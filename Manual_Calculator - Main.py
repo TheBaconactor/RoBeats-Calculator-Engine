@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#                       !/usr/bin/env python3
 """
 Manual Calculator + Iteration Engine + Co-Evolution Finder
 (Unified Genome: Optimizes Gear AND Minis simultaneously for perfect synergy)
@@ -98,6 +98,108 @@ DB_FILE = "evolution_db.json"
 MAX_TIMELINE_CACHE_PER_SONG = 500000
 FEVER_TIMELINE_CACHE = {}
 
+# --- Gem solver cache (per-stat-signature) ---
+# Avoids redundant solve_best_fever_combination calls when different gear+mini
+# combinations produce the same effective stats for a given song/color context.
+GEM_SOLVER_CACHE = {}
+
+# Keys to skip when aggregating gear/mini stats (metadata, not actual stats).
+SKIP_ITEM_KEYS = frozenset({"Name", "type"})
+
+
+def stats_signature(stats, calc_song, selected_color):
+    """
+    Compute a cache key that captures exactly the inputs influencing the gem
+    solver for a given song context. Two loadouts with the same signature will
+    produce identical gem allocations and scores.
+    
+    Key insight: elemental stats only matter if they feed into the song's
+    Primary/Secondary/Selected Element paths. Differences in other elements
+    are irrelevant and should share the same cache entry.
+    """
+    meta = calc_song["metadata"]
+    p_color = meta.get("Primary Color", "")
+    s_color = meta.get("Secondary Color", "")
+
+    gs = stats.get
+
+    # Mirror the same Beat/Vibe mapping the solver uses.
+    base_beat = gs("Beat", 0)
+    base_vibe = gs("Vibe", 0)
+
+    def get_val_inline(k):
+        if k == "Beat":
+            return base_beat
+        if k == "Vibe":
+            return base_vibe
+        return gs(k, 0)
+
+    # Only capture elemental values that actually feed into P/S lanes.
+    base_p_val = get_val_inline(p_color)
+    base_s_val = get_val_inline(s_color)
+
+    return (
+        meta.get("Song Name", ""),
+        meta.get("Difficulty", ""),
+        selected_color,
+        p_color,
+        s_color,
+        gs("Perfect Points", 0),
+        gs("Combo Multiplier", 0),
+        gs("Fever Multiplier", 0),
+        gs("Fever Fill Rate", 0),
+        gs("Fever Time", 0),
+        base_p_val,
+        base_s_val,
+    )
+
+
+# --- Gear Dominance Pruning ---
+# DOMINANCE_KEYS is aliased to STAT_KEYS (defined below) since they are identical.
+
+def is_dominated_by(a, b):
+    """
+    Check if gear 'a' is strictly dominated by gear 'b'.
+    
+    Returns True if:
+      - b[stat] >= a[stat] for ALL stats in DOMINANCE_KEYS, AND
+      - b[stat] > a[stat] for AT LEAST ONE stat
+    
+    This means 'a' can never be optimal if 'b' is available.
+    """
+    dominated = all(b.get(k, 0) >= a.get(k, 0) for k in DOMINANCE_KEYS)
+    if not dominated:
+        return False
+    strictly_better = any(b.get(k, 0) > a.get(k, 0) for k in DOMINANCE_KEYS)
+    return strictly_better
+
+
+def prune_dominated_gear(gear_list):
+    """
+    Remove gear items that are strictly dominated by another gear in the list.
+    
+    For each gear, check if any other gear in the list dominates it.
+    Only keep gear that is NOT dominated by any other.
+    
+    Returns a new list with dominated gear removed.
+    """
+    if len(gear_list) <= 1:
+        return gear_list
+    
+    pruned = []
+    for g in gear_list:
+        dominated = False
+        for other in gear_list:
+            if other is g:
+                continue
+            if is_dominated_by(g, other):
+                dominated = True
+                break
+        if not dominated:
+            pruned.append(g)
+    return pruned
+
+
 # --- STAT KEYS / HELPERS ---
 STAT_KEYS = [
     "Perfect Points",
@@ -111,6 +213,9 @@ STAT_KEYS = [
     "Beat",
     "Vibe",
 ]
+
+# Alias for gear dominance pruning (same keys used for dominance comparison).
+DOMINANCE_KEYS = STAT_KEYS
 
 
 def empty_stats():
@@ -165,7 +270,7 @@ else:
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 LOGGING_CHANNEL_ID = safe_int(os.getenv("LOGGINGCHANNEL"), 0) or None
 STATS_CHANNEL_ID = safe_int(os.getenv("STATSCHANNEL"), 0) or None
-EVOLUTION_DB_PATH = os.getenv("EVOLUTION_DB_PATH")
+EVOLUTION_DB_PATH = os.getenv("EVOLUTION_DB_PATH") or os.path.join(SCRIPT_DIR, DB_FILE)
 
 
 class DiscordReporter:
@@ -304,6 +409,7 @@ def save_evolution_db(db_data):
     except Exception as e:
         print(f"Failed to save DB: {e}")
 
+
 def sanitize_evolution_db(db_data):
     """
     Remove malformed or non-serializable entries to avoid DB corruption.
@@ -325,19 +431,7 @@ def sanitize_evolution_db(db_data):
         if "details" in v and not isinstance(v.get("details"), dict):
             v.pop("details", None)
         if "second" in v:
-            if not isinstance(v.get("second"), dict):
-                v.pop("second", None)
-            else:
-                sec = v.get("second") or {}
-                if "score" in sec and not isinstance(sec.get("score"), (int, float)):
-                    v.pop("second", None)
-                else:
-                    if "gear" in sec and not isinstance(sec.get("gear"), list):
-                        sec.pop("gear", None)
-                    if "minis" in sec and not isinstance(sec.get("minis"), list):
-                        sec.pop("minis", None)
-                    if "details" in sec and not isinstance(sec.get("details"), dict):
-                        sec.pop("details", None)
+            v.pop("second", None)
         cleaned[k] = v
     return cleaned
 
@@ -390,7 +484,8 @@ def read_table(fp):
     if not fp or not os.path.exists(fp):
         return []
     try:
-        with open(fp, "r") as f:
+        # Explicit UTF-8-SIG to match other data files and avoid Windows 'charmap' decode issues
+        with open(fp, "r", encoding="utf-8-sig") as f:
             lines = f.read().splitlines()
         if not lines:
             return []
@@ -406,6 +501,16 @@ def read_table(fp):
         return table
     except Exception:
         return []
+
+
+def resolve_stats_csv(paths, filename):
+    """Resolve Gears/Minis CSV relative to SCRIPT_DIR or Stats.csv folder."""
+    csv_path = os.path.join(SCRIPT_DIR, filename)
+    if not os.path.exists(csv_path):
+        stats_loc = paths.get("Stats", "")
+        if stats_loc:
+            csv_path = os.path.join(os.path.dirname(stats_loc), filename)
+    return csv_path
 
 
 # --- CSV Parsing Helpers (shared) ---
@@ -470,9 +575,12 @@ def parse_gear_rows(filepath):
                         _first_val(row_map, ("fmult", "fmlt", "fever multiplier"))
                     ),
                 }
+                # IMPORTANT: Perfect Time (often stored as "PTime") is a
+                # completely different mechanic from Fever Time and must
+                # NEVER be treated as Fever Time. Do not fall back to
+                # any "ptime" column here; only true Fever Time fields
+                # ("time" / "fever time" / "ft") are allowed.
                 time_val = _first_val(row_map, ("time", "fever time", "ft"))
-                if not time_val:
-                    time_val = _first_val(row_map, ("ptime",))
                 stats["Fever Time"] = safe_int(time_val)
                 stats["Fever Fill Rate"] = safe_int(
                     _first_val(row_map, ("fill", "fvfil", "fever fill rate", "fever fill"))
@@ -624,21 +732,11 @@ def load_csv_db(filepath, db_type="gear"):
 
 
 def load_all_minis_list(paths):
-    minis_path = os.path.join(SCRIPT_DIR, "Minis.csv")
-    if not os.path.exists(minis_path):
-        stats_loc = paths.get("Stats", "")
-        if stats_loc:
-            minis_path = os.path.join(os.path.dirname(stats_loc), "Minis.csv")
-    return parse_mini_rows(minis_path)
+    return parse_mini_rows(resolve_stats_csv(paths, "Minis.csv"))
 
 
 def load_all_gears_list(paths):
-    gears_path = os.path.join(SCRIPT_DIR, "Gears.csv")
-    if not os.path.exists(gears_path):
-        stats_loc = paths.get("Stats", "")
-        if stats_loc:
-            gears_path = os.path.join(os.path.dirname(stats_loc), "Gears.csv")
-    return parse_gear_rows(gears_path)
+    return parse_gear_rows(resolve_stats_csv(paths, "Gears.csv"))
 
 
 # --- Load Config and Calculate Stats ---
@@ -694,12 +792,7 @@ def get_config_gear_stats(cfg, paths, gears_db=None):
     gears_db: optional dict {Name: stats}. If None, load from CSV.
     """
     if gears_db is None:
-        gears_path = os.path.join(SCRIPT_DIR, "Gears.csv")
-        if not os.path.exists(gears_path):
-            stats_loc = paths.get("Stats", "")
-            if stats_loc:
-                gears_path = os.path.join(os.path.dirname(stats_loc), "Gears.csv")
-        gears_db = load_csv_db(gears_path, "gear")
+        gears_db = load_csv_db(resolve_stats_csv(paths, "Gears.csv"), "gear")
 
     gear_stats = empty_stats()
     gear_list = []
@@ -725,12 +818,7 @@ def get_config_mini_stats(cfg, paths, minis_db=None):
     minis_db: optional dict {Name: stats}. If None, load from CSV.
     """
     if minis_db is None:
-        minis_path = os.path.join(SCRIPT_DIR, "Minis.csv")
-        if not os.path.exists(minis_path):
-            stats_loc = paths.get("Stats", "")
-            if stats_loc:
-                minis_path = os.path.join(os.path.dirname(stats_loc), "Minis.csv")
-        minis_db = load_csv_db(minis_path, "mini")
+        minis_db = load_csv_db(resolve_stats_csv(paths, "Minis.csv"), "mini")
 
     mini_stats = empty_stats()
     mini_list = []
@@ -745,6 +833,35 @@ def get_config_mini_stats(cfg, paths, minis_db=None):
         else:
             mini_list.append({"Name": "(Empty)", "type": "Mini"})
     return mini_stats, mini_list
+
+
+def load_force_greats_config(cfg):
+    """
+    Parse [ForceGreats] options into a list indexed by non-fever section (0-based).
+    Keys follow the pattern NonFever{N}; missing values default to zero.
+    """
+    if not cfg or not cfg.has_section("ForceGreats"):
+        return []
+    entries = []
+    try:
+        for opt, raw in cfg.items("ForceGreats"):
+            match = re.match(r"nonfever(\d+)", opt.strip().lower())
+            if not match:
+                continue
+            idx = max(0, safe_int(match.group(1)) - 1)
+            val = max(0, safe_int(raw, 0))
+            entries.append((idx, val))
+    except Exception:
+        return []
+
+    if not entries:
+        return []
+
+    max_idx = max(idx for idx, _ in entries)
+    values = [0] * (max_idx + 1)
+    for idx, val in entries:
+        values[idx] = val
+    return values
 
 
 # --- Song Scanner ---
@@ -848,8 +965,16 @@ def calculate_fever_timeline_indices(
     last_note_time,
     fever_mask_buffer,
 ):
+    """
+    Calculate fever timeline using corrected server-matching logic.
+    
+    Key fixes:
+    1. First non-fever section: non_fever_base - 1 notes
+       Later sections: non_fever_base notes (1 "wasted" note where fever ends)
+    2. Binary search uses side="left" (>=) instead of side="right" (>)
+    """
     non_fever_cas = (total_notes - long_notes_count) * 0.333
-    notes_to_fill_fever = ceil(non_fever_cas * fever_fill_rate)
+    non_fever_base = ceil(non_fever_cas * fever_fill_rate)
     fever_time_cas = last_note_time * 0.15 + 0.15
     real_fever_time = fever_time_cas * fever_time_stat
 
@@ -857,9 +982,18 @@ def calculate_fever_timeline_indices(
     is_fever[:] = False
     current_note_idx = 0
     fever_activations = 0
+    fever_section = 0
 
     while current_note_idx < total_notes:
-        end_normal_idx = min(current_note_idx + notes_to_fill_fever, total_notes)
+        # Non-fever section
+        fever_section += 1
+        # First section: -1, Later sections: use base (wasted note effect)
+        if fever_section == 1:
+            notes_to_fill = non_fever_base - 1
+        else:
+            notes_to_fill = non_fever_base
+        
+        end_normal_idx = min(current_note_idx + notes_to_fill, total_notes)
         current_note_idx = end_normal_idx
         if current_note_idx >= total_notes:
             break
@@ -868,7 +1002,8 @@ def calculate_fever_timeline_indices(
             fever_activations += 1
             start_time = song_timestamps[current_note_idx]
             end_time = start_time + real_fever_time
-            fever_end_idx = np.searchsorted(song_timestamps, end_time, side="right")
+            # Use side="left" to find first note where time >= end_time (not >)
+            fever_end_idx = np.searchsorted(song_timestamps, end_time, side="left")
             is_fever[current_note_idx:fever_end_idx] = True
             current_note_idx = fever_end_idx
         else:
@@ -895,18 +1030,22 @@ def fast_calculate_score(
     fever_mask_head,
     count_body_fever,
     count_body_normal,
-    fever_activations_count,
 ):
+    """
+    Fast JIT-compiled score calculation.
+    
+    NOTE: The old fever_activations_count adjustment has been REMOVED.
+    The timeline calculation now correctly handles note allocation per fever cycle,
+    so no adjustment is needed.
+    """
     combo_val_per_note = floor(base_value * combo_mul)
     fever_val_per_note = floor(base_value * combo_mul * fever_mul)
 
     body_score = (count_body_fever * fever_val_per_note) + (
         count_body_normal * combo_val_per_note
     )
-    
-    if fever_activations_count > 1:
-        diff = fever_val_per_note - combo_val_per_note
-        body_score += diff * (fever_activations_count - 1)
+
+    # OLD PATCH REMOVED - no longer needed with corrected timeline
 
     factor = (combo_mul - 1) * base_value / 100.0
     total_head = 0.0
@@ -945,7 +1084,6 @@ def optimize_core_jit(
     fever_mask_head,
     count_body_fever,
     count_body_normal,
-    fever_activations,
     GEM_SCALE_NORMAL,
     GEM_SCALE_FEVER,
     GEM_STAT_TO_ELEMENT_SCALE,
@@ -985,7 +1123,6 @@ def optimize_core_jit(
                 fever_mask_head,
                 count_body_fever,
                 count_body_normal,
-                fever_activations,
             )
             if score >= best_score:
                 best_score = score
@@ -1011,7 +1148,6 @@ def optimize_core_jit(
                 fever_mask_head,
                 count_body_fever,
                 count_body_normal,
-                fever_activations,
             )
             if score > best_score:
                 best_score = score
@@ -1037,7 +1173,6 @@ def optimize_core_jit(
                 fever_mask_head,
                 count_body_fever,
                 count_body_normal,
-                fever_activations,
             )
             if score > best_score:
                 best_score = score
@@ -1057,7 +1192,6 @@ def optimize_core_jit(
             fever_mask_head,
             count_body_fever,
             count_body_normal,
-            fever_activations,
         )
         if score >= best_score:
             best_score = score
@@ -1101,25 +1235,39 @@ def optimize_core_jit(
 def worker_coevolution_evaluate(args):
     """
     Evaluates a Co-Evolution Individual.
+    
+    Uses a stat-signature cache: if multiple gear+mini combinations produce
+    the same effective stats for the song's Primary/Secondary/Selected paths,
+    we reuse the gem solver result instead of recomputing.
     """
     (genome, base_stats_fixed, cfg_data, calc_song, ref_arrays) = args
 
     current_stats = base_stats_fixed.copy()
+    cs = current_stats
+    cs_get = cs.get
 
-    skip_keys = {"Name", "type"}
     for item in genome:
         for k, v in item.items():
-            if k not in skip_keys:
-                current_stats[k] = current_stats.get(k, 0) + v
+            if k not in SKIP_ITEM_KEYS:
+                cs[k] = cs_get(k, 0) + v
 
-    res = solve_best_fever_combination(
-        None,
-        current_stats,
-        calc_song,
-        ref_arrays,
-        silent=True,
-        override_cfg=cfg_data,
-    )
+    # Check stat-signature cache before calling the expensive gem solver.
+    sel_color = cfg_data["selected_color"]
+    sig = stats_signature(current_stats, calc_song, sel_color)
+    cached = GEM_SOLVER_CACHE.get(sig)
+
+    if cached is None:
+        res = solve_best_fever_combination(
+            None,
+            current_stats,
+            calc_song,
+            ref_arrays,
+            silent=True,
+            override_cfg=cfg_data,
+        )
+        GEM_SOLVER_CACHE[sig] = res
+    else:
+        res = cached
 
     gear_part = genome[:6]
     mini_part = genome[6:]
@@ -1136,6 +1284,324 @@ def worker_coevolution_evaluate(args):
 
 
 # === SOLVERS ===
+def evaluate_stats_score(
+    stats,
+    calc_song,
+    ref_arrays,
+    song_timestamps=None,
+    long_notes=None,
+    last_note=None,
+    fever_mask_buffer=None,
+):
+    """Return total score for a fixed stats snapshot without reallocations."""
+    timestamps = (
+        song_timestamps if song_timestamps is not None else calc_song["song_data"]["timestamps"]
+    )
+    total_notes = len(timestamps)
+    long_count = (
+        long_notes if long_notes is not None else int(calc_song["metadata"].get("Long Notes", 0))
+    )
+    last_time = (
+        last_note
+        if last_note is not None
+        else float(calc_song["metadata"].get("Last Note Time", 0))
+    )
+    mask_buffer = fever_mask_buffer
+    if mask_buffer is None or mask_buffer.shape[0] != total_notes:
+        mask_buffer = np.zeros(total_notes, dtype=np.bool_)
+
+    ft_factor = lookup_reference_py(stats["Fever Time"], ref_arrays["Fever Time"], TOTAL_ROWS)
+    ff_factor = lookup_reference_py(stats["Fever Fill Rate"], ref_arrays["Fever Fill Rate"], TOTAL_ROWS)
+    fever_mask_head, count_body_fever, count_body_normal, _ = calculate_fever_timeline_indices(
+        timestamps,
+        total_notes,
+        ff_factor,
+        ft_factor,
+        long_count,
+        last_time,
+        mask_buffer,
+    )
+
+    base_pp = lookup_reference_py(stats["Perfect Points"], ref_arrays["Perfect Points"], TOTAL_ROWS)
+    combo_mul = lookup_reference_py(stats["Combo Multiplier"], ref_arrays["Combo Multiplier"], TOTAL_ROWS)
+    fever_mul = lookup_reference_py(stats["Fever Multiplier"], ref_arrays["Fever Multiplier"], TOTAL_ROWS)
+
+    p_color = calc_song["metadata"].get("Primary Color", "")
+    s_color = calc_song["metadata"].get("Secondary Color", "")
+    primary_val = stats.get(p_color, 0)
+    secondary_val = stats.get(s_color, 0)
+    total_base = (primary_val * 2) + secondary_val + base_pp
+
+    return fast_calculate_score(
+        total_base,
+        combo_mul,
+        fever_mul,
+        fever_mask_head,
+        count_body_fever,
+        count_body_normal,
+    )
+
+
+def _force_greats_counts_to_dict(counts, sections):
+    config = {}
+    for idx in range(sections):
+        val = counts[idx] if idx < len(counts) else 0
+        config[f"NonFever{idx + 1}"] = max(0, int(val))
+    return config
+
+
+def build_great_penalty_table(base_value, combo_mul, great_penalty_base, head_limit=100):
+    """
+    Precompute ramp penalties for the first `head_limit` notes.
+    Avoids recalculating scaling when evaluating force-great permutations.
+    """
+    penalties = [0] * head_limit
+    combo_span = combo_mul - 1.0
+    for idx in range(head_limit):
+        scaling = 1.0 + combo_span * (idx + 1) / 100.0
+        perfect_val = floor(base_value * scaling)
+        great_val = floor(great_penalty_base * scaling)
+        penalties[idx] = max(0, perfect_val - great_val)
+    return penalties
+
+
+def evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=None):
+    """
+    Recompute fever timeline and penalties when greats are forced in non-fever sections.
+    Returns None when prerequisites are missing.
+    """
+    if not stats or not calc_song:
+        return None
+
+    timestamps = calc_song["song_data"]["timestamps"]
+    total_notes = len(timestamps)
+    if total_notes <= 0:
+        return None
+
+    metadata = calc_song["metadata"]
+    long_notes = int(metadata.get("Long Notes", 0))
+    last_note_time = float(metadata.get("Last Note Time", timestamps[-1] if total_notes else 0.0))
+    primary_color = metadata.get("Primary Color", "")
+    secondary_color = metadata.get("Secondary Color", "")
+    primary_val = stats.get(primary_color, 0)
+    secondary_val = stats.get(secondary_color, 0)
+
+    ref_pp = ref_arrays["Perfect Points"]
+    ref_cm = ref_arrays["Combo Multiplier"]
+    ref_fm = ref_arrays["Fever Multiplier"]
+    ref_ff = ref_arrays["Fever Fill Rate"]
+    ref_ft = ref_arrays["Fever Time"]
+
+    pp_factor = lookup_reference_py(stats["Perfect Points"], ref_pp, TOTAL_ROWS)
+    combo_mul = lookup_reference_py(stats["Combo Multiplier"], ref_cm, TOTAL_ROWS)
+    fever_mul = lookup_reference_py(stats["Fever Multiplier"], ref_fm, TOTAL_ROWS)
+    fever_fill_rate = lookup_reference_py(stats["Fever Fill Rate"], ref_ff, TOTAL_ROWS)
+    fever_time_stat = lookup_reference_py(stats["Fever Time"], ref_ft, TOTAL_ROWS)
+
+    base_value = (primary_val * 2) + secondary_val + pp_factor
+    combo_value = floor(base_value * combo_mul)
+    great_penalty_base = floor(((primary_val * 2) + secondary_val) * (2.0 / 3.0) + 150.0)
+    great_combo_value = floor(great_penalty_base * combo_mul)
+    penalty_table = build_great_penalty_table(base_value, combo_mul, great_penalty_base)
+    body_penalty = max(0, combo_value - great_combo_value)
+
+    non_fever_cas = max(0.0, (total_notes - long_notes) * 0.333)
+    non_fever_base = ceil(non_fever_cas * fever_fill_rate)
+    non_fever_great_to_fill = ceil(max(1.0, (non_fever_cas * fever_fill_rate) * 2.0))
+    fever_time_cas = last_note_time * 0.15 + 0.15
+    real_fever_time = fever_time_cas * fever_time_stat
+
+    force_counts = list(forced_counts or [])
+    fever_mask = np.zeros(total_notes, dtype=np.bool_)
+    current_idx = 0
+    non_fever_section = 0
+    section_details = []
+
+    while current_idx < total_notes:
+        non_fever_section += 1
+        base_notes = non_fever_base - 1 if non_fever_section == 1 else non_fever_base
+        base_notes = max(0, base_notes)
+        forced_val = 0
+        if non_fever_section - 1 < len(force_counts):
+            forced_val = max(0, int(force_counts[non_fever_section - 1]))
+        forced_val = min(forced_val, non_fever_base)
+        fill_penalty_notes = ceil(
+            max(0.0, (non_fever_base * forced_val) / non_fever_great_to_fill)
+        )
+        notes_to_fill = base_notes + fill_penalty_notes
+        section_start = current_idx
+        end_normal = min(section_start + notes_to_fill, total_notes)
+        actual_notes = max(0, end_normal - section_start)
+        forced_applied = min(forced_val, actual_notes)
+
+        section_details.append(
+            {
+                "start_idx": section_start,
+                "notes": actual_notes,
+                "forced": forced_applied,
+                "fill_penalty_notes": fill_penalty_notes,
+                "skip_wasted": (non_fever_section == 1),
+            }
+        )
+        current_idx = end_normal
+        if current_idx >= total_notes:
+            break
+
+        start_time = timestamps[current_idx]
+        end_time = start_time + real_fever_time
+        fever_end_idx = int(np.searchsorted(timestamps, end_time, side="left"))
+        if fever_end_idx <= current_idx:
+            fever_end_idx = min(total_notes, current_idx + 1)
+        fever_mask[current_idx:fever_end_idx] = True
+        current_idx = fever_end_idx
+
+    head_limit = min(total_notes, 100)
+    fever_mask_head = fever_mask[:head_limit]
+    if total_notes > 100:
+        body_slice = fever_mask[100:]
+        count_body_fever = int(np.count_nonzero(body_slice))
+        count_body_normal = max(len(body_slice) - count_body_fever, 0)
+    else:
+        count_body_fever = 0
+        count_body_normal = 0
+
+    base_score = fast_calculate_score(
+        base_value,
+        combo_mul,
+        fever_mul,
+        fever_mask_head,
+        count_body_fever,
+        count_body_normal,
+    )
+
+    total_score_penalty = 0
+    total_fill_penalty = 0
+    penalty_analysis = {}
+    for idx, detail in enumerate(section_details):
+        section_key = f"NonFever{idx + 1}"
+        fill_penalty_score = detail["fill_penalty_notes"] * combo_value
+        total_fill_penalty += fill_penalty_score
+        forced = detail["forced"]
+        if forced > 0:
+            start_idx = detail["start_idx"]
+            if detail.get("skip_wasted"):
+                start_idx = min(total_notes, start_idx + 1)
+            score_penalty = 0
+            note_idx = start_idx
+            remaining = forced
+            while remaining > 0:
+                if note_idx < len(penalty_table):
+                    score_penalty += penalty_table[note_idx]
+                else:
+                    score_penalty += body_penalty
+                note_idx += 1
+                remaining -= 1
+        else:
+            score_penalty = 0
+        total_score_penalty += score_penalty
+        penalty_analysis[section_key] = {
+            "forced_greats": forced,
+            "score_penalty": score_penalty,
+            "fill_penalty": fill_penalty_score,
+            "total_penalty": score_penalty + fill_penalty_score,
+        }
+
+    used_counts = force_counts[:]
+    if len(used_counts) < len(section_details):
+        used_counts.extend([0] * (len(section_details) - len(used_counts)))
+
+    return {
+        "base_score": base_score,
+        "final_score": max(0, base_score - total_score_penalty),
+        "score_penalty": total_score_penalty,
+        "fill_penalty": total_fill_penalty,
+        "total_penalty": total_score_penalty + total_fill_penalty,
+        "num_non_fever_sections": len(section_details),
+        "config_counts": used_counts[: len(section_details)],
+        "config_dict": _force_greats_counts_to_dict(used_counts, len(section_details)),
+        "penalty_analysis": penalty_analysis,
+        "non_fever_base": non_fever_base,
+    }
+
+
+def run_force_greats_hill_climb(stats, calc_song, ref_arrays):
+    """
+    Simple hill-climb optimizer that increments forced greats per section
+    while the total score improves.
+    """
+    baseline = evaluate_force_greats(stats, calc_song, ref_arrays, [])
+    if not baseline:
+        return None
+
+    best_counts = [0] * baseline["num_non_fever_sections"]
+    best_result = evaluate_force_greats(stats, calc_song, ref_arrays, best_counts)
+    if not best_result or best_result["num_non_fever_sections"] == 0:
+        return best_result
+
+    improved = True
+    while improved:
+        improved = False
+        for idx in range(best_result["num_non_fever_sections"]):
+            candidate_counts = best_counts[:]
+            if idx >= len(candidate_counts):
+                candidate_counts.extend([0] * (idx + 1 - len(candidate_counts)))
+            candidate_counts[idx] += 1
+            candidate = evaluate_force_greats(stats, calc_song, ref_arrays, candidate_counts)
+            if candidate and candidate["final_score"] > best_result["final_score"]:
+                best_counts = candidate_counts
+                best_result = candidate
+                improved = True
+                break
+    return best_result
+
+
+def apply_force_greats_to_result(
+    data_dict,
+    calc_song,
+    ref_arrays,
+    manual_counts=None,
+    use_finder=False,
+):
+    """
+    Evaluate forced-great penalties (manual config or hill-climb finder) for a result dict.
+    Returns a cloned variant with the adjusted score while leaving the original untouched.
+    """
+    if not data_dict or "Stats" not in data_dict:
+        return None
+
+    stats = data_dict.get("Stats") or {}
+    if not stats:
+        return None
+
+    if use_finder:
+        fg_result = run_force_greats_hill_climb(stats, calc_song, ref_arrays)
+    else:
+        fg_result = evaluate_force_greats(stats, calc_song, ref_arrays, manual_counts)
+
+    if not fg_result:
+        return None
+
+    fg_info = {
+        "enabled": True,
+        "config": fg_result["config_dict"],
+        "base_score": fg_result["base_score"],
+        "final_score": fg_result["final_score"],
+        "score_penalty": fg_result["score_penalty"],
+        "fill_penalty": fg_result["fill_penalty"],
+        "total_penalty": fg_result["total_penalty"],
+        "num_non_fever_sections": fg_result["num_non_fever_sections"],
+        "penalty_analysis": fg_result["penalty_analysis"],
+    }
+
+    data_dict["ForceGreats"] = fg_info
+
+    fg_variant = copy.deepcopy(data_dict)
+    fg_variant["Score"] = fg_result["final_score"]
+    fg_variant["ForceGreats"] = fg_info.copy()
+    fg_variant["ForceGreats"]["variant_applied"] = True
+    return fg_variant
+
+
 def solve_best_fever_combination(
     cfg,
     initial_stats,
@@ -1143,6 +1609,7 @@ def solve_best_fever_combination(
     ref_arrays,
     silent=False,
     override_cfg=None,
+    skip_optimizer=False,
 ):
     if override_cfg:
         user_ft = override_cfg["user_ft"]
@@ -1170,6 +1637,48 @@ def solve_best_fever_combination(
         )
 
     base_stats = initial_stats.copy()
+
+    # OPTIMIZATION: timestamps are already a NumPy array (set in __main__)
+    song_timestamps = calc_song["song_data"]["timestamps"]
+    total_notes = len(song_timestamps)
+    long_notes = int(calc_song["metadata"].get("Long Notes", 0))
+    last_note = float(calc_song["metadata"].get("Last Note Time", 0))
+    p_color = calc_song["metadata"].get("Primary Color", "")
+    s_color = calc_song["metadata"].get("Secondary Color", "")
+
+    # Reuse mask buffer across FT/FF permutations to avoid repeated allocations.
+    fever_mask_buffer = np.zeros(total_notes, dtype=np.bool_)
+
+    ref_pp = ref_arrays["Perfect Points"]
+    ref_cm = ref_arrays["Combo Multiplier"]
+    ref_fm = ref_arrays["Fever Multiplier"]
+    ref_ft = ref_arrays["Fever Time"]
+    ref_ff = ref_arrays["Fever Fill Rate"]
+
+    if skip_optimizer:
+        score = evaluate_stats_score(
+            base_stats,
+            calc_song,
+            ref_arrays,
+            song_timestamps=song_timestamps,
+            long_notes=long_notes,
+            last_note=last_note,
+            fever_mask_buffer=fever_mask_buffer,
+        )
+        return {
+            "Score": score,
+            "FT": user_ft,
+            "FF": user_ff,
+            "GemCounts": {
+                "Perfect Points": user_pp,
+                "Combo Multiplier": user_cm,
+                "Fever Multiplier": user_fm,
+                "Element Overflow": static_elem_input,
+            },
+            "Stats": base_stats,
+            "Selected Element": selected_color,
+        }
+
     base_stats["Fever Time"] -= user_ft * GEM_SCALE_FEVER
     base_stats["Beat"] -= user_ft * GEM_STAT_TO_ELEMENT_SCALE
     base_stats["Fever Fill Rate"] -= user_ff * GEM_SCALE_FEVER
@@ -1190,23 +1699,6 @@ def solve_best_fever_combination(
     if not silent:
         print(f"Max allocatable Gems: FT<={max_ft_gems}, Fill<={max_ff_gems}")
         print("Iterating permutations...")
-
-    # OPTIMIZATION: timestamps are already a NumPy array (set in __main__)
-    song_timestamps = calc_song["song_data"]["timestamps"]
-    total_notes = len(song_timestamps)
-    long_notes = int(calc_song["metadata"].get("Long Notes", 0))
-    last_note = float(calc_song["metadata"].get("Last Note Time", 0))
-    p_color = calc_song["metadata"].get("Primary Color", "")
-    s_color = calc_song["metadata"].get("Secondary Color", "")
-
-    # Reuse mask buffer across FT/FF permutations to avoid repeated allocations.
-    fever_mask_buffer = np.zeros(total_notes, dtype=np.bool_)
-
-    ref_pp = ref_arrays["Perfect Points"]
-    ref_cm = ref_arrays["Combo Multiplier"]
-    ref_fm = ref_arrays["Fever Multiplier"]
-    ref_ft = ref_arrays["Fever Time"]
-    ref_ff = ref_arrays["Fever Fill Rate"]
 
     best_score = -1
     best_tuple = None
@@ -1348,7 +1840,6 @@ def solve_best_fever_combination(
                 fever_mask_head,
                 count_body_fever,
                 count_body_normal,
-                fever_activations,
                 GEM_SCALE_NORMAL,
                 GEM_SCALE_FEVER,
                 GEM_STAT_TO_ELEMENT_SCALE,
@@ -1369,7 +1860,6 @@ def solve_best_fever_combination(
                 fever_mask_head,
                 count_body_fever,
                 count_body_normal,
-                fever_activations,
             )
 
             if total_score > best_score:
@@ -1436,8 +1926,11 @@ def solve_coevolution_genetic(
     status_cb=None,
     executor=None,
 ):
+    # Clear per-song caches to prevent unbounded memory growth across songs.
+    GEM_SOLVER_CACHE.clear()
+
     print("\n=== STARTING GENETIC ALGORITHM SOLVER ===")
-    print(f"Configuration: GearFinder={optimize_gear}, MiniFinder={optimize_minis}")
+    print(f"Configuration: GearOptimization={optimize_gear}, MiniOptimization={optimize_minis}")
 
     p_color = calc_song["metadata"].get("Primary Color", "Rush")
     selected_color = p_color
@@ -1447,11 +1940,22 @@ def solve_coevolution_genetic(
         print("No valid minis found (Primary Color check).")
         return None, [], []
 
+    # Pre-compute mini name set for faster candidate filtering in crossover/mutation.
+    mini_pool_names = frozenset(m["Name"] for m in mini_pool)
+
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     gear_pool = {s: [] for s in slots}
     for g in all_gears:
         if g["type"] in gear_pool:
             gear_pool[g["type"]].append(g)
+
+    # Apply dominance pruning per slot to remove strictly inferior gear.
+    total_before = sum(len(gear_pool[s]) for s in slots)
+    for s in slots:
+        gear_pool[s] = prune_dominated_gear(gear_pool[s])
+    total_after = sum(len(gear_pool[s]) for s in slots)
+    if total_before > total_after:
+        print(f"[Dominance Pruning] Removed {total_before - total_after} dominated gear items.")
 
     cfg_data = {
         "selected_color": selected_color,
@@ -1482,6 +1986,48 @@ def solve_coevolution_genetic(
     )
     fixed_seed_copies = max(0, fixed_seed_copies)
 
+    # --- MEMETIC GA PARAMETERS (configurable from [IterationEngine]) ---
+    memetic_elites = (
+        safe_int(cfg.get("IterationEngine", "GA_MemeticElites", fallback=4))
+        if cfg
+        else 4
+    )
+    if memetic_elites < 0:
+        memetic_elites = 0
+
+    memetic_steps = (
+        safe_int(cfg.get("IterationEngine", "GA_MemeticSteps", fallback=2))
+        if cfg
+        else 2
+    )
+    if memetic_steps < 0:
+        memetic_steps = 0
+
+    memetic_top_gear = (
+        safe_int(cfg.get("IterationEngine", "GA_MemeticTopGear", fallback=4))
+        if cfg
+        else 4
+    )
+    if memetic_top_gear <= 0:
+        memetic_top_gear = 1
+
+    memetic_top_minis = (
+        safe_int(cfg.get("IterationEngine", "GA_MemeticTopMinis", fallback=12))
+        if cfg
+        else 12
+    )
+    if memetic_top_minis <= 0:
+        memetic_top_minis = 1
+
+    if memetic_elites > 0 and memetic_steps > 0:
+        print(
+            f"[Memetic GA] Enabled: elites={memetic_elites}, "
+            f"steps={memetic_steps}, top_gear={memetic_top_gear}, "
+            f"top_minis={memetic_top_minis}"
+        )
+    else:
+        print("[Memetic GA] Disabled (elites or steps <= 0).")
+
     def score_candidate(x):
         return (
             x.get(p_color, 0) * 3
@@ -1501,7 +2047,12 @@ def solve_coevolution_genetic(
     ]
 
     def genome_key(genome):
-        return tuple(item.get("Name", "") for item in genome)
+        # Gear (first 6 slots): order matters because slots are positional.
+        gear_names = tuple(item.get("Name", "") for item in genome[:6])
+        # Minis (last 3 slots): order-invariant - only the set/multiset matters.
+        # Sorting canonicalizes permutations so [A,B,C] and [C,B,A] share a key.
+        mini_names = tuple(sorted(item.get("Name", "") for item in genome[6:]))
+        return gear_names + mini_names
 
     evaluation_cache = {}
 
@@ -1648,48 +2199,128 @@ def solve_coevolution_genetic(
         while improved:
             improved = False
             # Gear sweep (one slot at a time)
-            for idx, slot in enumerate(slots):
-                current_name = best_genome[idx].get("Name")
-                for cand in gear_rank.get(slot, []):
-                    if cand.get("Name") == current_name:
-                        continue
-                    trial = best_genome[:]
-                    trial[idx] = cand
-                    trial_res = evaluate_genome_local(trial)
-                    if trial_res["Score"] > best_score:
-                        best_score = trial_res["Score"]
-                        best_result = trial_res
-                        best_genome = trial
-                        improved = True
+            if optimize_gear:
+                for idx, slot in enumerate(slots):
+                    current_name = best_genome[idx].get("Name")
+                    for cand in gear_rank.get(slot, []):
+                        if cand.get("Name") == current_name:
+                            continue
+                        trial = best_genome[:]
+                        trial[idx] = cand
+                        trial_res = evaluate_genome_local(trial)
+                        if trial_res["Score"] > best_score:
+                            best_score = trial_res["Score"]
+                            best_result = trial_res
+                            best_genome = trial
+                            improved = True
+                            break
+                    if improved:
                         break
-                if improved:
-                    break
             if improved:
                 continue
 
             # Mini sweep (respect unique minis)
-            for idx in range(6, 9):
-                curr_name = best_genome[idx].get("Name")
+            if optimize_minis:
+                # Compute existing mini names once per sweep iteration.
                 existing = {m.get("Name") for m in best_genome[6:] if isinstance(m, dict)}
-                for cand in mini_rank:
-                    c_name = cand.get("Name")
-                    if c_name == curr_name:
-                        continue
-                    if c_name in existing - {curr_name}:
-                        continue
-                    trial = best_genome[:]
-                    trial[idx] = cand
-                    trial_res = evaluate_genome_local(trial)
-                    if trial_res["Score"] > best_score:
-                        best_score = trial_res["Score"]
-                        best_result = trial_res
-                        best_genome = trial
-                        improved = True
+                for idx in range(6, 9):
+                    curr_name = best_genome[idx].get("Name")
+                    for cand in mini_rank:
+                        c_name = cand.get("Name")
+                        if c_name == curr_name:
+                            continue
+                        if c_name in existing - {curr_name}:
+                            continue
+                        trial = best_genome[:]
+                        trial[idx] = cand
+                        trial_res = evaluate_genome_local(trial)
+                        if trial_res["Score"] > best_score:
+                            best_score = trial_res["Score"]
+                            best_result = trial_res
+                            best_genome = trial
+                            improved = True
+                            break
+                    if improved:
                         break
-                if improved:
-                    break
 
         return best_result, best_genome
+
+    # --- MEMETIC LOCAL SEARCH (lightweight) ---
+    def memetic_local_search(start_genome, max_steps, top_k_gear, top_k_minis):
+        """
+        Lightweight local search around a genome.
+        Performs up to max_steps improving moves over gear/minis,
+        using ranked candidates and the shared evaluation cache.
+        """
+        if max_steps <= 0:
+            return evaluate_genome_local(start_genome)
+
+        best_genome = list(start_genome)
+        best_result = evaluate_genome_local(best_genome)
+        best_score = best_result["Score"]
+
+        # Pre-trim candidate lists for this memetic search
+        local_gear_rank = {
+            s: gear_rank_cache.get(s, [])[:top_k_gear] for s in slots
+        }
+        local_mini_rank = mini_rank_cache[:top_k_minis]
+
+        steps = 0
+        while steps < max_steps:
+            improved = False
+
+            # Gear neighbourhood (if optimizing gear)
+            if optimize_gear:
+                for idx, slot in enumerate(slots):
+                    current_name = best_genome[idx].get("Name")
+                    for cand in local_gear_rank.get(slot, []):
+                        if cand.get("Name") == current_name:
+                            continue
+                        trial = best_genome[:]
+                        trial[idx] = cand
+                        trial_res = evaluate_genome_local(trial)
+                        if trial_res["Score"] > best_score:
+                            best_score = trial_res["Score"]
+                            best_result = trial_res
+                            best_genome = trial
+                            improved = True
+                            steps += 1
+                            break
+                    if improved or steps >= max_steps:
+                        break
+
+            if steps >= max_steps:
+                break
+
+            # Mini neighbourhood (if optimizing minis)
+            if not improved and optimize_minis:
+                # Compute existing mini names once per neighbourhood iteration.
+                existing = {m.get("Name") for m in best_genome[6:] if isinstance(m, dict)}
+                for idx in range(6, 9):
+                    curr_name = best_genome[idx].get("Name")
+                    for cand in local_mini_rank:
+                        c_name = cand.get("Name")
+                        if c_name == curr_name:
+                            continue
+                        if c_name in existing - {curr_name}:
+                            continue
+                        trial = best_genome[:]
+                        trial[idx] = cand
+                        trial_res = evaluate_genome_local(trial)
+                        if trial_res["Score"] > best_score:
+                            best_score = trial_res["Score"]
+                            best_result = trial_res
+                            best_genome = trial
+                            improved = True
+                            steps += 1
+                            break
+                    if improved or steps >= max_steps:
+                        break
+
+            if not improved:
+                break
+
+        return best_result
 
     num_runs = max(
         1,
@@ -1703,9 +2334,6 @@ def solve_coevolution_genetic(
     best_global_score = -1
     best_global_genome = []
     best_global_data = {}
-    second_global_score = -1
-    second_global_genome = []
-    second_global_data = {}
 
     for run_idx in range(num_runs):
         print(f"\n--- GA Run {run_idx + 1}/{num_runs} ---")
@@ -1718,14 +2346,16 @@ def solve_coevolution_genetic(
 
         for generation in range(1, gens_per_run + 1):
             key_to_genome = {}
+            pending_keys = []
+            tasks = []
             for genome in population:
-                key_to_genome.setdefault(genome_key(genome), genome)
-
-            pending_keys = [k for k in key_to_genome if k not in evaluation_cache]
-            tasks = [
-                (key_to_genome[k], base_stats_fixed, cfg_data, calc_song, ref_arrays)
-                for k in pending_keys
-            ]
+                k = genome_key(genome)
+                if k in key_to_genome:
+                    continue
+                key_to_genome[k] = genome
+                if k not in evaluation_cache:
+                    pending_keys.append(k)
+                    tasks.append((genome, base_stats_fixed, cfg_data, calc_song, ref_arrays))
 
             if pending_keys:
                 if executor:
@@ -1749,39 +2379,22 @@ def solve_coevolution_genetic(
 
             def consider_candidate(cand):
                 nonlocal best_global_score, best_global_genome, best_global_data
-                nonlocal second_global_score, second_global_genome, second_global_data
-
                 cand_score = cand["Score"]
                 cand_genome = cand["Genome"]
                 cand_data = cand["Data"]
-
                 best_key = genome_key(best_global_genome) if best_global_genome else None
-                second_key = (
-                    genome_key(second_global_genome) if second_global_genome else None
-                )
                 cand_key = genome_key(cand_genome)
 
                 if (cand_score > best_global_score) or (
                     cand_score == best_global_score and cand_key != best_key
                 ):
-                    if best_global_genome and cand_key != best_key:
-                        if best_global_score > second_global_score:
-                            second_global_score = best_global_score
-                            second_global_genome = best_global_genome
-                            second_global_data = best_global_data
                     best_global_score = cand_score
                     best_global_genome = cand_genome
                     best_global_data = cand_data
                     return True
-                if cand_key != best_key and cand_score > second_global_score:
-                    second_global_score = cand_score
-                    second_global_genome = cand_genome
-                    second_global_data = cand_data
                 return False
 
             promoted = consider_candidate(results[0])
-            if len(results) > 1:
-                consider_candidate(results[1])
 
             if promoted:
                 m_names = results[0]["MiniNames"]
@@ -1803,6 +2416,37 @@ def solve_coevolution_genetic(
                         status_cb(
                             f"Run {run_idx + 1}/{num_runs} Gen {generation}: Best {results[0]['Score']}"
                         )
+
+            # --- MEMETIC GA STEP: local search on top elites ---
+            if memetic_elites > 0 and memetic_steps > 0:
+                elite_count = min(memetic_elites, len(results))
+                for e_idx in range(elite_count):
+                    base_res = results[e_idx]
+                    improved_res = memetic_local_search(
+                        base_res["Genome"],
+                        memetic_steps,
+                        memetic_top_gear,
+                        memetic_top_minis,
+                    )
+                    if improved_res["Score"] > base_res["Score"]:
+                        results[e_idx] = improved_res
+                        # Feed improved candidate back into global tracking
+                        if consider_candidate(improved_res):
+                            m_names = improved_res["MiniNames"]
+                            print(
+                                f"  >> [Memetic] Gen {generation} "
+                                f"(Run {run_idx + 1}): New Best {best_global_score} "
+                                f"(Minis: {m_names})"
+                            )
+                            if status_cb:
+                                status_cb(
+                                    f"Run {run_idx + 1}/{num_runs} Gen {generation} "
+                                    f"Memetic: New Best {best_global_score}"
+                                )
+                            last_improvement_gen = generation
+                            mutation_rate = GA_MUTATION_RATE
+                # resort after memetic improvements
+                results.sort(key=lambda x: x["Score"], reverse=True)
 
             next_gen = [results[i]["Genome"] for i in range(GA_ELITISM)]
 
@@ -1840,7 +2484,8 @@ def solve_coevolution_genetic(
                         else:
                             break
                 else:
-                    unique_minis = copy.deepcopy(fixed_minis)
+                    # Shallow copy suffices; minis are read-only dicts.
+                    unique_minis = list(fixed_minis)
 
                 child = child_gear + unique_minis
 
@@ -1879,40 +2524,25 @@ def solve_coevolution_genetic(
                 last_improvement_gen = generation
 
     if best_global_genome:
-        prev_best_score = best_global_score
-        prev_best_genome = best_global_genome
-        prev_best_data = best_global_data
-
         polished_result, polished_genome = polish_best_genome(best_global_genome)
         polished_score = polished_result["Score"]
 
         if polished_score > best_global_score:
-            if prev_best_genome and prev_best_score > second_global_score:
-                second_global_score = prev_best_score
-                second_global_genome = prev_best_genome
-                second_global_data = prev_best_data
             best_global_score = polished_score
             best_global_data = polished_result["Data"]
             best_global_genome = polished_genome
-        elif polished_score > second_global_score:
-            second_global_score = polished_score
-            second_global_data = polished_result["Data"]
-            second_global_genome = polished_genome
 
     best_gear = best_global_genome[:6] if best_global_genome else []
     best_minis = best_global_genome[6:] if best_global_genome else []
-    second_gear = second_global_genome[:6] if second_global_genome else []
-    second_minis = second_global_genome[6:] if second_global_genome else []
 
     return (
         best_global_data if best_global_data else None,
         best_gear,
         best_minis,
-        second_global_data if second_global_data else None,
-        second_gear,
-        second_minis,
+        None,
+        [],
+        [],
     )
-
 
 
 def process_song_task(args):
@@ -1941,7 +2571,7 @@ def process_song_task(args):
     # Optional local pool for single-song runs to saturate available cores.
     local_executor = None
     if parallel_workers:
-        worker_count = min(parallel_workers, os.cpu_count() or parallel_workers)
+        worker_count = min(parallel_workers, os.cpu_count() or 1)
         if worker_count > 1:
             local_executor = concurrent.futures.ProcessPoolExecutor(
                 max_workers=worker_count,
@@ -1959,9 +2589,13 @@ def process_song_task(args):
 
         cfg = cfg_from_dict(cfg_dict)
 
-        enable_fever = cfg.getboolean("IterationEngine", "FeverFinder", fallback=False)
-        enable_mini = cfg.getboolean("IterationEngine", "MiniFinder", fallback=False)
-        enable_gear = cfg.getboolean("IterationEngine", "GearFinder", fallback=False)
+        # MetaFinder controls all optimizers collectively.
+        meta_finder = cfg.getboolean("IterationEngine", "MetaFinder", fallback=False)
+        enable_fever = enable_mini = enable_gear = bool(meta_finder)
+
+        force_greats_finder = cfg.getboolean("IterationEngine", "ForceGreatsFinder", fallback=False)
+        force_greats_config = load_force_greats_config(cfg)
+        manual_force_greats = any(force_greats_config)
 
         song_data = read_song_file(fp)
 
@@ -2027,14 +2661,14 @@ def process_song_task(args):
 
         # --- LOGIC BRANCHING BASED ON FINDERS ---
         if enable_gear or enable_mini:
-            # Run Genetic Algorithm
+            # Run Genetic Algorithm (now memetic-enhanced)
             (
                 best_data,
                 best_gear,
                 best_minis,
-                run_second_data,
-                run_second_gear,
-                run_second_minis,
+                _,
+                _,
+                _,
             ) = solve_coevolution_genetic(
                 cfg,
                 fixed_stats,
@@ -2056,7 +2690,7 @@ def process_song_task(args):
             )
 
         elif enable_fever:
-            # Run ONLY Gem Solver (FeverFinder)
+            # Run ONLY Gem Solver
             combined_stats = fixed_stats.copy()
             for k, v in current_gear_stats.items():
                 combined_stats[k] = combined_stats.get(k, 0) + v
@@ -2071,17 +2705,41 @@ def process_song_task(args):
             )
             best_gear = current_gear_list
             best_minis = current_mini_list
-            run_second_data = None
-            run_second_gear = []
-            run_second_minis = []
-
         else:
-            print("No Iteration Engine flags (Fever/Mini/Gear) are set to TRUE.")
-            print("Enable at least one finder in [IterationEngine] to optimize.")
-            best_data = None
-            run_second_data = None
-            run_second_gear = []
-            run_second_minis = []
+            # No finders enabled - just calculate score with current config
+            print("[Calculate-Only Mode] MetaFinder disabled - calculating score with current config...")
+            combined_stats = fixed_stats.copy()
+            for k, v in current_gear_stats.items():
+                combined_stats[k] = combined_stats.get(k, 0) + v
+            for k, v in current_mini_stats.items():
+                combined_stats[k] = combined_stats.get(k, 0) + v
+
+            best_data = solve_best_fever_combination(
+                cfg,
+                combined_stats,
+                calc_song,
+                ref_arrays,
+                silent=False,
+                skip_optimizer=True,
+            )
+            best_gear = current_gear_list
+            best_minis = current_mini_list
+
+        fg_variants = []
+        if manual_force_greats or force_greats_finder:
+            manual_counts = (
+                force_greats_config if (manual_force_greats and not force_greats_finder) else []
+            )
+            if best_data:
+                fg_variant = apply_force_greats_to_result(
+                    best_data,
+                    calc_song,
+                    ref_arrays,
+                    manual_counts=manual_counts,
+                    use_finder=force_greats_finder,
+                )
+                if fg_variant:
+                    fg_variants.append(("best", fg_variant))
 
         # --- REPORTING & DB UPDATE (payload only; saved by coordinator) ---
         if best_data:
@@ -2091,7 +2749,7 @@ def process_song_task(args):
             print(f"Total Score: {score}")
 
             prev_score = prev_record.get("score") if prev_record else None
-            prev_second = prev_record.get("second") if prev_record else None
+            prev_second = None
             is_first = prev_record is None
             is_better = (prev_score is None) or (score > prev_score)
 
@@ -2115,16 +2773,27 @@ def process_song_task(args):
                     "SelectedElement": data_dict.get("Selected Element", ""),
                     "PrimaryColor": meta_primary_color,
                     "SecondaryColor": meta_secondary_color,
+                    "ForceGreats": data_dict.get("ForceGreats", {}),
                 }
 
             best_gear_names = [g.get("Name") for g in best_gear]
             best_mini_names = [m.get("Name") for m in best_minis]
             best_details = build_details(best_data)
 
-            run_second_score = run_second_data.get("Score") if run_second_data else None
-            run_second_details = build_details(run_second_data)
-            run_second_gear_names = [g.get("Name") for g in run_second_gear]
-            run_second_mini_names = [m.get("Name") for m in run_second_minis]
+            force_candidates = []
+            if prev_record:
+                prev_force = prev_record.get("force")
+                if prev_force and prev_force.get("score") is not None:
+                    force_candidates.append(prev_force)
+            for _, fg_variant in fg_variants:
+                force_candidates.append(
+                    {
+                        "score": fg_variant.get("Score", 0),
+                        "gear": best_gear_names,
+                        "minis": best_mini_names,
+                        "details": build_details(fg_variant),
+                    }
+                )
 
             if is_first:
                 print(
@@ -2153,16 +2822,6 @@ def process_song_task(args):
                     }
                 )
 
-            if prev_second and prev_second.get("score") is not None:
-                candidates.append(
-                    {
-                        "score": prev_second.get("score"),
-                        "gear": prev_second.get("gear", []),
-                        "minis": prev_second.get("minis", []),
-                        "details": prev_second.get("details", {}),
-                    }
-                )
-
             candidates.append(
                 {
                     "score": score,
@@ -2171,16 +2830,6 @@ def process_song_task(args):
                     "details": best_details,
                 }
             )
-
-            if run_second_score is not None:
-                candidates.append(
-                    {
-                        "score": run_second_score,
-                        "gear": run_second_gear_names,
-                        "minis": run_second_mini_names,
-                        "details": run_second_details,
-                    }
-                )
 
             candidates = sorted(
                 candidates, key=lambda c: c.get("score", -1), reverse=True
@@ -2216,13 +2865,7 @@ def process_song_task(args):
                 if is_first or is_better
                 else (prev_attempts_first + 1 if prev_attempts_first else 1)
             )
-            prev_second_score = prev_second.get("score") if prev_second else None
             attempts_second = 0
-            if top2:
-                if (prev_second_score is None) or (top2_score > prev_second_score):
-                    attempts_second = 1
-                else:
-                    attempts_second = prev_attempts_second + 1 if prev_attempts_second else 1
 
             updated_payload = {}
             updated_payload["attempt_lifetime"] = attempt_lifetime
@@ -2238,15 +2881,21 @@ def process_song_task(args):
                     }
                 )
 
-            if top2:
-                updated_payload["second"] = {
-                    "score": top2["score"],
-                    "gear": top2.get("gear", []),
-                    "minis": top2.get("minis", []),
-                    "details": top2.get("details", {}),
+            updated_payload.pop("second", None)
+
+            if force_candidates:
+                force_candidates = sorted(
+                    force_candidates, key=lambda c: c.get("score", -1), reverse=True
+                )
+                best_force = force_candidates[0]
+                updated_payload["force"] = {
+                    "score": best_force.get("score"),
+                    "gear": best_force.get("gear", []),
+                    "minis": best_force.get("minis", []),
+                    "details": best_force.get("details", {}),
                 }
             else:
-                updated_payload.pop("second", None)
+                updated_payload.pop("force", None)
 
             db_payload = updated_payload
 
@@ -2292,6 +2941,20 @@ def process_song_task(args):
                     f"{gc.get('Element Overflow', 0)}"
                 )
 
+            if fg_variants:
+                best_fg_variant = max(
+                    fg_variants, key=lambda p: p[1].get("Score", -1)
+                )[1]
+                fg_meta = best_fg_variant.get("ForceGreats", {}) or {}
+                print("\n[ForceGreats Optimizer]")
+                print(
+                    f"Base Score: {fg_meta.get('base_score', best_data.get('Score', 0))} | "
+                    f"ForceGreat Score: {best_fg_variant.get('Score', 0)}"
+                )
+                cfg_map = fg_meta.get("config", {})
+                if cfg_map:
+                    print(f"Config: {cfg_map}")
+
         return {
             "song": found_song_name,
             "db_key": db_key,
@@ -2304,6 +2967,9 @@ def process_song_task(args):
     finally:
         if local_executor:
             local_executor.shutdown()
+        # Prevent memory leak from unbounded cache growth across thousands of songs
+        FEVER_TIMELINE_CACHE.clear()
+        GEM_SOLVER_CACHE.clear()
 
     # Should never reach here; fallback to avoid crashes
     return {
@@ -2325,7 +2991,8 @@ if __name__ == "__main__":
         start_time = time.time()
         try:
             cfg = configparser.ConfigParser()
-            cfg.read("config.ini")
+            # Explicit UTF-8-SIG to avoid Windows default 'charmap' decoding issues
+            cfg.read("config.ini", encoding="utf-8-sig")
             paths = load_paths_cache()
             db_display_name = os.path.basename(get_evolution_db_path())
             discord_reporter.send_log(
@@ -2336,9 +3003,8 @@ if __name__ == "__main__":
             evo_db = load_evolution_db()
 
             # --- Configuration Granularity ---
-            enable_fever = cfg.getboolean("IterationEngine", "FeverFinder", fallback=False)
-            enable_mini = cfg.getboolean("IterationEngine", "MiniFinder", fallback=False)
-            enable_gear = cfg.getboolean("IterationEngine", "GearFinder", fallback=False)
+            meta_finder = cfg.getboolean("IterationEngine", "MetaFinder", fallback=False)
+            enable_fever = enable_mini = enable_gear = bool(meta_finder)
             auto_buff = cfg.getboolean(
                 "IterationEngine", "AutoSelectBuffAndColor", fallback=False
             )
@@ -2348,6 +3014,9 @@ if __name__ == "__main__":
             )
             loop_forever = cfg.getboolean(
                 "IterationEngine", "LoopForever", fallback=False
+            )
+            eval_cpu_limit = safe_int(
+                cfg.get("IterationEngine", "EvalCPUCores", fallback=0)
             )
 
             stats_path = paths.get("Stats", "")
@@ -2556,13 +3225,17 @@ if __name__ == "__main__":
                 cfg_dict = cfg_to_dict(cfg)
 
                 tasks = []
-                available_cpus = os.cpu_count() or 1
-                if len(song_queue) <= 1:
-                    parallel_workers = min(available_cpus, 32)
+                logical_cpus = os.cpu_count() or 1
+                available_cpus = logical_cpus
+                if eval_cpu_limit and eval_cpu_limit > 0:
+                    available_cpus = max(1, min(logical_cpus, eval_cpu_limit))
                 else:
-                    # Split cores across queued songs so we keep GA parallelism alive.
-                    parallel_workers = max(1, available_cpus // len(song_queue))
-                    parallel_workers = min(parallel_workers, available_cpus)
+                    available_cpus = max(1, available_cpus)
+                if available_cpus != logical_cpus:
+                    print(
+                        f"EvalCPUCores cap applied: using {available_cpus} of {logical_cpus} cores."
+                    )
+                parallel_workers = 1  # Single-threaded per song to avoid nested pools on Windows
 
                 for fp, found_song_name in song_queue:
                     print(f"[QUEUE] {found_song_name}")
@@ -2587,11 +3260,38 @@ if __name__ == "__main__":
                         )
                     )
 
-                def _consume_results(results_iter):
+                def _consume_results(results_iter, future_map=None):
                     total = len(tasks)
                     completed = 0
-                    for res in results_iter:
+                    failed = 0
+                    for item in results_iter:
                         completed += 1
+                        # Handle Future objects (from ProcessPoolExecutor) with exception safety
+                        if future_map is not None:
+                            future = item
+                            song_name = future_map.get(future, "Unknown")
+                            try:
+                                res = future.result()
+                            except Exception as task_err:
+                                failed += 1
+                                err_msg = f"[{completed}/{total}] FAILED: {song_name} - {type(task_err).__name__}: {task_err}"
+                                print(err_msg)
+                                logging.error(err_msg)
+                                discord_reporter.send_log(err_msg)
+                                continue  # Skip this song and continue with the queue
+                        else:
+                            # Sequential processing - item is already the result (or error dict)
+                            res = item
+                            # Check if this is an error placeholder from _safe_sequential_gen
+                            if isinstance(res, dict) and "_error" in res:
+                                failed += 1
+                                task_err = res["_error"]
+                                song_name = res.get("_song_name", "Unknown")
+                                err_msg = f"[{completed}/{total}] FAILED: {song_name} - {type(task_err).__name__}: {task_err}"
+                                print(err_msg)
+                                logging.error(err_msg)
+                                discord_reporter.send_log(err_msg)
+                                continue
                         print(f"[{completed}/{total}] Completed: {res['song']}")
                         print("=" * 60)
                         print(f"PROCESSING SONG: {res['song']}")
@@ -2608,12 +3308,15 @@ if __name__ == "__main__":
                             # Avoid Discord spam: keep only the tail of very long logs.
                             tail = log_content[-3000:] if len(log_content) > 3000 else log_content
                             discord_reporter.send_log(tail)
+                    if failed > 0:
+                        print(f"[SUMMARY] {failed}/{total} songs failed during processing.")
 
                 song_worker_limit = max(1, available_cpus // max(1, parallel_workers))
                 max_workers = max(1, min(len(tasks), song_worker_limit))
                 print(
                     f"Parallel plan -> songs: {len(tasks)}, concurrent workers: {max_workers}, cores per song: {parallel_workers}"
                 )
+                print(f"Using {available_cpus} logical CPU cores")
                 if len(tasks) > 1 and max_workers > 1:
                     with concurrent.futures.ProcessPoolExecutor(
                         max_workers=max_workers,
@@ -2622,11 +3325,20 @@ if __name__ == "__main__":
                         future_map = {
                             executor.submit(process_song_task, t): t[1] for t in tasks
                         }
+                        # Pass futures directly so _consume_results can handle exceptions per-song
                         _consume_results(
-                            (f.result() for f in concurrent.futures.as_completed(future_map))
+                            concurrent.futures.as_completed(future_map),
+                            future_map=future_map
                         )
                 else:
-                    _consume_results(process_song_task(t) for t in tasks)
+                    # Sequential processing with per-song exception handling
+                    def _safe_sequential_gen():
+                        for t in tasks:
+                            try:
+                                yield process_song_task(t)
+                            except Exception as seq_err:
+                                yield {"_error": seq_err, "_song_name": t[1]}
+                    _consume_results(_safe_sequential_gen(), future_map=None)
 
                 if status_queue:
                     status_queue.put(None)

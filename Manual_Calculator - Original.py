@@ -22,6 +22,9 @@ GEM_SCALE_FEVER  = 3  # Multiplier for all Fever-related stats
 ELEMENTAL_GEM_SCALE = 6 # Multiplier for raw [ElementalGems] inputs
 GEM_STAT_TO_ELEMENT_SCALE = 3 # +3 Element for every Stat Gem point
 
+# Debug output flag - set to False to suppress debug prints
+DEBUG_OUTPUT = True
+
 # --- Helper Conversion Functions ---
 def safe_int(val, default=0):
     try:
@@ -64,7 +67,7 @@ def read_table(fp):
     if not fp or not os.path.exists(fp):
         return []
     try:
-        with open(fp, "r") as f:
+        with open(fp, "r", encoding="utf-8") as f:
             lines = f.read().splitlines()
         if not lines:
             return []
@@ -497,15 +500,29 @@ def calculate_fever_score(
     fever_value,
     first_100_values,
 ):
-    time = song_data[current_notes]["time"]
-    time += real_fever_time
-    if song_data[-1]["time"] < time:
+    """
+    Calculate fever score using time-based drain (matches server behavior).
+    
+    Math: Fever ends when elapsed_time >= real_fever_time
+    So the last fever note is the last note where:
+        time[i] - time[start] < real_fever_time
+    
+    Binary search finds first note where time >= start_time + real_fever_time
+    (that note is NOT in fever, so notes_in_fever = found_index - start)
+    """
+    start_time = song_data[current_notes]["time"]
+    end_time = start_time + real_fever_time
+    
+    # Edge case: fever lasts until end of song
+    if song_data[-1]["time"] < end_time:
         notes = total_notes - current_notes
     else:
-        left, right = current_notes + 1, len(song_data) - 1
+        # Binary search: find first note where time >= end_time
+        # That note is the first one NOT in fever
+        left, right = current_notes + 1, total_notes
         while left < right:
             mid = (left + right) // 2
-            if song_data[mid]["time"] > time:
+            if song_data[mid]["time"] >= end_time:
                 right = mid
             else:
                 left = mid + 1
@@ -552,7 +569,57 @@ def calculate_non_fever_score(
         new_score = notes * combo_value
     return int(new_score), notes
 
-def calculate_score(song, sub_stats_indices, references, total_rows=TOTAL_ROWS):
+# --- Helper Functions ---
+
+def calculate_great_penalty_for_notes(
+    start_note_idx, greats_count, base_value, combo_mul, 
+    great_judgement_penalty_base, combo_value, great_judgement_penalty_combo
+):
+    """
+    Calculate total great penalty for greats starting at start_note_idx.
+    Greats are prioritized at the earliest notes (lowest penalty first).
+    
+    For notes 0-99 (first 100): uses ramping penalty based on note position
+    For notes 100+: uses flat combo_value penalty
+    
+    Returns total score penalty to subtract.
+    """
+    total_penalty = 0
+    
+    for i in range(greats_count):
+        note_idx = start_note_idx + i  # 0-based index
+        
+        if note_idx < 100:
+            # Ramping penalty for first 100 notes
+            # Perfect value at this note
+            scaling_factor = 1 + (combo_mul - 1) * (note_idx + 1) / 100
+            perfect_at_note = floor(base_value * scaling_factor)
+            great_at_note = floor(great_judgement_penalty_base * scaling_factor)
+            penalty_at_note = perfect_at_note - great_at_note
+        else:
+            # Flat penalty for notes 100+
+            penalty_at_note = combo_value - great_judgement_penalty_combo
+        
+        total_penalty += penalty_at_note
+    
+    return floor(total_penalty)
+
+def debug_print(message):
+    """Print debug message only if DEBUG_OUTPUT is enabled."""
+    if DEBUG_OUTPUT:
+        print(message)
+
+def calculate_score(song, sub_stats_indices, references, total_rows=TOTAL_ROWS, force_greats=None, great_judgement_penalty_base=0):
+    """
+    Calculate score with optional forced greats penalty.
+    
+    force_greats: dict with keys 'NonFever1', 'NonFever2', etc. - number of great notes per section
+    great_judgement_penalty_base: base scoring offset for great judgement (floor((primary*2+secondary)*(2/3)+150))
+                                   combo_mul and fever_mul can be applied to get combo/fever penalty values
+    """
+    if force_greats is None:
+        force_greats = {}
+    
     metadata = song["metadata"]
     song_data = song["song_data"]
     total_notes = int(metadata.get("Total Notes", len(song_data)))
@@ -586,10 +653,22 @@ def calculate_score(song, sub_stats_indices, references, total_rows=TOTAL_ROWS):
     first_100_values = first_100(combo_mul, base_value)
 
     non_fever_cas = (total_notes - long_notes) * 0.333
-    non_fever = ceil(non_fever_cas * fever_fill)
+    non_fever_base = ceil(non_fever_cas * fever_fill) ## how many notes it takes to fill in perfect judgement
+    non_fever_great_to_fill = ceil(((non_fever_cas * fever_fill)*2))
 
-    # NEW: print out non_fever for debugging/inspection
-    print(f"non_fever (target notes per non-fever section) = {non_fever}")
+    # great_fill_penalty: CEILING(MAX(0, non_fever_base * (1/non_fever_great_to_fill) * user_input))
+    # This is computed per-section based on forced greats
+
+    debug_print(f"non_fever_base (ceil) = {non_fever_base}, non_fever_great_to_fill = {non_fever_great_to_fill}")
+    
+    # Calculate great judgement penalty variants with combo and fever multipliers (all floored)
+    great_judgement_penalty_combo = floor(great_judgement_penalty_base * combo_mul) if great_judgement_penalty_base > 0 else 0
+    great_judgement_penalty_fever = floor(great_judgement_penalty_base * combo_mul * fever_mul) if great_judgement_penalty_base > 0 else 0
+    
+    if great_judgement_penalty_base > 0:
+        debug_print(f"great_judgement_penalty_base = {great_judgement_penalty_base}")
+        debug_print(f"great_judgement_penalty_combo = {great_judgement_penalty_combo}")
+        debug_print(f"great_judgement_penalty_fever = {great_judgement_penalty_fever}")
 
     fever_time_cas = last_note * 0.15 + 0.15
     real_fever_time = fever_time_cas * fever_time_factor
@@ -599,7 +678,8 @@ def calculate_score(song, sub_stats_indices, references, total_rows=TOTAL_ROWS):
     scores = []
     notes_per_section = []  # Track note counts per section
     loop = 0
-
+    non_fever_section = 0  # Track which non-fever section we're in
+    
     while current_notes < total_notes:
         if fever:
             new_score, notes = calculate_fever_score(
@@ -611,9 +691,16 @@ def calculate_score(song, sub_stats_indices, references, total_rows=TOTAL_ROWS):
                 fever_value,
                 first_100_values,
             )
-            if loop > 1:
-                new_score = new_score - combo_value + fever_value
         else:
+            # Non-fever section
+            non_fever_section += 1
+            # First non-fever section: notes fill bar from 0 to 1.0
+            # Subsequent non-fever sections: 1 "wasted" note where fever ends (no fill)
+            if non_fever_section == 1:
+                non_fever = non_fever_base - 1
+            else:
+                non_fever = non_fever_base
+            
             new_score, notes = calculate_non_fever_score(
                 current_notes,
                 total_notes,
@@ -621,6 +708,40 @@ def calculate_score(song, sub_stats_indices, references, total_rows=TOTAL_ROWS):
                 combo_value,
                 first_100_values,
             )
+            
+            # Apply forced greats penalties for this non-fever section
+            force_greats_key = f"NonFever{non_fever_section}"
+            forced_greats_count = safe_int(force_greats.get(force_greats_key, 0))
+            # Clamp forced_greats_count to never exceed non_fever_base (fever fill threshold)
+            forced_greats_count = min(forced_greats_count, non_fever_base)
+            
+            if forced_greats_count > 0:
+                # great_fill_penalty: adds to indexing (penalizes fever fill per section)
+                # Formula: CEILING(MAX(0, non_fever_base * (1/non_fever_great_to_fill) * forced_greats_count))
+                great_fill_penalty = ceil(max(0, non_fever_base * (1/non_fever_great_to_fill) * forced_greats_count))
+                
+                # Recalculate non_fever score with the fill penalty added to indexing
+                non_fever_with_penalty = non_fever + great_fill_penalty
+                new_score, notes = calculate_non_fever_score(
+                    current_notes,
+                    total_notes,
+                    non_fever_with_penalty,
+                    combo_value,
+                    first_100_values,
+                )
+                
+                # great_judgement_penalty: score offset for great notes
+                # Uses ramping penalty for notes 0-99, flat penalty for notes 100+
+                # Greats prioritized at earliest notes (lowest penalty)
+                if great_judgement_penalty_base > 0:
+                    total_score_penalty = calculate_great_penalty_for_notes(
+                        current_notes, forced_greats_count, base_value, combo_mul,
+                        great_judgement_penalty_base, combo_value, great_judgement_penalty_combo
+                    )
+                    new_score = floor(new_score - total_score_penalty)
+                    debug_print(f"  [Debug] Non-fever {non_fever_section}: {forced_greats_count} greats at notes {current_notes}-{current_notes + forced_greats_count - 1}, fill_penalty={great_fill_penalty} (notes: {non_fever}->{non_fever_with_penalty}), score_penalty={total_score_penalty}")
+                else:
+                    debug_print(f"  [Debug] Non-fever {non_fever_section}: {forced_greats_count} greats, fill_penalty={great_fill_penalty} (notes: {non_fever}->{non_fever_with_penalty})")
 
         scores.append(new_score)
         notes_per_section.append(notes)
@@ -629,14 +750,14 @@ def calculate_score(song, sub_stats_indices, references, total_rows=TOTAL_ROWS):
         fever = not fever
         loop += 1
 
-    return scores, notes_per_section
+    return scores, notes_per_section, non_fever_base, non_fever_great_to_fill
 
 # --- Main Execution ---
 if __name__ == "__main__":
     try:
         # 1. Load Config and Stats
         cfg = configparser.ConfigParser()
-        cfg.read("config.ini")
+        cfg.read("config.ini", encoding="utf-8")
         paths = load_paths_cache()
 
         # [CalculateSong] Section Handling
@@ -648,6 +769,12 @@ if __name__ == "__main__":
         ).strip()
 
         sub_stats_indices, stats_table = load_config_stats(cfg, paths)
+
+        # Load ForceGreats config section
+        force_greats = {}
+        if cfg.has_section("ForceGreats"):
+            for key in ["NonFever1", "NonFever2", "NonFever3", "NonFever4"]:
+                force_greats[key] = cfg.get("ForceGreats", key, fallback="0").strip()
 
         # 2. Build References for Lookup
         stat_names = [
@@ -761,10 +888,35 @@ if __name__ == "__main__":
                     "metadata": song_data["song_details"],
                     "song_data": [{"time": t} for t in song_data["timestamps"]],
                 }
-                scores, notes_per_section = calculate_score(
-                    calc_song, sub_stats_indices, references, TOTAL_ROWS
+                
+                # great_judgement_penalty_base: base scoring offset for great judgement
+                # Formula: floor((primary * 2 + secondary) * (2/3) + 150)
+                # Uses song's primary/secondary colors to get elemental values
+                # combo_mul and fever_mul applied inside calculate_score
+                primary_color = song_data["song_details"].get("Primary Color", "")
+                secondary_color = song_data["song_details"].get("Secondary Color", "")
+                primary_elemental = sub_stats_indices.get(primary_color, 0)
+                secondary_elemental = sub_stats_indices.get(secondary_color, 0)
+                great_judgement_penalty_base = floor((primary_elemental * 2 + secondary_elemental) * (2/3) + 150)
+                
+                scores, notes_per_section, non_fever_base, non_fever_great_to_fill = calculate_score(
+                    calc_song, sub_stats_indices, references, TOTAL_ROWS,
+                    force_greats=force_greats, great_judgement_penalty_base=great_judgement_penalty_base
                 )
 
+                # Print non-fever base/raw values for visibility
+                print(f"\nNon-fever base (ceil) = {non_fever_base}, non_fever great_to_fill = {non_fever_great_to_fill}")
+                print(f"great_judgement_penalty_base = {great_judgement_penalty_base}")
+                
+                # Calculate and print combo penalty for visibility in main output
+                combo_mul = lookup_reference(
+                    sub_stats_indices["Combo Multiplier"],
+                    references["Combo Multiplier"],
+                    TOTAL_ROWS,
+                )
+                great_judgement_penalty_combo = floor(great_judgement_penalty_base * combo_mul) if great_judgement_penalty_base > 0 else 0
+                print(f"great_judgement_penalty_combo = {great_judgement_penalty_combo}")
+                
                 print("\n=== Calculated Score Blocks ===")
                 running_note_idx = 1  # global note index (1-based)
 
