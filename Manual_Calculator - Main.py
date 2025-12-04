@@ -346,13 +346,10 @@ def build_stats_summary(res, completed, total):
     lines = [f"[{completed}/{total}] {res.get('song', 'Unknown Song')}"]
     lines.append(f"Score: {score_txt}")
     attempts_best = payload.get("attempts_first")
-    attempts_runner = payload.get("attempts_second")
     attempt_lifetime = payload.get("attempt_lifetime")
     attempt_parts = []
     if attempts_best is not None:
         attempt_parts.append(f"Best: {attempts_best}")
-    if attempts_runner is not None:
-        attempt_parts.append(f"Runner-up: {attempts_runner}")
     if attempt_lifetime is not None:
         attempt_parts.append(f"Lifetime: {attempt_lifetime}")
     if attempt_parts:
@@ -2648,7 +2645,6 @@ def process_song_task(args):
             )
         attempt_lifetime = attempt_lifetime_prev + 1
         prev_attempts_first = prev_record.get("attempts_first", 0) if prev_record else 0
-        prev_attempts_second = prev_record.get("attempts_second", 0) if prev_record else 0
 
         def emit(msg):
             if status_queue:
@@ -2846,31 +2842,15 @@ def process_song_task(args):
                 return (gear_key, minis_key, details_key)
 
             top1 = candidates[0] if candidates else None
-            top2 = None
-            if top1:
-                sig1 = _sig(top1)
-                for cand in candidates[1:]:
-                    if cand.get("score", -1) >= top1.get("score", -1):
-                        continue  # enforce strictly lower score
-                    if _sig(cand) == sig1:
-                        continue  # require different loadout/alloc
-                    top2 = cand
-                    break
-
-            top1_score = top1.get("score") if top1 else None
-            top2_score = top2.get("score") if top2 else None
 
             attempts_first = (
                 1
                 if is_first or is_better
                 else (prev_attempts_first + 1 if prev_attempts_first else 1)
             )
-            attempts_second = 0
-
             updated_payload = {}
             updated_payload["attempt_lifetime"] = attempt_lifetime
             updated_payload["attempts_first"] = attempts_first
-            updated_payload["attempts_second"] = attempts_second
             if top1:
                 updated_payload.update(
                     {
