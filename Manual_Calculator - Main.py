@@ -5,7 +5,7 @@ Manual Calculator + Iteration Engine + Co-Evolution Finder
 WITH PERMANENT EVOLUTION DATABASE
 """
 
-import os, re, json, csv, configparser, logging, copy, itertools, time, random, sys, threading
+import os, re, json, csv, configparser, logging, copy, itertools, time, random, sys, threading, sqlite3, hashlib
 import concurrent.futures
 import contextlib
 import multiprocessing
@@ -92,7 +92,7 @@ GA_MULTI_RUNS_DEFAULT = 3  # Multi-start passes to escape local maxima
 GA_MUTATION_RATE_MAX = 0.45  # Cap for adaptive mutation bumps
 
 # --- DATABASE FILE ---
-DB_FILE = "evolution_db.json"
+DB_FILE = "evolution.db"
 
 # --- Fever timeline cache ---
 MAX_TIMELINE_CACHE_PER_SONG = 500000
@@ -102,6 +102,11 @@ FEVER_TIMELINE_CACHE = {}
 # Avoids redundant solve_best_fever_combination calls when different gear+mini
 # combinations produce the same effective stats for a given song/color context.
 GEM_SOLVER_CACHE = {}
+
+# --- ForceGreats cache (per-stat-signature) ---
+# Avoids redundant FG calculations when multiple loadouts have the same stats.
+# Key: (stats_signature, use_finder, manual_counts_tuple)
+FG_CACHE = {}
 
 # Keys to skip when aggregating gear/mini stats (metadata, not actual stats).
 SKIP_ITEM_KEYS = frozenset({"Name", "type"})
@@ -368,69 +373,245 @@ def get_evolution_db_path():
     """Return the configured evolution DB location (env override supported)."""
     return EVOLUTION_DB_PATH if EVOLUTION_DB_PATH else os.path.join(SCRIPT_DIR, DB_FILE)
 
+def get_db_connection(db_path=None):
+    if db_path is None:
+        db_path = get_evolution_db_path()
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn.row_factory = sqlite3.Row
+    # Enable WAL mode for better concurrency
+    conn.execute("PRAGMA journal_mode=WAL;")
+    return conn
 
-def load_evolution_db():
+def init_db():
+    """
+    Initialize the SQLite database schema if it doesn't exist.
+    
+    Storage optimization: gear_json and minis_json store only names (not full stats)
+    as a JSON array of strings, e.g. ["Gear1", "Gear2", ...]. Full stats are looked
+    up from Gears.csv/Minis.csv when loading. This reduces storage by ~90%.
+    """
+    db_path = get_evolution_db_path()
+    conn = get_db_connection(db_path)
+    try:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS songs (
+                name TEXT PRIMARY KEY,
+                best_score INTEGER DEFAULT 0,
+                best_fg_score INTEGER DEFAULT 0,
+                last_updated REAL
+            );
+            CREATE TABLE IF NOT EXISTS loadouts (
+                song_name TEXT,
+                loadout_hash TEXT,
+                score INTEGER,
+                fg_score INTEGER DEFAULT 0,
+                gear_json TEXT,
+                minis_json TEXT,
+                details_json TEXT,
+                force_details_json TEXT,
+                timestamp REAL,
+                PRIMARY KEY (song_name, loadout_hash),
+                FOREIGN KEY (song_name) REFERENCES songs(name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_loadouts_score ON loadouts (song_name, score DESC);
+        """)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _compact_gear_for_db(gear_list):
+    """Convert gear list to compact storage format (names only). Handles both dicts and strings."""
+    if not gear_list:
+        return []
+    result = []
+    for g in gear_list:
+        if isinstance(g, dict):
+            name = g.get("Name", "")
+        else:
+            name = str(g) if g else ""
+        if name:
+            result.append(name)
+    return result
+
+
+def _compact_minis_for_db(mini_list):
+    """Convert mini list to compact storage format (names only). Handles both dicts and strings."""
+    if not mini_list:
+        return []
+    result = []
+    for m in mini_list:
+        if isinstance(m, dict):
+            name = m.get("Name", "")
+        else:
+            name = str(m) if m else ""
+        if name:
+            result.append(name)
+    return result
+
+
+def _expand_gear_from_db(gear_names, gears_by_name):
+    """Expand gear names back to full stat dictionaries."""
+    if not gear_names or not gears_by_name:
+        return []
+    return [gears_by_name.get(name, {"Name": name}) for name in gear_names]
+
+
+def _expand_minis_from_db(mini_names, minis_by_name):
+    """Expand mini names back to full stat dictionaries."""
+    if not mini_names or not minis_by_name:
+        return []
+    return [minis_by_name.get(name, {"Name": name}) for name in mini_names]
+
+def get_loadout_hash(gear_list, mini_list):
+    """
+    Generate a unique hash for a loadout (gear + minis).
+    Sorts items by name to ensure consistent hashing regardless of order.
+    Handles both dicts (with 'Name' key) and plain strings.
+    """
+    # Extract names, handling both dict and string inputs
+    gear_names = []
+    for g in (gear_list or []):
+        if isinstance(g, dict):
+            gear_names.append(g.get("Name", ""))
+        else:
+            gear_names.append(str(g) if g else "")
+    gear_names = sorted([n for n in gear_names if n])
+    
+    mini_names = []
+    for m in (mini_list or []):
+        if isinstance(m, dict):
+            mini_names.append(m.get("Name", ""))
+        else:
+            mini_names.append(str(m) if m else "")
+    mini_names = sorted([n for n in mini_names if n])
+    
+    # Create a string representation
+    payload = f"GEAR:{'|'.join(gear_names)}::MINIS:{'|'.join(mini_names)}"
+    return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+def save_loadout_to_db(song_name, score, fg_score, gear, minis, details):
+    """
+    Save a loadout to the database.
+    Enforces the 10,000 loadout limit per song.
+    
+    Storage is optimized: only gear/mini names are stored, not full stats.
+    """
+    db_path = get_evolution_db_path()
+    conn = get_db_connection(db_path)
+    try:
+        loadout_hash = get_loadout_hash(gear, minis)
+        
+        # Compact storage: store only names, not full stat dictionaries
+        gear_names = _compact_gear_for_db(gear)
+        mini_names = _compact_minis_for_db(minis)
+        
+        # Upsert the loadout
+        conn.execute("""
+            INSERT INTO loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+            ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
+                score = excluded.score,
+                fg_score = excluded.fg_score,
+                gear_json = excluded.gear_json,
+                minis_json = excluded.minis_json,
+                details_json = excluded.details_json,
+                timestamp = strftime('%s', 'now')
+        """, (
+            song_name,
+            loadout_hash,
+            score,
+            fg_score,
+            json.dumps(gear_names, separators=(',', ':')),
+            json.dumps(mini_names, separators=(',', ':')),
+            json.dumps(details, separators=(',', ':')) if details else None
+        ))
+        
+        # Update the song's best score if this is better
+        conn.execute("""
+            INSERT INTO songs (name, best_score)
+            VALUES (?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                best_score = MAX(best_score, excluded.best_score),
+                last_updated = strftime('%s', 'now')
+        """, (song_name, score))
+        
+        # Enforce limit: Keep top 10,000 by score
+        # We only need to check this occasionally or if we suspect we are over.
+        # Doing it on every insert might be expensive.
+        # Let's do a quick check of count.
+        cursor = conn.execute("SELECT COUNT(*) FROM loadouts WHERE song_name = ?", (song_name,))
+        count = cursor.fetchone()[0]
+        
+        if count > 10000:
+            # Delete the worst ones, keeping top 10000
+            conn.execute("""
+                DELETE FROM loadouts 
+                WHERE song_name = ? 
+                AND loadout_hash NOT IN (
+                    SELECT loadout_hash FROM loadouts 
+                    WHERE song_name = ? 
+                    ORDER BY score DESC 
+                    LIMIT 10000
+                )
+            """, (song_name, song_name))
+            
+        conn.commit()
+    except Exception as e:
+        print(f"[DB] Error saving loadout: {e}")
+    finally:
+        conn.close()
+
+def get_best_loadouts(song_name, limit=50, gears_by_name=None, minis_by_name=None):
+    """
+    Retrieve the top N loadouts for a song to seed the GA.
+    
+    Storage format: gear_json and minis_json are JSON arrays of name strings.
+    If gears_by_name/minis_by_name are provided, expands names to full stat dicts.
+    """
     db_path = get_evolution_db_path()
     if not os.path.exists(db_path):
-        return {}
-
+        return []
+        
+    conn = get_db_connection(db_path)
     try:
-        with open(db_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        cursor = conn.execute("""
+            SELECT score, fg_score, gear_json, minis_json, details_json
+            FROM loadouts
+            WHERE song_name = ?
+            ORDER BY score DESC
+            LIMIT ?
+        """, (song_name, limit))
+        
+        results = []
+        for row in cursor:
+            gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
+            mini_names = json.loads(row["minis_json"]) if row["minis_json"] else []
+            
+            # Expand names to full dicts if lookup provided
+            if gears_by_name:
+                gear_data = _expand_gear_from_db(gear_names, gears_by_name)
+            else:
+                gear_data = gear_names  # Return as names for hash lookups
+            
+            if minis_by_name:
+                minis_data = _expand_minis_from_db(mini_names, minis_by_name)
+            else:
+                minis_data = mini_names
+            
+            results.append({
+                "score": row["score"],
+                "fg_score": row["fg_score"],
+                "gear": gear_data,
+                "minis": minis_data,
+                "details": json.loads(row["details_json"]) if row["details_json"] else {}
+            })
+        return results
     except Exception as e:
-        # Corrupt JSON; preserve a copy and start fresh.
-        print(f"[DB] Failed to load {db_path}: {e}")
-        try:
-            corrupt_path = f"{db_path}.corrupt.{int(time.time())}"
-            os.replace(db_path, corrupt_path)
-            print(f"[DB] Moved corrupt DB to {corrupt_path}. Starting with an empty DB.")
-        except Exception as move_err:
-            print(f"[DB] Could not move corrupt DB: {move_err}. Continuing with empty DB.")
-        return {}
-    cleaned = sanitize_evolution_db(data)
-    if cleaned != data:
-        try:
-            save_evolution_db(cleaned)
-            print("[DB] Detected and removed invalid entries; DB sanitized.")
-        except Exception as e:
-            print(f"[DB] Failed to sanitize DB: {e}")
-    return cleaned
-
-
-def save_evolution_db(db_data):
-    db_path = get_evolution_db_path()
-    try:
-        with open(db_path, "w", encoding="utf-8") as f:
-            # Compact JSON write (separators remove whitespace)
-            json.dump(db_data, f, separators=(",", ":"))
-    except Exception as e:
-        print(f"Failed to save DB: {e}")
-
-
-def sanitize_evolution_db(db_data):
-    """
-    Remove malformed or non-serializable entries to avoid DB corruption.
-    Keeps only dict values with numeric scores and list-ish gear/minis.
-    """
-    if not isinstance(db_data, dict):
-        return {}
-    cleaned = {}
-    for k, v in db_data.items():
-        if not isinstance(k, str):
-            continue
-        if not isinstance(v, dict):
-            continue
-        if "score" in v and not isinstance(v.get("score"), (int, float)):
-            continue
-        for list_key in ("gear", "minis", "loadout"):
-            if list_key in v and not isinstance(v.get(list_key), list):
-                v.pop(list_key, None)
-        if "details" in v and not isinstance(v.get("details"), dict):
-            v.pop("details", None)
-        if "second" in v:
-            v.pop("second", None)
-        cleaned[k] = v
-    return cleaned
+        print(f"[DB] Error retrieving loadouts: {e}")
+        return []
+    finally:
+        conn.close()
 
 
 def sanitize_public_message(content):
@@ -511,6 +692,25 @@ def resolve_stats_csv(paths, filename):
 
 
 # --- CSV Parsing Helpers (shared) ---
+def _build_row_map(row, header_lower):
+    """Build a mapping from header keys to row values for CSV parsing."""
+    mapped = {}
+    for idx, col in enumerate(header_lower):
+        key = col or f"col_{idx}"
+        mapped.setdefault(key, []).append(row[idx].strip() if idx < len(row) else "")
+    return mapped
+
+
+def _first_val(row_map, keys):
+    """Return the first non-empty value from row_map matching any of the keys."""
+    for key in keys:
+        for val in row_map.get(key, []):
+            v = str(val).strip() if val is not None else ""
+            if v:
+                return v
+    return ""
+
+
 def parse_gear_rows(filepath):
     """Parse Gears.csv into a list of gear dicts."""
     gear_list = []
@@ -526,21 +726,6 @@ def parse_gear_rows(filepath):
         header = [h.strip() for h in rows[0]]
         header_lower = [h.lower() for h in header]
 
-        def _build_row_map(row):
-            mapped = {}
-            for idx, col in enumerate(header_lower):
-                key = col or f"col_{idx}"
-                mapped.setdefault(key, []).append(row[idx].strip() if idx < len(row) else "")
-            return mapped
-
-        def _first_val(row_map, keys):
-            for key in keys:
-                for val in row_map.get(key, []):
-                    v = str(val).strip() if val is not None else ""
-                    if v:
-                        return v
-            return ""
-
         modern_format = "type" in header_lower and any(
             name in header_lower for name in ("gear name", "name", "gear")
         )
@@ -549,7 +734,7 @@ def parse_gear_rows(filepath):
             for row in rows[1:]:
                 if not any((c or "").strip() for c in row):
                     continue
-                row_map = _build_row_map(row)
+                row_map = _build_row_map(row, header_lower)
                 name = _first_val(row_map, ("gear name", "name", "gear"))
                 if not name:
                     continue
@@ -633,21 +818,6 @@ def parse_mini_rows(filepath):
         header = [h.strip() for h in rows[0]]
         header_lower = [h.lower() for h in header]
 
-        def _build_row_map(row):
-            mapped = {}
-            for idx, col in enumerate(header_lower):
-                key = col or f"col_{idx}"
-                mapped.setdefault(key, []).append(row[idx].strip() if idx < len(row) else "")
-            return mapped
-
-        def _first_val(row_map, keys):
-            for key in keys:
-                for val in row_map.get(key, []):
-                    v = str(val).strip() if val is not None else ""
-                    if v:
-                        return v
-            return ""
-
         modern_format = "type" in header_lower and any(
             name in header_lower for name in ("mini name", "name", "mini")
         )
@@ -656,7 +826,7 @@ def parse_mini_rows(filepath):
             for row in rows[1:]:
                 if not any((c or "").strip() for c in row):
                     continue
-                row_map = _build_row_map(row)
+                row_map = _build_row_map(row, header_lower)
                 name = _first_val(row_map, ("mini name", "name", "mini"))
                 if not name or name == "(Empty)":
                     continue
@@ -873,8 +1043,15 @@ def scan_song_header(fp):
                 line = line.strip()
                 if line == "Song Data":
                     break
+                # Handle both TAB and COLON separators
                 if "\t" in line:
                     parts = line.split("\t", 1)
+                    if len(parts) == 2:
+                        key = parts[0].strip()
+                        if key in meta:
+                            meta[key] = parts[1].strip()
+                elif ":" in line:
+                    parts = line.split(":", 1)
                     if len(parts) == 2:
                         key = parts[0].strip()
                         if key in meta:
@@ -1562,6 +1739,7 @@ def apply_force_greats_to_result(
     """
     Evaluate forced-great penalties (manual config or hill-climb finder) for a result dict.
     Returns a cloned variant with the adjusted score while leaving the original untouched.
+    Uses FG_CACHE to avoid redundant calculations for identical stats.
     """
     if not data_dict or "Stats" not in data_dict:
         return None
@@ -1570,10 +1748,23 @@ def apply_force_greats_to_result(
     if not stats:
         return None
 
-    if use_finder:
-        fg_result = run_force_greats_hill_climb(stats, calc_song, ref_arrays)
+    # Build cache key from stats signature + FG parameters
+    selected_color = data_dict.get("Selected Element", calc_song["metadata"].get("Primary Color", ""))
+    base_sig = stats_signature(stats, calc_song, selected_color)
+    manual_tuple = tuple(manual_counts) if manual_counts else ()
+    fg_cache_key = (base_sig, use_finder, manual_tuple)
+
+    # Check cache first
+    cached_fg = FG_CACHE.get(fg_cache_key)
+    if cached_fg is not None:
+        fg_result = cached_fg
     else:
-        fg_result = evaluate_force_greats(stats, calc_song, ref_arrays, manual_counts)
+        if use_finder:
+            fg_result = run_force_greats_hill_climb(stats, calc_song, ref_arrays)
+        else:
+            fg_result = evaluate_force_greats(stats, calc_song, ref_arrays, manual_counts)
+        # Cache the result (even if None)
+        FG_CACHE[fg_cache_key] = fg_result
 
     if not fg_result:
         return None
@@ -1922,9 +2113,12 @@ def solve_coevolution_genetic(
     db_seed=None,
     status_cb=None,
     executor=None,
+    known_loadouts=None,
 ):
-    # Clear per-song caches to prevent unbounded memory growth across songs.
+    # Caches are now cleared in process_song_task, but clearing here is safe redundancy.
     GEM_SOLVER_CACHE.clear()
+    FG_CACHE.clear()
+    FEVER_TIMELINE_CACHE.clear()
 
     print("\n=== STARTING GENETIC ALGORITHM SOLVER ===")
     print(f"Configuration: GearOptimization={optimize_gear}, MiniOptimization={optimize_minis}")
@@ -2044,19 +2238,44 @@ def solve_coevolution_genetic(
     ]
 
     def genome_key(genome):
+        # Helper to extract name from dict or string
+        def get_name(item):
+            if isinstance(item, dict):
+                return item.get("Name", "")
+            return str(item) if item else ""
+        
         # Gear (first 6 slots): order matters because slots are positional.
-        gear_names = tuple(item.get("Name", "") for item in genome[:6])
+        gear_names = tuple(get_name(item) for item in genome[:6])
         # Minis (last 3 slots): order-invariant - only the set/multiset matters.
         # Sorting canonicalizes permutations so [A,B,C] and [C,B,A] share a key.
-        mini_names = tuple(sorted(item.get("Name", "") for item in genome[6:]))
+        mini_names = tuple(sorted(get_name(item) for item in genome[6:]))
         return gear_names + mini_names
 
     evaluation_cache = {}
+    cache_hits_in_run = 0
+
+    def check_persistent_cache(genome):
+        if known_loadouts:
+            gear_part = genome[:6]
+            mini_part = genome[6:]
+            h = get_loadout_hash(gear_part, mini_part)
+            if h in known_loadouts:
+                score, fg_score = known_loadouts[h]
+                return {"Score": score, "FG_Score": fg_score, "_cached": True}
+        return None
 
     def evaluate_genome_local(genome):
+        nonlocal cache_hits_in_run
         k = genome_key(genome)
         if k in evaluation_cache:
             return evaluation_cache[k]
+            
+        cached_res = check_persistent_cache(genome)
+        if cached_res:
+            evaluation_cache[k] = cached_res
+            cache_hits_in_run += 1
+            return cached_res
+
         res = worker_coevolution_evaluate(
             (genome, base_stats_fixed, cfg_data, calc_song, ref_arrays)
         )
@@ -2123,18 +2342,30 @@ def solve_coevolution_genetic(
     def build_seed_list_from_record(record):
         """
         Normalize any stored record into a compact list of names for seeding.
+        Handles both dict format (with 'Name' key) and plain string names.
         Priority: legacy loadout -> gear + minis.
         """
         if not record:
             return None
+        
+        def extract_name(item):
+            """Extract name from either a dict or string."""
+            if isinstance(item, dict):
+                return item.get("Name", "")
+            return str(item) if item else ""
+        
         if "loadout" in record:
             load = record.get("loadout") or []
             if isinstance(load, list):
-                return load
-        gear_names = record.get("gear") or []
-        mini_names = record.get("minis") or []
-        if gear_names or mini_names:
-            return list(gear_names) + list(mini_names)
+                return [extract_name(item) for item in load]
+        
+        gear_items = record.get("gear") or []
+        mini_items = record.get("minis") or []
+        
+        if gear_items or mini_items:
+            gear_names = [extract_name(g) for g in gear_items]
+            mini_names = [extract_name(m) for m in mini_items]
+            return gear_names + mini_names
         return None
 
     def mutate_genome_once(genome):
@@ -2147,7 +2378,13 @@ def solve_coevolution_genetic(
             if gear_pool[slot_type]:
                 g[mutate_idx] = random.choice(gear_pool[slot_type])
         elif mutate_idx >= 6 and optimize_minis:
-            current_mini_names = {m.get("Name") for m in g[6:] if isinstance(m, dict)}
+            # Extract current mini names, handling both dict and string formats
+            current_mini_names = set()
+            for m in g[6:]:
+                if isinstance(m, dict):
+                    current_mini_names.add(m.get("Name", ""))
+                elif m:
+                    current_mini_names.add(str(m))
             candidates = [m for m in mini_pool if m["Name"] not in current_mini_names]
             if candidates:
                 g[mutate_idx] = random.choice(candidates)
@@ -2182,94 +2419,33 @@ def solve_coevolution_genetic(
             population.append(create_random_genome())
         return population
 
-    def polish_best_genome(best_genome):
-        """Local sweep on top candidates per slot/mini to escape near-misses."""
-        top_k_gear = 8
-        top_k_minis = min(25, len(mini_rank_cache))
-        gear_rank = {s: gear_rank_cache.get(s, [])[:top_k_gear] for s in slots}
-        mini_rank = mini_rank_cache[:top_k_minis]
-
-        best_result = evaluate_genome_local(best_genome)
-        best_score = best_result["Score"]
-
-        improved = True
-        while improved:
-            improved = False
-            # Gear sweep (one slot at a time)
-            if optimize_gear:
-                for idx, slot in enumerate(slots):
-                    current_name = best_genome[idx].get("Name")
-                    for cand in gear_rank.get(slot, []):
-                        if cand.get("Name") == current_name:
-                            continue
-                        trial = best_genome[:]
-                        trial[idx] = cand
-                        trial_res = evaluate_genome_local(trial)
-                        if trial_res["Score"] > best_score:
-                            best_score = trial_res["Score"]
-                            best_result = trial_res
-                            best_genome = trial
-                            improved = True
-                            break
-                    if improved:
-                        break
-            if improved:
-                continue
-
-            # Mini sweep (respect unique minis)
-            if optimize_minis:
-                # Compute existing mini names once per sweep iteration.
-                existing = {m.get("Name") for m in best_genome[6:] if isinstance(m, dict)}
-                for idx in range(6, 9):
-                    curr_name = best_genome[idx].get("Name")
-                    for cand in mini_rank:
-                        c_name = cand.get("Name")
-                        if c_name == curr_name:
-                            continue
-                        if c_name in existing - {curr_name}:
-                            continue
-                        trial = best_genome[:]
-                        trial[idx] = cand
-                        trial_res = evaluate_genome_local(trial)
-                        if trial_res["Score"] > best_score:
-                            best_score = trial_res["Score"]
-                            best_result = trial_res
-                            best_genome = trial
-                            improved = True
-                            break
-                    if improved:
-                        break
-
-        return best_result, best_genome
-
-    # --- MEMETIC LOCAL SEARCH (lightweight) ---
-    def memetic_local_search(start_genome, max_steps, top_k_gear, top_k_minis):
+    def run_local_search(start_genome, max_steps, top_k_gear, top_k_minis, is_polishing=False):
         """
-        Lightweight local search around a genome.
-        Performs up to max_steps improving moves over gear/minis,
-        using ranked candidates and the shared evaluation cache.
+        Unified local search logic for both Memetic Search and Polishing.
+        Iteratively improves the genome by checking neighbors in ranked lists.
         """
-        if max_steps <= 0:
-            return evaluate_genome_local(start_genome)
-
         best_genome = list(start_genome)
         best_result = evaluate_genome_local(best_genome)
         best_score = best_result["Score"]
 
-        # Pre-trim candidate lists for this memetic search
+        # Pre-trim candidate lists
         local_gear_rank = {
             s: gear_rank_cache.get(s, [])[:top_k_gear] for s in slots
         }
         local_mini_rank = mini_rank_cache[:top_k_minis]
 
         steps = 0
-        while steps < max_steps:
+        # Polishing runs until no improvement (or very high limit), Memetic runs fixed steps
+        limit = 999999 if is_polishing else max_steps
+
+        while steps < limit:
             improved = False
 
-            # Gear neighbourhood (if optimizing gear)
+            # Gear neighbourhood
             if optimize_gear:
                 for idx, slot in enumerate(slots):
-                    current_name = best_genome[idx].get("Name")
+                    curr_item = best_genome[idx]
+                    current_name = curr_item.get("Name") if isinstance(curr_item, dict) else str(curr_item) if curr_item else ""
                     for cand in local_gear_rank.get(slot, []):
                         if cand.get("Name") == current_name:
                             continue
@@ -2283,18 +2459,24 @@ def solve_coevolution_genetic(
                             improved = True
                             steps += 1
                             break
-                    if improved or steps >= max_steps:
+                    if improved or (not is_polishing and steps >= limit):
                         break
 
-            if steps >= max_steps:
+            if not is_polishing and steps >= limit:
                 break
 
-            # Mini neighbourhood (if optimizing minis)
-            if not improved and optimize_minis:
-                # Compute existing mini names once per neighbourhood iteration.
-                existing = {m.get("Name") for m in best_genome[6:] if isinstance(m, dict)}
+            # Mini neighbourhood
+            if (not improved or is_polishing) and optimize_minis:
+                # Extract existing mini names, handling both dict and string formats
+                existing = set()
+                for m in best_genome[6:]:
+                    if isinstance(m, dict):
+                        existing.add(m.get("Name", ""))
+                    elif m:
+                        existing.add(str(m))
                 for idx in range(6, 9):
-                    curr_name = best_genome[idx].get("Name")
+                    curr_item = best_genome[idx]
+                    curr_name = curr_item.get("Name") if isinstance(curr_item, dict) else str(curr_item) if curr_item else ""
                     for cand in local_mini_rank:
                         c_name = cand.get("Name")
                         if c_name == curr_name:
@@ -2311,13 +2493,33 @@ def solve_coevolution_genetic(
                             improved = True
                             steps += 1
                             break
-                    if improved or steps >= max_steps:
+                    if improved or (not is_polishing and steps >= limit):
                         break
 
             if not improved:
                 break
 
-        return best_result
+        return best_result, best_genome
+
+    def polish_best_genome(best_genome):
+        """Local sweep on top candidates per slot/mini to escape near-misses."""
+        top_k_gear = 8
+        top_k_minis = min(25, len(mini_rank_cache))
+        return run_local_search(best_genome, 0, top_k_gear, top_k_minis, is_polishing=True)
+
+    # --- MEMETIC LOCAL SEARCH (lightweight) ---
+    def memetic_local_search(start_genome, max_steps, top_k_gear, top_k_minis):
+        """
+        Lightweight local search around a genome.
+        """
+        if max_steps <= 0:
+            res = evaluate_genome_local(start_genome)
+            return res # Return just result dict to match original signature expectation if needed, 
+                       # but original code expected just the result dict.
+                       # run_local_search returns (result, genome).
+        
+        res, _ = run_local_search(start_genome, max_steps, top_k_gear, top_k_minis, is_polishing=False)
+        return res
 
     num_runs = max(
         1,
@@ -2332,6 +2534,13 @@ def solve_coevolution_genetic(
     best_global_genome = []
     best_global_data = {}
 
+    # Read Deep Mining config
+    deep_mining_enabled = cfg.getboolean("IterationEngine", "DeepMining", fallback=True)
+    if deep_mining_enabled:
+        print(" >> [Deep Mining] Enabled: Will extend search based on cache hits.")
+    else:
+        print(" >> [Deep Mining] Disabled: Fixed generation count.")
+
     for run_idx in range(num_runs):
         print(f"\n--- GA Run {run_idx + 1}/{num_runs} ---")
         if status_cb:
@@ -2340,8 +2549,19 @@ def solve_coevolution_genetic(
         last_improvement_gen = 0
         stagnation_limit = max(8, gens_per_run // 2)
         mutation_rate = GA_MUTATION_RATE
-
-        for generation in range(1, gens_per_run + 1):
+        
+        # Dynamic generation limit based on cache hits
+        current_run_gens = gens_per_run
+        cache_hits_in_run = 0 # Reset for each run
+        generation = 0
+        
+        while generation < current_run_gens:
+            generation += 1
+            
+            # Initialize current_mutation_rate for the first generation
+            if generation == 1:
+                current_mutation_rate = mutation_rate
+            
             key_to_genome = {}
             pending_keys = []
             tasks = []
@@ -2355,21 +2575,46 @@ def solve_coevolution_genetic(
                     tasks.append((genome, base_stats_fixed, cfg_data, calc_song, ref_arrays))
 
             if pending_keys:
-                if executor:
-                    worker_count = getattr(executor, "_max_workers", None) or (
-                        os.cpu_count() or 1
-                    )
-                    chunk = max(1, len(tasks) // (worker_count * 4))
-                    for k, res in zip(
-                        pending_keys,
-                        executor.map(
-                            worker_coevolution_evaluate, tasks, chunksize=chunk
-                        ),
-                    ):
-                        evaluation_cache[k] = res
-                else:
-                    for k, payload in zip(pending_keys, tasks):
-                        evaluation_cache[k] = worker_coevolution_evaluate(payload)
+                # Use evaluate_genome_local logic for pending keys to ensure cache hits are counted
+                # and known_loadouts are checked.
+                # The previous logic bypassed evaluate_genome_local and went straight to worker_coevolution_evaluate
+                # or executor.map, missing the persistent cache check for the initial population or bulk evals.
+                
+                # We need to integrate the persistent cache check into the bulk evaluation flow.
+                # Or simply iterate and call evaluate_genome_local (which handles caching).
+                # But evaluate_genome_local is designed for single calls.
+                
+                # Let's split pending_keys into "cached in DB" and "needs calculation".
+                
+                keys_to_calc = []
+                tasks_to_calc = []
+                
+                for k, genome, task_payload in zip(pending_keys, [key_to_genome[k] for k in pending_keys], tasks):
+                    # Check persistent cache first
+                    cached_res = check_persistent_cache(genome)
+                    if cached_res:
+                        evaluation_cache[k] = cached_res
+                        cache_hits_in_run += 1
+                    else:
+                        keys_to_calc.append(k)
+                        tasks_to_calc.append(task_payload)
+
+                if keys_to_calc:
+                    if executor:
+                        worker_count = getattr(executor, "_max_workers", None) or (
+                            os.cpu_count() or 1
+                        )
+                        chunk = max(1, len(tasks_to_calc) // (worker_count * 4))
+                        for k, res in zip(
+                            keys_to_calc,
+                            executor.map(
+                                worker_coevolution_evaluate, tasks_to_calc, chunksize=chunk
+                            ),
+                        ):
+                            evaluation_cache[k] = res
+                    else:
+                        for k, payload in zip(keys_to_calc, tasks_to_calc):
+                            evaluation_cache[k] = worker_coevolution_evaluate(payload)
 
             results = [evaluation_cache[genome_key(g)] for g in population]
             results.sort(key=lambda x: x["Score"], reverse=True)
@@ -2486,7 +2731,8 @@ def solve_coevolution_genetic(
 
                 child = child_gear + unique_minis
 
-                if random.random() < mutation_rate:
+                # Use current_mutation_rate instead of mutation_rate
+                if random.random() < current_mutation_rate:
                     mutate_idx = random.randint(0, 8)
                     if mutate_idx < 6 and optimize_gear:
                         slot_type = slots[mutate_idx]
@@ -2505,11 +2751,33 @@ def solve_coevolution_genetic(
                 next_gen.append(child)
 
             population = next_gen
+            
+            # Update dynamic generation limit
+            # "run longer about 1 gen for each hit"
+            # We add the hits to the base limit.
+            if deep_mining_enabled:
+                current_run_gens = gens_per_run + cache_hits_in_run
+            
+            # "increase the exploration"
+            # If we have many cache hits, we are in known territory. Increase mutation.
+            # Base mutation is ~0.275. Max is 0.45.
+            # If we have > 10% cache hits in the run, boost mutation.
+            # Let's calculate a dynamic boost based on hit density.
+            total_evals_so_far = generation * GA_POPULATION_SIZE
+            hit_ratio = cache_hits_in_run / max(1, total_evals_so_far)
+            
+            # Boost mutation by up to 0.2 if hit ratio is high
+            exploration_boost = min(0.2, hit_ratio * 0.5)
+            current_mutation_rate = min(0.6, mutation_rate + exploration_boost) # Allow going slightly higher than normal max
+            
+            # Cap the extension to avoid infinite loops (e.g. max 5000 gens)
+            if current_run_gens > 5000:
+                current_run_gens = 5000
 
             if generation - last_improvement_gen >= stagnation_limit:
                 mutation_rate = min(GA_MUTATION_RATE_MAX, mutation_rate + 0.08)
                 print(
-                    f"  >> Stagnation detected (Run {run_idx + 1}), mutation -> {mutation_rate:.3f}, injecting diversity"
+                    f"  >> Stagnation detected (Run {run_idx + 1}), mutation -> {current_mutation_rate:.3f} (Boost: {exploration_boost:.3f}), injecting diversity"
                 )
                 elites = [r["Genome"] for r in results[:GA_ELITISM]]
                 population = elites[:]
@@ -2519,9 +2787,22 @@ def solve_coevolution_genetic(
                 while len(population) < GA_POPULATION_SIZE:
                     population.append(create_heuristic_genome())
                 last_improvement_gen = generation
+            
+            # Use the boosted rate for the next generation's crossover loop
+            # Note: mutation_rate variable tracks the base rate (stagnation adjusted), 
+            # while current_mutation_rate includes the exploration boost.
+            # We don't overwrite mutation_rate with current_mutation_rate to avoid runaway growth.
+            pass
 
     if best_global_genome:
         polished_result, polished_genome = polish_best_genome(best_global_genome)
+        
+        # If result was cached, re-evaluate fully to get all details
+        if polished_result.get("_cached"):
+             polished_result = worker_coevolution_evaluate(
+                (polished_genome, base_stats_fixed, cfg_data, calc_song, ref_arrays)
+            )
+            
         polished_score = polished_result["Score"]
 
         if polished_score > best_global_score:
@@ -2532,6 +2813,9 @@ def solve_coevolution_genetic(
     best_gear = best_global_genome[:6] if best_global_genome else []
     best_minis = best_global_genome[6:] if best_global_genome else []
 
+    # Return all unique evaluated loadouts from the cache
+    all_evaluated = list(evaluation_cache.values())
+
     return (
         best_global_data if best_global_data else None,
         best_gear,
@@ -2539,6 +2823,7 @@ def solve_coevolution_genetic(
         None,
         [],
         [],
+        all_evaluated,  # All unique loadouts evaluated by GA
     )
 
 
@@ -2547,9 +2832,17 @@ def process_song_task(args):
     Run a single song end-to-end.
     Optionally spins a local worker pool to parallelize inner GA work.
     """
+    # --- CRITICAL: Clear caches at start of task to prevent OOM in worker process ---
+    # These globals persist in the worker process if not cleared, leading to memory leaks
+    # especially when GA is skipped (Calculate-Only mode) but caches are still populated.
+    GEM_SOLVER_CACHE.clear()
+    FEVER_TIMELINE_CACHE.clear()
+    FG_CACHE.clear()
+
     (
         fp,
         found_song_name,
+        effective_difficulty,  # Difficulty determined from file header or folder path
         cfg_dict,
         paths,
         ref_arrays,
@@ -2560,7 +2853,6 @@ def process_song_task(args):
         use_evo_db,
         auto_buff,
         ga_depth,
-        prev_record,
         status_queue,
         parallel_workers,
     ) = args
@@ -2590,9 +2882,13 @@ def process_song_task(args):
         meta_finder = cfg.getboolean("IterationEngine", "MetaFinder", fallback=False)
         enable_fever = enable_mini = enable_gear = bool(meta_finder)
 
+        force_greats_mode = cfg.getboolean("IterationEngine", "ForceGreatsMode", fallback=False)
         force_greats_finder = cfg.getboolean("IterationEngine", "ForceGreatsFinder", fallback=False)
+        # ForceGreatsMode must be enabled for ForceGreatsFinder to work
+        if not force_greats_mode:
+            force_greats_finder = False
         force_greats_config = load_force_greats_config(cfg)
-        manual_force_greats = any(force_greats_config)
+        manual_force_greats = force_greats_mode and any(force_greats_config)
 
         song_data = read_song_file(fp)
 
@@ -2626,25 +2922,29 @@ def process_song_task(args):
         )
 
         # --- DB KEY MODIFICATION ---
-        # User requested removal of suffix (e.g. _Hard_Vibe).
-        # The key is now strictly the Song Name found in the file header.
+        # The song name from the file header already includes difficulty suffix like "(Hard)" or "(Easy)"
+        # Normal difficulty songs have no suffix. Use song name directly as DB key.
         db_key = found_song_name
 
         # Only seed GA if UseEvolutionDB=TRUE
-        db_seed = prev_record if use_evo_db else None
+        db_seed = None
+        prev_record = None
+        if use_evo_db:
+            best_loadouts = get_best_loadouts(found_song_name, limit=1, gears_by_name=gears_by_name, minis_by_name=minis_by_name)
+            if best_loadouts:
+                prev_record = best_loadouts[0]
+                db_seed = prev_record
 
         if prev_record:
             print(f"[DB] Found previous best: {prev_record.get('score', 0)}")
 
         attempt_lifetime_prev = 0
-        if prev_record:
-            attempt_lifetime_prev = (
-                prev_record.get("attempt_lifetime")
-                or prev_record.get("attempts")
-                or 0
-            )
+        prev_attempts_first = 0
+        if prev_record and "details" in prev_record:
+            attempt_lifetime_prev = prev_record["details"].get("attempt_lifetime", 0)
+            prev_attempts_first = prev_record["details"].get("attempts_first", 0)
+            
         attempt_lifetime = attempt_lifetime_prev + 1
-        prev_attempts_first = prev_record.get("attempts_first", 0) if prev_record else 0
 
         def emit(msg):
             if status_queue:
@@ -2654,6 +2954,18 @@ def process_song_task(args):
                     pass
 
         emit("START")
+
+        # Fetch known loadouts for persistent caching
+        known_loadouts = {}
+        if use_evo_db:
+            try:
+                conn = get_db_connection()
+                cursor = conn.execute("SELECT loadout_hash, score, fg_score FROM loadouts WHERE song_name = ?", (found_song_name,))
+                for row in cursor:
+                    known_loadouts[row["loadout_hash"]] = (row["score"], row["fg_score"])
+                conn.close()
+            except Exception as e:
+                print(f"[DB] Error fetching known loadouts: {e}")
 
         # --- LOGIC BRANCHING BASED ON FINDERS ---
         if enable_gear or enable_mini:
@@ -2665,6 +2977,7 @@ def process_song_task(args):
                 _,
                 _,
                 _,
+                all_evaluated,  # All unique loadouts from GA
             ) = solve_coevolution_genetic(
                 cfg,
                 fixed_stats,
@@ -2683,27 +2996,16 @@ def process_song_task(args):
                 db_seed=db_seed,
                 status_cb=lambda m: emit(m),
                 executor=local_executor,
+                known_loadouts=known_loadouts,
             )
 
-        elif enable_fever:
-            # Run ONLY Gem Solver
-            combined_stats = fixed_stats.copy()
-            for k, v in current_gear_stats.items():
-                combined_stats[k] = combined_stats.get(k, 0) + v
-            for k, v in current_mini_stats.items():
-                combined_stats[k] = combined_stats.get(k, 0) + v
-
-            best_data = solve_best_fever_combination(
-                cfg,
-                combined_stats,
-                calc_song,
-                ref_arrays,
-            )
-            best_gear = current_gear_list
-            best_minis = current_mini_list
         else:
-            # No finders enabled - just calculate score with current config
-            print("[Calculate-Only Mode] MetaFinder disabled - calculating score with current config...")
+            # Run Gem Solver only (enable_fever) or Calculate-Only Mode (nothing enabled)
+            all_evaluated = []  # No GA, so no evaluated loadouts
+            if not enable_fever:
+                print("[Calculate-Only Mode] MetaFinder disabled - calculating score with current config...")
+            
+            # Common logic: combine fixed_stats + gear_stats + mini_stats
             combined_stats = fixed_stats.copy()
             for k, v in current_gear_stats.items():
                 combined_stats[k] = combined_stats.get(k, 0) + v
@@ -2715,18 +3017,51 @@ def process_song_task(args):
                 combined_stats,
                 calc_song,
                 ref_arrays,
-                silent=False,
-                skip_optimizer=True,
+                silent=enable_fever,  # Silent if enable_fever, verbose otherwise
+                skip_optimizer=not enable_fever,  # Skip optimizer if no finders enabled
             )
             best_gear = current_gear_list
             best_minis = current_mini_list
 
+        # --- APPLY FORCE GREATS TO ALL EVALUATED LOADOUTS ---
         fg_variants = []
         if manual_force_greats or force_greats_finder:
             manual_counts = (
                 force_greats_config if (manual_force_greats and not force_greats_finder) else []
             )
-            if best_data:
+            
+            # Apply FG to ALL unique loadouts from GA (not just the best)
+            if all_evaluated:
+                # Track unique stats signatures to report actual FG calculations
+                unique_stats_seen = set()
+                print(f"[ForceGreats] Processing {len(all_evaluated)} loadouts...")
+                for eval_result in all_evaluated:
+                    eval_data = eval_result.get("Data")
+                    if eval_data:
+                        # Track unique stats for logging
+                        stats = eval_data.get("Stats", {})
+                        sel_color = eval_data.get("Selected Element", meta_primary_color)
+                        sig = stats_signature(stats, calc_song, sel_color)
+                        unique_stats_seen.add(sig)
+                        
+                        fg_variant = apply_force_greats_to_result(
+                            eval_data,
+                            calc_song,
+                            ref_arrays,
+                            manual_counts=manual_counts,
+                            use_finder=force_greats_finder,
+                        )
+                        if fg_variant:
+                            # Store the gear/minis with the FG variant
+                            fg_variants.append({
+                                "data": fg_variant,
+                                "gear": eval_result.get("Gear", []),
+                                "minis": eval_result.get("Minis", []),
+                                "score": fg_variant.get("Score", 0),
+                            })
+                print(f"[ForceGreats] {len(unique_stats_seen)} unique stat signatures, {len(fg_variants)} FG variants generated")
+            elif best_data:
+                # Fallback: apply FG to best_data only if no GA was run
                 fg_variant = apply_force_greats_to_result(
                     best_data,
                     calc_song,
@@ -2735,7 +3070,12 @@ def process_song_task(args):
                     use_finder=force_greats_finder,
                 )
                 if fg_variant:
-                    fg_variants.append(("best", fg_variant))
+                    fg_variants.append({
+                        "data": fg_variant,
+                        "gear": best_gear,
+                        "minis": best_minis,
+                        "score": fg_variant.get("Score", 0),
+                    })
 
         # --- REPORTING & DB UPDATE (payload only; saved by coordinator) ---
         if best_data:
@@ -2750,13 +3090,22 @@ def process_song_task(args):
             is_better = (prev_score is None) or (score > prev_score)
 
             def extract_names(record):
-                gear_names = record.get("gear") if record else []
-                minis_names = record.get("minis") if record else []
+                """Extract names from record, handling both dict and string formats."""
+                def get_name(item):
+                    if isinstance(item, dict):
+                        return item.get("Name", "")
+                    return str(item) if item else ""
+                
+                gear_items = record.get("gear") if record else []
+                minis_items = record.get("minis") if record else []
                 loadout = record.get("loadout") if record else None
-                if (not gear_names and not minis_names) and loadout:
-                    gear_names = loadout[:6]
-                    minis_names = loadout[6:9]
-                return list(gear_names or []), list(minis_names or [])
+                if (not gear_items and not minis_items) and loadout:
+                    gear_items = loadout[:6]
+                    minis_items = loadout[6:9]
+                
+                gear_names = [get_name(g) for g in (gear_items or [])]
+                minis_names = [get_name(m) for m in (minis_items or [])]
+                return gear_names, minis_names
 
             def build_details(data_dict):
                 if not data_dict:
@@ -2769,6 +3118,7 @@ def process_song_task(args):
                     "SelectedElement": data_dict.get("Selected Element", ""),
                     "PrimaryColor": meta_primary_color,
                     "SecondaryColor": meta_secondary_color,
+                    "Difficulty": effective_difficulty,  # Use the effective difficulty
                     "ForceGreats": data_dict.get("ForceGreats", {}),
                 }
 
@@ -2776,18 +3126,21 @@ def process_song_task(args):
             best_mini_names = [m.get("Name") for m in best_minis]
             best_details = build_details(best_data)
 
-            force_candidates = []
-            if prev_record:
-                prev_force = prev_record.get("force")
-                if prev_force and prev_force.get("score") is not None:
-                    force_candidates.append(prev_force)
-            for _, fg_variant in fg_variants:
-                force_candidates.append(
+            # Build FG candidates from CURRENT RUN ONLY (not prev_record)
+            # We always save the best FG from this run, regardless of whether it beats the old one.
+            current_run_fg_candidates = []
+            for fg_entry in fg_variants:
+                fg_gear = fg_entry.get("gear", [])
+                fg_minis = fg_entry.get("minis", [])
+                fg_data = fg_entry.get("data", {})
+                fg_gear_names = [g.get("Name") for g in fg_gear] if fg_gear else []
+                fg_mini_names = [m.get("Name") for m in fg_minis] if fg_minis else []
+                current_run_fg_candidates.append(
                     {
-                        "score": fg_variant.get("Score", 0),
-                        "gear": best_gear_names,
-                        "minis": best_mini_names,
-                        "details": build_details(fg_variant),
+                        "score": fg_entry.get("score", 0),
+                        "gear": fg_gear_names,
+                        "minis": fg_mini_names,
+                        "details": build_details(fg_data),
                     }
                 )
 
@@ -2863,17 +3216,23 @@ def process_song_task(args):
 
             updated_payload.pop("second", None)
 
-            if force_candidates:
-                force_candidates = sorted(
-                    force_candidates, key=lambda c: c.get("score", -1), reverse=True
+            # Always save the best FG from the CURRENT RUN
+            # This ensures we always record the FG result from this GA's evaluated loadouts,
+            # even if it doesn't beat the previous best FG score.
+            if current_run_fg_candidates:
+                current_run_fg_candidates = sorted(
+                    current_run_fg_candidates, key=lambda c: c.get("score", -1), reverse=True
                 )
-                best_force = force_candidates[0]
+                best_force = current_run_fg_candidates[0]
                 updated_payload["force"] = {
                     "score": best_force.get("score"),
                     "gear": best_force.get("gear", []),
                     "minis": best_force.get("minis", []),
                     "details": best_force.get("details", {}),
                 }
+            # If no FG candidates from current run, keep the old one from prev_record (if any)
+            elif prev_record and prev_record.get("force"):
+                updated_payload["force"] = prev_record.get("force")
             else:
                 updated_payload.pop("force", None)
 
@@ -2922,15 +3281,22 @@ def process_song_task(args):
                 )
 
             if fg_variants:
-                best_fg_variant = max(
-                    fg_variants, key=lambda p: p[1].get("Score", -1)
-                )[1]
+                best_fg_entry = max(
+                    fg_variants, key=lambda p: p.get("score", -1)
+                )
+                best_fg_variant = best_fg_entry.get("data", {})
                 fg_meta = best_fg_variant.get("ForceGreats", {}) or {}
+                best_fg_gear = best_fg_entry.get("gear", [])
+                best_fg_minis = best_fg_entry.get("minis", [])
+                fg_gear_names = [g.get("Name") for g in best_fg_gear] if best_fg_gear else []
+                fg_mini_names = [m.get("Name") for m in best_fg_minis] if best_fg_minis else []
                 print("\n[ForceGreats Optimizer]")
                 print(
                     f"Base Score: {fg_meta.get('base_score', best_data.get('Score', 0))} | "
-                    f"ForceGreat Score: {best_fg_variant.get('Score', 0)}"
+                    f"ForceGreat Score: {best_fg_entry.get('score', 0)}"
                 )
+                print(f"Best FG Gear: {fg_gear_names}")
+                print(f"Best FG Minis: {fg_mini_names}")
                 cfg_map = fg_meta.get("config", {})
                 if cfg_map:
                     print(f"Config: {cfg_map}")
@@ -2950,6 +3316,7 @@ def process_song_task(args):
         # Prevent memory leak from unbounded cache growth across thousands of songs
         FEVER_TIMELINE_CACHE.clear()
         GEM_SOLVER_CACHE.clear()
+        FG_CACHE.clear()
 
     # Should never reach here; fallback to avoid crashes
     return {
@@ -2980,14 +3347,21 @@ if __name__ == "__main__":
             )
 
             # --- DB LOAD (always, independent of UseEvolutionDB) ---
-            evo_db = load_evolution_db()
+            init_db()
 
             # --- Configuration Granularity ---
             meta_finder = cfg.getboolean("IterationEngine", "MetaFinder", fallback=False)
             enable_fever = enable_mini = enable_gear = bool(meta_finder)
+            force_greats_mode = cfg.getboolean("IterationEngine", "ForceGreatsMode", fallback=False)
+            force_greats_finder = cfg.getboolean("IterationEngine", "ForceGreatsFinder", fallback=False)
             auto_buff = cfg.getboolean(
                 "IterationEngine", "AutoSelectBuffAndColor", fallback=False
             )
+            
+            # Log ForceGreats configuration status
+            if force_greats_mode:
+                fg_status = "ForceGreatsFinder" if force_greats_finder else "Manual Config"
+                print(f" >> [ForceGreats] Mode enabled ({fg_status})")
             ga_depth = safe_int(cfg.get("IterationEngine", "GA_SearchDepth", fallback=50))
             use_evo_db = cfg.getboolean(
                 "IterationEngine", "UseEvolutionDB", fallback=True
@@ -3091,9 +3465,14 @@ if __name__ == "__main__":
             song_queue = []
             seen_paths = set()
 
-            dirs_to_search = [search_dir]
-            if search_dir != SCRIPT_DIR:
-                dirs_to_search.append(SCRIPT_DIR)
+            # If "All" is selected, search the entire Data folder.
+            # Otherwise, search the specific difficulty folder from paths.
+            if diff_lower not in ("easy", "normal", "hard"):
+                # Search everything in Data/ if possible, or just SCRIPT_DIR
+                data_root = os.path.join(SCRIPT_DIR, "Data")
+                dirs_to_search = [data_root] if os.path.exists(data_root) else [SCRIPT_DIR]
+            else:
+                dirs_to_search = [search_dir]
 
             for d in dirs_to_search:
                 if not os.path.exists(d):
@@ -3109,35 +3488,39 @@ if __name__ == "__main__":
                             meta = scan_song_header(fp)
                             if not meta:
                                 continue
-                            name = meta["Song Name"].lower()
-                            meta_diff = (meta.get("Difficulty") or "").strip().lower()
-                            meta_diff_known = meta_diff in ("easy", "normal", "hard")
+                            
+                            # --- ROBUST METADATA PARSING ---
+                            # Trust the file content. The Song Name usually contains the difficulty 
+                            # (e.g. "Song (Hard) by Artist").
+                            name = meta["Song Name"]
+                            name_lower = name.lower()
+                            
+                            # Extract difficulty from the song name if possible, or use the Difficulty field
+                            # The Difficulty field is often a number (e.g. "10"), so checking for "Hard" text is better.
+                            detected_diff = "Unknown"
+                            if "(hard)" in name_lower:
+                                detected_diff = "Hard"
+                            elif "(normal)" in name_lower:
+                                detected_diff = "Normal"
+                            elif "(easy)" in name_lower:
+                                detected_diff = "Easy"
+                            else:
+                                # Fallback to the Difficulty header if it's a word
+                                meta_diff_val = (meta.get("Difficulty") or "").strip().capitalize()
+                                if meta_diff_val in ("Hard", "Normal", "Easy"):
+                                    detected_diff = meta_diff_val
+
+                            # --- FILTERING ---
+                            # 1. Difficulty Filter
+                            if diff_lower in ("easy", "normal", "hard"):
+                                # If user requested specific difficulty, ensure this song matches
+                                if detected_diff.lower() != diff_lower:
+                                    continue
+
+                            # 2. Color Filter
                             primary_color = (meta.get("Primary Color") or "").strip().lower()
-                            secondary_color = (
-                                (meta.get("Secondary Color") or "").strip().lower()
-                            )
-                            abs_fp_lower = abs_fp.lower()
-                            file_diff = next(
-                                (
-                                    tag
-                                    for tag, base in diff_dirs.items()
-                                    if abs_fp_lower.startswith(base)
-                                ),
-                                None,
-                            )
-                            if diff_lower in ("easy", "normal", "hard"):
-                                if meta_diff_known and meta_diff != diff_lower:
-                                    continue
-                                if file_diff and file_diff != diff_lower:
-                                    continue
-                                if not file_diff and not meta_diff_known and search_dir != SCRIPT_DIR:
-                                    continue
-                            if diff_lower in ("easy", "normal", "hard"):
-                                if any(
-                                    diff_lower != tag and f"({tag}" in name
-                                    for tag in ("hard", "normal", "easy")
-                                ):
-                                    continue
+                            secondary_color = (meta.get("Secondary Color") or "").strip().lower()
+                            
                             if (
                                 not target_primary_all
                                 and (
@@ -3154,23 +3537,42 @@ if __name__ == "__main__":
                                 )
                             ):
                                 continue
-                            if filter_search and filter_search not in name:
+                            
+                            # 3. Name Search Filter
+                            if filter_search and filter_search not in name_lower:
                                 continue
 
-                            song_queue.append((fp, meta["Song Name"]))
+                            # Store full metadata to avoid re-scanning later
+                            song_queue.append((fp, name, detected_diff))
                             seen_paths.add(abs_fp)
 
             if not song_queue:
                 print("Error: No matching songs found.")
             else:
                 if not filter_search:
+                    # Fetch existing songs from DB
+                    existing_songs = set()
+                    if use_evo_db:
+                        try:
+                            conn = get_db_connection()
+                            cursor = conn.execute("SELECT name FROM songs")
+                            existing_songs = {row[0] for row in cursor}
+                            conn.close()
+                        except Exception as e:
+                            print(f"[DB] Error fetching existing songs: {e}")
+
                     missing = []
                     completed = []
-                    for fp, meta_name in song_queue:
-                        if meta_name in evo_db:
-                            completed.append((fp, meta_name))
+                    for fp, meta_name, song_diff in song_queue:
+                        # Song name already contains difficulty like "(Hard)" or "(Easy)"
+                        # Use song name directly as lookup key
+                        lookup_key = meta_name
+                        
+                        # Skip _meta key when checking for completion
+                        if lookup_key in existing_songs:
+                            completed.append((fp, meta_name, song_diff))
                         else:
-                            missing.append((fp, meta_name))
+                            missing.append((fp, meta_name, song_diff))
                     if missing:
                         print(f"Auto-selection: {len(missing)} song(s) without DB records found; prioritizing those.")
                         song_queue = missing
@@ -3217,13 +3619,14 @@ if __name__ == "__main__":
                     )
                 parallel_workers = 1  # Single-threaded per song to avoid nested pools on Windows
 
-                for fp, found_song_name in song_queue:
+                for fp, found_song_name, task_diff in song_queue:
                     print(f"[QUEUE] {found_song_name}")
-                    prev_for_task = evo_db.get(found_song_name) if use_evo_db else None
+                    # Song name already includes difficulty like "(Hard)" or "(Easy)", use directly as key
                     tasks.append(
                         (
                             fp,
                             found_song_name,
+                            task_diff,  # Pass the determined difficulty
                             cfg_dict,
                             paths,
                             ref_arrays,
@@ -3234,7 +3637,6 @@ if __name__ == "__main__":
                             use_evo_db,
                             auto_buff,
                             ga_depth,
-                            prev_for_task,
                             status_queue,
                             parallel_workers,
                         )
@@ -3280,8 +3682,14 @@ if __name__ == "__main__":
                         # Logs already streamed live via Tee; buffer retained for completeness
                         db_payload = res.get("db_payload")
                         if use_evo_db and db_payload:
-                            evo_db[res["db_key"]] = db_payload
-                            save_evolution_db(evo_db)
+                            save_loadout_to_db(
+                                res["song"],
+                                db_payload["score"],
+                                db_payload.get("fg_score", 0),
+                                db_payload["gear"],
+                                db_payload["minis"],
+                                db_payload.get("details", {})
+                            )
                         log_content = (res.get("log") or "").strip()
                         if log_content:
                             discord_reporter.send_log(f"Log for {res.get('song', 'Unknown Song')} ({completed}/{total}):")

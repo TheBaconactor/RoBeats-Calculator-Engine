@@ -463,7 +463,7 @@ def read_song_file(fp):
 TOTAL_ROWS = 160
 
 def first_100(combo_mul, base_value):
-    rows = np.arange(1, 101)
+    rows = np.arange(0, 100)
     scaled_values = base_value + ((combo_mul - 1) * base_value / 100 * rows)
     return scaled_values
 
@@ -591,7 +591,7 @@ def calculate_great_penalty_for_notes(
         
         if note_idx < 100:
             # Ramping penalty for first 100 notes
-            # Perfect value at this note
+            # Perfect value at this note (note 0 gets scaling at position 1, note 99 gets full combo_mul)
             scaling_factor = 1 + (combo_mul - 1) * (note_idx + 1) / 100
             perfect_at_note = floor(base_value * scaling_factor)
             great_at_note = floor(great_judgement_penalty_base * scaling_factor)
