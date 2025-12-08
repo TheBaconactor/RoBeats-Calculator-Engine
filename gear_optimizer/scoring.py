@@ -1,0 +1,1105 @@
+"""
+Score calculation engine with JIT-compiled performance optimizations.
+
+This module contains the core scoring algorithms including:
+- Fever timeline calculation
+- Gem optimization solver
+- Force greats evaluation
+- JIT-compiled performance-critical functions
+
+Uses LRU caching to avoid redundant calculations.
+"""
+import numpy as np
+from math import floor, ceil
+from cachetools import LRUCache
+
+from .jit_setup import jit
+from .constants import (
+    TOTAL_ROWS,
+    MAX_STAT_INDEX,
+    TOTAL_GEM_BUDGET,
+    GEM_SCALE_NORMAL,
+    GEM_SCALE_FEVER,
+    GEM_STAT_TO_ELEMENT_SCALE,
+    ELEMENTAL_GEM_SCALE,
+)
+from .utils import safe_int, safe_float, stats_signature, SKIP_ITEM_KEYS
+
+# Global caches for performance optimization
+GEM_SOLVER_CACHE = LRUCache(maxsize=5000)
+FEVER_TIMELINE_CACHE = LRUCache(maxsize=10000)
+FG_CACHE = LRUCache(maxsize=2000)
+
+
+def lookup_reference_py(value, ref_array, total_rows=TOTAL_ROWS):
+    """
+    Python implementation of reference lookup.
+    Clamps value to valid range and returns corresponding reference value.
+    """
+    clamped = max(0, min(total_rows, int(value)))
+    return ref_array[clamped]
+
+
+@jit(nopython=True, cache=True)
+def lookup_reference_jit(value, ref_array, total_rows):
+    """
+    JIT-compiled reference lookup for performance.
+    Used in hot paths where speed is critical.
+    """
+    idx = int(value)
+    if idx > total_rows:
+        idx = total_rows
+    elif idx < 0:
+        idx = 0
+    return ref_array[idx]
+
+
+@jit(nopython=True, cache=True)
+def calculate_fever_timeline_indices(
+    song_timestamps,
+    total_notes,
+    fever_fill_rate,
+    fever_time_stat,
+    long_notes_count,
+    last_note_time,
+    fever_mask_buffer,
+):
+    """
+    Calculate fever timeline using corrected server-matching logic.
+
+    Key fixes:
+    1. First non-fever section: non_fever_base - 1 notes
+       Later sections: non_fever_base notes (1 "wasted" note where fever ends)
+    2. Binary search uses side="left" (>=) instead of side="right" (>)
+
+    Args:
+        song_timestamps: NumPy array of note timestamps
+        total_notes: Total number of notes in song
+        fever_fill_rate: Fever fill rate multiplier
+        fever_time_stat: Fever time multiplier
+        long_notes_count: Number of long notes
+        last_note_time: Timestamp of last note
+        fever_mask_buffer: Preallocated boolean array for fever mask
+
+    Returns:
+        tuple: (fever_mask_head, count_body_fever, count_body_normal, fever_activations)
+    """
+    non_fever_cas = (total_notes - long_notes_count) * 0.333
+    non_fever_base = ceil(non_fever_cas * fever_fill_rate)
+    fever_time_cas = last_note_time * 0.15 + 0.15
+    real_fever_time = fever_time_cas * fever_time_stat
+
+    is_fever = fever_mask_buffer
+    is_fever[:] = False
+    current_note_idx = 0
+    fever_activations = 0
+    fever_section = 0
+
+    while current_note_idx < total_notes:
+        # Non-fever section
+        fever_section += 1
+        # First section: -1, Later sections: use base (wasted note effect)
+        if fever_section == 1:
+            notes_to_fill = non_fever_base - 1
+        else:
+            notes_to_fill = non_fever_base
+
+        end_normal_idx = min(current_note_idx + notes_to_fill, total_notes)
+        current_note_idx = end_normal_idx
+        if current_note_idx >= total_notes:
+            break
+
+        if current_note_idx > 0:
+            fever_activations += 1
+            start_time = song_timestamps[current_note_idx]
+            end_time = start_time + real_fever_time
+            # Use side="left" to find first note where time >= end_time (not >)
+            fever_end_idx = np.searchsorted(song_timestamps, end_time, side="left")
+            is_fever[current_note_idx:fever_end_idx] = True
+            current_note_idx = fever_end_idx
+        else:
+            break
+
+    head_limit = min(total_notes, 100)
+    fever_mask_head = is_fever[:head_limit]
+    count_body_fever = 0
+    count_body_normal = 0
+    if total_notes > 100:
+        for i in range(100, total_notes):
+            if is_fever[i]:
+                count_body_fever += 1
+            else:
+                count_body_normal += 1
+    return fever_mask_head, count_body_fever, count_body_normal, fever_activations
+
+
+@jit(nopython=True, cache=True)
+def fast_calculate_score(
+    base_value,
+    combo_mul,
+    fever_mul,
+    fever_mask_head,
+    count_body_fever,
+    count_body_normal,
+):
+    """
+    Fast JIT-compiled score calculation.
+
+    NOTE: The old fever_activations_count adjustment has been REMOVED.
+    The timeline calculation now correctly handles note allocation per fever cycle,
+    so no adjustment is needed.
+
+    Args:
+        base_value: Base score value per note
+        combo_mul: Combo multiplier
+        fever_mul: Fever multiplier
+        fever_mask_head: Boolean array marking fever notes in head (first 100)
+        count_body_fever: Number of fever notes after head
+        count_body_normal: Number of normal notes after head
+
+    Returns:
+        int: Total calculated score
+    """
+    combo_val_per_note = floor(base_value * combo_mul)
+    fever_val_per_note = floor(base_value * combo_mul * fever_mul)
+
+    body_score = (count_body_fever * fever_val_per_note) + (
+        count_body_normal * combo_val_per_note
+    )
+
+    # OLD PATCH REMOVED - no longer needed with corrected timeline
+
+    factor = (combo_mul - 1) * base_value / 100.0
+    total_head = 0.0
+    n_head = len(fever_mask_head)
+
+    for i in range(n_head):
+        current_ramp_val = base_value + ((i + 1) * factor)
+        if fever_mask_head[i]:
+            val = floor(current_ramp_val * fever_mul)
+        else:
+            val = floor(current_ramp_val)
+        total_head += val
+
+    return int(body_score + total_head)
+
+
+@jit(nopython=True, cache=True)
+def optimize_core_jit(
+    budget,
+    cur_pp,
+    cur_cm,
+    cur_fm,
+    cur_p_val,
+    cur_s_val,
+    is_p_pp,
+    is_s_pp,
+    is_p_cm,
+    is_s_cm,
+    is_p_fm,
+    is_s_fm,
+    is_p_ov,
+    is_s_ov,
+    ref_pp,
+    ref_cm,
+    ref_fm,
+    fever_mask_head,
+    count_body_fever,
+    count_body_normal,
+    GEM_SCALE_NORMAL,
+    GEM_SCALE_FEVER,
+    GEM_STAT_TO_ELEMENT_SCALE,
+    ELEMENTAL_GEM_SCALE,
+    TOTAL_ROWS,
+    MAX_STAT_INDEX,
+):
+    """
+    JIT-compiled greedy gem allocation optimizer.
+
+    At each iteration, evaluates 4 options (PP, CM, FM, Overflow) and picks
+    the one that maximizes score. Continues until gem budget is exhausted.
+
+    This is the performance-critical hot path and MUST be JIT-compiled.
+
+    Returns:
+        tuple: (final_pp, final_cm, final_fm, final_p_val, final_s_val,
+                gems_pp, gems_cm, gems_fm, gems_ov)
+    """
+    gems_pp = 0
+    gems_cm = 0
+    gems_fm = 0
+    gems_ov = 0
+    remaining_budget = budget
+
+    while remaining_budget > 0:
+        best_score = -1.0
+        best_opt_idx = -1
+        fill_budget = remaining_budget - 1
+        fill_bonus = (fill_budget * ELEMENTAL_GEM_SCALE) if fill_budget > 0 else 0
+
+        # Option 0: PP gem
+        if cur_pp < MAX_STAT_INDEX:
+            t_pp = cur_pp + GEM_SCALE_NORMAL
+            t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_pp) + (
+                fill_bonus * is_p_ov
+            )
+            t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_pp) + (
+                fill_bonus * is_s_ov
+            )
+            pp_factor = lookup_reference_jit(t_pp, ref_pp, TOTAL_ROWS)
+            base = (t_p * 2) + t_s + pp_factor
+            c_mul = lookup_reference_jit(cur_cm, ref_cm, TOTAL_ROWS)
+            f_mul = lookup_reference_jit(cur_fm, ref_fm, TOTAL_ROWS)
+            score = fast_calculate_score(
+                base,
+                c_mul,
+                f_mul,
+                fever_mask_head,
+                count_body_fever,
+                count_body_normal,
+            )
+            if score >= best_score:
+                best_score = score
+                best_opt_idx = 0
+
+        # Option 1: CM gem
+        if cur_cm < MAX_STAT_INDEX:
+            t_cm = cur_cm + GEM_SCALE_NORMAL
+            t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_cm) + (
+                fill_bonus * is_p_ov
+            )
+            t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_cm) + (
+                fill_bonus * is_s_ov
+            )
+            pp_factor = lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS)
+            base = (t_p * 2) + t_s + pp_factor
+            c_mul = lookup_reference_jit(t_cm, ref_cm, TOTAL_ROWS)
+            f_mul = lookup_reference_jit(cur_fm, ref_fm, TOTAL_ROWS)
+            score = fast_calculate_score(
+                base,
+                c_mul,
+                f_mul,
+                fever_mask_head,
+                count_body_fever,
+                count_body_normal,
+            )
+            if score > best_score:
+                best_score = score
+                best_opt_idx = 1
+
+        # Option 2: FM gem
+        if cur_fm < MAX_STAT_INDEX:
+            t_fm = cur_fm + GEM_SCALE_FEVER
+            t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_fm) + (
+                fill_bonus * is_p_ov
+            )
+            t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_fm) + (
+                fill_bonus * is_s_ov
+            )
+            pp_factor = lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS)
+            base = (t_p * 2) + t_s + pp_factor
+            c_mul = lookup_reference_jit(cur_cm, ref_cm, TOTAL_ROWS)
+            f_mul = lookup_reference_jit(t_fm, ref_fm, TOTAL_ROWS)
+            score = fast_calculate_score(
+                base,
+                c_mul,
+                f_mul,
+                fever_mask_head,
+                count_body_fever,
+                count_body_normal,
+            )
+            if score > best_score:
+                best_score = score
+                best_opt_idx = 2
+
+        # Option 3: Overflow (elemental gem on selected color)
+        t_p = cur_p_val + (ELEMENTAL_GEM_SCALE * is_p_ov) + (fill_bonus * is_p_ov)
+        t_s = cur_s_val + (ELEMENTAL_GEM_SCALE * is_s_ov) + (fill_bonus * is_s_ov)
+        pp_factor = lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS)
+        base = (t_p * 2) + t_s + pp_factor
+        c_mul = lookup_reference_jit(cur_cm, ref_cm, TOTAL_ROWS)
+        f_mul = lookup_reference_jit(cur_fm, ref_fm, TOTAL_ROWS)
+        score = fast_calculate_score(
+            base,
+            c_mul,
+            f_mul,
+            fever_mask_head,
+            count_body_fever,
+            count_body_normal,
+        )
+        if score >= best_score:
+            best_score = score
+            best_opt_idx = 3
+
+        # Apply the best option
+        if best_opt_idx == 0:
+            cur_pp += GEM_SCALE_NORMAL
+            cur_p_val += GEM_STAT_TO_ELEMENT_SCALE * is_p_pp
+            cur_s_val += GEM_STAT_TO_ELEMENT_SCALE * is_s_pp
+            gems_pp += 1
+        elif best_opt_idx == 1:
+            cur_cm += GEM_SCALE_NORMAL
+            cur_p_val += GEM_STAT_TO_ELEMENT_SCALE * is_p_cm
+            cur_s_val += GEM_STAT_TO_ELEMENT_SCALE * is_s_cm
+            gems_cm += 1
+        elif best_opt_idx == 2:
+            cur_fm += GEM_SCALE_FEVER
+            cur_p_val += GEM_STAT_TO_ELEMENT_SCALE * is_p_fm
+            cur_s_val += GEM_STAT_TO_ELEMENT_SCALE * is_s_fm
+            gems_fm += 1
+        else:
+            cur_p_val += ELEMENTAL_GEM_SCALE * is_p_ov
+            cur_s_val += ELEMENTAL_GEM_SCALE * is_s_ov
+            gems_ov += 1
+        remaining_budget -= 1
+
+    return (
+        cur_pp,
+        cur_cm,
+        cur_fm,
+        cur_p_val,
+        cur_s_val,
+        gems_pp,
+        gems_cm,
+        gems_fm,
+        gems_ov,
+    )
+
+
+def worker_coevolution_evaluate(args):
+    """
+    Evaluates a Co-Evolution Individual (genome = gear + minis).
+
+    Uses a stat-signature cache: if multiple gear+mini combinations produce
+    the same effective stats for the song's Primary/Secondary/Selected paths,
+    we reuse the gem solver result instead of recomputing.
+
+    This is called in parallel by the genetic algorithm.
+
+    Args:
+        args: Tuple of (genome, base_stats_fixed, cfg_data, calc_song, ref_arrays)
+
+    Returns:
+        dict: Evaluation result with score, genome, gear, minis, and data
+    """
+    (genome, base_stats_fixed, cfg_data, calc_song, ref_arrays) = args
+
+    current_stats = base_stats_fixed.copy()
+    cs = current_stats
+    cs_get = cs.get
+
+    # Aggregate stats from all items in genome
+    for item in genome:
+        for k, v in item.items():
+            if k not in SKIP_ITEM_KEYS:
+                cs[k] = cs_get(k, 0) + v
+
+    # Check stat-signature cache before calling the expensive gem solver
+    sel_color = cfg_data["selected_color"]
+    sig = stats_signature(current_stats, calc_song, sel_color)
+    cached = GEM_SOLVER_CACHE.get(sig)
+
+    if cached is None:
+        res = solve_best_fever_combination(
+            None,
+            current_stats,
+            calc_song,
+            ref_arrays,
+            silent=True,
+            override_cfg=cfg_data,
+        )
+        GEM_SOLVER_CACHE[sig] = res
+    else:
+        res = cached
+
+    gear_part = genome[:6]
+    mini_part = genome[6:]
+    mini_names = [m["Name"] for m in mini_part]
+
+    return {
+        "Score": res["Score"],
+        "Genome": genome,
+        "Gear": gear_part,
+        "Minis": mini_part,
+        "MiniNames": mini_names,
+        "Data": res,
+    }
+
+
+def evaluate_stats_score(
+    stats,
+    calc_song,
+    ref_arrays,
+    song_timestamps=None,
+    long_notes=None,
+    last_note=None,
+    fever_mask_buffer=None,
+):
+    """
+    Return total score for a fixed stats snapshot without gem reallocations.
+
+    This is used when you just want to evaluate a loadout without optimizing gems.
+
+    Args:
+        stats: Stats dictionary
+        calc_song: Song calculation context
+        ref_arrays: Reference lookup arrays
+        song_timestamps: Optional precomputed timestamps
+        long_notes: Optional long notes count
+        last_note: Optional last note time
+        fever_mask_buffer: Optional preallocated fever mask buffer
+
+    Returns:
+        int: Total score
+    """
+    timestamps = (
+        song_timestamps if song_timestamps is not None else calc_song["song_data"]["timestamps"]
+    )
+    total_notes = len(timestamps)
+    long_count = (
+        long_notes
+        if long_notes is not None
+        else safe_int(calc_song["metadata"].get("Long Notes"), 0)
+    )
+    default_last_note = timestamps[-1] if total_notes else 0.0
+    last_time = (
+        last_note
+        if last_note is not None
+        else safe_float(calc_song["metadata"].get("Last Note Time"), default_last_note)
+    )
+    mask_buffer = fever_mask_buffer
+    if mask_buffer is None or mask_buffer.shape[0] != total_notes:
+        mask_buffer = np.zeros(total_notes, dtype=np.bool_)
+
+    ft_factor = lookup_reference_py(stats["Fever Time"], ref_arrays["Fever Time"], TOTAL_ROWS)
+    ff_factor = lookup_reference_py(stats["Fever Fill Rate"], ref_arrays["Fever Fill Rate"], TOTAL_ROWS)
+    fever_mask_head, count_body_fever, count_body_normal, _ = calculate_fever_timeline_indices(
+        timestamps,
+        total_notes,
+        ff_factor,
+        ft_factor,
+        long_count,
+        last_time,
+        mask_buffer,
+    )
+
+    base_pp = lookup_reference_py(stats["Perfect Points"], ref_arrays["Perfect Points"], TOTAL_ROWS)
+    combo_mul = lookup_reference_py(stats["Combo Multiplier"], ref_arrays["Combo Multiplier"], TOTAL_ROWS)
+    fever_mul = lookup_reference_py(stats["Fever Multiplier"], ref_arrays["Fever Multiplier"], TOTAL_ROWS)
+
+    p_color = calc_song["metadata"].get("Primary Color", "")
+    s_color = calc_song["metadata"].get("Secondary Color", "")
+    primary_val = stats.get(p_color, 0)
+    secondary_val = stats.get(s_color, 0)
+    total_base = (primary_val * 2) + secondary_val + base_pp
+
+    return fast_calculate_score(
+        total_base,
+        combo_mul,
+        fever_mul,
+        fever_mask_head,
+        count_body_fever,
+        count_body_normal,
+    )
+
+
+def _force_greats_counts_to_dict(counts, sections):
+    """Convert force counts to config dict."""
+    config = {}
+    for idx in range(sections):
+        val = counts[idx] if idx < len(counts) else 0
+        config[f"NonFever{idx + 1}"] = max(0, int(val))
+    return config
+
+
+def build_great_penalty_table(base_value, combo_mul, great_penalty_base, head_limit=100):
+    """
+    Precompute ramp penalties for the first `head_limit` notes.
+    Avoids recalculating scaling when evaluating force-great permutations.
+    """
+    penalties = [0] * head_limit
+    combo_span = combo_mul - 1.0
+    for idx in range(head_limit):
+        scaling = 1.0 + combo_span * (idx + 1) / 100.0
+        perfect_val = floor(base_value * scaling)
+        great_val = floor(great_penalty_base * scaling)
+        penalties[idx] = max(0, perfect_val - great_val)
+    return penalties
+
+
+def evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=None):
+    """
+    Recompute fever timeline and penalties when greats are forced in non-fever sections.
+    Returns None when prerequisites are missing.
+    """
+    if not stats or not calc_song:
+        return None
+
+    timestamps = calc_song["song_data"]["timestamps"]
+    total_notes = len(timestamps)
+    if total_notes <= 0:
+        return None
+
+    metadata = calc_song["metadata"]
+    long_notes = safe_int(metadata.get("Long Notes"), 0)
+    default_last_note = timestamps[-1] if total_notes else 0.0
+    last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
+    primary_color = metadata.get("Primary Color", "")
+    secondary_color = metadata.get("Secondary Color", "")
+    primary_val = stats.get(primary_color, 0)
+    secondary_val = stats.get(secondary_color, 0)
+
+    ref_pp = ref_arrays["Perfect Points"]
+    ref_cm = ref_arrays["Combo Multiplier"]
+    ref_fm = ref_arrays["Fever Multiplier"]
+    ref_ff = ref_arrays["Fever Fill Rate"]
+    ref_ft = ref_arrays["Fever Time"]
+
+    pp_factor = lookup_reference_py(stats["Perfect Points"], ref_pp, TOTAL_ROWS)
+    combo_mul = lookup_reference_py(stats["Combo Multiplier"], ref_cm, TOTAL_ROWS)
+    fever_mul = lookup_reference_py(stats["Fever Multiplier"], ref_fm, TOTAL_ROWS)
+    fever_fill_rate = lookup_reference_py(stats["Fever Fill Rate"], ref_ff, TOTAL_ROWS)
+    fever_time_stat = lookup_reference_py(stats["Fever Time"], ref_ft, TOTAL_ROWS)
+
+    base_value = (primary_val * 2) + secondary_val + pp_factor
+    combo_value = floor(base_value * combo_mul)
+    great_penalty_base = floor(((primary_val * 2) + secondary_val) * (2.0 / 3.0) + 150.0)
+    great_combo_value = floor(great_penalty_base * combo_mul)
+    penalty_table = build_great_penalty_table(base_value, combo_mul, great_penalty_base)
+    body_penalty = max(0, combo_value - great_combo_value)
+
+    non_fever_cas = max(0.0, (total_notes - long_notes) * 0.333)
+    non_fever_base = ceil(non_fever_cas * fever_fill_rate)
+    non_fever_great_to_fill = ceil(max(1.0, (non_fever_cas * fever_fill_rate) * 2.0))
+    fever_time_cas = last_note_time * 0.15 + 0.15
+    real_fever_time = fever_time_cas * fever_time_stat
+
+    force_counts = list(forced_counts or [])
+    fever_mask = np.zeros(total_notes, dtype=np.bool_)
+    current_idx = 0
+    non_fever_section = 0
+    section_details = []
+
+    while current_idx < total_notes:
+        non_fever_section += 1
+        base_notes = non_fever_base - 1 if non_fever_section == 1 else non_fever_base
+        base_notes = max(0, base_notes)
+        forced_val = 0
+        if non_fever_section - 1 < len(force_counts):
+            forced_val = max(0, int(force_counts[non_fever_section - 1]))
+        forced_val = min(forced_val, non_fever_base)
+        fill_penalty_notes = ceil(
+            max(0.0, (non_fever_base * forced_val) / non_fever_great_to_fill)
+        )
+        notes_to_fill = base_notes + fill_penalty_notes
+        section_start = current_idx
+        end_normal = min(section_start + notes_to_fill, total_notes)
+        actual_notes = max(0, end_normal - section_start)
+        forced_applied = min(forced_val, actual_notes)
+
+        section_details.append(
+            {
+                "start_idx": section_start,
+                "notes": actual_notes,
+                "forced": forced_applied,
+                "fill_penalty_notes": fill_penalty_notes,
+                "skip_wasted": (non_fever_section == 1),
+            }
+        )
+        current_idx = end_normal
+        if current_idx >= total_notes:
+            break
+
+        start_time = timestamps[current_idx]
+        end_time = start_time + real_fever_time
+        fever_end_idx = int(np.searchsorted(timestamps, end_time, side="left"))
+        if fever_end_idx <= current_idx:
+            fever_end_idx = min(total_notes, current_idx + 1)
+        fever_mask[current_idx:fever_end_idx] = True
+        current_idx = fever_end_idx
+
+    head_limit = min(total_notes, 100)
+    fever_mask_head = fever_mask[:head_limit]
+    if total_notes > 100:
+        body_slice = fever_mask[100:]
+        count_body_fever = int(np.count_nonzero(body_slice))
+        count_body_normal = max(len(body_slice) - count_body_fever, 0)
+    else:
+        count_body_fever = 0
+        count_body_normal = 0
+
+    base_score = fast_calculate_score(
+        base_value,
+        combo_mul,
+        fever_mul,
+        fever_mask_head,
+        count_body_fever,
+        count_body_normal,
+    )
+
+    total_score_penalty = 0
+    total_fill_penalty = 0
+    penalty_analysis = {}
+    for idx, detail in enumerate(section_details):
+        section_key = f"NonFever{idx + 1}"
+        fill_penalty_score = detail["fill_penalty_notes"] * combo_value
+        total_fill_penalty += fill_penalty_score
+        forced = detail["forced"]
+        if forced > 0:
+            start_idx = detail["start_idx"]
+            if detail.get("skip_wasted"):
+                start_idx = min(total_notes, start_idx + 1)
+            score_penalty = 0
+            note_idx = start_idx
+            remaining = forced
+            while remaining > 0:
+                if note_idx < len(penalty_table):
+                    score_penalty += penalty_table[note_idx]
+                else:
+                    score_penalty += body_penalty
+                note_idx += 1
+                remaining -= 1
+        else:
+            score_penalty = 0
+        total_score_penalty += score_penalty
+        penalty_analysis[section_key] = {
+            "forced_greats": forced,
+            "score_penalty": score_penalty,
+            "fill_penalty": fill_penalty_score,
+            "total_penalty": score_penalty + fill_penalty_score,
+        }
+
+    used_counts = force_counts[:]
+    if len(used_counts) < len(section_details):
+        used_counts.extend([0] * (len(section_details) - len(used_counts)))
+
+    return {
+        "base_score": base_score,
+        "final_score": max(0, base_score - total_score_penalty),
+        "score_penalty": total_score_penalty,
+        "fill_penalty": total_fill_penalty,
+        "total_penalty": total_score_penalty + total_fill_penalty,
+        "num_non_fever_sections": len(section_details),
+        "config_counts": used_counts[: len(section_details)],
+        "config_dict": _force_greats_counts_to_dict(used_counts, len(section_details)),
+        "penalty_analysis": penalty_analysis,
+        "non_fever_base": non_fever_base,
+    }
+
+
+def run_force_greats_hill_climb(stats, calc_song, ref_arrays):
+    """
+    Simple hill-climb optimizer that increments forced greats per section
+    while the total score improves.
+    """
+    baseline = evaluate_force_greats(stats, calc_song, ref_arrays, [])
+    if not baseline:
+        return None
+
+    best_counts = [0] * baseline["num_non_fever_sections"]
+    best_result = evaluate_force_greats(stats, calc_song, ref_arrays, best_counts)
+    if not best_result or best_result["num_non_fever_sections"] == 0:
+        return best_result
+
+    improved = True
+    while improved:
+        improved = False
+        for idx in range(best_result["num_non_fever_sections"]):
+            candidate_counts = best_counts[:]
+            if idx >= len(candidate_counts):
+                candidate_counts.extend([0] * (idx + 1 - len(candidate_counts)))
+            candidate_counts[idx] += 1
+            candidate = evaluate_force_greats(stats, calc_song, ref_arrays, candidate_counts)
+            if candidate and candidate["final_score"] > best_result["final_score"]:
+                best_counts = candidate_counts
+                best_result = candidate
+                improved = True
+                break
+    return best_result
+
+
+def apply_force_greats_to_result(
+    data_dict,
+    calc_song,
+    ref_arrays,
+    manual_counts=None,
+    use_finder=False,
+):
+    """
+    Evaluate forced-great penalties (manual config or hill-climb finder) for a result dict.
+    Returns a cloned variant with the adjusted score while leaving the original untouched.
+    Uses FG_CACHE to avoid redundant calculations for identical stats.
+    """
+    if not data_dict or "Stats" not in data_dict:
+        return None
+
+    stats = data_dict.get("Stats") or {}
+    if not stats:
+        return None
+
+    # Build cache key from stats signature + FG parameters
+    selected_color = data_dict.get("Selected Element", calc_song["metadata"].get("Primary Color", ""))
+    base_sig = stats_signature(stats, calc_song, selected_color)
+    manual_tuple = tuple(manual_counts) if manual_counts else ()
+    fg_cache_key = (base_sig, use_finder, manual_tuple)
+
+    # Check cache first
+    cached_fg = FG_CACHE.get(fg_cache_key)
+    if cached_fg is not None:
+        fg_result = cached_fg
+    else:
+        if use_finder:
+            fg_result = run_force_greats_hill_climb(stats, calc_song, ref_arrays)
+        else:
+            fg_result = evaluate_force_greats(stats, calc_song, ref_arrays, manual_counts)
+        # Cache the result (even if None)
+        FG_CACHE[fg_cache_key] = fg_result
+
+    if not fg_result:
+        return None
+
+    fg_info = {
+        "enabled": True,
+        "config": fg_result["config_dict"],
+        "base_score": fg_result["base_score"],
+        "final_score": fg_result["final_score"],
+        "score_penalty": fg_result["score_penalty"],
+        "fill_penalty": fg_result["fill_penalty"],
+        "total_penalty": fg_result["total_penalty"],
+        "num_non_fever_sections": fg_result["num_non_fever_sections"],
+        "penalty_analysis": fg_result["penalty_analysis"],
+    }
+
+    data_dict["ForceGreats"] = fg_info
+
+    # Memory leak fix: Shallow copy is sufficient (only modifying top-level keys)
+    # Eliminates 28K deepcopy operations per song
+    fg_variant = data_dict.copy()
+    fg_variant["Score"] = fg_result["final_score"]
+    fg_variant["ForceGreats"] = {**fg_info, "variant_applied": True}
+    return fg_variant
+
+
+def solve_best_fever_combination(
+    cfg,
+    initial_stats,
+    calc_song,
+    ref_arrays,
+    silent=False,
+    override_cfg=None,
+    skip_optimizer=False,
+):
+    """
+    Main gem solver - optimizes gem allocation for maximum score.
+
+    Iterates through FT/FF combinations and uses greedy JIT optimizer for PP/CM/FM/Overflow.
+    Uses extensive caching to avoid redundant timeline and gem solver calculations.
+
+    Args:
+        cfg: Configuration object or None
+        initial_stats: Initial stats dictionary
+        calc_song: Song calculation context
+        ref_arrays: Reference lookup arrays
+        silent: Suppress console output if True
+        override_cfg: Override config dictionary (for parallel evaluation)
+        skip_optimizer: Skip optimization and just calculate score
+
+    Returns:
+        dict: Result with Score, FT, FF, GemCounts, Stats, Selected Element
+    """
+    if override_cfg:
+        user_ft = override_cfg["user_ft"]
+        user_ff = override_cfg["user_ff"]
+        user_pp = override_cfg["user_pp"]
+        user_cm = override_cfg["user_cm"]
+        user_fm = override_cfg["user_fm"]
+        selected_color = override_cfg["selected_color"]
+        static_elem_input = override_cfg["static_elem_input"]
+    else:
+        if not silent:
+            print("\n=== STARTING FEVER ITERATION ENGINE (GEM SOLVER) ===")
+        user_ft = safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0))
+        user_ff = safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0))
+        user_pp = safe_int(cfg.get("UserInputStatsGems", "perfect_points", fallback=0))
+        user_cm = safe_int(
+            cfg.get("UserInputStatsGems", "combo_multiplier", fallback=0)
+        )
+        user_fm = safe_int(
+            cfg.get("UserInputStatsGems", "fever_multiplier", fallback=0)
+        )
+        selected_color = calc_song["metadata"].get("Primary Color", "Rush")
+        static_elem_input = safe_int(
+            cfg.get("ElementalGems", selected_color, fallback=0)
+        )
+
+    base_stats = initial_stats.copy()
+
+    # OPTIMIZATION: timestamps are already a NumPy array (set in __main__)
+    song_timestamps = calc_song["song_data"]["timestamps"]
+    total_notes = len(song_timestamps)
+    long_notes = int(calc_song["metadata"].get("Long Notes", 0))
+    last_note = float(calc_song["metadata"].get("Last Note Time", 0))
+    p_color = calc_song["metadata"].get("Primary Color", "")
+    s_color = calc_song["metadata"].get("Secondary Color", "")
+
+    # Reuse mask buffer across FT/FF permutations to avoid repeated allocations.
+    fever_mask_buffer = np.zeros(total_notes, dtype=np.bool_)
+
+    ref_pp = ref_arrays["Perfect Points"]
+    ref_cm = ref_arrays["Combo Multiplier"]
+    ref_fm = ref_arrays["Fever Multiplier"]
+    ref_ft = ref_arrays["Fever Time"]
+    ref_ff = ref_arrays["Fever Fill Rate"]
+
+    if skip_optimizer:
+        score = evaluate_stats_score(
+            base_stats,
+            calc_song,
+            ref_arrays,
+            song_timestamps=song_timestamps,
+            long_notes=long_notes,
+            last_note=last_note,
+            fever_mask_buffer=fever_mask_buffer,
+        )
+        return {
+            "Score": score,
+            "FT": user_ft,
+            "FF": user_ff,
+            "GemCounts": {
+                "Perfect Points": user_pp,
+                "Combo Multiplier": user_cm,
+                "Fever Multiplier": user_fm,
+                "Element Overflow": static_elem_input,
+            },
+            "Stats": base_stats,
+            "Selected Element": selected_color,
+        }
+
+    base_stats["Fever Time"] -= user_ft * GEM_SCALE_FEVER
+    base_stats["Beat"] -= user_ft * GEM_STAT_TO_ELEMENT_SCALE
+    base_stats["Fever Fill Rate"] -= user_ff * GEM_SCALE_FEVER
+    base_stats["Vibe"] -= user_ff * GEM_STAT_TO_ELEMENT_SCALE
+    base_stats["Fever Multiplier"] -= user_fm * GEM_SCALE_FEVER
+    base_stats["Rush"] -= user_fm * GEM_STAT_TO_ELEMENT_SCALE
+    base_stats["Combo Multiplier"] -= user_cm * GEM_SCALE_NORMAL
+    base_stats["Flow"] -= user_cm * GEM_STAT_TO_ELEMENT_SCALE
+    base_stats["Perfect Points"] -= user_pp * GEM_SCALE_NORMAL
+    base_stats["Chill"] -= user_pp * GEM_STAT_TO_ELEMENT_SCALE
+    base_stats[selected_color] -= static_elem_input * ELEMENTAL_GEM_SCALE
+
+    remaining_ft_stat = MAX_STAT_INDEX - base_stats["Fever Time"]
+    remaining_ff_stat = MAX_STAT_INDEX - base_stats["Fever Fill Rate"]
+    max_ft_gems = floor(remaining_ft_stat / GEM_SCALE_FEVER) if remaining_ft_stat > 0 else 0
+    max_ff_gems = floor(remaining_ff_stat / GEM_SCALE_FEVER) if remaining_ff_stat > 0 else 0
+
+    if not silent:
+        print(f"Max allocatable Gems: FT<={max_ft_gems}, Fill<={max_ff_gems}")
+        print("Iterating permutations...")
+
+    best_score = -1
+    best_tuple = None
+
+    range_ft = min(TOTAL_GEM_BUDGET, max_ft_gems)
+
+    is_p_pp = 1 if "Chill" == p_color else 0
+    is_s_pp = 1 if "Chill" == s_color else 0
+    is_p_cm = 1 if "Flow" == p_color else 0
+    is_s_cm = 1 if "Flow" == s_color else 0
+    is_p_fm = 1 if "Rush" == p_color else 0
+    is_s_fm = 1 if "Rush" == s_color else 0
+    is_p_ov = 1 if selected_color == p_color else 0
+    is_s_ov = 1 if selected_color == s_color else 0
+
+    base_beat = base_stats.get("Beat", 0)
+    base_vibe = base_stats.get("Vibe", 0)
+
+    bs_get = base_stats.get
+
+    def get_val_inline(k, b, v):
+        if k == "Beat":
+            return b
+        if k == "Vibe":
+            return v
+        return bs_get(k, 0)
+
+    cur_pp = base_stats["Perfect Points"]
+    cur_cm = base_stats["Combo Multiplier"]
+    cur_fm = base_stats["Fever Multiplier"]
+
+    base_ft_stat = base_stats["Fever Time"]
+    base_ff_stat = base_stats["Fever Fill Rate"]
+
+    song_cache_key = (
+        calc_song["metadata"].get("Song Name", ""),
+        total_notes,
+        long_notes,
+        round(last_note, 5),
+    )
+    # Memory leak fix: Use flattened cache key for global LRU
+    # (no nested dicts, all entries at top level)
+
+    # OPTIMIZATION: precompute FT/FF reference lookups
+    ft_stat_table = [
+        base_ft_stat + (ft_val * GEM_SCALE_FEVER) for ft_val in range(range_ft + 1)
+    ]
+    ft_factor_table = [
+        lookup_reference_py(stat, ref_ft, TOTAL_ROWS) for stat in ft_stat_table
+    ]
+
+    ff_stat_table = [
+        base_ff_stat + (ff_val * GEM_SCALE_FEVER) for ff_val in range(max_ff_gems + 1)
+    ]
+    ff_factor_table = [
+        lookup_reference_py(stat, ref_ff, TOTAL_ROWS) for stat in ff_stat_table
+    ]
+
+    # Cache timelines per (ft, ff) combo for this song/config to avoid recomputing.
+
+    for ft in range(range_ft + 1):
+        remaining_for_ff = TOTAL_GEM_BUDGET - ft
+        range_ff = min(remaining_for_ff, max_ff_gems)
+
+        stat_ft_val = ft_stat_table[ft]
+        ft_factor = ft_factor_table[ft]
+        cur_beat = base_beat + (ft * GEM_STAT_TO_ELEMENT_SCALE)
+
+        for ff in range(range_ff + 1):
+            current_budget = TOTAL_GEM_BUDGET - ft - ff
+            stat_ff_val = ff_stat_table[ff]
+            ff_factor = ff_factor_table[ff]
+
+            # Flattened cache key: song info + FT/FF stats
+            cache_key = song_cache_key + (stat_ft_val, stat_ff_val)
+            cached_timeline = FEVER_TIMELINE_CACHE.get(cache_key)
+            if cached_timeline:
+                (
+                    fever_mask_head,
+                    count_body_fever,
+                    count_body_normal,
+                    fever_activations,
+                ) = cached_timeline
+            else:
+                (
+                    fever_mask_head,
+                    count_body_fever,
+                    count_body_normal,
+                    fever_activations,
+                ) = calculate_fever_timeline_indices(
+                    song_timestamps,
+                    total_notes,
+                    ff_factor,
+                    ft_factor,
+                    long_notes,
+                    last_note,
+                    fever_mask_buffer,
+                )
+                # Copy the head slice so the shared buffer can be reused safely.
+                # LRUCache auto-evicts when global limit is reached
+                FEVER_TIMELINE_CACHE[cache_key] = (
+                    fever_mask_head.copy(),
+                    count_body_fever,
+                    count_body_normal,
+                    fever_activations,
+                )
+
+            cur_vibe = base_vibe + (ff * GEM_STAT_TO_ELEMENT_SCALE)
+
+            cur_p_val = get_val_inline(p_color, cur_beat, cur_vibe)
+            cur_s_val = get_val_inline(s_color, cur_beat, cur_vibe)
+
+            (
+                final_pp,
+                final_cm,
+                final_fm,
+                final_p_val,
+                final_s_val,
+                g_pp,
+                g_cm,
+                g_fm,
+                g_ov,
+            ) = optimize_core_jit(
+                current_budget,
+                cur_pp,
+                cur_cm,
+                cur_fm,
+                cur_p_val,
+                cur_s_val,
+                is_p_pp,
+                is_s_pp,
+                is_p_cm,
+                is_s_cm,
+                is_p_fm,
+                is_s_fm,
+                is_p_ov,
+                is_s_ov,
+                ref_pp,
+                ref_cm,
+                ref_fm,
+                fever_mask_head,
+                count_body_fever,
+                count_body_normal,
+                GEM_SCALE_NORMAL,
+                GEM_SCALE_FEVER,
+                GEM_STAT_TO_ELEMENT_SCALE,
+                ELEMENTAL_GEM_SCALE,
+                TOTAL_ROWS,
+                MAX_STAT_INDEX,
+            )
+
+            base = (final_p_val * 2) + final_s_val + lookup_reference_py(
+                final_pp, ref_pp, TOTAL_ROWS
+            )
+            c_mul = lookup_reference_py(final_cm, ref_cm, TOTAL_ROWS)
+            f_mul = lookup_reference_py(final_fm, ref_fm, TOTAL_ROWS)
+            total_score = fast_calculate_score(
+                base,
+                c_mul,
+                f_mul,
+                fever_mask_head,
+                count_body_fever,
+                count_body_normal,
+            )
+
+            if total_score > best_score:
+                best_score = total_score
+                best_tuple = (total_score, ft, ff, g_pp, g_cm, g_fm, g_ov)
+
+    if best_tuple:
+        (score, ft, ff, g_pp, g_cm, g_fm, g_ov) = best_tuple
+        final_stats = base_stats.copy()
+        final_stats["Fever Time"] += ft * GEM_SCALE_FEVER
+        final_stats["Fever Fill Rate"] += ff * GEM_SCALE_FEVER
+
+        final_stats["Perfect Points"] += g_pp * GEM_SCALE_NORMAL
+        final_stats["Combo Multiplier"] += g_cm * GEM_SCALE_NORMAL
+        final_stats["Fever Multiplier"] += g_fm * GEM_SCALE_FEVER
+
+        final_stats["Chill"] += g_pp * GEM_STAT_TO_ELEMENT_SCALE
+        final_stats["Flow"] += g_cm * GEM_STAT_TO_ELEMENT_SCALE
+        final_stats["Rush"] += g_fm * GEM_STAT_TO_ELEMENT_SCALE
+        final_stats["Beat"] = base_stats.get("Beat", 0) + (
+            ft * GEM_STAT_TO_ELEMENT_SCALE
+        )
+        final_stats["Vibe"] = base_stats.get("Vibe", 0) + (
+            ff * GEM_STAT_TO_ELEMENT_SCALE
+        )
+
+        if selected_color in final_stats:
+            final_stats[selected_color] += g_ov * ELEMENTAL_GEM_SCALE
+
+        gem_counts = {
+            "Perfect Points": g_pp,
+            "Combo Multiplier": g_cm,
+            "Fever Multiplier": g_fm,
+            "Element Overflow": g_ov,
+        }
+        return {
+            "Score": score,
+            "FT": ft,
+            "FF": ff,
+            "GemCounts": gem_counts,
+            "Stats": final_stats,
+            "Selected Element": selected_color,
+        }
+
+    return {}
