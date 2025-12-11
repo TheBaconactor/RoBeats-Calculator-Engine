@@ -18,7 +18,7 @@ import random
 from ..core.constants import GA_POPULATION_SIZE, GA_MUTATION_RATE, GA_MUTATION_RATE_MAX, GA_ELITISM
 from ..core.utils import prune_dominated_gear
 from ..data.database import get_loadout_hash
-from ..solver.scoring import worker_coevolution_evaluate
+from ..solver.scoring import worker_coevolution_evaluate, batch_evaluate_genomes
 
 
 def initialize_pools(all_gears, all_minis, p_color, slots):
@@ -634,9 +634,10 @@ def evaluate_population_parallel(
     ref_arrays,
     executor,
     cache_hits_tracker,
+    use_gpu_batch=False,
 ):
     """
-    Evaluate population in parallel using process pool.
+    Evaluate population in parallel using process pool or GPU batch.
 
     Args:
         population: List of genomes to evaluate
@@ -649,10 +650,39 @@ def evaluate_population_parallel(
         ref_arrays: Reference lookup arrays
         executor: Process pool executor (or None for serial)
         cache_hits_tracker: List [count] for tracking cache hits (mutable)
+        use_gpu_batch: If True, use GPU batch evaluation instead of parallel CPU
 
     Returns:
         list: Evaluated results sorted by score
     """
+    # GPU batch path - evaluate all uncached genomes in single pass
+    if use_gpu_batch:
+        # First check persistent cache for all unique genomes
+        key_to_genome = {}
+        for genome in population:
+            k = genome_key(genome)
+            if k not in key_to_genome:
+                key_to_genome[k] = genome
+                if k not in evaluation_cache:
+                    cached_res = check_persistent_cache(genome)
+                    if cached_res:
+                        evaluation_cache[k] = cached_res
+                        cache_hits_tracker[0] += 1
+        
+        # Use batch evaluation with deduplication
+        results = batch_evaluate_genomes(
+            population,
+            base_stats_fixed,
+            cfg_data,
+            calc_song,
+            ref_arrays,
+            genome_key_fn=genome_key,
+            evaluation_cache=evaluation_cache,
+        )
+        results.sort(key=lambda x: x["Score"], reverse=True)
+        return results
+    
+    # CPU parallel path (original implementation)
     key_to_genome = {}
     pending_keys = []
     tasks = []

@@ -267,6 +267,7 @@ def solve_coevolution_genetic(
                 ref_arrays,
                 executor,
                 cache_hits_tracker,
+                use_gpu_batch=cfg_data.get("use_gpu", False),
             )
 
             # Track best candidate

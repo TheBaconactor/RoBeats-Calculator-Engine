@@ -131,6 +131,145 @@ def worker_coevolution_evaluate(args):
     }
 
 
+def batch_evaluate_genomes(
+    population: list,
+    base_stats_fixed: dict,
+    cfg_data: dict,
+    calc_song: dict,
+    ref_arrays: dict,
+    genome_key_fn=None,
+    evaluation_cache: dict = None,
+) -> list:
+    """
+    Evaluate entire population in a single GPU batch call.
+    
+    This is the GPU-optimized version that:
+    1. Aggregates all genome stats in a batch (CPU vectorized)
+    2. Calls GPU solver ONCE for all uncached genomes
+    3. Returns results in same order as input population
+    
+    Args:
+        population: List of genomes (each genome is list of item dicts)
+        base_stats_fixed: Fixed base stats dictionary
+        cfg_data: Configuration data
+        calc_song: Song calculation context
+        ref_arrays: Reference lookup arrays
+        genome_key_fn: Optional function to generate genome keys for caching
+        evaluation_cache: Optional cache dict to use
+        
+    Returns:
+        list: Evaluation results in same order as population
+    """
+    if not population:
+        return []
+    
+    # Use cache if provided
+    use_cache = genome_key_fn is not None and evaluation_cache is not None
+    
+    # Split into cached and uncached
+    cached_results = {}
+    uncached_genomes = []
+    uncached_indices = []
+    
+    for i, genome in enumerate(population):
+        if use_cache:
+            key = genome_key_fn(genome)
+            if key in evaluation_cache:
+                cached_results[i] = evaluation_cache[key]
+            else:
+                uncached_genomes.append(genome)
+                uncached_indices.append(i)
+        else:
+            uncached_genomes.append(genome)
+            uncached_indices.append(i)
+    
+    # If all cached, return immediately
+    if not uncached_genomes:
+        return [cached_results[i] for i in range(len(population))]
+    
+    # Batch aggregate stats for all uncached genomes
+    sel_color = cfg_data["selected_color"]
+    base_get = base_stats_fixed.get
+    
+    # Aggregate stats for each genome
+    all_stats = []
+    for genome in uncached_genomes:
+        current_stats = base_stats_fixed.copy()
+        for item in genome:
+            for k, v in item.items():
+                if k not in SKIP_ITEM_KEYS:
+                    current_stats[k] = current_stats.get(k, 0) + v
+        all_stats.append(current_stats)
+    
+    # Check stat-signature cache for deduplication
+    sig_to_result = {}
+    unique_stats = []
+    unique_indices = []  # Maps unique_stats index -> list of uncached_indices
+    
+    for i, stats in enumerate(all_stats):
+        sig = stats_signature(stats, calc_song, sel_color)
+        cached = GEM_SOLVER_CACHE.get(sig)
+        if cached is not None:
+            sig_to_result[i] = cached
+        else:
+            # Check if same sig already in unique_stats
+            found = False
+            for j, (prev_sig, prev_stats) in enumerate(unique_stats):
+                if prev_sig == sig:
+                    unique_indices[j].append(i)
+                    found = True
+                    break
+            if not found:
+                unique_stats.append((sig, stats))
+                unique_indices.append([i])
+    
+    # Call GPU solver for unique uncached stats
+    if unique_stats:
+        for j, (sig, stats) in enumerate(unique_stats):
+            res = solve_best_fever_combination(
+                None, stats, calc_song, ref_arrays,
+                silent=True, override_cfg=cfg_data,
+            )
+            GEM_SOLVER_CACHE[sig] = res
+            # Apply to all genomes with this signature
+            for idx in unique_indices[j]:
+                sig_to_result[idx] = res
+    
+    # Build results for uncached genomes
+    uncached_results = {}
+    for i, (genome, stats) in enumerate(zip(uncached_genomes, all_stats)):
+        res = sig_to_result[i]
+        gear_part = genome[:6]
+        mini_part = genome[6:]
+        mini_names = [m["Name"] for m in mini_part]
+        
+        result = {
+            "Score": res["Score"],
+            "Genome": genome,
+            "Gear": gear_part,
+            "Minis": mini_part,
+            "MiniNames": mini_names,
+            "Data": res,
+        }
+        
+        uncached_results[uncached_indices[i]] = result
+        
+        # Update cache if provided
+        if use_cache:
+            key = genome_key_fn(genome)
+            evaluation_cache[key] = result
+    
+    # Combine cached and uncached results
+    all_results = []
+    for i in range(len(population)):
+        if i in cached_results:
+            all_results.append(cached_results[i])
+        else:
+            all_results.append(uncached_results[i])
+    
+    return all_results
+
+
 def evaluate_stats_score(
     stats,
     calc_song,
