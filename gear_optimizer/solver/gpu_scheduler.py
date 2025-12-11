@@ -227,38 +227,39 @@ class GpuScheduler:
                 print(f"[GPU Scheduler] Error: {e}")
     
     def _process_coalesced_batch(self, first_request: BatchRequest):
-        """Collect and coalesce BatchRequests, then execute as mega-batch."""
+        """Collect and coalesce BatchRequests, then execute as mega-batch.
+        
+        OPTIMIZATION: Only wait for more requests if queue has pending items.
+        If queue is empty, execute immediately to minimize GPU idle time.
+        """
         from .taichi_gem_solver import optimize_gems_batch_gpu
         
         requests = [first_request]
-        deadline = time.perf_counter() + (self._batch_timeout_ms / 1000.0)
         
-        # Collect more requests until timeout or max size
+        # Only coalesce if there are already more requests waiting
+        # This prevents GPU idle time when requests trickle in slowly
         while len(requests) < self._max_batch_size:
-            remaining_time = deadline - time.perf_counter()
-            if remaining_time <= 0:
+            # Non-blocking check: is there another request already waiting?
+            try:
+                next_request = self._request_queue.get_nowait()
+            except queue.Empty:
+                # No more requests waiting - execute immediately!
                 break
             
-            try:
-                next_request = self._request_queue.get(timeout=remaining_time)
-                
-                if next_request is None:
-                    self._request_queue.put(None)  # Re-queue poison pill
-                    break
-                
-                if isinstance(next_request, BatchRequest):
-                    if first_request.can_coalesce_with(next_request):
-                        requests.append(next_request)
-                    else:
-                        # Different config, can't coalesce - re-queue
-                        self._request_queue.put(next_request)
-                        break
+            if next_request is None:
+                self._request_queue.put(None)  # Re-queue poison pill
+                break
+            
+            if isinstance(next_request, BatchRequest):
+                if first_request.can_coalesce_with(next_request):
+                    requests.append(next_request)
                 else:
-                    # Non-batch request - re-queue and process current batch
+                    # Different config, can't coalesce - re-queue
                     self._request_queue.put(next_request)
                     break
-                    
-            except queue.Empty:
+            else:
+                # Non-batch request - re-queue and process current batch
+                self._request_queue.put(next_request)
                 break
         
         # Execute coalesced batch

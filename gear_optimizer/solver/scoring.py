@@ -756,31 +756,27 @@ def solve_best_fever_combination(
                 })
             
             # SINGLE GPU kernel launch for ALL timelines - GPU-resident!
-            # Submit to GPU scheduler with batch coalescing support
-            from .gpu_scheduler import submit_gpu_batch
-            
-            future = submit_gpu_batch(
-                batch_input=batch_input,
-                cur_pp=cur_pp,
-                cur_cm=cur_cm,
-                cur_fm=cur_fm,
-                base_p_val=base_p_val,
-                base_s_val=base_s_val,
-                is_p_ft=is_p_ft,
-                is_s_ft=is_s_ft,
-                is_p_ff=is_p_ff,
-                is_s_ff=is_s_ff,
-                is_p_pp=is_p_pp,
-                is_s_pp=is_s_pp,
-                is_p_cm=is_p_cm,
-                is_s_cm=is_s_cm,
-                is_p_fm=is_p_fm,
-                is_s_fm=is_s_fm,
-                is_p_ov=is_p_ov,
-                is_s_ov=is_s_ov,
-                ref_arrays=ref_arrays,
-            )
-            batch_results = future.result()  # Await completion
+            # Direct call with lock for minimal overhead (scheduler queue was too slow)
+            with _GPU_LOCK:
+                batch_results = batch_solver(
+                    batch_input,
+                    cur_pp, cur_cm, cur_fm,
+                    base_p_val=base_p_val,
+                    base_s_val=base_s_val,
+                    is_p_ft=is_p_ft,
+                    is_s_ft=is_s_ft,
+                    is_p_ff=is_p_ff,
+                    is_s_ff=is_s_ff,
+                    is_p_pp=is_p_pp,
+                    is_s_pp=is_s_pp,
+                    is_p_cm=is_p_cm,
+                    is_s_cm=is_s_cm,
+                    is_p_fm=is_p_fm,
+                    is_s_fm=is_s_fm,
+                    is_p_ov=is_p_ov,
+                    is_s_ov=is_s_ov,
+                    ref_arrays=ref_arrays,
+                )
             
             # Find best result (only CPU work: simple max)
             for i, (t_data, result) in enumerate(zip(timelines, batch_results)):
