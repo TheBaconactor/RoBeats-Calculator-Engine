@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import sqlite3
-from .constants import LOADOUTS_PER_SONG_LIMIT, PATHS, DB_FILE
+from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS, DB_FILE
 
 
 # Database path with environment variable override support

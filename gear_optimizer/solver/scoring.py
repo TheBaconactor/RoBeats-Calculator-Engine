@@ -13,8 +13,8 @@ import numpy as np
 from math import floor, ceil
 from cachetools import LRUCache
 
-from .jit_setup import jit
-from .constants import (
+from ..core.jit_setup import jit
+from ..core.constants import (
     TOTAL_ROWS,
     MAX_STAT_INDEX,
     TOTAL_GEM_BUDGET,
@@ -23,7 +23,7 @@ from .constants import (
     GEM_STAT_TO_ELEMENT_SCALE,
     ELEMENTAL_GEM_SCALE,
 )
-from .utils import safe_int, safe_float, stats_signature, SKIP_ITEM_KEYS
+from ..core.utils import safe_int, safe_float, stats_signature, SKIP_ITEM_KEYS
 
 # Global caches for performance optimization
 GEM_SOLVER_CACHE = LRUCache(maxsize=5000)

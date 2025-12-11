@@ -11,7 +11,7 @@ from helpers.ga_helpers for improved modularity and maintainability.
 import os
 import random
 
-from .constants import (
+from ..core.constants import (
     GA_POPULATION_SIZE,
     GA_GENERATIONS,
     GA_MUTATION_RATE,
@@ -19,11 +19,11 @@ from .constants import (
     GA_MUTATION_RATE_MAX,
     GA_MULTI_RUNS_DEFAULT,
 )
-from .utils import prune_dominated_gear, safe_int
-from .database import get_loadout_hash
+from ..core.utils import prune_dominated_gear, safe_int
+from ..data.database import get_loadout_hash
 from .scoring import worker_coevolution_evaluate, GEM_SOLVER_CACHE, FG_CACHE, FEVER_TIMELINE_CACHE
-from .models import GASettings
-from .helpers.ga_helpers import (
+from ..data.models import GASettings
+from ..helpers.ga_helpers import (
     initialize_pools,
     create_genome_functions,
     create_evaluation_functions,

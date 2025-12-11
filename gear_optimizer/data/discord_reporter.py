@@ -12,8 +12,8 @@ try:
 except ImportError:
     requests = None
 
-from .utils import safe_int
-from .constants import SCRIPT_DIR, BIN_DIR, PATHS
+from ..core.utils import safe_int
+from ..core.constants import SCRIPT_DIR, BIN_DIR, PATHS
 
 
 class DiscordReporter:

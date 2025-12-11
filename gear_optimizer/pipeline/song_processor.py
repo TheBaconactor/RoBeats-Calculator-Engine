@@ -25,24 +25,24 @@ from io import StringIO
 
 import numpy as np
 
-from .models import Tee, GASettings, WarnOnce
-from .database import (
+from ..data.models import Tee, GASettings, WarnOnce
+from ..data.database import (
     LOADOUTS_PER_SONG_LIMIT,
 )
-from .csv_parser import (
+from ..data.csv_parser import (
     load_all_gears_list,
     load_all_minis_list,
 )
-from .genetic import solve_coevolution_genetic
-from .scoring import (
+from ..solver.genetic import solve_coevolution_genetic
+from ..solver.scoring import (
     GEM_SOLVER_CACHE,
     FEVER_TIMELINE_CACHE,
     FG_CACHE,
     solve_best_fever_combination,
 )
-from .memory import log_memory_usage
-from .utils import cfg_from_dict
-from .helpers.song_helpers import (
+from ..core.memory import log_memory_usage
+from ..core.utils import cfg_from_dict
+from ..helpers.song_helpers import (
     load_database_context,
     setup_song_config,
     build_loadout_entries,

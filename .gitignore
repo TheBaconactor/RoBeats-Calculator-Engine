@@ -1,3 +1,19 @@
-
-# ignore DB file
-/evolution.db
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.env
+.venv
+env.bak/
+venv.bak/
+*.log
+bin/
+evolution.db
+.vscode/
+.idea/
+*.egg-info/
+dist/
+build/

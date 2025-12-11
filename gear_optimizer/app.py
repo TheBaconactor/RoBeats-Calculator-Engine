@@ -20,19 +20,19 @@ except ImportError:
         return False
 
 # Import from refactored modules
-from gear_optimizer.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS
-from gear_optimizer.config import (
+from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS
+from gear_optimizer.core.config import (
     write_metafinder_status,
     compute_memory_guard_limit,
     load_paths_cache,
 )
-from gear_optimizer.database import (
+from gear_optimizer.data.database import (
     init_db,
     save_loadouts_batch,
     get_db_connection,
     get_evolution_db_path,
 )
-from gear_optimizer.memory import (
+from gear_optimizer.core.memory import (
     set_memory_watchdog_limit,
     memory_release_requested,
     build_memory_guard_resume_context,
@@ -41,16 +41,16 @@ from gear_optimizer.memory import (
     restart_process_for_memory_guard,
     MEMORY_GUARD_RESUME_FILE,
 )
-from gear_optimizer.discord_reporter import DiscordReporter, build_stats_summary
-from gear_optimizer.song_processor import safe_process_song_task, scan_song_header
-from gear_optimizer.csv_parser import (
+from gear_optimizer.data.discord_reporter import DiscordReporter, build_stats_summary
+from gear_optimizer.pipeline.song_processor import safe_process_song_task, scan_song_header
+from gear_optimizer.data.csv_parser import (
     load_all_gears_list,
     load_all_minis_list,
     read_table,
 )
-from gear_optimizer.utils import safe_int, cfg_to_dict
-from gear_optimizer.scoring import FEVER_TIMELINE_CACHE, FG_CACHE
-from gear_optimizer.genetic import GEM_SOLVER_CACHE
+from gear_optimizer.core.utils import safe_int, cfg_to_dict
+from gear_optimizer.solver.scoring import FEVER_TIMELINE_CACHE, FG_CACHE
+from gear_optimizer.solver.genetic import GEM_SOLVER_CACHE
 
 
 class GearOptimizerApp:

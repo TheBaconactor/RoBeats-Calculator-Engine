@@ -15,10 +15,10 @@ to improve code modularity and maintainability. These functions handle:
 import os
 import random
 
-from ..constants import GA_POPULATION_SIZE, GA_MUTATION_RATE, GA_MUTATION_RATE_MAX, GA_ELITISM
-from ..utils import prune_dominated_gear
-from ..database import get_loadout_hash
-from ..scoring import worker_coevolution_evaluate
+from ..core.constants import GA_POPULATION_SIZE, GA_MUTATION_RATE, GA_MUTATION_RATE_MAX, GA_ELITISM
+from ..core.utils import prune_dominated_gear
+from ..data.database import get_loadout_hash
+from ..solver.scoring import worker_coevolution_evaluate
 
 
 def initialize_pools(all_gears, all_minis, p_color, slots):

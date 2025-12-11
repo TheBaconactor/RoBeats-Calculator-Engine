@@ -4,14 +4,14 @@ Handles both modern and legacy CSV formats.
 """
 import csv
 import os
-from .constants import (
+from ..core.constants import (
     GEM_SCALE_NORMAL,
     GEM_SCALE_FEVER,
     ELEMENTAL_GEM_SCALE,
     GEM_STAT_TO_ELEMENT_SCALE,
     SCRIPT_DIR,
 )
-from .utils import safe_int, empty_stats
+from ..core.utils import safe_int, empty_stats
 from .models import WarnOnce
 
 # Global warning instance

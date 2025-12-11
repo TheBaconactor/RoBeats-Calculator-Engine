@@ -13,16 +13,16 @@ Contains functions for:
 """
 import json
 
-from ..database import (
+from ..data.database import (
     get_db_connection,
     get_best_loadouts,
     get_loadout_hash,
     LOADOUTS_PER_SONG_LIMIT,
 )
-from ..models import WarnOnce, GASettings
-from ..csv_parser import get_fixed_stats, get_config_gear_stats, get_config_mini_stats
-from ..scoring import apply_force_greats_to_result
-from ..utils import stats_signature
+from ..data.models import WarnOnce, GASettings
+from ..data.csv_parser import get_fixed_stats, get_config_gear_stats, get_config_mini_stats
+from ..solver.scoring import apply_force_greats_to_result
+from ..core.utils import stats_signature
 
 # Global warn-once instance
 WARN_ONCE = WarnOnce()
