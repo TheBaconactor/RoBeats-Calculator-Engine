@@ -39,7 +39,7 @@ fever_mask_batch_field = None
 
 # Constants
 HEAD_LIMIT = 100
-MAX_BATCH_SIZE = 4096  # Max FT/FF combinations to process in parallel
+MAX_BATCH_SIZE = 65536  # Max work items for mega-batch (200 genomes × 300 timelines)
 
 # Single fever mask for backwards compatibility
 fever_mask_field = None
@@ -758,3 +758,138 @@ def calc_score_gpu(
         out,
     )
     return int(out[0])
+
+
+# =============================================================================
+# Population-Level Mega-Batch Solver
+# =============================================================================
+
+def mega_batch_solve_population(
+    work_items: list,
+    genome_ids: np.ndarray,
+    cur_pp: int,
+    cur_cm: int,
+    cur_fm: int,
+    base_p_val: int,
+    base_s_val: int,
+    is_p_ft: int, is_s_ft: int,
+    is_p_ff: int, is_s_ff: int,
+    is_p_pp: int, is_s_pp: int,
+    is_p_cm: int, is_s_cm: int,
+    is_p_fm: int, is_s_fm: int,
+    is_p_ov: int, is_s_ov: int,
+    ref_arrays: dict,
+) -> dict:
+    """
+    Solve gem optimization for an entire population in ONE kernel launch.
+    
+    This is the mega-batch version that processes ALL timelines from ALL genomes
+    in a single GPU kernel call, eliminating per-genome launch overhead.
+    
+    Args:
+        work_items: List of dicts, each containing:
+            - budget: Remaining gem budget
+            - fever_mask_head: np.array of head fever mask
+            - count_body_fever: int
+            - count_body_normal: int
+            - ft_gems: FT gems allocated
+            - ff_gems: FF gems allocated
+        genome_ids: np.ndarray mapping work_item index -> genome index
+        cur_pp/cur_cm/cur_fm: Base PP/CM/FM stats
+        base_p_val/base_s_val: Base primary/secondary color values
+        is_p_*/is_s_*: Color contribution flags
+        ref_arrays: Reference lookup arrays
+        
+    Returns:
+        dict: genome_id -> best result tuple (score, pp, cm, fm, p_val, s_val, 
+              gems_pp, gems_cm, gems_fm, gems_ov)
+    """
+    if not _initialized:
+        init_taichi_vulkan()
+        load_ref_arrays(ref_arrays)
+    
+    batch_size = len(work_items)
+    if batch_size == 0:
+        return {}
+    
+    # Clamp batch size to avoid memory issues
+    effective_batch = min(batch_size, MAX_BATCH_SIZE)
+    if batch_size > MAX_BATCH_SIZE:
+        # Process in chunks if too large
+        all_results = {}
+        for chunk_start in range(0, batch_size, MAX_BATCH_SIZE):
+            chunk_end = min(chunk_start + MAX_BATCH_SIZE, batch_size)
+            chunk_items = work_items[chunk_start:chunk_end]
+            chunk_ids = genome_ids[chunk_start:chunk_end]
+            chunk_result = mega_batch_solve_population(
+                chunk_items, chunk_ids,
+                cur_pp, cur_cm, cur_fm,
+                base_p_val, base_s_val,
+                is_p_ft, is_s_ft, is_p_ff, is_s_ff,
+                is_p_pp, is_s_pp, is_p_cm, is_s_cm,
+                is_p_fm, is_s_fm, is_p_ov, is_s_ov,
+                ref_arrays,
+            )
+            for gid, result in chunk_result.items():
+                if gid not in all_results or result[0] > all_results[gid][0]:
+                    all_results[gid] = result
+        return all_results
+    
+    # VECTORIZED: Build all arrays using NumPy operations
+    budgets = np.array([item["budget"] for item in work_items], dtype=np.int32)
+    body_fevers = np.array([item["count_body_fever"] for item in work_items], dtype=np.int32)
+    body_normals = np.array([item["count_body_normal"] for item in work_items], dtype=np.int32)
+    ft_gems_arr = np.array([item["ft_gems"] for item in work_items], dtype=np.int32)
+    ff_gems_arr = np.array([item["ff_gems"] for item in work_items], dtype=np.int32)
+    
+    # VECTORIZED: Build fever mask array using NumPy
+    fever_masks_np = np.zeros((batch_size, HEAD_LIMIT), dtype=np.int32)
+    n_heads_arr = np.zeros(batch_size, dtype=np.int32)
+    
+    for i, item in enumerate(work_items):
+        mask_head = item["fever_mask_head"]
+        n_head = min(len(mask_head), HEAD_LIMIT)
+        n_heads_arr[i] = n_head
+        # Vectorized copy using NumPy slicing
+        fever_masks_np[i, :n_head] = mask_head[:n_head].astype(np.int32)
+    
+    # Pad to match Taichi field shape (from_numpy requires exact match)
+    padded_masks = np.zeros((MAX_BATCH_SIZE, HEAD_LIMIT), dtype=np.int32)
+    padded_masks[:batch_size, :] = fever_masks_np
+    
+    # Bulk copy fever masks to Taichi field using from_numpy
+    fever_mask_batch_field.from_numpy(padded_masks)
+    
+    # Allocate results array
+    results = np.zeros((batch_size, 10), dtype=np.int32)
+    
+    # SINGLE kernel launch for ALL work items
+    optimize_gems_batch_kernel(
+        batch_size,
+        budgets,
+        n_heads_arr,
+        body_fevers,
+        body_normals,
+        ft_gems_arr,
+        ff_gems_arr,
+        cur_pp, cur_cm, cur_fm,
+        base_p_val, base_s_val,
+        is_p_ft, is_s_ft, is_p_ff, is_s_ff,
+        is_p_pp, is_s_pp,
+        is_p_cm, is_s_cm,
+        is_p_fm, is_s_fm,
+        is_p_ov, is_s_ov,
+        results,
+    )
+    
+    # VECTORIZED: Reduce results using NumPy
+    best_per_genome = {}
+    unique_genome_ids = np.unique(genome_ids)
+    for gid in unique_genome_ids:
+        mask = genome_ids == gid
+        genome_results = results[mask]
+        best_idx = np.argmax(genome_results[:, 0])
+        best_per_genome[int(gid)] = tuple(genome_results[best_idx])
+    
+    return best_per_genome
+

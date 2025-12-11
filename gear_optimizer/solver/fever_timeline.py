@@ -214,6 +214,55 @@ class SongTimelineGrid:
         non_fever_great_to_fill = ceil(max(1.0, self.non_fever_cas * ff_factor * 2.0))
         
         return non_fever_base, real_fever_time, non_fever_great_to_fill
+    
+    def precompute_all(self):
+        """
+        Eagerly compute all 161x161 timeline entries.
+        Call this once per song before mega-batch GPU processing.
+        """
+        for ft in range(self.GRID_SIZE):
+            for ff in range(self.GRID_SIZE):
+                self.get_timeline(ft, ff)  # Populates internal cache
+    
+    def to_gpu_arrays(self):
+        """
+        Convert timeline grid to GPU-friendly NumPy arrays.
+        
+        Returns:
+            dict: {
+                'count_body_fever': (161, 161) int32 array,
+                'count_body_normal': (161, 161) int32 array,
+                'fever_activations': (161, 161) int32 array,
+                'ft_factors': (161,) float32 array,
+                'ff_factors': (161,) float32 array,
+            }
+        
+        Note: fever_mask_head varies in size per timeline, so we store
+        count_body_fever/normal/activations which are sufficient for scoring.
+        """
+        # Ensure all entries are computed
+        self.precompute_all()
+        
+        count_body_fever = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
+        count_body_normal = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
+        fever_activations = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
+        
+        for ft in range(self.GRID_SIZE):
+            for ff in range(self.GRID_SIZE):
+                timeline = self._timeline_grid[ft][ff]
+                if timeline:
+                    _, cbf, cbn, acts = timeline
+                    count_body_fever[ft, ff] = cbf
+                    count_body_normal[ft, ff] = cbn
+                    fever_activations[ft, ff] = acts
+        
+        return {
+            'count_body_fever': count_body_fever,
+            'count_body_normal': count_body_normal,
+            'fever_activations': fever_activations,
+            'ft_factors': np.array(self.ft_factors, dtype=np.float32),
+            'ff_factors': np.array(self.ff_factors, dtype=np.float32),
+        }
 
 
 def get_song_timeline_grid(calc_song, ref_arrays):
