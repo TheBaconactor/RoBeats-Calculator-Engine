@@ -132,7 +132,7 @@ def setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_
         force_greats_finder = False
 
     # Import here to avoid circular dependency
-    from ..config import load_force_greats_config
+    from ..core.config import load_force_greats_config
     force_greats_config = load_force_greats_config(cfg)
     manual_force_greats = force_greats_mode and any(force_greats_config)
 

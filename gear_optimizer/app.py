@@ -255,7 +255,7 @@ class GearOptimizerApp:
 
     def _auto_merge_databases(self):
         try:
-            from gear_optimizer.db_merge import auto_merge_secondary_databases
+            from gear_optimizer.data.db_merge import auto_merge_secondary_databases
             merge_success, merge_message = auto_merge_secondary_databases(
                 delete_after_merge=True,
                 backup_before_merge=True
@@ -493,12 +493,45 @@ class GearOptimizerApp:
             memory_resume_tracker.finalize(memory_release_requested())
 
     def _run_sequential(self, tasks, completed_songs, memory_resume_tracker):
+        """Sequential song processing with async preloading.
+        
+        While GPU processes current song, next song is being preloaded in background.
+        """
         completed_offset = len(completed_songs)
         
+        # Check if GPU preloading should be used
+        use_gpu_preload = len(tasks) > 1
+        
+        if use_gpu_preload:
+            try:
+                from .helpers.song_preloader import get_song_preloader
+                preloader = get_song_preloader()
+                preloader.start()
+                
+                # Queue first 2 songs for preloading
+                for i, t in enumerate(tasks[:2]):
+                    if t[1] not in completed_songs:
+                        self._queue_song_for_preload(preloader, t)
+                
+                print("[Song Preloader] Async preloading enabled")
+            except Exception as e:
+                print(f"[Song Preloader] Not available: {e}")
+                use_gpu_preload = False
+        
         def _safe_sequential_gen(task_list):
-            for t in task_list:
+            preload_idx = 2  # Start preloading from index 2
+            
+            for i, t in enumerate(task_list):
                 if t[1] in completed_songs:
                     continue
+                
+                # Queue next song for preloading
+                if use_gpu_preload and preload_idx < len(task_list):
+                    next_task = task_list[preload_idx]
+                    if next_task[1] not in completed_songs:
+                        self._queue_song_for_preload(preloader, next_task)
+                    preload_idx += 1
+                
                 try:
                     yield safe_process_song_task(t)
                 except Exception as seq_err:
@@ -511,6 +544,33 @@ class GearOptimizerApp:
             memory_resume_tracker=memory_resume_tracker,
             total_tasks=len(tasks)
         )
+    
+    def _queue_song_for_preload(self, preloader, task):
+        """Queue a song task for background preloading."""
+        try:
+            from .helpers.song_preloader import SongLoadRequest
+            
+            fp, song_name, task_diff, cfg_dict, paths, ref_arrays, \
+                all_gears, all_minis, gears_by_name, minis_by_name, \
+                use_evo_db, auto_buff, ga_depth, status_queue, parallel_workers = task
+            
+            request = SongLoadRequest(
+                song_name=song_name,
+                file_path=fp,
+                difficulty=task_diff,
+                cfg_dict=cfg_dict,
+                paths=paths,
+                ref_arrays=ref_arrays,
+                all_gears=all_gears,
+                all_minis=all_minis,
+                gears_by_name=gears_by_name,
+                minis_by_name=minis_by_name,
+                use_evo_db=use_evo_db,
+                auto_buff=auto_buff,
+            )
+            preloader.queue_song(request)
+        except Exception as e:
+            pass  # Preloading failure is non-fatal
 
     def _run_parallel(self, tasks, max_workers, completed_songs, memory_resume_tracker, manager, status_queue, status_thread):
         remaining_tasks = list(tasks)

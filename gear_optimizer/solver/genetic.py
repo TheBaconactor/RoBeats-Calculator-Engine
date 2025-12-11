@@ -114,8 +114,14 @@ def solve_coevolution_genetic(
         return None, [], []
 
     # Build configuration data
+    # Read GPU gem solver setting from config
+    use_gpu_gem_solver = cfg.getboolean("IterationEngine", "GPU_GemSolver", fallback=False) if hasattr(cfg, 'getboolean') else False
+    if use_gpu_gem_solver:
+        print("[GPU] GPU Gem Solver enabled for GA evaluation")
+    
     cfg_data = {
         "selected_color": selected_color,
+        "use_gpu": use_gpu_gem_solver,
         "user_ft": safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0)),
         "user_ff": safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0)),
         "user_pp": safe_int(cfg.get("UserInputStatsGems", "perfect_points", fallback=0)),

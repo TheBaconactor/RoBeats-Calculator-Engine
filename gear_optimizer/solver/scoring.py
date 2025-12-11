@@ -1,19 +1,17 @@
 """
-Score calculation engine with JIT-compiled performance optimizations.
+Score calculation engine - orchestration layer.
 
-This module contains the core scoring algorithms including:
-- Fever timeline calculation
-- Gem optimization solver
-- Force greats evaluation
-- JIT-compiled performance-critical functions
+This module orchestrates the scoring process by combining:
+- Rules Layer (fever_timeline.py): Timeline calculation, SongTimelineGrid
+- Compute Layer (scoring_core.py): Score calculation, gem optimization
 
 Uses LRU caching to avoid redundant calculations.
 """
 import numpy as np
 from math import floor, ceil
 from cachetools import LRUCache
+import threading # Added threading import
 
-from ..core.jit_setup import jit
 from ..core.constants import (
     TOTAL_ROWS,
     MAX_STAT_INDEX,
@@ -25,345 +23,52 @@ from ..core.constants import (
 )
 from ..core.utils import safe_int, safe_float, stats_signature, SKIP_ITEM_KEYS
 
+# Import from Rules Layer
+from .fever_timeline import (
+    SongTimelineGrid,
+    get_song_timeline_grid,
+    calculate_fever_timeline_indices,
+    lookup_reference_py,
+    SONG_TIMELINE_GRIDS,
+)
+
+# Import from Compute Layer
+from .scoring_core import (
+    lookup_reference_jit,
+    fast_calculate_score,
+    optimize_core_jit,
+)
+
+# GPU Gem Solver (lazy import to avoid init overhead if not used)
+_gpu_solver_loaded = False
+_optimize_gems_gpu = None
+_optimize_gems_batch_gpu = None
+_GPU_LOCK = threading.Lock()  # Serialize GPU kernel calls
+
+def _get_gpu_solver():
+    """Lazy-load the GPU gem solver to avoid Taichi init on import."""
+    global _gpu_solver_loaded, _optimize_gems_gpu, _optimize_gems_batch_gpu
+    if not _gpu_solver_loaded:
+        try:
+            from .taichi_gem_solver import (
+                optimize_gems_gpu,
+                optimize_gems_batch_gpu,
+                load_ref_arrays,
+            )
+            _optimize_gems_gpu = optimize_gems_gpu
+            _optimize_gems_batch_gpu = optimize_gems_batch_gpu
+            _gpu_solver_loaded = True
+        except ImportError as e:
+            print(f"[GPU] Failed to load Taichi gem solver: {e}")
+            _optimize_gems_gpu = None
+            _optimize_gems_batch_gpu = None
+            _gpu_solver_loaded = True  # Mark as attempted
+    return _optimize_gems_gpu, _optimize_gems_batch_gpu
+
 # Global caches for performance optimization
 GEM_SOLVER_CACHE = LRUCache(maxsize=5000)
 FEVER_TIMELINE_CACHE = LRUCache(maxsize=10000)
 FG_CACHE = LRUCache(maxsize=2000)
-
-
-def lookup_reference_py(value, ref_array, total_rows=TOTAL_ROWS):
-    """
-    Python implementation of reference lookup.
-    Clamps value to valid range and returns corresponding reference value.
-    """
-    clamped = max(0, min(total_rows, int(value)))
-    return ref_array[clamped]
-
-
-@jit(nopython=True, cache=True)
-def lookup_reference_jit(value, ref_array, total_rows):
-    """
-    JIT-compiled reference lookup for performance.
-    Used in hot paths where speed is critical.
-    """
-    idx = int(value)
-    if idx > total_rows:
-        idx = total_rows
-    elif idx < 0:
-        idx = 0
-    return ref_array[idx]
-
-
-@jit(nopython=True, cache=True)
-def calculate_fever_timeline_indices(
-    song_timestamps,
-    total_notes,
-    fever_fill_rate,
-    fever_time_stat,
-    long_notes_count,
-    last_note_time,
-    fever_mask_buffer,
-):
-    """
-    Calculate fever timeline using corrected server-matching logic.
-
-    Key fixes:
-    1. First non-fever section: non_fever_base - 1 notes
-       Later sections: non_fever_base notes (1 "wasted" note where fever ends)
-    2. Binary search uses side="left" (>=) instead of side="right" (>)
-
-    Args:
-        song_timestamps: NumPy array of note timestamps
-        total_notes: Total number of notes in song
-        fever_fill_rate: Fever fill rate multiplier
-        fever_time_stat: Fever time multiplier
-        long_notes_count: Number of long notes
-        last_note_time: Timestamp of last note
-        fever_mask_buffer: Preallocated boolean array for fever mask
-
-    Returns:
-        tuple: (fever_mask_head, count_body_fever, count_body_normal, fever_activations)
-    """
-    non_fever_cas = (total_notes - long_notes_count) * 0.333
-    non_fever_base = ceil(non_fever_cas * fever_fill_rate)
-    fever_time_cas = last_note_time * 0.15 + 0.15
-    real_fever_time = fever_time_cas * fever_time_stat
-
-    is_fever = fever_mask_buffer
-    is_fever[:] = False
-    current_note_idx = 0
-    fever_activations = 0
-    fever_section = 0
-
-    while current_note_idx < total_notes:
-        # Non-fever section
-        fever_section += 1
-        # First section: -1, Later sections: use base (wasted note effect)
-        if fever_section == 1:
-            notes_to_fill = non_fever_base - 1
-        else:
-            notes_to_fill = non_fever_base
-
-        end_normal_idx = min(current_note_idx + notes_to_fill, total_notes)
-        current_note_idx = end_normal_idx
-        if current_note_idx >= total_notes:
-            break
-
-        if current_note_idx > 0:
-            fever_activations += 1
-            start_time = song_timestamps[current_note_idx]
-            end_time = start_time + real_fever_time
-            # Use side="left" to find first note where time >= end_time (not >)
-            fever_end_idx = np.searchsorted(song_timestamps, end_time, side="left")
-            is_fever[current_note_idx:fever_end_idx] = True
-            current_note_idx = fever_end_idx
-        else:
-            break
-
-    head_limit = min(total_notes, 100)
-    fever_mask_head = is_fever[:head_limit]
-    count_body_fever = 0
-    count_body_normal = 0
-    if total_notes > 100:
-        for i in range(100, total_notes):
-            if is_fever[i]:
-                count_body_fever += 1
-            else:
-                count_body_normal += 1
-    return fever_mask_head, count_body_fever, count_body_normal, fever_activations
-
-
-@jit(nopython=True, cache=True)
-def fast_calculate_score(
-    base_value,
-    combo_mul,
-    fever_mul,
-    fever_mask_head,
-    count_body_fever,
-    count_body_normal,
-):
-    """
-    Fast JIT-compiled score calculation.
-
-    NOTE: The old fever_activations_count adjustment has been REMOVED.
-    The timeline calculation now correctly handles note allocation per fever cycle,
-    so no adjustment is needed.
-
-    Args:
-        base_value: Base score value per note
-        combo_mul: Combo multiplier
-        fever_mul: Fever multiplier
-        fever_mask_head: Boolean array marking fever notes in head (first 100)
-        count_body_fever: Number of fever notes after head
-        count_body_normal: Number of normal notes after head
-
-    Returns:
-        int: Total calculated score
-    """
-    combo_val_per_note = floor(base_value * combo_mul)
-    fever_val_per_note = floor(base_value * combo_mul * fever_mul)
-
-    body_score = (count_body_fever * fever_val_per_note) + (
-        count_body_normal * combo_val_per_note
-    )
-
-    # OLD PATCH REMOVED - no longer needed with corrected timeline
-
-    factor = (combo_mul - 1) * base_value / 100.0
-    total_head = 0.0
-    n_head = len(fever_mask_head)
-
-    for i in range(n_head):
-        current_ramp_val = base_value + ((i + 1) * factor)
-        if fever_mask_head[i]:
-            val = floor(current_ramp_val * fever_mul)
-        else:
-            val = floor(current_ramp_val)
-        total_head += val
-
-    return int(body_score + total_head)
-
-
-@jit(nopython=True, cache=True)
-def optimize_core_jit(
-    budget,
-    cur_pp,
-    cur_cm,
-    cur_fm,
-    cur_p_val,
-    cur_s_val,
-    is_p_pp,
-    is_s_pp,
-    is_p_cm,
-    is_s_cm,
-    is_p_fm,
-    is_s_fm,
-    is_p_ov,
-    is_s_ov,
-    ref_pp,
-    ref_cm,
-    ref_fm,
-    fever_mask_head,
-    count_body_fever,
-    count_body_normal,
-    GEM_SCALE_NORMAL,
-    GEM_SCALE_FEVER,
-    GEM_STAT_TO_ELEMENT_SCALE,
-    ELEMENTAL_GEM_SCALE,
-    TOTAL_ROWS,
-    MAX_STAT_INDEX,
-):
-    """
-    JIT-compiled greedy gem allocation optimizer.
-
-    At each iteration, evaluates 4 options (PP, CM, FM, Overflow) and picks
-    the one that maximizes score. Continues until gem budget is exhausted.
-
-    This is the performance-critical hot path and MUST be JIT-compiled.
-
-    Returns:
-        tuple: (final_pp, final_cm, final_fm, final_p_val, final_s_val,
-                gems_pp, gems_cm, gems_fm, gems_ov)
-    """
-    gems_pp = 0
-    gems_cm = 0
-    gems_fm = 0
-    gems_ov = 0
-    remaining_budget = budget
-
-    while remaining_budget > 0:
-        best_score = -1.0
-        best_opt_idx = -1
-        fill_budget = remaining_budget - 1
-        fill_bonus = (fill_budget * ELEMENTAL_GEM_SCALE) if fill_budget > 0 else 0
-
-        # Option 0: PP gem
-        if cur_pp < MAX_STAT_INDEX:
-            t_pp = cur_pp + GEM_SCALE_NORMAL
-            t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_pp) + (
-                fill_bonus * is_p_ov
-            )
-            t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_pp) + (
-                fill_bonus * is_s_ov
-            )
-            pp_factor = lookup_reference_jit(t_pp, ref_pp, TOTAL_ROWS)
-            base = (t_p * 2) + t_s + pp_factor
-            c_mul = lookup_reference_jit(cur_cm, ref_cm, TOTAL_ROWS)
-            f_mul = lookup_reference_jit(cur_fm, ref_fm, TOTAL_ROWS)
-            score = fast_calculate_score(
-                base,
-                c_mul,
-                f_mul,
-                fever_mask_head,
-                count_body_fever,
-                count_body_normal,
-            )
-            if score >= best_score:
-                best_score = score
-                best_opt_idx = 0
-
-        # Option 1: CM gem
-        if cur_cm < MAX_STAT_INDEX:
-            t_cm = cur_cm + GEM_SCALE_NORMAL
-            t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_cm) + (
-                fill_bonus * is_p_ov
-            )
-            t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_cm) + (
-                fill_bonus * is_s_ov
-            )
-            pp_factor = lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS)
-            base = (t_p * 2) + t_s + pp_factor
-            c_mul = lookup_reference_jit(t_cm, ref_cm, TOTAL_ROWS)
-            f_mul = lookup_reference_jit(cur_fm, ref_fm, TOTAL_ROWS)
-            score = fast_calculate_score(
-                base,
-                c_mul,
-                f_mul,
-                fever_mask_head,
-                count_body_fever,
-                count_body_normal,
-            )
-            if score > best_score:
-                best_score = score
-                best_opt_idx = 1
-
-        # Option 2: FM gem
-        if cur_fm < MAX_STAT_INDEX:
-            t_fm = cur_fm + GEM_SCALE_FEVER
-            t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_fm) + (
-                fill_bonus * is_p_ov
-            )
-            t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_fm) + (
-                fill_bonus * is_s_ov
-            )
-            pp_factor = lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS)
-            base = (t_p * 2) + t_s + pp_factor
-            c_mul = lookup_reference_jit(cur_cm, ref_cm, TOTAL_ROWS)
-            f_mul = lookup_reference_jit(t_fm, ref_fm, TOTAL_ROWS)
-            score = fast_calculate_score(
-                base,
-                c_mul,
-                f_mul,
-                fever_mask_head,
-                count_body_fever,
-                count_body_normal,
-            )
-            if score > best_score:
-                best_score = score
-                best_opt_idx = 2
-
-        # Option 3: Overflow (elemental gem on selected color)
-        t_p = cur_p_val + (ELEMENTAL_GEM_SCALE * is_p_ov) + (fill_bonus * is_p_ov)
-        t_s = cur_s_val + (ELEMENTAL_GEM_SCALE * is_s_ov) + (fill_bonus * is_s_ov)
-        pp_factor = lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS)
-        base = (t_p * 2) + t_s + pp_factor
-        c_mul = lookup_reference_jit(cur_cm, ref_cm, TOTAL_ROWS)
-        f_mul = lookup_reference_jit(cur_fm, ref_fm, TOTAL_ROWS)
-        score = fast_calculate_score(
-            base,
-            c_mul,
-            f_mul,
-            fever_mask_head,
-            count_body_fever,
-            count_body_normal,
-        )
-        if score >= best_score:
-            best_score = score
-            best_opt_idx = 3
-
-        # Apply the best option
-        if best_opt_idx == 0:
-            cur_pp += GEM_SCALE_NORMAL
-            cur_p_val += GEM_STAT_TO_ELEMENT_SCALE * is_p_pp
-            cur_s_val += GEM_STAT_TO_ELEMENT_SCALE * is_s_pp
-            gems_pp += 1
-        elif best_opt_idx == 1:
-            cur_cm += GEM_SCALE_NORMAL
-            cur_p_val += GEM_STAT_TO_ELEMENT_SCALE * is_p_cm
-            cur_s_val += GEM_STAT_TO_ELEMENT_SCALE * is_s_cm
-            gems_cm += 1
-        elif best_opt_idx == 2:
-            cur_fm += GEM_SCALE_FEVER
-            cur_p_val += GEM_STAT_TO_ELEMENT_SCALE * is_p_fm
-            cur_s_val += GEM_STAT_TO_ELEMENT_SCALE * is_s_fm
-            gems_fm += 1
-        else:
-            cur_p_val += ELEMENTAL_GEM_SCALE * is_p_ov
-            cur_s_val += ELEMENTAL_GEM_SCALE * is_s_ov
-            gems_ov += 1
-        remaining_budget -= 1
-
-    return (
-        cur_pp,
-        cur_cm,
-        cur_fm,
-        cur_p_val,
-        cur_s_val,
-        gems_pp,
-        gems_cm,
-        gems_fm,
-        gems_ov,
-    )
 
 
 def worker_coevolution_evaluate(args):
@@ -780,6 +485,84 @@ def apply_force_greats_to_result(
     return fg_variant
 
 
+def precompute_fever_timelines(
+    base_stats,
+    calc_song,
+    ref_arrays,
+    budget,
+    max_ft_gems,
+    max_ff_gems,
+    fever_mask_buffer,
+):
+    """
+    Precompute valid fever timelines for all reachable FT/FF gem combinations.
+    
+    Uses SongTimelineGrid for O(1) lookups based on stat indices.
+    Decouples the complex fever rules (timeline logic) from the optimization loop.
+    
+    Args:
+        base_stats: Base stats dictionary (before gems)
+        calc_song: Song calculation context
+        ref_arrays: Reference lookup arrays
+        budget: Total gem budget
+        max_ft_gems: Max allowed Fever Time gems
+        max_ff_gems: Max allowed Fever Fill Rate gems
+        fever_mask_buffer: Unused (kept for API compatibility)
+        
+    Returns:
+        list: List of dicts, each containing:
+            - ft_gems: Number of FT gems
+            - ff_gems: Number of FF gems
+            - ft_stat_val: Resulting FT stat value
+            - ff_stat_val: Resulting FF stat value
+            - ft_factor: FT multiplier factor
+            - ff_factor: FF multiplier factor
+            - timeline: Tuple (fever_mask_head, count_body_fever, count_body_normal, activations)
+            - remaining_budget: Budget left for other gems
+    """
+    results = []
+    
+    # Get or create the song's timeline grid
+    grid = get_song_timeline_grid(calc_song, ref_arrays)
+    
+    # Extract base stats for computing final stat values
+    base_ft_stat = base_stats["Fever Time"]
+    base_ff_stat = base_stats["Fever Fill Rate"]
+    
+    range_ft = min(budget, max_ft_gems)
+    
+    for ft in range(range_ft + 1):
+        remaining_for_ff = budget - ft
+        range_ff = min(remaining_for_ff, max_ff_gems)
+        
+        # Calculate final stat value after applying gems
+        stat_ft_val = base_ft_stat + (ft * GEM_SCALE_FEVER)
+        # Clamp to grid index
+        ft_idx = max(0, min(TOTAL_ROWS, int(stat_ft_val)))
+        ft_factor = grid.ft_factors[ft_idx]
+        
+        for ff in range(range_ff + 1):
+            stat_ff_val = base_ff_stat + (ff * GEM_SCALE_FEVER)
+            ff_idx = max(0, min(TOTAL_ROWS, int(stat_ff_val)))
+            ff_factor = grid.ff_factors[ff_idx]
+            
+            # O(1) lookup from grid (lazy-computed if first access)
+            timeline = grid.get_timeline(ft_idx, ff_idx)
+            
+            results.append({
+                "ft_gems": ft,
+                "ff_gems": ff,
+                "ft_stat_val": stat_ft_val,
+                "ff_stat_val": stat_ff_val,
+                "ft_factor": ft_factor,
+                "ff_factor": ff_factor,
+                "timeline": timeline,
+                "remaining_budget": budget - ft - ff
+            })
+            
+    return results
+
+
 def solve_best_fever_combination(
     cfg,
     initial_stats,
@@ -815,6 +598,7 @@ def solve_best_fever_combination(
         user_fm = override_cfg["user_fm"]
         selected_color = override_cfg["selected_color"]
         static_elem_input = override_cfg["static_elem_input"]
+        use_gpu = override_cfg.get("use_gpu", False)
     else:
         if not silent:
             print("\n=== STARTING FEVER ITERATION ENGINE (GEM SOLVER) ===")
@@ -831,6 +615,7 @@ def solve_best_fever_combination(
         static_elem_input = safe_int(
             cfg.get("ElementalGems", selected_color, fallback=0)
         )
+        use_gpu = cfg.getboolean("IterationEngine", "GPU_GemSolver", fallback=False) if hasattr(cfg, 'getboolean') else False
 
     base_stats = initial_stats.copy()
 
@@ -899,8 +684,6 @@ def solve_best_fever_combination(
     best_score = -1
     best_tuple = None
 
-    range_ft = min(TOTAL_GEM_BUDGET, max_ft_gems)
-
     is_p_pp = 1 if "Chill" == p_color else 0
     is_s_pp = 1 if "Chill" == s_color else 0
     is_p_cm = 1 if "Flow" == p_color else 0
@@ -926,82 +709,109 @@ def solve_best_fever_combination(
     cur_cm = base_stats["Combo Multiplier"]
     cur_fm = base_stats["Fever Multiplier"]
 
-    base_ft_stat = base_stats["Fever Time"]
-    base_ff_stat = base_stats["Fever Fill Rate"]
-
-    song_cache_key = (
-        calc_song["metadata"].get("Song Name", ""),
-        total_notes,
-        long_notes,
-        round(last_note, 5),
+    # 1. Precompute Timelines (Rules Layer)
+    # This generates all valid fever scenarios without doing gem optimization yet.
+    timelines = precompute_fever_timelines(
+        base_stats,
+        calc_song,
+        ref_arrays,
+        TOTAL_GEM_BUDGET,
+        max_ft_gems,
+        max_ff_gems,
+        fever_mask_buffer,
     )
-    # Memory leak fix: Use flattened cache key for global LRU
-    # (no nested dicts, all entries at top level)
 
-    # OPTIMIZATION: precompute FT/FF reference lookups
-    ft_stat_table = [
-        base_ft_stat + (ft_val * GEM_SCALE_FEVER) for ft_val in range(range_ft + 1)
-    ]
-    ft_factor_table = [
-        lookup_reference_py(stat, ref_ft, TOTAL_ROWS) for stat in ft_stat_table
-    ]
-
-    ff_stat_table = [
-        base_ff_stat + (ff_val * GEM_SCALE_FEVER) for ff_val in range(max_ff_gems + 1)
-    ]
-    ff_factor_table = [
-        lookup_reference_py(stat, ref_ff, TOTAL_ROWS) for stat in ff_stat_table
-    ]
-
-    # Cache timelines per (ft, ff) combo for this song/config to avoid recomputing.
-
-    for ft in range(range_ft + 1):
-        remaining_for_ff = TOTAL_GEM_BUDGET - ft
-        range_ff = min(remaining_for_ff, max_ff_gems)
-
-        stat_ft_val = ft_stat_table[ft]
-        ft_factor = ft_factor_table[ft]
-        cur_beat = base_beat + (ft * GEM_STAT_TO_ELEMENT_SCALE)
-
-        for ff in range(range_ff + 1):
-            current_budget = TOTAL_GEM_BUDGET - ft - ff
-            stat_ff_val = ff_stat_table[ff]
-            ff_factor = ff_factor_table[ff]
-
-            # Flattened cache key: song info + FT/FF stats
-            cache_key = song_cache_key + (stat_ft_val, stat_ff_val)
-            cached_timeline = FEVER_TIMELINE_CACHE.get(cache_key)
-            if cached_timeline:
-                (
-                    fever_mask_head,
-                    count_body_fever,
-                    count_body_normal,
-                    fever_activations,
-                ) = cached_timeline
-            else:
-                (
-                    fever_mask_head,
-                    count_body_fever,
-                    count_body_normal,
-                    fever_activations,
-                ) = calculate_fever_timeline_indices(
-                    song_timestamps,
-                    total_notes,
-                    ff_factor,
-                    ft_factor,
-                    long_notes,
-                    last_note,
-                    fever_mask_buffer,
-                )
-                # Copy the head slice so the shared buffer can be reused safely.
-                # LRUCache auto-evicts when global limit is reached
-                FEVER_TIMELINE_CACHE[cache_key] = (
-                    fever_mask_head.copy(),
-                    count_body_fever,
-                    count_body_normal,
-                    fever_activations,
-                )
-
+    # 2. Optimize Gems for each Timeline
+    if use_gpu:
+        # GPU BATCH PATH: Process all timelines in parallel on GPU
+        _, batch_solver = _get_gpu_solver()
+        if batch_solver is not None:
+            # Compute color contribution flags for FT/FF gems
+            # FT gems add Beat, FF gems add Vibe
+            is_p_ft = 1 if "Beat" == p_color else 0
+            is_s_ft = 1 if "Beat" == s_color else 0
+            is_p_ff = 1 if "Vibe" == p_color else 0
+            is_s_ff = 1 if "Vibe" == s_color else 0
+            
+            # Base color values (before FT/FF gems)
+            base_p_val = base_stats.get(p_color, 0)
+            base_s_val = base_stats.get(s_color, 0)
+            
+            # Prepare batch input - each timeline becomes one batch element
+            batch_input = []
+            for t_data in timelines:
+                ft = t_data["ft_gems"]
+                ff = t_data["ff_gems"]
+                timeline = t_data["timeline"]
+                current_budget = t_data["remaining_budget"]
+                fever_mask_head, count_body_fever, count_body_normal, _ = timeline
+                
+                batch_input.append({
+                    "budget": current_budget,
+                    "fever_mask_head": fever_mask_head,
+                    "count_body_fever": count_body_fever,
+                    "count_body_normal": count_body_normal,
+                    "ft_gems": ft,
+                    "ff_gems": ff,
+                })
+            
+            # SINGLE GPU kernel launch for ALL timelines - GPU-resident!
+            # Submit to GPU scheduler with batch coalescing support
+            from .gpu_scheduler import submit_gpu_batch
+            
+            future = submit_gpu_batch(
+                batch_input=batch_input,
+                cur_pp=cur_pp,
+                cur_cm=cur_cm,
+                cur_fm=cur_fm,
+                base_p_val=base_p_val,
+                base_s_val=base_s_val,
+                is_p_ft=is_p_ft,
+                is_s_ft=is_s_ft,
+                is_p_ff=is_p_ff,
+                is_s_ff=is_s_ff,
+                is_p_pp=is_p_pp,
+                is_s_pp=is_s_pp,
+                is_p_cm=is_p_cm,
+                is_s_cm=is_s_cm,
+                is_p_fm=is_p_fm,
+                is_s_fm=is_s_fm,
+                is_p_ov=is_p_ov,
+                is_s_ov=is_s_ov,
+                ref_arrays=ref_arrays,
+            )
+            batch_results = future.result()  # Await completion
+            
+            # Find best result (only CPU work: simple max)
+            for i, (t_data, result) in enumerate(zip(timelines, batch_results)):
+                ft = t_data["ft_gems"]
+                ff = t_data["ff_gems"]
+                # Result: (score, pp, cm, fm, p_val, s_val, gems_pp, gems_cm, gems_fm, gems_ov)
+                total_score = result[0]
+                g_pp = result[6]
+                g_cm = result[7]
+                g_fm = result[8]
+                g_ov = result[9]
+                
+                if total_score > best_score:
+                    best_score = total_score
+                    best_tuple = (total_score, ft, ff, g_pp, g_cm, g_fm, g_ov)
+        else:
+            # Fallback to CPU if GPU failed
+            use_gpu = False
+    
+    if not use_gpu:
+        # CPU PATH: Sequential processing
+        for t_data in timelines:
+            ft = t_data["ft_gems"]
+            ff = t_data["ff_gems"]
+            timeline = t_data["timeline"]
+            current_budget = t_data["remaining_budget"]
+            
+            fever_mask_head, count_body_fever, count_body_normal, _ = timeline
+            
+            # Calculate stats affected by FT/FF gems
+            cur_beat = base_beat + (ft * GEM_STAT_TO_ELEMENT_SCALE)
             cur_vibe = base_vibe + (ff * GEM_STAT_TO_ELEMENT_SCALE)
 
             cur_p_val = get_val_inline(p_color, cur_beat, cur_vibe)
