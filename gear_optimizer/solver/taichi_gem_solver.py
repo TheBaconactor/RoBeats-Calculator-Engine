@@ -99,6 +99,7 @@ genome_result_ov: ti.Field = None
 
 _fields_allocated = False
 _grid_fields_allocated = False
+_last_uploaded_grid_id = None  # Cache to skip redundant grid uploads
 
 
 def _allocate_fields():
@@ -1403,8 +1404,13 @@ _grid_uploaded = False
 
 
 def _upload_timeline_grid(timeline_grid):
-    """Upload timeline grid to GPU fields."""
-    global _grid_uploaded
+    """Upload timeline grid to GPU fields (with caching)."""
+    global _grid_uploaded, _last_uploaded_grid_id
+    
+    # Skip if same grid already uploaded (major optimization!)
+    grid_id = id(timeline_grid)
+    if _grid_uploaded and _last_uploaded_grid_id == grid_id:
+        return
     
     # Ensure all timelines are computed
     timeline_grid.precompute_all()
@@ -1437,6 +1443,7 @@ def _upload_timeline_grid(timeline_grid):
     grid_fever_masks.from_numpy(masks_np)
     
     _grid_uploaded = True
+    _last_uploaded_grid_id = grid_id
 
 
 def solve_genomes_parallel(

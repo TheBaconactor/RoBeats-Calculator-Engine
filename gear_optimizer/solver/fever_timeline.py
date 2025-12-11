@@ -151,6 +151,9 @@ class SongTimelineGrid:
         
         # Shared buffer for timeline calculation
         self._fever_mask_buffer = np.zeros(self.total_notes, dtype=np.bool_)
+        
+        # Flag to track if precompute_all has been called
+        self._precomputed = False
     
     def get_timeline(self, ft_idx, ff_idx):
         """
@@ -220,9 +223,14 @@ class SongTimelineGrid:
         Eagerly compute all 161x161 timeline entries.
         Call this once per song before mega-batch GPU processing.
         """
+        if self._precomputed:
+            return  # Already computed - skip!
+        
         for ft in range(self.GRID_SIZE):
             for ff in range(self.GRID_SIZE):
                 self.get_timeline(ft, ff)  # Populates internal cache
+        
+        self._precomputed = True
     
     def to_gpu_arrays(self):
         """
