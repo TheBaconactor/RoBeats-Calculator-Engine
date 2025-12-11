@@ -154,6 +154,7 @@ def solve_coevolution_genetic(
         check_persistent_cache,
         evaluate_genome_local,
         evaluation_cache,
+        batch_evaluator,
     ) = create_evaluation_functions(
         p_color,
         base_stats_fixed,
@@ -199,6 +200,7 @@ def solve_coevolution_genetic(
     # Create local search functions
     run_local_search, polish_best_genome, memetic_local_search = create_local_search_function(
         evaluate_genome_local,
+        batch_evaluator,
         gear_rank_cache,
         mini_rank_cache,
         mini_pool,

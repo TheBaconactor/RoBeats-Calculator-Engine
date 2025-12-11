@@ -340,17 +340,41 @@ def create_evaluation_functions(
         evaluation_cache[k] = res
         return res
 
+    def batch_evaluator(population):
+        """
+        Evaluate a batch of genomes using the configured batch settings.
+        Falls back to serial evaluation if population is small or GPU disabled.
+        """
+        if not population:
+            return []
+            
+        return evaluate_population_parallel(
+            population,
+            genome_key,
+            evaluation_cache,
+            check_persistent_cache,
+            base_stats_fixed,
+            cfg_data,
+            calc_song,
+            ref_arrays,
+            None, # No executor needed for GPU path
+            cache_hits_tracker,
+            use_gpu_batch=cfg_data.get("use_gpu", False)
+        )
+
     return (
         score_candidate,
         genome_key,
         check_persistent_cache,
         evaluate_genome_local,
         evaluation_cache,
+        batch_evaluator,
     )
 
 
 def create_local_search_function(
     evaluate_genome_local,
+    batch_evaluator,
     gear_rank_cache,
     mini_rank_cache,
     mini_pool,
@@ -362,7 +386,8 @@ def create_local_search_function(
     Create local search function for memetic GA and polishing.
 
     Args:
-        evaluate_genome_local: Function to evaluate genomes
+        evaluate_genome_local: Function to evaluate single genome (fallback)
+        batch_evaluator: Function to evaluate batch of genomes
         gear_rank_cache: Dict mapping slots to ranked gear lists
         mini_rank_cache: Ranked list of minis
         mini_pool: List of valid minis
@@ -376,8 +401,8 @@ def create_local_search_function(
 
     def run_local_search(start_genome, max_steps, top_k_gear, top_k_minis, is_polishing=False):
         """
-        Unified local search logic for both Memetic Search and Polishing.
-        Iteratively improves the genome by checking neighbors in ranked lists.
+        Unified local search logic using Batch Evaluation (Best Improvement).
+        Generates all neighbors, evaluates them in parallel, and picks the best.
         """
         best_genome = list(start_genome)
         best_result = evaluate_genome_local(best_genome)
@@ -390,68 +415,76 @@ def create_local_search_function(
         local_mini_rank = mini_rank_cache[:top_k_minis]
 
         steps = 0
-        # Polishing runs until no improvement (or very high limit), Memetic runs fixed steps
         limit = 999999 if is_polishing else max_steps
 
         while steps < limit:
-            improved = False
-
-            # Gear neighbourhood
+            candidates = []
+            
+            # 1. Generate Gear Candidates
             if optimize_gear:
                 for idx, slot in enumerate(slots):
                     curr_item = best_genome[idx]
                     current_name = curr_item.get("Name") if isinstance(curr_item, dict) else str(curr_item) if curr_item else ""
+                    
                     for cand in local_gear_rank.get(slot, []):
                         if cand.get("Name") == current_name:
                             continue
+                        
+                        # Create candidate genome
                         trial = best_genome[:]
                         trial[idx] = cand
-                        trial_res = evaluate_genome_local(trial)
-                        if trial_res["Score"] > best_score:
-                            best_score = trial_res["Score"]
-                            best_result = trial_res
-                            best_genome = trial
-                            improved = True
-                            steps += 1
-                            break
-                    if improved or (not is_polishing and steps >= limit):
-                        break
+                        candidates.append(trial)
 
-            if not is_polishing and steps >= limit:
-                break
-
-            # Mini neighbourhood
-            if (not improved or is_polishing) and optimize_minis:
-                # Extract existing mini names, handling both dict and string formats
+            # 2. Generate Mini Candidates
+            if optimize_minis:
+                # Extract existing mini names
                 existing = set()
                 for m in best_genome[6:]:
                     if isinstance(m, dict):
                         existing.add(m.get("Name", ""))
                     elif m:
                         existing.add(str(m))
+                        
                 for idx in range(6, 9):
                     curr_item = best_genome[idx]
                     curr_name = curr_item.get("Name") if isinstance(curr_item, dict) else str(curr_item) if curr_item else ""
+                    
                     for cand in local_mini_rank:
                         c_name = cand.get("Name")
                         if c_name == curr_name:
                             continue
-                        if c_name in existing - {curr_name}:
+                        if c_name in existing:
                             continue
+                            
                         trial = best_genome[:]
                         trial[idx] = cand
-                        trial_res = evaluate_genome_local(trial)
-                        if trial_res["Score"] > best_score:
-                            best_score = trial_res["Score"]
-                            best_result = trial_res
-                            best_genome = trial
-                            improved = True
-                            steps += 1
-                            break
-                    if improved or (not is_polishing and steps >= limit):
-                        break
+                        candidates.append(trial)
 
-            if not improved:
+            if not candidates:
+                break
+
+            # 3. Batch Evaluate All Candidates
+            # This uses the GPU batch path if available!
+            candidate_results = batch_evaluator(candidates)
+            
+            # 4. Find Best Improvement
+            step_best_res = None
+            step_best_score = -1
+
+            if candidate_results:
+                # Find max score in batch
+                best_cand = max(candidate_results, key=lambda x: x["Score"])
+                step_best_score = best_cand["Score"]
+                step_best_res = best_cand
+
+            # 5. Adopt if better
+            if step_best_res and step_best_score > best_score:
+                best_score = step_best_score
+                best_result = step_best_res
+                best_genome = step_best_res["Genome"]
+                steps += 1
+            else:
+                # Local Optimum Reached
                 break
 
         return best_result, best_genome
@@ -460,6 +493,8 @@ def create_local_search_function(
         """Local sweep on top candidates per slot/mini to escape near-misses."""
         top_k_gear = 8
         top_k_minis = min(25, len(mini_rank_cache))
+        
+        # Polishing uses the same batch logic now!
         return run_local_search(best_genome, 0, top_k_gear, top_k_minis, is_polishing=True)
 
     def memetic_local_search(start_genome, max_steps, top_k_gear, top_k_minis):
