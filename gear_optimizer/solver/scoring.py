@@ -211,7 +211,15 @@ def batch_evaluate_genomes(
     genome_to_unique_idx = {}  # Maps uncached genome idx -> unique_stats idx
     
     for i, stats in enumerate(all_stats):
-        sig = stats_signature(stats, calc_song, sel_color)
+        base_sig = stats_signature(stats, calc_song, sel_color)
+        # Fix regression: Cache key must include user gem config!
+        # sig is a tuple, so we append via tuple concatenation
+        config_sig = (
+            cfg_data['user_ft'], cfg_data['user_ff'], cfg_data['user_pp'],
+            cfg_data['user_cm'], cfg_data['user_fm'], cfg_data['static_elem_input']
+        )
+        sig = base_sig + config_sig
+        
         cached = GEM_SOLVER_CACHE.get(sig)
         if cached is not None:
             sig_to_result[i] = cached
@@ -235,6 +243,7 @@ def batch_evaluate_genomes(
         
         # Get precomputed timeline grid for this song
         grid = get_song_timeline_grid(calc_song, ref_arrays)
+        grid.precompute_all()  # Eagerly cache all 161x161 timelines (one-time ~0.5s cost)
         
         # Collect all timelines from all unique genomes
         work_items = []
@@ -287,12 +296,51 @@ def batch_evaluate_genomes(
                 })
                 genome_ids.append(unique_idx)
         
-        # Prepare GPU call parameters
-        first_stats = unique_stats[0][1]
-        base_pp = first_stats.get("Perfect Points", 0) - user_pp * GEM_SCALE_NORMAL
-        base_cm = first_stats.get("Combo Multiplier", 0) - user_cm * GEM_SCALE_NORMAL
-        base_fm = first_stats.get("Fever Multiplier", 0) - user_fm * GEM_SCALE_FEVER
+        # ================================================================
+        # COMPUTE PER-GENOME STATS (fixes the per-genome stats bug!)
+        # ================================================================
+        # Each unique genome has different gear stats, so we need per-genome
+        # base_pp/cm/fm/p_val/s_val values for the GPU solver.
         
+        genome_stats = {}  # {genome_idx: (base_pp, base_cm, base_fm, base_p_val, base_s_val)}
+        
+        for unique_idx, (sig, stats) in enumerate(unique_stats):
+            # Compute base stat values (before gems) - kernel handles gem allocation
+            base_pp = stats.get("Perfect Points", 0) - user_pp * GEM_SCALE_NORMAL
+            base_cm = stats.get("Combo Multiplier", 0) - user_cm * GEM_SCALE_NORMAL
+            base_fm = stats.get("Fever Multiplier", 0) - user_fm * GEM_SCALE_FEVER
+            
+            # Primary/Secondary elemental values from ORIGINAL stats
+            # CAUTION: We must DEDUCT user-forced gems because the kernel adds them back!
+            # If we pass original stats, the kernel adds gems on top, causing double counting.
+            
+            # 1. Deduct user FT/FF from elemental stats
+            base_beat = stats.get("Beat", 0) - user_ft * GEM_STAT_TO_ELEMENT_SCALE
+            base_vibe = stats.get("Vibe", 0) - user_ff * GEM_STAT_TO_ELEMENT_SCALE
+            base_rush = stats.get("Rush", 0) - user_fm * GEM_STAT_TO_ELEMENT_SCALE
+            base_flow = stats.get("Flow", 0) - user_cm * GEM_STAT_TO_ELEMENT_SCALE
+            base_chill = stats.get("Chill", 0) - user_pp * GEM_STAT_TO_ELEMENT_SCALE
+            
+            # 2. Deduct static overflow gems (if any)
+            if sel_color == "Beat":
+                base_beat -= static_elem_input * ELEMENTAL_GEM_SCALE
+            elif sel_color == "Vibe":
+                base_vibe -= static_elem_input * ELEMENTAL_GEM_SCALE
+            elif sel_color == "Rush":
+                base_rush -= static_elem_input * ELEMENTAL_GEM_SCALE
+            elif sel_color == "Flow":
+                base_flow -= static_elem_input * ELEMENTAL_GEM_SCALE
+            elif sel_color == "Chill":
+                base_chill -= static_elem_input * ELEMENTAL_GEM_SCALE
+
+            # 3. Select P/S values from deducted stats
+            color_vals = {"Beat": base_beat, "Vibe": base_vibe, "Rush": base_rush, "Flow": base_flow, "Chill": base_chill}
+            base_p_val = color_vals.get(p_color, 0)
+            base_s_val = color_vals.get(s_color, 0)
+            
+            genome_stats[unique_idx] = (int(base_pp), int(base_cm), int(base_fm), int(base_p_val), int(base_s_val))
+        
+        # Color flags (these are shared across all genomes for the same song)
         is_p_pp = 1 if "Chill" == p_color else 0
         is_s_pp = 1 if "Chill" == s_color else 0
         is_p_cm = 1 if "Flow" == p_color else 0
@@ -306,18 +354,12 @@ def batch_evaluate_genomes(
         is_p_ff = 1 if "Vibe" == p_color else 0
         is_s_ff = 1 if "Vibe" == s_color else 0
         
-        base_beat = first_stats.get("Beat", 0) - user_ft * GEM_STAT_TO_ELEMENT_SCALE
-        base_vibe = first_stats.get("Vibe", 0) - user_ff * GEM_STAT_TO_ELEMENT_SCALE
-        base_p_val = base_beat if p_color == "Beat" else (base_vibe if p_color == "Vibe" else first_stats.get(p_color, 0))
-        base_s_val = base_beat if s_color == "Beat" else (base_vibe if s_color == "Vibe" else first_stats.get(s_color, 0))
-        
-        # SINGLE GPU KERNEL LAUNCH (vectorized)
+        # SINGLE GPU KERNEL LAUNCH (vectorized with per-genome stats)
         with _GPU_LOCK:
             best_per_unique = mega_batch_solve_population(
                 work_items,
                 np.array(genome_ids, dtype=np.int32),
-                int(base_pp), int(base_cm), int(base_fm),
-                int(base_p_val), int(base_s_val),
+                genome_stats,  # NEW: per-genome base stats
                 is_p_ft, is_s_ft, is_p_ff, is_s_ff,
                 is_p_pp, is_s_pp, is_p_cm, is_s_cm,
                 is_p_fm, is_s_fm, is_p_ov, is_s_ov,
@@ -331,13 +373,13 @@ def batch_evaluate_genomes(
             unique_idx = genome_to_unique_idx[i]
             gpu_result = best_per_unique.get(unique_idx)
             if gpu_result is not None:
-                score, pp, cm, fm, p_val, s_val, g_pp, g_cm, g_fm, g_ov = gpu_result
+                score, pp, cm, fm, p_val, s_val, g_pp, g_cm, g_fm, g_ov, g_ft, g_ff = gpu_result
                 sig = unique_stats[unique_idx][0]
                 
                 res = {
                     "Score": score,
-                    "FT": user_ft,
-                    "FF": user_ff,
+                    "FT": g_ft,
+                    "FF": g_ff,
                     "GemCounts": {
                         "Perfect Points": g_pp,
                         "Combo Multiplier": g_cm,
