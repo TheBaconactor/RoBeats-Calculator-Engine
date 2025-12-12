@@ -53,12 +53,18 @@ from gear_optimizer.solver.scoring import FEVER_TIMELINE_CACHE, FG_CACHE
 from gear_optimizer.solver.genetic import GEM_SOLVER_CACHE
 
 
+# Module-level worker initializer for GPU executor (must be picklable)
+def _gpu_worker_initializer(worker_id, req_queue, resp_queue):
+    """Initialize GPU worker mode in spawned process."""
+    from gear_optimizer.solver.gpu_executor import set_gpu_worker_mode
+    set_gpu_worker_mode(worker_id, req_queue, resp_queue)
+
+
 class GearOptimizerApp:
     def __init__(self):
         self.setup_logging()
         self.discord_reporter = self.setup_discord()
         self.ensure_directories()
-        self.status_file = PATHS.status_file
 
     def setup_logging(self):
         os.makedirs(BIN_DIR, exist_ok=True)
@@ -89,54 +95,17 @@ class GearOptimizerApp:
     def ensure_directories(self):
         os.makedirs(BIN_DIR, exist_ok=True)
 
-    def verify_status_file(self):
-        print(f"[MetaFinder] Status file path: {self.status_file}")
-        try:
-            status_dir = os.path.dirname(self.status_file)
-            if not os.path.exists(status_dir):
-                print(f"[MetaFinder] Creating status directory: {status_dir}")
-            os.makedirs(status_dir, exist_ok=True)
 
-            test_payload = {"test": True, "timestamp": time.time()}
-            with open(self.status_file + ".test", "w") as f:
-                json.dump(test_payload, f)
-            os.remove(self.status_file + ".test")
-            print(f"[MetaFinder] Status file path verified successfully")
-        except Exception as e:
-            print(f"[MetaFinder] WARNING: Cannot write to status file: {e}")
-            print(f"[MetaFinder] Status updates will fail. Check path or set METAFINDER_STATUS_FILE env variable.")
 
-    def run_heartbeat(self, stop_event):
-        while not stop_event.is_set():
-            try:
-                write_metafinder_status("online", "MetaFinder heartbeat")
-            except Exception:
-                # Heartbeat failures should never crash the optimizer, but should be visible
-                # in logs when debugging deployment issues.
-                logging.debug("[MetaFinder] Heartbeat status write failed", exc_info=True)
-            stop_event.wait(60.0)
+
 
     def run(self):
         multiprocessing.freeze_support()
-        self.verify_status_file()
-        write_metafinder_status("online", "MetaFinder process started")
-
-        heartbeat_stop = threading.Event()
-        try:
-            threading.Thread(target=self.run_heartbeat, args=(heartbeat_stop,), daemon=True).start()
-        except Exception:
-            logging.debug("[MetaFinder] Failed to start heartbeat thread", exc_info=True)
-
+        
         while True:
             should_loop = self._run_single_iteration()
             if not should_loop:
                 break
-
-        try:
-            write_metafinder_status("offline", "MetaFinder run stopped")
-        except Exception:
-            pass
-        heartbeat_stop.set()
 
     def _run_single_iteration(self):
         memory_guard_restart = False
@@ -164,6 +133,7 @@ class GearOptimizerApp:
 
             init_db()
             self._auto_merge_databases()
+
 
             # Config reading
             meta_finder = cfg.getboolean("IterationEngine", "MetaFinder", fallback=False)
@@ -234,14 +204,11 @@ class GearOptimizerApp:
         finally:
             self._cleanup_resources(status_queue, status_thread, manager)
             
+
             elapsed = time.time() - start_time
             done_msg = f"Run completed in {elapsed:.2f}s"
             print(done_msg)
             self.discord_reporter.send_log(done_msg)
-            try:
-                write_metafinder_status("online", done_msg)
-            except Exception:
-                pass
             gc.collect()
 
         if memory_guard_restart:
@@ -616,22 +583,15 @@ class GearOptimizerApp:
                         worker_id, req_q, resp_q = gpu_executor.register_worker()
                         worker_registrations.append((worker_id, req_q, resp_q))
                 
-                # Create initializer function for workers
+                # Use module-level initializer (local functions can't be pickled for spawn)
                 if worker_registrations:
-                    from gear_optimizer.solver.gpu_executor import set_gpu_worker_mode
-                    
-                    def worker_init(worker_id, req_q, resp_q):
-                        set_gpu_worker_mode(worker_id, req_q, resp_q)
-                    
-                    # Use initializer with first registration (all workers share same req queue)
-                    # NOTE: This is a simplification - for proper per-worker queues, we'd need
-                    # a more complex mechanism. Here all workers share the same request queue.
+                    # Use first registration (all workers share same req queue)
                     w_id, req_q, resp_q = worker_registrations[0]
                     
                     with concurrent.futures.ProcessPoolExecutor(
                         max_workers=effective_workers,
                         mp_context=mp_ctx,
-                        initializer=worker_init,
+                        initializer=_gpu_worker_initializer,
                         initargs=(w_id, req_q, resp_q),
                     ) as executor:
                         future_map = {executor.submit(safe_process_song_task, t): t[1] for t in remaining_tasks}

@@ -11,7 +11,6 @@ import time
 from .constants import (
     DEFAULT_MEMORY_GUARD_PERCENT,
     STRICT_PLATFORM_MEMORY_GUARD_PERCENT,
-    STATUS_FILE,
     SCRIPT_DIR,
 )
 from .utils import safe_int, safe_float
@@ -74,40 +73,7 @@ def compute_memory_guard_limit(cfg):
     return int(min(candidates))
 
 
-def write_metafinder_status(status, message=None):
-    """
-    Export a lightweight status JSON for the RoBeatsMeta website.
 
-    The website reads this from:
-      web/public/data/metafinder_status.json
-    and uses the timestamp to determine if MetaFinder is considered online.
-
-    Args:
-        status: Status string (e.g., "online", "offline", "running")
-        message: Optional message to include (max 500 chars)
-    """
-    payload = {
-        "source": "MetaFinder",
-        "status": str(status),
-        "message": (message or "")[:500],
-        "timestamp": time.time(),
-    }
-    try:
-        status_dir = os.path.dirname(STATUS_FILE)
-        os.makedirs(status_dir, exist_ok=True)
-        tmp_path = STATUS_FILE + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(payload, f)
-        os.replace(tmp_path, STATUS_FILE)
-    except Exception as e:
-        # BUG FIX: Always print status file errors to console so they're visible
-        error_msg = f"Failed to write MetaFinder status file to {STATUS_FILE}: {e}"
-        print(f"[WARNING] {error_msg}")
-        try:
-            logging.warning(error_msg)
-        except Exception:
-            # Avoid crashing the optimizer if logging fails
-            pass
 
 
 def load_force_greats_config(cfg):

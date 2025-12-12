@@ -58,7 +58,8 @@ class PathConfig:
     """
     script_dir: str
     bin_dir: str
-    status_file: str
+    script_dir: str
+    bin_dir: str
 
     @classmethod
     def build(cls):
@@ -70,36 +71,7 @@ class PathConfig:
         script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         bin_dir = os.path.join(script_dir, "bin")
 
-        # BUG FIX: Make status file path configurable for server deployment
-        # Priority: 1) Environment variable 2) config.ini 3) Hardcoded fallback
-        status_file = None
-
-        # Try environment variable first (best for server deployment)
-        if "METAFINDER_STATUS_FILE" in os.environ:
-            status_file = os.environ["METAFINDER_STATUS_FILE"]
-        else:
-            # Try config.ini
-            try:
-                cfg = configparser.ConfigParser()
-                cfg.read(os.path.join(script_dir, "config.ini"), encoding="utf-8-sig")
-                if cfg.has_option("IterationEngine", "StatusFilePath"):
-                    status_file = cfg.get("IterationEngine", "StatusFilePath")
-            except Exception:
-                logging.debug("[Paths] Failed reading StatusFilePath from config.ini", exc_info=True)
-
-        # Fallback to original hardcoded path for local development
-        if not status_file:
-            status_file = os.path.join(
-                script_dir,
-                "RoBeatMetaWebsite",
-                "RoBeatsMeta",
-                "web",
-                "dist",
-                "data",
-                "metafinder_status.json",
-            )
-
-        return cls(script_dir, bin_dir, status_file)
+        return cls(script_dir, bin_dir)
 
     def bin_path(self, *parts):
         """Get a path within the bin directory."""
@@ -130,4 +102,3 @@ class PathConfig:
 PATHS = PathConfig.build()
 SCRIPT_DIR = PATHS.script_dir
 BIN_DIR = PATHS.bin_dir
-STATUS_FILE = PATHS.status_file
