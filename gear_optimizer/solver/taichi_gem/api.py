@@ -44,6 +44,7 @@ _last_ref_arrays_id = None
 
 _BATCH_STAGING = None
 _MEGA_STAGING = None
+_PARALLEL_STAGING = None
 
 
 def _ensure_batch_staging():
@@ -88,6 +89,33 @@ def _ensure_mega_staging():
         "genome_s": np.zeros(MAX_GENOMES, dtype=np.int32),
     }
     return _MEGA_STAGING
+
+
+def _ensure_parallel_staging():
+    """
+    Allocate and reuse staging buffers for solve_genomes_parallel().
+    
+    These buffers avoid per-call np.zeros() allocations which are expensive
+    due to memory allocation + CPU zeroing overhead.
+    """
+    global _PARALLEL_STAGING
+    if _PARALLEL_STAGING is not None:
+        return _PARALLEL_STAGING
+    _PARALLEL_STAGING = {
+        # Per-genome stats (uploaded once per call)
+        "genome_pp": np.zeros(MAX_GENOMES, dtype=np.int32),
+        "genome_cm": np.zeros(MAX_GENOMES, dtype=np.int32),
+        "genome_fm": np.zeros(MAX_GENOMES, dtype=np.int32),
+        "genome_p_val": np.zeros(MAX_GENOMES, dtype=np.int32),
+        "genome_s_val": np.zeros(MAX_GENOMES, dtype=np.int32),
+        "genome_ft": np.zeros(MAX_GENOMES, dtype=np.int32),
+        "genome_ff": np.zeros(MAX_GENOMES, dtype=np.int32),
+        # Per-work-item buffers (reused per chunk)
+        "work_genome_id": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
+        "work_ft_gems": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
+        "work_ff_gems": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
+    }
+    return _PARALLEL_STAGING
 
 
 def is_refs_loaded() -> bool:
@@ -816,14 +844,15 @@ def solve_genomes_parallel(
     if n_genomes > MAX_GENOMES:
         raise ValueError(f"Too many genomes: {n_genomes} > {MAX_GENOMES}")
     
-    # Upload per-genome stats
-    pp_np = np.zeros(MAX_GENOMES, dtype=np.int32)
-    cm_np = np.zeros(MAX_GENOMES, dtype=np.int32)
-    fm_np = np.zeros(MAX_GENOMES, dtype=np.int32)
-    p_val_np = np.zeros(MAX_GENOMES, dtype=np.int32)
-    s_val_np = np.zeros(MAX_GENOMES, dtype=np.int32)
-    ft_np = np.zeros(MAX_GENOMES, dtype=np.int32)
-    ff_np = np.zeros(MAX_GENOMES, dtype=np.int32)
+    # Get reusable staging buffers (avoid per-call allocations)
+    staging = _ensure_parallel_staging()
+    pp_np = staging["genome_pp"]
+    cm_np = staging["genome_cm"]
+    fm_np = staging["genome_fm"]
+    p_val_np = staging["genome_p_val"]
+    s_val_np = staging["genome_s_val"]
+    ft_np = staging["genome_ft"]
+    ff_np = staging["genome_ff"]
     
     # Also track max allowed FT/FF per genome for work item generation
     max_ft_list = []
@@ -875,23 +904,24 @@ def solve_genomes_parallel(
     if n_work == 0:
         return [(0, 0, 0, 0, 0, 0, 0) for _ in range(n_genomes)]
     
-    # Track best results per genome across all chunks
-    best_per_genome = {}
-    
     # Process in chunks if exceeds MAX_WORK_ITEMS
     chunk_size = MAX_WORK_ITEMS
     num_chunks = (n_work + chunk_size - 1) // chunk_size
+    
+    # Initialize genome results ONCE before any chunks
+    kernels.init_genome_results_kernel(n_genomes)
+    
+    # Get reusable work item buffers
+    genome_id_np = staging["work_genome_id"]
+    ft_gems_np = staging["work_ft_gems"]
+    ff_gems_np = staging["work_ff_gems"]
     
     for chunk_idx in range(num_chunks):
         start = chunk_idx * chunk_size
         end = min(start + chunk_size, n_work)
         chunk_n = end - start
         
-        # Upload work items for this chunk
-        genome_id_np = np.zeros(MAX_WORK_ITEMS, dtype=np.int32)
-        ft_gems_np = np.zeros(MAX_WORK_ITEMS, dtype=np.int32)
-        ff_gems_np = np.zeros(MAX_WORK_ITEMS, dtype=np.int32)
-        
+        # Copy work items into reusable buffers (no allocation needed)
         genome_id_np[:chunk_n] = work_genome[start:end]
         ft_gems_np[:chunk_n] = work_ft[start:end]
         ff_gems_np[:chunk_n] = work_ff[start:end]
@@ -900,7 +930,7 @@ def solve_genomes_parallel(
         fields.work_ft_gems.from_numpy(ft_gems_np)
         fields.work_ff_gems.from_numpy(ff_gems_np)
         
-        # Launch kernel
+        # Launch solve kernel
         kernels.solve_ftff_parallel_kernel(
             chunk_n,
             total_budget,
@@ -910,38 +940,32 @@ def solve_genomes_parallel(
             is_p_fm, is_s_fm, is_p_ov, is_s_ov,
         )
         
-        ti.sync()
-        
-        # Download results for this chunk
-        scores_np = fields.result_scores.to_numpy()[:chunk_n]
-        pp_out = fields.result_pp.to_numpy()[:chunk_n]
-        cm_out = fields.result_cm.to_numpy()[:chunk_n]
-        fm_out = fields.result_fm.to_numpy()[:chunk_n]
-        ov_out = fields.result_ov.to_numpy()[:chunk_n]
-        
-        # Reduce: find best score per genome (merge with global best)
-        for i in range(chunk_n):
-            gid = work_genome[start + i]
-            score = int(scores_np[i])
-            
-            if gid not in best_per_genome or score > best_per_genome[gid][0]:
-                best_per_genome[gid] = (
-                    score,
-                    work_ft[start + i],
-                    work_ff[start + i],
-                    int(pp_out[i]),
-                    int(cm_out[i]),
-                    int(fm_out[i]),
-                    int(ov_out[i]),
-                )
+        # GPU-side reduction: accumulate best into genome_result_* fields
+        kernels.reduce_chunk_to_genomes_kernel(chunk_n)
     
-    # Return in order
+    ti.sync()
+    
+    # Download only O(n_genomes) results (not O(n_work_items)!)
+    scores_np = fields.genome_result_scores.to_numpy()[:n_genomes]
+    ft_np = fields.genome_result_ft.to_numpy()[:n_genomes]
+    ff_np = fields.genome_result_ff.to_numpy()[:n_genomes]
+    pp_np = fields.genome_result_pp.to_numpy()[:n_genomes]
+    cm_np = fields.genome_result_cm.to_numpy()[:n_genomes]
+    fm_np = fields.genome_result_fm.to_numpy()[:n_genomes]
+    ov_np = fields.genome_result_ov.to_numpy()[:n_genomes]
+    
+    # Build results in order
     results = []
     for i in range(n_genomes):
-        if i in best_per_genome:
-            results.append(best_per_genome[i])
-        else:
-            results.append((0, 0, 0, 0, 0, 0, 0))
+        results.append((
+            int(scores_np[i]),
+            int(ft_np[i]),
+            int(ff_np[i]),
+            int(pp_np[i]),
+            int(cm_np[i]),
+            int(fm_np[i]),
+            int(ov_np[i]),
+        ))
     
     return results
 

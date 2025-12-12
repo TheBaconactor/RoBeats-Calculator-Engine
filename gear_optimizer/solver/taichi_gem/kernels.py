@@ -1039,9 +1039,68 @@ def solve_ftff_parallel_kernel(
             cur_remaining -= 1
             final_score = best_opt_score
         
-        # Store result for this work item (reduction done on CPU)
+        # Store result for this work item (reduction done by reduce_best_per_genome_kernel)
         result_scores[i] = final_score
         result_pp[i] = gems_pp
         result_cm[i] = gems_cm
         result_fm[i] = gems_fm
         result_ov[i] = gems_ov
+
+
+@ti.kernel
+def init_genome_results_kernel(n_genomes: ti.i32):
+    """
+    Initialize genome result fields to -1 (no valid result yet).
+    
+    Call this ONCE before processing any chunks. The reduction kernel
+    will then accumulate best results across all chunks.
+    """
+    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
+    
+    for g in range(n_genomes):
+        genome_result_scores[g] = -1
+        genome_result_ft[g] = 0
+        genome_result_ff[g] = 0
+        genome_result_pp[g] = 0
+        genome_result_cm[g] = 0
+        genome_result_fm[g] = 0
+        genome_result_ov[g] = 0
+
+
+@ti.kernel
+def reduce_chunk_to_genomes_kernel(n_work_items: ti.i32):
+    """
+    GPU-side reduction: find best score per genome from work item results.
+    
+    This replaces the CPU-side reduction loop, downloading O(n_genomes) instead
+    of O(n_work_items) results (~400k → ~500 rows).
+    
+    Uses atomic_max for thread-safe score comparison. When a thread wins,
+    it writes the associated gem allocation. Race condition on writes is
+    benign: if two threads have the same max score, either result is valid.
+    
+    NOTE: Call init_genome_results_kernel() once before the first chunk,
+    then call this kernel after each chunk's solve kernel.
+    
+    Args:
+        n_work_items: Number of work items in this chunk to reduce
+    """
+    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
+    
+    for i in range(n_work_items):
+        score = result_scores[i]
+        gid = work_genome_id[i]
+        
+        # Atomic compare-and-swap pattern for max score
+        # Returns old value, updates field if score > old
+        old = ti.atomic_max(genome_result_scores[gid], score)
+        
+        # If we won (our score is the new max), write associated data
+        # Note: benign race - if two threads have same max, one wins
+        if old < score:
+            genome_result_ft[gid] = work_ft_gems[i]
+            genome_result_ff[gid] = work_ff_gems[i]
+            genome_result_pp[gid] = result_pp[i]
+            genome_result_cm[gid] = result_cm[i]
+            genome_result_fm[gid] = result_fm[i]
+            genome_result_ov[gid] = result_ov[i]
