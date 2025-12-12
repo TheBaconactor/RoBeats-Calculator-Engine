@@ -111,17 +111,21 @@ def solve_coevolution_genetic(
         all_gears, all_minis, p_color, slots
     )
     if gear_pool is None:
-        return None, [], []
+        return None, [], [], None, [], [], []
 
     # Build configuration data
     # Read GPU mode setting from config
     use_gpu_mode = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False) if hasattr(cfg, 'getboolean') else False
+    fg_heuristic_mode = cfg.getboolean("IterationEngine", "ForceGreatsHeuristic", fallback=False) if hasattr(cfg, 'getboolean') else False
     if use_gpu_mode:
         print("[GPU] GPU_Mode enabled for GA evaluation")
+    if fg_heuristic_mode:
+        print("[FG Heuristic] Using FG potential estimate for GA fitness")
     
     cfg_data = {
         "selected_color": selected_color,
         "use_gpu": use_gpu_mode,
+        "fg_heuristic": cfg.getboolean("IterationEngine", "ForceGreatsHeuristic", fallback=False) if hasattr(cfg, 'getboolean') else False,
         "user_ft": safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0)),
         "user_ff": safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0)),
         "user_pp": safe_int(cfg.get("UserInputStatsGems", "perfect_points", fallback=0)),
