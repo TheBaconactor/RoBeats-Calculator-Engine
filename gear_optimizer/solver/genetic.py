@@ -114,14 +114,14 @@ def solve_coevolution_genetic(
         return None, [], []
 
     # Build configuration data
-    # Read GPU gem solver setting from config
-    use_gpu_gem_solver = cfg.getboolean("IterationEngine", "GPU_GemSolver", fallback=False) if hasattr(cfg, 'getboolean') else False
-    if use_gpu_gem_solver:
-        print("[GPU] GPU Gem Solver enabled for GA evaluation")
+    # Read GPU mode setting from config
+    use_gpu_mode = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False) if hasattr(cfg, 'getboolean') else False
+    if use_gpu_mode:
+        print("[GPU] GPU_Mode enabled for GA evaluation")
     
     cfg_data = {
         "selected_color": selected_color,
-        "use_gpu": use_gpu_gem_solver,
+        "use_gpu": use_gpu_mode,
         "user_ft": safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0)),
         "user_ff": safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0)),
         "user_pp": safe_int(cfg.get("UserInputStatsGems", "perfect_points", fallback=0)),
@@ -163,6 +163,7 @@ def solve_coevolution_genetic(
         ref_arrays,
         known_loadouts,
         cache_hits_tracker,
+        getattr(ga_settings, "heuristic_mode", "modern"),
     )
 
     # Build ranked candidate caches
@@ -204,6 +205,7 @@ def solve_coevolution_genetic(
         gear_rank_cache,
         mini_rank_cache,
         mini_pool,
+        gear_pool,
         slots,
         optimize_gear,
         optimize_minis,
@@ -217,6 +219,35 @@ def solve_coevolution_genetic(
     best_global_score = -1
     best_global_genome = []
     best_global_data = {}
+
+    # Cross-run elite sharing: maintain a pool of best genomes across runs.
+    # This allows later runs to recombine with discoveries from earlier runs
+    # without forcing DB seed injection every run.
+    global_elites = []
+
+    # Non-regression guard:
+    # If we have a DB seed, fully evaluate it once up-front and use it as the
+    # baseline global best. This ensures the GA cannot "regress" below the
+    # previously-known best even if seeding probability gates skip injection.
+    if db_seed:
+        try:
+            seed_list = build_seed_list_from_record(db_seed)
+            if seed_list:
+                seed_genome = reconstruct_genome_from_db_list(seed_list)
+                seed_res = worker_coevolution_evaluate(
+                    (seed_genome, base_stats_fixed, cfg_data, calc_song, ref_arrays)
+                )
+                evaluation_cache[genome_key(seed_genome)] = seed_res
+                best_global_score = seed_res["Score"]
+                best_global_genome = seed_genome
+                best_global_data = seed_res["Data"]
+                # Seed the global elite pool with the DB seed for cross-run sharing
+                # REMOVED: global_elites.append(seed_genome) -- too strong, causes local optima traps
+                print(
+                    f" >> [Evolution] Baseline locked from DB seed: {best_global_score}"
+                )
+        except Exception as exc:
+            print(f" >> [Evolution] Warning: failed to lock DB seed baseline: {exc}")
 
     # Read Deep Mining config
     if ga_settings.deep_mining_enabled:
@@ -241,10 +272,16 @@ def solve_coevolution_genetic(
             ga_settings,
             fixed_gear,
             fixed_minis,
+            force_db_seed=False,  # Use db_seed_prob probability instead of guaranteed injection
         )
 
+        # Track progress within THIS run (not global best).
+        # This avoids "false stagnation" when the global best is already locked.
+        best_run_score = -1
         last_improvement_gen = 0
-        stagnation_limit = max(8, gens_per_run // 2)
+
+        base_stagnation_limit = max(8, gens_per_run // 2)
+        explore_stagnation_limit = max(8, gens_per_run // 3)
         mutation_rate = GA_MUTATION_RATE
 
         # Dynamic generation limit based on cache hits
@@ -272,7 +309,7 @@ def solve_coevolution_genetic(
                 use_gpu_batch=cfg_data.get("use_gpu", False),
             )
 
-            # Track best candidate
+            # Track best candidate (global best with tie-awareness)
             def consider_candidate(cand):
                 nonlocal best_global_score, best_global_genome, best_global_data
                 cand_score = cand["Score"]
@@ -281,37 +318,19 @@ def solve_coevolution_genetic(
                 best_key = genome_key(best_global_genome) if best_global_genome else None
                 cand_key = genome_key(cand_genome)
 
-                if (cand_score > best_global_score) or (
-                    cand_score == best_global_score and cand_key != best_key
-                ):
+                if cand_score > best_global_score:
                     best_global_score = cand_score
                     best_global_genome = cand_genome
                     best_global_data = cand_data
-                    return True
-                return False
+                    return 2  # strict improvement
 
-            promoted = consider_candidate(results[0])
+                if cand_score == best_global_score and cand_key != best_key:
+                    # Same score, different loadout: treat as a variant, not an improvement.
+                    best_global_genome = cand_genome
+                    best_global_data = cand_data
+                    return 1  # tie variant
 
-            if promoted:
-                m_names = results[0]["MiniNames"]
-                print(
-                    f"  >> Gen {generation} (Run {run_idx + 1}): New Best {best_global_score} (Minis: {m_names})"
-                )
-                if status_cb:
-                    status_cb(
-                        f"Run {run_idx + 1}/{num_runs} Gen {generation}: New Best {best_global_score}"
-                    )
-                last_improvement_gen = generation
-                mutation_rate = GA_MUTATION_RATE
-            else:
-                if generation % 10 == 0:
-                    print(
-                        f"  >> Gen {generation} (Run {run_idx + 1}): Best {results[0]['Score']}"
-                    )
-                    if status_cb:
-                        status_cb(
-                            f"Run {run_idx + 1}/{num_runs} Gen {generation}: Best {results[0]['Score']}"
-                        )
+                return 0
 
             # --- MEMETIC GA STEP: local search on top elites ---
             if ga_settings.memetic_elites > 0 and ga_settings.memetic_steps > 0:
@@ -326,23 +345,48 @@ def solve_coevolution_genetic(
                     )
                     if improved_res["Score"] > base_res["Score"]:
                         results[e_idx] = improved_res
-                        # Feed improved candidate back into global tracking
-                        if consider_candidate(improved_res):
-                            m_names = improved_res["MiniNames"]
-                            print(
-                                f"  >> [Memetic] Gen {generation} "
-                                f"(Run {run_idx + 1}): New Best {best_global_score} "
-                                f"(Minis: {m_names})"
-                            )
-                            if status_cb:
-                                status_cb(
-                                    f"Run {run_idx + 1}/{num_runs} Gen {generation} "
-                                    f"Memetic: New Best {best_global_score}"
-                                )
-                            last_improvement_gen = generation
-                            mutation_rate = GA_MUTATION_RATE
                 # Resort after memetic improvements
                 results.sort(key=lambda x: x["Score"], reverse=True)
+
+            # Best candidate AFTER memetic (this is the generation winner)
+            best_cand = results[0]
+
+            # Update run-best tracking (used for stagnation handling)
+            if best_cand["Score"] > best_run_score:
+                best_run_score = best_cand["Score"]
+                last_improvement_gen = generation
+                mutation_rate = GA_MUTATION_RATE
+
+            promote_status = consider_candidate(best_cand)
+            if promote_status == 2:
+                m_names = best_cand["MiniNames"]
+                print(
+                    f"  >> Gen {generation} (Run {run_idx + 1}): New Best {best_global_score} (Minis: {m_names})"
+                )
+                if status_cb:
+                    status_cb(
+                        f"Run {run_idx + 1}/{num_runs} Gen {generation}: New Best {best_global_score}"
+                    )
+            elif promote_status == 1:
+                # Tie score, but a different loadout at the same global score.
+                # Don't call it a "new best" to avoid confusing plateaus with improvements.
+                if generation % 10 == 0:
+                    m_names = best_cand["MiniNames"]
+                    print(
+                        f"  >> Gen {generation} (Run {run_idx + 1}): "
+                        f"BestVariant {best_global_score} (Minis: {m_names})"
+                    )
+            else:
+                if generation % 10 == 0:
+                    print(
+                        f"  >> Gen {generation} (Run {run_idx + 1}): "
+                        f"BestInRun {best_cand['Score']} | GlobalBest {best_global_score}"
+                    )
+                    if status_cb:
+                        status_cb(
+                            f"Run {run_idx + 1}/{num_runs} Gen {generation}: "
+                            f"BestInRun {best_cand['Score']} | GlobalBest {best_global_score}"
+                        )
 
             # Generate next generation via crossover and mutation
             next_gen = perform_crossover_mutation(
@@ -355,28 +399,34 @@ def solve_coevolution_genetic(
                 optimize_minis,
                 fixed_minis,
                 current_mutation_rate,
+                global_elites=global_elites,
             )
 
             population = next_gen
             next_gen = None  # Break reference to help GC
 
             # Compute dynamic mutation rate and generation limit
-            exploration_boost = 0.0
-            if ga_settings.deep_mining_enabled or True:  # Always compute for logging
-                current_mutation_rate, current_run_gens = compute_dynamic_mutation(
-                    mutation_rate,
-                    cache_hits_tracker[0],
-                    generation,
-                    current_run_gens,
-                    gens_per_run,
-                    ga_settings,
-                )
-                # Calculate exploration boost for logging
-                total_evals_so_far = generation * GA_POPULATION_SIZE
-                hit_ratio = cache_hits_tracker[0] / max(1, total_evals_so_far)
-                exploration_boost = min(0.2, hit_ratio * 0.5)
+            current_mutation_rate, current_run_gens = compute_dynamic_mutation(
+                mutation_rate,
+                cache_hits_tracker[0],
+                generation,
+                current_run_gens,
+                gens_per_run,
+                ga_settings,
+            )
+
+            # Cache-hit driven exploration boost is only applied when DeepMining is enabled.
+            total_evals_so_far = generation * GA_POPULATION_SIZE
+            hit_ratio = cache_hits_tracker[0] / max(1, total_evals_so_far)
+            exploration_boost = min(0.2, hit_ratio * 0.5) if ga_settings.deep_mining_enabled else 0.0
 
             # Handle stagnation
+            # If this run is far below the global best, trigger diversity injection sooner
+            # to avoid wasting many generations in a clearly inferior basin.
+            stagnation_limit = base_stagnation_limit
+            if best_global_score > 0 and best_run_score > 0 and best_run_score < best_global_score:
+                stagnation_limit = explore_stagnation_limit
+
             population, mutation_rate, last_improvement_gen = update_mutation_and_diversity(
                 population,
                 results,
@@ -389,7 +439,23 @@ def solve_coevolution_genetic(
                 run_idx,
                 current_mutation_rate,
                 exploration_boost,
+                mini_pool=mini_pool,
+                gear_pool=gear_pool,
+                slots=slots,
+                optimize_gear=optimize_gear,
+                optimize_minis=optimize_minis,
             )
+
+        # Cross-run elite sharing: add this run's best to the global elite pool.
+        # This makes discoveries available for crossover in subsequent runs.
+        if best_run_score > 0:
+            # Find the best genome from this run (may differ from global best)
+            run_best_genome = results[0]["Genome"] if results else None
+            if run_best_genome:
+                global_elites.append(run_best_genome)
+                # Cap pool size to prevent unbounded growth
+                if len(global_elites) > 10:
+                    global_elites = global_elites[-10:]
 
     # Polish best genome with exhaustive local search
     if best_global_genome:

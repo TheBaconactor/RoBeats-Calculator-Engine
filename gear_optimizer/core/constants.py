@@ -3,6 +3,7 @@ Global constants and configuration values for the gear optimizer.
 """
 import os
 import configparser
+import logging
 from dataclasses import dataclass
 
 # --- SCORING CONSTANTS ---
@@ -17,12 +18,17 @@ TOTAL_ROWS = 160
 
 # --- GA (GENETIC ALGORITHM) CONSTANTS ---
 # These will be overwritten by config.ini if present
-GA_POPULATION_SIZE = 250
-GA_GENERATIONS = 75
-GA_MUTATION_RATE = 0.275
-GA_ELITISM = 1
-GA_MULTI_RUNS_DEFAULT = 3  # Multi-start passes to escape local maxima
-GA_MUTATION_RATE_MAX = 0.45  # Cap for adaptive mutation bumps
+# 
+# EXPLORATION vs EXPLOITATION TUNING:
+# - Higher mutation_rate = more exploration (random changes)
+# - More multi_runs = more fresh starts (escape local optima)
+# - Elitism = exploitation (preserving best solutions)
+GA_POPULATION_SIZE = 250          # Balance: keep moderate for diversity + speed
+GA_GENERATIONS = 75               # Enough iterations per run
+GA_MUTATION_RATE = 0.35           # INCREASED: 0.275 → 0.35 (more exploration)
+GA_ELITISM = 1                    # Keep 1 elite (exploitation anchor)
+GA_MULTI_RUNS_DEFAULT = 5         # INCREASED: 3 → 5 (more fresh starts)
+GA_MUTATION_RATE_MAX = 0.55       # INCREASED: 0.45 → 0.55 (allow more aggressive mutation on stagnation)
 
 # --- DATABASE CONFIGURATION ---
 DB_FILE = "evolution.db"
@@ -57,7 +63,11 @@ class PathConfig:
     @classmethod
     def build(cls):
         """Build PathConfig with automatic detection and fallback logic."""
-        script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # Project root resolution:
+        # This file lives at: <root>/gear_optimizer/core/constants.py
+        # We want <root> as the script_dir so that user-facing files like
+        # config.ini, Discord.env, Data/, bin/, etc resolve correctly.
+        script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         bin_dir = os.path.join(script_dir, "bin")
 
         # BUG FIX: Make status file path configurable for server deployment
@@ -75,12 +85,12 @@ class PathConfig:
                 if cfg.has_option("IterationEngine", "StatusFilePath"):
                     status_file = cfg.get("IterationEngine", "StatusFilePath")
             except Exception:
-                pass
+                logging.debug("[Paths] Failed reading StatusFilePath from config.ini", exc_info=True)
 
         # Fallback to original hardcoded path for local development
         if not status_file:
             status_file = os.path.join(
-                os.path.dirname(script_dir),
+                script_dir,
                 "RoBeatMetaWebsite",
                 "RoBeatsMeta",
                 "web",

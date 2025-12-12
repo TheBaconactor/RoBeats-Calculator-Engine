@@ -142,10 +142,40 @@ def optimize_core_jit(
     gems_fm = 0
     gems_ov = 0
     remaining_budget = budget
+    # Tie-breaking / secondary objective:
+    # - Primary: maximize score
+    # - Secondary (when scores tie): maximize Overflow (OV) usage
+    #
+    # IMPORTANT: Pure "prefer OV on ties" can prevent reaching score breakpoints that
+    # require several PP gems (because early PP steps may tie). To address this,
+    # we add a small lookahead: if PP ties with OV now but investing a few PP gems
+    # would strictly improve score within the lookahead window, we still pick PP.
+    PP_TIE_LOOKAHEAD_MAX = 8
 
     while remaining_budget > 0:
-        best_score = -1.0
-        best_opt_idx = -1
+        fill_budget = remaining_budget - 1
+        fill_bonus = (fill_budget * ELEMENTAL_GEM_SCALE) if fill_budget > 0 else 0
+
+        # Precompute multipliers for current CM/FM (unchanged for PP/OV checks)
+        c_mul_cur = lookup_reference_jit(cur_cm, ref_cm, TOTAL_ROWS)
+        f_mul_cur = lookup_reference_jit(cur_fm, ref_fm, TOTAL_ROWS)
+
+        # Start with OV as the default winner so OV wins exact ties.
+        t_p = cur_p_val + (ELEMENTAL_GEM_SCALE * is_p_ov) + (fill_bonus * is_p_ov)
+        t_s = cur_s_val + (ELEMENTAL_GEM_SCALE * is_s_ov) + (fill_bonus * is_s_ov)
+        pp_factor = lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS)
+        base = (t_p * 2) + t_s + pp_factor
+        best_score = fast_calculate_score(
+            base,
+            c_mul_cur,
+            f_mul_cur,
+            fever_mask_head,
+            count_body_fever,
+            count_body_normal,
+        )
+        best_opt_idx = 3
+
+        pp_score = -1
         fill_budget = remaining_budget - 1
         fill_bonus = (fill_budget * ELEMENTAL_GEM_SCALE) if fill_budget > 0 else 0
 
@@ -160,18 +190,16 @@ def optimize_core_jit(
             )
             pp_factor = lookup_reference_jit(t_pp, ref_pp, TOTAL_ROWS)
             base = (t_p * 2) + t_s + pp_factor
-            c_mul = lookup_reference_jit(cur_cm, ref_cm, TOTAL_ROWS)
-            f_mul = lookup_reference_jit(cur_fm, ref_fm, TOTAL_ROWS)
-            score = fast_calculate_score(
+            pp_score = fast_calculate_score(
                 base,
-                c_mul,
-                f_mul,
+                c_mul_cur,
+                f_mul_cur,
                 fever_mask_head,
                 count_body_fever,
                 count_body_normal,
             )
-            if score >= best_score:
-                best_score = score
+            if pp_score > best_score:
+                best_score = pp_score
                 best_opt_idx = 0
 
         # Option 1: CM gem
@@ -186,11 +214,10 @@ def optimize_core_jit(
             pp_factor = lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS)
             base = (t_p * 2) + t_s + pp_factor
             c_mul = lookup_reference_jit(t_cm, ref_cm, TOTAL_ROWS)
-            f_mul = lookup_reference_jit(cur_fm, ref_fm, TOTAL_ROWS)
             score = fast_calculate_score(
                 base,
                 c_mul,
-                f_mul,
+                f_mul_cur,
                 fever_mask_head,
                 count_body_fever,
                 count_body_normal,
@@ -210,11 +237,10 @@ def optimize_core_jit(
             )
             pp_factor = lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS)
             base = (t_p * 2) + t_s + pp_factor
-            c_mul = lookup_reference_jit(cur_cm, ref_cm, TOTAL_ROWS)
             f_mul = lookup_reference_jit(t_fm, ref_fm, TOTAL_ROWS)
             score = fast_calculate_score(
                 base,
-                c_mul,
+                c_mul_cur,
                 f_mul,
                 fever_mask_head,
                 count_body_fever,
@@ -224,24 +250,40 @@ def optimize_core_jit(
                 best_score = score
                 best_opt_idx = 2
 
-        # Option 3: Overflow (elemental gem on selected color)
-        t_p = cur_p_val + (ELEMENTAL_GEM_SCALE * is_p_ov) + (fill_bonus * is_p_ov)
-        t_s = cur_s_val + (ELEMENTAL_GEM_SCALE * is_s_ov) + (fill_bonus * is_s_ov)
-        pp_factor = lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS)
-        base = (t_p * 2) + t_s + pp_factor
-        c_mul = lookup_reference_jit(cur_cm, ref_cm, TOTAL_ROWS)
-        f_mul = lookup_reference_jit(cur_fm, ref_fm, TOTAL_ROWS)
-        score = fast_calculate_score(
-            base,
-            c_mul,
-            f_mul,
-            fever_mask_head,
-            count_body_fever,
-            count_body_normal,
-        )
-        if score >= best_score:
-            best_score = score
-            best_opt_idx = 3
+        # PP lookahead: if OV wins a tie *now*, but a few PP gems would break the tie
+        # into a real improvement soon, start investing in PP.
+        if (
+            best_opt_idx == 3
+            and pp_score == best_score
+            and remaining_budget > 1
+        ):
+            max_k = remaining_budget
+            if max_k > PP_TIE_LOOKAHEAD_MAX:
+                max_k = PP_TIE_LOOKAHEAD_MAX
+            k = 2
+            while k <= max_k:
+                fill_bonus_k = (remaining_budget - k) * ELEMENTAL_GEM_SCALE
+                t_pp = cur_pp + (k * GEM_SCALE_NORMAL)
+                t_p = cur_p_val + (k * GEM_STAT_TO_ELEMENT_SCALE * is_p_pp) + (
+                    fill_bonus_k * is_p_ov
+                )
+                t_s = cur_s_val + (k * GEM_STAT_TO_ELEMENT_SCALE * is_s_pp) + (
+                    fill_bonus_k * is_s_ov
+                )
+                pp_factor = lookup_reference_jit(t_pp, ref_pp, TOTAL_ROWS)
+                base = (t_p * 2) + t_s + pp_factor
+                score_k = fast_calculate_score(
+                    base,
+                    c_mul_cur,
+                    f_mul_cur,
+                    fever_mask_head,
+                    count_body_fever,
+                    count_body_normal,
+                )
+                if score_k > best_score:
+                    best_opt_idx = 0
+                    break
+                k += 1
 
         # Apply the best option
         if best_opt_idx == 0:

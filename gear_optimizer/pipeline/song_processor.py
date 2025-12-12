@@ -20,6 +20,7 @@ import multiprocessing
 import os
 import re
 import sys
+import time
 import traceback
 from io import StringIO
 
@@ -58,6 +59,8 @@ WARN_ONCE = WarnOnce()
 # Global counter for deterministic garbage collection
 _SONG_GC_COUNTER = 0
 
+# Performance timing flag (set via env var or config)
+PERF_TIMING_ENABLED = os.environ.get("PERF_TIMING", "0") == "1"
 
 def scan_song_header(fp):
     """
@@ -240,6 +243,7 @@ def process_song_task(args):
         db_payload = None
 
         cfg = cfg_from_dict(cfg_dict)
+        gpu_mode = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False)
 
         song_data = read_song_file(fp)
 
@@ -301,8 +305,16 @@ def process_song_task(args):
         emit("START")
 
         # --- LOGIC BRANCHING BASED ON FINDERS ---
+        # Performance timing variables (opt-in; enable via PERF_TIMING=1)
+        ga_time_sec = 0.0
+        fg_time_sec = 0.0
+        db_payload_time_sec = 0.0
+        persist_build_time_sec = 0.0
+        report_time_sec = 0.0
+        
         if enable_gear or enable_mini:
             # Run Genetic Algorithm (now memetic-enhanced)
+            ga_start = time.perf_counter()
             (
                 best_data,
                 best_gear,
@@ -332,11 +344,16 @@ def process_song_task(args):
                 executor=local_executor,
                 known_loadouts=known_loadouts,
             )
+            ga_time_sec = time.perf_counter() - ga_start
+            
+            if PERF_TIMING_ENABLED:
+                print(f"[PERF] GA: {ga_time_sec:.2f}s")
 
             # Memory leak fix: Clear known_loadouts after GA completes
             # This dict now caps at the per-song loadout limit (small footprint)
             if known_loadouts:
                 known_loadouts.clear()
+
 
         else:
             # Run Gem Solver only (enable_fever) or Calculate-Only Mode (nothing enabled)
@@ -414,6 +431,7 @@ def process_song_task(args):
                 except Exception:
                     db_loadouts_full_count = 0
 
+            fg_start = time.perf_counter()
             fg_variants = process_force_greats(
                 loadout_entries,
                 manual_force_greats,
@@ -424,11 +442,20 @@ def process_song_task(args):
                 meta_primary_color,
                 build_details,
                 db_loadouts_full_count,
+                use_gpu=gpu_mode,
+                perf_timing=PERF_TIMING_ENABLED,
             )
+            fg_time_sec = time.perf_counter() - fg_start
+            
+            if PERF_TIMING_ENABLED:
+                n_loadouts = len(loadout_entries) if loadout_entries else 0
+                print(f"[PERF] ForceGreats: {fg_time_sec:.2f}s ({n_loadouts} loadouts, finder={force_greats_finder})")
+
 
         # --- REPORTING & DB UPDATE (payload only; saved by coordinator) ---
         if best_data:
             # Build database payload
+            _t_db0 = time.perf_counter()
             db_payload = build_db_payload(
                 best_data,
                 best_gear,
@@ -439,16 +466,20 @@ def process_song_task(args):
                 fg_variants,
                 build_details,
             )
+            db_payload_time_sec = time.perf_counter() - _t_db0
 
             # Build persistence entries
+            _t_persist0 = time.perf_counter()
             persist_entries = build_persistence_entries(
                 db_payload,
                 ga_candidates,
                 loadout_entries,
                 build_details,
             )
+            persist_build_time_sec = time.perf_counter() - _t_persist0
 
             # Print results
+            _t_report0 = time.perf_counter()
             print_results(
                 found_song_name,
                 best_data,
@@ -461,6 +492,13 @@ def process_song_task(args):
                 fg_variants,
                 emit,
             )
+            report_time_sec = time.perf_counter() - _t_report0
+
+            if PERF_TIMING_ENABLED:
+                print(
+                    f"[PERF] DB/Persist/Report: payload={db_payload_time_sec:.3f}s "
+                    f"persist={persist_build_time_sec:.3f}s report={report_time_sec:.3f}s"
+                )
 
         # BUG FIX: Capture buffer content BEFORE finally block closes it
         buf_content = buf.getvalue() if buf else ""

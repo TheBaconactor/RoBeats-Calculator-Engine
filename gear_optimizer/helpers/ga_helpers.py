@@ -134,8 +134,13 @@ def create_genome_functions(
             genome.extend(fixed_gear)
 
         if optimize_minis:
-            if len(mini_rank_cache) >= 3:
-                genome.extend(random.sample(mini_rank_cache[:10], 3))
+            # Widen sampling from top 10 to top 25 to improve diversity
+            # while still biasing toward high-scoring minis.
+            # This helps discover synergistic combinations that don't rank
+            # highest individually but score well together.
+            sample_pool = mini_rank_cache[:25] if len(mini_rank_cache) >= 25 else mini_rank_cache
+            if len(sample_pool) >= 3:
+                genome.extend(random.sample(sample_pool, 3))
             else:
                 genome.extend(random.sample(mini_pool, 3))
         else:
@@ -231,6 +236,7 @@ def create_evaluation_functions(
     ref_arrays,
     known_loadouts,
     cache_hits_tracker,
+    heuristic_mode="modern",
 ):
     """
     Create evaluation and caching functions.
@@ -251,14 +257,47 @@ def create_evaluation_functions(
                 evaluate_genome_local, evaluation_cache)
     """
 
+    # Extract secondary color from song metadata
+    s_color = None
+    if calc_song and calc_song.get("metadata"):
+        s_color = calc_song["metadata"].get("Secondary Color")
+    
     def score_candidate(x):
-        """Simple heuristic scoring for ranking items."""
-        return (
-            x.get(p_color, 0) * 3
-            + x.get("Perfect Points", 0) * 2
-            + x.get("Combo Multiplier", 0) * 2
-            + x.get("Fever Multiplier", 0) * 2
-        )
+        """
+        Heuristic scoring used to rank candidate gear/minis before GA search.
+        Supports multiple modes via GASettings:
+        - modern: base-stats dominant (default)
+        - legacy: color-heavy (closer to legacy script behavior)
+        - hybrid: take the max(modern, legacy) to keep both benefits
+        
+        Note: This is NOT the true score function; it's only used to build the
+        top-K ranked caches that seed the GA and local search neighborhoods.
+        """
+        pp = x.get("Perfect Points", 0)
+        cm = x.get("Combo Multiplier", 0)
+        fm = x.get("Fever Multiplier", 0)
+        ft = x.get("Fever Time", 0)
+        ff = x.get("Fever Fill Rate", 0)
+
+        primary_val = x.get(p_color, 0) if p_color else 0
+        secondary_val = x.get(s_color, 0) if (s_color and s_color != p_color) else 0
+
+        # --- Modern heuristic (base-stats dominant) ---
+        modern_base = (pp * 3) + (cm * 3) + (fm * 3) + (ft * 2) + (ff * 2)
+        modern_elemental_bonus = (primary_val * 2) + (secondary_val * 1)
+        modern_score = modern_base + (modern_elemental_bonus // 2)
+
+        # --- Legacy-like heuristic (color-heavy) ---
+        # Mirrors the legacy idea: prioritize primary-color stat strongly while
+        # still valuing PP/CM/FM (but not FT/FF).
+        legacy_score = (primary_val * 3) + ((pp + cm + fm) * 2) + (secondary_val * 1)
+
+        mode = (heuristic_mode or "modern").strip().lower()
+        if mode == "legacy":
+            return legacy_score
+        if mode == "hybrid":
+            return max(modern_score, legacy_score)
+        return modern_score
 
     def genome_key(genome):
         """Generate a unique key for a genome for caching."""
@@ -378,6 +417,7 @@ def create_local_search_function(
     gear_rank_cache,
     mini_rank_cache,
     mini_pool,
+    gear_pool,
     slots,
     optimize_gear,
     optimize_minis,
@@ -391,6 +431,7 @@ def create_local_search_function(
         gear_rank_cache: Dict mapping slots to ranked gear lists
         mini_rank_cache: Ranked list of minis
         mini_pool: List of valid minis
+        gear_pool: Dict mapping slots to all gear items (full pool)
         slots: List of gear slot names
         optimize_gear: Whether to optimize gear
         optimize_minis: Whether to optimize minis
@@ -490,12 +531,117 @@ def create_local_search_function(
         return best_result, best_genome
 
     def polish_best_genome(best_genome):
-        """Local sweep on top candidates per slot/mini to escape near-misses."""
-        top_k_gear = 8
-        top_k_minis = min(25, len(mini_rank_cache))
+        """
+        Enhanced polishing with exhaustive mini permutation and 2-move neighborhood.
         
-        # Polishing uses the same batch logic now!
-        return run_local_search(best_genome, 0, top_k_gear, top_k_minis, is_polishing=True)
+        Phase 0: Combined gear+mini exploration - try alternative gear WITH alternative minis
+        Phase 1: Exhaustive mini permutation - try all C(top_k, 3) mini combinations
+        Phase 2: 2-swap gear neighborhood - try all pairs of gear swaps
+        Phase 3: Standard 1-swap local search until convergence
+        
+        This helps escape local optima that require coordinated changes.
+        """
+        from itertools import combinations, product
+        
+        top_k_gear = 8
+        top_k_minis_sweep = min(10, len(mini_rank_cache))  # For exhaustive: top 10 -> C(10,3)=120 combos
+        top_k_minis_local = min(25, len(mini_rank_cache))  # For 1-swap local search
+        
+        best_result = evaluate_genome_local(best_genome)
+        best_score = best_result["Score"]
+        current_genome = list(best_genome)
+        
+        # Phase 0 removed - the improved heuristic (MAX of color OR base-stat score) 
+        # should now properly rank items with strong base stats, making exhaustive
+        # search unnecessary.
+        
+        
+        # === PHASE 1: Exhaustive Mini Permutation ===
+        # Try ALL combinations of top-ranked minis with current gear
+        # This guarantees finding the optimal mini team for the current gear.
+        if optimize_minis and len(mini_rank_cache) >= 3:
+            mini_candidates = mini_rank_cache[:top_k_minis_sweep]
+            all_mini_combos = list(combinations(mini_candidates, 3))
+            
+            if all_mini_combos:
+                # Build genomes for all mini combinations
+                mini_trial_genomes = []
+                for combo in all_mini_combos:
+                    trial = current_genome[:6] + list(combo)
+                    mini_trial_genomes.append(trial)
+                
+                # Batch evaluate all mini combinations
+                mini_results = batch_evaluator(mini_trial_genomes)
+                
+                if mini_results:
+                    best_mini_result = max(mini_results, key=lambda x: x["Score"])
+                    if best_mini_result["Score"] > best_score:
+                        best_score = best_mini_result["Score"]
+                        best_result = best_mini_result
+                        current_genome = list(best_mini_result["Genome"])
+                        print(f"  >> [Polish] Exhaustive mini sweep improved score to {best_score}")
+        
+        # === PHASE 2: 2-Swap Gear Neighborhood ===
+        # Try all pairs of gear swaps to escape 2-move basins
+        if optimize_gear:
+            local_gear_rank = {
+                s: gear_rank_cache.get(s, [])[:top_k_gear] for s in slots
+            }
+            
+            two_swap_candidates = []
+            
+            # Generate all (slot_i, gear_a, slot_j, gear_b) combinations
+            for i, slot_i in enumerate(slots):
+                for j, slot_j in enumerate(slots):
+                    if j <= i:
+                        continue  # Only consider i < j pairs
+                    
+                    curr_i = current_genome[i]
+                    curr_j = current_genome[j]
+                    curr_i_name = curr_i.get("Name") if isinstance(curr_i, dict) else ""
+                    curr_j_name = curr_j.get("Name") if isinstance(curr_j, dict) else ""
+                    
+                    for cand_i in local_gear_rank.get(slot_i, []):
+                        if cand_i.get("Name") == curr_i_name:
+                            continue
+                        for cand_j in local_gear_rank.get(slot_j, []):
+                            if cand_j.get("Name") == curr_j_name:
+                                continue
+                            
+                            trial = current_genome[:]
+                            trial[i] = cand_i
+                            trial[j] = cand_j
+                            two_swap_candidates.append(trial)
+            
+            if two_swap_candidates:
+                # Batch evaluate in chunks to avoid exceeding GPU batch size limit
+                GPU_BATCH_LIMIT = 400  # Stay safely under 512 limit
+                all_two_swap_results = []
+                
+                for chunk_start in range(0, len(two_swap_candidates), GPU_BATCH_LIMIT):
+                    chunk = two_swap_candidates[chunk_start:chunk_start + GPU_BATCH_LIMIT]
+                    chunk_results = batch_evaluator(chunk)
+                    if chunk_results:
+                        all_two_swap_results.extend(chunk_results)
+                
+                if all_two_swap_results:
+                    best_two_swap = max(all_two_swap_results, key=lambda x: x["Score"])
+                    if best_two_swap["Score"] > best_score:
+                        best_score = best_two_swap["Score"]
+                        best_result = best_two_swap
+                        current_genome = list(best_two_swap["Genome"])
+                        print(f"  >> [Polish] 2-swap gear improved score to {best_score}")
+        
+        # === PHASE 3: Standard 1-Swap Local Search ===
+        # Continue with traditional hill climbing until convergence
+        final_result, final_genome = run_local_search(
+            current_genome, 0, top_k_gear, top_k_minis_local, is_polishing=True
+        )
+        
+        if final_result["Score"] > best_score:
+            return final_result, final_genome
+        else:
+            return best_result, current_genome
 
     def memetic_local_search(start_genome, max_steps, top_k_gear, top_k_minis):
         """Lightweight local search around a genome."""
@@ -519,6 +665,7 @@ def build_initial_population(
     ga_settings,
     fixed_gear,
     fixed_minis,
+    force_db_seed=False,
 ):
     """
     Build the initial population for a GA run.
@@ -541,11 +688,19 @@ def build_initial_population(
     """
     population = []
     seed_list = build_seed_list_from_record(db_seed)
-    if seed_list and random.random() < ga_settings.db_seed_prob:
+    should_inject = bool(seed_list) and (
+        force_db_seed or (random.random() < ga_settings.db_seed_prob)
+    )
+    if seed_list and should_inject:
         try:
-            print(
-                f" >> [Evolution] Injecting previous best (Score: {db_seed.get('score', 0)})"
-            )
+            if force_db_seed:
+                print(
+                    f" >> [Evolution] Injecting previous best (forced) (Score: {db_seed.get('score', 0)})"
+                )
+            else:
+                print(
+                    f" >> [Evolution] Injecting previous best (Score: {db_seed.get('score', 0)})"
+                )
             seed_genome = reconstruct_genome_from_db_list(seed_list)
             population.append(seed_genome[:])
             population.append(mutate_genome_once(seed_genome))
@@ -559,7 +714,10 @@ def build_initial_population(
         for _ in range(ga_settings.fixed_seed_copies):
             population.append(seed_genome[:])
 
-    for _ in range(10):
+    # Inject more heuristic genomes (25 instead of 10) to ensure each of the 
+    # top-ranked minis gets tested in at least a few combinations.
+    # This helps discover synergistic combos that don't rank highest individually.
+    for _ in range(25):
         population.append(create_heuristic_genome())
 
     while len(population) < GA_POPULATION_SIZE:
@@ -577,6 +735,7 @@ def perform_crossover_mutation(
     optimize_minis,
     fixed_minis,
     current_mutation_rate,
+    global_elites=None,
 ):
     """
     Perform crossover and mutation to create next generation.
@@ -591,19 +750,50 @@ def perform_crossover_mutation(
         optimize_minis: Whether to optimize minis
         fixed_minis: Fixed minis if not optimizing
         current_mutation_rate: Current mutation rate
+        global_elites: Optional list of elite genomes from previous runs (cross-run sharing)
 
     Returns:
         list: Next generation population
     """
     next_gen = [results[i]["Genome"] for i in range(GA_ELITISM)]
 
+    # When exploration is high (e.g., after stagnation/diversity injection),
+    # widen parent selection and increase random injection to help cross
+    # multi-gene fitness valleys caused by strong stat/gem interactions.
+    #
+    # current_mutation_rate is already dynamic (see compute_dynamic_mutation),
+    # so we use it as a proxy for "how stuck are we?".
+    if current_mutation_rate >= 0.35:
+        parent_pool_size = 120
+        random_inject_prob = 0.35
+    elif current_mutation_rate >= 0.30:
+        parent_pool_size = 80
+        random_inject_prob = 0.25
+    else:
+        parent_pool_size = 50
+        random_inject_prob = 0.18
+
+    parent_pool_size = min(parent_pool_size, len(results))
+
+    # Cross-run elite sharing probability - allows good building blocks from
+    # previous runs to propagate via crossover without forcing DB seed injection.
+    elite_crossover_prob = 0.15 if global_elites else 0.0
+
     while len(next_gen) < GA_POPULATION_SIZE:
-        if random.random() < 0.18:
+        if random.random() < random_inject_prob:
             next_gen.append(create_random_genome())
             continue
 
-        p1 = random.choice(results[:50])["Genome"]
-        p2 = random.choice(results[:50])["Genome"]
+        # Parent selection with optional cross-run elite sharing
+        if global_elites and random.random() < elite_crossover_prob:
+            p1 = random.choice(global_elites)
+        else:
+            p1 = random.choice(results[:parent_pool_size])["Genome"]
+        
+        if global_elites and random.random() < elite_crossover_prob:
+            p2 = random.choice(global_elites)
+        else:
+            p2 = random.choice(results[:parent_pool_size])["Genome"]
 
         child = []
         L = min(len(p1), len(p2))
@@ -636,22 +826,41 @@ def perform_crossover_mutation(
 
         child = child_gear + unique_minis
 
-        # Use current_mutation_rate instead of mutation_rate
+        # Mutation:
+        # - Always preserve the existing behavior at low exploration (single-gene mutation).
+        # - Under high exploration, allow *macro-mutation* (2-4 independent gene edits)
+        #   to jump across fitness valleys where any single edit is detrimental but a
+        #   coordinated set is beneficial (common with gem allocation interactions).
         if random.random() < current_mutation_rate:
-            mutate_idx = random.randint(0, 8)
-            if mutate_idx < 6 and optimize_gear:
-                slot_type = slots[mutate_idx]
-                if gear_pool[slot_type]:
-                    child[mutate_idx] = random.choice(gear_pool[slot_type])
-            elif mutate_idx >= 6 and optimize_minis:
-                current_mini_names = {
-                    m.get("Name") for m in child[6:] if isinstance(m, dict)
-                }
-                candidates = [
-                    m for m in mini_pool if m["Name"] not in current_mini_names
-                ]
-                if candidates:
-                    child[mutate_idx] = random.choice(candidates)
+            # Decide how many independent edits to apply.
+            # (This is intentionally small to avoid destabilizing the GA.)
+            n_edits = 1
+            if current_mutation_rate >= 0.35:
+                r = random.random()
+                if r < 0.35:
+                    n_edits = 4
+                elif r < 0.75:
+                    n_edits = 3
+                else:
+                    n_edits = 2
+            elif current_mutation_rate >= 0.30 and random.random() < 0.5:
+                n_edits = 2
+
+            for _ in range(n_edits):
+                mutate_idx = random.randint(0, 8)
+                if mutate_idx < 6 and optimize_gear:
+                    slot_type = slots[mutate_idx]
+                    if gear_pool[slot_type]:
+                        child[mutate_idx] = random.choice(gear_pool[slot_type])
+                elif mutate_idx >= 6 and optimize_minis:
+                    current_mini_names = {
+                        m.get("Name") for m in child[6:] if isinstance(m, dict)
+                    }
+                    candidates = [
+                        m for m in mini_pool if m["Name"] not in current_mini_names
+                    ]
+                    if candidates:
+                        child[mutate_idx] = random.choice(candidates)
 
         next_gen.append(child)
 
@@ -779,6 +988,11 @@ def update_mutation_and_diversity(
     run_idx,
     current_mutation_rate,
     exploration_boost,
+    mini_pool=None,
+    gear_pool=None,
+    slots=None,
+    optimize_gear=True,
+    optimize_minis=True,
 ):
     """
     Update mutation rate and inject diversity if stagnated.
@@ -795,18 +1009,131 @@ def update_mutation_and_diversity(
         run_idx: Current run index
         current_mutation_rate: Current mutation rate with exploration boost
         exploration_boost: Exploration boost amount
+        mini_pool: Optional list of minis for coordinated perturbation
+        gear_pool: Optional dict of gear pools for coordinated perturbation
+        slots: Optional list of slot names for coordinated perturbation
+        optimize_gear: Whether gear optimization is enabled
+        optimize_minis: Whether mini optimization is enabled
 
     Returns:
         tuple: (updated_population, updated_mutation_rate, updated_last_improvement_gen)
     """
     if generation - last_improvement_gen >= stagnation_limit:
+        # Bump the *base* mutation rate, then compute an "effective" rate that
+        # includes the exploration boost (cache-hit driven) so downstream logic
+        # can react immediately in this generation.
+        #
+        # NOTE: Historically we printed/used the pre-bump `current_mutation_rate`
+        # (computed earlier in the loop), which under-reported mutation and
+        # made diversity injection less aggressive than intended.
         mutation_rate = min(GA_MUTATION_RATE_MAX, mutation_rate + 0.08)
+        effective_mutation_rate = min(0.6, mutation_rate + exploration_boost)
         print(
-            f"  >> Stagnation detected (Run {run_idx + 1}), mutation -> {current_mutation_rate:.3f} (Boost: {exploration_boost:.3f}), injecting diversity"
+            f"  >> Stagnation detected (Run {run_idx + 1}), "
+            f"mutation_base -> {mutation_rate:.3f} "
+            f"(effective: {effective_mutation_rate:.3f}, boost: {exploration_boost:.3f}), "
+            f"injecting diversity"
         )
         elites = [r["Genome"] for r in results[:GA_ELITISM]]
         population = elites[:]
-        reinject_target = int(GA_POPULATION_SIZE * 0.4)
+        
+        # NEW: Coordinated Elite Perturbation
+        # Create variants of each elite with 2-3 genes swapped simultaneously.
+        # This helps escape fitness valleys that require coordinated changes
+        # (e.g., swapping a mini AND changing gear simultaneously).
+        if mini_pool and gear_pool and slots:
+            for elite in elites:
+                for _ in range(3):  # 3 perturbation variants per elite
+                    perturbed = list(elite)
+                    n_swaps = random.choice([2, 2, 3])  # Bias toward 2 swaps
+                    
+                    # Choose swap indices - at least one gear, at least one mini
+                    swap_indices = []
+                    if optimize_gear and random.random() < 0.7:
+                        swap_indices.append(random.randint(0, 5))  # gear
+                    if optimize_minis and random.random() < 0.8:
+                        swap_indices.append(random.randint(6, 8))  # mini
+                    
+                    # Fill remaining swaps randomly
+                    while len(swap_indices) < n_swaps:
+                        idx = random.randint(0, 8)
+                        if idx not in swap_indices:
+                            swap_indices.append(idx)
+                    
+                    # Apply swaps
+                    for idx in swap_indices:
+                        if idx < 6 and optimize_gear:
+                            slot_type = slots[idx]
+                            if gear_pool.get(slot_type):
+                                perturbed[idx] = random.choice(gear_pool[slot_type])
+                        elif idx >= 6 and optimize_minis:
+                            current_names = {
+                                m.get("Name") for m in perturbed[6:] 
+                                if isinstance(m, dict)
+                            }
+                            candidates = [
+                                m for m in mini_pool 
+                                if m.get("Name") not in current_names
+                            ]
+                            if candidates:
+                                perturbed[idx] = random.choice(candidates)
+                    
+                    population.append(perturbed)
+        
+        # === FIX 2: Diverse Mini Injection ===
+        # When stuck, explicitly inject genomes using minis that are NOT in the current best.
+        # This forces exploration of alternative mini teams.
+        if mini_pool and optimize_minis and results:
+            # Get the best genome's minis
+            best_genome = results[0]["Genome"]
+            best_mini_names = set()
+            for m in best_genome[6:]:
+                if isinstance(m, dict):
+                    best_mini_names.add(m.get("Name", ""))
+                elif m:
+                    best_mini_names.add(str(m))
+            
+            # Get alternative minis (NOT in current best but in top pool)
+            # Use broader pool for diversity
+            alternative_minis = [
+                m for m in mini_pool 
+                if m.get("Name") not in best_mini_names
+            ]
+            
+            if len(alternative_minis) >= 3:
+                # Inject genomes using top 10 alternative minis
+                top_alt = alternative_minis[:10]
+                for _ in range(8):  # 8 diverse mini genomes
+                    # Use random gear from pool + alternative minis
+                    genome = []
+                    if optimize_gear and gear_pool and slots:
+                        for s in slots:
+                            genome.append(random.choice(gear_pool[s]) if gear_pool.get(s) else {})
+                    else:
+                        genome.extend(best_genome[:6])  # Keep current best gear
+                    
+                    # Sample 3 random minis from alternatives
+                    sample_size = min(3, len(top_alt))
+                    genome.extend(random.sample(top_alt, sample_size))
+                    population.append(genome)
+                
+                # Also inject a few genomes using the BEST gear but alternative minis
+                # This specifically tests if the current gear + different minis is better
+                for _ in range(5):
+                    genome = list(best_genome[:6])  # Clone best gear
+                    sample_size = min(3, len(top_alt))
+                    genome.extend(random.sample(top_alt, sample_size))
+                    population.append(genome)
+        
+        # More aggressive reinjection when exploration is already high.
+        # This helps escape deep local basins where single-gene improvements are rare.
+        reinject_frac = 0.4
+        if effective_mutation_rate >= 0.35:
+            reinject_frac = 0.7
+        elif effective_mutation_rate >= 0.30:
+            reinject_frac = 0.55
+
+        reinject_target = int(GA_POPULATION_SIZE * reinject_frac)
         while len(population) < reinject_target:
             population.append(create_random_genome())
         while len(population) < GA_POPULATION_SIZE:
@@ -857,6 +1184,9 @@ def compute_dynamic_mutation(
 
     # Boost mutation by up to 0.2 if hit ratio is high
     exploration_boost = min(0.2, hit_ratio * 0.5)
+    if not ga_settings.deep_mining_enabled:
+        # DeepMining disabled => do not apply cache-hit driven mutation boosts.
+        exploration_boost = 0.0
     current_mutation_rate = min(0.6, mutation_rate + exploration_boost)  # Allow going slightly higher than normal max
 
     # Cap the extension to avoid infinite loops (e.g. max 5000 gens)

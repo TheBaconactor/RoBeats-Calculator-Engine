@@ -292,7 +292,7 @@ class SongPreloader:
         
         return {
             "selected_color": selected_color,
-            "use_gpu": cfg_dict.get("IterationEngine", {}).get("GPU_GemSolver", False),
+            "use_gpu": cfg_dict.get("IterationEngine", {}).get("GPU_Mode", False),
             "user_ft": int(s.get("fever_time", 0)),
             "user_ff": int(s.get("fever_fill", 0)),
             "user_pp": int(s.get("perfect_points", 0)),

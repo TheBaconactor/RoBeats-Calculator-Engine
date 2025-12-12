@@ -34,9 +34,19 @@ memory_limit_pct = 80         # Memory watchdog threshold
 Add Discord credentials to `Discord.env`:
 
 ```env
-DISCORD_BOT_TOKEN=your_token_here
-DISCORD_LOG_CHANNEL_ID=123456789
-DISCORD_STATS_CHANNEL_ID=987654321
+DISCORD_TOKEN=your_token_here
+LOGGINGCHANNEL=123456789
+STATSCHANNEL=987654321
+```
+
+Optional overrides:
+
+```env
+# Override where results are stored
+EVOLUTION_DB_PATH=/path/to/evolution.db
+
+# Override where MetaFinder writes status JSON (useful for deployments)
+METAFINDER_STATUS_FILE=/path/to/metafinder_status.json
 ```
 
 ## Project Structure
@@ -222,7 +232,7 @@ No circular dependencies - clean hierarchical structure with modular helpers.
 ## Troubleshooting
 
 ### "Could not find Data folder"
-Run `python Bootstrapper.py` to regenerate path cache.
+Delete `bin/paths_cache.json` and re-run `python main.py` to regenerate it automatically.
 
 ### "Memory limit exceeded"
 Increase `memory_limit_pct` in config.ini or reduce `workers`.
@@ -257,3 +267,7 @@ First run compiles functions (slow). Subsequent runs use cached JIT code.
 ## License
 
 This project is for personal use. All rights reserved.
+
+## Security note
+
+Never commit tokens. Keep `Discord.env` local and rotate your Discord bot token if it is ever exposed.

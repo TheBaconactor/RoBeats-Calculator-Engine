@@ -75,12 +75,15 @@ def test_batch_parity():
     batch_results = optimize_gems_batch_gpu(
         timeline_data,
         cur_pp, cur_cm, cur_fm,
-        cur_p_val, cur_s_val,
-        is_p_pp, is_s_pp,
-        is_p_cm, is_s_cm,
-        is_p_fm, is_s_fm,
-        is_p_ov, is_s_ov,
-        ref_arrays,
+        base_p_val=cur_p_val,
+        base_s_val=cur_s_val,
+        is_p_ft=0, is_s_ft=0,
+        is_p_ff=0, is_s_ff=0,
+        is_p_pp=is_p_pp, is_s_pp=is_s_pp,
+        is_p_cm=is_p_cm, is_s_cm=is_s_cm,
+        is_p_fm=is_p_fm, is_s_fm=is_s_fm,
+        is_p_ov=is_p_ov, is_s_ov=is_s_ov,
+        ref_arrays=ref_arrays,
     )
     
     # Run sequential version for comparison
@@ -89,20 +92,19 @@ def test_batch_parity():
     for t in timeline_data:
         result = optimize_gems_gpu(
             t["budget"],
+            t["fever_mask_head"],
+            t["count_body_fever"],
+            t["count_body_normal"],
             cur_pp, cur_cm, cur_fm,
             cur_p_val, cur_s_val,
             is_p_pp, is_s_pp,
             is_p_cm, is_s_cm,
             is_p_fm, is_s_fm,
             is_p_ov, is_s_ov,
-            t["fever_mask_head"],
-            t["count_body_fever"],
-            t["count_body_normal"],
             ref_arrays,
         )
-        # Sequential returns (pp, cm, fm, p_val, s_val, gems_pp, gems_cm, gems_fm, gems_ov)
-        # Batch returns (score, pp, cm, fm, p_val, s_val, gems_pp, gems_cm, gems_fm, gems_ov)
-        # Skip score comparison since sequential doesn't return score
+        # Both return:
+        # (score, pp, cm, fm, p_val, s_val, gems_pp, gems_cm, gems_fm, gems_ov)
         sequential_results.append(result)
     
     # Compare results
@@ -111,18 +113,13 @@ def test_batch_parity():
     mismatches = 0
     
     for i in range(batch_size):
-        # Batch: [score, pp, cm, fm, p_val, s_val, gems_pp, gems_cm, gems_fm, gems_ov]
-        # Sequential: [pp, cm, fm, p_val, s_val, gems_pp, gems_cm, gems_fm, gems_ov]
-        batch_core = batch_results[i][1:]  # Skip score
-        seq_core = sequential_results[i]
-        
-        if batch_core != seq_core:
+        if batch_results[i] != sequential_results[i]:
             all_match = False
             mismatches += 1
             if mismatches <= 3:  # Show first 3 mismatches
                 print(f"  ✗ Mismatch at index {i}:")
-                print(f"    Batch: {batch_core}")
-                print(f"    Sequential: {seq_core}")
+                print(f"    Batch: {batch_results[i]}")
+                print(f"    Sequential: {sequential_results[i]}")
     
     print("\n" + "=" * 60)
     if all_match:

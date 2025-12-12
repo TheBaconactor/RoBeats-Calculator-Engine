@@ -52,6 +52,7 @@ class GASettings:
     memetic_top_minis: int
     multi_start: int
     deep_mining_enabled: bool
+    heuristic_mode: str  # modern | legacy | hybrid
 
     @classmethod
     def from_cfg(cls, cfg):
@@ -70,6 +71,7 @@ class GASettings:
                 12,
                 GA_MULTI_RUNS_DEFAULT,
                 True,
+                "modern",
             )
 
         def get_option(option, fallback):
@@ -92,6 +94,16 @@ class GASettings:
             ),
         )
         deep_mining = cfg.getboolean(section, "DeepMining", fallback=True)
+        heuristic_mode = str(get_option("GA_HeuristicMode", "modern") or "modern").strip().lower()
+        if heuristic_mode not in {"modern", "legacy", "hybrid"}:
+            # Be conservative: invalid config should not crash or silently change behavior.
+            try:
+                logging.warning(
+                    f"[GA] Invalid GA_HeuristicMode={heuristic_mode!r}; falling back to 'modern'."
+                )
+            except Exception:
+                pass
+            heuristic_mode = "modern"
 
         return cls(
             min(1.0, max(0.0, db_seed_prob)),
@@ -102,6 +114,7 @@ class GASettings:
             memetic_top_minis,
             multi_start,
             deep_mining,
+            heuristic_mode,
         )
 
 

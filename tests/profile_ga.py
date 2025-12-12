@@ -1,32 +1,30 @@
 """
-Test GA with GPU Gem Solver enabled.
-
-Verifies that the GPU gem solver produces the same results when used
-through the full GA pipeline.
+Profile the Genetic Algorithm to identify performance bottlenecks.
+Uses cProfile and pstats to generate a detailed performance report.
 """
 import sys
 import os
+import cProfile
+import pstats
+import io
 import numpy as np
 import random
 
+# Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-def run_ga_gpu_test():
-    print("=" * 60)
-    print("GA GPU Integration Test")
-    print("=" * 60)
+
+def setup_ga_test_data():
+    """Create mock data for GA profiling."""
+    from gear_optimizer.core.constants import TOTAL_ROWS
     
     SEED = 42
-    
-    from gear_optimizer.solver.genetic import solve_coevolution_genetic
-    from gear_optimizer.core.constants import TOTAL_ROWS
-
-    # Generate deterministic mock data
     np.random.seed(SEED)
     random.seed(SEED)
     
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     
+    # Generate 50 items per slot (300 total gear items)
     all_gears = []
     gears_by_name = {}
     for slot in slots:
@@ -49,6 +47,7 @@ def run_ga_gpu_test():
             all_gears.append(item)
             gears_by_name[name] = item
     
+    # Generate 20 minis
     all_minis = []
     minis_by_name = {}
     for i in range(20):
@@ -70,10 +69,11 @@ def run_ga_gpu_test():
         all_minis.append(item)
         minis_by_name[name] = item
 
+    # Mock Song Context - 100 notes over 120s
     timestamps = np.linspace(0, 120, 100).tolist()
     calc_song = {
         "metadata": {
-            "Song Name": "GPU GA Test Song",
+            "Song Name": "Profile Song",
             "Difficulty": "Hard",
             "Primary Color": "Rush",
             "Secondary Color": "Flow",
@@ -101,15 +101,14 @@ def run_ga_gpu_test():
         "Fever Time": np.linspace(1.0, 2.5, rows),
     }
 
-    class MockCfgGPU:
+    # Mock Config object
+    class MockCfg:
         def get(self, section, option, fallback=None):
             if section == "UserInputStatsGems":
                 return 0
             if section == "ElementalGems":
                 return 0
             if section == "IterationEngine":
-                if option == "GPU_Mode":
-                    return True  # Enable GPU!
                 if option in ["MemeticElites", "MemeticSteps", "MemeticTopGear", "MemeticTopMinis"]:
                     return 0
                 if option == "MultiStartRuns":
@@ -136,43 +135,121 @@ def run_ga_gpu_test():
             except:
                 return float(fallback)
 
-    # Run with GPU
-    print("\nRunning GA with GPU Gem Solver...")
-    np.random.seed(SEED)
-    random.seed(SEED)
+    cfg = MockCfg()
+    
+    return {
+        "cfg": cfg,
+        "base_stats_fixed": base_stats_fixed,
+        "calc_song": calc_song,
+        "ref_arrays": ref_arrays,
+        "all_gears": all_gears,
+        "all_minis": all_minis,
+        "gears_by_name": gears_by_name,
+        "minis_by_name": minis_by_name,
+    }
+
+
+def run_ga(data, ga_depth=50):
+    """Run the GA solver."""
+    from gear_optimizer.solver.genetic import solve_coevolution_genetic
+    
+    np.random.seed(42)
+    random.seed(42)
     
     best_data, best_gear, best_minis, _, _, _, _ = solve_coevolution_genetic(
-        cfg=MockCfgGPU(),
-        base_stats_fixed=base_stats_fixed,
+        cfg=data["cfg"],
+        base_stats_fixed=data["base_stats_fixed"],
         paths=None,
-        calc_song=calc_song,
-        ref_arrays=ref_arrays,
-        all_gears=all_gears,
-        all_minis=all_minis,
-        gears_by_name=gears_by_name,
-        minis_by_name=minis_by_name,
+        calc_song=data["calc_song"],
+        ref_arrays=data["ref_arrays"],
+        all_gears=data["all_gears"],
+        all_minis=data["all_minis"],
+        gears_by_name=data["gears_by_name"],
+        minis_by_name=data["minis_by_name"],
         optimize_gear=True,
         optimize_minis=True,
-        ga_depth=10,
+        ga_depth=ga_depth,
     )
     
-    gpu_score = best_data["Score"]
-    print(f"\nGPU GA Score: {gpu_score}")
+    return best_data["Score"]
+
+
+def profile_ga(ga_depth=50):
+    """Profile the GA and output stats."""
+    print("=" * 70)
+    print(f"Profiling Genetic Algorithm (ga_depth={ga_depth})")
+    print("=" * 70)
     
-    # Expected score from CPU regression
-    expected_score = 1662978
+    # Setup data outside of profiling
+    print("\nSetting up test data...")
+    data = setup_ga_test_data()
+    print("Test data ready.\n")
     
-    print("\n" + "=" * 60)
-    if gpu_score == expected_score:
-        print(f"✓ PASSED: GPU GA ({gpu_score}) == CPU expected ({expected_score})")
-    else:
-        print(f"✗ DIFFERENT: GPU GA ({gpu_score}) != CPU expected ({expected_score})")
-        print(f"  Diff: {gpu_score - expected_score}")
-        print("  (Note: Minor differences may be due to GPU floating point)")
-    print("=" * 60)
+    # Profile the GA run
+    profiler = cProfile.Profile()
+    profiler.enable()
     
-    return gpu_score == expected_score
+    score = run_ga(data, ga_depth)
+    
+    profiler.disable()
+    
+    print(f"\nFinal Score: {score}")
+    print("\n" + "=" * 70)
+    print("PROFILING RESULTS (Top 30 by cumulative time)")
+    print("=" * 70)
+    
+    # Sort by cumulative time
+    stream = io.StringIO()
+    stats = pstats.Stats(profiler, stream=stream)
+    stats.strip_dirs()
+    stats.sort_stats('cumulative')
+    stats.print_stats(30)
+    print(stream.getvalue())
+    
+    print("\n" + "=" * 70)
+    print("PROFILING RESULTS (Top 30 by total time)")
+    print("=" * 70)
+    
+    stream2 = io.StringIO()
+    stats2 = pstats.Stats(profiler, stream=stream2)
+    stats2.strip_dirs()
+    stats2.sort_stats('tottime')
+    stats2.print_stats(30)
+    print(stream2.getvalue())
+    
+    # Save to file
+    output_file = os.path.join(os.path.dirname(__file__), "ga_profile_results.txt")
+    with open(output_file, "w") as f:
+        f.write(f"GA Profiling Results (ga_depth={ga_depth})\n")
+        f.write("=" * 70 + "\n\n")
+        f.write("TOP 50 BY CUMULATIVE TIME:\n")
+        f.write("-" * 70 + "\n")
+        
+        stream3 = io.StringIO()
+        stats3 = pstats.Stats(profiler, stream=stream3)
+        stats3.strip_dirs()
+        stats3.sort_stats('cumulative')
+        stats3.print_stats(50)
+        f.write(stream3.getvalue())
+        
+        f.write("\n\nTOP 50 BY TOTAL TIME:\n")
+        f.write("-" * 70 + "\n")
+        
+        stream4 = io.StringIO()
+        stats4 = pstats.Stats(profiler, stream=stream4)
+        stats4.strip_dirs()
+        stats4.sort_stats('tottime')
+        stats4.print_stats(50)
+        f.write(stream4.getvalue())
+    
+    print(f"\nFull results saved to: {output_file}")
+    return score
+
 
 if __name__ == "__main__":
-    success = run_ga_gpu_test()
-    sys.exit(0 if success else 1)
+    import argparse
+    parser = argparse.ArgumentParser(description="Profile the Genetic Algorithm")
+    parser.add_argument("--depth", type=int, default=50, help="GA depth (generations)")
+    args = parser.parse_args()
+    
+    profile_ga(ga_depth=args.depth)

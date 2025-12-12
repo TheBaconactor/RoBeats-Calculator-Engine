@@ -14,6 +14,22 @@ import os
 import time
 import random
 
+# IMPORTANT: Taichi init config is captured when `gear_optimizer.solver.taichi_gem_solver`
+# is first imported. We set defaults here before any GPU path is invoked.
+if "--no-kernel-profiler" in sys.argv:
+    os.environ.setdefault("TAICHI_KERNEL_PROFILER", "0")
+else:
+    os.environ.setdefault("TAICHI_KERNEL_PROFILER", "1")
+
+if "--block-dim" in sys.argv:
+    try:
+        idx = sys.argv.index("--block-dim")
+        os.environ["TAICHI_BLOCK_DIM"] = str(int(sys.argv[idx + 1]))
+    except Exception:
+        pass
+else:
+    os.environ.setdefault("TAICHI_BLOCK_DIM", "256")
+
 # Add parent to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -152,12 +168,11 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
     from gear_optimizer.solver.fever_timeline import get_song_timeline_grid, SONG_TIMELINE_GRIDS
     from gear_optimizer.core.utils import stats_signature, SKIP_ITEM_KEYS
     from gear_optimizer.core.constants import (
-        TOTAL_GEM_BUDGET, MAX_STAT_INDEX, GEM_SCALE_NORMAL, GEM_SCALE_FEVER,
+        TOTAL_GEM_BUDGET, GEM_SCALE_NORMAL, GEM_SCALE_FEVER,
         GEM_STAT_TO_ELEMENT_SCALE, ELEMENTAL_GEM_SCALE,
     )
-    from gear_optimizer.solver.scoring import precompute_fever_timelines
-    from gear_optimizer.solver.taichi_gem_solver import mega_batch_solve_population
-    from math import floor
+    from gear_optimizer.solver.taichi_gem_solver import solve_genomes_parallel
+    import taichi as ti
     
     population = [create_random_genome() for _ in range(population_size)]
     GEM_SOLVER_CACHE.clear()
@@ -197,68 +212,28 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
     phase2_time = time.perf_counter() - t0
     print(f"Phase 2 (Signature dedup):      {phase2_time:.4f}s")
     
-    # Phase 3: Timeline grid + precompute_fever_timelines
+    # Phase 3: Timeline grid init + precompute + upload (done inside solve_genomes_parallel once/song)
     t0 = time.perf_counter()
     grid = get_song_timeline_grid(calc_song, ref_arrays)
     phase3a_time = time.perf_counter() - t0
     print(f"Phase 3a (Timeline grid init):  {phase3a_time:.4f}s")
     
+    # Build genome_stats_list (same shape as scoring.py GPU V2/V3 path expects)
     t0 = time.perf_counter()
-    total_work_items = 0
-    genome_stats = {}
-    work_items = []
-    genome_ids = []
-    
-    for unique_idx, (sig, stats) in enumerate(unique_stats[:50]):  # Sample first 50 for speed
-        base_stats = stats.copy()
-        
-        # Deduct user-specified gems from base stats
-        base_stats["Fever Time"] -= user_ft * GEM_SCALE_FEVER
-        base_stats["Beat"] -= user_ft * GEM_STAT_TO_ELEMENT_SCALE
-        base_stats["Fever Fill Rate"] -= user_ff * GEM_SCALE_FEVER
-        base_stats["Vibe"] -= user_ff * GEM_STAT_TO_ELEMENT_SCALE
-        base_stats["Fever Multiplier"] -= user_fm * GEM_SCALE_FEVER
-        base_stats["Rush"] -= user_fm * GEM_STAT_TO_ELEMENT_SCALE
-        base_stats["Combo Multiplier"] -= user_cm * GEM_SCALE_NORMAL
-        base_stats["Flow"] -= user_cm * GEM_STAT_TO_ELEMENT_SCALE
-        base_stats["Perfect Points"] -= user_pp * GEM_SCALE_NORMAL
-        base_stats["Chill"] -= user_pp * GEM_STAT_TO_ELEMENT_SCALE
-        base_stats[sel_color] -= static_elem_input * ELEMENTAL_GEM_SCALE
-        
-        remaining_ft_stat = MAX_STAT_INDEX - base_stats["Fever Time"]
-        remaining_ff_stat = MAX_STAT_INDEX - base_stats["Fever Fill Rate"]
-        max_ft_gems = floor(remaining_ft_stat / GEM_SCALE_FEVER) if remaining_ft_stat > 0 else 0
-        max_ff_gems = floor(remaining_ff_stat / GEM_SCALE_FEVER) if remaining_ff_stat > 0 else 0
-        
-        timelines = precompute_fever_timelines(
-            base_stats, calc_song, ref_arrays,
-            TOTAL_GEM_BUDGET, max_ft_gems, max_ff_gems, None
-        )
-        
-        for t_data in timelines:
-            work_items.append({
-                "budget": t_data["remaining_budget"],
-                "fever_mask_head": t_data["timeline"][0],
-                "count_body_fever": t_data["timeline"][1],
-                "count_body_normal": t_data["timeline"][2],
-                "ft_gems": t_data["ft_gems"],
-                "ff_gems": t_data["ff_gems"],
-            })
-            genome_ids.append(unique_idx)
-        
-        total_work_items += len(timelines)
-        
-        # Build genome stats
+    genome_stats_list = []
+    for stats in all_stats:
         base_pp = stats.get("Perfect Points", 0) - user_pp * GEM_SCALE_NORMAL
         base_cm = stats.get("Combo Multiplier", 0) - user_cm * GEM_SCALE_NORMAL
         base_fm = stats.get("Fever Multiplier", 0) - user_fm * GEM_SCALE_FEVER
-        
+        base_ft_stat = stats.get("Fever Time", 0) - user_ft * GEM_SCALE_FEVER
+        base_ff_stat = stats.get("Fever Fill Rate", 0) - user_ff * GEM_SCALE_FEVER
+
         base_beat = stats.get("Beat", 0) - user_ft * GEM_STAT_TO_ELEMENT_SCALE
         base_vibe = stats.get("Vibe", 0) - user_ff * GEM_STAT_TO_ELEMENT_SCALE
         base_rush = stats.get("Rush", 0) - user_fm * GEM_STAT_TO_ELEMENT_SCALE
         base_flow = stats.get("Flow", 0) - user_cm * GEM_STAT_TO_ELEMENT_SCALE
         base_chill = stats.get("Chill", 0) - user_pp * GEM_STAT_TO_ELEMENT_SCALE
-        
+
         if sel_color == "Beat": base_beat -= static_elem_input * ELEMENTAL_GEM_SCALE
         elif sel_color == "Vibe": base_vibe -= static_elem_input * ELEMENTAL_GEM_SCALE
         elif sel_color == "Rush": base_rush -= static_elem_input * ELEMENTAL_GEM_SCALE
@@ -268,54 +243,93 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
         color_vals = {"Beat": base_beat, "Vibe": base_vibe, "Rush": base_rush, "Flow": base_flow, "Chill": base_chill}
         base_p_val = color_vals.get(p_color, 0)
         base_s_val = color_vals.get(s_color, 0)
-        
-        genome_stats[unique_idx] = (int(base_pp), int(base_cm), int(base_fm), int(base_p_val), int(base_s_val))
-    
+
+        genome_stats_list.append({
+            "base_pp": int(base_pp),
+            "base_cm": int(base_cm),
+            "base_fm": int(base_fm),
+            "base_p_val": int(base_p_val),
+            "base_s_val": int(base_s_val),
+            "base_ft_stat": int(base_ft_stat),
+            "base_ff_stat": int(base_ff_stat),
+        })
     phase3b_time = time.perf_counter() - t0
-    print(f"Phase 3b (Fever timeline gen):  {phase3b_time:.4f}s  ({total_work_items} work items for 50 genomes)")
-    print(f"         Extrapolated for {population_size}: ~{phase3b_time * population_size / 50:.3f}s")
-    
-    # Phase 4: GPU Kernel
-    if work_items:
-        # Color flags
-        is_p_pp = 1 if "Chill" == p_color else 0
-        is_s_pp = 1 if "Chill" == s_color else 0
-        is_p_cm = 1 if "Flow" == p_color else 0
-        is_s_cm = 1 if "Flow" == s_color else 0
-        is_p_fm = 1 if "Rush" == p_color else 0
-        is_s_fm = 1 if "Rush" == s_color else 0
-        is_p_ov = 1 if sel_color == p_color else 0
-        is_s_ov = 1 if sel_color == s_color else 0
-        is_p_ft = 1 if "Beat" == p_color else 0
-        is_s_ft = 1 if "Beat" == s_color else 0
-        is_p_ff = 1 if "Vibe" == p_color else 0
-        is_s_ff = 1 if "Vibe" == s_color else 0
-        
-        t0 = time.perf_counter()
-        results = mega_batch_solve_population(
-            work_items,
-            np.array(genome_ids, dtype=np.int32),
-            genome_stats,
-            is_p_ft, is_s_ft, is_p_ff, is_s_ff,
-            is_p_pp, is_s_pp, is_p_cm, is_s_cm,
-            is_p_fm, is_s_fm, is_p_ov, is_s_ov,
-            ref_arrays,
-        )
-        phase4_time = time.perf_counter() - t0
-        print(f"Phase 4 (GPU kernel):           {phase4_time:.4f}s  ({len(work_items)} work items)")
-        print(f"         Extrapolated for {population_size}: ~{phase4_time * population_size / 50:.3f}s")
+    print(f"Phase 3b (Build genome_stats_list): {phase3b_time:.4f}s")
+
+    # Phase 4: GPU Kernel (solve_genomes_parallel V3) + internal breakdown
+    # Enable Taichi kernel profiler automatically for this profiling run
+    # (Must be set before first Taichi init; safe here if Taichi wasn't inited yet.)
+    os.environ.setdefault("TAICHI_KERNEL_PROFILER", "1")
+
+    is_p_pp = 1 if "Chill" == p_color else 0
+    is_s_pp = 1 if "Chill" == s_color else 0
+    is_p_cm = 1 if "Flow" == p_color else 0
+    is_s_cm = 1 if "Flow" == s_color else 0
+    is_p_fm = 1 if "Rush" == p_color else 0
+    is_s_fm = 1 if "Rush" == s_color else 0
+    is_p_ov = 1 if sel_color == p_color else 0
+    is_s_ov = 1 if sel_color == s_color else 0
+    is_p_ft = 1 if "Beat" == p_color else 0
+    is_s_ft = 1 if "Beat" == s_color else 0
+    is_p_ff = 1 if "Vibe" == p_color else 0
+    is_s_ff = 1 if "Vibe" == s_color else 0
+
+    profile = {}
+    t0 = time.perf_counter()
+    _ = solve_genomes_parallel(
+        genome_stats_list,
+        grid,
+        is_p_ft, is_s_ft, is_p_ff, is_s_ff,
+        is_p_pp, is_s_pp, is_p_cm, is_s_cm,
+        is_p_fm, is_s_fm, is_p_ov, is_s_ov,
+        ref_arrays,
+        total_budget=TOTAL_GEM_BUDGET,
+        gem_scale_fever=GEM_SCALE_FEVER,
+        profile=profile,
+    )
+    phase4_time = time.perf_counter() - t0
+    print(f"Phase 4 (solve_genomes_parallel total): {phase4_time:.4f}s")
+    if profile:
+        print("  Internal breakdown:")
+        for k in [
+            "grid_upload_s", "genome_upload_s", "combo_upload_s", "reset_best_s",
+            "kernel_combo_s", "kernel_finalize_s", "download_s", "total_s"
+        ]:
+            if k in profile:
+                print(f"    {k:18s}: {profile[k]:.6f}s")
+        if "combo_count" in profile:
+            print(f"    {'combo_count':18s}: {profile['combo_count']}")
+
+    # Print Taichi kernel profiler results (if enabled)
+    try:
+        ti.profiler.print_kernel_profiler_info()
+        ti.profiler.clear_kernel_profiler_info()
+    except Exception:
+        pass
     
     print()
     print("CONCLUSION:")
     print("-" * 40)
-    estimated_total = phase1_time + phase2_time + phase3a_time + (phase3b_time * population_size / 50) + (phase4_time * population_size / 50)
+    estimated_total = phase1_time + phase2_time + phase3a_time + phase3b_time + phase4_time
     print(f"Estimated total for {population_size} genomes: {estimated_total:.3f}s")
-    
-    if phase3b_time * population_size / 50 > phase4_time * population_size / 50:
-        print("BOTTLENECK: CPU-side fever timeline generation (Phase 3b)")
+
+    cpu_total = phase1_time + phase2_time + phase3a_time + phase3b_time
+    if cpu_total > phase4_time:
+        print("BOTTLENECK: CPU-side prep (stats/signatures/grid/stats_list)")
     else:
-        print("BOTTLENECK: GPU kernel (Phase 4)")
+        print("BOTTLENECK: GPU compute (Phase 4)")
 
 
 if __name__ == "__main__":
-    profile_batch_evaluation(population_size=500, num_iterations=3)
+    def _arg_int(flag: str, default: int) -> int:
+        if flag in sys.argv:
+            try:
+                i = sys.argv.index(flag)
+                return int(sys.argv[i + 1])
+            except Exception:
+                return default
+        return default
+
+    pop = _arg_int("--population", 500)
+    iters = _arg_int("--iterations", 3)
+    profile_batch_evaluation(population_size=pop, num_iterations=iters)

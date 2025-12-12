@@ -65,7 +65,7 @@ def log_memory_usage(label=""):
         percent = process.memory_percent()
         print(f"[MEMORY] {label}: {rss_gb:.2f} GB ({percent:.1f}%)")
     except Exception:
-        pass
+        logging.debug("[MEMORY] Failed to read memory usage", exc_info=True)
 
 
 def trigger_memory_release(reason):
@@ -86,7 +86,7 @@ def trigger_memory_release(reason):
         try:
             reporter.send_log(reason)
         except Exception:
-            pass
+            logging.debug("[MemoryGuard] Failed to send Discord log", exc_info=True)
     MEMORY_WATCHDOG_EVENT.set()
 
 
@@ -116,7 +116,7 @@ def _process_tree_rss_bytes(root_process, include_compressed=False):
         for child in root_process.children(recursive=True):
             total += _rss_with_compressed(child)
     except Exception:
-        pass
+        logging.debug("[MemoryGuard] Failed to read child process memory", exc_info=True)
     return total
 
 
@@ -440,7 +440,7 @@ def restart_process_for_memory_guard():
     then exits the current process.
     """
     python = sys.executable or "python"
-    script = os.path.abspath(__file__)
+    is_frozen = bool(getattr(sys, "frozen", False))
     message = "[MemoryGuard] Restarting optimizer to release memory and resume pending songs."
     print(message)
     try:
@@ -449,7 +449,22 @@ def restart_process_for_memory_guard():
         pass
     sys.stdout.flush()
     try:
-        subprocess.Popen([python, script] + sys.argv[1:])
+        # Relaunch the *actual entrypoint* (not this module).
+        #
+        # - Non-frozen: sys.argv is typically ["main.py", ...] so `python + sys.argv`
+        #   faithfully recreates the invocation.
+        # - Frozen (PyInstaller): sys.executable is the app; sys.argv[0] is the app
+        #   path, so we must NOT duplicate it.
+        if is_frozen:
+            cmd = [python] + sys.argv[1:]
+        else:
+            if sys.argv and sys.argv[0] and os.path.exists(sys.argv[0]):
+                cmd = [python] + sys.argv
+            else:
+                main_py = os.path.join(PATHS.script_dir, "main.py")
+                cmd = [python, main_py] + sys.argv[1:]
+
+        subprocess.Popen(cmd, cwd=PATHS.script_dir)
     except Exception as exc:
         fail_msg = f"[MemoryGuard] Failed to relaunch automatically: {exc}"
         print(fail_msg)

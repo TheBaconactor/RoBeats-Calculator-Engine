@@ -166,7 +166,8 @@ def run_ga_regression():
     print(f"Final Score: {score}")
     
     # 4. Assert
-    expected_score = 1662978
+    # expected_score = 1662978  # Old baseline with strong seeding
+    expected_score = 1656772  # New baseline after removing strong global_elites seeding
     assert score == expected_score, f"Expected {expected_score}, got {score}"
     print("[OK] Regression score match!")
     

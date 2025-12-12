@@ -111,7 +111,9 @@ class GearOptimizerApp:
             try:
                 write_metafinder_status("online", "MetaFinder heartbeat")
             except Exception:
-                pass
+                # Heartbeat failures should never crash the optimizer, but should be visible
+                # in logs when debugging deployment issues.
+                logging.debug("[MetaFinder] Heartbeat status write failed", exc_info=True)
             stop_event.wait(60.0)
 
     def run(self):
@@ -123,7 +125,7 @@ class GearOptimizerApp:
         try:
             threading.Thread(target=self.run_heartbeat, args=(heartbeat_stop,), daemon=True).start()
         except Exception:
-            pass
+            logging.debug("[MetaFinder] Failed to start heartbeat thread", exc_info=True)
 
         while True:
             should_loop = self._run_single_iteration()
@@ -438,7 +440,11 @@ class GearOptimizerApp:
                 break
             if msg is None:
                 break
-            print(msg, flush=True)
+            try:
+                print(msg, flush=True)
+            except (ValueError, OSError):
+                # Handle "I/O operation on closed file" during shutdown
+                pass
             self.discord_reporter.send_log(str(msg))
 
     def _prepare_tasks(self, song_queue, cfg, paths, ref_arrays, all_gears, all_minis,

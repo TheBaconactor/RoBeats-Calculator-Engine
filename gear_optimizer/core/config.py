@@ -168,8 +168,10 @@ def find_and_cache_paths():
     targets_dirs = set(["Easy", "Normal", "Hard"])
     targets_files = set(["Gears.csv", "Minis.csv", "Stats.txt"])
 
-    # Start scanning from parent directory to include sibling folders
-    base_dir = PROJECT_ROOT.parent if PROJECT_ROOT.parent != PROJECT_ROOT else PROJECT_ROOT
+    # Start scanning from the project root (or Data/ if present) to avoid scanning
+    # unrelated parent directories (which can be very large on some systems).
+    data_dir = PROJECT_ROOT / "Data"
+    base_dir = data_dir if data_dir.exists() else PROJECT_ROOT
     queue = deque([base_dir])
     visited = {str(base_dir.resolve())}
 
@@ -234,7 +236,7 @@ def load_paths_cache():
                 if all(cached.get(k) for k in ["Easy", "Normal", "Hard", "Gears", "Stats"]):
                     return cached
         except Exception:
-            pass
+            logging.debug("[Paths] Failed to load/validate paths_cache.json", exc_info=True)
 
     # Cache doesn't exist or is invalid - discover paths
     print("[Paths] Discovering data file paths...")
