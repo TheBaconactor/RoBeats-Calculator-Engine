@@ -382,10 +382,14 @@ def batch_evaluate_genomes(
         is_s_ff = 1 if "Vibe" == s_color else 0
         
         # V2 KERNEL: Parallelizes across (genome, ft, ff) = ~400k threads!
-        with _GPU_LOCK:
-            gpu_results = solve_genomes_parallel(
+        # Route through GPU executor IPC in worker process mode
+        from .gpu_executor import is_gpu_worker_mode, submit_gpu_solve_genomes
+        
+        if is_gpu_worker_mode():
+            # IPC route to GPU executor (parallel song processing)
+            gpu_results = submit_gpu_solve_genomes(
                 genome_stats_list,
-                grid,  # Timeline grid - uploaded once
+                grid,
                 is_p_ft, is_s_ft, is_p_ff, is_s_ff,
                 is_p_pp, is_s_pp, is_p_cm, is_s_cm,
                 is_p_fm, is_s_fm, is_p_ov, is_s_ov,
@@ -393,6 +397,19 @@ def batch_evaluate_genomes(
                 total_budget=TOTAL_GEM_BUDGET,
                 gem_scale_fever=GEM_SCALE_FEVER,
             )
+        else:
+            # Direct GPU call (sequential mode or main process)
+            with _GPU_LOCK:
+                gpu_results = solve_genomes_parallel(
+                    genome_stats_list,
+                    grid,  # Timeline grid - uploaded once
+                    is_p_ft, is_s_ft, is_p_ff, is_s_ff,
+                    is_p_pp, is_s_pp, is_p_cm, is_s_cm,
+                    is_p_fm, is_s_fm, is_p_ov, is_s_ov,
+                    ref_arrays,
+                    total_budget=TOTAL_GEM_BUDGET,
+                    gem_scale_fever=GEM_SCALE_FEVER,
+                )
         
         # Convert GPU results to proper format and cache (O(n))
         for unique_idx, (sig, _rep_stats) in enumerate(unique_stats):

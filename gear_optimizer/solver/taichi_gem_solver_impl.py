@@ -71,7 +71,7 @@ grid_fever_masks_bits: ti.Field = None   # (161, 161, 4) u32 - bitpacked head ma
 # MEGA-BATCH work items (max 524k work items for V2 parallel kernel)
 MAX_WORK_ITEMS = 524288  # 512k - supports 500 genomes × ~800 FT/FF combinations
 MAX_HEAD_NOTES = 100
-MAX_GENOMES = 512  # Support up to 512 unique genomes per batch
+MAX_GENOMES = 1024  # Support up to 1024 unique genomes per batch
 
 # ============================================================================
 # FORCE GREATs (FG) FINDER GPU CONFIG

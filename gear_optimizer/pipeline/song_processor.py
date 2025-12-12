@@ -41,6 +41,7 @@ from ..solver.scoring import (
     FG_CACHE,
     solve_best_fever_combination,
 )
+from ..solver.gpu_profiler import get_gpu_profiler
 from ..core.memory import log_memory_usage
 from ..core.utils import cfg_from_dict
 from ..helpers.song_helpers import (
@@ -61,6 +62,9 @@ _SONG_GC_COUNTER = 0
 
 # Performance timing flag (set via env var or config)
 PERF_TIMING_ENABLED = os.environ.get("PERF_TIMING", "0") == "1"
+
+# GPU profiler for songs/hour tracking
+_gpu_profiler = get_gpu_profiler()
 
 def scan_song_header(fp):
     """
@@ -235,6 +239,9 @@ def process_song_task(args):
 
     # Memory leak tracking: Log memory at start of song
     log_memory_usage(f"Start: {found_song_name}")
+    
+    # GPU profiler: track song processing time
+    _gpu_profiler.start_song(found_song_name)
 
     try:
         best_data = None
@@ -516,6 +523,9 @@ def process_song_task(args):
     finally:
         # Memory leak tracking: Log before cleanup
         log_memory_usage(f"Before cleanup: {found_song_name}")
+        
+        # GPU profiler: end song tracking
+        _gpu_profiler.end_song()
 
         if local_executor:
             local_executor.shutdown()

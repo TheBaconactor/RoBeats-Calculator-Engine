@@ -583,6 +583,17 @@ class GearOptimizerApp:
         max_pool_retries = 3
         broken_pool_failures = 0
         current_worker_cap = max_workers
+        
+        # Start GPU executor for centralized GPU ownership
+        gpu_executor = None
+        try:
+            from gear_optimizer.solver.gpu_executor import get_gpu_executor
+            gpu_executor = get_gpu_executor()
+            gpu_executor.start()
+            print("[GPU Executor] Started for parallel song processing")
+        except Exception as e:
+            print(f"[GPU Executor] Failed to start: {e} - workers will use direct GPU")
+            gpu_executor = None
 
         while remaining_tasks:
             completed_offset = len(completed_songs)
@@ -598,21 +609,62 @@ class GearOptimizerApp:
                 break
 
             try:
-                with concurrent.futures.ProcessPoolExecutor(max_workers=effective_workers, mp_context=mp_ctx) as executor:
-                    future_map = {executor.submit(safe_process_song_task, t): t[1] for t in remaining_tasks}
-                    self._consume_results(
-                        concurrent.futures.as_completed(future_map),
-                        future_map=future_map,
-                        propagate_broken_pool=True,
-                        completed_songs=completed_songs,
-                        completed_offset=completed_offset,
-                        memory_resume_tracker=memory_resume_tracker,
-                        total_tasks=len(tasks)
-                    )
+                # Register workers with GPU executor (if available)
+                worker_registrations = []
+                if gpu_executor and gpu_executor.is_running:
+                    for _ in range(effective_workers):
+                        worker_id, req_q, resp_q = gpu_executor.register_worker()
+                        worker_registrations.append((worker_id, req_q, resp_q))
+                
+                # Create initializer function for workers
+                if worker_registrations:
+                    from gear_optimizer.solver.gpu_executor import set_gpu_worker_mode
                     
-                    if memory_release_requested():
-                         print("[MemoryGuard] Stopping parallel loop after soft limit.")
-                         break
+                    def worker_init(worker_id, req_q, resp_q):
+                        set_gpu_worker_mode(worker_id, req_q, resp_q)
+                    
+                    # Use initializer with first registration (all workers share same req queue)
+                    # NOTE: This is a simplification - for proper per-worker queues, we'd need
+                    # a more complex mechanism. Here all workers share the same request queue.
+                    w_id, req_q, resp_q = worker_registrations[0]
+                    
+                    with concurrent.futures.ProcessPoolExecutor(
+                        max_workers=effective_workers,
+                        mp_context=mp_ctx,
+                        initializer=worker_init,
+                        initargs=(w_id, req_q, resp_q),
+                    ) as executor:
+                        future_map = {executor.submit(safe_process_song_task, t): t[1] for t in remaining_tasks}
+                        self._consume_results(
+                            concurrent.futures.as_completed(future_map),
+                            future_map=future_map,
+                            propagate_broken_pool=True,
+                            completed_songs=completed_songs,
+                            completed_offset=completed_offset,
+                            memory_resume_tracker=memory_resume_tracker,
+                            total_tasks=len(tasks)
+                        )
+                        
+                        if memory_release_requested():
+                             print("[MemoryGuard] Stopping parallel loop after soft limit.")
+                             break
+                else:
+                    # Fallback: no GPU executor, workers use direct GPU (may conflict)
+                    with concurrent.futures.ProcessPoolExecutor(max_workers=effective_workers, mp_context=mp_ctx) as executor:
+                        future_map = {executor.submit(safe_process_song_task, t): t[1] for t in remaining_tasks}
+                        self._consume_results(
+                            concurrent.futures.as_completed(future_map),
+                            future_map=future_map,
+                            propagate_broken_pool=True,
+                            completed_songs=completed_songs,
+                            completed_offset=completed_offset,
+                            memory_resume_tracker=memory_resume_tracker,
+                            total_tasks=len(tasks)
+                        )
+                        
+                        if memory_release_requested():
+                             print("[MemoryGuard] Stopping parallel loop after soft limit.")
+                             break
 
             except BrokenProcessPool as bpp:
                 broken_pool_failures += 1
@@ -646,6 +698,13 @@ class GearOptimizerApp:
                 continue
             
             break
+        
+        # Stop GPU executor
+        if gpu_executor and gpu_executor.is_running:
+            try:
+                gpu_executor.stop()
+            except Exception:
+                pass
 
 
     def _consume_results(self, results_iter, future_map=None, propagate_broken_pool=False,

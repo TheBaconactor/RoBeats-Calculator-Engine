@@ -19,7 +19,7 @@ from .runtime import is_initialized, init_taichi_vulkan
 GRID_SIZE = 161  # Timeline grid dimension (161x161 = 26,521 entries per song)
 MAX_WORK_ITEMS = 524288  # 512k - supports 500 genomes × ~800 FT/FF combinations
 MAX_HEAD_NOTES = 100  # Maximum notes in head section
-MAX_GENOMES = 512  # Support up to 512 unique genomes per batch
+MAX_GENOMES = 1024  # Support up to 1024 unique genomes per batch
 MAX_SLOTS = 9  # 6 gear + 3 minis (GPU-native GA representation)
 MAX_ITEMS = 65536  # Upper bound for (type,Name)-deduped items per song (row 0 reserved)
 ITEM_STAT_DIM = 10  # Must match solver.population_index.STAT_KEYS length

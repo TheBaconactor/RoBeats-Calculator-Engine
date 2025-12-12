@@ -11,8 +11,12 @@ This module provides the public Python API:
 """
 from __future__ import annotations
 
+import time
 import taichi as ti
 import numpy as np
+
+from ..gpu_profiler import get_gpu_profiler
+_profiler = get_gpu_profiler()
 
 from .runtime import init_taichi_vulkan, is_initialized
 from . import fields
@@ -926,11 +930,15 @@ def solve_genomes_parallel(
         ft_gems_np[:chunk_n] = work_ft[start:end]
         ff_gems_np[:chunk_n] = work_ff[start:end]
         
+        # Upload with profiling
+        _t_upload = time.perf_counter()
         fields.work_genome_id.from_numpy(genome_id_np)
         fields.work_ft_gems.from_numpy(ft_gems_np)
         fields.work_ff_gems.from_numpy(ff_gems_np)
+        _profiler.record_upload(time.perf_counter() - _t_upload)
         
-        # Launch solve kernel
+        # Launch solve kernel with profiling
+        _t_kernel = time.perf_counter()
         kernels.solve_ftff_parallel_kernel(
             chunk_n,
             total_budget,
@@ -942,10 +950,11 @@ def solve_genomes_parallel(
         
         # GPU-side reduction: accumulate best into genome_result_* fields
         kernels.reduce_chunk_to_genomes_kernel(chunk_n)
-    
-    ti.sync()
+        ti.sync()  # Sync after each chunk to get accurate timing
+        _profiler.record_kernel(time.perf_counter() - _t_kernel, genome_count=chunk_n)
     
     # Download only O(n_genomes) results (not O(n_work_items)!)
+    _t_download = time.perf_counter()
     scores_np = fields.genome_result_scores.to_numpy()[:n_genomes]
     ft_np = fields.genome_result_ft.to_numpy()[:n_genomes]
     ff_np = fields.genome_result_ff.to_numpy()[:n_genomes]
@@ -953,6 +962,7 @@ def solve_genomes_parallel(
     cm_np = fields.genome_result_cm.to_numpy()[:n_genomes]
     fm_np = fields.genome_result_fm.to_numpy()[:n_genomes]
     ov_np = fields.genome_result_ov.to_numpy()[:n_genomes]
+    _profiler.record_download(time.perf_counter() - _t_download)
     
     # Build results in order
     results = []

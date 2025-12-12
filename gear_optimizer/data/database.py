@@ -365,17 +365,20 @@ def save_loadout_to_db(song_name, score, fg_score, gear, minis, details, force_d
         gear_names = _compact_gear_for_db(gear)
         mini_names = _compact_minis_for_db(minis)
 
-        # Upsert the loadout
+        # Upsert the loadout (preserve better FG score)
         conn.execute("""
             INSERT INTO loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
             ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
                 score = excluded.score,
-                fg_score = excluded.fg_score,
+                fg_score = MAX(fg_score, excluded.fg_score),
                 gear_json = excluded.gear_json,
                 minis_json = excluded.minis_json,
                 details_json = excluded.details_json,
-                force_details_json = excluded.force_details_json,
+                force_details_json = CASE 
+                    WHEN excluded.fg_score > fg_score THEN excluded.force_details_json 
+                    ELSE force_details_json 
+                END,
                 timestamp = strftime('%s', 'now')
         """, (
             song_name,
@@ -484,16 +487,20 @@ def save_loadouts_batch(song_name, entries):
             gear_names = _compact_gear_for_db(gear)
             mini_names = _compact_minis_for_db(minis)
 
+            # Upsert loadout (preserve better FG score)
             conn.execute("""
                 INSERT INTO loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
                 ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
                     score = excluded.score,
-                    fg_score = excluded.fg_score,
+                    fg_score = MAX(fg_score, excluded.fg_score),
                     gear_json = excluded.gear_json,
                     minis_json = excluded.minis_json,
                     details_json = excluded.details_json,
-                    force_details_json = excluded.force_details_json,
+                    force_details_json = CASE 
+                        WHEN excluded.fg_score > fg_score THEN excluded.force_details_json 
+                        ELSE force_details_json 
+                    END,
                     timestamp = strftime('%s', 'now')
             """, (
                 song_name,
