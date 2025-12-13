@@ -22,9 +22,9 @@ if _GA_SEED is not None:
     random.seed(_GA_SEED)
 
 from ..core.constants import GA_POPULATION_SIZE, GA_MUTATION_RATE, GA_MUTATION_RATE_MAX, GA_ELITISM
-from ..core.utils import prune_dominated_gear
+from ..core.utils import prune_dominated_gear, SKIP_ITEM_KEYS
 from ..data.database import get_loadout_hash
-from ..solver.scoring import worker_coevolution_evaluate, batch_evaluate_genomes
+from ..solver.scoring import worker_coevolution_evaluate, batch_evaluate_genomes, estimate_fg_potential
 
 
 def initialize_pools(all_gears, all_minis, p_color, slots):
@@ -349,8 +349,23 @@ def create_evaluation_functions(
                 if score is None or fg_score is None:
                     return None
 
+                base_score = score
+                fitness_score = base_score
+
+                # Apply FG heuristic if enabled (matches worker_coevolution_evaluate behavior)
+                # We must reconstruct stats to calculate the potential.
+                if cfg_data.get("fg_heuristic"):
+                    current_stats = base_stats_fixed.copy()
+                    for item in genome:
+                        for k, v in item.items():
+                            if k not in SKIP_ITEM_KEYS:
+                                current_stats[k] = current_stats.get(k, 0) + v
+                    
+                    fitness_score = estimate_fg_potential(base_score, current_stats, calc_song, ref_arrays)
+
                 return {
-                    "Score": score,
+                    "Score": fitness_score,
+                    "BaseScore": base_score,
                     "FG_Score": fg_score,
                     "Genome": genome,
                     "Gear": gear_part,
@@ -359,7 +374,7 @@ def create_evaluation_functions(
                         m.get("Name", "") if isinstance(m, dict) else str(m) for m in mini_part
                     ],
                     "Data": {
-                        "Score": score,
+                        "Score": base_score, # Data.Score is typically the base score
                         "_cached_db": True,
                         "ForceDetails": force_data,
                     },

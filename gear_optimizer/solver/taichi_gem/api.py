@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import time
+import hashlib
 import taichi as ti
 import numpy as np
 
@@ -41,7 +42,27 @@ from . import kernels
 # ============================================================================
 
 _ref_loaded = False
-_last_ref_arrays_id = None
+_last_ref_arrays_sig = None
+
+
+def _ref_arrays_sig(ref_arrays: dict) -> bytes:
+    """
+    Stable content signature for ref arrays.
+
+    We avoid caching by `id(ref_arrays)` because in parallel/IPC mode each request
+    arrives as a distinct Python object despite having identical contents.
+    """
+    h = hashlib.blake2b(digest_size=16)
+    for key in ("Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Fill Rate", "Fever Time"):
+        if key not in ref_arrays:
+            # Preserve old behavior: some call sites may omit optional FT/FF.
+            h.update(b"\x00")
+            continue
+        arr = np.asarray(ref_arrays[key])
+        h.update(str(arr.dtype).encode("utf-8"))
+        h.update(arr.shape[0].to_bytes(4, "little", signed=False))
+        h.update(arr.tobytes(order="C"))
+    return h.digest()
 
 # ============================================================================
 # NUMPY STAGING BUFFERS (avoid huge per-call allocations / CPU zeroing)
@@ -50,6 +71,31 @@ _last_ref_arrays_id = None
 _BATCH_STAGING = None
 _MEGA_STAGING = None
 _PARALLEL_STAGING = None
+_SONG_FLAGS_HOST = None
+
+
+def _ensure_song_flags_host():
+    global _SONG_FLAGS_HOST
+    if _SONG_FLAGS_HOST is not None:
+        return _SONG_FLAGS_HOST
+    _SONG_FLAGS_HOST = np.zeros((fields.MAX_SONG_SLOTS, 12), dtype=np.int32)
+    return _SONG_FLAGS_HOST
+
+
+def _upload_song_flags(slot_to_flags: dict[int, tuple[int, ...]]) -> None:
+    """
+    Upload per-slot song flags used by `solve_ftff_parallel_kernel`.
+
+    slot_to_flags entries must be 12-int tuples in this order:
+      [is_p_ft, is_s_ft, is_p_ff, is_s_ff, is_p_pp, is_s_pp,
+       is_p_cm, is_s_cm, is_p_fm, is_s_fm, is_p_ov, is_s_ov]
+    """
+    host = _ensure_song_flags_host()
+    for slot, flags12 in slot_to_flags.items():
+        if len(flags12) != 12:
+            raise ValueError(f"song_flags for slot {slot} must be 12 ints, got {len(flags12)}")
+        host[int(slot), :] = np.asarray(flags12, dtype=np.int32)
+    fields.song_flags.from_numpy(host)
 
 
 # ============================================================================
@@ -153,12 +199,12 @@ def ensure_ready(ref_arrays=None, *, need_grid=False, timeline_grid=None):
     
     # 3. Reference arrays - upload only when needed (or when ref source changes)
     # This preserves the old behavior where callers could load once and reuse.
-    global _last_ref_arrays_id
+    global _last_ref_arrays_sig
     if ref_arrays is not None:
-        rid = id(ref_arrays)
-        if (not _ref_loaded) or (_last_ref_arrays_id != rid):
+        sig = _ref_arrays_sig(ref_arrays)
+        if (not _ref_loaded) or (_last_ref_arrays_sig != sig):
             load_ref_arrays(ref_arrays)
-            _last_ref_arrays_id = rid
+            _last_ref_arrays_sig = sig
     
     # 4. Grid fields (only if needed)
     if need_grid:
@@ -166,15 +212,7 @@ def ensure_ready(ref_arrays=None, *, need_grid=False, timeline_grid=None):
             ensure_grid_fields_allocated()
         
         if timeline_grid is not None:
-            # IPC/parallel-safe path: in worker mode we can pass a lightweight
-            # `calc_song` dict instead of a huge SongTimelineGrid (which can blow up
-            # Windows IPC resources when pickled repeatedly).
-            if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
-                if ref_arrays is None:
-                    raise ValueError("ensure_ready: calc_song provided but ref_arrays is None")
-                precompute_timeline_gpu(timeline_grid, ref_arrays)
-            else:
-                _upload_timeline_grid(timeline_grid)
+            _upload_timeline_grid(timeline_grid)
 
 
 # ============================================================================
@@ -580,7 +618,7 @@ def mega_batch_solve_population(
 # GPU TIMELINE PRECOMPUTATION (eliminates Numba typeof overhead)
 # ============================================================================
 
-_gpu_timeline_song_id = None  # Track which song's timestamps are uploaded
+_gpu_timeline_song_id_by_slot = [None] * fields.MAX_SONG_SLOTS  # Track last song per slot
 
 
 def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 0) -> None:
@@ -604,14 +642,18 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     - grid_fever_masks[song_slot, ft, ff, :]
     - grid_fever_masks_bits[song_slot, ft, ff, :]
     """
-    global _gpu_timeline_song_id
+    global _gpu_timeline_song_id_by_slot
     
     # Check if we already computed for this song
     song_key = (
         calc_song["metadata"].get("Song Name", ""),
         len(calc_song["song_data"]["timestamps"]),
     )
-    if _gpu_timeline_song_id == song_key:
+    song_slot = int(song_slot)
+    if song_slot < 0 or song_slot >= fields.MAX_SONG_SLOTS:
+        raise ValueError(f"song_slot out of range: {song_slot}")
+
+    if _gpu_timeline_song_id_by_slot[song_slot] == song_key:
         return  # Already computed
     
     # Ensure GPU is ready with refs and grid fields
@@ -649,7 +691,7 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     _maybe_sync(for_timing=True)
     _t1 = time.perf_counter()
     
-    _gpu_timeline_song_id = song_key
+    _gpu_timeline_song_id_by_slot[song_slot] = song_key
     
     if _SYNC_FOR_TIMING or _FORCE_SYNC:
         print(f"[GPU Timeline] Computed 161×161 grid in {(_t1 - _t0) * 1000:.1f}ms")
@@ -772,7 +814,19 @@ def solve_genomes_with_ftff(
     Returns:
         List of (score, ft, ff, pp, cm, fm, ov) tuples per genome
     """
-    ensure_ready(ref_arrays, need_grid=True, timeline_grid=timeline_grid)
+    ensure_ready(ref_arrays, need_grid=True)
+    if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
+        precompute_timeline_gpu(timeline_grid, ref_arrays, song_slot=0)
+    else:
+        _upload_timeline_grid(timeline_grid)
+
+    _upload_song_flags({
+        0: (
+            int(is_p_ft), int(is_s_ft), int(is_p_ff), int(is_s_ff),
+            int(is_p_pp), int(is_s_pp), int(is_p_cm), int(is_s_cm),
+            int(is_p_fm), int(is_s_fm), int(is_p_ov), int(is_s_ov),
+        )
+    })
     
     # Import fields module
     from . import fields
@@ -867,7 +921,27 @@ def solve_genomes_parallel(
         List of (score, ft, ff, pp, cm, fm, ov) tuples per genome
     """
 
-    ensure_ready(ref_arrays, need_grid=True, timeline_grid=timeline_grid)
+    # Ensure grid fields are available; timeline data must be available in `song_slot`.
+    ensure_ready(ref_arrays, need_grid=True)
+
+    # If we were given a lightweight calc_song dict, compute the 161×161 grid on GPU
+    # directly into this song slot (avoids pickling CPU timeline objects in parallel mode).
+    if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
+        precompute_timeline_gpu(timeline_grid, ref_arrays, song_slot=song_slot)
+    else:
+        # CPU upload path (slot 0 only today).
+        if int(song_slot) != 0:
+            raise ValueError("SongTimelineGrid upload supports song_slot=0 only; use calc_song dict for multi-slot batching")
+        _upload_timeline_grid(timeline_grid)
+
+    # Upload per-slot flags used by the kernel.
+    _upload_song_flags({
+        int(song_slot): (
+            int(is_p_ft), int(is_s_ft), int(is_p_ff), int(is_s_ff),
+            int(is_p_pp), int(is_s_pp), int(is_p_cm), int(is_s_cm),
+            int(is_p_fm), int(is_s_fm), int(is_p_ov), int(is_s_ov),
+        )
+    })
     
     # Import fields module
     from . import fields
@@ -1044,6 +1118,208 @@ def solve_genomes_parallel(
         ))
     
     return results
+
+
+def solve_genomes_parallel_merged(
+    payloads: list[dict],
+    *,
+    total_budget: int,
+    gem_scale_fever: int,
+) -> list[list[tuple]]:
+    """
+    Merge multiple solve requests into a single (chunked) GPU execution.
+
+    This uses:
+    - per-song-slot timeline grids (MAX_SONG_SLOTS)
+    - per-song-slot flags (fields.song_flags)
+    - GPU-side reduction (reduce_chunk_to_genomes_kernel)
+
+    Each payload must contain:
+      - genome_stats_list: list[dict]
+      - timeline_grid: calc_song dict (metadata + song_data[timestamps])
+      - is_p_*/is_s_* flags
+      - ref_arrays
+    """
+    if not payloads:
+        return []
+
+    if len(payloads) > fields.MAX_SONG_SLOTS:
+        raise ValueError(f"Too many merged payloads: {len(payloads)} > {fields.MAX_SONG_SLOTS}")
+
+    total_budget = int(total_budget)
+    gem_scale_fever = int(gem_scale_fever)
+
+    # Validate ref_arrays compatibility (batch by content).
+    ref0 = payloads[0].get("ref_arrays")
+    if ref0 is None:
+        raise ValueError("Merged solve: payload missing ref_arrays")
+    sig0 = _ref_arrays_sig(ref0)
+    for p in payloads[1:]:
+        r = p.get("ref_arrays")
+        if r is None:
+            raise ValueError("Merged solve: payload missing ref_arrays")
+        if _ref_arrays_sig(r) != sig0:
+            raise ValueError("Merged solve requires compatible ref_arrays across payloads")
+
+    ensure_ready(ref0, need_grid=True)
+    log_batches = os.environ.get("GPU_BATCH_LOG", "0") == "1"
+
+    # Assign slots 0..N-1 in payload order.
+    slot_to_flags: dict[int, tuple[int, ...]] = {}
+    genome_ranges: list[tuple[int, int]] = []
+
+    staging = _ensure_parallel_staging()
+    genome_stats_np = staging["genome_base_stats"]
+    work_items_np = staging["work_items"]
+
+    # Build merged genome_base_stats and precompute per-slot grids/flags.
+    genome_offset = 0
+    for slot, payload in enumerate(payloads):
+        calc_song = payload.get("timeline_grid")
+        if not (isinstance(calc_song, dict) and "metadata" in calc_song and "song_data" in calc_song):
+            raise ValueError("Merged solve requires calc_song dict payload['timeline_grid']")
+
+        precompute_timeline_gpu(calc_song, ref0, song_slot=slot)
+
+        flags12 = (
+            int(payload["is_p_ft"]), int(payload["is_s_ft"]),
+            int(payload["is_p_ff"]), int(payload["is_s_ff"]),
+            int(payload["is_p_pp"]), int(payload["is_s_pp"]),
+            int(payload["is_p_cm"]), int(payload["is_s_cm"]),
+            int(payload["is_p_fm"]), int(payload["is_s_fm"]),
+            int(payload["is_p_ov"]), int(payload["is_s_ov"]),
+        )
+        slot_to_flags[slot] = flags12
+
+        g_list = payload.get("genome_stats_list") or []
+        n_g = len(g_list)
+        if genome_offset + n_g > MAX_GENOMES:
+            raise ValueError(f"Merged genomes exceed MAX_GENOMES: {genome_offset + n_g} > {MAX_GENOMES}")
+
+        for i, stats in enumerate(g_list):
+            dst = genome_offset + i
+            genome_stats_np[dst, 0] = stats["base_pp"]
+            genome_stats_np[dst, 1] = stats["base_cm"]
+            genome_stats_np[dst, 2] = stats["base_fm"]
+            genome_stats_np[dst, 3] = stats["base_p_val"]
+            genome_stats_np[dst, 4] = stats["base_s_val"]
+            genome_stats_np[dst, 5] = stats["base_ft_stat"]
+            genome_stats_np[dst, 6] = stats["base_ff_stat"]
+
+        genome_ranges.append((genome_offset, genome_offset + n_g))
+        genome_offset += n_g
+
+    n_total_genomes = genome_offset
+    if n_total_genomes == 0:
+        return [[] for _ in payloads]
+
+    # Upload merged genome stats and per-slot flags once.
+    fields.genome_base_stats.from_numpy(genome_stats_np)
+    _upload_song_flags(slot_to_flags)
+
+    # Initialize per-genome results once for the whole merged batch.
+    kernels.init_genome_results_kernel(n_total_genomes)
+
+    # Use any one payload's flags for legacy kernel args (the kernel reads song_flags by slot).
+    any_flags = next(iter(slot_to_flags.values()))
+
+    # Stream work items into MAX_WORK_ITEMS chunks.
+    cur = 0
+    total_work = 0
+    chunks = 0
+    for slot, payload in enumerate(payloads):
+        g_list = payload.get("genome_stats_list") or []
+        base_gid = genome_ranges[slot][0]
+        for local_idx, stats in enumerate(g_list):
+            gid = base_gid + local_idx
+
+            remaining_ft = 160 - int(stats["base_ft_stat"])
+            remaining_ff = 160 - int(stats["base_ff_stat"])
+            max_ft = (remaining_ft // gem_scale_fever) if remaining_ft > 0 else 0
+            max_ff = (remaining_ff // gem_scale_fever) if remaining_ff > 0 else 0
+            if max_ft > total_budget:
+                max_ft = total_budget
+            if max_ff > total_budget:
+                max_ff = total_budget
+
+            for ft in range(max_ft + 1):
+                ff_max = total_budget - ft
+                if ff_max > max_ff:
+                    ff_max = max_ff
+                
+                cnt = ff_max + 1
+                if cnt <= 0:
+                    continue
+                
+                # Flush if chunk would overflow
+                if cur + cnt > MAX_WORK_ITEMS:
+                    fields.work_items.from_numpy(work_items_np[:cur])
+                    kernels.solve_ftff_parallel_kernel(
+                        cur,
+                        total_budget,
+                        gem_scale_fever,
+                        any_flags[0], any_flags[1], any_flags[2], any_flags[3],
+                        any_flags[4], any_flags[5], any_flags[6], any_flags[7],
+                        any_flags[8], any_flags[9], any_flags[10], any_flags[11],
+                    )
+                    kernels.reduce_chunk_to_genomes_kernel(cur)
+                    chunks += 1
+                    cur = 0
+
+                # Vectorized packing
+                # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id, song_slot]
+                end = cur + cnt
+                
+                # Budget: (total - ft) - [0, 1, ... cnt-1]
+                work_items_np[cur:end, 0] = (total_budget - ft) - np.arange(cnt, dtype=np.int32)
+                # ft_gems: constant ft
+                work_items_np[cur:end, 3] = ft
+                # ff_gems: [0, 1, ... cnt-1]
+                work_items_np[cur:end, 4] = np.arange(cnt, dtype=np.int32)
+                # genome_id: constant
+                work_items_np[cur:end, 6] = gid
+                # song_slot: constant
+                work_items_np[cur:end, 7] = slot
+                
+                cur += cnt
+                total_work += cnt
+
+
+    # Final partial chunk
+    if cur > 0:
+        fields.work_items.from_numpy(work_items_np)
+        kernels.solve_ftff_parallel_kernel(
+            cur,
+            total_budget,
+            gem_scale_fever,
+            any_flags[0], any_flags[1], any_flags[2], any_flags[3],
+            any_flags[4], any_flags[5], any_flags[6], any_flags[7],
+            any_flags[8], any_flags[9], any_flags[10], any_flags[11],
+        )
+        kernels.reduce_chunk_to_genomes_kernel(cur)
+        chunks += 1
+
+    if log_batches:
+        print(f"[GPU_BATCH] merged_requests={len(payloads)} genomes={n_total_genomes} work_items={total_work} chunks={chunks}")
+
+    # Download O(total_genomes) results once and demux.
+    results_np = fields.genome_result_stats.to_numpy()[:n_total_genomes]
+    out: list[list[tuple]] = []
+    for start, end in genome_ranges:
+        req = []
+        for i in range(start, end):
+            row = results_np[i]
+            req.append((
+                int(row[0]),  # score
+                int(row[1]),  # ft
+                int(row[2]),  # ff
+                int(row[3]),  # pp
+                int(row[4]),  # cm
+                int(row[5]),  # fm
+                int(row[6]),  # ov
+            ))
+        out.append(req)
+    return out
 
 
 def aggregate_population_stats_gpu(

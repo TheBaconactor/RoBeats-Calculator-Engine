@@ -48,6 +48,9 @@ work_items = None
 genome_base_stats = None
 # [pp, cm, fm, p_val, s_val, ft, ff]
 
+# Per-slot song flags (batch coalescing)
+song_flags = None  # (MAX_SONG_SLOTS, 12) i32
+
 # GPU-native GA / stat aggregation fields
 population_indices = None
 population_next_indices = None
@@ -1127,6 +1130,22 @@ def solve_ftff_parallel_kernel(
         head_len: ti.i32 = item[5]
         genome_idx: ti.i32 = item[6]
         song_slot: ti.i32 = item[7]  # Song grid slot for batch coalescing
+
+        # Per-song-slot flags (override kernel args for multi-song batching)
+        # [is_p_ft, is_s_ft, is_p_ff, is_s_ff, is_p_pp, is_s_pp,
+        #  is_p_cm, is_s_cm, is_p_fm, is_s_fm, is_p_ov, is_s_ov]
+        f_is_p_ft: ti.i32 = song_flags[song_slot, 0]
+        f_is_s_ft: ti.i32 = song_flags[song_slot, 1]
+        f_is_p_ff: ti.i32 = song_flags[song_slot, 2]
+        f_is_s_ff: ti.i32 = song_flags[song_slot, 3]
+        f_is_p_pp: ti.i32 = song_flags[song_slot, 4]
+        f_is_s_pp: ti.i32 = song_flags[song_slot, 5]
+        f_is_p_cm: ti.i32 = song_flags[song_slot, 6]
+        f_is_s_cm: ti.i32 = song_flags[song_slot, 7]
+        f_is_p_fm: ti.i32 = song_flags[song_slot, 8]
+        f_is_s_fm: ti.i32 = song_flags[song_slot, 9]
+        f_is_p_ov: ti.i32 = song_flags[song_slot, 10]
+        f_is_s_ov: ti.i32 = song_flags[song_slot, 11]
         
         # Load genome base stats
         stats = genome_base_stats[genome_idx]
@@ -1151,18 +1170,18 @@ def solve_ftff_parallel_kernel(
 
         
         # Adjust p/s values
-        p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
-        s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
+        p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * f_is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * f_is_p_ff)
+        s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * f_is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * f_is_s_ff)
         
         # Run greedy gem allocation
         res_vec = optimize_core_device(
             i, budget,
             base_pp, base_cm, base_fm,
             p_val, s_val,
-            is_p_pp, is_s_pp,
-            is_p_cm, is_s_cm,
-            is_p_fm, is_s_fm,
-            is_p_ov, is_s_ov,
+            f_is_p_pp, f_is_s_pp,
+            f_is_p_cm, f_is_s_cm,
+            f_is_p_fm, f_is_s_fm,
+            f_is_p_ov, f_is_s_ov,
             head_len, count_fever, count_normal
         )
         

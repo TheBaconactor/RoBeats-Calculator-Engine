@@ -82,6 +82,12 @@ ga_rng_state: ti.Field = None        # (MAX_GENOMES,) uint32 RNG state per genom
 ga_parent_a: ti.Field = None         # (MAX_GENOMES,) int32 selected parent index A
 ga_parent_b: ti.Field = None         # (MAX_GENOMES,) int32 selected parent index B
 
+# Per-slot song flags for batch coalescing (12 flags per slot)
+# Indices: [is_p_ft, is_s_ft, is_p_ff, is_s_ff, is_p_pp, is_s_pp,
+#           is_p_cm, is_s_cm, is_p_fm, is_s_fm, is_p_ov, is_s_ov]
+song_flags: ti.Field = None  # (MAX_SONG_SLOTS, 12) i32
+
+
 # Per-work-item outputs
 result_scores: ti.Field = None
 result_pp: ti.Field = None
@@ -154,6 +160,7 @@ def allocate_fields():
     global genome_base_ft, genome_base_ff, genome_base_stats
     global population_indices, population_next_indices, item_stats, base_fixed_stats
     global ga_scores, ga_rng_state, ga_parent_a, ga_parent_b
+    global song_flags
     global result_scores, result_pp, result_cm, result_fm, result_ov
     global result_p_val, result_s_val, result_stats, _fields_allocated
     global genome_result_scores, genome_result_ft, genome_result_ff
@@ -188,6 +195,10 @@ def allocate_fields():
     ga_parent_a = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     ga_parent_b = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     
+    # Per-slot song flags for batch coalescing
+    # [is_p_ft, is_s_ft, is_p_ff, is_s_ff, is_p_pp, is_s_pp, is_p_cm, is_s_cm, is_p_fm, is_s_fm, is_p_ov, is_s_ov]
+    song_flags = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, 12))
+    
     # Per-work-item results (Vector field for single-shot download)
     # [score, pp, cm, fm, ov, p_val, s_val]
     result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_WORK_ITEMS)
@@ -198,6 +209,7 @@ def allocate_fields():
     
     _fields_allocated = True
     print(f"[Taichi] Allocated GPU fields: {MAX_WORK_ITEMS} work items, {MAX_HEAD_NOTES} head notes, {MAX_GENOMES} genomes")
+
 
 
 def allocate_grid_fields():
@@ -266,6 +278,9 @@ def bind_fields(kernels_module):
     
     # Genome base stats
     kernels_module.genome_base_stats = genome_base_stats
+
+    # Per-slot song flags (batch coalescing)
+    kernels_module.song_flags = song_flags
 
     # GPU-native GA / stat aggregation
     kernels_module.population_indices = population_indices

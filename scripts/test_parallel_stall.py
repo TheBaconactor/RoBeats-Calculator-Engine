@@ -64,22 +64,30 @@ def worker_process_fn(worker_id, req_q, resp_q, song_name, num_notes):
         t0 = time.perf_counter()
         print(f"[Worker {worker_id}] Submitting {len(genomes)} genomes for {song_name}...")
         
-        result = submit_gpu_solve_genomes(
-            genome_stats_list=genomes,
-            timeline_grid=song,
-            is_p_ft=0, is_s_ft=0,
-            is_p_ff=0, is_s_ff=0,
-            is_p_pp=1, is_s_pp=0,
-            is_p_cm=1, is_s_cm=0,
-            is_p_fm=1, is_s_fm=0,
-            is_p_ov=1, is_s_ov=0,
-            ref_arrays=ref_arrays,
-            timeout=120.0,
-        )
-        
-        dt = time.perf_counter() - t0
-        print(f"[Worker {worker_id}] Got {len(result)} results in {dt:.2f}s")
+        # Run 3 times to verify cache benefit
+        total_dt = 0
+        for i in range(3):
+            t_sub = time.perf_counter()
+            result = submit_gpu_solve_genomes(
+                genome_stats_list=genomes,
+                timeline_grid=song,
+                is_p_ft=0, is_s_ft=0,
+                is_p_ff=0, is_s_ff=0,
+                is_p_pp=1, is_s_pp=0,
+                is_p_cm=1, is_s_cm=0,
+                is_p_fm=1, is_s_fm=0,
+                is_p_ov=1, is_s_ov=0,
+                ref_arrays=ref_arrays,
+                timeout=120.0,
+            )
+            dt_sub = time.perf_counter() - t_sub
+            total_dt += dt_sub
+            print(f"[Worker {worker_id}] Iter {i}: {len(result)} results in {dt_sub:.2f}s")
+            
+        dt = total_dt
+        print(f"[Worker {worker_id}] Total 3 iters in {dt:.2f}s")
         return {"worker_id": worker_id, "count": len(result), "time": dt}
+
         
     except Exception as e:
         print(f"[Worker {worker_id}] ERROR: {e}")

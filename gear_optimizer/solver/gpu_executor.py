@@ -238,19 +238,36 @@ class GpuExecutor:
                 solve_requests = [r for r in batch if r.request_type == GpuRequestType.SOLVE_GENOMES_PARALLEL]
                 other_requests = [r for r in batch if r.request_type != GpuRequestType.SOLVE_GENOMES_PARALLEL]
                 
-                # Execute solve_genomes requests - process sequentially for now
-                # TODO: True batched kernel execution would combine work items
-                for req in solve_requests:
-                    t_exec0 = perf_counter()
-                    response = self._execute_request(req)
-                    dt_exec = perf_counter() - t_exec0
-                    self._exec_sec += dt_exec
-                    self._req_type_counts[req.request_type] += 1
-                    self._req_type_exec_sec[req.request_type] += dt_exec
-                    
-                    if req.worker_id in self._response_queues:
-                        self._response_queues[req.worker_id].put(response)
-                    self._requests_processed += 1
+                # Execute solve_genomes requests (true batched kernel execution when possible)
+                if solve_requests:
+                    if len(solve_requests) > 1:
+                        t_exec0 = perf_counter()
+                        responses = self._execute_solve_batch(solve_requests)
+                        dt_exec = perf_counter() - t_exec0
+                        # Attribute exec time proportionally (for profiling only)
+                        per_req = dt_exec / max(1, len(solve_requests))
+                        self._exec_sec += dt_exec
+                        for _ in solve_requests:
+                            self._req_type_counts[GpuRequestType.SOLVE_GENOMES_PARALLEL] += 1
+                            self._req_type_exec_sec[GpuRequestType.SOLVE_GENOMES_PARALLEL] += per_req
+
+                        # Dispatch responses back to originating workers
+                        for req, resp in zip(solve_requests, responses):
+                            if req.worker_id in self._response_queues:
+                                self._response_queues[req.worker_id].put(resp)
+                            self._requests_processed += 1
+                    else:
+                        req = solve_requests[0]
+                        t_exec0 = perf_counter()
+                        response = self._execute_request(req)
+                        dt_exec = perf_counter() - t_exec0
+                        self._exec_sec += dt_exec
+                        self._req_type_counts[req.request_type] += 1
+                        self._req_type_exec_sec[req.request_type] += dt_exec
+
+                        if req.worker_id in self._response_queues:
+                            self._response_queues[req.worker_id].put(response)
+                        self._requests_processed += 1
 
                 
                 # Process other request types individually
@@ -316,50 +333,57 @@ class GpuExecutor:
         Returns:
             List of GpuResponse objects, one per request
         """
-        from .taichi_gem.api import (
-            precompute_timeline_gpu, load_ref_arrays, ensure_ready
-        )
+        from .taichi_gem.api import solve_genomes_parallel_merged
 
-        from .taichi_gem.fields import MAX_SONG_SLOTS
-        
-        responses = []
-        
-        # Assign song slots to each request
-        slot_assignments = {}  # worker_id -> slot
-        for i, req in enumerate(requests):
-            slot = i % MAX_SONG_SLOTS
-            slot_assignments[req.request_id] = slot
-        
-        # Precompute timeline grids for each request's song (to its slot)
+        # Partition into compatible batches (same budget/scales; ref arrays are checked by content in merged solver).
+        groups: dict[tuple[int, int], list[GpuRequest]] = {}
         for req in requests:
-            slot = slot_assignments[req.request_id]
-            payload = req.payload
-            
-            # Load ref arrays once
-            if "ref_arrays" in payload:
-                load_ref_arrays(payload["ref_arrays"])
-            
-            # Precompute grid to this slot
-            timeline_grid = payload["timeline_grid"]
-            if isinstance(timeline_grid, dict):
-                # calc_song dict - compute GPU grid
-                precompute_timeline_gpu(timeline_grid, payload["ref_arrays"], song_slot=slot)
-        
-        # For now, fall back to individual execution since we need to
-        # implement solve_genomes_parallel_batched properly
-        # TODO: Implement true batched kernel execution
-        for req in requests:
-            try:
-                response = self._execute_solve_genomes(req, song_slot=slot_assignments[req.request_id])
-                responses.append(response)
-            except Exception as e:
-                responses.append(GpuResponse(
-                    request_id=req.request_id,
-                    success=False,
-                    error=str(e),
-                ))
-        
-        return responses
+            p = req.payload
+            key = (int(p.get("total_budget", 90)), int(p.get("gem_scale_fever", 3)))
+            groups.setdefault(key, []).append(req)
+
+        out: list[GpuResponse] = []
+        log_batches = os.environ.get("GPU_BATCH_LOG", "0") == "1"
+        for key, group in groups.items():
+            # If group is too large for available slots, split further.
+            max_slots = 8
+            for start in range(0, len(group), max_slots):
+                sub = group[start : start + max_slots]
+                try:
+                    if log_batches and len(sub) > 1:
+                        print(f"[GpuExecutor][BATCH] requests={len(sub)} budget={int(sub[0].payload.get('total_budget', 90))} scale={int(sub[0].payload.get('gem_scale_fever', 3))}")
+                    # Require calc_song dict inputs for true batching; otherwise fall back.
+                    if any(not isinstance(r.payload.get("timeline_grid"), dict) for r in sub):
+                        raise ValueError("non-dict timeline_grid in batch")
+
+                    total_budget = int(sub[0].payload.get("total_budget", 90))
+                    gem_scale_fever = int(sub[0].payload.get("gem_scale_fever", 3))
+                    merged_results = solve_genomes_parallel_merged(
+                        [r.payload for r in sub],
+                        total_budget=total_budget,
+                        gem_scale_fever=gem_scale_fever,
+                    )
+                    for req, res in zip(sub, merged_results):
+                        out.append(GpuResponse(
+                            request_id=req.request_id,
+                            success=True,
+                            result=res,
+                        ))
+                except Exception as e:
+                    # Conservative fallback: process each request individually.
+                    for req in sub:
+                        try:
+                            out.append(self._execute_solve_genomes(req, song_slot=0))
+                        except Exception as e2:
+                            out.append(GpuResponse(
+                                request_id=req.request_id,
+                                success=False,
+                                error=f"{type(e2).__name__}: {e2}",
+                            ))
+
+        # Preserve original request order for caller.
+        by_id = {r.request_id: r for r in out}
+        return [by_id.get(req.request_id) for req in requests]
 
     
     def _execute_request(self, request: GpuRequest) -> GpuResponse:
