@@ -11,6 +11,13 @@ from helpers.ga_helpers for improved modularity and maintainability.
 import os
 import random
 
+# Support deterministic testing via GA_SEED environment variable
+_GA_SEED = os.environ.get("GA_SEED")
+if _GA_SEED is not None:
+    _GA_SEED = int(_GA_SEED)
+    random.seed(_GA_SEED)
+    print(f"[GA] Deterministic mode: seed={_GA_SEED}")
+
 from ..core.constants import (
     GA_POPULATION_SIZE,
     GA_GENERATIONS,

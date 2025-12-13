@@ -15,6 +15,12 @@ to improve code modularity and maintainability. These functions handle:
 import os
 import random
 
+# Support deterministic testing via GA_SEED environment variable
+_GA_SEED = os.environ.get("GA_SEED")
+if _GA_SEED is not None:
+    _GA_SEED = int(_GA_SEED)
+    random.seed(_GA_SEED)
+
 from ..core.constants import GA_POPULATION_SIZE, GA_MUTATION_RATE, GA_MUTATION_RATE_MAX, GA_ELITISM
 from ..core.utils import prune_dominated_gear
 from ..data.database import get_loadout_hash

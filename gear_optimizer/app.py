@@ -199,11 +199,18 @@ class GearOptimizerApp:
                 ga_depth, status_queue
             )
 
-            parallel_workers = 1 
+            parallel_workers = 1
+            # MaxParallelSongs limits concurrent song workers to reduce GPU queue contention
+            # Default 6 provides good balance between parallelism and per-song latency
+            max_parallel_songs = safe_int(cfg.get("IterationEngine", "MaxParallelSongs", fallback=6))
+            if max_parallel_songs <= 0:
+                max_parallel_songs = 6  # Fallback if invalid
+            
             self._execute_tasks(
                 tasks, eval_cpu_limit, parallel_workers, memory_resume_tracker, 
-                manager, status_queue, status_thread, loop_forever
+                manager, status_queue, status_thread, loop_forever, max_parallel_songs
             )
+
 
             # Check if we need to restart due to memory guard
             if memory_release_requested() and loop_forever:
@@ -432,20 +439,29 @@ class GearOptimizerApp:
         return tasks
 
     def _execute_tasks(self, tasks, eval_cpu_limit, parallel_workers, memory_resume_tracker,
-                       manager, status_queue, status_thread, loop_forever):
+                       manager, status_queue, status_thread, loop_forever, max_parallel_songs=6):
+        """Execute tasks with configurable parallelism.
+        
+        Args:
+            max_parallel_songs: Max concurrent song workers (default 6).
+                               This limits GPU executor queue depth to improve
+                               per-song latency without affecting total throughput.
+        """
         logical_cpus = os.cpu_count() or 1
         available_cpus = logical_cpus
         if eval_cpu_limit and eval_cpu_limit > 0:
             available_cpus = max(1, min(logical_cpus, eval_cpu_limit))
         
         song_worker_limit = max(1, available_cpus // max(1, parallel_workers))
-        max_workers = max(1, min(len(tasks), song_worker_limit))
+        # Apply MaxParallelSongs cap to reduce GPU executor queue contention
+        max_workers = max(1, min(len(tasks), song_worker_limit, max_parallel_songs))
         
         if available_cpus != logical_cpus:
              print(f"EvalCPUCores cap applied: using {available_cpus} of {logical_cpus} cores.")
 
         print(f"Parallel plan -> songs: {len(tasks)}, concurrent workers: {max_workers}, cores per song: {parallel_workers}")
         print(f"Using {available_cpus} logical CPU cores")
+
 
         completed_songs = set()
         

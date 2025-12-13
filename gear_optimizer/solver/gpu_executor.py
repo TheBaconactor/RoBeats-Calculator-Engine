@@ -310,7 +310,6 @@ class GpuExecutor:
             success=True,
             result=results,
         )
-
     def _execute_optimize_gems_batch(self, request: GpuRequest) -> GpuResponse:
         """Execute optimize_gems_batch_gpu on GPU."""
         from .taichi_gem.api import optimize_gems_batch_gpu
