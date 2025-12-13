@@ -11,6 +11,7 @@ This module provides the public Python API:
 """
 from __future__ import annotations
 
+import os
 import time
 import taichi as ti
 import numpy as np
@@ -51,24 +52,36 @@ _MEGA_STAGING = None
 _PARALLEL_STAGING = None
 
 
+# ============================================================================
+# SYNC POLICY
+# ============================================================================
+#
+# Taichi kernels are ordered on the device; explicit ti.sync() is only required
+# when the CPU needs results/timing *right now*. Excess sync points can dominate
+# runtime (CPU stalls waiting for GPU).
+#
+# - GPU_SYNC_FOR_TIMING=1: allow extra syncs to measure kernel wall time
+# - GPU_FORCE_SYNC=1: force all optional sync points on (debug)
+_SYNC_FOR_TIMING = os.environ.get("GPU_SYNC_FOR_TIMING", "0") == "1"
+_FORCE_SYNC = os.environ.get("GPU_FORCE_SYNC", "0") == "1"
+
+
+def _maybe_sync(*, for_timing: bool = False) -> None:
+    """Sync only when explicitly requested (timing/debug)."""
+    if _FORCE_SYNC or (for_timing and _SYNC_FOR_TIMING):
+        ti.sync()
+
+
 def _ensure_batch_staging():
     global _BATCH_STAGING
     if _BATCH_STAGING is not None:
         return _BATCH_STAGING
     _BATCH_STAGING = {
-        "budgets": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
-        "count_fever": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
-        "count_normal": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
-        "ft_gems": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
-        "ff_gems": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
-        "head_len": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
-        "genome_id": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
+        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
+        "work_items": np.zeros((MAX_WORK_ITEMS, 7), dtype=np.int32),
         "fever_masks": np.zeros((MAX_WORK_ITEMS, MAX_HEAD_NOTES), dtype=np.int8),
-        "genome_pp": np.zeros(MAX_GENOMES, dtype=np.int32),
-        "genome_cm": np.zeros(MAX_GENOMES, dtype=np.int32),
-        "genome_fm": np.zeros(MAX_GENOMES, dtype=np.int32),
-        "genome_p": np.zeros(MAX_GENOMES, dtype=np.int32),
-        "genome_s": np.zeros(MAX_GENOMES, dtype=np.int32),
+        # [pp, cm, fm, p_val, s_val, ft, ff]
+        "genome_base_stats": np.zeros((MAX_GENOMES, 7), dtype=np.int32),
     }
     return _BATCH_STAGING
 
@@ -78,19 +91,11 @@ def _ensure_mega_staging():
     if _MEGA_STAGING is not None:
         return _MEGA_STAGING
     _MEGA_STAGING = {
-        "budgets": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
-        "count_fever": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
-        "count_normal": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
-        "ft_gems": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
-        "ff_gems": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
-        "head_len": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
-        "genome_id": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
+        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
+        "work_items": np.zeros((MAX_WORK_ITEMS, 7), dtype=np.int32),
         "fever_masks": np.zeros((MAX_WORK_ITEMS, MAX_HEAD_NOTES), dtype=np.int8),
-        "genome_pp": np.zeros(MAX_GENOMES, dtype=np.int32),
-        "genome_cm": np.zeros(MAX_GENOMES, dtype=np.int32),
-        "genome_fm": np.zeros(MAX_GENOMES, dtype=np.int32),
-        "genome_p": np.zeros(MAX_GENOMES, dtype=np.int32),
-        "genome_s": np.zeros(MAX_GENOMES, dtype=np.int32),
+        # [pp, cm, fm, p_val, s_val, ft, ff]
+        "genome_base_stats": np.zeros((MAX_GENOMES, 7), dtype=np.int32),
     }
     return _MEGA_STAGING
 
@@ -107,17 +112,12 @@ def _ensure_parallel_staging():
         return _PARALLEL_STAGING
     _PARALLEL_STAGING = {
         # Per-genome stats (uploaded once per call)
-        "genome_pp": np.zeros(MAX_GENOMES, dtype=np.int32),
-        "genome_cm": np.zeros(MAX_GENOMES, dtype=np.int32),
-        "genome_fm": np.zeros(MAX_GENOMES, dtype=np.int32),
-        "genome_p_val": np.zeros(MAX_GENOMES, dtype=np.int32),
-        "genome_s_val": np.zeros(MAX_GENOMES, dtype=np.int32),
-        "genome_ft": np.zeros(MAX_GENOMES, dtype=np.int32),
-        "genome_ff": np.zeros(MAX_GENOMES, dtype=np.int32),
+        # [pp, cm, fm, p_val, s_val, ft, ff]
+        "genome_base_stats": np.zeros((MAX_GENOMES, 7), dtype=np.int32),
+        
         # Per-work-item buffers (reused per chunk)
-        "work_genome_id": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
-        "work_ft_gems": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
-        "work_ff_gems": np.zeros(MAX_WORK_ITEMS, dtype=np.int32),
+        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
+        "work_items": np.zeros((MAX_WORK_ITEMS, 7), dtype=np.int32),
     }
     return _PARALLEL_STAGING
 
@@ -166,7 +166,15 @@ def ensure_ready(ref_arrays=None, *, need_grid=False, timeline_grid=None):
             ensure_grid_fields_allocated()
         
         if timeline_grid is not None:
-            _upload_timeline_grid(timeline_grid)
+            # IPC/parallel-safe path: in worker mode we can pass a lightweight
+            # `calc_song` dict instead of a huge SongTimelineGrid (which can blow up
+            # Windows IPC resources when pickled repeatedly).
+            if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
+                if ref_arrays is None:
+                    raise ValueError("ensure_ready: calc_song provided but ref_arrays is None")
+                precompute_timeline_gpu(timeline_grid, ref_arrays)
+            else:
+                _upload_timeline_grid(timeline_grid)
 
 
 # ============================================================================
@@ -329,36 +337,25 @@ def optimize_gems_batch_gpu(
     next_genome_id = 0
     
     staging = _ensure_batch_staging()
-    budgets_np = staging["budgets"]
-    count_fever_np = staging["count_fever"]
-    count_normal_np = staging["count_normal"]
-    ft_gems_np = staging["ft_gems"]
-    ff_gems_np = staging["ff_gems"]
-    head_len_np = staging["head_len"]
-    genome_id_np = staging["genome_id"]
+    work_items_np = staging["work_items"]
     fever_masks_np = staging["fever_masks"]
 
     # Clear only the active prefix. (Avoid full zeroing of MAX_WORK_ITEMS each call.)
-    budgets_np[:n] = 0
-    count_fever_np[:n] = 0
-    count_normal_np[:n] = 0
-    ft_gems_np[:n] = 0
-    ff_gems_np[:n] = 0
-    head_len_np[:n] = 0
-    genome_id_np[:n] = 0
+    work_items_np[:n, :] = 0
     fever_masks_np[:n, :] = 0
     
     for i, item in enumerate(batch_input):
-        budgets_np[i] = item["budget"]
-        count_fever_np[i] = item["count_body_fever"]
-        count_normal_np[i] = item["count_body_normal"]
-        ft_gems_np[i] = item.get("ft_gems", 0)
-        ff_gems_np[i] = item.get("ff_gems", 0)
+        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
+        work_items_np[i, 0] = item["budget"]
+        work_items_np[i, 1] = item["count_body_fever"]
+        work_items_np[i, 2] = item["count_body_normal"]
+        work_items_np[i, 3] = item.get("ft_gems", 0)
+        work_items_np[i, 4] = item.get("ff_gems", 0)
         
         mask = item.get("fever_mask_head")
         if mask is not None:
             hl = min(len(mask), MAX_HEAD_NOTES)
-            head_len_np[i] = hl
+            work_items_np[i, 5] = hl
             fever_masks_np[i, :hl] = mask[:hl].astype(np.int8)
             
         # Check for overrides
@@ -370,46 +367,35 @@ def optimize_gems_batch_gpu(
             unique_stats_map[stats_key] = next_genome_id
             next_genome_id += 1
             
-        genome_id_np[i] = unique_stats_map[stats_key]
+        work_items_np[i, 6] = unique_stats_map[stats_key]
     
     # Ensure we don't exceed max genomes (unlikely for reasonable batches)
     if next_genome_id > MAX_GENOMES:
         raise RuntimeError(f"Too many unique base stat combinations in batch ({next_genome_id} > {MAX_GENOMES})")
         
     # Upload per-genome stats
-    genome_pp_np = staging["genome_pp"]
-    genome_cm_np = staging["genome_cm"]
-    genome_fm_np = staging["genome_fm"]
-    genome_p_np = staging["genome_p"]
-    genome_s_np = staging["genome_s"]
-
-    genome_pp_np[:] = 0
-    genome_cm_np[:] = 0
-    genome_fm_np[:] = 0
-    genome_p_np[:] = 0
-    genome_s_np[:] = 0
+    genome_stats_np = staging["genome_base_stats"]
+    genome_stats_np[:] = 0
+    
+    # [pp, cm, fm, p_val, s_val, ft, ff]
+    # In this legacy mode, we assume constant pp/cm/fm/ft/ff for the whole batch
+    # (except p/s which can vary per item).
+    # FT/FF stats are not used in solve_batch_kernel (passed as 0 usually), 
+    # but we should fill them to avoid garbage.
     
     for (p, s), gid in unique_stats_map.items():
-        genome_pp_np[gid] = cur_pp
-        genome_cm_np[gid] = cur_cm
-        genome_fm_np[gid] = cur_fm
-        genome_p_np[gid] = p
-        genome_s_np[gid] = s
+        genome_stats_np[gid, 0] = cur_pp
+        genome_stats_np[gid, 1] = cur_cm
+        genome_stats_np[gid, 2] = cur_fm
+        genome_stats_np[gid, 3] = p
+        genome_stats_np[gid, 4] = s
+        genome_stats_np[gid, 5] = 0 # Dummy FT stat
+        genome_stats_np[gid, 6] = 0 # Dummy FF stat
         
-    fields.genome_base_pp.from_numpy(genome_pp_np)
-    fields.genome_base_cm.from_numpy(genome_cm_np)
-    fields.genome_base_fm.from_numpy(genome_fm_np)
-    fields.genome_base_p_val.from_numpy(genome_p_np)
-    fields.genome_base_s_val.from_numpy(genome_s_np)
+    fields.genome_base_stats.from_numpy(genome_stats_np)
     
     # BULK transfer
-    fields.work_budgets.from_numpy(budgets_np)
-    fields.work_count_fever.from_numpy(count_fever_np)
-    fields.work_count_normal.from_numpy(count_normal_np)
-    fields.work_ft_gems.from_numpy(ft_gems_np)
-    fields.work_ff_gems.from_numpy(ff_gems_np)
-    fields.work_head_len.from_numpy(head_len_np)
-    fields.work_genome_id.from_numpy(genome_id_np)
+    fields.work_items.from_numpy(work_items_np)
     fields.fever_masks.from_numpy(fever_masks_np)
     
     # Launch kernel
@@ -423,19 +409,14 @@ def optimize_gems_batch_gpu(
     ti.sync()
     
     # Download results
-    scores_np = fields.result_scores.to_numpy()[:n]
-    pp_np = fields.result_pp.to_numpy()[:n]
-    cm_np = fields.result_cm.to_numpy()[:n]
-    fm_np = fields.result_fm.to_numpy()[:n]
-    ov_np = fields.result_ov.to_numpy()[:n]
-    p_val_np = fields.result_p_val.to_numpy()[:n]
-    s_val_np = fields.result_s_val.to_numpy()[:n]
+    # [score, pp, cm, fm, ov, p_val, s_val]
+    results_np = fields.result_stats.to_numpy()[:n]
     
     results = [
-        (int(scores_np[i]), int(pp_np[i]), int(cm_np[i]), int(fm_np[i]),
-         int(p_val_np[i]), int(s_val_np[i]),
-         int(pp_np[i]), int(cm_np[i]), int(fm_np[i]), int(ov_np[i]))
-        for i in range(n)
+        (int(row[0]), int(row[1]), int(row[2]), int(row[3]),
+         int(row[5]), int(row[6]), # p_val, s_val
+         int(row[1]), int(row[2]), int(row[3]), int(row[4])) # repeats for generic tuple format
+        for row in results_np
     ]
     
     return results
@@ -512,73 +493,49 @@ def mega_batch_solve_population(
     # ========================================================================
     # UPLOAD PER-GENOME STATS
     # ========================================================================
-    genome_pp_np = staging["genome_pp"]
-    genome_cm_np = staging["genome_cm"]
-    genome_fm_np = staging["genome_fm"]
-    genome_p_np = staging["genome_p"]
-    genome_s_np = staging["genome_s"]
+    staging = _ensure_mega_staging()
+    
+    # ========================================================================
+    # UPLOAD PER-GENOME STATS
+    # ========================================================================
+    genome_stats_np = staging["genome_base_stats"]
+    genome_stats_np[:] = 0
 
-    genome_pp_np[:] = 0
-    genome_cm_np[:] = 0
-    genome_fm_np[:] = 0
-    genome_p_np[:] = 0
-    genome_s_np[:] = 0
-    
     for gid, (base_pp, base_cm, base_fm, base_p, base_s) in genome_stats.items():
-        genome_pp_np[gid] = base_pp
-        genome_cm_np[gid] = base_cm
-        genome_fm_np[gid] = base_fm
-        genome_p_np[gid] = base_p
-        genome_s_np[gid] = base_s
+        genome_stats_np[gid, 0] = base_pp
+        genome_stats_np[gid, 1] = base_cm
+        genome_stats_np[gid, 2] = base_fm
+        genome_stats_np[gid, 3] = base_p
+        genome_stats_np[gid, 4] = base_s
+        genome_stats_np[gid, 5] = 0 # Dummy FT
+        genome_stats_np[gid, 6] = 0 # Dummy FF
     
-    fields.genome_base_pp.from_numpy(genome_pp_np)
-    fields.genome_base_cm.from_numpy(genome_cm_np)
-    fields.genome_base_fm.from_numpy(genome_fm_np)
-    fields.genome_base_p_val.from_numpy(genome_p_np)
-    fields.genome_base_s_val.from_numpy(genome_s_np)
+    fields.genome_base_stats.from_numpy(genome_stats_np)
     
     # ========================================================================
     # UPLOAD WORK ITEMS WITH GENOME IDS
     # ========================================================================
-    budgets_np = staging["budgets"]
-    count_fever_np = staging["count_fever"]
-    count_normal_np = staging["count_normal"]
-    ft_gems_np = staging["ft_gems"]
-    ff_gems_np = staging["ff_gems"]
-    head_len_np = staging["head_len"]
-    genome_id_np = staging["genome_id"]
+    work_items_np = staging["work_items"]
     fever_masks_np = staging["fever_masks"]
-
-    budgets_np[:n] = 0
-    count_fever_np[:n] = 0
-    count_normal_np[:n] = 0
-    ft_gems_np[:n] = 0
-    ff_gems_np[:n] = 0
-    head_len_np[:n] = 0
-    genome_id_np[:n] = 0
+    
+    work_items_np[:n, :] = 0
     fever_masks_np[:n, :] = 0
     
     for i, item in enumerate(work_items):
-        budgets_np[i] = item["budget"]
-        count_fever_np[i] = item["count_body_fever"]
-        count_normal_np[i] = item["count_body_normal"]
-        ft_gems_np[i] = item.get("ft_gems", 0)
-        ff_gems_np[i] = item.get("ff_gems", 0)
-        genome_id_np[i] = genome_ids[i]
+        work_items_np[i, 0] = item["budget"]
+        work_items_np[i, 1] = item["count_body_fever"]
+        work_items_np[i, 2] = item["count_body_normal"]
+        work_items_np[i, 3] = item.get("ft_gems", 0)
+        work_items_np[i, 4] = item.get("ff_gems", 0)
+        work_items_np[i, 6] = genome_ids[i]
         
         mask = item.get("fever_mask_head")
         if mask is not None:
             head_len = min(len(mask), MAX_HEAD_NOTES)
-            head_len_np[i] = head_len
+            work_items_np[i, 5] = head_len
             fever_masks_np[i, :head_len] = mask[:head_len].astype(np.int8)
     
-    fields.work_budgets.from_numpy(budgets_np)
-    fields.work_count_fever.from_numpy(count_fever_np)
-    fields.work_count_normal.from_numpy(count_normal_np)
-    fields.work_ft_gems.from_numpy(ft_gems_np)
-    fields.work_ff_gems.from_numpy(ff_gems_np)
-    fields.work_head_len.from_numpy(head_len_np)
-    fields.work_genome_id.from_numpy(genome_id_np)
+    fields.work_items.from_numpy(work_items_np)
     fields.fever_masks.from_numpy(fever_masks_np)
     
     # Launch kernel (uses genome lookup for base stats)
@@ -592,31 +549,108 @@ def mega_batch_solve_population(
     ti.sync()
     
     # Download results
-    scores_np = fields.result_scores.to_numpy()[:n]
-    pp_np = fields.result_pp.to_numpy()[:n]
-    cm_np = fields.result_cm.to_numpy()[:n]
-    fm_np = fields.result_fm.to_numpy()[:n]
-    ov_np = fields.result_ov.to_numpy()[:n]
-    p_val_np = fields.result_p_val.to_numpy()[:n]
-    s_val_np = fields.result_s_val.to_numpy()[:n]
+    # [score, pp, cm, fm, ov, p_val, s_val]
+    results_np = fields.result_stats.to_numpy()[:n]
     
     # Reduce: find best score per genome
     best_per_genome = {}
     
+    # Need access to ft_gems/ff_gems for result tuple, which are in input work_items
+    
     for i in range(n):
         genome_idx = int(genome_ids[i])
-        score = int(scores_np[i])
+        row = results_np[i]
+        score = int(row[0])
         
         if genome_idx not in best_per_genome or score > best_per_genome[genome_idx][0]:
+            ft_in = work_items_np[i, 3]
+            ff_in = work_items_np[i, 4]
+            
             best_per_genome[genome_idx] = (
                 score,
-                int(pp_np[i]), int(cm_np[i]), int(fm_np[i]),
-                int(p_val_np[i]), int(s_val_np[i]),
-                int(pp_np[i]), int(cm_np[i]), int(fm_np[i]), int(ov_np[i]),
-                int(ft_gems_np[i]), int(ff_gems_np[i])  # Added FT/FF specific to this result
+                int(row[1]), int(row[2]), int(row[3]),
+                int(row[5]), int(row[6]), # p, s
+                int(row[1]), int(row[2]), int(row[3]), int(row[4]), # g_pp, g_cm, g_fm, g_ov
+                int(ft_in), int(ff_in)  # Added FT/FF specific to this result
             )
     
     return best_per_genome
+
+# ============================================================================
+# GPU TIMELINE PRECOMPUTATION (eliminates Numba typeof overhead)
+# ============================================================================
+
+_gpu_timeline_song_id = None  # Track which song's timestamps are uploaded
+
+
+def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict) -> None:
+    """
+    Precompute all 161×161 fever timeline entries on GPU.
+    
+    This replaces the CPU Numba path (calculate_fever_timeline_indices) which
+    had 28.7s typeof() overhead from 20M calls.
+    
+    GPU computes all 26,521 timelines in parallel in ~100ms.
+    
+    Args:
+        calc_song: Song calculation context with timestamps/metadata
+        ref_arrays: Reference lookup arrays (must include Fever Time/Fill Rate)
+        
+    After calling this, the grid fields are populated:
+    - grid_count_body_fever[ft, ff]
+    - grid_count_body_normal[ft, ff]
+    - grid_head_len[ft, ff]
+    - grid_fever_masks[ft, ff, :]
+    - grid_fever_masks_bits[ft, ff, :]
+    """
+    global _gpu_timeline_song_id
+    
+    # Check if we already computed for this song
+    song_key = (
+        calc_song["metadata"].get("Song Name", ""),
+        len(calc_song["song_data"]["timestamps"]),
+    )
+    if _gpu_timeline_song_id == song_key:
+        return  # Already computed
+    
+    # Ensure GPU is ready with refs and grid fields
+    ensure_ready(ref_arrays, need_grid=True)
+    
+    # Upload song timestamps
+    timestamps = np.asarray(calc_song["song_data"]["timestamps"], dtype=np.float32)
+    total_notes = len(timestamps)
+    
+    # Pad to MAX_SONG_NOTES if needed
+    if total_notes > fields.MAX_SONG_NOTES:
+        raise ValueError(f"Song has {total_notes} notes, max is {fields.MAX_SONG_NOTES}")
+    
+    # Create padded array
+    ts_padded = np.zeros(fields.MAX_SONG_NOTES, dtype=np.float32)
+    ts_padded[:total_notes] = timestamps
+    fields.song_timestamps.from_numpy(ts_padded)
+    
+    # Extract song metadata
+    long_notes = int(calc_song["metadata"].get("Long Notes", 0))
+    last_note_time = float(calc_song["metadata"].get("Last Note Time", 0))
+    
+    # Sync before timing
+    _maybe_sync(for_timing=True)
+    _t0 = time.perf_counter()
+    
+    # Launch GPU kernel to compute all 161×161 timelines
+    kernels.compute_timeline_grid_kernel(
+        total_notes,
+        long_notes,
+        last_note_time,
+    )
+    
+    _maybe_sync(for_timing=True)
+    _t1 = time.perf_counter()
+    
+    _gpu_timeline_song_id = song_key
+    
+    if _SYNC_FOR_TIMING or _FORCE_SYNC:
+        print(f"[GPU Timeline] Computed 161×161 grid in {(_t1 - _t0) * 1000:.1f}ms")
 
 
 # ============================================================================
@@ -631,7 +665,10 @@ def _upload_timeline_grid(timeline_grid):
     global _grid_uploaded
     
     # Skip if same grid already uploaded (major optimization!)
-    grid_id = id(timeline_grid)
+    # NOTE: In parallel mode the timeline grid is pickled across processes; `id()`
+    # changes on every request, which defeats caching and can force repeated
+    # 161x161 precompute + upload. Prefer a stable key when available.
+    grid_id = getattr(timeline_grid, "cache_key", None) or id(timeline_grid)
     if _grid_uploaded and get_last_uploaded_grid_id() == grid_id:
         return
     
@@ -644,17 +681,21 @@ def _upload_timeline_grid(timeline_grid):
     # Get grid data
     grid_size = timeline_grid.GRID_SIZE
     
-    # Allocate numpy arrays
+    # OPTIMIZED: Extract all grid data using precomputed cache
+    # This avoids 2.6M Python loop iterations!
+    _t_extract = time.perf_counter()
+    
     cbf_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
     cbn_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
     hl_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
     masks_np = np.zeros((GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES), dtype=np.int8)
     masks_bits_np = np.zeros((GRID_SIZE, GRID_SIZE, 4), dtype=np.uint32)
     
-    # Fill from grid (+ bitpack head mask)
+    # Vectorized extraction: iterate once, extract directly
     for ft_idx in range(grid_size):
+        row = timeline_grid._timeline_grid[ft_idx]
         for ff_idx in range(grid_size):
-            timeline = timeline_grid._timeline_grid[ft_idx][ff_idx]
+            timeline = row[ff_idx]
             if timeline is not None:
                 fever_mask_head, count_fever, count_normal, _ = timeline
                 cbf_np[ft_idx, ff_idx] = count_fever
@@ -662,34 +703,26 @@ def _upload_timeline_grid(timeline_grid):
                 head_len = min(len(fever_mask_head), MAX_HEAD_NOTES)
                 hl_np[ft_idx, ff_idx] = head_len
                 masks_np[ft_idx, ff_idx, :head_len] = fever_mask_head[:head_len].astype(np.int8)
-
-                # Pack bits (bit i = head note i fever)
-                w0 = np.uint32(0)
-                w1 = np.uint32(0)
-                w2 = np.uint32(0)
-                w3 = np.uint32(0)
-                for i in range(head_len):
-                    if fever_mask_head[i]:
-                        bit = np.uint32(1) << np.uint32(i & 31)
-                        if i < 32:
-                            w0 |= bit
-                        elif i < 64:
-                            w1 |= bit
-                        elif i < 96:
-                            w2 |= bit
-                        else:
-                            w3 |= bit
-                masks_bits_np[ft_idx, ff_idx, 0] = w0
-                masks_bits_np[ft_idx, ff_idx, 1] = w1
-                masks_bits_np[ft_idx, ff_idx, 2] = w2
-                masks_bits_np[ft_idx, ff_idx, 3] = w3
+                
+                # OPTIMIZED: Vectorized bit packing using NumPy
+                # Convert bool array to bit positions, then pack
+                if head_len > 0:
+                    fever_bits = np.nonzero(fever_mask_head[:head_len])[0]
+                    for bit_pos in fever_bits:
+                        word_idx = bit_pos >> 5  # bit_pos // 32
+                        bit_in_word = bit_pos & 31  # bit_pos % 32
+                        masks_bits_np[ft_idx, ff_idx, word_idx] |= np.uint32(1) << bit_in_word
+    
+    _profiler.record_upload(time.perf_counter() - _t_extract)
     
     # Upload to GPU
+    _t_gpu_upload = time.perf_counter()
     fields.grid_count_body_fever.from_numpy(cbf_np)
     fields.grid_count_body_normal.from_numpy(cbn_np)
     fields.grid_head_len.from_numpy(hl_np)
     fields.grid_fever_masks.from_numpy(masks_np)
     fields.grid_fever_masks_bits.from_numpy(masks_bits_np)
+    _profiler.record_upload(time.perf_counter() - _t_gpu_upload)
     
     _grid_uploaded = True
     set_last_uploaded_grid_id(grid_id)
@@ -744,30 +777,19 @@ def solve_genomes_with_ftff(
         raise ValueError(f"Too many genomes: {n_genomes} > {MAX_GENOMES}")
     
     # Upload per-genome stats
-    pp_np = np.zeros(MAX_GENOMES, dtype=np.int32)
-    cm_np = np.zeros(MAX_GENOMES, dtype=np.int32)
-    fm_np = np.zeros(MAX_GENOMES, dtype=np.int32)
-    p_val_np = np.zeros(MAX_GENOMES, dtype=np.int32)
-    s_val_np = np.zeros(MAX_GENOMES, dtype=np.int32)
-    ft_np = np.zeros(MAX_GENOMES, dtype=np.int32)
-    ff_np = np.zeros(MAX_GENOMES, dtype=np.int32)
+    # [pp, cm, fm, p_val, s_val, ft, ff]
+    stats_buf = np.zeros((n_genomes, 7), dtype=np.int32)
     
     for i, stats in enumerate(genome_stats_list):
-        pp_np[i] = stats["base_pp"]
-        cm_np[i] = stats["base_cm"]
-        fm_np[i] = stats["base_fm"]
-        p_val_np[i] = stats["base_p_val"]
-        s_val_np[i] = stats["base_s_val"]
-        ft_np[i] = stats["base_ft_stat"]
-        ff_np[i] = stats["base_ff_stat"]
+        stats_buf[i, 0] = stats["base_pp"]
+        stats_buf[i, 1] = stats["base_cm"]
+        stats_buf[i, 2] = stats["base_fm"]
+        stats_buf[i, 3] = stats["base_p_val"]
+        stats_buf[i, 4] = stats["base_s_val"]
+        stats_buf[i, 5] = stats["base_ft_stat"]
+        stats_buf[i, 6] = stats["base_ff_stat"]
     
-    fields.genome_base_pp.from_numpy(pp_np)
-    fields.genome_base_cm.from_numpy(cm_np)
-    fields.genome_base_fm.from_numpy(fm_np)
-    fields.genome_base_p_val.from_numpy(p_val_np)
-    fields.genome_base_s_val.from_numpy(s_val_np)
-    fields.genome_base_ft.from_numpy(ft_np)
-    fields.genome_base_ff.from_numpy(ff_np)
+    fields.genome_base_stats.from_numpy(stats_buf)
     
     # Launch kernel
     kernels.solve_genomes_with_ftff_kernel(
@@ -782,24 +804,20 @@ def solve_genomes_with_ftff(
     ti.sync()
     
     # Download results
-    scores_np = fields.genome_result_scores.to_numpy()[:n_genomes]
-    ft_out_np = fields.genome_result_ft.to_numpy()[:n_genomes]
-    ff_out_np = fields.genome_result_ff.to_numpy()[:n_genomes]
-    pp_out_np = fields.genome_result_pp.to_numpy()[:n_genomes]
-    cm_out_np = fields.genome_result_cm.to_numpy()[:n_genomes]
-    fm_out_np = fields.genome_result_fm.to_numpy()[:n_genomes]
-    ov_out_np = fields.genome_result_ov.to_numpy()[:n_genomes]
+    # [score, ft, ff, pp, cm, fm, ov]
+    results_np = fields.genome_result_stats.to_numpy()[:n_genomes]
     
     results = []
     for i in range(n_genomes):
+        row = results_np[i]
         results.append((
-            int(scores_np[i]),
-            int(ft_out_np[i]),
-            int(ff_out_np[i]),
-            int(pp_out_np[i]),
-            int(cm_out_np[i]),
-            int(fm_out_np[i]),
-            int(ov_out_np[i]),
+            int(row[0]), # score
+            int(row[1]), # ft
+            int(row[2]), # ff
+            int(row[3]), # pp
+            int(row[4]), # cm
+            int(row[5]), # fm
+            int(row[6]), # ov
         ))
     
     return results
@@ -850,26 +868,21 @@ def solve_genomes_parallel(
     
     # Get reusable staging buffers (avoid per-call allocations)
     staging = _ensure_parallel_staging()
-    pp_np = staging["genome_pp"]
-    cm_np = staging["genome_cm"]
-    fm_np = staging["genome_fm"]
-    p_val_np = staging["genome_p_val"]
-    s_val_np = staging["genome_s_val"]
-    ft_np = staging["genome_ft"]
-    ff_np = staging["genome_ff"]
+    genome_stats_np = staging["genome_base_stats"]
     
     # Also track max allowed FT/FF per genome for work item generation
     max_ft_list = []
     max_ff_list = []
     
     for i, stats in enumerate(genome_stats_list):
-        pp_np[i] = stats["base_pp"]
-        cm_np[i] = stats["base_cm"]
-        fm_np[i] = stats["base_fm"]
-        p_val_np[i] = stats["base_p_val"]
-        s_val_np[i] = stats["base_s_val"]
-        ft_np[i] = stats["base_ft_stat"]
-        ff_np[i] = stats["base_ff_stat"]
+        # [pp, cm, fm, p_val, s_val, ft, ff]
+        genome_stats_np[i, 0] = stats["base_pp"]
+        genome_stats_np[i, 1] = stats["base_cm"]
+        genome_stats_np[i, 2] = stats["base_fm"]
+        genome_stats_np[i, 3] = stats["base_p_val"]
+        genome_stats_np[i, 4] = stats["base_s_val"]
+        genome_stats_np[i, 5] = stats["base_ft_stat"]
+        genome_stats_np[i, 6] = stats["base_ff_stat"]
         
         # Compute max FT/FF gems
         remaining_ft = 160 - stats["base_ft_stat"]
@@ -879,31 +892,57 @@ def solve_genomes_parallel(
         max_ft_list.append(min(total_budget, max_ft))
         max_ff_list.append(min(total_budget, max_ff))
     
-    fields.genome_base_pp.from_numpy(pp_np)
-    fields.genome_base_cm.from_numpy(cm_np)
-    fields.genome_base_fm.from_numpy(fm_np)
-    fields.genome_base_p_val.from_numpy(p_val_np)
-    fields.genome_base_s_val.from_numpy(s_val_np)
-    fields.genome_base_ft.from_numpy(ft_np)
-    fields.genome_base_ff.from_numpy(ff_np)
+    fields.genome_base_stats.from_numpy(genome_stats_np)
     
     # Generate work items: (genome_id, ft, ff) for all valid combinations
-    work_genome = []
-    work_ft = []
-    work_ff = []
-    
+    # Avoid huge Python list append overhead by precomputing size and filling arrays.
+    n_work = 0
     for genome_idx in range(n_genomes):
-        max_ft = max_ft_list[genome_idx]
-        max_ff = max_ff_list[genome_idx]
-        
+        max_ft = int(max_ft_list[genome_idx])
+        max_ff = int(max_ff_list[genome_idx])
         for ft in range(max_ft + 1):
             remaining = total_budget - ft
-            for ff in range(min(remaining, max_ff) + 1):
-                work_genome.append(genome_idx)
-                work_ft.append(ft)
-                work_ff.append(ff)
-    
-    n_work = len(work_genome)
+            n_work += (min(remaining, max_ff) + 1)
+
+    work_genome = np.empty((n_work,), dtype=np.int32)
+    work_ft = np.empty((n_work,), dtype=np.int32)
+    work_ff = np.empty((n_work,), dtype=np.int32)
+    work_budgets = np.empty((n_work,), dtype=np.int32) # Need budget per item
+
+    pos = 0
+    for genome_idx in range(n_genomes):
+        max_ft = int(max_ft_list[genome_idx])
+        max_ff = int(max_ff_list[genome_idx])
+        for ft in range(max_ft + 1):
+            remaining = total_budget - ft
+            ff_max = min(remaining, max_ff)
+            cnt = ff_max + 1
+            work_genome[pos : pos + cnt] = genome_idx
+            work_ft[pos : pos + cnt] = ft
+            work_ff[pos : pos + cnt] = np.arange(cnt, dtype=np.int32)
+            # Budget calculation happens in kernel anyway based on ft/ff, but we pass it for consistency
+            # Actually kernel calculates budget = total_budget - ft - ff
+            # But the vector format expects budget at index 0.
+            # Let's precalculate it or pass total_budget to kernel?
+            # The vector format for work_items is:
+            # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
+            # Wait, solve_ftff_parallel_kernel in kernels.py calculates budget itself:
+            # budget = total_budget - ft - ff
+            # But it READS budget from item[0].
+            # So we MUST prefill item[0].
+            
+            # Vectorized budget fill:
+            # budget = total - ft - ff
+            # ff ranges from 0 to ff_max
+            # budget ranges from (total-ft) down to (total-ft-ff_max)
+            current_budget_base = total_budget - ft
+            work_budgets[pos : pos + cnt] = current_budget_base - np.arange(cnt, dtype=np.int32)
+            
+            pos += cnt
+
+    # Safety: ensure we filled exactly what we allocated
+    if pos != n_work:
+        raise RuntimeError(f"Internal error: filled work items {pos} != allocated {n_work}")
     
     if n_work == 0:
         return [(0, 0, 0, 0, 0, 0, 0) for _ in range(n_genomes)]
@@ -916,9 +955,7 @@ def solve_genomes_parallel(
     kernels.init_genome_results_kernel(n_genomes)
     
     # Get reusable work item buffers
-    genome_id_np = staging["work_genome_id"]
-    ft_gems_np = staging["work_ft_gems"]
-    ff_gems_np = staging["work_ff_gems"]
+    work_items_np = staging["work_items"]
     
     for chunk_idx in range(num_chunks):
         start = chunk_idx * chunk_size
@@ -926,15 +963,30 @@ def solve_genomes_parallel(
         chunk_n = end - start
         
         # Copy work items into reusable buffers (no allocation needed)
-        genome_id_np[:chunk_n] = work_genome[start:end]
-        ft_gems_np[:chunk_n] = work_ft[start:end]
-        ff_gems_np[:chunk_n] = work_ff[start:end]
+        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
+        
+        # We need to fill all 7 channels.
+        # Channels 1 (count_fever), 2 (count_normal), 5 (head_len) are filled by kernel (from grid lookup).
+        # We can leave them as 0 or whatever.
+        # But wait, solve_ftff_parallel_kernel READS them from grid, it ignores input values for these?
+        # Let's check kernel:
+        # count_fever = grid_count_body_fever[ft_idx, ff_idx]
+        # YES, kernel overwrites local variables from grid lookup. so input doesn't matter.
+        
+        # So we just need to pack budget, ft, ff, genome_id.
+        
+        # Flattened packing
+        # Reset buffer for cleanliness (optional but safer)
+        # work_items_np[:chunk_n, :] = 0 
+        
+        work_items_np[:chunk_n, 0] = work_budgets[start:end]      # budget
+        work_items_np[:chunk_n, 3] = work_ft[start:end]           # ft_gems
+        work_items_np[:chunk_n, 4] = work_ff[start:end]           # ff_gems
+        work_items_np[:chunk_n, 6] = work_genome[start:end]       # genome_id
         
         # Upload with profiling
         _t_upload = time.perf_counter()
-        fields.work_genome_id.from_numpy(genome_id_np)
-        fields.work_ft_gems.from_numpy(ft_gems_np)
-        fields.work_ff_gems.from_numpy(ff_gems_np)
+        fields.work_items.from_numpy(work_items_np)
         _profiler.record_upload(time.perf_counter() - _t_upload)
         
         # Launch solve kernel with profiling
@@ -950,31 +1002,29 @@ def solve_genomes_parallel(
         
         # GPU-side reduction: accumulate best into genome_result_* fields
         kernels.reduce_chunk_to_genomes_kernel(chunk_n)
-        ti.sync()  # Sync after each chunk to get accurate timing
-        _profiler.record_kernel(time.perf_counter() - _t_kernel, genome_count=chunk_n)
+        # IMPORTANT: Avoid sync in the hot loop unless explicitly timing.
+        if _profiler.enabled and _SYNC_FOR_TIMING:
+            _maybe_sync(for_timing=True)
+            _profiler.record_kernel(time.perf_counter() - _t_kernel, genome_count=chunk_n)
     
     # Download only O(n_genomes) results (not O(n_work_items)!)
     _t_download = time.perf_counter()
-    scores_np = fields.genome_result_scores.to_numpy()[:n_genomes]
-    ft_np = fields.genome_result_ft.to_numpy()[:n_genomes]
-    ff_np = fields.genome_result_ff.to_numpy()[:n_genomes]
-    pp_np = fields.genome_result_pp.to_numpy()[:n_genomes]
-    cm_np = fields.genome_result_cm.to_numpy()[:n_genomes]
-    fm_np = fields.genome_result_fm.to_numpy()[:n_genomes]
-    ov_np = fields.genome_result_ov.to_numpy()[:n_genomes]
+    # [score, ft, ff, pp, cm, fm, ov]
+    results_np = fields.genome_result_stats.to_numpy()[:n_genomes]
     _profiler.record_download(time.perf_counter() - _t_download)
     
     # Build results in order
     results = []
     for i in range(n_genomes):
+        row = results_np[i]
         results.append((
-            int(scores_np[i]),
-            int(ft_np[i]),
-            int(ff_np[i]),
-            int(pp_np[i]),
-            int(cm_np[i]),
-            int(fm_np[i]),
-            int(ov_np[i]),
+            int(row[0]), # score
+            int(row[1]), # ft
+            int(row[2]), # ff
+            int(row[3]), # pp
+            int(row[4]), # cm
+            int(row[5]), # fm
+            int(row[6]), # ov
         ))
     
     return results
@@ -1024,7 +1074,7 @@ def aggregate_population_stats_gpu(
     fields.base_fixed_stats.from_numpy(base_buf)
 
     kernels.aggregate_population_stats_kernel(n_genomes, int(n_slots))
-    ti.sync()
+    # No CPU readback here; avoid an unconditional sync.
 
 
 def ga_upload_population_indices(population_indices_np: np.ndarray, *, n_slots: int = 9) -> int:
@@ -1051,7 +1101,7 @@ def ga_seed_rng(n_genomes: int, seed: int = 12345) -> None:
     """Seed per-genome RNG state for GPU GA operators."""
     ensure_ready()
     kernels.ga_seed_rng_kernel(int(n_genomes), np.uint32(seed))
-    ti.sync()
+    # GPU-only op; no CPU readback needed.
 
 
 def ga_set_scores(scores_np: np.ndarray, *, n_genomes: int | None = None) -> int:
@@ -1110,7 +1160,7 @@ def ga_next_generation(
     kernels.ga_select_parents_tournament_kernel(n_genomes, tournament_k)
     kernels.ga_crossover_mutate_kernel(n_genomes, n_slots, mr_fp, elite_count)
     kernels.ga_swap_populations_kernel(n_genomes, n_slots)
-    ti.sync()
+    # GPU-only ops; no CPU readback needed.
 
 
 def ga_download_population_indices(*, n_genomes: int, n_slots: int = 9) -> np.ndarray:

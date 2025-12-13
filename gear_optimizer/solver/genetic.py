@@ -111,16 +111,17 @@ def solve_coevolution_genetic(
         all_gears, all_minis, p_color, slots
     )
     if gear_pool is None:
+        print(f"[GA Error] initialize_pools failed for song {calc_song['metadata'].get('Song Name', 'Unknown')}")
         return None, [], [], None, [], [], []
 
     # Build configuration data
     # Read GPU mode setting from config
     use_gpu_mode = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False) if hasattr(cfg, 'getboolean') else False
-    fg_heuristic_mode = cfg.getboolean("IterationEngine", "ForceGreatsHeuristic", fallback=False) if hasattr(cfg, 'getboolean') else False
+    # FG heuristic DISABLED: GA now optimizes for true base score (all perfects)
+    # The FG finder separately evaluates all loadouts with FG configs to find the best FG score.
+    # This gives two independent optimal results: best raw base score + best FG score.
     if use_gpu_mode:
         print("[GPU] GPU_Mode enabled for GA evaluation")
-    if fg_heuristic_mode:
-        print("[FG Heuristic] Using FG potential estimate for GA fitness")
     
     cfg_data = {
         "selected_color": selected_color,
@@ -171,7 +172,7 @@ def solve_coevolution_genetic(
     )
 
     # Build ranked candidate caches
-    gear_rank_max = 10  # keep gear sweep tight to avoid huge branching
+    gear_rank_max = 25  # expanded to help find items heuristic underranks
     mini_rank_max = 40  # widen minis to escape local minima
     gear_rank_cache = {
         s: sorted(gear_pool[s], key=score_candidate, reverse=True)[:gear_rank_max]
@@ -203,7 +204,7 @@ def solve_coevolution_genetic(
     )
 
     # Create local search functions
-    run_local_search, polish_best_genome, memetic_local_search = create_local_search_function(
+    run_local_search, polish_best_genome, memetic_local_search, batch_memetic_local_search = create_local_search_function(
         evaluate_genome_local,
         batch_evaluator,
         gear_rank_cache,
@@ -224,15 +225,19 @@ def solve_coevolution_genetic(
     best_global_genome = []
     best_global_data = {}
 
-    # Cross-run elite sharing: maintain a pool of best genomes across runs.
-    # This allows later runs to recombine with discoveries from earlier runs
-    # without forcing DB seed injection every run.
-    global_elites = []
+    # Store each run's best for comparison at the end
+    run_results = []  # List of (score, genome, data) tuples
 
-    # Non-regression guard:
-    # If we have a DB seed, fully evaluate it once up-front and use it as the
-    # baseline global best. This ensures the GA cannot "regress" below the
-    # previously-known best even if seeding probability gates skip injection.
+    # Cross-run elite sharing: DISABLED - each run is independent now
+    # global_elites = []
+
+    # Soft non-regression guard:
+    # Evaluate DB seed once up-front and cache it, but DON'T lock it as global best.
+    # This allows the GA to explore freely without being anchored to the DB score.
+    # We only use the DB seed for non-regression comparison at the END.
+    db_seed_score = -1
+    db_seed_genome = None
+    db_seed_data = None
     if db_seed:
         try:
             seed_list = build_seed_list_from_record(db_seed)
@@ -242,16 +247,14 @@ def solve_coevolution_genetic(
                     (seed_genome, base_stats_fixed, cfg_data, calc_song, ref_arrays)
                 )
                 evaluation_cache[genome_key(seed_genome)] = seed_res
-                best_global_score = seed_res["Score"]
-                best_global_genome = seed_genome
-                best_global_data = seed_res["Data"]
-                # Seed the global elite pool with the DB seed for cross-run sharing
-                # REMOVED: global_elites.append(seed_genome) -- too strong, causes local optima traps
+                db_seed_score = seed_res["Score"]
+                db_seed_genome = seed_genome
+                db_seed_data = seed_res["Data"]
                 print(
-                    f" >> [Evolution] Baseline locked from DB seed: {best_global_score}"
+                    f" >> [Evolution] DB seed baseline (soft): {db_seed_score}"
                 )
         except Exception as exc:
-            print(f" >> [Evolution] Warning: failed to lock DB seed baseline: {exc}")
+            print(f" >> [Evolution] Warning: failed to evaluate DB seed: {exc}")
 
     # Read Deep Mining config
     if ga_settings.deep_mining_enabled:
@@ -283,6 +286,12 @@ def solve_coevolution_genetic(
         # This avoids "false stagnation" when the global best is already locked.
         best_run_score = -1
         last_improvement_gen = 0
+
+        # Reset global best at start of each run to ensure independence
+        # The best across all runs will be selected after all runs complete
+        best_global_score = -1
+        best_global_genome = []
+        best_global_data = {}
 
         base_stagnation_limit = max(8, gens_per_run // 2)
         explore_stagnation_limit = max(8, gens_per_run // 3)
@@ -339,16 +348,22 @@ def solve_coevolution_genetic(
             # --- MEMETIC GA STEP: local search on top elites ---
             if ga_settings.memetic_elites > 0 and ga_settings.memetic_steps > 0:
                 elite_count = min(ga_settings.memetic_elites, len(results))
-                for e_idx in range(elite_count):
-                    base_res = results[e_idx]
-                    improved_res = memetic_local_search(
-                        base_res["Genome"],
-                        ga_settings.memetic_steps,
-                        ga_settings.memetic_top_gear,
-                        ga_settings.memetic_top_minis,
-                    )
-                    if improved_res["Score"] > base_res["Score"]:
-                        results[e_idx] = improved_res
+                
+                # BATCHED PATH: Process all elites simultaneously
+                # This reduces kernel launch overhead by packing all neighbors into fewer batches.
+                seed_genomes = [results[i]["Genome"] for i in range(elite_count)]
+                improved_results = batch_memetic_local_search(
+                    seed_genomes,
+                    ga_settings.memetic_steps,
+                    ga_settings.memetic_top_gear,
+                    ga_settings.memetic_top_minis,
+                )
+                
+                # Update population with improved versions if score increased
+                for i, improved_res in enumerate(improved_results):
+                    if improved_res["Score"] > results[i]["Score"]:
+                        results[i] = improved_res
+                
                 # Resort after memetic improvements
                 results.sort(key=lambda x: x["Score"], reverse=True)
 
@@ -403,7 +418,7 @@ def solve_coevolution_genetic(
                 optimize_minis,
                 fixed_minis,
                 current_mutation_rate,
-                global_elites=global_elites,
+                global_elites=None,  # Cross-run sharing disabled - runs are independent
             )
 
             population = next_gen
@@ -453,13 +468,19 @@ def solve_coevolution_genetic(
         # Cross-run elite sharing: add this run's best to the global elite pool.
         # This makes discoveries available for crossover in subsequent runs.
         if best_run_score > 0:
-            # Find the best genome from this run (may differ from global best)
+            # Store this run's best result
             run_best_genome = results[0]["Genome"] if results else None
-            if run_best_genome:
-                global_elites.append(run_best_genome)
-                # Cap pool size to prevent unbounded growth
-                if len(global_elites) > 10:
-                    global_elites = global_elites[-10:]
+            run_best_score = results[0]["Score"] if results else -1
+            run_best_data = results[0]["Data"] if results else {}
+            if run_best_genome and run_best_score > 0:
+                run_results.append((run_best_score, run_best_genome, run_best_data))
+
+    # Select the best result across all independent runs
+    for run_score, run_genome, run_data in run_results:
+        if run_score > best_global_score:
+            best_global_score = run_score
+            best_global_genome = run_genome
+            best_global_data = run_data
 
     # Polish best genome with exhaustive local search
     if best_global_genome:
@@ -478,6 +499,14 @@ def solve_coevolution_genetic(
             best_global_data = polished_result["Data"]
             best_global_genome = polished_genome
 
+    # Soft non-regression guard: If GA's best is worse than DB seed, fall back.
+    # This ensures we never regress while still allowing free exploration.
+    if db_seed_score > best_global_score and db_seed_genome:
+        print(f" >> [Evolution] GA best ({best_global_score}) < DB seed ({db_seed_score}); using DB seed.")
+        best_global_score = db_seed_score
+        best_global_genome = db_seed_genome
+        best_global_data = db_seed_data
+
     best_gear = best_global_genome[:6] if best_global_genome else []
     best_minis = best_global_genome[6:] if best_global_genome else []
 
@@ -491,6 +520,9 @@ def solve_coevolution_genetic(
     # Memory leak fix: Clear all generation-scoped data before returning
     population = None
     results = None
+    
+    if not best_global_data:
+        print(f"[GA Error] GA completed but found no valid candidates (best_global_score={best_global_score})")
 
     return (
         best_global_data if best_global_data else None,

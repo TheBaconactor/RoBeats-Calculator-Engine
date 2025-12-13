@@ -128,8 +128,16 @@ def worker_coevolution_evaluate(args):
     mini_part = genome[6:]
     mini_names = [m["Name"] for m in mini_part]
 
+    base_score = res["Score"]
+    fitness_score = base_score
+    
+    # Apply FG heuristic if enabled (biases GA toward FG-friendly loadouts)
+    if cfg_data.get("fg_heuristic"):
+        fitness_score = estimate_fg_potential(base_score, current_stats, calc_song, ref_arrays)
+
     return {
-        "Score": res["Score"],
+        "Score": fitness_score,  # Used for GA selection (may include FG heuristic boost)
+        "BaseScore": base_score,  # Always the true base score
         "Genome": genome,
         "Gear": gear_part,
         "Minis": mini_part,
@@ -213,6 +221,12 @@ def batch_evaluate_genomes(
     all_stats = []
     if use_gpu and use_gpu_aggregate:
         try:
+            # In parallel song processing, workers run in GPU worker mode and must not
+            # initialize Taichi directly (GPU ownership is centralized in GpuExecutor).
+            from .gpu_executor import is_gpu_worker_mode
+            if is_gpu_worker_mode():
+                raise RuntimeError("aggregate_population_stats_gpu disabled in GPU worker mode")
+
             from .taichi_gem.api import aggregate_population_stats_gpu
             from .population_index import STAT_KEYS, build_population_index, encode_population
 
@@ -303,6 +317,7 @@ def batch_evaluate_genomes(
     
     # GPU V2 FAST PATH - Full parallelization across (genome, ft, ff) combinations
     # This launches ~400k threads instead of 500, giving full GPU utilization!
+    gpu_results = None
     if unique_stats and use_gpu:
         from .taichi_gem_solver import solve_genomes_parallel
         from .fever_timeline import get_song_timeline_grid
@@ -385,24 +400,14 @@ def batch_evaluate_genomes(
         # Route through GPU executor IPC in worker process mode
         from .gpu_executor import is_gpu_worker_mode, submit_gpu_solve_genomes
         
-        if is_gpu_worker_mode():
-            # IPC route to GPU executor (parallel song processing)
-            gpu_results = submit_gpu_solve_genomes(
-                genome_stats_list,
-                grid,
-                is_p_ft, is_s_ft, is_p_ff, is_s_ff,
-                is_p_pp, is_s_pp, is_p_cm, is_s_cm,
-                is_p_fm, is_s_fm, is_p_ov, is_s_ov,
-                ref_arrays,
-                total_budget=TOTAL_GEM_BUDGET,
-                gem_scale_fever=GEM_SCALE_FEVER,
-            )
-        else:
-            # Direct GPU call (sequential mode or main process)
-            with _GPU_LOCK:
-                gpu_results = solve_genomes_parallel(
+        try:
+            if is_gpu_worker_mode():
+                # IPC route to GPU executor (parallel song processing).
+                # Pass lightweight `calc_song` dict to avoid pickling a full
+                # SongTimelineGrid across IPC (can trigger WinError 1450).
+                gpu_results = submit_gpu_solve_genomes(
                     genome_stats_list,
-                    grid,  # Timeline grid - uploaded once
+                    calc_song,
                     is_p_ft, is_s_ft, is_p_ff, is_s_ff,
                     is_p_pp, is_s_pp, is_p_cm, is_s_cm,
                     is_p_fm, is_s_fm, is_p_ov, is_s_ov,
@@ -410,10 +415,43 @@ def batch_evaluate_genomes(
                     total_budget=TOTAL_GEM_BUDGET,
                     gem_scale_fever=GEM_SCALE_FEVER,
                 )
+            else:
+                # Direct GPU call (sequential mode or main process)
+                with _GPU_LOCK:
+                    gpu_results = solve_genomes_parallel(
+                        genome_stats_list,
+                        grid,  # Timeline grid - uploaded once
+                        is_p_ft, is_s_ft, is_p_ff, is_s_ff,
+                        is_p_pp, is_s_pp, is_p_cm, is_s_cm,
+                        is_p_fm, is_s_fm, is_p_ov, is_s_ov,
+                        ref_arrays,
+                        total_budget=TOTAL_GEM_BUDGET,
+                        gem_scale_fever=GEM_SCALE_FEVER,
+                    )
+        except Exception as e:
+            # Fail-safe: never allow GPU/IPC issues to crash multi-song processing.
+            print(f"[batch_evaluate_genomes] GPU path failed, falling back to CPU: {type(e).__name__}: {e}")
+            gpu_results = None
         
-        # Convert GPU results to proper format and cache (O(n))
-        for unique_idx, (sig, _rep_stats) in enumerate(unique_stats):
-            if unique_idx >= len(gpu_results):
+    if unique_stats:
+        if gpu_results is not None and len(gpu_results) < len(unique_stats):
+            print(
+                f"[batch_evaluate_genomes] GPU returned {len(gpu_results)}/{len(unique_stats)} results; "
+                "filling missing via CPU"
+            )
+
+        # Populate sig_to_result for every uncached signature.
+        for unique_idx, (sig, rep_stats) in enumerate(unique_stats):
+            if gpu_results is None or unique_idx >= len(gpu_results):
+                # CPU fallback for this signature (or entire GPU path failed).
+                res = solve_best_fever_combination(
+                    None, rep_stats, calc_song, ref_arrays,
+                    silent=True, override_cfg=cfg_data,
+                )
+                GEM_SOLVER_CACHE[sig] = res
+                members = unique_members[unique_idx] if unique_idx < len(unique_members) else []
+                for i in members:
+                    sig_to_result[i] = res
                 continue
 
             score, g_ft, g_ff, g_pp, g_cm, g_fm, g_ov = gpu_results[unique_idx]
@@ -467,28 +505,38 @@ def batch_evaluate_genomes(
                     # Cache one representative result for this signature
                     GEM_SOLVER_CACHE[sig] = res
                     cache_written = True
-    else:
-        # CPU fallback path
-        for unique_idx, (sig, stats) in enumerate(unique_stats):
-            res = solve_best_fever_combination(
-                None, stats, calc_song, ref_arrays,
-                silent=True, override_cfg=cfg_data,
-            )
-            GEM_SOLVER_CACHE[sig] = res
-            members = unique_members[unique_idx] if unique_idx < len(unique_members) else []
-            for i in members:
-                sig_to_result[i] = res
     
     # Build results for uncached genomes
     uncached_results = {}
+    use_fg_heuristic = cfg_data.get("fg_heuristic", False)
     for i, (genome, stats) in enumerate(zip(uncached_genomes, all_stats)):
-        res = sig_to_result[i]
+        res = sig_to_result.get(i)
+        if res is None:
+            # Safety net: if the GPU/CPU signature mapping missed this index, evaluate it now.
+            base_sig = stats_signature(stats, calc_song, sel_color)
+            sig = base_sig + config_sig
+            res = GEM_SOLVER_CACHE.get(sig)
+            if res is None:
+                res = solve_best_fever_combination(
+                    None, stats, calc_song, ref_arrays,
+                    silent=True, override_cfg=cfg_data,
+                )
+                GEM_SOLVER_CACHE[sig] = res
+            sig_to_result[i] = res
         gear_part = genome[:6]
         mini_part = genome[6:]
         mini_names = [m["Name"] for m in mini_part]
         
+        base_score = res["Score"]
+        fitness_score = base_score
+        
+        # Apply FG heuristic if enabled (biases GA toward FG-friendly loadouts)
+        if use_fg_heuristic:
+            fitness_score = estimate_fg_potential(base_score, stats, calc_song, ref_arrays)
+        
         result = {
-            "Score": res["Score"],
+            "Score": fitness_score,  # Used for GA selection (may include FG heuristic boost)
+            "BaseScore": base_score,  # Always the true base score
             "Genome": genome,
             "Gear": gear_part,
             "Minis": mini_part,
@@ -664,6 +712,59 @@ def fg_baseline_params(stats, calc_song, ref_arrays):
         current_idx = fever_end_idx
 
     return int(non_fever_section), int(non_fever_base)
+
+
+def estimate_fg_potential(base_score, stats, calc_song, ref_arrays):
+    """
+    Cheap heuristic to estimate FG (Force Greats) potential without full search.
+    
+    Used during GA fitness evaluation to bias selection toward loadouts
+    that are likely to benefit from Force Greats timing manipulation.
+    
+    Factors that increase FG potential:
+    - Higher Fever Multiplier (FM): Bigger fever score boost when timing shifts
+    - More non-fever sections: More manipulation opportunities
+    - Higher base score: More absolute gain from percentage improvements
+    
+    Args:
+        base_score: Base score (all Perfect notes)
+        stats: Stats dictionary with gear/mini aggregated values
+        calc_song: Song calculation context
+        ref_arrays: Reference lookup arrays
+        
+    Returns:
+        int: Estimated FG-adjusted score (base_score + estimated FG boost)
+    """
+    if base_score <= 0:
+        return base_score
+    
+    # Get number of non-fever sections and baseline fill requirement
+    n_sections, non_fever_base = fg_baseline_params(stats, calc_song, ref_arrays)
+    
+    if n_sections <= 0:
+        return base_score
+    
+    # Factor 1: Fever Multiplier - higher FM = more FG benefit
+    # Normalize to 0-1 range (typical FM range is 0-1000)
+    fm = stats.get("Fever Multiplier", 0)
+    fm_factor = min(fm / 600.0, 1.0)
+    
+    # Factor 2: Non-fever sections - more sections = more manipulation room
+    # 2 sections is baseline, up to 4 provides increasing benefit
+    section_factor = min(n_sections / 3.0, 1.0)
+    
+    # Factor 3: Fill requirement - lower fill = easier to shift timing
+    # Smaller non_fever_base means fewer notes needed to trigger fever
+    fill_factor = 1.0 - min(non_fever_base / 50.0, 0.5)  # 0.5 to 1.0 range
+    
+    # Combined FG potential multiplier (0.0 to ~0.03 range)
+    # Typical FG improvement is 0.5-2% of base score
+    fg_multiplier = 0.015 * fm_factor * section_factor * fill_factor
+    
+    # Estimate FG boost
+    estimated_boost = int(base_score * fg_multiplier)
+    
+    return base_score + estimated_boost
 
 
 def evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=None):

@@ -27,6 +27,9 @@ import threading
 import queue
 import os
 import traceback
+import time
+from collections import defaultdict
+from time import perf_counter
 from dataclasses import dataclass
 from typing import Any, Optional, Dict, List
 from enum import Enum
@@ -35,6 +38,7 @@ from enum import Enum
 class GpuRequestType(Enum):
     """Types of GPU requests that can be submitted."""
     SOLVE_GENOMES_PARALLEL = "solve_genomes_parallel"
+    OPTIMIZE_GEMS_BATCH = "optimize_gems_batch_gpu"
     LOAD_REF_ARRAYS = "load_ref_arrays"
     SHUTDOWN = "shutdown"
 
@@ -63,6 +67,7 @@ _WORKER_ID: Optional[int] = None
 _REQUEST_QUEUE: Optional[multiprocessing.Queue] = None
 _RESPONSE_QUEUE: Optional[multiprocessing.Queue] = None
 _REQUEST_COUNTER = 0
+_PENDING_RESPONSES: Dict[int, "GpuResponse"] = {}
 
 
 def set_gpu_worker_mode(worker_id: int, request_queue, response_queue):
@@ -81,11 +86,12 @@ def is_gpu_worker_mode() -> bool:
 
 def clear_gpu_worker_mode():
     """Clear worker mode (for testing or process reuse)."""
-    global _WORKER_MODE, _WORKER_ID, _REQUEST_QUEUE, _RESPONSE_QUEUE
+    global _WORKER_MODE, _WORKER_ID, _REQUEST_QUEUE, _RESPONSE_QUEUE, _PENDING_RESPONSES
     _WORKER_MODE = False
     _WORKER_ID = None
     _REQUEST_QUEUE = None
     _RESPONSE_QUEUE = None
+    _PENDING_RESPONSES = {}
 
 
 class GpuExecutor:
@@ -122,6 +128,11 @@ class GpuExecutor:
         
         # Stats
         self._requests_processed = 0
+        self._profile_enabled = os.environ.get("GPU_EXECUTOR_PROFILE", "0") == "1"
+        self._wait_sec = 0.0
+        self._exec_sec = 0.0
+        self._req_type_counts = defaultdict(int)
+        self._req_type_exec_sec = defaultdict(float)
     
     def start(self):
         """Start the GPU executor thread in the main process."""
@@ -159,6 +170,22 @@ class GpuExecutor:
             self._executor_thread.join(timeout=10.0)
         
         self._running = False
+        if self._profile_enabled:
+            total = self._wait_sec + self._exec_sec
+            util = (self._exec_sec / total * 100.0) if total > 0 else 0.0
+            avg = (self._exec_sec / self._requests_processed) if self._requests_processed else 0.0
+            top_types = sorted(
+                self._req_type_exec_sec.items(), key=lambda kv: kv[1], reverse=True
+            )[:6]
+            top_types_str = ", ".join(
+                f"{t.value}:{self._req_type_counts[t]} ({sec:.2f}s)"
+                for t, sec in top_types
+            )
+            print(
+                "[GpuExecutor][PROFILE] "
+                f"wait={self._wait_sec:.2f}s exec={self._exec_sec:.2f}s util={util:.1f}% "
+                f"avg_exec_per_req={avg:.3f}s types=[{top_types_str}]"
+            )
         print(f"[GpuExecutor] Stopped. Processed {self._requests_processed} requests.")
     
     def register_worker(self) -> tuple:
@@ -196,13 +223,20 @@ class GpuExecutor:
         while self._running:
             try:
                 # Get request with timeout
+                t_wait0 = perf_counter()
                 request = self._request_queue.get(timeout=0.1)
+                self._wait_sec += perf_counter() - t_wait0
                 
                 if request.request_type == GpuRequestType.SHUTDOWN:
                     break
                 
                 # Execute and send response
+                t_exec0 = perf_counter()
                 response = self._execute_request(request)
+                dt_exec = perf_counter() - t_exec0
+                self._exec_sec += dt_exec
+                self._req_type_counts[request.request_type] += 1
+                self._req_type_exec_sec[request.request_type] += dt_exec
                 
                 # Send response to the worker's queue
                 if request.worker_id in self._response_queues:
@@ -211,6 +245,8 @@ class GpuExecutor:
                 self._requests_processed += 1
                 
             except queue.Empty:
+                if self._profile_enabled:
+                    self._wait_sec += 0.1
                 continue
             except Exception as e:
                 print(f"[GpuExecutor] Error: {e}")
@@ -221,6 +257,8 @@ class GpuExecutor:
         try:
             if request.request_type == GpuRequestType.SOLVE_GENOMES_PARALLEL:
                 return self._execute_solve_genomes(request)
+            elif request.request_type == GpuRequestType.OPTIMIZE_GEMS_BATCH:
+                return self._execute_optimize_gems_batch(request)
             elif request.request_type == GpuRequestType.LOAD_REF_ARRAYS:
                 return self._execute_load_refs(request)
             else:
@@ -272,6 +310,39 @@ class GpuExecutor:
             success=True,
             result=results,
         )
+
+    def _execute_optimize_gems_batch(self, request: GpuRequest) -> GpuResponse:
+        """Execute optimize_gems_batch_gpu on GPU."""
+        from .taichi_gem.api import optimize_gems_batch_gpu
+
+        payload = request.payload
+        results = optimize_gems_batch_gpu(
+            payload["batch_input"],
+            payload["cur_pp"],
+            payload["cur_cm"],
+            payload["cur_fm"],
+            payload["base_p_val"],
+            payload["base_s_val"],
+            payload["is_p_ft"],
+            payload["is_s_ft"],
+            payload["is_p_ff"],
+            payload["is_s_ff"],
+            payload["is_p_pp"],
+            payload["is_s_pp"],
+            payload["is_p_cm"],
+            payload["is_s_cm"],
+            payload["is_p_fm"],
+            payload["is_s_fm"],
+            payload["is_p_ov"],
+            payload["is_s_ov"],
+            payload["ref_arrays"],
+        )
+
+        return GpuResponse(
+            request_id=request.request_id,
+            success=True,
+            result=results,
+        )
     
     def _execute_load_refs(self, request: GpuRequest) -> GpuResponse:
         """Load reference arrays."""
@@ -291,10 +362,18 @@ class GpuExecutor:
     
     @property
     def stats(self) -> dict:
-        return {
+        out = {
             "requests_processed": self._requests_processed,
             "registered_workers": len(self._response_queues),
         }
+        if self._profile_enabled:
+            total = self._wait_sec + self._exec_sec
+            out["profile"] = {
+                "wait_sec": self._wait_sec,
+                "exec_sec": self._exec_sec,
+                "utilization_pct": (self._exec_sec / total * 100.0) if total > 0 else 0.0,
+            }
+        return out
 
 
 # Global executor instance
@@ -329,7 +408,10 @@ def submit_gpu_solve_genomes(
     This is a blocking call that waits for the GPU executor to return results.
     
     Args:
-        Same as solve_genomes_parallel
+        Same as solve_genomes_parallel. `timeline_grid` may be either:
+        - a `SongTimelineGrid` instance (sequential mode), or
+        - a lightweight `calc_song` dict with `metadata`/`song_data` (parallel/IPC mode),
+          which will be used to precompute the full 161×161 grid on GPU.
         timeout: Max seconds to wait for response
         
     Returns:
@@ -375,12 +457,171 @@ def submit_gpu_solve_genomes(
     _REQUEST_QUEUE.put(request)
     
     # Wait for response
-    try:
-        response: GpuResponse = _RESPONSE_QUEUE.get(timeout=timeout)
-    except queue.Empty:
-        raise RuntimeError(f"GPU executor timeout after {timeout}s")
+    start = time.monotonic()
+    while True:
+        if request_id in _PENDING_RESPONSES:
+            response = _PENDING_RESPONSES.pop(request_id)
+            break
+
+        remaining = timeout - (time.monotonic() - start)
+        if remaining <= 0:
+            raise RuntimeError(f"GPU executor timeout after {timeout}s")
+
+        try:
+            response: GpuResponse = _RESPONSE_QUEUE.get(timeout=remaining)
+        except queue.Empty:
+            raise RuntimeError(f"GPU executor timeout after {timeout}s")
+
+        if response.request_id != request_id:
+            # Can happen if an earlier request timed out and its response arrived late.
+            _PENDING_RESPONSES[response.request_id] = response
+            continue
+        break
     
     if not response.success:
         raise RuntimeError(f"GPU executor error: {response.error}")
     
-    return response.result
+    result = response.result
+    if isinstance(result, list) and len(result) != len(genome_stats_list):
+        raise RuntimeError(
+            f"GPU executor returned {len(result)} results for {len(genome_stats_list)} genomes"
+        )
+    return result
+
+
+def submit_gpu_optimize_gems_batch(
+    batch_input: list,
+    cur_pp: int,
+    cur_cm: int,
+    cur_fm: int,
+    base_p_val: int,
+    base_s_val: int,
+    is_p_ft: int,
+    is_s_ft: int,
+    is_p_ff: int,
+    is_s_ff: int,
+    is_p_pp: int,
+    is_s_pp: int,
+    is_p_cm: int,
+    is_s_cm: int,
+    is_p_fm: int,
+    is_s_fm: int,
+    is_p_ov: int,
+    is_s_ov: int,
+    ref_arrays: dict,
+    timeout: float = 60.0,
+) -> list:
+    """
+    Submit optimize_gems_batch_gpu request via IPC (for worker processes).
+
+    Mirrors `gear_optimizer.solver.taichi_gem.api.optimize_gems_batch_gpu`.
+    """
+    global _REQUEST_COUNTER
+
+    if not _WORKER_MODE:
+        raise RuntimeError("submit_gpu_optimize_gems_batch called but not in worker mode")
+
+    _REQUEST_COUNTER += 1
+    request_id = _REQUEST_COUNTER
+
+    request = GpuRequest(
+        request_type=GpuRequestType.OPTIMIZE_GEMS_BATCH,
+        request_id=request_id,
+        worker_id=_WORKER_ID,
+        payload={
+            "batch_input": batch_input,
+            "cur_pp": int(cur_pp),
+            "cur_cm": int(cur_cm),
+            "cur_fm": int(cur_fm),
+            "base_p_val": int(base_p_val),
+            "base_s_val": int(base_s_val),
+            "is_p_ft": int(is_p_ft),
+            "is_s_ft": int(is_s_ft),
+            "is_p_ff": int(is_p_ff),
+            "is_s_ff": int(is_s_ff),
+            "is_p_pp": int(is_p_pp),
+            "is_s_pp": int(is_s_pp),
+            "is_p_cm": int(is_p_cm),
+            "is_s_cm": int(is_s_cm),
+            "is_p_fm": int(is_p_fm),
+            "is_s_fm": int(is_s_fm),
+            "is_p_ov": int(is_p_ov),
+            "is_s_ov": int(is_s_ov),
+            "ref_arrays": ref_arrays,
+        },
+    )
+
+    _REQUEST_QUEUE.put(request)
+
+    start = time.monotonic()
+    while True:
+        if request_id in _PENDING_RESPONSES:
+            response = _PENDING_RESPONSES.pop(request_id)
+            break
+
+        remaining = timeout - (time.monotonic() - start)
+        if remaining <= 0:
+            raise RuntimeError(f"GPU executor timeout after {timeout}s")
+
+        try:
+            response: GpuResponse = _RESPONSE_QUEUE.get(timeout=remaining)
+        except queue.Empty:
+            raise RuntimeError(f"GPU executor timeout after {timeout}s")
+
+        if response.request_id != request_id:
+            _PENDING_RESPONSES[response.request_id] = response
+            continue
+        break
+
+    if not response.success:
+        raise RuntimeError(f"GPU executor error: {response.error}")
+
+    result = response.result
+    if isinstance(result, list) and len(result) != len(batch_input):
+        raise RuntimeError(
+            f"GPU executor returned {len(result)} results for {len(batch_input)} items"
+        )
+    return result
+
+
+def submit_gpu_load_ref_arrays(ref_arrays: dict, timeout: float = 30.0) -> None:
+    """Submit load_ref_arrays request via IPC (for worker processes)."""
+    global _REQUEST_COUNTER
+
+    if not _WORKER_MODE:
+        raise RuntimeError("submit_gpu_load_ref_arrays called but not in worker mode")
+
+    _REQUEST_COUNTER += 1
+    request_id = _REQUEST_COUNTER
+
+    request = GpuRequest(
+        request_type=GpuRequestType.LOAD_REF_ARRAYS,
+        request_id=request_id,
+        worker_id=_WORKER_ID,
+        payload={"ref_arrays": ref_arrays},
+    )
+
+    _REQUEST_QUEUE.put(request)
+
+    start = time.monotonic()
+    while True:
+        if request_id in _PENDING_RESPONSES:
+            response = _PENDING_RESPONSES.pop(request_id)
+            break
+
+        remaining = timeout - (time.monotonic() - start)
+        if remaining <= 0:
+            raise RuntimeError(f"GPU executor timeout after {timeout}s")
+
+        try:
+            response: GpuResponse = _RESPONSE_QUEUE.get(timeout=remaining)
+        except queue.Empty:
+            raise RuntimeError(f"GPU executor timeout after {timeout}s")
+
+        if response.request_id != request_id:
+            _PENDING_RESPONSES[response.request_id] = response
+            continue
+        break
+
+    if not response.success:
+        raise RuntimeError(f"GPU executor error: {response.error}")

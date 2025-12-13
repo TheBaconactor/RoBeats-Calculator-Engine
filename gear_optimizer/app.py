@@ -22,7 +22,6 @@ except ImportError:
 # Import from refactored modules
 from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS
 from gear_optimizer.core.config import (
-    write_metafinder_status,
     compute_memory_guard_limit,
     load_paths_cache,
 )
@@ -54,10 +53,24 @@ from gear_optimizer.solver.genetic import GEM_SOLVER_CACHE
 
 
 # Module-level worker initializer for GPU executor (must be picklable)
-def _gpu_worker_initializer(worker_id, req_queue, resp_queue):
-    """Initialize GPU worker mode in spawned process."""
+def _gpu_worker_initializer(request_queue, registrations, counter, lock):
+    """
+    Initialize GPU worker mode in spawned process.
+
+    Each spawned process claims a unique (worker_id, response_queue) registration.
+    """
     from gear_optimizer.solver.gpu_executor import set_gpu_worker_mode
-    set_gpu_worker_mode(worker_id, req_queue, resp_queue)
+
+    with lock:
+        idx = int(counter.value)
+        counter.value = idx + 1
+
+    if idx < 0 or idx >= len(registrations):
+        # Defensive fallback: disable GPU worker mode if we ran out of registrations.
+        return
+
+    worker_id, response_queue = registrations[idx]
+    set_gpu_worker_mode(worker_id, request_queue, response_queue)
 
 
 class GearOptimizerApp:
@@ -363,9 +376,10 @@ class GearOptimizerApp:
             print("Error: No matching songs found.")
             return []
 
+        # Queue all discovered songs; filtering is handled by difficulty folder + optional search string.
         if not filter_search:
-            return self._filter_existing_db_songs(song_queue, use_evo_db)
-        
+            return song_queue
+         
         print(f"Found {len(song_queue)} songs to process.")
         return song_queue
 
@@ -385,19 +399,8 @@ class GearOptimizerApp:
             except Exception as e:
                 print(f"[DB] Error fetching existing songs: {e}")
 
-        missing = []
-        for fp, meta_name, song_diff in song_queue:
-            if meta_name in existing_songs:
-                pass 
-            else:
-                missing.append((fp, meta_name, song_diff))
-        
-        if missing:
-            print(f"Auto-selection: {len(missing)} song(s) without DB records found; prioritizing those.")
-            return missing
-        else:
-            print("All songs have DB records; processing full list.")
-            return song_queue
+        # Legacy helper retained for compatibility, but we always process the full queue now.
+        return song_queue
 
     def _status_listener(self, q):
         while True:
@@ -508,7 +511,7 @@ class GearOptimizerApp:
                 try:
                     yield safe_process_song_task(t)
                 except Exception as seq_err:
-                    yield {"_error": seq_err, "_song_name": t[1]}
+                    yield {"_error": str(seq_err), "_error_type": type(seq_err).__name__, "_song_name": t[1]}
 
         self._consume_results(
             _safe_sequential_gen(tasks),
@@ -585,14 +588,18 @@ class GearOptimizerApp:
                 
                 # Use module-level initializer (local functions can't be pickled for spawn)
                 if worker_registrations:
-                    # Use first registration (all workers share same req queue)
-                    w_id, req_q, resp_q = worker_registrations[0]
+                    # All workers share the same request queue, but each worker must have its
+                    # own response queue and worker_id to avoid response cross-talk.
+                    req_q = worker_registrations[0][1]
+                    registrations = [(wid, resp_q) for (wid, _req_q, resp_q) in worker_registrations]
+                    reg_counter = mp_ctx.Value("i", 0)
+                    reg_lock = mp_ctx.Lock()
                     
                     with concurrent.futures.ProcessPoolExecutor(
                         max_workers=effective_workers,
                         mp_context=mp_ctx,
                         initializer=_gpu_worker_initializer,
-                        initargs=(w_id, req_q, resp_q),
+                        initargs=(req_q, registrations, reg_counter, reg_lock),
                     ) as executor:
                         future_map = {executor.submit(safe_process_song_task, t): t[1] for t in remaining_tasks}
                         self._consume_results(
@@ -689,13 +696,29 @@ class GearOptimizerApp:
                     if propagate_broken_pool and isinstance(task_err, BrokenProcessPool):
                         raise
                     continue
+
+                # safe_process_song_task can return an error payload; treat it as a failure here too.
+                if isinstance(res, dict) and "_error" in res:
+                    failed += 1
+                    err_type = res.get("_error_type") or type(res.get("_error")).__name__
+                    err_msg = f"[{completed}/{total}] FAILED: {song_name} - {err_type}: {res.get('_error')}"
+                    print(err_msg)
+                    logging.error(err_msg)
+                    if res.get("_trace"):
+                        logging.error(res.get("_trace"))
+                    self.discord_reporter.send_log(err_msg)
+                    continue
             else:
                 res = item
                 if isinstance(res, dict) and "_error" in res:
                     failed += 1
-                    err_msg = f"[{completed}/{total}] FAILED: {res.get('_song_name')} - {type(res['_error']).__name__}: {res['_error']}"
+                    err_name = res.get("_song_name") or res.get("song")
+                    err_type = res.get("_error_type") or type(res.get("_error")).__name__
+                    err_msg = f"[{completed}/{total}] FAILED: {err_name} - {err_type}: {res.get('_error')}"
                     print(err_msg)
                     logging.error(err_msg)
+                    if res.get("_trace"):
+                        logging.error(res.get("_trace"))
                     self.discord_reporter.send_log(err_msg)
                     continue
             

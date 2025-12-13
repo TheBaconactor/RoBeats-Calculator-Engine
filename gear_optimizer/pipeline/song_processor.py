@@ -507,6 +507,23 @@ def process_song_task(args):
                     f"persist={persist_build_time_sec:.3f}s report={report_time_sec:.3f}s"
                 )
 
+        else:
+            # OPTIMIZATION FAILED: Provide fallback payload to diagnose "N/A" score issues
+            print(f"[ERROR] Optimization failed for {found_song_name} - best_data is None")
+            # Try to capture log tail from buffer
+            log_tail = buf.getvalue()[-500:] if buf else "No log buffer"
+            db_payload = {
+                "score": 0,
+                "fg_score": 0,
+                "gear": [],
+                "minis": [],
+                "details": {
+                    "Error": "Optimization failed - no valid loadout found",
+                    "LogTail": log_tail
+                },
+                "force": None
+            }
+
         # BUG FIX: Capture buffer content BEFORE finally block closes it
         buf_content = buf.getvalue() if buf else ""
 
@@ -604,6 +621,8 @@ def safe_process_song_task(args):
             pass
         return {
             "song": song_name,
-            "_error": exc,
+            "_song_name": song_name,
+            "_error": str(exc),
+            "_error_type": type(exc).__name__,
             "_trace": tb,
         }

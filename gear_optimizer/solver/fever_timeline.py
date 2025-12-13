@@ -128,6 +128,16 @@ class SongTimelineGrid:
         """
         self.calc_song = calc_song
         self.ref_arrays = ref_arrays
+
+        # Stable identifier for cross-process caching (IPC pickling creates new object IDs).
+        meta = calc_song.get("metadata", {}) or {}
+        timestamps = calc_song.get("song_data", {}).get("timestamps", ())
+        self.cache_key = (
+            str(meta.get("Song Name", "")),
+            int(len(timestamps)),
+            float(meta.get("Last Note Time", 0) or 0),
+            int(meta.get("Long Notes", 0) or 0),
+        )
         
         # Extract song data
         self.song_timestamps = calc_song["song_data"]["timestamps"]

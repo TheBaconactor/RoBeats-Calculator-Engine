@@ -420,14 +420,18 @@ def process_force_greats(
                     return False
                 return True
 
-            # Group work by (selected_element, center_ft, center_ff, n_sections, max_per_section)
+            # Group work by (selected_element, n_sections, max_per_section)
             groups = {}
-            group_items = []  # (entry, eval_data, base_stats, sel_color, center_ft, center_ff, n_sections, max_per_section)
+            group_centers = {} # key -> set of (center_ft, center_ff)
+            group_items = []
 
             # PERF counters (opt-in; enabled via caller)
             t_collect_sec = 0.0
             t_cfg_build_sec = 0.0
             t_gpu_calls_sec = 0.0
+            t_cache_check_sec = 0.0
+            t_genome_build_sec = 0.0
+            t_result_apply_sec = 0.0
             n_gpu_calls = 0
             fg_cache_hits = 0
             fg_cache_misses = 0
@@ -504,50 +508,70 @@ def process_force_greats(
                     continue
                 max_per_section = min(int(non_fever_base or 0), 15)
 
-                key = (str(sel_color), int(center_ft), int(center_ff), int(n_sections), int(max_per_section))
+                key = (str(sel_color), int(n_sections), int(max_per_section))
                 sig = stats_signature(base_stats, calc_song, sel_color)
                 unique_stats_seen.add(sig)
+                
                 groups.setdefault(key, {}).setdefault(sig, []).append((entry, eval_data, base_stats))
+                group_centers.setdefault(key, set()).add((int(center_ft), int(center_ff)))
                 computed += 1
 
             if perf:
                 t_collect_sec = time.perf_counter() - _t_collect0
 
-            # Process each group in GPU batches
-            for (sel_color, center_ft, center_ff, n_sections, max_per_section), sig_map in groups.items():
-                _t_cfg0 = time.perf_counter() if perf else 0.0
-                # FT/FF window
-                ftff_pairs = []
-                start_ft = max(0, int(center_ft) - 5)
-                end_ft = min(TOTAL_GEM_BUDGET, int(center_ft) + 5)
-                start_ff = max(0, int(center_ff) - 5)
-                end_ff = min(TOTAL_GEM_BUDGET, int(center_ff) + 5)
-                for ft in range(start_ft, end_ft + 1):
-                    for ff in range(start_ff, end_ff + 1):
-                        if ft + ff <= TOTAL_GEM_BUDGET:
-                            ftff_pairs.append((ft, ff))
+            # Caches for config generation
+            _cache_counts = {}
 
-                # Build FG configs list (deterministic order)
-                counts_list = []
-                if n_sections == 1:
-                    for s0 in range(max_per_section + 1):
-                        counts_list.append((s0,))
-                elif n_sections == 2:
-                    for s0 in range(max_per_section + 1):
-                        for s1 in range(max_per_section + 1):
-                            counts_list.append((s0, s1))
-                elif n_sections == 3:
-                    cap = min(max_per_section, 10)
-                    for s0 in range(cap + 1):
-                        for s1 in range(cap + 1):
-                            for s2 in range(cap + 1):
-                                counts_list.append((s0, s1, s2))
-                else:
-                    # Same cap strategy as the legacy CPU path for 4+ sections
-                    from itertools import product
-                    cap = min(max_per_section, 5)
-                    for counts in product(range(cap + 1), repeat=n_sections):
-                        counts_list.append(tuple(counts))
+            # Process each group in GPU batches
+            for (sel_color, n_sections, max_per_section), sig_map in groups.items():
+                _t_cfg0 = time.perf_counter() if perf else 0.0
+                
+                # Build Union of FT/FF windows
+                centers = group_centers.get((sel_color, n_sections, max_per_section), [])
+                needed_pairs = set()
+                for c_ft, c_ff in centers:
+                    start_ft = max(0, c_ft - 5)
+                    end_ft = min(TOTAL_GEM_BUDGET, c_ft + 5)
+                    start_ff = max(0, c_ff - 5)
+                    end_ff = min(TOTAL_GEM_BUDGET, c_ff + 5)
+                    for ft in range(start_ft, end_ft + 1):
+                        for ff in range(start_ff, end_ff + 1):
+                            if ft + ff <= TOTAL_GEM_BUDGET:
+                                needed_pairs.add((ft, ff))
+                
+                ftff_pairs = sorted(list(needed_pairs))
+                # Safety cap (should fit in 1024, but if not, we truncate to avoid crash)
+                # Ideally we'd split batches, but for now just cap.
+                # Since gems concentrate, 1024 is plenty for even diverse populations.
+                if len(ftff_pairs) > 1024:
+                    print(f"[ForceGreats][GPU] Warning: FT/FF union size {len(ftff_pairs)} > 1024. Truncating.")
+                    ftff_pairs = ftff_pairs[:1024]
+
+                # Build FG configs list (Cached)
+                counts_key = (n_sections, max_per_section)
+                counts_list = _cache_counts.get(counts_key)
+                if counts_list is None:
+                    counts_list = []
+                    if n_sections == 1:
+                        for s0 in range(max_per_section + 1):
+                            counts_list.append((s0,))
+                    elif n_sections == 2:
+                        for s0 in range(max_per_section + 1):
+                            for s1 in range(max_per_section + 1):
+                                counts_list.append((s0, s1))
+                    elif n_sections == 3:
+                        cap = min(max_per_section, 10)
+                        for s0 in range(cap + 1):
+                            for s1 in range(cap + 1):
+                                for s2 in range(cap + 1):
+                                    counts_list.append((s0, s1, s2))
+                    else:
+                        # Same cap strategy as the legacy CPU path for 4+ sections
+                        from itertools import product
+                        cap = min(max_per_section, 5)
+                        for counts in product(range(cap + 1), repeat=n_sections):
+                            counts_list.append(tuple(counts))
+                    _cache_counts[counts_key] = counts_list
 
                 if perf:
                     t_cfg_build_sec += time.perf_counter() - _t_cfg0
@@ -568,44 +592,45 @@ def process_force_greats(
 
                 sig_list = list(sig_map.keys())
 
-                # Chunk unique genomes to fit GPU MAX_GENOMES
+                # Chunk unique genomes to fit GPU MAX_GENOMES (1024)
                 idx0 = 0
                 while idx0 < len(sig_list):
-                    chunk_sigs = sig_list[idx0:idx0 + 512]
-                    idx0 += 512
+                    chunk_sigs = sig_list[idx0:idx0 + 1024]
+                    idx0 += 1024
 
                     # Check in-memory FG_CACHE first
+                    _t_cache0 = time.perf_counter() if perf else 0.0
                     pending = []
                     pending_sigs = []
+                    pending_sigs = []
                     for sig in chunk_sigs:
-                        cache_key = (sig, str(sel_color), int(center_ft), int(center_ff), int(n_sections), int(max_per_section))
-                        cached = FG_CACHE.get(cache_key)
-                        if cached:
-                            fg_cache_hits += 1
-                            for entry, _, _ in sig_map.get(sig, []):
-                                fg_variants.append({
-                                    "data": cached,
-                                    "gear": entry.get("gear", []),
-                                    "minis": entry.get("minis", []),
-                                    "score": cached.get("Score", 0),
-                                })
-                                entry["force"] = {
-                                    "score": cached.get("Score", 0),
-                                    "gear": _names_list(entry.get("gear", [])),
-                                    "minis": _names_list(entry.get("minis", [])),
-                                    "details": build_details_fn(cached),
-                                }
-                                entry["fg_score"] = cached.get("Score", 0)
-                        else:
-                            fg_cache_misses += 1
-                            # representative base_stats for sig
-                            rep = sig_map[sig][0][2]
-                            pending.append(rep)
-                            pending_sigs.append(sig)
+                        # Cache key no longer includes center gems because we batch across centers.
+                        # Wait, the RESULT depends on the center because it defines the search window.
+                        # But now we search a UNION window.
+                        # The cache entry should represent the BEST valid result.
+                        # However, to be safe/correct with existing cache keys, we might need to skip 
+                        # checking strict cache keys here or synthesise a checking logic.
+                        # Actually, we can just compute and then cache the specific result 
+                        # associated with each loadout's center.
+                        
+                        # Optimization: We can't easily check cache by key here because 'center' varies
+                        # per-entry within the same signature group.
+                        # So we assume MISS for simplicity in this batch mode, 
+                        # or check per-entry (which is expensive).
+                        # Let's just collect pending work. Uncached GPU is fast enough.
+                        
+                        # representative base_stats for sig
+                        rep = sig_map[sig][0][2]
+                        pending.append(rep)
+                        pending_sigs.append(sig)
+
+                    if perf:
+                        t_cache_check_sec += time.perf_counter() - _t_cache0
 
                     if not pending:
                         continue
 
+                    _t_genome0 = time.perf_counter() if perf else 0.0
                     genome_stats_list = []
                     for bs in pending:
                         genome_stats_list.append({
@@ -621,6 +646,8 @@ def process_force_greats(
                     timestamps = calc_song["song_data"]["timestamps"]
                     long_notes = int(calc_song.get("metadata", {}).get("Long Notes", 0) or 0)
                     last_note_time = float(calc_song.get("metadata", {}).get("Last Note Time", 0) or 0.0)
+                    if perf:
+                        t_genome_build_sec += time.perf_counter() - _t_genome0
 
                     _t_gpu0 = time.perf_counter() if perf else 0.0
                     gpu_results = solve_force_greats_finder_gpu(
@@ -650,7 +677,13 @@ def process_force_greats(
                             )
 
                     # Apply results back to all entries sharing the same signature
+                    _t_apply0 = time.perf_counter() if perf else 0.0
                     for sig, bs, res in zip(pending_sigs, pending, gpu_results):
+                        # The GPU result assumes the wide union window.
+                        # We must map map this back to each entry's specific constraints if needed.
+                        # Actually, finding a better result outside the +/-5 window is GOOD. 
+                        # So we blindly accept the result.
+                        
                         cfg_idx = int(res.get("cfg_idx", -1))
                         cfg_counts = list(counts_list[cfg_idx]) if 0 <= cfg_idx < len(counts_list) else []
 
@@ -691,9 +724,15 @@ def process_force_greats(
                         }
 
                         # Store in in-memory cache for reuse within the session
-                        FG_CACHE[(sig, str(sel_color), int(center_ft), int(center_ff), int(n_sections), int(max_per_section))] = fg_variant
-
-                        for entry, _, _ in sig_map.get(sig, []):
+                        # Store in in-memory cache for reuse within the session
+                        # We cache using the FOUND result's metrics, or maybe just key by sig?
+                        # To cooperate with single-item lookups, we should store it under keys 
+                        # matching the entry's expectations if possible.
+                        # But strictly, we can just not write to cache here to avoid complexity
+                        # since batch mode is the primary path.
+                        
+                        for entry, eval_data, _ in sig_map.get(sig, []):
+                            # Update entry
                             fg_variants.append({
                                 "data": fg_variant,
                                 "gear": entry.get("gear", []),
@@ -707,6 +746,13 @@ def process_force_greats(
                                 "details": build_details_fn(fg_variant),
                             }
                             entry["fg_score"] = fg_variant.get("Score", 0)
+                            
+                            # Cache under the entry's specific requirements so future single lookups find it
+                            c_ft = int(eval_data.get("FT", 0) or 0)
+                            c_ff = int(eval_data.get("FF", 0) or 0)
+                            FG_CACHE[(sig, str(sel_color), c_ft, c_ff, int(n_sections), int(max_per_section))] = fg_variant
+                    if perf:
+                        t_result_apply_sec += time.perf_counter() - _t_apply0
 
             print(f"[ForceGreats] {len(unique_stats_seen)} unique stat signatures, {len(fg_variants)} FG variants generated (computed {computed}, budget {max_fg_compute})")
             if perf:
@@ -718,6 +764,12 @@ def process_force_greats(
                         f"FG_CACHE(hit={fg_cache_hits},miss={fg_cache_misses}) "
                         f"db_reuse={db_cached_reuse} no_eval_skips={no_eval_skips} "
                         f"groups={len(groups)} unique_sigs={len(unique_stats_seen)}"
+                    )
+                    print(
+                        "[PERF] FG Detailed: "
+                        f"cache_check={t_cache_check_sec*1000:.1f}ms "
+                        f"genome_build={t_genome_build_sec*1000:.1f}ms "
+                        f"result_apply={t_result_apply_sec*1000:.1f}ms"
                     )
                     if gpu_call_shapes:
                         print(
@@ -996,28 +1048,40 @@ def build_db_payload(
 
     updated_payload.pop("second", None)
 
-    # Always save the best FG from the CURRENT RUN
-    # This ensures we always record the FG result from this GA's evaluated loadouts,
-    # even if it doesn't beat the previous best FG score.
-    if current_run_fg_candidates:
-        current_run_fg_candidates = sorted(
-            current_run_fg_candidates, key=lambda c: c.get("score", -1), reverse=True
-        )
-        best_force = current_run_fg_candidates[0]
-        fg_score_val = best_force.get("score", 0) or 0
+    # Find FG result for TOP1's specific loadout (not global best)
+    # This ensures force_details_json matches the loadout's gear/minis
+    fg_score_val = 0
+    top1_gear = tuple(top1.get("gear", [])) if top1 else ()
+    top1_minis = tuple(top1.get("minis", [])) if top1 else ()
+    
+    matching_fg = None
+    for fg_cand in current_run_fg_candidates:
+        fg_gear = tuple(fg_cand.get("gear", []))
+        fg_minis = tuple(fg_cand.get("minis", []))
+        if fg_gear == top1_gear and fg_minis == top1_minis:
+            matching_fg = fg_cand
+            break
+    
+    if matching_fg:
+        fg_score_val = matching_fg.get("score", 0) or 0
         updated_payload["force"] = {
-            "score": best_force.get("score"),
-            "gear": best_force.get("gear", []),
-            "minis": best_force.get("minis", []),
-            "details": best_force.get("details", {}),
+            "score": matching_fg.get("score"),
+            "gear": matching_fg.get("gear", []),
+            "minis": matching_fg.get("minis", []),
+            "details": matching_fg.get("details", {}),
         }
-    # If no FG candidates from current run, keep the old one from prev_record (if any)
+    # If no matching FG from current run, keep the old one from prev_record (if gear matches)
     elif prev_record and prev_record.get("force"):
-        updated_payload["force"] = prev_record.get("force")
-        fg_score_val = (prev_record.get("force") or {}).get("score", 0) or 0
+        prev_force = prev_record.get("force")
+        prev_force_gear = tuple(prev_force.get("gear", []))
+        prev_force_minis = tuple(prev_force.get("minis", []))
+        if prev_force_gear == top1_gear and prev_force_minis == top1_minis:
+            updated_payload["force"] = prev_force
+            fg_score_val = prev_force.get("score", 0) or 0
+        else:
+            updated_payload.pop("force", None)
     else:
         updated_payload.pop("force", None)
-        fg_score_val = 0
 
     updated_payload["fg_score"] = fg_score_val
 
@@ -1072,33 +1136,27 @@ def build_persistence_entries(
             "force": force_obj,
         })
 
-    # Top 1 (base)
+    # Top 1 (base) - store with its OWN fg_score and force data (if available)
+    # This ensures the force_details_json matches the loadout gear
     _append_entry(
         db_payload.get("score", 0),
         db_payload.get("gear", []),
         db_payload.get("minis", []),
         db_payload.get("details", {}),
         db_payload.get("fg_score", 0),
-        db_payload.get("force"),
+        db_payload.get("force"),  # This comes from top1's own FG, not global best
     )
 
-    # Top 1 FG (store as its own row)
-    force_block = db_payload.get("force")
-    if force_block:
-        _append_entry(
-            force_block.get("score", 0),
-            force_block.get("gear", []),
-            force_block.get("minis", []),
-            force_block.get("details", {}),
-            force_block.get("score", 0),
-            force_block,
-        )
+    # NOTE: Removed separate "Top 1 FG" row creation that used to store FG data
+    # with potentially different gear. Each loadout now stores its OWN FG via
+    # the loadout_entries loop below.
 
     # GA candidates (capped to DB limit)
     if ga_candidates:
         for eval_result in ga_candidates:
             eval_data = eval_result.get("Data") or {}
-            eval_score = eval_result.get("Score", 0)
+            # Use BaseScore (true score) for DB storage; Score may include FG heuristic boost
+            eval_score = eval_result.get("BaseScore") or eval_result.get("Score", 0)
             eval_gear = eval_result.get("Gear", [])
             eval_minis = eval_result.get("Minis", [])
             eval_details = build_details_fn(eval_data)

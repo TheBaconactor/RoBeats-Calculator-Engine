@@ -17,12 +17,13 @@ from .runtime import is_initialized, init_taichi_vulkan
 # ============================================================================
 
 GRID_SIZE = 161  # Timeline grid dimension (161x161 = 26,521 entries per song)
-MAX_WORK_ITEMS = 524288  # 512k - supports 500 genomes × ~800 FT/FF combinations
+MAX_WORK_ITEMS = 4194304  # 4M - supports 4000 genomes × ~1000 FT/FF combinations
 MAX_HEAD_NOTES = 100  # Maximum notes in head section
-MAX_GENOMES = 1024  # Support up to 1024 unique genomes per batch
+MAX_GENOMES = 4096  # Support up to 4096 unique genomes per batch
 MAX_SLOTS = 9  # 6 gear + 3 minis (GPU-native GA representation)
 MAX_ITEMS = 65536  # Upper bound for (type,Name)-deduped items per song (row 0 reserved)
 ITEM_STAT_DIM = 10  # Must match solver.population_index.STAT_KEYS length
+MAX_SONG_NOTES = 200000  # Maximum song length for GPU timeline computation
 
 
 # ============================================================================
@@ -43,6 +44,9 @@ grid_head_len: ti.Field = None           # (161, 161) i32
 grid_fever_masks: ti.Field = None        # (161, 161, 100) i8 - head masks
 grid_fever_masks_bits: ti.Field = None   # (161, 161, 4) u32 - bitpacked head masks (128 bits covers 100 notes)
 
+# Song data for GPU timeline computation
+song_timestamps: ti.Field = None  # (MAX_SONG_NOTES,) f32
+
 # Per-work-item fever masks
 fever_masks: ti.Field = None  # (MAX_WORK_ITEMS, MAX_HEAD_NOTES) - i8
 
@@ -53,7 +57,8 @@ work_count_normal: ti.Field = None
 work_ft_gems: ti.Field = None
 work_ff_gems: ti.Field = None
 work_head_len: ti.Field = None
-work_genome_id: ti.Field = None  # Maps work item -> genome index
+work_genome_id: ti.Field = None
+work_items: ti.Field = None  # Vector field [budget, cnt_fever, cnt_normal, ft, ff, hl, gid]
 
 # Per-genome base stats (lookup by genome_id in kernel)
 genome_base_pp: ti.Field = None
@@ -63,6 +68,7 @@ genome_base_p_val: ti.Field = None
 genome_base_s_val: ti.Field = None
 genome_base_ft: ti.Field = None  # Base Fever Time stat (for FT/FF iteration)
 genome_base_ff: ti.Field = None  # Base Fever Fill Rate stat
+genome_base_stats: ti.Field = None  # Vector field [pp, cm, fm, p, s, ft, ff]
 
 # GPU-native GA / stat aggregation fields
 population_indices: ti.Field = None  # (MAX_GENOMES, MAX_SLOTS) item_id per (genome,slot)
@@ -82,6 +88,7 @@ result_fm: ti.Field = None
 result_ov: ti.Field = None
 result_p_val: ti.Field = None
 result_s_val: ti.Field = None
+result_stats: ti.Field = None  # Vector field [score, pp, cm, fm, ov, p, s]
 
 # Per-genome outputs (for FT/FF iteration kernel)
 genome_result_scores: ti.Field = None
@@ -91,6 +98,7 @@ genome_result_pp: ti.Field = None
 genome_result_cm: ti.Field = None
 genome_result_fm: ti.Field = None
 genome_result_ov: ti.Field = None
+genome_result_stats: ti.Field = None  # Vector field [score, ft, ff, pp, cm, fm, ov]
 
 
 # ============================================================================
@@ -139,15 +147,15 @@ def allocate_fields():
     """
     global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
     global fever_masks, work_budgets, work_count_fever, work_count_normal
-    global work_ft_gems, work_ff_gems, work_head_len, work_genome_id
+    global work_ft_gems, work_ff_gems, work_head_len, work_genome_id, work_items
     global genome_base_pp, genome_base_cm, genome_base_fm, genome_base_p_val, genome_base_s_val
-    global genome_base_ft, genome_base_ff
+    global genome_base_ft, genome_base_ff, genome_base_stats
     global population_indices, population_next_indices, item_stats, base_fixed_stats
     global ga_scores, ga_rng_state, ga_parent_a, ga_parent_b
     global result_scores, result_pp, result_cm, result_fm, result_ov
-    global result_p_val, result_s_val, _fields_allocated
+    global result_p_val, result_s_val, result_stats, _fields_allocated
     global genome_result_scores, genome_result_ft, genome_result_ff
-    global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov
+    global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
     
     if _fields_allocated:
         return
@@ -159,24 +167,14 @@ def allocate_fields():
     ref_ft_field = ti.field(dtype=ti.f32, shape=161)
     ref_ff_field = ti.field(dtype=ti.f32, shape=161)
     
-    # Work item inputs
+    # Work item inputs (Vector field for single-shot upload)
+    # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
     fever_masks = ti.field(dtype=ti.i8, shape=(MAX_WORK_ITEMS, MAX_HEAD_NOTES))
-    work_budgets = ti.field(dtype=ti.i32, shape=MAX_WORK_ITEMS)
-    work_count_fever = ti.field(dtype=ti.i32, shape=MAX_WORK_ITEMS)
-    work_count_normal = ti.field(dtype=ti.i32, shape=MAX_WORK_ITEMS)
-    work_ft_gems = ti.field(dtype=ti.i32, shape=MAX_WORK_ITEMS)
-    work_ff_gems = ti.field(dtype=ti.i32, shape=MAX_WORK_ITEMS)
-    work_head_len = ti.field(dtype=ti.i32, shape=MAX_WORK_ITEMS)
-    work_genome_id = ti.field(dtype=ti.i32, shape=MAX_WORK_ITEMS)
+    work_items = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_WORK_ITEMS)
     
     # Per-genome base stats (lookup by work_genome_id in kernel)
-    genome_base_pp = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    genome_base_cm = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    genome_base_fm = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    genome_base_p_val = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    genome_base_s_val = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    genome_base_ft = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    genome_base_ff = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    # [pp, cm, fm, p_val, s_val, ft, ff]
+    genome_base_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_GENOMES)
 
     # GPU-native GA / stat aggregation (Phase 3/4)
     population_indices = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, MAX_SLOTS))
@@ -188,23 +186,13 @@ def allocate_fields():
     ga_parent_a = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     ga_parent_b = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     
-    # Per-work-item results
-    result_scores = ti.field(dtype=ti.i32, shape=MAX_WORK_ITEMS)
-    result_pp = ti.field(dtype=ti.i32, shape=MAX_WORK_ITEMS)
-    result_cm = ti.field(dtype=ti.i32, shape=MAX_WORK_ITEMS)
-    result_fm = ti.field(dtype=ti.i32, shape=MAX_WORK_ITEMS)
-    result_ov = ti.field(dtype=ti.i32, shape=MAX_WORK_ITEMS)
-    result_p_val = ti.field(dtype=ti.i32, shape=MAX_WORK_ITEMS)
-    result_s_val = ti.field(dtype=ti.i32, shape=MAX_WORK_ITEMS)
+    # Per-work-item results (Vector field for single-shot download)
+    # [score, pp, cm, fm, ov, p_val, s_val]
+    result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_WORK_ITEMS)
     
     # Per-genome results (for FT/FF iteration kernel)
-    genome_result_scores = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    genome_result_ft = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    genome_result_ff = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    genome_result_pp = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    genome_result_cm = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    genome_result_fm = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    genome_result_ov = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    # [score, ft, ff, pp, cm, fm, ov]
+    genome_result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_GENOMES)
     
     _fields_allocated = True
     print(f"[Taichi] Allocated GPU fields: {MAX_WORK_ITEMS} work items, {MAX_HEAD_NOTES} head notes, {MAX_GENOMES} genomes")
@@ -217,6 +205,7 @@ def allocate_grid_fields():
     This allocates the 161x161 timeline grid for fever mask lookups.
     """
     global grid_count_body_fever, grid_count_body_normal, grid_head_len, grid_fever_masks, grid_fever_masks_bits
+    global song_timestamps
     global _grid_fields_allocated
     
     if _grid_fields_allocated:
@@ -228,6 +217,9 @@ def allocate_grid_fields():
     grid_head_len = ti.field(dtype=ti.i32, shape=(GRID_SIZE, GRID_SIZE))
     grid_fever_masks = ti.field(dtype=ti.i8, shape=(GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES))
     grid_fever_masks_bits = ti.field(dtype=ti.u32, shape=(GRID_SIZE, GRID_SIZE, 4))
+    
+    # Song timestamps for GPU timeline computation
+    song_timestamps = ti.field(dtype=ti.f32, shape=MAX_SONG_NOTES)
     
     _grid_fields_allocated = True
     print(f"[Taichi] Allocated grid fields: {GRID_SIZE}x{GRID_SIZE} timeline grid")
@@ -261,24 +253,15 @@ def bind_fields(kernels_module):
     kernels_module.grid_fever_masks = grid_fever_masks
     kernels_module.grid_fever_masks_bits = grid_fever_masks_bits
     
+    # Song data for timeline
+    kernels_module.song_timestamps = song_timestamps
+    
     # Work item data
     kernels_module.fever_masks = fever_masks
-    kernels_module.work_budgets = work_budgets
-    kernels_module.work_count_fever = work_count_fever
-    kernels_module.work_count_normal = work_count_normal
-    kernels_module.work_ft_gems = work_ft_gems
-    kernels_module.work_ff_gems = work_ff_gems
-    kernels_module.work_head_len = work_head_len
-    kernels_module.work_genome_id = work_genome_id
+    kernels_module.work_items = work_items
     
     # Genome base stats
-    kernels_module.genome_base_pp = genome_base_pp
-    kernels_module.genome_base_cm = genome_base_cm
-    kernels_module.genome_base_fm = genome_base_fm
-    kernels_module.genome_base_p_val = genome_base_p_val
-    kernels_module.genome_base_s_val = genome_base_s_val
-    kernels_module.genome_base_ft = genome_base_ft
-    kernels_module.genome_base_ff = genome_base_ff
+    kernels_module.genome_base_stats = genome_base_stats
 
     # GPU-native GA / stat aggregation
     kernels_module.population_indices = population_indices
@@ -291,22 +274,10 @@ def bind_fields(kernels_module):
     kernels_module.ga_parent_b = ga_parent_b
     
     # Results
-    kernels_module.result_scores = result_scores
-    kernels_module.result_pp = result_pp
-    kernels_module.result_cm = result_cm
-    kernels_module.result_fm = result_fm
-    kernels_module.result_ov = result_ov
-    kernels_module.result_p_val = result_p_val
-    kernels_module.result_s_val = result_s_val
+    kernels_module.result_stats = result_stats
     
     # Genome results
-    kernels_module.genome_result_scores = genome_result_scores
-    kernels_module.genome_result_ft = genome_result_ft
-    kernels_module.genome_result_ff = genome_result_ff
-    kernels_module.genome_result_pp = genome_result_pp
-    kernels_module.genome_result_cm = genome_result_cm
-    kernels_module.genome_result_fm = genome_result_fm
-    kernels_module.genome_result_ov = genome_result_ov
+    kernels_module.genome_result_stats = genome_result_stats
 
 
 def ensure_fields_allocated():
