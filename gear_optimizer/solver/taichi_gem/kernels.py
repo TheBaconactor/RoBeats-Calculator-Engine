@@ -229,7 +229,9 @@ def solve_genomes_with_ftff_kernel(
     is_p_cm: ti.i32, is_s_cm: ti.i32,
     is_p_fm: ti.i32, is_s_fm: ti.i32,
     is_p_ov: ti.i32, is_s_ov: ti.i32,
+    song_slot: ti.i32,  # Grid slot for batch coalescing (0 for single-song)
 ):
+
     ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
     MAX_STAT: ti.i32 = 160
@@ -269,9 +271,10 @@ def solve_genomes_with_ftff_kernel(
                 ft_idx = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
                 ff_idx = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
                 
-                count_fever = grid_count_body_fever[ft_idx, ff_idx]
-                count_normal = grid_count_body_normal[ft_idx, ff_idx]
-                head_len = grid_head_len[ft_idx, ff_idx]
+                count_fever = grid_count_body_fever[song_slot, ft_idx, ff_idx]
+                count_normal = grid_count_body_normal[song_slot, ft_idx, ff_idx]
+                head_len = grid_head_len[song_slot, ft_idx, ff_idx]
+
                 
                 budget = total_budget - ft - ff
                 
@@ -885,6 +888,7 @@ def solve_genomes_with_ftff_kernel(
     is_p_cm: ti.i32, is_s_cm: ti.i32,
     is_p_fm: ti.i32, is_s_fm: ti.i32,
     is_p_ov: ti.i32, is_s_ov: ti.i32,
+    song_slot: ti.i32,  # Grid slot for batch coalescing (0 for single-song)
 ):
     """
     New kernel that iterates FT/FF combinations INSIDE the GPU thread.
@@ -942,10 +946,10 @@ def solve_genomes_with_ftff_kernel(
                 ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
                 ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
                 
-                # O(1) lookup from grid
-                count_fever: ti.i32 = grid_count_body_fever[ft_idx, ff_idx]
-                count_normal: ti.i32 = grid_count_body_normal[ft_idx, ff_idx]
-                head_len: ti.i32 = grid_head_len[ft_idx, ff_idx]
+                # O(1) lookup from grid using song_slot
+                count_fever: ti.i32 = grid_count_body_fever[song_slot, ft_idx, ff_idx]
+                count_normal: ti.i32 = grid_count_body_normal[song_slot, ft_idx, ff_idx]
+                head_len: ti.i32 = grid_head_len[song_slot, ft_idx, ff_idx]
                 
                 # Budget remaining for PP/CM/FM/OV gems
                 budget: ti.i32 = total_budget - ft - ff
@@ -1113,7 +1117,7 @@ def solve_ftff_parallel_kernel(
     
     for i in range(n_work_items):
         item = work_items[i]
-        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id, total_budget]
+        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id, song_slot]
         
         budget: ti.i32 = item[0]
         count_fever: ti.i32 = item[1]
@@ -1122,7 +1126,7 @@ def solve_ftff_parallel_kernel(
         ff: ti.i32 = item[4]
         head_len: ti.i32 = item[5]
         genome_idx: ti.i32 = item[6]
-        genome_idx: ti.i32 = item[6]
+        song_slot: ti.i32 = item[7]  # Song grid slot for batch coalescing
         
         # Load genome base stats
         stats = genome_base_stats[genome_idx]
@@ -1140,10 +1144,11 @@ def solve_ftff_parallel_kernel(
         ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
         ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
         
-        # O(1) lookup from grid (re-calculated to ensure correctness with ft_idx/ff_idx)
-        count_fever = grid_count_body_fever[ft_idx, ff_idx]
-        count_normal = grid_count_body_normal[ft_idx, ff_idx]
-        head_len = grid_head_len[ft_idx, ff_idx]
+        # O(1) lookup from grid using song_slot for batch coalescing
+        count_fever = grid_count_body_fever[song_slot, ft_idx, ff_idx]
+        count_normal = grid_count_body_normal[song_slot, ft_idx, ff_idx]
+        head_len = grid_head_len[song_slot, ft_idx, ff_idx]
+
         
         # Adjust p/s values
         p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
@@ -1236,17 +1241,19 @@ def compute_timeline_grid_kernel(
     total_notes: ti.i32,
     long_notes: ti.i32,
     last_note_time: ti.f32,
+    song_slot: ti.i32,  # Grid slot to write to (0-7)
 ):
     """
     Compute all 161x161 fever timeline entries on GPU.
     
     Parallelizes over (ft_idx, ff_idx) pairs. Each thread computes one timeline.
-    Writes results to:
-    - grid_count_body_fever[ft, ff]
-    - grid_count_body_normal[ft, ff]
-    - grid_head_len[ft, ff]
-    - grid_fever_masks[ft, ff, :]
-    - grid_fever_masks_bits[ft, ff, :]
+    Writes results to song_slot in grid fields for batch coalescing support.
+    Results written to:
+    - grid_count_body_fever[song_slot, ft, ff]
+    - grid_count_body_normal[song_slot, ft, ff]
+    - grid_head_len[song_slot, ft, ff]
+    - grid_fever_masks[song_slot, ft, ff, :]
+    - grid_fever_masks_bits[song_slot, ft, ff, :]
     """
     ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
     
@@ -1361,14 +1368,14 @@ def compute_timeline_grid_kernel(
             else:
                 break
         
-        # Write outputs
-        grid_count_body_fever[ft_idx, ff_idx] = body_fever
-        grid_count_body_normal[ft_idx, ff_idx] = body_normal
-        grid_head_len[ft_idx, ff_idx] = head_len
-        grid_fever_masks_bits[ft_idx, ff_idx, 0] = m0
-        grid_fever_masks_bits[ft_idx, ff_idx, 1] = m1
-        grid_fever_masks_bits[ft_idx, ff_idx, 2] = m2
-        grid_fever_masks_bits[ft_idx, ff_idx, 3] = m3
+        # Write outputs to specified song slot
+        grid_count_body_fever[song_slot, ft_idx, ff_idx] = body_fever
+        grid_count_body_normal[song_slot, ft_idx, ff_idx] = body_normal
+        grid_head_len[song_slot, ft_idx, ff_idx] = head_len
+        grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0] = m0
+        grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1] = m1
+        grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2] = m2
+        grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3] = m3
         
         # Also write unpacked mask for compatibility
         for i in range(MAX_HEAD):
@@ -1381,4 +1388,4 @@ def compute_timeline_grid_kernel(
                 is_fever = ti.cast((m2 >> ti.u32(i - 64)) & 1, ti.i8)
             else:
                 is_fever = ti.cast((m3 >> ti.u32(i - 96)) & 1, ti.i8)
-            grid_fever_masks[ft_idx, ff_idx, i] = is_fever
+            grid_fever_masks[song_slot, ft_idx, ff_idx, i] = is_fever

@@ -24,6 +24,7 @@ MAX_SLOTS = 9  # 6 gear + 3 minis (GPU-native GA representation)
 MAX_ITEMS = 65536  # Upper bound for (type,Name)-deduped items per song (row 0 reserved)
 ITEM_STAT_DIM = 10  # Must match solver.population_index.STAT_KEYS length
 MAX_SONG_NOTES = 200000  # Maximum song length for GPU timeline computation
+MAX_SONG_SLOTS = 8  # Concurrent song grid slots for batch coalescing
 
 
 # ============================================================================
@@ -37,12 +38,13 @@ ref_fm_field: ti.Field = None
 ref_ft_field: ti.Field = None  # Fever Time multipliers
 ref_ff_field: ti.Field = None  # Fever Fill Rate multipliers
 
-# Timeline grid (161x161 = 26,521 entries per song)
-grid_count_body_fever: ti.Field = None   # (161, 161) i32
-grid_count_body_normal: ti.Field = None  # (161, 161) i32
-grid_head_len: ti.Field = None           # (161, 161) i32
-grid_fever_masks: ti.Field = None        # (161, 161, 100) i8 - head masks
-grid_fever_masks_bits: ti.Field = None   # (161, 161, 4) u32 - bitpacked head masks (128 bits covers 100 notes)
+# Timeline grid with song slots (MAX_SONG_SLOTS, 161, 161)
+# Slot 0 is default for single-song mode; slots 1-7 for batch mode
+grid_count_body_fever: ti.Field = None   # (MAX_SONG_SLOTS, 161, 161) i32
+grid_count_body_normal: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32
+grid_head_len: ti.Field = None           # (MAX_SONG_SLOTS, 161, 161) i32
+grid_fever_masks: ti.Field = None        # (MAX_SONG_SLOTS, 161, 161, 100) i8 - head masks
+grid_fever_masks_bits: ti.Field = None   # (MAX_SONG_SLOTS, 161, 161, 4) u32 - bitpacked head masks
 
 # Song data for GPU timeline computation
 song_timestamps: ti.Field = None  # (MAX_SONG_NOTES,) f32
@@ -58,7 +60,7 @@ work_ft_gems: ti.Field = None
 work_ff_gems: ti.Field = None
 work_head_len: ti.Field = None
 work_genome_id: ti.Field = None
-work_items: ti.Field = None  # Vector field [budget, cnt_fever, cnt_normal, ft, ff, hl, gid]
+work_items: ti.Field = None  # Vector field [budget, cnt_fever, cnt_normal, ft, ff, hl, gid, song_slot]
 
 # Per-genome base stats (lookup by genome_id in kernel)
 genome_base_pp: ti.Field = None
@@ -168,9 +170,9 @@ def allocate_fields():
     ref_ff_field = ti.field(dtype=ti.f32, shape=161)
     
     # Work item inputs (Vector field for single-shot upload)
-    # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
+    # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id, song_slot]
     fever_masks = ti.field(dtype=ti.i8, shape=(MAX_WORK_ITEMS, MAX_HEAD_NOTES))
-    work_items = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_WORK_ITEMS)
+    work_items = ti.Vector.field(n=8, dtype=ti.i32, shape=MAX_WORK_ITEMS)
     
     # Per-genome base stats (lookup by work_genome_id in kernel)
     # [pp, cm, fm, p_val, s_val, ft, ff]
@@ -202,7 +204,8 @@ def allocate_grid_fields():
     """
     Allocate GPU fields for timeline grid. Must be called after ti.init().
     
-    This allocates the 161x161 timeline grid for fever mask lookups.
+    This allocates MAX_SONG_SLOTS × 161×161 timeline grids for batch coalescing.
+    Each song slot can hold a different song's grid for parallel processing.
     """
     global grid_count_body_fever, grid_count_body_normal, grid_head_len, grid_fever_masks, grid_fever_masks_bits
     global song_timestamps
@@ -211,18 +214,19 @@ def allocate_grid_fields():
     if _grid_fields_allocated:
         return
     
-    # Timeline grid (161x161 = 26,521 entries)
-    grid_count_body_fever = ti.field(dtype=ti.i32, shape=(GRID_SIZE, GRID_SIZE))
-    grid_count_body_normal = ti.field(dtype=ti.i32, shape=(GRID_SIZE, GRID_SIZE))
-    grid_head_len = ti.field(dtype=ti.i32, shape=(GRID_SIZE, GRID_SIZE))
-    grid_fever_masks = ti.field(dtype=ti.i8, shape=(GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES))
-    grid_fever_masks_bits = ti.field(dtype=ti.u32, shape=(GRID_SIZE, GRID_SIZE, 4))
+    # Timeline grid with song slots (MAX_SONG_SLOTS × 161×161)
+    # Slot 0 is default for single-song mode; slots 0-7 for batch mode
+    grid_count_body_fever = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
+    grid_count_body_normal = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
+    grid_head_len = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
+    grid_fever_masks = ti.field(dtype=ti.i8, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES))
+    grid_fever_masks_bits = ti.field(dtype=ti.u32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, 4))
     
     # Song timestamps for GPU timeline computation
     song_timestamps = ti.field(dtype=ti.f32, shape=MAX_SONG_NOTES)
     
     _grid_fields_allocated = True
-    print(f"[Taichi] Allocated grid fields: {GRID_SIZE}x{GRID_SIZE} timeline grid")
+    print(f"[Taichi] Allocated grid fields: {MAX_SONG_SLOTS}×{GRID_SIZE}×{GRID_SIZE} timeline grid slots")
 
 
 # ============================================================================

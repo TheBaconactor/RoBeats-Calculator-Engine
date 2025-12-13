@@ -77,8 +77,8 @@ def _ensure_batch_staging():
     if _BATCH_STAGING is not None:
         return _BATCH_STAGING
     _BATCH_STAGING = {
-        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
-        "work_items": np.zeros((MAX_WORK_ITEMS, 7), dtype=np.int32),
+        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id, song_slot]
+        "work_items": np.zeros((MAX_WORK_ITEMS, 8), dtype=np.int32),
         "fever_masks": np.zeros((MAX_WORK_ITEMS, MAX_HEAD_NOTES), dtype=np.int8),
         # [pp, cm, fm, p_val, s_val, ft, ff]
         "genome_base_stats": np.zeros((MAX_GENOMES, 7), dtype=np.int32),
@@ -91,8 +91,8 @@ def _ensure_mega_staging():
     if _MEGA_STAGING is not None:
         return _MEGA_STAGING
     _MEGA_STAGING = {
-        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
-        "work_items": np.zeros((MAX_WORK_ITEMS, 7), dtype=np.int32),
+        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id, song_slot]
+        "work_items": np.zeros((MAX_WORK_ITEMS, 8), dtype=np.int32),
         "fever_masks": np.zeros((MAX_WORK_ITEMS, MAX_HEAD_NOTES), dtype=np.int8),
         # [pp, cm, fm, p_val, s_val, ft, ff]
         "genome_base_stats": np.zeros((MAX_GENOMES, 7), dtype=np.int32),
@@ -116,8 +116,8 @@ def _ensure_parallel_staging():
         "genome_base_stats": np.zeros((MAX_GENOMES, 7), dtype=np.int32),
         
         # Per-work-item buffers (reused per chunk)
-        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
-        "work_items": np.zeros((MAX_WORK_ITEMS, 7), dtype=np.int32),
+        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id, song_slot]
+        "work_items": np.zeros((MAX_WORK_ITEMS, 8), dtype=np.int32),
     }
     return _PARALLEL_STAGING
 
@@ -583,7 +583,7 @@ def mega_batch_solve_population(
 _gpu_timeline_song_id = None  # Track which song's timestamps are uploaded
 
 
-def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict) -> None:
+def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 0) -> None:
     """
     Precompute all 161×161 fever timeline entries on GPU.
     
@@ -595,13 +595,14 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict) -> None:
     Args:
         calc_song: Song calculation context with timestamps/metadata
         ref_arrays: Reference lookup arrays (must include Fever Time/Fill Rate)
+        song_slot: Grid slot to write to (0-7, default 0 for single-song mode)
         
-    After calling this, the grid fields are populated:
-    - grid_count_body_fever[ft, ff]
-    - grid_count_body_normal[ft, ff]
-    - grid_head_len[ft, ff]
-    - grid_fever_masks[ft, ff, :]
-    - grid_fever_masks_bits[ft, ff, :]
+    After calling this, the grid fields for song_slot are populated:
+    - grid_count_body_fever[song_slot, ft, ff]
+    - grid_count_body_normal[song_slot, ft, ff]
+    - grid_head_len[song_slot, ft, ff]
+    - grid_fever_masks[song_slot, ft, ff, :]
+    - grid_fever_masks_bits[song_slot, ft, ff, :]
     """
     global _gpu_timeline_song_id
     
@@ -637,11 +638,12 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict) -> None:
     _maybe_sync(for_timing=True)
     _t0 = time.perf_counter()
     
-    # Launch GPU kernel to compute all 161×161 timelines
+    # Launch GPU kernel to compute all 161×161 timelines for this song slot
     kernels.compute_timeline_grid_kernel(
         total_notes,
         long_notes,
         last_note_time,
+        song_slot,  # Grid slot for batch coalescing
     )
     
     _maybe_sync(for_timing=True)
@@ -685,24 +687,29 @@ def _upload_timeline_grid(timeline_grid):
     # This avoids 2.6M Python loop iterations!
     _t_extract = time.perf_counter()
     
-    cbf_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
-    cbn_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
-    hl_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
-    masks_np = np.zeros((GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES), dtype=np.int8)
-    masks_bits_np = np.zeros((GRID_SIZE, GRID_SIZE, 4), dtype=np.uint32)
+    # Allocate 3D arrays matching slotted grid fields (slot 0 for CPU upload path)
+    from .fields import MAX_SONG_SLOTS
+    cbf_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int32)
+    cbn_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int32)
+    hl_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int32)
+    masks_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES), dtype=np.int8)
+    masks_bits_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, 4), dtype=np.uint32)
     
-    # Vectorized extraction: iterate once, extract directly
+    # Fill slot 0 with timeline data
+    song_slot = 0
+    
+    # Vectorized extraction: iterate once, extract directly into slot 0
     for ft_idx in range(grid_size):
         row = timeline_grid._timeline_grid[ft_idx]
         for ff_idx in range(grid_size):
             timeline = row[ff_idx]
             if timeline is not None:
                 fever_mask_head, count_fever, count_normal, _ = timeline
-                cbf_np[ft_idx, ff_idx] = count_fever
-                cbn_np[ft_idx, ff_idx] = count_normal
+                cbf_np[song_slot, ft_idx, ff_idx] = count_fever
+                cbn_np[song_slot, ft_idx, ff_idx] = count_normal
                 head_len = min(len(fever_mask_head), MAX_HEAD_NOTES)
-                hl_np[ft_idx, ff_idx] = head_len
-                masks_np[ft_idx, ff_idx, :head_len] = fever_mask_head[:head_len].astype(np.int8)
+                hl_np[song_slot, ft_idx, ff_idx] = head_len
+                masks_np[song_slot, ft_idx, ff_idx, :head_len] = fever_mask_head[:head_len].astype(np.int8)
                 
                 # OPTIMIZED: Vectorized bit packing using NumPy
                 # Convert bool array to bit positions, then pack
@@ -711,7 +718,7 @@ def _upload_timeline_grid(timeline_grid):
                     for bit_pos in fever_bits:
                         word_idx = bit_pos >> 5  # bit_pos // 32
                         bit_in_word = bit_pos & 31  # bit_pos % 32
-                        masks_bits_np[ft_idx, ff_idx, word_idx] |= np.uint32(1) << bit_in_word
+                        masks_bits_np[song_slot, ft_idx, ff_idx, word_idx] |= np.uint32(1) << bit_in_word
     
     _profiler.record_upload(time.perf_counter() - _t_extract)
     
@@ -723,6 +730,7 @@ def _upload_timeline_grid(timeline_grid):
     fields.grid_fever_masks.from_numpy(masks_np)
     fields.grid_fever_masks_bits.from_numpy(masks_bits_np)
     _profiler.record_upload(time.perf_counter() - _t_gpu_upload)
+
     
     _grid_uploaded = True
     set_last_uploaded_grid_id(grid_id)
@@ -799,7 +807,9 @@ def solve_genomes_with_ftff(
         is_p_ft, is_s_ft, is_p_ff, is_s_ff,
         is_p_pp, is_s_pp, is_p_cm, is_s_cm,
         is_p_fm, is_s_fm, is_p_ov, is_s_ov,
+        0,  # song_slot=0 for single-song mode
     )
+
     
     ti.sync()
     
@@ -983,6 +993,8 @@ def solve_genomes_parallel(
         work_items_np[:chunk_n, 3] = work_ft[start:end]           # ft_gems
         work_items_np[:chunk_n, 4] = work_ff[start:end]           # ff_gems
         work_items_np[:chunk_n, 6] = work_genome[start:end]       # genome_id
+        work_items_np[:chunk_n, 7] = 0                            # song_slot (0 for single-song mode)
+
         
         # Upload with profiling
         _t_upload = time.perf_counter()
