@@ -845,6 +845,7 @@ def solve_genomes_parallel(
     ref_arrays: dict,
     total_budget: int = 90,
     gem_scale_fever: int = 3,
+    song_slot: int = 0,
 ) -> list:
     """
     V2: Solve gem allocation with MAXIMUM parallelism.
@@ -860,10 +861,12 @@ def solve_genomes_parallel(
         ref_arrays: Reference lookup arrays
         total_budget: Gem budget (default 90)
         gem_scale_fever: Stats per fever gem (default 3)
+        song_slot: Grid slot for batch coalescing (0-7, default 0)
         
     Returns:
         List of (score, ft, ff, pp, cm, fm, ov) tuples per genome
     """
+
     ensure_ready(ref_arrays, need_grid=True, timeline_grid=timeline_grid)
     
     # Import fields module
@@ -993,7 +996,8 @@ def solve_genomes_parallel(
         work_items_np[:chunk_n, 3] = work_ft[start:end]           # ft_gems
         work_items_np[:chunk_n, 4] = work_ff[start:end]           # ff_gems
         work_items_np[:chunk_n, 6] = work_genome[start:end]       # genome_id
-        work_items_np[:chunk_n, 7] = 0                            # song_slot (0 for single-song mode)
+        work_items_np[:chunk_n, 7] = song_slot                     # song_slot (batch coalescing)
+
 
         
         # Upload with profiling
