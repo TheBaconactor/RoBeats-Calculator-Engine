@@ -1,0 +1,29 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Test/coverage caches
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Type checker / linter caches
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Taichi cache
+.taichi/
+
+# Local database journaling files
+*.db-journal
+*.db-shm
+*.db-wal
+
+# OS/editor noise
+Thumbs.db
+Desktop.ini

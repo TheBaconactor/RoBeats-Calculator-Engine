@@ -168,6 +168,8 @@ def read_song_file(fp):
         return data
 
 
+
+
 def process_song_task(args):
     """
     Run a single song end-to-end optimization.
@@ -387,6 +389,7 @@ def process_song_task(args):
             best_minis = current_mini_list
 
         # Cap GA candidates for downstream processing to the DB loadout limit
+        # Ranked by Score (may include FG heuristic boost) to preserve FG-friendly loadouts for DB seeding
         ga_candidates = all_evaluated or []
         if ga_candidates and len(ga_candidates) > LOADOUTS_PER_SONG_LIMIT:
             ga_candidates = sorted(

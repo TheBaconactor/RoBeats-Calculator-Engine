@@ -254,7 +254,10 @@ def solve_coevolution_genetic(
                     (seed_genome, base_stats_fixed, cfg_data, calc_song, ref_arrays)
                 )
                 evaluation_cache[genome_key(seed_genome)] = seed_res
-                db_seed_score = seed_res["Score"]
+                # CRITICAL: Use BaseScore (true score) for DB comparison, not Score
+                # which may include FG heuristic boost. This ensures consistent
+                # comparison between what's stored in DB and new GA results.
+                db_seed_score = seed_res.get("BaseScore") or seed_res["Score"]
                 db_seed_genome = seed_genome
                 db_seed_data = seed_res["Data"]
                 print(
@@ -335,6 +338,11 @@ def solve_coevolution_genetic(
                 cand_score = cand["Score"]
                 cand_genome = cand["Genome"]
                 cand_data = cand["Data"]
+                # CRITICAL: Inject BaseScore into cand_data so build_db_payload can access it.
+                # The outer wrapper has BaseScore (true score), but cand_data (inner dict) doesn't.
+                # Without this, build_db_payload uses cand_data["Score"] which may be outdated.
+                if "BaseScore" in cand:
+                    cand_data["BaseScore"] = cand["BaseScore"]
                 best_key = genome_key(best_global_genome) if best_global_genome else None
                 cand_key = genome_key(cand_genome)
 
@@ -475,14 +483,14 @@ def solve_coevolution_genetic(
         # Cross-run elite sharing: add this run's best to the global elite pool.
         # This makes discoveries available for crossover in subsequent runs.
         if best_run_score > 0:
-            # Store this run's best result
+            # Store this run's best result (using heuristic Score for GA selection)
             run_best_genome = results[0]["Genome"] if results else None
             run_best_score = results[0]["Score"] if results else -1
             run_best_data = results[0]["Data"] if results else {}
             if run_best_genome and run_best_score > 0:
                 run_results.append((run_best_score, run_best_genome, run_best_data))
 
-    # Select the best result across all independent runs
+    # Select the best result across all independent runs (using true base scores)
     for run_score, run_genome, run_data in run_results:
         if run_score > best_global_score:
             best_global_score = run_score
@@ -499,6 +507,7 @@ def solve_coevolution_genetic(
                 (polished_genome, base_stats_fixed, cfg_data, calc_song, ref_arrays)
             )
 
+        # Use heuristic Score for GA selection (BaseScore only for DB comparisons)
         polished_score = polished_result["Score"]
 
         if polished_score > best_global_score:
@@ -508,11 +517,22 @@ def solve_coevolution_genetic(
 
     # Soft non-regression guard: If GA's best is worse than DB seed, fall back.
     # This ensures we never regress while still allowing free exploration.
-    if db_seed_score > best_global_score and db_seed_genome:
-        print(f" >> [Evolution] GA best ({best_global_score}) < DB seed ({db_seed_score}); using DB seed.")
+    # CRITICAL: Get the TRUE base score from best_global_data["Score"] for comparison,
+    # since best_global_score may still contain heuristic boost from GA selection.
+    ga_true_score = best_global_data.get("Score", 0) if best_global_data else best_global_score
+    if db_seed_score > ga_true_score and db_seed_genome:
+        print(f" >> [Evolution] GA best ({ga_true_score}) < DB seed ({db_seed_score}); using DB seed.")
         best_global_score = db_seed_score
         best_global_genome = db_seed_genome
         best_global_data = db_seed_data
+
+    # CRITICAL: Re-evaluate if best_global_data is missing GemCounts (from DB cache path).
+    # This ensures the final result always has complete gem allocation details for display.
+    if best_global_genome and best_global_data and "GemCounts" not in best_global_data:
+        full_result = worker_coevolution_evaluate(
+            (best_global_genome, base_stats_fixed, cfg_data, calc_song, ref_arrays)
+        )
+        best_global_data = full_result["Data"]
 
     best_gear = best_global_genome[:6] if best_global_genome else []
     best_minis = best_global_genome[6:] if best_global_genome else []
@@ -530,6 +550,11 @@ def solve_coevolution_genetic(
     
     if not best_global_data:
         print(f"[GA Error] GA completed but found no valid candidates (best_global_score={best_global_score})")
+
+    # Inject the heuristic score into the data packet if it differs from the base score.
+    # This helps explain why GA picked a loadout with a lower base score (due to expected FG boost).
+    if best_global_data and best_global_score != best_global_data.get("Score", 0):
+        best_global_data["HeuristicScore"] = best_global_score
 
     return (
         best_global_data if best_global_data else None,

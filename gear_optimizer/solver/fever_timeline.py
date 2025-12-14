@@ -104,6 +104,169 @@ def calculate_fever_timeline_indices(
     return fever_mask_head, count_body_fever, count_body_normal, fever_activations
 
 
+@jit(nopython=True, cache=True)
+def calculate_non_fever_sections(
+    song_timestamps,
+    total_notes,
+    fever_fill_rate,
+    fever_time_stat,
+    long_notes_count,
+    last_note_time,
+):
+    """
+    JIT helper: count non-fever sections and compute non_fever_base.
+
+    Matches the section stepping logic used by fg_baseline_params (scoring.py).
+    """
+    non_fever_cas = (total_notes - long_notes_count) * 0.333
+    if non_fever_cas < 0.0:
+        non_fever_cas = 0.0
+
+    non_fever_base = ceil(non_fever_cas * fever_fill_rate)
+    fever_time_cas = last_note_time * 0.15 + 0.15
+    real_fever_time = fever_time_cas * fever_time_stat
+
+    current_idx = 0
+    non_fever_section = 0
+
+    while current_idx < total_notes:
+        non_fever_section += 1
+        base_notes = non_fever_base - 1 if non_fever_section == 1 else non_fever_base
+        if base_notes < 0:
+            base_notes = 0
+
+        current_idx = min(current_idx + base_notes, total_notes)
+        if current_idx >= total_notes:
+            break
+
+        start_time = song_timestamps[current_idx]
+        end_time = start_time + real_fever_time
+        fever_end_idx = int(np.searchsorted(song_timestamps, end_time, side="left"))
+        if fever_end_idx <= current_idx:
+            fever_end_idx = min(total_notes, current_idx + 1)
+        current_idx = fever_end_idx
+
+    return int(non_fever_section), int(non_fever_base)
+
+
+@jit(nopython=True, cache=True)
+def calculate_force_greats_timeline_indices(
+    song_timestamps,
+    total_notes,
+    fever_fill_rate,
+    fever_time_stat,
+    long_notes_count,
+    last_note_time,
+    forced_counts,
+    forced_counts_len,
+    clamp_base_notes_nonnegative,
+    clamp_forced_to_section_notes,
+    fever_mask_buffer,
+    section_start_out,
+    section_forced_out,
+    section_fill_penalty_out,
+    section_skip_wasted_out,
+):
+    """
+    JIT ForceGreats fever timeline builder.
+
+    Replaces the Python while-loops in scoring.py by computing:
+    - fever_mask_head (first 100 notes or fewer)
+    - count_body_fever / count_body_normal
+    - per-section start index + forced greats + fill-penalty notes + skip_wasted
+
+    Behavior is controlled by flags to preserve existing semantics:
+    - clamp_base_notes_nonnegative: match evaluate_force_greats*() (True) vs
+      evaluate_fg_with_gem_iteration() (False).
+    - clamp_forced_to_section_notes: match evaluate_force_greats*() (True) vs
+      evaluate_fg_with_gem_iteration() (False).
+    """
+    non_fever_cas = (total_notes - long_notes_count) * 0.333
+    if non_fever_cas < 0.0:
+        non_fever_cas = 0.0
+
+    non_fever_base = ceil(non_fever_cas * fever_fill_rate)
+    non_fever_great_to_fill = ceil(max(1.0, (non_fever_cas * fever_fill_rate) * 2.0))
+
+    fever_time_cas = last_note_time * 0.15 + 0.15
+    real_fever_time = fever_time_cas * fever_time_stat
+
+    is_fever = fever_mask_buffer
+    is_fever[:] = False
+
+    max_sections = section_start_out.shape[0]
+    section_count = 0
+
+    current_idx = 0
+    non_fever_section = 0
+
+    while current_idx < total_notes and section_count < max_sections:
+        non_fever_section += 1
+
+        base_notes = non_fever_base - 1 if non_fever_section == 1 else non_fever_base
+        if clamp_base_notes_nonnegative and base_notes < 0:
+            base_notes = 0
+
+        forced_val = 0
+        if non_fever_section - 1 < forced_counts_len:
+            forced_val = int(forced_counts[non_fever_section - 1])
+        if forced_val < 0:
+            forced_val = 0
+        if forced_val > non_fever_base:
+            forced_val = non_fever_base
+
+        fill_penalty_notes = ceil(
+            max(0.0, (non_fever_base * forced_val) / non_fever_great_to_fill)
+        )
+        notes_to_fill = base_notes + fill_penalty_notes
+
+        section_start = current_idx
+        end_normal = min(section_start + notes_to_fill, total_notes)
+        actual_notes = max(0, end_normal - section_start)
+
+        forced_applied = forced_val
+        if clamp_forced_to_section_notes and forced_applied > actual_notes:
+            forced_applied = actual_notes
+
+        section_start_out[section_count] = section_start
+        section_forced_out[section_count] = forced_applied
+        section_fill_penalty_out[section_count] = fill_penalty_notes
+        section_skip_wasted_out[section_count] = non_fever_section == 1
+        section_count += 1
+
+        current_idx = end_normal
+        if current_idx >= total_notes:
+            break
+
+        start_time = song_timestamps[current_idx]
+        end_time = start_time + real_fever_time
+        fever_end_idx = int(np.searchsorted(song_timestamps, end_time, side="left"))
+        if fever_end_idx <= current_idx:
+            fever_end_idx = min(total_notes, current_idx + 1)
+        is_fever[current_idx:fever_end_idx] = True
+        current_idx = fever_end_idx
+
+    head_limit = min(total_notes, 100)
+    fever_mask_head = is_fever[:head_limit]
+
+    count_body_fever = 0
+    count_body_normal = 0
+    if total_notes > 100:
+        for i in range(100, total_notes):
+            if is_fever[i]:
+                count_body_fever += 1
+            else:
+                count_body_normal += 1
+
+    return (
+        fever_mask_head,
+        int(count_body_fever),
+        int(count_body_normal),
+        int(non_fever_base),
+        int(section_count),
+    )
+
+
 class SongTimelineGrid:
     """
     Pre-computed 161x161 grid of fever timelines for a specific song.

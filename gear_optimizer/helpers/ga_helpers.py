@@ -331,17 +331,20 @@ def create_evaluation_functions(
             if h in known_loadouts:
                 entry = known_loadouts[h]
 
-                # DB rows are stored as (score, fg_score, force_data); fall back gracefully
-                score = fg_score = force_data = None
+                # DB rows are stored as (score, fg_score, force_data, details_data); fall back gracefully
+                score = fg_score = force_data = details_data = None
                 if isinstance(entry, dict):
                     score = entry.get("score")
                     fg_score = entry.get("fg_score")
                     force_data = entry.get("force_data") or entry.get("force_details")
+                    details_data = entry.get("details_data")
                 elif isinstance(entry, (list, tuple)):
                     if len(entry) >= 2:
                         score, fg_score = entry[0], entry[1]
                     if len(entry) >= 3:
                         force_data = entry[2]
+                    if len(entry) >= 4:
+                        details_data = entry[3]
                 else:
                     # Unknown shape; skip cache usage rather than crashing
                     return None
@@ -363,6 +366,18 @@ def create_evaluation_functions(
                     
                     fitness_score = estimate_fg_potential(base_score, current_stats, calc_song, ref_arrays)
 
+                data_dict = {
+                    "Score": base_score, # Data.Score is typically the base score
+                    "_cached_db": True,
+                    "ForceDetails": force_data,
+                }
+                
+                # Verify details_data contains expected fields before updating
+                if details_data and isinstance(details_data, dict):
+                    # Only update if it looks like valid details (has GemCounts or FT/FF)
+                    if "GemCounts" in details_data or "FT" in details_data:
+                        data_dict.update(details_data)
+
                 return {
                     "Score": fitness_score,
                     "BaseScore": base_score,
@@ -373,11 +388,7 @@ def create_evaluation_functions(
                     "MiniNames": [
                         m.get("Name", "") if isinstance(m, dict) else str(m) for m in mini_part
                     ],
-                    "Data": {
-                        "Score": base_score, # Data.Score is typically the base score
-                        "_cached_db": True,
-                        "ForceDetails": force_data,
-                    },
+                    "Data": data_dict,
                     "_cached": True,  # Flag so we force a full re-eval when polishing
                 }
         return None
@@ -602,113 +613,60 @@ def create_local_search_function(
                         current_genome = list(best_mini_result["Genome"])
                         print(f"  >> [Polish] Exhaustive mini sweep improved score to {best_score}")
         
-        # === PHASE 2: 2-Swap Gear Neighborhood ===
-        # Try all pairs of gear swaps to escape 2-move basins
+        # === PHASE 2: k-Swap Gear Neighborhood (k=2 then k=3) ===
+        # Try coordinated k-slot changes to escape multi-move basins.
         if optimize_gear:
-            local_gear_rank = {
-                s: gear_rank_cache.get(s, [])[:top_k_gear] for s in slots
-            }
-            
-            two_swap_candidates = []
-            
-            # Generate all (slot_i, gear_a, slot_j, gear_b) combinations
-            for i, slot_i in enumerate(slots):
-                for j, slot_j in enumerate(slots):
-                    if j <= i:
-                        continue  # Only consider i < j pairs
-                    
-                    curr_i = current_genome[i]
-                    curr_j = current_genome[j]
-                    curr_i_name = curr_i.get("Name") if isinstance(curr_i, dict) else ""
-                    curr_j_name = curr_j.get("Name") if isinstance(curr_j, dict) else ""
-                    
-                    for cand_i in local_gear_rank.get(slot_i, []):
-                        if cand_i.get("Name") == curr_i_name:
-                            continue
-                        for cand_j in local_gear_rank.get(slot_j, []):
-                            if cand_j.get("Name") == curr_j_name:
-                                continue
-                            
-                            trial = current_genome[:]
-                            trial[i] = cand_i
-                            trial[j] = cand_j
-                            two_swap_candidates.append(trial)
-            
-            if two_swap_candidates:
-                # Batch evaluate in chunks to avoid exceeding GPU batch size limit
-                GPU_BATCH_LIMIT = 2000  # Stay safely under 4096 limit
-                all_two_swap_results = []
-                
-                for chunk_start in range(0, len(two_swap_candidates), GPU_BATCH_LIMIT):
-                    chunk = two_swap_candidates[chunk_start:chunk_start + GPU_BATCH_LIMIT]
-                    chunk_results = batch_evaluator(chunk)
-                    if chunk_results:
-                        all_two_swap_results.extend(chunk_results)
-                
-                if all_two_swap_results:
-                    best_two_swap = max(all_two_swap_results, key=lambda x: x["Score"])
-                    if best_two_swap["Score"] > best_score:
-                        best_score = best_two_swap["Score"]
-                        best_result = best_two_swap
-                        current_genome = list(best_two_swap["Genome"])
-                        print(f"  >> [Polish] 2-swap gear improved score to {best_score}")
-        
-        # === PHASE 2.5: 3-Swap Gear Neighborhood ===
-        # Try all triplets of gear swaps to escape 3-move basins
-        # This is critical for loadouts where the true optimum differs in 3+ slots
-        if optimize_gear:
-            three_swap_candidates = []
-            
-            # Generate all (slot_i, slot_j, slot_k) triplet combinations
-            for i, slot_i in enumerate(slots):
-                for j, slot_j in enumerate(slots):
-                    if j <= i:
+            local_gear_rank = {s: gear_rank_cache.get(s, [])[:top_k_gear] for s in slots}
+
+            def try_k_swap(k: int, label: str):
+                nonlocal best_score, best_result, current_genome
+
+                # Pre-filter candidates per slot index (exclude current gear).
+                choices_by_idx = {}
+                for idx, slot in enumerate(slots):
+                    curr = current_genome[idx]
+                    curr_name = curr.get("Name") if isinstance(curr, dict) else ""
+                    choices_by_idx[idx] = [
+                        cand
+                        for cand in local_gear_rank.get(slot, [])
+                        if cand.get("Name") != curr_name
+                    ]
+
+                swap_candidates = []
+                for idxs in combinations(range(len(slots)), k):
+                    candidate_lists = [choices_by_idx[i] for i in idxs]
+                    if any(not lst for lst in candidate_lists):
                         continue
-                    for k, slot_k in enumerate(slots):
-                        if k <= j:
-                            continue  # Only consider i < j < k triplets
-                        
-                        curr_i = current_genome[i]
-                        curr_j = current_genome[j]
-                        curr_k = current_genome[k]
-                        curr_i_name = curr_i.get("Name") if isinstance(curr_i, dict) else ""
-                        curr_j_name = curr_j.get("Name") if isinstance(curr_j, dict) else ""
-                        curr_k_name = curr_k.get("Name") if isinstance(curr_k, dict) else ""
-                        
-                        for cand_i in local_gear_rank.get(slot_i, []):
-                            if cand_i.get("Name") == curr_i_name:
-                                continue
-                            for cand_j in local_gear_rank.get(slot_j, []):
-                                if cand_j.get("Name") == curr_j_name:
-                                    continue
-                                for cand_k in local_gear_rank.get(slot_k, []):
-                                    if cand_k.get("Name") == curr_k_name:
-                                        continue
-                                    
-                                    trial = current_genome[:]
-                                    trial[i] = cand_i
-                                    trial[j] = cand_j
-                                    trial[k] = cand_k
-                                    three_swap_candidates.append(trial)
-            
-            if three_swap_candidates:
-                # Batch evaluate in chunks to avoid exceeding GPU batch size limit
-                GPU_BATCH_LIMIT = 2000
-                all_three_swap_results = []
-                
-                for chunk_start in range(0, len(three_swap_candidates), GPU_BATCH_LIMIT):
-                    chunk = three_swap_candidates[chunk_start:chunk_start + GPU_BATCH_LIMIT]
+                    for replacements in product(*candidate_lists):
+                        trial = current_genome[:]
+                        for i, cand in zip(idxs, replacements):
+                            trial[i] = cand
+                        swap_candidates.append(trial)
+
+                if not swap_candidates:
+                    return
+
+                # Batch evaluate in chunks to avoid exceeding GPU batch size limit.
+                GPU_BATCH_LIMIT = 2000  # Stay safely under 4096 limit
+                all_results = []
+                for chunk_start in range(0, len(swap_candidates), GPU_BATCH_LIMIT):
+                    chunk = swap_candidates[chunk_start : chunk_start + GPU_BATCH_LIMIT]
                     chunk_results = batch_evaluator(chunk)
                     if chunk_results:
-                        all_three_swap_results.extend(chunk_results)
-                
-                if all_three_swap_results:
-                    best_three_swap = max(all_three_swap_results, key=lambda x: x["Score"])
-                    if best_three_swap["Score"] > best_score:
-                        best_score = best_three_swap["Score"]
-                        best_result = best_three_swap
-                        current_genome = list(best_three_swap["Genome"])
-                        print(f"  >> [Polish] 3-swap gear improved score to {best_score}")
+                        all_results.extend(chunk_results)
+
+                if not all_results:
+                    return
+
+                best_k_swap = max(all_results, key=lambda x: x["Score"])
+                if best_k_swap["Score"] > best_score:
+                    best_score = best_k_swap["Score"]
+                    best_result = best_k_swap
+                    current_genome = list(best_k_swap["Genome"])
+                    print(f"  >> [Polish] {label} gear improved score to {best_score}")
+
+            try_k_swap(2, "2-swap")
+            try_k_swap(3, "3-swap")
         
         # === PHASE 3: Standard 1-Swap Local Search ===
         # Continue with traditional hill climbing until convergence

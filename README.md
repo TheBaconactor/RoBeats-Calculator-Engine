@@ -97,9 +97,6 @@ Gear Optimizer/
 │   ├── REFACTORING_VALIDATION.md  # Test results
 │   └── legacy/                # Old refactoring guides
 │
-└── legacy/                    # Archived code
-    ├── Manual_Calculator - Main.py      # Original 5,196-line monolith
-    └── Manual_Calculator - Original.py  # Pre-refactor version
 ```
 
 ## Features
@@ -252,7 +249,7 @@ First run compiles functions (slow). Subsequent runs use cached JIT code.
 
 ## Credits
 
-**Original Implementation:** 5,196-line monolith (see legacy/)
+**Original Implementation:** 5,196-line monolith (removed from repo; see docs/legacy for refactor notes)
 
 **Refactored Architecture:** Modular design with 12 core modules + 16 helper functions
 

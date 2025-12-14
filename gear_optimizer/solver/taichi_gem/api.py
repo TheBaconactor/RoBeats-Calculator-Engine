@@ -206,13 +206,14 @@ def ensure_ready(ref_arrays=None, *, need_grid=False, timeline_grid=None):
             load_ref_arrays(ref_arrays)
             _last_ref_arrays_sig = sig
     
-    # 4. Grid fields (only if needed)
-    if need_grid:
-        if not is_grid_fields_allocated():
-            ensure_grid_fields_allocated()
-        
-        if timeline_grid is not None:
-            _upload_timeline_grid(timeline_grid)
+    # 4. Grid fields - ALWAYS allocate because Taichi JIT traces both branches
+    #    of _calc_score_selector regardless of runtime `mode` value, so accessing
+    #    `grid_fever_masks_bits` during compilation fails if the field is None.
+    if not is_grid_fields_allocated():
+        ensure_grid_fields_allocated()
+    
+    if timeline_grid is not None:
+        _upload_timeline_grid(timeline_grid)
 
 
 # ============================================================================
@@ -645,9 +646,14 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     global _gpu_timeline_song_id_by_slot
     
     # Check if we already computed for this song
+    meta = calc_song.get("metadata", {}) or {}
+    song_data = calc_song.get("song_data", {}) or {}
+    timestamps = song_data.get("timestamps", ())
     song_key = (
-        calc_song["metadata"].get("Song Name", ""),
-        len(calc_song["song_data"]["timestamps"]),
+        str(meta.get("Song Name", "")),
+        int(len(timestamps)),
+        float(meta.get("Last Note Time", 0) or 0),
+        int(meta.get("Long Notes", 0) or 0),
     )
     song_slot = int(song_slot)
     if song_slot < 0 or song_slot >= fields.MAX_SONG_SLOTS:

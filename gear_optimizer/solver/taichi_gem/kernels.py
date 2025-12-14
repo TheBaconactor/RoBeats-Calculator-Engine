@@ -77,29 +77,29 @@ genome_result_stats = None
 # ... (lookup functions and xorshift unchanged) ...
 
 @ti.func
+def _clamp_stat_idx(value: ti.i32) -> ti.i32:
+    return ti.max(0, ti.min(160, value))
+
+
+@ti.func
 def lookup_ref_pp(value: ti.i32) -> ti.f32:
-    idx = ti.max(0, ti.min(160, value))
-    return ref_pp_field[idx]
+    return ref_pp_field[_clamp_stat_idx(value)]
 
 @ti.func
 def lookup_ref_cm(value: ti.i32) -> ti.f32:
-    idx = ti.max(0, ti.min(160, value))
-    return ref_cm_field[idx]
+    return ref_cm_field[_clamp_stat_idx(value)]
 
 @ti.func
 def lookup_ref_fm(value: ti.i32) -> ti.f32:
-    idx = ti.max(0, ti.min(160, value))
-    return ref_fm_field[idx]
+    return ref_fm_field[_clamp_stat_idx(value)]
 
 @ti.func
 def lookup_ref_ft(value: ti.i32) -> ti.f32:
-    idx = ti.max(0, ti.min(160, value))
-    return ref_ft_field[idx]
+    return ref_ft_field[_clamp_stat_idx(value)]
 
 @ti.func
 def lookup_ref_ff(value: ti.i32) -> ti.f32:
-    idx = ti.max(0, ti.min(160, value))
-    return ref_ff_field[idx]
+    return ref_ff_field[_clamp_stat_idx(value)]
 
 @ti.func
 def _xorshift32(x: ti.u32) -> ti.u32:
@@ -208,6 +208,7 @@ def solve_batch_kernel(
             is_p_fm, is_s_fm,
             is_p_ov, is_s_ov,
             head_len, count_fever, count_normal,
+            0, 0, 0, 0,
         )
         
         # We need to fill result_stats but optimize_core_device only returns score.
@@ -467,6 +468,98 @@ def ga_swap_populations_kernel(n_genomes: ti.i32, n_slots: ti.i32):
 
 
 @ti.func
+def _calc_body_score(
+    base_value: ti.f32,
+    combo_mul: ti.f32,
+    fever_mul: ti.f32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+) -> ti.f32:
+    combo_val = ti.floor(base_value * combo_mul)
+    fever_val = ti.floor(base_value * combo_mul * fever_mul)
+    return (ti.cast(count_fever, ti.f32) * fever_val) + (
+        ti.cast(count_normal, ti.f32) * combo_val
+    )
+
+
+@ti.func
+def _calc_head_factor(base_value: ti.f32, combo_mul: ti.f32) -> ti.f32:
+    return (combo_mul - 1.0) * base_value / 100.0
+
+
+@ti.func
+def _calc_head_score_masks(
+    base_value: ti.f32,
+    factor: ti.f32,
+    fever_mul: ti.f32,
+    work_idx: ti.i32,
+    head_len: ti.i32,
+) -> ti.f32:
+    head_score = 0.0
+    for i in range(head_len):
+        ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
+        if fever_masks[work_idx, i] != 0:
+            head_score += ti.floor(ramp_val * fever_mul)
+        else:
+            head_score += ti.floor(ramp_val)
+    return head_score
+
+
+@ti.func
+def _calc_head_score_grid(
+    base_value: ti.f32,
+    factor: ti.f32,
+    fever_mul: ti.f32,
+    song_slot: ti.i32,
+    ft_idx: ti.i32,
+    ff_idx: ti.i32,
+    head_len: ti.i32,
+) -> ti.f32:
+    head_score = 0.0
+    for i in range(head_len):
+        ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
+        if grid_fever_masks[song_slot, ft_idx, ff_idx, i] != 0:
+            head_score += ti.floor(ramp_val * fever_mul)
+        else:
+            head_score += ti.floor(ramp_val)
+    return head_score
+
+
+@ti.func
+def _calc_head_score_bits(
+    base_value: ti.f32,
+    factor: ti.f32,
+    fever_mul: ti.f32,
+    m0: ti.u32,
+    m1: ti.u32,
+    m2: ti.u32,
+    m3: ti.u32,
+    head_len: ti.i32,
+) -> ti.f32:
+    head_score = 0.0
+    for i in range(head_len):
+        ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
+        word = ti.u32(0)
+        shift = ti.u32(i & 31)
+
+        if i < 32:
+            word = m0
+        elif i < 64:
+            word = m1
+        elif i < 96:
+            word = m2
+        else:
+            word = m3
+
+        is_fever = (word >> shift) & ti.u32(1)
+        if is_fever != 0:
+            head_score += ti.floor(ramp_val * fever_mul)
+        else:
+            head_score += ti.floor(ramp_val)
+    return head_score
+
+
+@ti.func
 def calc_score_device(
     base_value: ti.f32,  # Changed to f32 for performance
     combo_mul: ti.f32,
@@ -495,23 +588,11 @@ def calc_score_device(
     Returns:
         Total score as int32
     """
-    # Body score (notes 101+) - base_value is already f32
-    combo_val = ti.floor(base_value * combo_mul)
-    fever_val = ti.floor(base_value * combo_mul * fever_mul)
-    
-    body_score = (ti.cast(count_fever, ti.f32) * fever_val) + (ti.cast(count_normal, ti.f32) * combo_val)
-    
-    # Head score (notes 1-100) with ramped combo
-    factor = (combo_mul - 1.0) * base_value / 100.0
-    head_score = 0.0
-    
-    for i in range(head_len):
-        ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
-        if fever_masks[work_idx, i] != 0:
-            head_score += ti.floor(ramp_val * fever_mul)
-        else:
-            head_score += ti.floor(ramp_val)
-    
+    body_score = _calc_body_score(
+        base_value, combo_mul, fever_mul, count_fever, count_normal
+    )
+    factor = _calc_head_factor(base_value, combo_mul)
+    head_score = _calc_head_score_masks(base_value, factor, fever_mul, work_idx, head_len)
     return ti.cast(body_score + head_score, ti.i32)
 
 
@@ -531,6 +612,10 @@ def optimize_core_device(
     head_len: ti.i32,
     count_fever: ti.i32,
     count_normal: ti.i32,
+    mode: ti.i32,
+    song_slot: ti.i32,
+    ft_idx: ti.i32,
+    ff_idx: ti.i32,
 ) -> ti.types.vector(7, ti.i32):
     """
     GPU port of optimize_core_jit (scoring_core.py:99-278).
@@ -582,7 +667,9 @@ def optimize_core_device(
         t_s: ti.i32 = s_val + (ELEMENTAL_GEM_SCALE * is_s_ov) + (fill_bonus * is_s_ov)
         pp_factor: ti.f32 = lookup_ref_pp(pp)
         base: ti.f32 = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-        best_score: ti.i32 = calc_score_device(base, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal)
+        best_score: ti.i32 = _calc_score_selector(
+            mode, base, c_mul_cur, f_mul_cur, work_idx, song_slot, ft_idx, ff_idx, head_len, count_fever, count_normal
+        )
         best_opt: ti.i32 = 3
 
         pp_score: ti.i32 = -1
@@ -594,7 +681,9 @@ def optimize_core_device(
             t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_pp) + (fill_bonus * is_s_ov)
             pp_factor = lookup_ref_pp(t_pp)
             base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-            pp_score = calc_score_device(base, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal)
+            pp_score = _calc_score_selector(
+                mode, base, c_mul_cur, f_mul_cur, work_idx, song_slot, ft_idx, ff_idx, head_len, count_fever, count_normal
+            )
             if pp_score > best_score:
                 best_score = pp_score
                 best_opt = 0
@@ -607,7 +696,9 @@ def optimize_core_device(
             pp_factor = lookup_ref_pp(pp)
             base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
             c_mul: ti.f32 = lookup_ref_cm(t_cm)
-            score: ti.i32 = calc_score_device(base, c_mul, f_mul_cur, work_idx, head_len, count_fever, count_normal)
+            score: ti.i32 = _calc_score_selector(
+                mode, base, c_mul, f_mul_cur, work_idx, song_slot, ft_idx, ff_idx, head_len, count_fever, count_normal
+            )
             if score > best_score:
                 best_score = score
                 best_opt = 1
@@ -620,7 +711,9 @@ def optimize_core_device(
             pp_factor = lookup_ref_pp(pp)
             base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
             f_mul: ti.f32 = lookup_ref_fm(t_fm)
-            score = calc_score_device(base, c_mul_cur, f_mul, work_idx, head_len, count_fever, count_normal)
+            score = _calc_score_selector(
+                mode, base, c_mul_cur, f_mul, work_idx, song_slot, ft_idx, ff_idx, head_len, count_fever, count_normal
+            )
             if score > best_score:
                 best_score = score
                 best_opt = 2
@@ -639,7 +732,9 @@ def optimize_core_device(
                 t_s = s_val + (k * GEM_STAT_TO_ELEMENT * is_s_pp) + (fill_bonus_k * is_s_ov)
                 pp_factor = lookup_ref_pp(t_pp)
                 base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-                score_k: ti.i32 = calc_score_device(base, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal)
+                score_k: ti.i32 = _calc_score_selector(
+                    mode, base, c_mul_cur, f_mul_cur, work_idx, song_slot, ft_idx, ff_idx, head_len, count_fever, count_normal
+                )
                 if score_k > best_score:
                     best_opt = 0
                     break
@@ -677,6 +772,7 @@ def calc_score_with_grid(
     base_value: ti.f32,
     combo_mul: ti.f32,
     fever_mul: ti.f32,
+    song_slot: ti.i32,
     ft_idx: ti.i32,
     ff_idx: ti.i32,
     head_len: ti.i32,
@@ -687,22 +783,13 @@ def calc_score_with_grid(
     Score calculation using grid-stored fever masks.
     Reads fever mask from grid_fever_masks[ft_idx, ff_idx, :].
     """
-    # Body score (notes 101+)
-    combo_val = ti.floor(base_value * combo_mul)
-    fever_val = ti.floor(base_value * combo_mul * fever_mul)
-    body_score = (ti.cast(count_fever, ti.f32) * fever_val) + (ti.cast(count_normal, ti.f32) * combo_val)
-    
-    # Head score (notes 1-100) with ramped combo
-    factor = (combo_mul - 1.0) * base_value / 100.0
-    head_score = 0.0
-    
-    for i in range(head_len):
-        ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
-        if grid_fever_masks[ft_idx, ff_idx, i] != 0:
-            head_score += ti.floor(ramp_val * fever_mul)
-        else:
-            head_score += ti.floor(ramp_val)
-    
+    body_score = _calc_body_score(
+        base_value, combo_mul, fever_mul, count_fever, count_normal
+    )
+    factor = _calc_head_factor(base_value, combo_mul)
+    head_score = _calc_head_score_grid(
+        base_value, factor, fever_mul, song_slot, ft_idx, ff_idx, head_len
+    )
     return ti.cast(body_score + head_score, ti.i32)
 
 
@@ -723,36 +810,55 @@ def calc_score_with_grid_bits(
     Score calculation using bitpacked fever masks (4x u32 = 128 bits).
     Bit i corresponds to head note i being a fever note.
     """
-    # Body score (notes 101+)
-    combo_val = ti.floor(base_value * combo_mul)
-    fever_val = ti.floor(base_value * combo_mul * fever_mul)
-    body_score = (ti.cast(count_fever, ti.f32) * fever_val) + (ti.cast(count_normal, ti.f32) * combo_val)
-
-    # Head score (notes 1-100) with ramped combo
-    factor = (combo_mul - 1.0) * base_value / 100.0
-    head_score = 0.0
-
-    for i in range(head_len):
-        ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
-        word = ti.u32(0)
-        shift = ti.u32(i & 31)
-
-        if i < 32:
-            word = m0
-        elif i < 64:
-            word = m1
-        elif i < 96:
-            word = m2
-        else:
-            word = m3
-
-        is_fever = (word >> shift) & ti.u32(1)
-        if is_fever != 0:
-            head_score += ti.floor(ramp_val * fever_mul)
-        else:
-            head_score += ti.floor(ramp_val)
-
+    body_score = _calc_body_score(
+        base_value, combo_mul, fever_mul, count_fever, count_normal
+    )
+    factor = _calc_head_factor(base_value, combo_mul)
+    head_score = _calc_head_score_bits(base_value, factor, fever_mul, m0, m1, m2, m3, head_len)
     return ti.cast(body_score + head_score, ti.i32)
+
+
+@ti.func
+def _calc_score_selector(
+    mode: ti.i32,
+    base_value: ti.f32,
+    combo_mul: ti.f32,
+    fever_mul: ti.f32,
+    work_idx: ti.i32,
+    song_slot: ti.i32,
+    ft_idx: ti.i32,
+    ff_idx: ti.i32,
+    head_len: ti.i32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+) -> ti.i32:
+    score: ti.i32 = 0
+
+    # mode=0: per-work-item mask (fever_masks)
+    if mode == 0:
+        score = calc_score_device(
+            base_value, combo_mul, fever_mul, work_idx, head_len, count_fever, count_normal
+        )
+    else:
+        # mode=1: grid bitmask head (grid_fever_masks_bits)
+        m0 = grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
+        m1 = grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
+        m2 = grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
+        m3 = grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
+        score = calc_score_with_grid_bits(
+            base_value,
+            combo_mul,
+            fever_mul,
+            m0,
+            m1,
+            m2,
+            m3,
+            head_len,
+            count_fever,
+            count_normal,
+        )
+
+    return score
 
 
 # ============================================================================
@@ -875,6 +981,7 @@ def solve_batch_kernel(
             is_p_fm, is_s_fm,
             is_p_ov, is_s_ov,
             head_len, count_fever, count_normal,
+            0, 0, 0, 0,
         )
         # [score, pp, cm, fm, ov, p_val, s_val]
         result_stats[i] = score_vec
@@ -994,7 +1101,9 @@ def solve_genomes_with_ftff_kernel(
                     t_s: ti.i32 = cur_s + (ELEMENTAL_GEM_SCALE * is_s_ov) + (fill_bonus * is_s_ov)
                     pp_factor: ti.f32 = lookup_ref_pp(cur_pp)
                     base_val: ti.f32 = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-                    best_opt_score: ti.i32 = calc_score_with_grid(base_val, c_mul_cur, f_mul_cur, ft_idx, ff_idx, head_len, count_fever, count_normal)
+                    best_opt_score: ti.i32 = calc_score_with_grid(
+                        base_val, c_mul_cur, f_mul_cur, song_slot, ft_idx, ff_idx, head_len, count_fever, count_normal
+                    )
                     best_opt: ti.i32 = 3
 
                     pp_score: ti.i32 = -1
@@ -1006,7 +1115,9 @@ def solve_genomes_with_ftff_kernel(
                         t_s = cur_s + (GEM_STAT_TO_ELEMENT * is_s_pp) + (fill_bonus * is_s_ov)
                         pp_factor = lookup_ref_pp(t_pp)
                         base_val = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-                        pp_score = calc_score_with_grid(base_val, c_mul_cur, f_mul_cur, ft_idx, ff_idx, head_len, count_fever, count_normal)
+                        pp_score = calc_score_with_grid(
+                            base_val, c_mul_cur, f_mul_cur, song_slot, ft_idx, ff_idx, head_len, count_fever, count_normal
+                        )
                         if pp_score > best_opt_score:
                             best_opt_score = pp_score
                             best_opt = 0
@@ -1019,7 +1130,9 @@ def solve_genomes_with_ftff_kernel(
                         pp_factor = lookup_ref_pp(cur_pp)
                         base_val = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
                         c_mul: ti.f32 = lookup_ref_cm(t_cm)
-                        score: ti.i32 = calc_score_with_grid(base_val, c_mul, f_mul_cur, ft_idx, ff_idx, head_len, count_fever, count_normal)
+                        score: ti.i32 = calc_score_with_grid(
+                            base_val, c_mul, f_mul_cur, song_slot, ft_idx, ff_idx, head_len, count_fever, count_normal
+                        )
                         if score > best_opt_score:
                             best_opt_score = score
                             best_opt = 1
@@ -1032,7 +1145,9 @@ def solve_genomes_with_ftff_kernel(
                         pp_factor = lookup_ref_pp(cur_pp)
                         base_val = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
                         f_mul: ti.f32 = lookup_ref_fm(t_fm)
-                        score = calc_score_with_grid(base_val, c_mul_cur, f_mul, ft_idx, ff_idx, head_len, count_fever, count_normal)
+                        score = calc_score_with_grid(
+                            base_val, c_mul_cur, f_mul, song_slot, ft_idx, ff_idx, head_len, count_fever, count_normal
+                        )
                         if score > best_opt_score:
                             best_opt_score = score
                             best_opt = 2
@@ -1051,7 +1166,9 @@ def solve_genomes_with_ftff_kernel(
                             t_s = cur_s + (k * GEM_STAT_TO_ELEMENT * is_s_pp) + (fill_bonus_k * is_s_ov)
                             pp_factor = lookup_ref_pp(t_pp)
                             base_val = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-                            score_k: ti.i32 = calc_score_with_grid(base_val, c_mul_cur, f_mul_cur, ft_idx, ff_idx, head_len, count_fever, count_normal)
+                            score_k: ti.i32 = calc_score_with_grid(
+                                base_val, c_mul_cur, f_mul_cur, song_slot, ft_idx, ff_idx, head_len, count_fever, count_normal
+                            )
                             if score_k > best_opt_score:
                                 best_opt = 0
                                 break
@@ -1182,7 +1299,8 @@ def solve_ftff_parallel_kernel(
             f_is_p_cm, f_is_s_cm,
             f_is_p_fm, f_is_s_fm,
             f_is_p_ov, f_is_s_ov,
-            head_len, count_fever, count_normal
+            head_len, count_fever, count_normal,
+            1, song_slot, ft_idx, ff_idx,
         )
         
         result_stats[i] = res_vec
@@ -1239,12 +1357,13 @@ def reduce_chunk_to_genomes_kernel(n_work_items: ti.i32):
 # ============================================================================
 
 @ti.func
-def binary_search_left(timestamps: ti.template(), n: ti.i32, target: ti.f32) -> ti.i32:
+def binary_search_left_from(
+    timestamps: ti.template(), n: ti.i32, target: ti.f32, lo: ti.i32
+) -> ti.i32:
     """
-    Binary search for leftmost index where timestamps[i] >= target.
-    Equivalent to np.searchsorted(timestamps, target, side='left').
+    Binary search for leftmost index where timestamps[i] >= target, starting at `lo`.
+    Equivalent to np.searchsorted(timestamps, target, side='left') with a lower bound.
     """
-    lo = 0
     hi = n
     while lo < hi:
         mid = (lo + hi) // 2
@@ -1253,6 +1372,15 @@ def binary_search_left(timestamps: ti.template(), n: ti.i32, target: ti.f32) -> 
         else:
             hi = mid
     return lo
+
+
+@ti.func
+def binary_search_left(timestamps: ti.template(), n: ti.i32, target: ti.f32) -> ti.i32:
+    """
+    Binary search for leftmost index where timestamps[i] >= target.
+    Equivalent to np.searchsorted(timestamps, target, side='left').
+    """
+    return binary_search_left_from(timestamps, n, target, 0)
 
 
 @ti.kernel

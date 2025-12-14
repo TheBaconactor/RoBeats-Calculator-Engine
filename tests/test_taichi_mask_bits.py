@@ -82,15 +82,17 @@ def test_mask_bits_parity():
         for i in range(n):
             ft = ft_f[i]
             ff = ff_f[i]
-            head_len = gf.grid_head_len[ft, ff]
-            cnt_fever = gf.grid_count_body_fever[ft, ff]
-            cnt_normal = gf.grid_count_body_normal[ft, ff]
+            song_slot = ti.i32(0)
+            head_len = gf.grid_head_len[song_slot, ft, ff]
+            cnt_fever = gf.grid_count_body_fever[song_slot, ft, ff]
+            cnt_normal = gf.grid_count_body_normal[song_slot, ft, ff]
 
             # Legacy: per-note i8 lookup in head loop
             s_old = gk.calc_score_with_grid(
                 ti.cast(base_value, ti.f32),
                 ti.cast(combo_mul, ti.f32),
                 ti.cast(fever_mul, ti.f32),
+                song_slot,
                 ft,
                 ff,
                 head_len,
@@ -99,10 +101,10 @@ def test_mask_bits_parity():
             )
 
             # New: cached bitset words
-            m0 = gf.grid_fever_masks_bits[ft, ff, 0]
-            m1 = gf.grid_fever_masks_bits[ft, ff, 1]
-            m2 = gf.grid_fever_masks_bits[ft, ff, 2]
-            m3 = gf.grid_fever_masks_bits[ft, ff, 3]
+            m0 = gf.grid_fever_masks_bits[song_slot, ft, ff, 0]
+            m1 = gf.grid_fever_masks_bits[song_slot, ft, ff, 1]
+            m2 = gf.grid_fever_masks_bits[song_slot, ft, ff, 2]
+            m3 = gf.grid_fever_masks_bits[song_slot, ft, ff, 3]
             s_new = gk.calc_score_with_grid_bits(
                 ti.cast(base_value, ti.f32),
                 ti.cast(combo_mul, ti.f32),
@@ -127,5 +129,4 @@ def test_mask_bits_parity():
 
     # Exact equality required
     assert np.array_equal(old_np, new_np), f"Mask-bit parity mismatch: old={old_np}, new={new_np}"
-
 

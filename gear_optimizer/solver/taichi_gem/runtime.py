@@ -55,7 +55,7 @@ def init_taichi_vulkan():
     """
     Initialize Taichi with Vulkan backend for AMD GPUs.
     
-    Called once by gpu_scheduler.py on the GPU thread, or lazily on first use.
+    Called once by gpu_executor.py on the GPU thread, or lazily on first use.
     Uses f32 precision for performance (sufficient for score accuracy).
     """
     global _ti_initialized

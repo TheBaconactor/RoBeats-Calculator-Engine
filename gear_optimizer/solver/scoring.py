@@ -28,6 +28,8 @@ from .fever_timeline import (
     SongTimelineGrid,
     get_song_timeline_grid,
     calculate_fever_timeline_indices,
+    calculate_force_greats_timeline_indices,
+    calculate_non_fever_sections,
     lookup_reference_py,
     SONG_TIMELINE_GRIDS,
 )
@@ -134,6 +136,11 @@ def worker_coevolution_evaluate(args):
     # Apply FG heuristic if enabled (biases GA toward FG-friendly loadouts)
     if cfg_data.get("fg_heuristic"):
         fitness_score = estimate_fg_potential(base_score, current_stats, calc_song, ref_arrays)
+
+    # CRITICAL: Inject BaseScore into res so it propagates through all caching layers
+    # and reaches build_db_payload for correct DB storage. Without this, the heuristic
+    # score would be stored instead of the true base score.
+    res["BaseScore"] = base_score
 
     return {
         "Score": fitness_score,  # Used for GA selection (may include FG heuristic boost)
@@ -534,6 +541,10 @@ def batch_evaluate_genomes(
         if use_fg_heuristic:
             fitness_score = estimate_fg_potential(base_score, stats, calc_song, ref_arrays)
         
+        # CRITICAL: Inject BaseScore into res so it propagates through all caching layers
+        # and reaches build_db_payload for correct DB storage.
+        res["BaseScore"] = base_score
+        
         result = {
             "Score": fitness_score,  # Used for GA selection (may include FG heuristic boost)
             "BaseScore": base_score,  # Always the true base score
@@ -688,28 +699,14 @@ def fg_baseline_params(stats, calc_song, ref_arrays):
 
     fever_fill_rate = lookup_reference_py(stats.get("Fever Fill Rate", 0), ref_ff, TOTAL_ROWS)
     fever_time_stat = lookup_reference_py(stats.get("Fever Time", 0), ref_ft, TOTAL_ROWS)
-
-    non_fever_cas = max(0.0, (total_notes - long_notes) * 0.333)
-    non_fever_base = ceil(non_fever_cas * fever_fill_rate)
-
-    fever_time_cas = last_note_time * 0.15 + 0.15
-    real_fever_time = fever_time_cas * fever_time_stat
-
-    current_idx = 0
-    non_fever_section = 0
-    while current_idx < total_notes:
-        non_fever_section += 1
-        base_notes = non_fever_base - 1 if non_fever_section == 1 else non_fever_base
-        base_notes = max(0, base_notes)
-        current_idx = min(current_idx + base_notes, total_notes)
-        if current_idx >= total_notes:
-            break
-        start_time = timestamps[current_idx]
-        end_time = start_time + real_fever_time
-        fever_end_idx = int(np.searchsorted(timestamps, end_time, side="left"))
-        if fever_end_idx <= current_idx:
-            fever_end_idx = min(total_notes, current_idx + 1)
-        current_idx = fever_end_idx
+    non_fever_section, non_fever_base = calculate_non_fever_sections(
+        timestamps,
+        total_notes,
+        fever_fill_rate,
+        fever_time_stat,
+        long_notes,
+        last_note_time,
+    )
 
     return int(non_fever_section), int(non_fever_base)
 
@@ -767,6 +764,94 @@ def estimate_fg_potential(base_score, stats, calc_song, ref_arrays):
     return base_score + estimated_boost
 
 
+def _song_cache_key(calc_song):
+    meta = calc_song.get("metadata", {}) or {}
+    timestamps = calc_song.get("song_data", {}).get("timestamps", ())
+    return (
+        str(meta.get("Song Name", "")),
+        int(len(timestamps)),
+        float(meta.get("Last Note Time", 0) or 0),
+        int(meta.get("Long Notes", 0) or 0),
+    )
+
+
+def _compute_force_greats_timeline(
+    timestamps,
+    total_notes,
+    fever_fill_rate,
+    fever_time_stat,
+    long_notes,
+    last_note_time,
+    force_counts,
+    *,
+    clamp_base_notes_nonnegative,
+    clamp_forced_to_section_notes,
+):
+    fever_mask_buffer = np.zeros(total_notes, dtype=np.bool_)
+
+    forced_arr = (
+        np.asarray(force_counts, dtype=np.int32)
+        if force_counts
+        else np.zeros(0, dtype=np.int32)
+    )
+
+    # Worst-case: section count is bounded by note count (+1 for safety).
+    section_cap = int(total_notes) + 1
+    section_start = np.zeros(section_cap, dtype=np.int32)
+    section_forced = np.zeros(section_cap, dtype=np.int32)
+    section_fill_penalty = np.zeros(section_cap, dtype=np.int32)
+    section_skip_wasted = np.zeros(section_cap, dtype=np.bool_)
+
+    (
+        fever_mask_head_view,
+        count_body_fever,
+        count_body_normal,
+        non_fever_base,
+        section_count,
+    ) = calculate_force_greats_timeline_indices(
+        timestamps,
+        total_notes,
+        fever_fill_rate,
+        fever_time_stat,
+        long_notes,
+        last_note_time,
+        forced_arr,
+        int(forced_arr.shape[0]),
+        bool(clamp_base_notes_nonnegative),
+        bool(clamp_forced_to_section_notes),
+        fever_mask_buffer,
+        section_start,
+        section_forced,
+        section_fill_penalty,
+        section_skip_wasted,
+    )
+
+    section_details = []
+    for i in range(int(section_count)):
+        base_notes = non_fever_base - 1 if (i == 0) else non_fever_base
+        if clamp_base_notes_nonnegative:
+            base_notes = max(0, int(base_notes))
+        notes_to_fill = int(base_notes) + int(section_fill_penalty[i])
+
+        section_details.append(
+            {
+                "start_idx": int(section_start[i]),
+                "forced": int(section_forced[i]),
+                "fill_penalty_notes": int(section_fill_penalty[i]),
+                "skip_wasted": bool(section_skip_wasted[i]),
+                "notes": notes_to_fill,
+            }
+        )
+
+    return (
+        fever_mask_head_view.copy(),
+        int(count_body_fever),
+        int(count_body_normal),
+        int(non_fever_base),
+        section_details,
+    )
+
+
 def evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=None):
     """
     Recompute fever timeline and penalties when greats are forced in non-fever sections.
@@ -808,289 +893,25 @@ def evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=None):
     penalty_table = build_great_penalty_table(base_value, combo_mul, great_penalty_base)
     body_penalty = max(0, combo_value - great_combo_value)
 
-    non_fever_cas = max(0.0, (total_notes - long_notes) * 0.333)
-    non_fever_base = ceil(non_fever_cas * fever_fill_rate)
-    non_fever_great_to_fill = ceil(max(1.0, (non_fever_cas * fever_fill_rate) * 2.0))
-    fever_time_cas = last_note_time * 0.15 + 0.15
-    real_fever_time = fever_time_cas * fever_time_stat
-
     force_counts = list(forced_counts or [])
-    fever_mask = np.zeros(total_notes, dtype=np.bool_)
-    current_idx = 0
-    non_fever_section = 0
-    section_details = []
-
-    while current_idx < total_notes:
-        non_fever_section += 1
-        base_notes = non_fever_base - 1 if non_fever_section == 1 else non_fever_base
-        base_notes = max(0, base_notes)
-        forced_val = 0
-        if non_fever_section - 1 < len(force_counts):
-            forced_val = max(0, int(force_counts[non_fever_section - 1]))
-        forced_val = min(forced_val, non_fever_base)
-        fill_penalty_notes = ceil(
-            max(0.0, (non_fever_base * forced_val) / non_fever_great_to_fill)
-        )
-        notes_to_fill = base_notes + fill_penalty_notes
-        section_start = current_idx
-        end_normal = min(section_start + notes_to_fill, total_notes)
-        actual_notes = max(0, end_normal - section_start)
-        forced_applied = min(forced_val, actual_notes)
-
-        section_details.append(
-            {
-                "start_idx": section_start,
-                "notes": actual_notes,
-                "forced": forced_applied,
-                "fill_penalty_notes": fill_penalty_notes,
-                "skip_wasted": (non_fever_section == 1),
-            }
-        )
-        current_idx = end_normal
-        if current_idx >= total_notes:
-            break
-
-        start_time = timestamps[current_idx]
-        end_time = start_time + real_fever_time
-        fever_end_idx = int(np.searchsorted(timestamps, end_time, side="left"))
-        if fever_end_idx <= current_idx:
-            fever_end_idx = min(total_notes, current_idx + 1)
-        fever_mask[current_idx:fever_end_idx] = True
-        current_idx = fever_end_idx
-
-    head_limit = min(total_notes, 100)
-    fever_mask_head = fever_mask[:head_limit]
-    if total_notes > 100:
-        body_slice = fever_mask[100:]
-        count_body_fever = int(np.count_nonzero(body_slice))
-        count_body_normal = max(len(body_slice) - count_body_fever, 0)
-    else:
-        count_body_fever = 0
-        count_body_normal = 0
-
-    base_score = fast_calculate_score(
-        base_value,
-        combo_mul,
-        fever_mul,
-        fever_mask_head,
-        count_body_fever,
-        count_body_normal,
-    )
-
-    total_score_penalty = 0
-    total_fill_penalty = 0
-    penalty_analysis = {}
-    for idx, detail in enumerate(section_details):
-        section_key = f"NonFever{idx + 1}"
-        fill_penalty_score = detail["fill_penalty_notes"] * combo_value
-        total_fill_penalty += fill_penalty_score
-        forced = detail["forced"]
-        if forced > 0:
-            start_idx = detail["start_idx"]
-            if detail.get("skip_wasted"):
-                start_idx = min(total_notes, start_idx + 1)
-            score_penalty = 0
-            note_idx = start_idx
-            remaining = forced
-            while remaining > 0:
-                if note_idx < len(penalty_table):
-                    score_penalty += penalty_table[note_idx]
-                else:
-                    score_penalty += body_penalty
-                note_idx += 1
-                remaining -= 1
-        else:
-            score_penalty = 0
-        total_score_penalty += score_penalty
-        penalty_analysis[section_key] = {
-            "forced_greats": forced,
-            "score_penalty": score_penalty,
-            "fill_penalty": fill_penalty_score,
-            "total_penalty": score_penalty + fill_penalty_score,
-        }
-
-    used_counts = force_counts[:]
-    if len(used_counts) < len(section_details):
-        used_counts.extend([0] * (len(section_details) - len(used_counts)))
-
-    return {
-        "base_score": base_score,
-        "final_score": max(0, base_score - total_score_penalty),
-        "score_penalty": total_score_penalty,
-        "fill_penalty": total_fill_penalty,
-        "total_penalty": total_score_penalty + total_fill_penalty,
-        "num_non_fever_sections": len(section_details),
-        "config_counts": used_counts[: len(section_details)],
-        "config_dict": _force_greats_counts_to_dict(used_counts, len(section_details)),
-        "penalty_analysis": penalty_analysis,
-        "non_fever_base": non_fever_base,
-    }
-
-
-def evaluate_force_greats_optimized(
-    base_stats,
-    calc_song,
-    ref_arrays,
-    selected_color,
-    forced_counts=None,
-):
-    """
-    ForceGreats evaluation WITH gem re-optimization.
-    
-    Unlike evaluate_force_greats which uses pre-optimized stats, this function:
-    1. Calculates the FG fever timeline
-    2. Re-runs the gem optimizer for the FG timeline
-    3. Returns the score with properly optimized gems
-    
-    Args:
-        base_stats: Stats BEFORE gem optimization (gear stats only)
-        calc_song: Song calculation context
-        ref_arrays: Reference lookup arrays
-        selected_color: Selected elemental color for overflow gems
-        forced_counts: List of forced great counts per non-fever section
-        
-    Returns:
-        dict: Result with base_score, final_score, gem_counts, etc.
-    """
-    if not base_stats or not calc_song:
-        return None
-
-    timestamps = calc_song["song_data"]["timestamps"]
-    total_notes = len(timestamps)
-    if total_notes <= 0:
-        return None
-
-    metadata = calc_song["metadata"]
-    long_notes = safe_int(metadata.get("Long Notes"), 0)
-    default_last_note = timestamps[-1] if total_notes else 0.0
-    last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
-    p_color = metadata.get("Primary Color", "")
-    s_color = metadata.get("Secondary Color", "")
-
-    ref_pp = ref_arrays["Perfect Points"]
-    ref_cm = ref_arrays["Combo Multiplier"]
-    ref_fm = ref_arrays["Fever Multiplier"]
-    ref_ff = ref_arrays["Fever Fill Rate"]
-    ref_ft = ref_arrays["Fever Time"]
-
-    # Get fever timeline multipliers from base stats
-    fever_fill_rate = lookup_reference_py(base_stats["Fever Fill Rate"], ref_ff, TOTAL_ROWS)
-    fever_time_stat = lookup_reference_py(base_stats["Fever Time"], ref_ft, TOTAL_ROWS)
-
-    non_fever_cas = max(0.0, (total_notes - long_notes) * 0.333)
-    non_fever_base = ceil(non_fever_cas * fever_fill_rate)
-    non_fever_great_to_fill = ceil(max(1.0, (non_fever_cas * fever_fill_rate) * 2.0))
-    fever_time_cas = last_note_time * 0.15 + 0.15
-    real_fever_time = fever_time_cas * fever_time_stat
-
-    force_counts = list(forced_counts or [])
-    fever_mask = np.zeros(total_notes, dtype=np.bool_)
-    current_idx = 0
-    non_fever_section = 0
-    section_details = []
-
-    # Calculate FG timeline (same as evaluate_force_greats)
-    while current_idx < total_notes:
-        non_fever_section += 1
-        base_notes = non_fever_base - 1 if non_fever_section == 1 else non_fever_base
-        base_notes = max(0, base_notes)
-        forced_val = 0
-        if non_fever_section - 1 < len(force_counts):
-            forced_val = max(0, int(force_counts[non_fever_section - 1]))
-        forced_val = min(forced_val, non_fever_base)
-        fill_penalty_notes = ceil(
-            max(0.0, (non_fever_base * forced_val) / non_fever_great_to_fill)
-        )
-        notes_to_fill = base_notes + fill_penalty_notes
-        section_start = current_idx
-        end_normal = min(section_start + notes_to_fill, total_notes)
-        actual_notes = max(0, end_normal - section_start)
-        forced_applied = min(forced_val, actual_notes)
-
-        section_details.append(
-            {
-                "start_idx": section_start,
-                "notes": actual_notes,
-                "forced": forced_applied,
-                "fill_penalty_notes": fill_penalty_notes,
-                "skip_wasted": (non_fever_section == 1),
-            }
-        )
-        current_idx = end_normal
-        if current_idx >= total_notes:
-            break
-
-        start_time = timestamps[current_idx]
-        end_time = start_time + real_fever_time
-        fever_end_idx = int(np.searchsorted(timestamps, end_time, side="left"))
-        if fever_end_idx <= current_idx:
-            fever_end_idx = min(total_notes, current_idx + 1)
-        fever_mask[current_idx:fever_end_idx] = True
-        current_idx = fever_end_idx
-
-    head_limit = min(total_notes, 100)
-    fever_mask_head = fever_mask[:head_limit].copy()
-    if total_notes > 100:
-        body_slice = fever_mask[100:]
-        count_body_fever = int(np.count_nonzero(body_slice))
-        count_body_normal = max(len(body_slice) - count_body_fever, 0)
-    else:
-        count_body_fever = 0
-        count_body_normal = 0
-
-    # ========================================================================
-    # KEY FIX: Re-run gem optimization with FG timeline!
-    # ========================================================================
-    
-    # Compute color contribution flags
-    is_p_pp = 1 if "Chill" == p_color else 0
-    is_s_pp = 1 if "Chill" == s_color else 0
-    is_p_cm = 1 if "Flow" == p_color else 0
-    is_s_cm = 1 if "Flow" == s_color else 0
-    is_p_fm = 1 if "Rush" == p_color else 0
-    is_s_fm = 1 if "Rush" == s_color else 0
-    is_p_ov = 1 if selected_color == p_color else 0
-    is_s_ov = 1 if selected_color == s_color else 0
-    
-    # Base values before gem optimization
-    cur_pp = base_stats.get("Perfect Points", 0)
-    cur_cm = base_stats.get("Combo Multiplier", 0)
-    cur_fm = base_stats.get("Fever Multiplier", 0)
-    cur_p_val = base_stats.get(p_color, 0)
-    cur_s_val = base_stats.get(s_color, 0)
-    
-    # Run the gem optimizer with FG timeline
     (
-        final_pp, final_cm, final_fm, final_p_val, final_s_val,
-        gems_pp, gems_cm, gems_fm, gems_ov
-    ) = optimize_core_jit(
-        TOTAL_GEM_BUDGET,
-        cur_pp, cur_cm, cur_fm,
-        cur_p_val, cur_s_val,
-        is_p_pp, is_s_pp,
-        is_p_cm, is_s_cm,
-        is_p_fm, is_s_fm,
-        is_p_ov, is_s_ov,
-        ref_pp, ref_cm, ref_fm,
         fever_mask_head,
         count_body_fever,
         count_body_normal,
-        GEM_SCALE_NORMAL,
-        GEM_SCALE_FEVER,
-        GEM_STAT_TO_ELEMENT_SCALE,
-        ELEMENTAL_GEM_SCALE,
-        TOTAL_ROWS,
-        MAX_STAT_INDEX,
+        non_fever_base,
+        section_details,
+    ) = _compute_force_greats_timeline(
+        timestamps,
+        total_notes,
+        fever_fill_rate,
+        fever_time_stat,
+        long_notes,
+        last_note_time,
+        force_counts,
+        clamp_base_notes_nonnegative=True,
+        clamp_forced_to_section_notes=True,
     )
-    
-    # Calculate optimized score
-    pp_factor = lookup_reference_py(final_pp, ref_pp, TOTAL_ROWS)
-    combo_mul = lookup_reference_py(final_cm, ref_cm, TOTAL_ROWS)
-    fever_mul = lookup_reference_py(final_fm, ref_fm, TOTAL_ROWS)
-    
-    base_value = (final_p_val * 2) + final_s_val + pp_factor
-    combo_value = floor(base_value * combo_mul)
-    
+
     base_score = fast_calculate_score(
         base_value,
         combo_mul,
@@ -1099,16 +920,10 @@ def evaluate_force_greats_optimized(
         count_body_fever,
         count_body_normal,
     )
-    
-    # Calculate penalties (same logic as evaluate_force_greats)
-    great_penalty_base = floor(((final_p_val * 2) + final_s_val) * (2.0 / 3.0) + 150.0)
-    penalty_table = build_great_penalty_table(base_value, combo_mul, great_penalty_base)
-    body_penalty = max(0, combo_value - floor(great_penalty_base * combo_mul))
-    
+
     total_score_penalty = 0
     total_fill_penalty = 0
     penalty_analysis = {}
-    
     for idx, detail in enumerate(section_details):
         section_key = f"NonFever{idx + 1}"
         fill_penalty_score = detail["fill_penalty_notes"] * combo_value
@@ -1153,12 +968,6 @@ def evaluate_force_greats_optimized(
         "config_dict": _force_greats_counts_to_dict(used_counts, len(section_details)),
         "penalty_analysis": penalty_analysis,
         "non_fever_base": non_fever_base,
-        "gem_counts": {
-            "Perfect Points": gems_pp,
-            "Combo Multiplier": gems_cm,
-            "Fever Multiplier": gems_fm,
-            "Element Overflow": gems_ov,
-        },
     }
 
 
@@ -1243,8 +1052,8 @@ def evaluate_fg_with_gem_iteration(
     base_s_val_for_gpu = base_stats.get(s_color, 0)
 
     non_fever_cas = max(0.0, (total_notes - long_notes) * 0.333)
-    fever_time_cas = last_note_time * 0.15 + 0.15
     force_counts = list(forced_counts or [])
+    song_key = _song_cache_key(calc_song)
 
     # Determine iteration ranges
     if search_ranges:
@@ -1277,92 +1086,33 @@ def evaluate_fg_with_gem_iteration(
             cur_ff_stat = base_ff_stat + ff_gems * GEM_SCALE_FEVER
             fever_fill_rate = lookup_reference_py(cur_ff_stat, ref_ff, TOTAL_ROWS)
             fever_time_stat = lookup_reference_py(cur_ft_stat, ref_ft, TOTAL_ROWS)
-            real_fever_time = fever_time_cas * fever_time_stat
             non_fever_base = ceil(non_fever_cas * fever_fill_rate)
-            non_fever_great_to_fill = ceil(
-                max(1.0, (non_fever_cas * fever_fill_rate) * 2.0)
-            )
 
             # Timeline cache includes FT, FF, forced_counts, and song identity.
             # We also cache section_details because FG penalties need start indices.
-            fg_cache_key = (ft_gems, ff_gems, tuple(force_counts), id(calc_song))
+            fg_cache_key = (ft_gems, ff_gems, tuple(force_counts), song_key)
             cached = FG_TIMELINE_CACHE.get(fg_cache_key)
 
             if cached is None:
-                fever_mask = np.zeros(total_notes, dtype=np.bool_)
-                current_idx = 0
-                non_fever_section = 0
-                section_details = []
-
-                while current_idx < total_notes:
-                    non_fever_section += 1
-                    if non_fever_section == 1:
-                        non_fever = non_fever_base - 1
-                        section_start = 0
-                    else:
-                        non_fever = non_fever_base
-                        section_start = current_idx
-
-                    forced_val = (
-                        force_counts[non_fever_section - 1]
-                        if non_fever_section <= len(force_counts)
-                        else 0
-                    )
-                    forced_val = min(forced_val, non_fever_base)
-
-                    if forced_val > 0:
-                        fill_penalty_notes = ceil(
-                            max(
-                                0.0,
-                                (non_fever_base * forced_val)
-                                / non_fever_great_to_fill,
-                            )
-                        )
-                        non_fever += fill_penalty_notes
-                    else:
-                        fill_penalty_notes = 0
-
-                    section_details.append(
-                        {
-                            "forced": forced_val,
-                            "fill_penalty_notes": fill_penalty_notes,
-                            "start_idx": section_start,
-                            "notes": non_fever,
-                            "skip_wasted": (non_fever_section == 1),
-                        }
-                    )
-
-                    end_normal = min(total_notes, current_idx + non_fever)
-                    current_idx = end_normal
-                    if current_idx >= total_notes:
-                        break
-
-                    start_time = timestamps[current_idx]
-                    end_time = start_time + real_fever_time
-                    fever_end_idx = int(
-                        np.searchsorted(timestamps, end_time, side="left")
-                    )
-                    if fever_end_idx <= current_idx:
-                        fever_end_idx = min(total_notes, current_idx + 1)
-                    fever_mask[current_idx:fever_end_idx] = True
-                    current_idx = fever_end_idx
-
-                head_limit = min(total_notes, 100)
-                fever_mask_head = fever_mask[:head_limit].copy()
-                if total_notes > 100:
-                    body_slice = fever_mask[100:]
-                    count_body_fever = int(np.count_nonzero(body_slice))
-                    count_body_normal = max(len(body_slice) - count_body_fever, 0)
-                else:
-                    count_body_fever = 0
-                    count_body_normal = 0
-
-                cached = (
+                (
                     fever_mask_head,
                     count_body_fever,
                     count_body_normal,
+                    _nf_base_from_jit,
                     section_details,
+                ) = _compute_force_greats_timeline(
+                    timestamps,
+                    total_notes,
+                    fever_fill_rate,
+                    fever_time_stat,
+                    long_notes,
+                    last_note_time,
+                    force_counts,
+                    clamp_base_notes_nonnegative=False,
+                    clamp_forced_to_section_notes=False,
                 )
+
+                cached = (fever_mask_head, count_body_fever, count_body_normal, section_details)
                 FG_TIMELINE_CACHE[fg_cache_key] = cached
 
             fever_mask_head, count_body_fever, count_body_normal, section_details = (
@@ -1827,46 +1577,6 @@ def run_force_greats_hill_climb(
         }
 
     return best_result
-
-
-def run_force_greats_hill_climb_optimized(base_stats, calc_song, ref_arrays, selected_color):
-    """
-    Optimized hill-climb optimizer that re-runs gem optimization for each FG config.
-    
-    This is the correct version that properly optimizes gems for the FG timeline.
-    
-    Args:
-        base_stats: Stats BEFORE gem optimization (gear stats only)
-        calc_song: Song calculation context
-        ref_arrays: Reference lookup arrays
-        selected_color: Selected elemental color for overflow gems
-    """
-    baseline = evaluate_force_greats_optimized(base_stats, calc_song, ref_arrays, selected_color, [])
-    if not baseline:
-        return None
-
-    best_counts = [0] * baseline["num_non_fever_sections"]
-    best_result = evaluate_force_greats_optimized(base_stats, calc_song, ref_arrays, selected_color, best_counts)
-    if not best_result or best_result["num_non_fever_sections"] == 0:
-        return best_result
-
-    improved = True
-    while improved:
-        improved = False
-        for idx in range(best_result["num_non_fever_sections"]):
-            candidate_counts = best_counts[:]
-            if idx >= len(candidate_counts):
-                candidate_counts.extend([0] * (idx + 1 - len(candidate_counts)))
-            candidate_counts[idx] += 1
-            candidate = evaluate_force_greats_optimized(base_stats, calc_song, ref_arrays, selected_color, candidate_counts)
-            if candidate and candidate["final_score"] > best_result["final_score"]:
-                best_counts = candidate_counts
-                best_result = candidate
-                improved = True
-                break
-    return best_result
-
-
 def _extract_base_stats(stats, gem_counts, selected_color, ft_gems=0, ff_gems=0):
     """
     Extract base stats (before gem optimization) by reversing gem contributions.

@@ -4,7 +4,7 @@
 
 Your root directory has **23 files** including:
 - 1 active main entry point (`main.py`)
-- 2 legacy monoliths (`Manual_Calculator - Main.py`, `Manual_Calculator - Original.py`)
+- 2 legacy monoliths (`Manual_Calculator - Main.py`, `Manual_Calculator - Original.py`) (removed from repo)
 - 1 bootstrapper (`Bootstrapper.py`)
 - 8 documentation/guide markdown files
 - Test files, config files, and data
@@ -57,7 +57,7 @@ Gear Optimizer/
 ├── docs/                            # NEW: All documentation
 │   ├── ARCHITECTURE.md
 │   ├── REFACTORING_VALIDATION.md
-│   └── legacy/                      # OLD: Archive old guides
+│   └── legacy/                      # Archive old guides
 │       ├── EXTRACTION_PLAN.md
 │       ├── FINAL_COMPLETION_GUIDE.md
 │       ├── PHASE_3_STATUS.md
@@ -67,9 +67,7 @@ Gear Optimizer/
 │       ├── REFACTORING_GUIDE.md
 │       └── REFACTORING_STATUS.md
 │
-└── legacy/                          # NEW: Archive old code
-    ├── Manual_Calculator - Main.py
-    └── Manual_Calculator - Original.py
+└── (legacy code removed)            # Old monoliths removed from repo
 ```
 
 ---
@@ -132,11 +130,8 @@ mv REFACTORING_GUIDE.md docs/legacy/
 mv REFACTORING_STATUS.md docs/legacy/
 ```
 
-### 4. Archive Legacy Code
-```bash
-mv "Manual_Calculator - Main.py" legacy/
-mv "Manual_Calculator - Original.py" legacy/
-```
+### 4. Legacy Code
+The legacy monoliths were removed from the repository to reduce maintenance surface area.
 
 ### 5. Create Main README
 Create a single `README.md` that explains:

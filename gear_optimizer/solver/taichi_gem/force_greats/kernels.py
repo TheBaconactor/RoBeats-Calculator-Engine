@@ -55,23 +55,6 @@ fg_flat_work_ftff = None
 # ============================================================================
 
 @ti.func
-def _searchsorted_left_timestamps(n_notes: ti.i32, x: ti.f32, lo: ti.i32) -> ti.i32:
-    """
-    searchsorted(side='left') over `song_timestamps` field.
-    Returns the first index i in [lo, n_notes] with song_timestamps[i] >= x.
-    """
-    l = lo
-    r = n_notes
-    while l < r:
-        mid = (l + r) >> 1
-        if song_timestamps[mid] < x:
-            l = mid + 1
-        else:
-            r = mid
-    return l
-
-
-@ti.func
 def _optimize_core_bits(
     budget: ti.i32,
     cur_pp: ti.i32,
@@ -432,7 +415,7 @@ def fg_stage1_kernel(
                 # Fever section
                 start_time: ti.f32 = song_timestamps[current_idx]
                 end_time: ti.f32 = start_time + real_fever_time
-                fever_end_idx: ti.i32 = _searchsorted_left_timestamps(total_notes, end_time, current_idx)
+                fever_end_idx: ti.i32 = _core.binary_search_left_from(song_timestamps, total_notes, end_time, current_idx)
                 if fever_end_idx <= current_idx:
                     fever_end_idx = ti.min(total_notes, current_idx + 1)
 
@@ -731,7 +714,7 @@ def fg_stage1_flat_kernel(
             # Fever section
             start_time: ti.f32 = song_timestamps[current_idx]
             end_time: ti.f32 = start_time + real_fever_time
-            fever_end_idx: ti.i32 = _searchsorted_left_timestamps(total_notes, end_time, current_idx)
+            fever_end_idx: ti.i32 = _core.binary_search_left_from(song_timestamps, total_notes, end_time, current_idx)
             if fever_end_idx <= current_idx:
                 fever_end_idx = ti.min(total_notes, current_idx + 1)
 
@@ -853,7 +836,6 @@ def fg_stage1_flat_kernel(
             fg_stage1_g_ov[g, ftff_idx] = gems_ov
             fg_stage1_score_penalty[g, ftff_idx] = score_penalty_total
             fg_stage1_fill_penalty[g, ftff_idx] = fill_penalty_total
-
 
 
 

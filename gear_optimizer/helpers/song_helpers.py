@@ -87,7 +87,7 @@ def load_database_context(found_song_name, use_evo_db, gears_by_name, minis_by_n
         try:
             conn = get_db_connection()
             cursor = conn.execute(
-                """SELECT loadout_hash, score, fg_score, force_details_json
+                """SELECT loadout_hash, score, fg_score, force_details_json, details_json
                    FROM loadouts
                    WHERE song_name = ?
                    ORDER BY score DESC
@@ -106,10 +106,24 @@ def load_database_context(found_song_name, use_evo_db, gears_by_name, minis_by_n
                             f"Invalid force JSON for {row.get('loadout_hash')}: {exc}",
                         )
                         force_data = None
+                
+                details_blob = row["details_json"]
+                details_data = None
+                if details_blob:
+                    try:
+                        details_data = json.loads(details_blob)
+                    except Exception as exc:
+                        WARN_ONCE.warn(
+                            "details-loadout-json",
+                            f"Invalid details JSON for {row.get('loadout_hash')}: {exc}",
+                        )
+                        details_data = None
+
                 known_loadouts[row["loadout_hash"]] = (
                     row["score"],
                     row["fg_score"],
                     force_data,
+                    details_data,
                 )
             # Memory leak fix #2: Checkpoint WAL before closing connection
             # Prevents WAL file growth (5-50 MB per 1000 songs)
@@ -276,7 +290,8 @@ def build_loadout_entries(
     # Current GA evaluated loadouts (only add if not already present)
     for eval_result in ga_candidates:
         eval_data = eval_result.get("Data")
-        eval_score = eval_result.get("Score", 0)
+        # Use BaseScore (true base score) for persistence, not Score (heuristic)
+        eval_score = eval_result.get("BaseScore") or eval_result.get("Score", 0)
         gear_items = eval_result.get("Gear", [])
         mini_items = eval_result.get("Minis", [])
         eval_details = build_details_fn(eval_data) if eval_data else {}
@@ -922,7 +937,9 @@ def build_db_payload(
     Returns:
         dict: Database payload
     """
-    score = best_data.get("Score", 0)
+    # Use BaseScore if available (true base score without heuristic boost)
+    # Fall back to Score if BaseScore not present (backwards compatibility)
+    score = best_data.get("BaseScore") or best_data.get("Score", 0)
 
     prev_score = prev_record.get("score") if prev_record else None
     is_first = prev_record is None
@@ -987,12 +1004,27 @@ def build_db_payload(
             "Saving to Evolution Database..."
         )
     elif is_better:
-        print(
-            f" >> NEW RECORD! Previous: {prev_score} | New: {score} "
-            f"- Updating Evolution Database..."
-        )
+        msg = f" >> NEW RECORD! Previous: {prev_score} | New: {score}"
+        h_score = best_data.get("HeuristicScore")
+        if h_score:
+            msg += f" (Heuristic: {h_score})"
+        msg += " - Updating Evolution Database..."
+        print(msg)
     else:
-        print(f" >> No improvement over DB Record ({prev_score})")
+        msg = f" >> No improvement over DB Record ({prev_score})"
+        if is_first: # Edge case coverage
+            msg = " >> Record exists but no improvement found."
+            
+        h_score = best_data.get("HeuristicScore")
+        if h_score:
+            msg += f"\n    [Context] GA picked this via Heuristic Score: {h_score}"
+            if h_score > (prev_score or 0):
+                msg += " (Predicted better than Record)"
+            else:
+                 msg += " (But still worse than Record)"
+            if score < (prev_score or 0):
+                msg += f"\n    [Context] Actual Base Score: {score} (Lower than Record, so rejected)"
+        print(msg)
 
     # Aggregate candidates (best + second from previous DB and current run) and pick top two.
     candidates = []
@@ -1085,6 +1117,21 @@ def build_db_payload(
 
     updated_payload["fg_score"] = fg_score_val
 
+    # Track BEST FG entry separately (may be a different loadout than best base)
+    # This ensures we always persist the highest-scoring FG loadout
+    best_fg_entry = None
+    if current_run_fg_candidates:
+        best_fg_entry = max(current_run_fg_candidates, key=lambda x: x.get("score", 0))
+        best_fg_score = best_fg_entry.get("score", 0)
+        # Only include if it's actually better than top1's FG score
+        if best_fg_score > fg_score_val:
+            updated_payload["best_fg"] = {
+                "score": best_fg_score,
+                "gear": best_fg_entry.get("gear", []),
+                "minis": best_fg_entry.get("minis", []),
+                "details": best_fg_entry.get("details", {}),
+            }
+
     return updated_payload
 
 
@@ -1146,6 +1193,32 @@ def build_persistence_entries(
         db_payload.get("fg_score", 0),
         db_payload.get("force"),  # This comes from top1's own FG, not global best
     )
+
+    # BEST FG ENTRY: If a different loadout has the best FG score, include it as a priority entry
+    # This ensures we always persist the highest-scoring FG loadout
+    best_fg = db_payload.get("best_fg")
+    if best_fg:
+        best_fg_gear = best_fg.get("gear", [])
+        best_fg_minis = best_fg.get("minis", [])
+        best_fg_details = best_fg.get("details", {})
+        best_fg_score = best_fg.get("score", 0)
+        
+        # Build force object for the best FG entry
+        best_fg_force = {
+            "score": best_fg_score,
+            "gear": best_fg_gear,
+            "minis": best_fg_minis,
+            "details": best_fg_details,
+        }
+        
+        _append_entry(
+            best_fg_details.get("ForceGreats", {}).get("base_score", 0),  # Use FG's base_score as the loadout's score
+            best_fg_gear,
+            best_fg_minis,
+            best_fg_details,
+            best_fg_score,  # fg_score
+            best_fg_force,  # force object
+        )
 
     # NOTE: Removed separate "Top 1 FG" row creation that used to store FG data
     # with potentially different gear. Each loadout now stores its OWN FG via

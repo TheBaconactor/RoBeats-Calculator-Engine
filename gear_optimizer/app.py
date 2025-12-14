@@ -3,7 +3,6 @@ import concurrent.futures
 from concurrent.futures.process import BrokenProcessPool
 import configparser
 import gc
-import json
 import logging
 import multiprocessing
 import os
@@ -212,6 +211,7 @@ class GearOptimizerApp:
             )
 
 
+
             # Check if we need to restart due to memory guard
             if memory_release_requested() and loop_forever:
                 memory_guard_restart = True
@@ -388,25 +388,6 @@ class GearOptimizerApp:
             return song_queue
          
         print(f"Found {len(song_queue)} songs to process.")
-        return song_queue
-
-    def _filter_existing_db_songs(self, song_queue, use_evo_db):
-        existing_songs = set()
-        if use_evo_db:
-            try:
-                conn = get_db_connection()
-                cursor = conn.execute("SELECT name FROM songs")
-                existing_songs = {row[0] for row in cursor}
-                try:
-                    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                    conn.execute("PRAGMA optimize")
-                except Exception as e:
-                    logging.warning(f"[DB] WAL checkpoint/optimize failed: {e}")
-                conn.close()
-            except Exception as e:
-                print(f"[DB] Error fetching existing songs: {e}")
-
-        # Legacy helper retained for compatibility, but we always process the full queue now.
         return song_queue
 
     def _status_listener(self, q):
