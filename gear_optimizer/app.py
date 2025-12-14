@@ -781,6 +781,12 @@ class GearOptimizerApp:
                     manager.shutdown()
                 except Exception:
                     pass
+            # Graceful shutdown of async Discord reporter
+            if hasattr(self.discord_reporter, 'shutdown'):
+                try:
+                    self.discord_reporter.shutdown(timeout=5.0)
+                except Exception:
+                    pass
              # Force GC on manager
             old_manager = manager
             del old_manager

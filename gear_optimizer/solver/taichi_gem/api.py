@@ -444,8 +444,7 @@ def optimize_gems_batch_gpu(
         is_p_pp, is_s_pp, is_p_cm, is_s_cm,
         is_p_fm, is_s_fm, is_p_ov, is_s_ov,
     )
-    
-    ti.sync()
+    # NOTE: ti.sync() removed - to_numpy() internally syncs
     
     # Download results
     # [score, pp, cm, fm, ov, p_val, s_val]
@@ -584,8 +583,7 @@ def mega_batch_solve_population(
         is_p_pp, is_s_pp, is_p_cm, is_s_cm,
         is_p_fm, is_s_fm, is_p_ov, is_s_ov,
     )
-    
-    ti.sync()
+    # NOTE: ti.sync() removed - to_numpy() internally syncs
     
     # Download results
     # [score, pp, cm, fm, ov, p_val, s_val]
@@ -870,8 +868,7 @@ def solve_genomes_with_ftff(
         0,  # song_slot=0 for single-song mode
     )
 
-    
-    ti.sync()
+    # NOTE: ti.sync() removed - to_numpy() internally syncs
     
     # Download results
     # [score, ft, ff, pp, cm, fm, ov]
