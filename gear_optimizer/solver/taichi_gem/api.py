@@ -73,6 +73,10 @@ _MEGA_STAGING = None
 _PARALLEL_STAGING = None
 _SONG_FLAGS_HOST = None
 
+# Cache for genome_base_stats uploads to avoid redundant from_numpy calls
+# Stores (n_genomes, hash_bytes) of last uploaded stats
+_GENOME_STATS_CACHE = None
+
 
 def _ensure_song_flags_host():
     global _SONG_FLAGS_HOST
@@ -982,7 +986,16 @@ def solve_genomes_parallel(
         max_ft_list.append(min(total_budget, max_ft))
         max_ff_list.append(min(total_budget, max_ff))
     
-    fields.genome_base_stats.from_numpy(genome_stats_np)
+    # OPTIMIZATION: Skip upload if genome stats unchanged (saves ~1-2s per run)
+    # Hash only the portion of the buffer that's actually used
+    global _GENOME_STATS_CACHE
+    stats_slice = genome_stats_np[:n_genomes].tobytes()
+    stats_hash = hash(stats_slice)
+    cache_key = (n_genomes, stats_hash)
+    
+    if _GENOME_STATS_CACHE != cache_key:
+        fields.genome_base_stats.from_numpy(genome_stats_np)
+        _GENOME_STATS_CACHE = cache_key
     
     # Generate work items: (genome_id, ft, ff) for all valid combinations
     # Avoid huge Python list append overhead by precomputing size and filling arrays.
