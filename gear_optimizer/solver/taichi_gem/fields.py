@@ -25,6 +25,8 @@ MAX_ITEMS = 65536  # Upper bound for (type,Name)-deduped items per song (row 0 r
 ITEM_STAT_DIM = 10  # PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill
 MAX_SONG_NOTES = 200000  # Maximum song length for GPU timeline computation
 MAX_SONG_SLOTS = 8  # Concurrent song grid slots for batch coalescing
+MAX_TOTAL_BUDGET = 90  # Max supported total_budget for FT/FF combo tables
+MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 when MAX_TOTAL_BUDGET=90
 
 
 # ============================================================================
@@ -84,6 +86,11 @@ ga_rng_state: ti.Field = None        # (MAX_GENOMES,) uint32 RNG state per genom
 ga_parent_a: ti.Field = None         # (MAX_GENOMES,) int32 selected parent index A
 ga_parent_b: ti.Field = None         # (MAX_GENOMES,) int32 selected parent index B
 
+# Slot pools for GPU mutation - contiguous ID ranges per slot
+# Allows O(1) mutation: new_id = slot_start[s] + (rand % slot_count[s])
+slot_start: ti.Field = None          # (MAX_SLOTS,) int32 - first valid item_id for slot
+slot_count: ti.Field = None          # (MAX_SLOTS,) int32 - number of items in slot pool
+
 # Per-slot song flags for batch coalescing (12 flags per slot)
 # Indices: [is_p_ft, is_s_ft, is_p_ff, is_s_ff, is_p_pp, is_s_pp,
 #           is_p_cm, is_s_cm, is_p_fm, is_s_fm, is_p_ov, is_s_ov]
@@ -109,6 +116,9 @@ genome_result_cm: ti.Field = None
 genome_result_fm: ti.Field = None
 genome_result_ov: ti.Field = None
 genome_result_stats: ti.Field = None  # Vector field [score, ft, ff, pp, cm, fm, ov]
+chunk_best_key: ti.Field = None       # (MAX_GENOMES,) u64 packed key for safe per-chunk reduction
+ftff_combo_ft: ti.Field = None        # (MAX_FTFF_COMBOS,) i32 FT gems per combo
+ftff_combo_ff: ti.Field = None        # (MAX_FTFF_COMBOS,) i32 FF gems per combo
 
 
 # ============================================================================
@@ -162,11 +172,14 @@ def allocate_fields():
     global genome_base_ft, genome_base_ff, genome_base_stats
     global population_indices, population_next_indices, item_stats, base_fixed_stats
     global ga_scores, ga_rng_state, ga_parent_a, ga_parent_b
+    global slot_start, slot_count
     global song_flags
     global result_scores, result_pp, result_cm, result_fm, result_ov
     global result_p_val, result_s_val, result_stats, _fields_allocated
     global genome_result_scores, genome_result_ft, genome_result_ff
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
+    global chunk_best_key
+    global ftff_combo_ft, ftff_combo_ff
     
     if _fields_allocated:
         return
@@ -197,6 +210,10 @@ def allocate_fields():
     ga_parent_a = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     ga_parent_b = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     
+    # Slot pools for GPU mutation
+    slot_start = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
+    slot_count = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
+    
     # Per-slot song flags for batch coalescing
     # [is_p_ft, is_s_ft, is_p_ff, is_s_ff, is_p_pp, is_s_pp, is_p_cm, is_s_cm, is_p_fm, is_s_fm, is_p_ov, is_s_ov]
     song_flags = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, 12))
@@ -208,6 +225,11 @@ def allocate_fields():
     # Per-genome results (for FT/FF iteration kernel)
     # [score, ft, ff, pp, cm, fm, ov]
     genome_result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_GENOMES)
+    # Per-chunk reduction key: ((score+1) << 32) | work_item_index
+    chunk_best_key = ti.field(dtype=ti.u64, shape=MAX_GENOMES)
+    # FT/FF combo tables for GPU-parallel evaluation (indexed by combo_id)
+    ftff_combo_ft = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
+    ftff_combo_ff = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
     
     _fields_allocated = True
     print(f"[Taichi] Allocated GPU fields: {MAX_WORK_ITEMS} work items, {MAX_HEAD_NOTES} head notes, {MAX_GENOMES} genomes")
@@ -293,12 +315,17 @@ def bind_fields(kernels_module):
     kernels_module.ga_rng_state = ga_rng_state
     kernels_module.ga_parent_a = ga_parent_a
     kernels_module.ga_parent_b = ga_parent_b
+    kernels_module.slot_start = slot_start
+    kernels_module.slot_count = slot_count
     
     # Results
     kernels_module.result_stats = result_stats
     
     # Genome results
     kernels_module.genome_result_stats = genome_result_stats
+    kernels_module.chunk_best_key = chunk_best_key
+    kernels_module.ftff_combo_ft = ftff_combo_ft
+    kernels_module.ftff_combo_ff = ftff_combo_ff
 
 
 def ensure_fields_allocated():

@@ -25,6 +25,10 @@ from ..core.constants import (
     GA_ELITISM,
     GA_MUTATION_RATE_MAX,
     GA_MULTI_RUNS_DEFAULT,
+    GEM_SCALE_NORMAL,
+    GEM_SCALE_FEVER,
+    GEM_STAT_TO_ELEMENT_SCALE,
+    ELEMENTAL_GEM_SCALE,
 )
 from ..core.utils import prune_dominated_gear, safe_int
 from ..data.database import get_loadout_hash
@@ -41,6 +45,202 @@ from ..helpers.ga_helpers import (
     update_mutation_and_diversity,
     compute_dynamic_mutation,
 )
+
+# Optional: GPU-native GA imports (only loaded if needed)
+_GPU_NATIVE_AVAILABLE = False
+try:
+    from .item_registry import ItemRegistry
+    from .taichi_gem import api as gpu_api
+    import numpy as np
+    _GPU_NATIVE_AVAILABLE = True
+except ImportError:
+    pass
+
+
+def _run_gpu_native_ga(
+    population: list,
+    n_generations: int,
+    registry: "ItemRegistry",
+    cfg_data: dict,
+    calc_song: dict,
+    ref_arrays: dict,
+    base_stats_fixed: dict,
+    elite_count: int = 2,
+    mutation_rate: float = 0.02,
+    tournament_k: int = 3,
+    color_flags: dict = None,
+    status_cb=None,
+) -> tuple:
+    """
+    Run GPU-native GA loop (internal function).
+
+    This runs the GA entirely on GPU, only downloading scores for elitism
+    and the final best genome. Eliminates per-generation CPU-GPU round-trips.
+
+    Args:
+        population: Initial population as list of genomes (item dicts)
+        n_generations: Number of generations to run
+        registry: ItemRegistry for encoding/decoding genomes
+        cfg_data: Song configuration data
+        calc_song: Song calculation context (for timeline)
+        ref_arrays: Reference lookup arrays (PP, CM, FM, FT, FF)
+        elite_count: Number of elites to preserve per generation
+        mutation_rate: Mutation probability
+        tournament_k: Tournament size for selection
+        color_flags: Dict with is_p_*, is_s_* flags
+        status_cb: Optional status callback
+
+    Returns:
+        tuple: (best_genome, best_score, best_result_array)
+    """
+    if not _GPU_NATIVE_AVAILABLE:
+        raise RuntimeError("GPU-native GA not available (missing dependencies)")
+    
+    n_genomes = len(population)
+    n_slots = 9
+    
+    # Ensure color flags are set
+    color_flags = color_flags or {}
+    is_p_ft = color_flags.get("is_p_ft", 0)
+    is_s_ft = color_flags.get("is_s_ft", 0)
+    is_p_ff = color_flags.get("is_p_ff", 0)
+    is_s_ff = color_flags.get("is_s_ff", 0)
+    is_p_pp = color_flags.get("is_p_pp", 0)
+    is_s_pp = color_flags.get("is_s_pp", 0)
+    is_p_cm = color_flags.get("is_p_cm", 0)
+    is_s_cm = color_flags.get("is_s_cm", 0)
+    is_p_fm = color_flags.get("is_p_fm", 0)
+    is_s_fm = color_flags.get("is_s_fm", 0)
+    is_p_ov = color_flags.get("is_p_ov", 0)
+    is_s_ov = color_flags.get("is_s_ov", 0)
+    
+    total_budget = cfg_data.get("TotalBudget", 90)
+    gem_scale_fever = cfg_data.get("GemScaleFever", 3)
+    
+    # Upload item stats and slot pools (one-time per song)
+    gpu_data = registry.to_gpu_arrays()
+    gpu_api.ga_upload_item_stats(
+        gpu_data["item_stats"],
+        gpu_data["slot_start"],
+        gpu_data["slot_count"],
+    )
+    
+    # Upload base fixed stats (team buffs + user gems from config)
+    # Format: [PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill]
+    # base_stats_fixed contains team buff bonuses (e.g., T5: +25 PP, +30 to team color)
+    base_stats_arr = np.array([
+        base_stats_fixed.get("Perfect Points", 0),
+        base_stats_fixed.get("Combo Multiplier", 0),
+        base_stats_fixed.get("Fever Multiplier", 0),
+        base_stats_fixed.get("Fever Time", 0),
+        base_stats_fixed.get("Fever Fill Rate", 0),
+        base_stats_fixed.get("Beat", 0),
+        base_stats_fixed.get("Vibe", 0),
+        base_stats_fixed.get("Rush", 0),
+        base_stats_fixed.get("Flow", 0),
+        base_stats_fixed.get("Chill", 0),
+    ], dtype=np.int32)
+
+    # Match scoring.solve_best_fever_combination(): subtract user-fixed gems and static elemental input
+    # so the GPU optimizer starts from the same "base stats" as CPU.
+    user_pp = int(cfg_data.get("user_pp", 0))
+    user_cm = int(cfg_data.get("user_cm", 0))
+    user_fm = int(cfg_data.get("user_fm", 0))
+    user_ft = int(cfg_data.get("user_ft", 0))
+    user_ff = int(cfg_data.get("user_ff", 0))
+    static_elem_input = int(cfg_data.get("static_elem_input", 0))
+    selected_color = str(cfg_data.get("selected_color", ""))
+
+    if user_pp or user_cm or user_fm or user_ft or user_ff:
+        base_stats_arr[0] -= user_pp * GEM_SCALE_NORMAL
+        base_stats_arr[1] -= user_cm * GEM_SCALE_NORMAL
+        base_stats_arr[2] -= user_fm * GEM_SCALE_FEVER
+        base_stats_arr[3] -= user_ft * GEM_SCALE_FEVER
+        base_stats_arr[4] -= user_ff * GEM_SCALE_FEVER
+
+        base_stats_arr[9] -= user_pp * GEM_STAT_TO_ELEMENT_SCALE   # Chill
+        base_stats_arr[8] -= user_cm * GEM_STAT_TO_ELEMENT_SCALE   # Flow
+        base_stats_arr[7] -= user_fm * GEM_STAT_TO_ELEMENT_SCALE   # Rush
+        base_stats_arr[5] -= user_ft * GEM_STAT_TO_ELEMENT_SCALE   # Beat
+        base_stats_arr[6] -= user_ff * GEM_STAT_TO_ELEMENT_SCALE   # Vibe
+
+    if static_elem_input and selected_color:
+        color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
+        idx = color_to_idx.get(selected_color)
+        if idx is not None:
+            base_stats_arr[idx] -= static_elem_input * ELEMENTAL_GEM_SCALE
+    gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
+
+    # NOTE: Timeline grid is already precomputed by caller (solve_coevolution_genetic)
+    # No need to re-upload here - GPU fields persist across calls
+
+    # Encode and upload initial population
+    pop_ids = registry.encode_population(population)
+    gpu_api.ga_upload_population_indices(pop_ids, n_slots=n_slots)
+    gpu_api.ga_seed_rng(n_genomes, seed=42)
+
+    best_score = -1
+    best_genome_ids = None
+
+    # Main GPU-native GA loop
+    for gen in range(n_generations):
+        # Evaluate population on GPU
+        gpu_api.ga_evaluate_population(
+            n_genomes=n_genomes,
+            n_slots=n_slots,
+            total_budget=total_budget,
+            gem_scale_fever=gem_scale_fever,
+            song_slot=0,
+            is_p_ft=is_p_ft, is_s_ft=is_s_ft,
+            is_p_ff=is_p_ff, is_s_ff=is_s_ff,
+            is_p_pp=is_p_pp, is_s_pp=is_s_pp,
+            is_p_cm=is_p_cm, is_s_cm=is_s_cm,
+            is_p_fm=is_p_fm, is_s_fm=is_s_fm,
+            is_p_ov=is_p_ov, is_s_ov=is_s_ov,
+        )
+        
+        # Download scores for elitism (small transfer: n_genomes ints)
+        scores = gpu_api.ga_download_scores(n_genomes)
+        
+        # Track best
+        gen_best_idx = int(np.argmax(scores))
+        gen_best_score = int(scores[gen_best_idx])
+        
+        if gen_best_score > best_score:
+            best_score = gen_best_score
+            # Download best genome IDs
+            pop_snapshot = gpu_api.ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
+            best_genome_ids = pop_snapshot[gen_best_idx].copy()
+            
+            if status_cb:
+                status_cb(f"GPU-Native Gen {gen+1}/{n_generations}: New Best {best_score}")
+            elif (gen + 1) % 10 == 0:
+                print(f"  >> GPU-Native Gen {gen+1}: Best {best_score}")
+        elif (gen + 1) % 10 == 0 and status_cb is None:
+            print(f"  >> GPU-Native Gen {gen+1}: Best {gen_best_score} (global {best_score})")
+        
+        # Find elite indices for next generation
+        elite_indices = np.argsort(scores)[-elite_count:].astype(np.int32)
+        
+        # Run next generation (selection + crossover + mutation + elitism + swap)
+        gpu_api.ga_next_generation(
+            n_genomes=n_genomes,
+            n_slots=n_slots,
+            mutation_rate=mutation_rate,
+            tournament_k=tournament_k,
+            elite_count=elite_count,
+            elite_indices=elite_indices,
+        )
+    
+    # Decode best genome
+    best_genome = registry.decode_genome(best_genome_ids) if best_genome_ids is not None else []
+    
+    # Download final results for best genome
+    results = gpu_api.ga_download_results(n_genomes)
+    best_result = results[gen_best_idx] if best_genome_ids is not None else np.zeros(7, dtype=np.int32)
+    
+    return best_genome, best_score, best_result
+
 
 
 def solve_coevolution_genetic(
@@ -109,7 +309,8 @@ def solve_coevolution_genetic(
     ga_settings = ga_settings or GASettings.from_cfg(cfg)
 
     p_color = calc_song["metadata"].get("Primary Color", "Rush")
-    selected_color = p_color
+    s_color = calc_song["metadata"].get("Secondary Color", "")
+    selected_color = p_color  # For overflow gems (could be customized per loadout)
 
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
 
@@ -124,15 +325,18 @@ def solve_coevolution_genetic(
     # Build configuration data
     # Read GPU mode setting from config
     use_gpu_mode = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False) if hasattr(cfg, 'getboolean') else False
+    use_gpu_native = cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=True) if hasattr(cfg, 'getboolean') else True
+    
     # FG fitness heuristic was removed: GA always optimizes true base score (all perfects).
     # The FG finder separately evaluates loadouts with FG configs to find the best FG score.
     if use_gpu_mode:
-        print("[GPU] GPU_Mode enabled for GA evaluation")
+        print(f"[GPU] GPU_Mode enabled (Native GA: {use_gpu_native})")
     
 
     cfg_data = {
         "selected_color": selected_color,
         "use_gpu": use_gpu_mode,
+        "use_gpu_native": use_gpu_native,
 
         "user_ft": safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0)),
         "user_ff": safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0)),
@@ -147,6 +351,127 @@ def solve_coevolution_genetic(
             cfg.get("ElementalGems", selected_color, fallback=0)
         ),
     }
+
+    # --- GPU-NATIVE GA PATH ---
+    # If using GPU mode, bypass the entire CPU loop mechanism.
+    if cfg_data.get("use_gpu", False) and cfg_data.get("use_gpu_native", True) and _GPU_NATIVE_AVAILABLE:
+        print("\n=== RUNNING GPU-NATIVE GENETIC ALGORITHM ===")
+        print(f"  Population: {GA_POPULATION_SIZE}, Generations: {ga_depth}")
+
+        # CRITICAL: Upload GPU prerequisites for evaluation
+        from .taichi_gem.api import load_ref_arrays, precompute_timeline_gpu
+
+        # 1. Load reference bonus lookup tables (required by optimize_core_device)
+        load_ref_arrays(ref_arrays)
+
+        # 2. Precompute timeline grid (required by solve_genomes_with_ftff_kernel)
+        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
+
+        # 3. Create Registry
+        registry = ItemRegistry(gear_pool, mini_pool, slots)
+
+        # 4. Create simple rank caches for genome factory (not needed for random genomes, but required by function signature)
+        # GPU-native GA uses random initialization, not heuristic, so these won't be used
+        gear_rank_cache = {s: gear_pool[s] for s in slots}  # Just use full pools
+        mini_rank_cache = mini_pool
+
+        # 5. Build explicit factories for initial population
+        # We reuse the existing factories to robustly create valid random genomes
+        (
+            create_random_genome,
+            create_heuristic_genome,
+            reconstruct_genome_from_db_list,
+            build_seed_list_from_record,
+            mutate_genome_once,
+        ) = create_genome_functions(
+            gear_pool,
+            mini_pool,
+            gear_rank_cache,
+            mini_rank_cache,
+            gears_by_name,
+            minis_by_name,
+            slots,
+            optimize_gear,
+            optimize_minis,
+            fixed_gear,
+            fixed_minis,
+        )
+
+        # 6. Create initial population
+        # GPU GA runs single long run instead of multi-start restarts to minimize overhead
+        initial_pop = build_initial_population(
+            create_random_genome,
+            create_heuristic_genome,
+            reconstruct_genome_from_db_list,
+            build_seed_list_from_record,
+            mutate_genome_once,
+            db_seed,
+            ga_settings,
+            fixed_gear,
+            fixed_minis,
+            force_db_seed=False,
+        )
+
+        # 7. Run GPU-Native GA
+        best_genome, best_score, best_res_arr = _run_gpu_native_ga(
+            population=initial_pop,
+            n_generations=ga_depth,
+            registry=registry,
+            cfg_data=cfg_data,
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+            base_stats_fixed=base_stats_fixed,
+            elite_count=GA_ELITISM,
+            mutation_rate=GA_MUTATION_RATE,
+            # Use color flags for correct p_val/s_val calculation
+            # CRITICAL: s_color (secondary) is DIFFERENT from selected_color (overflow target)
+            color_flags={
+                # Primary/secondary elemental colors map to which gems add +3 to that element:
+                # Beat<-FT, Vibe<-FF, Rush<-FM, Flow<-CM, Chill<-PP
+                "is_p_ft": 1 if p_color == "Beat" else 0,
+                "is_s_ft": 1 if s_color == "Beat" else 0,
+                "is_p_ff": 1 if p_color == "Vibe" else 0,
+                "is_s_ff": 1 if s_color == "Vibe" else 0,
+                "is_p_pp": 1 if p_color == "Chill" else 0,
+                "is_s_pp": 1 if s_color == "Chill" else 0,
+                "is_p_cm": 1 if p_color == "Flow" else 0,
+                "is_s_cm": 1 if s_color == "Flow" else 0,
+                "is_p_fm": 1 if p_color == "Rush" else 0,
+                "is_s_fm": 1 if s_color == "Rush" else 0,
+                "is_p_ov": 1 if selected_color == p_color else 0,
+                "is_s_ov": 1 if selected_color == s_color else 0,
+            },
+            status_cb=status_cb,
+        )
+
+        # 8. Format results to match expected return signature
+        best_gear = best_genome[:6]
+        best_minis = best_genome[6:9]
+        
+        best_data = {
+            "Score": best_score,
+            "BaseScore": best_score,
+            "Genome": best_genome,
+            "Gear": best_gear,
+            "Minis": best_minis,
+            "GearNames": [g.get("Name", "None") for g in best_gear],
+            "MiniNames": [m.get("Name", "None") for m in best_minis],
+            # Reconstruct result details from kernel output
+            # [score, ft, ff, pp, cm, fm, ov]
+            "Details": {
+                "FeverGems": int(best_res_arr[1]),
+                "FeverFillGems": int(best_res_arr[2]),
+                "PP": int(best_res_arr[3]),
+                "CM": int(best_res_arr[4]),
+                "FM": int(best_res_arr[5]),
+                "OV": int(best_res_arr[6]),
+            }
+        }
+        
+        print(f"=== GPU-NATIVE GA COMPLETE: Best Score {best_score} ===")
+        # (best_data, best_gear, best_minis, None, [], [], all_evaluated)
+        # GPU-native GA doesn't track individual evaluated loadouts, so return empty list
+        return best_data, best_gear, best_minis, None, [], [], []
 
     # --- MEMETIC GA PARAMETERS (configurable from [IterationEngine]) ---
     if ga_settings.memetic_elites > 0 and ga_settings.memetic_steps > 0:
