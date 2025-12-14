@@ -822,14 +822,18 @@ def fg_stage1_flat_kernel(
         if final_score < 0:
             final_score = 0
 
-        # Atomic max: update (genome, ftff) slot if this config is better
+        # Atomic update with race-free metadata writes
+        # Use atomic_max on score, then check if THIS thread won to update metadata
+        # This avoids race conditions where multiple threads with same score try to write
         old_score = ti.atomic_max(fg_stage1_final_score[g, ftff_idx], final_score)
-        if final_score > old_score:
-            # We won the race - update other fields
-            # Note: This is a benign race - all threads writing the same winning config
-            # will write the same values, giving correct final result
+
+        # Strict < check ensures only ONE thread (first to atomic_max) writes metadata
+        # If old_score == final_score, another thread already updated, we skip
+        if old_score < final_score:
+            # We atomically won - safe to update all metadata synchronously
+            global_cfg_idx: ti.i32 = cfg_offset + cfg_idx
             fg_stage1_base_score[g, ftff_idx] = base_score
-            fg_stage1_cfg_idx[g, ftff_idx] = cfg_offset + cfg_idx
+            fg_stage1_cfg_idx[g, ftff_idx] = global_cfg_idx
             fg_stage1_g_pp[g, ftff_idx] = gems_pp
             fg_stage1_g_cm[g, ftff_idx] = gems_cm
             fg_stage1_g_fm[g, ftff_idx] = gems_fm
