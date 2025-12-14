@@ -131,11 +131,6 @@ def worker_coevolution_evaluate(args):
     mini_names = [m["Name"] for m in mini_part]
 
     base_score = res["Score"]
-    fitness_score = base_score
-    
-    # Apply FG heuristic if enabled (biases GA toward FG-friendly loadouts)
-    if cfg_data.get("fg_heuristic"):
-        fitness_score = estimate_fg_potential(base_score, current_stats, calc_song, ref_arrays)
 
     # CRITICAL: Inject BaseScore into res so it propagates through all caching layers
     # and reaches build_db_payload for correct DB storage. Without this, the heuristic
@@ -143,8 +138,8 @@ def worker_coevolution_evaluate(args):
     res["BaseScore"] = base_score
 
     return {
-        "Score": fitness_score,  # Used for GA selection (may include FG heuristic boost)
-        "BaseScore": base_score,  # Always the true base score
+        "Score": base_score,  # Used for GA selection
+        "BaseScore": base_score,  # True base score (all perfects)
         "Genome": genome,
         "Gear": gear_part,
         "Minis": mini_part,
@@ -189,7 +184,6 @@ def batch_evaluate_genomes(
     
     # Check if GPU is enabled
     use_gpu = cfg_data.get("use_gpu", False)
-    use_gpu_aggregate = bool(cfg_data.get("gpu_aggregate_stats", False))
     
     # Use cache if provided
     use_cache = genome_key_fn is not None and evaluation_cache is not None
@@ -218,74 +212,15 @@ def batch_evaluate_genomes(
     # Batch aggregate stats for all uncached genomes
     sel_color = cfg_data["selected_color"]
     
-    # Aggregate stats for each genome
-    #
-    # Default path: Python dict aggregation (stable, reference).
-    #
-    # Optional GPU path: build integer population indices + dense item table and
-    # aggregate base stats on GPU. This reduces Python loop cost and is a building
-    # block for GPU-native GA (Phase 3).
+    # Aggregate stats for each genome (simple dict accumulation)
     all_stats = []
-    if use_gpu and use_gpu_aggregate:
-        try:
-            # In parallel song processing, workers run in GPU worker mode and must not
-            # initialize Taichi directly (GPU ownership is centralized in GpuExecutor).
-            from .gpu_executor import is_gpu_worker_mode
-            if is_gpu_worker_mode():
-                raise RuntimeError("aggregate_population_stats_gpu disabled in GPU worker mode")
-
-            from .taichi_gem.api import aggregate_population_stats_gpu
-            from .population_index import STAT_KEYS, build_population_index, encode_population
-
-            # Build item pool from the current uncached genomes.
-            items = []
-            for genome in uncached_genomes:
-                for it in genome:
-                    if isinstance(it, dict):
-                        items.append(it)
-
-            pop_index = build_population_index(items)
-            pop_indices = encode_population(uncached_genomes, pop_index.key_to_id, slots=9)
-
-            # Base fixed stats in STAT_KEYS order.
-            base_fixed_np = np.zeros((len(STAT_KEYS),), dtype=np.int32)
-            for s_idx, s_key in enumerate(STAT_KEYS):
-                base_fixed_np[s_idx] = int(base_stats_fixed.get(s_key, 0) or 0)
-
-            # Aggregate on GPU. (Does not compute P/S mapping here.)
-            aggregate_population_stats_gpu(
-                pop_indices,
-                pop_index.item_stats,
-                base_fixed_np,
-                n_slots=9,
-            )
-
-            # For now, still materialize Python dict stats as the downstream signature/key
-            # and CPU fallback code expects dicts. This is a transitional step.
-            # (Full Phase 4 keeps everything resident on GPU.)
-            #
-            # We keep this path correct by building dicts from base_fixed + items.
-            # CPU cost here is still present, but the expensive per-item loops can be
-            # removed once downstream is moved to index-based signatures.
-            for genome in uncached_genomes:
-                current_stats = base_stats_fixed.copy()
-                for item in genome:
-                    for k, v in item.items():
-                        if k not in SKIP_ITEM_KEYS:
-                            current_stats[k] = current_stats.get(k, 0) + v
-                all_stats.append(current_stats)
-        except Exception:
-            # Any failure => fall back to CPU aggregation.
-            all_stats = []
-
-    if not all_stats:
-        for genome in uncached_genomes:
-            current_stats = base_stats_fixed.copy()
-            for item in genome:
-                for k, v in item.items():
-                    if k not in SKIP_ITEM_KEYS:
-                        current_stats[k] = current_stats.get(k, 0) + v
-            all_stats.append(current_stats)
+    for genome in uncached_genomes:
+        current_stats = base_stats_fixed.copy()
+        for item in genome:
+            for k, v in item.items():
+                if k not in SKIP_ITEM_KEYS:
+                    current_stats[k] = current_stats.get(k, 0) + v
+        all_stats.append(current_stats)
     
     # Check stat-signature cache for deduplication (O(n))
     sig_to_result = {}
@@ -515,7 +450,6 @@ def batch_evaluate_genomes(
     
     # Build results for uncached genomes
     uncached_results = {}
-    use_fg_heuristic = cfg_data.get("fg_heuristic", False)
     for i, (genome, stats) in enumerate(zip(uncached_genomes, all_stats)):
         res = sig_to_result.get(i)
         if res is None:
@@ -535,19 +469,14 @@ def batch_evaluate_genomes(
         mini_names = [m["Name"] for m in mini_part]
         
         base_score = res["Score"]
-        fitness_score = base_score
-        
-        # Apply FG heuristic if enabled (biases GA toward FG-friendly loadouts)
-        if use_fg_heuristic:
-            fitness_score = estimate_fg_potential(base_score, stats, calc_song, ref_arrays)
         
         # CRITICAL: Inject BaseScore into res so it propagates through all caching layers
         # and reaches build_db_payload for correct DB storage.
         res["BaseScore"] = base_score
         
         result = {
-            "Score": fitness_score,  # Used for GA selection (may include FG heuristic boost)
-            "BaseScore": base_score,  # Always the true base score
+            "Score": base_score,  # Used for GA selection
+            "BaseScore": base_score,  # True base score (all perfects)
             "Genome": genome,
             "Gear": gear_part,
             "Minis": mini_part,
@@ -709,59 +638,6 @@ def fg_baseline_params(stats, calc_song, ref_arrays):
     )
 
     return int(non_fever_section), int(non_fever_base)
-
-
-def estimate_fg_potential(base_score, stats, calc_song, ref_arrays):
-    """
-    Cheap heuristic to estimate FG (Force Greats) potential without full search.
-    
-    Used during GA fitness evaluation to bias selection toward loadouts
-    that are likely to benefit from Force Greats timing manipulation.
-    
-    Factors that increase FG potential:
-    - Higher Fever Multiplier (FM): Bigger fever score boost when timing shifts
-    - More non-fever sections: More manipulation opportunities
-    - Higher base score: More absolute gain from percentage improvements
-    
-    Args:
-        base_score: Base score (all Perfect notes)
-        stats: Stats dictionary with gear/mini aggregated values
-        calc_song: Song calculation context
-        ref_arrays: Reference lookup arrays
-        
-    Returns:
-        int: Estimated FG-adjusted score (base_score + estimated FG boost)
-    """
-    if base_score <= 0:
-        return base_score
-    
-    # Get number of non-fever sections and baseline fill requirement
-    n_sections, non_fever_base = fg_baseline_params(stats, calc_song, ref_arrays)
-    
-    if n_sections <= 0:
-        return base_score
-    
-    # Factor 1: Fever Multiplier - higher FM = more FG benefit
-    # Normalize to 0-1 range (typical FM range is 0-1000)
-    fm = stats.get("Fever Multiplier", 0)
-    fm_factor = min(fm / 600.0, 1.0)
-    
-    # Factor 2: Non-fever sections - more sections = more manipulation room
-    # 2 sections is baseline, up to 4 provides increasing benefit
-    section_factor = min(n_sections / 3.0, 1.0)
-    
-    # Factor 3: Fill requirement - lower fill = easier to shift timing
-    # Smaller non_fever_base means fewer notes needed to trigger fever
-    fill_factor = 1.0 - min(non_fever_base / 50.0, 0.5)  # 0.5 to 1.0 range
-    
-    # Combined FG potential multiplier (0.0 to ~0.03 range)
-    # Typical FG improvement is 0.5-2% of base score
-    fg_multiplier = 0.015 * fm_factor * section_factor * fill_factor
-    
-    # Estimate FG boost
-    estimated_boost = int(base_score * fg_multiplier)
-    
-    return base_score + estimated_boost
 
 
 def _song_cache_key(calc_song):

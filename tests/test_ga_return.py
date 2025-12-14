@@ -14,7 +14,7 @@ class TestGAReturnValues(unittest.TestCase):
     def test_ga_returns_unwrapped_data(self):
         # Mock dependencies
         cfg = MagicMock()
-        cfg.getboolean.return_value = True # Heuristic enabled
+        cfg.getboolean.return_value = False
         cfg.get.return_value = 0
         
         base_stats_fixed = {"Perfect Points": 100}
@@ -25,15 +25,17 @@ class TestGAReturnValues(unittest.TestCase):
         gears_by_name = {"G1": all_gears[0]}
         minis_by_name = {m["Name"]: m for m in all_minis}
         
-        # Mock result from worker_coevolution_evaluate
-        # Returns Wrapper with Heuristic=2000, Base=1000
-        # And Data with Score=1000
+        # Mock result from worker_coevolution_evaluate.
+        # The solver returns the inner `Data` dict (not the wrapper).
+        genome = [all_gears[0]] * 6 + list(all_minis)
         wrapper_res = {
-            "Score": 2000, # Heuristic
+            "Score": 1000,
             "BaseScore": 1000,
-            "Genome": [], 
-            "Gear": [], "Minis": [], "MiniNames": [],
-            "Data": {"Score": 1000, "Stats": {}} # Inner Data
+            "Genome": genome,
+            "Gear": genome[:6],
+            "Minis": genome[6:],
+            "MiniNames": [m["Name"] for m in genome[6:]],
+            "Data": {"Score": 1000, "Stats": {}},  # Inner Data (no BaseScore yet)
         }
         
         # Populate all slots to ensure valid genomes
@@ -68,14 +70,12 @@ class TestGAReturnValues(unittest.TestCase):
                             ga_depth=1, ga_settings=None # Use defaults from mocked cfg
                         )
                         
-                        print(f"\nGA Returned Data Score: {best_data.get('Score')}")
-                        
-                        if best_data.get("Score") == 1000:
-                            print("VERIFIED: GA returns Inner Data (Base Score).")
-                        elif best_data.get("Score") == 2000:
-                            print("FAIL: GA returns Wrapper (Heuristic Score)!")
-                        else:
-                            print(f"FAIL: Unknown score {best_data.get('Score')}")
+                        assert isinstance(best_data, dict)
+                        # Returned payload is the inner "Data" dict, not the wrapper.
+                        assert "Genome" not in best_data
+                        assert best_data.get("Score") == 1000
+                        # Solver injects BaseScore into the inner data dict for DB storage.
+                        assert best_data.get("BaseScore") == 1000
 
 if __name__ == "__main__":
     unittest.main()

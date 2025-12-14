@@ -53,6 +53,7 @@ class GASettings:
     multi_start: int
     deep_mining_enabled: bool
     heuristic_mode: str  # modern | legacy | hybrid
+    allow_3_swap: bool  # Enable expensive 3-swap polish (~15s extra)
 
     @classmethod
     def from_cfg(cls, cfg):
@@ -72,6 +73,7 @@ class GASettings:
                 GA_MULTI_RUNS_DEFAULT,
                 True,
                 "modern",
+                True,  # allow_3_swap default
             )
 
         def get_option(option, fallback):
@@ -104,6 +106,7 @@ class GASettings:
             except Exception:
                 pass
             heuristic_mode = "modern"
+        allow_3_swap = cfg.getboolean(section, "GA_Allow3Swap", fallback=True)
 
         return cls(
             min(1.0, max(0.0, db_seed_prob)),
@@ -115,6 +118,7 @@ class GASettings:
             multi_start,
             deep_mining,
             heuristic_mode,
+            allow_3_swap,
         )
 
 

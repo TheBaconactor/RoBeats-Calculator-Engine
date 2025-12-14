@@ -158,9 +158,8 @@ RoBeats-Calculator-Engine/
 │   │   ├── fever_timeline.py         # Fever timeline calculation (Rules layer)
 │   │   ├── gpu_executor.py           # GPU worker process management & IPC
 │   │   ├── gpu_profiler.py           # GPU performance profiling
-│   │   ├── population_index.py       # Population indexing for batch ops
 │   │   ├── taichi_gem_solver.py      # Facade to Taichi gem solver (lazy load)
-│   │   └── taichi_gem/               # GPU kernels subpackage (~180K LOC)
+│   │   └── taichi_gem/               # GPU kernels subpackage
 │   │       ├── api.py                # Taichi gem solver API (55KB)
 │   │       ├── kernels.py            # Parallel gem allocation kernels (56KB)
 │   │       ├── fields.py             # Taichi field definitions

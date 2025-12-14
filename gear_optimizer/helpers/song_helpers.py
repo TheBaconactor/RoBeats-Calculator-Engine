@@ -937,8 +937,8 @@ def build_db_payload(
     Returns:
         dict: Database payload
     """
-    # Use BaseScore if available (true base score without heuristic boost)
-    # Fall back to Score if BaseScore not present (backwards compatibility)
+    # Use BaseScore if available (true base score).
+    # Fall back to Score if BaseScore not present (backwards compatibility).
     score = best_data.get("BaseScore") or best_data.get("Score", 0)
 
     prev_score = prev_record.get("score") if prev_record else None
@@ -1004,26 +1004,12 @@ def build_db_payload(
             "Saving to Evolution Database..."
         )
     elif is_better:
-        msg = f" >> NEW RECORD! Previous: {prev_score} | New: {score}"
-        h_score = best_data.get("HeuristicScore")
-        if h_score:
-            msg += f" (Heuristic: {h_score})"
-        msg += " - Updating Evolution Database..."
+        msg = f" >> NEW RECORD! Previous: {prev_score} | New: {score} - Updating Evolution Database..."
         print(msg)
     else:
         msg = f" >> No improvement over DB Record ({prev_score})"
         if is_first: # Edge case coverage
             msg = " >> Record exists but no improvement found."
-            
-        h_score = best_data.get("HeuristicScore")
-        if h_score:
-            msg += f"\n    [Context] GA picked this via Heuristic Score: {h_score}"
-            if h_score > (prev_score or 0):
-                msg += " (Predicted better than Record)"
-            else:
-                 msg += " (But still worse than Record)"
-            if score < (prev_score or 0):
-                msg += f"\n    [Context] Actual Base Score: {score} (Lower than Record, so rejected)"
         print(msg)
 
     # Aggregate candidates (best + second from previous DB and current run) and pick top two.
@@ -1228,7 +1214,7 @@ def build_persistence_entries(
     if ga_candidates:
         for eval_result in ga_candidates:
             eval_data = eval_result.get("Data") or {}
-            # Use BaseScore (true score) for DB storage; Score may include FG heuristic boost
+            # Use BaseScore (true score) for DB storage; fall back for older payloads.
             eval_score = eval_result.get("BaseScore") or eval_result.get("Score", 0)
             eval_gear = eval_result.get("Gear", [])
             eval_minis = eval_result.get("Minis", [])

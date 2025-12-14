@@ -24,7 +24,7 @@ if _GA_SEED is not None:
 from ..core.constants import GA_POPULATION_SIZE, GA_MUTATION_RATE, GA_MUTATION_RATE_MAX, GA_ELITISM
 from ..core.utils import prune_dominated_gear, SKIP_ITEM_KEYS
 from ..data.database import get_loadout_hash
-from ..solver.scoring import worker_coevolution_evaluate, batch_evaluate_genomes, estimate_fg_potential
+from ..solver.scoring import worker_coevolution_evaluate, batch_evaluate_genomes
 
 
 def initialize_pools(all_gears, all_minis, p_color, slots):
@@ -355,17 +355,6 @@ def create_evaluation_functions(
                 base_score = score
                 fitness_score = base_score
 
-                # Apply FG heuristic if enabled (matches worker_coevolution_evaluate behavior)
-                # We must reconstruct stats to calculate the potential.
-                if cfg_data.get("fg_heuristic"):
-                    current_stats = base_stats_fixed.copy()
-                    for item in genome:
-                        for k, v in item.items():
-                            if k not in SKIP_ITEM_KEYS:
-                                current_stats[k] = current_stats.get(k, 0) + v
-                    
-                    fitness_score = estimate_fg_potential(base_score, current_stats, calc_song, ref_arrays)
-
                 data_dict = {
                     "Score": base_score, # Data.Score is typically the base score
                     "_cached_db": True,
@@ -453,6 +442,7 @@ def create_local_search_function(
     slots,
     optimize_gear,
     optimize_minis,
+    ga_settings=None,
 ):
     """
     Create local search function for memetic GA and polishing.
@@ -467,6 +457,7 @@ def create_local_search_function(
         slots: List of gear slot names
         optimize_gear: Whether to optimize gear
         optimize_minis: Whether to optimize minis
+        ga_settings: GASettings object containing allow_3_swap flag
 
     Returns:
         tuple: (run_local_search, polish_best_genome, memetic_local_search)
@@ -565,19 +556,21 @@ def create_local_search_function(
     def polish_best_genome(best_genome):
         """
         Enhanced polishing with exhaustive mini permutation and 2-move neighborhood.
-        
+
         Phase 0: Combined gear+mini exploration - try alternative gear WITH alternative minis
         Phase 1: Exhaustive mini permutation - try all C(top_k, 3) mini combinations
         Phase 2: 2-swap gear neighborhood - try all pairs of gear swaps
         Phase 3: Standard 1-swap local search until convergence
-        
+
         This helps escape local optima that require coordinated changes.
         """
         from itertools import combinations, product
-        
-        top_k_gear = 15  # expanded to use more of the gear_rank_cache (25 items)
-        top_k_minis_sweep = min(10, len(mini_rank_cache))  # For exhaustive: top 10 -> C(10,3)=120 combos
-        top_k_minis_local = min(25, len(mini_rank_cache))  # For 1-swap local search
+
+        # OPTIMIZATION: Reduced from 15 to 6 to cut polish time by ~75%
+        # This reduces 2-swap from 3,375 to 540 genomes (6x faster)
+        top_k_gear = 6
+        top_k_minis_sweep = min(8, len(mini_rank_cache))  # Reduced from 10 -> C(8,3)=56 combos
+        top_k_minis_local = min(20, len(mini_rank_cache))  # Reduced from 25
         
         best_result = evaluate_genome_local(best_genome)
         best_score = best_result["Score"]
@@ -646,8 +639,9 @@ def create_local_search_function(
                 if not swap_candidates:
                     return
 
-                # Batch evaluate in chunks to avoid exceeding GPU batch size limit.
-                GPU_BATCH_LIMIT = 2000  # Stay safely under 4096 limit
+                # OPTIMIZATION: Increased batch limit to 3500 to reduce kernel launches
+                # With reduced top_k_gear=6, max candidates ~540, so single batch usually
+                GPU_BATCH_LIMIT = 3500  # Increased from 2000 (safe under 4096 limit)
                 all_results = []
                 for chunk_start in range(0, len(swap_candidates), GPU_BATCH_LIMIT):
                     chunk = swap_candidates[chunk_start : chunk_start + GPU_BATCH_LIMIT]
@@ -659,14 +653,21 @@ def create_local_search_function(
                     return
 
                 best_k_swap = max(all_results, key=lambda x: x["Score"])
+                improved = False
                 if best_k_swap["Score"] > best_score:
                     best_score = best_k_swap["Score"]
                     best_result = best_k_swap
                     current_genome = list(best_k_swap["Genome"])
                     print(f"  >> [Polish] {label} gear improved score to {best_score}")
+                    improved = True
+                return improved
 
-            try_k_swap(2, "2-swap")
-            try_k_swap(3, "3-swap")
+            # OPTIMIZATION: Only try 2-swap by default, skip expensive 3-swap (saves ~15s)
+            # 3-swap generates 67,500 genomes vs 540 for 2-swap
+            improved = try_k_swap(2, "2-swap")
+            # Conditionally try 3-swap if enabled in config (adds ~15s)
+            if ga_settings and getattr(ga_settings, 'allow_3_swap', False):
+                try_k_swap(3, "3-swap")
         
         # === PHASE 3: Standard 1-Swap Local Search ===
         # Continue with traditional hill climbing until convergence

@@ -110,51 +110,6 @@ def _xorshift32(x: ti.u32) -> ti.u32:
 
 # ... (ga kernels unchanged) ...
 
-@ti.kernel
-def aggregate_population_stats_kernel(
-    n_genomes: ti.i32,
-    n_slots: ti.i32,
-):
-    """
-    Aggregate per-genome base stats on GPU from integer population representation.
-    Writes to genome_base_stats Vector field.
-    """
-    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
-
-    for g in range(n_genomes):
-        pp = base_fixed_stats[0]
-        cm = base_fixed_stats[1]
-        fm = base_fixed_stats[2]
-        ft = base_fixed_stats[3]
-        ff = base_fixed_stats[4]
-
-        beat = base_fixed_stats[5]
-        vibe = base_fixed_stats[6]
-        rush = base_fixed_stats[7]
-        flow = base_fixed_stats[8]
-        chill = base_fixed_stats[9]
-
-        for s in range(n_slots):
-            item_id = population_indices[g, s]
-            if item_id <= 0:
-                continue
-
-            pp += item_stats[item_id, 0]
-            cm += item_stats[item_id, 1]
-            fm += item_stats[item_id, 2]
-            ft += item_stats[item_id, 3]
-            ff += item_stats[item_id, 4]
-
-            beat += item_stats[item_id, 5]
-            vibe += item_stats[item_id, 6]
-            rush += item_stats[item_id, 7]
-            flow += item_stats[item_id, 8]
-            chill += item_stats[item_id, 9]
-
-        # Store outputs expected by downstream kernels.
-        # Layout: [pp, cm, fm, p_val, s_val, ft, ff]
-        # p_val/s_val are placeholders here, filled later
-        genome_base_stats[g] = ti.Vector([pp, cm, fm, 0, 0, ft, ff])
 
 
 @ti.kernel
@@ -865,65 +820,6 @@ def _calc_score_selector(
 # @ti.kernel ENTRY POINTS
 # ============================================================================
 
-@ti.kernel
-def aggregate_population_stats_kernel(
-    n_genomes: ti.i32,
-    n_slots: ti.i32,
-):
-    """
-    Aggregate per-genome base stats on GPU from integer population representation.
-
-    Inputs:
-      - population_indices[g, slot] -> item_id
-      - item_stats[item_id, stat_id] -> int32 stat values
-      - base_fixed_stats[stat_id] -> int32 fixed base stats to add for all genomes
-
-    Outputs:
-      - genome_base_* fields filled to match the gem solver expectations.
-
-    stat_id schema must match gear_optimizer.solver.population_index.STAT_KEYS:
-      0: PP, 1: CM, 2: FM, 3: FT, 4: FF, 5: Beat, 6: Vibe, 7: Rush, 8: Flow, 9: Chill
-    """
-    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
-
-    for g in range(n_genomes):
-        # Start from fixed base stats.
-        pp = base_fixed_stats[0]
-        cm = base_fixed_stats[1]
-        fm = base_fixed_stats[2]
-        ft = base_fixed_stats[3]
-        ff = base_fixed_stats[4]
-
-        beat = base_fixed_stats[5]
-        vibe = base_fixed_stats[6]
-        rush = base_fixed_stats[7]
-        flow = base_fixed_stats[8]
-        chill = base_fixed_stats[9]
-
-        for s in range(n_slots):
-            item_id = population_indices[g, s]
-            if item_id <= 0:
-                continue
-
-            pp += item_stats[item_id, 0]
-            cm += item_stats[item_id, 1]
-            fm += item_stats[item_id, 2]
-            ft += item_stats[item_id, 3]
-            ff += item_stats[item_id, 4]
-
-            beat += item_stats[item_id, 5]
-            vibe += item_stats[item_id, 6]
-            rush += item_stats[item_id, 7]
-            flow += item_stats[item_id, 8]
-            chill += item_stats[item_id, 9]
-
-        # Store outputs expected by downstream kernels.
-        # Layout: [pp, cm, fm, p_val, s_val, ft, ff]
-        # p_val/s_val are placeholders here, filled later
-        genome_base_stats[g] = ti.Vector([pp, cm, fm, 0, 0, ft, ff])
-
-        # Note: p/s values depend on song metadata, so we don't compute them here.
-        # Callers will fill genome_base_p_val/genome_base_s_val after mapping colors.
 
 @ti.kernel
 def solve_batch_kernel(

@@ -124,16 +124,16 @@ def solve_coevolution_genetic(
     # Build configuration data
     # Read GPU mode setting from config
     use_gpu_mode = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False) if hasattr(cfg, 'getboolean') else False
-    # FG heuristic DISABLED: GA now optimizes for true base score (all perfects)
-    # The FG finder separately evaluates all loadouts with FG configs to find the best FG score.
-    # This gives two independent optimal results: best raw base score + best FG score.
+    # FG fitness heuristic was removed: GA always optimizes true base score (all perfects).
+    # The FG finder separately evaluates loadouts with FG configs to find the best FG score.
     if use_gpu_mode:
         print("[GPU] GPU_Mode enabled for GA evaluation")
     
+
     cfg_data = {
         "selected_color": selected_color,
         "use_gpu": use_gpu_mode,
-        "fg_heuristic": cfg.getboolean("IterationEngine", "ForceGreatsHeuristic", fallback=False) if hasattr(cfg, 'getboolean') else False,
+
         "user_ft": safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0)),
         "user_ff": safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0)),
         "user_pp": safe_int(cfg.get("UserInputStatsGems", "perfect_points", fallback=0)),
@@ -221,6 +221,7 @@ def solve_coevolution_genetic(
         slots,
         optimize_gear,
         optimize_minis,
+        ga_settings=ga_settings,
     )
 
     # Setup multi-start runs
@@ -254,9 +255,8 @@ def solve_coevolution_genetic(
                     (seed_genome, base_stats_fixed, cfg_data, calc_song, ref_arrays)
                 )
                 evaluation_cache[genome_key(seed_genome)] = seed_res
-                # CRITICAL: Use BaseScore (true score) for DB comparison, not Score
-                # which may include FG heuristic boost. This ensures consistent
-                # comparison between what's stored in DB and new GA results.
+                # Use BaseScore (true score) for DB comparison. (Score is the GA fitness score
+                # and is currently the same as BaseScore.)
                 db_seed_score = seed_res.get("BaseScore") or seed_res["Score"]
                 db_seed_genome = seed_genome
                 db_seed_data = seed_res["Data"]
@@ -507,7 +507,7 @@ def solve_coevolution_genetic(
                 (polished_genome, base_stats_fixed, cfg_data, calc_song, ref_arrays)
             )
 
-        # Use heuristic Score for GA selection (BaseScore only for DB comparisons)
+        # Use Score for GA selection (BaseScore only for DB comparisons)
         polished_score = polished_result["Score"]
 
         if polished_score > best_global_score:
@@ -517,9 +517,12 @@ def solve_coevolution_genetic(
 
     # Soft non-regression guard: If GA's best is worse than DB seed, fall back.
     # This ensures we never regress while still allowing free exploration.
-    # CRITICAL: Get the TRUE base score from best_global_data["Score"] for comparison,
-    # since best_global_score may still contain heuristic boost from GA selection.
-    ga_true_score = best_global_data.get("Score", 0) if best_global_data else best_global_score
+    # Compare using true base score.
+    ga_true_score = (
+        best_global_data.get("BaseScore", best_global_data.get("Score", 0))
+        if best_global_data
+        else best_global_score
+    )
     if db_seed_score > ga_true_score and db_seed_genome:
         print(f" >> [Evolution] GA best ({ga_true_score}) < DB seed ({db_seed_score}); using DB seed.")
         best_global_score = db_seed_score
@@ -550,11 +553,6 @@ def solve_coevolution_genetic(
     
     if not best_global_data:
         print(f"[GA Error] GA completed but found no valid candidates (best_global_score={best_global_score})")
-
-    # Inject the heuristic score into the data packet if it differs from the base score.
-    # This helps explain why GA picked a loadout with a lower base score (due to expected FG boost).
-    if best_global_data and best_global_score != best_global_data.get("Score", 0):
-        best_global_data["HeuristicScore"] = best_global_score
 
     return (
         best_global_data if best_global_data else None,
