@@ -34,7 +34,10 @@ from .fields import (
     get_last_uploaded_grid_id,
     set_last_uploaded_grid_id,
 )
-from . import kernels
+from .kernel_loader import get_kernels
+
+# Get appropriate kernels for current platform (Metal-safe on macOS)
+kernels = get_kernels()
 
 
 # ============================================================================

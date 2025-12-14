@@ -7,10 +7,15 @@ This module handles:
 - Grid fields for timeline lookups
 - bind_fields() to inject live field objects into kernels module
 """
+import sys
+
 import taichi as ti
 import numpy as np
 
 from .runtime import is_initialized, init_taichi_vulkan
+
+# Platform detection for Metal-specific fields
+IS_METAL = sys.platform == "darwin"
 
 # ============================================================================
 # CONSTANTS
@@ -120,6 +125,10 @@ chunk_best_key: ti.Field = None       # (MAX_GENOMES,) u64 packed key for safe p
 ftff_combo_ft: ti.Field = None        # (MAX_FTFF_COMBOS,) i32 FT gems per combo
 ftff_combo_ff: ti.Field = None        # (MAX_FTFF_COMBOS,) i32 FF gems per combo
 
+# Metal-specific 32-bit fields (used instead of u64 atomics on macOS)
+chunk_best_score: ti.Field = None     # (MAX_GENOMES,) i32 best score per genome (Metal)
+chunk_best_idx: ti.Field = None       # (MAX_GENOMES,) i32 work item index (Metal)
+
 
 # ============================================================================
 # ALLOCATION STATE
@@ -178,7 +187,7 @@ def allocate_fields():
     global result_p_val, result_s_val, result_stats, _fields_allocated
     global genome_result_scores, genome_result_ft, genome_result_ff
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
-    global chunk_best_key
+    global chunk_best_key, chunk_best_score, chunk_best_idx
     global ftff_combo_ft, ftff_combo_ff
     
     if _fields_allocated:
@@ -226,7 +235,12 @@ def allocate_fields():
     # [score, ft, ff, pp, cm, fm, ov]
     genome_result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_GENOMES)
     # Per-chunk reduction key: ((score+1) << 32) | work_item_index
-    chunk_best_key = ti.field(dtype=ti.u64, shape=MAX_GENOMES)
+    # NOTE: u64 atomics not supported on Metal, so we use separate 32-bit fields on macOS
+    if not IS_METAL:
+        chunk_best_key = ti.field(dtype=ti.u64, shape=MAX_GENOMES)
+    else:
+        chunk_best_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+        chunk_best_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     # FT/FF combo tables for GPU-parallel evaluation (indexed by combo_id)
     ftff_combo_ft = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
     ftff_combo_ff = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
@@ -323,7 +337,8 @@ def bind_fields(kernels_module):
     
     # Genome results
     kernels_module.genome_result_stats = genome_result_stats
-    kernels_module.chunk_best_key = chunk_best_key
+    if not IS_METAL:
+        kernels_module.chunk_best_key = chunk_best_key
     kernels_module.ftff_combo_ft = ftff_combo_ft
     kernels_module.ftff_combo_ff = ftff_combo_ff
 
@@ -343,6 +358,21 @@ def ensure_fields_allocated():
         # Import kernels here to avoid circular import at module load time
         from . import kernels
         bind_fields(kernels)
+        
+        # Bind Metal-specific NON-GRID fields if on macOS
+        # Grid fields are bound later in ensure_grid_fields_allocated()
+        if IS_METAL:
+            from . import kernels_metal
+            kernels_metal.chunk_best_score = chunk_best_score
+            kernels_metal.chunk_best_idx = chunk_best_idx
+            # Bind shared non-grid fields needed by Metal kernels
+            kernels_metal.work_items = work_items
+            kernels_metal.result_stats = result_stats
+            kernels_metal.genome_result_stats = genome_result_stats
+            kernels_metal.genome_base_stats = genome_base_stats
+            kernels_metal.ga_scores = ga_scores
+            kernels_metal.ftff_combo_ft = ftff_combo_ft
+            kernels_metal.ftff_combo_ff = ftff_combo_ff
 
 
 def ensure_grid_fields_allocated():
@@ -358,3 +388,15 @@ def ensure_grid_fields_allocated():
         # Re-bind to include grid fields
         from . import kernels
         bind_fields(kernels)
+        
+        # Bind Metal-specific GRID fields if on macOS
+        if IS_METAL:
+            from . import kernels_metal
+            kernels_metal.grid_count_body_fever = grid_count_body_fever
+            kernels_metal.grid_count_body_normal = grid_count_body_normal
+            kernels_metal.grid_head_len = grid_head_len
+            kernels_metal.grid_fever_masks_bits = grid_fever_masks_bits
+            
+            # Now that ALL fields are bound, apply Metal kernel patches
+            from .kernel_loader import apply_metal_patches
+            apply_metal_patches()
