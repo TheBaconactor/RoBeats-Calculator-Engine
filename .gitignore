@@ -27,3 +27,8 @@ env/
 # OS/editor noise
 Thumbs.db
 Desktop.ini
+
+# Sensitive credentials (NEVER commit these!)
+Discord.env
+*.env
+.env
