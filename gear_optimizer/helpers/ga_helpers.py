@@ -306,18 +306,23 @@ def create_evaluation_functions(
         return modern_score
 
     def genome_key(genome):
-        """Generate a unique key for a genome for caching."""
-        # Helper to extract name from dict or string
-        def get_name(item):
-            if isinstance(item, dict):
-                return item.get("Name", "")
-            return str(item) if item else ""
-
+        """Generate a unique key for a genome for caching.
+        
+        OPTIMIZATION: Inlined get_name, avoid isinstance where possible.
+        This function is called 241K+ times per run.
+        """
         # Gear (first 6 slots): order matters because slots are positional.
-        gear_names = tuple(get_name(item) for item in genome[:6])
+        # Inline name extraction: most items are dicts
+        gear_names = tuple(
+            (item.get("Name", "") if isinstance(item, dict) else (str(item) if item else ""))
+            for item in genome[:6]
+        )
         # Minis (last 3 slots): order-invariant - only the set/multiset matters.
         # Sorting canonicalizes permutations so [A,B,C] and [C,B,A] share a key.
-        mini_names = tuple(sorted(get_name(item) for item in genome[6:]))
+        mini_names = tuple(sorted(
+            (item.get("Name", "") if isinstance(item, dict) else (str(item) if item else ""))
+            for item in genome[6:]
+        ))
         return gear_names + mini_names
 
     evaluation_cache = {}
