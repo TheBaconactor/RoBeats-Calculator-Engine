@@ -796,6 +796,10 @@ def process_force_greats(
             return fg_variants
         except Exception as e:
             print(f"[ForceGreats][GPU] Batch FG finder failed; falling back to CPU per-loadout: {e}")
+            # Reset state to allow CPU manual loop to run from scratch
+            fg_variants = []
+            computed = 0
+            unique_stats_seen = set()
     for entry in loadout_entries.values():
         if computed >= max_fg_compute:
             break
@@ -1331,10 +1335,7 @@ def print_results(
         fg_gear_names = [g.get("Name") for g in best_fg_gear] if best_fg_gear else []
         fg_mini_names = [m.get("Name") for m in best_fg_minis] if best_fg_minis else []
         print("\n[ForceGreats Optimizer]")
-        print(
-            f"Base Score: {fg_meta.get('base_score', best_data.get('Score', 0))} | "
-            f"ForceGreat Score: {best_fg_entry.get('score', 0)}"
-        )
+        print(f"ForceGreat Score: {best_fg_entry.get('score', 0)}")
         print(f"Best FG Gear: {fg_gear_names}")
         print(f"Best FG Minis: {fg_mini_names}")
         cfg_map = fg_meta.get("config", {})

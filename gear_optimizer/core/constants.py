@@ -32,7 +32,7 @@ GA_MUTATION_RATE_MAX = 0.55       # INCREASED: 0.45 → 0.55 (allow more aggress
 
 # --- DATABASE CONFIGURATION ---
 DB_FILE = "evolution.db"
-LOADOUTS_PER_SONG_LIMIT = 50  # Hard cap per song to keep DB size manageable
+LOADOUTS_PER_SONG_LIMIT = 100  # Hard cap per song to keep DB size manageable
 
 # --- CACHE LIMITS ---
 # Memory leak fix: Use LRU with global limits instead of unbounded dicts

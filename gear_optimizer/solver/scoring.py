@@ -1261,6 +1261,11 @@ def run_force_greats_hill_climb(
     num_sections = baseline["num_non_fever_sections"]
     if num_sections == 0:
         return baseline
+
+    # Safety: excessive sections (e.g. 0 fill rate -> 1000+ sections) breaks brute force & GPU limits.
+    # Return baseline as-is since FG is effectively impossible/useless in this case.
+    if num_sections > 20:
+        return baseline
     
     # Selected element is a loadout/config property (overflow target), not always the song primary.
     # Default to song primary only if missing.

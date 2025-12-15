@@ -29,6 +29,8 @@ from ..core.constants import (
     GEM_SCALE_FEVER,
     GEM_STAT_TO_ELEMENT_SCALE,
     ELEMENTAL_GEM_SCALE,
+    LOADOUTS_PER_SONG_LIMIT,
+    SKIP_ITEM_KEYS,
 )
 from ..core.utils import prune_dominated_gear, safe_int
 from ..data.database import get_loadout_hash
@@ -91,7 +93,7 @@ def _run_gpu_native_ga(
         status_cb: Optional status callback
 
     Returns:
-        tuple: (best_genome, best_score, best_result_array)
+        tuple: (best_genome, best_score, best_result_array, all_evaluated)
     """
     if not _GPU_NATIVE_AVAILABLE:
         raise RuntimeError("GPU-native GA not available (missing dependencies)")
@@ -238,8 +240,107 @@ def _run_gpu_native_ga(
     # Download final results for best genome
     results = gpu_api.ga_download_results(n_genomes)
     best_result = results[gen_best_idx] if best_genome_ids is not None else np.zeros(7, dtype=np.int32)
+
+    # --- FG CANDIDATE EXTRACTION ---
+    # Extract top N unique genomes to seed Force Greats solver (mimics CPU GA output compatibility)
+    all_evaluated = []
+    if best_genome_ids is not None:
+        # Sort by score descending
+        # We use a stable sort or simple argsort. Scores are already on CPU.
+        top_indices = np.argsort(scores)[::-1]
+        
+        # Take up to LIMIT candidates (decoding excessively many is slow)
+        limit = min(n_genomes, LOADOUTS_PER_SONG_LIMIT * 2) # 2x buffer for duplicates
+        top_indices = top_indices[:limit]
+        
+        # Batch download corresponding population indices
+        # We must download the whole buffer first (API limitation) then slice
+        # Ideally api.py would support gathering, but this is fast enough for 1000 items.
+        full_pop_indices = gpu_api.ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
+        
+        for idx in top_indices:
+            score_val = int(scores[idx])
+            # Skip zero-score garbage
+            if score_val <= 0:
+                continue
+
+            genome_ids = full_pop_indices[idx]
+            genome = registry.decode_genome(genome_ids)
+            
+            # Reconstruct result details
+            res_row = results[idx]
+            g_ft = int(res_row[1])
+            g_ff = int(res_row[2])
+            g_pp = int(res_row[3])
+            g_cm = int(res_row[4])
+            g_fm = int(res_row[5])
+            g_ov = int(res_row[6])
+
+            # Reconstruct full Data object for Force Greats compatibility
+            # 1. Sum base item stats
+            current_stats = base_stats_fixed.copy()
+            for item in genome:
+                for k, v in item.items():
+                    if k not in SKIP_ITEM_KEYS:
+                        current_stats[k] = current_stats.get(k, 0) + v
+
+            # 2. Add Gem Stats
+            current_stats["Perfect Points"] = current_stats.get("Perfect Points", 0) + g_pp * GEM_SCALE_NORMAL
+            current_stats["Combo Multiplier"] = current_stats.get("Combo Multiplier", 0) + g_cm * GEM_SCALE_NORMAL
+            current_stats["Fever Multiplier"] = current_stats.get("Fever Multiplier", 0) + g_fm * GEM_SCALE_FEVER
+            current_stats["Fever Time"] = current_stats.get("Fever Time", 0) + g_ft * GEM_SCALE_FEVER
+            current_stats["Fever Fill Rate"] = current_stats.get("Fever Fill Rate", 0) + g_ff * GEM_SCALE_FEVER
+
+            current_stats["Chill"] = current_stats.get("Chill", 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
+            current_stats["Flow"] = current_stats.get("Flow", 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
+            current_stats["Rush"] = current_stats.get("Rush", 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
+            current_stats["Beat"] = current_stats.get("Beat", 0) + g_ft * GEM_STAT_TO_ELEMENT_SCALE
+            current_stats["Vibe"] = current_stats.get("Vibe", 0) + g_ff * GEM_STAT_TO_ELEMENT_SCALE
+
+            sel_color = cfg_data.get("selected_color", "")
+            if sel_color:
+                current_stats[sel_color] = current_stats.get(sel_color, 0) + g_ov * ELEMENTAL_GEM_SCALE
+
+            data_obj = {
+                "Score": score_val,
+                "FT": g_ft,
+                "FF": g_ff,
+                "GemCounts": {
+                    "Perfect Points": g_pp,
+                    "Combo Multiplier": g_cm,
+                    "Fever Multiplier": g_fm,
+                    "Element Overflow": g_ov,
+                },
+                "Stats": current_stats,
+                "Selected Element": sel_color,
+                "BaseScore": score_val
+            }
+            
+            cand_data = {
+                "Score": score_val,
+                "BaseScore": score_val, # GPU GA only calculates BaseScore
+                "Genome": genome,
+                "Gear": genome[:6],
+                "Minis": genome[6:9],
+                "GearNames": [g.get("Name", "None") for g in genome[:6]],
+                "MiniNames": [m.get("Name", "None") for m in genome[6:9]],
+                "Data": data_obj,
+                "Details": {
+                    "FeverGems": g_ft,
+                    "FeverFillGems": g_ff,
+                    "PP": g_pp,
+                    "CM": g_cm,
+                    "FM": g_fm,
+                    "OV": g_ov,
+                }
+            }
+            all_evaluated.append(cand_data)
+            
+            # Stop if we have enough
+            if len(all_evaluated) >= LOADOUTS_PER_SONG_LIMIT:
+                break
     
-    return best_genome, best_score, best_result
+    return best_genome, best_score, best_result, all_evaluated
 
 
 
@@ -397,61 +498,92 @@ def solve_coevolution_genetic(
             fixed_minis,
         )
 
-        # 6. Create initial population
-        # GPU GA runs single long run instead of multi-start restarts to minimize overhead
-        initial_pop = build_initial_population(
-            create_random_genome,
-            create_heuristic_genome,
-            reconstruct_genome_from_db_list,
-            build_seed_list_from_record,
-            mutate_genome_once,
-            db_seed,
-            ga_settings,
-            fixed_gear,
-            fixed_minis,
-            force_db_seed=False,
-        )
+        # 6. Create initial population functions (created once)
+        # We reuse the existing factories to robustly create valid random genomes
 
-        # 7. Run GPU-Native GA
-        best_genome, best_score, best_res_arr = _run_gpu_native_ga(
-            population=initial_pop,
-            n_generations=ga_depth,
-            registry=registry,
-            cfg_data=cfg_data,
-            calc_song=calc_song,
-            ref_arrays=ref_arrays,
-            base_stats_fixed=base_stats_fixed,
-            elite_count=GA_ELITISM,
-            mutation_rate=GA_MUTATION_RATE,
-            # Use color flags for correct p_val/s_val calculation
-            # CRITICAL: s_color (secondary) is DIFFERENT from selected_color (overflow target)
-            color_flags={
-                # Primary/secondary elemental colors map to which gems add +3 to that element:
-                # Beat<-FT, Vibe<-FF, Rush<-FM, Flow<-CM, Chill<-PP
-                "is_p_ft": 1 if p_color == "Beat" else 0,
-                "is_s_ft": 1 if s_color == "Beat" else 0,
-                "is_p_ff": 1 if p_color == "Vibe" else 0,
-                "is_s_ff": 1 if s_color == "Vibe" else 0,
-                "is_p_pp": 1 if p_color == "Chill" else 0,
-                "is_s_pp": 1 if s_color == "Chill" else 0,
-                "is_p_cm": 1 if p_color == "Flow" else 0,
-                "is_s_cm": 1 if s_color == "Flow" else 0,
-                "is_p_fm": 1 if p_color == "Rush" else 0,
-                "is_s_fm": 1 if s_color == "Rush" else 0,
-                "is_p_ov": 1 if selected_color == p_color else 0,
-                "is_s_ov": 1 if selected_color == s_color else 0,
-            },
-            status_cb=status_cb,
-        )
+        # --- MULTI-START LOOP ---
+        num_runs = ga_settings.multi_start
+        # Match CPU logic: split total depth across runs (Micro-GA strategy)
+        # or use full depth if multi-start is 1.
+        gens_per_run = max(1, (ga_depth + num_runs - 1) // num_runs)
+        
+        print(f"  Multi-start runs: {num_runs} (generations per run: {gens_per_run})")
+
+        best_global_score = -1
+        best_global_genome = None
+        best_global_res_arr = None
+        all_evaluated_global = []
+
+        for run_idx in range(num_runs):
+            print(f"  >> GPU GA Run {run_idx + 1}/{num_runs}...")
+            
+            # Re-initialize population for each run to get fresh random start
+            initial_pop = build_initial_population(
+                create_random_genome,
+                create_heuristic_genome,
+                reconstruct_genome_from_db_list,
+                build_seed_list_from_record,
+                mutate_genome_once,
+                db_seed,
+                ga_settings,
+                fixed_gear,
+                fixed_minis,
+                force_db_seed=False,
+            )
+
+            # Run GPU-Native GA
+            run_best_genome, run_best_score, run_best_res_arr, run_evaluated = _run_gpu_native_ga(
+                population=initial_pop,
+                n_generations=gens_per_run,
+                registry=registry,
+                cfg_data=cfg_data,
+                calc_song=calc_song,
+                ref_arrays=ref_arrays,
+                base_stats_fixed=base_stats_fixed,
+                elite_count=GA_ELITISM,
+                mutation_rate=GA_MUTATION_RATE,
+                # Use color flags for correct p_val/s_val calculation
+                color_flags={
+                    "is_p_ft": 1 if p_color == "Beat" else 0,
+                    "is_s_ft": 1 if s_color == "Beat" else 0,
+                    "is_p_ff": 1 if p_color == "Vibe" else 0,
+                    "is_s_ff": 1 if s_color == "Vibe" else 0,
+                    "is_p_pp": 1 if p_color == "Chill" else 0,
+                    "is_s_pp": 1 if s_color == "Chill" else 0,
+                    "is_p_cm": 1 if p_color == "Flow" else 0,
+                    "is_s_cm": 1 if s_color == "Flow" else 0,
+                    "is_p_fm": 1 if p_color == "Rush" else 0,
+                    "is_s_fm": 1 if s_color == "Rush" else 0,
+                    "is_p_ov": 1 if selected_color == p_color else 0,
+                    "is_s_ov": 1 if selected_color == s_color else 0,
+                },
+                status_cb=status_cb,
+            )
+            
+            # Aggregate candidates
+            all_evaluated_global.extend(run_evaluated)
+            
+            # Update global best
+            if run_best_score > best_global_score:
+                best_global_score = run_best_score
+                best_global_genome = run_best_genome
+                best_global_res_arr = run_best_res_arr
 
         # 8. Format results to match expected return signature
-        best_gear = best_genome[:6]
-        best_minis = best_genome[6:9]
+        # Use simple fallback if no valid genome found (shouldn't happen)
+        if best_global_genome is None:
+             # Should practically never happen unless 0 runs
+             best_global_genome = initial_pop[0]
+             best_global_score = 0
+             best_global_res_arr = [0]*7
+
+        best_gear = best_global_genome[:6]
+        best_minis = best_global_genome[6:9]
         
         best_data = {
-            "Score": best_score,
-            "BaseScore": best_score,
-            "Genome": best_genome,
+            "Score": best_global_score,
+            "BaseScore": best_global_score,
+            "Genome": best_global_genome,
             "Gear": best_gear,
             "Minis": best_minis,
             "GearNames": [g.get("Name", "None") for g in best_gear],
@@ -459,19 +591,19 @@ def solve_coevolution_genetic(
             # Reconstruct result details from kernel output
             # [score, ft, ff, pp, cm, fm, ov]
             "Details": {
-                "FeverGems": int(best_res_arr[1]),
-                "FeverFillGems": int(best_res_arr[2]),
-                "PP": int(best_res_arr[3]),
-                "CM": int(best_res_arr[4]),
-                "FM": int(best_res_arr[5]),
-                "OV": int(best_res_arr[6]),
+                "FeverGems": int(best_global_res_arr[1]),
+                "FeverFillGems": int(best_global_res_arr[2]),
+                "PP": int(best_global_res_arr[3]),
+                "CM": int(best_global_res_arr[4]),
+                "FM": int(best_global_res_arr[5]),
+                "OV": int(best_global_res_arr[6]),
             }
         }
         
-        print(f"=== GPU-NATIVE GA COMPLETE: Best Score {best_score} ===")
-        # (best_data, best_gear, best_minis, None, [], [], all_evaluated)
-        # GPU-native GA doesn't track individual evaluated loadouts, so return empty list
-        return best_data, best_gear, best_minis, None, [], [], []
+        print(f"=== GPU-NATIVE GA COMPLETE: Best Score {best_global_score} ===")
+        # Deduplicate all_evaluated (performance op)
+        # Use simpler list if too large, but for ~50*10=500 it's fine.
+        return best_data, best_gear, best_minis, None, [], [], all_evaluated_global
 
     # --- MEMETIC GA PARAMETERS (configurable from [IterationEngine]) ---
     if ga_settings.memetic_elites > 0 and ga_settings.memetic_steps > 0:
