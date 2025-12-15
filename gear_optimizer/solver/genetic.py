@@ -601,9 +601,25 @@ def solve_coevolution_genetic(
         }
         
         print(f"=== GPU-NATIVE GA COMPLETE: Best Score {best_global_score} ===")
-        # Deduplicate all_evaluated (performance op)
-        # Use simpler list if too large, but for ~50*10=500 it's fine.
-        return best_data, best_gear, best_minis, None, [], [], all_evaluated_global
+        
+        # Deduplicate all_evaluated to prevent duplicate loadouts from multiple runs
+        # Key by tuple of names (Gear + Minis)
+        unique_evaluated = []
+        seen_hashes = set()
+        
+        for cand in all_evaluated_global:
+            # Create a stable hashable key from gear names and mini names
+            # Genome usually has 9 dicts.
+            key_parts = []
+            for item in cand.get("Genome", []):
+                key_parts.append(item.get("Name", ""))
+            
+            cand_hash = tuple(key_parts)
+            if cand_hash not in seen_hashes:
+                seen_hashes.add(cand_hash)
+                unique_evaluated.append(cand)
+
+        return best_data, best_gear, best_minis, None, [], [], unique_evaluated
 
     # --- MEMETIC GA PARAMETERS (configurable from [IterationEngine]) ---
     if ga_settings.memetic_elites > 0 and ga_settings.memetic_steps > 0:
