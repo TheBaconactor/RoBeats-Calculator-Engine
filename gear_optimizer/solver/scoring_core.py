@@ -180,7 +180,10 @@ def optimize_core_jit(
         fill_bonus = (fill_budget * ELEMENTAL_GEM_SCALE) if fill_budget > 0 else 0
 
         # Option 0: PP gem
-        if cur_pp < MAX_STAT_INDEX:
+        # Optimization: Skip PP upgrades if Chill is not in Primary/Secondary (user request)
+        allow_pp = (is_p_pp > 0) or (is_s_pp > 0)
+
+        if allow_pp and cur_pp < MAX_STAT_INDEX:
             t_pp = cur_pp + GEM_SCALE_NORMAL
             t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_pp) + (
                 fill_bonus * is_p_ov
@@ -203,7 +206,7 @@ def optimize_core_jit(
                 best_opt_idx = 0
 
         # Option 1: CM gem
-        if cur_cm < MAX_STAT_INDEX:
+        if cur_cm < MAX_STAT_INDEX and (cur_cm <= 50 or is_p_cm or is_s_cm):
             t_cm = cur_cm + GEM_SCALE_NORMAL
             t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_cm) + (
                 fill_bonus * is_p_ov
@@ -253,7 +256,8 @@ def optimize_core_jit(
         # PP lookahead: if OV wins a tie *now*, but a few PP gems would break the tie
         # into a real improvement soon, start investing in PP.
         if (
-            best_opt_idx == 3
+            allow_pp
+            and best_opt_idx == 3
             and pp_score == best_score
             and remaining_budget > 1
         ):

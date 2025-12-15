@@ -68,6 +68,12 @@ try:
 except ImportError:
     pass
 
+# Import from fg_utils (helper)
+try:
+    from ...helpers.fg_utils import generate_dynamic_fg_configs
+except ImportError:
+    pass
+
 # Export all public names for backward compatibility
 __all__ = [
     # GPU solver
@@ -97,4 +103,6 @@ __all__ = [
     # Genome evaluation
     "worker_coevolution_evaluate",
     "batch_evaluate_genomes",
+    # Helpers
+    "generate_dynamic_fg_configs",
 ]

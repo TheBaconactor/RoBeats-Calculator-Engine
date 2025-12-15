@@ -53,6 +53,13 @@ class SongLoadRequest:
     auto_buff: str
     priority: int = 0  # Lower = higher priority
 
+    def __lt__(self, other):
+        if not isinstance(other, SongLoadRequest):
+            return NotImplemented
+        if self.priority != other.priority:
+            return self.priority < other.priority
+        return self.song_name < other.song_name
+
 
 class SongPreloader:
     """

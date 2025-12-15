@@ -338,7 +338,10 @@ def optimize_core_device(
         pp_score: ti.i32 = -1
 
         # Option 0: PP gem
-        if pp < MAX_STAT:
+        # Optimization: Skip PP if Chill is not in Primary/Secondary
+        allow_pp: ti.i32 = (is_p_pp | is_s_pp)
+
+        if allow_pp != 0 and pp < MAX_STAT:
             t_pp: ti.i32 = pp + GEM_SCALE_NORMAL
             t_p = p_val + (GEM_STAT_TO_ELEMENT * is_p_pp) + (fill_bonus * is_p_ov)
             t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_pp) + (fill_bonus * is_s_ov)
@@ -352,7 +355,7 @@ def optimize_core_device(
                 best_opt = 0
 
         # Option 1: CM gem
-        if cm < MAX_STAT:
+        if cm < MAX_STAT and (cm <= 50 or is_p_cm or is_s_cm):
             t_cm: ti.i32 = cm + GEM_SCALE_NORMAL
             t_p = p_val + (GEM_STAT_TO_ELEMENT * is_p_cm) + (fill_bonus * is_p_ov)
             t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_cm) + (fill_bonus * is_s_ov)
@@ -383,7 +386,7 @@ def optimize_core_device(
 
         # PP lookahead: if OV wins a tie now, but a few PP gems would become a real
         # improvement soon, start investing in PP.
-        if best_opt == 3 and pp_score == best_score and remaining > 1:
+        if allow_pp != 0 and best_opt == 3 and pp_score == best_score and remaining > 1:
             max_k: ti.i32 = remaining
             if max_k > PP_TIE_LOOKAHEAD_MAX:
                 max_k = PP_TIE_LOOKAHEAD_MAX
