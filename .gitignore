@@ -35,3 +35,13 @@ Discord.env
 
 # Paths cache (local config)
 paths_cache.json
+
+# IDE/AI tool config (local)
+.claude/
+.cursor/
+
+# Local database (active during runtime)
+evolution.db
+
+# Website export folder
+RoBeatMetaWebsite/
