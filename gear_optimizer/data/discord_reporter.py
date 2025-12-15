@@ -30,9 +30,10 @@ class DiscordReporter:
     - Automatic message chunking for Discord's 2000 char limit
     - Rate limit handling with exponential backoff
     - Message sanitization to remove sensitive file paths
+    - Batched stats messages to reduce API calls
     """
 
-    def __init__(self, token, log_channel_id=None, stats_channel_id=None):
+    def __init__(self, token, log_channel_id=None, stats_channel_id=None, stats_batch_size=5):
         """
         Initialize Discord reporter.
 
@@ -40,10 +41,16 @@ class DiscordReporter:
             token: Discord bot token
             log_channel_id: Channel ID for log messages
             stats_channel_id: Channel ID for stats updates
+            stats_batch_size: Number of stats messages to batch before sending (default 5)
         """
         self.token = token
         self.log_channel_id = log_channel_id
         self.stats_channel_id = stats_channel_id
+        
+        # Stats batching
+        self._stats_batch_size = stats_batch_size
+        self._stats_buffer: list[str] = []
+        self._stats_lock = threading.Lock()
         
         # Background thread for async HTTP posting
         self._queue: queue_module.Queue = queue_module.Queue()
@@ -83,6 +90,9 @@ class DiscordReporter:
     
     def shutdown(self, timeout: float = 5.0):
         """Gracefully shutdown the background worker, waiting for pending posts."""
+        # Flush any pending batched logs before shutdown
+        self.flush_logs()
+        
         self._shutdown = True
         if self._worker_thread is not None and self._worker_thread.is_alive():
             self._queue.put(None)  # Shutdown signal
@@ -141,13 +151,48 @@ class DiscordReporter:
                     print(f"[DiscordReporter] Error sending Discord message: {e}")
                     break
 
-    def send_log(self, content):
-        """Send log message to log channel (with sanitization)."""
-        self._post(self.log_channel_id, sanitize_public_message(content))
+    def send_log(self, content, force_flush=False):
+        """
+        Add log message to batch buffer. Sends when buffer reaches batch size.
+        
+        Args:
+            content: Log message content
+            force_flush: If True, immediately flush the buffer after adding
+        """
+        if not content:
+            return
+        
+        sanitized = sanitize_public_message(content)
+        if not sanitized:
+            return
+            
+        with self._stats_lock:  # Reusing lock for log buffer too
+            self._stats_buffer.append(sanitized)
+            
+            # Flush if buffer is full or force requested
+            if len(self._stats_buffer) >= self._stats_batch_size or force_flush:
+                self._flush_log_buffer()
 
     def send_stats(self, content):
-        """Send stats update to stats channel."""
+        """Send stats update to stats channel immediately (no batching)."""
         self._post(self.stats_channel_id, content)
+    
+    def flush_logs(self):
+        """Force flush any pending logs in the buffer."""
+        with self._stats_lock:
+            self._flush_log_buffer()
+    
+    def _flush_log_buffer(self):
+        """Internal: Send all buffered logs as a single message (caller holds lock)."""
+        if not self._stats_buffer:
+            return
+        
+        # Join messages with a separator line
+        combined = "\n" + "─" * 40 + "\n"
+        combined = combined.join(self._stats_buffer)
+        
+        self._post(self.log_channel_id, combined)
+        self._stats_buffer.clear()
 
 
 def build_stats_summary(res, completed, total):

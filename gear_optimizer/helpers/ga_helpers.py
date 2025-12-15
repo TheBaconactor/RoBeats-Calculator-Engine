@@ -27,7 +27,7 @@ from ..data.database import get_loadout_hash
 from ..solver.scoring import worker_coevolution_evaluate, batch_evaluate_genomes
 
 
-def initialize_pools(all_gears, all_minis, p_color, slots):
+def initialize_pools(all_gears, all_minis, p_color, slots, s_color=None):
     """
     Initialize and prune gear and mini pools.
 
@@ -49,6 +49,32 @@ def initialize_pools(all_gears, all_minis, p_color, slots):
     """
     # Filter minis by primary color
     mini_pool = [m for m in all_minis if m.get(p_color, 0) > 0]
+    
+    # Load mini exceptions from CSV (configurable overrides)
+    # Format: MiniName,PrimaryColor,SecondaryColor
+    try:
+        import csv
+        from ..core.constants import PATHS
+        exceptions_path = os.path.join(PATHS.data_dir, "Gear", "MiniExceptions.csv")
+        if os.path.exists(exceptions_path):
+            with open(exceptions_path, "r", encoding="utf-8-sig") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    mini_name = row.get("MiniName", "").strip()
+                    req_primary = row.get("PrimaryColor", "").strip()
+                    req_secondary = row.get("SecondaryColor", "").strip()
+                    
+                    # Check if this exception applies to current song
+                    if req_primary == p_color:
+                        if req_secondary == "Any" or req_secondary == s_color:
+                            # Find and add the mini if not already in pool
+                            exception_mini = next((m for m in all_minis if m.get("Name") == mini_name), None)
+                            if exception_mini and exception_mini not in mini_pool:
+                                mini_pool.append(exception_mini)
+    except Exception as e:
+        # Silently ignore if file doesn't exist or has errors
+        pass
+    
     if not mini_pool:
         print("No valid minis found (Primary Color check).")
         return None, [], 0, 0

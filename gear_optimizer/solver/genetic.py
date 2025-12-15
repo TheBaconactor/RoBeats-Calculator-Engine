@@ -476,7 +476,7 @@ def solve_coevolution_genetic(
 
     # Initialize pools and apply dominance pruning
     gear_pool, mini_pool, total_before, total_after = initialize_pools(
-        all_gears, all_minis, p_color, slots
+        all_gears, all_minis, p_color, slots, s_color=s_color
     )
     if gear_pool is None:
         print(f"[GA Error] initialize_pools failed for song {calc_song['metadata'].get('Song Name', 'Unknown')}")
@@ -647,6 +647,15 @@ def solve_coevolution_genetic(
             "Minis": best_minis,
             "GearNames": [g.get("Name", "None") for g in best_gear],
             "MiniNames": [m.get("Name", "None") for m in best_minis],
+            # FT/FF at root level for build_details() compatibility
+            "FT": int(best_global_res_arr[1]),
+            "FF": int(best_global_res_arr[2]),
+            "GemCounts": {
+                "Perfect Points": int(best_global_res_arr[3]),
+                "Combo Multiplier": int(best_global_res_arr[4]),
+                "Fever Multiplier": int(best_global_res_arr[5]),
+                "Element Overflow": int(best_global_res_arr[6]),
+            },
             # Reconstruct result details from kernel output
             # [score, ft, ff, pp, cm, fm, ov]
             "Details": {
