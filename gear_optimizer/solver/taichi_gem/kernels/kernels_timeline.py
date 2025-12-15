@@ -23,50 +23,6 @@ from .kernels_helpers import (
 from . import kernels_helpers
 
 
-@ti.func
-def binary_search_left_from(
-    timestamps: ti.template(), n: ti.i32, target: ti.f32, lo: ti.i32
-) -> ti.i32:
-    """
-    Binary search for leftmost index where timestamps[i] >= target, starting at `lo`.
-
-    Equivalent to np.searchsorted(timestamps, target, side='left') with a lower bound.
-
-    Args:
-        timestamps: Sorted array of timestamps (Taichi field)
-        n: Length of array
-        target: Value to search for
-        lo: Lower bound starting index
-
-    Returns:
-        Leftmost index where timestamps[i] >= target, or n if not found
-    """
-    hi = n
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if timestamps[mid] < target:
-            lo = mid + 1
-        else:
-            hi = mid
-    return lo
-
-
-@ti.func
-def binary_search_left(timestamps: ti.template(), n: ti.i32, target: ti.f32) -> ti.i32:
-    """
-    Binary search for leftmost index where timestamps[i] >= target.
-
-    Equivalent to np.searchsorted(timestamps, target, side='left').
-
-    Args:
-        timestamps: Sorted array of timestamps (Taichi field)
-        n: Length of array
-        target: Value to search for
-
-    Returns:
-        Leftmost index where timestamps[i] >= target, or n if not found
-    """
-    return binary_search_left_from(timestamps, n, target, 0)
 
 
 @ti.kernel
@@ -157,7 +113,7 @@ def compute_timeline_grid_kernel(
                 end_time = start_time + real_fever_time
 
                 # Binary search for first note >= end_time
-                fever_end_idx = binary_search_left(kernels_helpers.song_timestamps, total_notes, end_time)
+                fever_end_idx = kernels_helpers.binary_search_left(kernels_helpers.song_timestamps, total_notes, end_time)
 
                 # Mark fever notes in bitmask (for first MAX_HEAD notes)
                 for note_i in range(current_note, fever_end_idx):
@@ -203,7 +159,7 @@ def compute_timeline_grid_kernel(
             if current_note > 0:
                 start_time = kernels_helpers.song_timestamps[current_note]
                 end_time = start_time + real_fever_time
-                fever_end_idx = binary_search_left(kernels_helpers.song_timestamps, total_notes, end_time)
+                fever_end_idx = kernels_helpers.binary_search_left(kernels_helpers.song_timestamps, total_notes, end_time)
 
                 # Count fever body notes
                 for ni in range(current_note, fever_end_idx):

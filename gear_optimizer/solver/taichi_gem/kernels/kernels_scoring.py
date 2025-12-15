@@ -19,53 +19,7 @@ import taichi as ti
 from . import kernels_helpers
 
 
-@ti.func
-def _calc_body_score(
-    base_value: ti.f32,
-    combo_mul: ti.f32,
-    fever_mul: ti.f32,
-    count_fever: ti.i32,
-    count_normal: ti.i32,
-) -> ti.f32:
-    """
-    Calculate score for body notes (notes past the head).
 
-    Body notes are at full combo, so no ramping. Just multiply base score
-    by combo and fever multipliers.
-
-    Args:
-        base_value: (primary*2) + secondary + pp_factor
-        combo_mul: Combo multiplier
-        fever_mul: Fever multiplier
-        count_fever: Number of fever notes in body
-        count_normal: Number of normal notes in body
-
-    Returns:
-        Body score as float
-    """
-    combo_val = ti.floor(base_value * combo_mul)
-    fever_val = ti.floor(base_value * combo_mul * fever_mul)
-    return (ti.cast(count_fever, ti.f32) * fever_val) + (
-        ti.cast(count_normal, ti.f32) * combo_val
-    )
-
-
-@ti.func
-def _calc_head_factor(base_value: ti.f32, combo_mul: ti.f32) -> ti.f32:
-    """
-    Calculate combo ramp factor for head notes.
-
-    The head (first 100 notes) has ramping combo multiplier.
-    Factor is added per note: score[i] = base_value + (i * factor)
-
-    Args:
-        base_value: Base score value
-        combo_mul: Combo multiplier at full combo
-
-    Returns:
-        Ramp factor per note
-    """
-    return (combo_mul - 1.0) * base_value / 100.0
 
 
 @ti.func
@@ -139,57 +93,7 @@ def _calc_head_score_grid(
     return head_score
 
 
-@ti.func
-def _calc_head_score_bits(
-    base_value: ti.f32,
-    factor: ti.f32,
-    fever_mul: ti.f32,
-    m0: ti.u32,
-    m1: ti.u32,
-    m2: ti.u32,
-    m3: ti.u32,
-    head_len: ti.i32,
-) -> ti.f32:
-    """
-    Calculate head score using bitpacked fever masks.
 
-    More efficient than grid lookup - masks passed as 4×u32 = 128 bits.
-    Bit i corresponds to head note i being a fever note.
-
-    Args:
-        base_value: Base score value
-        factor: Combo ramp factor
-        fever_mul: Fever multiplier
-        m0: Bits 0-31 (notes 0-31)
-        m1: Bits 32-63 (notes 32-63)
-        m2: Bits 64-95 (notes 64-95)
-        m3: Bits 96-127 (notes 96-99 used)
-        head_len: Number of notes in head
-
-    Returns:
-        Head score as float
-    """
-    head_score = 0.0
-    for i in range(head_len):
-        ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
-        word = ti.u32(0)
-        shift = ti.u32(i & 31)
-
-        if i < 32:
-            word = m0
-        elif i < 64:
-            word = m1
-        elif i < 96:
-            word = m2
-        else:
-            word = m3
-
-        is_fever = (word >> shift) & ti.u32(1)
-        if is_fever != 0:
-            head_score += ti.floor(ramp_val * fever_mul)
-        else:
-            head_score += ti.floor(ramp_val)
-    return head_score
 
 
 @ti.func
@@ -221,10 +125,10 @@ def calc_score_device(
     Returns:
         Total score as int32
     """
-    body_score = _calc_body_score(
+    body_score = kernels_helpers._calc_body_score(
         base_value, combo_mul, fever_mul, count_fever, count_normal
     )
-    factor = _calc_head_factor(base_value, combo_mul)
+    factor = kernels_helpers._calc_head_factor(base_value, combo_mul)
     head_score = _calc_head_score_masks(base_value, factor, fever_mul, work_idx, head_len)
     return ti.cast(body_score + head_score, ti.i32)
 
@@ -259,54 +163,17 @@ def calc_score_with_grid(
     Returns:
         Total score as int32
     """
-    body_score = _calc_body_score(
+    body_score = kernels_helpers._calc_body_score(
         base_value, combo_mul, fever_mul, count_fever, count_normal
     )
-    factor = _calc_head_factor(base_value, combo_mul)
+    factor = kernels_helpers._calc_head_factor(base_value, combo_mul)
     head_score = _calc_head_score_grid(
         base_value, factor, fever_mul, song_slot, ft_idx, ff_idx, head_len
     )
     return ti.cast(body_score + head_score, ti.i32)
 
 
-@ti.func
-def calc_score_with_grid_bits(
-    base_value: ti.f32,
-    combo_mul: ti.f32,
-    fever_mul: ti.f32,
-    m0: ti.u32,
-    m1: ti.u32,
-    m2: ti.u32,
-    m3: ti.u32,
-    head_len: ti.i32,
-    count_fever: ti.i32,
-    count_normal: ti.i32,
-) -> ti.i32:
-    """
-    Score calculation using bitpacked fever masks (4x u32 = 128 bits).
-    Bit i corresponds to head note i being a fever note.
 
-    More efficient than grid lookup for repeated score calculations
-    in optimize_core_device.
-
-    Args:
-        base_value: (primary*2) + secondary + pp_factor
-        combo_mul: Combo multiplier
-        fever_mul: Fever multiplier
-        m0-m3: Bitpacked fever masks (4×32 bits)
-        head_len: Number of notes in head
-        count_fever: Fever notes in body
-        count_normal: Normal notes in body
-
-    Returns:
-        Total score as int32
-    """
-    body_score = _calc_body_score(
-        base_value, combo_mul, fever_mul, count_fever, count_normal
-    )
-    factor = _calc_head_factor(base_value, combo_mul)
-    head_score = _calc_head_score_bits(base_value, factor, fever_mul, m0, m1, m2, m3, head_len)
-    return ti.cast(body_score + head_score, ti.i32)
 
 
 @ti.func
@@ -353,7 +220,7 @@ def calc_score_cached_device(
             base_value, combo_mul, fever_mul, work_idx, head_len, count_fever, count_normal
         )
     else:
-        score = calc_score_with_grid_bits(
+        score = kernels_helpers.calc_score_with_grid_bits(
             base_value,
             combo_mul,
             fever_mul,

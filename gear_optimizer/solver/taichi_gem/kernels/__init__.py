@@ -59,6 +59,14 @@ from .kernels_helpers import (
     lookup_ref_ft,
     lookup_ref_ff,
     _xorshift32,
+    # Search helpers
+    binary_search_left_from,
+    binary_search_left,
+    # Scoring helpers
+    _calc_body_score,
+    _calc_head_factor,
+    _calc_head_score_bits,
+    calc_score_with_grid_bits,
 )
 
 # Import GA kernels
@@ -74,14 +82,10 @@ from .kernels_ga import (
 
 # Import scoring functions and optimize_core_device
 from .kernels_scoring import (
-    _calc_body_score,
-    _calc_head_factor,
     _calc_head_score_masks,
     _calc_head_score_grid,
-    _calc_head_score_bits,
     calc_score_device,
     calc_score_with_grid,
-    calc_score_with_grid_bits,
     calc_score_cached_device,
     optimize_core_device,
 )
@@ -106,8 +110,6 @@ from .kernels_ga_eval import (
 
 # Import timeline kernel
 from .kernels_timeline import (
-    binary_search_left_from,
-    binary_search_left,
     compute_timeline_grid_kernel,
 )
 
