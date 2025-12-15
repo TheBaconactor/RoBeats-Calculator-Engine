@@ -20,9 +20,10 @@ from __future__ import annotations
 import numpy as np
 
 from .. import fields
+from ..fields import MAX_WORK_ITEMS
 from ..kernel_loader import get_kernels
 
-from .initialization import ensure_ready, _upload_song_flags
+from .initialization import ensure_ready, _upload_song_flags, _ensure_ftff_combo_tables
 
 # Get appropriate kernels for current platform (Metal-safe on macOS)
 kernels = get_kernels()
