@@ -133,7 +133,7 @@ RoBeats-Calculator-Engine/
 ├── evolution.db                      # SQLite results database
 ├── CODEBASE_QUALITY_REPORT.md        # Quality analysis (A- rating)
 │
-├── gear_optimizer/                   # Main package (v2.0.0, 39 files)
+├── gear_optimizer/                   # Main package (v2.0.0, 70+ files)
 │   ├── __init__.py                   # Package metadata
 │   │
 │   ├── core/                         # Foundation layer (6 modules, 1,083 LOC)
@@ -151,28 +151,65 @@ RoBeats-Calculator-Engine/
 │   │   ├── discord_reporter.py       # Discord webhook integration
 │   │   └── db_merge.py               # Database merging utilities
 │   │
-│   ├── solver/                       # Algorithm layer (10 modules, 4,937 LOC)
+│   ├── solver/                       # Algorithm layer (40+ modules, 7,200+ LOC)
 │   │   ├── genetic.py                # Main GA loop with multi-start restarts
-│   │   ├── scoring.py                # Scoring orchestration (CPU+GPU paths)
-│   │   ├── scoring_core.py           # JIT-optimized core scoring (Numba)
 │   │   ├── fever_timeline.py         # Fever timeline calculation (Rules layer)
 │   │   ├── gpu_executor.py           # GPU worker process management & IPC
 │   │   ├── gpu_profiler.py           # GPU performance profiling
 │   │   ├── taichi_gem_solver.py      # Facade to Taichi gem solver (lazy load)
-│   │   └── taichi_gem/               # GPU kernels subpackage
-│   │       ├── api.py                # Taichi gem solver API (55KB)
-│   │       ├── kernels.py            # Parallel gem allocation kernels (56KB)
-│   │       ├── fields.py             # Taichi field definitions
+│   │   │
+│   │   ├── scoring/                  # Scoring package (7 modules, 1,010 → 178 avg LOC)
+│   │   │   ├── batch_evaluation.py   # Batch genome evaluation with GPU/CPU
+│   │   │   ├── cache_management.py   # Triple-layer LRU caching system
+│   │   │   ├── core_scoring.py       # JIT-optimized core scoring (Numba)
+│   │   │   ├── force_greats.py       # Force greats simulation & optimization
+│   │   │   ├── orchestration.py      # Scoring dispatch (CPU+GPU paths)
+│   │   │   ├── stat_extraction.py    # Base stats extraction utilities
+│   │   │   └── utils.py               # Scoring helper utilities
+│   │   │
+│   │   └── taichi_gem/               # GPU kernels package (25+ modules)
 │   │       ├── runtime.py            # Taichi initialization
-│   │       └── force_greats/         # Force greats GPU kernels
+│   │       ├── fields.py             # Taichi field definitions
+│   │       │
+│   │       ├── kernels/              # Kernels package (6 modules, 1,757 → 293 avg)
+│   │       │   ├── helpers.py        # Field placeholders, lookup functions
+│   │       │   ├── ga.py             # GA operations (selection, crossover, mutation)
+│   │       │   ├── scoring.py        # Score calculation + greedy gem allocation
+│   │       │   ├── solvers_batch.py  # Batch processing kernels
+│   │       │   ├── ga_eval.py        # GA evaluation & reduction kernels
+│   │       │   └── timeline.py       # Timeline grid precomputation (161×161)
+│   │       │
+│   │       ├── api/                  # API package (6 modules, 1,754 → 292 avg)
+│   │       │   ├── initialization.py # GPU/field initialization, ref arrays
+│   │       │   ├── single_batch.py   # Single-item & batch gem optimization
+│   │       │   ├── mega_batch.py     # Mega-batch solver (highest performance)
+│   │       │   ├── timeline.py       # GPU timeline precomputation
+│   │       │   ├── parallel_solvers.py # Maximum parallelism solvers (~400k threads)
+│   │       │   └── ga_operations.py  # GPU-native GA infrastructure
+│   │       │
+│   │       └── force_greats/         # Force greats GPU kernels (3 modules)
 │   │           ├── api.py            # FG finder GPU API
 │   │           ├── kernels.py        # FG simulation kernels
 │   │           └── fields.py         # FG field definitions
 │   │
-│   ├── helpers/                      # Modular helper functions (4 modules, 3,013 LOC)
-│   │   ├── ga_helpers.py             # GA pool init, genome ops, eval, local search
-│   │   ├── song_helpers.py           # Song loading, config setup, loadout building
-│   │   └── song_preloader.py         # Pre-loading optimization for multi-song runs
+│   ├── helpers/                      # Modular helper packages (20+ modules, 3,800+ LOC)
+│   │   ├── song_preloader.py         # Pre-loading optimization for multi-song runs
+│   │   │
+│   │   ├── ga_helpers/               # GA helpers package (6 modules, 1,368 → 228 avg)
+│   │   │   ├── pool_initialization.py # Gear/mini pools with dominance pruning
+│   │   │   ├── genome_factory.py      # Genome creation & manipulation
+│   │   │   ├── evaluation.py          # Evaluation with caching (in-memory + DB)
+│   │   │   ├── local_search.py        # Hill-climbing local search
+│   │   │   ├── population.py          # Population init, crossover, mutation
+│   │   │   └── diversity.py           # Diversity metrics & adaptive mutation
+│   │   │
+│   │   └── song_helpers/             # Song helpers package (6 modules, 1,327 → 221 avg)
+│   │       ├── database_context.py    # DB seeds & known loadouts loading
+│   │       ├── song_config.py         # Configuration setup with auto-buff
+│   │       ├── loadout_builder.py     # Build union of DB + GA loadouts
+│   │       ├── force_greats.py        # Force greats processing (GPU/CPU)
+│   │       ├── persistence.py         # DB payload & persistence entries
+│   │       └── results_printer.py     # Results display & formatting
 │   │
 │   ├── pipeline/                     # Orchestration layer (1 module)
 │   │   └── song_processor.py         # Main song processing workflow
@@ -218,7 +255,7 @@ RoBeats-Calculator-Engine/
     └── legacy/                       # Historical refactoring guides
 ```
 
-**Total Codebase:** 79 files, 18,055 lines of code
+**Total Codebase:** 100+ files, 18,000+ lines of code (refactored from 7,216 monolithic lines)
 
 ---
 
@@ -362,8 +399,9 @@ pytest tests/test_parity_smoke.py
 
 See [CODEBASE_QUALITY_REPORT.md](CODEBASE_QUALITY_REPORT.md) for detailed quality analysis.
 
-### Recent Improvements (Phase 4 - December 2024)
+### Recent Improvements (Phase 3 & 4 - December 2024)
 
+#### Phase 4 - GPU Batch Execution
 1. ✅ Fixed force greats persistence bug
 2. ✅ Implemented true batched kernel execution
 3. ✅ Added GPU executor batch gathering infrastructure
@@ -371,12 +409,31 @@ See [CODEBASE_QUALITY_REPORT.md](CODEBASE_QUALITY_REPORT.md) for detailed qualit
 5. ✅ Configurable `MaxParallelSongs` to limit concurrent workers
 6. ✅ Cleaned up codebase (removed stale `__pycache__`)
 
-### Refactoring Achievements
+#### Phase 3 - Large File Refactoring (COMPLETE)
+**Transformed 5 monolithic files (7,216 lines) into 31 focused modules across 5 packages:**
 
-- Reduced monolithic functions: 815 lines → 367 lines, 749 lines → 331 lines
-- Created 2 helper modules with 16 focused functions ([helpers/](gear_optimizer/helpers/))
-- Maintained 100% functional equivalence (regression tests passing)
+1. ✅ **scoring.py** split → 7 modules (1,010 → 178 avg LOC)
+   - Batch evaluation, cache management, core scoring, force greats, orchestration
+
+2. ✅ **kernels.py** split → 6 modules (1,757 → 293 avg LOC)
+   - Helpers, GA operations, scoring, solvers, evaluation, timeline
+
+3. ✅ **api.py** split → 6 modules (1,754 → 292 avg LOC)
+   - Initialization, single batch, mega batch, timeline, parallel solvers, GA ops
+
+4. ✅ **ga_helpers.py** split → 6 modules (1,368 → 228 avg LOC)
+   - Pool init, genome factory, evaluation, local search, population, diversity
+
+5. ✅ **song_helpers.py** split → 6 modules (1,327 → 221 avg LOC)
+   - DB context, song config, loadout builder, force greats, persistence, results
+
+**Benefits:**
+- Improved maintainability (220-290 lines per module vs 1,000-1,700)
+- Clear module boundaries and single responsibilities
+- Easier navigation and understanding
+- 100% backward compatibility maintained
 - Zero circular dependencies introduced
+- Foundation for future refactoring
 
 ---
 
