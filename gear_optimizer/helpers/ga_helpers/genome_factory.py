@@ -1,3 +1,6 @@
+import random
+
+
 def create_genome_functions(
     gear_pool,
     mini_pool,

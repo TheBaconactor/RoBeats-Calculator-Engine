@@ -735,21 +735,33 @@ class GearOptimizerApp:
             print("=" * 60)
             self.discord_reporter.send_stats(build_stats_summary(res, completed, total))
             
-            # DB Stuff
+            # DB Stuff - Only save valid entries (non-zero score, has gear/minis)
             use_evo_db = True # Assumed true if we got here usually, or check config
             persisted = res.get("persist_entries")
             if persisted:
-                 save_loadouts_batch(res["song"], persisted)
+                 # Filter: only save entries with score > 0 and at least some gear
+                 valid_entries = [
+                     e for e in persisted 
+                     if e.get("score", 0) > 0 and (e.get("gear") or e.get("minis"))
+                 ]
+                 if valid_entries:
+                     save_loadouts_batch(res["song"], valid_entries)
+                 else:
+                     print(f"[DB] Skipped save for {res['song']}: no valid entries (score=0 or empty loadout)")
             elif res.get("db_payload"):
                  pl = res["db_payload"]
-                 save_loadouts_batch(res["song"], [{
-                     "score": pl.get("score", 0),
-                     "fg_score": pl.get("fg_score", 0),
-                     "gear": pl.get("gear", []),
-                     "minis": pl.get("minis", []),
-                     "details": pl.get("details", {}),
-                     "force": pl.get("force"),
-                 }])
+                 # Only save if score > 0 and has gear/minis (prevents tainting on errors)
+                 if pl.get("score", 0) > 0 and (pl.get("gear") or pl.get("minis")):
+                     save_loadouts_batch(res["song"], [{
+                         "score": pl.get("score", 0),
+                         "fg_score": pl.get("fg_score", 0),
+                         "gear": pl.get("gear", []),
+                         "minis": pl.get("minis", []),
+                         "details": pl.get("details", {}),
+                         "force": pl.get("force"),
+                     }])
+                 else:
+                     print(f"[DB] Skipped save for {res['song']}: invalid payload (score=0 or empty loadout)")
 
             log_content = (res.get("log") or "").strip()
             if log_content:
