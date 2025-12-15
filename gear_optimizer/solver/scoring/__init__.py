@@ -4,7 +4,7 @@ Scoring Package - Score Calculation and Gem Optimization.
 This package splits the monolithic scoring.py (2,056 lines) into 5 focused modules:
 1. gpu_solver.py - GPU solver initialization and global caches
 2. stats_scoring.py - Stats evaluation helpers
-3. fever_solver.py - Fever timeline and gem combination optimization (PENDING)
+3. fever_solver.py - Fever timeline and gem combination optimization
 4. force_greats.py - Force greats timeline, evaluation, and hill climb (PENDING)
 5. genome_evaluation.py - Batch genome evaluation for GA (PENDING)
 
@@ -36,6 +36,15 @@ try:
 except ImportError:
     pass
 
+# Import from fever_solver
+try:
+    from .fever_solver import (
+        precompute_fever_timelines,
+        solve_best_fever_combination,
+    )
+except ImportError:
+    pass
+
 # Export all public names for backward compatibility
 __all__ = [
     # GPU solver
@@ -51,4 +60,7 @@ __all__ = [
     "fg_baseline_params",
     "_force_greats_counts_to_dict",
     "_song_cache_key",
+    # Fever solver
+    "precompute_fever_timelines",
+    "solve_best_fever_combination",
 ]
