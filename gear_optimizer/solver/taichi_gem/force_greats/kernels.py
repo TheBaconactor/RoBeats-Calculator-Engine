@@ -406,7 +406,7 @@ def fg_stage1_kernel(
                     start_idx[sec] = section_start
                     forced_applied[sec] = forced_app
                     fill_notes[sec] = fp_calc
-                    skip_wasted[sec] = 1 if sec == 0 else 0
+                    skip_wasted[sec] = 0 # 1 if sec == 0 else 0
 
                 current_idx = end_normal
                 if current_idx >= total_notes:
@@ -705,7 +705,7 @@ def fg_stage1_flat_kernel(
                 start_idx_vec[sec] = section_start
                 forced_applied[sec] = forced_app
                 fill_notes[sec] = fp_calc
-                skip_wasted[sec] = 1 if sec == 0 else 0
+                skip_wasted[sec] = 0 # 1 if sec == 0 else 0
 
             current_idx = end_normal
             if current_idx >= total_notes:

@@ -805,11 +805,11 @@ def evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=None):
         fill_penalty_score = detail["fill_penalty_notes"] * combo_value
         total_fill_penalty += fill_penalty_score
         forced = detail["forced"]
-        if forced > 0:
-            start_idx = detail["start_idx"]
-            if detail.get("skip_wasted"):
-                start_idx = min(total_notes, start_idx + 1)
-            score_penalty = 0
+            if forced > 0:
+                start_idx = detail["start_idx"]
+                # if detail.get("skip_wasted"):
+                #     start_idx = min(total_notes, start_idx + 1)
+                score_penalty = 0
             note_idx = start_idx
             remaining = forced
             while remaining > 0:
