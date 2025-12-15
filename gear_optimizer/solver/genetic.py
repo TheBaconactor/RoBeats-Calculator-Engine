@@ -31,6 +31,9 @@ from ..core.constants import (
     ELEMENTAL_GEM_SCALE,
     LOADOUTS_PER_SONG_LIMIT,
     SKIP_ITEM_KEYS,
+    GPU_GA_NUM_ISLANDS,
+    GPU_GA_GENS_PER_MIGRATION,
+    GPU_GA_MIGRATE_COUNT,
 )
 from ..core.utils import prune_dominated_gear, safe_int
 from ..data.database import get_loadout_hash
@@ -183,10 +186,24 @@ def _run_gpu_native_ga(
 
     best_score = -1
     best_genome_ids = None
+    best_genome_idx = 0
 
-    # Main GPU-native GA loop
+    # --- ISLAND MODEL SETUP ---
+    # Partition population into islands (contiguous index ranges)
+    num_islands = min(GPU_GA_NUM_ISLANDS, n_genomes // 10)  # At least 10 per island
+    if num_islands < 1:
+        num_islands = 1
+    island_size = n_genomes // num_islands
+    
+    # Island boundaries: island i owns indices [island_start[i], island_start[i+1])
+    island_starts = [i * island_size for i in range(num_islands)]
+    island_starts.append(n_genomes)  # Sentinel for last island end
+    
+    print(f"  >> Island Model: {num_islands} islands, ~{island_size} genomes each")
+
+    # Main GPU-native GA loop with island migration
     for gen in range(n_generations):
-        # Evaluate population on GPU
+        # Evaluate ENTIRE population on GPU (all islands at once - efficient)
         gpu_api.ga_evaluate_population(
             n_genomes=n_genomes,
             n_slots=n_slots,
@@ -204,12 +221,13 @@ def _run_gpu_native_ga(
         # Download scores for elitism (small transfer: n_genomes ints)
         scores = gpu_api.ga_download_scores(n_genomes)
         
-        # Track best
+        # Track global best across all islands
         gen_best_idx = int(np.argmax(scores))
         gen_best_score = int(scores[gen_best_idx])
         
         if gen_best_score > best_score:
             best_score = gen_best_score
+            best_genome_idx = gen_best_idx
             # Download best genome IDs
             pop_snapshot = gpu_api.ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
             best_genome_ids = pop_snapshot[gen_best_idx].copy()
@@ -221,8 +239,49 @@ def _run_gpu_native_ga(
         elif (gen + 1) % 10 == 0 and status_cb is None:
             print(f"  >> GPU-Native Gen {gen+1}: Best {gen_best_score} (global {best_score})")
         
-        # Find elite indices for next generation
-        elite_indices = np.argsort(scores)[-elite_count:].astype(np.int32)
+        # --- ISLAND-AWARE ELITISM ---
+        # Find elite indices PER ISLAND (not global) to maintain island diversity
+        elite_indices_list = []
+        for isl in range(num_islands):
+            isl_start = island_starts[isl]
+            isl_end = island_starts[isl + 1]
+            isl_scores = scores[isl_start:isl_end]
+            # Get top 'elite_count' indices within this island, then offset to global
+            isl_top = np.argsort(isl_scores)[-elite_count:] + isl_start
+            elite_indices_list.extend(isl_top.tolist())
+        
+        elite_indices = np.array(elite_indices_list, dtype=np.int32)
+        
+        # --- MIGRATION PHASE (every GPU_GA_GENS_PER_MIGRATION generations) ---
+        if num_islands > 1 and (gen + 1) % GPU_GA_GENS_PER_MIGRATION == 0:
+            # Ring topology: island i sends to island (i+1) % num_islands
+            # Download current population for migration
+            if 'pop_snapshot' not in dir() or pop_snapshot is None:
+                pop_snapshot = gpu_api.ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
+            
+            # Build migration patches
+            for isl in range(num_islands):
+                src_start = island_starts[isl]
+                src_end = island_starts[isl + 1]
+                dst_isl = (isl + 1) % num_islands
+                dst_start = island_starts[dst_isl]
+                
+                # Get top MIGRATE_COUNT from source island
+                src_scores = scores[src_start:src_end]
+                src_top_local = np.argsort(src_scores)[-GPU_GA_MIGRATE_COUNT:]
+                src_top_global = src_top_local + src_start
+                
+                # Copy to destination island (overwrite worst in destination)
+                dst_end = island_starts[dst_isl + 1]
+                dst_scores = scores[dst_start:dst_end]
+                dst_worst_local = np.argsort(dst_scores)[:GPU_GA_MIGRATE_COUNT]
+                dst_worst_global = dst_worst_local + dst_start
+                
+                for mi, (src_idx, dst_idx) in enumerate(zip(src_top_global, dst_worst_global)):
+                    pop_snapshot[dst_idx] = pop_snapshot[src_idx].copy()
+            
+            # Re-upload patched population
+            gpu_api.ga_upload_population_indices(pop_snapshot, n_slots=n_slots)
         
         # Run next generation (selection + crossover + mutation + elitism + swap)
         gpu_api.ga_next_generation(
@@ -230,7 +289,7 @@ def _run_gpu_native_ga(
             n_slots=n_slots,
             mutation_rate=mutation_rate,
             tournament_k=tournament_k,
-            elite_count=elite_count,
+            elite_count=len(elite_indices),
             elite_indices=elite_indices,
         )
     
@@ -618,6 +677,10 @@ def solve_coevolution_genetic(
             if cand_hash not in seen_hashes:
                 seen_hashes.add(cand_hash)
                 unique_evaluated.append(cand)
+
+        # Sort by score descending and truncate to limit
+        unique_evaluated.sort(key=lambda c: c.get("Score", 0), reverse=True)
+        unique_evaluated = unique_evaluated[:LOADOUTS_PER_SONG_LIMIT]
 
         return best_data, best_gear, best_minis, None, [], [], unique_evaluated
 

@@ -30,6 +30,11 @@ GA_ELITISM = 1                    # Keep 1 elite (exploitation anchor)
 GA_MULTI_RUNS_DEFAULT = 5         # INCREASED: 3 → 5 (more fresh starts)
 GA_MUTATION_RATE_MAX = 0.55       # INCREASED: 0.45 → 0.55 (allow more aggressive mutation on stagnation)
 
+# --- GPU GA ISLAND MODEL ---
+GPU_GA_NUM_ISLANDS = 5            # Number of sub-populations (islands)
+GPU_GA_GENS_PER_MIGRATION = 5     # Generations between elite migrations
+GPU_GA_MIGRATE_COUNT = 2          # Elites to migrate per island (ring topology)
+
 # --- DATABASE CONFIGURATION ---
 DB_FILE = "evolution.db"
 LOADOUTS_PER_SONG_LIMIT = 100  # Hard cap per song to keep DB size manageable
