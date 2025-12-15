@@ -13,20 +13,7 @@ and packed keys to safely aggregate results across parallel threads.
 """
 import taichi as ti
 
-from .kernels_helpers import (
-    _KERNEL_BLOCK_DIM,
-    work_items,
-    genome_base_stats,
-    result_stats,
-    genome_result_stats,
-    chunk_best_key,
-    ftff_combo_ft,
-    ftff_combo_ff,
-    grid_count_body_fever,
-    grid_count_body_normal,
-    grid_head_len,
-    ga_scores,
-)
+from . import kernels_helpers
 
 from .kernels_scoring import optimize_core_device
 
@@ -39,9 +26,9 @@ def init_genome_results_kernel(n_genomes: ti.i32):
     Args:
         n_genomes: Number of genomes to initialize
     """
-    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for g in range(n_genomes):
-        genome_result_stats[g] = ti.Vector([-1, 0, 0, 0, 0, 0, 0])
+        kernels_helpers.genome_result_stats[g] = ti.Vector([-1, 0, 0, 0, 0, 0, 0])
 
 
 @ti.kernel
@@ -55,9 +42,9 @@ def init_chunk_best_key_kernel(n_genomes: ti.i32):
     Args:
         n_genomes: Number of genomes to initialize keys for
     """
-    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for g in range(n_genomes):
-        chunk_best_key[g] = ti.u64(0)
+        kernels_helpers.chunk_best_key[g] = ti.u64(0)
 
 
 @ti.kernel
@@ -73,13 +60,13 @@ def reduce_chunk_to_best_key_kernel(n_work_items: ti.i32):
     Args:
         n_work_items: Number of work items to reduce
     """
-    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for i in range(n_work_items):
-        gid = work_items[i][6]
-        score = result_stats[i][0]
+        gid = kernels_helpers.work_items[i][6]
+        score = kernels_helpers.result_stats[i][0]
         if score >= 0:
             key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(i, ti.u64)
-            ti.atomic_max(chunk_best_key[gid], key)
+            ti.atomic_max(kernels_helpers.chunk_best_key[gid], key)
 
 
 @ti.kernel
@@ -93,16 +80,16 @@ def merge_chunk_best_to_genomes_kernel(n_genomes: ti.i32):
     Args:
         n_genomes: Number of genomes to merge results for
     """
-    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for g in range(n_genomes):
-        key = chunk_best_key[g]
+        key = kernels_helpers.chunk_best_key[g]
         if key != 0:
             i = ti.cast(key & ti.u64(0xFFFFFFFF), ti.i32)
             score = ti.cast((key >> 32) - 1, ti.i32)
-            if score > genome_result_stats[g][0]:
-                item = work_items[i]
-                res = result_stats[i]
-                genome_result_stats[g] = ti.Vector([
+            if score > kernels_helpers.genome_result_stats[g][0]:
+                item = kernels_helpers.work_items[i]
+                res = kernels_helpers.result_stats[i]
+                kernels_helpers.genome_result_stats[g] = ti.Vector([
                     score,
                     item[3],  # ft
                     item[4],  # ff
@@ -148,7 +135,7 @@ def ga_find_best_combo_key_kernel(
         is_*: Color contribution flags (0/1)
         song_slot: Grid slot for batch coalescing
     """
-    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
     MAX_STAT: ti.i32 = 160
 
@@ -157,15 +144,15 @@ def ga_find_best_combo_key_kernel(
         if combo_idx >= n_combos:
             continue
 
-        ft: ti.i32 = ftff_combo_ft[combo_idx]
-        ff: ti.i32 = ftff_combo_ff[combo_idx]
+        ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
+        ff: ti.i32 = kernels_helpers.ftff_combo_ff[combo_idx]
 
         # Skip combos outside budget (defensive, should not happen if tables match total_budget).
         if ft + ff > total_budget:
             continue
 
         # Load genome base stats: [pp, cm, fm, p_val, s_val, ft, ff]
-        stats = genome_base_stats[genome_idx]
+        stats = kernels_helpers.genome_base_stats[genome_idx]
         base_pp: ti.i32 = stats[0]
         base_cm: ti.i32 = stats[1]
         base_fm: ti.i32 = stats[2]
@@ -196,9 +183,9 @@ def ga_find_best_combo_key_kernel(
         ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
 
         # O(1) lookup from timeline grid using song_slot.
-        count_fever: ti.i32 = grid_count_body_fever[song_slot, ft_idx, ff_idx]
-        count_normal: ti.i32 = grid_count_body_normal[song_slot, ft_idx, ff_idx]
-        head_len: ti.i32 = grid_head_len[song_slot, ft_idx, ff_idx]
+        count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
+        count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
+        head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
 
         # Budget remaining for PP/CM/FM/OV gems.
         budget: ti.i32 = total_budget - ft - ff
@@ -222,7 +209,7 @@ def ga_find_best_combo_key_kernel(
         score: ti.i32 = res_vec[0]
         if score >= 0:
             key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
-            ti.atomic_max(chunk_best_key[genome_idx], key)
+            ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], key)
 
 
 @ti.kernel
@@ -256,22 +243,22 @@ def ga_write_best_results_from_key_kernel(
         is_*: Color contribution flags (0/1)
         song_slot: Grid slot for batch coalescing
     """
-    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
     MAX_STAT: ti.i32 = 160
 
     for genome_idx in range(n_genomes):
-        key = chunk_best_key[genome_idx]
+        key = kernels_helpers.chunk_best_key[genome_idx]
         if key == 0:
-            genome_result_stats[genome_idx] = ti.Vector([-1, 0, 0, 0, 0, 0, 0])
-            ga_scores[genome_idx] = -1
+            kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([-1, 0, 0, 0, 0, 0, 0])
+            kernels_helpers.ga_scores[genome_idx] = -1
             continue
 
         combo_idx: ti.i32 = ti.cast(key & ti.u64(0xFFFFFFFF), ti.i32)
-        ft: ti.i32 = ftff_combo_ft[combo_idx]
-        ff: ti.i32 = ftff_combo_ff[combo_idx]
+        ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
+        ff: ti.i32 = kernels_helpers.ftff_combo_ff[combo_idx]
 
-        stats = genome_base_stats[genome_idx]
+        stats = kernels_helpers.genome_base_stats[genome_idx]
         base_pp: ti.i32 = stats[0]
         base_cm: ti.i32 = stats[1]
         base_fm: ti.i32 = stats[2]
@@ -285,9 +272,9 @@ def ga_write_best_results_from_key_kernel(
         ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
         ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
 
-        count_fever: ti.i32 = grid_count_body_fever[song_slot, ft_idx, ff_idx]
-        count_normal: ti.i32 = grid_count_body_normal[song_slot, ft_idx, ff_idx]
-        head_len: ti.i32 = grid_head_len[song_slot, ft_idx, ff_idx]
+        count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
+        count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
+        head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
 
         budget: ti.i32 = total_budget - ft - ff
         p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
@@ -306,7 +293,7 @@ def ga_write_best_results_from_key_kernel(
         )
 
         score: ti.i32 = res_vec[0]
-        genome_result_stats[genome_idx] = ti.Vector([
+        kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([
             score,
             ft,
             ff,
@@ -315,7 +302,7 @@ def ga_write_best_results_from_key_kernel(
             res_vec[3],  # fm gems
             res_vec[4],  # ov gems
         ])
-        ga_scores[genome_idx] = score
+        kernels_helpers.ga_scores[genome_idx] = score
 
 
 @ti.kernel
@@ -331,17 +318,17 @@ def reduce_chunk_to_genomes_kernel(n_work_items: ti.i32):
     Args:
         n_work_items: Number of work items to reduce
     """
-    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
 
     for i in range(n_work_items):
         # Unpack from Vector field: [score, pp, cm, fm, ov, p_val, s_val]
-        res = result_stats[i]
+        res = kernels_helpers.result_stats[i]
         score = res[0]
         # work_items layout: [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
-        gid = work_items[i][6]
+        gid = kernels_helpers.work_items[i][6]
 
         # Atomic compare-and-swap pattern for max score
-        old = ti.atomic_max(genome_result_stats[gid][0], score)
+        old = ti.atomic_max(kernels_helpers.genome_result_stats[gid][0], score)
 
         # If we won (our score is the new max), write associated data
         # Note: benign race - if two threads have same max, one wins
@@ -349,7 +336,7 @@ def reduce_chunk_to_genomes_kernel(n_work_items: ti.i32):
             # Layout: [score, ft, ff, pp, cm, fm, ov]
 
             # Need to get ft/ff from work_items
-            item = work_items[i]
+            item = kernels_helpers.work_items[i]
             ft = item[3]
             ff = item[4]
 
@@ -359,4 +346,4 @@ def reduce_chunk_to_genomes_kernel(n_work_items: ti.i32):
             fm = res[3]
             ov = res[4]
 
-            genome_result_stats[gid] = ti.Vector([score, ft, ff, pp, cm, fm, ov])
+            kernels_helpers.genome_result_stats[gid] = ti.Vector([score, ft, ff, pp, cm, fm, ov])

@@ -564,26 +564,29 @@ def process_force_greats(
 
                 # Build FG configs list (Cached)
                 counts_key = (n_sections, max_per_section)
-                counts_list = _cache_counts.get(counts_key)
                 if counts_list is None:
                     counts_list = []
+                    # Per-section caps requested by user
+                    cap_s0 = min(int(non_fever_base or 0), 50)
+                    cap_s1 = min(int(non_fever_base or 0), 25)
+                    cap_s2 = min(int(non_fever_base or 0), 15)
+                    
                     if n_sections == 1:
-                        for s0 in range(max_per_section + 1):
+                        for s0 in range(cap_s0 + 1):
                             counts_list.append((s0,))
                     elif n_sections == 2:
-                        for s0 in range(max_per_section + 1):
-                            for s1 in range(max_per_section + 1):
+                        for s0 in range(cap_s0 + 1):
+                            for s1 in range(cap_s1 + 1):
                                 counts_list.append((s0, s1))
                     elif n_sections == 3:
-                        cap = min(max_per_section, 10)
-                        for s0 in range(cap + 1):
-                            for s1 in range(cap + 1):
-                                for s2 in range(cap + 1):
+                        for s0 in range(cap_s0 + 1):
+                            for s1 in range(cap_s1 + 1):
+                                for s2 in range(cap_s2 + 1):
                                     counts_list.append((s0, s1, s2))
                     else:
                         # Same cap strategy as the legacy CPU path for 4+ sections
                         from itertools import product
-                        cap = min(max_per_section, 5)
+                        cap = min(int(non_fever_base or 0), 5)
                         for counts in product(range(cap + 1), repeat=n_sections):
                             counts_list.append(tuple(counts))
                     _cache_counts[counts_key] = counts_list
