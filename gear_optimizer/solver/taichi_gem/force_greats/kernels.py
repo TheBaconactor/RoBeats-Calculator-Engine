@@ -10,7 +10,7 @@ Fields are bound at runtime via `force_greats.fields.bind_fields()`.
 
 import taichi as ti
 
-from .. import kernels as _core
+from ..kernels import kernels_helpers
 from .fields import FG_MAX_SECTIONS
 
 
@@ -109,15 +109,15 @@ def _optimize_core_bits(
         fill_budget: ti.i32 = remaining - 1
         fill_bonus: ti.i32 = fill_budget * ELEMENTAL_GEM_SCALE if fill_budget > 0 else 0
 
-        c_mul_cur: ti.f32 = _core.lookup_ref_cm(cm)
-        f_mul_cur: ti.f32 = _core.lookup_ref_fm(fm)
+        c_mul_cur: ti.f32 = kernels_helpers.lookup_ref_cm(cm)
+        f_mul_cur: ti.f32 = kernels_helpers.lookup_ref_fm(fm)
 
         # OV wins exact ties by default
         t_p: ti.i32 = p_val + (ELEMENTAL_GEM_SCALE * is_p_ov) + (fill_bonus * is_p_ov)
         t_s: ti.i32 = s_val + (ELEMENTAL_GEM_SCALE * is_s_ov) + (fill_bonus * is_s_ov)
-        pp_factor: ti.f32 = _core.lookup_ref_pp(pp)
+        pp_factor: ti.f32 = kernels_helpers.lookup_ref_pp(pp)
         base: ti.f32 = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-        best_score: ti.i32 = _core.calc_score_with_grid_bits(
+        best_score: ti.i32 = kernels_helpers.calc_score_with_grid_bits(
             base, c_mul_cur, f_mul_cur, m0, m1, m2, m3, head_len, count_fever, count_normal
         )
         best_opt: ti.i32 = 3
@@ -129,9 +129,9 @@ def _optimize_core_bits(
             t_pp: ti.i32 = pp + GEM_SCALE_NORMAL
             t_p = p_val + (GEM_STAT_TO_ELEMENT * is_p_pp) + (fill_bonus * is_p_ov)
             t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_pp) + (fill_bonus * is_s_ov)
-            pp_factor = _core.lookup_ref_pp(t_pp)
+            pp_factor = kernels_helpers.lookup_ref_pp(t_pp)
             base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-            pp_score = _core.calc_score_with_grid_bits(
+            pp_score = kernels_helpers.calc_score_with_grid_bits(
                 base, c_mul_cur, f_mul_cur, m0, m1, m2, m3, head_len, count_fever, count_normal
             )
             if pp_score > best_score:
@@ -143,10 +143,10 @@ def _optimize_core_bits(
             t_cm: ti.i32 = cm + GEM_SCALE_NORMAL
             t_p = p_val + (GEM_STAT_TO_ELEMENT * is_p_cm) + (fill_bonus * is_p_ov)
             t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_cm) + (fill_bonus * is_s_ov)
-            pp_factor = _core.lookup_ref_pp(pp)
+            pp_factor = kernels_helpers.lookup_ref_pp(pp)
             base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-            c_mul: ti.f32 = _core.lookup_ref_cm(t_cm)
-            score: ti.i32 = _core.calc_score_with_grid_bits(
+            c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(t_cm)
+            score: ti.i32 = kernels_helpers.calc_score_with_grid_bits(
                 base, c_mul, f_mul_cur, m0, m1, m2, m3, head_len, count_fever, count_normal
             )
             if score > best_score:
@@ -158,10 +158,10 @@ def _optimize_core_bits(
             t_fm: ti.i32 = fm + GEM_SCALE_FEVER
             t_p = p_val + (GEM_STAT_TO_ELEMENT * is_p_fm) + (fill_bonus * is_p_ov)
             t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_fm) + (fill_bonus * is_s_ov)
-            pp_factor = _core.lookup_ref_pp(pp)
+            pp_factor = kernels_helpers.lookup_ref_pp(pp)
             base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-            f_mul: ti.f32 = _core.lookup_ref_fm(t_fm)
-            score = _core.calc_score_with_grid_bits(
+            f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(t_fm)
+            score = kernels_helpers.calc_score_with_grid_bits(
                 base, c_mul_cur, f_mul, m0, m1, m2, m3, head_len, count_fever, count_normal
             )
             if score > best_score:
@@ -179,9 +179,9 @@ def _optimize_core_bits(
                 t_pp: ti.i32 = pp + (k * GEM_SCALE_NORMAL)
                 t_p = p_val + (k * GEM_STAT_TO_ELEMENT * is_p_pp) + (fill_bonus_k * is_p_ov)
                 t_s = s_val + (k * GEM_STAT_TO_ELEMENT * is_s_pp) + (fill_bonus_k * is_s_ov)
-                pp_factor = _core.lookup_ref_pp(t_pp)
+                pp_factor = kernels_helpers.lookup_ref_pp(t_pp)
                 base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-                score_k: ti.i32 = _core.calc_score_with_grid_bits(
+                score_k: ti.i32 = kernels_helpers.calc_score_with_grid_bits(
                     base, c_mul_cur, f_mul_cur, m0, m1, m2, m3, head_len, count_fever, count_normal
                 )
                 if score_k > best_score:
@@ -313,7 +313,7 @@ def fg_stage1_kernel(
         # Load genome base stats (hoisted out of cfg loop)
         # Load genome base stats (hoisted out of cfg loop)
         # [pp, cm, fm, p_val, s_val, ft, ff]
-        base_stats = _core.genome_base_stats[g]
+        base_stats = kernels_helpers.genome_base_stats[g]
         base_pp: ti.i32 = base_stats[0]
         base_cm: ti.i32 = base_stats[1]
         base_fm: ti.i32 = base_stats[2]
@@ -327,8 +327,8 @@ def fg_stage1_kernel(
         ff_stat_val: ti.i32 = base_ff_stat + (ff_gems * gem_scale_fever)
         ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
         ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
-        ft_factor: ti.f32 = _core.lookup_ref_ft(ft_idx)
-        ff_factor: ti.f32 = _core.lookup_ref_ff(ff_idx)
+        ft_factor: ti.f32 = kernels_helpers.lookup_ref_ft(ft_idx)
+        ff_factor: ti.f32 = kernels_helpers.lookup_ref_ff(ff_idx)
 
         non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_cas * ff_factor), ti.i32)
         non_fever_great_to_fill: ti.i32 = ti.cast(
@@ -415,7 +415,7 @@ def fg_stage1_kernel(
                 # Fever section
                 start_time: ti.f32 = song_timestamps[current_idx]
                 end_time: ti.f32 = start_time + real_fever_time
-                fever_end_idx: ti.i32 = _core.binary_search_left_from(song_timestamps, total_notes, end_time, current_idx)
+                fever_end_idx: ti.i32 = kernels_helpers.binary_search_left_from(song_timestamps, total_notes, end_time, current_idx)
                 if fever_end_idx <= current_idx:
                     fever_end_idx = ti.min(total_notes, current_idx + 1)
 
@@ -493,8 +493,8 @@ def fg_stage1_kernel(
             gems_ov: ti.i32 = opt[9]
 
             # Penalty math
-            pp_factor: ti.f32 = _core.lookup_ref_pp(final_pp)
-            combo_mul: ti.f32 = _core.lookup_ref_cm(final_cm)
+            pp_factor: ti.f32 = kernels_helpers.lookup_ref_pp(final_pp)
+            combo_mul: ti.f32 = kernels_helpers.lookup_ref_cm(final_cm)
             combo_span: ti.f32 = combo_mul - 1.0
 
             base_value: ti.f32 = ti.cast((final_p_val * 2) + final_s_val, ti.f32) + pp_factor
@@ -634,7 +634,7 @@ def fg_stage1_flat_kernel(
             continue
 
         # Load genome base stats
-        base_stats = _core.genome_base_stats[g]
+        base_stats = kernels_helpers.genome_base_stats[g]
         base_pp: ti.i32 = base_stats[0]
         base_cm: ti.i32 = base_stats[1]
         base_fm: ti.i32 = base_stats[2]
@@ -648,8 +648,8 @@ def fg_stage1_flat_kernel(
         ff_stat_val: ti.i32 = base_ff_stat + (ff_gems * gem_scale_fever)
         ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
         ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
-        ft_factor: ti.f32 = _core.lookup_ref_ft(ft_idx)
-        ff_factor: ti.f32 = _core.lookup_ref_ff(ff_idx)
+        ft_factor: ti.f32 = kernels_helpers.lookup_ref_ft(ft_idx)
+        ff_factor: ti.f32 = kernels_helpers.lookup_ref_ff(ff_idx)
 
         non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_cas * ff_factor), ti.i32)
         non_fever_great_to_fill: ti.i32 = ti.cast(
@@ -714,7 +714,7 @@ def fg_stage1_flat_kernel(
             # Fever section
             start_time: ti.f32 = song_timestamps[current_idx]
             end_time: ti.f32 = start_time + real_fever_time
-            fever_end_idx: ti.i32 = _core.binary_search_left_from(song_timestamps, total_notes, end_time, current_idx)
+            fever_end_idx: ti.i32 = kernels_helpers.binary_search_left_from(song_timestamps, total_notes, end_time, current_idx)
             if fever_end_idx <= current_idx:
                 fever_end_idx = ti.min(total_notes, current_idx + 1)
 
@@ -781,8 +781,8 @@ def fg_stage1_flat_kernel(
         gems_ov: ti.i32 = opt[9]
 
         # Penalty calculation
-        pp_factor: ti.f32 = _core.lookup_ref_pp(final_pp)
-        combo_mul: ti.f32 = _core.lookup_ref_cm(final_cm)
+        pp_factor: ti.f32 = kernels_helpers.lookup_ref_pp(final_pp)
+        combo_mul: ti.f32 = kernels_helpers.lookup_ref_cm(final_cm)
         combo_span: ti.f32 = combo_mul - 1.0
 
         base_value: ti.f32 = ti.cast((final_p_val * 2) + final_s_val, ti.f32) + pp_factor
