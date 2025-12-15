@@ -45,3 +45,6 @@ evolution.db
 
 # Website export folder
 RoBeatMetaWebsite/
+
+# Local bin folder (logs, temp files, local databases)
+bin/
