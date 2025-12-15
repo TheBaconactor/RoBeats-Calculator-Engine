@@ -286,61 +286,72 @@ def allocate_grid_fields():
 def bind_fields(kernels_module):
     """
     Bind live field objects to the kernels module.
-    
+
     This must be called AFTER field allocation, so that kernels can access
     the actual ti.field objects rather than None placeholders.
-    
+
+    If kernels is a package (has kernels_helpers submodule), binds to kernels_helpers.
+    Otherwise binds to the module directly (backward compatibility with monolithic kernels.py).
+
     Args:
-        kernels_module: The kernels module to bind fields to
+        kernels_module: The kernels module or package to bind fields to
     """
+    # Try to bind to kernels_helpers submodule if it exists (package structure)
+    # Otherwise bind to the module directly (monolithic kernels.py)
+    try:
+        from . import kernels
+        target = kernels.kernels_helpers
+    except (ImportError, AttributeError):
+        target = kernels_module
+
     # Reference tables
-    kernels_module.ref_pp_field = ref_pp_field
-    kernels_module.ref_cm_field = ref_cm_field
-    kernels_module.ref_fm_field = ref_fm_field
-    kernels_module.ref_ft_field = ref_ft_field
-    kernels_module.ref_ff_field = ref_ff_field
-    
+    target.ref_pp_field = ref_pp_field
+    target.ref_cm_field = ref_cm_field
+    target.ref_fm_field = ref_fm_field
+    target.ref_ft_field = ref_ft_field
+    target.ref_ff_field = ref_ff_field
+
     # Grid fields
-    kernels_module.grid_count_body_fever = grid_count_body_fever
-    kernels_module.grid_count_body_normal = grid_count_body_normal
-    kernels_module.grid_head_len = grid_head_len
-    kernels_module.grid_fever_masks = grid_fever_masks
-    kernels_module.grid_fever_masks_bits = grid_fever_masks_bits
-    
+    target.grid_count_body_fever = grid_count_body_fever
+    target.grid_count_body_normal = grid_count_body_normal
+    target.grid_head_len = grid_head_len
+    target.grid_fever_masks = grid_fever_masks
+    target.grid_fever_masks_bits = grid_fever_masks_bits
+
     # Song data for timeline
-    kernels_module.song_timestamps = song_timestamps
-    
+    target.song_timestamps = song_timestamps
+
     # Work item data
-    kernels_module.fever_masks = fever_masks
-    kernels_module.work_items = work_items
-    
+    target.fever_masks = fever_masks
+    target.work_items = work_items
+
     # Genome base stats
-    kernels_module.genome_base_stats = genome_base_stats
+    target.genome_base_stats = genome_base_stats
 
     # Per-slot song flags (batch coalescing)
-    kernels_module.song_flags = song_flags
+    target.song_flags = song_flags
 
     # GPU-native GA / stat aggregation
-    kernels_module.population_indices = population_indices
-    kernels_module.population_next_indices = population_next_indices
-    kernels_module.item_stats = item_stats
-    kernels_module.base_fixed_stats = base_fixed_stats
-    kernels_module.ga_scores = ga_scores
-    kernels_module.ga_rng_state = ga_rng_state
-    kernels_module.ga_parent_a = ga_parent_a
-    kernels_module.ga_parent_b = ga_parent_b
-    kernels_module.slot_start = slot_start
-    kernels_module.slot_count = slot_count
-    
+    target.population_indices = population_indices
+    target.population_next_indices = population_next_indices
+    target.item_stats = item_stats
+    target.base_fixed_stats = base_fixed_stats
+    target.ga_scores = ga_scores
+    target.ga_rng_state = ga_rng_state
+    target.ga_parent_a = ga_parent_a
+    target.ga_parent_b = ga_parent_b
+    target.slot_start = slot_start
+    target.slot_count = slot_count
+
     # Results
-    kernels_module.result_stats = result_stats
-    
+    target.result_stats = result_stats
+
     # Genome results
-    kernels_module.genome_result_stats = genome_result_stats
+    target.genome_result_stats = genome_result_stats
     if not IS_METAL:
-        kernels_module.chunk_best_key = chunk_best_key
-    kernels_module.ftff_combo_ft = ftff_combo_ft
-    kernels_module.ftff_combo_ff = ftff_combo_ff
+        target.chunk_best_key = chunk_best_key
+    target.ftff_combo_ft = ftff_combo_ft
+    target.ftff_combo_ff = ftff_combo_ff
 
 
 def ensure_fields_allocated():
