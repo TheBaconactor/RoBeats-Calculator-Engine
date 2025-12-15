@@ -6,7 +6,7 @@ This package splits the monolithic scoring.py (2,056 lines) into 5 focused modul
 2. stats_scoring.py - Stats evaluation helpers
 3. fever_solver.py - Fever timeline and gem combination optimization
 4. force_greats.py - Force greats timeline, evaluation, and hill climb
-5. genome_evaluation.py - Batch genome evaluation for GA (PENDING)
+5. genome_evaluation.py - Batch genome evaluation for GA
 
 This __init__.py provides backward-compatible imports so existing code continues to work.
 """
@@ -59,6 +59,15 @@ try:
 except ImportError:
     pass
 
+# Import from genome_evaluation
+try:
+    from .genome_evaluation import (
+        worker_coevolution_evaluate,
+        batch_evaluate_genomes,
+    )
+except ImportError:
+    pass
+
 # Export all public names for backward compatibility
 __all__ = [
     # GPU solver
@@ -85,4 +94,7 @@ __all__ = [
     "run_force_greats_hill_climb",
     "apply_force_greats_to_result",
     "_extract_base_stats",
+    # Genome evaluation
+    "worker_coevolution_evaluate",
+    "batch_evaluate_genomes",
 ]
