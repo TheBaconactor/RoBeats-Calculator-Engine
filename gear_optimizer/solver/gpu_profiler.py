@@ -32,7 +32,9 @@ from typing import Dict, List, Optional
 
 
 # Enable via env var
-GPU_PROFILER_ENABLED = os.environ.get("GPU_PROFILER", os.environ.get("PERF_TIMING", "0")) == "1"
+from gear_optimizer.core.env_config import ENV
+
+GPU_PROFILER_ENABLED = ENV.gpu_profiler or ENV.perf_timing
 
 
 @dataclass

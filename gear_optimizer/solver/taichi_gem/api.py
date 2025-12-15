@@ -158,8 +158,10 @@ def _ensure_ftff_combo_tables(total_budget: int) -> int:
 #
 # - GPU_SYNC_FOR_TIMING=1: allow extra syncs to measure kernel wall time
 # - GPU_FORCE_SYNC=1: force all optional sync points on (debug)
-_SYNC_FOR_TIMING = os.environ.get("GPU_SYNC_FOR_TIMING", "0") == "1"
-_FORCE_SYNC = os.environ.get("GPU_FORCE_SYNC", "0") == "1"
+from gear_optimizer.core.env_config import ENV
+
+_SYNC_FOR_TIMING = ENV.gpu_sync_for_timing
+_FORCE_SYNC = ENV.gpu_force_sync
 
 
 def _maybe_sync(*, for_timing: bool = False) -> None:
@@ -1236,7 +1238,7 @@ def solve_genomes_parallel_merged(
             raise ValueError("Merged solve requires compatible ref_arrays across payloads")
 
     ensure_ready(ref0, need_grid=True)
-    log_batches = os.environ.get("GPU_BATCH_LOG", "0") == "1"
+    log_batches = ENV.gpu_batch_log
 
     # Assign slots 0..N-1 in payload order.
     slot_to_flags: dict[int, tuple[int, ...]] = {}

@@ -128,7 +128,8 @@ class GpuExecutor:
         
         # Stats
         self._requests_processed = 0
-        self._profile_enabled = os.environ.get("GPU_EXECUTOR_PROFILE", "0") == "1"
+        from gear_optimizer.core.env_config import ENV
+        self._profile_enabled = ENV.gpu_executor_profile
         self._wait_sec = 0.0
         self._exec_sec = 0.0
         self._req_type_counts = defaultdict(int)
@@ -343,7 +344,7 @@ class GpuExecutor:
             groups.setdefault(key, []).append(req)
 
         out: list[GpuResponse] = []
-        log_batches = os.environ.get("GPU_BATCH_LOG", "0") == "1"
+        log_batches = ENV.gpu_batch_log
         for key, group in groups.items():
             # If group is too large for available slots, split further.
             max_slots = 8
