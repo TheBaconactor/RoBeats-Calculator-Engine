@@ -481,8 +481,8 @@ class GearOptimizerApp:
                 preloader = get_song_preloader()
                 preloader.start()
                 
-                # Queue first 2 songs for preloading
-                for i, t in enumerate(tasks[:2]):
+                # Queue first 5 songs for preloading
+                for i, t in enumerate(tasks[:5]):
                     if t[1] not in completed_songs:
                         self._queue_song_for_preload(preloader, t)
                 
@@ -492,7 +492,7 @@ class GearOptimizerApp:
                 use_gpu_preload = False
         
         def _safe_sequential_gen(task_list):
-            preload_idx = 2  # Start preloading from index 2
+            preload_idx = 5  # Start preloading from index 5
             
             for i, t in enumerate(task_list):
                 if t[1] in completed_songs:
