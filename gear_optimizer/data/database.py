@@ -370,11 +370,11 @@ def save_loadout_to_db(song_name, score, fg_score, gear, minis, details, force_d
             INSERT INTO loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
             ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
-                score = excluded.score,
+                score = CASE WHEN excluded.score > score THEN excluded.score ELSE score END,
                 fg_score = MAX(fg_score, excluded.fg_score),
                 gear_json = excluded.gear_json,
                 minis_json = excluded.minis_json,
-                details_json = excluded.details_json,
+                details_json = CASE WHEN excluded.score > score THEN excluded.details_json ELSE details_json END,
                 force_details_json = CASE 
                     WHEN excluded.fg_score > fg_score THEN excluded.force_details_json 
                     ELSE force_details_json 
@@ -492,11 +492,11 @@ def save_loadouts_batch(song_name, entries):
                 INSERT INTO loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
                 ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
-                    score = excluded.score,
+                    score = CASE WHEN excluded.score > score THEN excluded.score ELSE score END,
                     fg_score = MAX(fg_score, excluded.fg_score),
                     gear_json = excluded.gear_json,
                     minis_json = excluded.minis_json,
-                    details_json = excluded.details_json,
+                    details_json = CASE WHEN excluded.score > score THEN excluded.details_json ELSE details_json END,
                     force_details_json = CASE 
                         WHEN excluded.fg_score > fg_score THEN excluded.force_details_json 
                         ELSE force_details_json 
