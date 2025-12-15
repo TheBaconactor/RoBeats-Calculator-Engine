@@ -63,8 +63,6 @@ class PathConfig:
     """
     script_dir: str
     bin_dir: str
-    script_dir: str
-    bin_dir: str
 
     @classmethod
     def build(cls):

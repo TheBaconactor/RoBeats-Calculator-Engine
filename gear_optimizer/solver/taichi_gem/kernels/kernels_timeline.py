@@ -17,15 +17,10 @@ import taichi as ti
 
 from .kernels_helpers import (
     _KERNEL_BLOCK_DIM,
-    ref_ft_field,
-    ref_ff_field,
-    song_timestamps,
-    grid_count_body_fever,
-    grid_count_body_normal,
-    grid_head_len,
-    grid_fever_masks,
-    grid_fever_masks_bits,
 )
+
+# Import kernels_helpers to access fields at runtime (they're bound by fields.bind_fields())
+from . import kernels_helpers
 
 
 @ti.func
@@ -126,8 +121,8 @@ def compute_timeline_grid_kernel(
         ff_idx = idx % GRID_DIM
 
         # Lookup multipliers from reference tables
-        ft_factor = ref_ft_field[ft_idx]
-        ff_factor = ref_ff_field[ff_idx]
+        ft_factor = kernels_helpers.ref_ft_field[ft_idx]
+        ff_factor = kernels_helpers.ref_ff_field[ff_idx]
 
         # Compute fill and time parameters
         non_fever_base_f = non_fever_cas * ff_factor
@@ -158,11 +153,11 @@ def compute_timeline_grid_kernel(
 
             if current_note > 0:
                 # Fever activates
-                start_time = song_timestamps[current_note]
+                start_time = kernels_helpers.song_timestamps[current_note]
                 end_time = start_time + real_fever_time
 
                 # Binary search for first note >= end_time
-                fever_end_idx = binary_search_left(song_timestamps, total_notes, end_time)
+                fever_end_idx = binary_search_left(kernels_helpers.song_timestamps, total_notes, end_time)
 
                 # Mark fever notes in bitmask (for first MAX_HEAD notes)
                 for note_i in range(current_note, fever_end_idx):
@@ -206,9 +201,9 @@ def compute_timeline_grid_kernel(
                 break
 
             if current_note > 0:
-                start_time = song_timestamps[current_note]
+                start_time = kernels_helpers.song_timestamps[current_note]
                 end_time = start_time + real_fever_time
-                fever_end_idx = binary_search_left(song_timestamps, total_notes, end_time)
+                fever_end_idx = binary_search_left(kernels_helpers.song_timestamps, total_notes, end_time)
 
                 # Count fever body notes
                 for ni in range(current_note, fever_end_idx):
@@ -220,13 +215,13 @@ def compute_timeline_grid_kernel(
                 break
 
         # Write outputs to specified song slot
-        grid_count_body_fever[song_slot, ft_idx, ff_idx] = body_fever
-        grid_count_body_normal[song_slot, ft_idx, ff_idx] = body_normal
-        grid_head_len[song_slot, ft_idx, ff_idx] = head_len
-        grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0] = m0
-        grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1] = m1
-        grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2] = m2
-        grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3] = m3
+        kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx] = body_fever
+        kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx] = body_normal
+        kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx] = head_len
+        kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0] = m0
+        kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1] = m1
+        kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2] = m2
+        kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3] = m3
 
         # Also write unpacked mask for compatibility
         for i in range(MAX_HEAD):
@@ -239,4 +234,4 @@ def compute_timeline_grid_kernel(
                 is_fever = ti.cast((m2 >> ti.u32(i - 64)) & 1, ti.i8)
             else:
                 is_fever = ti.cast((m3 >> ti.u32(i - 96)) & 1, ti.i8)
-            grid_fever_masks[song_slot, ft_idx, ff_idx, i] = is_fever
+            kernels_helpers.grid_fever_masks[song_slot, ft_idx, ff_idx, i] = is_fever
