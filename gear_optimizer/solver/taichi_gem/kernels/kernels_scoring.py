@@ -16,15 +16,7 @@ The optimize_core_device function is the core of the gem optimizer - it evaluate
 """
 import taichi as ti
 
-from .kernels_helpers import (
-    _KERNEL_BLOCK_DIM,
-    lookup_ref_pp,
-    lookup_ref_cm,
-    lookup_ref_fm,
-    fever_masks,
-    grid_fever_masks,
-    grid_fever_masks_bits,
-)
+from . import kernels_helpers
 
 
 @ti.func
@@ -103,7 +95,7 @@ def _calc_head_score_masks(
     head_score = 0.0
     for i in range(head_len):
         ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
-        if fever_masks[work_idx, i] != 0:
+        if kernels_helpers.fever_masks[work_idx, i] != 0:
             head_score += ti.floor(ramp_val * fever_mul)
         else:
             head_score += ti.floor(ramp_val)
@@ -140,7 +132,7 @@ def _calc_head_score_grid(
     head_score = 0.0
     for i in range(head_len):
         ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
-        if grid_fever_masks[song_slot, ft_idx, ff_idx, i] != 0:
+        if kernels_helpers.grid_fever_masks[song_slot, ft_idx, ff_idx, i] != 0:
             head_score += ti.floor(ramp_val * fever_mul)
         else:
             head_score += ti.floor(ramp_val)
@@ -437,10 +429,10 @@ def optimize_core_device(
     m3: ti.u32 = ti.u32(0)
     if mode != 0:
         # Cache bitpacked head mask once per work item to avoid repeated global loads.
-        m0 = grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
-        m1 = grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
-        m2 = grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
-        m3 = grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
+        m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
+        m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
+        m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
+        m3 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
 
     gems_pp: ti.i32 = 0
     gems_cm: ti.i32 = 0
@@ -463,13 +455,13 @@ def optimize_core_device(
         fill_bonus: ti.i32 = fill_budget * ELEMENTAL_GEM_SCALE if fill_budget > 0 else 0
 
         # Precompute current multipliers (unchanged for PP/OV checks)
-        c_mul_cur: ti.f32 = lookup_ref_cm(cm)
-        f_mul_cur: ti.f32 = lookup_ref_fm(fm)
+        c_mul_cur: ti.f32 = kernels_helpers.lookup_ref_cm(cm)
+        f_mul_cur: ti.f32 = kernels_helpers.lookup_ref_fm(fm)
 
         # Start with OV as default so OV wins exact ties.
         t_p: ti.i32 = p_val + (ELEMENTAL_GEM_SCALE * is_p_ov) + (fill_bonus * is_p_ov)
         t_s: ti.i32 = s_val + (ELEMENTAL_GEM_SCALE * is_s_ov) + (fill_bonus * is_s_ov)
-        pp_factor: ti.f32 = lookup_ref_pp(pp)
+        pp_factor: ti.f32 = kernels_helpers.lookup_ref_pp(pp)
         base: ti.f32 = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
         best_score: ti.i32 = calc_score_cached_device(
             mode, base, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
@@ -483,7 +475,7 @@ def optimize_core_device(
             t_pp: ti.i32 = pp + GEM_SCALE_NORMAL
             t_p = p_val + (GEM_STAT_TO_ELEMENT * is_p_pp) + (fill_bonus * is_p_ov)
             t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_pp) + (fill_bonus * is_s_ov)
-            pp_factor = lookup_ref_pp(t_pp)
+            pp_factor = kernels_helpers.lookup_ref_pp(t_pp)
             base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
             pp_score = calc_score_cached_device(
                 mode, base, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
@@ -497,9 +489,9 @@ def optimize_core_device(
             t_cm: ti.i32 = cm + GEM_SCALE_NORMAL
             t_p = p_val + (GEM_STAT_TO_ELEMENT * is_p_cm) + (fill_bonus * is_p_ov)
             t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_cm) + (fill_bonus * is_s_ov)
-            pp_factor = lookup_ref_pp(pp)
+            pp_factor = kernels_helpers.lookup_ref_pp(pp)
             base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-            c_mul: ti.f32 = lookup_ref_cm(t_cm)
+            c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(t_cm)
             score: ti.i32 = calc_score_cached_device(
                 mode, base, c_mul, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
             )
@@ -512,9 +504,9 @@ def optimize_core_device(
             t_fm: ti.i32 = fm + GEM_SCALE_FEVER
             t_p = p_val + (GEM_STAT_TO_ELEMENT * is_p_fm) + (fill_bonus * is_p_ov)
             t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_fm) + (fill_bonus * is_s_ov)
-            pp_factor = lookup_ref_pp(pp)
+            pp_factor = kernels_helpers.lookup_ref_pp(pp)
             base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-            f_mul: ti.f32 = lookup_ref_fm(t_fm)
+            f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(t_fm)
             score = calc_score_cached_device(
                 mode, base, c_mul_cur, f_mul, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
             )
@@ -534,7 +526,7 @@ def optimize_core_device(
                 t_pp: ti.i32 = pp + (k * GEM_SCALE_NORMAL)
                 t_p = p_val + (k * GEM_STAT_TO_ELEMENT * is_p_pp) + (fill_bonus_k * is_p_ov)
                 t_s = s_val + (k * GEM_STAT_TO_ELEMENT * is_s_pp) + (fill_bonus_k * is_s_ov)
-                pp_factor = lookup_ref_pp(t_pp)
+                pp_factor = kernels_helpers.lookup_ref_pp(t_pp)
                 base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
                 score_k: ti.i32 = calc_score_cached_device(
                     mode, base, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3

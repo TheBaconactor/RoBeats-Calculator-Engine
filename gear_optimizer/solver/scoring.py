@@ -1295,24 +1295,29 @@ def run_force_greats_hill_climb(
         )
 
     # Build FG config list in deterministic order (matches the legacy nested loops)
+    # Build FG config list in deterministic order (matches the legacy nested loops)
     counts_list = []
+    
+    # Per-section caps requested by user
+    cap_s0 = min(int(non_fever_base or 0), 50)
+    cap_s1 = min(int(non_fever_base or 0), 25)
+    cap_s2 = min(int(non_fever_base or 0), 15)
+
     if num_sections == 1:
-        for s0 in range(max_per_section + 1):
+        for s0 in range(cap_s0 + 1):
             counts_list.append((s0,))
     elif num_sections == 2:
-        for s0 in range(max_per_section + 1):
-            for s1 in range(max_per_section + 1):
+        for s0 in range(cap_s0 + 1):
+            for s1 in range(cap_s1 + 1):
                 counts_list.append((s0, s1))
     elif num_sections == 3:
-        cap = min(max_per_section, 10)
-        for s0 in range(cap + 1):
-            for s1 in range(cap + 1):
-                for s2 in range(cap + 1):
+        for s0 in range(cap_s0 + 1):
+            for s1 in range(cap_s1 + 1):
+                for s2 in range(cap_s2 + 1):
                     counts_list.append((s0, s1, s2))
     else:
         from itertools import product
-
-        cap = min(max_per_section, 5)
+        cap = min(int(non_fever_base or 0), 5)
         for counts in product(range(cap + 1), repeat=num_sections):
             counts_list.append(tuple(counts))
 

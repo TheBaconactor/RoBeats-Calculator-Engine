@@ -564,6 +564,7 @@ def process_force_greats(
 
                 # Build FG configs list (Cached)
                 counts_key = (n_sections, max_per_section)
+                counts_list = _cache_counts.get(counts_key)
                 if counts_list is None:
                     counts_list = []
                     # Per-section caps requested by user
