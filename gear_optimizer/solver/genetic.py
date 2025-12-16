@@ -289,41 +289,22 @@ def _run_gpu_native_ga(
             pop_snapshot = None  # Invalidate - population changed
             pop_snapshot_gen = -1
         
-        # Run next generation (selection + crossover + mutation + elitism + swap)
-        gpu_api.ga_next_generation(
-            n_genomes=n_genomes,
-            n_slots=n_slots,
-            mutation_rate=mutation_rate,
-            tournament_k=tournament_k,
-            elite_count=len(elite_indices),
-            elite_indices=elite_indices,
-        )
+        # Skip ga_next_generation on final iteration - we don't use that population
+        # This saves one generation step per run (30 total per song)
+        if gen < n_generations - 1:
+            # Run next generation (selection + crossover + mutation + elitism + swap)
+            gpu_api.ga_next_generation(
+                n_genomes=n_genomes,
+                n_slots=n_slots,
+                mutation_rate=mutation_rate,
+                tournament_k=tournament_k,
+                elite_count=len(elite_indices),
+                elite_indices=elite_indices,
+            )
 
     # --- END OF GA RUN: Download final population once for candidate extraction ---
-    # Re-evaluate final generation to get accurate scores (population changed after ga_next_generation)
-    gpu_api.ga_evaluate_population(
-        n_genomes=n_genomes,
-        n_slots=n_slots,
-        total_budget=total_budget,
-        gem_scale_fever=gem_scale_fever,
-        song_slot=0,
-        is_p_ft=is_p_ft, is_s_ft=is_s_ft,
-        is_p_ff=is_p_ff, is_s_ff=is_s_ff,
-        is_p_pp=is_p_pp, is_s_pp=is_s_pp,
-        is_p_cm=is_p_cm, is_s_cm=is_s_cm,
-        is_p_fm=is_p_fm, is_s_fm=is_s_fm,
-        is_p_ov=is_p_ov, is_s_ov=is_s_ov,
-    )
-    scores = gpu_api.ga_download_scores(n_genomes)
-    
-    # Update best if final gen improved
-    final_best_idx = int(np.argmax(scores))
-    final_best_score = int(scores[final_best_idx])
-    if final_best_score > best_score:
-        best_score = final_best_score
-        best_genome_idx = final_best_idx
-    
-    # Single population download at end of run (replaces per-gen downloads)
+    # Since we skip ga_next_generation on final iteration, scores are still valid from loop
+    # No need to re-evaluate - just download population
     pop_snapshot = gpu_api.ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
     best_genome_ids = pop_snapshot[best_genome_idx].copy()
     
