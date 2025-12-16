@@ -45,6 +45,7 @@ from .kernels_helpers import (
     slot_count,
     result_stats,
     genome_result_stats,
+    genome_hint_allocation,  # Warm-start hints for local search optimization
     chunk_best_key,
     ftff_combo_ft,
     ftff_combo_ff,
@@ -81,6 +82,9 @@ from .kernels_ga import (
     ga_copy_elites_kernel,
     ga_aggregate_genome_stats_kernel,
     ga_copy_scores_kernel,
+    # Warm-start optimization
+    ga_store_hints_kernel,
+    ga_inherit_hints_kernel,
 )
 
 # Import scoring functions and optimize_core_device
@@ -91,6 +95,7 @@ from .kernels_scoring import (
     calc_score_with_grid,
     calc_score_cached_device,
     optimize_core_device,
+    local_search_from_hint,  # Warm-start local search function
 )
 
 # Import batch solver kernels
@@ -112,6 +117,8 @@ from .kernels_ga_eval import (
     # GPU-side global best tracking
     ga_init_global_best_kernel,
     ga_update_global_best_kernel,
+    # Warm-start evaluation
+    ga_find_best_combo_warmstart_kernel,
 )
 
 # Import timeline kernel
@@ -199,6 +206,12 @@ __all__ = [
     # GPU-side global best tracking
     "ga_init_global_best_kernel",
     "ga_update_global_best_kernel",
+    # Warm-start optimization
+    "genome_hint_allocation",
+    "ga_store_hints_kernel",
+    "ga_inherit_hints_kernel",
+    "ga_find_best_combo_warmstart_kernel",
+    "local_search_from_hint",
     # Timeline kernels
     "binary_search_left_from",
     "binary_search_left",

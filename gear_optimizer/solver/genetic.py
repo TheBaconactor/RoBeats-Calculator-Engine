@@ -206,6 +206,9 @@ def _run_gpu_native_ga(
     # Track population snapshot - only downloaded when best improves or during migrations
     pop_snapshot = None
     pop_snapshot_gen = -1  # Generation when pop_snapshot was taken (-1 = invalid)
+    
+    # Warm-start control: force cold start on Gen 0
+    gen_use_hints = 0
 
     # Main GPU-native GA loop with island migration
     for gen in range(n_generations):
@@ -222,7 +225,11 @@ def _run_gpu_native_ga(
             is_p_cm=is_p_cm, is_s_cm=is_s_cm,
             is_p_fm=is_p_fm, is_s_fm=is_s_fm,
             is_p_ov=is_p_ov, is_s_ov=is_s_ov,
+            use_hints=gen_use_hints,  # 0=cold, 1=warm
         )
+        
+        # Store best allocations as hints for next generation
+        gpu_api.ga_store_hints(n_genomes)
         
         # Download scores for elitism (small transfer: n_genomes ints)
         scores = gpu_api.ga_download_scores(n_genomes)
@@ -297,6 +304,12 @@ def _run_gpu_native_ga(
             gpu_api.ga_upload_population_indices(pop_snapshot, n_slots=n_slots)
             pop_snapshot = None  # Invalidate - population changed
             pop_snapshot_gen = -1
+            
+            # Optimization: Force cold start after migration, as hints are scrambled
+            gen_use_hints = 0
+        else:
+            # Enable warm start for next generation (unless overridden by migration)
+            gen_use_hints = 1
         
         # Skip ga_next_generation on final iteration - we don't use that population
         # This saves one generation step per run (30 total per song)
@@ -310,6 +323,10 @@ def _run_gpu_native_ga(
                 elite_count=len(elite_indices),
                 elite_indices=elite_indices,
             )
+            
+            # Inherit hints from parents to children (for warm start)
+            gpu_api.ga_inherit_hints(n_genomes)
+
 
     # --- END OF GA RUN: Download final population for FG candidate extraction ---
     # NOTE: best_genome_ids and best_result_row were captured when best score was found (during loop)

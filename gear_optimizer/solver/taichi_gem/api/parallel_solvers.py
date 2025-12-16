@@ -86,7 +86,7 @@ def solve_genomes_with_ftff(
     
     # Upload per-genome stats
     # [pp, cm, fm, p_val, s_val, ft, ff]
-    stats_buf = np.zeros((n_genomes, 7), dtype=np.int32)
+    stats_buf = np.zeros((n_genomes, 7), dtype=np.int16)
     
     for i, stats in enumerate(genome_stats_list):
         stats_buf[i, 0] = stats["base_pp"]

@@ -125,6 +125,7 @@ genome_result_cm: ti.Field = None
 genome_result_fm: ti.Field = None
 genome_result_ov: ti.Field = None
 genome_result_stats: ti.Field = None  # Vector field [score, ft, ff, pp, cm, fm, ov]
+genome_hint_allocation: ti.Field = None  # Vector field [pp, cm, fm, ov] - warm-start hints from previous gen
 chunk_best_key: ti.Field = None       # (MAX_GENOMES,) u64 packed key for safe per-chunk reduction
 ftff_combo_ft: ti.Field = None        # (MAX_FTFF_COMBOS,) i32 FT gems per combo
 ftff_combo_ff: ti.Field = None        # (MAX_FTFF_COMBOS,) i32 FF gems per combo
@@ -191,6 +192,7 @@ def allocate_fields():
     global result_p_val, result_s_val, result_stats, _fields_allocated
     global genome_result_scores, genome_result_ft, genome_result_ff
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
+    global genome_hint_allocation
     global chunk_best_key, chunk_best_score, chunk_best_idx
     global ftff_combo_ft, ftff_combo_ff
     global ga_global_best_score, ga_global_best_genome
@@ -212,7 +214,7 @@ def allocate_fields():
     
     # Per-genome base stats (lookup by work_genome_id in kernel)
     # [pp, cm, fm, p_val, s_val, ft, ff]
-    genome_base_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_GENOMES)
+    genome_base_stats = ti.Vector.field(n=7, dtype=ti.i16, shape=MAX_GENOMES)
 
     # GPU-native GA / stat aggregation (Phase 3/4)
     population_indices = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, MAX_SLOTS))
@@ -239,6 +241,8 @@ def allocate_fields():
     # Per-genome results (for FT/FF iteration kernel)
     # [score, ft, ff, pp, cm, fm, ov]
     genome_result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_GENOMES)
+    # Warm-start hints for local search optimization [pp_gems, cm_gems, fm_gems, ov_gems]
+    genome_hint_allocation = ti.Vector.field(n=4, dtype=ti.i32, shape=MAX_GENOMES)
     # Per-chunk reduction key: ((score+1) << 32) | work_item_index
     # NOTE: u64 atomics not supported on Metal, so we use separate 32-bit fields on macOS
     if not IS_METAL:
@@ -275,9 +279,9 @@ def allocate_grid_fields():
     
     # Timeline grid with song slots (MAX_SONG_SLOTS × 161×161)
     # Slot 0 is default for single-song mode; slots 0-7 for batch mode
-    grid_count_body_fever = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
-    grid_count_body_normal = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
-    grid_head_len = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
+    grid_count_body_fever = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
+    grid_count_body_normal = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
+    grid_head_len = ti.field(dtype=ti.i8, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_fever_masks = ti.field(dtype=ti.i8, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES))
     grid_fever_masks_bits = ti.field(dtype=ti.u32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, 4))
     
@@ -357,6 +361,7 @@ def bind_fields(kernels_module):
 
     # Genome results
     target.genome_result_stats = genome_result_stats
+    target.genome_hint_allocation = genome_hint_allocation
     if not IS_METAL:
         target.chunk_best_key = chunk_best_key
     target.ftff_combo_ft = ftff_combo_ft

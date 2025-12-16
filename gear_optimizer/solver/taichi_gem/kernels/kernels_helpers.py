@@ -75,6 +75,7 @@ result_stats = None
 # Genome results
 genome_result_stats = None
 # [score, ft, ff, pp, cm, fm, ov]
+genome_hint_allocation = None  # [pp_gems, cm_gems, fm_gems, ov_gems] - warm-start hints
 chunk_best_key = None  # u64 packed key per genome for safe reduction
 ftff_combo_ft = None   # (MAX_FTFF_COMBOS,) i32
 ftff_combo_ff = None   # (MAX_FTFF_COMBOS,) i32

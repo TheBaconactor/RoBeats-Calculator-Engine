@@ -309,3 +309,52 @@ def ga_copy_scores_kernel(n_genomes: ti.i32):
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for g in range(n_genomes):
         kernels_helpers.ga_scores[g] = kernels_helpers.genome_result_stats[g][0]
+
+
+@ti.kernel
+def ga_store_hints_kernel(n_genomes: ti.i32):
+    """
+    Store current best gem allocation as hints for next generation.
+    
+    Reads from genome_result_stats[g] = [score, ft, ff, pp, cm, fm, ov]
+    Writes to genome_hint_allocation[g] = [pp, cm, fm, ov]
+    
+    Call this AFTER evaluation, BEFORE crossover/mutation.
+    The hints will be used to warm-start the solver in the next generation.
+    
+    Args:
+        n_genomes: Number of genomes
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for g in range(n_genomes):
+        result = kernels_helpers.genome_result_stats[g]
+        # genome_result_stats layout: [score, ft, ff, pp, cm, fm, ov]
+        # genome_hint_allocation layout: [pp, cm, fm, ov]
+        kernels_helpers.genome_hint_allocation[g][0] = result[3]  # pp gems
+        kernels_helpers.genome_hint_allocation[g][1] = result[4]  # cm gems
+        kernels_helpers.genome_hint_allocation[g][2] = result[5]  # fm gems
+        kernels_helpers.genome_hint_allocation[g][3] = result[6]  # ov gems
+
+
+@ti.kernel
+def ga_inherit_hints_kernel(n_genomes: ti.i32):
+    """
+    Inherit hints from parents to children after crossover.
+    
+    Each child inherits the hint from parent A (the first parent).
+    This provides a warm-start point for the next evaluation.
+    
+    Call this AFTER crossover/mutation, BEFORE evaluation.
+    
+    The hint_next buffer is used to store inherited hints, then swapped.
+    For simplicity, we just copy from parent A's hint to child's hint.
+    
+    Args:
+        n_genomes: Number of genomes
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for g in range(n_genomes):
+        parent_a = kernels_helpers.ga_parent_a[g]
+        # Copy parent A's hint to child
+        for i in range(4):
+            kernels_helpers.genome_hint_allocation[g][i] = kernels_helpers.genome_hint_allocation[parent_a][i]

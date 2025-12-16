@@ -171,6 +171,7 @@ def ga_evaluate_population(
     is_p_cm: int = 0, is_s_cm: int = 0,
     is_p_fm: int = 0, is_s_fm: int = 0,
     is_p_ov: int = 0, is_s_ov: int = 0,
+    use_hints: int = 0,
 ) -> None:
     """
     GPU-native population evaluation: aggregate stats + evaluate + copy scores.
@@ -213,6 +214,9 @@ def ga_evaluate_population(
     total_budget_i = int(total_budget)
     gem_scale_fever_i = int(gem_scale_fever)
     song_slot_i = int(song_slot)
+    
+    # Warm-start logic: Default to cold start (0) unless specified
+    use_hints_i = int(use_hints)
 
     # Precompute FT/FF combo tables once per budget (tiny upload, reused across generations).
     n_combos = _ensure_ftff_combo_tables(total_budget_i)
@@ -225,21 +229,41 @@ def ga_evaluate_population(
         combo_chunk = 1024
 
     for offset in range(0, n_combos, combo_chunk):
-        kernels.ga_find_best_combo_key_kernel(
-            n_genomes,
-            n_combos,
-            int(offset),
-            int(min(combo_chunk, n_combos - offset)),
-            total_budget_i,
-            gem_scale_fever_i,
-            int(is_p_ft), int(is_s_ft),
-            int(is_p_ff), int(is_s_ff),
-            int(is_p_pp), int(is_s_pp),
-            int(is_p_cm), int(is_s_cm),
-            int(is_p_fm), int(is_s_fm),
-            int(is_p_ov), int(is_s_ov),
-            song_slot_i,
-        )
+        # Use warm-start kernel if available and requested
+        if hasattr(kernels, "ga_find_best_combo_warmstart_kernel"):
+            kernels.ga_find_best_combo_warmstart_kernel(
+                n_genomes,
+                n_combos,
+                int(offset),
+                int(min(combo_chunk, n_combos - offset)),
+                total_budget_i,
+                gem_scale_fever_i,
+                int(is_p_ft), int(is_s_ft),
+                int(is_p_ff), int(is_s_ff),
+                int(is_p_pp), int(is_s_pp),
+                int(is_p_cm), int(is_s_cm),
+                int(is_p_fm), int(is_s_fm),
+                int(is_p_ov), int(is_s_ov),
+                song_slot_i,
+                use_hints_i,
+            )
+        else:
+            # Fallback to cold-start kernel if warm-start kernel missing
+            kernels.ga_find_best_combo_key_kernel(
+                n_genomes,
+                n_combos,
+                int(offset),
+                int(min(combo_chunk, n_combos - offset)),
+                total_budget_i,
+                gem_scale_fever_i,
+                int(is_p_ft), int(is_s_ft),
+                int(is_p_ff), int(is_s_ff),
+                int(is_p_pp), int(is_s_pp),
+                int(is_p_cm), int(is_s_cm),
+                int(is_p_fm), int(is_s_fm),
+                int(is_p_ov), int(is_s_ov),
+                song_slot_i,
+            )
 
     # Step 3: Finalize best combo → genome_result_stats + ga_scores (one thread per genome).
     kernels.ga_write_best_results_from_key_kernel(
@@ -254,6 +278,24 @@ def ga_evaluate_population(
         int(is_p_ov), int(is_s_ov),
         song_slot_i,
     )
+
+
+def ga_store_hints(n_genomes: int) -> None:
+    """
+    Store current best gem allocations as hints for next generation.
+    Call this AFTER evaluation, BEFORE crossover.
+    """
+    ensure_ready()
+    kernels.ga_store_hints_kernel(int(n_genomes))
+
+
+def ga_inherit_hints(n_genomes: int) -> None:
+    """
+    Inherit hints from parents to children.
+    Call this AFTER crossover, BEFORE next evaluation.
+    """
+    ensure_ready()
+    kernels.ga_inherit_hints_kernel(int(n_genomes))
 
 
 def ga_set_scores(scores_np: np.ndarray, *, n_genomes: int | None = None) -> int:
