@@ -102,16 +102,9 @@ class GASettings:
         deep_mining = cfg.getboolean(section, "DeepMining", fallback=True)
         allow_3_swap = cfg.getboolean(section, "GA_Allow3Swap", fallback=True)
 
-        # Read from [GeneticAlgorithm] section if available
-        ga_section = "GeneticAlgorithm"
-        def get_ga_option(option, fallback):
-            try:
-                return cfg.get(ga_section, option, fallback=fallback)
-            except Exception:
-                return fallback
-
-        gear_rank_max = max(10, safe_int(get_ga_option("GearRankMax", "40"), 40))
-        mini_rank_max = max(10, safe_int(get_ga_option("MiniRankMax", "40"), 40))
+        # Read rank sizes from [IterationEngine] section
+        gear_rank_max = max(10, safe_int(get_option("GearRankMax", "40"), 40))
+        mini_rank_max = max(10, safe_int(get_option("MiniRankMax", "40"), 40))
 
         return cls(
             min(1.0, max(0.0, db_seed_prob)),
