@@ -57,7 +57,7 @@ def _get_genome_stats_buf() -> np.ndarray:
     global _fg_genome_stats_buf
     if _fg_genome_stats_buf is None:
         # [pp, cm, fm, p, s, ft, ff]
-        _fg_genome_stats_buf = np.zeros((gem_fields.MAX_GENOMES, 7), dtype=np.int32)
+        _fg_genome_stats_buf = np.zeros((gem_fields.MAX_GENOMES, 7), dtype=np.int16)
     return _fg_genome_stats_buf
 
 

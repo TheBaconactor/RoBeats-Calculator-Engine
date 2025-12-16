@@ -82,6 +82,9 @@ try:
         ga_init_global_best,
         ga_update_global_best,
         ga_download_global_best,
+        # Warm-start
+        ga_store_hints,
+        ga_inherit_hints,
     )
 except ImportError:
     pass
@@ -126,4 +129,7 @@ __all__ = [
     "ga_init_global_best",
     "ga_update_global_best",
     "ga_download_global_best",
+    # Warm-start
+    "ga_store_hints",
+    "ga_inherit_hints",
 ]
