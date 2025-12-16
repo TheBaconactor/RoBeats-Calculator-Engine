@@ -232,12 +232,13 @@ def _run_gpu_native_ga(
         if gen_best_score > best_score:
             best_score = gen_best_score
             best_genome_idx = gen_best_idx
-            # CRITICAL: Must download genome IDs NOW, not at end of run!
+            # CRITICAL: Must capture genome IDs NOW, not at end of run!
             # ga_next_generation will modify the population, overwriting the genome at this index.
-            # If we defer, we'll get the wrong genome for this score.
-            pop_snapshot = gpu_api.ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
+            # Optimization: reuse pop_snapshot if already downloaded this generation
+            if pop_snapshot is None or pop_snapshot_gen != gen:
+                pop_snapshot = gpu_api.ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
+                pop_snapshot_gen = gen
             best_genome_ids = pop_snapshot[gen_best_idx].copy()
-            pop_snapshot_gen = gen  # Mark as valid for this generation
             
             if status_cb:
                 status_cb(f"GPU-Native Gen {gen+1}/{n_generations}: New Best {best_score}")
