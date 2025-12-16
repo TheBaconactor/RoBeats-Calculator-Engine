@@ -23,6 +23,15 @@ from . import kernels as fg_kernels
 
 
 # ============================================================================
+# ASYNC PIPELINING (enabled by default, disable with USE_ASYNC_FG=0)
+# ============================================================================
+# When enabled, dict construction is offloaded to background thread
+# while GPU can continue with other work.
+_USE_ASYNC_FG = os.environ.get("USE_ASYNC_FG", "1") == "1"
+
+
+
+# ============================================================================
 # SYNC POLICY
 # ============================================================================
 # See `gear_optimizer.solver.taichi_gem.api` for rationale.
@@ -334,35 +343,63 @@ def solve_force_greats_finder_gpu(
     out_sp = fg_fields.fg_best_score_penalty.to_numpy()[:n_genomes]
     out_fp = fg_fields.fg_best_fill_penalty.to_numpy()[:n_genomes]
 
-    results: list[dict[str, Any]] = []
-    for i in range(n_genomes):
-        results.append(
-            {
-                "final_score": int(out_final[i]),
-                "base_score": int(out_base[i]),
-                "cfg_idx": int(out_cfg[i]),
-                "FT": int(out_ft[i]),
-                "FF": int(out_ff[i]),
-                "gem_counts": {
-                    "Perfect Points": int(out_gpp[i]),
-                    "Combo Multiplier": int(out_gcm[i]),
-                    "Fever Multiplier": int(out_gfm[i]),
-                    "Element Overflow": int(out_gov[i]),
-                },
-                "score_penalty": int(out_sp[i]),
-                "fill_penalty": int(out_fp[i]),
-            }
-        )
+    # Mark end of download phase (before dict construction)
+    if _perf:
+        t_download = time.perf_counter() - _t2
+        _t3 = time.perf_counter()
+
+    # Build result dicts (optionally offload to background thread)
+    def _build_results(arrays: dict, n: int) -> list[dict[str, Any]]:
+        """Helper to build result dicts from numpy arrays."""
+        results = []
+        for i in range(n):
+            results.append(
+                {
+                    "final_score": int(arrays["final"][i]),
+                    "base_score": int(arrays["base"][i]),
+                    "cfg_idx": int(arrays["cfg"][i]),
+                    "FT": int(arrays["ft"][i]),
+                    "FF": int(arrays["ff"][i]),
+                    "gem_counts": {
+                        "Perfect Points": int(arrays["gpp"][i]),
+                        "Combo Multiplier": int(arrays["gcm"][i]),
+                        "Fever Multiplier": int(arrays["gfm"][i]),
+                        "Element Overflow": int(arrays["gov"][i]),
+                    },
+                    "score_penalty": int(arrays["sp"][i]),
+                    "fill_penalty": int(arrays["fp"][i]),
+                }
+            )
+        return results
+
+    # Pack arrays for helper function
+    arrays_dict = {
+        "final": out_final, "base": out_base, "cfg": out_cfg,
+        "ft": out_ft, "ff": out_ff,
+        "gpp": out_gpp, "gcm": out_gcm, "gfm": out_gfm, "gov": out_gov,
+        "sp": out_sp, "fp": out_fp,
+    }
+
+    if _USE_ASYNC_FG:
+        # Async path: offload dict construction to background thread
+        from .async_buffers import get_result_processor
+        proc = get_result_processor()
+        proc.submit_result_build(arrays_dict, n_genomes, _build_results)
+        results = proc.get_results()  # Wait for completion (for now, single-call)
+    else:
+        # Sync path: build directly
+        results = _build_results(arrays_dict, n_genomes)
 
     # Print timing breakdown
     if _perf:
-        t_download = time.perf_counter() - _t2
-        t_total = t_upload + t_kernel + t_download
+        t_dict_build = time.perf_counter() - _t3
+        t_total = t_upload + t_kernel + t_download + t_dict_build
         n_chunks = (n_cfg_total + cfg_chunk - 1) // cfg_chunk
+        async_tag = " [ASYNC]" if _USE_ASYNC_FG else ""
         print(
             f"[PERF] FG GPU: upload={t_upload*1000:.1f}ms kernel={t_kernel*1000:.1f}ms "
-            f"download={t_download*1000:.1f}ms total={t_total*1000:.1f}ms "
-            f"(genomes={n_genomes}, cfgs={n_cfg_total}, ftff={n_ftff}, chunks={n_chunks})"
+            f"download={t_download*1000:.1f}ms dict={t_dict_build*1000:.1f}ms total={t_total*1000:.1f}ms "
+            f"(genomes={n_genomes}, cfgs={n_cfg_total}, ftff={n_ftff}, chunks={n_chunks}){async_tag}"
         )
 
     return results
