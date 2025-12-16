@@ -402,6 +402,7 @@ def ensure_fields_allocated():
             kernels_metal.ga_scores = ga_scores
             kernels_metal.ftff_combo_ft = ftff_combo_ft
             kernels_metal.ftff_combo_ff = ftff_combo_ff
+            kernels_metal.genome_hint_allocation = genome_hint_allocation
 
 
 def ensure_grid_fields_allocated():
