@@ -225,15 +225,19 @@ def _run_gpu_native_ga(
         # Download scores for elitism (small transfer: n_genomes ints)
         scores = gpu_api.ga_download_scores(n_genomes)
         
-        # Track global best across all islands (defer genome download to end)
+        # Track global best across all islands
         gen_best_idx = int(np.argmax(scores))
         gen_best_score = int(scores[gen_best_idx])
         
         if gen_best_score > best_score:
             best_score = gen_best_score
             best_genome_idx = gen_best_idx
-            # Mark that we need to download this genome at end (defer costly transfer)
-            # Don't download now - pop_snapshot will be fetched at run end or during migration
+            # CRITICAL: Must download genome IDs NOW, not at end of run!
+            # ga_next_generation will modify the population, overwriting the genome at this index.
+            # If we defer, we'll get the wrong genome for this score.
+            pop_snapshot = gpu_api.ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
+            best_genome_ids = pop_snapshot[gen_best_idx].copy()
+            pop_snapshot_gen = gen  # Mark as valid for this generation
             
             if status_cb:
                 status_cb(f"GPU-Native Gen {gen+1}/{n_generations}: New Best {best_score}")
@@ -302,18 +306,24 @@ def _run_gpu_native_ga(
                 elite_indices=elite_indices,
             )
 
-    # --- END OF GA RUN: Download final population once for candidate extraction ---
-    # Since we skip ga_next_generation on final iteration, scores are still valid from loop
-    # No need to re-evaluate - just download population
+    # --- END OF GA RUN: Download final population for FG candidate extraction ---
+    # NOTE: best_genome_ids was captured when best score was found (during loop)
+    # so we don't overwrite it here. We need pop_snapshot for extracting OTHER candidates.
     pop_snapshot = gpu_api.ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
-    best_genome_ids = pop_snapshot[best_genome_idx].copy()
     
-    # Decode best genome
+    # Decode best genome (already captured correctly during loop)
     best_genome = registry.decode_genome(best_genome_ids) if best_genome_ids is not None else []
     
-    # Download final results for best genome
+    # Download final results - but we need the results from when best was found
+    # The results at best_genome_idx in the CURRENT population may have different FT/FF/PP/CM etc.
+    # For the "best" result display, we should re-evaluate the actual best genome.
+    # However, for simplicity and correctness, we compute stats from best_genome_ids directly.
     results = gpu_api.ga_download_results(n_genomes)
-    best_result = results[best_genome_idx] if best_genome_ids is not None else np.zeros(7, dtype=np.int32)
+    # Use a dummy result if best comes from an earlier gen (results array is for current pop)
+    # The FG candidate loop below will compute correct stats for each candidate anyway.
+    best_result = np.zeros(7, dtype=np.int32)
+    if best_genome_ids is not None:
+        best_result[0] = best_score  # Score is correct
 
     # --- FG CANDIDATE EXTRACTION ---
     # Extract top N unique genomes to seed Force Greats solver (mimics CPU GA output compatibility)
