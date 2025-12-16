@@ -46,14 +46,15 @@ def _calc_head_score_masks(
     Returns:
         Head score as float
     """
-    head_score = 0.0
+    head_score = ti.i32(0)
     for i in range(head_len):
         ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
         if kernels_helpers.fever_masks[work_idx, i] != 0:
-            head_score += ti.floor(ramp_val * fever_mul)
+            # Convert to i32 immediately after floor to use exact integer addition
+            head_score += ti.cast(ti.floor(ramp_val * fever_mul), ti.i32)
         else:
-            head_score += ti.floor(ramp_val)
-    return head_score
+            head_score += ti.cast(ti.floor(ramp_val), ti.i32)
+    return ti.cast(head_score, ti.f32)
 
 
 @ti.func
@@ -83,14 +84,15 @@ def _calc_head_score_grid(
     Returns:
         Head score as float
     """
-    head_score = 0.0
+    head_score = ti.i32(0)
     for i in range(head_len):
         ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
         if kernels_helpers.grid_fever_masks[song_slot, ft_idx, ff_idx, i] != 0:
-            head_score += ti.floor(ramp_val * fever_mul)
+            # Convert to i32 immediately after floor to use exact integer addition
+            head_score += ti.cast(ti.floor(ramp_val * fever_mul), ti.i32)
         else:
-            head_score += ti.floor(ramp_val)
-    return head_score
+            head_score += ti.cast(ti.floor(ramp_val), ti.i32)
+    return ti.cast(head_score, ti.f32)
 
 
 
@@ -130,7 +132,8 @@ def calc_score_device(
     )
     factor = kernels_helpers._calc_head_factor(base_value, combo_mul)
     head_score = _calc_head_score_masks(base_value, factor, fever_mul, work_idx, head_len)
-    return ti.cast(body_score + head_score, ti.i32)
+    # Cast each component to i32 first, then add as integers for exact result
+    return ti.cast(body_score, ti.i32) + ti.cast(head_score, ti.i32)
 
 
 @ti.func
@@ -170,7 +173,8 @@ def calc_score_with_grid(
     head_score = _calc_head_score_grid(
         base_value, factor, fever_mul, song_slot, ft_idx, ff_idx, head_len
     )
-    return ti.cast(body_score + head_score, ti.i32)
+    # Cast each component to i32 first, then add as integers for exact result
+    return ti.cast(body_score, ti.i32) + ti.cast(head_score, ti.i32)
 
 
 

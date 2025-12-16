@@ -270,11 +270,10 @@ def _calc_body_score(
     Returns:
         Body score as float
     """
-    combo_val = ti.floor(base_value * combo_mul)
-    fever_val = ti.floor(base_value * combo_mul * fever_mul)
-    return (ti.cast(count_fever, ti.f32) * fever_val) + (
-        ti.cast(count_normal, ti.f32) * combo_val
-    )
+    combo_val = ti.cast(ti.floor(base_value * combo_mul), ti.i32)
+    fever_val = ti.cast(ti.floor(base_value * combo_mul * fever_mul), ti.i32)
+    # Use integer multiplication to avoid f32 precision loss with large counts
+    return ti.cast((count_fever * fever_val) + (count_normal * combo_val), ti.f32)
 
 
 @ti.func
@@ -325,7 +324,7 @@ def _calc_head_score_bits(
     Returns:
         Head score as float
     """
-    head_score = 0.0
+    head_score = ti.i32(0)
     for i in range(head_len):
         ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
         word = ti.u32(0)
@@ -342,10 +341,11 @@ def _calc_head_score_bits(
 
         is_fever = (word >> shift) & ti.u32(1)
         if is_fever != 0:
-            head_score += ti.floor(ramp_val * fever_mul)
+            # Convert to i32 immediately after floor to use exact integer addition
+            head_score += ti.cast(ti.floor(ramp_val * fever_mul), ti.i32)
         else:
-            head_score += ti.floor(ramp_val)
-    return head_score
+            head_score += ti.cast(ti.floor(ramp_val), ti.i32)
+    return ti.cast(head_score, ti.f32)
 
 
 @ti.func
@@ -385,4 +385,5 @@ def calc_score_with_grid_bits(
     )
     factor = _calc_head_factor(base_value, combo_mul)
     head_score = _calc_head_score_bits(base_value, factor, fever_mul, m0, m1, m2, m3, head_len)
-    return ti.cast(body_score + head_score, ti.i32)
+    # Cast each component to i32 first, then add as integers for exact result
+    return ti.cast(body_score, ti.i32) + ti.cast(head_score, ti.i32)

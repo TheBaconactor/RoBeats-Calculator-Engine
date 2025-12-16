@@ -754,7 +754,7 @@ def solve_coevolution_genetic(
     )
 
     # Build ranked candidate caches
-    gear_rank_max = 25  # expanded to help find items heuristic underranks
+    gear_rank_max = 40  # expanded to help find items heuristic underranks
     mini_rank_max = 40  # widen minis to escape local minima
     gear_rank_cache = {
         s: sorted(gear_pool[s], key=score_candidate, reverse=True)[:gear_rank_max]
