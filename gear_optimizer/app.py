@@ -355,14 +355,12 @@ class GearOptimizerApp:
                         name = meta["Song Name"]
                         name_lower = name.lower()
                         
-                        detected_diff = "Unknown"
-                        if "(hard)" in name_lower: detected_diff = "Hard"
-                        elif "(normal)" in name_lower: detected_diff = "Normal"
-                        elif "(easy)" in name_lower: detected_diff = "Easy"
-                        else:
-                            meta_diff_val = (meta.get("Difficulty") or "").strip().capitalize()
-                            if meta_diff_val in ("Hard", "Normal", "Easy"):
-                                detected_diff = meta_diff_val
+                        # Infer difficulty from parent folder name
+                        parent_folder = os.path.basename(root).lower()
+                        if parent_folder == "hard": detected_diff = "Hard"
+                        elif parent_folder == "normal": detected_diff = "Normal"
+                        elif parent_folder == "easy": detected_diff = "Easy"
+                        else: detected_diff = "Unknown"
 
                         if diff_lower in ("easy", "normal", "hard") and detected_diff.lower() != diff_lower:
                             continue
