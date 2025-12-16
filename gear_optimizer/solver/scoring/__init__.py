@@ -12,67 +12,49 @@ This __init__.py provides backward-compatible imports so existing code continues
 """
 
 # Import from gpu_solver
-try:
-    from .gpu_solver import (
-        _get_gpu_solver,
-        _GPU_LOCK,
-        GEM_SOLVER_CACHE,
-        FEVER_TIMELINE_CACHE,
-        FG_CACHE,
-        FORCE_GREATS_ALGO_VERSION,
-    )
-except ImportError:
-    pass
+from .gpu_solver import (
+    _get_gpu_solver,
+    _GPU_LOCK,
+    GEM_SOLVER_CACHE,
+    FEVER_TIMELINE_CACHE,
+    FG_CACHE,
+    FORCE_GREATS_ALGO_VERSION,
+)
 
 # Import from stats_scoring
-try:
-    from .stats_scoring import (
-        evaluate_stats_score,
-        build_great_penalty_table,
-        fg_baseline_params,
-        _force_greats_counts_to_dict,
-        _song_cache_key,
-    )
-except ImportError:
-    pass
+from .stats_scoring import (
+    evaluate_stats_score,
+    build_great_penalty_table,
+    fg_baseline_params,
+    _force_greats_counts_to_dict,
+    _song_cache_key,
+)
 
 # Import from fever_solver
-try:
-    from .fever_solver import (
-        precompute_fever_timelines,
-        solve_best_fever_combination,
-    )
-except ImportError:
-    pass
+from .fever_solver import (
+    precompute_fever_timelines,
+    solve_best_fever_combination,
+)
 
 # Import from force_greats
-try:
-    from .force_greats import (
-        FG_TIMELINE_CACHE,
-        _compute_force_greats_timeline,
-        evaluate_force_greats,
-        evaluate_fg_with_gem_iteration,
-        run_force_greats_hill_climb,
-        apply_force_greats_to_result,
-        _extract_base_stats,
-    )
-except ImportError:
-    pass
+from .force_greats import (
+    FG_TIMELINE_CACHE,
+    _compute_force_greats_timeline,
+    evaluate_force_greats,
+    evaluate_fg_with_gem_iteration,
+    run_force_greats_hill_climb,
+    apply_force_greats_to_result,
+    _extract_base_stats,
+)
 
 # Import from genome_evaluation
-try:
-    from .genome_evaluation import (
-        worker_coevolution_evaluate,
-        batch_evaluate_genomes,
-    )
-except ImportError:
-    pass
+from .genome_evaluation import (
+    worker_coevolution_evaluate,
+    batch_evaluate_genomes,
+)
 
 # Import from fg_utils (helper)
-try:
-    from ...helpers.fg_utils import generate_dynamic_fg_configs
-except ImportError:
-    pass
+from ...helpers.fg_utils import generate_dynamic_fg_configs
 
 # Export all public names for backward compatibility
 __all__ = [
