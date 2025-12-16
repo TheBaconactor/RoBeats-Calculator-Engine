@@ -378,3 +378,50 @@ def ga_download_results(n_genomes: int) -> np.ndarray:
     n_genomes = int(n_genomes)
     out = fields.genome_result_stats.to_numpy()
     return np.asarray(out[:n_genomes], dtype=np.int32)
+
+
+# ============================================================================
+# GPU-SIDE GLOBAL BEST TRACKING
+# ============================================================================
+
+def ga_init_global_best() -> None:
+    """
+    Initialize global best tracking at the start of a GA run.
+    
+    Resets ga_global_best_score to -1 (no best yet).
+    Call this once at the start of each GA run.
+    """
+    ensure_ready()
+    kernels.ga_init_global_best_kernel()
+
+
+def ga_update_global_best(n_genomes: int, n_slots: int = 9) -> None:
+    """
+    Update global best genome on GPU if current generation has a better score.
+    
+    Atomically tracks the best genome across all generations on GPU,
+    avoiding expensive per-generation CPU downloads.
+    
+    Call this after each ga_evaluate_population() call.
+    
+    Args:
+        n_genomes: Number of genomes to check
+        n_slots: Number of equipment slots per genome
+    """
+    ensure_ready()
+    kernels.ga_update_global_best_kernel(int(n_genomes), int(n_slots))
+
+
+def ga_download_global_best() -> tuple[int, np.ndarray]:
+    """
+    Download the global best genome from GPU.
+    
+    Returns:
+        Tuple of (best_score, best_genome_ids):
+        - best_score: int - the best score found across all generations
+        - best_genome_ids: np.ndarray (n_slots,) int32 - item IDs of best genome
+    """
+    ensure_ready()
+    best_score = int(fields.ga_global_best_score.to_numpy()[0])
+    best_genome_ids = fields.ga_global_best_genome.to_numpy().copy()
+    return best_score, best_genome_ids

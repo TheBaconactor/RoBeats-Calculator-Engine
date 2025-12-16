@@ -79,6 +79,10 @@ chunk_best_key = None  # u64 packed key per genome for safe reduction
 ftff_combo_ft = None   # (MAX_FTFF_COMBOS,) i32
 ftff_combo_ff = None   # (MAX_FTFF_COMBOS,) i32
 
+# GPU-side global best tracking (avoids per-generation CPU downloads)
+ga_global_best_score = None   # (1,) i32 - best score across all generations
+ga_global_best_genome = None  # (MAX_SLOTS,) i32 - item IDs of best genome
+
 
 # ============================================================================
 # HELPER FUNCTIONS

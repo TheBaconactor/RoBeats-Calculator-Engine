@@ -78,6 +78,10 @@ try:
         ga_download_population_indices,
         ga_download_scores,
         ga_download_results,
+        # GPU-side global best tracking
+        ga_init_global_best,
+        ga_update_global_best,
+        ga_download_global_best,
     )
 except ImportError:
     pass
@@ -118,4 +122,8 @@ __all__ = [
     "ga_download_population_indices",
     "ga_download_scores",
     "ga_download_results",
+    # GPU-side global best tracking
+    "ga_init_global_best",
+    "ga_update_global_best",
+    "ga_download_global_best",
 ]

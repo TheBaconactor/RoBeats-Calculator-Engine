@@ -91,6 +91,10 @@ ga_rng_state: ti.Field = None        # (MAX_GENOMES,) uint32 RNG state per genom
 ga_parent_a: ti.Field = None         # (MAX_GENOMES,) int32 selected parent index A
 ga_parent_b: ti.Field = None         # (MAX_GENOMES,) int32 selected parent index B
 
+# GPU-side global best tracking (avoids per-generation CPU downloads)
+ga_global_best_score: ti.Field = None     # (1,) i32 - best score across all generations
+ga_global_best_genome: ti.Field = None    # (MAX_SLOTS,) i32 - item IDs of best genome
+
 # Slot pools for GPU mutation - contiguous ID ranges per slot
 # Allows O(1) mutation: new_id = slot_start[s] + (rand % slot_count[s])
 slot_start: ti.Field = None          # (MAX_SLOTS,) int32 - first valid item_id for slot
@@ -189,6 +193,7 @@ def allocate_fields():
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
     global chunk_best_key, chunk_best_score, chunk_best_idx
     global ftff_combo_ft, ftff_combo_ff
+    global ga_global_best_score, ga_global_best_genome
     
     if _fields_allocated:
         return
@@ -244,6 +249,10 @@ def allocate_fields():
     # FT/FF combo tables for GPU-parallel evaluation (indexed by combo_id)
     ftff_combo_ft = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
     ftff_combo_ff = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
+    
+    # GPU-side global best tracking (avoids per-generation CPU downloads)
+    ga_global_best_score = ti.field(dtype=ti.i32, shape=1)
+    ga_global_best_genome = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
     
     _fields_allocated = True
     print(f"[Taichi] Allocated GPU fields: {MAX_WORK_ITEMS} work items, {MAX_HEAD_NOTES} head notes, {MAX_GENOMES} genomes")
@@ -352,6 +361,10 @@ def bind_fields(kernels_module):
         target.chunk_best_key = chunk_best_key
     target.ftff_combo_ft = ftff_combo_ft
     target.ftff_combo_ff = ftff_combo_ff
+    
+    # GPU-side global best tracking
+    target.ga_global_best_score = ga_global_best_score
+    target.ga_global_best_genome = ga_global_best_genome
 
 
 def ensure_fields_allocated():

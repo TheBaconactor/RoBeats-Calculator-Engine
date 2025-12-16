@@ -48,6 +48,9 @@ from .kernels_helpers import (
     chunk_best_key,
     ftff_combo_ft,
     ftff_combo_ff,
+    # GPU-side global best tracking
+    ga_global_best_score,
+    ga_global_best_genome,
 )
 
 # Import helper functions
@@ -106,6 +109,9 @@ from .kernels_ga_eval import (
     ga_find_best_combo_key_kernel,
     ga_write_best_results_from_key_kernel,
     reduce_chunk_to_genomes_kernel,
+    # GPU-side global best tracking
+    ga_init_global_best_kernel,
+    ga_update_global_best_kernel,
 )
 
 # Import timeline kernel
@@ -190,6 +196,9 @@ __all__ = [
     "ga_find_best_combo_key_kernel",
     "ga_write_best_results_from_key_kernel",
     "reduce_chunk_to_genomes_kernel",
+    # GPU-side global best tracking
+    "ga_init_global_best_kernel",
+    "ga_update_global_best_kernel",
     # Timeline kernels
     "binary_search_left_from",
     "binary_search_left",
