@@ -685,6 +685,7 @@ def solve_coevolution_genetic(
                 "Fever Multiplier": int(best_global_res_arr[5]),
                 "Element Overflow": int(best_global_res_arr[6]),
             },
+            "Selected Element": selected_color,  # For correct overflow gem labeling
             # Reconstruct result details from kernel output
             # [score, ft, ff, pp, cm, fm, ov]
             "Details": {
