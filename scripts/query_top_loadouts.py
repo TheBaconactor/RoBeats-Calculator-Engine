@@ -7,7 +7,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from gear_optimizer.data.database import get_best_loadouts, get_db_connection, get_evolution_db_path
 
 def main():
-    song_name = "Feeling Alright (Hard) by Rutra"
+    song_name = "Bopeebo (Hard)"
     limit = 50
     
     print(f"Querying top {limit} candidates for '{song_name}'...")

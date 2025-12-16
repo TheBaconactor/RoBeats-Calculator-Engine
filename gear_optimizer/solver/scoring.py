@@ -1409,7 +1409,7 @@ def run_force_greats_hill_climb(
             }
             result["ForceGreats"] = {
                 "config": result.get("config_dict", {}),
-                "base_score": result.get("base_score", 0),
+                # base_score removed from DB JSON as requested
             }
             return result
         except Exception as e:
@@ -1438,7 +1438,7 @@ def run_force_greats_hill_climb(
     if best_result:
         best_result["ForceGreats"] = {
             "config": best_result.get("config_dict", {}),
-            "base_score": best_result.get("base_score", 0),
+            # base_score removed from DB JSON as requested
         }
 
     return best_result
@@ -1583,7 +1583,6 @@ def apply_force_greats_to_result(
         "enabled": True,
         "algo_version": FORCE_GREATS_ALGO_VERSION,
         "config": fg_result["config_dict"],
-        "base_score": fg_result["base_score"],
         "final_score": fg_result["final_score"],
         "score_penalty": fg_result["score_penalty"],
         "fill_penalty": fg_result["fill_penalty"],
@@ -1595,13 +1594,20 @@ def apply_force_greats_to_result(
         "center_ft": int(ft_gems) if use_finder else None,
         "center_ff": int(ff_gems) if use_finder else None,
         "search_radius": 5 if use_finder else None,
+        # base_score removed from DB JSON as requested
     }
 
     data_dict["ForceGreats"] = fg_info
+    print(f"DEBUG: fg_info keys: {list(fg_info.keys())}")
 
     # Memory leak fix: Shallow copy is sufficient (only modifying top-level keys)
     # Eliminates 28K deepcopy operations per song
     fg_variant = data_dict.copy()
+    
+    # Store the TRUE base score (unpenalized) before overwriting Score
+    # Preference: Existing BaseScore -> Existing Score (which is base score at this point)
+    fg_variant["BaseScore"] = data_dict.get("BaseScore") or data_dict.get("Score", 0)
+    
     fg_variant["Score"] = fg_result["final_score"]
     fg_variant["ForceGreats"] = {**fg_info, "variant_applied": True}
     return fg_variant

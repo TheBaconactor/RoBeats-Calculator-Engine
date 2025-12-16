@@ -295,7 +295,7 @@ def build_persistence_entries(
         }
 
         _append_entry(
-            best_fg_details.get("ForceGreats", {}).get("base_score", 0),  # Use FG's base_score as the loadout's score
+            best_fg_details.get("BaseScore") or best_fg_details.get("Score", 0),  # Use BaseScore as main score (unpenalized)
             best_fg_gear,
             best_fg_minis,
             best_fg_details,

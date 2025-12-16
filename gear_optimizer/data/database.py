@@ -249,8 +249,11 @@ def _deduplicate_entries(entries):
         if len(group) == 1:
             deduplicated.append(group[0])
         else:
-            # Multiple entries with same score and loadout - keep one with highest overflow
-            best_entry = max(group, key=lambda e: _get_overflow_from_details(e.get("details", {})))
+            # Multiple entries with same score and loadout - keep one with highest overflow AND FG score
+            best_entry = max(group, key=lambda e: (
+                _get_overflow_from_details(e.get("details", {})),
+                e.get("fg_score", 0)
+            ))
             deduplicated.append(best_entry)
 
     return deduplicated

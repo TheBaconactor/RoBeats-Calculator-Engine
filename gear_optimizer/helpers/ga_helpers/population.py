@@ -41,9 +41,13 @@ def build_initial_population(
     """
     population = []
     seed_list = build_seed_list_from_record(db_seed)
+    rand_val = random.random()
     should_inject = bool(seed_list) and (
-        force_db_seed or (random.random() < ga_settings.db_seed_prob)
+        force_db_seed or (rand_val < ga_settings.db_seed_prob)
     )
+    # DEBUG: Print probability values
+    if seed_list and not force_db_seed:
+        print(f" >> [DEBUG] db_seed_prob={ga_settings.db_seed_prob}, random={rand_val:.4f}, inject={should_inject}")
     if seed_list and should_inject:
         try:
             if force_db_seed:

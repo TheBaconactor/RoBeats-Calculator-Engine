@@ -475,12 +475,15 @@ def solve_coevolution_genetic(
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
 
     # Initialize pools and apply dominance pruning
-    gear_pool, mini_pool, total_before, total_after = initialize_pools(
+    gear_pool, mini_pool, total_before, total_after, whitelisted_minis = initialize_pools(
         all_gears, all_minis, p_color, slots, s_color=s_color
     )
     if gear_pool is None:
         print(f"[GA Error] initialize_pools failed for song {calc_song['metadata'].get('Song Name', 'Unknown')}")
         return None, [], [], None, [], [], []
+    
+    if whitelisted_minis:
+        print(f"[GA] Force-including {len(whitelisted_minis)} whitelisted minis in initialization.")
 
     # Build configuration data
     # Read GPU mode setting from config
@@ -730,9 +733,8 @@ def solve_coevolution_genetic(
         s: sorted(gear_pool[s], key=score_candidate, reverse=True)[:gear_rank_max]
         for s in slots
     }
-    mini_rank_cache = sorted(mini_pool, key=score_candidate, reverse=True)[
-        :mini_rank_max
-    ]
+    sorted_minis = sorted(mini_pool, key=score_candidate, reverse=True)
+    mini_rank_cache = sorted_minis[:mini_rank_max]
 
     # Create genome factory functions
     (

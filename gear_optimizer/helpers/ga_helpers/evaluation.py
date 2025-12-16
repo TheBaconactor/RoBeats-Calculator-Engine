@@ -40,7 +40,21 @@ def create_evaluation_functions(
     s_color = None
     if calc_song and calc_song.get("metadata"):
         s_color = calc_song["metadata"].get("Secondary Color")
-    
+
+    # Color stats for mini primary/secondary determination
+    color_stats = ["Rush", "Flow", "Chill", "Beat", "Vibe"]
+    song_colors = {p_color} if p_color else set()
+    if s_color:
+        song_colors.add(s_color)
+
+    def get_item_colors(item):
+        """Get an item's primary and secondary colors (top 2 highest stat colors)."""
+        color_values = [(c, item.get(c, 0)) for c in color_stats]
+        sorted_colors = sorted(color_values, key=lambda cv: cv[1], reverse=True)
+        primary = sorted_colors[0][0] if sorted_colors[0][1] > 0 else None
+        secondary = sorted_colors[1][0] if len(sorted_colors) > 1 and sorted_colors[1][1] > 0 else None
+        return primary, secondary
+
     def score_candidate(x):
         """
         Heuristic scoring used to rank candidate gear/minis before GA search.
@@ -48,7 +62,10 @@ def create_evaluation_functions(
         - modern: base-stats dominant (default)
         - legacy: color-heavy (closer to legacy script behavior)
         - hybrid: take the max(modern, legacy) to keep both benefits
-        
+
+        Minis whose primary/secondary matches the song's primary/secondary
+        get a ranking boost to ensure they're included in the heuristic pool.
+
         Note: This is NOT the true score function; it's only used to build the
         top-K ranked caches that seed the GA and local search neighborhoods.
         """
@@ -73,10 +90,31 @@ def create_evaluation_functions(
 
         mode = (heuristic_mode or "modern").strip().lower()
         if mode == "legacy":
-            return legacy_score
-        if mode == "hybrid":
-            return max(modern_score, legacy_score)
-        return modern_score
+            base_score = legacy_score
+        elif mode == "hybrid":
+            base_score = max(modern_score, legacy_score)
+        else:
+            base_score = modern_score
+
+        # Boost minis whose primary/secondary matches song's primary/secondary
+        # Heavily favor mini primary matching song primary > mini primary matching song secondary
+        item_primary, item_secondary = get_item_colors(x)
+        color_match_bonus = 0
+
+        # Mini's primary color matches song's primary color (highest priority)
+        if item_primary and item_primary == p_color:
+            color_match_bonus += 25
+        # Mini's primary color matches song's secondary color (medium priority)
+        elif item_primary and s_color and item_primary == s_color:
+            color_match_bonus += 12
+
+        # Mini's secondary color matches song colors (lower priority)
+        if item_secondary and item_secondary == p_color:
+            color_match_bonus += 8
+        elif item_secondary and s_color and item_secondary == s_color:
+            color_match_bonus += 5
+
+        return base_score + color_match_bonus
 
     def genome_key(genome):
         """Generate a unique key for a genome for caching.

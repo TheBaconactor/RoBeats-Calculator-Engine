@@ -75,201 +75,7 @@ ftff_combo_ft = None   # (MAX_FTFF_COMBOS,) i32
 ftff_combo_ff = None   # (MAX_FTFF_COMBOS,) i32
 
 
-# ============================================================================
-# @ti.func IMPLEMENTATIONS (Ported from scoring_core.py)
-# ============================================================================
 
-# ... (lookup functions and xorshift unchanged) ...
-
-@ti.func
-def _clamp_stat_idx(value: ti.i32) -> ti.i32:
-    return ti.max(0, ti.min(160, value))
-
-
-@ti.func
-def lookup_ref_pp(value: ti.i32) -> ti.f32:
-    return ref_pp_field[_clamp_stat_idx(value)]
-
-@ti.func
-def lookup_ref_cm(value: ti.i32) -> ti.f32:
-    return ref_cm_field[_clamp_stat_idx(value)]
-
-@ti.func
-def lookup_ref_fm(value: ti.i32) -> ti.f32:
-    return ref_fm_field[_clamp_stat_idx(value)]
-
-@ti.func
-def lookup_ref_ft(value: ti.i32) -> ti.f32:
-    return ref_ft_field[_clamp_stat_idx(value)]
-
-@ti.func
-def lookup_ref_ff(value: ti.i32) -> ti.f32:
-    return ref_ff_field[_clamp_stat_idx(value)]
-
-@ti.func
-def _xorshift32(x: ti.u32) -> ti.u32:
-    x ^= x << ti.u32(13)
-    x ^= x >> ti.u32(17)
-    x ^= x << ti.u32(5)
-    return x
-
-# ... (ga kernels unchanged) ...
-
-
-
-@ti.kernel
-def solve_batch_kernel(
-    n_items: ti.i32,
-    is_p_ft: ti.i32, is_s_ft: ti.i32,
-    is_p_ff: ti.i32, is_s_ff: ti.i32,
-    is_p_pp: ti.i32, is_s_pp: ti.i32,
-    is_p_cm: ti.i32, is_s_cm: ti.i32,
-    is_p_fm: ti.i32, is_s_fm: ti.i32,
-    is_p_ov: ti.i32, is_s_ov: ti.i32,
-):
-    """
-    Main kernel - processes all work items in parallel.
-    Unpacks from Vector fields.
-    """
-    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
-    GEM_STAT_TO_ELEMENT: ti.i32 = 3
-    
-    for i in range(n_items):
-        # Unpack work item
-        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
-        item = work_items[i]
-        budget = item[0]
-        count_fever = item[1]
-        count_normal = item[2]
-        ft_gems = item[3]
-        ff_gems = item[4]
-        head_len = item[5]
-        genome_id = item[6]
-        
-        # Look up per-genome base stats
-        # [pp, cm, fm, p_val, s_val, ft, ff]
-        stats = genome_base_stats[genome_id]
-        base_pp = stats[0]
-        base_cm = stats[1]
-        base_fm = stats[2]
-        base_p_val = stats[3]
-        base_s_val = stats[4]
-        
-        # Adjust elemental stats
-        p_val = base_p_val + (ft_gems * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff_gems * GEM_STAT_TO_ELEMENT * is_p_ff)
-        s_val = base_s_val + (ft_gems * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff_gems * GEM_STAT_TO_ELEMENT * is_s_ff)
-        
-        score = optimize_core_device(
-            i, budget,
-            base_pp, base_cm, base_fm,
-            p_val, s_val,
-            is_p_pp, is_s_pp,
-            is_p_cm, is_s_cm,
-            is_p_fm, is_s_fm,
-            is_p_ov, is_s_ov,
-            head_len, count_fever, count_normal,
-            0, 0, 0, 0,
-        )
-        
-        # We need to fill result_stats but optimize_core_device only returns score.
-        # optimize_core_device writes to result_pp, result_cm etc which are now placeholders!
-        # WARNING: optimize_core_device must also be updated or we need to capture outputs differently.
-        # Actually optimize_core_device writes to GLOBAL fields. We need to update IT too.
-        # Let's fix that in separate edit if needed, or inline the assignment here?
-        # The logic inside optimize_core_device stores results to global arrays at the end.
-        # We should update optimize_core_device to return a Vector or write to Vector.
-        # For now, let's assume optimize_core_device is updated to write to result_stats.
-        # Wait, optimize_core_device relies on globals.
-        pass # The replace call needs to cover optimize_core_device too.
-
-@ti.kernel
-def solve_genomes_with_ftff_kernel(
-    n_genomes: ti.i32,
-    total_budget: ti.i32,
-    gem_scale_fever: ti.i32,
-    is_p_ft: ti.i32, is_s_ft: ti.i32,
-    is_p_ff: ti.i32, is_s_ff: ti.i32,
-    is_p_pp: ti.i32, is_s_pp: ti.i32,
-    is_p_cm: ti.i32, is_s_cm: ti.i32,
-    is_p_fm: ti.i32, is_s_fm: ti.i32,
-    is_p_ov: ti.i32, is_s_ov: ti.i32,
-    song_slot: ti.i32,  # Grid slot for batch coalescing (0 for single-song)
-):
-
-    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
-    GEM_STAT_TO_ELEMENT: ti.i32 = 3
-    MAX_STAT: ti.i32 = 160
-    
-    for genome_idx in range(n_genomes):
-        # [pp, cm, fm, p_val, s_val, ft, ff]
-        stats = genome_base_stats[genome_idx]
-        base_pp = stats[0]
-        base_cm = stats[1]
-        base_fm = stats[2]
-        base_p_val = stats[3]
-        base_s_val = stats[4]
-        base_ft_stat = stats[5]
-        base_ff_stat = stats[6]
-        
-        remaining_ft = MAX_STAT - base_ft_stat
-        remaining_ff = MAX_STAT - base_ff_stat
-        max_ft_gems = remaining_ft // gem_scale_fever if remaining_ft > 0 else 0
-        max_ff_gems = remaining_ff // gem_scale_fever if remaining_ff > 0 else 0
-        
-        best_score = -1
-        best_ft = 0
-        best_ff = 0
-        best_g_pp = 0
-        best_g_cm = 0
-        best_g_fm = 0
-        best_g_ov = 0
-        
-        # ... (iteration logic same as before) ...
-        for ft in range(ti.min(total_budget, max_ft_gems) + 1):
-            remaining_for_ff = total_budget - ft
-            
-            for ff in range(ti.min(remaining_for_ff, max_ff_gems) + 1):
-                # ... (lookup logic) ...
-                ft_stat_val = base_ft_stat + (ft * gem_scale_fever)
-                ff_stat_val = base_ff_stat + (ff * gem_scale_fever)
-                ft_idx = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
-                ff_idx = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
-                
-                count_fever = grid_count_body_fever[song_slot, ft_idx, ff_idx]
-                count_normal = grid_count_body_normal[song_slot, ft_idx, ff_idx]
-                head_len = grid_head_len[song_slot, ft_idx, ff_idx]
-
-                
-                budget = total_budget - ft - ff
-                
-                p_val = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
-                s_val = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
-                
-                gems_pp = 0
-                gems_cm = 0
-                gems_fm = 0
-                gems_ov = 0
-                cur_pp = base_pp
-                cur_cm = base_cm
-                cur_fm = base_fm
-                cur_p = p_val
-                cur_s = s_val
-                cur_remaining = budget
-                local_best_score = 0
-                
-                # ... (greedy allocation same as before) ...
-                # We need to inline greedy logic or reuse func. 
-                # Reusing existing logic to maximize compatibility.
-                # Assuming simple copy of logic from previous kernel code snippet.
-                
-                # To save token space I will focus on the structure change. The logic inside loops is untouched mostly
-                # except accessing base stats which we did above.
-                
-                # ... skipping extensive inlined logic for brevity, assuming replace tool allows chunk replacement ...
-                
-        # Store result
-        # [score, ft, ff, pp, cm, fm, ov]
-        genome_result_stats[genome_idx] = ti.Vector([best_score, best_ft, best_ff, best_g_pp, best_g_cm, best_g_fm, best_g_ov])
 
 
 # ============================================================================
@@ -763,6 +569,12 @@ def optimize_core_device(
     p_val: ti.i32 = cur_p_val
     s_val: ti.i32 = cur_s_val
     
+    # Precompute CM limit: upgrade past 50 only if Flow (is_p_cm/is_s_cm) is active
+    # This avoids complex branching inside the hot loop.
+    cm_limit: ti.i32 = 50
+    if (is_p_cm | is_s_cm):
+        cm_limit = MAX_STAT
+
     best_final_score: ti.i32 = 0
     
     while remaining > 0:
@@ -800,7 +612,7 @@ def optimize_core_device(
                 best_opt = 0
 
         # Option 1: CM gem
-        if cm < MAX_STAT:
+        if cm < cm_limit:
             t_cm: ti.i32 = cm + GEM_SCALE_NORMAL
             t_p = p_val + (GEM_STAT_TO_ELEMENT * is_p_cm) + (fill_bonus * is_p_ov)
             t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_cm) + (fill_bonus * is_s_ov)
@@ -1651,8 +1463,10 @@ def compute_timeline_grid_kernel(
         
         current_note = 0
         fever_section = 0
+        body_fever = 0
+        body_normal = 0
         
-        # Simulate fever timeline
+        # Simulate fever timeline once
         while current_note < total_notes:
             fever_section += 1
             
@@ -1660,6 +1474,12 @@ def compute_timeline_grid_kernel(
             notes_to_fill = non_fever_base - 1 if fever_section == 1 else non_fever_base
             
             end_normal_idx = ti.min(current_note + notes_to_fill, total_notes)
+            
+            # Count normal body notes (indices >= MAX_HEAD)
+            range_start = ti.max(current_note, MAX_HEAD)
+            if end_normal_idx > range_start:
+                body_normal += end_normal_idx - range_start
+                
             current_note = end_normal_idx
             
             if current_note >= total_notes:
@@ -1673,65 +1493,28 @@ def compute_timeline_grid_kernel(
                 # Binary search for first note >= end_time
                 fever_end_idx = binary_search_left(song_timestamps, total_notes, end_time)
                 
-                # Mark fever notes in bitmask (for first MAX_HEAD notes)
-                for note_i in range(current_note, fever_end_idx):
+                # Mark fever notes in bitmask (up to MAX_HEAD only)
+                head_iter_end = ti.min(fever_end_idx, MAX_HEAD)
+                for note_i in range(current_note, head_iter_end):
                     if note_i < 32:
                         m0 |= ti.u32(1) << ti.u32(note_i)
                     elif note_i < 64:
                         m1 |= ti.u32(1) << ti.u32(note_i - 32)
                     elif note_i < 96:
                         m2 |= ti.u32(1) << ti.u32(note_i - 64)
-                    elif note_i < MAX_HEAD:
+                    else:
                         m3 |= ti.u32(1) << ti.u32(note_i - 96)
                 
+                # Count fever body notes (indices >= MAX_HEAD)
+                range_start = ti.max(current_note, MAX_HEAD)
+                if fever_end_idx > range_start:
+                    body_fever += fever_end_idx - range_start
+                
                 current_note = fever_end_idx
             else:
                 break
         
-        # Count body fever/normal (notes 100+)
-        count_body_fever = 0
-        count_body_normal = 0
         head_len = ti.min(total_notes, MAX_HEAD)
-        
-        for note_i in range(MAX_HEAD, total_notes):
-            # Check if this note is in fever by simulating again or using packed bits
-            # For body notes, we need to recompute. But the bitmask only covers first 100.
-            # We'll track during simulation instead.
-            pass  # TODO: Track body counts during main loop
-        
-        # For now, compute body counts by re-simulating (slower but correct)
-        current_note = 0
-        fever_section = 0
-        body_fever = 0
-        body_normal = 0
-        
-        while current_note < total_notes:
-            fever_section += 1
-            notes_to_fill = non_fever_base - 1 if fever_section == 1 else non_fever_base
-            end_normal_idx = ti.min(current_note + notes_to_fill, total_notes)
-            
-            # Count normal body notes in this section
-            for ni in range(current_note, end_normal_idx):
-                if ni >= MAX_HEAD:
-                    body_normal += 1
-            
-            current_note = end_normal_idx
-            if current_note >= total_notes:
-                break
-            
-            if current_note > 0:
-                start_time = song_timestamps[current_note]
-                end_time = start_time + real_fever_time
-                fever_end_idx = binary_search_left(song_timestamps, total_notes, end_time)
-                
-                # Count fever body notes
-                for ni in range(current_note, fever_end_idx):
-                    if ni >= MAX_HEAD:
-                        body_fever += 1
-                
-                current_note = fever_end_idx
-            else:
-                break
         
         # Write outputs to specified song slot
         grid_count_body_fever[song_slot, ft_idx, ff_idx] = body_fever
