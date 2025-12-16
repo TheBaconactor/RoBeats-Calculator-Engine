@@ -49,7 +49,8 @@ class DiscordReporter:
         
         # Stats batching
         self._stats_batch_size = stats_batch_size
-        self._stats_buffer: list[str] = []
+        self._stats_buffer: list[str] = []  # Actually used for logs (legacy naming)
+        self._stats_msg_buffer: list[str] = []  # For actual stats messages
         self._stats_lock = threading.Lock()
         
         # Background thread for async HTTP posting
@@ -90,8 +91,9 @@ class DiscordReporter:
     
     def shutdown(self, timeout: float = 5.0):
         """Gracefully shutdown the background worker, waiting for pending posts."""
-        # Flush any pending batched logs before shutdown
+        # Flush any pending batched logs/stats before shutdown
         self.flush_logs()
+        self.flush_stats()
         
         self._shutdown = True
         if self._worker_thread is not None and self._worker_thread.is_alive():
@@ -173,9 +175,40 @@ class DiscordReporter:
             if len(self._stats_buffer) >= self._stats_batch_size or force_flush:
                 self._flush_log_buffer()
 
-    def send_stats(self, content):
-        """Send stats update to stats channel immediately (no batching)."""
-        self._post(self.stats_channel_id, content)
+    def send_stats(self, content, force_flush=False):
+        """
+        Add stats message to batch buffer. Sends when buffer reaches batch size.
+        
+        Args:
+            content: Stats message content
+            force_flush: If True, immediately flush the buffer after adding
+        """
+        if not content:
+            return
+
+        with self._stats_lock:
+            self._stats_msg_buffer.append(content)
+            
+            # Flush if buffer is full or force requested
+            if len(self._stats_msg_buffer) >= self._stats_batch_size or force_flush:
+                self._flush_stats_buffer()
+
+    def flush_stats(self):
+        """Force flush any pending stats in the buffer."""
+        with self._stats_lock:
+            self._flush_stats_buffer()
+
+    def _flush_stats_buffer(self):
+        """Internal: Send all buffered stats as a single message (caller holds lock)."""
+        if not self._stats_msg_buffer:
+            return
+        
+        # Join messages with a detailed separator
+        combined = "\n" + "─" * 40 + "\n"
+        combined = combined.join(self._stats_msg_buffer)
+        
+        self._post(self.stats_channel_id, combined)
+        self._stats_msg_buffer.clear()
     
     def flush_logs(self):
         """Force flush any pending logs in the buffer."""

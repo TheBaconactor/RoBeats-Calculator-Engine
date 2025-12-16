@@ -286,13 +286,13 @@ def ga_aggregate_genome_stats_kernel(
         s_val = (beat * is_s_ft) + (vibe * is_s_ff) + (rush * is_s_fm) + (flow * is_s_cm) + (chill * is_s_pp)
 
         # Write to genome_base_stats: [pp, cm, fm, p_val, s_val, ft, ff]
-        kernels_helpers.genome_base_stats[g][0] = pp
-        kernels_helpers.genome_base_stats[g][1] = cm
-        kernels_helpers.genome_base_stats[g][2] = fm
-        kernels_helpers.genome_base_stats[g][3] = p_val
-        kernels_helpers.genome_base_stats[g][4] = s_val
-        kernels_helpers.genome_base_stats[g][5] = ft
-        kernels_helpers.genome_base_stats[g][6] = ff
+        kernels_helpers.genome_base_stats[g][0] = ti.cast(pp, ti.i16)
+        kernels_helpers.genome_base_stats[g][1] = ti.cast(cm, ti.i16)
+        kernels_helpers.genome_base_stats[g][2] = ti.cast(fm, ti.i16)
+        kernels_helpers.genome_base_stats[g][3] = ti.cast(p_val, ti.i16)
+        kernels_helpers.genome_base_stats[g][4] = ti.cast(s_val, ti.i16)
+        kernels_helpers.genome_base_stats[g][5] = ti.cast(ft, ti.i16)
+        kernels_helpers.genome_base_stats[g][6] = ti.cast(ff, ti.i16)
 
 
 @ti.kernel

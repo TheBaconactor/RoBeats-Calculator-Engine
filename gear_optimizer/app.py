@@ -102,6 +102,7 @@ class GearOptimizerApp:
             token,
             log_channel_id=logging_channel_id,
             stats_channel_id=stats_channel_id,
+            stats_batch_size=500,
         )
 
     def ensure_directories(self):

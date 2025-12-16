@@ -173,7 +173,7 @@ def compute_timeline_grid_kernel(
         # Write outputs to specified song slot
         kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx] = ti.cast(body_fever, ti.i16)
         kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx] = ti.cast(body_normal, ti.i16)
-        kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx] = ti.cast(head_len, ti.i16)
+        kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx] = ti.cast(head_len, ti.i8)
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0] = m0
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1] = m1
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2] = m2
