@@ -187,6 +187,8 @@ def _run_gpu_native_ga(
     # CPU-side best tracking (faster than GPU-side for this use case)
     best_score = -1
     best_genome_ids = None
+    best_result_row = None  # [score, ft, ff, pp, cm, fm, ov] - gem allocation for best genome
+    results_snapshot = None  # Downloaded with pop_snapshot to avoid race condition
 
     # --- ISLAND MODEL SETUP ---
     # Partition population into islands (contiguous index ranges)
@@ -231,13 +233,16 @@ def _run_gpu_native_ga(
         
         if gen_best_score > best_score:
             best_score = gen_best_score
-            # CRITICAL: Must capture genome IDs NOW, not at end of run!
+            # CRITICAL: Must capture genome IDs AND gem results NOW, not at end of run!
             # ga_next_generation will modify the population, overwriting the genome at this index.
             # Optimization: reuse pop_snapshot if already downloaded this generation
             if pop_snapshot is None or pop_snapshot_gen != gen:
                 pop_snapshot = gpu_api.ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
+                # Also download results (gem allocations) - same race condition applies!
+                results_snapshot = gpu_api.ga_download_results(n_genomes)
                 pop_snapshot_gen = gen
             best_genome_ids = pop_snapshot[gen_best_idx].copy()
+            best_result_row = results_snapshot[gen_best_idx].copy()  # [score, ft, ff, pp, cm, fm, ov]
             
             if status_cb:
                 status_cb(f"GPU-Native Gen {gen+1}/{n_generations}: New Best {best_score}")
@@ -307,19 +312,21 @@ def _run_gpu_native_ga(
             )
 
     # --- END OF GA RUN: Download final population for FG candidate extraction ---
-    # NOTE: best_genome_ids was captured when best score was found (during loop)
+    # NOTE: best_genome_ids and best_result_row were captured when best score was found (during loop)
     # We need pop_snapshot for extracting OTHER candidates.
     pop_snapshot = gpu_api.ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
     
     # Decode best genome (already captured correctly during loop)
     best_genome = registry.decode_genome(best_genome_ids) if best_genome_ids is not None else []
     
-    # Download final results for stats display
+    # Download final results for FG candidate gem allocations only (not for best genome)
     results = gpu_api.ga_download_results(n_genomes)
-    # Best result uses the best score from CPU tracking
-    best_result = np.zeros(7, dtype=np.int32)
-    if best_genome_ids is not None:
-        best_result[0] = best_score
+    
+    # Best result uses the captured best_result_row (has correct gem allocations from when best was found)
+    if best_result_row is not None:
+        best_result = best_result_row.copy()
+    else:
+        best_result = np.zeros(7, dtype=np.int32)
 
     # --- FG CANDIDATE EXTRACTION ---
     # Extract top N unique genomes to seed Force Greats solver (mimics CPU GA output compatibility)
