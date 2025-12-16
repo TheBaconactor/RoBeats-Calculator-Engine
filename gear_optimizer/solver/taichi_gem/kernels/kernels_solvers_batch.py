@@ -152,9 +152,9 @@ def solve_genomes_with_ftff_kernel(
                 ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
 
                 # O(1) lookup from grid using song_slot
-                count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
-                count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
-                head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
+                count_fever: ti.i32 = ti.cast(kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx], ti.i32)
+                count_normal: ti.i32 = ti.cast(kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx], ti.i32)
+                head_len: ti.i32 = ti.cast(kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx], ti.i32)
 
                 # Budget remaining for PP/CM/FM/OV gems
                 budget: ti.i32 = total_budget - ft - ff
@@ -272,9 +272,9 @@ def solve_ftff_parallel_kernel(
         ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
 
         # O(1) lookup from grid using song_slot for batch coalescing
-        count_fever = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
-        count_normal = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
-        head_len = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
+        count_fever = ti.cast(kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx], ti.i32)
+        count_normal = ti.cast(kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx], ti.i32)
+        head_len = ti.cast(kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx], ti.i32)
 
 
         # Adjust p/s values

@@ -199,7 +199,7 @@ def allocate_fields():
         return
     
     # Reference tables (f32 for performance)
-    ref_pp_field = ti.field(dtype=ti.f32, shape=161)
+    ref_pp_field = ti.field(dtype=ti.i16, shape=161)
     ref_cm_field = ti.field(dtype=ti.f32, shape=161)
     ref_fm_field = ti.field(dtype=ti.f32, shape=161)
     ref_ft_field = ti.field(dtype=ti.f32, shape=161)
@@ -275,9 +275,9 @@ def allocate_grid_fields():
     
     # Timeline grid with song slots (MAX_SONG_SLOTS × 161×161)
     # Slot 0 is default for single-song mode; slots 0-7 for batch mode
-    grid_count_body_fever = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
-    grid_count_body_normal = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
-    grid_head_len = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
+    grid_count_body_fever = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
+    grid_count_body_normal = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
+    grid_head_len = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_fever_masks = ti.field(dtype=ti.i8, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES))
     grid_fever_masks_bits = ti.field(dtype=ti.u32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, 4))
     

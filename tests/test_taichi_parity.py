@@ -34,12 +34,12 @@ from gear_optimizer.core.constants import (
 def create_test_ref_arrays():
     """Create mock reference arrays for testing."""
     # Simple linear progression for testing
-    pp = np.array([i * 2.5 for i in range(161)], dtype=np.float64)
+    p = np.array([i * 2 for i in range(161)], dtype=np.float64)
     cm = np.array([1.0 + i * 0.005 for i in range(161)], dtype=np.float64)
     fm = np.array([1.5 + i * 0.01 for i in range(161)], dtype=np.float64)
     
     return {
-        "Perfect Points": pp,
+        "Perfect Points": p,
         "Combo Multiplier": cm,
         "Fever Multiplier": fm,
     }

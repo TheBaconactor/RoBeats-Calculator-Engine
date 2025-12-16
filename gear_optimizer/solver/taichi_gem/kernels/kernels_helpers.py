@@ -113,7 +113,7 @@ def lookup_ref_pp(value: ti.i32) -> ti.f32:
     Returns:
         PP multiplier from reference table
     """
-    return ref_pp_field[_clamp_stat_idx(value)]
+    return ti.cast(ref_pp_field[_clamp_stat_idx(value)], ti.f32)
 
 
 @ti.func
