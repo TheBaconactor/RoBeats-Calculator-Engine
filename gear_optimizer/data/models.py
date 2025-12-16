@@ -54,6 +54,8 @@ class GASettings:
     deep_mining_enabled: bool
     heuristic_mode: str  # modern | legacy | hybrid
     allow_3_swap: bool  # Enable expensive 3-swap polish (~15s extra)
+    gear_rank_max: int  # Max gear items per slot in rank cache
+    mini_rank_max: int  # Max minis in rank cache
 
     @classmethod
     def from_cfg(cls, cfg):
@@ -74,6 +76,8 @@ class GASettings:
                 True,
                 "modern",
                 True,  # allow_3_swap default
+                40,   # gear_rank_max default
+                40,   # mini_rank_max default
             )
 
         def get_option(option, fallback):
@@ -96,17 +100,18 @@ class GASettings:
             ),
         )
         deep_mining = cfg.getboolean(section, "DeepMining", fallback=True)
-        heuristic_mode = str(get_option("GA_HeuristicMode", "modern") or "modern").strip().lower()
-        if heuristic_mode not in {"modern", "legacy", "hybrid"}:
-            # Be conservative: invalid config should not crash or silently change behavior.
-            try:
-                logging.warning(
-                    f"[GA] Invalid GA_HeuristicMode={heuristic_mode!r}; falling back to 'modern'."
-                )
-            except Exception:
-                pass
-            heuristic_mode = "modern"
         allow_3_swap = cfg.getboolean(section, "GA_Allow3Swap", fallback=True)
+
+        # Read from [GeneticAlgorithm] section if available
+        ga_section = "GeneticAlgorithm"
+        def get_ga_option(option, fallback):
+            try:
+                return cfg.get(ga_section, option, fallback=fallback)
+            except Exception:
+                return fallback
+
+        gear_rank_max = max(10, safe_int(get_ga_option("GearRankMax", "40"), 40))
+        mini_rank_max = max(10, safe_int(get_ga_option("MiniRankMax", "40"), 40))
 
         return cls(
             min(1.0, max(0.0, db_seed_prob)),
@@ -117,8 +122,10 @@ class GASettings:
             memetic_top_minis,
             multi_start,
             deep_mining,
-            heuristic_mode,
+            "modern",  # HeuristicMode always modern now
             allow_3_swap,
+            gear_rank_max,
+            mini_rank_max,
         )
 
 
