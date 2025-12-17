@@ -2,11 +2,6 @@
 # Section 1 can have more FG than section 2, etc. (diminishing returns)
 MAX_SECTION_CAPS = [50, 30, 15, 10, 8, 6, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4]
 
-# Mock Scoring Constants for Pruning (Conservative)
-MOCK_BASE_SCORE = 1000
-MOCK_FEVER_MUL = 3.0
-MOCK_PENALTY = 150
-
 
 def calculate_section_caps(num_sections, non_fever_base, gap=None, fever_activations=None):
     """
@@ -79,26 +74,22 @@ def vectorized_calculate_section_caps_grid(gap_grid, activations_grid, max_per_s
     # Initialize output: (H, W, 16)
     pair_caps = np.zeros((grid_h, grid_w, n_sections), dtype=np.int32)
     
-    # For each section, compute cap as min(hard_cap, gap, max_per_section)
-    # But only if section index < activations (otherwise 0)
+    # For each section, compute cap as min(hard_cap, max_per_section)
+    # NOTE: Previously also capped by gap_grid, but this caused regressions
+    # (e.g., NonFever1=15 was skipped when gap was small at most FT/FF pairs).
+    # The analytic breakpoint collector already handles timeline-change detection,
+    # so we don't need to double-cap here.
     for sec in range(n_sections):
         hard_cap = int(hard_caps[sec])
         
-        # Base cap: min(hard_cap, gap, max_per_section)
-        # Use np.minimum for element-wise min
-        base_cap = np.minimum(gap_grid, hard_cap)
-        base_cap = np.minimum(base_cap, max_per_section)
-        base_cap = np.maximum(base_cap, 0)  # Ensure non-negative
+        # Base cap: min(hard_cap, max_per_section) - no gap capping
+        base_cap = min(hard_cap, max_per_section)
         
         # Zero out where section >= activations
         # activations_grid[i,j] = number of fever windows
         # Section sec is valid only if sec < activations
         mask = sec < activations_grid
         pair_caps[:, :, sec] = np.where(mask, base_cap, 0)
-    
-    # Zero where gap <= 0 (no FG opportunity)
-    no_gap_mask = gap_grid <= 0
-    pair_caps[no_gap_mask, :] = 0
     
     return pair_caps
 
@@ -189,10 +180,11 @@ def collect_analytic_configs(grid, total_rows=160, stat_bounds=None):
             
             limit_secs = min(acts, 4)
             for sec in range(limit_secs):
-                # Calculate cap for this specific pair
-                # We use a localized cap check
+                # Use hard cap only - GPU solver handles per-pair capping via pair_caps_grid
+                # NOTE: Previously used min(hard_cap, gap) but this caused regressions when
+                # sampled FT/FF pairs had small gaps even though other pairs had larger gaps.
                 hard_cap = MAX_SECTION_CAPS[sec] if sec < len(MAX_SECTION_CAPS) else 4
-                effective_cap = min(hard_cap, gap)
+                effective_cap = hard_cap
                 
                 prev_mask_fingerprint = (res_0[0], res_0[1]) # (head_bits, body_count)
                 
@@ -213,35 +205,13 @@ def collect_analytic_configs(grid, total_rows=160, stat_bounds=None):
                     new_signature = (mask.tobytes(), cbf)
                     
                     if new_signature != current_mask_signature:
-                        # Change detected! Check if it's worth the cost.
-                        
-                        # Calculate Fever Gain vs Baseline (0 greats = res_0)
-                        # res_0[0] is head mask (boolean array?), res_0[1] is body fever
-                        # Need to sum head mask
-                        base_head = np.sum(res_0[0])
-                        base_body = res_0[1]
-                        
-                        curr_head = np.sum(mask)
-                        curr_body = cbf
-                        
-                        fever_gain_notes = (curr_head + curr_body) - (base_head + base_body)
-                        
-                        # Gain vs Cost
-                        gain_score = fever_gain_notes * MOCK_BASE_SCORE * (MOCK_FEVER_MUL - 1.0)
-                        
-                        # Cost: Penalty + Fill Penalty?
-                        # Grid returns (mask, cbf, cbn). Doesn't explicitly return fill penalty.
-                        # But fill penalty reduces score.
-                        # Here we assume just basic per-great penalty.
-                        cost_score = c * MOCK_PENALTY
-                        
-                        if gain_score > cost_score:
-                             breakpoints[sec].add(c)
-                        
+                        # Timeline changed! Add this breakpoint.
+                        # We skip mock cost-benefit analysis as it was unreliable
+                        # (caused regressions like missing NonFever1=15).
+                        # Let the GPU scorer determine actual optimality.
+                        breakpoints[sec].add(c)
                         current_mask_signature = new_signature
-                    else:
-                        # 'c' produced same result as 'c-1' (or 0). Useless intermediate.
-                        pass
+                    # else: 'c' produced same result as 'c-1' - useless intermediate, skip it
 
     # Sort and return product
     sorted_breakpoints = [sorted(list(bp)) for bp in breakpoints]
@@ -249,7 +219,7 @@ def collect_analytic_configs(grid, total_rows=160, stat_bounds=None):
     # Display up to max_sections (the logical limit for active sections).
     display_limit = max(1, max_sections)
     display_counts = [len(b) for b in sorted_breakpoints[:display_limit]]
-    print(f"[FG] Analytic Breakpoints (Active Sections 0-{max_sections-1}): {display_counts}")
+    print(f"[FG] Analytic Candidates (Active Sections 0-{max_sections-1}): {display_counts}")
     
     # Show explicit values for ALL active sections to demonstrate pruning
     for sec in range(display_limit):
@@ -259,7 +229,7 @@ def collect_analytic_configs(grid, total_rows=160, stat_bounds=None):
              val_str = f"{vals[:10]} ... {vals[-5:]}"
         else:
              val_str = str(vals)
-        print(f"[FG] Section {sec} (NonFever{sec+1}) Pruned Breakpoints: {val_str}")
+        print(f"[FG] Section {sec} (NonFever{sec+1}) Candidates: {val_str}")
     
     # Prune empty tails
     # If a section (e.g. S15) has only {0}, and all subsequent have {0}, we can drop them if we want configs to match active sections.

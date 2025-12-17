@@ -95,6 +95,15 @@ def build_db_payload(
             }
         )
 
+    # Determine if FG improved
+    best_fg_score_run = 0
+    if current_run_fg_candidates:
+         best_cand = max(current_run_fg_candidates, key=lambda x: x.get("score", 0))
+         best_fg_score_run = best_cand.get("score", 0)
+
+    prev_fg_score = prev_record.get("fg_score") if prev_record else 0
+    is_fg_better = (prev_fg_score is None) or (best_fg_score_run > prev_fg_score)
+    
     if is_first:
         print(
             " >> NEW RECORD! (First entry for this song/context). "
@@ -103,8 +112,12 @@ def build_db_payload(
     elif is_better:
         msg = f" >> NEW RECORD! Previous: {prev_score} | New: {score} - Updating Evolution Database..."
         print(msg)
+    elif is_fg_better and best_fg_score_run > 0:
+        # FG-only improvement
+        msg = f" >> NEW RECORD (ForceGreats)! Previous FG: {prev_fg_score} | New FG: {best_fg_score_run} - Updating Evolution Database..."
+        print(msg)
     else:
-        msg = f" >> No improvement over DB Record ({prev_score})"
+        msg = f" >> No improvement over DB Record (Base: {prev_score}, FG: {prev_fg_score})"
         if is_first: # Edge case coverage
             msg = " >> Record exists but no improvement found."
         print(msg)
