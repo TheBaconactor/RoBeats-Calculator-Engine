@@ -101,7 +101,7 @@ def _fg_upload_song_timestamps(timestamps_np: np.ndarray) -> int:
 
 
 def solve_force_greats_finder_gpu(
-    genome_stats_list: list[dict[str, Any]],
+    genome_stats_list: list[dict[str, Any]] | np.ndarray,
     timestamps_np: np.ndarray,
     long_notes: int,
     last_note_time: float,
@@ -126,18 +126,31 @@ def solve_force_greats_finder_gpu(
     gem_scale_fever: int = 3,
     pair_caps_grid: np.ndarray | None = None,
     cfg_chunk: int | None = None,
-) -> list[dict[str, Any]]:
+    return_raw: bool = False,
+) -> list[dict[str, Any]] | dict[str, np.ndarray]:
     """
     Full GPU ForceGreatsFinder (tolerant mode).
 
-    Returns list aligned with genome_stats_list:
-      dict with keys: base_score, final_score, cfg_idx, FT, FF, gem_counts, score_penalty, fill_penalty
+    Args:
+        genome_stats_list: Either list[dict] with keys base_pp/cm/fm/p_val/s_val/ft_stat/ff_stat,
+                          OR numpy array of shape (n_genomes, 7) with same column order.
+        return_raw: If True, return dict of numpy arrays instead of list[dict].
+                    Keys: 'final_score', 'base_score', 'cfg_idx', 'FT', 'FF', 
+                          'g_pp', 'g_cm', 'g_fm', 'g_ov', 'score_penalty', 'fill_penalty'
+
+    Returns:
+        If return_raw=False: list aligned with genome_stats_list with dict per genome.
+        If return_raw=True: dict of numpy arrays (much faster, no Python object creation).
     """
     if cfg_chunk is None:
         cfg_chunk = fg_fields.FG_MAX_CONFIGS
 
-    if not genome_stats_list:
-        return []
+    # Handle both list and numpy array (numpy arrays have ambiguous truth value)
+    if isinstance(genome_stats_list, np.ndarray):
+        if genome_stats_list.shape[0] == 0:
+            return [] if not return_raw else {}
+    elif not genome_stats_list:
+        return [] if not return_raw else {}
 
     if "Fever Time" not in ref_arrays or "Fever Fill Rate" not in ref_arrays:
         raise KeyError(
@@ -169,18 +182,20 @@ def solve_force_greats_finder_gpu(
     # Upload per-genome base stats using cached buffers
     stats_buf = _get_genome_stats_buf()
     
-    # Reset only used rows (or rely on overwrite)
-    # We overwrite 0..n_genomes completely, so no need to clear.
-    
-    # Fast fill from list-of-dicts
-    for i, st in enumerate(genome_stats_list):
-        stats_buf[i, 0] = int(st.get("base_pp", 0))
-        stats_buf[i, 1] = int(st.get("base_cm", 0))
-        stats_buf[i, 2] = int(st.get("base_fm", 0))
-        stats_buf[i, 3] = int(st.get("base_p_val", 0))
-        stats_buf[i, 4] = int(st.get("base_s_val", 0))
-        stats_buf[i, 5] = int(st.get("base_ft_stat", 0))
-        stats_buf[i, 6] = int(st.get("base_ff_stat", 0))
+    # Fast path: if genome_stats_list is already a numpy array, use directly
+    if isinstance(genome_stats_list, np.ndarray):
+        # Expect shape (n_genomes, 7) with columns: pp, cm, fm, p_val, s_val, ft_stat, ff_stat
+        stats_buf[:n_genomes, :7] = genome_stats_list[:n_genomes, :7]
+    else:
+        # Slow path: unpack list of dicts
+        for i, st in enumerate(genome_stats_list):
+            stats_buf[i, 0] = int(st.get("base_pp", 0))
+            stats_buf[i, 1] = int(st.get("base_cm", 0))
+            stats_buf[i, 2] = int(st.get("base_fm", 0))
+            stats_buf[i, 3] = int(st.get("base_p_val", 0))
+            stats_buf[i, 4] = int(st.get("base_s_val", 0))
+            stats_buf[i, 5] = int(st.get("base_ft_stat", 0))
+            stats_buf[i, 6] = int(st.get("base_ff_stat", 0))
 
     gem_fields.genome_base_stats.from_numpy(stats_buf)
 
@@ -407,6 +422,31 @@ def solve_force_greats_finder_gpu(
         "gpp": out_gpp, "gcm": out_gcm, "gfm": out_gfm, "gov": out_gov,
         "sp": out_sp, "fp": out_fp,
     }
+
+    # Fast path: return raw numpy arrays (skip expensive dict building)
+    if return_raw:
+        if _perf:
+            t_dict_build = 0.0  # No dict building
+            t_total = t_upload + t_kernel + t_download
+            n_chunks = (n_cfg_total + cfg_chunk - 1) // cfg_chunk
+            print(
+                f"[PERF] FG GPU (RAW): upload={t_upload*1000:.1f}ms kernel={t_kernel*1000:.1f}ms "
+                f"download={t_download*1000:.1f}ms total={t_total*1000:.1f}ms "
+                f"(genomes={n_genomes}, cfgs={n_cfg_total}, ftff={n_ftff}, chunks={n_chunks})"
+            )
+        return {
+            "final_score": out_final,
+            "base_score": out_base,
+            "cfg_idx": out_cfg,
+            "FT": out_ft,
+            "FF": out_ff,
+            "g_pp": out_gpp,
+            "g_cm": out_gcm,
+            "g_fm": out_gfm,
+            "g_ov": out_gov,
+            "score_penalty": out_sp,
+            "fill_penalty": out_fp,
+        }
 
     if _USE_ASYNC_FG:
         # Async path: offload dict construction to background thread

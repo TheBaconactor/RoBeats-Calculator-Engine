@@ -420,17 +420,19 @@ def process_force_greats(
                         continue
 
                     _t_genome0 = time.perf_counter() if perf else 0.0
-                    genome_stats_list = []
-                    for bs in pending:
-                        genome_stats_list.append({
-                            "base_pp": int(bs.get("Perfect Points", 0)),
-                            "base_cm": int(bs.get("Combo Multiplier", 0)),
-                            "base_fm": int(bs.get("Fever Multiplier", 0)),
-                            "base_ft_stat": int(bs.get("Fever Time", 0)),
-                            "base_ff_stat": int(bs.get("Fever Fill Rate", 0)),
-                            "base_p_val": int(bs.get(p_color, 0)),
-                            "base_s_val": int(bs.get(s_color, 0)),
-                        })
+                    
+                    # FAST PATH: Build numpy array directly instead of list[dict]
+                    # Column order: pp, cm, fm, p_val, s_val, ft_stat, ff_stat
+                    n_pending = len(pending)
+                    genome_stats_arr = np.zeros((n_pending, 7), dtype=np.int32)
+                    for i, bs in enumerate(pending):
+                        genome_stats_arr[i, 0] = int(bs.get("Perfect Points", 0))
+                        genome_stats_arr[i, 1] = int(bs.get("Combo Multiplier", 0))
+                        genome_stats_arr[i, 2] = int(bs.get("Fever Multiplier", 0))
+                        genome_stats_arr[i, 3] = int(bs.get(p_color, 0))  # p_val
+                        genome_stats_arr[i, 4] = int(bs.get(s_color, 0))  # s_val
+                        genome_stats_arr[i, 5] = int(bs.get("Fever Time", 0))  # ft_stat
+                        genome_stats_arr[i, 6] = int(bs.get("Fever Fill Rate", 0))  # ff_stat
 
                     timestamps = calc_song["song_data"]["timestamps"]
                     long_notes = int(calc_song.get("metadata", {}).get("Long Notes", 0) or 0)
@@ -439,8 +441,9 @@ def process_force_greats(
                         t_genome_build_sec += time.perf_counter() - _t_genome0
 
                     _t_gpu0 = time.perf_counter() if perf else 0.0
+                    # Use return_raw=True for numpy results (skip dict building in API)
                     gpu_results = solve_force_greats_finder_gpu(
-                        genome_stats_list,
+                        genome_stats_arr,  # numpy array instead of list[dict]
                         timestamps,
                         long_notes,
                         last_note_time,
@@ -457,40 +460,60 @@ def process_force_greats(
                         total_budget=TOTAL_GEM_BUDGET,
                         gem_scale_fever=GEM_SCALE_FEVER,
                         pair_caps_grid=pair_caps_grid,
+                        return_raw=True,  # Return numpy arrays, not list[dict]
                     )
                     if perf:
                         t_gpu_calls_sec += time.perf_counter() - _t_gpu0
                         n_gpu_calls += 1
                         if len(gpu_call_shapes) < 12:
                             gpu_call_shapes.append(
-                                (len(genome_stats_list), len(counts_list), len(ftff_pairs), int(n_sections))
+                                (n_pending, len(counts_list), len(ftff_pairs), int(n_sections))
                             )
 
                     # Apply results back to all entries sharing the same signature
+                    # gpu_results is now a dict of numpy arrays (from return_raw=True)
                     _t_apply0 = time.perf_counter() if perf else 0.0
-                    for sig, bs, res in zip(pending_sigs, pending, gpu_results):
-                        # GPU results use union window; accept improvements beyond individual windows.
-
-                        cfg_idx = int(res.get("cfg_idx", -1))
+                    for idx, (sig, bs) in enumerate(zip(pending_sigs, pending)):
+                        # Index into raw numpy arrays (much faster than dict.get)
+                        cfg_idx = int(gpu_results["cfg_idx"][idx])
+                        final_score = int(gpu_results["final_score"][idx])
+                        base_score = int(gpu_results["base_score"][idx])
+                        ft_val = int(gpu_results["FT"][idx])
+                        ff_val = int(gpu_results["FF"][idx])
+                        g_pp = int(gpu_results["g_pp"][idx])
+                        g_cm = int(gpu_results["g_cm"][idx])
+                        g_fm = int(gpu_results["g_fm"][idx])
+                        g_ov = int(gpu_results["g_ov"][idx])
+                        score_penalty = int(gpu_results["score_penalty"][idx])
+                        fill_penalty = int(gpu_results["fill_penalty"][idx])
+                        
                         cfg_counts = list(counts_list[cfg_idx]) if 0 <= cfg_idx < len(counts_list) else []
+
+                        # Build gem_counts dict
+                        gem_counts = {
+                            "Perfect Points": g_pp,
+                            "Combo Multiplier": g_cm,
+                            "Fever Multiplier": g_fm,
+                            "Element Overflow": g_ov,
+                        }
 
                         final_stats = _apply_gems_to_base(
                             bs,
                             str(sel_color),
-                            int(res.get("FT", 0)),
-                            int(res.get("FF", 0)),
-                            res.get("gem_counts") or {},
+                            ft_val,
+                            ff_val,
+                            gem_counts,
                         )
 
                         fg_info = {
                             "enabled": True,
                             "algo_version": 3,
                             "config": _force_greats_counts_to_dict(cfg_counts, max(2, len(cfg_counts))),
-                            "base_score": int(res.get("base_score", 0)),
-                            "final_score": int(res.get("final_score", 0)),
-                            "score_penalty": int(res.get("score_penalty", 0)),
-                            "fill_penalty": int(res.get("fill_penalty", 0)),
-                            "total_penalty": int(res.get("score_penalty", 0)) + int(res.get("fill_penalty", 0)),
+                            "base_score": base_score,
+                            "final_score": final_score,
+                            "score_penalty": score_penalty,
+                            "fill_penalty": fill_penalty,
+                            "total_penalty": score_penalty + fill_penalty,
                             "num_non_fever_sections": int(n_sections),
                             "penalty_analysis": {},
                             "finder": True,
@@ -501,10 +524,10 @@ def process_force_greats(
                         }
 
                         fg_variant = {
-                            "Score": int(res.get("final_score", 0)),
-                            "FT": int(res.get("FT", 0)),
-                            "FF": int(res.get("FF", 0)),
-                            "GemCounts": res.get("gem_counts") or {},
+                            "Score": final_score,
+                            "FT": ft_val,
+                            "FF": ff_val,
+                            "GemCounts": gem_counts,
                             "Stats": final_stats,
                             "Selected Element": str(sel_color),
                             "ForceGreats": {**fg_info, "variant_applied": True},
@@ -518,15 +541,15 @@ def process_force_greats(
                                 "data": fg_variant,
                                 "gear": entry.get("gear", []),
                                 "minis": entry.get("minis", []),
-                                "score": fg_variant.get("Score", 0),
+                                "score": final_score,
                             })
                             entry["force"] = {
-                                "score": fg_variant.get("Score", 0),
+                                "score": final_score,
                                 "gear": _names_list(entry.get("gear", [])),
                                 "minis": _names_list(entry.get("minis", [])),
                                 "details": build_details_fn(fg_variant),
                             }
-                            entry["fg_score"] = fg_variant.get("Score", 0)
+                            entry["fg_score"] = final_score
 
                             # Cache under the entry's specific requirements so future single lookups find it
                             c_ft = int(eval_data.get("FT", 0) or 0)
