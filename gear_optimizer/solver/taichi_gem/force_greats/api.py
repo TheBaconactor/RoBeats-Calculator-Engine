@@ -337,30 +337,47 @@ def solve_force_greats_finder_gpu(
              # But likely caller always provides it now.
              pass
 
-        # Call FLATTENED kernel (GPU-friendly: one thread per work_item * cfg)
-        fg_kernels.fg_stage1_flat_kernel(
-            int(n_work_items),
-            int(n_cfg),
-            int(cfg_offset),
-            int(total_notes),
-            int(long_notes),
-            float(last_note_time),
-            int(total_budget),
-            int(gem_scale_fever),
-            int(n_sections),
-            int(is_p_ft),
-            int(is_s_ft),
-            int(is_p_ff),
-            int(is_s_ff),
-            int(is_p_pp),
-            int(is_s_pp),
-            int(is_p_cm),
-            int(is_s_cm),
-            int(is_p_fm),
-            int(is_s_fm),
-            int(is_p_ov),
-            int(is_s_ov),
-        )
+        # Call Kernel based on platform
+        # On Metal (macOS), 64-bit atomics for the flat kernel are not supported.
+        # Fallback to the sequential-loop kernel (fg_stage1_kernel) which is atomic-free.
+        if gem_fields.IS_METAL:
+            fg_kernels.fg_stage1_kernel(
+                int(n_genomes),
+                int(total_notes),
+                int(long_notes),
+                float(last_note_time),
+                int(total_budget),
+                int(gem_scale_fever),
+                int(n_cfg),
+                int(n_sections),
+                int(n_ftff),
+                int(cfg_offset),
+                int(is_p_ft), int(is_s_ft),
+                int(is_p_ff), int(is_s_ff),
+                int(is_p_pp), int(is_s_pp),
+                int(is_p_cm), int(is_s_cm),
+                int(is_p_fm), int(is_s_fm),
+                int(is_p_ov), int(is_s_ov),
+            )
+        else:
+            # FLATTENED kernel (GPU-friendly: one thread per work_item * cfg)
+            fg_kernels.fg_stage1_flat_kernel(
+                int(n_work_items),
+                int(n_cfg),
+                int(cfg_offset),
+                int(total_notes),
+                int(long_notes),
+                float(last_note_time),
+                int(total_budget),
+                int(gem_scale_fever),
+                int(n_sections),
+                int(is_p_ft), int(is_s_ft),
+                int(is_p_ff), int(is_s_ff),
+                int(is_p_pp), int(is_s_pp),
+                int(is_p_cm), int(is_s_cm),
+                int(is_p_fm), int(is_s_fm),
+                int(is_p_ov), int(is_s_ov),
+            )
         # Force sync after each chunk to prevent TDR - GPU must complete before next launch
         ti.sync()
 
