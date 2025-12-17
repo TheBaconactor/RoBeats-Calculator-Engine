@@ -16,6 +16,9 @@ during population evolution.
 import sys
 import taichi as ti
 
+# Platform detection for atomic operations
+IS_METAL = (sys.platform == "darwin")
+
 from . import kernels_helpers
 
 
@@ -347,8 +350,6 @@ def ga_aggregate_and_init_best_kernel(
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
 
     # Platform detection for atomic operations
-    # Metal (macOS) doesn't support u64 atomics, so we use separate 32-bit fields
-    IS_METAL = (sys.platform == "darwin")
 
     for g in range(n_genomes):
         if ti.static(not IS_METAL):

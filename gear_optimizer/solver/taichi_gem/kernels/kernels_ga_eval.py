@@ -11,7 +11,11 @@ This module contains GPU-native GA evaluation kernels:
 These kernels implement race-free reduction patterns using atomic operations
 and packed keys to safely aggregate results across parallel threads.
 """
+import sys
 import taichi as ti
+
+# Platform detection for atomic operations
+IS_METAL = (sys.platform == "darwin")
 
 from . import kernels_helpers
 
@@ -47,7 +51,11 @@ def init_chunk_best_key_kernel(n_genomes: ti.i32):
     """
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for g in range(n_genomes):
-        kernels_helpers.chunk_best_key[g] = ti.u64(0)
+        if ti.static(not IS_METAL):
+            kernels_helpers.chunk_best_key[g] = ti.u64(0)
+        else:
+            kernels_helpers.chunk_best_score[g] = ti.cast(-2147483648, ti.i32)
+            kernels_helpers.chunk_best_idx[g] = -1
 
 
 @ti.kernel
@@ -68,8 +76,14 @@ def reduce_chunk_to_best_key_kernel(n_work_items: ti.i32):
         gid = kernels_helpers.work_items[i][6]
         score = kernels_helpers.result_stats[i][0]
         if score >= 0:
-            key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(i, ti.u64)
-            ti.atomic_max(kernels_helpers.chunk_best_key[gid], key)
+            if ti.static(not IS_METAL):
+                key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(i, ti.u64)
+                ti.atomic_max(kernels_helpers.chunk_best_key[gid], key)
+            else:
+                # Metal: update score first, then index (benign race)
+                old = ti.atomic_max(kernels_helpers.chunk_best_score[gid], score)
+                if old < score:
+                    kernels_helpers.chunk_best_idx[gid] = i
 
 
 @ti.kernel
@@ -85,10 +99,22 @@ def merge_chunk_best_to_genomes_kernel(n_genomes: ti.i32):
     """
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for g in range(n_genomes):
-        key = kernels_helpers.chunk_best_key[g]
-        if key != 0:
-            i = ti.cast(key & ti.u64(0xFFFFFFFF), ti.i32)
-            score = ti.cast((key >> 32) - 1, ti.i32)
+        score = 0
+        i = 0
+        valid = False
+
+        if ti.static(not IS_METAL):
+            key = kernels_helpers.chunk_best_key[g]
+            if key != 0:
+                i = ti.cast(key & ti.u64(0xFFFFFFFF), ti.i32)
+                score = ti.cast((key >> 32) - 1, ti.i32)
+                valid = True
+        else:
+            score = kernels_helpers.chunk_best_score[g]
+            i = kernels_helpers.chunk_best_idx[g]
+            valid = (i >= 0)
+
+        if valid:
             if score > kernels_helpers.genome_result_stats[g][0]:
                 item = kernels_helpers.work_items[i]
                 res = kernels_helpers.result_stats[i]
@@ -211,8 +237,13 @@ def ga_find_best_combo_key_kernel(
 
         score: ti.i32 = res_vec[0]
         if score >= 0:
-            key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
-            ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], key)
+            if ti.static(not IS_METAL):
+                key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
+                ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], key)
+            else:
+                old = ti.atomic_max(kernels_helpers.chunk_best_score[genome_idx], score)
+                if old < score:
+                    kernels_helpers.chunk_best_idx[genome_idx] = combo_idx
 
 
 @ti.kernel
@@ -251,13 +282,24 @@ def ga_write_best_results_from_key_kernel(
     MAX_STAT: ti.i32 = 160
 
     for genome_idx in range(n_genomes):
-        key = kernels_helpers.chunk_best_key[genome_idx]
-        if key == 0:
+        combo_idx = 0
+        valid = False
+
+        if ti.static(not IS_METAL):
+            key = kernels_helpers.chunk_best_key[genome_idx]
+            if key != 0:
+                combo_idx = ti.cast(key & ti.u64(0xFFFFFFFF), ti.i32)
+                valid = True
+        else:
+            i = kernels_helpers.chunk_best_idx[genome_idx]
+            if i >= 0:
+                combo_idx = i
+                valid = True
+
+        if not valid:
             kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([-1, 0, 0, 0, 0, 0, 0])
             kernels_helpers.ga_scores[genome_idx] = -1
             continue
-
-        combo_idx: ti.i32 = ti.cast(key & ti.u64(0xFFFFFFFF), ti.i32)
         ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
         ff: ti.i32 = kernels_helpers.ftff_combo_ff[combo_idx]
 
@@ -348,13 +390,24 @@ def ga_write_best_and_update_global_kernel(
     MAX_STAT: ti.i32 = 160
 
     for genome_idx in range(n_genomes):
-        key = kernels_helpers.chunk_best_key[genome_idx]
-        if key == 0:
+        combo_idx = 0
+        valid = False
+
+        if ti.static(not IS_METAL):
+            key = kernels_helpers.chunk_best_key[genome_idx]
+            if key != 0:
+                combo_idx = ti.cast(key & ti.u64(0xFFFFFFFF), ti.i32)
+                valid = True
+        else:
+            i = kernels_helpers.chunk_best_idx[genome_idx]
+            if i >= 0:
+                combo_idx = i
+                valid = True
+
+        if not valid:
             kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([-1, 0, 0, 0, 0, 0, 0])
             kernels_helpers.ga_scores[genome_idx] = -1
             continue
-
-        combo_idx: ti.i32 = ti.cast(key & ti.u64(0xFFFFFFFF), ti.i32)
         ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
         ff: ti.i32 = kernels_helpers.ftff_combo_ff[combo_idx]
 
@@ -706,8 +759,13 @@ def ga_find_best_combo_warmstart_kernel(
 
         score: ti.i32 = res_vec[0]
         if score >= 0:
-            key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
-            ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], key)
+            if ti.static(not IS_METAL):
+                key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
+                ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], key)
+            else:
+                old = ti.atomic_max(kernels_helpers.chunk_best_score[genome_idx], score)
+                if old < score:
+                    kernels_helpers.chunk_best_idx[genome_idx] = combo_idx
 
 
 MAX_MIGRATE_COUNT = 8  # Static limit for local arrays in migration kernel
