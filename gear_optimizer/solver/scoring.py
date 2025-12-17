@@ -549,7 +549,7 @@ def evaluate_stats_score(
 
     ft_factor = lookup_reference_py(stats["Fever Time"], ref_arrays["Fever Time"], TOTAL_ROWS)
     ff_factor = lookup_reference_py(stats["Fever Fill Rate"], ref_arrays["Fever Fill Rate"], TOTAL_ROWS)
-    fever_mask_head, count_body_fever, count_body_normal, _ = calculate_fever_timeline_indices(
+    fever_mask_head, count_body_fever, count_body_normal, _, _ = calculate_fever_timeline_indices(
         timestamps,
         total_notes,
         ff_factor,
@@ -1286,6 +1286,22 @@ def run_force_greats_hill_climb(
     non_fever_base = baseline.get("non_fever_base", 20)
     max_per_section = min(non_fever_base, 15)  # Cap at 15 due to FT/FF iteration cost
     
+    # Get gap and fever_activations from timeline grid (for smart config gen)
+    gap = None
+    fever_activations = None
+    try:
+        from .fever_timeline import get_song_timeline_grid
+        grid = get_song_timeline_grid(calc_song, ref_arrays)
+        # Use a middle FT/FF index for baseline gap (actual gap varies by gems)
+        # This gives a conservative estimate for config generation
+        _, _, _, acts, last_fever_end = grid.get_timeline(80, 80)
+        gap = grid.total_notes - last_fever_end
+        fever_activations = acts
+        print(f"[FG] Gap lookup OK: gap={gap}, fever_activations={fever_activations}, total_notes={grid.total_notes}")
+    except Exception as e:
+        print(f"[FG] Gap lookup FAILED: {type(e).__name__}: {e}")
+        pass  # Fall back to default caps if grid lookup fails
+    
     # Calculate FT/FF search window (kept tight; full FT/FF × all FG configs explodes combinatorially)
     search_ranges = None
     if center_ft is not None and center_ff is not None:
@@ -1296,9 +1312,11 @@ def run_force_greats_hill_climb(
             center_ff + search_radius,
         )
 
-    # Build FG config list in deterministic order (matches the legacy nested loops)
-    # Build FG config list using Dynamic Budget logic
-    counts_list = generate_dynamic_fg_configs(num_sections, non_fever_base, budget=4096)
+    # Build FG config list using Dynamic Budget logic (now with gap/activations)
+    counts_list = generate_dynamic_fg_configs(
+        num_sections, non_fever_base, budget=4096, 
+        gap=gap, fever_activations=fever_activations
+    )
 
     # --------------------------------------------------------------------
     # FULL GPU FINDER PATH (when enabled):

@@ -52,6 +52,8 @@ grid_count_body_normal: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32
 grid_head_len: ti.Field = None           # (MAX_SONG_SLOTS, 161, 161) i32
 grid_fever_masks: ti.Field = None        # (MAX_SONG_SLOTS, 161, 161, 100) i8 - head masks
 grid_fever_masks_bits: ti.Field = None   # (MAX_SONG_SLOTS, 161, 161, 4) u32 - bitpacked head masks
+grid_gap: ti.Field = None                 # (MAX_SONG_SLOTS, 161, 161) i16 - gap to song end per (FT, FF)
+grid_fever_activations: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i8 - fever activations per (FT, FF)
 
 # Song data for GPU timeline computation
 song_timestamps: ti.Field = None  # (MAX_SONG_NOTES,) f32
@@ -94,6 +96,13 @@ ga_parent_b: ti.Field = None         # (MAX_GENOMES,) int32 selected parent inde
 # GPU-side global best tracking (avoids per-generation CPU downloads)
 ga_global_best_score: ti.Field = None     # (1,) i32 - best score across all generations
 ga_global_best_genome: ti.Field = None    # (MAX_SLOTS,) i32 - item IDs of best genome
+ga_global_best_results: ti.Field = None   # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for best genome
+
+# GPU-side island elitism (avoids per-generation score downloads)
+MAX_ISLANDS = 16  # Maximum number of islands
+island_boundaries: ti.Field = None        # (MAX_ISLANDS+1,) i32 - island start indices + end sentinel
+island_elite_indices: ti.Field = None     # (MAX_GENOMES,) i32 - output: elite genome indices
+island_elite_count: ti.Field = None       # (1,) i32 - output: total elites found
 
 # Slot pools for GPU mutation - contiguous ID ranges per slot
 # Allows O(1) mutation: new_id = slot_start[s] + (rand % slot_count[s])
@@ -195,7 +204,8 @@ def allocate_fields():
     global genome_hint_allocation
     global chunk_best_key, chunk_best_score, chunk_best_idx
     global ftff_combo_ft, ftff_combo_ff
-    global ga_global_best_score, ga_global_best_genome
+    global ga_global_best_score, ga_global_best_genome, ga_global_best_results
+    global island_boundaries, island_elite_indices, island_elite_count
     
     if _fields_allocated:
         return
@@ -257,6 +267,14 @@ def allocate_fields():
     # GPU-side global best tracking (avoids per-generation CPU downloads)
     ga_global_best_score = ti.field(dtype=ti.i32, shape=1)
     ga_global_best_genome = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
+    ga_global_best_results = ti.field(dtype=ti.i32, shape=7)  # [score, ft, ff, pp, cm, fm, ov]
+    
+    # GPU-side island elitism (avoids per-generation score downloads)
+    # Islands are contiguous ranges in the population
+    MAX_ISLANDS = 16  # Maximum number of islands
+    island_boundaries = ti.field(dtype=ti.i32, shape=MAX_ISLANDS + 1)  # [start0, start1, ..., end_last]
+    island_elite_indices = ti.field(dtype=ti.i32, shape=MAX_GENOMES)  # Output: elite genome indices
+    island_elite_count = ti.field(dtype=ti.i32, shape=1)  # Output: total elites found
     
     _fields_allocated = True
     print(f"[Taichi] Allocated GPU fields: {MAX_WORK_ITEMS} work items, {MAX_HEAD_NOTES} head notes, {MAX_GENOMES} genomes")
@@ -271,6 +289,7 @@ def allocate_grid_fields():
     Each song slot can hold a different song's grid for parallel processing.
     """
     global grid_count_body_fever, grid_count_body_normal, grid_head_len, grid_fever_masks, grid_fever_masks_bits
+    global grid_gap, grid_fever_activations
     global song_timestamps
     global _grid_fields_allocated
     
@@ -284,6 +303,10 @@ def allocate_grid_fields():
     grid_head_len = ti.field(dtype=ti.i8, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_fever_masks = ti.field(dtype=ti.i8, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES))
     grid_fever_masks_bits = ti.field(dtype=ti.u32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, 4))
+    # Gap to song end: total_notes - last_fever_end_idx (positive = opportunity, negative = overshoot)
+    grid_gap = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
+    # Fever activations count per (FT, FF) - sections beyond this have no fever
+    grid_fever_activations = ti.field(dtype=ti.i8, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     
     # Song timestamps for GPU timeline computation
     song_timestamps = ti.field(dtype=ti.f32, shape=MAX_SONG_NOTES)
@@ -330,6 +353,8 @@ def bind_fields(kernels_module):
     target.grid_head_len = grid_head_len
     target.grid_fever_masks = grid_fever_masks
     target.grid_fever_masks_bits = grid_fever_masks_bits
+    target.grid_gap = grid_gap
+    target.grid_fever_activations = grid_fever_activations
 
     # Song data for timeline
     target.song_timestamps = song_timestamps
@@ -370,6 +395,12 @@ def bind_fields(kernels_module):
     # GPU-side global best tracking
     target.ga_global_best_score = ga_global_best_score
     target.ga_global_best_genome = ga_global_best_genome
+    target.ga_global_best_results = ga_global_best_results
+    
+    # GPU-side island elitism
+    target.island_boundaries = island_boundaries
+    target.island_elite_indices = island_elite_indices
+    target.island_elite_count = island_elite_count
 
 
 def ensure_fields_allocated():
@@ -426,6 +457,8 @@ def ensure_grid_fields_allocated():
             kernels_metal.grid_count_body_normal = grid_count_body_normal
             kernels_metal.grid_head_len = grid_head_len
             kernels_metal.grid_fever_masks_bits = grid_fever_masks_bits
+            kernels_metal.grid_gap = grid_gap
+            kernels_metal.grid_fever_activations = grid_fever_activations
             
             # Now that ALL fields are bound, apply Metal kernel patches
             from .kernel_loader import apply_metal_patches

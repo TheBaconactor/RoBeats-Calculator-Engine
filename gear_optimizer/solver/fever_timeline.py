@@ -53,7 +53,8 @@ def calculate_fever_timeline_indices(
         fever_mask_buffer: Preallocated boolean array for fever mask
 
     Returns:
-        tuple: (fever_mask_head, count_body_fever, count_body_normal, fever_activations)
+        tuple: (fever_mask_head, count_body_fever, count_body_normal, fever_activations, last_fever_end_idx)
+               last_fever_end_idx = where the last fever window ends (for gap calculation)
     """
     non_fever_cas = (total_notes - long_notes_count) * 0.333
     non_fever_base = ceil(non_fever_cas * fever_fill_rate)
@@ -65,6 +66,7 @@ def calculate_fever_timeline_indices(
     current_note_idx = 0
     fever_activations = 0
     fever_section = 0
+    last_fever_end_idx = 0  # Track where last fever ends
 
     while current_note_idx < total_notes:
         # Non-fever section
@@ -88,6 +90,7 @@ def calculate_fever_timeline_indices(
             fever_end_idx = np.searchsorted(song_timestamps, end_time, side="left")
             is_fever[current_note_idx:fever_end_idx] = True
             current_note_idx = fever_end_idx
+            last_fever_end_idx = fever_end_idx  # Update last fever end
         else:
             break
 
@@ -101,7 +104,7 @@ def calculate_fever_timeline_indices(
                 count_body_fever += 1
             else:
                 count_body_normal += 1
-    return fever_mask_head, count_body_fever, count_body_normal, fever_activations
+    return fever_mask_head, count_body_fever, count_body_normal, fever_activations, last_fever_end_idx
 
 
 @jit(nopython=True, cache=True)
@@ -338,7 +341,7 @@ class SongTimelineGrid:
             ff_idx: Fever Fill Rate stat index (0-160)
             
         Returns:
-            tuple: (fever_mask_head, count_body_fever, count_body_normal, fever_activations)
+            tuple: (fever_mask_head, count_body_fever, count_body_normal, fever_activations, last_fever_end_idx)
         """
         # Clamp indices to valid range
         ft_idx = max(0, min(TOTAL_ROWS, int(ft_idx)))
@@ -352,7 +355,7 @@ class SongTimelineGrid:
         ft_factor = self.ft_factors[ft_idx]
         ff_factor = self.ff_factors[ff_idx]
         
-        fever_mask_head, count_body_fever, count_body_normal, fever_activations = calculate_fever_timeline_indices(
+        fever_mask_head, count_body_fever, count_body_normal, fever_activations, last_fever_end_idx = calculate_fever_timeline_indices(
             self.song_timestamps,
             self.total_notes,
             ff_factor,
@@ -363,7 +366,7 @@ class SongTimelineGrid:
         )
         
         # Copy the head slice (buffer is reused)
-        result = (fever_mask_head.copy(), count_body_fever, count_body_normal, fever_activations)
+        result = (fever_mask_head.copy(), count_body_fever, count_body_normal, fever_activations, last_fever_end_idx)
         self._timeline_grid[ft_idx][ff_idx] = result
         return result
     
@@ -414,6 +417,8 @@ class SongTimelineGrid:
                 'count_body_fever': (161, 161) int32 array,
                 'count_body_normal': (161, 161) int32 array,
                 'fever_activations': (161, 161) int32 array,
+                'last_fever_end': (161, 161) int32 array,
+                'gap': (161, 161) int32 array (= total_notes - last_fever_end),
                 'ft_factors': (161,) float32 array,
                 'ff_factors': (161,) float32 array,
             }
@@ -427,20 +432,26 @@ class SongTimelineGrid:
         count_body_fever = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
         count_body_normal = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
         fever_activations = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
+        last_fever_end = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
+        gap = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
         
         for ft in range(self.GRID_SIZE):
             for ff in range(self.GRID_SIZE):
                 timeline = self._timeline_grid[ft][ff]
                 if timeline:
-                    _, cbf, cbn, acts = timeline
+                    _, cbf, cbn, acts, lfe = timeline
                     count_body_fever[ft, ff] = cbf
                     count_body_normal[ft, ff] = cbn
                     fever_activations[ft, ff] = acts
+                    last_fever_end[ft, ff] = lfe
+                    gap[ft, ff] = self.total_notes - lfe
         
         return {
             'count_body_fever': count_body_fever,
             'count_body_normal': count_body_normal,
             'fever_activations': fever_activations,
+            'last_fever_end': last_fever_end,
+            'gap': gap,
             'ft_factors': np.array(self.ft_factors, dtype=np.float32),
             'ff_factors': np.array(self.ff_factors, dtype=np.float32),
         }

@@ -82,6 +82,10 @@ try:
         ga_init_global_best,
         ga_update_global_best,
         ga_download_global_best,
+        # GPU-side island elitism
+        ga_upload_island_boundaries,
+        ga_find_island_elites,
+        ga_download_island_elite_indices,
         # Warm-start
         ga_store_hints,
         ga_inherit_hints,
@@ -129,6 +133,10 @@ __all__ = [
     "ga_init_global_best",
     "ga_update_global_best",
     "ga_download_global_best",
+    # GPU-side island elitism
+    "ga_upload_island_boundaries",
+    "ga_find_island_elites",
+    "ga_download_island_elite_indices",
     # Warm-start
     "ga_store_hints",
     "ga_inherit_hints",

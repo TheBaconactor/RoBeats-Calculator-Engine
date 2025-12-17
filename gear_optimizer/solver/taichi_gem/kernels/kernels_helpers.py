@@ -37,6 +37,8 @@ grid_count_body_normal = None
 grid_head_len = None
 grid_fever_masks = None
 grid_fever_masks_bits = None
+grid_gap = None  # (MAX_SONG_SLOTS, 161, 161) i16 - gap to song end per (FT, FF)
+grid_fever_activations = None  # (MAX_SONG_SLOTS, 161, 161) i8 - fever activations per (FT, FF)
 
 # Song data for timeline computation
 song_timestamps = None  # (MAX_SONG_NOTES,) f32
@@ -83,6 +85,12 @@ ftff_combo_ff = None   # (MAX_FTFF_COMBOS,) i32
 # GPU-side global best tracking (avoids per-generation CPU downloads)
 ga_global_best_score = None   # (1,) i32 - best score across all generations
 ga_global_best_genome = None  # (MAX_SLOTS,) i32 - item IDs of best genome
+ga_global_best_results = None # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for best genome
+
+# GPU-side island elitism (avoids per-generation score downloads)
+island_boundaries = None       # (MAX_ISLANDS+1,) i32 - island start/end indices
+island_elite_indices = None    # (MAX_GENOMES,) i32 - output: elite genome indices
+island_elite_count = None      # (1,) i32 - output: total elites found
 
 
 # ============================================================================

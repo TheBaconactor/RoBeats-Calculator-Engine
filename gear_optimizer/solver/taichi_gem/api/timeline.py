@@ -56,6 +56,8 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     - grid_head_len[song_slot, ft, ff]
     - grid_fever_masks[song_slot, ft, ff, :]
     - grid_fever_masks_bits[song_slot, ft, ff, :]
+    - grid_gap[song_slot, ft, ff] (computed by CPU upload path)
+    - grid_fever_activations[song_slot, ft, ff] (computed by CPU upload path)
     """
     global _gpu_timeline_song_id_by_slot
 
@@ -153,9 +155,12 @@ def _upload_timeline_grid(timeline_grid):
     hl_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int8)
     masks_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES), dtype=np.int8)
     masks_bits_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, 4), dtype=np.uint32)
+    gap_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int16)
+    fevact_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int8)
 
     # Fill slot 0 with timeline data
     song_slot = 0
+    total_notes = timeline_grid.total_notes  # Get total notes for gap calculation
 
     # Vectorized extraction: iterate once, extract directly into slot 0
     for ft_idx in range(grid_size):
@@ -163,9 +168,11 @@ def _upload_timeline_grid(timeline_grid):
         for ff_idx in range(grid_size):
             timeline = row[ff_idx]
             if timeline is not None:
-                fever_mask_head, count_fever, count_normal, _ = timeline
+                fever_mask_head, count_fever, count_normal, fevact, last_fever_end = timeline
                 cbf_np[song_slot, ft_idx, ff_idx] = count_fever
                 cbn_np[song_slot, ft_idx, ff_idx] = count_normal
+                fevact_np[song_slot, ft_idx, ff_idx] = fevact
+                gap_np[song_slot, ft_idx, ff_idx] = total_notes - last_fever_end
                 head_len = min(len(fever_mask_head), MAX_HEAD_NOTES)
                 hl_np[song_slot, ft_idx, ff_idx] = head_len
                 masks_np[song_slot, ft_idx, ff_idx, :head_len] = fever_mask_head[:head_len].astype(np.int8)
@@ -188,6 +195,8 @@ def _upload_timeline_grid(timeline_grid):
     fields.grid_head_len.from_numpy(hl_np)
     fields.grid_fever_masks.from_numpy(masks_np)
     fields.grid_fever_masks_bits.from_numpy(masks_bits_np)
+    fields.grid_gap.from_numpy(gap_np)
+    fields.grid_fever_activations.from_numpy(fevact_np)
     _profiler.record_upload(time.perf_counter() - _t_gpu_upload)
 
     _grid_uploaded = True

@@ -209,8 +209,15 @@ def _run_gpu_native_ga(
     
     # Warm-start control: force cold start on Gen 0
     gen_use_hints = 0
+    
+    # Upload island boundaries to GPU (once per run)
+    island_boundaries_np = np.array(island_starts, dtype=np.int32)
+    gpu_api.ga_upload_island_boundaries(island_boundaries_np)
+    
+    # Initialize GPU-side global best tracking
+    gpu_api.ga_init_global_best()
 
-    # Main GPU-native GA loop with island migration
+    # Main GPU-native GA loop with island migration (GPU-resident elitism)
     for gen in range(n_generations):
         # Evaluate ENTIRE population on GPU (all islands at once - efficient)
         gpu_api.ga_evaluate_population(
@@ -231,53 +238,23 @@ def _run_gpu_native_ga(
         # Store best allocations as hints for next generation
         gpu_api.ga_store_hints(n_genomes)
         
-        # Download scores for elitism (small transfer: n_genomes ints)
-        scores = gpu_api.ga_download_scores(n_genomes)
+        # GPU-side global best update (no CPU download!)
+        gpu_api.ga_update_global_best(n_genomes, n_slots)
         
-        # Track global best across all islands
-        gen_best_idx = int(np.argmax(scores))
-        gen_best_score = int(scores[gen_best_idx])
+        # GPU-side island elite selection (no CPU download!)
+        gpu_api.ga_find_island_elites(n_genomes, num_islands, elite_count)
         
-        if gen_best_score > best_score:
-            best_score = gen_best_score
-            # CRITICAL: Must capture genome IDs AND gem results NOW, not at end of run!
-            # ga_next_generation will modify the population, overwriting the genome at this index.
-            # Optimization: reuse pop_snapshot if already downloaded this generation
-            if pop_snapshot is None or pop_snapshot_gen != gen:
-                pop_snapshot = gpu_api.ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
-                # Also download results (gem allocations) - same race condition applies!
-                results_snapshot = gpu_api.ga_download_results(n_genomes)
-                pop_snapshot_gen = gen
-            best_genome_ids = pop_snapshot[gen_best_idx].copy()
-            best_result_row = results_snapshot[gen_best_idx].copy()  # [score, ft, ff, pp, cm, fm, ov]
-            
-            if status_cb:
-                status_cb(f"GPU-Native Gen {gen+1}/{n_generations}: New Best {best_score}")
-            elif (gen + 1) % 10 == 0:
-                print(f"  >> GPU-Native Gen {gen+1}: Best {best_score}")
-        elif (gen + 1) % 10 == 0 and status_cb is None:
-            print(f"  >> GPU-Native Gen {gen+1}: Best {gen_best_score} (global {best_score})")
-        
-        # --- ISLAND-AWARE ELITISM ---
-        # Find elite indices PER ISLAND (not global) to maintain island diversity
-        elite_indices_list = []
-        for isl in range(num_islands):
-            isl_start = island_starts[isl]
-            isl_end = island_starts[isl + 1]
-            isl_scores = scores[isl_start:isl_end]
-            # Get top 'elite_count' indices within this island, then offset to global
-            isl_top = np.argsort(isl_scores)[-elite_count:] + isl_start
-            elite_indices_list.extend(isl_top.tolist())
-        
-        elite_indices = np.array(elite_indices_list, dtype=np.int32)
+        # Download elite indices for ga_next_generation (small: ~10 ints per island)
+        total_elites = num_islands * elite_count
+        elite_indices = gpu_api.ga_download_island_elite_indices(total_elites)
         
         # --- MIGRATION PHASE (every GPU_GA_GENS_PER_MIGRATION generations) ---
+        # Migration still requires score download for now (CPU-side logic)
         is_migration_gen = num_islands > 1 and (gen + 1) % GPU_GA_GENS_PER_MIGRATION == 0
         if is_migration_gen:
-            # Download population for migration (reuse if already current)
-            if pop_snapshot is None or pop_snapshot_gen != gen:
-                pop_snapshot = gpu_api.ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
-                pop_snapshot_gen = gen
+            # Download scores and population for migration
+            scores = gpu_api.ga_download_scores(n_genomes)
+            pop_snapshot = gpu_api.ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
             
             # Ring topology: island i sends to island (i+1) % num_islands
             for isl in range(num_islands):
@@ -300,10 +277,8 @@ def _run_gpu_native_ga(
                 for mi, (src_idx, dst_idx) in enumerate(zip(src_top_global, dst_worst_global)):
                     pop_snapshot[dst_idx] = pop_snapshot[src_idx].copy()
             
-            # Re-upload patched population and invalidate cache
+            # Re-upload patched population
             gpu_api.ga_upload_population_indices(pop_snapshot, n_slots=n_slots)
-            pop_snapshot = None  # Invalidate - population changed
-            pop_snapshot_gen = -1
             
             # Optimization: Force cold start after migration, as hints are scrambled
             gen_use_hints = 0
@@ -327,6 +302,10 @@ def _run_gpu_native_ga(
             # Inherit hints from parents to children (for warm start)
             gpu_api.ga_inherit_hints(n_genomes)
 
+    # --- END OF RUN: Download global best from GPU ---
+    # GPU-side global best tracking captured the best genome and results during the loop
+    best_score, best_genome_ids, best_result_row = gpu_api.ga_download_global_best()
+
 
     # --- END OF GA RUN: Download final population for FG candidate extraction ---
     # NOTE: best_genome_ids and best_result_row were captured when best score was found (during loop)
@@ -336,8 +315,9 @@ def _run_gpu_native_ga(
     # Decode best genome (already captured correctly during loop)
     best_genome = registry.decode_genome(best_genome_ids) if best_genome_ids is not None else []
     
-    # Download final results for FG candidate gem allocations only (not for best genome)
+    # Download final results and scores for FG candidate gem allocations and ranking
     results = gpu_api.ga_download_results(n_genomes)
+    scores = gpu_api.ga_download_scores(n_genomes)  # For FG candidate ranking
     
     # Best result uses the captured best_result_row (has correct gem allocations from when best was found)
     if best_result_row is not None:
@@ -350,7 +330,6 @@ def _run_gpu_native_ga(
     all_evaluated = []
     if best_genome_ids is not None:
         # Sort by score descending
-        # We use a stable sort or simple argsort. Scores are already on CPU.
         top_indices = np.argsort(scores)[::-1]
         
         # Take up to LIMIT candidates (decoding excessively many is slow)

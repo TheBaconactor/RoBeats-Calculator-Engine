@@ -69,7 +69,7 @@ def evaluate_stats_score(
 
     ft_factor = lookup_reference_py(stats["Fever Time"], ref_arrays["Fever Time"], TOTAL_ROWS)
     ff_factor = lookup_reference_py(stats["Fever Fill Rate"], ref_arrays["Fever Fill Rate"], TOTAL_ROWS)
-    fever_mask_head, count_body_fever, count_body_normal, _ = calculate_fever_timeline_indices(
+    fever_mask_head, count_body_fever, count_body_normal, _, _ = calculate_fever_timeline_indices(
         timestamps,
         total_notes,
         ff_factor,

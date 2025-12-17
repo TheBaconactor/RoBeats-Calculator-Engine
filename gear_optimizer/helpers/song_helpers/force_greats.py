@@ -236,7 +236,24 @@ def process_force_greats(
             if perf:
                 t_collect_sec = time.perf_counter() - _t_collect0
 
-            # Caches for config generation
+            # Precompute gap and fever_activations ONCE per song
+            # Use a representative middle point (80, 80) - typical gem allocation
+            song_gap = None
+            song_fever_activations = None
+            try:
+                from ...solver.fever_timeline import get_song_timeline_grid
+                grid = get_song_timeline_grid(calc_song, ref_arrays)
+                
+                # Use middle FT/FF (80, 80) as representative baseline
+                # This represents typical gem allocation and gives reasonable cap
+                _, _, _, acts, last_fever_end = grid.get_timeline(80, 80)
+                song_gap = grid.total_notes - last_fever_end
+                song_fever_activations = acts
+                print(f"[FG] Song gap: {song_gap}, activations: {song_fever_activations}")
+            except Exception as e:
+                print(f"[FG] Gap precomputation FAILED: {type(e).__name__}: {e}")
+
+            # Caches for config generation (now uses precomputed gap)
             _cache_counts = {}
 
             # Process each group in GPU batches
@@ -264,14 +281,18 @@ def process_force_greats(
                     print(f"[ForceGreats][GPU] Warning: FT/FF union size {len(ftff_pairs)} > 1024. Truncating.")
                     ftff_pairs = ftff_pairs[:1024]
 
-                # Build FG configs list (Cached)
+                # Build FG configs list (uses precomputed song gap)
                 counts_key = (n_sections, max_per_section)
                 counts_list = _cache_counts.get(counts_key)
                 if counts_list is None:
-                    # Use shared Dynamic Budget logic
+                    # Use shared Dynamic Budget logic with precomputed gap
                     from ..fg_utils import generate_dynamic_fg_configs
-                    counts_list = generate_dynamic_fg_configs(n_sections, non_fever_base, budget=4096)
+                    counts_list = generate_dynamic_fg_configs(
+                        n_sections, non_fever_base, budget=4096,
+                        gap=song_gap, fever_activations=song_fever_activations
+                    )
                     _cache_counts[counts_key] = counts_list
+                    print(f"[FG] Generated {len(counts_list)} configs (n_sections={n_sections})")
 
                 if perf:
                     t_cfg_build_sec += time.perf_counter() - _t_cfg0

@@ -52,6 +52,11 @@ from .kernels_helpers import (
     # GPU-side global best tracking
     ga_global_best_score,
     ga_global_best_genome,
+    ga_global_best_results,
+    # GPU-side island elitism
+    island_boundaries,
+    island_elite_indices,
+    island_elite_count,
 )
 
 # Import helper functions
@@ -117,6 +122,8 @@ from .kernels_ga_eval import (
     # GPU-side global best tracking
     ga_init_global_best_kernel,
     ga_update_global_best_kernel,
+    # GPU-side island elitism
+    ga_find_island_elites_kernel,
     # Warm-start evaluation
     ga_find_best_combo_warmstart_kernel,
 )

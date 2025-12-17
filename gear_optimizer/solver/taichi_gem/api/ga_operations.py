@@ -454,16 +454,71 @@ def ga_update_global_best(n_genomes: int, n_slots: int = 9) -> None:
     kernels.ga_update_global_best_kernel(int(n_genomes), int(n_slots))
 
 
-def ga_download_global_best() -> tuple[int, np.ndarray]:
+def ga_download_global_best() -> tuple[int, np.ndarray, np.ndarray]:
     """
-    Download the global best genome from GPU.
+    Download the global best genome and results from GPU.
     
     Returns:
-        Tuple of (best_score, best_genome_ids):
+        Tuple of (best_score, best_genome_ids, best_results):
         - best_score: int - the best score found across all generations
         - best_genome_ids: np.ndarray (n_slots,) int32 - item IDs of best genome
+        - best_results: np.ndarray (7,) int32 - [score, ft, ff, pp, cm, fm, ov]
     """
     ensure_ready()
     best_score = int(fields.ga_global_best_score.to_numpy()[0])
     best_genome_ids = fields.ga_global_best_genome.to_numpy().copy()
-    return best_score, best_genome_ids
+    best_results = fields.ga_global_best_results.to_numpy().copy()
+    return best_score, best_genome_ids, best_results
+
+
+def ga_upload_island_boundaries(island_starts: np.ndarray) -> None:
+    """
+    Upload island boundary indices to GPU for island-based elitism.
+    
+    Args:
+        island_starts: (n_islands + 1,) int32 array of island boundaries.
+                      Format: [start0, start1, ..., end_last]
+                      Island i owns indices [start[i], start[i+1])
+    """
+    ensure_ready()
+    buf = np.zeros(fields.MAX_ISLANDS + 1, dtype=np.int32)
+    n = min(len(island_starts), fields.MAX_ISLANDS + 1)
+    buf[:n] = np.asarray(island_starts[:n], dtype=np.int32)
+    fields.island_boundaries.from_numpy(buf)
+
+
+def ga_find_island_elites(n_genomes: int, n_islands: int, elites_per_island: int) -> None:
+    """
+    GPU-side island elite selection: find top-k genomes per island.
+    
+    This replaces the CPU-side score download + argsort previously used.
+    Must call ga_upload_island_boundaries() first.
+    
+    After calling, elite indices are available in island_elite_indices field.
+    Use ga_download_island_elite_indices() to retrieve them if needed.
+    
+    Args:
+        n_genomes: Total population size
+        n_islands: Number of islands
+        elites_per_island: Number of elites to select per island
+    """
+    ensure_ready()
+    kernels.ga_find_island_elites_kernel(
+        int(n_genomes), int(n_islands), int(elites_per_island)
+    )
+
+
+def ga_download_island_elite_indices(n_elites: int) -> np.ndarray:
+    """
+    Download the elite genome indices computed by ga_find_island_elites.
+    
+    Args:
+        n_elites: Total number of elites (n_islands * elites_per_island)
+        
+    Returns:
+        np.ndarray: (n_elites,) int32 array of elite genome indices
+    """
+    ensure_ready()
+    out = fields.island_elite_indices.to_numpy()
+    return np.asarray(out[:n_elites], dtype=np.int32)
+

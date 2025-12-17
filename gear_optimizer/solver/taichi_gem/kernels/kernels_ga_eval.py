@@ -18,6 +18,9 @@ from . import kernels_helpers
 from .kernels_scoring import optimize_core_device, local_search_from_hint
 
 
+MAX_ELITES_PER_ISLAND = 16  # Static limit for local arrays in island elitism kernel
+
+
 @ti.kernel
 def init_genome_results_kernel(n_genomes: ti.i32):
     """
@@ -366,7 +369,7 @@ def ga_update_global_best_kernel(n_genomes: ti.i32, n_slots: ti.i32):
     GPU-side global best update: atomically track best genome across all generations.
     
     For each genome, if its score is better than the current global best,
-    atomically update the best score and copy the genome's item IDs.
+    atomically update the best score and copy the genome's item IDs AND results.
     
     This avoids expensive per-generation CPU downloads by keeping the best
     genome on GPU until the end of the run.
@@ -380,12 +383,90 @@ def ga_update_global_best_kernel(n_genomes: ti.i32, n_slots: ti.i32):
         score: ti.i32 = kernels_helpers.ga_scores[g]
         old_best: ti.i32 = ti.atomic_max(kernels_helpers.ga_global_best_score[0], score)
         
-        # If we improved the global best, copy our genome
+        # If we improved the global best, copy our genome AND results
         # Note: Race condition possible if two threads have same max score,
         # but both would copy valid genomes with that score, so result is correct.
         if old_best < score:
             for s in range(n_slots):
                 kernels_helpers.ga_global_best_genome[s] = kernels_helpers.population_indices[g, s]
+            # Also copy gem allocation results: [score, ft, ff, pp, cm, fm, ov]
+            res = kernels_helpers.genome_result_stats[g]
+            for r in ti.static(range(7)):
+                kernels_helpers.ga_global_best_results[r] = res[r]
+
+
+@ti.kernel
+def ga_find_island_elites_kernel(
+    n_genomes: ti.i32,
+    n_islands: ti.i32,
+    elites_per_island: ti.i32,
+):
+    """
+    GPU-side island elite selection: find top-k genomes per island.
+    
+    Uses insertion sort within each thread to find top elites_per_island
+    genomes per island, avoiding CPU downloads for elitism.
+    
+    Prerequisites:
+    - island_boundaries must be uploaded: [start0, start1, ..., end_last]
+    - ga_scores must be populated from evaluation
+    
+    Outputs:
+    - island_elite_indices: flattened list of elite genome indices
+    - island_elite_count: total number of elites (n_islands * elites_per_island)
+    
+    Args:
+        n_genomes: Total population size
+        n_islands: Number of islands (must match island_boundaries)
+        elites_per_island: Number of elites to select per island
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    
+    for isl in range(n_islands):
+        isl_start: ti.i32 = kernels_helpers.island_boundaries[isl]
+        isl_end: ti.i32 = kernels_helpers.island_boundaries[isl + 1]
+        isl_size: ti.i32 = isl_end - isl_start
+        
+        # Local arrays for top-k tracking (insertion sort)
+        top_scores = ti.Vector([-1] * MAX_ELITES_PER_ISLAND)
+        top_indices = ti.Vector([-1] * MAX_ELITES_PER_ISLAND)
+        
+        k: ti.i32 = ti.min(elites_per_island, isl_size)
+        k = ti.min(k, MAX_ELITES_PER_ISLAND)
+        
+        # Scan all genomes in island, maintain top-k via insertion
+        for local_idx in range(isl_size):
+            g: ti.i32 = isl_start + local_idx
+            score: ti.i32 = kernels_helpers.ga_scores[g]
+            
+            # Check if this score belongs in top-k
+            if score > top_scores[k - 1]:
+                # Insert in sorted position
+                insert_pos: ti.i32 = k - 1
+                found_better: ti.i32 = 0
+                for j in ti.static(range(MAX_ELITES_PER_ISLAND)):
+                    if found_better == 0 and j < k and score > top_scores[j]:
+                        insert_pos = j
+                        found_better = 1
+                
+                # Shift down to make room
+                for j in ti.static(range(MAX_ELITES_PER_ISLAND - 1, 0, -1)):
+                    if j > insert_pos and j < k:
+                        top_scores[j] = top_scores[j - 1]
+                        top_indices[j] = top_indices[j - 1]
+                
+                top_scores[insert_pos] = score
+                top_indices[insert_pos] = g
+        
+        # Write elites to output (flattened: island i at offset i * elites_per_island)
+        out_base: ti.i32 = isl * elites_per_island
+        for j in range(k):
+            if top_indices[j] >= 0:
+                kernels_helpers.island_elite_indices[out_base + j] = top_indices[j]
+    
+    # Set total elite count
+    kernels_helpers.island_elite_count[0] = n_islands * elites_per_island
+
 
 
 @ti.kernel
