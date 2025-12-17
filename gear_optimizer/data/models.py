@@ -53,9 +53,9 @@ class GASettings:
     multi_start: int
     deep_mining_enabled: bool
     heuristic_mode: str  # modern | legacy | hybrid
-    allow_3_swap: bool  # Enable expensive 3-swap polish (~15s extra)
-    gear_rank_max: int  # Max gear items per slot in rank cache
-    mini_rank_max: int  # Max minis in rank cache
+    allow_3_swap: bool = True  # Enable expensive 3-swap polish (~15s extra)
+    gear_rank_max: int = 40  # Max gear items per slot in rank cache
+    mini_rank_max: int = 40  # Max minis in rank cache
 
     @classmethod
     def from_cfg(cls, cfg):

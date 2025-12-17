@@ -11,6 +11,8 @@ GPU port only needs to reimplement these functions in Taichi.
 """
 from math import floor
 
+import numpy as np
+
 from ..core.jit_setup import jit
 from ..core.constants import (
     TOTAL_ROWS,
@@ -72,25 +74,30 @@ def fast_calculate_score(
     Returns:
         int: Total calculated score
     """
-    combo_val_per_note = floor(base_value * combo_mul)
-    fever_val_per_note = floor(base_value * combo_mul * fever_mul)
+    # Force float32 math so CPU and GPU paths share identical numeric behavior.
+    # This significantly reduces divergence from float64 boundary rounding.
+    base_f = np.float32(base_value)
+    combo_mul_f = np.float32(combo_mul)
+    fever_mul_f = np.float32(fever_mul)
+
+    # floor(x) for positive x is equivalent to int(x) truncation.
+    combo_val_per_note = int(base_f * combo_mul_f)
+    fever_val_per_note = int(base_f * combo_mul_f * fever_mul_f)
 
     body_score = (count_body_fever * fever_val_per_note) + (
         count_body_normal * combo_val_per_note
     )
 
-    # OLD PATCH REMOVED - no longer needed with corrected timeline
-
-    factor = (combo_mul - 1) * base_value / 100.0
-    total_head = 0.0
+    factor = (combo_mul_f - np.float32(1.0)) * base_f / np.float32(100.0)
+    total_head = 0
     n_head = len(fever_mask_head)
 
     for i in range(n_head):
-        current_ramp_val = base_value + ((i + 1) * factor)
+        current_ramp_val = base_f + (np.float32(i + 1) * factor)
         if fever_mask_head[i]:
-            val = floor(current_ramp_val * fever_mul)
+            val = int(current_ramp_val * fever_mul_f)
         else:
-            val = floor(current_ramp_val)
+            val = int(current_ramp_val)
         total_head += val
 
     return int(body_score + total_head)
@@ -157,14 +164,14 @@ def optimize_core_jit(
         fill_bonus = (fill_budget * ELEMENTAL_GEM_SCALE) if fill_budget > 0 else 0
 
         # Precompute multipliers for current CM/FM (unchanged for PP/OV checks)
-        c_mul_cur = lookup_reference_jit(cur_cm, ref_cm, TOTAL_ROWS)
-        f_mul_cur = lookup_reference_jit(cur_fm, ref_fm, TOTAL_ROWS)
+        c_mul_cur = np.float32(lookup_reference_jit(cur_cm, ref_cm, TOTAL_ROWS))
+        f_mul_cur = np.float32(lookup_reference_jit(cur_fm, ref_fm, TOTAL_ROWS))
 
         # Start with OV as the default winner so OV wins exact ties.
         t_p = cur_p_val + (ELEMENTAL_GEM_SCALE * is_p_ov) + (fill_bonus * is_p_ov)
         t_s = cur_s_val + (ELEMENTAL_GEM_SCALE * is_s_ov) + (fill_bonus * is_s_ov)
-        pp_factor = lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS)
-        base = (t_p * 2) + t_s + pp_factor
+        pp_factor = np.float32(lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS))
+        base = np.float32((t_p * 2) + t_s) + pp_factor
         best_score = fast_calculate_score(
             base,
             c_mul_cur,
@@ -191,8 +198,8 @@ def optimize_core_jit(
             t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_pp) + (
                 fill_bonus * is_s_ov
             )
-            pp_factor = lookup_reference_jit(t_pp, ref_pp, TOTAL_ROWS)
-            base = (t_p * 2) + t_s + pp_factor
+            pp_factor = np.float32(lookup_reference_jit(t_pp, ref_pp, TOTAL_ROWS))
+            base = np.float32((t_p * 2) + t_s) + pp_factor
             pp_score = fast_calculate_score(
                 base,
                 c_mul_cur,
@@ -214,9 +221,9 @@ def optimize_core_jit(
             t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_cm) + (
                 fill_bonus * is_s_ov
             )
-            pp_factor = lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS)
-            base = (t_p * 2) + t_s + pp_factor
-            c_mul = lookup_reference_jit(t_cm, ref_cm, TOTAL_ROWS)
+            pp_factor = np.float32(lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS))
+            base = np.float32((t_p * 2) + t_s) + pp_factor
+            c_mul = np.float32(lookup_reference_jit(t_cm, ref_cm, TOTAL_ROWS))
             score = fast_calculate_score(
                 base,
                 c_mul,
@@ -238,9 +245,9 @@ def optimize_core_jit(
             t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_fm) + (
                 fill_bonus * is_s_ov
             )
-            pp_factor = lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS)
-            base = (t_p * 2) + t_s + pp_factor
-            f_mul = lookup_reference_jit(t_fm, ref_fm, TOTAL_ROWS)
+            pp_factor = np.float32(lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS))
+            base = np.float32((t_p * 2) + t_s) + pp_factor
+            f_mul = np.float32(lookup_reference_jit(t_fm, ref_fm, TOTAL_ROWS))
             score = fast_calculate_score(
                 base,
                 c_mul_cur,
@@ -274,8 +281,8 @@ def optimize_core_jit(
                 t_s = cur_s_val + (k * GEM_STAT_TO_ELEMENT_SCALE * is_s_pp) + (
                     fill_bonus_k * is_s_ov
                 )
-                pp_factor = lookup_reference_jit(t_pp, ref_pp, TOTAL_ROWS)
-                base = (t_p * 2) + t_s + pp_factor
+                pp_factor = np.float32(lookup_reference_jit(t_pp, ref_pp, TOTAL_ROWS))
+                base = np.float32((t_p * 2) + t_s) + pp_factor
                 score_k = fast_calculate_score(
                     base,
                     c_mul_cur,

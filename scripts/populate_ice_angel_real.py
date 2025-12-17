@@ -66,6 +66,7 @@ def run_real_solver():
     conn.commit()
     conn.close()
 
+    song_name = "Ice Angel (Easy) by Yooh"
     print(f"Profiling: {song_name}...")
     
     cfg_dict = cfg_to_dict(cfg)
@@ -77,7 +78,7 @@ def run_real_solver():
     
     args = (
         song_file,
-        song_name, # Passed explicitly as display name? No, second arg is song_name
+        song_name, # Second arg is song_name
         "Easy",
         cfg_dict,
         paths,

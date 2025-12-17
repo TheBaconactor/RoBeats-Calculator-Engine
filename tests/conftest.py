@@ -4,6 +4,8 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from gear_optimizer.data.database import init_db
+
 
 def _configure_test_db_path() -> None:
     repo_root = Path(__file__).resolve().parents[1]
@@ -17,7 +19,7 @@ def _configure_test_db_path() -> None:
         shutil.copy2(source_db, tmp_db)
 
     os.environ["EVOLUTION_DB_PATH"] = str(tmp_db)
+    init_db()
 
 
 _configure_test_db_path()
-

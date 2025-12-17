@@ -61,6 +61,43 @@ _fg_ftff_upload_buf: dict[str, np.ndarray] | None = None
 _fg_genome_stats_buf: np.ndarray | None = None
 _fg_flat_work_buf: dict[str, np.ndarray] | None = None
 
+# Pair-caps upload state. The flat kernel clamps forced counts by fg_pair_caps;
+# leaving this field uninitialized (default zeros) effectively disables forced
+# greats. When no pair caps grid is provided, default to "no cap" (int32 max).
+_fg_pair_caps_state: str | None = None  # "default" | "custom"
+_fg_pair_caps_default_buf: np.ndarray | None = None
+
+
+def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
+    global _fg_pair_caps_state, _fg_pair_caps_default_buf
+
+    expected_shape = (
+        fg_fields.FG_MAX_STAT + 1,
+        fg_fields.FG_MAX_STAT + 1,
+        fg_fields.FG_MAX_SECTIONS,
+    )
+
+    if pair_caps_grid is None:
+        if _fg_pair_caps_state == "default":
+            return
+        if _fg_pair_caps_default_buf is None:
+            _fg_pair_caps_default_buf = np.full(
+                expected_shape,
+                np.iinfo(np.int32).max,
+                dtype=np.int32,
+            )
+        fg_fields.fg_pair_caps.from_numpy(_fg_pair_caps_default_buf)
+        _fg_pair_caps_state = "default"
+        return
+
+    arr = np.asarray(pair_caps_grid, dtype=np.int32)
+    if arr.shape != expected_shape:
+        raise ValueError(
+            f"pair_caps_grid must be shape {expected_shape}, got {arr.shape}"
+        )
+    fg_fields.fg_pair_caps.from_numpy(arr)
+    _fg_pair_caps_state = "custom"
+
 def _get_genome_stats_buf() -> np.ndarray:
     """Get or allocate a persistent buffer for genome stats (N, 7)."""
     global _fg_genome_stats_buf
@@ -265,6 +302,11 @@ def solve_force_greats_finder_gpu(
     fg_fields.fg_flat_work_genome.from_numpy(genome_buf)
     fg_fields.fg_flat_work_ftff.from_numpy(ftff_buf)
 
+    # Pair caps (once per call). The flat kernel always clamps by fg_pair_caps,
+    # so we must ensure it is initialized even when the caller does not supply
+    # a caps grid.
+    _ensure_pair_caps_uploaded(pair_caps_grid)
+
     # Upload configs in chunks and run Stage 1 FLAT kernel
     n_cfg_total = int(len(fg_configs))
     if n_cfg_total <= 0:
@@ -333,17 +375,6 @@ def solve_force_greats_finder_gpu(
                 buf[i, :limit] = cfg[:limit]
 
         fg_fields.fg_forced_counts.from_numpy(buf)
-
-        # Upload pair caps grid (once per call, if provided)
-        if pair_caps_grid is not None:
-             # Expect shape (161, 161, 16)
-             # Use safe copy/upload
-             fg_fields.fg_pair_caps.from_numpy(pair_caps_grid)
-        else:
-             # Zero it out if not provided to allow functioning without restrictions?
-             # Or we assume it's provided. For safety, if None, we might want to fill with MAX_INT
-             # But likely caller always provides it now.
-             pass
 
         # Call Kernel based on platform
         # On Metal (macOS), 64-bit atomics for the flat kernel are not supported.
@@ -496,7 +527,6 @@ def solve_force_greats_finder_gpu(
         )
 
     return results
-
 
 
 

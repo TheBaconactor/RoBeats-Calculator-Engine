@@ -5,8 +5,13 @@ This module provides evaluation functions with caching:
 - create_evaluation_functions: Evaluation with per-song and per-loadout caching
 - evaluate_population_parallel: Parallel batch evaluation
 """
+
+import os
+
 from ...data.database import get_loadout_hash
 from ...solver.scoring import worker_coevolution_evaluate, batch_evaluate_genomes
+
+
 def create_evaluation_functions(
     p_color,
     base_stats_fixed,
@@ -356,5 +361,4 @@ def evaluate_population_parallel(
     results.sort(key=lambda x: x["Score"], reverse=True)
 
     return results
-
 

@@ -211,7 +211,7 @@ def allocate_fields():
         return
     
     # Reference tables (f32 for performance)
-    ref_pp_field = ti.field(dtype=ti.i16, shape=161)
+    ref_pp_field = ti.field(dtype=ti.f32, shape=161)
     ref_cm_field = ti.field(dtype=ti.f32, shape=161)
     ref_fm_field = ti.field(dtype=ti.f32, shape=161)
     ref_ft_field = ti.field(dtype=ti.f32, shape=161)

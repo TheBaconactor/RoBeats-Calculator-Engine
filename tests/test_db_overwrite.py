@@ -1,51 +1,24 @@
-
-import os
 import json
-import sqlite3
 import pytest
-from gear_optimizer.data.database import init_db, save_loadout_to_db, get_db_connection, save_loadouts_batch
 
-# Use a temporary database for testing
-TEST_DB_PATH = os.path.abspath("test_overwrite.db")
+from gear_optimizer.data.database import (
+    get_db_connection,
+    init_db,
+    save_loadout_to_db,
+    save_loadouts_batch,
+)
 
 @pytest.fixture
-def db_connection():
-    # Setup
-    if os.path.exists(TEST_DB_PATH):
-        os.remove(TEST_DB_PATH)
-    
-    # Override module-level variable directly because it's cached at import time
-    import gear_optimizer.data.database
-    original_path = gear_optimizer.data.database.EVOLUTION_DB_PATH
-    gear_optimizer.data.database.EVOLUTION_DB_PATH = TEST_DB_PATH
-    
-    print(f"DEBUG: Initializing DB at {TEST_DB_PATH}")
+def db_connection(tmp_path, monkeypatch):
+    db_path = tmp_path / "test_overwrite.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
     init_db()
-    
-    if os.path.exists(TEST_DB_PATH):
-        print("DEBUG: DB file exists.")
-    else:
-        print("DEBUG: DB file MISSING after init_db!")
 
-    conn = get_db_connection(TEST_DB_PATH)
-    
-    # Check tables
+    conn = get_db_connection(str(db_path))
     try:
-        cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = [row[0] for row in cur.fetchall()]
-        print(f"DEBUG: Tables in DB: {tables}")
-    except Exception as e:
-        print(f"DEBUG: Error listing tables: {e}")
-
-    yield conn
-    
-    # Teardown
-    gear_optimizer.data.database.EVOLUTION_DB_PATH = original_path
-    
-    # Teardown
-    conn.close()
-    if os.path.exists(TEST_DB_PATH):
-        os.remove(TEST_DB_PATH)
+        yield conn
+    finally:
+        conn.close()
 
 def test_save_loadout_singular_overwrite(db_connection):
     """Test that singular save_loadout_to_db protects high scores."""

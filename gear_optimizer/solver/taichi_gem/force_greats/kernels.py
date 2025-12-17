@@ -390,6 +390,9 @@ def fg_stage1_kernel(
                     if forced_val < 0:
                         forced_val = 0
                     forced_val = ti.min(forced_val, non_fever_base)
+                    if sec < FG_MAX_SECTIONS:
+                        pair_cap: ti.i32 = fg_pair_caps[ft_idx, ff_idx, sec]
+                        forced_val = ti.min(forced_val, pair_cap)
 
                 fp_calc: ti.i32 = 0
                 if forced_val > 0:
@@ -413,7 +416,7 @@ def fg_stage1_kernel(
                     start_idx[sec] = section_start
                     forced_applied[sec] = forced_app
                     fill_notes[sec] = fp_calc
-                    skip_wasted[sec] = 0 # 1 if sec == 0 else 0
+                    skip_wasted[sec] = ti.cast(sec == 0, ti.i32)
 
                 current_idx = end_normal
                 if current_idx >= total_notes:
@@ -723,7 +726,7 @@ def fg_stage1_flat_kernel(
                 start_idx_vec[sec] = section_start
                 forced_applied[sec] = forced_app
                 fill_notes[sec] = fp_calc
-                skip_wasted[sec] = 0 # 1 if sec == 0 else 0
+                skip_wasted[sec] = ti.cast(sec == 0, ti.i32)
 
             current_idx = end_normal
             if current_idx >= total_notes:
@@ -866,7 +869,6 @@ def fg_stage1_flat_kernel(
             fg_stage1_g_ov[g, ftff_idx] = gems_ov
             fg_stage1_score_penalty[g, ftff_idx] = score_penalty_total
             fg_stage1_fill_penalty[g, ftff_idx] = fill_penalty_total
-
 
 
 

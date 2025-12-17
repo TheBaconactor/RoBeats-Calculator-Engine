@@ -473,9 +473,15 @@ def solve_coevolution_genetic(
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
 
     # Initialize pools and apply dominance pruning
-    gear_pool, mini_pool, total_before, total_after, whitelisted_minis = initialize_pools(
-        all_gears, all_minis, p_color, slots, s_color=s_color
-    )
+    pools = initialize_pools(all_gears, all_minis, p_color, slots, s_color=s_color)
+    if pools is None:
+        gear_pool = None
+        whitelisted_minis = []
+    elif len(pools) == 4:
+        gear_pool, mini_pool, total_before, total_after = pools
+        whitelisted_minis = []
+    else:
+        gear_pool, mini_pool, total_before, total_after, whitelisted_minis = pools
     if gear_pool is None:
         print(f"[GA Error] initialize_pools failed for song {calc_song['metadata'].get('Song Name', 'Unknown')}")
         return None, [], [], None, [], [], []

@@ -9,10 +9,6 @@ import sqlite3
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS, DB_FILE
 
 
-# Database path with environment variable override support
-EVOLUTION_DB_PATH = os.getenv("EVOLUTION_DB_PATH", "")
-
-
 def get_evolution_db_path():
     """
     Return the configured evolution DB location (env override supported).
@@ -20,7 +16,8 @@ def get_evolution_db_path():
     Returns:
         str: Path to evolution database file
     """
-    return EVOLUTION_DB_PATH if EVOLUTION_DB_PATH else PATHS.evolution_db_default
+    env_path = os.getenv("EVOLUTION_DB_PATH", "")
+    return env_path if env_path else PATHS.evolution_db_default
 
 
 def get_db_connection(db_path=None):

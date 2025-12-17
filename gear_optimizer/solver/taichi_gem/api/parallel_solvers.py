@@ -8,23 +8,32 @@ This module provides GPU-parallel genome solvers with different parallelization 
 """
 from __future__ import annotations
 
-import hashlib
+import time
+
 import numpy as np
 
+from gear_optimizer.core.env_config import ENV
+from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
+
 from .. import fields
-from ..fields import MAX_GENOMES
+from ..fields import MAX_GENOMES, MAX_WORK_ITEMS
 from ..kernel_loader import get_kernels
 
 from .initialization import (
     ensure_ready,
-    _ensure_ftff_combo_tables,
+    _maybe_sync,
+    _ref_arrays_sig,
+    _SYNC_FOR_TIMING,
     _upload_song_flags,
     _ensure_parallel_staging,
-    
 )
 from .timeline import precompute_timeline_gpu, _upload_timeline_grid
 
-# Cache for genome_base_stats uploads to avoid redundant from_numpy calls_GENOME_STATS_CACHE = None
+_profiler = get_gpu_profiler()
+
+# Cache for genome_base_stats uploads to avoid redundant from_numpy calls
+_GENOME_STATS_CACHE = None
+
 # Get appropriate kernels for current platform (Metal-safe on macOS)
 kernels = get_kernels()
 
@@ -73,10 +82,7 @@ def solve_genomes_with_ftff(
             int(is_p_fm), int(is_s_fm), int(is_p_ov), int(is_s_ov),
         )
     })
-    
-    # Import fields module
-    from . import fields
-    
+
     n_genomes = len(genome_stats_list)
     if n_genomes == 0:
         return []
@@ -187,10 +193,7 @@ def solve_genomes_parallel(
             int(is_p_fm), int(is_s_fm), int(is_p_ov), int(is_s_ov),
         )
     })
-    
-    # Import fields module
-    from . import fields
-    
+
     n_genomes = len(genome_stats_list)
     if n_genomes == 0:
         return []
@@ -586,4 +589,3 @@ def solve_genomes_parallel_merged(
 #
 # To complete: need encoder (genome -> item_ids) and integration in genetic.py.
 # ============================================================================
-

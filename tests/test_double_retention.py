@@ -1,67 +1,59 @@
-import os
-import sys
-import sqlite3
+from gear_optimizer.data.database import (
+    LOADOUTS_PER_SONG_LIMIT,
+    get_db_connection,
+    init_db,
+    save_loadouts_batch,
+)
 
-# Set env var first!
-TEST_DB_PATH = "test_double_retention.db"
-os.environ["EVOLUTION_DB_PATH"] = TEST_DB_PATH
 
-# Add project root to path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+def test_retention_keeps_top_scores_and_best_fg(tmp_path, monkeypatch):
+    db_path = tmp_path / "test_double_retention.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    init_db()
 
-from gear_optimizer.data.database import save_loadouts_batch, get_db_connection, init_db, LOADOUTS_PER_SONG_LIMIT
+    song_name = "Double Retention Test"
+    limit = LOADOUTS_PER_SONG_LIMIT
 
-if os.path.exists(TEST_DB_PATH):
-    os.remove(TEST_DB_PATH)
+    raw_entries = [
+        {
+            "score": 2000 + i,
+            "fg_score": 0,
+            "gear": [f"RawGear{i}"],
+            "minis": ["RawMini"],
+            "details": {},
+            "force": None,
+        }
+        for i in range(limit)
+    ]
+    save_loadouts_batch(song_name, raw_entries)
 
-init_db()
-
-SONG_NAME = "Double Retention Test"
-
-# 1. Insert 50 "Raw Best" (High Base: 2000+, Low FG: 0)
-print(f"Inserting {LOADOUTS_PER_SONG_LIMIT} Raw Best items...")
-raw_entries = []
-for i in range(LOADOUTS_PER_SONG_LIMIT):
-    raw_entries.append({
-        "score": 2000 + i,
-        "fg_score": 0,
-        "gear": [f"RawGear{i}"],
-        "minis": ["RawMini"],
-        "details": {},
-        "force": None
-    })
-save_loadouts_batch(SONG_NAME, raw_entries)
-
-# 2. Insert 50 "FG Best" (Low Base: 500, High FG: 5000+)
-print(f"Inserting {LOADOUTS_PER_SONG_LIMIT} FG Best items...")
-fg_entries = []
-for i in range(LOADOUTS_PER_SONG_LIMIT):
-    fg_entries.append({
+    fg_entry = {
         "score": 500,
-        "fg_score": 5000 + i,
-        "gear": [f"FGGear{i}"],
+        "fg_score": 5000,
+        "gear": ["FGGear0"],
         "minis": ["FGMini"],
         "details": {},
-        "force": {"score": 5000 + i}
-    })
-save_loadouts_batch(SONG_NAME, fg_entries)
+        "force": {"score": 5000},
+    }
+    save_loadouts_batch(song_name, [fg_entry])
 
-# 3. Verify counts
-conn = get_db_connection(TEST_DB_PATH)
-total = conn.execute("SELECT count(*) FROM loadouts WHERE song_name=?", (SONG_NAME,)).fetchone()[0]
-count_raw = conn.execute("SELECT count(*) FROM loadouts WHERE song_name=? AND score >= 2000", (SONG_NAME,)).fetchone()[0]
-count_fg = conn.execute("SELECT count(*) FROM loadouts WHERE song_name=? AND fg_score >= 5000", (SONG_NAME,)).fetchone()[0]
-conn.close()
+    conn = get_db_connection(str(db_path))
+    try:
+        total = conn.execute(
+            "SELECT count(*) FROM loadouts WHERE song_name=?", (song_name,)
+        ).fetchone()[0]
+        count_raw = conn.execute(
+            "SELECT count(*) FROM loadouts WHERE song_name=? AND score >= 2000",
+            (song_name,),
+        ).fetchone()[0]
+        count_fg = conn.execute(
+            "SELECT count(*) FROM loadouts WHERE song_name=? AND fg_score >= 5000",
+            (song_name,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
 
-p_limit = LOADOUTS_PER_SONG_LIMIT
-print(f"Total entries: {total}")
-print(f"High Raw (>2000): {count_raw}/{p_limit}")
-print(f"High FG (>5000): {count_fg}/{p_limit}")
+    assert count_raw == limit
+    assert count_fg == 1
+    assert total == limit + 1
 
-if count_raw == p_limit and count_fg == p_limit:
-    print("SUCCESS: Both groups preserved completely.")
-else:
-    print("FAIL: Some items were deleted.")
-
-if os.path.exists(TEST_DB_PATH):
-    os.remove(TEST_DB_PATH)

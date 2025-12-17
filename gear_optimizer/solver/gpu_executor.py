@@ -34,6 +34,8 @@ from dataclasses import dataclass
 from typing import Any, Optional, Dict, List
 from enum import Enum
 
+from gear_optimizer.core.env_config import ENV
+
 
 class GpuRequestType(Enum):
     """Types of GPU requests that can be submitted."""

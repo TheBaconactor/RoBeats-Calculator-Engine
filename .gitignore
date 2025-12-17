@@ -27,6 +27,10 @@ env/
 # OS/editor noise
 Thumbs.db
 Desktop.ini
+.DS_Store
+
+# Profiling artifacts
+*.prof
 
 # Sensitive credentials (NEVER commit these!)
 Discord.env

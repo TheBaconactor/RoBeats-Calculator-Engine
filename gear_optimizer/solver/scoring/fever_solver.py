@@ -70,7 +70,9 @@ def precompute_fever_timelines(
             - ff_stat_val: Resulting FF stat value
             - ft_factor: FT multiplier factor
             - ff_factor: FF multiplier factor
-            - timeline: Tuple (fever_mask_head, count_body_fever, count_body_normal, activations)
+            - timeline: Tuple where the first 3 elements are:
+              (fever_mask_head, count_body_fever, count_body_normal). Additional
+              trailing fields may exist depending on timeline implementation.
             - remaining_budget: Budget left for other gems
     """
     results = []
@@ -182,6 +184,17 @@ def solve_best_fever_combination(
 
     # Reuse mask buffer across FT/FF permutations to avoid repeated allocations.
     fever_mask_buffer = np.zeros(total_notes, dtype=np.bool_)
+
+    # Normalize ref arrays to float32 so CPU and GPU paths use identical numeric behavior
+    # regardless of input dtype (tests may pass float64 arrays).
+    ref_arrays = {
+        **ref_arrays,
+        "Perfect Points": np.asarray(ref_arrays["Perfect Points"], dtype=np.float32),
+        "Combo Multiplier": np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float32),
+        "Fever Multiplier": np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float32),
+        "Fever Time": np.asarray(ref_arrays["Fever Time"], dtype=np.float32),
+        "Fever Fill Rate": np.asarray(ref_arrays["Fever Fill Rate"], dtype=np.float32),
+    }
 
     ref_pp = ref_arrays["Perfect Points"]
     ref_cm = ref_arrays["Combo Multiplier"]
@@ -297,7 +310,9 @@ def solve_best_fever_combination(
                 ff = t_data["ff_gems"]
                 timeline = t_data["timeline"]
                 current_budget = t_data["remaining_budget"]
-                fever_mask_head, count_body_fever, count_body_normal, _ = timeline
+                fever_mask_head = timeline[0]
+                count_body_fever = timeline[1]
+                count_body_normal = timeline[2]
 
                 batch_input.append({
                     "budget": current_budget,
@@ -357,7 +372,9 @@ def solve_best_fever_combination(
             timeline = t_data["timeline"]
             current_budget = t_data["remaining_budget"]
 
-            fever_mask_head, count_body_fever, count_body_normal, _ = timeline
+            fever_mask_head = timeline[0]
+            count_body_fever = timeline[1]
+            count_body_normal = timeline[2]
 
             # Calculate stats affected by FT/FF gems
             cur_beat = base_beat + (ft * GEM_STAT_TO_ELEMENT_SCALE)

@@ -3,7 +3,7 @@
 A high-performance genetic algorithm solver for optimizing gear and mini loadouts in rhythm games. Features JIT-compiled scoring, GPU-accelerated gem allocation, parallel song processing, and intelligent caching for maximum throughput.
 
 **Version:** 2.0.0
-**Codebase Quality:** A- (8.5/10) - [See Quality Report](CODEBASE_QUALITY_REPORT.md)
+**Codebase Quality:** A- (8.4/10) - [See Assessment](CODEBASE_QUALITY_ASSESSMENT.md)
 
 ---
 
@@ -12,10 +12,10 @@ A high-performance genetic algorithm solver for optimizing gear and mini loadout
 ### 1. Install Dependencies
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -r requirements.txt
 ```
 
-Required packages: `numpy`, `numba`, `taichi` (for GPU acceleration)
+Dev/test tools: `pip install -r requirements-dev.txt`
 
 ### 2. Run the Optimizer
 
@@ -129,9 +129,11 @@ RoBeats-Calculator-Engine/
 ├── main.py                           # Entry point → GearOptimizerApp
 ├── config.ini                        # User configuration (GA, memory, paths)
 ├── Discord.env                       # Discord credentials (gitignored)
-├── requirements-dev.txt              # Development dependencies
+├── requirements.txt                  # Runtime dependencies
+├── requirements-dev.txt              # Dev/test dependencies
 ├── evolution.db                      # SQLite results database
 ├── CODEBASE_QUALITY_REPORT.md        # Quality analysis (A- rating)
+├── CODEBASE_QUALITY_ASSESSMENT.md    # Full repo assessment (living)
 │
 ├── gear_optimizer/                   # Main package (v2.0.0, 70+ files)
 │   ├── __init__.py                   # Package metadata
@@ -448,7 +450,7 @@ See [CODEBASE_QUALITY_REPORT.md](CODEBASE_QUALITY_REPORT.md) for detailed qualit
 - Increase `memory_limit_pct` in config.ini or reduce `MaxParallelSongs`
 
 **"No module named 'numba'" or "No module named 'taichi'"**
-- Install dependencies: `pip install -r requirements-dev.txt`
+- Install dependencies: `pip install -r requirements.txt`
 
 **JIT compilation warnings on first run**
 - Normal behavior: first run compiles functions (slow), subsequent runs use cached JIT code
