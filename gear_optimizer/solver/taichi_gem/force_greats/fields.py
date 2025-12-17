@@ -238,12 +238,24 @@ def warmup_kernels() -> None:
     fg_kernels.fg_stage1_init_kernel(n_genomes, n_ftff)
     
     # Warmup FLAT stage1 kernel (the heavy one)
-    fg_kernels.fg_stage1_flat_kernel(
-        n_work_items, n_cfg, cfg_offset,
-        total_notes, long_notes, last_note_time,
-        total_budget, gem_scale_fever, n_sections,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  # color flags
-    )
+    # Check if we are on Metal to decide which kernel to warm up
+    from ..fields import IS_METAL
+    
+    if IS_METAL:
+        fg_kernels.fg_stage1_kernel(
+            n_genomes,
+            total_notes, long_notes, last_note_time,
+            total_budget, gem_scale_fever, n_cfg, n_sections, n_ftff,
+            cfg_offset,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 # color flags
+        )
+    else:
+        fg_kernels.fg_stage1_flat_kernel(
+            n_work_items, n_cfg, cfg_offset,
+            total_notes, long_notes, last_note_time,
+            total_budget, gem_scale_fever, n_sections,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  # color flags
+        )
     
     # Warmup stage2 reduction kernel
     fg_kernels.fg_stage2_kernel(n_genomes, n_ftff)

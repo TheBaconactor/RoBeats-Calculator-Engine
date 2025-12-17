@@ -288,7 +288,15 @@ def solve_force_greats_finder_gpu(
     
     if cfg_chunk is None or int(cfg_chunk) <= 0:
         # Auto-calculate based on work items
-        cfg_chunk = max(256, TARGET_THREADS_PER_KERNEL // max(1, n_work_items))
+        if gem_fields.IS_METAL:
+            # Metal kernel (fg_stage1_kernel) loops SEQUENTIALLY over cfg_chunk.
+            # We must keep this small to avoid TDR (watchdog timeout).
+            # A safe bet is ~16-32 configs per kernel launch.
+            cfg_chunk = 16
+        else:
+            # Flattened kernel (fg_stage1_flat_kernel) parallelizes over cfg_chunk.
+            # We want MANY threads.
+            cfg_chunk = max(256, TARGET_THREADS_PER_KERNEL // max(1, n_work_items))
     else:
         cfg_chunk = int(cfg_chunk)
     
