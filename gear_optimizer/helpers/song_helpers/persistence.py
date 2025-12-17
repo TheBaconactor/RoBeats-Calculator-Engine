@@ -110,7 +110,10 @@ def build_db_payload(
             "Saving to Evolution Database..."
         )
     elif is_better:
-        msg = f" >> NEW RECORD! Previous: {prev_score} | New: {score} - Updating Evolution Database..."
+        msg = f" >> NEW RECORD! Previous: {prev_score} | New: {score}"
+        if is_fg_better and best_fg_score_run > 0:
+            msg += f" (FG: {prev_fg_score} -> {best_fg_score_run})"
+        msg += " - Updating Evolution Database..."
         print(msg)
     elif is_fg_better and best_fg_score_run > 0:
         # FG-only improvement
