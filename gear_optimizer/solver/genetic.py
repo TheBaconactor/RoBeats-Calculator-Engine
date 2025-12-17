@@ -252,38 +252,13 @@ def _run_gpu_native_ga(
         gpu_api.ga_find_island_elites(n_genomes, num_islands, elite_count)
         
         # --- MIGRATION PHASE (every GPU_GA_GENS_PER_MIGRATION generations) ---
-        # Migration still requires score download for now (CPU-side logic)
+        # Now fully GPU-side: no CPU downloads/uploads needed!
         is_migration_gen = num_islands > 1 and (gen + 1) % GPU_GA_GENS_PER_MIGRATION == 0
         if is_migration_gen:
-            # Download scores and population for migration
-            scores = gpu_api.ga_download_scores(n_genomes)
-            pop_snapshot = gpu_api.ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
+            # GPU-side ring topology migration (replaces expensive CPU round-trip)
+            gpu_api.ga_island_migration(n_genomes, num_islands, GPU_GA_MIGRATE_COUNT, n_slots)
             
-            # Ring topology: island i sends to island (i+1) % num_islands
-            for isl in range(num_islands):
-                src_start = island_starts[isl]
-                src_end = island_starts[isl + 1]
-                dst_isl = (isl + 1) % num_islands
-                dst_start = island_starts[dst_isl]
-                
-                # Get top MIGRATE_COUNT from source island
-                src_scores = scores[src_start:src_end]
-                src_top_local = np.argsort(src_scores)[-GPU_GA_MIGRATE_COUNT:]
-                src_top_global = src_top_local + src_start
-                
-                # Copy to destination island (overwrite worst in destination)
-                dst_end = island_starts[dst_isl + 1]
-                dst_scores = scores[dst_start:dst_end]
-                dst_worst_local = np.argsort(dst_scores)[:GPU_GA_MIGRATE_COUNT]
-                dst_worst_global = dst_worst_local + dst_start
-                
-                for mi, (src_idx, dst_idx) in enumerate(zip(src_top_global, dst_worst_global)):
-                    pop_snapshot[dst_idx] = pop_snapshot[src_idx].copy()
-            
-            # Re-upload patched population
-            gpu_api.ga_upload_population_indices(pop_snapshot, n_slots=n_slots)
-            
-            # Optimization: Force cold start after migration, as hints are scrambled
+            # Force cold start after migration, as hints are scrambled
             gen_use_hints = 0
         else:
             # Enable warm start for next generation (unless overridden by migration)

@@ -656,3 +656,29 @@ def ga_download_island_elite_indices(n_elites: int) -> np.ndarray:
     out = fields.island_elite_indices.to_numpy()
     return np.asarray(out[:n_elites], dtype=np.int32)
 
+
+def ga_island_migration(n_genomes: int, n_islands: int, migrate_count: int, n_slots: int = 9) -> None:
+    """
+    GPU-side island migration using ring topology.
+    
+    Migrates top-k genomes from each island to the next island (ring topology),
+    replacing the worst-k genomes in the destination. This eliminates the expensive
+    CPU round-trip (download scores, download population, upload patched population)
+    that was previously required for migration.
+    
+    Prerequisites:
+    - Call ga_upload_island_boundaries() first
+    - ga_scores must be populated from evaluation
+    
+    Args:
+        n_genomes: Total population size
+        n_islands: Number of islands
+        migrate_count: Number of genomes to migrate per island (max 8)
+        n_slots: Number of equipment slots per genome (default 9)
+    """
+    ensure_ready()
+    kernels.ga_island_migration_kernel(
+        int(n_genomes), int(n_islands), int(migrate_count), int(n_slots)
+    )
+
+

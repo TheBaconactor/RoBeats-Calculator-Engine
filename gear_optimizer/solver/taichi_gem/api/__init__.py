@@ -88,6 +88,8 @@ try:
         ga_upload_island_boundaries,
         ga_find_island_elites,
         ga_download_island_elite_indices,
+        # GPU-side island migration
+        ga_island_migration,
         # Warm-start
         ga_store_hints,
         ga_inherit_hints,
@@ -143,6 +145,8 @@ __all__ = [
     "ga_upload_island_boundaries",
     "ga_find_island_elites",
     "ga_download_island_elite_indices",
+    # GPU-side island migration
+    "ga_island_migration",
     # Warm-start
     "ga_store_hints",
     "ga_inherit_hints",

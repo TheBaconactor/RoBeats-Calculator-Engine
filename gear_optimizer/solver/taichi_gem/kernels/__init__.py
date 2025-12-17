@@ -130,6 +130,8 @@ from .kernels_ga_eval import (
     ga_update_global_best_kernel,
     # GPU-side island elitism
     ga_find_island_elites_kernel,
+    # GPU-side island migration
+    ga_island_migration_kernel,
     # Warm-start evaluation
     ga_find_best_combo_warmstart_kernel,
     # FUSED kernels
@@ -228,6 +230,8 @@ __all__ = [
     # GPU-side global best tracking
     "ga_init_global_best_kernel",
     "ga_update_global_best_kernel",
+    # GPU-side island migration
+    "ga_island_migration_kernel",
     # Warm-start optimization
     "genome_hint_allocation",
     "ga_store_hints_kernel",
