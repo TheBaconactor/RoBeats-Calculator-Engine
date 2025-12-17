@@ -389,6 +389,9 @@ def bind_fields(kernels_module):
     target.genome_hint_allocation = genome_hint_allocation
     if not IS_METAL:
         target.chunk_best_key = chunk_best_key
+    else:
+        target.chunk_best_score = chunk_best_score
+        target.chunk_best_idx = chunk_best_idx
     target.ftff_combo_ft = ftff_combo_ft
     target.ftff_combo_ff = ftff_combo_ff
     

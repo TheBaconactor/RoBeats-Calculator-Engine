@@ -79,6 +79,8 @@ genome_result_stats = None
 # [score, ft, ff, pp, cm, fm, ov]
 genome_hint_allocation = None  # [pp_gems, cm_gems, fm_gems, ov_gems] - warm-start hints
 chunk_best_key = None  # u64 packed key per genome for safe reduction
+chunk_best_score = None  # (MAX_GENOMES,) i32 best score per genome (Metal)
+chunk_best_idx = None    # (MAX_GENOMES,) i32 work item index (Metal)
 ftff_combo_ft = None   # (MAX_FTFF_COMBOS,) i32
 ftff_combo_ff = None   # (MAX_FTFF_COMBOS,) i32
 

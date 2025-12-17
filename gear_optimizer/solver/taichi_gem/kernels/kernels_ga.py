@@ -13,6 +13,7 @@ This module contains 8 kernels implementing genetic algorithm operators:
 These kernels enable fully GPU-native GA execution, avoiding CPU-GPU transfers
 during population evolution.
 """
+import sys
 import taichi as ti
 
 from . import kernels_helpers
@@ -345,8 +346,16 @@ def ga_aggregate_and_init_best_kernel(
     """
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
 
+    # Platform detection for atomic operations
+    # Metal (macOS) doesn't support u64 atomics, so we use separate 32-bit fields
+    IS_METAL = (sys.platform == "darwin")
+
     for g in range(n_genomes):
-        kernels_helpers.chunk_best_key[g] = ti.u64(0)
+        if ti.static(not IS_METAL):
+            kernels_helpers.chunk_best_key[g] = ti.u64(0)
+        else:
+            kernels_helpers.chunk_best_score[g] = ti.cast(-2147483648, ti.i32)
+            kernels_helpers.chunk_best_idx[g] = -1
 
         pp = kernels_helpers.base_fixed_stats[0]
         cm = kernels_helpers.base_fixed_stats[1]
