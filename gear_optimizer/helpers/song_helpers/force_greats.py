@@ -76,6 +76,7 @@ def process_force_greats(
                 GEM_STAT_TO_ELEMENT_SCALE,
                 ELEMENTAL_GEM_SCALE,
                 TOTAL_GEM_BUDGET,
+                TOTAL_ROWS,
             )
             from ...solver.scoring import _extract_base_stats, fg_baseline_params, FG_CACHE, _force_greats_counts_to_dict
             from ...solver.taichi_gem_solver import solve_force_greats_finder_gpu
@@ -83,6 +84,9 @@ def process_force_greats(
             meta = calc_song.get("metadata", {}) or {}
             p_color = meta.get("Primary Color", "")
             s_color = meta.get("Secondary Color", "")
+            
+            import numpy as np
+            from ...helpers.fg_utils import calculate_section_caps, collect_analytic_configs
 
             # Helper: apply gem allocations to base stats to produce a final Stats dict
             def _apply_gems_to_base(base: dict, sel_color: str, ft: int, ff: int, gem_counts: dict) -> dict:
@@ -242,19 +246,44 @@ def process_force_greats(
             song_fever_activations = None
             try:
                 from ...solver.fever_timeline import get_song_timeline_grid
+                from ...helpers.fg_utils import vectorized_calculate_section_caps_grid
                 grid = get_song_timeline_grid(calc_song, ref_arrays)
                 
-                # Use middle FT/FF (80, 80) as representative baseline
-                # This represents typical gem allocation and gives reasonable cap
-                _, _, _, acts, last_fever_end = grid.get_timeline(80, 80)
-                song_gap = grid.total_notes - last_fever_end
-                song_fever_activations = acts
-                print(f"[FG] Song gap: {song_gap}, activations: {song_fever_activations}")
-            except Exception as e:
-                print(f"[FG] Gap precomputation FAILED: {type(e).__name__}: {e}")
+                # Use conservative estimates for search space bounds:
+                # 1. Maximize gap (Low FT, High FF) -> Index 0, TOTAL_ROWS
+                # Low FT (short fevers) + High FF (fast fill) = Fevers finish earliest -> Max Gap
+                # This ensures we find opportunities even if they only exist at high stats.
+                # Note: Previous (0,0) was flawed (Low FF pushes fevers late -> small gap).
+                _, _, _, acts_max, last_fever_end_early = grid.get_timeline(0, TOTAL_ROWS)
+                
+                song_gap = max(0, grid.total_notes - last_fever_end_early)
+                song_fever_activations = acts_max
 
-            # Caches for config generation (now uses precomputed gap)
-            _cache_counts = {}
+                print(f"[FG] Search bounds (at 0,{TOTAL_ROWS}) -> Gap: {song_gap}, Activations: {song_fever_activations}")
+
+                # VECTORIZED: Precompute pair_caps_grid using NumPy (~100x faster)
+                # Uses the precomputed gap/activations arrays from the grid
+                _t_grid0 = time.perf_counter() if perf else 0.0
+                
+                gpu_arrays = grid.to_gpu_arrays()
+                gap_grid = gpu_arrays['gap']  # (161, 161) int32
+                acts_grid = gpu_arrays['fever_activations']  # (161, 161) int32
+                
+                # Vectorized computation - replaces 26K loop with NumPy broadcasting
+                pair_caps_grid = vectorized_calculate_section_caps_grid(
+                    gap_grid, acts_grid, max_per_section=100
+                )
+                
+                if perf:
+                    print(f"[PERF] FG Pair Caps Grid precompute (VECTORIZED): {(time.perf_counter() - _t_grid0)*1000:.1f}ms")
+            except Exception as e:
+                print(f"[FG] Gap/Grid precomputation FAILED: {type(e).__name__}: {e}")
+                # Fallback to permissive caps (50) to avoid 0-clamping on GPU
+                pair_caps_grid = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1, 16), 50, dtype=np.int32)
+
+            # Generate SMART configs using Analytic Breakpoint Pruning
+            # This scans the grid to find only the counts that fundamentally change fever coverage.
+            # (Now moved inside group loop to be context-aware)
 
             # Process each group in GPU batches
             for (sel_color, n_sections, max_per_section), sig_map in groups.items():
@@ -273,27 +302,81 @@ def process_force_greats(
                             if ft + ff <= TOTAL_GEM_BUDGET:
                                 needed_pairs.add((ft, ff))
 
+                if len(needed_pairs) == 0:
+                    ftff_pairs = []
+                    stat_bounds = (0, 0, 0, 0) # Should not happen
+                else:
+                    ft_vals = [p[0] for p in needed_pairs]
+                    ff_vals = [p[1] for p in needed_pairs]
+                    # Map gem counts to stat indices for collect_analytic_configs.
+                    # Groups may contain loadouts with different base stats, so we need to find
+                    # the union of their active stat regions.
+                    # FT_Stat = Base + Gems*3, where Base varies per loadout.
+                    
+                    min_base_ft = 999
+                    max_base_ft = -999
+                    min_base_ff = 999
+                    max_base_ff = -999
+                    
+                    # sig_map: sig -> list of (entry, eval, base_stats)
+                    for _, items in sig_map.items():
+                        for _, _, bs in items: 
+                            bft = bs.get("Fever Time", 0)
+                            bff = bs.get("Fever Fill Rate", 0)
+                            if bft < min_base_ft: min_base_ft = bft
+                            if bft > max_base_ft: max_base_ft = bft
+                            if bff < min_base_ff: min_base_ff = bff
+                            if bff > max_base_ff: max_base_ff = bff
+                    
+                    # Calculate stat bounds reachable by this group
+                    # Max gems ~10, Min gems 0.
+                    # But we specifically care about the 'needed_pairs' search window.
+                    # needed_pairs has (ft_gem, ff_gem).
+                    # MinStat = MinBase + MinGem*3
+                    # MaxStat = MaxBase + MaxGem*3
+                    
+                    min_gem_ft = min(ft_vals)
+                    max_gem_ft = max(ft_vals)
+                    min_gem_ff = min(ff_vals)
+                    max_gem_ff = max(ff_vals)
+                    
+                    # Constants
+                    GEM_SCALE = 3 
+                    
+                    bound_min_ft = max(0, min_base_ft + min_gem_ft * GEM_SCALE - 5) # -5 margin
+                    bound_max_ft = min(TOTAL_ROWS, max_base_ft + max_gem_ft * GEM_SCALE + 5)
+                    bound_min_ff = max(0, min_base_ff + min_gem_ff * GEM_SCALE - 5)
+                    bound_max_ff = min(TOTAL_ROWS, max_base_ff + max_gem_ff * GEM_SCALE + 5)
+                    
+                    stat_bounds = (bound_min_ft, bound_max_ft, bound_min_ff, bound_max_ff)
+
                 ftff_pairs = sorted(list(needed_pairs))
                 # Safety cap (should fit in 1024, but if not, we truncate to avoid crash)
-                # Ideally we'd split batches, but for now just cap.
-                # Since gems concentrate, 1024 is plenty for even diverse populations.
                 if len(ftff_pairs) > 1024:
                     print(f"[ForceGreats][GPU] Warning: FT/FF union size {len(ftff_pairs)} > 1024. Truncating.")
                     ftff_pairs = ftff_pairs[:1024]
 
-                # Build FG configs list (uses precomputed song gap)
-                counts_key = (n_sections, max_per_section)
-                counts_list = _cache_counts.get(counts_key)
-                if counts_list is None:
-                    # Use shared Dynamic Budget logic with precomputed gap
-                    from ..fg_utils import generate_dynamic_fg_configs
-                    counts_list = generate_dynamic_fg_configs(
-                        n_sections, non_fever_base, budget=4096,
-                        gap=song_gap, fever_activations=song_fever_activations
-                    )
-                    _cache_counts[counts_key] = counts_list
-                    print(f"[FG] Generated {len(counts_list)} configs (n_sections={n_sections})")
+                # Per-Group Analytic Config Collection
+                # We use the bounds derived from the group's actual stat potential.
+                group_counts_list = collect_analytic_configs(grid, TOTAL_ROWS, stat_bounds=stat_bounds)
+                
+                if not group_counts_list:
+                    group_counts_list = [tuple([0] * song_fever_activations)]
 
+                # Adapt to this group's section count
+                # Slice and deduplicate
+                if n_sections <= 0:
+                    counts_list = [()]
+                else:
+                    # Slice global tuples to n_sections
+                    sliced = [c[:n_sections] for c in group_counts_list]
+                    # Deduplicate and sort
+                    counts_list = sorted(list(set(sliced)))
+                    
+                if perf:
+                    t_cfg_build_sec += time.perf_counter() - _t_cfg0
+                
+                # ... (rest of loop uses counts_list)
                 if perf:
                     t_cfg_build_sec += time.perf_counter() - _t_cfg0
 
@@ -323,24 +406,9 @@ def process_force_greats(
                     _t_cache0 = time.perf_counter() if perf else 0.0
                     pending = []
                     pending_sigs = []
-                    pending_sigs = []
                     for sig in chunk_sigs:
-                        # Cache key no longer includes center gems because we batch across centers.
-                        # Wait, the RESULT depends on the center because it defines the search window.
-                        # But now we search a UNION window.
-                        # The cache entry should represent the BEST valid result.
-                        # However, to be safe/correct with existing cache keys, we might need to skip
-                        # checking strict cache keys here or synthesise a checking logic.
-                        # Actually, we can just compute and then cache the specific result
-                        # associated with each loadout's center.
-
-                        # Optimization: We can't easily check cache by key here because 'center' varies
-                        # per-entry within the same signature group.
-                        # So we assume MISS for simplicity in this batch mode,
-                        # or check per-entry (which is expensive).
-                        # Let's just collect pending work. Uncached GPU is fast enough.
-
-                        # representative base_stats for sig
+                        # Skip cache check in batch mode since center varies per-entry within signature groups.
+                        # GPU computation is fast enough for uncached entries.
                         rep = sig_map[sig][0][2]
                         pending.append(rep)
                         pending_sigs.append(sig)
@@ -388,6 +456,7 @@ def process_force_greats(
                         ref_arrays=ref_arrays,
                         total_budget=TOTAL_GEM_BUDGET,
                         gem_scale_fever=GEM_SCALE_FEVER,
+                        pair_caps_grid=pair_caps_grid,
                     )
                     if perf:
                         t_gpu_calls_sec += time.perf_counter() - _t_gpu0
@@ -400,10 +469,7 @@ def process_force_greats(
                     # Apply results back to all entries sharing the same signature
                     _t_apply0 = time.perf_counter() if perf else 0.0
                     for sig, bs, res in zip(pending_sigs, pending, gpu_results):
-                        # The GPU result assumes the wide union window.
-                        # We must map map this back to each entry's specific constraints if needed.
-                        # Actually, finding a better result outside the +/-5 window is GOOD.
-                        # So we blindly accept the result.
+                        # GPU results use union window; accept improvements beyond individual windows.
 
                         cfg_idx = int(res.get("cfg_idx", -1))
                         cfg_counts = list(counts_list[cfg_idx]) if 0 <= cfg_idx < len(counts_list) else []
@@ -444,13 +510,7 @@ def process_force_greats(
                             "ForceGreats": {**fg_info, "variant_applied": True},
                         }
 
-                        # Store in in-memory cache for reuse within the session
-                        # Store in in-memory cache for reuse within the session
-                        # We cache using the FOUND result's metrics, or maybe just key by sig?
-                        # To cooperate with single-item lookups, we should store it under keys
-                        # matching the entry's expectations if possible.
-                        # But strictly, we can just not write to cache here to avoid complexity
-                        # since batch mode is the primary path.
+                        # Store results in cache for future lookups.
 
                         for entry, eval_data, _ in sig_map.get(sig, []):
                             # Update entry

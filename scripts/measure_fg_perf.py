@@ -90,7 +90,6 @@ def run_measurement():
     # To truly measure the BATCHING efficiency, we should call process_force_greats directly
     # or create a scenario that feeds many entries to it.
     
-    # Let's verify if we can invoke process_force_greats directly for better measurement
     try:
         from gear_optimizer.helpers.song_helpers import process_force_greats
         

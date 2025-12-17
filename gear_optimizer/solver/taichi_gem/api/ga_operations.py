@@ -198,9 +198,9 @@ def ga_evaluate_population(
     ensure_ready()
     n_genomes = int(n_genomes)
     n_slots = int(n_slots)
-    
-    # Step 1: Aggregate item stats into genome_base_stats
-    kernels.ga_aggregate_genome_stats_kernel(
+
+    # Step 1: FUSED aggregate + init (was 2 kernels, now 1)
+    kernels.ga_aggregate_and_init_best_kernel(
         n_genomes, n_slots,
         int(is_p_ft), int(is_s_ft),
         int(is_p_ff), int(is_s_ff),
@@ -209,63 +209,40 @@ def ga_evaluate_population(
         int(is_p_fm), int(is_s_fm),
         int(is_p_ov), int(is_s_ov),
     )
-    
+
     # Step 2: Evaluate genomes using existing FT/FF iteration kernel
     total_budget_i = int(total_budget)
     gem_scale_fever_i = int(gem_scale_fever)
     song_slot_i = int(song_slot)
-    
+
     # Warm-start logic: Default to cold start (0) unless specified
     use_hints_i = int(use_hints)
 
     # Precompute FT/FF combo tables once per budget (tiny upload, reused across generations).
     n_combos = _ensure_ftff_combo_tables(total_budget_i)
-
-    # Step 2: GPU-parallel evaluation across (genome, ft/ff combo), writing best key per genome.
-    kernels.init_chunk_best_key_kernel(n_genomes)
     combo_chunk = n_combos
     # Chunk very large workloads to reduce kernel wall time (helps avoid Windows TDR on Vulkan).
     if n_genomes * n_combos > MAX_WORK_ITEMS:
         combo_chunk = 1024
 
     for offset in range(0, n_combos, combo_chunk):
-        # Use warm-start kernel if available and requested
-        if hasattr(kernels, "ga_find_best_combo_warmstart_kernel"):
-            kernels.ga_find_best_combo_warmstart_kernel(
-                n_genomes,
-                n_combos,
-                int(offset),
-                int(min(combo_chunk, n_combos - offset)),
-                total_budget_i,
-                gem_scale_fever_i,
-                int(is_p_ft), int(is_s_ft),
-                int(is_p_ff), int(is_s_ff),
-                int(is_p_pp), int(is_s_pp),
-                int(is_p_cm), int(is_s_cm),
-                int(is_p_fm), int(is_s_fm),
-                int(is_p_ov), int(is_s_ov),
-                song_slot_i,
-                use_hints_i,
-            )
-        else:
-            # Fallback to cold-start kernel if warm-start kernel missing
-            kernels.ga_find_best_combo_key_kernel(
-                n_genomes,
-                n_combos,
-                int(offset),
-                int(min(combo_chunk, n_combos - offset)),
-                total_budget_i,
-                gem_scale_fever_i,
-                int(is_p_ft), int(is_s_ft),
-                int(is_p_ff), int(is_s_ff),
-                int(is_p_pp), int(is_s_pp),
-                int(is_p_cm), int(is_s_cm),
-                int(is_p_fm), int(is_s_fm),
-                int(is_p_ov), int(is_s_ov),
-                song_slot_i,
-            )
+        kernels.ga_find_best_combo_warmstart_kernel(
+            n_genomes,
+            n_combos,
+            int(offset),
+            int(min(combo_chunk, n_combos - offset)),
+            total_budget_i,
+            gem_scale_fever_i,
+            int(is_p_ft), int(is_s_ft),
+            int(is_p_ff), int(is_s_ff),
+            int(is_p_pp), int(is_s_pp),
+            int(is_p_cm), int(is_s_cm),
+            int(is_p_fm), int(is_s_fm),
+            int(is_p_ov), int(is_s_ov),
+            song_slot_i,
+            use_hints_i,
+        )
 
-    # Step 3: Finalize best combo → genome_result_stats + ga_scores (one thread per genome).
     kernels.ga_write_best_results_from_key_kernel(
         n_genomes,
         total_budget_i,
@@ -277,6 +254,52 @@ def ga_evaluate_population(
         int(is_p_fm), int(is_s_fm),
         int(is_p_ov), int(is_s_ov),
         song_slot_i,
+    )
+
+
+def ga_write_best_and_update_global(
+    n_genomes: int,
+    n_slots: int,
+    total_budget: int,
+    gem_scale_fever: int,
+    *,
+    is_p_ft: int = 0, is_s_ft: int = 0,
+    is_p_ff: int = 0, is_s_ff: int = 0,
+    is_p_pp: int = 0, is_s_pp: int = 0,
+    is_p_cm: int = 0, is_s_cm: int = 0,
+    is_p_fm: int = 0, is_s_fm: int = 0,
+    is_p_ov: int = 0, is_s_ov: int = 0,
+    song_slot: int = 0,
+) -> None:
+    """
+    FUSED: Write best results + store hints + update global best (3 kernels -> 1).
+
+    Call this AFTER evaluation (ga_evaluate_population) to:
+    1. Finalize best combo from chunk_best_key
+    2. Store hints for next generation (warm-start)
+    3. Update GPU-side global best
+
+    Args:
+        n_genomes: Number of genomes
+        n_slots: Number of equipment slots
+        total_budget: Total gem budget
+        gem_scale_fever: Gems per fever stat point
+        is_*: Color contribution flags (0/1)
+        song_slot: Timeline grid slot
+    """
+    ensure_ready()
+    kernels.ga_write_best_and_update_global_kernel(
+        int(n_genomes),
+        int(n_slots),
+        int(total_budget),
+        int(gem_scale_fever),
+        int(is_p_ft), int(is_s_ft),
+        int(is_p_ff), int(is_s_ff),
+        int(is_p_pp), int(is_s_pp),
+        int(is_p_cm), int(is_s_cm),
+        int(is_p_fm), int(is_s_fm),
+        int(is_p_ov), int(is_s_ov),
+        int(song_slot),
     )
 
 
@@ -362,12 +385,9 @@ def ga_next_generation(
     else:
         mr_fp = np.uint32(int(mr * 4294967295.0))
 
-    # Step 1: Selection
-    kernels.ga_select_parents_tournament_kernel(n_genomes, tournament_k)
-    
-    # Step 2: Crossover + Mutation (with mini uniqueness repair)
-    kernels.ga_crossover_mutate_kernel(n_genomes, n_slots, mr_fp, elite_count)
-    
+    # Step 1+2: FUSED Selection + Crossover + Mutation (was 2 kernels, now 1)
+    kernels.ga_select_crossover_mutate_kernel(n_genomes, n_slots, tournament_k, mr_fp)
+
     # Step 3: Elitism - copy elite genomes to front of next generation
     if elite_count > 0:
         if elite_indices is None:
@@ -379,6 +399,120 @@ def ga_next_generation(
     
     # Step 4: Swap buffers (next -> current)
     kernels.ga_swap_populations_kernel(n_genomes, n_slots)
+
+
+def ga_next_generation_gpu_elites(
+    *,
+    n_genomes: int,
+    n_slots: int = 9,
+    mutation_rate: float = 0.02,
+    tournament_k: int = 3,
+    n_elites: int = 10,
+) -> None:
+    """
+    Run one GPU-side GA operator step using GPU-resident elite indices.
+    
+    This is an optimized version of ga_next_generation that reads elite indices
+    from the GPU-resident island_elite_indices field (set by ga_find_island_elites)
+    instead of a CPU ndarray. This avoids the expensive GPU->CPU transfer per generation.
+    
+    Args:
+        n_genomes: Population size
+        n_slots: Slots per genome (default 9)
+        mutation_rate: Probability of mutation per genome (default 0.02)
+        tournament_k: Tournament size for selection (default 3)
+        n_elites: Total number of elites to preserve (n_islands * elites_per_island)
+    """
+    ensure_ready()
+    n_genomes = int(n_genomes)
+    n_slots = int(n_slots)
+    n_elites = int(n_elites)
+    tournament_k = int(tournament_k)
+    if n_genomes <= 0:
+        return
+    if n_slots <= 0 or n_slots > fields.MAX_SLOTS:
+        raise ValueError(f"Invalid n_slots: {n_slots}")
+    if n_elites < 0:
+        n_elites = 0
+    if n_elites > n_genomes:
+        n_elites = n_genomes
+    if tournament_k < 1:
+        tournament_k = 1
+
+    # Convert probability to uint32 threshold.
+    mr = float(mutation_rate)
+    if mr <= 0.0:
+        mr_fp = np.uint32(0)
+    elif mr >= 1.0:
+        mr_fp = np.uint32(0xFFFFFFFF)
+    else:
+        mr_fp = np.uint32(int(mr * 4294967295.0))
+
+    # Step 1+2: FUSED Selection + Crossover + Mutation
+    kernels.ga_select_crossover_mutate_kernel(n_genomes, n_slots, tournament_k, mr_fp)
+
+    # Step 3: Elitism - copy elite genomes from GPU-resident island_elite_indices
+    if n_elites > 0:
+        kernels.ga_copy_island_elites_kernel(n_elites, n_slots)
+    
+    # Step 4: Swap buffers (next -> current)
+    kernels.ga_swap_populations_kernel(n_genomes, n_slots)
+
+
+def ga_next_generation_fused(
+    *,
+    n_genomes: int,
+    n_slots: int = 9,
+    mutation_rate: float = 0.02,
+    tournament_k: int = 3,
+    n_elites: int = 10,
+) -> None:
+    """
+    FULLY FUSED next generation: 2 kernel launches instead of 4.
+    
+    This combines:
+    1. ga_next_generation_full_kernel: select + crossover + mutate + elite copy
+    2. ga_swap_and_inherit_hints_kernel: swap + hint inheritance
+    
+    Uses GPU-resident island_elite_indices (set by ga_find_island_elites).
+    
+    Args:
+        n_genomes: Population size
+        n_slots: Slots per genome (default 9)
+        mutation_rate: Probability of mutation per genome (default 0.02)
+        tournament_k: Tournament size for selection (default 3)
+        n_elites: Total number of elites to preserve (n_islands * elites_per_island)
+    """
+    ensure_ready()
+    n_genomes = int(n_genomes)
+    n_slots = int(n_slots)
+    n_elites = int(n_elites)
+    tournament_k = int(tournament_k)
+    if n_genomes <= 0:
+        return
+    if n_slots <= 0 or n_slots > fields.MAX_SLOTS:
+        raise ValueError(f"Invalid n_slots: {n_slots}")
+    if n_elites < 0:
+        n_elites = 0
+    if n_elites > n_genomes:
+        n_elites = n_genomes
+    if tournament_k < 1:
+        tournament_k = 1
+
+    # Convert probability to uint32 threshold.
+    mr = float(mutation_rate)
+    if mr <= 0.0:
+        mr_fp = np.uint32(0)
+    elif mr >= 1.0:
+        mr_fp = np.uint32(0xFFFFFFFF)
+    else:
+        mr_fp = np.uint32(int(mr * 4294967295.0))
+
+    # FUSED: Selection + Crossover + Mutation + Elitism (all in one kernel)
+    kernels.ga_next_generation_full_kernel(n_genomes, n_slots, n_elites, tournament_k, mr_fp)
+    
+    # FUSED: Swap + Hint Inheritance (second kernel)
+    kernels.ga_swap_and_inherit_hints_kernel(n_genomes, n_slots)
 
 
 def ga_download_population_indices(*, n_genomes: int, n_slots: int = 9) -> np.ndarray:

@@ -234,19 +234,22 @@ def _run_gpu_native_ga(
             is_p_ov=is_p_ov, is_s_ov=is_s_ov,
             use_hints=gen_use_hints,  # 0=cold, 1=warm
         )
-        
-        # Store best allocations as hints for next generation
-        gpu_api.ga_store_hints(n_genomes)
-        
-        # GPU-side global best update (no CPU download!)
-        gpu_api.ga_update_global_best(n_genomes, n_slots)
+
+        # FUSED: Write best + store hints + update global best (was 3 kernels, now 1)
+        # This replaces: ga_write_best_results_from_key + ga_store_hints + ga_update_global_best
+        gpu_api.ga_write_best_and_update_global(
+            n_genomes, n_slots, total_budget, gem_scale_fever,
+            is_p_ft=is_p_ft, is_s_ft=is_s_ft,
+            is_p_ff=is_p_ff, is_s_ff=is_s_ff,
+            is_p_pp=is_p_pp, is_s_pp=is_s_pp,
+            is_p_cm=is_p_cm, is_s_cm=is_s_cm,
+            is_p_fm=is_p_fm, is_s_fm=is_s_fm,
+            is_p_ov=is_p_ov, is_s_ov=is_s_ov,
+            song_slot=0,
+        )
         
         # GPU-side island elite selection (no CPU download!)
         gpu_api.ga_find_island_elites(n_genomes, num_islands, elite_count)
-        
-        # Download elite indices for ga_next_generation (small: ~10 ints per island)
-        total_elites = num_islands * elite_count
-        elite_indices = gpu_api.ga_download_island_elite_indices(total_elites)
         
         # --- MIGRATION PHASE (every GPU_GA_GENS_PER_MIGRATION generations) ---
         # Migration still requires score download for now (CPU-side logic)
@@ -289,18 +292,16 @@ def _run_gpu_native_ga(
         # Skip ga_next_generation on final iteration - we don't use that population
         # This saves one generation step per run (30 total per song)
         if gen < n_generations - 1:
-            # Run next generation (selection + crossover + mutation + elitism + swap)
-            gpu_api.ga_next_generation(
+            # Run next generation using FUSED kernel (2 launches instead of 4!)
+            # Includes: select + crossover + mutate + elitism + swap + hints
+            total_elites = num_islands * elite_count
+            gpu_api.ga_next_generation_fused(
                 n_genomes=n_genomes,
                 n_slots=n_slots,
                 mutation_rate=mutation_rate,
                 tournament_k=tournament_k,
-                elite_count=len(elite_indices),
-                elite_indices=elite_indices,
+                n_elites=total_elites,
             )
-            
-            # Inherit hints from parents to children (for warm start)
-            gpu_api.ga_inherit_hints(n_genomes)
 
     # --- END OF RUN: Download global best from GPU ---
     # GPU-side global best tracking captured the best genome and results during the loop

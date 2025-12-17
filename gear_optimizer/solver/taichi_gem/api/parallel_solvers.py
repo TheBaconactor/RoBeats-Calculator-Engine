@@ -261,16 +261,8 @@ def solve_genomes_parallel(
             work_genome[pos : pos + cnt] = genome_idx
             work_ft[pos : pos + cnt] = ft
             work_ff[pos : pos + cnt] = np.arange(cnt, dtype=np.int32)
-            # Budget calculation happens in kernel anyway based on ft/ff, but we pass it for consistency
-            # Actually kernel calculates budget = total_budget - ft - ff
-            # But the vector format expects budget at index 0.
-            # Let's precalculate it or pass total_budget to kernel?
-            # The vector format for work_items is:
-            # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
-            # Wait, solve_ftff_parallel_kernel in kernels.py calculates budget itself:
+            # Kernel reads budget from item[0], so we must precalculate it.
             # budget = total_budget - ft - ff
-            # But it READS budget from item[0].
-            # So we MUST prefill item[0].
             
             # Vectorized budget fill:
             # budget = total - ft - ff
@@ -306,15 +298,8 @@ def solve_genomes_parallel(
         # Copy work items into reusable buffers (no allocation needed)
         # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
         
-        # We need to fill all 7 channels.
-        # Channels 1 (count_fever), 2 (count_normal), 5 (head_len) are filled by kernel (from grid lookup).
-        # We can leave them as 0 or whatever.
-        # But wait, solve_ftff_parallel_kernel READS them from grid, it ignores input values for these?
-        # Let's check kernel:
-        # count_fever = grid_count_body_fever[ft_idx, ff_idx]
-        # YES, kernel overwrites local variables from grid lookup. so input doesn't matter.
-        
-        # So we just need to pack budget, ft, ff, genome_id.
+        # Pack work items: budget, ft, ff, genome_id.
+        # Kernel reads count_fever, count_normal, head_len from grid, so input values don't matter.
         
         # Flattened packing
         # Reset buffer for cleanliness (optional but safer)

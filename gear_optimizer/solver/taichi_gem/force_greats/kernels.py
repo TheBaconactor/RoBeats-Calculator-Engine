@@ -20,6 +20,7 @@ from .fields import FG_MAX_SECTIONS
 
 song_timestamps = None
 fg_forced_counts = None
+fg_pair_caps = None
 fg_ft_list = None
 fg_ff_list = None
 
@@ -48,6 +49,9 @@ fg_stage1_fill_penalty = None
 # Flat work items (GPU-friendly parallelization)
 fg_flat_work_genome = None
 fg_flat_work_ftff = None
+
+# Packed 64-bit field for atomic (score, cfg_idx) updates
+fg_stage1_packed = None
 
 
 # ============================================================================
@@ -262,6 +266,9 @@ def fg_stage1_init_kernel(n_genomes: ti.i32, n_ftff: ti.i32):
         fg_stage1_g_ov[g, f] = 0
         fg_stage1_score_penalty[g, f] = 0
         fg_stage1_fill_penalty[g, f] = 0
+        # Initialize packed field to sentinel value (very negative score, cfg=-1)
+        # Use -2^62 in upper bits for sentinel (so any real score wins)
+        fg_stage1_packed[g, f] = ti.cast(-1, ti.i64) << 32
 
 
 @ti.kernel
@@ -562,21 +569,27 @@ def fg_stage2_kernel(n_genomes: ti.i32, n_ftff: ti.i32):
     Stage 2: Reduce across ftff to find best per genome.
 
     Each thread handles one genome, loops over ftff sequentially.
+    Uses the packed field to get atomically-consistent (score, cfg_idx) pairs.
     """
     for g in range(n_genomes):
-        best_final: ti.i32 = -1
+        best_packed: ti.i64 = ti.cast(-1, ti.i64) << 32  # Sentinel
         best_ftff: ti.i32 = 0
 
         for f in range(n_ftff):
-            score = fg_stage1_final_score[g, f]
-            if score > best_final:
-                best_final = score
+            packed = fg_stage1_packed[g, f]
+            if packed > best_packed:
+                best_packed = packed
                 best_ftff = f
+
+        # Extract score and DECODE inverted cfg_idx
+        best_final: ti.i32 = ti.cast(best_packed >> 32, ti.i32)
+        inverted_cfg: ti.i32 = ti.cast(best_packed & 0x7FFFFFFF, ti.i32)
+        best_cfg: ti.i32 = 0x7FFFFFFF - inverted_cfg  # Decode: invert back
 
         if best_final >= 0:
             fg_best_final_score[g] = best_final
             fg_best_base_score[g] = fg_stage1_base_score[g, best_ftff]
-            fg_best_cfg_idx[g] = fg_stage1_cfg_idx[g, best_ftff]
+            fg_best_cfg_idx[g] = best_cfg  # Use decoded cfg from packed field
             fg_best_ft[g] = fg_ft_list[best_ftff]
             fg_best_ff[g] = fg_ff_list[best_ftff]
             fg_best_g_pp[g] = fg_stage1_g_pp[g, best_ftff]
@@ -682,6 +695,11 @@ def fg_stage1_flat_kernel(
                 if forced_val < 0:
                     forced_val = 0
                 forced_val = ti.min(forced_val, non_fever_base)
+
+                # Clamp by per-pair dynamic cap
+                if sec < FG_MAX_SECTIONS:
+                    pair_cap: ti.i32 = fg_pair_caps[ft_idx, ff_idx, sec]
+                    forced_val = ti.min(forced_val, pair_cap)
 
             fp_calc: ti.i32 = 0
             if forced_val > 0:
@@ -822,16 +840,24 @@ def fg_stage1_flat_kernel(
         if final_score < 0:
             final_score = 0
 
-        # Atomic update with race-free metadata writes
-        # Use atomic_max on score, then check if THIS thread won to update metadata
-        # This avoids race conditions where multiple threads with same score try to write
-        old_score = ti.atomic_max(fg_stage1_final_score[g, ftff_idx], final_score)
-
-        # Strict < check ensures only ONE thread (first to atomic_max) writes metadata
-        # If old_score == final_score, another thread already updated, we skip
+        # Pack score and cfg_idx into a single 64-bit value for atomic update
+        # Format: (score << 32) | inverted_cfg_idx
+        # Score in upper 32 bits ensures atomic_max picks highest score
+        # INVERTED cfg_idx in lower 32 bits ensures lower cfg_idx wins ties
+        # (atomic_max picks larger value, so invert to prefer smaller idx)
+        global_cfg_idx: ti.i32 = cfg_offset + cfg_idx
+        inverted_idx: ti.i32 = 0x7FFFFFFF - global_cfg_idx  # Invert: 0 -> 0x7FFFFFFF, 1 -> 0x7FFFFFFE, etc.
+        packed_val: ti.i64 = (ti.cast(final_score, ti.i64) << 32) | ti.cast(inverted_idx, ti.i64)
+        
+        # Atomic update - score and cfg_idx updated TOGETHER atomically
+        old_packed = ti.atomic_max(fg_stage1_packed[g, ftff_idx], packed_val)
+        old_score: ti.i32 = ti.cast(old_packed >> 32, ti.i32)
+        
+        # Only update metadata if WE won the atomic race
+        # Strict < check ensures exactly ONE winner writes metadata
         if old_score < final_score:
-            # We atomically won - safe to update all metadata synchronously
-            global_cfg_idx: ti.i32 = cfg_offset + cfg_idx
+            # We won - safe to update all metadata fields (no race)
+            fg_stage1_final_score[g, ftff_idx] = final_score
             fg_stage1_base_score[g, ftff_idx] = base_score
             fg_stage1_cfg_idx[g, ftff_idx] = global_cfg_idx
             fg_stage1_g_pp[g, ftff_idx] = gems_pp

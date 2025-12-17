@@ -124,6 +124,7 @@ def solve_force_greats_finder_gpu(
     ref_arrays: dict,
     total_budget: int = 90,
     gem_scale_fever: int = 3,
+    pair_caps_grid: np.ndarray | None = None,
     cfg_chunk: int | None = None,
 ) -> list[dict[str, Any]]:
     """
@@ -309,6 +310,17 @@ def solve_force_greats_finder_gpu(
                 buf[i, :limit] = cfg[:limit]
 
         fg_fields.fg_forced_counts.from_numpy(buf)
+
+        # Upload pair caps grid (once per call, if provided)
+        if pair_caps_grid is not None:
+             # Expect shape (161, 161, 16)
+             # Use safe copy/upload
+             fg_fields.fg_pair_caps.from_numpy(pair_caps_grid)
+        else:
+             # Zero it out if not provided to allow functioning without restrictions?
+             # Or we assume it's provided. For safety, if None, we might want to fill with MAX_INT
+             # But likely caller always provides it now.
+             pass
 
         # Call FLATTENED kernel (GPU-friendly: one thread per work_item * cfg)
         fg_kernels.fg_stage1_flat_kernel(

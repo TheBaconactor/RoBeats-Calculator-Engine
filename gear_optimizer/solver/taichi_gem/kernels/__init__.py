@@ -85,11 +85,17 @@ from .kernels_ga import (
     ga_crossover_mutate_kernel,
     ga_swap_populations_kernel,
     ga_copy_elites_kernel,
+    ga_copy_island_elites_kernel,  # GPU-resident elitism (avoids CPU download)
     ga_aggregate_genome_stats_kernel,
     ga_copy_scores_kernel,
     # Warm-start optimization
     ga_store_hints_kernel,
     ga_inherit_hints_kernel,
+    # FUSED kernels
+    ga_aggregate_and_init_best_kernel,
+    ga_select_crossover_mutate_kernel,
+    ga_next_generation_full_kernel,      # FULLY FUSED: select+crossover+mutate+elitism
+    ga_swap_and_inherit_hints_kernel,    # FUSED: swap+hints
 )
 
 # Import scoring functions and optimize_core_device
@@ -126,6 +132,8 @@ from .kernels_ga_eval import (
     ga_find_island_elites_kernel,
     # Warm-start evaluation
     ga_find_best_combo_warmstart_kernel,
+    # FUSED kernels
+    ga_write_best_and_update_global_kernel,
 )
 
 # Import timeline kernel
@@ -185,8 +193,15 @@ __all__ = [
     "ga_crossover_mutate_kernel",
     "ga_swap_populations_kernel",
     "ga_copy_elites_kernel",
+    "ga_copy_island_elites_kernel",
     "ga_aggregate_genome_stats_kernel",
     "ga_copy_scores_kernel",
+    # FUSED GA kernels
+    "ga_aggregate_and_init_best_kernel",
+    "ga_select_crossover_mutate_kernel",
+    "ga_next_generation_full_kernel",
+    "ga_swap_and_inherit_hints_kernel",
+    "ga_write_best_and_update_global_kernel",
     # Scoring functions
     "_calc_body_score",
     "_calc_head_factor",

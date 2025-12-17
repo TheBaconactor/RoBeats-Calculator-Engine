@@ -18,6 +18,7 @@ from ..fields import MAX_GENOMES
 # ============================================================================
 
 FG_MAX_SECTIONS = 16
+FG_MAX_STAT = 160  # Maximum FT/FF stat index
 FG_MAX_CONFIGS = 1048576
 FG_MAX_FTFF = 1024
 FG_MAX_SONG_NOTES = 200000  # safety cap for timestamps uploaded to GPU
@@ -36,6 +37,7 @@ song_timestamps: ti.Field | None = None  # (FG_MAX_SONG_NOTES,) f32
 
 # FG finder inputs (GPU-resident)
 fg_forced_counts: ti.Field | None = None  # (FG_MAX_CONFIGS, FG_MAX_SECTIONS) i32
+fg_pair_caps: ti.Field | None = None      # (FG_MAX_STAT+1, FG_MAX_STAT+1, FG_MAX_SECTIONS) i32
 fg_ft_list: ti.Field | None = None        # (FG_MAX_FTFF,) i32
 fg_ff_list: ti.Field | None = None        # (FG_MAX_FTFF,) i32
 
@@ -51,6 +53,10 @@ fg_best_g_fm: ti.Field | None = None            # (MAX_GENOMES,) i32
 fg_best_g_ov: ti.Field | None = None            # (MAX_GENOMES,) i32
 fg_best_score_penalty: ti.Field | None = None   # (MAX_GENOMES,) i32
 fg_best_fill_penalty: ti.Field | None = None    # (MAX_GENOMES,) i32
+
+# NEW: Packed 64-bit field for atomic (score, cfg_idx) updates - fixes race condition
+# Format: (score << 32) | (cfg_idx & 0xFFFFFFFF) - score in upper 32 bits for correct atomic_max ordering
+fg_stage1_packed: ti.Field | None = None        # (MAX_GENOMES, FG_MAX_FTFF) i64
 
 # FG finder intermediate outputs (per genome × ftff) - for two-stage reduction
 fg_stage1_final_score: ti.Field | None = None   # (MAX_GENOMES, FG_MAX_FTFF) i32
@@ -89,6 +95,7 @@ def bind_fields(kernels_module) -> None:
     """
     kernels_module.song_timestamps = song_timestamps
     kernels_module.fg_forced_counts = fg_forced_counts
+    kernels_module.fg_pair_caps = fg_pair_caps
     kernels_module.fg_ft_list = fg_ft_list
     kernels_module.fg_ff_list = fg_ff_list
 
@@ -113,6 +120,7 @@ def bind_fields(kernels_module) -> None:
     kernels_module.fg_stage1_g_ov = fg_stage1_g_ov
     kernels_module.fg_stage1_score_penalty = fg_stage1_score_penalty
     kernels_module.fg_stage1_fill_penalty = fg_stage1_fill_penalty
+    kernels_module.fg_stage1_packed = fg_stage1_packed
 
     # Flat work items
     kernels_module.fg_flat_work_genome = fg_flat_work_genome
@@ -122,13 +130,14 @@ def bind_fields(kernels_module) -> None:
 def allocate_fields() -> None:
     """Allocate ForceGreats GPU fields. Must be called after ti.init()."""
     global song_timestamps
-    global fg_forced_counts, fg_ft_list, fg_ff_list
+    global fg_forced_counts, fg_pair_caps, fg_ft_list, fg_ff_list
     global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx, fg_best_ft, fg_best_ff
     global fg_best_g_pp, fg_best_g_cm, fg_best_g_fm, fg_best_g_ov
     global fg_best_score_penalty, fg_best_fill_penalty
     global fg_stage1_final_score, fg_stage1_base_score, fg_stage1_cfg_idx
     global fg_stage1_g_pp, fg_stage1_g_cm, fg_stage1_g_fm, fg_stage1_g_ov
     global fg_stage1_score_penalty, fg_stage1_fill_penalty
+    global fg_stage1_packed
     global fg_flat_work_genome, fg_flat_work_ftff
     global _fields_allocated
 
@@ -138,6 +147,7 @@ def allocate_fields() -> None:
     song_timestamps = ti.field(dtype=ti.f32, shape=FG_MAX_SONG_NOTES)
 
     fg_forced_counts = ti.field(dtype=ti.i32, shape=(FG_MAX_CONFIGS, FG_MAX_SECTIONS))
+    fg_pair_caps = ti.field(dtype=ti.i32, shape=(FG_MAX_STAT + 1, FG_MAX_STAT + 1, FG_MAX_SECTIONS))
     fg_ft_list = ti.field(dtype=ti.i32, shape=FG_MAX_FTFF)
     fg_ff_list = ti.field(dtype=ti.i32, shape=FG_MAX_FTFF)
 
@@ -162,6 +172,9 @@ def allocate_fields() -> None:
     fg_stage1_g_ov = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
     fg_stage1_score_penalty = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
     fg_stage1_fill_penalty = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
+    
+    # Packed 64-bit field for atomic (score, cfg_idx) updates
+    fg_stage1_packed = ti.field(dtype=ti.i64, shape=(MAX_GENOMES, FG_MAX_FTFF))
 
     # Flat work item indices (GPU-friendly)
     fg_flat_work_genome = ti.field(dtype=ti.i32, shape=FG_MAX_FLAT_WORK_ITEMS)

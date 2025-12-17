@@ -25,13 +25,9 @@ print(f"Rows found for '{song_name}': {len(rows)}")
 for row in rows:
     # Convert Row object to dict
     row_dict = dict(row)
-    # Print it raw
     print("\n--- RAW ROW ---")
-    print(str(row_dict)) 
+    print(str(row_dict))
     print("\n--- JSON PRETTY ---")
-    # Try to make it readable but still raw content
-    # We won't parse the internal JSON strings unless requested, but "RAW" implies seeing the string content.
-    # Actually, let's just dump the whole dict as a string first, then maybe pretty print the outer structure.
     print(json.dumps(row_dict, default=str, indent=2))
 
 conn.close()

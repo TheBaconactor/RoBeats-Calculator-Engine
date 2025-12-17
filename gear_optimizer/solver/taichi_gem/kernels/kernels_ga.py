@@ -91,7 +91,6 @@ def ga_crossover_mutate_kernel(
     n_genomes: ti.i32,
     n_slots: ti.i32,
     mutation_rate_fp: ti.u32,  # [0..2^32-1]
-    elite_count: ti.i32,
 ):
     """
     Create next generation in population_next_indices (race-free, deterministic).
@@ -102,13 +101,12 @@ def ga_crossover_mutate_kernel(
        with a random item from that slot's valid pool
     3. Mini uniqueness repair: ensures slots 6-8 have no duplicate item IDs
 
-    NOTE: elite_count is accepted but elites are handled separately via ga_copy_elites_kernel.
+    Note: Elites are handled separately via ga_copy_elites_kernel (call after this).
 
     Args:
         n_genomes: Number of genomes in population
         n_slots: Number of equipment slots (typically 9)
         mutation_rate_fp: Mutation probability in fixed-point [0..2^32-1]
-        elite_count: Number of elites (not used here, handled separately)
     """
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
 
@@ -214,6 +212,34 @@ def ga_copy_elites_kernel(
 
 
 @ti.kernel
+def ga_copy_island_elites_kernel(
+    n_elites: ti.i32,
+    n_slots: ti.i32,
+):
+    """
+    Copy elite genomes to the beginning of population_next_indices (GPU-resident version).
+
+    Reads elite indices from the GPU-resident island_elite_indices field (set by
+    ga_find_island_elites_kernel) instead of a CPU ndarray. This avoids the
+    expensive GPU->CPU transfer per generation.
+
+    Elite genomes are copied from population_indices[island_elite_indices[i]]
+    to population_next_indices[i] for i in [0, n_elites).
+
+    This preserves the best solutions across generations (elitism).
+    Call AFTER crossover/mutation but BEFORE swap.
+
+    Args:
+        n_elites: Number of elite solutions to preserve (n_islands * elites_per_island)
+        n_slots: Number of equipment slots
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for i, s in ti.ndrange(n_elites, n_slots):
+        src_genome = kernels_helpers.island_elite_indices[i]
+        kernels_helpers.population_next_indices[i, s] = kernels_helpers.population_indices[src_genome, s]
+
+
+@ti.kernel
 def ga_aggregate_genome_stats_kernel(
     n_genomes: ti.i32,
     n_slots: ti.i32,
@@ -296,6 +322,70 @@ def ga_aggregate_genome_stats_kernel(
 
 
 @ti.kernel
+def ga_aggregate_and_init_best_kernel(
+    n_genomes: ti.i32,
+    n_slots: ti.i32,
+    is_p_ft: ti.i32, is_s_ft: ti.i32,
+    is_p_ff: ti.i32, is_s_ff: ti.i32,
+    is_p_pp: ti.i32, is_s_pp: ti.i32,
+    is_p_cm: ti.i32, is_s_cm: ti.i32,
+    is_p_fm: ti.i32, is_s_fm: ti.i32,
+    is_p_ov: ti.i32, is_s_ov: ti.i32,
+):
+    """
+    FUSED: Aggregate item stats AND initialize chunk_best_key in one kernel.
+
+    Combines ga_aggregate_genome_stats_kernel + init_chunk_best_key_kernel
+    to reduce kernel launch overhead.
+
+    Args:
+        n_genomes: Number of genomes
+        n_slots: Number of equipment slots
+        is_*: Color contribution flags (0/1) for primary/secondary
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+
+    for g in range(n_genomes):
+        kernels_helpers.chunk_best_key[g] = ti.u64(0)
+
+        pp = kernels_helpers.base_fixed_stats[0]
+        cm = kernels_helpers.base_fixed_stats[1]
+        fm = kernels_helpers.base_fixed_stats[2]
+        ft = kernels_helpers.base_fixed_stats[3]
+        ff = kernels_helpers.base_fixed_stats[4]
+        beat = kernels_helpers.base_fixed_stats[5]
+        vibe = kernels_helpers.base_fixed_stats[6]
+        rush = kernels_helpers.base_fixed_stats[7]
+        flow = kernels_helpers.base_fixed_stats[8]
+        chill = kernels_helpers.base_fixed_stats[9]
+
+        for s in range(n_slots):
+            item_id = kernels_helpers.population_indices[g, s]
+            if item_id > 0:
+                pp += kernels_helpers.item_stats[item_id, 0]
+                cm += kernels_helpers.item_stats[item_id, 1]
+                fm += kernels_helpers.item_stats[item_id, 2]
+                ft += kernels_helpers.item_stats[item_id, 3]
+                ff += kernels_helpers.item_stats[item_id, 4]
+                beat += kernels_helpers.item_stats[item_id, 5]
+                vibe += kernels_helpers.item_stats[item_id, 6]
+                rush += kernels_helpers.item_stats[item_id, 7]
+                flow += kernels_helpers.item_stats[item_id, 8]
+                chill += kernels_helpers.item_stats[item_id, 9]
+
+        p_val = (beat * is_p_ft) + (vibe * is_p_ff) + (rush * is_p_fm) + (flow * is_p_cm) + (chill * is_p_pp)
+        s_val = (beat * is_s_ft) + (vibe * is_s_ff) + (rush * is_s_fm) + (flow * is_s_cm) + (chill * is_s_pp)
+
+        kernels_helpers.genome_base_stats[g][0] = ti.cast(pp, ti.i16)
+        kernels_helpers.genome_base_stats[g][1] = ti.cast(cm, ti.i16)
+        kernels_helpers.genome_base_stats[g][2] = ti.cast(fm, ti.i16)
+        kernels_helpers.genome_base_stats[g][3] = ti.cast(p_val, ti.i16)
+        kernels_helpers.genome_base_stats[g][4] = ti.cast(s_val, ti.i16)
+        kernels_helpers.genome_base_stats[g][5] = ti.cast(ft, ti.i16)
+        kernels_helpers.genome_base_stats[g][6] = ti.cast(ff, ti.i16)
+
+
+@ti.kernel
 def ga_copy_scores_kernel(n_genomes: ti.i32):
     """
     Copy scores from genome_result_stats to ga_scores for selection.
@@ -309,6 +399,109 @@ def ga_copy_scores_kernel(n_genomes: ti.i32):
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for g in range(n_genomes):
         kernels_helpers.ga_scores[g] = kernels_helpers.genome_result_stats[g][0]
+
+
+@ti.kernel
+def ga_select_crossover_mutate_kernel(
+    n_genomes: ti.i32,
+    n_slots: ti.i32,
+    tournament_k: ti.i32,
+    mutation_rate_fp: ti.u32,
+):
+    """
+    FUSED: Tournament selection + crossover + mutation in one kernel.
+
+    Combines ga_select_parents_tournament_kernel + ga_crossover_mutate_kernel
+    to reduce kernel launch overhead.
+
+    For each genome:
+    1. Tournament selection to pick two parents
+    2. Uniform crossover from parents
+    3. Mutation with given probability
+    4. Mini uniqueness repair for slots 6-8
+
+    Note: Elites are handled separately via ga_copy_elites_kernel (call after this).
+
+    Args:
+        n_genomes: Number of genomes in population
+        n_slots: Number of equipment slots (typically 9)
+        tournament_k: Tournament size for selection
+        mutation_rate_fp: Mutation probability in fixed-point [0..2^32-1]
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+
+    for g in range(n_genomes):
+        state = kernels_helpers.ga_rng_state[g]
+
+        best_a = 0
+        best_a_score = ti.cast(-2147483648, ti.i32)
+        for _ in range(tournament_k):
+            state = kernels_helpers._xorshift32(state)
+            idx = ti.cast(state % ti.cast(n_genomes, ti.u32), ti.i32)
+            sc = kernels_helpers.ga_scores[idx]
+            if sc > best_a_score:
+                best_a_score = sc
+                best_a = idx
+
+        # Pick parent B
+        best_b = 0
+        best_b_score = ti.cast(-2147483648, ti.i32)
+        for _ in range(tournament_k):
+            state = kernels_helpers._xorshift32(state)
+            idx = ti.cast(state % ti.cast(n_genomes, ti.u32), ti.i32)
+            sc = kernels_helpers.ga_scores[idx]
+            if sc > best_b_score:
+                best_b_score = sc
+                best_b = idx
+
+        pa = best_a
+        pb = best_b
+
+        for s in range(n_slots):
+            state = kernels_helpers._xorshift32(state)
+            take_a = (state & ti.u32(1)) != 0
+            if take_a:
+                kernels_helpers.population_next_indices[g, s] = kernels_helpers.population_indices[pa, s]
+            else:
+                kernels_helpers.population_next_indices[g, s] = kernels_helpers.population_indices[pb, s]
+
+        state = kernels_helpers._xorshift32(state)
+        if state < mutation_rate_fp:
+            state = kernels_helpers._xorshift32(state)
+            mut_slot = ti.cast(state % ti.cast(n_slots, ti.u32), ti.i32)
+
+            pool_start = kernels_helpers.slot_start[mut_slot]
+            pool_count = kernels_helpers.slot_count[mut_slot]
+            if pool_count > 0:
+                state = kernels_helpers._xorshift32(state)
+                new_item = pool_start + ti.cast(state % ti.cast(pool_count, ti.u32), ti.i32)
+                kernels_helpers.population_next_indices[g, mut_slot] = new_item
+
+        m0 = kernels_helpers.population_next_indices[g, 6]
+        m1 = kernels_helpers.population_next_indices[g, 7]
+        m2 = kernels_helpers.population_next_indices[g, 8]
+
+        mini_pool_start = kernels_helpers.slot_start[6]
+        mini_pool_count = kernels_helpers.slot_count[6]
+
+        if mini_pool_count > 1:
+            tries = 0
+            while m1 == m0 and tries < 10:
+                state = kernels_helpers._xorshift32(state)
+                m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+                tries += 1
+
+            tries = 0
+            while (m2 == m0 or m2 == m1) and tries < 10:
+                state = kernels_helpers._xorshift32(state)
+                m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+                tries += 1
+
+            kernels_helpers.population_next_indices[g, 6] = m0
+            kernels_helpers.population_next_indices[g, 7] = m1
+            kernels_helpers.population_next_indices[g, 8] = m2
+
+        kernels_helpers.ga_rng_state[g] = state
 
 
 @ti.kernel
@@ -356,5 +549,154 @@ def ga_inherit_hints_kernel(n_genomes: ti.i32):
     for g in range(n_genomes):
         parent_a = kernels_helpers.ga_parent_a[g]
         # Copy parent A's hint to child
+        for i in range(4):
+            kernels_helpers.genome_hint_allocation[g][i] = kernels_helpers.genome_hint_allocation[parent_a][i]
+
+
+@ti.kernel
+def ga_next_generation_full_kernel(
+    n_genomes: ti.i32,
+    n_slots: ti.i32,
+    n_elites: ti.i32,
+    tournament_k: ti.i32,
+    mutation_rate_fp: ti.u32,
+):
+    """
+    FULLY FUSED: Selection + Crossover + Mutation + Elitism + Swap + Hint Inheritance.
+    
+    This kernel combines 4 separate kernels into 1 to reduce launch overhead:
+    1. Tournament selection (picks pa, pb)
+    2. Crossover + mutation (writes to population_next_indices)
+    3. Elite copy (from GPU-resident island_elite_indices)
+    4. Swap (next -> current) + hint inheritance
+    
+    The kernel operates in two phases:
+    - Phase 1 (g >= n_elites): Tournament + crossover + mutation for non-elite slots
+    - Phase 2 (g < n_elites): Copy elites directly
+    - Phase 3: Swap and inherit hints (done in same iteration)
+    
+    Args:
+        n_genomes: Population size
+        n_slots: Slots per genome (typically 9)
+        n_elites: Number of elites to preserve (reads from island_elite_indices)
+        tournament_k: Tournament size for selection
+        mutation_rate_fp: Mutation probability in fixed-point [0..2^32-1]
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+
+    for g in range(n_genomes):
+        state = kernels_helpers.ga_rng_state[g]
+        pa = 0  # Initialize pa (used for hint inheritance)
+        
+        # For elites (g < n_elites): copy from original population
+        # For non-elites (g >= n_elites): do tournament + crossover + mutation
+        if g < n_elites:
+            # Elite path: copy from island_elite_indices[g]
+            src_genome = kernels_helpers.island_elite_indices[g]
+            for s in range(n_slots):
+                kernels_helpers.population_next_indices[g, s] = kernels_helpers.population_indices[src_genome, s]
+            # Inherit hint from source elite
+            pa = src_genome  # For hint inheritance
+        else:
+            # Non-elite path: tournament selection + crossover + mutation
+            # Pick parent A
+            best_a = 0
+            best_a_score = ti.cast(-2147483648, ti.i32)
+            for _ in range(tournament_k):
+                state = kernels_helpers._xorshift32(state)
+                idx = ti.cast(state % ti.cast(n_genomes, ti.u32), ti.i32)
+                sc = kernels_helpers.ga_scores[idx]
+                if sc > best_a_score:
+                    best_a_score = sc
+                    best_a = idx
+
+            # Pick parent B
+            best_b = 0
+            best_b_score = ti.cast(-2147483648, ti.i32)
+            for _ in range(tournament_k):
+                state = kernels_helpers._xorshift32(state)
+                idx = ti.cast(state % ti.cast(n_genomes, ti.u32), ti.i32)
+                sc = kernels_helpers.ga_scores[idx]
+                if sc > best_b_score:
+                    best_b_score = sc
+                    best_b = idx
+
+            pa = best_a
+            pb = best_b
+
+            # Crossover per slot
+            for s in range(n_slots):
+                state = kernels_helpers._xorshift32(state)
+                take_a = (state & ti.u32(1)) != 0
+                if take_a:
+                    kernels_helpers.population_next_indices[g, s] = kernels_helpers.population_indices[pa, s]
+                else:
+                    kernels_helpers.population_next_indices[g, s] = kernels_helpers.population_indices[pb, s]
+
+            # Mutation
+            state = kernels_helpers._xorshift32(state)
+            if state < mutation_rate_fp:
+                state = kernels_helpers._xorshift32(state)
+                mut_slot = ti.cast(state % ti.cast(n_slots, ti.u32), ti.i32)
+
+                pool_start = kernels_helpers.slot_start[mut_slot]
+                pool_count = kernels_helpers.slot_count[mut_slot]
+                if pool_count > 0:
+                    state = kernels_helpers._xorshift32(state)
+                    new_item = pool_start + ti.cast(state % ti.cast(pool_count, ti.u32), ti.i32)
+                    kernels_helpers.population_next_indices[g, mut_slot] = new_item
+
+            # Mini uniqueness repair
+            m0 = kernels_helpers.population_next_indices[g, 6]
+            m1 = kernels_helpers.population_next_indices[g, 7]
+            m2 = kernels_helpers.population_next_indices[g, 8]
+
+            mini_pool_start = kernels_helpers.slot_start[6]
+            mini_pool_count = kernels_helpers.slot_count[6]
+
+            if mini_pool_count > 1:
+                tries = 0
+                while m1 == m0 and tries < 10:
+                    state = kernels_helpers._xorshift32(state)
+                    m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+                    tries += 1
+
+                tries = 0
+                while (m2 == m0 or m2 == m1) and tries < 10:
+                    state = kernels_helpers._xorshift32(state)
+                    m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+                    tries += 1
+
+                kernels_helpers.population_next_indices[g, 6] = m0
+                kernels_helpers.population_next_indices[g, 7] = m1
+                kernels_helpers.population_next_indices[g, 8] = m2
+
+        kernels_helpers.ga_rng_state[g] = state
+        
+        # Store parent_a for hint inheritance (used in second pass)
+        kernels_helpers.ga_parent_a[g] = pa
+
+
+@ti.kernel
+def ga_swap_and_inherit_hints_kernel(n_genomes: ti.i32, n_slots: ti.i32):
+    """
+    FUSED: Swap populations AND inherit hints in one kernel.
+    
+    This is Phase 2 of the fused next-generation operation:
+    1. Copy population_next_indices -> population_indices (swap)
+    2. Inherit hints from parent A (stored in ga_parent_a) to child
+    
+    Args:
+        n_genomes: Population size
+        n_slots: Slots per genome
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for g in range(n_genomes):
+        # Swap
+        for s in range(n_slots):
+            kernels_helpers.population_indices[g, s] = kernels_helpers.population_next_indices[g, s]
+        
+        # Inherit hints from parent A
+        parent_a = kernels_helpers.ga_parent_a[g]
         for i in range(4):
             kernels_helpers.genome_hint_allocation[g][i] = kernels_helpers.genome_hint_allocation[parent_a][i]

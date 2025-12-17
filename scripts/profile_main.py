@@ -20,9 +20,9 @@ project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
 if __name__ == "__main__":
-    import multiprocessing
-    multiprocessing.freeze_support()
-    
+    import cProfile
+    import pstats
+
     from gear_optimizer.app import GearOptimizerApp
     
     try:
@@ -35,8 +35,34 @@ if __name__ == "__main__":
         print("=" * 70)
         print()
         
+        # Instantiate App (Cold Start / Init costs are here)
         app = GearOptimizerApp()
-        app.run()
+        
+        # Start Profiling ONLY for the run loop
+        print("[Profiler] Starting cProfile...")
+        profiler = cProfile.Profile()
+        profiler.enable()
+        
+        try:
+            app.run()
+        except SystemExit:
+            pass # Expected exit
+            
+        profiler.disable()
+        print("[Profiler] Stopped cProfile.")
+        
+        # Save Stats
+        stats_file = "profile_main.prof"
+        profiler.dump_stats(stats_file)
+        print(f"[Profiler] Stats saved to {stats_file}")
+        
+        # Print Summary
+        print("=" * 70)
+        print("TOP 20 CALLS BY CUMULATIVE TIME")
+        print("=" * 70)
+        stats = pstats.Stats(profiler)
+        stats.sort_stats("cumtime").print_stats(20)
+        
     except KeyboardInterrupt:
         sys.exit(0)
     except Exception as e:

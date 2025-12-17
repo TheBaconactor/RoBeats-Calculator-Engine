@@ -58,13 +58,7 @@ def run_real_solver():
         print(f"File not found: {song_file}")
         return
 
-    song_name = "Ice Angel (Easy)" # Expected name in DB (often driven by filename sans extension)
-    # Note: process_song_task might derive name from file path. 
-    # "Ice Angel (Easy) by Yooh" -> "Ice Angel (Easy) by Yooh" usually.
-    # But the user asked for "Ice Angel (Easy)".
-    # Let's hope the system naming matches. The file is "Ice Angel (Easy) by Yooh.txt".
-    # The stored name will likely be "Ice Angel (Easy) by Yooh".
-    # Just in case, I cleared "Ice Angel (Easy)". I should probably clear "Ice Angel (Easy) by Yooh" too.
+    # process_song_task may derive name from file path, so clear both possible variants.
     
     conn = get_db_connection(db_path)
     conn.execute("DELETE FROM loadouts WHERE song_name = ?", ("Ice Angel (Easy) by Yooh",))
