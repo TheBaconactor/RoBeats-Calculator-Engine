@@ -265,8 +265,23 @@ def solve_force_greats_finder_gpu(
             (fg_fields.FG_MAX_CONFIGS, fg_fields.FG_MAX_SECTIONS), dtype=np.int32
         )
 
-    cfg_chunk = int(cfg_chunk) if int(cfg_chunk) > 0 else fg_fields.FG_MAX_CONFIGS
-    cfg_chunk = min(cfg_chunk, fg_fields.FG_MAX_CONFIGS)
+    # Adaptive cfg_chunk: target ~2M threads per kernel to avoid TDR while staying 100% utilized
+    # TDR (Timeout Detection and Recovery) triggers after ~2s on Windows if GPU is unresponsive
+    # With heavy per-thread work (90-iteration gem optimization), we need to limit threads per launch
+    TARGET_THREADS_PER_KERNEL = 2_000_000
+    
+    if cfg_chunk is None or int(cfg_chunk) <= 0:
+        # Auto-calculate based on work items
+        cfg_chunk = max(256, TARGET_THREADS_PER_KERNEL // max(1, n_work_items))
+    else:
+        cfg_chunk = int(cfg_chunk)
+    
+    cfg_chunk = min(cfg_chunk, n_cfg_total, fg_fields.FG_MAX_CONFIGS)
+    n_chunks = (n_cfg_total + cfg_chunk - 1) // cfg_chunk
+    
+    if _perf:
+        print(f"[PERF] FG adaptive chunking: n_work={n_work_items} cfg_chunk={cfg_chunk} "
+              f"n_cfg={n_cfg_total} n_chunks={n_chunks} threads/kernel≈{n_work_items * cfg_chunk:,}")
     
     # Pre-fetch buffer reference
     buf = _fg_forced_upload_buf
@@ -319,7 +334,8 @@ def solve_force_greats_finder_gpu(
             int(is_p_ov),
             int(is_s_ov),
         )
-        _maybe_sync(for_timing=True)
+        # Force sync after each chunk to prevent TDR - GPU must complete before next launch
+        ti.sync()
 
     # Stage 2: Reduce across ftff to find best per genome
     fg_kernels.fg_stage2_kernel(n_genomes, n_ftff)
