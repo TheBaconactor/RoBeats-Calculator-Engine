@@ -124,7 +124,6 @@ from .kernels_ga_eval import (
     merge_chunk_best_to_genomes_kernel,
     ga_find_best_combo_key_kernel,
     ga_write_best_results_from_key_kernel,
-    reduce_chunk_to_genomes_kernel,
     # GPU-side global best tracking
     ga_init_global_best_kernel,
     ga_update_global_best_kernel,
@@ -226,7 +225,6 @@ __all__ = [
     "merge_chunk_best_to_genomes_kernel",
     "ga_find_best_combo_key_kernel",
     "ga_write_best_results_from_key_kernel",
-    "reduce_chunk_to_genomes_kernel",
     # GPU-side global best tracking
     "ga_init_global_best_kernel",
     "ga_update_global_best_kernel",

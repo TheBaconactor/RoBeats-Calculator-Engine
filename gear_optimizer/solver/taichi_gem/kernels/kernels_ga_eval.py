@@ -6,7 +6,6 @@ This module contains GPU-native GA evaluation kernels:
 - Reduction: reduce_chunk_to_best_key_kernel, merge_chunk_best_to_genomes_kernel
 - Best combo finder: ga_find_best_combo_key_kernel
 - Result writer: ga_write_best_results_from_key_kernel
-- Legacy reduction: reduce_chunk_to_genomes_kernel
 
 These kernels implement race-free reduction patterns using atomic operations
 and packed keys to safely aggregate results across parallel threads.
@@ -467,51 +466,6 @@ def ga_write_best_and_update_global_kernel(
                 kernels_helpers.ga_global_best_genome[s] = kernels_helpers.population_indices[genome_idx, s]
             for r in ti.static(range(7)):
                 kernels_helpers.ga_global_best_results[r] = kernels_helpers.genome_result_stats[genome_idx][r]
-
-
-@ti.kernel
-def reduce_chunk_to_genomes_kernel(n_work_items: ti.i32):
-    """
-    GPU-side reduction: find best score per genome from work item results.
-
-    WARNING: This kernel has a benign race condition where multiple threads
-    with the same max score may overwrite each other's results. For production use,
-    prefer reduce_chunk_to_best_key_kernel + merge_chunk_best_to_genomes_kernel
-    which implement a race-free reduction pattern.
-
-    Args:
-        n_work_items: Number of work items to reduce
-    """
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-
-    for i in range(n_work_items):
-        # Unpack from Vector field: [score, pp, cm, fm, ov, p_val, s_val]
-        res = kernels_helpers.result_stats[i]
-        score = res[0]
-        # work_items layout: [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
-        gid = kernels_helpers.work_items[i][6]
-
-        # Atomic compare-and-swap pattern for max score
-        old = ti.atomic_max(kernels_helpers.genome_result_stats[gid][0], score)
-
-        # If we won (our score is the new max), write associated data
-        # Note: benign race - if two threads have same max, one wins
-        if old < score:
-            # Layout: [score, ft, ff, pp, cm, fm, ov]
-
-            # Need to get ft/ff from work_items
-            item = kernels_helpers.work_items[i]
-            ft = item[3]
-            ff = item[4]
-
-            # pp, cm, fm, ov from res
-            pp = res[1]
-            cm = res[2]
-            fm = res[3]
-            ov = res[4]
-
-            kernels_helpers.genome_result_stats[gid] = ti.Vector([score, ft, ff, pp, cm, fm, ov])
-
 
 @ti.kernel
 def ga_init_global_best_kernel():
