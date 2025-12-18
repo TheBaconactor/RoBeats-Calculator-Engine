@@ -86,7 +86,8 @@ def process_force_greats(
             s_color = meta.get("Secondary Color", "")
             
             import numpy as np
-            from ...helpers.fg_utils import calculate_section_caps, collect_analytic_configs
+            from ...helpers.fg_utils import calculate_section_caps, collect_analytical_breakpoints
+            from ...solver.analytical_fg import create_scorer_from_calc_song
 
             # Helper: apply gem allocations to base stats to produce a final Stats dict
             def _apply_gems_to_base(base: dict, sel_color: str, ft: int, ff: int, gem_counts: dict) -> dict:
@@ -356,22 +357,24 @@ def process_force_greats(
                     print(f"[ForceGreats][GPU] Warning: FT/FF union size {len(ftff_pairs)} > 1024. Truncating.")
                     ftff_pairs = ftff_pairs[:1024]
 
-                # Per-Group Analytic Config Collection
-                # We use the bounds derived from the group's actual stat potential.
-                group_counts_list = collect_analytic_configs(grid, TOTAL_ROWS, stat_bounds=stat_bounds)
+                # Per-Group Analytic Config Collection using PURE MATH (100x faster)
+                # Create analytical scorer once per song (cached implicitly by calc_song)
+                if 'fg_scorer' not in locals():
+                    fg_scorer = create_scorer_from_calc_song(calc_song, ref_arrays)
+                    print(f"[FG] Created AnalyticalFGScorer: {fg_scorer.total_notes} notes, head_len={fg_scorer.head_len}")
+                
+                # Get breakpoints using pure math (no simulation needed)
+                group_counts_list = collect_analytical_breakpoints(fg_scorer, n_sections)
                 
                 if not group_counts_list:
                     group_counts_list = [tuple([0] * song_fever_activations)]
 
-                # Adapt to this group's section count
-                # Slice and deduplicate
+                # Already sliced to n_sections by collect_analytical_breakpoints
+                # Just deduplicate and sort
                 if n_sections <= 0:
                     counts_list = [()]
                 else:
-                    # Slice global tuples to n_sections
-                    sliced = [c[:n_sections] for c in group_counts_list]
-                    # Deduplicate and sort
-                    counts_list = sorted(list(set(sliced)))
+                    counts_list = sorted(list(set(group_counts_list)))
                     
                 if perf:
                     t_cfg_build_sec += time.perf_counter() - _t_cfg0
