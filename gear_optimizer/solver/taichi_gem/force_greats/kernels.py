@@ -526,9 +526,8 @@ def fg_stage1_kernel(
 
                 forced_n: ti.i32 = forced_applied[s]
                 if forced_n > 0:
-                    start = start_idx[s] + (1 if skip_wasted[s] != 0 else 0)
-                    if start > total_notes:
-                        start = total_notes
+                    # Greats start at section's actual start_idx (skip_wasted only affects fill, not penalty)
+                    start = start_idx[s]
                     for k in range(forced_n):
                         note_idx = start + k
                         if note_idx < 100:
@@ -825,9 +824,8 @@ def fg_stage1_flat_kernel(
 
             forced_n: ti.i32 = forced_applied[s]
             if forced_n > 0:
-                start = start_idx_vec[s] + (1 if skip_wasted[s] != 0 else 0)
-                if start > total_notes:
-                    start = total_notes
+                # Greats start at section's actual start_idx (skip_wasted only affects fill, not penalty)
+                start = start_idx_vec[s]
                 for k in range(forced_n):
                     note_idx = start + k
                     if note_idx < 100:

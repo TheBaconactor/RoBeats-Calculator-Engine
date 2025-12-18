@@ -234,6 +234,8 @@ def calculate_force_greats_timeline_indices(
         section_start_out[section_count] = section_start
         section_forced_out[section_count] = forced_applied
         section_fill_penalty_out[section_count] = fill_penalty_notes
+        # NOTE: skip_wasted is ONLY for fever fill calculation (section 0 needs fewer notes to fill).
+        # It should NOT be used to offset great penalty indices - greats always start at section_start.
         section_skip_wasted_out[section_count] = non_fever_section == 1
         section_count += 1
 

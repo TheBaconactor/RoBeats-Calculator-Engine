@@ -218,9 +218,8 @@ def evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=None):
         total_fill_penalty += fill_penalty_score
         forced = detail["forced"]
         if forced > 0:
+            # Greats start at section's actual start_idx (skip_wasted only affects fill, not penalty)
             start_idx = detail["start_idx"]
-            if detail.get("skip_wasted"):
-                start_idx = min(total_notes, start_idx + 1)
             score_penalty = 0
             note_idx = start_idx
             remaining = forced
@@ -589,9 +588,8 @@ def evaluate_fg_with_gem_iteration(
             forced = detail["forced"]
             score_p = 0
             if forced > 0:
+                # Greats start at section's actual start_idx (skip_wasted only affects fill, not penalty)
                 start_idx = detail["start_idx"]
-                if detail.get("skip_wasted"):
-                    start_idx = min(total_notes, start_idx + 1)
 
                 note_idx = start_idx
                 remaining = forced
