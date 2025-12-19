@@ -1009,21 +1009,9 @@ def apply_force_greats_to_result(
         return None
 
     fg_info = {
-        "enabled": True,
-        "algo_version": FORCE_GREATS_ALGO_VERSION,
         "config": fg_result["config_dict"],
-        "base_score": fg_result["base_score"],
         "final_score": fg_result["final_score"],
-        "score_penalty": fg_result["score_penalty"],
-        "fill_penalty": fg_result["fill_penalty"],
-        "total_penalty": fg_result["total_penalty"],
         "num_non_fever_sections": fg_result["num_non_fever_sections"],
-        "penalty_analysis": fg_result["penalty_analysis"],
-        "finder": bool(use_finder),
-        "gpu": bool(use_gpu) if use_finder else False,
-        "center_ft": int(ft_gems) if use_finder else None,
-        "center_ff": int(ff_gems) if use_finder else None,
-        "search_radius": 5 if use_finder else None,
     }
 
     data_dict["ForceGreats"] = fg_info
@@ -1032,5 +1020,5 @@ def apply_force_greats_to_result(
     # Eliminates 28K deepcopy operations per song
     fg_variant = data_dict.copy()
     fg_variant["Score"] = fg_result["final_score"]
-    fg_variant["ForceGreats"] = {**fg_info, "variant_applied": True}
+    fg_variant["ForceGreats"] = fg_info
     return fg_variant

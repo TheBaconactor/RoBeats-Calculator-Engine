@@ -122,23 +122,13 @@ def process_force_greats(
                 if not isinstance(details, dict):
                     return False
                 fg_meta = details.get("ForceGreats") or {}
-                if not isinstance(fg_meta, dict):
+                if not isinstance(fg_meta, dict) or not fg_meta:
                     return False
-                algo_ver = fg_meta.get("algo_version")
-                if int(algo_ver or 0) != 3:
-                    return False
-                if not fg_meta.get("finder") or not fg_meta.get("gpu"):
+                # Must have config with section greats
+                if not fg_meta.get("config"):
                     return False
                 cached_sel = details.get("SelectedElement") or details.get("Selected Element") or ""
                 if expected_selected_element and cached_sel and cached_sel != expected_selected_element:
-                    return False
-                # Require same FT/FF center to ensure same search window assumptions
-                try:
-                    if int(fg_meta.get("center_ft", -999)) != int(center_ft):
-                        return False
-                    if int(fg_meta.get("center_ff", -999)) != int(center_ff):
-                        return False
-                except Exception:
                     return False
                 return True
 
@@ -509,21 +499,9 @@ def process_force_greats(
                         )
 
                         fg_info = {
-                            "enabled": True,
-                            "algo_version": 3,
                             "config": _force_greats_counts_to_dict(cfg_counts, max(2, len(cfg_counts))),
-                            "base_score": base_score,
                             "final_score": final_score,
-                            "score_penalty": score_penalty,
-                            "fill_penalty": fill_penalty,
-                            "total_penalty": score_penalty + fill_penalty,
                             "num_non_fever_sections": int(n_sections),
-                            "penalty_analysis": {},
-                            "finder": True,
-                            "gpu": True,
-                            "center_ft": int(center_ft),
-                            "center_ff": int(center_ff),
-                            "search_radius": 5,
                         }
 
                         fg_variant = {
@@ -533,7 +511,7 @@ def process_force_greats(
                             "GemCounts": gem_counts,
                             "Stats": final_stats,
                             "Selected Element": str(sel_color),
-                            "ForceGreats": {**fg_info, "variant_applied": True},
+                            "ForceGreats": fg_info,
                         }
 
                         # Store results in cache for future lookups.
@@ -608,25 +586,11 @@ def process_force_greats(
             if not isinstance(details, dict):
                 return False
             fg_meta = details.get("ForceGreats") or {}
-            if not isinstance(fg_meta, dict):
+            if not isinstance(fg_meta, dict) or not fg_meta:
                 return False
-            # Require version tag to avoid trusting old/broken FG payloads
-            algo_ver = fg_meta.get("algo_version")
-            if algo_ver is None:
+            # Must have config with section greats
+            if not fg_meta.get("config"):
                 return False
-            if int(algo_ver or 0) != 3:
-                return False
-            if finder_enabled:
-                # Finder results must be from finder path to be reused safely
-                if not fg_meta.get("finder"):
-                    return False
-                try:
-                    if int(fg_meta.get("center_ft", -999)) != int(center_ft):
-                        return False
-                    if int(fg_meta.get("center_ff", -999)) != int(center_ff):
-                        return False
-                except Exception:
-                    return False
             # Guard against overflow-target mismatch (affects gem optimization and score)
             cached_sel = details.get("SelectedElement") or details.get("Selected Element") or ""
             if expected_selected_element and cached_sel and cached_sel != expected_selected_element:
