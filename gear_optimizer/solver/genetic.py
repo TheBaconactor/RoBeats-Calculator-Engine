@@ -646,6 +646,36 @@ def solve_coevolution_genetic(
         best_gear = best_global_genome[:6]
         best_minis = best_global_genome[6:9]
         
+        # Compute full stats for best genome (like FG candidates)
+        best_stats = base_stats_fixed.copy()
+        for item in best_global_genome:
+            for k, v in item.items():
+                if k not in SKIP_ITEM_KEYS:
+                    best_stats[k] = best_stats.get(k, 0) + v
+        
+        # Add gem contributions
+        g_ft = int(best_global_res_arr[1])
+        g_ff = int(best_global_res_arr[2])
+        g_pp = int(best_global_res_arr[3])
+        g_cm = int(best_global_res_arr[4])
+        g_fm = int(best_global_res_arr[5])
+        g_ov = int(best_global_res_arr[6])
+        
+        best_stats["Perfect Points"] = best_stats.get("Perfect Points", 0) + g_pp * GEM_SCALE_NORMAL
+        best_stats["Combo Multiplier"] = best_stats.get("Combo Multiplier", 0) + g_cm * GEM_SCALE_NORMAL
+        best_stats["Fever Multiplier"] = best_stats.get("Fever Multiplier", 0) + g_fm * GEM_SCALE_FEVER
+        best_stats["Fever Time"] = best_stats.get("Fever Time", 0) + g_ft * GEM_SCALE_FEVER
+        best_stats["Fever Fill Rate"] = best_stats.get("Fever Fill Rate", 0) + g_ff * GEM_SCALE_FEVER
+        
+        best_stats["Chill"] = best_stats.get("Chill", 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
+        best_stats["Flow"] = best_stats.get("Flow", 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
+        best_stats["Rush"] = best_stats.get("Rush", 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
+        best_stats["Beat"] = best_stats.get("Beat", 0) + g_ft * GEM_STAT_TO_ELEMENT_SCALE
+        best_stats["Vibe"] = best_stats.get("Vibe", 0) + g_ff * GEM_STAT_TO_ELEMENT_SCALE
+        
+        if selected_color:
+            best_stats[selected_color] = best_stats.get(selected_color, 0) + g_ov * ELEMENTAL_GEM_SCALE
+        
         best_data = {
             "Score": best_global_score,
             "BaseScore": best_global_score,
@@ -655,24 +685,25 @@ def solve_coevolution_genetic(
             "GearNames": [g.get("Name", "None") for g in best_gear],
             "MiniNames": [m.get("Name", "None") for m in best_minis],
             # FT/FF at root level for build_details() compatibility
-            "FT": int(best_global_res_arr[1]),
-            "FF": int(best_global_res_arr[2]),
+            "FT": g_ft,
+            "FF": g_ff,
             "GemCounts": {
-                "Perfect Points": int(best_global_res_arr[3]),
-                "Combo Multiplier": int(best_global_res_arr[4]),
-                "Fever Multiplier": int(best_global_res_arr[5]),
-                "Element": int(best_global_res_arr[6]),
+                "Perfect Points": g_pp,
+                "Combo Multiplier": g_cm,
+                "Fever Multiplier": g_fm,
+                "Element": g_ov,
             },
+            "Stats": best_stats,  # Full computed stats
             "Selected Element": selected_color,  # For correct overflow gem labeling
             # Reconstruct result details from kernel output
             # [score, ft, ff, pp, cm, fm, ov]
             "Details": {
-                "FeverGems": int(best_global_res_arr[1]),
-                "FeverFillGems": int(best_global_res_arr[2]),
-                "PP": int(best_global_res_arr[3]),
-                "CM": int(best_global_res_arr[4]),
-                "FM": int(best_global_res_arr[5]),
-                "OV": int(best_global_res_arr[6]),
+                "FeverGems": g_ft,
+                "FeverFillGems": g_ff,
+                "PP": g_pp,
+                "CM": g_cm,
+                "FM": g_fm,
+                "OV": g_ov,
             }
         }
         

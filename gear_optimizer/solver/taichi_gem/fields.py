@@ -143,6 +143,9 @@ ftff_combo_ff: ti.Field = None        # (MAX_FTFF_COMBOS,) i32 FF gems per combo
 chunk_best_score: ti.Field = None     # (MAX_GENOMES,) i32 best score per genome (Metal)
 chunk_best_idx: ti.Field = None       # (MAX_GENOMES,) i32 work item index (Metal)
 
+# Cached evaluation results per genome (eliminates redundant optimize_core_device calls)
+chunk_best_results: ti.Field = None   # (MAX_GENOMES, 4) i32 - [pp, cm, fm, ov] from winning combo
+
 
 # ============================================================================
 # ALLOCATION STATE
@@ -202,7 +205,7 @@ def allocate_fields():
     global genome_result_scores, genome_result_ft, genome_result_ff
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
     global genome_hint_allocation
-    global chunk_best_key, chunk_best_score, chunk_best_idx
+    global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results
     global island_boundaries, island_elite_indices, island_elite_count
@@ -263,6 +266,8 @@ def allocate_fields():
     # FT/FF combo tables for GPU-parallel evaluation (indexed by combo_id)
     ftff_combo_ft = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
     ftff_combo_ff = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
+    # Cached evaluation results per genome [pp, cm, fm, ov] - avoids redundant scoring
+    chunk_best_results = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, 4))
     
     # GPU-side global best tracking (avoids per-generation CPU downloads)
     ga_global_best_score = ti.field(dtype=ti.i32, shape=1)
@@ -394,6 +399,7 @@ def bind_fields(kernels_module):
         target.chunk_best_idx = chunk_best_idx
     target.ftff_combo_ft = ftff_combo_ft
     target.ftff_combo_ff = ftff_combo_ff
+    target.chunk_best_results = chunk_best_results
     
     # GPU-side global best tracking
     target.ga_global_best_score = ga_global_best_score
