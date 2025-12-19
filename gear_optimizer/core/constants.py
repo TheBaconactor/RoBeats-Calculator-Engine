@@ -37,7 +37,8 @@ GPU_GA_MIGRATE_COUNT = 2          # Elites to migrate per island (ring topology)
 
 # --- DATABASE CONFIGURATION ---
 DB_FILE = "evolution.db"
-LOADOUTS_PER_SONG_LIMIT = 100  # Hard cap per song to keep DB size manageable
+LOADOUTS_PER_SONG_LIMIT = 51  # Top 51 by score + Top 51 by FG score
+FG_CANDIDATE_LIMIT = 100  # Number of candidates to evaluate for Force Greats (funnel size)
 
 # --- CACHE LIMITS ---
 # Memory leak fix: Use LRU with global limits instead of unbounded dicts

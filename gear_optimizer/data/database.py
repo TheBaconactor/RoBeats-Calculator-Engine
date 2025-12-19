@@ -47,6 +47,7 @@ def init_db():
     as a JSON array of strings, e.g. ["Gear1", "Gear2", ...]. Full stats are looked
     up from Gears.csv/Minis.csv when loading. This reduces storage by ~90%.
     """
+
     db_path = get_evolution_db_path()
     conn = get_db_connection(db_path)
     try:
@@ -70,7 +71,25 @@ def init_db():
                 PRIMARY KEY (song_name, loadout_hash),
                 FOREIGN KEY (song_name) REFERENCES songs(name)
             );
+            
+            -- Separate table for Force Greats loadouts to prevent leaderboard pollution
+            CREATE TABLE IF NOT EXISTS fg_loadouts (
+                song_name TEXT,
+                loadout_hash TEXT,
+                score INTEGER, -- Base score context
+                fg_score INTEGER,
+                gear_json TEXT,
+                minis_json TEXT,
+                details_json TEXT,
+                force_details_json TEXT,
+                timestamp REAL,
+                PRIMARY KEY (song_name, loadout_hash),
+                FOREIGN KEY (song_name) REFERENCES songs(name)
+            );
+            
             CREATE INDEX IF NOT EXISTS idx_loadouts_score ON loadouts (song_name, score DESC);
+            CREATE INDEX IF NOT EXISTS idx_loadouts_fg_score ON loadouts (song_name, fg_score DESC); -- Legacy index, keep for now
+            CREATE INDEX IF NOT EXISTS idx_fg_loadouts_score ON fg_loadouts (song_name, fg_score DESC);
         """)
         conn.commit()
     finally:
@@ -256,9 +275,9 @@ def _deduplicate_entries(entries):
     return deduplicated
 
 
-def _deduplicate_db_loadouts(conn, song_name):
+def _deduplicate_db_loadouts(conn, song_name, table_name="loadouts"):
     """
-    Remove duplicate loadouts from database for a specific song.
+    Remove duplicate loadouts from database for a specific song and table.
 
     Identifies and removes tie-breakers:
     - Same score with exact same loadout hash (shouldn't happen but just in case)
@@ -267,15 +286,20 @@ def _deduplicate_db_loadouts(conn, song_name):
     Args:
         conn: SQLite connection
         song_name: Name of the song to deduplicate
+        table_name: Table to target ("loadouts" or "fg_loadouts")
 
     Returns:
         int: Number of duplicates removed
     """
     try:
-        # Find all loadouts grouped by score
-        cursor = conn.execute("""
+        # Sort criteria depends on table. For fg_loadouts, fg_score is primary.
+        # But here we are deduplicating BY SCORE (base score collisions).
+        # Actually for fg_loadouts we might want to deduplicate by FG score?
+        # For now, stick to standard deduplication logic (Score + Hash) to prevent spam.
+        
+        cursor = conn.execute(f"""
             SELECT loadout_hash, score, details_json, fg_score
-            FROM loadouts
+            FROM {table_name}
             WHERE song_name = ?
             ORDER BY score DESC, fg_score DESC
         """, (song_name,))
@@ -329,130 +353,36 @@ def _deduplicate_db_loadouts(conn, song_name):
         if hashes_to_delete:
             placeholders = ",".join("?" * len(hashes_to_delete))
             conn.execute(f"""
-                DELETE FROM loadouts
+                DELETE FROM {table_name}
                 WHERE song_name = ? AND loadout_hash IN ({placeholders})
             """, (song_name, *hashes_to_delete))
             return len(hashes_to_delete)
 
         return 0
     except Exception as e:
-        print(f"[DB] Error deduplicating loadouts: {e}")
+        print(f"[DB] Error deduplicating loadouts in {table_name}: {e}")
         return 0
 
 
 def save_loadout_to_db(song_name, score, fg_score, gear, minis, details, force_data=None):
     """
-    Save a loadout to the database.
-    Enforces the per-song loadout limit.
-
-    Storage is optimized: only gear/mini names are stored, not full stats.
-
-    Args:
-        song_name: Name of the song
-        score: Total score
-        fg_score: Full gems score
-        gear: List of gear items
-        minis: List of mini items
-        details: Details dictionary
-        force_data: Optional force greats data
+    Save a single loadout (Legacy wrapper, directs to batch).
     """
-    db_path = get_evolution_db_path()
-    conn = get_db_connection(db_path)
-    try:
-        loadout_hash = get_loadout_hash(gear, minis)
-
-        # Compact storage: store only names, not full stat dictionaries
-        gear_names = _compact_gear_for_db(gear)
-        mini_names = _compact_minis_for_db(minis)
-
-        # Upsert the loadout (preserve better FG score)
-        conn.execute("""
-            INSERT INTO loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
-            ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
-                score = CASE WHEN excluded.score > score THEN excluded.score ELSE score END,
-                fg_score = MAX(fg_score, excluded.fg_score),
-                gear_json = excluded.gear_json,
-                minis_json = excluded.minis_json,
-                details_json = CASE WHEN excluded.score > score THEN excluded.details_json ELSE details_json END,
-                force_details_json = CASE 
-                    WHEN excluded.fg_score > fg_score THEN excluded.force_details_json 
-                    ELSE force_details_json 
-                END,
-                timestamp = strftime('%s', 'now')
-        """, (
-            song_name,
-            loadout_hash,
-            score,
-            fg_score,
-            json.dumps(gear_names, separators=(',', ':')),
-            json.dumps(mini_names, separators=(',', ':')),
-            json.dumps(details, separators=(',', ':')) if details else None,
-            json.dumps(force_data, separators=(',', ':')) if force_data else None,
-        ))
-
-        # Update the song's best score if this is better
-        conn.execute("""
-            INSERT INTO songs (name, best_score)
-            VALUES (?, ?)
-            ON CONFLICT(name) DO UPDATE SET
-                best_score = MAX(best_score, excluded.best_score),
-                last_updated = strftime('%s', 'now')
-        """, (song_name, score))
-
-        # Update best FG score if provided
-        try:
-            fg_val = int(fg_score) if fg_score is not None else 0
-        except Exception:
-            fg_val = 0
-        if fg_val:
-            conn.execute("""
-                INSERT INTO songs (name, best_fg_score)
-                VALUES (?, ?)
-                ON CONFLICT(name) DO UPDATE SET
-                    best_fg_score = MAX(best_fg_score, excluded.best_fg_score),
-                    last_updated = strftime('%s', 'now')
-            """, (song_name, fg_val))
-
-        # Enforce limit: Keep top N by score and preserve best FG entry
-        cursor = conn.execute("SELECT COUNT(*) FROM loadouts WHERE song_name = ?", (song_name,))
-        count = cursor.fetchone()[0]
-
-        if count > LOADOUTS_PER_SONG_LIMIT:
-            # Delete the worst ones, keeping top limit by score AND always keep the best FG entry (if any)
-            conn.execute("""
-                DELETE FROM loadouts
-                WHERE song_name = ?
-                AND loadout_hash NOT IN (
-                    -- keep top N by score
-                    SELECT loadout_hash FROM loadouts
-                    WHERE song_name = ?
-                    ORDER BY score DESC
-                    LIMIT ?
-                )
-                AND loadout_hash NOT IN (
-                    -- keep best FG entry if it exists
-                    SELECT loadout_hash FROM loadouts
-                    WHERE song_name = ?
-                    ORDER BY fg_score DESC
-                    LIMIT 1
-                )
-            """, (song_name, song_name, LOADOUTS_PER_SONG_LIMIT, song_name))
-
-        conn.commit()
-    except Exception as e:
-        print(f"[DB] Error saving loadout: {e}")
-    finally:
-        conn.close()
+    entry = {
+        "score": score,
+        "fg_score": fg_score,
+        "gear": gear,
+        "minis": minis,
+        "details": details,
+        "force": force_data
+    }
+    save_loadouts_batch(song_name, [entry])
 
 
 def save_loadouts_batch(song_name, entries):
     """
     Batch insert/update loadouts for a song in a single transaction.
-
-    Implements tie-breaker prevention:
-    - Deduplicates exact same loadouts with same score
-    - For same score with different gem allocations, keeps entry with highest overflow
+    Splits data into 'loadouts' (All) and 'fg_loadouts' (Valid FG Only).
 
     Args:
         song_name: Name of the song
@@ -468,8 +398,9 @@ def save_loadouts_batch(song_name, entries):
     conn = get_db_connection(db_path)
     best_score_max = None
     best_fg_max = None
+    
     try:
-        # Relax sync during batch for throughput; WAL is already enabled in get_db_connection
+        # Relax sync during batch for throughput
         try:
             conn.execute("PRAGMA synchronous=NORMAL;")
         except Exception:
@@ -486,8 +417,13 @@ def save_loadouts_batch(song_name, entries):
             loadout_hash = get_loadout_hash(gear, minis)
             gear_names = _compact_gear_for_db(gear)
             mini_names = _compact_minis_for_db(minis)
+            
+            gear_json = json.dumps(gear_names, separators=(',', ':'))
+            minis_json = json.dumps(mini_names, separators=(',', ':'))
+            details_json = json.dumps(details, separators=(',', ':')) if details else None
+            force_json = json.dumps(force_data, separators=(',', ':')) if force_data else None
 
-            # Upsert loadout (preserve better FG score)
+            # 1. Insert into Base Score Table (loadouts) - Always
             conn.execute("""
                 INSERT INTO loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
@@ -503,61 +439,69 @@ def save_loadouts_batch(song_name, entries):
                     END,
                     timestamp = strftime('%s', 'now')
             """, (
-                song_name,
-                loadout_hash,
-                score,
-                fg_score,
-                json.dumps(gear_names, separators=(',', ':')),
-                json.dumps(mini_names, separators=(',', ':')),
-                json.dumps(details, separators=(',', ':')) if details else None,
-                json.dumps(force_data, separators=(',', ':')) if force_data else None,
+                song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_json
             ))
+
+            # 2. Insert into Force Greats Table (fg_loadouts) - Only if FG Score > 0 AND Valid Config
+            # Note: We rely on upstream (persistence.py) to set fg_score=0/force=None if invalid.
+            # So simple checks here suffice.
+            if fg_score > 0 and force_data is not None:
+                conn.execute("""
+                    INSERT INTO fg_loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+                    ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
+                        score = excluded.score, -- Keeping context updated
+                        fg_score = MAX(fg_score, excluded.fg_score),
+                        gear_json = excluded.gear_json,
+                        minis_json = excluded.minis_json,
+                        details_json = excluded.details_json,
+                        force_details_json = excluded.force_details_json,
+                        timestamp = strftime('%s', 'now')
+                """, (
+                    song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_json
+                ))
+
 
             if best_score_max is None or score > best_score_max:
                 best_score_max = score
             if fg_score and (best_fg_max is None or fg_score > best_fg_max):
                 best_fg_max = fg_score
 
+        # Update Song Stats
         if best_score_max is not None:
             conn.execute("""
-                INSERT INTO songs (name, best_score)
-                VALUES (?, ?)
-                ON CONFLICT(name) DO UPDATE SET
-                    best_score = MAX(best_score, excluded.best_score),
-                    last_updated = strftime('%s', 'now')
+                INSERT INTO songs (name, best_score) VALUES (?, ?)
+                ON CONFLICT(name) DO UPDATE SET best_score = MAX(best_score, excluded.best_score), last_updated = strftime('%s', 'now')
             """, (song_name, best_score_max))
 
         if best_fg_max:
             conn.execute("""
-                INSERT INTO songs (name, best_fg_score)
-                VALUES (?, ?)
-                ON CONFLICT(name) DO UPDATE SET
-                    best_fg_score = MAX(best_fg_score, excluded.best_fg_score),
-                    last_updated = strftime('%s', 'now')
+                INSERT INTO songs (name, best_fg_score) VALUES (?, ?)
+                ON CONFLICT(name) DO UPDATE SET best_fg_score = MAX(best_fg_score, excluded.best_fg_score), last_updated = strftime('%s', 'now')
             """, (song_name, best_fg_max))
 
-        # Deduplicate existing DB entries after batch insert
-        _deduplicate_db_loadouts(conn, song_name)
-
-        cursor = conn.execute("SELECT COUNT(*) FROM loadouts WHERE song_name = ?", (song_name,))
-        count = cursor.fetchone()[0]
-        if count > LOADOUTS_PER_SONG_LIMIT:
-            conn.execute("""
-                DELETE FROM loadouts
-                WHERE song_name = ?
-                AND loadout_hash NOT IN (
-                    SELECT loadout_hash FROM loadouts
+        # Deduplicate and Prune BOTH tables
+        for table in ["loadouts", "fg_loadouts"]:
+             # Deduplicate
+            _deduplicate_db_loadouts(conn, song_name, table)
+            
+            # Prune (Limit size)
+            cursor = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE song_name = ?", (song_name,))
+            count = cursor.fetchone()[0]
+            if count > LOADOUTS_PER_SONG_LIMIT:
+                # For 'loadouts' we prioritize SCORE. For 'fg_loadouts' we prioritize FG_SCORE.
+                sort_col = "score" if table == "loadouts" else "fg_score"
+                
+                conn.execute(f"""
+                    DELETE FROM {table}
                     WHERE song_name = ?
-                    ORDER BY score DESC
-                    LIMIT ?
-                )
-                AND loadout_hash NOT IN (
-                    SELECT loadout_hash FROM loadouts
-                    WHERE song_name = ?
-                    ORDER BY fg_score DESC
-                    LIMIT 1
-                )
-            """, (song_name, song_name, LOADOUTS_PER_SONG_LIMIT, song_name))
+                    AND loadout_hash NOT IN (
+                        SELECT loadout_hash FROM {table}
+                        WHERE song_name = ?
+                        ORDER BY {sort_col} DESC
+                        LIMIT ?
+                    )
+                """, (song_name, song_name, LOADOUTS_PER_SONG_LIMIT))
 
         conn.commit()
     except Exception as e:
@@ -596,8 +540,9 @@ def get_best_loadouts(song_name, limit=LOADOUTS_PER_SONG_LIMIT, gears_by_name=No
 
     conn = get_db_connection(db_path)
     try:
+        # 1. Fetch Top Base Score Loadouts
         cursor = conn.execute("""
-            SELECT score, fg_score, gear_json, minis_json, details_json, force_details_json
+            SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
             FROM loadouts
             WHERE song_name = ?
             ORDER BY score DESC
@@ -605,7 +550,12 @@ def get_best_loadouts(song_name, limit=LOADOUTS_PER_SONG_LIMIT, gears_by_name=No
         """, (song_name, limit))
 
         results = []
-        for row in cursor:
+        seen_hashes = set()
+
+        def process_row(row):
+            if row["loadout_hash"] in seen_hashes:
+                return
+            
             gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
             mini_names = json.loads(row["minis_json"]) if row["minis_json"] else []
             force_block = json.loads(row["force_details_json"]) if row["force_details_json"] else None
@@ -629,6 +579,23 @@ def get_best_loadouts(song_name, limit=LOADOUTS_PER_SONG_LIMIT, gears_by_name=No
                 "details": json.loads(row["details_json"]) if row["details_json"] else {},
                 "force": force_block if isinstance(force_block, dict) else None,
             })
+            seen_hashes.add(row["loadout_hash"])
+
+        for row in cursor:
+            process_row(row)
+
+        # 2. Fetch Top Force Greats Loadouts
+        cursor = conn.execute("""
+            SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
+            FROM fg_loadouts
+            WHERE song_name = ?
+            ORDER BY fg_score DESC
+            LIMIT ?
+        """, (song_name, limit))
+        
+        for row in cursor:
+            process_row(row)
+
         return results
     except Exception as e:
         print(f"[DB] Error retrieving loadouts: {e}")

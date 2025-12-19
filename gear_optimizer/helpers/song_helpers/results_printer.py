@@ -85,7 +85,7 @@ def print_results(
 
     if fg_variants:
         best_fg_entry = max(
-            fg_variants, key=lambda p: p.get("score", -1)
+            fg_variants, key=lambda p: p.get("fg_score", 0) or p.get("score", -1)
         )
         best_fg_variant = best_fg_entry.get("data", {})
         fg_meta = best_fg_variant.get("ForceGreats", {}) or {}
@@ -94,7 +94,7 @@ def print_results(
         fg_gear_names = [g.get("Name") for g in best_fg_gear] if best_fg_gear else []
         fg_mini_names = [m.get("Name") for m in best_fg_minis] if best_fg_minis else []
         print("\n[ForceGreats Optimizer]")
-        print(f"ForceGreat Score: {best_fg_entry.get('score', 0)}")
+        print(f"ForceGreat Score: {best_fg_entry.get('fg_score', best_fg_entry.get('score', 0))}")
         # Pretty print FG Gear
         if best_fg_gear:
             print("[Best FG Gear Loadout]")

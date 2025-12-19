@@ -57,9 +57,9 @@ def process_force_greats(
                 names.append(str(it) if it else "")
         return names
 
-    # FG processing budget: number of DB loadouts (dynamic). Skip (reuse) does NOT consume budget.
+    # FG processing: Process ALL loadouts (DB + GA) without artificial budget limits.
+    # The budget was previously used to limit compute, but this caused incomplete FG coverage.
     unique_stats_seen = set()
-    max_fg_compute = db_loadouts_full_count if db_loadouts_full_count else len(loadout_entries)
     computed = 0
     print(f"[ForceGreats] Processing {len(loadout_entries)} unique loadouts (DB + GA)...")
 
@@ -151,12 +151,9 @@ def process_force_greats(
             no_eval_skips = 0
             gpu_call_shapes = []  # sample a few: (n_genomes, n_cfg, n_ftff, n_sections)
 
-            # Collect candidates up to compute budget
+            # Collect all candidates (no budget limit)
             _t_collect0 = time.perf_counter() if perf else 0.0
             for entry in loadout_entries.values():
-                if computed >= max_fg_compute:
-                    break
-
                 cached_force = entry.get("force")
                 expected_sel = None
                 try:
@@ -171,11 +168,16 @@ def process_force_greats(
                     and (cached_force.get("score") or entry.get("fg_score"))
                     and (not force_greats_finder)
                 ):
+                    # Preserve base score when reusing cached FG
+                    base_score = entry.get("base_score") or entry.get("score", 0)
+                    cached_fg_score = cached_force.get("score", entry.get("fg_score", 0))
+
                     fg_variants.append({
                         "data": cached_force.get("details", {}),
                         "gear": entry.get("gear", []),
                         "minis": entry.get("minis", []),
-                        "score": cached_force.get("score", entry.get("fg_score", 0)),
+                        "score": base_score,  # Keep base score
+                        "fg_score": cached_fg_score,  # Store FG score separately
                     })
                     continue
 
@@ -202,11 +204,16 @@ def process_force_greats(
                 # Reuse DB cached FG finder results when compatible (major compute savings)
                 if cached_force and _is_cached_force_valid_for_finder(cached_force, expected_sel, center_ft, center_ff):
                     db_cached_reuse += 1
+                    # Preserve base score when reusing cached FG
+                    base_score = entry.get("base_score") or entry.get("score", 0)
+                    cached_fg_score = cached_force.get("score", entry.get("fg_score", 0))
+
                     fg_variants.append({
                         "data": cached_force.get("details", {}),
                         "gear": entry.get("gear", []),
                         "minis": entry.get("minis", []),
-                        "score": cached_force.get("score", entry.get("fg_score", 0)),
+                        "score": base_score,  # Keep base score
+                        "fg_score": cached_fg_score,  # Store FG score separately
                     })
                     continue
                 gem_counts_existing = eval_data.get("GemCounts", {}) or {}
@@ -504,6 +511,7 @@ def process_force_greats(
                         }
 
                         fg_variant = {
+                            "BaseScore": entry.get("score"),
                             "Score": final_score,
                             "FT": ft_val,
                             "FF": ff_val,
@@ -517,11 +525,16 @@ def process_force_greats(
 
                         for entry, eval_data, _ in sig_map.get(sig, []):
                             # Update entry
+                            if "base_score" not in entry:
+                                entry["base_score"] = entry.get("score")
+
                             fg_variants.append({
                                 "data": fg_variant,
                                 "gear": entry.get("gear", []),
                                 "minis": entry.get("minis", []),
-                                "score": final_score,
+                                "score": entry.get("base_score") or entry.get("score"),  # Keep base score
+                                "fg_score": final_score,  # Store FG score separately
+                                "base_score": entry.get("score"),
                             })
                             entry["force"] = {
                                 "score": final_score,
@@ -538,7 +551,7 @@ def process_force_greats(
                     if perf:
                         t_result_apply_sec += time.perf_counter() - _t_apply0
 
-            print(f"[ForceGreats] {len(unique_stats_seen)} unique stat signatures, {len(fg_variants)} FG variants generated (computed {computed}, budget {max_fg_compute})")
+            print(f"[ForceGreats] {len(unique_stats_seen)} unique stat signatures, {len(fg_variants)} FG variants generated (computed {computed})")
             if perf:
                 try:
                     print(
@@ -569,10 +582,8 @@ def process_force_greats(
             fg_variants = []
             computed = 0
             unique_stats_seen = set()
+    # CPU fallback: Process all loadouts (no budget limit)
     for entry in loadout_entries.values():
-        if computed >= max_fg_compute:
-            break
-
         def _is_cached_force_valid(cached_force_obj, expected_selected_element, center_ft, center_ff, finder_enabled):
             """
             Validate that a DB-cached ForceGreats payload is compatible with the current code/config.
@@ -614,11 +625,16 @@ def process_force_greats(
             and (cached_force.get("score") or entry.get("fg_score"))
             and _is_cached_force_valid(cached_force, expected_sel, expected_center_ft, expected_center_ff, force_greats_finder)
         ):
+            # Preserve base score when reusing cached FG
+            base_score = entry.get("base_score") or entry.get("score", 0)
+            cached_fg_score = cached_force.get("score", entry.get("fg_score", 0))
+
             fg_variants.append({
                 "data": cached_force.get("details", {}),
                 "gear": entry.get("gear", []),
                 "minis": entry.get("minis", []),
-                "score": cached_force.get("score", entry.get("fg_score", 0)),
+                "score": base_score,  # Keep base score
+                "fg_score": cached_fg_score,  # Store FG score separately
             })
             # Skipped entries do not consume compute budget
             continue
@@ -652,19 +668,24 @@ def process_force_greats(
         )
         computed += 1
         if fg_variant:
+            # Preserve base score (non-FG)
+            base_score = entry.get("base_score") or entry.get("score", 0)
+            fg_score = fg_variant.get("Score", 0)
+
             fg_variants.append({
                 "data": fg_variant,
                 "gear": entry.get("gear", []),
                 "minis": entry.get("minis", []),
-                "score": fg_variant.get("Score", 0),
+                "score": base_score,  # Keep base score
+                "fg_score": fg_score,  # Store FG score separately
             })
             entry["force"] = {
-                "score": fg_variant.get("Score", 0),
+                "score": fg_score,
                 "gear": _names_list(entry.get("gear", [])),
                 "minis": _names_list(entry.get("minis", [])),
                 "details": build_details_fn(fg_variant),
             }
-            entry["fg_score"] = fg_variant.get("Score", 0)
-    print(f"[ForceGreats] {len(unique_stats_seen)} unique stat signatures, {len(fg_variants)} FG variants generated (computed {computed}, budget {max_fg_compute})")
+            entry["fg_score"] = fg_score
+    print(f"[ForceGreats] {len(unique_stats_seen)} unique stat signatures, {len(fg_variants)} FG variants generated (computed {computed})")
 
     return fg_variants

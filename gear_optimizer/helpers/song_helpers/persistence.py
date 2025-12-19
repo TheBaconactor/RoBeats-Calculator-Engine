@@ -8,6 +8,31 @@ This module provides persistence operations:
 import json
 
 
+def _has_valid_fg_config(fg_container):
+    """
+    Check if FG container (entry or force obj) has a non-empty/non-zero configuration.
+    Handles both 'fg_entry' result format and 'force_obj' DB format.
+    """
+    try:
+        # Path 1: Result dict (has "data")
+        data = fg_container.get("data", {})
+        if data:
+            fg_meta = data.get("ForceGreats", {})
+            config = fg_meta.get("config", {})
+            return bool(config and sum(config.values()) > 0)
+            
+        # Path 2: Force object (direct details)
+        details = fg_container.get("details", {})
+        if details:
+            fg_meta = details.get("ForceGreats", {})
+            config = fg_meta.get("config", {})
+            return bool(config and sum(config.values()) > 0)
+            
+        return False
+    except Exception:
+        return False
+
+
 def build_db_payload(
     best_data,
     best_gear,
@@ -77,10 +102,15 @@ def build_db_payload(
         merged["attempts_first"] = attempts_first
         return merged
 
-    # Build FG candidates from CURRENT RUN ONLY (not prev_record)
-    # We always save the best FG from this run, regardless of whether it beats the old one.
+    # Build FG candidates from current run.
+    # Always track best FG from this run independently.
     current_run_fg_candidates = []
+    
+
     for fg_entry in fg_variants:
+        if not _has_valid_fg_config(fg_entry):
+            continue
+            
         fg_gear = fg_entry.get("gear", [])
         fg_minis = fg_entry.get("minis", [])
         fg_data = fg_entry.get("data", {})
@@ -88,7 +118,7 @@ def build_db_payload(
         fg_mini_names = [m.get("Name") for m in fg_minis] if fg_minis else []
         current_run_fg_candidates.append(
             {
-                "score": fg_entry.get("score", 0),
+                "score": fg_entry.get("fg_score", 0),
                 "gear": fg_gear_names,
                 "minis": fg_mini_names,
                 "details": build_details_fn(fg_data),
@@ -204,13 +234,21 @@ def build_db_payload(
     # If no matching FG from current run, keep the old one from prev_record (if gear matches)
     elif prev_record and prev_record.get("force"):
         prev_force = prev_record.get("force")
-        prev_force_gear = tuple(prev_force.get("gear", []))
-        prev_force_minis = tuple(prev_force.get("minis", []))
-        if prev_force_gear == top1_gear and prev_force_minis == top1_minis:
-            updated_payload["force"] = prev_force
-            fg_score_val = prev_force.get("score", 0) or 0
+        # Validate propagated force data
+
+        if not _has_valid_fg_config(prev_force):
+            prev_force = None
+
+        if prev_force:
+            prev_force_gear = tuple(prev_force.get("gear", []))
+            prev_force_minis = tuple(prev_force.get("minis", []))
+            if prev_force_gear == top1_gear and prev_force_minis == top1_minis:
+                updated_payload["force"] = prev_force
+                fg_score_val = prev_force.get("score", 0) or 0
+            else:
+                updated_payload.pop("force", None)
         else:
-            updated_payload.pop("force", None)
+             updated_payload.pop("force", None)
     else:
         updated_payload.pop("force", None)
 
@@ -319,12 +357,12 @@ def build_persistence_entries(
             best_fg_force,  # force object
         )
 
-    # NOTE: Removed separate "Top 1 FG" row creation that used to store FG data
-    # with potentially different gear. Each loadout now stores its OWN FG via
-    # the loadout_entries loop below.
 
     # GA candidates (capped to DB limit)
-    if ga_candidates:
+    # NOTE: GA candidates are now handled in the loadout_entries loop below,
+    # which includes their FG scores. This section is kept for backwards compatibility
+    # with older code that may not populate loadout_entries.
+    if ga_candidates and loadout_entries is None:
         for eval_result in ga_candidates:
             eval_data = eval_result.get("Data") or {}
             # Use BaseScore (true score) for DB storage; fall back for older payloads.
@@ -337,20 +375,30 @@ def build_persistence_entries(
                 eval_gear,
                 eval_minis,
                 eval_details,
-                0,
+                0,  # No FG score available in this legacy path
                 None,
             )
 
     # Include DB+GA union entries (with updated FG) if available
     if loadout_entries is not None:
         for entry in loadout_entries.values():
+            # Ensure FG score is zeroed if configuration is invalid
+
+            fg_score_to_save = entry.get("fg_score", 0)
+            force_obj = entry.get("force")
+            
+
+            if force_obj and not _has_valid_fg_config(force_obj):
+                fg_score_to_save = 0
+                force_obj = None  # Explicitly clear valid force object if invalid (prevent empty JSON)
+            
             _append_entry(
-                entry.get("score", 0),
+                entry.get("base_score") or entry.get("score", 0),
                 entry.get("gear", []),
                 entry.get("minis", []),
                 entry.get("details", {}),
-                entry.get("fg_score", 0),
-                entry.get("force"),
+                fg_score_to_save,
+                force_obj,
             )
 
     return persist_entries

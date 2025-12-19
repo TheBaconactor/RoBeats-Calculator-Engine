@@ -58,6 +58,7 @@ The optimizer will:
 - **Stats Signatures:** Deterministic cache keys for identical configurations
 - **Database Merging:** Utilities for combining results from multiple runs
 - **Discord Integration:** Real-time progress reporting with rate limiting
+- **Dual-Table Architecture:** Clean separation of Base and Force Greats loadouts ([View Schema](docs/DATABASE_SCHEMA.md))
 
 ---
 

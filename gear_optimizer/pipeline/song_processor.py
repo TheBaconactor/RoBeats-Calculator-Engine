@@ -27,9 +27,11 @@ from io import StringIO
 import numpy as np
 
 from ..data.models import Tee, GASettings, WarnOnce
-from ..data.database import (
+from ..core.constants import (
     LOADOUTS_PER_SONG_LIMIT,
+    FG_CANDIDATE_LIMIT,
 )
+
 from ..data.csv_parser import (
     load_all_gears_list,
     load_all_minis_list,
@@ -390,13 +392,15 @@ def process_song_task(args):
 
         # Cap GA candidates for downstream processing to the DB loadout limit.
         # Ranked by Score (base score) for DB seeding.
+        # Use FG_CANDIDATE_LIMIT (1000) to allow high-FG/low-Score loadouts to be evaluated.
+        # The final DB save will still truncate to LOADOUTS_PER_SONG_LIMIT (51).
         ga_candidates = all_evaluated or []
-        if ga_candidates and len(ga_candidates) > LOADOUTS_PER_SONG_LIMIT:
+        if ga_candidates and len(ga_candidates) > FG_CANDIDATE_LIMIT:
             ga_candidates = sorted(
                 ga_candidates,
                 key=lambda r: r.get("Score", 0),
                 reverse=True,
-            )[:LOADOUTS_PER_SONG_LIMIT]
+            )[:FG_CANDIDATE_LIMIT]
 
         def build_details(data_dict):
             if not data_dict:
@@ -422,7 +426,7 @@ def process_song_task(args):
                 found_song_name,
                 use_evo_db,
                 ga_candidates,
-                LOADOUTS_PER_SONG_LIMIT,
+                FG_CANDIDATE_LIMIT,  # Pass the larger budget to build_loadout_entries
                 gears_by_name,
                 minis_by_name,
                 build_details,
@@ -434,7 +438,7 @@ def process_song_task(args):
                 try:
                     from .database import get_best_loadouts
                     db_loadouts_full = get_best_loadouts(
-                        found_song_name, limit=LOADOUTS_PER_SONG_LIMIT,
+                        found_song_name, limit=FG_CANDIDATE_LIMIT,
                         gears_by_name=gears_by_name, minis_by_name=minis_by_name
                     )
                     db_loadouts_full_count = len(db_loadouts_full)
