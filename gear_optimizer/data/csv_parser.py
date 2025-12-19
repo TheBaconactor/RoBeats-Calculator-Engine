@@ -450,9 +450,6 @@ def read_table(fp):
     Returns:
         list: Table data as list of lists of floats, or empty list if file not found
     """
-    from .models import WarnOnce
-    WARN_ONCE = WarnOnce()
-
     if not fp or not os.path.exists(fp):
         return []
     try:

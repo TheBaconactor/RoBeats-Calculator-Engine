@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from concurrent.futures import Future, ThreadPoolExecutor
 import time
 
+from ..core.stats_calculator import build_base_stats_from_config
+
 
 @dataclass
 class PreloadedSong:
@@ -228,10 +230,10 @@ class SongPreloader:
             
             if not calc_song:
                 raise ValueError(f"Failed to load song: {req.song_name}")
-            
+
             # Build base stats from config
-            base_stats_fixed = self._build_base_stats(req.cfg_dict, calc_song)
-            
+            base_stats_fixed = build_base_stats_from_config(req.cfg_dict)
+
             # Build cfg_data for evaluator
             cfg_data = self._build_cfg_data(req.cfg_dict, calc_song)
             
@@ -264,27 +266,7 @@ class SongPreloader:
                 cfg_data={},
                 error=e,
             )
-    
-    def _build_base_stats(self, cfg_dict: dict, calc_song: dict) -> dict:
-        """Build base stats dictionary from config and song context."""
-        # Get user input stats from config
-        s = cfg_dict.get("UserInputStatsGems", {})
-        
-        base_stats = {
-            "Perfect Points": int(s.get("perfect_points", 0)),
-            "Combo Multiplier": int(s.get("combo_multiplier", 0)),
-            "Fever Multiplier": int(s.get("fever_multiplier", 0)),
-            "Fever Fill Rate": int(s.get("fever_fill_rate", 0)),
-            "Fever Time": int(s.get("fever_time", 0)),
-            "Beat": int(s.get("beat", 0)),
-            "Vibe": int(s.get("vibe", 0)),
-            "Rush": int(s.get("rush", 0)),
-            "Chill": int(s.get("chill", 0)),
-            "Flow": int(s.get("flow", 0)),
-        }
-        
-        return base_stats
-    
+
     def _build_cfg_data(self, cfg_dict: dict, calc_song: dict) -> dict:
         """Build cfg_data dictionary for evaluator."""
         metadata = calc_song.get("metadata", {})

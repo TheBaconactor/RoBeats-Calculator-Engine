@@ -49,6 +49,7 @@ from gear_optimizer.data.csv_parser import (
 from gear_optimizer.core.utils import safe_int, cfg_to_dict
 from gear_optimizer.solver.scoring import FEVER_TIMELINE_CACHE, FG_CACHE
 from gear_optimizer.solver.genetic import GEM_SOLVER_CACHE
+from gear_optimizer.data.db_health import run_health_check
 
 
 # Module-level worker initializer for GPU executor (must be picklable)
@@ -76,7 +77,6 @@ class GearOptimizerApp:
     def __init__(self):
         self.setup_logging()
         self.discord_reporter = self.setup_discord()
-        self.ensure_directories()
 
     def setup_logging(self):
         os.makedirs(BIN_DIR, exist_ok=True)
@@ -104,13 +104,6 @@ class GearOptimizerApp:
             stats_channel_id=stats_channel_id,
             stats_batch_size=500,
         )
-
-    def ensure_directories(self):
-        os.makedirs(BIN_DIR, exist_ok=True)
-
-
-
-
 
     def run(self):
         multiprocessing.freeze_support()
@@ -146,6 +139,14 @@ class GearOptimizerApp:
 
             init_db()
             self._auto_merge_databases()
+            
+            # Start background DB health check (CPU-only, won't block GPU)
+            health_thread = threading.Thread(
+                target=self._run_db_health_check,
+                args=(paths, cfg_to_dict(cfg)),
+                daemon=True
+            )
+            health_thread.start()
 
 
             # Config reading
@@ -259,6 +260,22 @@ class GearOptimizerApp:
         except Exception as e:
             logging.error(f"[DB Merge] Unexpected error: {e}")
             print(f"[DB Merge] Error: {e}")
+
+    def _run_db_health_check(self, paths, cfg_dict):
+        """Background CPU task to validate DB Stats consistency."""
+        try:
+            db_path = get_evolution_db_path()
+            gears_path = paths.get("Gears", "")
+            minis_path = paths.get("Minis", "")
+            
+            warning = run_health_check(db_path, gears_path, minis_path, cfg_dict, sample_size=100)
+            
+            if warning:
+                print(warning)
+                logging.warning(warning)
+                self.discord_reporter.send_log(warning)
+        except Exception as e:
+            logging.error(f"[DB Health] Check failed: {e}")
 
     def _disable_inputs_to_prevent_taint(self, cfg):
         print(" >> [Auto-Mode] Finders active: Ignoring manual [UserInputStatsGems] & [ElementalGems] to prevent database tainting.")
