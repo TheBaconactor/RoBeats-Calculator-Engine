@@ -200,14 +200,14 @@ def _get_overflow_from_details(details):
         details: Details dictionary containing GemCounts
 
     Returns:
-        int: Overflow value (Element Overflow), or 0 if not found
+        int: Overflow value (Element), or 0 if not found
     """
     if not details:
         return 0
     gem_counts = details.get("GemCounts", {})
     if not gem_counts:
         return 0
-    return gem_counts.get("Element Overflow", 0)
+    return gem_counts.get("Element", 0)
 
 
 def _deduplicate_entries(entries):

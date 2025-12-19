@@ -73,7 +73,7 @@ if top_base:
     if details and 'GemCounts' in details:
         gems = details['GemCounts']
         print(f"\nGems: PP={gems.get('Perfect Points', 0)}, CM={gems.get('Combo Multiplier', 0)}, "
-              f"FM={gems.get('Fever Multiplier', 0)}, Overflow={gems.get('Element Overflow', 0)}")
+              f"FM={gems.get('Fever Multiplier', 0)}, Overflow={gems.get('Element', 0)}")
 
 print("\n" + "=" * 80)
 print("TOP FG SCORE LOADOUT")
@@ -92,7 +92,7 @@ if top_fg:
     if details and 'GemCounts' in details:
         gems = details['GemCounts']
         print(f"\nGems: PP={gems.get('Perfect Points', 0)}, CM={gems.get('Combo Multiplier', 0)}, "
-              f"FM={gems.get('Fever Multiplier', 0)}, Overflow={gems.get('Element Overflow', 0)}")
+              f"FM={gems.get('Fever Multiplier', 0)}, Overflow={gems.get('Element', 0)}")
     
     if force_details and 'ForceGreats' in force_details:
         fg = force_details['ForceGreats']

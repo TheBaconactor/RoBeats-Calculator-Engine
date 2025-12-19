@@ -95,7 +95,7 @@ def process_force_greats(
                 g_pp = int((gem_counts or {}).get("Perfect Points", 0))
                 g_cm = int((gem_counts or {}).get("Combo Multiplier", 0))
                 g_fm = int((gem_counts or {}).get("Fever Multiplier", 0))
-                g_ov = int((gem_counts or {}).get("Element Overflow", 0))
+                g_ov = int((gem_counts or {}).get("Element", 0))
 
                 out["Perfect Points"] = out.get("Perfect Points", 0) + g_pp * GEM_SCALE_NORMAL
                 out["Combo Multiplier"] = out.get("Combo Multiplier", 0) + g_cm * GEM_SCALE_NORMAL
@@ -487,7 +487,7 @@ def process_force_greats(
                             "Perfect Points": g_pp,
                             "Combo Multiplier": g_cm,
                             "Fever Multiplier": g_fm,
-                            "Element Overflow": g_ov,
+                            "Element": g_ov,
                         }
 
                         final_stats = _apply_gems_to_base(
@@ -501,7 +501,6 @@ def process_force_greats(
                         fg_info = {
                             "config": _force_greats_counts_to_dict(cfg_counts, max(2, len(cfg_counts))),
                             "final_score": final_score,
-                            "num_non_fever_sections": int(n_sections),
                         }
 
                         fg_variant = {

@@ -71,7 +71,7 @@ for row in results:
                 if elem in gems:
                     print(f"    {elem}: {gems[elem]}")
             
-            if 'Element Overflow' in gems:
-                print(f"    Overflow: {gems['Element Overflow']}")
+            if 'Element' in gems:
+                print(f"    Overflow: {gems['Element']}")
 
 conn.close()

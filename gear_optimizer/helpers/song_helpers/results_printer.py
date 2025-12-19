@@ -80,7 +80,7 @@ def print_results(
         )
         print(
             f"Gem Allocation -> {sel_el} (Overflow): "
-            f"{gem_counts.get('Element Overflow', 0)}"
+            f"{gem_counts.get('Element', 0)}"
         )
 
     if fg_variants:
@@ -142,5 +142,5 @@ def print_results(
             )
             print(
                 f"Gem Allocation -> {fg_sel_el} (Overflow): "
-                f"{fg_gem_counts.get('Element Overflow', 0)}"
+                f"{fg_gem_counts.get('Element', 0)}"
             )

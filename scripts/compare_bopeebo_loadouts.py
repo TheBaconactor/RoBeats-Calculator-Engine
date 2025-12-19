@@ -54,8 +54,8 @@ if base_loadout:
             if elem in gems:
                 print(f"  {elem}: {gems[elem]}")
         
-        if 'Element Overflow' in gems:
-            print(f"  Overflow: {gems['Element Overflow']}")
+        if 'Element' in gems:
+            print(f"  Overflow: {gems['Element']}")
     
     if details and 'Stats' in details:
         stats = details['Stats']
@@ -104,8 +104,8 @@ if fg_loadout:
             if elem in gems:
                 print(f"  {elem}: {gems[elem]}")
         
-        if 'Element Overflow' in gems:
-            print(f"  Overflow: {gems['Element Overflow']}")
+        if 'Element' in gems:
+            print(f"  Overflow: {gems['Element']}")
     
     if force_details and 'ForceGreats' in force_details:
         fg = force_details['ForceGreats']

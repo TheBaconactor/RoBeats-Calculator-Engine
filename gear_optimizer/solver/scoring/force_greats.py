@@ -630,7 +630,7 @@ def evaluate_fg_with_gem_iteration(
                     "Perfect Points": gems_pp,
                     "Combo Multiplier": gems_cm,
                     "Fever Multiplier": gems_fm,
-                    "Element Overflow": gems_ov,
+                    "Element": gems_ov,
                 },
                 "FT": ft_gems,
                 "FF": ff_gems,
@@ -893,7 +893,7 @@ def _extract_base_stats(stats, gem_counts, selected_color, ft_gems=0, ff_gems=0)
 
     # Quick check: would reversal make a key value negative?
     # If so, stats is already pre-gem (GPU batch path returns "Stats": stats)
-    g_ov = gem_counts.get("Element Overflow", 0)
+    g_ov = gem_counts.get("Element", 0)
     expected_reduction = g_ov * ELEMENTAL_GEM_SCALE  # ~469 for 67 gems
     current_val = stats.get(selected_color, 0) if selected_color else 0
 
@@ -1011,7 +1011,6 @@ def apply_force_greats_to_result(
     fg_info = {
         "config": fg_result["config_dict"],
         "final_score": fg_result["final_score"],
-        "num_non_fever_sections": fg_result["num_non_fever_sections"],
     }
 
     data_dict["ForceGreats"] = fg_info

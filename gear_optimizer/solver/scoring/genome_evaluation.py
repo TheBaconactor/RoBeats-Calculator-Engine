@@ -383,7 +383,7 @@ def batch_evaluate_genomes(
                         "Perfect Points": g_pp,
                         "Combo Multiplier": g_cm,
                         "Fever Multiplier": g_fm,
-                        "Element Overflow": g_ov,
+                        "Element": g_ov,
                     },
                     "Stats": final_stats,
                     "Selected Element": sel_color,

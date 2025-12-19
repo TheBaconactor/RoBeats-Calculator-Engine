@@ -463,7 +463,7 @@ def solve_force_greats_finder_gpu(
                         "Perfect Points": int(arrays["gpp"][i]),
                         "Combo Multiplier": int(arrays["gcm"][i]),
                         "Fever Multiplier": int(arrays["gfm"][i]),
-                        "Element Overflow": int(arrays["gov"][i]),
+                        "Element": int(arrays["gov"][i]),
                     },
                     "score_penalty": int(arrays["sp"][i]),
                     "fill_penalty": int(arrays["fp"][i]),

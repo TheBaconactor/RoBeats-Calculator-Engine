@@ -53,7 +53,7 @@ if top_base:
         print(f"  Fever Multiplier: {gems.get('Fever Multiplier', 0)}")
         print(f"  Fever Fill Rate: {gems.get('Fever Fill Rate', 0)}")
         print(f"  Fever Time: {gems.get('Fever Time', 0)}")
-        print(f"  Element Overflow: {gems.get('Element Overflow', 0)}")
+        print(f"  Element: {gems.get('Element', 0)}")
 
 print("\n### TOP FG SCORE LOADOUT (16,191,875) ###\n")
 if top_fg:
@@ -71,7 +71,7 @@ if top_fg:
         print(f"  Fever Multiplier: {gems.get('Fever Multiplier', 0)}")
         print(f"  Fever Fill Rate: {gems.get('Fever Fill Rate', 0)}")
         print(f"  Fever Time: {gems.get('Fever Time', 0)}")
-        print(f"  Element Overflow: {gems.get('Element Overflow', 0)}")
+        print(f"  Element: {gems.get('Element', 0)}")
     
     force_details = json.loads(top_fg['force_details_json']) if top_fg['force_details_json'] else {}
     if force_details and 'ForceGreats' in force_details:

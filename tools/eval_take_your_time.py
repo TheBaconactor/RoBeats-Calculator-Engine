@@ -125,7 +125,7 @@ def _print_result(tag: str, res: dict) -> None:
         f"PP={gems.get('Perfect Points', '?')},",
         f"CM={gems.get('Combo Multiplier', '?')},",
         f"FM={gems.get('Fever Multiplier', '?')},",
-        f"OV={gems.get('Element Overflow', gems.get('Overflow', '?'))}",
+        f"OV={gems.get('Element', gems.get('Overflow', '?'))}",
     )
 
 

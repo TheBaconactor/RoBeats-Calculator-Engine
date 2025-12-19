@@ -109,7 +109,7 @@ user_gems = {
     "Fever Multiplier": 5,
     "Combo Multiplier": 0,
     "Perfect Points": 0,
-    "Element Overflow": 72  # Assumed Vibe
+    "Element": 72  # Assumed Vibe
 }
 
 print("=== LOADOUT ===")
@@ -141,7 +141,7 @@ calc_stats["Fever Multiplier"] += user_gems["Fever Multiplier"] * GEM_SCALE_FEVE
 calc_stats["Rush"] += user_gems["Fever Multiplier"] * GEM_STAT_TO_ELEMENT_SCALE
 
 # Apply Overflow (Vibe)
-calc_stats["Vibe"] += user_gems["Element Overflow"] * ELEMENTAL_GEM_SCALE
+calc_stats["Vibe"] += user_gems["Element"] * ELEMENTAL_GEM_SCALE
 
 # Apply Team Buff (T5 Vibe) - HARDCODED as per log "[Auto-Config] Set Team Buff: T5 | Team Color: Vibe"
 print("Applying Team Buff T5 (Vibe)...")

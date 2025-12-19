@@ -16,7 +16,7 @@ for i, r in enumerate(rows):
     print(f"--- Entry {i+1} ---")
     print(f"  score={r[0]}, fg_score={r[1]}, time={ts}")
     print(f"  FT={d.get('FT', 'N/A')}, FF={d.get('FF', 'N/A')}")
-    print(f"  GemCounts: FM={gems.get('Fever Multiplier', 'N/A')}, PP={gems.get('Perfect Points', 'N/A')}, CM={gems.get('Combo Multiplier', 'N/A')}, OV={gems.get('Element Overflow', 'N/A')}")
+    print(f"  GemCounts: FM={gems.get('Fever Multiplier', 'N/A')}, PP={gems.get('Perfect Points', 'N/A')}, CM={gems.get('Combo Multiplier', 'N/A')}, OV={gems.get('Element', 'N/A')}")
     print(f"  Gear: {gear[:2]}...")  # First 2 items
 
 conn.close()

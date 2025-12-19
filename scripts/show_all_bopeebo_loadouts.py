@@ -58,8 +58,8 @@ for idx, loadout in enumerate(loadouts, 1):
             if elem in gems:
                 print(f"  {elem}: {gems[elem]}")
         
-        if 'Element Overflow' in gems:
-            print(f"  Overflow: {gems['Element Overflow']}")
+        if 'Element' in gems:
+            print(f"  Overflow: {gems['Element']}")
     
     if details and 'Stats' in details:
         stats = details['Stats']

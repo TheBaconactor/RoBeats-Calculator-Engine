@@ -220,7 +220,7 @@ def solve_best_fever_combination(
                 "Perfect Points": user_pp,
                 "Combo Multiplier": user_cm,
                 "Fever Multiplier": user_fm,
-                "Element Overflow": static_elem_input,
+                "Element": static_elem_input,
             },
             "Stats": base_stats,
             "Selected Element": selected_color,
@@ -463,7 +463,7 @@ def solve_best_fever_combination(
             "Perfect Points": g_pp,
             "Combo Multiplier": g_cm,
             "Fever Multiplier": g_fm,
-            "Element Overflow": g_ov,
+            "Element": g_ov,
         }
         return {
             "Score": score,

@@ -366,7 +366,7 @@ def _run_gpu_native_ga(
                     "Perfect Points": g_pp,
                     "Combo Multiplier": g_cm,
                     "Fever Multiplier": g_fm,
-                    "Element Overflow": g_ov,
+                    "Element": g_ov,
                 },
                 "Stats": current_stats,
                 "Selected Element": sel_color,
@@ -661,7 +661,7 @@ def solve_coevolution_genetic(
                 "Perfect Points": int(best_global_res_arr[3]),
                 "Combo Multiplier": int(best_global_res_arr[4]),
                 "Fever Multiplier": int(best_global_res_arr[5]),
-                "Element Overflow": int(best_global_res_arr[6]),
+                "Element": int(best_global_res_arr[6]),
             },
             "Selected Element": selected_color,  # For correct overflow gem labeling
             # Reconstruct result details from kernel output
