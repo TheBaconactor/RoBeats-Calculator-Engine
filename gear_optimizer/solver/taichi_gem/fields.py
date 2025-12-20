@@ -177,6 +177,127 @@ def set_last_uploaded_grid_id(grid_id):
     _last_uploaded_grid_id = grid_id
 
 
+def reset_fields_state() -> None:
+    """
+    Reset module-level allocation state after `ti.reset()`.
+
+    All field objects become invalid after a Taichi runtime reset; we clear the
+    globals so `ensure_fields_allocated()` can safely re-allocate and re-bind.
+    """
+    global _fields_allocated, _grid_fields_allocated, _last_uploaded_grid_id
+
+    global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
+    global grid_count_body_fever, grid_count_body_normal, grid_head_len, grid_fever_masks, grid_fever_masks_bits
+    global grid_gap, grid_fever_activations
+    global song_timestamps
+    global fever_masks, work_budgets, work_count_fever, work_count_normal
+    global work_ft_gems, work_ff_gems, work_head_len, work_genome_id, work_items
+    global genome_base_pp, genome_base_cm, genome_base_fm, genome_base_p_val, genome_base_s_val
+    global genome_base_ft, genome_base_ff, genome_base_stats
+    global population_indices, population_next_indices, item_stats, base_fixed_stats
+    global ga_scores, ga_rng_state, ga_parent_a, ga_parent_b
+    global slot_start, slot_count
+    global song_flags
+    global result_scores, result_pp, result_cm, result_fm, result_ov
+    global result_p_val, result_s_val, result_stats
+    global genome_result_scores, genome_result_ft, genome_result_ff
+    global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
+    global genome_hint_allocation
+    global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
+    global ftff_combo_ft, ftff_combo_ff
+    global ga_global_best_score, ga_global_best_genome, ga_global_best_results
+    global island_boundaries, island_elite_indices, island_elite_count
+
+    # Main refs
+    ref_pp_field = None
+    ref_cm_field = None
+    ref_fm_field = None
+    ref_ft_field = None
+    ref_ff_field = None
+
+    # Grid fields
+    grid_count_body_fever = None
+    grid_count_body_normal = None
+    grid_head_len = None
+    grid_fever_masks = None
+    grid_fever_masks_bits = None
+    grid_gap = None
+    grid_fever_activations = None
+
+    # Song timeline
+    song_timestamps = None
+
+    # Work items
+    fever_masks = None
+    work_budgets = None
+    work_count_fever = None
+    work_count_normal = None
+    work_ft_gems = None
+    work_ff_gems = None
+    work_head_len = None
+    work_genome_id = None
+    work_items = None
+
+    # Genome base
+    genome_base_pp = None
+    genome_base_cm = None
+    genome_base_fm = None
+    genome_base_p_val = None
+    genome_base_s_val = None
+    genome_base_ft = None
+    genome_base_ff = None
+    genome_base_stats = None
+
+    # GA fields
+    population_indices = None
+    population_next_indices = None
+    item_stats = None
+    base_fixed_stats = None
+    ga_scores = None
+    ga_rng_state = None
+    ga_parent_a = None
+    ga_parent_b = None
+    slot_start = None
+    slot_count = None
+    island_boundaries = None
+    island_elite_indices = None
+    island_elite_count = None
+    ga_global_best_score = None
+    ga_global_best_genome = None
+    ga_global_best_results = None
+    song_flags = None
+
+    # Results
+    result_scores = None
+    result_pp = None
+    result_cm = None
+    result_fm = None
+    result_ov = None
+    result_p_val = None
+    result_s_val = None
+    result_stats = None
+
+    genome_result_scores = None
+    genome_result_ft = None
+    genome_result_ff = None
+    genome_result_pp = None
+    genome_result_cm = None
+    genome_result_fm = None
+    genome_result_ov = None
+    genome_result_stats = None
+    genome_hint_allocation = None
+    chunk_best_key = None
+    chunk_best_score = None
+    chunk_best_idx = None
+    chunk_best_results = None
+    ftff_combo_ft = None
+    ftff_combo_ff = None
+
+    _fields_allocated = False
+    _grid_fields_allocated = False
+    _last_uploaded_grid_id = None
+
+
 # ============================================================================
 # FIELD ALLOCATION
 # ============================================================================

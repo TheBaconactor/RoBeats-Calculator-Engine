@@ -101,3 +101,34 @@ def init_taichi():
 
 # Backward-compatible alias
 init_taichi_vulkan = init_taichi
+
+
+def reset_taichi(*, reason: str | None = None) -> None:
+    """
+    Hard-reset Taichi runtime (frees Vulkan/Metal resources).
+
+    This is intended as a recovery path for backend/driver failures (e.g. Vulkan
+    semaphore allocation failures) and for long-running sessions where driver
+    resources may leak.
+    """
+    global _ti_initialized
+
+    if reason:
+        print(f"[Taichi] Resetting runtime: {reason}")
+
+    if not _ti_initialized:
+        return
+
+    try:
+        ti.sync()
+    except Exception:
+        pass
+
+    try:
+        ti.reset()
+    except Exception:
+        # If reset fails, we'll still mark as uninitialized and let callers try
+        # to re-init; worst case they crash again but with a clearer log path.
+        pass
+
+    _ti_initialized = False

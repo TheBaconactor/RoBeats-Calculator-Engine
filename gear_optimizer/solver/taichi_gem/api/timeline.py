@@ -201,3 +201,10 @@ def _upload_timeline_grid(timeline_grid):
 
     _grid_uploaded = True
     set_last_uploaded_grid_id(grid_id)
+
+
+def reset_timeline_state() -> None:
+    """Reset module-level timeline upload caches after `ti.reset()`."""
+    global _grid_uploaded, _gpu_timeline_song_id_by_slot
+    _grid_uploaded = False
+    _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS

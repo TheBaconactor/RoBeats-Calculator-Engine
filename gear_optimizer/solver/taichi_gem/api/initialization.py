@@ -16,6 +16,7 @@ import numpy as np
 from gear_optimizer.core.env_config import ENV
 from ..runtime import init_taichi_vulkan, is_initialized
 from .. import fields
+from ..runtime import reset_taichi as _reset_taichi_runtime
 from ..fields import (
     GRID_SIZE,
     MAX_WORK_ITEMS,
@@ -69,6 +70,50 @@ _SONG_FLAGS_HOST = None
 # Stores (n_genomes, hash_bytes) of last uploaded stats
 _GENOME_STATS_CACHE = None
 _FTFF_COMBO_CACHE = {"budget": None, "n_combos": 0}
+
+
+def hard_reset_taichi(*, reason: str | None = None) -> None:
+    """
+    Hard-reset the Taichi runtime and all taichi_gem module state.
+
+    Intended as a recovery path for Vulkan backend failures (e.g. semaphore
+    allocation errors) and long-running sessions.
+    """
+    global _ref_loaded, _last_ref_arrays_sig, _GENOME_STATS_CACHE, _FTFF_COMBO_CACHE
+
+    # Reset runtime first (frees Vulkan resources)
+    _reset_taichi_runtime(reason=reason)
+
+    # Clear all Taichi field allocation state (fields are invalid after reset)
+    try:
+        from ..fields import reset_fields_state as _reset_fields_state
+        _reset_fields_state()
+    except Exception:
+        pass
+
+    try:
+        from ..force_greats.fields import reset_fields_state as _reset_fg_fields_state
+        _reset_fg_fields_state()
+    except Exception:
+        pass
+
+    # Clear API-level caches that assume device state exists
+    _ref_loaded = False
+    _last_ref_arrays_sig = None
+    _GENOME_STATS_CACHE = None
+    _FTFF_COMBO_CACHE = {"budget": None, "n_combos": 0}
+
+    try:
+        from .timeline import reset_timeline_state as _reset_timeline_state
+        _reset_timeline_state()
+    except Exception:
+        pass
+
+    try:
+        from ..force_greats.api import reset_force_greats_api_state as _reset_fg_api_state
+        _reset_fg_api_state()
+    except Exception:
+        pass
 
 
 def _ensure_song_flags_host():

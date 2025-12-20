@@ -70,6 +70,7 @@ def _run_gpu_native_ga(
     calc_song: dict,
     ref_arrays: dict,
     base_stats_fixed: dict,
+    gpu_static: dict | None = None,
     elite_count: int = 2,
     mutation_rate: float = 0.02,
     tournament_k: int = 3,
@@ -121,60 +122,69 @@ def _run_gpu_native_ga(
     
     total_budget = cfg_data.get("TotalBudget", 90)
     gem_scale_fever = cfg_data.get("GemScaleFever", 3)
-    
-    # Upload item stats and slot pools (one-time per song)
-    gpu_data = registry.to_gpu_arrays()
-    gpu_api.ga_upload_item_stats(
-        gpu_data["item_stats"],
-        gpu_data["slot_start"],
-        gpu_data["slot_count"],
-    )
-    
-    # Upload base fixed stats (team buffs + user gems from config)
-    # Format: [PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill]
-    # base_stats_fixed contains team buff bonuses (e.g., T5: +25 PP, +30 to team color)
-    base_stats_arr = np.array([
-        base_stats_fixed.get("Perfect Points", 0),
-        base_stats_fixed.get("Combo Multiplier", 0),
-        base_stats_fixed.get("Fever Multiplier", 0),
-        base_stats_fixed.get("Fever Time", 0),
-        base_stats_fixed.get("Fever Fill Rate", 0),
-        base_stats_fixed.get("Beat", 0),
-        base_stats_fixed.get("Vibe", 0),
-        base_stats_fixed.get("Rush", 0),
-        base_stats_fixed.get("Flow", 0),
-        base_stats_fixed.get("Chill", 0),
-    ], dtype=np.int32)
 
-    # Match scoring.solve_best_fever_combination(): subtract user-fixed gems and static elemental input
-    # so the GPU optimizer starts from the same "base stats" as CPU.
-    user_pp = int(cfg_data.get("user_pp", 0))
-    user_cm = int(cfg_data.get("user_cm", 0))
-    user_fm = int(cfg_data.get("user_fm", 0))
-    user_ft = int(cfg_data.get("user_ft", 0))
-    user_ff = int(cfg_data.get("user_ff", 0))
-    static_elem_input = int(cfg_data.get("static_elem_input", 0))
-    selected_color = str(cfg_data.get("selected_color", ""))
+    # Upload item stats / base fixed stats are static per song; do it once in the caller
+    # and reuse here. This reduces heavy CPU->GPU transfers and mitigates Vulkan
+    # resource exhaustion in long multi-start runs.
+    if gpu_static is None:
+        # Backward-compatible fallback (slower): upload per run.
+        gpu_data = registry.to_gpu_arrays()
+        gpu_api.ga_upload_item_stats(
+            gpu_data["item_stats"],
+            gpu_data["slot_start"],
+            gpu_data["slot_count"],
+        )
 
-    if user_pp or user_cm or user_fm or user_ft or user_ff:
-        base_stats_arr[0] -= user_pp * GEM_SCALE_NORMAL
-        base_stats_arr[1] -= user_cm * GEM_SCALE_NORMAL
-        base_stats_arr[2] -= user_fm * GEM_SCALE_FEVER
-        base_stats_arr[3] -= user_ft * GEM_SCALE_FEVER
-        base_stats_arr[4] -= user_ff * GEM_SCALE_FEVER
+        base_stats_arr = np.array([
+            base_stats_fixed.get("Perfect Points", 0),
+            base_stats_fixed.get("Combo Multiplier", 0),
+            base_stats_fixed.get("Fever Multiplier", 0),
+            base_stats_fixed.get("Fever Time", 0),
+            base_stats_fixed.get("Fever Fill Rate", 0),
+            base_stats_fixed.get("Beat", 0),
+            base_stats_fixed.get("Vibe", 0),
+            base_stats_fixed.get("Rush", 0),
+            base_stats_fixed.get("Flow", 0),
+            base_stats_fixed.get("Chill", 0),
+        ], dtype=np.int32)
 
-        base_stats_arr[9] -= user_pp * GEM_STAT_TO_ELEMENT_SCALE   # Chill
-        base_stats_arr[8] -= user_cm * GEM_STAT_TO_ELEMENT_SCALE   # Flow
-        base_stats_arr[7] -= user_fm * GEM_STAT_TO_ELEMENT_SCALE   # Rush
-        base_stats_arr[5] -= user_ft * GEM_STAT_TO_ELEMENT_SCALE   # Beat
-        base_stats_arr[6] -= user_ff * GEM_STAT_TO_ELEMENT_SCALE   # Vibe
+        user_pp = int(cfg_data.get("user_pp", 0))
+        user_cm = int(cfg_data.get("user_cm", 0))
+        user_fm = int(cfg_data.get("user_fm", 0))
+        user_ft = int(cfg_data.get("user_ft", 0))
+        user_ff = int(cfg_data.get("user_ff", 0))
+        static_elem_input = int(cfg_data.get("static_elem_input", 0))
+        selected_color = str(cfg_data.get("selected_color", ""))
 
-    if static_elem_input and selected_color:
-        color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
-        idx = color_to_idx.get(selected_color)
-        if idx is not None:
-            base_stats_arr[idx] -= static_elem_input * ELEMENTAL_GEM_SCALE
-    gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
+        if user_pp or user_cm or user_fm or user_ft or user_ff:
+            base_stats_arr[0] -= user_pp * GEM_SCALE_NORMAL
+            base_stats_arr[1] -= user_cm * GEM_SCALE_NORMAL
+            base_stats_arr[2] -= user_fm * GEM_SCALE_FEVER
+            base_stats_arr[3] -= user_ft * GEM_SCALE_FEVER
+            base_stats_arr[4] -= user_ff * GEM_SCALE_FEVER
+
+            base_stats_arr[9] -= user_pp * GEM_STAT_TO_ELEMENT_SCALE   # Chill
+            base_stats_arr[8] -= user_cm * GEM_STAT_TO_ELEMENT_SCALE   # Flow
+            base_stats_arr[7] -= user_fm * GEM_STAT_TO_ELEMENT_SCALE   # Rush
+            base_stats_arr[5] -= user_ft * GEM_STAT_TO_ELEMENT_SCALE   # Beat
+            base_stats_arr[6] -= user_ff * GEM_STAT_TO_ELEMENT_SCALE   # Vibe
+
+        if static_elem_input and selected_color:
+            color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
+            idx = color_to_idx.get(selected_color)
+            if idx is not None:
+                base_stats_arr[idx] -= static_elem_input * ELEMENTAL_GEM_SCALE
+
+        gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
+    else:
+        if gpu_static.get("need_upload_item_stats"):
+            gpu_api.ga_upload_item_stats(
+                gpu_static["item_stats"],
+                gpu_static["slot_start"],
+                gpu_static["slot_count"],
+            )
+        if gpu_static.get("need_upload_base_fixed"):
+            gpu_api.ga_upload_base_fixed_stats(gpu_static["base_fixed_stats"])
 
     # NOTE: Timeline grid is already precomputed by caller (solve_coevolution_genetic)
     # No need to re-upload here - GPU fields persist across calls
@@ -537,6 +547,60 @@ def solve_coevolution_genetic(
         # 3. Create Registry
         registry = ItemRegistry(gear_pool, mini_pool, slots)
 
+        # Upload static per-song GA data once (item stats + base fixed stats)
+        # Doing this once avoids large repeated from_numpy() calls which can
+        # trigger Vulkan resource exhaustion (semaphore allocation failures)
+        # during multi-start runs.
+        gpu_data = registry.to_gpu_arrays()
+        gpu_api.ga_upload_item_stats(
+            gpu_data["item_stats"],
+            gpu_data["slot_start"],
+            gpu_data["slot_count"],
+        )
+
+        # Upload base fixed stats (team buffs + user gems from config)
+        base_stats_arr = np.array([
+            base_stats_fixed.get("Perfect Points", 0),
+            base_stats_fixed.get("Combo Multiplier", 0),
+            base_stats_fixed.get("Fever Multiplier", 0),
+            base_stats_fixed.get("Fever Time", 0),
+            base_stats_fixed.get("Fever Fill Rate", 0),
+            base_stats_fixed.get("Beat", 0),
+            base_stats_fixed.get("Vibe", 0),
+            base_stats_fixed.get("Rush", 0),
+            base_stats_fixed.get("Flow", 0),
+            base_stats_fixed.get("Chill", 0),
+        ], dtype=np.int32)
+
+        user_pp = int(cfg_data.get("user_pp", 0))
+        user_cm = int(cfg_data.get("user_cm", 0))
+        user_fm = int(cfg_data.get("user_fm", 0))
+        user_ft = int(cfg_data.get("user_ft", 0))
+        user_ff = int(cfg_data.get("user_ff", 0))
+        static_elem_input = int(cfg_data.get("static_elem_input", 0))
+        selected_color = str(cfg_data.get("selected_color", ""))
+
+        if user_pp or user_cm or user_fm or user_ft or user_ff:
+            base_stats_arr[0] -= user_pp * GEM_SCALE_NORMAL
+            base_stats_arr[1] -= user_cm * GEM_SCALE_NORMAL
+            base_stats_arr[2] -= user_fm * GEM_SCALE_FEVER
+            base_stats_arr[3] -= user_ft * GEM_SCALE_FEVER
+            base_stats_arr[4] -= user_ff * GEM_SCALE_FEVER
+
+            base_stats_arr[9] -= user_pp * GEM_STAT_TO_ELEMENT_SCALE   # Chill
+            base_stats_arr[8] -= user_cm * GEM_STAT_TO_ELEMENT_SCALE   # Flow
+            base_stats_arr[7] -= user_fm * GEM_STAT_TO_ELEMENT_SCALE   # Rush
+            base_stats_arr[5] -= user_ft * GEM_STAT_TO_ELEMENT_SCALE   # Beat
+            base_stats_arr[6] -= user_ff * GEM_STAT_TO_ELEMENT_SCALE   # Vibe
+
+        if static_elem_input and selected_color:
+            color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
+            idx = color_to_idx.get(selected_color)
+            if idx is not None:
+                base_stats_arr[idx] -= static_elem_input * ELEMENTAL_GEM_SCALE
+
+        gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
+
         # 4. Create simple rank caches for genome factory (not needed for random genomes, but required by function signature)
         # GPU-native GA uses random initialization, not heuristic, so these won't be used
         gear_rank_cache = {s: gear_pool[s] for s in slots}  # Just use full pools
@@ -580,8 +644,40 @@ def solve_coevolution_genetic(
         best_global_res_arr = None
         all_evaluated_global = []
 
+        def _is_vulkan_semaphore_failure(exc: BaseException) -> bool:
+            msg = str(exc)
+            return ("failed to create semaphore" in msg) or ("RHI Error" in msg and "semaphore" in msg)
+
+        # Stability: reset Taichi runtime periodically on Vulkan to avoid long-run
+        # resource exhaustion (seen as random "failed to create semaphore" crashes).
+        reset_every_runs_env = os.environ.get("GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", "8")
+        try:
+            reset_every_runs = int(reset_every_runs_env)
+        except Exception:
+            reset_every_runs = 8
+
+        max_retries_env = os.environ.get("GPU_NATIVE_GA_VULKAN_RETRIES", "1")
+        try:
+            max_retries = int(max_retries_env)
+        except Exception:
+            max_retries = 1
+
         for run_idx in range(num_runs):
             print(f"  >> GPU GA Run {run_idx + 1}/{num_runs}...")
+
+            if reset_every_runs > 0 and run_idx > 0 and (run_idx % reset_every_runs) == 0:
+                try:
+                    gpu_api.hard_reset_taichi(reason=f"periodic Vulkan reset at run {run_idx + 1}/{num_runs}")
+                    load_ref_arrays(ref_arrays)
+                    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
+                    gpu_api.ga_upload_item_stats(
+                        gpu_data["item_stats"],
+                        gpu_data["slot_start"],
+                        gpu_data["slot_count"],
+                    )
+                    gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
+                except Exception as e:
+                    print(f"[GPU GA] Warning: periodic reset failed: {e}")
             
             # Re-initialize population for each run to get fresh random start
             initial_pop = build_initial_population(
@@ -597,34 +693,68 @@ def solve_coevolution_genetic(
                 force_db_seed=False,
             )
 
-            # Run GPU-Native GA
-            run_best_genome, run_best_score, run_best_res_arr, run_evaluated = _run_gpu_native_ga(
-                population=initial_pop,
-                n_generations=gens_per_run,
-                registry=registry,
-                cfg_data=cfg_data,
-                calc_song=calc_song,
-                ref_arrays=ref_arrays,
-                base_stats_fixed=base_stats_fixed,
-                elite_count=GA_ELITISM,
-                mutation_rate=GA_MUTATION_RATE,
-                # Use color flags for correct p_val/s_val calculation
-                color_flags={
-                    "is_p_ft": 1 if p_color == "Beat" else 0,
-                    "is_s_ft": 1 if s_color == "Beat" else 0,
-                    "is_p_ff": 1 if p_color == "Vibe" else 0,
-                    "is_s_ff": 1 if s_color == "Vibe" else 0,
-                    "is_p_pp": 1 if p_color == "Chill" else 0,
-                    "is_s_pp": 1 if s_color == "Chill" else 0,
-                    "is_p_cm": 1 if p_color == "Flow" else 0,
-                    "is_s_cm": 1 if s_color == "Flow" else 0,
-                    "is_p_fm": 1 if p_color == "Rush" else 0,
-                    "is_s_fm": 1 if s_color == "Rush" else 0,
-                    "is_p_ov": 1 if selected_color == p_color else 0,
-                    "is_s_ov": 1 if selected_color == s_color else 0,
-                },
-                status_cb=status_cb,
-            )
+            # Run GPU-Native GA (retry/reset on Vulkan semaphore failures)
+            last_exc = None
+            for attempt in range(max_retries + 1):
+                try:
+                    run_best_genome, run_best_score, run_best_res_arr, run_evaluated = _run_gpu_native_ga(
+                        population=initial_pop,
+                        n_generations=gens_per_run,
+                        registry=registry,
+                        cfg_data=cfg_data,
+                        calc_song=calc_song,
+                        ref_arrays=ref_arrays,
+                        base_stats_fixed=base_stats_fixed,
+                        gpu_static={
+                            "need_upload_item_stats": False,
+                            "need_upload_base_fixed": False,
+                            "item_stats": gpu_data["item_stats"],
+                            "slot_start": gpu_data["slot_start"],
+                            "slot_count": gpu_data["slot_count"],
+                            "base_fixed_stats": base_stats_arr,
+                        },
+                        elite_count=GA_ELITISM,
+                        mutation_rate=GA_MUTATION_RATE,
+                        # Use color flags for correct p_val/s_val calculation
+                        color_flags={
+                            "is_p_ft": 1 if p_color == "Beat" else 0,
+                            "is_s_ft": 1 if s_color == "Beat" else 0,
+                            "is_p_ff": 1 if p_color == "Vibe" else 0,
+                            "is_s_ff": 1 if s_color == "Vibe" else 0,
+                            "is_p_pp": 1 if p_color == "Chill" else 0,
+                            "is_s_pp": 1 if s_color == "Chill" else 0,
+                            "is_p_cm": 1 if p_color == "Flow" else 0,
+                            "is_s_cm": 1 if s_color == "Flow" else 0,
+                            "is_p_fm": 1 if p_color == "Rush" else 0,
+                            "is_s_fm": 1 if s_color == "Rush" else 0,
+                            "is_p_ov": 1 if selected_color == p_color else 0,
+                            "is_s_ov": 1 if selected_color == s_color else 0,
+                        },
+                        status_cb=status_cb,
+                    )
+                    last_exc = None
+                    break
+                except Exception as e:
+                    last_exc = e
+                    if attempt >= max_retries or not _is_vulkan_semaphore_failure(e):
+                        break
+                    print(f"[GPU GA] Vulkan backend error; retrying run after reset (attempt {attempt + 1}/{max_retries})")
+                    try:
+                        gpu_api.hard_reset_taichi(reason=str(e).splitlines()[0][:200])
+                        load_ref_arrays(ref_arrays)
+                        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
+                        gpu_api.ga_upload_item_stats(
+                            gpu_data["item_stats"],
+                            gpu_data["slot_start"],
+                            gpu_data["slot_count"],
+                        )
+                        gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
+                    except Exception as reset_exc:
+                        print(f"[GPU GA] Reset failed: {reset_exc}")
+                        break
+
+            if last_exc is not None:
+                raise last_exc
             
             # Aggregate candidates
             all_evaluated_global.extend(run_evaluated)

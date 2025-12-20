@@ -69,6 +69,23 @@ _fg_pair_caps_default_buf: np.ndarray | None = None
 _fg_pair_caps_custom_key: tuple[int, int, int, int] | None = None  # (ptr, h, w, sections)
 
 
+def reset_force_greats_api_state() -> None:
+    """Reset module-level upload caches after `ti.reset()`."""
+    global _fg_last_song_key, _fg_song_upload_buf, _fg_forced_upload_buf, _fg_ftff_upload_buf
+    global _fg_genome_stats_buf, _fg_flat_work_buf
+    global _fg_pair_caps_state, _fg_pair_caps_default_buf, _fg_pair_caps_custom_key
+
+    _fg_last_song_key = None
+    _fg_song_upload_buf = None
+    _fg_forced_upload_buf = None
+    _fg_ftff_upload_buf = None
+    _fg_genome_stats_buf = None
+    _fg_flat_work_buf = None
+    _fg_pair_caps_state = None
+    _fg_pair_caps_default_buf = None
+    _fg_pair_caps_custom_key = None
+
+
 def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
     global _fg_pair_caps_state, _fg_pair_caps_default_buf
     global _fg_pair_caps_custom_key

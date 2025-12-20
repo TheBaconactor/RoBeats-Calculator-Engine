@@ -86,6 +86,55 @@ def is_fields_allocated() -> bool:
     return _fields_allocated
 
 
+def reset_fields_state() -> None:
+    """Reset module-level allocation state after `ti.reset()`."""
+    global _fields_allocated
+    global song_timestamps
+    global fg_forced_counts, fg_pair_caps, fg_ft_list, fg_ff_list
+    global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx
+    global fg_best_ft, fg_best_ff, fg_best_g_pp, fg_best_g_cm, fg_best_g_fm, fg_best_g_ov
+    global fg_best_score_penalty, fg_best_fill_penalty
+    global fg_stage1_packed
+    global fg_stage1_final_score, fg_stage1_base_score, fg_stage1_cfg_idx
+    global fg_stage1_g_pp, fg_stage1_g_cm, fg_stage1_g_fm, fg_stage1_g_ov
+    global fg_stage1_score_penalty, fg_stage1_fill_penalty
+    global fg_flat_work_genome, fg_flat_work_ftff
+
+    song_timestamps = None
+    fg_forced_counts = None
+    fg_pair_caps = None
+    fg_ft_list = None
+    fg_ff_list = None
+
+    fg_best_final_score = None
+    fg_best_base_score = None
+    fg_best_cfg_idx = None
+    fg_best_ft = None
+    fg_best_ff = None
+    fg_best_g_pp = None
+    fg_best_g_cm = None
+    fg_best_g_fm = None
+    fg_best_g_ov = None
+    fg_best_score_penalty = None
+    fg_best_fill_penalty = None
+
+    fg_stage1_packed = None
+    fg_stage1_final_score = None
+    fg_stage1_base_score = None
+    fg_stage1_cfg_idx = None
+    fg_stage1_g_pp = None
+    fg_stage1_g_cm = None
+    fg_stage1_g_fm = None
+    fg_stage1_g_ov = None
+    fg_stage1_score_penalty = None
+    fg_stage1_fill_penalty = None
+
+    fg_flat_work_genome = None
+    fg_flat_work_ftff = None
+
+    _fields_allocated = False
+
+
 def bind_fields(kernels_module) -> None:
     """
     Bind live field objects into the kernels module placeholders.
