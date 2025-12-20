@@ -223,6 +223,79 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, ff_b
     return list(itertools.product(*section_breakpoints))
 
 
+def collect_analytical_breakpoint_groups(
+    scorer,
+    num_sections,
+    ftff_pairs,
+    base_stats_pairs,
+    gem_scale_fever=3,
+):
+    """
+    Build per-FT/FF breakpoint groups for ForceGreatsFinder.
+
+    Returns:
+        List[dict]: Each dict has keys:
+            "ftff_pairs": list[(ft_gems, ff_gems)]
+            "counts_list": list[tuple] of FG configs
+    """
+    import itertools
+
+    if num_sections <= 0:
+        return [{"ftff_pairs": list(ftff_pairs), "counts_list": [()]}] if ftff_pairs else []
+
+    if not ftff_pairs:
+        return []
+
+    base_pairs = {(int(ft), int(ff)) for ft, ff in (base_stats_pairs or [])}
+    if not base_pairs:
+        return []
+
+    groups = {}
+    for ft_gems, ff_gems in ftff_pairs:
+        section_sets = [set([0]) for _ in range(num_sections)]
+
+        for base_ft_stat, base_ff_stat in base_pairs:
+            ft_stat = int(base_ft_stat) + int(ft_gems) * int(gem_scale_fever)
+            ff_stat = int(base_ff_stat) + int(ff_gems) * int(gem_scale_fever)
+
+            analysis = scorer.get_section_analysis(ft_stat, ff_stat)
+            useful_sections = min(num_sections, int(analysis.get("useful_sections", 0) or 0))
+            if useful_sections <= 0:
+                continue
+
+            analyzed_caps = analysis.get("section_caps") or []
+            for sec in range(useful_sections):
+                if sec < len(analyzed_caps) and analyzed_caps[sec] > 0:
+                    cap = min(
+                        int(analyzed_caps[sec]),
+                        MAX_SECTION_CAPS[sec] if sec < len(MAX_SECTION_CAPS) else 4,
+                    )
+                else:
+                    cap = MAX_SECTION_CAPS[sec] if sec < len(MAX_SECTION_CAPS) else 4
+
+                if cap <= 0:
+                    continue
+
+                bp = scorer.get_breakpoints(ft_stat, ff_stat, max_fg=cap)
+                if bp:
+                    section_sets[sec].update(bp)
+
+        section_breakpoints = tuple(tuple(sorted(list(bp))) for bp in section_sets)
+        group = groups.get(section_breakpoints)
+        if group is None:
+            counts_list = list(itertools.product(*section_breakpoints))
+            group = {
+                "ftff_pairs": [],
+                "counts_list": counts_list,
+                "section_breakpoints": section_breakpoints,
+            }
+            groups[section_breakpoints] = group
+
+        group["ftff_pairs"].append((int(ft_gems), int(ff_gems)))
+
+    return list(groups.values())
+
+
 # DEPRECATED: Old simulation-based function (kept for reference, will be removed)
 def collect_analytic_configs(grid, total_rows=160, stat_bounds=None):
     """

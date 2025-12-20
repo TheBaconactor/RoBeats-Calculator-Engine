@@ -4,6 +4,7 @@ Song Helpers - Force Greats - Force greats processing and optimization.
 This module provides force greats operations:
 - process_force_greats: Apply force greats to loadouts with GPU/CPU support
 """
+import os
 import time
 
 from ...solver.scoring import apply_force_greats_to_result
@@ -86,7 +87,11 @@ def process_force_greats(
             s_color = meta.get("Secondary Color", "")
             
             import numpy as np
-            from ...helpers.fg_utils import calculate_section_caps, collect_analytical_breakpoints
+            from ...helpers.fg_utils import (
+                calculate_section_caps,
+                collect_analytical_breakpoints,
+                collect_analytical_breakpoint_groups,
+            )
             from ...solver.analytical_fg import create_scorer_from_calc_song
 
             # Helper: apply gem allocations to base stats to produce a final Stats dict
@@ -150,6 +155,10 @@ def process_force_greats(
             db_cached_reuse = 0
             no_eval_skips = 0
             gpu_call_shapes = []  # sample a few: (n_genomes, n_cfg, n_ftff, n_sections)
+            per_pair_breakpoints = os.environ.get("FG_PER_FTFF_BREAKPOINTS", "1") == "1"
+            if per_pair_breakpoints and not hasattr(process_force_greats, "_fg_pair_breakpoint_log"):
+                process_force_greats._fg_pair_breakpoint_log = True
+                print("[FG] Per-FT/FF breakpoint mode enabled (GPU finder)")
 
             # Collect all candidates (no budget limit)
             _t_collect0 = time.perf_counter() if perf else 0.0
@@ -360,25 +369,23 @@ def process_force_greats(
                     fg_scorer = create_scorer_from_calc_song(calc_song, ref_arrays)
                     print(f"[FG] Created AnalyticalFGScorer: {fg_scorer.total_notes} notes, head_len={fg_scorer.head_len}")
                 
-                # Get breakpoints using pure math (no simulation needed)
-                group_counts_list = collect_analytical_breakpoints(fg_scorer, n_sections)
-                
-                if not group_counts_list:
-                    group_counts_list = [tuple([0] * song_fever_activations)]
+                counts_list = None
+                if not per_pair_breakpoints:
+                    # Get breakpoints using pure math (no simulation needed)
+                    group_counts_list = collect_analytical_breakpoints(fg_scorer, n_sections)
 
-                # Already sliced to n_sections by collect_analytical_breakpoints
-                # Just deduplicate and sort
-                if n_sections <= 0:
-                    counts_list = [()]
-                else:
-                    counts_list = sorted(list(set(group_counts_list)))
-                    
-                if perf:
-                    t_cfg_build_sec += time.perf_counter() - _t_cfg0
-                
-                # ... (rest of loop uses counts_list)
-                if perf:
-                    t_cfg_build_sec += time.perf_counter() - _t_cfg0
+                    if not group_counts_list:
+                        group_counts_list = [tuple([0] * song_fever_activations)]
+
+                    # Already sliced to n_sections by collect_analytical_breakpoints
+                    # Just deduplicate and sort
+                    if n_sections <= 0:
+                        counts_list = [()]
+                    else:
+                        counts_list = sorted(list(set(group_counts_list)))
+
+                    if perf:
+                        t_cfg_build_sec += time.perf_counter() - _t_cfg0
 
                 # Color flags for GPU
                 is_p_pp = 1 if "Chill" == p_color else 0
@@ -440,54 +447,202 @@ def process_force_greats(
                     if perf:
                         t_genome_build_sec += time.perf_counter() - _t_genome0
 
-                    _t_gpu0 = time.perf_counter() if perf else 0.0
-                    # Use return_raw=True for numpy results (skip dict building in API)
-                    gpu_results = solve_force_greats_finder_gpu(
-                        genome_stats_arr,  # numpy array instead of list[dict]
-                        timestamps,
-                        long_notes,
-                        last_note_time,
-                        counts_list,
-                        ftff_pairs,
-                        n_sections=n_sections,
-                        is_p_ft=is_p_ft, is_s_ft=is_s_ft,
-                        is_p_ff=is_p_ff, is_s_ff=is_s_ff,
-                        is_p_pp=is_p_pp, is_s_pp=is_s_pp,
-                        is_p_cm=is_p_cm, is_s_cm=is_s_cm,
-                        is_p_fm=is_p_fm, is_s_fm=is_s_fm,
-                        is_p_ov=is_p_ov, is_s_ov=is_s_ov,
-                        ref_arrays=ref_arrays,
-                        total_budget=TOTAL_GEM_BUDGET,
-                        gem_scale_fever=GEM_SCALE_FEVER,
-                        pair_caps_grid=pair_caps_grid,
-                        return_raw=True,  # Return numpy arrays, not list[dict]
-                    )
-                    if perf:
-                        t_gpu_calls_sec += time.perf_counter() - _t_gpu0
-                        n_gpu_calls += 1
-                        if len(gpu_call_shapes) < 12:
-                            gpu_call_shapes.append(
-                                (n_pending, len(counts_list), len(ftff_pairs), int(n_sections))
+                    result_final = None
+                    result_base = None
+                    result_cfg_idx = None
+                    result_ft = None
+                    result_ff = None
+                    result_g_pp = None
+                    result_g_cm = None
+                    result_g_fm = None
+                    result_g_ov = None
+                    result_score_penalty = None
+                    result_fill_penalty = None
+                    result_cfg_counts = None
+
+                    if per_pair_breakpoints:
+                        _t_cfg1 = time.perf_counter() if perf else 0.0
+                        base_stats_pairs = {
+                            (bs.get("Fever Time", 0), bs.get("Fever Fill Rate", 0))
+                            for bs in pending
+                        }
+                        breakpoint_groups = collect_analytical_breakpoint_groups(
+                            fg_scorer,
+                            n_sections,
+                            ftff_pairs,
+                            base_stats_pairs,
+                            gem_scale_fever=GEM_SCALE_FEVER,
+                        )
+                        if not breakpoint_groups:
+                            group_counts_list = collect_analytical_breakpoints(fg_scorer, n_sections)
+                            if not group_counts_list:
+                                group_counts_list = [tuple([0] * song_fever_activations)]
+                            if n_sections <= 0:
+                                counts_list = [()]
+                            else:
+                                counts_list = sorted(list(set(group_counts_list)))
+                            breakpoint_groups = [{"ftff_pairs": ftff_pairs, "counts_list": counts_list}]
+
+                        log_key = (int(n_sections), int(len(ftff_pairs)), int(len(breakpoint_groups)))
+                        if not hasattr(process_force_greats, "_fg_pair_breakpoint_log_keys"):
+                            process_force_greats._fg_pair_breakpoint_log_keys = set()
+                        if log_key not in process_force_greats._fg_pair_breakpoint_log_keys:
+                            process_force_greats._fg_pair_breakpoint_log_keys.add(log_key)
+                            print(
+                                f"[FG] Per-FT/FF Breakpoints: {len(breakpoint_groups)} groups "
+                                f"from {len(ftff_pairs)} FT/FF pairs"
                             )
+                            max_groups = 10
+                            for i, group in enumerate(breakpoint_groups[:max_groups], start=1):
+                                bps = group.get("section_breakpoints") or ()
+                                print(f"     Group {i}: pairs={len(group.get('ftff_pairs') or [])}")
+                                for sec_idx, bp in enumerate(bps):
+                                    print(f"          Section {sec_idx + 1}: {list(bp)}")
+                            if len(breakpoint_groups) > max_groups:
+                                print(f"     (truncated {len(breakpoint_groups) - max_groups} groups)")
+
+                        if perf:
+                            t_cfg_build_sec += time.perf_counter() - _t_cfg1
+
+                        best_final = np.full(n_pending, -1, dtype=np.int32)
+                        best_base = np.zeros(n_pending, dtype=np.int32)
+                        best_ft = np.zeros(n_pending, dtype=np.int32)
+                        best_ff = np.zeros(n_pending, dtype=np.int32)
+                        best_g_pp = np.zeros(n_pending, dtype=np.int32)
+                        best_g_cm = np.zeros(n_pending, dtype=np.int32)
+                        best_g_fm = np.zeros(n_pending, dtype=np.int32)
+                        best_g_ov = np.zeros(n_pending, dtype=np.int32)
+                        best_sp = np.zeros(n_pending, dtype=np.int32)
+                        best_fp = np.zeros(n_pending, dtype=np.int32)
+                        best_cfg_counts = [None] * n_pending
+
+                        for group in breakpoint_groups:
+                            counts_list = group.get("counts_list") or []
+                            group_pairs = group.get("ftff_pairs") or []
+                            if not counts_list or not group_pairs:
+                                continue
+                            _t_gpu0 = time.perf_counter() if perf else 0.0
+                            gpu_results = solve_force_greats_finder_gpu(
+                                genome_stats_arr,  # numpy array instead of list[dict]
+                                timestamps,
+                                long_notes,
+                                last_note_time,
+                                counts_list,
+                                group_pairs,
+                                n_sections=n_sections,
+                                is_p_ft=is_p_ft, is_s_ft=is_s_ft,
+                                is_p_ff=is_p_ff, is_s_ff=is_s_ff,
+                                is_p_pp=is_p_pp, is_s_pp=is_s_pp,
+                                is_p_cm=is_p_cm, is_s_cm=is_s_cm,
+                                is_p_fm=is_p_fm, is_s_fm=is_s_fm,
+                                is_p_ov=is_p_ov, is_s_ov=is_s_ov,
+                                ref_arrays=ref_arrays,
+                                total_budget=TOTAL_GEM_BUDGET,
+                                gem_scale_fever=GEM_SCALE_FEVER,
+                                pair_caps_grid=pair_caps_grid,
+                                return_raw=True,  # Return numpy arrays, not list[dict]
+                            )
+                            if perf:
+                                t_gpu_calls_sec += time.perf_counter() - _t_gpu0
+                                n_gpu_calls += 1
+                                if len(gpu_call_shapes) < 12:
+                                    gpu_call_shapes.append(
+                                        (n_pending, len(counts_list), len(group_pairs), int(n_sections))
+                                    )
+
+                            for idx in range(n_pending):
+                                score = int(gpu_results["final_score"][idx])
+                                if score <= int(best_final[idx]):
+                                    continue
+                                cfg_idx = int(gpu_results["cfg_idx"][idx])
+                                if not (0 <= cfg_idx < len(counts_list)):
+                                    continue
+                                best_final[idx] = score
+                                best_base[idx] = int(gpu_results["base_score"][idx])
+                                best_ft[idx] = int(gpu_results["FT"][idx])
+                                best_ff[idx] = int(gpu_results["FF"][idx])
+                                best_g_pp[idx] = int(gpu_results["g_pp"][idx])
+                                best_g_cm[idx] = int(gpu_results["g_cm"][idx])
+                                best_g_fm[idx] = int(gpu_results["g_fm"][idx])
+                                best_g_ov[idx] = int(gpu_results["g_ov"][idx])
+                                best_sp[idx] = int(gpu_results["score_penalty"][idx])
+                                best_fp[idx] = int(gpu_results["fill_penalty"][idx])
+                                best_cfg_counts[idx] = counts_list[cfg_idx]
+
+                        result_final = best_final
+                        result_base = best_base
+                        result_ft = best_ft
+                        result_ff = best_ff
+                        result_g_pp = best_g_pp
+                        result_g_cm = best_g_cm
+                        result_g_fm = best_g_fm
+                        result_g_ov = best_g_ov
+                        result_score_penalty = best_sp
+                        result_fill_penalty = best_fp
+                        result_cfg_counts = best_cfg_counts
+                    else:
+                        _t_gpu0 = time.perf_counter() if perf else 0.0
+                        # Use return_raw=True for numpy results (skip dict building in API)
+                        gpu_results = solve_force_greats_finder_gpu(
+                            genome_stats_arr,  # numpy array instead of list[dict]
+                            timestamps,
+                            long_notes,
+                            last_note_time,
+                            counts_list,
+                            ftff_pairs,
+                            n_sections=n_sections,
+                            is_p_ft=is_p_ft, is_s_ft=is_s_ft,
+                            is_p_ff=is_p_ff, is_s_ff=is_s_ff,
+                            is_p_pp=is_p_pp, is_s_pp=is_s_pp,
+                            is_p_cm=is_p_cm, is_s_cm=is_s_cm,
+                            is_p_fm=is_p_fm, is_s_fm=is_s_fm,
+                            is_p_ov=is_p_ov, is_s_ov=is_s_ov,
+                            ref_arrays=ref_arrays,
+                            total_budget=TOTAL_GEM_BUDGET,
+                            gem_scale_fever=GEM_SCALE_FEVER,
+                            pair_caps_grid=pair_caps_grid,
+                            return_raw=True,  # Return numpy arrays, not list[dict]
+                        )
+                        if perf:
+                            t_gpu_calls_sec += time.perf_counter() - _t_gpu0
+                            n_gpu_calls += 1
+                            if len(gpu_call_shapes) < 12:
+                                gpu_call_shapes.append(
+                                    (n_pending, len(counts_list), len(ftff_pairs), int(n_sections))
+                                )
+
+                        result_final = gpu_results["final_score"]
+                        result_base = gpu_results["base_score"]
+                        result_cfg_idx = gpu_results["cfg_idx"]
+                        result_ft = gpu_results["FT"]
+                        result_ff = gpu_results["FF"]
+                        result_g_pp = gpu_results["g_pp"]
+                        result_g_cm = gpu_results["g_cm"]
+                        result_g_fm = gpu_results["g_fm"]
+                        result_g_ov = gpu_results["g_ov"]
+                        result_score_penalty = gpu_results["score_penalty"]
+                        result_fill_penalty = gpu_results["fill_penalty"]
 
                     # Apply results back to all entries sharing the same signature
-                    # gpu_results is now a dict of numpy arrays (from return_raw=True)
                     _t_apply0 = time.perf_counter() if perf else 0.0
                     for idx, (sig, bs) in enumerate(zip(pending_sigs, pending)):
                         # Index into raw numpy arrays (much faster than dict.get)
-                        cfg_idx = int(gpu_results["cfg_idx"][idx])
-                        final_score = int(gpu_results["final_score"][idx])
-                        base_score = int(gpu_results["base_score"][idx])
-                        ft_val = int(gpu_results["FT"][idx])
-                        ff_val = int(gpu_results["FF"][idx])
-                        g_pp = int(gpu_results["g_pp"][idx])
-                        g_cm = int(gpu_results["g_cm"][idx])
-                        g_fm = int(gpu_results["g_fm"][idx])
-                        g_ov = int(gpu_results["g_ov"][idx])
-                        score_penalty = int(gpu_results["score_penalty"][idx])
-                        fill_penalty = int(gpu_results["fill_penalty"][idx])
-                        
-                        cfg_counts = list(counts_list[cfg_idx]) if 0 <= cfg_idx < len(counts_list) else []
+                        final_score = int(result_final[idx])
+                        base_score = int(result_base[idx])
+                        ft_val = int(result_ft[idx])
+                        ff_val = int(result_ff[idx])
+                        g_pp = int(result_g_pp[idx])
+                        g_cm = int(result_g_cm[idx])
+                        g_fm = int(result_g_fm[idx])
+                        g_ov = int(result_g_ov[idx])
+                        score_penalty = int(result_score_penalty[idx])
+                        fill_penalty = int(result_fill_penalty[idx])
+
+                        if per_pair_breakpoints:
+                            cfg_counts = list(result_cfg_counts[idx]) if result_cfg_counts and result_cfg_counts[idx] else []
+                        else:
+                            cfg_idx = int(result_cfg_idx[idx]) if result_cfg_idx is not None else -1
+                            cfg_counts = list(counts_list[cfg_idx]) if 0 <= cfg_idx < len(counts_list) else []
 
                         # Build gem_counts dict
                         gem_counts = {
