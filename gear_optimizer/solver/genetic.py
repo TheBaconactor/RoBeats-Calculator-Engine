@@ -650,11 +650,15 @@ def solve_coevolution_genetic(
 
         # Stability: reset Taichi runtime periodically on Vulkan to avoid long-run
         # resource exhaustion (seen as random "failed to create semaphore" crashes).
-        reset_every_runs_env = os.environ.get("GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", "8")
+        # NOTE: Periodic runtime reset is OFF by default because it adds heavy
+        # overhead (ti.reset() + ti.init() + field allocation) and can dominate
+        # throughput when processing large queues. Enable only if you still hit
+        # Vulkan backend instability.
+        reset_every_runs_env = os.environ.get("GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", "0")
         try:
             reset_every_runs = int(reset_every_runs_env)
         except Exception:
-            reset_every_runs = 8
+            reset_every_runs = 0
 
         max_retries_env = os.environ.get("GPU_NATIVE_GA_VULKAN_RETRIES", "1")
         try:
