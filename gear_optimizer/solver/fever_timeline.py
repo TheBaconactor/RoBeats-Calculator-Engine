@@ -153,6 +153,62 @@ def calculate_non_fever_sections(
 
 
 @jit(nopython=True, cache=True)
+def calculate_fever_activations_grid(
+    song_timestamps,
+    total_notes,
+    fever_time_cas,
+    non_fever_cas,
+    ft_factors,
+    ff_factors,
+    fever_activations_out,
+    last_fever_end_out,
+):
+    """
+    JIT helper: compute fever_activations + last_fever_end_idx for all (FT, FF) indices.
+
+    This avoids building and copying fever masks for every cell, which is expensive
+    when callers only need activations/gap-derived data (e.g., FG pair caps grid).
+    """
+    grid_size = ft_factors.shape[0]
+    for ft_idx in range(grid_size):
+        ft_factor = ft_factors[ft_idx]
+        real_fever_time = fever_time_cas * ft_factor
+        for ff_idx in range(grid_size):
+            ff_factor = ff_factors[ff_idx]
+
+            non_fever_base = ceil(non_fever_cas * ff_factor)
+
+            current_note_idx = 0
+            fever_activations = 0
+            fever_section = 0
+            last_fever_end_idx = 0
+
+            while current_note_idx < total_notes:
+                fever_section += 1
+                # First section: -1, Later sections: use base (wasted note effect)
+                notes_to_fill = non_fever_base - 1 if fever_section == 1 else non_fever_base
+                end_normal_idx = current_note_idx + notes_to_fill
+                if end_normal_idx > total_notes:
+                    end_normal_idx = total_notes
+                current_note_idx = end_normal_idx
+                if current_note_idx >= total_notes:
+                    break
+
+                if current_note_idx > 0:
+                    fever_activations += 1
+                    start_time = song_timestamps[current_note_idx]
+                    end_time = start_time + real_fever_time
+                    fever_end_idx = int(np.searchsorted(song_timestamps, end_time, side="left"))
+                    current_note_idx = fever_end_idx
+                    last_fever_end_idx = fever_end_idx
+                else:
+                    break
+
+            fever_activations_out[ft_idx, ff_idx] = fever_activations
+            last_fever_end_out[ft_idx, ff_idx] = last_fever_end_idx
+
+
+@jit(nopython=True, cache=True)
 def calculate_force_greats_timeline_indices(
     song_timestamps,
     total_notes,
@@ -322,6 +378,9 @@ class SongTimelineGrid:
         ref_ff = ref_arrays["Fever Fill Rate"]
         self.ft_factors = [lookup_reference_py(i, ref_ft, TOTAL_ROWS) for i in range(self.GRID_SIZE)]
         self.ff_factors = [lookup_reference_py(i, ref_ff, TOTAL_ROWS) for i in range(self.GRID_SIZE)]
+        # Numba-friendly arrays (avoid Python loops/boxing in JIT grid builders)
+        self._ft_factors_np = np.asarray(self.ft_factors, dtype=np.float64)
+        self._ff_factors_np = np.asarray(self.ff_factors, dtype=np.float64)
         
         # Lazy-loaded 2D grid: [ft_idx][ff_idx] -> (mask_head, body_fever, body_normal, activations)
         # Using None to indicate not-yet-computed
@@ -332,6 +391,10 @@ class SongTimelineGrid:
         
         # Flag to track if precompute_all has been called
         self._precomputed = False
+
+        # Cached fast grids (do not require fever_mask_head copies)
+        self._fever_activations_grid = None
+        self._last_fever_end_grid = None
     
     def get_timeline(self, ft_idx, ff_idx):
         """
@@ -541,6 +604,38 @@ class SongTimelineGrid:
             'gap': gap,
             'ft_factors': np.array(self.ft_factors, dtype=np.float32),
             'ff_factors': np.array(self.ff_factors, dtype=np.float32),
+        }
+
+    def to_gpu_arrays_minimal(self):
+        """
+        Fast path: return only the grids needed by downstream "meta" computations.
+
+        This avoids the expensive per-cell fever_mask_head copies done by `to_gpu_arrays()`.
+        """
+        if self._fever_activations_grid is None or self._last_fever_end_grid is None:
+            acts = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
+            last_end = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
+
+            calculate_fever_activations_grid(
+                self.song_timestamps,
+                int(self.total_notes),
+                float(self.fever_time_cas),
+                float(self.non_fever_cas),
+                self._ft_factors_np,
+                self._ff_factors_np,
+                acts,
+                last_end,
+            )
+            self._fever_activations_grid = acts
+            self._last_fever_end_grid = last_end
+
+        gap = np.empty((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
+        gap[:, :] = int(self.total_notes) - self._last_fever_end_grid
+
+        return {
+            "fever_activations": self._fever_activations_grid,
+            "last_fever_end": self._last_fever_end_grid,
+            "gap": gap,
         }
 
 

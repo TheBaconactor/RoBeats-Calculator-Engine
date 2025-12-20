@@ -50,10 +50,10 @@ def profile_fg_processing():
     long_notes = 50
     last_note_time = 120.0
     
-    # Generate FG configs (typical number)
+    # Generate FG configs (reduced for fast profiling)
     # Each config is per-section forced great counts [0, 1, 2] x n_sections
-    n_sections = 8  # Typical
-    n_configs = 6561  # 3^8 = 6561 configs
+    n_sections = 4  # Reduced for faster runs
+    n_configs = 81  # 3^4 = 81 configs
     
     # Generate all possible configs (0,1,2 for each section)
     from itertools import product
@@ -61,12 +61,12 @@ def profile_fg_processing():
     print(f"  FG configs: {len(fg_configs)}")
     
     # Generate FTFF pairs (FT x FF gem combinations)
-    # Use step of 6 to stay under FG_MAX_FTFF=256 limit
-    ftff_pairs = [(ft, ff) for ft in range(0, 91, 6) for ff in range(0, 91-ft, 6)]
+    # Use step of 15 for faster runs and smaller pair set
+    ftff_pairs = [(ft, ff) for ft in range(0, 91, 15) for ff in range(0, 91-ft, 15)]
     print(f"  FT/FF pairs: {len(ftff_pairs)}")
     
-    # Test with various genome counts
-    genome_counts = [1, 10, 50, 100, 200, 500]
+    # Test with smaller genome counts for faster profiling
+    genome_counts = [1, 10, 50, 100]
     
     results = {}
     
@@ -115,11 +115,11 @@ def profile_fg_processing():
         # Full profile run
         print("  Running full profile...")
         
-        chunk_sizes = [256, 512, 1024, 2048, 4096, 8192]
+        chunk_sizes = [64, 128, 256, 512]
         
         for cfg_chunk in chunk_sizes:
             times = []
-            for trial in range(3):
+            for trial in range(2):
                 t0 = time.perf_counter()
                 
                 _ = fg_api.solve_force_greats_finder_gpu(

@@ -66,10 +66,12 @@ _fg_flat_work_buf: dict[str, np.ndarray] | None = None
 # greats. When no pair caps grid is provided, default to "no cap" (int32 max).
 _fg_pair_caps_state: str | None = None  # "default" | "custom"
 _fg_pair_caps_default_buf: np.ndarray | None = None
+_fg_pair_caps_custom_key: tuple[int, int, int, int] | None = None  # (ptr, h, w, sections)
 
 
 def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
     global _fg_pair_caps_state, _fg_pair_caps_default_buf
+    global _fg_pair_caps_custom_key
 
     expected_shape = (
         fg_fields.FG_MAX_STAT + 1,
@@ -88,6 +90,7 @@ def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
             )
         fg_fields.fg_pair_caps.from_numpy(_fg_pair_caps_default_buf)
         _fg_pair_caps_state = "default"
+        _fg_pair_caps_custom_key = None
         return
 
     arr = np.asarray(pair_caps_grid, dtype=np.int32)
@@ -95,8 +98,16 @@ def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
         raise ValueError(
             f"pair_caps_grid must be shape {expected_shape}, got {arr.shape}"
         )
+    try:
+        ptr = int(arr.__array_interface__["data"][0])
+    except Exception:
+        ptr = 0
+    key = (ptr, int(arr.shape[0]), int(arr.shape[1]), int(arr.shape[2]))
+    if _fg_pair_caps_state == "custom" and _fg_pair_caps_custom_key == key:
+        return
     fg_fields.fg_pair_caps.from_numpy(arr)
     _fg_pair_caps_state = "custom"
+    _fg_pair_caps_custom_key = key
 
 def _get_genome_stats_buf() -> np.ndarray:
     """Get or allocate a persistent buffer for genome stats (N, 7)."""

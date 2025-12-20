@@ -272,7 +272,7 @@ def process_force_greats(
                 # Uses the precomputed gap/activations arrays from the grid
                 _t_grid0 = time.perf_counter() if perf else 0.0
                 
-                gpu_arrays = grid.to_gpu_arrays()
+                gpu_arrays = grid.to_gpu_arrays_minimal()
                 gap_grid = gpu_arrays['gap']  # (161, 161) int32
                 acts_grid = gpu_arrays['fever_activations']  # (161, 161) int32
                 
@@ -500,6 +500,37 @@ def process_force_greats(
                                     print(f"          Section {sec_idx + 1}: {list(bp)}")
                             if len(breakpoint_groups) > max_groups:
                                 print(f"     (truncated {len(breakpoint_groups) - max_groups} groups)")
+
+                        # Optional: merge groups to reduce GPU call count (exact; evaluates a superset of configs)
+                        merge_groups = os.environ.get("FG_MERGE_BREAKPOINT_GROUPS", "1") == "1"
+                        if merge_groups and len(breakpoint_groups) > 1:
+                            try:
+                                max_union_cfg = int(os.environ.get("FG_MERGE_MAX_CONFIGS", "5000"))
+                                max_union_threads = int(os.environ.get("FG_MERGE_MAX_THREADS", "20000000"))
+                            except Exception:
+                                max_union_cfg = 5000
+                                max_union_threads = 20000000
+
+                            union_counts = set()
+                            for g in breakpoint_groups:
+                                for cfg in (g.get("counts_list") or []):
+                                    union_counts.add(tuple(cfg))
+
+                            union_cfg_count = len(union_counts)
+                            est_threads = int(n_pending) * int(len(ftff_pairs)) * int(union_cfg_count)
+                            if union_cfg_count <= max_union_cfg and est_threads <= max_union_threads:
+                                breakpoint_groups = [{
+                                    "ftff_pairs": ftff_pairs,
+                                    "counts_list": sorted(list(union_counts)),
+                                }]
+                                if not hasattr(process_force_greats, "_fg_pair_merge_log_keys"):
+                                    process_force_greats._fg_pair_merge_log_keys = set()
+                                if log_key not in process_force_greats._fg_pair_merge_log_keys:
+                                    process_force_greats._fg_pair_merge_log_keys.add(log_key)
+                                    print(
+                                        f"[FG] Merged breakpoint groups -> 1 batch "
+                                        f"(cfg={union_cfg_count}, pairs={len(ftff_pairs)}, est_threads={est_threads:,})"
+                                    )
 
                         if perf:
                             t_cfg_build_sec += time.perf_counter() - _t_cfg1
