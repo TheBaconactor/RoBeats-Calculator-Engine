@@ -3,6 +3,18 @@
 MAX_SECTION_CAPS = [50, 30, 15, 10, 8, 6, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4]
 
 
+def _fp_cap_from_forced(scorer, ft_stat: int, ff_stat: int, forced_cap: int) -> int:
+    """Convert a forced-count cap into a fill-penalty cap for this FT/FF."""
+    if forced_cap <= 0:
+        return 0
+    non_fever_base, _, non_fever_great_to_fill = scorer.get_fever_params(ft_stat, ff_stat)
+    if non_fever_base <= 0:
+        return 0
+    # fill_penalty = ceil((non_fever_base * forced) / non_fever_great_to_fill)
+    import numpy as np
+    return int(np.ceil((non_fever_base * forced_cap) / non_fever_great_to_fill))
+
+
 def calculate_section_caps(num_sections, non_fever_base, gap=None, fever_activations=None):
     """
     Compute max Forced Greats caps per section.
@@ -190,18 +202,19 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, ff_b
     # Since it's pure math (not simulation), this is still fast.
     ff_samples = range(0, 161, 10)  # Sample every 10th FF value (covers edge cases)
     
-    # Collect breakpoints for valid sections only
+    # Collect fill-penalty targets for valid sections only
     section_breakpoints = []
     for sec in range(actual_sections):
         if section_caps[sec] <= 0:
             # Section has no useful FG - just use [0]
             section_breakpoints.append([0])
         else:
-            bp_set = set()
+            max_fp = 0
             for ff_stat in ff_samples:
-                bp = scorer.get_breakpoints(80, ff_stat, max_fg=section_caps[sec])
-                bp_set.update(bp)
-            section_breakpoints.append(sorted(list(bp_set)))
+                fp_cap = _fp_cap_from_forced(scorer, 80, ff_stat, int(section_caps[sec]))
+                if fp_cap > max_fp:
+                    max_fp = fp_cap
+            section_breakpoints.append(list(range(0, max_fp + 1)))
     
     # Only log once per unique configuration
     max_values = [max(bp) if bp else 0 for bp in section_breakpoints]
@@ -216,7 +229,7 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, ff_b
             total_configs *= len(bp)
         
         # Show all breakpoints per section
-        print(f"[FG] Breakpoints: {actual_sections} sections, {total_configs} configs")
+        print(f"[FG] Breakpoints (FP targets): {actual_sections} sections, {total_configs} configs")
         for i, bp in enumerate(section_breakpoints):
             print(f"     Section {i+1}: {bp}")
     
@@ -252,7 +265,7 @@ def collect_analytical_breakpoint_groups(
 
     groups = {}
     for ft_gems, ff_gems in ftff_pairs:
-        section_sets = [set([0]) for _ in range(num_sections)]
+        max_fp_by_sec = [0 for _ in range(num_sections)]
 
         for base_ft_stat, base_ff_stat in base_pairs:
             ft_stat = int(base_ft_stat) + int(ft_gems) * int(gem_scale_fever)
@@ -276,11 +289,11 @@ def collect_analytical_breakpoint_groups(
                 if cap <= 0:
                     continue
 
-                bp = scorer.get_breakpoints(ft_stat, ff_stat, max_fg=cap)
-                if bp:
-                    section_sets[sec].update(bp)
+                fp_cap = _fp_cap_from_forced(scorer, ft_stat, ff_stat, cap)
+                if fp_cap > max_fp_by_sec[sec]:
+                    max_fp_by_sec[sec] = fp_cap
 
-        section_breakpoints = tuple(tuple(sorted(list(bp))) for bp in section_sets)
+        section_breakpoints = tuple(tuple(range(0, max_fp + 1)) for max_fp in max_fp_by_sec)
         group = groups.get(section_breakpoints)
         if group is None:
             counts_list = list(itertools.product(*section_breakpoints))
@@ -294,6 +307,142 @@ def collect_analytical_breakpoint_groups(
         group["ftff_pairs"].append((int(ft_gems), int(ff_gems)))
 
     return list(groups.values())
+
+
+def iter_analytical_breakpoint_groups(
+    scorer,
+    num_sections,
+    ftff_pairs,
+    base_stats_pairs,
+    gem_scale_fever=3,
+    batch_size=20,
+    merge_threshold_cfgs=5000,
+    merge_threshold_threads=20_000_000,
+    n_genomes=1,
+):
+    """
+    Generator version: yields groups incrementally for GPU pipelining.
+    
+    Builds breakpoint groups in batches and yields them one at a time,
+    allowing the caller to launch GPU work while the next batch is being built.
+    
+    Also includes integrated merge logic: if merging all groups into one batch
+    would stay under thresholds, yields a single merged group at the end.
+    Otherwise, yields groups as they're built.
+    
+    Args:
+        scorer: AnalyticalFGScorer instance
+        num_sections: Number of non-fever sections
+        ftff_pairs: List of (ft_gems, ff_gems) pairs to evaluate
+        base_stats_pairs: Set of (base_ft_stat, base_ff_stat) pairs
+        gem_scale_fever: Gem scale for fever stats (default 3)
+        batch_size: Number of FT/FF pairs to process per batch (default 20)
+        merge_threshold_cfgs: Max configs to allow merge (default 5000)
+        merge_threshold_threads: Max threads to allow merge (default 20M)
+        n_genomes: Number of genomes (for thread estimation)
+    
+    Yields:
+        dict: Each dict has keys:
+            "ftff_pairs": list[(ft_gems, ff_gems)]
+            "counts_list": list[tuple] of FG configs
+            "section_breakpoints": tuple of breakpoint tuples per section
+    """
+    import itertools
+
+    if num_sections <= 0:
+        if ftff_pairs:
+            yield {"ftff_pairs": list(ftff_pairs), "counts_list": [()], "section_breakpoints": ()}
+        return
+
+    if not ftff_pairs:
+        return
+
+    base_pairs = {(int(ft), int(ff)) for ft, ff in (base_stats_pairs or [])}
+    if not base_pairs:
+        return
+
+    ftff_pairs = list(ftff_pairs)
+    n_pairs = len(ftff_pairs)
+    
+    # Track all groups for potential merge at the end
+    all_groups = {}
+    all_union_counts = set()
+    
+    # Process in batches
+    for batch_start in range(0, n_pairs, batch_size):
+        batch_pairs = ftff_pairs[batch_start:batch_start + batch_size]
+        
+        for ft_gems, ff_gems in batch_pairs:
+            max_fp_by_sec = [0 for _ in range(num_sections)]
+
+            for base_ft_stat, base_ff_stat in base_pairs:
+                ft_stat = int(base_ft_stat) + int(ft_gems) * int(gem_scale_fever)
+                ff_stat = int(base_ff_stat) + int(ff_gems) * int(gem_scale_fever)
+
+                analysis = scorer.get_section_analysis(ft_stat, ff_stat)
+                useful_sections = min(num_sections, int(analysis.get("useful_sections", 0) or 0))
+                if useful_sections <= 0:
+                    continue
+
+                analyzed_caps = analysis.get("section_caps") or []
+                for sec in range(useful_sections):
+                    if sec < len(analyzed_caps) and analyzed_caps[sec] > 0:
+                        cap = min(
+                            int(analyzed_caps[sec]),
+                            MAX_SECTION_CAPS[sec] if sec < len(MAX_SECTION_CAPS) else 4,
+                        )
+                    else:
+                        cap = MAX_SECTION_CAPS[sec] if sec < len(MAX_SECTION_CAPS) else 4
+
+                    if cap <= 0:
+                        continue
+
+                    fp_cap = _fp_cap_from_forced(scorer, ft_stat, ff_stat, cap)
+                    if fp_cap > max_fp_by_sec[sec]:
+                        max_fp_by_sec[sec] = fp_cap
+
+            section_breakpoints = tuple(tuple(range(0, max_fp + 1)) for max_fp in max_fp_by_sec)
+            
+            if section_breakpoints not in all_groups:
+                counts_list = list(itertools.product(*section_breakpoints))
+                all_groups[section_breakpoints] = {
+                    "ftff_pairs": [],
+                    "counts_list": counts_list,
+                    "section_breakpoints": section_breakpoints,
+                }
+                # Track union for merge decision
+                for cfg in counts_list:
+                    all_union_counts.add(tuple(cfg))
+
+            all_groups[section_breakpoints]["ftff_pairs"].append((int(ft_gems), int(ff_gems)))
+    
+    # Decide: merge into one batch or yield individually?
+    union_cfg_count = len(all_union_counts)
+    est_threads = int(n_genomes) * int(n_pairs) * int(union_cfg_count)
+    
+    # Handle empty groups case (no useful sections found for any pair)
+    if not all_groups or union_cfg_count == 0:
+        # Fall back to default config: all zeros
+        fallback_cfg = tuple([0] * num_sections) if num_sections > 0 else ()
+        yield {
+            "ftff_pairs": ftff_pairs,
+            "counts_list": [fallback_cfg],
+            "section_breakpoints": tuple((0,) for _ in range(num_sections)),
+        }
+        return
+    
+    if union_cfg_count <= merge_threshold_cfgs and est_threads <= merge_threshold_threads:
+        # Merge all into one batch
+        merged_group = {
+            "ftff_pairs": ftff_pairs,
+            "counts_list": sorted(list(all_union_counts)),
+            "section_breakpoints": None,  # Not meaningful for merged
+        }
+        yield merged_group
+    else:
+        # Yield groups individually (enables pipelining for large workloads)
+        for group in all_groups.values():
+            yield group
 
 
 # DEPRECATED: Old simulation-based function (kept for reference, will be removed)

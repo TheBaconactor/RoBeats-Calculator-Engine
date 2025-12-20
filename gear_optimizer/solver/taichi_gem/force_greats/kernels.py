@@ -384,27 +384,36 @@ def fg_stage1_kernel(
                 if base_notes_s < 0:
                     base_notes_s = 0
 
-                forced_val: ti.i32 = 0
+                fp_target: ti.i32 = 0
                 if sec < n_sections:
-                    forced_val = fg_forced_counts[cfg_idx, sec]
-                    if forced_val < 0:
-                        forced_val = 0
-                    forced_val = ti.min(forced_val, non_fever_base)
+                    fp_target = fg_forced_counts[cfg_idx, sec]
+                    if fp_target < 0:
+                        fp_target = 0
                     if sec < FG_MAX_SECTIONS:
-                        pair_cap: ti.i32 = fg_pair_caps[ft_idx, ff_idx, sec]
-                        forced_val = ti.min(forced_val, pair_cap)
-
-                fp_calc: ti.i32 = 0
-                if forced_val > 0:
-                    fp_calc = ti.cast(
-                        ti.ceil(
-                            ti.max(
-                                0.0,
-                                (ti.cast(non_fever_base * forced_val, ti.f32) / ti.cast(non_fever_great_to_fill, ti.f32)),
+                        pair_cap_forced: ti.i32 = fg_pair_caps[ft_idx, ff_idx, sec]
+                        if pair_cap_forced < 0:
+                            pair_cap_forced = 0
+                        if non_fever_base > 0:
+                            fp_cap: ti.i32 = ti.cast(
+                                ti.ceil(
+                                    ti.max(
+                                        0.0,
+                                        (ti.cast(non_fever_base * pair_cap_forced, ti.f32)
+                                         / ti.cast(non_fever_great_to_fill, ti.f32)),
+                                    )
+                                ),
+                                ti.i32,
                             )
-                        ),
-                        ti.i32,
-                    )
+                            fp_target = ti.min(fp_target, fp_cap)
+                        else:
+                            fp_target = 0
+
+                forced_val: ti.i32 = 0
+                if fp_target > 0 and non_fever_base > 0:
+                    forced_val = ((fp_target - 1) * non_fever_great_to_fill) // non_fever_base + 1
+                    forced_val = ti.min(forced_val, non_fever_base)
+
+                fp_calc: ti.i32 = fp_target
 
                 notes_to_fill: ti.i32 = base_notes_s + fp_calc
                 section_start: ti.i32 = current_idx
@@ -691,29 +700,38 @@ def fg_stage1_flat_kernel(
             if base_notes_s < 0:
                 base_notes_s = 0
 
-            forced_val: ti.i32 = 0
+            fp_target: ti.i32 = 0
             if sec < n_sections:
-                forced_val = fg_forced_counts[cfg_idx, sec]
-                if forced_val < 0:
-                    forced_val = 0
+                fp_target = fg_forced_counts[cfg_idx, sec]
+                if fp_target < 0:
+                    fp_target = 0
+
+                # Clamp by per-pair dynamic cap (stored as forced-count caps)
+                if sec < FG_MAX_SECTIONS:
+                    pair_cap_forced: ti.i32 = fg_pair_caps[ft_idx, ff_idx, sec]
+                    if pair_cap_forced < 0:
+                        pair_cap_forced = 0
+                    if non_fever_base > 0:
+                        fp_cap: ti.i32 = ti.cast(
+                            ti.ceil(
+                                ti.max(
+                                    0.0,
+                                    (ti.cast(non_fever_base * pair_cap_forced, ti.f32)
+                                     / ti.cast(non_fever_great_to_fill, ti.f32)),
+                                )
+                            ),
+                            ti.i32,
+                        )
+                        fp_target = ti.min(fp_target, fp_cap)
+                    else:
+                        fp_target = 0
+
+            forced_val: ti.i32 = 0
+            if fp_target > 0 and non_fever_base > 0:
+                forced_val = ((fp_target - 1) * non_fever_great_to_fill) // non_fever_base + 1
                 forced_val = ti.min(forced_val, non_fever_base)
 
-                # Clamp by per-pair dynamic cap
-                if sec < FG_MAX_SECTIONS:
-                    pair_cap: ti.i32 = fg_pair_caps[ft_idx, ff_idx, sec]
-                    forced_val = ti.min(forced_val, pair_cap)
-
-            fp_calc: ti.i32 = 0
-            if forced_val > 0:
-                fp_calc = ti.cast(
-                    ti.ceil(
-                        ti.max(
-                            0.0,
-                            (ti.cast(non_fever_base * forced_val, ti.f32) / ti.cast(non_fever_great_to_fill, ti.f32)),
-                        )
-                    ),
-                    ti.i32,
-                )
+            fp_calc: ti.i32 = fp_target
 
             notes_to_fill: ti.i32 = base_notes_s + fp_calc
             section_start: ti.i32 = current_idx

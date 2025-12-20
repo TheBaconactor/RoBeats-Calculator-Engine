@@ -36,6 +36,7 @@ FG_MAX_FLAT_WORK_ITEMS = MAX_GENOMES * FG_MAX_FTFF  # 4096 * 256 = 1M work items
 song_timestamps: ti.Field | None = None  # (FG_MAX_SONG_NOTES,) f32
 
 # FG finder inputs (GPU-resident)
+# Stores fill-penalty targets (fp) per section (not raw forced counts).
 fg_forced_counts: ti.Field | None = None  # (FG_MAX_CONFIGS, FG_MAX_SECTIONS) i32
 fg_pair_caps: ti.Field | None = None      # (FG_MAX_STAT+1, FG_MAX_STAT+1, FG_MAX_SECTIONS) i32
 fg_ft_list: ti.Field | None = None        # (FG_MAX_FTFF,) i32

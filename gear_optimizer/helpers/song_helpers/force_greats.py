@@ -91,6 +91,7 @@ def process_force_greats(
                 calculate_section_caps,
                 collect_analytical_breakpoints,
                 collect_analytical_breakpoint_groups,
+                iter_analytical_breakpoint_groups,
             )
             from ...solver.analytical_fg import create_scorer_from_calc_song
 
@@ -119,6 +120,32 @@ def process_force_greats(
                 if sel_color:
                     out[sel_color] = out.get(sel_color, 0) + g_ov * ELEMENTAL_GEM_SCALE
                 return out
+
+            def _fp_targets_to_forced_counts(
+                fp_counts: list,
+                base_stats: dict,
+                ft_gems: int,
+                ff_gems: int,
+                scorer,
+            ) -> list:
+                if not fp_counts:
+                    return []
+                ft_stat = int(base_stats.get("Fever Time", 0)) + int(ft_gems) * GEM_SCALE_FEVER
+                ff_stat = int(base_stats.get("Fever Fill Rate", 0)) + int(ff_gems) * GEM_SCALE_FEVER
+                non_fever_base, _, non_fever_great_to_fill = scorer.get_fever_params(ft_stat, ff_stat)
+                if non_fever_base <= 0:
+                    return [0] * len(fp_counts)
+                forced_counts = []
+                for fp in fp_counts:
+                    fp_i = int(fp)
+                    if fp_i <= 0:
+                        forced = 0
+                    else:
+                        forced = ((fp_i - 1) * non_fever_great_to_fill) // non_fever_base + 1
+                    if forced > non_fever_base:
+                        forced = non_fever_base
+                    forced_counts.append(int(forced))
+                return forced_counts
 
             def _is_cached_force_valid_for_finder(cached_force_obj, expected_selected_element, center_ft, center_ff):
                 if not isinstance(cached_force_obj, dict):
@@ -466,71 +493,33 @@ def process_force_greats(
                             (bs.get("Fever Time", 0), bs.get("Fever Fill Rate", 0))
                             for bs in pending
                         }
-                        breakpoint_groups = collect_analytical_breakpoint_groups(
+                        
+                        # Read merge thresholds from env (same as before)
+                        try:
+                            max_union_cfg = int(os.environ.get("FG_MERGE_MAX_CONFIGS", "5000"))
+                            max_union_threads = int(os.environ.get("FG_MERGE_MAX_THREADS", "20000000"))
+                        except Exception:
+                            max_union_cfg = 5000
+                            max_union_threads = 20000000
+                        
+                        # Use generator to build groups incrementally (Approach A)
+                        # Generator includes integrated merge logic
+                        group_gen = iter_analytical_breakpoint_groups(
                             fg_scorer,
                             n_sections,
                             ftff_pairs,
                             base_stats_pairs,
                             gem_scale_fever=GEM_SCALE_FEVER,
+                            batch_size=20,  # Build 20 FT/FF pairs at a time
+                            merge_threshold_cfgs=max_union_cfg,
+                            merge_threshold_threads=max_union_threads,
+                            n_genomes=n_pending,
                         )
-                        if not breakpoint_groups:
-                            group_counts_list = collect_analytical_breakpoints(fg_scorer, n_sections)
-                            if not group_counts_list:
-                                group_counts_list = [tuple([0] * song_fever_activations)]
-                            if n_sections <= 0:
-                                counts_list = [()]
-                            else:
-                                counts_list = sorted(list(set(group_counts_list)))
-                            breakpoint_groups = [{"ftff_pairs": ftff_pairs, "counts_list": counts_list}]
-
-                        log_key = (int(n_sections), int(len(ftff_pairs)), int(len(breakpoint_groups)))
-                        if not hasattr(process_force_greats, "_fg_pair_breakpoint_log_keys"):
-                            process_force_greats._fg_pair_breakpoint_log_keys = set()
-                        if log_key not in process_force_greats._fg_pair_breakpoint_log_keys:
-                            process_force_greats._fg_pair_breakpoint_log_keys.add(log_key)
-                            print(
-                                f"[FG] Per-FT/FF Breakpoints: {len(breakpoint_groups)} groups "
-                                f"from {len(ftff_pairs)} FT/FF pairs"
-                            )
-                            max_groups = 10
-                            for i, group in enumerate(breakpoint_groups[:max_groups], start=1):
-                                bps = group.get("section_breakpoints") or ()
-                                print(f"     Group {i}: pairs={len(group.get('ftff_pairs') or [])}")
-                                for sec_idx, bp in enumerate(bps):
-                                    print(f"          Section {sec_idx + 1}: {list(bp)}")
-                            if len(breakpoint_groups) > max_groups:
-                                print(f"     (truncated {len(breakpoint_groups) - max_groups} groups)")
-
-                        # Optional: merge groups to reduce GPU call count (exact; evaluates a superset of configs)
-                        merge_groups = os.environ.get("FG_MERGE_BREAKPOINT_GROUPS", "1") == "1"
-                        if merge_groups and len(breakpoint_groups) > 1:
-                            try:
-                                max_union_cfg = int(os.environ.get("FG_MERGE_MAX_CONFIGS", "5000"))
-                                max_union_threads = int(os.environ.get("FG_MERGE_MAX_THREADS", "20000000"))
-                            except Exception:
-                                max_union_cfg = 5000
-                                max_union_threads = 20000000
-
-                            union_counts = set()
-                            for g in breakpoint_groups:
-                                for cfg in (g.get("counts_list") or []):
-                                    union_counts.add(tuple(cfg))
-
-                            union_cfg_count = len(union_counts)
-                            est_threads = int(n_pending) * int(len(ftff_pairs)) * int(union_cfg_count)
-                            if union_cfg_count <= max_union_cfg and est_threads <= max_union_threads:
-                                breakpoint_groups = [{
-                                    "ftff_pairs": ftff_pairs,
-                                    "counts_list": sorted(list(union_counts)),
-                                }]
-                                if not hasattr(process_force_greats, "_fg_pair_merge_log_keys"):
-                                    process_force_greats._fg_pair_merge_log_keys = set()
-                                if log_key not in process_force_greats._fg_pair_merge_log_keys:
-                                    process_force_greats._fg_pair_merge_log_keys.add(log_key)
-                                    print(
-                                        f"[FG] Merged breakpoint groups -> 1 batch "
-                                        f"(cfg={union_cfg_count}, pairs={len(ftff_pairs)}, est_threads={est_threads:,})"
-                                    )
+                        
+                        # Logging (count groups as we go)
+                        log_key = (int(n_sections), int(len(ftff_pairs)))
+                        logged_first = False
+                        group_count = 0
 
                         if perf:
                             t_cfg_build_sec += time.perf_counter() - _t_cfg1
@@ -547,11 +536,30 @@ def process_force_greats(
                         best_fp = np.zeros(n_pending, dtype=np.int32)
                         best_cfg_counts = [None] * n_pending
 
-                        for group in breakpoint_groups:
+                        # Pipelined processing (Approach B2):
+                        # Process groups as they're yielded from generator
+                        for group in group_gen:
+                            group_count += 1
                             counts_list = group.get("counts_list") or []
                             group_pairs = group.get("ftff_pairs") or []
                             if not counts_list or not group_pairs:
                                 continue
+                            
+                            # Log first group info
+                            if not logged_first:
+                                logged_first = True
+                                if not hasattr(process_force_greats, "_fg_pair_breakpoint_log_keys"):
+                                    process_force_greats._fg_pair_breakpoint_log_keys = set()
+                                bps = group.get("section_breakpoints") or ()
+                                if bps and log_key not in process_force_greats._fg_pair_breakpoint_log_keys:
+                                    process_force_greats._fg_pair_breakpoint_log_keys.add(log_key)
+                                    print(
+                                        f"[FG] Per-FT/FF Breakpoints (FP targets, pipelined): "
+                                        f"{len(ftff_pairs)} FT/FF pairs"
+                                    )
+                                    for sec_idx, bp in enumerate(bps):
+                                        print(f"     Section {sec_idx + 1}: {list(bp)[:15]}{'...' if len(bp) > 15 else ''}")
+                            
                             _t_gpu0 = time.perf_counter() if perf else 0.0
                             gpu_results = solve_force_greats_finder_gpu(
                                 genome_stats_arr,  # numpy array instead of list[dict]
@@ -599,6 +607,16 @@ def process_force_greats(
                                 best_sp[idx] = int(gpu_results["score_penalty"][idx])
                                 best_fp[idx] = int(gpu_results["fill_penalty"][idx])
                                 best_cfg_counts[idx] = counts_list[cfg_idx]
+                        
+                        # Log merged status if we got a single batch
+                        if group_count == 1 and not hasattr(process_force_greats, "_fg_pair_merge_log_keys"):
+                            process_force_greats._fg_pair_merge_log_keys = set()
+                        if group_count == 1 and log_key not in getattr(process_force_greats, "_fg_pair_merge_log_keys", set()):
+                            process_force_greats._fg_pair_merge_log_keys.add(log_key)
+                            print(
+                                f"[FG] Merged breakpoint groups -> 1 batch "
+                                f"(pairs={len(ftff_pairs)}, pipelined)"
+                            )
 
                         result_final = best_final
                         result_base = best_base
@@ -674,6 +692,14 @@ def process_force_greats(
                         else:
                             cfg_idx = int(result_cfg_idx[idx]) if result_cfg_idx is not None else -1
                             cfg_counts = list(counts_list[cfg_idx]) if 0 <= cfg_idx < len(counts_list) else []
+                        forced_counts = cfg_counts
+                        try:
+                            if cfg_counts and 'fg_scorer' in locals():
+                                forced_counts = _fp_targets_to_forced_counts(
+                                    cfg_counts, bs, ft_val, ff_val, fg_scorer
+                                )
+                        except Exception:
+                            forced_counts = cfg_counts
 
                         # Build gem_counts dict
                         gem_counts = {
@@ -692,7 +718,7 @@ def process_force_greats(
                         )
 
                         fg_info = {
-                            "config": _force_greats_counts_to_dict(cfg_counts, max(2, len(cfg_counts))),
+                            "config": _force_greats_counts_to_dict(forced_counts, max(2, len(forced_counts))),
                             "final_score": final_score,
                         }
 

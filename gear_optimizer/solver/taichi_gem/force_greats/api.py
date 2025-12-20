@@ -61,7 +61,8 @@ _fg_ftff_upload_buf: dict[str, np.ndarray] | None = None
 _fg_genome_stats_buf: np.ndarray | None = None
 _fg_flat_work_buf: dict[str, np.ndarray] | None = None
 
-# Pair-caps upload state. The flat kernel clamps forced counts by fg_pair_caps;
+# Pair-caps upload state. The flat kernel clamps FP targets using per-section
+# forced-count caps stored in fg_pair_caps.
 # leaving this field uninitialized (default zeros) effectively disables forced
 # greats. When no pair caps grid is provided, default to "no cap" (int32 max).
 _fg_pair_caps_state: str | None = None  # "default" | "custom"
