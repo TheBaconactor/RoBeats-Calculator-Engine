@@ -136,17 +136,25 @@ def process_force_greats(
                     return []
                 ft_stat = int(base_stats.get("Fever Time", 0)) + int(ft_gems) * GEM_SCALE_FEVER
                 ff_stat = int(base_stats.get("Fever Fill Rate", 0)) + int(ff_gems) * GEM_SCALE_FEVER
-                non_fever_base, _, _, _ = scorer.get_fever_params(ft_stat, ff_stat)
+                non_fever_base, _, _, raw_fever_fill = scorer.get_fever_params(ft_stat, ff_stat)
                 if non_fever_base <= 0:
                     return [0] * len(fp_counts)
+                import math
+
+                base_ceil = math.ceil(raw_fever_fill)
+
+                def _min_forced_for_fp(fp_target: int) -> int:
+                    if fp_target <= 0:
+                        return 0
+                    delta = (base_ceil + fp_target - 1) - raw_fever_fill
+                    if delta < 0:
+                        return 0
+                    return int(math.floor(delta * 2.0) + 1)
+
                 forced_counts = []
                 for fp in fp_counts:
                     fp_i = int(fp)
-                    if fp_i <= 0:
-                        forced = 0
-                    else:
-                        # Inverse of ceil(forced * 0.5): forced = (fp - 1) * 2 + 1
-                        forced = (fp_i - 1) * 2 + 1
+                    forced = _min_forced_for_fp(fp_i)
                     if forced > non_fever_base:
                         forced = non_fever_base
                     forced_counts.append(int(forced))

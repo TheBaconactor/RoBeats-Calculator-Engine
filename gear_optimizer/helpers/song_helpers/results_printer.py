@@ -65,7 +65,7 @@ def print_results(
 
         # Print Loadouts
         if is_same:
-            _print_loadout_section("Best Overall Loadout (Base & FG)", base_entry)
+            _print_loadout_section("Best Overall Loadout (Base & FG)", best_fg_entry)
         else:
             _print_loadout_section("Best Gear Loadout (Base)", base_entry)
             _print_loadout_section("Best Gear Loadout (ForceGreats)", best_fg_entry)
@@ -215,124 +215,5 @@ def _print_detailed_debug(found_song_name, entry, ref_arrays, calc_song, cfg):
                 break
         print(f"{label} = {val} (Index: {idx})")
 
-    # Song details
-    meta = calc_song.get("metadata", {})
-    song_name = meta.get("Song Name", found_song_name)
-    difficulty = meta.get("Difficulty", "Normal")
-    print(f"\nUsing Song: {song_name} ({difficulty})")
-    
-    # Calculate section details using AnalyticalFGScorer
-    scorer = create_scorer_from_calc_song(calc_song, ref_arrays)
-    
-    ft_stat = 0
-    ff_stat = 0
-    for i in range(161):
-        if abs(lookup_reference_py(i, ref_arrays["Fever Time"], TOTAL_ROWS) - stats.get("Fever Time", 0)) < 0.0001:
-            ft_stat = i
-        if abs(lookup_reference_py(i, ref_arrays["Fever Fill Rate"], TOTAL_ROWS) - stats.get("Fever Fill Rate", 0)) < 0.0001:
-            ff_stat = i
-
-    non_fever_base, fever_duration, non_fever_great_to_fill, _ = scorer.get_fever_params(ft_stat, ff_stat)
-    print(f"non_fever_base (ceil) = {non_fever_base}, non_fever_great_to_fill = {non_fever_great_to_fill}")
-
-    p_color = meta.get("Primary Color", "")
-    s_color = meta.get("Secondary Color", "")
-    pp_val = stats.get("Perfect Points", 0)
-    cm_val = stats.get("Combo Multiplier", 0)
-    fm_val = stats.get("Fever Multiplier", 0)
-    
-    pp_idx = 0
-    cm_idx = 0
-    fm_idx = 0
-    for i in range(161):
-        if abs(lookup_reference_py(i, ref_arrays["Perfect Points"], TOTAL_ROWS) - pp_val) < 0.0001: pp_idx = i
-        if abs(lookup_reference_py(i, ref_arrays["Combo Multiplier"], TOTAL_ROWS) - cm_val) < 0.0001: cm_idx = i
-        if abs(lookup_reference_py(i, ref_arrays["Fever Multiplier"], TOTAL_ROWS) - fm_val) < 0.0001: fm_idx = i
-
-    pp_factor = lookup_reference_py(pp_idx, ref_arrays["Perfect Points"], TOTAL_ROWS)
-    combo_multiplier = lookup_reference_py(cm_idx, ref_arrays["Combo Multiplier"], TOTAL_ROWS)
-    fever_multiplier = lookup_reference_py(fm_idx, ref_arrays["Fever Multiplier"], TOTAL_ROWS)
-    
-    total_base = (stats.get(p_color, 0) * 2) + stats.get(s_color, 0) + pp_factor
-    
-    great_penalty_base = floor(((stats.get(p_color, 0) * 2) + stats.get(s_color, 0)) * (2.0 / 3.0) + 150.0)
-    print(f"great_judgement_penalty_base = {great_penalty_base}")
-    
-    great_judgement_penalty_combo = floor(great_penalty_base * combo_multiplier)
-    print(f"great_judgement_penalty_combo = {great_judgement_penalty_combo}")
-    
-    great_judgement_penalty_fever = floor(great_penalty_base * combo_multiplier * fever_multiplier)
-    print(f"great_judgement_penalty_fever = {great_judgement_penalty_fever}")
-
-    # Calculated Score Blocks
-    print("\n=== Calculated Score Blocks ===")
-    fg_config = variant_data.get("ForceGreats", {}).get("config", {})
-    # Convert config dict back to list
-    forced_counts = []
-    for i in range(16):
-        val = fg_config.get(f"NonFever{i+1}")
-        if val is not None:
-            forced_counts.append(val)
-        else:
-            break
-            
-    idx = 0
-    section_num = 1
-    
-    penalty_table = build_great_penalty_table(total_base, combo_multiplier, great_penalty_base)
-    body_penalty = max(0, floor(total_base * combo_multiplier) - floor(great_penalty_base * combo_multiplier))
-    
-    raw_fever_fill = scorer.non_fever_cas * scorer._lookup(scorer.ref_ff, ff_stat)
-    
-    while idx < scorer.total_notes:
-        # Non-Fever Section
-        forced = forced_counts[(section_num - 1) // 2] if ((section_num - 1) // 2) < len(forced_counts) else 0
-        
-        fill_penalty = scorer.get_fill_penalty(forced, raw_fever_fill, (section_num - 1) // 2)
-        base_notes = non_fever_base - 1 if section_num == 1 else non_fever_base
-        notes_in_nf = base_notes + fill_penalty
-        
-        nf_end = min(idx + notes_in_nf, scorer.total_notes)
-        nf_notes = nf_end - idx
-        
-        # Calculate NF Score
-        nf_score = 0
-        for n in range(idx, nf_end):
-             if n < 100:
-                  scaling = 1.0 + (combo_multiplier - 1.0) * (n + 1) / 100.0
-                  nf_score += floor(total_base * scaling)
-             else:
-                  nf_score += floor(total_base * combo_multiplier)
-        
-        for n in range(idx, min(idx + forced, nf_end)):
-             if n < 100:
-                  nf_score -= penalty_table[n]
-             else:
-                  nf_score -= body_penalty
-                  
-        print(f"Section {section_num:02d} [Non-Fever]: Score = {int(nf_score)}, Notes = {nf_notes} (Notes {idx+1}-{nf_end})")
-        idx = nf_end
-        if idx >= scorer.total_notes: break
-        
-        # Fever Section
-        section_num += 1
-        f_start_time = scorer.timestamps[idx] if idx < scorer.total_notes else 0
-        f_end_time = f_start_time + fever_duration
-        f_end_idx = scorer.binary_search_left(f_end_time)
-        f_notes = f_end_idx - idx
-        
-        f_score = 0
-        for n in range(idx, f_end_idx):
-             if n < 100:
-                  scaling = 1.0 + (combo_multiplier - 1.0) * (n + 1) / 100.0
-                  f_score += floor(total_base * scaling * fever_multiplier)
-             else:
-                  f_score += floor(total_base * combo_multiplier * fever_multiplier)
-                  
-        print(f"Section {section_num:02d} [Fever]: Score = {int(f_score)}, Notes = {f_notes} (Notes {idx+1}-{f_end_idx})")
-        idx = f_end_idx
-        section_num += 1
-
     final_score = variant_data.get("fg_score") or variant_data.get("Score", 0)
     print(f"\nTotal Score: {int(final_score)}")
-    print(f"Total Notes (sum over sections): {scorer.total_notes}")

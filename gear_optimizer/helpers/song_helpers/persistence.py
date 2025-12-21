@@ -42,6 +42,7 @@ def build_db_payload(
     prev_attempts_first,
     fg_variants,
     build_details_fn,
+    db_best_fg_score=None,
 ):
     """
     Build database persistence payload.
@@ -55,6 +56,7 @@ def build_db_payload(
         prev_attempts_first: Previous attempts_first counter
         fg_variants: Force greats variants
         build_details_fn: Function to build details dict from data dict
+        db_best_fg_score: Best FG score from DB (across all loadouts)
 
     Returns:
         dict: Database payload
@@ -131,8 +133,10 @@ def build_db_payload(
          best_cand = max(current_run_fg_candidates, key=lambda x: x.get("score", 0))
          best_fg_score_run = best_cand.get("score", 0)
 
-    prev_fg_score = prev_record.get("fg_score") if prev_record else 0
-    is_fg_better = (prev_fg_score is None) or (best_fg_score_run > prev_fg_score)
+    # Use the max FG score from DB (any loadout) if provided, else fallback to prev_record
+    prev_fg_score = db_best_fg_score if db_best_fg_score is not None else (prev_record.get("fg_score") if prev_record else 0)
+    prev_fg_score = prev_fg_score or 0  # Ensure it's not None
+    is_fg_better = best_fg_score_run > prev_fg_score
     
     if is_first:
         print(

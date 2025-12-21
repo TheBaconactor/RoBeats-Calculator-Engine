@@ -246,6 +246,28 @@ def _optimize_core_bits(
     )
 
 
+@ti.func
+def _forced_from_fp_target(
+    raw_fill: ti.f32,
+    base_ceil: ti.i32,
+    fp_target: ti.i32,
+    non_fever_base: ti.i32,
+) -> ti.i32:
+    """
+    Convert a fill-penalty target into the minimal forced great count.
+
+    Uses: ceil(raw_fill + 0.5*k) - ceil(raw_fill) >= fp_target
+    """
+    forced_val: ti.i32 = 0
+    if fp_target > 0:
+        delta: ti.f32 = (ti.cast(base_ceil, ti.f32) + ti.cast(fp_target, ti.f32) - 1.0) - raw_fill
+        if delta >= 0.0:
+            forced_val = ti.cast(ti.floor(delta * 2.0), ti.i32) + 1
+    if forced_val > non_fever_base:
+        forced_val = non_fever_base
+    return forced_val
+
+
 # ============================================================================
 # KERNELS
 # ============================================================================
@@ -421,12 +443,10 @@ def fg_stage1_kernel(
                         
                         fp_target = ti.min(fp_target, fp_cap)
 
-                # Derive forced_val from fp_target using inverse of ceil(forced * 0.5)
-                # If fp_target = ceil(forced * 0.5), then forced = (fp_target - 1) * 2 + 1 for fp_target > 0
-                forced_val: ti.i32 = 0
-                if fp_target > 0:
-                    forced_val = (fp_target - 1) * 2 + 1
-                    forced_val = ti.min(forced_val, non_fever_base)
+                # Derive forced_val from fp_target using raw_fill-based inverse.
+                forced_val: ti.i32 = _forced_from_fp_target(
+                    non_fever_base_f, non_fever_base, fp_target, non_fever_base
+                )
 
                 fp_calc: ti.i32 = fp_target
 
@@ -741,12 +761,10 @@ def fg_stage1_flat_kernel(
                     
                     fp_target = ti.min(fp_target, fp_cap)
 
-            # Derive forced_val from fp_target using inverse of ceil(forced * 0.5)
-            # If fp_target = ceil(forced * 0.5), then forced = (fp_target - 1) * 2 + 1 for fp_target > 0
-            forced_val: ti.i32 = 0
-            if fp_target > 0:
-                forced_val = (fp_target - 1) * 2 + 1
-                forced_val = ti.min(forced_val, non_fever_base)
+            # Derive forced_val from fp_target using raw_fill-based inverse.
+            forced_val: ti.i32 = _forced_from_fp_target(
+                non_fever_base_f, non_fever_base, fp_target, non_fever_base
+            )
 
             fp_calc: ti.i32 = fp_target
 

@@ -298,6 +298,15 @@ def process_song_task(args):
         )
 
         db_seed = prev_record if prev_record else None
+        
+        # Calculate best FG score from DB before known_loadouts is cleared
+        # known_loadouts structure: {hash: (score, fg_score, force_data, details_data)}
+        db_best_fg_score = 0
+        if known_loadouts:
+            try:
+                db_best_fg_score = max(v[1] for v in known_loadouts.values() if v[1])
+            except (ValueError, IndexError, TypeError):
+                db_best_fg_score = 0
 
         attempt_lifetime_prev = 0
         prev_attempts_first = 0
@@ -498,6 +507,7 @@ def process_song_task(args):
                 prev_attempts_first,
                 fg_variants,
                 build_details,
+                db_best_fg_score=db_best_fg_score,
             )
             db_payload_time_sec = time.perf_counter() - _t_db0
 

@@ -6,7 +6,7 @@ All calculations are derived from the mathematical specification and
 validated against SongTimelineGrid ground truth (13/13 tests passing).
 
 Key insight: Instead of simulating note-by-note on GPU, we can calculate:
-1. Fill penalty = ceil(forced_count * 0.5)
+1. Fill penalty = ceil(raw_fill + forced_count * 0.5) - ceil(raw_fill)
 2. Section start = baseline_start + fill_penalty (forced affects fill_penalty, not added directly)
 3. Fever mask derived from section boundaries
 4. Score = head_score + body_score
@@ -195,8 +195,7 @@ class AnalyticalFGScorer:
         Get forced great counts that actually change the timeline (breakpoints).
         
         This is pure math - no simulation needed! Breakpoints occur when
-        fill_penalty increases, which happens every 2 forced greats (since
-        fill_penalty = ceil(forced * 0.5)).
+        fill_penalty increases when ceil(raw_fill + forced * 0.5) changes.
         
         Args:
             ft_stat: Fever Time stat (0-160)

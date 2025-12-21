@@ -145,7 +145,7 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, ff_b
     This replaces the simulation-based collect_analytic_configs with ~100x speedup.
     
     Breakpoints are where fill_penalty changes:
-        fill_penalty = ceil(forced * 0.5)
+        fill_penalty = ceil(raw_fill + forced * 0.5) - ceil(raw_fill)
     
     Uses the 3 FG rules to limit sections:
     1. Fever overflow: Skip sections where fever extends past song
