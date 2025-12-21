@@ -49,7 +49,7 @@ from gear_optimizer.data.csv_parser import (
 from gear_optimizer.core.utils import safe_int, cfg_to_dict
 from gear_optimizer.solver.scoring import FEVER_TIMELINE_CACHE, FG_CACHE
 from gear_optimizer.solver.genetic import GEM_SOLVER_CACHE
-from gear_optimizer.data.db_health import run_health_check
+
 
 
 # Module-level worker initializer for GPU executor (must be picklable)
@@ -139,14 +139,6 @@ class GearOptimizerApp:
 
             init_db()
             self._auto_merge_databases()
-            
-            # Start background DB health check (CPU-only, won't block GPU)
-            health_thread = threading.Thread(
-                target=self._run_db_health_check,
-                args=(paths, cfg_to_dict(cfg)),
-                daemon=True
-            )
-            health_thread.start()
 
 
             # Config reading
@@ -154,6 +146,7 @@ class GearOptimizerApp:
             enable_auto = bool(meta_finder)
             force_greats_mode = cfg.getboolean("IterationEngine", "ForceGreatsMode", fallback=False)
             force_greats_finder = cfg.getboolean("IterationEngine", "ForceGreatsFinder", fallback=False)
+            fg_debug = cfg.getboolean("IterationEngine", "ForceGreatsDebug", fallback=False)
             auto_buff = cfg.getboolean("IterationEngine", "AutoSelectBuffAndColor", fallback=False)
             
             if force_greats_mode:
@@ -197,7 +190,7 @@ class GearOptimizerApp:
             tasks = self._prepare_tasks(
                 song_queue, cfg, paths, ref_arrays, all_gears, all_minis,
                 gears_by_name, minis_by_name, use_evo_db, auto_buff,
-                ga_depth, status_queue
+                ga_depth, status_queue, fg_debug
             )
 
             parallel_workers = 1
@@ -261,21 +254,7 @@ class GearOptimizerApp:
             logging.error(f"[DB Merge] Unexpected error: {e}")
             print(f"[DB Merge] Error: {e}")
 
-    def _run_db_health_check(self, paths, cfg_dict):
-        """Background CPU task to validate DB Stats consistency."""
-        try:
-            db_path = get_evolution_db_path()
-            gears_path = paths.get("Gears", "")
-            minis_path = paths.get("Minis", "")
-            
-            warning = run_health_check(db_path, gears_path, minis_path, cfg_dict, sample_size=100)
-            
-            if warning:
-                print(warning)
-                logging.warning(warning)
-                self.discord_reporter.send_log(warning)
-        except Exception as e:
-            logging.error(f"[DB Health] Check failed: {e}")
+
 
     def _disable_inputs_to_prevent_taint(self, cfg):
         print(" >> [Auto-Mode] Finders active: Ignoring manual [UserInputStatsGems] & [ElementalGems] to prevent database tainting.")
@@ -422,7 +401,7 @@ class GearOptimizerApp:
             self.discord_reporter.send_log(str(msg))
 
     def _prepare_tasks(self, song_queue, cfg, paths, ref_arrays, all_gears, all_minis,
-                      gears_by_name, minis_by_name, use_evo_db, auto_buff, ga_depth, status_queue):
+                      gears_by_name, minis_by_name, use_evo_db, auto_buff, ga_depth, status_queue, fg_debug):
         cfg_dict = cfg_to_dict(cfg)
         tasks = []
         parallel_workers = 1 
@@ -432,6 +411,7 @@ class GearOptimizerApp:
                 fp, found_song_name, task_diff, cfg_dict, paths, ref_arrays,
                 all_gears, all_minis, gears_by_name, minis_by_name,
                 use_evo_db, auto_buff, ga_depth, status_queue, parallel_workers,
+                fg_debug,
             ))
         return tasks
 
@@ -510,16 +490,50 @@ class GearOptimizerApp:
         def _safe_sequential_gen(task_list):
             preload_idx = 5  # Start preloading from index 5
             
+            # GPU prefetch manager for ahead-of-time timeline computation
+            _gpu_prefetch_mgr = None
+            _prefetched_songs = {}  # Cache: song_name -> PreloadedSong with gpu_slot
+            if use_gpu_preload:
+                try:
+                    from gear_optimizer.solver.taichi_gem.api.gpu_prefetch import get_gpu_prefetch_manager
+                    _gpu_prefetch_mgr = get_gpu_prefetch_manager()
+                except Exception:
+                    pass
+            
             for i, t in enumerate(task_list):
                 if t[1] in completed_songs:
                     continue
                 
-                # Queue next song for preloading
+                song_name = t[1]
+                
+                # Queue next song for CPU preloading
                 if use_gpu_preload and preload_idx < len(task_list):
                     next_task = task_list[preload_idx]
                     if next_task[1] not in completed_songs:
                         self._queue_song_for_preload(preloader, next_task)
                     preload_idx += 1
+                
+                # Ahead-of-time GPU prefetch: drain preloader queue and prefetch timelines
+                # These songs will be cached by GPUPrefetchManager for later retrieval
+                if _gpu_prefetch_mgr is not None:
+                    try:
+                        # Drain all ready preloaded songs and prefetch their timelines
+                        while True:
+                            preloaded = preloader.get_if_ready()
+                            if preloaded is None:
+                                break
+                            if preloaded.calc_song and not preloaded.error:
+                                # Prefetch to a slot
+                                slot = _gpu_prefetch_mgr.prefetch(
+                                    preloaded.calc_song,
+                                    preloaded.ref_arrays
+                                )
+                                if slot is not None:
+                                    preloaded.gpu_slot = slot
+                                # Store in our local cache for when this song is processed
+                                _prefetched_songs[preloaded.song_name] = preloaded
+                    except Exception:
+                        pass
                 
                 try:
                     yield safe_process_song_task(t)
@@ -541,7 +555,8 @@ class GearOptimizerApp:
             
             fp, song_name, task_diff, cfg_dict, paths, ref_arrays, \
                 all_gears, all_minis, gears_by_name, minis_by_name, \
-                use_evo_db, auto_buff, ga_depth, status_queue, parallel_workers = task
+                use_evo_db, auto_buff, ga_depth, status_queue, parallel_workers, \
+                fg_debug = task
             
             request = SongLoadRequest(
                 song_name=song_name,

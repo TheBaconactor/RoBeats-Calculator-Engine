@@ -244,8 +244,11 @@ def calculate_force_greats_timeline_indices(
     if non_fever_cas < 0.0:
         non_fever_cas = 0.0
 
-    non_fever_base = ceil(non_fever_cas * fever_fill_rate)
-    non_fever_great_to_fill = ceil(max(1.0, (non_fever_cas * fever_fill_rate) * 2.0))
+    # Raw fill value (before ceiling) - used for penalty calculation
+    raw_fever_fill = non_fever_cas * fever_fill_rate
+    non_fever_base = ceil(raw_fever_fill)
+    # Note: non_fever_great_to_fill is kept for forced_val clamping compatibility
+    non_fever_great_to_fill = ceil(max(1.0, raw_fever_fill * 2.0))
 
     fever_time_cas = last_note_time * 0.15 + 0.15
     real_fever_time = fever_time_cas * fever_time_stat
@@ -274,10 +277,16 @@ def calculate_force_greats_timeline_indices(
         if forced_val > non_fever_base:
             forced_val = non_fever_base
 
-        fill_penalty_notes = ceil(
-            max(0.0, (non_fever_base * forced_val) / non_fever_great_to_fill)
-        )
-        notes_to_fill = base_notes + fill_penalty_notes
+        # Use raw values and ceiling AFTER adding: ceil(raw_base + raw_penalty)
+        # For section 1, we apply -1 indexing offset OUTSIDE the ceil.
+        # raw_penalty = forced_val * 0.5
+        raw_penalty = max(0.0, forced_val * 0.5)
+        
+        notes_to_fill = ceil(raw_fever_fill + raw_penalty)
+        if non_fever_section == 1:
+            notes_to_fill -= 1
+            
+        fill_penalty_notes = notes_to_fill - (non_fever_base - 1 if non_fever_section == 1 else non_fever_base)
 
         section_start = current_idx
         end_normal = min(section_start + notes_to_fill, total_notes)
@@ -529,7 +538,7 @@ class SongTimelineGrid:
             ff_idx: Fever Fill Rate stat index (0-160)
             
         Returns:
-            tuple: (non_fever_base, real_fever_time, non_fever_great_to_fill)
+            tuple: (non_fever_base, real_fever_time, non_fever_great_to_fill, raw_fever_fill)
         """
         ft_idx = max(0, min(TOTAL_ROWS, int(ft_idx)))
         ff_idx = max(0, min(TOTAL_ROWS, int(ff_idx)))
@@ -537,12 +546,13 @@ class SongTimelineGrid:
         ft_factor = self.ft_factors[ft_idx]
         ff_factor = self.ff_factors[ff_idx]
         
-        non_fever_base = ceil(self.non_fever_cas * ff_factor)
+        raw_fever_fill = self.non_fever_cas * ff_factor
+        non_fever_base = ceil(raw_fever_fill)
         real_fever_time = self.fever_time_cas * ft_factor
         # Max greats to fill: effectively 2x the base (perfect judgement fills faster)
-        non_fever_great_to_fill = ceil(max(1.0, self.non_fever_cas * ff_factor * 2.0))
+        non_fever_great_to_fill = ceil(max(1.0, raw_fever_fill * 2.0))
         
-        return non_fever_base, real_fever_time, non_fever_great_to_fill
+        return non_fever_base, real_fever_time, non_fever_great_to_fill, raw_fever_fill
     
     def precompute_all(self):
         """

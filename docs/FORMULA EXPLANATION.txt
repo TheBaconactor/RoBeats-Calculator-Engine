@@ -1,0 +1,33 @@
+You may see magic numbers like 0.333 for fever fill. What does it mean?
+Well, 0.333 is base 0 stat for the in-game value, but this base unit, we then convert to our fever fill number that the optimizer is then using.
+
+Such that:
+=1/((Total Notes - Long Notes)*0.333) is OUR fill contribution per hit, where each hit >= 1. fever activates.
+
+0.333 is the base fever fill stat in the game itself. We then apply 0.333*Gear_FeverFill
+Where Gear FeverFill is our Fever Fill Raw Stat (e.g 0.45241095)
+
+What about Fever Time?
+
+Fever Duration is derived as Last Note Time + 1000 ms where constant 1000 ms is 1s. You may see something like 0.15 seconds. This is because 15% * 1 seconds = 0.15. it is simply just simplified.
+
+15% is a fever time stat in the game itself, though we apply the same principle.
+
+(LastNoteTime*0.15) + 0.15
+
+Furthermore, the Fever Draining mechanism goes like this:
+
+Total decay time = Sum of all (note_time[i] - note_time[i-1])
+                 = Last note time - First note time
+                 = LastNoteTime
+
+Now you may ask. Why do we apply CEIL to fever fill?
+
+That's because in the game, fever activates on the note itself, so when we do something like:
+=1/((Total Notes - Long Notes)*(0.333*GEAR_FEVERFILL))*X, (e.g) say... 142.
+Where X is the number of times we hit.
+
+Lets say we hit 142. It is past >=1 so fever activates. So the number is 142. the fever.
+
+BUT...
+Our calculator is using (Total Notes - Long Notes)*(0.333*GEAR_FEVERFILL)! It is NOT calculating fill per note! it's calculating how many notes in total to get there. This left us with 141.0110647... which is 1 left off from our actual in-game mechanic.

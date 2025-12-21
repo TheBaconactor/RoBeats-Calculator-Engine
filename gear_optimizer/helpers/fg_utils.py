@@ -7,12 +7,13 @@ def _fp_cap_from_forced(scorer, ft_stat: int, ff_stat: int, forced_cap: int) -> 
     """Convert a forced-count cap into a fill-penalty cap for this FT/FF."""
     if forced_cap <= 0:
         return 0
-    non_fever_base, _, non_fever_great_to_fill = scorer.get_fever_params(ft_stat, ff_stat)
-    if non_fever_base <= 0:
-        return 0
-    # fill_penalty = ceil((non_fever_base * forced) / non_fever_great_to_fill)
+    # fill_penalty = ceil(raw_base + forced * 0.5) - ceil(raw_base)
+    raw_fill = scorer.non_fever_cas * scorer._lookup(scorer.ref_ff, ff_stat)
+    
     import numpy as np
-    return int(np.ceil((non_fever_base * forced_cap) / non_fever_great_to_fill))
+    notes_to_fill = np.ceil(raw_fill + forced_cap * 0.5)
+    base_notes = np.ceil(raw_fill)
+    return int(max(0, notes_to_fill - base_notes))
 
 
 def calculate_section_caps(num_sections, non_fever_base, gap=None, fever_activations=None):
@@ -144,7 +145,7 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, ff_b
     This replaces the simulation-based collect_analytic_configs with ~100x speedup.
     
     Breakpoints are where fill_penalty changes:
-        fill_penalty = ceil((non_fever_base × forced) / non_fever_great_to_fill)
+        fill_penalty = ceil(forced * 0.5)
     
     Uses the 3 FG rules to limit sections:
     1. Fever overflow: Skip sections where fever extends past song

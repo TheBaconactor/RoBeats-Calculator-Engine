@@ -218,6 +218,7 @@ def process_song_task(args):
         ga_depth,
         status_queue,
         parallel_workers,
+        fg_debug,
     ) = args
 
     # Initialize variables at function start to avoid 'in locals()' pattern issues
@@ -324,6 +325,16 @@ def process_song_task(args):
         report_time_sec = 0.0
         
         if enable_gear or enable_mini:
+            # Get GPU slot for timeline prefetch (prefetched or on-demand)
+            _gpu_song_slot = 0
+            if gpu_mode:
+                try:
+                    from gear_optimizer.solver.taichi_gem.api.gpu_prefetch import get_gpu_prefetch_manager
+                    _prefetch_mgr = get_gpu_prefetch_manager()
+                    _gpu_song_slot = _prefetch_mgr.get_slot(calc_song, ref_arrays)
+                except Exception as _pfx_err:
+                    pass  # Fallback to slot 0
+            
             # Run Genetic Algorithm (now memetic-enhanced)
             ga_start = time.perf_counter()
             (
@@ -354,8 +365,16 @@ def process_song_task(args):
                 status_cb=lambda m: emit(m),
                 executor=local_executor,
                 known_loadouts=known_loadouts,
+                song_slot=_gpu_song_slot,  # Use prefetched GPU slot
             )
             ga_time_sec = time.perf_counter() - ga_start
+            
+            # Release GPU slot for reuse
+            if gpu_mode and _gpu_song_slot > 0:
+                try:
+                    _prefetch_mgr.release(_gpu_song_slot)
+                except Exception:
+                    pass
             
             if PERF_TIMING_ENABLED:
                 print(f"[PERF] GA: {ga_time_sec:.2f}s")
@@ -505,6 +524,10 @@ def process_song_task(args):
                 enable_mini,
                 fg_variants,
                 emit,
+                fg_debug=fg_debug,
+                ref_arrays=ref_arrays,
+                calc_song=calc_song,
+                cfg=cfg,
             )
             report_time_sec = time.perf_counter() - _t_report0
 

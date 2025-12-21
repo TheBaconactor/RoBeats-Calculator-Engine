@@ -86,12 +86,15 @@ def _simulate_timeline_signature(
             if forced_val > non_fever_base:
                 forced_val = non_fever_base
         
-        # Calculate fill penalty from forced greats
-        fill_penalty_notes = 0
-        if forced_val > 0:
-            fill_penalty_notes = ti.i32(ti.ceil(
-                ti.max(0.0, ti.cast(non_fever_base * forced_val, ti.f32) / ti.cast(non_fever_great_to_fill, ti.f32))
-            ))
+        # Calculate fill penalty from forced greats using new formula:
+        # For section 1, we apply -1 indexing offset OUTSIDE the ceil.
+        raw_penalty: ti.f32 = ti.cast(forced_val, ti.f32) * 0.5
+        
+        notes_to_fill_total = ti.cast(ti.ceil(non_fever_base_f + raw_penalty), ti.i32)
+        if fever_section == 0:
+            notes_to_fill_total -= 1
+            
+        fill_penalty_notes = notes_to_fill_total - base_notes
         
         notes_to_fill = base_notes + fill_penalty_notes
         end_normal_idx = ti.min(current_note + notes_to_fill, total_notes)

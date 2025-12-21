@@ -76,8 +76,14 @@ def _py_force_greats_timeline(
 
         forced_val = forced_counts[non_fever_section - 1] if (non_fever_section - 1) < len(forced_counts) else 0
         forced_val = min(int(forced_val), non_fever_base)
-        fill_penalty_notes = ceil(max(0.0, (non_fever_base * forced_val) / non_fever_great_to_fill))
-        notes_to_fill = base_notes + fill_penalty_notes
+        # Use raw values and ceiling AFTER adding: ceil(raw_base + raw_penalty)
+        raw_penalty = max(0.0, forced_val * 0.5)
+        raw_fever_fill = non_fever_cas * float(fever_fill_rate)
+        
+        notes_to_fill = ceil(raw_fever_fill + raw_penalty)
+        if non_fever_section == 1:
+            notes_to_fill -= 1
+        fill_penalty_notes = notes_to_fill - base_notes
 
         section_start = current_idx
         end_normal = min(section_start + notes_to_fill, total_notes)

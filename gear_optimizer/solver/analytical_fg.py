@@ -6,7 +6,7 @@ All calculations are derived from the mathematical specification and
 validated against SongTimelineGrid ground truth (13/13 tests passing).
 
 Key insight: Instead of simulating note-by-note on GPU, we can calculate:
-1. Fill penalty = ceil((non_fever_base * forced_count) / non_fever_great_to_fill)
+1. Fill penalty = ceil(forced_count * 0.5)
 2. Section start = baseline_start + fill_penalty (forced affects fill_penalty, not added directly)
 3. Fever mask derived from section boundaries
 4. Score = head_score + body_score
@@ -60,21 +60,22 @@ class AnalyticalFGScorer:
         """Safe lookup with clamping to [0, 160]."""
         return float(ref[max(0, min(160, idx))])
     
-    def get_fever_params(self, ft_stat: int, ff_stat: int) -> Tuple[int, float, int]:
+    def get_fever_params(self, ft_stat: int, ff_stat: int) -> Tuple[int, float, int, float]:
         """
         Get fever parameters for given FT/FF stats.
         
         Returns:
-            (non_fever_base, fever_duration, non_fever_great_to_fill)
+            (non_fever_base, fever_duration, non_fever_great_to_fill, raw_fever_fill)
         """
         ff_mult = self._lookup(self.ref_ff, ff_stat)
         ft_mult = self._lookup(self.ref_ft, ft_stat)
         
-        non_fever_base = ceil(self.non_fever_cas * ff_mult)
+        raw_fever_fill = self.non_fever_cas * ff_mult
+        non_fever_base = ceil(raw_fever_fill)
         fever_duration = self.fever_time_cas * ft_mult
-        non_fever_great_to_fill = ceil(max(1.0, self.non_fever_cas * ff_mult * 2))
+        non_fever_great_to_fill = ceil(max(1.0, raw_fever_fill * 2))
         
-        return non_fever_base, fever_duration, max(1, non_fever_great_to_fill)
+        return non_fever_base, fever_duration, max(1, non_fever_great_to_fill), raw_fever_fill
     
     def get_section_analysis(self, ft_stat: int, ff_stat: int) -> dict:
         """
@@ -92,7 +93,7 @@ class AnalyticalFGScorer:
                 'useful_sections': Max meaningful section index
                 'section_caps': Recommended cap per section based on gap
         """
-        non_fever_base, fever_duration, _ = self.get_fever_params(ft_stat, ff_stat)
+        non_fever_base, fever_duration, _, raw_fever_fill = self.get_fever_params(ft_stat, ff_stat)
         
         idx = 0
         section = 0
@@ -149,15 +150,26 @@ class AnalyticalFGScorer:
             'non_fever_base': non_fever_base,
         }
     
-    def get_fill_penalty(self, forced_count: int, non_fever_base: int, non_fever_great_to_fill: int) -> int:
+    def get_fill_penalty(self, forced_count: int, raw_fever_fill: float, is_section_1: bool) -> int:
         """
-        Calculate fill penalty (extra notes delayed until fever).
+        Calculate fill penalty in notes.
+        Uses the new formula: ceil(raw_base + raw_penalty).
         
-        Formula: fill_penalty = ceil((non_fever_base * forced_count) / non_fever_great_to_fill)
+        For section 1, we subtract 1 from the result (indexing adjustment).
         """
         if forced_count <= 0:
             return 0
-        return ceil(max(0.0, (non_fever_base * forced_count) / non_fever_great_to_fill))
+            
+        penalty_raw = forced_count * 0.5
+        notes_to_fill = ceil(raw_fever_fill + penalty_raw)
+        
+        if is_section_1:
+            notes_to_fill -= 1
+            base_notes = ceil(raw_fever_fill) - 1
+        else:
+            base_notes = ceil(raw_fever_fill)
+            
+        return max(0, int(notes_to_fill - base_notes))
     
     def binary_search_left(self, target_time: float) -> int:
         """
@@ -183,8 +195,8 @@ class AnalyticalFGScorer:
         Get forced great counts that actually change the timeline (breakpoints).
         
         This is pure math - no simulation needed! Breakpoints occur when
-        fill_penalty increases, which happens every (non_fever_great_to_fill / non_fever_base)
-        forced greats.
+        fill_penalty increases, which happens every 2 forced greats (since
+        fill_penalty = ceil(forced * 0.5)).
         
         Args:
             ft_stat: Fever Time stat (0-160)
@@ -195,17 +207,17 @@ class AnalyticalFGScorer:
         Returns:
             List of forced counts that are breakpoints (including 0)
         """
-        non_fever_base, _, non_fever_great_to_fill = self.get_fever_params(ft_stat, ff_stat)
+        raw_fever_fill = self.non_fever_cas * self._lookup(self.ref_ff, ff_stat)
         
         # Default to non_fever_base (natural limit - can't force more greats than exist)
         if max_fg is None:
-            max_fg = non_fever_base
+            max_fg = ceil(raw_fever_fill)
         
         breakpoints = [0]  # Always include 0
         prev_penalty = 0
         
         for fc in range(1, max_fg + 1):
-            penalty = self.get_fill_penalty(fc, non_fever_base, non_fever_great_to_fill)
+            penalty = self.get_fill_penalty(fc, raw_fever_fill, False) # Use section 2+ as proxy for delta changes
             if penalty != prev_penalty:
                 breakpoints.append(fc)
                 prev_penalty = penalty
@@ -258,7 +270,7 @@ class AnalyticalFGScorer:
             count_body_normal: normal notes in body
             fever_activations: number of fever windows activated
         """
-        non_fever_base, fever_duration, non_fever_great_to_fill = self.get_fever_params(ft_stat, ff_stat)
+        non_fever_base, fever_duration, non_fever_great_to_fill, raw_fever_fill = self.get_fever_params(ft_stat, ff_stat)
         
         idx = 0
         section = 0
@@ -274,11 +286,12 @@ class AnalyticalFGScorer:
                 forced = non_fever_base  # Clamp to non_fever_base
             
             # Fill penalty: extra notes needed due to forced greats using fill bar
-            fill_penalty = self.get_fill_penalty(forced, non_fever_base, non_fever_great_to_fill)
+            # Uses ceil(raw_base + raw_penalty) - ceil(raw_base)
+            fill_penalty = self.get_fill_penalty(forced, raw_fever_fill, bool(section == 0))
             
-            # Notes needed to fill fever bar (forced is factored into fill_penalty, NOT added directly)
-            base_notes = non_fever_base - 1 if section == 0 else non_fever_base
-            notes_needed = base_notes + fill_penalty
+            notes_needed = ceil(raw_fever_fill + forced * 0.5)
+            if section == 0:
+                notes_needed -= 1
             
             section_start = idx
             idx += notes_needed

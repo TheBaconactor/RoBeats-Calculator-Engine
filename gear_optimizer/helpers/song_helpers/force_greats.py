@@ -94,6 +94,10 @@ def process_force_greats(
                 iter_analytical_breakpoint_groups,
             )
             from ...solver.analytical_fg import create_scorer_from_calc_song
+            from ...solver.taichi_gem.force_greats.api import (
+                fg_reset_global_best,
+                fg_download_global_best,
+            )
 
             # Helper: apply gem allocations to base stats to produce a final Stats dict
             def _apply_gems_to_base(base: dict, sel_color: str, ft: int, ff: int, gem_counts: dict) -> dict:
@@ -132,7 +136,7 @@ def process_force_greats(
                     return []
                 ft_stat = int(base_stats.get("Fever Time", 0)) + int(ft_gems) * GEM_SCALE_FEVER
                 ff_stat = int(base_stats.get("Fever Fill Rate", 0)) + int(ff_gems) * GEM_SCALE_FEVER
-                non_fever_base, _, non_fever_great_to_fill = scorer.get_fever_params(ft_stat, ff_stat)
+                non_fever_base, _, _, _ = scorer.get_fever_params(ft_stat, ff_stat)
                 if non_fever_base <= 0:
                     return [0] * len(fp_counts)
                 forced_counts = []
@@ -141,7 +145,8 @@ def process_force_greats(
                     if fp_i <= 0:
                         forced = 0
                     else:
-                        forced = ((fp_i - 1) * non_fever_great_to_fill) // non_fever_base + 1
+                        # Inverse of ceil(forced * 0.5): forced = (fp - 1) * 2 + 1
+                        forced = (fp_i - 1) * 2 + 1
                     if forced > non_fever_base:
                         forced = non_fever_base
                     forced_counts.append(int(forced))
@@ -524,26 +529,25 @@ def process_force_greats(
                         if perf:
                             t_cfg_build_sec += time.perf_counter() - _t_cfg1
 
-                        best_final = np.full(n_pending, -1, dtype=np.int32)
-                        best_base = np.zeros(n_pending, dtype=np.int32)
-                        best_ft = np.zeros(n_pending, dtype=np.int32)
-                        best_ff = np.zeros(n_pending, dtype=np.int32)
-                        best_g_pp = np.zeros(n_pending, dtype=np.int32)
-                        best_g_cm = np.zeros(n_pending, dtype=np.int32)
-                        best_g_fm = np.zeros(n_pending, dtype=np.int32)
-                        best_g_ov = np.zeros(n_pending, dtype=np.int32)
-                        best_sp = np.zeros(n_pending, dtype=np.int32)
-                        best_fp = np.zeros(n_pending, dtype=np.int32)
-                        best_cfg_counts = [None] * n_pending
+                        # GPU-Resident Accumulation: Build master config list for global indexing
+                        # This allows us to look up cfg_counts after a single download at the end
+                        master_configs = []  # Will be extended by each group
+                        
+                        # Reset global best on GPU before processing groups
+                        fg_reset_global_best(n_pending)
 
-                        # Pipelined processing (Approach B2):
-                        # Process groups as they're yielded from generator
+                        # Pipelined processing with GPU accumulation:
+                        # Process groups and accumulate best on GPU (no per-group downloads)
                         for group in group_gen:
                             group_count += 1
                             counts_list = group.get("counts_list") or []
                             group_pairs = group.get("ftff_pairs") or []
                             if not counts_list or not group_pairs:
                                 continue
+                            
+                            # Track where this group's configs start in master list
+                            group_cfg_offset = len(master_configs)
+                            master_configs.extend(counts_list)
                             
                             # Log first group info
                             if not logged_first:
@@ -554,15 +558,16 @@ def process_force_greats(
                                 if bps and log_key not in process_force_greats._fg_pair_breakpoint_log_keys:
                                     process_force_greats._fg_pair_breakpoint_log_keys.add(log_key)
                                     print(
-                                        f"[FG] Per-FT/FF Breakpoints (FP targets, pipelined): "
+                                        f"[FG] Per-FT/FF Breakpoints (GPU accumulation): "
                                         f"{len(ftff_pairs)} FT/FF pairs"
                                     )
                                     for sec_idx, bp in enumerate(bps):
                                         print(f"     Section {sec_idx + 1}: {list(bp)[:15]}{'...' if len(bp) > 15 else ''}")
                             
                             _t_gpu0 = time.perf_counter() if perf else 0.0
-                            gpu_results = solve_force_greats_finder_gpu(
-                                genome_stats_arr,  # numpy array instead of list[dict]
+                            # Use accumulate_global=True to skip download, with base_cfg_offset for global indexing
+                            solve_force_greats_finder_gpu(
+                                genome_stats_arr,
                                 timestamps,
                                 long_notes,
                                 last_note_time,
@@ -579,7 +584,9 @@ def process_force_greats(
                                 total_budget=TOTAL_GEM_BUDGET,
                                 gem_scale_fever=GEM_SCALE_FEVER,
                                 pair_caps_grid=pair_caps_grid,
-                                return_raw=True,  # Return numpy arrays, not list[dict]
+                                return_raw=True,
+                                accumulate_global=True,
+                                base_cfg_offset=group_cfg_offset,
                             )
                             if perf:
                                 t_gpu_calls_sec += time.perf_counter() - _t_gpu0
@@ -588,25 +595,6 @@ def process_force_greats(
                                     gpu_call_shapes.append(
                                         (n_pending, len(counts_list), len(group_pairs), int(n_sections))
                                     )
-
-                            for idx in range(n_pending):
-                                score = int(gpu_results["final_score"][idx])
-                                if score <= int(best_final[idx]):
-                                    continue
-                                cfg_idx = int(gpu_results["cfg_idx"][idx])
-                                if not (0 <= cfg_idx < len(counts_list)):
-                                    continue
-                                best_final[idx] = score
-                                best_base[idx] = int(gpu_results["base_score"][idx])
-                                best_ft[idx] = int(gpu_results["FT"][idx])
-                                best_ff[idx] = int(gpu_results["FF"][idx])
-                                best_g_pp[idx] = int(gpu_results["g_pp"][idx])
-                                best_g_cm[idx] = int(gpu_results["g_cm"][idx])
-                                best_g_fm[idx] = int(gpu_results["g_fm"][idx])
-                                best_g_ov[idx] = int(gpu_results["g_ov"][idx])
-                                best_sp[idx] = int(gpu_results["score_penalty"][idx])
-                                best_fp[idx] = int(gpu_results["fill_penalty"][idx])
-                                best_cfg_counts[idx] = counts_list[cfg_idx]
                         
                         # Log merged status if we got a single batch
                         if group_count == 1 and not hasattr(process_force_greats, "_fg_pair_merge_log_keys"):
@@ -615,20 +603,37 @@ def process_force_greats(
                             process_force_greats._fg_pair_merge_log_keys.add(log_key)
                             print(
                                 f"[FG] Merged breakpoint groups -> 1 batch "
-                                f"(pairs={len(ftff_pairs)}, pipelined)"
+                                f"(pairs={len(ftff_pairs)}, GPU accumulation)"
                             )
 
-                        result_final = best_final
-                        result_base = best_base
-                        result_ft = best_ft
-                        result_ff = best_ff
-                        result_g_pp = best_g_pp
-                        result_g_cm = best_g_cm
-                        result_g_fm = best_g_fm
-                        result_g_ov = best_g_ov
-                        result_score_penalty = best_sp
-                        result_fill_penalty = best_fp
-                        result_cfg_counts = best_cfg_counts
+                        # Single download at end - this is the key optimization!
+                        _t_download0 = time.perf_counter() if perf else 0.0
+                        global_results = fg_download_global_best(n_pending)
+                        if perf:
+                            t_download_sec = time.perf_counter() - _t_download0
+                            print(f"[PERF] FG GPU global download: {t_download_sec*1000:.1f}ms")
+                        
+                        # Extract results from global download
+                        result_final = global_results["final_score"]
+                        result_base = global_results["base_score"]
+                        result_ft = global_results["FT"]
+                        result_ff = global_results["FF"]
+                        result_g_pp = global_results["g_pp"]
+                        result_g_cm = global_results["g_cm"]
+                        result_g_fm = global_results["g_fm"]
+                        result_g_ov = global_results["g_ov"]
+                        result_score_penalty = global_results["score_penalty"]
+                        result_fill_penalty = global_results["fill_penalty"]
+                        
+                        # Build result_cfg_counts from master list using global cfg indices
+                        result_cfg_counts = []
+                        master_len = len(master_configs)
+                        for idx in range(n_pending):
+                            cfg_idx = int(global_results["cfg_idx"][idx])
+                            if 0 <= cfg_idx < master_len:
+                                result_cfg_counts.append(master_configs[cfg_idx])
+                            else:
+                                result_cfg_counts.append(None)
                     else:
                         _t_gpu0 = time.perf_counter() if perf else 0.0
                         # Use return_raw=True for numpy results (skip dict building in API)

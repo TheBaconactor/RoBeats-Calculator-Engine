@@ -76,6 +76,7 @@ def _run_gpu_native_ga(
     tournament_k: int = 3,
     color_flags: dict = None,
     status_cb=None,
+    song_slot: int = 0,  # GPU slot for prefetched timeline
 ) -> tuple:
     """
     Run GPU-native GA loop (internal function).
@@ -235,7 +236,7 @@ def _run_gpu_native_ga(
             n_slots=n_slots,
             total_budget=total_budget,
             gem_scale_fever=gem_scale_fever,
-            song_slot=0,
+            song_slot=song_slot,
             is_p_ft=is_p_ft, is_s_ft=is_s_ft,
             is_p_ff=is_p_ff, is_s_ff=is_s_ff,
             is_p_pp=is_p_pp, is_s_pp=is_s_pp,
@@ -255,7 +256,7 @@ def _run_gpu_native_ga(
             is_p_cm=is_p_cm, is_s_cm=is_s_cm,
             is_p_fm=is_p_fm, is_s_fm=is_s_fm,
             is_p_ov=is_p_ov, is_s_ov=is_s_ov,
-            song_slot=0,
+            song_slot=song_slot,
         )
         
         # GPU-side island elite selection (no CPU download!)
@@ -431,6 +432,7 @@ def solve_coevolution_genetic(
     status_cb=None,
     executor=None,
     known_loadouts=None,
+    song_slot: int = 0,  # GPU slot for prefetched timeline (0 = compute on-demand)
 ):
     """
     Main genetic algorithm solver for gear and mini co-evolution.
@@ -542,7 +544,7 @@ def solve_coevolution_genetic(
         load_ref_arrays(ref_arrays)
 
         # 2. Precompute timeline grid (required by solve_genomes_with_ftff_kernel)
-        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
+        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
 
         # 3. Create Registry
         registry = ItemRegistry(gear_pool, mini_pool, slots)
@@ -673,7 +675,7 @@ def solve_coevolution_genetic(
                 try:
                     gpu_api.hard_reset_taichi(reason=f"periodic Vulkan reset at run {run_idx + 1}/{num_runs}")
                     load_ref_arrays(ref_arrays)
-                    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
+                    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
                     gpu_api.ga_upload_item_stats(
                         gpu_data["item_stats"],
                         gpu_data["slot_start"],
@@ -735,6 +737,7 @@ def solve_coevolution_genetic(
                             "is_s_ov": 1 if selected_color == s_color else 0,
                         },
                         status_cb=status_cb,
+                        song_slot=song_slot,  # Use prefetched GPU slot
                     )
                     last_exc = None
                     break
@@ -746,7 +749,7 @@ def solve_coevolution_genetic(
                     try:
                         gpu_api.hard_reset_taichi(reason=str(e).splitlines()[0][:200])
                         load_ref_arrays(ref_arrays)
-                        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
+                        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
                         gpu_api.ga_upload_item_stats(
                             gpu_data["item_stats"],
                             gpu_data["slot_start"],

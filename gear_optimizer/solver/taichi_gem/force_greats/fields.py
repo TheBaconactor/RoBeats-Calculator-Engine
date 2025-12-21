@@ -75,6 +75,20 @@ fg_stage1_fill_penalty: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF) i32
 fg_flat_work_genome: ti.Field | None = None     # (FG_MAX_FLAT_WORK_ITEMS,) i32
 fg_flat_work_ftff: ti.Field | None = None       # (FG_MAX_FLAT_WORK_ITEMS,) i32
 
+# Global best fields for GPU-resident accumulation (persist across group calls)
+# These track the best results found across all GPU calls within a single FG batch
+fg_global_best_final_score: ti.Field | None = None     # (MAX_GENOMES,) i32
+fg_global_best_base_score: ti.Field | None = None      # (MAX_GENOMES,) i32
+fg_global_best_cfg_idx: ti.Field | None = None         # (MAX_GENOMES,) i32
+fg_global_best_ft: ti.Field | None = None              # (MAX_GENOMES,) i32
+fg_global_best_ff: ti.Field | None = None              # (MAX_GENOMES,) i32
+fg_global_best_g_pp: ti.Field | None = None            # (MAX_GENOMES,) i32
+fg_global_best_g_cm: ti.Field | None = None            # (MAX_GENOMES,) i32
+fg_global_best_g_fm: ti.Field | None = None            # (MAX_GENOMES,) i32
+fg_global_best_g_ov: ti.Field | None = None            # (MAX_GENOMES,) i32
+fg_global_best_score_penalty: ti.Field | None = None   # (MAX_GENOMES,) i32
+fg_global_best_fill_penalty: ti.Field | None = None    # (MAX_GENOMES,) i32
+
 
 # ============================================================================
 # ALLOCATION STATE
@@ -133,6 +147,23 @@ def reset_fields_state() -> None:
     fg_flat_work_genome = None
     fg_flat_work_ftff = None
 
+    # Global best fields
+    global fg_global_best_final_score, fg_global_best_base_score, fg_global_best_cfg_idx
+    global fg_global_best_ft, fg_global_best_ff
+    global fg_global_best_g_pp, fg_global_best_g_cm, fg_global_best_g_fm, fg_global_best_g_ov
+    global fg_global_best_score_penalty, fg_global_best_fill_penalty
+    fg_global_best_final_score = None
+    fg_global_best_base_score = None
+    fg_global_best_cfg_idx = None
+    fg_global_best_ft = None
+    fg_global_best_ff = None
+    fg_global_best_g_pp = None
+    fg_global_best_g_cm = None
+    fg_global_best_g_fm = None
+    fg_global_best_g_ov = None
+    fg_global_best_score_penalty = None
+    fg_global_best_fill_penalty = None
+
     _fields_allocated = False
 
 
@@ -175,6 +206,19 @@ def bind_fields(kernels_module) -> None:
     # Flat work items
     kernels_module.fg_flat_work_genome = fg_flat_work_genome
     kernels_module.fg_flat_work_ftff = fg_flat_work_ftff
+
+    # Global best fields
+    kernels_module.fg_global_best_final_score = fg_global_best_final_score
+    kernels_module.fg_global_best_base_score = fg_global_best_base_score
+    kernels_module.fg_global_best_cfg_idx = fg_global_best_cfg_idx
+    kernels_module.fg_global_best_ft = fg_global_best_ft
+    kernels_module.fg_global_best_ff = fg_global_best_ff
+    kernels_module.fg_global_best_g_pp = fg_global_best_g_pp
+    kernels_module.fg_global_best_g_cm = fg_global_best_g_cm
+    kernels_module.fg_global_best_g_fm = fg_global_best_g_fm
+    kernels_module.fg_global_best_g_ov = fg_global_best_g_ov
+    kernels_module.fg_global_best_score_penalty = fg_global_best_score_penalty
+    kernels_module.fg_global_best_fill_penalty = fg_global_best_fill_penalty
 
 
 def allocate_fields() -> None:
@@ -229,6 +273,23 @@ def allocate_fields() -> None:
     # Flat work item indices (GPU-friendly)
     fg_flat_work_genome = ti.field(dtype=ti.i32, shape=FG_MAX_FLAT_WORK_ITEMS)
     fg_flat_work_ftff = ti.field(dtype=ti.i32, shape=FG_MAX_FLAT_WORK_ITEMS)
+
+    # Global best fields (persistent across group calls)
+    global fg_global_best_final_score, fg_global_best_base_score, fg_global_best_cfg_idx
+    global fg_global_best_ft, fg_global_best_ff
+    global fg_global_best_g_pp, fg_global_best_g_cm, fg_global_best_g_fm, fg_global_best_g_ov
+    global fg_global_best_score_penalty, fg_global_best_fill_penalty
+    fg_global_best_final_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    fg_global_best_base_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    fg_global_best_cfg_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    fg_global_best_ft = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    fg_global_best_ff = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    fg_global_best_g_pp = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    fg_global_best_g_cm = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    fg_global_best_g_fm = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    fg_global_best_g_ov = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    fg_global_best_score_penalty = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    fg_global_best_fill_penalty = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
 
     _fields_allocated = True
 
@@ -309,6 +370,10 @@ def warmup_kernels() -> None:
     
     # Warmup stage2 reduction kernel
     fg_kernels.fg_stage2_kernel(n_genomes, n_ftff)
+    
+    # Warmup global best kernels (new for GPU-resident accumulation)
+    fg_kernels.fg_reset_global_best_kernel(n_genomes)
+    fg_kernels.fg_update_global_best_kernel(n_genomes)
     
     # Sync to ensure JIT is complete
     ti.sync()

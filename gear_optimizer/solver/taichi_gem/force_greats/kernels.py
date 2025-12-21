@@ -53,6 +53,19 @@ fg_flat_work_ftff = None
 # Packed 64-bit field for atomic (score, cfg_idx) updates
 fg_stage1_packed = None
 
+# Global best fields for GPU-resident accumulation (persist across group calls)
+fg_global_best_final_score = None
+fg_global_best_base_score = None
+fg_global_best_cfg_idx = None
+fg_global_best_ft = None
+fg_global_best_ff = None
+fg_global_best_g_pp = None
+fg_global_best_g_cm = None
+fg_global_best_g_fm = None
+fg_global_best_g_ov = None
+fg_global_best_score_penalty = None
+fg_global_best_fill_penalty = None
+
 
 # ============================================================================
 # HELPERS
@@ -337,7 +350,8 @@ def fg_stage1_kernel(
         ft_factor: ti.f32 = kernels_helpers.lookup_ref_ft(ft_idx)
         ff_factor: ti.f32 = kernels_helpers.lookup_ref_ff(ff_idx)
 
-        non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_cas * ff_factor), ti.i32)
+        non_fever_base_f: ti.f32 = non_fever_cas * ff_factor
+        non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_base_f), ti.i32)
         non_fever_great_to_fill: ti.i32 = ti.cast(
             ti.ceil(ti.max(1.0, non_fever_cas * ff_factor * 2.0)), ti.i32
         )
@@ -393,24 +407,25 @@ def fg_stage1_kernel(
                         pair_cap_forced: ti.i32 = fg_pair_caps[ft_idx, ff_idx, sec]
                         if pair_cap_forced < 0:
                             pair_cap_forced = 0
-                        if non_fever_base > 0:
-                            fp_cap: ti.i32 = ti.cast(
-                                ti.ceil(
-                                    ti.max(
-                                        0.0,
-                                        (ti.cast(non_fever_base * pair_cap_forced, ti.f32)
-                                         / ti.cast(non_fever_great_to_fill, ti.f32)),
-                                    )
-                                ),
-                                ti.i32,
-                            )
-                            fp_target = ti.min(fp_target, fp_cap)
+                        # New formula: fp_cap = ceil(raw_base + pair_cap_forced * 0.5) - ceil(raw_base)
+                        # The -1 indexing offset for section 0 (sec==0) cancels out in the delta.
+                        notes_with_cap = ti.ceil(non_fever_base_f + ti.cast(pair_cap_forced, ti.f32) * 0.5)
+                        non_fever_base_ceiled = ti.ceil(non_fever_base_f)
+                        
+                        # Apply -1 offset outside ceil for sec 0 (for conceptual correctness, though it cancels in delta)
+                        fp_cap: ti.i32 = 0
+                        if sec == 0:
+                            fp_cap = ti.cast(notes_with_cap - 1, ti.i32) - ti.cast(non_fever_base_ceiled - 1, ti.i32)
                         else:
-                            fp_target = 0
+                            fp_cap = ti.cast(notes_with_cap, ti.i32) - ti.cast(non_fever_base_ceiled, ti.i32)
+                        
+                        fp_target = ti.min(fp_target, fp_cap)
 
+                # Derive forced_val from fp_target using inverse of ceil(forced * 0.5)
+                # If fp_target = ceil(forced * 0.5), then forced = (fp_target - 1) * 2 + 1 for fp_target > 0
                 forced_val: ti.i32 = 0
-                if fp_target > 0 and non_fever_base > 0:
-                    forced_val = ((fp_target - 1) * non_fever_great_to_fill) // non_fever_base + 1
+                if fp_target > 0:
+                    forced_val = (fp_target - 1) * 2 + 1
                     forced_val = ti.min(forced_val, non_fever_base)
 
                 fp_calc: ti.i32 = fp_target
@@ -675,7 +690,8 @@ def fg_stage1_flat_kernel(
         ft_factor: ti.f32 = kernels_helpers.lookup_ref_ft(ft_idx)
         ff_factor: ti.f32 = kernels_helpers.lookup_ref_ff(ff_idx)
 
-        non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_cas * ff_factor), ti.i32)
+        non_fever_base_f: ti.f32 = non_fever_cas * ff_factor
+        non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_base_f), ti.i32)
         non_fever_great_to_fill: ti.i32 = ti.cast(
             ti.ceil(ti.max(1.0, non_fever_cas * ff_factor * 2.0)), ti.i32
         )
@@ -711,24 +727,25 @@ def fg_stage1_flat_kernel(
                     pair_cap_forced: ti.i32 = fg_pair_caps[ft_idx, ff_idx, sec]
                     if pair_cap_forced < 0:
                         pair_cap_forced = 0
-                    if non_fever_base > 0:
-                        fp_cap: ti.i32 = ti.cast(
-                            ti.ceil(
-                                ti.max(
-                                    0.0,
-                                    (ti.cast(non_fever_base * pair_cap_forced, ti.f32)
-                                     / ti.cast(non_fever_great_to_fill, ti.f32)),
-                                )
-                            ),
-                            ti.i32,
-                        )
-                        fp_target = ti.min(fp_target, fp_cap)
+                    # New formula: fp_cap = ceil(raw_base + pair_cap_forced * 0.5) - ceil(raw_base)
+                    # The -1 indexing offset for section 0 (sec==0) cancels out in the delta.
+                    notes_with_cap = ti.ceil(non_fever_base_f + ti.cast(pair_cap_forced, ti.f32) * 0.5)
+                    non_fever_base_ceiled = ti.ceil(non_fever_base_f)
+                    
+                    # Apply -1 offset outside ceil for sec 0 (for conceptual correctness, though it cancels in delta)
+                    fp_cap: ti.i32 = 0
+                    if sec == 0:
+                        fp_cap = ti.cast(notes_with_cap - 1, ti.i32) - ti.cast(non_fever_base_ceiled - 1, ti.i32)
                     else:
-                        fp_target = 0
+                        fp_cap = ti.cast(notes_with_cap, ti.i32) - ti.cast(non_fever_base_ceiled, ti.i32)
+                    
+                    fp_target = ti.min(fp_target, fp_cap)
 
+            # Derive forced_val from fp_target using inverse of ceil(forced * 0.5)
+            # If fp_target = ceil(forced * 0.5), then forced = (fp_target - 1) * 2 + 1 for fp_target > 0
             forced_val: ti.i32 = 0
-            if fp_target > 0 and non_fever_base > 0:
-                forced_val = ((fp_target - 1) * non_fever_great_to_fill) // non_fever_base + 1
+            if fp_target > 0:
+                forced_val = (fp_target - 1) * 2 + 1
                 forced_val = ti.min(forced_val, non_fever_base)
 
             fp_calc: ti.i32 = fp_target
@@ -887,8 +904,55 @@ def fg_stage1_flat_kernel(
             fg_stage1_fill_penalty[g, ftff_idx] = fill_penalty_total
 
 
+# ============================================================================
+# GLOBAL BEST KERNELS (GPU-resident accumulation across groups)
+# ============================================================================
+
+@ti.kernel
+def fg_reset_global_best_kernel(n_genomes: ti.i32):
+    """
+    Reset global best fields to sentinel values before multi-group processing.
+    
+    Call this once at the start of a batch of FG groups, before the loop.
+    """
+    for i in range(n_genomes):
+        fg_global_best_final_score[i] = -1
+        fg_global_best_base_score[i] = 0
+        fg_global_best_cfg_idx[i] = -1
+        fg_global_best_ft[i] = 0
+        fg_global_best_ff[i] = 0
+        fg_global_best_g_pp[i] = 0
+        fg_global_best_g_cm[i] = 0
+        fg_global_best_g_fm[i] = 0
+        fg_global_best_g_ov[i] = 0
+        fg_global_best_score_penalty[i] = 0
+        fg_global_best_fill_penalty[i] = 0
 
 
+@ti.kernel
+def fg_update_global_best_kernel(n_genomes: ti.i32):
+    """
+    Compare current fg_best_* results with fg_global_best_*, update if better.
+    
+    Call this after each solve_force_greats_finder_gpu() call to accumulate
+    the best results across all groups without downloading to CPU.
+    """
+    for gid in range(n_genomes):
+        new_score = fg_best_final_score[gid]
+        old_score = fg_global_best_final_score[gid]
+        
+        if new_score > old_score:
+            fg_global_best_final_score[gid] = new_score
+            fg_global_best_base_score[gid] = fg_best_base_score[gid]
+            fg_global_best_cfg_idx[gid] = fg_best_cfg_idx[gid]
+            fg_global_best_ft[gid] = fg_best_ft[gid]
+            fg_global_best_ff[gid] = fg_best_ff[gid]
+            fg_global_best_g_pp[gid] = fg_best_g_pp[gid]
+            fg_global_best_g_cm[gid] = fg_best_g_cm[gid]
+            fg_global_best_g_fm[gid] = fg_best_g_fm[gid]
+            fg_global_best_g_ov[gid] = fg_best_g_ov[gid]
+            fg_global_best_score_penalty[gid] = fg_best_score_penalty[gid]
+            fg_global_best_fill_penalty[gid] = fg_best_fill_penalty[gid]
 
 
 

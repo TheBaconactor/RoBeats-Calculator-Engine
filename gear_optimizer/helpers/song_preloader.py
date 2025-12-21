@@ -35,6 +35,7 @@ class PreloadedSong:
     minis_by_name: dict
     cfg_data: dict
     preload_time_ms: float = 0.0
+    gpu_slot: int = 0  # GPU slot for timeline prefetch (0 = not prefetched)
     error: Optional[Exception] = None
 
 

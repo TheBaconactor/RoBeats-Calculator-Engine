@@ -37,6 +37,8 @@ _USE_ASYNC_FG = os.environ.get("USE_ASYNC_FG", "1") == "1"
 # See `gear_optimizer.solver.taichi_gem.api` for rationale.
 _SYNC_FOR_TIMING = os.environ.get("GPU_SYNC_FOR_TIMING", "0") == "1"
 _FORCE_SYNC = os.environ.get("GPU_FORCE_SYNC", "0") == "1"
+# Per-chunk sync fallback for TDR-prone Windows systems (default OFF for performance)
+_SYNC_PER_CHUNK = os.environ.get("FG_SYNC_PER_CHUNK", "0") == "1"
 
 
 def _maybe_sync(*, for_timing: bool = False) -> None:
@@ -86,6 +88,65 @@ def reset_force_greats_api_state() -> None:
     _fg_pair_caps_default_buf = None
     _fg_pair_caps_custom_key = None
 
+
+# ============================================================================
+# GLOBAL BEST API (GPU-resident accumulation across groups)
+# ============================================================================
+
+def fg_reset_global_best(n_genomes: int) -> None:
+    """
+    Reset global best fields before multi-group processing.
+    
+    Call this once at the start of a batch of FG groups, before the loop.
+    All global best scores will be set to -1 (sentinel).
+    
+    Args:
+        n_genomes: Number of genomes to reset
+    """
+    fg_fields.ensure_ready_with_warmup()
+    fg_kernels.fg_reset_global_best_kernel(int(n_genomes))
+
+
+def fg_accumulate_global_best(n_genomes: int) -> None:
+    """
+    Update global best with current call's results (GPU-side comparison).
+    
+    Call this after each solve_force_greats_finder_gpu() call (with accumulate_global=True)
+    to track the best results across all groups without downloading to CPU.
+    
+    Args:
+        n_genomes: Number of genomes to compare
+    """
+    fg_kernels.fg_update_global_best_kernel(int(n_genomes))
+
+
+def fg_download_global_best(n_genomes: int) -> dict[str, np.ndarray]:
+    """
+    Download final global best results after all groups processed.
+    
+    Call this once at the end of multi-group processing to get the final results.
+    
+    Args:
+        n_genomes: Number of genomes to download
+        
+    Returns:
+        Dict with numpy arrays for all result fields (same format as return_raw=True)
+    """
+    ti.sync()  # Ensure all GPU work is complete
+    n = int(n_genomes)
+    return {
+        "final_score": fg_fields.fg_global_best_final_score.to_numpy()[:n],
+        "base_score": fg_fields.fg_global_best_base_score.to_numpy()[:n],
+        "cfg_idx": fg_fields.fg_global_best_cfg_idx.to_numpy()[:n],
+        "FT": fg_fields.fg_global_best_ft.to_numpy()[:n],
+        "FF": fg_fields.fg_global_best_ff.to_numpy()[:n],
+        "g_pp": fg_fields.fg_global_best_g_pp.to_numpy()[:n],
+        "g_cm": fg_fields.fg_global_best_g_cm.to_numpy()[:n],
+        "g_fm": fg_fields.fg_global_best_g_fm.to_numpy()[:n],
+        "g_ov": fg_fields.fg_global_best_g_ov.to_numpy()[:n],
+        "score_penalty": fg_fields.fg_global_best_score_penalty.to_numpy()[:n],
+        "fill_penalty": fg_fields.fg_global_best_fill_penalty.to_numpy()[:n],
+    }
 
 def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
     global _fg_pair_caps_state, _fg_pair_caps_default_buf
@@ -193,7 +254,9 @@ def solve_force_greats_finder_gpu(
     pair_caps_grid: np.ndarray | None = None,
     cfg_chunk: int | None = None,
     return_raw: bool = False,
-) -> list[dict[str, Any]] | dict[str, np.ndarray]:
+    accumulate_global: bool = False,
+    base_cfg_offset: int = 0,
+) -> list[dict[str, Any]] | dict[str, np.ndarray] | None:
     """
     Full GPU ForceGreatsFinder (tolerant mode).
 
@@ -203,8 +266,15 @@ def solve_force_greats_finder_gpu(
         return_raw: If True, return dict of numpy arrays instead of list[dict].
                     Keys: 'final_score', 'base_score', 'cfg_idx', 'FT', 'FF', 
                           'g_pp', 'g_cm', 'g_fm', 'g_ov', 'score_penalty', 'fill_penalty'
+        accumulate_global: If True, update GPU-resident global best fields instead of downloading.
+                          Caller must use fg_reset_global_best() before the loop and
+                          fg_download_global_best() after. Returns None when True.
+        base_cfg_offset: Offset added to cfg indices before storing. Use this when making
+                        multiple GPU calls with different config lists to maintain global
+                        cfg indexing. Default 0 for single-call usage.
 
     Returns:
+        If accumulate_global=True: None (results accumulated on GPU)
         If return_raw=False: list aligned with genome_stats_list with dict per genome.
         If return_raw=True: dict of numpy arrays (much faster, no Python object creation).
     """
@@ -408,6 +478,8 @@ def solve_force_greats_finder_gpu(
         # Call Kernel based on platform
         # On Metal (macOS), 64-bit atomics for the flat kernel are not supported.
         # Fallback to the sequential-loop kernel (fg_stage1_kernel) which is atomic-free.
+        # Add base_cfg_offset for global cfg indexing across multiple GPU calls
+        global_cfg_offset = cfg_offset + base_cfg_offset
         if gem_fields.IS_METAL:
             fg_kernels.fg_stage1_kernel(
                 int(n_genomes),
@@ -419,7 +491,7 @@ def solve_force_greats_finder_gpu(
                 int(n_cfg),
                 int(n_sections),
                 int(n_ftff),
-                int(cfg_offset),
+                int(global_cfg_offset),
                 int(is_p_ft), int(is_s_ft),
                 int(is_p_ff), int(is_s_ff),
                 int(is_p_pp), int(is_s_pp),
@@ -432,7 +504,7 @@ def solve_force_greats_finder_gpu(
             fg_kernels.fg_stage1_flat_kernel(
                 int(n_work_items),
                 int(n_cfg),
-                int(cfg_offset),
+                int(global_cfg_offset),
                 int(total_notes),
                 int(long_notes),
                 float(last_note_time),
@@ -446,12 +518,31 @@ def solve_force_greats_finder_gpu(
                 int(is_p_fm), int(is_s_fm),
                 int(is_p_ov), int(is_s_ov),
             )
-        # Force sync after each chunk to prevent TDR - GPU must complete before next launch
-        ti.sync()
+        # Optional per-chunk sync for TDR-prone systems (disabled by default)
+        if _SYNC_PER_CHUNK:
+            ti.sync()
+
+    # Single sync after all config chunks dispatched - required before Stage 2
+    # This is the key optimization: N chunks now cause 1 sync instead of N syncs
+    ti.sync()
 
     # Stage 2: Reduce across ftff to find best per genome
     fg_kernels.fg_stage2_kernel(n_genomes, n_ftff)
     _maybe_sync(for_timing=True)
+
+    # Accumulate global best (GPU-resident) if requested
+    if accumulate_global:
+        fg_kernels.fg_update_global_best_kernel(n_genomes)
+        if _perf:
+            ti.sync()
+            t_kernel = time.perf_counter() - _t1
+            t_total = t_upload + t_kernel
+            n_chunks = (n_cfg_total + cfg_chunk - 1) // cfg_chunk
+            print(
+                f"[PERF] FG GPU (ACCUMULATE): upload={t_upload*1000:.1f}ms kernel={t_kernel*1000:.1f}ms "
+                f"total={t_total*1000:.1f}ms (genomes={n_genomes}, cfgs={n_cfg_total}, ftff={n_ftff}, chunks={n_chunks})"
+            )
+        return None  # Results accumulated on GPU, not downloaded
 
     # Mark end of kernel phase
     if _perf:

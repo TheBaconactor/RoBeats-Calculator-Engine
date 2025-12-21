@@ -1,8 +1,8 @@
 """
 Shared stats calculation utilities.
 
-Consolidates duplicate stats computation logic from db_health.py, backfill_stats.py,
-and song_preloader.py to ensure consistency and reduce maintenance burden.
+Consolidates stats computation logic from backfill_stats.py and song_preloader.py
+to ensure consistency and reduce maintenance burden.
 """
 from .constants import (
     GEM_SCALE_NORMAL,
@@ -69,7 +69,6 @@ def compute_full_stats(gear_names, mini_names, gem_counts, selected_element,
     Compute full stats from gear + minis + gems + base stats.
 
     This is the canonical implementation used by:
-    - db_health.py (health checking)
     - backfill_stats.py (stats backfilling)
     - Any future stats computation needs
 

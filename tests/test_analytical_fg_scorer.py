@@ -15,8 +15,8 @@ class AnalyticalFGScorer:
     Analytical Force Greats scorer - no simulation, pure math.
     
     Key insight: Instead of simulating note-by-note, we can calculate:
-    1. Fill penalty = ceil(forced_count / non_fever_great_to_fill)
-    2. Section start = baseline_start + forced_count + fill_penalty
+    1. Fill penalty = ceil(forced_count * 0.5)
+    2. Section start = baseline_start + fill_penalty
     3. Fever mask derived from section boundaries
     4. Score = head_score + body_score
     """
@@ -52,36 +52,48 @@ class AnalyticalFGScorer:
         """Safe lookup with clamping."""
         return float(ref[max(0, min(160, idx))])
     
-    def get_fever_params(self, ft_stat: int, ff_stat: int) -> Tuple[int, float, int]:
+    def get_fever_params(self, ft_stat: int, ff_stat: int) -> Tuple[int, float, int, float]:
         """
         Get fever parameters for given stats.
         
         Returns:
-            (non_fever_base, fever_duration, non_fever_great_to_fill)
+            (non_fever_base, fever_duration, non_fever_great_to_fill, raw_fever_fill)
         """
         ff_mult = self._lookup(self.ref_ff, ff_stat)
         ft_mult = self._lookup(self.ref_ft, ft_stat)
         
-        non_fever_base = ceil(self.non_fever_cas * ff_mult)
+        raw_fever_fill = self.non_fever_cas * ff_mult
+        non_fever_base = ceil(raw_fever_fill)
         
         # CORRECT formula: fever_time_cas = last_note_time * 0.15 + 0.15
         #                  fever_duration = fever_time_cas * ft_mult
         fever_time_cas = self.last_note_time * 0.15 + 0.15
         fever_duration = fever_time_cas * ft_mult
         
-        non_fever_great_to_fill = ceil(max(1.0, self.non_fever_cas * ff_mult * 2))
+        non_fever_great_to_fill = ceil(max(1.0, raw_fever_fill * 2))
         
-        return non_fever_base, fever_duration, max(1, non_fever_great_to_fill)
+        return non_fever_base, fever_duration, max(1, non_fever_great_to_fill), raw_fever_fill
     
-    def get_fill_penalty(self, forced_count: int, non_fever_base: int, non_fever_great_to_fill: int) -> int:
+    def get_fill_penalty(self, forced_count: int, raw_fever_fill: float, is_section_1: bool) -> int:
         """
         Calculate fill penalty (extra notes delayed until fever).
         
-        CORRECT formula: fill_penalty = ceil((non_fever_base * forced_count) / non_fever_great_to_fill)
+        Uses ceil(base + raw_penalty) where raw_penalty = forced_count * 0.5.
+        The simplest form is: ceil(forced_count * 0.5)
         """
         if forced_count <= 0:
             return 0
-        return ceil(max(0.0, (non_fever_base * forced_count) / non_fever_great_to_fill))
+            
+        penalty_raw = forced_count * 0.5
+        notes_to_fill = ceil(raw_fever_fill + penalty_raw)
+        
+        if is_section_1:
+            notes_to_fill -= 1
+            base_notes = ceil(raw_fever_fill) - 1
+        else:
+            base_notes = ceil(raw_fever_fill)
+            
+        return max(0, int(notes_to_fill - base_notes))
     
     def binary_search_left(self, target_time: float) -> int:
         """
@@ -106,7 +118,7 @@ class AnalyticalFGScorer:
         Returns:
             (section_starts, section_ends, fever_activations, count_body_fever, count_body_normal)
         """
-        non_fever_base, fever_duration, _ = self.get_fever_params(ft_stat, ff_stat)
+        non_fever_base, fever_duration, _, raw_fever_fill = self.get_fever_params(ft_stat, ff_stat)
         
         idx = 0
         section_starts = []
@@ -165,7 +177,7 @@ class AnalyticalFGScorer:
             
         fever_mask_head: boolean array of length head_len (which of first 100 notes in fever)
         """
-        non_fever_base, fever_duration, non_fever_great_to_fill = self.get_fever_params(ft_stat, ff_stat)
+        non_fever_base, fever_duration, non_fever_great_to_fill, raw_fever_fill = self.get_fever_params(ft_stat, ff_stat)
         
         idx = 0
         section = 0
@@ -180,11 +192,12 @@ class AnalyticalFGScorer:
                 forced = non_fever_base  # Clamp to non_fever_base
             
             # Fill penalty: extra notes needed due to forced greats using fill bar
-            fill_penalty = self.get_fill_penalty(forced, non_fever_base, non_fever_great_to_fill)
+            fill_penalty = self.get_fill_penalty(forced, raw_fever_fill, bool(section == 0))
             
-            # Notes needed to fill fever bar (forced is factored into fill_penalty, NOT added directly)
-            base_notes = non_fever_base - 1 if section == 0 else non_fever_base
-            notes_needed = base_notes + fill_penalty
+            # Notes needed to fill fever bar
+            notes_needed = ceil(raw_fever_fill + forced * 0.5)
+            if section == 0:
+                notes_needed -= 1
             
             section_start = idx
             idx += notes_needed
@@ -306,7 +319,7 @@ class AnalyticalFGScorer:
         """
         pp_factor = self._lookup(self.ref_pp, pp_stat)
         combo_mul = self._lookup(self.ref_cm, cm_stat)
-        non_fever_base, _, non_fever_great_to_fill = self.get_fever_params(ft_stat, ff_stat)
+        non_fever_base, _, _, raw_fever_fill = self.get_fever_params(ft_stat, ff_stat)
         
         base_value = float((p_val * 2) + s_val) + pp_factor
         combo_span = combo_mul - 1.0
@@ -330,7 +343,7 @@ class AnalyticalFGScorer:
                 continue
             
             # Fill penalty for this section
-            fp = self.get_fill_penalty(forced, non_fever_great_to_fill)
+            fp = self.get_fill_penalty(forced, raw_fever_fill, bool(section == 0))
             fill_penalty_score += fp * combo_val
             
             # Score penalty for each forced great
@@ -443,13 +456,13 @@ def test_fill_penalty():
     
     # Test at various FF stats
     for ff_stat in [0, 80, 160]:
-        _, _, nfgtf = scorer.get_fever_params(80, ff_stat)
-        print(f"\nFF stat {ff_stat}: non_fever_great_to_fill = {nfgtf}")
+        _, _, _, raw_fever_fill = scorer.get_fever_params(80, ff_stat)
+        print(f"\nFF stat {ff_stat}: raw_fever_fill = {raw_fever_fill}")
         
         for fc in [0, 1, 5, 10, 20]:
-            fp = scorer.get_fill_penalty(fc, nfgtf)
-            expected = ceil(fc / nfgtf) if fc > 0 else 0
-            status = "✓" if fp == expected else "✗"
+            fp = scorer.get_fill_penalty(fc, raw_fever_fill, False)
+            expected = ceil(raw_fever_fill + fc * 0.5) - ceil(raw_fever_fill)
+            status = "PASS" if fp == expected else "FAIL"
             print(f"  forced_count={fc}: fill_penalty={fp} (expected {expected}) {status}")
 
 
@@ -465,7 +478,7 @@ def test_binary_search():
         idx = scorer.binary_search_left(t)
         # Compare with numpy's searchsorted (side='left')
         expected = np.searchsorted(scorer.timestamps, t, side='left')
-        status = "✓" if idx == expected else "✗"
+        status = "PASS" if idx == expected else "FAIL"
         print(f"  target={t:.2f}: idx={idx} (expected {expected}) {status}")
 
 
@@ -533,7 +546,7 @@ def test_body_scoring():
     fever_val = int(floor(base_value * combo_mul * fever_mul))
     expected = 100 * fever_val + 100 * combo_val
     
-    status = "✓" if score == expected else "✗"
+    status = "PASS" if score == expected else "FAIL"
     print(f"  100 fever + 100 normal: {score} (expected {expected}) {status}")
 
 
@@ -559,9 +572,9 @@ def test_forced_greats_timeline():
     
     # More forced greats should delay fever -> more body_normal
     if bn5 >= bn0 and bn10 >= bn5:
-        print("  ✓ Forced greats correctly delay fever")
+        print("  PASS Forced greats correctly delay fever")
     else:
-        print("  ✗ Unexpected body_normal pattern")
+        print("  FAIL Unexpected body_normal pattern")
 
 
 def test_full_evaluation():
