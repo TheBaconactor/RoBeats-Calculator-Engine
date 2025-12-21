@@ -172,48 +172,7 @@ def _print_gem_allocation(data):
 def _print_detailed_debug(found_song_name, entry, ref_arrays, calc_song, cfg):
     """Print detailed debug output for a specific variant entry."""
     variant_data = entry.get("data", {})
-    stats = variant_data.get("Stats", {})
-    gem_counts = variant_data.get("GemCounts", {})
     
-    # Buff info
-    if cfg and cfg.has_section("TeamContributionBuffConstant"):
-        team_buff = cfg.get("TeamContributionBuffConstant", "TeamBuff", fallback="").strip().upper()
-        team_color = cfg.get("TeamContributionBuffConstant", "TeamColor", fallback="").strip().capitalize()
-        
-        buff_tiers = {
-            "T1": {"PP": 25, "Elem": 35},
-            "T5": {"PP": 25, "Elem": 30},
-            "T10": {"PP": 20, "Elem": 25},
-            "T15": {"PP": 15, "Elem": 20},
-        }
-        
-        if team_buff in buff_tiers:
-            b_data = buff_tiers[team_buff]
-            print(f"\nApplied {team_buff} Buff: +{b_data['PP']} PP, +{b_data['Elem']} {team_color}")
-    
-    # Elemental points summary
-    elements = ["Chill", "Flow", "Rush", "Beat", "Vibe"]
-    print("\n[Elemental Points (Includes Gems & Buffs)]")
-    for el in elements:
-        print(f"{el} = {int(stats.get(el, 0))}")
-
-    # Raw stats summary
-    print("\n[RawStats (Gears + Minis + Gems + Buffs)]")
-    raw_params = [
-        ("Perfect Points", "perfect_points"),
-        ("Combo Multiplier", "combo_multiplier"),
-        ("Fever Multiplier", "fever_multiplier"),
-        ("Fever Fill Rate", "fever_fill"),
-        ("Fever Time", "fever_time"),
-    ]
-    for stat_key, label in raw_params:
-        val = stats.get(stat_key, 0)
-        idx = 0
-        for i in range(161):
-            if abs(lookup_reference_py(i, ref_arrays[stat_key], TOTAL_ROWS) - val) < 0.0001:
-                idx = i
-                break
-        print(f"{label} = {val} (Index: {idx})")
-
     final_score = variant_data.get("fg_score") or variant_data.get("Score", 0)
     print(f"\nTotal Score: {int(final_score)}")
+

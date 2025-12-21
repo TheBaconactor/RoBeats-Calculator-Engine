@@ -217,22 +217,15 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, ff_b
                     max_fp = fp_cap
             section_breakpoints.append(list(range(0, max_fp + 1)))
     
-    # Only log once per unique configuration
-    max_values = [max(bp) if bp else 0 for bp in section_breakpoints]
-    log_key = (actual_sections, num_sections, tuple(max_values))
-    if not hasattr(collect_analytical_breakpoints, '_logged'):
-        collect_analytical_breakpoints._logged = set()
+    # Always log breakpoint info
+    total_configs = 1
+    for bp in section_breakpoints:
+        total_configs *= len(bp)
     
-    if log_key not in collect_analytical_breakpoints._logged:
-        collect_analytical_breakpoints._logged.add(log_key)
-        total_configs = 1
-        for bp in section_breakpoints:
-            total_configs *= len(bp)
-        
-        # Show all breakpoints per section
-        print(f"[FG] Breakpoints (FP targets): {actual_sections} sections, {total_configs} configs")
-        for i, bp in enumerate(section_breakpoints):
-            print(f"     Section {i+1}: {bp}")
+    # Show all breakpoints per section
+    print(f"[FG] Breakpoints (FP targets): {actual_sections} sections, {total_configs} configs")
+    for i, bp in enumerate(section_breakpoints):
+        print(f"     Section {i+1}: {bp}")
     
     return list(itertools.product(*section_breakpoints))
 

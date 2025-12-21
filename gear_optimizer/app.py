@@ -462,14 +462,17 @@ class GearOptimizerApp:
             memory_resume_tracker.finalize(memory_release_requested())
 
     def _run_sequential(self, tasks, completed_songs, memory_resume_tracker):
-        """Sequential song processing with async preloading.
+        """Sequential song processing with async preloading and GPU look-ahead prefetch.
         
-        While GPU processes current song, next song is being preloaded in background.
+        While GPU processes current song, next songs are being:
+        1. CPU preloaded (file I/O, parsing) in background thread
+        2. GPU prefetched (timeline kernel) for slots 1-5
         """
         completed_offset = len(completed_songs)
         
         # Check if GPU preloading should be used
         use_gpu_preload = len(tasks) > 1
+        preloader = None
         
         if use_gpu_preload:
             try:
@@ -492,13 +495,17 @@ class GearOptimizerApp:
             
             # GPU prefetch manager for ahead-of-time timeline computation
             _gpu_prefetch_mgr = None
-            _prefetched_songs = {}  # Cache: song_name -> PreloadedSong with gpu_slot
+            gpu_prefetch_enabled = False
             if use_gpu_preload:
                 try:
                     from gear_optimizer.solver.taichi_gem.api.gpu_prefetch import get_gpu_prefetch_manager
                     _gpu_prefetch_mgr = get_gpu_prefetch_manager()
+                    gpu_prefetch_enabled = True
                 except Exception:
                     pass
+            
+            # Track which songs we've GPU-prefetched
+            gpu_prefetched_set = set()
             
             for i, t in enumerate(task_list):
                 if t[1] in completed_songs:
@@ -513,32 +520,51 @@ class GearOptimizerApp:
                         self._queue_song_for_preload(preloader, next_task)
                     preload_idx += 1
                 
-                # Ahead-of-time GPU prefetch: drain preloader queue and prefetch timelines
-                # These songs will be cached by GPUPrefetchManager for later retrieval
-                if _gpu_prefetch_mgr is not None:
+                # LOOK-AHEAD GPU PREFETCH: Prefetch timelines for next 3-4 songs
+                # This happens BEFORE processing the current song, so by the time
+                # we get to those songs, their timelines are already on GPU.
+                if gpu_prefetch_enabled and _gpu_prefetch_mgr is not None:
+                    # Drain all ready preloaded songs and prefetch their GPU timelines
                     try:
-                        # Drain all ready preloaded songs and prefetch their timelines
-                        while True:
+                        drained_count = 0
+                        while drained_count < 5:  # Don't drain too many at once
                             preloaded = preloader.get_if_ready()
                             if preloaded is None:
                                 break
+                            
                             if preloaded.calc_song and not preloaded.error:
-                                # Prefetch to a slot
-                                slot = _gpu_prefetch_mgr.prefetch(
-                                    preloaded.calc_song,
-                                    preloaded.ref_arrays
-                                )
-                                if slot is not None:
-                                    preloaded.gpu_slot = slot
-                                # Store in our local cache for when this song is processed
-                                _prefetched_songs[preloaded.song_name] = preloaded
+                                if preloaded.song_name not in gpu_prefetched_set:
+                                    slot = _gpu_prefetch_mgr.prefetch(
+                                        preloaded.calc_song,
+                                        preloaded.ref_arrays
+                                    )
+                                    if slot is not None:
+                                        gpu_prefetched_set.add(preloaded.song_name)
+                                        drained_count += 1
                     except Exception:
                         pass
+                    
+                    # Log prefetch stats periodically
+                    if i > 0 and i % 10 == 0:
+                        stats = _gpu_prefetch_mgr.stats()
+                        if stats["prefetch_count"] > 0:
+                            print(f"[GPU Prefetch] Songs prefetched: {stats['prefetch_count']}, "
+                                  f"cache hits: {stats['cache_hits']}, "
+                                  f"avg time: {stats['avg_prefetch_ms']:.1f}ms")
                 
                 try:
                     yield safe_process_song_task(t)
                 except Exception as seq_err:
                     yield {"_error": str(seq_err), "_error_type": type(seq_err).__name__, "_song_name": t[1]}
+                
+                # After processing, release the slot for this song to free it for reuse
+                if gpu_prefetch_enabled and _gpu_prefetch_mgr is not None and song_name in gpu_prefetched_set:
+                    try:
+                        # Find and release the slot for this song
+                        # The manager keeps track of song_key -> slot mapping internally
+                        pass  # Release happens in song_processor.py after GA completes
+                    except Exception:
+                        pass
 
         self._consume_results(
             _safe_sequential_gen(tasks),

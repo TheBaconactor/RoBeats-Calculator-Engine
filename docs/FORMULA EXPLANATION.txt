@@ -4,6 +4,8 @@ Well, 0.333 is base 0 stat for the in-game value, but this base unit, we then co
 Such that:
 =1/((Total Notes - Long Notes)*0.333) is OUR fill contribution per hit, where each hit >= 1. fever activates.
 
+(in the game source code, hit object count is often referred as: Total Notes - Long Notes)
+
 0.333 is the base fever fill stat in the game itself. We then apply 0.333*Gear_FeverFill
 Where Gear FeverFill is our Fever Fill Raw Stat (e.g 0.45241095)
 

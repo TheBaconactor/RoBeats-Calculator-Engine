@@ -102,6 +102,7 @@ def batch_evaluate_genomes(
     ref_arrays: dict,
     genome_key_fn=None,
     evaluation_cache: dict = None,
+    registry=None,
 ) -> list:
     """
     Evaluate entire population in a SINGLE GPU kernel launch.
@@ -121,6 +122,9 @@ def batch_evaluate_genomes(
         ref_arrays: Reference lookup arrays
         genome_key_fn: Optional function to generate genome keys for caching
         evaluation_cache: Optional cache dict to use
+        registry: Optional ItemRegistry for GPU-resident stat aggregation path.
+                  If provided, uses solve_genomes_from_registry() which eliminates
+                  the genome_base_stats upload by aggregating on GPU.
 
     Returns:
         list: Evaluation results in same order as population
@@ -293,6 +297,7 @@ def batch_evaluate_genomes(
                 # IPC route to GPU executor (parallel song processing).
                 # Pass lightweight `calc_song` dict to avoid pickling a full
                 # SongTimelineGrid across IPC (can trigger WinError 1450).
+                # Note: Registry path not available over IPC (can't pickle registry)
                 gpu_results = submit_gpu_solve_genomes(
                     genome_stats_list,
                     calc_song,
@@ -303,6 +308,67 @@ def batch_evaluate_genomes(
                     total_budget=TOTAL_GEM_BUDGET,
                     gem_scale_fever=GEM_SCALE_FEVER,
                 )
+            elif registry is not None:
+                # V3: GPU-RESIDENT AGGREGATION PATH
+                # Uses registry encoding + GPU-side stat aggregation to eliminate
+                # the genome_base_stats upload (56KB savings per call).
+                from ..taichi_gem.api import (
+                    solve_genomes_from_registry,
+                    ga_upload_item_stats,
+                    ga_upload_base_fixed_stats,
+                )
+                
+                # Build representative genome list for unique stat signatures
+                # unique_members[i][0] = first genome index with this signature
+                representative_genomes = [
+                    uncached_genomes[unique_members[unique_idx][0]]
+                    for unique_idx in range(len(unique_stats))
+                ]
+                
+                # Encode representatives using registry
+                population_indices = registry.encode_population(representative_genomes)
+                
+                # Ensure item_stats and base_fixed_stats are uploaded (cached)
+                gpu_arrays = registry.to_gpu_arrays()
+                ga_upload_item_stats(
+                    gpu_arrays["item_stats"],
+                    gpu_arrays["slot_start"],
+                    gpu_arrays["slot_count"],
+                )
+                
+                # Build base_fixed_stats with user gem adjustments
+                base_stats_arr = np.array([
+                    base_stats_fixed.get("Perfect Points", 0) - user_pp * GEM_SCALE_NORMAL,
+                    base_stats_fixed.get("Combo Multiplier", 0) - user_cm * GEM_SCALE_NORMAL,
+                    base_stats_fixed.get("Fever Multiplier", 0) - user_fm * GEM_SCALE_FEVER,
+                    base_stats_fixed.get("Fever Time", 0) - user_ft * GEM_SCALE_FEVER,
+                    base_stats_fixed.get("Fever Fill Rate", 0) - user_ff * GEM_SCALE_FEVER,
+                    base_stats_fixed.get("Beat", 0) - user_ft * GEM_STAT_TO_ELEMENT_SCALE,
+                    base_stats_fixed.get("Vibe", 0) - user_ff * GEM_STAT_TO_ELEMENT_SCALE,
+                    base_stats_fixed.get("Rush", 0) - user_fm * GEM_STAT_TO_ELEMENT_SCALE,
+                    base_stats_fixed.get("Flow", 0) - user_cm * GEM_STAT_TO_ELEMENT_SCALE,
+                    base_stats_fixed.get("Chill", 0) - user_pp * GEM_STAT_TO_ELEMENT_SCALE,
+                ], dtype=np.int32)
+                
+                if static_elem_input and sel_color:
+                    color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
+                    idx = color_to_idx.get(sel_color)
+                    if idx is not None:
+                        base_stats_arr[idx] -= static_elem_input * ELEMENTAL_GEM_SCALE
+                
+                ga_upload_base_fixed_stats(base_stats_arr)
+                
+                with _GPU_LOCK:
+                    gpu_results = solve_genomes_from_registry(
+                        population_indices,
+                        grid,
+                        is_p_ft, is_s_ft, is_p_ff, is_s_ff,
+                        is_p_pp, is_s_pp, is_p_cm, is_s_cm,
+                        is_p_fm, is_s_fm, is_p_ov, is_s_ov,
+                        ref_arrays,
+                        total_budget=TOTAL_GEM_BUDGET,
+                        gem_scale_fever=GEM_SCALE_FEVER,
+                    )
             else:
                 # Direct GPU call (sequential mode or main process)
                 with _GPU_LOCK:

@@ -28,6 +28,12 @@ from .initialization import (
     _ensure_parallel_staging,
 )
 from .timeline import precompute_timeline_gpu, _upload_timeline_grid
+from .ga_operations import (
+    ga_upload_population_indices,
+    ga_upload_item_stats,
+    ga_upload_base_fixed_stats,
+    ga_aggregate_stats,
+)
 
 _profiler = get_gpu_profiler()
 
@@ -368,6 +374,119 @@ def solve_genomes_parallel(
             int(row[4]), # cm
             int(row[5]), # fm
             int(row[6]), # ov
+        ))
+    
+    return results
+
+
+def solve_genomes_from_registry(
+    population_indices: np.ndarray,
+    timeline_grid,
+    is_p_ft: int, is_s_ft: int,
+    is_p_ff: int, is_s_ff: int,
+    is_p_pp: int, is_s_pp: int,
+    is_p_cm: int, is_s_cm: int,
+    is_p_fm: int, is_s_fm: int,
+    is_p_ov: int, is_s_ov: int,
+    ref_arrays: dict,
+    total_budget: int = 90,
+    gem_scale_fever: int = 3,
+    song_slot: int = 0,
+) -> list:
+    """
+    V3: GPU-RESIDENT stat aggregation path.
+    
+    Uses GPU-side stat aggregation instead of CPU-side, eliminating the 
+    56KB genome_base_stats upload per call.
+    
+    PREREQUISITES (must be called before this function):
+    - ga_upload_item_stats() with registry.to_gpu_arrays()
+    - ga_upload_base_fixed_stats() with base stats array
+    
+    This function:
+    1. Uploads population_indices (once per call)
+    2. Calls ga_aggregate_stats() kernel to compute genome_base_stats on GPU
+    3. Runs the standard evaluation kernel
+    
+    Args:
+        population_indices: (n_genomes, 9) int32 - encoded genome IDs from ItemRegistry
+        timeline_grid: SongTimelineGrid or calc_song dict
+        is_*: Color contribution flags (0/1)
+        ref_arrays: Reference lookup arrays
+        total_budget: Gem budget (default 90)
+        gem_scale_fever: Stats per fever gem (default 3)
+        song_slot: Grid slot for batch coalescing (0-7, default 0)
+        
+    Returns:
+        List of (score, ft, ff, pp, cm, fm, ov) tuples per genome
+    """
+    ensure_ready(ref_arrays, need_grid=True)
+    
+    # Upload timeline grid if needed
+    if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
+        precompute_timeline_gpu(timeline_grid, ref_arrays, song_slot=song_slot)
+    else:
+        if int(song_slot) != 0:
+            raise ValueError("SongTimelineGrid upload supports song_slot=0 only")
+        _upload_timeline_grid(timeline_grid)
+    
+    # Upload per-slot flags
+    _upload_song_flags({
+        int(song_slot): (
+            int(is_p_ft), int(is_s_ft), int(is_p_ff), int(is_s_ff),
+            int(is_p_pp), int(is_s_pp), int(is_p_cm), int(is_s_cm),
+            int(is_p_fm), int(is_s_fm), int(is_p_ov), int(is_s_ov),
+        )
+    })
+    
+    n_genomes = population_indices.shape[0]
+    if n_genomes == 0:
+        return []
+    
+    if n_genomes > MAX_GENOMES:
+        raise ValueError(f"Too many genomes: {n_genomes} > {MAX_GENOMES}")
+    
+    # Upload population indices (only ~150KB vs building/uploading genome_stats)
+    ga_upload_population_indices(population_indices, n_slots=9)
+    
+    # GPU-SIDE AGGREGATION: compute genome_base_stats on GPU from item_stats + population_indices
+    # This is the key optimization - no genome_base_stats upload needed!
+    ga_aggregate_stats(
+        n_genomes,
+        n_slots=9,
+        is_p_ft=is_p_ft, is_s_ft=is_s_ft,
+        is_p_ff=is_p_ff, is_s_ff=is_s_ff,
+        is_p_pp=is_p_pp, is_s_pp=is_s_pp,
+        is_p_cm=is_p_cm, is_s_cm=is_s_cm,
+        is_p_fm=is_p_fm, is_s_fm=is_s_fm,
+        is_p_ov=is_p_ov, is_s_ov=is_s_ov,
+    )
+    
+    # Now genome_base_stats is populated on GPU - run standard evaluation
+    kernels.solve_genomes_with_ftff_kernel(
+        n_genomes,
+        total_budget,
+        gem_scale_fever,
+        is_p_ft, is_s_ft, is_p_ff, is_s_ff,
+        is_p_pp, is_s_pp, is_p_cm, is_s_cm,
+        is_p_fm, is_s_fm, is_p_ov, is_s_ov,
+        song_slot,
+    )
+    
+    # Download results
+    results_np = fields.genome_result_stats.to_numpy()[:n_genomes]
+    
+    results = []
+    for i in range(n_genomes):
+        row = results_np[i]
+        results.append((
+            int(row[0]),  # score
+            int(row[1]),  # ft
+            int(row[2]),  # ff
+            int(row[3]),  # pp
+            int(row[4]),  # cm
+            int(row[5]),  # fm
+            int(row[6]),  # ov
         ))
     
     return results

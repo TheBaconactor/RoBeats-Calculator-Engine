@@ -115,6 +115,12 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
     except Exception:
         pass
 
+    try:
+        from .ga_operations import reset_ga_upload_caches as _reset_ga_caches
+        _reset_ga_caches()
+    except Exception:
+        pass
+
 
 def _ensure_song_flags_host():
     global _SONG_FLAGS_HOST

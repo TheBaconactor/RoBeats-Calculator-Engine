@@ -30,6 +30,39 @@ kernels = get_kernels()
 
 
 # ============================================================================
+# UPLOAD CACHES (avoid redundant uploads over eGPU/Thunderbolt)
+# ============================================================================
+# Cache item_stats, slot_start, slot_count to avoid re-uploading ~2.6MB per song
+# Cache base_fixed_stats (tiny but frequently called)
+
+import hashlib
+
+def _compute_array_sig(*arrays: np.ndarray) -> bytes:
+    """Compute stable hash signature for numpy arrays."""
+    h = hashlib.blake2b(digest_size=16)
+    for arr in arrays:
+        arr = np.ascontiguousarray(arr)
+        h.update(arr.dtype.str.encode("utf-8"))
+        h.update(np.array(arr.shape, dtype=np.int64).tobytes())
+        h.update(arr.tobytes())
+    return h.digest()
+
+
+# Cache state for item_stats + slot boundaries
+_ITEM_STATS_CACHE: dict = {"sig": None}
+
+# Cache state for base_fixed_stats (simple tuple comparison)
+_BASE_FIXED_STATS_CACHE: tuple | None = None
+
+
+def reset_ga_upload_caches() -> None:
+    """Reset upload caches after ti.reset() or when switching songs."""
+    global _ITEM_STATS_CACHE, _BASE_FIXED_STATS_CACHE
+    _ITEM_STATS_CACHE = {"sig": None}
+    _BASE_FIXED_STATS_CACHE = None
+
+
+# ============================================================================
 # GPU-NATIVE GA OPERATORS (UNUSED - Future infrastructure)
 # ============================================================================
 # These functions implement GPU-side GA operators (selection, crossover, mutation)
@@ -74,19 +107,32 @@ def ga_upload_item_stats(
     """
     Upload item stats and slot pool boundaries for GPU-native GA.
     
+    Caches uploads to avoid redundant transfers over Thunderbolt/eGPU.
+    
     Args:
         item_stats_np: (n_items, 10) int32 - per-item stats
         slot_start_np: (9,) int32 - first item_id per slot
         slot_count_np: (9,) int32 - count of items per slot
         
     Returns:
-        Number of items uploaded
+        Number of items uploaded (or cached)
     """
+    global _ITEM_STATS_CACHE
+    
     ensure_ready()
     n_items = int(item_stats_np.shape[0])
     
     if n_items > fields.MAX_ITEMS:
         raise ValueError(f"Too many items: {n_items} > {fields.MAX_ITEMS}")
+    
+    # Check cache - avoid redundant uploads (~2.6MB savings)
+    sig = _compute_array_sig(
+        np.asarray(item_stats_np[:n_items, :fields.ITEM_STAT_DIM], dtype=np.int32),
+        np.asarray(slot_start_np, dtype=np.int32),
+        np.asarray(slot_count_np, dtype=np.int32),
+    )
+    if _ITEM_STATS_CACHE.get("sig") == sig:
+        return n_items  # Already uploaded
     
     # Upload item stats (padded to MAX_ITEMS)
     stats_buf = np.zeros((fields.MAX_ITEMS, fields.ITEM_STAT_DIM), dtype=np.int32)
@@ -101,6 +147,7 @@ def ga_upload_item_stats(
     fields.slot_start.from_numpy(start_buf)
     fields.slot_count.from_numpy(count_buf)
     
+    _ITEM_STATS_CACHE["sig"] = sig
     return n_items
 
 
@@ -108,13 +155,24 @@ def ga_upload_base_fixed_stats(base_stats_np: np.ndarray) -> None:
     """
     Upload fixed base stats (added to all genomes during aggregation).
     
+    Caches uploads to avoid redundant transfers.
+    
     Args:
         base_stats_np: (10,) int32 - base stats [PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill]
     """
+    global _BASE_FIXED_STATS_CACHE
+    
+    # Fast tuple comparison for small array
+    key = tuple(int(x) for x in base_stats_np[:fields.ITEM_STAT_DIM])
+    if _BASE_FIXED_STATS_CACHE == key:
+        return  # Already uploaded
+    
     ensure_ready()
     buf = np.zeros(fields.ITEM_STAT_DIM, dtype=np.int32)
     buf[:len(base_stats_np)] = np.asarray(base_stats_np, dtype=np.int32)
     fields.base_fixed_stats.from_numpy(buf)
+    
+    _BASE_FIXED_STATS_CACHE = key
 
 
 def ga_aggregate_stats(

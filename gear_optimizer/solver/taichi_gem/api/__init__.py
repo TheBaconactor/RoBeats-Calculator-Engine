@@ -61,6 +61,7 @@ try:
         solve_genomes_with_ftff,
         solve_genomes_parallel,
         solve_genomes_parallel_merged,
+        solve_genomes_from_registry,
     )
 except ImportError:
     pass
@@ -125,6 +126,7 @@ __all__ = [
     "solve_genomes_with_ftff",
     "solve_genomes_parallel",
     "solve_genomes_parallel_merged",
+    "solve_genomes_from_registry",
     # GA operations
     "ga_upload_population_indices",
     "ga_seed_rng",
