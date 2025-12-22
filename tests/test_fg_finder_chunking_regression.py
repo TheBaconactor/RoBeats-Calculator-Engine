@@ -78,6 +78,7 @@ def test_solve_force_greats_finder_gpu_cfg_chunk_invariant():
     res_small = solve_force_greats_finder_gpu(
         genome_stats_list,
         timestamps,
+        None,  # great_candidate_timestamps_np (optional)
         long_notes,
         last_note_time,
         fg_configs,
@@ -92,6 +93,7 @@ def test_solve_force_greats_finder_gpu_cfg_chunk_invariant():
     res_large = solve_force_greats_finder_gpu(
         genome_stats_list,
         timestamps,
+        None,  # great_candidate_timestamps_np (optional)
         long_notes,
         last_note_time,
         fg_configs,

@@ -48,6 +48,7 @@ FG_TIMELINE_CACHE = LRUCache(maxsize=1000)
 
 def _compute_force_greats_timeline(
     timestamps,
+    great_candidate_timestamps,
     total_notes,
     fever_fill_rate,
     fever_time_stat,
@@ -57,6 +58,7 @@ def _compute_force_greats_timeline(
     *,
     clamp_base_notes_nonnegative,
     clamp_forced_to_section_notes,
+    use_forced_great_timing,
 ):
     """
     Compute fever timeline with force greats applied.
@@ -98,6 +100,7 @@ def _compute_force_greats_timeline(
         section_count,
     ) = calculate_force_greats_timeline_indices(
         timestamps,
+        great_candidate_timestamps,
         total_notes,
         fever_fill_rate,
         fever_time_stat,
@@ -107,6 +110,7 @@ def _compute_force_greats_timeline(
         int(forced_arr.shape[0]),
         bool(clamp_base_notes_nonnegative),
         bool(clamp_forced_to_section_notes),
+        bool(use_forced_great_timing),
         fever_mask_buffer,
         section_start,
         section_forced,
@@ -148,14 +152,19 @@ def evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=None):
     if not stats or not calc_song:
         return None
 
-    timestamps = calc_song["song_data"]["timestamps"]
+    song_data = calc_song.get("song_data", {}) or {}
+    timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
+    great_candidates = song_data.get("fg_great_candidate_timestamps", timestamps)
+    use_forced_great_timing = bool(song_data.get("fg_great_candidate_timestamps") is not None)
     total_notes = len(timestamps)
     if total_notes <= 0:
         return None
 
     metadata = calc_song["metadata"]
     long_notes = safe_int(metadata.get("Long Notes"), 0)
-    default_last_note = timestamps[-1] if total_notes else 0.0
+    # last_note_time is derived from chart length, not simulated hits.
+    base_ts = song_data.get("timestamps", timestamps)
+    default_last_note = base_ts[-1] if total_notes else 0.0
     last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
     primary_color = metadata.get("Primary Color", "")
     secondary_color = metadata.get("Secondary Color", "")
@@ -190,6 +199,7 @@ def evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=None):
         section_details,
     ) = _compute_force_greats_timeline(
         timestamps,
+        great_candidates,
         total_notes,
         fever_fill_rate,
         fever_time_stat,
@@ -198,6 +208,7 @@ def evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=None):
         force_counts,
         clamp_base_notes_nonnegative=True,
         clamp_forced_to_section_notes=True,
+        use_forced_great_timing=use_forced_great_timing,
     )
 
     base_score = fast_calculate_score(
@@ -218,8 +229,9 @@ def evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=None):
         total_fill_penalty += fill_penalty_score
         forced = detail["forced"]
         if forced > 0:
-            # Greats start at section's actual start_idx (skip_wasted only affects fill, not penalty)
-            start_idx = detail["start_idx"]
+            # For sections 2+, the first non-fever note is the transition note (no fill).
+            # Forced Greats should apply to fill-contributing notes, so offset by +1.
+            start_idx = detail["start_idx"] + (0 if detail.get("skip_wasted") else 1)
             score_penalty = 0
             note_idx = start_idx
             remaining = forced
@@ -289,14 +301,19 @@ def evaluate_fg_with_gem_iteration(
     if not base_stats or not calc_song:
         return None
 
-    timestamps = calc_song["song_data"]["timestamps"]
+    song_data = calc_song.get("song_data", {}) or {}
+    timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
+    great_candidates = song_data.get("fg_great_candidate_timestamps", timestamps)
+    use_forced_great_timing = bool(song_data.get("fg_great_candidate_timestamps") is not None)
     total_notes = len(timestamps)
     if total_notes <= 0:
         return None
 
     metadata = calc_song["metadata"]
     long_notes = safe_int(metadata.get("Long Notes"), 0)
-    default_last_note = timestamps[-1] if total_notes else 0.0
+    # last_note_time is derived from chart length, not simulated hits.
+    base_ts = song_data.get("timestamps", timestamps)
+    default_last_note = base_ts[-1] if total_notes else 0.0
     last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
     p_color = metadata.get("Primary Color", "")
     s_color = metadata.get("Secondary Color", "")
@@ -385,6 +402,7 @@ def evaluate_fg_with_gem_iteration(
                     section_details,
                 ) = _compute_force_greats_timeline(
                     timestamps,
+                    great_candidates,
                     total_notes,
                     fever_fill_rate,
                     fever_time_stat,
@@ -393,6 +411,7 @@ def evaluate_fg_with_gem_iteration(
                     force_counts,
                     clamp_base_notes_nonnegative=False,
                     clamp_forced_to_section_notes=False,
+                    use_forced_great_timing=use_forced_great_timing,
                 )
 
                 cached = (fever_mask_head, count_body_fever, count_body_normal, section_details)
@@ -588,8 +607,9 @@ def evaluate_fg_with_gem_iteration(
             forced = detail["forced"]
             score_p = 0
             if forced > 0:
-                # Greats start at section's actual start_idx (skip_wasted only affects fill, not penalty)
-                start_idx = detail["start_idx"]
+                # For sections 2+, the first non-fever note is the transition note (no fill).
+                # Forced Greats should apply to fill-contributing notes, so offset by +1.
+                start_idx = detail["start_idx"] + (0 if detail.get("skip_wasted") else 1)
 
                 note_idx = start_idx
                 remaining = forced
@@ -736,14 +756,18 @@ def run_force_greats_hill_climb(
         try:
             from ..taichi_gem_solver import solve_force_greats_finder_gpu
 
-            timestamps = calc_song["song_data"]["timestamps"]
+            song_data = calc_song.get("song_data", {}) or {}
+            timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
+            great_candidates = song_data.get("fg_great_candidate_timestamps")
             total_notes = len(timestamps)
             if total_notes <= 0:
                 return None
 
             meta = calc_song.get("metadata", {}) or {}
             long_notes = safe_int(meta.get("Long Notes"), 0)
-            default_last_note = timestamps[-1] if total_notes else 0.0
+            # last_note_time is derived from chart length, not simulated hits.
+            base_ts = song_data.get("timestamps", timestamps)
+            default_last_note = base_ts[-1] if total_notes else 0.0
             last_note_time = safe_float(meta.get("Last Note Time"), default_last_note)
             p_color = meta.get("Primary Color", "")
             s_color = meta.get("Secondary Color", "")
@@ -797,6 +821,7 @@ def run_force_greats_hill_climb(
             out = solve_force_greats_finder_gpu(
                 genome_stats_list,
                 timestamps,
+                great_candidates,
                 long_notes,
                 last_note_time,
                 counts_list,
@@ -942,6 +967,7 @@ def apply_force_greats_to_result(
     manual_counts=None,
     use_finder=False,
     use_gpu: bool = False,
+    search_radius=5,
 ):
     """
     Evaluate forced-great penalties (manual config or hill-climb finder) for a result dict.
@@ -974,7 +1000,7 @@ def apply_force_greats_to_result(
     manual_tuple = tuple(manual_counts) if manual_counts else ()
     if use_finder:
         # Finder depends on the FT/FF search window center and (optionally) GPU mode.
-        fg_cache_key = (sig, "finder", int(ft_gems), int(ff_gems), int(5), bool(use_gpu))
+        fg_cache_key = (sig, "finder", int(ft_gems), int(ff_gems), int(search_radius), bool(use_gpu))
     else:
         fg_cache_key = (sig, "manual", manual_tuple)
 
@@ -995,6 +1021,7 @@ def apply_force_greats_to_result(
                 selected_color=selected_color,
                 center_ft=ft_gems,
                 center_ff=ff_gems,
+                search_radius=search_radius,
                 use_gpu=use_gpu,
             )
         else:

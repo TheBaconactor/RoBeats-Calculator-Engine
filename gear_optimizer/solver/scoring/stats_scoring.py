@@ -133,14 +133,17 @@ def fg_baseline_params(stats, calc_song, ref_arrays):
     if not stats or not calc_song:
         return 0, 0
 
-    timestamps = calc_song["song_data"]["timestamps"]
+    song_data = calc_song.get("song_data", {}) or {}
+    timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
     total_notes = len(timestamps)
     if total_notes <= 0:
         return 0, 0
 
     metadata = calc_song.get("metadata", {}) or {}
     long_notes = safe_int(metadata.get("Long Notes"), 0)
-    default_last_note = timestamps[-1] if total_notes else 0.0
+    # last_note_time is derived from chart length, not simulated hits.
+    base_ts = song_data.get("timestamps", timestamps)
+    default_last_note = base_ts[-1] if total_notes else 0.0
     last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
 
     ref_ff = ref_arrays["Fever Fill Rate"]
@@ -163,10 +166,18 @@ def fg_baseline_params(stats, calc_song, ref_arrays):
 def _song_cache_key(calc_song):
     """Generate cache key for song."""
     meta = calc_song.get("metadata", {}) or {}
-    timestamps = calc_song.get("song_data", {}).get("timestamps", ())
+    song_data = calc_song.get("song_data", {}) or {}
+    timestamps = song_data.get("fg_timestamps", song_data.get("timestamps", ()))
+    n = int(len(timestamps))
+    first_ts = float(timestamps[0]) if n else 0.0
+    last_ts = float(timestamps[-1]) if n else 0.0
+    sim_seed = int(meta.get("HumanHitSimSeed", 0) or 0)
     return (
         str(meta.get("Song Name", "")),
-        int(len(timestamps)),
+        n,
+        first_ts,
+        last_ts,
         float(meta.get("Last Note Time", 0) or 0),
         int(meta.get("Long Notes", 0) or 0),
+        sim_seed,
     )

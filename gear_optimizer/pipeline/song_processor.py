@@ -129,6 +129,7 @@ def read_song_file(fp):
             "Long Notes": "",
         },
         "timestamps": [],
+        "note_types": [],
     }
     if not fp:
         return data
@@ -164,6 +165,9 @@ def read_song_file(fp):
                 nd = nd.reshape(1, -1) if nd.ndim == 1 else nd
                 if nd.shape[1] >= 4:
                     data["timestamps"] = nd[:, 0].tolist()
+                    # Column 4 is the note type: 1=normal, 2=held head, 3=held tail.
+                    # Keep as int so we can apply held-tail timing rules when needed.
+                    data["note_types"] = nd[:, 3].astype(int).tolist()
         return data
     except Exception as exc:
         WARN_ONCE.warn("song-file", f"Failed to read song file {fp}: {exc}")
@@ -261,11 +265,70 @@ def process_song_task(args):
 
         # OPTIMIZATION: store timestamps as NumPy array once per song
         song_timestamps_np = np.array(song_data["timestamps"], dtype=np.float64)
+        song_note_types_np = np.array(song_data.get("note_types") or [], dtype=np.int16)
+        if song_note_types_np.shape[0] != song_timestamps_np.shape[0]:
+            # Older song dumps may not include note types; default to "normal note".
+            song_note_types_np = np.ones(song_timestamps_np.shape[0], dtype=np.int16)
 
         calc_song = {
             "metadata": song_data["song_details"],
-            "song_data": {"timestamps": song_timestamps_np},
+            "song_data": {"timestamps": song_timestamps_np, "note_types": song_note_types_np},
         }
+
+        # ------------------------------------------------------------------
+        # Optional: Synthetic human hit-time simulation (Perfect-only).
+        # Stores an alternative timestamp sequence for ForceGreats modeling.
+        # ------------------------------------------------------------------
+        try:
+            sim_enabled = cfg.getboolean("HumanHitSim", "Enabled", fallback=False)
+        except Exception:
+            sim_enabled = False
+
+        if sim_enabled and song_timestamps_np.size:
+            from ..solver.hit_simulation import (
+                simulate_perfect_hit_timestamps_with_great_candidates,
+                stable_seed_from_text,
+            )
+
+            apply_to = cfg.get("HumanHitSim", "ApplyTo", fallback="FG").strip().upper()
+            if apply_to not in {"FG", "ALL"}:
+                apply_to = "FG"
+
+            try:
+                seed_in = int(cfg.get("HumanHitSim", "Seed", fallback="0") or "0")
+            except Exception:
+                seed_in = 0
+
+            dist = cfg.get("HumanHitSim", "Distribution", fallback="uniform").strip().lower()
+
+            # Default per-song deterministic seed when unset.
+            if seed_in == 0:
+                song_key = str(calc_song.get("metadata", {}).get("Song Name", "")) or str(found_song_name)
+                seed_in = stable_seed_from_text(song_key)
+
+            sim_ts, sim_great_candidates, sim_dbg = simulate_perfect_hit_timestamps_with_great_candidates(
+                song_timestamps_np,
+                song_note_types_np,
+                seed=seed_in,
+                distribution=dist,
+            )
+
+            # Store for downstream FG scorers; only override full timestamps when requested.
+            calc_song["song_data"]["fg_timestamps"] = np.asarray(sim_ts, dtype=np.float64)
+            calc_song["song_data"]["fg_great_candidate_timestamps"] = np.asarray(
+                sim_great_candidates, dtype=np.float64
+            )
+            calc_song["metadata"]["HumanHitSimSeed"] = int(seed_in)
+            calc_song["metadata"]["HumanHitSimDebug"] = sim_dbg
+            try:
+                print(
+                    f"[HumanHitSim] Enabled (ApplyTo={apply_to}, dist={dist}, seed={seed_in}, "
+                    f"groups={sim_dbg.get('groups')}, forced_monotonic={sim_dbg.get('forced_monotonic')})"
+                )
+            except Exception:
+                pass
+            if apply_to == "ALL":
+                calc_song["song_data"]["timestamps"] = np.asarray(sim_ts, dtype=np.float64)
         meta_primary_color = calc_song["metadata"].get("Primary Color", "")
         meta_secondary_color = calc_song["metadata"].get("Secondary Color", "")
 

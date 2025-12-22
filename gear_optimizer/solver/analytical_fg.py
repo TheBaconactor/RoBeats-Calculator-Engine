@@ -32,6 +32,7 @@ class AnalyticalFGScorer:
         last_note_time: float,
         ref_ft: np.ndarray,  # Fever Time lookup (161 values)
         ref_ff: np.ndarray,  # Fever Fill Rate lookup (161 values)
+        great_candidate_timestamps: np.ndarray | None = None,
     ):
         """
         Initialize with song data and reference arrays.
@@ -45,6 +46,10 @@ class AnalyticalFGScorer:
             ref_ff: Fever Fill Rate stat lookup array (161 values)
         """
         self.timestamps = np.array(timestamps, dtype=np.float64)
+        if great_candidate_timestamps is None:
+            self.great_candidate_timestamps = self.timestamps
+        else:
+            self.great_candidate_timestamps = np.array(great_candidate_timestamps, dtype=np.float64)
         self.total_notes = total_notes
         self.long_notes = long_notes
         self.last_note_time = last_note_time
@@ -278,6 +283,8 @@ class AnalyticalFGScorer:
         count_body_normal = 0
         fever_activations = 0
         
+        carry_time = 0.0
+
         while idx < self.total_notes and section < len(forced_counts) + 1:
             # Get forced count for this section (0 if beyond list)
             forced = forced_counts[section] if section < len(forced_counts) else 0
@@ -300,9 +307,20 @@ class AnalyticalFGScorer:
                 for note_idx in range(max(100, section_start), self.total_notes):
                     count_body_normal += 1
                 break
+
+            if forced > 0:
+                # Great offsets apply to fill-contributing notes. Sections 2+: +1 for transition note.
+                forced_start = section_start if section == 0 else (section_start + 1)
+                forced_end = min(idx - 1, forced_start + forced - 1)
+                if forced_end >= forced_start and forced_end < self.total_notes:
+                    cand = float(self.great_candidate_timestamps[forced_end])
+                    if cand > carry_time:
+                        carry_time = cand
             
             # Fever activates at this note
-            fever_start_time = self.timestamps[idx]
+            fever_start_time = float(self.timestamps[idx])
+            if carry_time > fever_start_time:
+                fever_start_time = carry_time
             fever_end_time = fever_start_time + fever_duration
             fever_end_idx = self.binary_search_left(fever_end_time)
             fever_activations += 1
@@ -391,8 +409,12 @@ def create_scorer_from_calc_song(calc_song: dict, ref_arrays: dict) -> Analytica
     song_data = calc_song["song_data"]
     metadata = calc_song.get("metadata", {})
     
+    timestamps = np.array(song_data.get("fg_timestamps", song_data["timestamps"]))
+    great_candidates = song_data.get("fg_great_candidate_timestamps")
+
     return AnalyticalFGScorer(
-        timestamps=np.array(song_data["timestamps"]),
+        timestamps=timestamps,
+        great_candidate_timestamps=None if great_candidates is None else np.array(great_candidates),
         total_notes=len(song_data["timestamps"]),
         long_notes=int(metadata.get("Long Notes", 0)),
         last_note_time=float(metadata.get("Last Note Time", song_data["timestamps"][-1])),

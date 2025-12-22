@@ -348,13 +348,24 @@ def process_force_greats(
             for (sel_color, n_sections, max_per_section), sig_map in groups.items():
                 _t_cfg0 = time.perf_counter() if perf else 0.0
 
-                # Evaluate the full FT/FF search space (no windowing).
-                needed_pairs = [
-                    (ft, ff)
-                    for ft in range(TOTAL_GEM_BUDGET + 1)
-                    for ff in range(TOTAL_GEM_BUDGET - ft + 1)
-                ]
-
+                # Use +-5 window around loadout centers for FT/FF search.
+                # Collect all centers from this group
+                centers = group_centers.get((sel_color, n_sections, max_per_section), set())
+                needed_pairs_set = set()
+                
+                # For each center, add all pairs within +-5 window
+                for center_ft, center_ff in centers:
+                    for ft_offset in range(-5, 6):  # -5 to +5 inclusive
+                        ft = center_ft + ft_offset
+                        if ft < 0 or ft > TOTAL_GEM_BUDGET:
+                            continue
+                        for ff_offset in range(-5, 6):
+                            ff = center_ff + ff_offset
+                            if ff < 0 or ft + ff > TOTAL_GEM_BUDGET:
+                                continue
+                            needed_pairs_set.add((ft, ff))
+                
+                needed_pairs = sorted(list(needed_pairs_set))
                 if len(needed_pairs) == 0:
                     ftff_pairs = []
                     stat_bounds = (0, 0, 0, 0) # Should not happen
@@ -480,7 +491,9 @@ def process_force_greats(
                         genome_stats_arr[i, 5] = int(bs.get("Fever Time", 0))  # ft_stat
                         genome_stats_arr[i, 6] = int(bs.get("Fever Fill Rate", 0))  # ff_stat
 
-                    timestamps = calc_song["song_data"]["timestamps"]
+                    song_data = calc_song.get("song_data", {}) or {}
+                    timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
+                    great_candidates = song_data.get("fg_great_candidate_timestamps")
                     long_notes = int(calc_song.get("metadata", {}).get("Long Notes", 0) or 0)
                     last_note_time = float(calc_song.get("metadata", {}).get("Last Note Time", 0) or 0.0)
                     if perf:
@@ -574,6 +587,7 @@ def process_force_greats(
                                 solve_force_greats_finder_gpu(
                                     genome_stats_arr,
                                     timestamps,
+                                    great_candidates,
                                     long_notes,
                                     last_note_time,
                                     counts_list,
@@ -659,6 +673,7 @@ def process_force_greats(
                                 solve_force_greats_finder_gpu(
                                     genome_stats_arr,  # numpy array instead of list[dict]
                                     timestamps,
+                                    great_candidates,
                                     long_notes,
                                     last_note_time,
                                     counts_list,
@@ -682,6 +697,7 @@ def process_force_greats(
                             gpu_results = solve_force_greats_finder_gpu(
                                 genome_stats_arr,  # numpy array instead of list[dict]
                                 timestamps,
+                                great_candidates,
                                 long_notes,
                                 last_note_time,
                                 counts_list,

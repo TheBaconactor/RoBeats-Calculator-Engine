@@ -175,7 +175,12 @@ In other words (high level):
 
 $$\text{total\_score}(C) = \text{score\_from\_timeline}(C) - \sum_{s=0}^{S}\sum_{i \in \text{forced\_great\_notes}(s)} \left(V_{perfect,i} - V_{great,i}\right)$$
 
-The optimizer finds $C^*$ that maximizes $\text{total\_score}$.
+The optimizer finds $C^*$ that maximizes $\text{total\_score}$. 
+
+Penalty placement for forced Greats
+- Section 1 (start of song): penalties start at `section_start`.
+- Section 2+ (after a fever window): penalties start at `section_start + 1` because the
+  first non-fever note is the transition note and does not contribute fill.
 
 Implementation Note
 - If you see any document claiming `fill_penalty(k) = ceil(k / non_fever_great_to_fill)`, treat it as legacy: the current solver uses `notes_to_fill(k) = ceil(raw_fill + 0.5k)` and derives FP targets from that.

@@ -34,6 +34,7 @@ FG_MAX_FLAT_WORK_ITEMS = MAX_GENOMES * FG_MAX_FTFF  # 4096 * 256 = 1M work items
 
 # Song timestamps (GPU-resident; used by FG finder kernel)
 song_timestamps: ti.Field | None = None  # (FG_MAX_SONG_NOTES,) f32
+song_timestamps_great_candidate: ti.Field | None = None  # (FG_MAX_SONG_NOTES,) f32
 
 # FG finder inputs (GPU-resident)
 # Stores fill-penalty targets (fp) per section (not raw forced counts).
@@ -108,7 +109,7 @@ def is_fields_allocated() -> bool:
 def reset_fields_state() -> None:
     """Reset module-level allocation state after `ti.reset()`."""
     global _fields_allocated
-    global song_timestamps
+    global song_timestamps, song_timestamps_great_candidate
     global fg_forced_counts, fg_pair_caps, fg_ft_list, fg_ff_list
     global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx
     global fg_best_ft, fg_best_ff, fg_best_g_pp, fg_best_g_cm, fg_best_g_fm, fg_best_g_ov
@@ -120,6 +121,7 @@ def reset_fields_state() -> None:
     global fg_flat_work_genome, fg_flat_work_ftff
 
     song_timestamps = None
+    song_timestamps_great_candidate = None
     fg_forced_counts = None
     fg_pair_caps = None
     fg_ft_list = None
@@ -180,6 +182,7 @@ def bind_fields(kernels_module) -> None:
     importing/initializing Taichi fields at module import time.
     """
     kernels_module.song_timestamps = song_timestamps
+    kernels_module.song_timestamps_great_candidate = song_timestamps_great_candidate
     kernels_module.fg_forced_counts = fg_forced_counts
     kernels_module.fg_pair_caps = fg_pair_caps
     kernels_module.fg_ft_list = fg_ft_list
@@ -229,7 +232,7 @@ def bind_fields(kernels_module) -> None:
 
 def allocate_fields() -> None:
     """Allocate ForceGreats GPU fields. Must be called after ti.init()."""
-    global song_timestamps
+    global song_timestamps, song_timestamps_great_candidate
     global fg_forced_counts, fg_pair_caps, fg_ft_list, fg_ff_list
     global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx, fg_best_ft, fg_best_ff
     global fg_best_g_pp, fg_best_g_cm, fg_best_g_fm, fg_best_g_ov
@@ -245,6 +248,7 @@ def allocate_fields() -> None:
         return
 
     song_timestamps = ti.field(dtype=ti.f32, shape=FG_MAX_SONG_NOTES)
+    song_timestamps_great_candidate = ti.field(dtype=ti.f32, shape=FG_MAX_SONG_NOTES)
 
     fg_forced_counts = ti.field(dtype=ti.i32, shape=(FG_MAX_CONFIGS, FG_MAX_SECTIONS))
     fg_pair_caps = ti.field(dtype=ti.i32, shape=(FG_MAX_STAT + 1, FG_MAX_STAT + 1, FG_MAX_SECTIONS))

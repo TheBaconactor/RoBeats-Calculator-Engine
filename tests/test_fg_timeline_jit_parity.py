@@ -186,6 +186,7 @@ def test_force_greats_timeline_jit_matches_python_for_both_semantics():
             jit_section_count,
         ) = calculate_force_greats_timeline_indices(
             timestamps,
+            timestamps,  # great_candidate_timestamps (disabled in this parity test)
             total_notes,
             fever_fill_rate,
             fever_time_stat,
@@ -195,6 +196,7 @@ def test_force_greats_timeline_jit_matches_python_for_both_semantics():
             int(forced_arr.shape[0]),
             bool(clamp_base_notes_nonnegative),
             bool(clamp_forced_to_section_notes),
+            False,  # use_forced_great_timing
             fever_mask_buffer,
             section_start,
             section_forced,

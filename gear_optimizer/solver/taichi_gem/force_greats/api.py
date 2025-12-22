@@ -55,7 +55,9 @@ _PERF_TIMING = os.environ.get("PERF_TIMING", "0") == "1"
 # ============================================================================
 
 _fg_last_song_key = None  # (n, first_ts, last_ts)
+_fg_last_great_key = None  # (n, first_ts, last_ts)
 _fg_song_upload_buf: np.ndarray | None = None
+_fg_great_upload_buf: np.ndarray | None = None
 _fg_forced_upload_buf: np.ndarray | None = None
 _fg_ftff_upload_buf: dict[str, np.ndarray] | None = None
 
@@ -74,12 +76,15 @@ _fg_pair_caps_custom_key: tuple[int, int, int, int] | None = None  # (ptr, h, w,
 
 def reset_force_greats_api_state() -> None:
     """Reset module-level upload caches after `ti.reset()`."""
-    global _fg_last_song_key, _fg_song_upload_buf, _fg_forced_upload_buf, _fg_ftff_upload_buf
+    global _fg_last_song_key, _fg_last_great_key
+    global _fg_song_upload_buf, _fg_great_upload_buf, _fg_forced_upload_buf, _fg_ftff_upload_buf
     global _fg_genome_stats_buf, _fg_flat_work_buf
     global _fg_pair_caps_state, _fg_pair_caps_default_buf, _fg_pair_caps_custom_key
 
     _fg_last_song_key = None
     _fg_song_upload_buf = None
+    _fg_last_great_key = None
+    _fg_great_upload_buf = None
     _fg_forced_upload_buf = None
     _fg_ftff_upload_buf = None
     _fg_genome_stats_buf = None
@@ -227,9 +232,54 @@ def _fg_upload_song_timestamps(timestamps_np: np.ndarray) -> int:
     return n
 
 
+def _fg_use_great_candidate_alias() -> None:
+    """
+    Alias great-candidate timestamps to the main song timestamps field.
+
+    This avoids a redundant upload when great candidates are not provided (or
+    intentionally identical to timestamps). Kernels will read the same field for
+    both `song_timestamps` and `song_timestamps_great_candidate`.
+    """
+    # Rebind kernel-side pointer (safe: Taichi reads global field reference).
+    fg_kernels.song_timestamps_great_candidate = fg_fields.song_timestamps
+
+
+def _fg_use_great_candidate_field() -> None:
+    """Use the separate great-candidate field (must have been uploaded)."""
+    fg_kernels.song_timestamps_great_candidate = fg_fields.song_timestamps_great_candidate
+
+
+def _fg_upload_great_candidate_timestamps(candidate_np: np.ndarray, n: int) -> None:
+    """Upload great-candidate timestamps to GPU (cached by (len, first, last))."""
+    global _fg_last_great_key, _fg_great_upload_buf
+
+    if n <= 0:
+        return
+    if int(len(candidate_np)) != n:
+        raise ValueError(f"great_candidate_timestamps length mismatch: {len(candidate_np)} != {n}")
+
+    key = (n, float(candidate_np[0]), float(candidate_np[-1]))
+    if _fg_last_great_key == key:
+        _fg_use_great_candidate_field()
+        return
+
+    if _fg_great_upload_buf is None:
+        _fg_great_upload_buf = np.zeros((fg_fields.FG_MAX_SONG_NOTES,), dtype=np.float32)
+
+    buf = _fg_great_upload_buf
+    buf[:n] = np.asarray(candidate_np, dtype=np.float32)
+    if n < fg_fields.FG_MAX_SONG_NOTES:
+        buf[n:] = 0.0
+
+    fg_fields.song_timestamps_great_candidate.from_numpy(buf)
+    _fg_last_great_key = key
+    _fg_use_great_candidate_field()
+
+
 def solve_force_greats_finder_gpu(
     genome_stats_list: list[dict[str, Any]] | np.ndarray,
     timestamps_np: np.ndarray,
+    great_candidate_timestamps_np: np.ndarray | None,
     long_notes: int,
     last_note_time: float,
     fg_configs: list,
@@ -305,6 +355,23 @@ def solve_force_greats_finder_gpu(
 
     timestamps_np = np.asarray(timestamps_np, dtype=np.float32)
     total_notes = _fg_upload_song_timestamps(timestamps_np)
+
+    if great_candidate_timestamps_np is None:
+        # Default: alias great candidates to the main timestamps field (no upload).
+        _fg_last_great_key = _fg_last_song_key
+        _fg_use_great_candidate_alias()
+    else:
+        great_candidate_timestamps_np = np.asarray(great_candidate_timestamps_np, dtype=np.float32)
+        # If caller passed the same array (or a view), alias and skip upload.
+        try:
+            same_buf = np.shares_memory(great_candidate_timestamps_np, timestamps_np)
+        except Exception:
+            same_buf = False
+        if same_buf:
+            _fg_last_great_key = _fg_last_song_key
+            _fg_use_great_candidate_alias()
+        else:
+            _fg_upload_great_candidate_timestamps(great_candidate_timestamps_np, total_notes)
     if total_notes <= 0:
         return []
 

@@ -19,6 +19,7 @@ from .fields import FG_MAX_SECTIONS
 # ============================================================================
 
 song_timestamps = None
+song_timestamps_great_candidate = None
 fg_forced_counts = None
 fg_pair_caps = None
 fg_ft_list = None
@@ -460,6 +461,7 @@ def fg_stage1_kernel(
 
             current_idx: ti.i32 = 0
             sec: ti.i32 = 0
+            carry_time: ti.f32 = 0.0
             while current_idx < total_notes:
                 base_notes_s: ti.i32 = non_fever_base - 1 if sec == 0 else non_fever_base
                 if base_notes_s < 0:
@@ -494,6 +496,13 @@ def fg_stage1_kernel(
                 actual_notes: ti.i32 = ti.max(0, end_normal - section_start)
                 forced_app: ti.i32 = ti.min(forced_val, actual_notes)
 
+                if forced_app > 0:
+                    forced_start: ti.i32 = section_start + (1 - ti.cast(sec == 0, ti.i32))
+                    forced_end: ti.i32 = forced_start + forced_app - 1
+                    forced_end = ti.min(forced_end, end_normal - 1)
+                    if forced_end >= forced_start and forced_end < total_notes:
+                        carry_time = ti.max(carry_time, song_timestamps_great_candidate[forced_end])
+
                 if sec < n_sections and sec < FG_MAX_SECTIONS:
                     start_idx[sec] = section_start
                     forced_applied[sec] = forced_app
@@ -505,7 +514,7 @@ def fg_stage1_kernel(
                     break
 
                 # Fever section
-                start_time: ti.f32 = song_timestamps[current_idx]
+                start_time: ti.f32 = ti.max(song_timestamps[current_idx], carry_time)
                 end_time: ti.f32 = start_time + real_fever_time
                 fever_end_idx: ti.i32 = kernels_helpers.binary_search_left_from(song_timestamps, total_notes, end_time, current_idx)
                 if fever_end_idx <= current_idx:
@@ -793,6 +802,7 @@ def fg_stage1_flat_kernel(
 
         current_idx: ti.i32 = 0
         sec: ti.i32 = 0
+        carry_time: ti.f32 = 0.0
         while current_idx < total_notes:
             base_notes_s: ti.i32 = non_fever_base - 1 if sec == 0 else non_fever_base
             if base_notes_s < 0:
@@ -827,6 +837,13 @@ def fg_stage1_flat_kernel(
             actual_notes: ti.i32 = ti.max(0, end_normal - section_start)
             forced_app: ti.i32 = ti.min(forced_val, actual_notes)
 
+            if forced_app > 0:
+                forced_start: ti.i32 = section_start + (1 - ti.cast(sec == 0, ti.i32))
+                forced_end: ti.i32 = forced_start + forced_app - 1
+                forced_end = ti.min(forced_end, end_normal - 1)
+                if forced_end >= forced_start and forced_end < total_notes:
+                    carry_time = ti.max(carry_time, song_timestamps_great_candidate[forced_end])
+
             if sec < n_sections and sec < FG_MAX_SECTIONS:
                 start_idx_vec[sec] = section_start
                 forced_applied[sec] = forced_app
@@ -838,7 +855,7 @@ def fg_stage1_flat_kernel(
                 break
 
             # Fever section
-            start_time: ti.f32 = song_timestamps[current_idx]
+            start_time: ti.f32 = ti.max(song_timestamps[current_idx], carry_time)
             end_time: ti.f32 = start_time + real_fever_time
             fever_end_idx: ti.i32 = kernels_helpers.binary_search_left_from(song_timestamps, total_notes, end_time, current_idx)
             if fever_end_idx <= current_idx:

@@ -211,6 +211,7 @@ def calculate_fever_activations_grid(
 @jit(nopython=True, cache=True)
 def calculate_force_greats_timeline_indices(
     song_timestamps,
+    great_candidate_timestamps,
     total_notes,
     fever_fill_rate,
     fever_time_stat,
@@ -220,6 +221,7 @@ def calculate_force_greats_timeline_indices(
     forced_counts_len,
     clamp_base_notes_nonnegative,
     clamp_forced_to_section_notes,
+    use_forced_great_timing,
     fever_mask_buffer,
     section_start_out,
     section_forced_out,
@@ -261,6 +263,7 @@ def calculate_force_greats_timeline_indices(
 
     current_idx = 0
     non_fever_section = 0
+    carry_time = 0.0
 
     while current_idx < total_notes and section_count < max_sections:
         non_fever_section += 1
@@ -294,6 +297,16 @@ def calculate_force_greats_timeline_indices(
         if clamp_forced_to_section_notes and forced_applied > actual_notes:
             forced_applied = actual_notes
 
+        if use_forced_great_timing and forced_applied > 0:
+            # Great offsets are applied to fill-contributing notes.
+            # Sections 2+: the transition note (no fill) is the first note in section.
+            forced_start = section_start if non_fever_section == 1 else (section_start + 1)
+            forced_end = forced_start + forced_applied - 1
+            if forced_end >= forced_start and forced_end < end_normal and forced_end < total_notes:
+                cand_t = great_candidate_timestamps[forced_end]
+                if cand_t > carry_time:
+                    carry_time = cand_t
+
         section_start_out[section_count] = section_start
         section_forced_out[section_count] = forced_applied
         section_fill_penalty_out[section_count] = fill_penalty_notes
@@ -307,6 +320,8 @@ def calculate_force_greats_timeline_indices(
             break
 
         start_time = song_timestamps[current_idx]
+        if use_forced_great_timing and carry_time > start_time:
+            start_time = carry_time
         end_time = start_time + real_fever_time
         fever_end_idx = int(np.searchsorted(song_timestamps, end_time, side="left"))
         if fever_end_idx <= current_idx:
@@ -479,6 +494,7 @@ class SongTimelineGrid:
         
         mask_result, cbf, cbn, base, sec_cnt = calculate_force_greats_timeline_indices(
             self.song_timestamps,
+            self.song_timestamps,
             self.total_notes,
             ff_factor,
             ft_factor,
@@ -488,6 +504,7 @@ class SongTimelineGrid:
             forced_len,
             True, # clamp_base_notes_nonnegative
             True, # clamp_forced_to_section_notes
+            False, # use_forced_great_timing
             self._fever_mask_buffer,
             section_start_out,
             section_forced_out,
