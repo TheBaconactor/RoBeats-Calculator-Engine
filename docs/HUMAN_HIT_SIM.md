@@ -17,6 +17,8 @@ This feature generates a deterministic, synthetic “human” hit-time stream an
 - Also builds `calc_song["song_data"]["fg_great_candidate_timestamps"]` using a **late-only Great band**
   (outside Perfect but inside Great), which the FG timeline uses as a *carry* time to model how forced-Great
   notes can delay fever start times when notes are tightly spaced.
+  - In the source `GearStats.get_note_times`, the Great window is computed as **Perfect + GreatTime** (an extension),
+    so the late-only band is `[perfect_upper+1, perfect_upper+great_extra_upper]` (and multiplied by x2 for held tails).
 
 ## Where It Applies
 

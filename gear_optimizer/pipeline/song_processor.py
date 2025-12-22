@@ -300,6 +300,7 @@ def process_song_task(args):
                 seed_in = 0
 
             dist = cfg.get("HumanHitSim", "Distribution", fallback="uniform").strip().lower()
+            great_mode = cfg.get("HumanHitSim", "GreatMode", fallback="late").strip().lower()
 
             # Default per-song deterministic seed when unset.
             if seed_in == 0:
@@ -311,6 +312,7 @@ def process_song_task(args):
                 song_note_types_np,
                 seed=seed_in,
                 distribution=dist,
+                great_mode=great_mode,
             )
 
             # Store for downstream FG scorers; only override full timestamps when requested.

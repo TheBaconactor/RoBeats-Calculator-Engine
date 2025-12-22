@@ -188,7 +188,9 @@ def simulate_perfect_hit_timestamps_with_great_candidates(
     distribution: str = "uniform",
     perfect_lower_ms: int = -20,
     perfect_upper_ms: int = 40,
-    great_upper_ms: int = 150,
+    great_lower_ms: int = -75,
+    great_extra_upper_ms: int = 150,
+    great_mode: str = "late",
     held_tail_type: int = 3,
     held_tail_time_multiplier: int = 2,
     quantize_ms: bool = True,
@@ -196,20 +198,30 @@ def simulate_perfect_hit_timestamps_with_great_candidates(
     """
     Generate:
     - Perfect event times (monotonic, chord-grouped)
-    - Great-candidate times (chart_time + sampled late-only Great offset, chord-grouped)
+    - Great-candidate times (sampled from Great window based on great_mode)
 
     "Great-candidate" is intentionally *not* monotonic by itself; monotonicity is
     handled in FG timeline simulation via a carry (prefix-max) rule:
       effective_time[i] = max(perfect_event_time[i], max(great_candidate_time[j] for forced j<=i))
 
-    Great offsets are sampled from the late-only band:
-      [perfect_upper+1, great_upper]
-    with held tails using x2 window multiplier.
+    In the game code, "GreatTime" is an *extension beyond Perfect* (see
+    `GearStats.get_note_times`), so Great's upper bound is:
+      great_upper = perfect_upper + great_extra_upper
+
+    Args:
+        great_mode: Great timing mode for forced greats simulation:
+            - "late": Late-only Great band [perfect_upper+1, great_upper] (default)
+            - "early": Early-only Great band [great_lower, perfect_lower-1]
+            - "full": Full Great window [great_lower, great_upper]
+
+    Great offsets are sampled from the configured band with held tails using x2 multiplier.
     """
     if distribution != "uniform":
         raise ValueError(f"Unsupported HumanHitSim distribution: {distribution!r}")
-    if int(great_upper_ms) < int(perfect_upper_ms):
-        raise ValueError("great_upper_ms must be >= perfect_upper_ms")
+    if great_mode not in ("early", "late", "full"):
+        raise ValueError(f"Unsupported great_mode: {great_mode!r}. Must be 'early', 'late', or 'full'")
+    if int(great_extra_upper_ms) < 0:
+        raise ValueError("great_extra_upper_ms must be >= 0")
 
     ts_sec = np.asarray(timestamps_sec, dtype=np.float64)
     n = int(ts_sec.shape[0])
@@ -236,11 +248,28 @@ def simulate_perfect_hit_timestamps_with_great_candidates(
         held_tail_time_multiplier=held_tail_time_multiplier,
     )
 
-    # Great late-only band per note (ms, with tail multiplier).
+    # Great window per note (ms, with tail multiplier) - mode-based.
     is_tail = note_types == int(held_tail_type)
     mult = np.where(is_tail, int(held_tail_time_multiplier), 1).astype(np.int16)
-    great_low_ms = (int(perfect_upper_ms) * mult + 1).astype(np.int32)
-    great_high_ms = (int(great_upper_ms) * mult).astype(np.int32)
+    
+    # Calculate Great window bounds based on mode
+    great_upper_ms = ((int(perfect_upper_ms) + int(great_extra_upper_ms)) * mult).astype(np.int32)
+    
+    if great_mode == "late":
+        # Late-only: [perfect_upper+1, great_upper]
+        great_low_ms = (int(perfect_upper_ms) * mult + 1).astype(np.int32)
+        great_high_ms = great_upper_ms
+    elif great_mode == "early":
+        # Early-only: [great_lower, perfect_lower-1]
+        great_low_ms = (int(great_lower_ms) * mult).astype(np.int32)
+        great_high_ms = (int(perfect_lower_ms) * mult - 1).astype(np.int32)
+    elif great_mode == "full":
+        # Full window: [great_lower, great_upper]
+        great_low_ms = (int(great_lower_ms) * mult).astype(np.int32)
+        great_high_ms = great_upper_ms
+    else:
+        raise ValueError(f"Invalid great_mode: {great_mode}")
+
 
     rng = np.random.default_rng(int(seed) & 0xFFFFFFFF)
 

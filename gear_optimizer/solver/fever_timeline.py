@@ -386,7 +386,17 @@ class SongTimelineGrid:
         )
         
         # Extract song data
-        self.song_timestamps = calc_song["song_data"]["timestamps"]
+        song_data = calc_song["song_data"]
+        self.song_timestamps = song_data["timestamps"]
+        
+        # Extract FG-specific timestamps when HumanHitSim is enabled
+        # These provide simulated Perfect hit times and late-only Great times
+        # Fallback to regular timestamps when HumanHitSim is disabled
+        self.fg_timestamps = song_data.get("fg_timestamps", self.song_timestamps)
+        self.fg_great_candidate_timestamps = song_data.get(
+            "fg_great_candidate_timestamps", self.song_timestamps
+        )
+        
         self.total_notes = len(self.song_timestamps)
         self.long_notes = int(calc_song["metadata"].get("Long Notes", 0))
         self.last_note_time = float(calc_song["metadata"].get("Last Note Time", 0))
@@ -493,8 +503,8 @@ class SongTimelineGrid:
         # Yes, standard python thread.
         
         mask_result, cbf, cbn, base, sec_cnt = calculate_force_greats_timeline_indices(
-            self.song_timestamps,
-            self.song_timestamps,
+            self.fg_timestamps,
+            self.fg_great_candidate_timestamps,
             self.total_notes,
             ff_factor,
             ft_factor,
