@@ -52,3 +52,6 @@ RoBeatMetaWebsite/
 
 # Local bin folder (logs, temp files, local databases)
 bin/
+
+# Generated results files
+general_meta_results.json
