@@ -278,8 +278,6 @@ def calculate_force_greats_timeline_indices(
             forced_val = non_fever_base
 
         # Use raw values and ceiling AFTER adding: ceil(raw_base + raw_penalty)
-        # For section 1, we apply -1 indexing offset OUTSIDE the ceil.
-        # raw_penalty = forced_val * 0.5
         raw_penalty = max(0.0, forced_val * 0.5)
         
         notes_to_fill = ceil(raw_fever_fill + raw_penalty)

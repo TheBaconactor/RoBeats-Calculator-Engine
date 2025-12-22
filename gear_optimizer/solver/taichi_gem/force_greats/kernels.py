@@ -429,18 +429,11 @@ def fg_stage1_kernel(
                         pair_cap_forced: ti.i32 = fg_pair_caps[ft_idx, ff_idx, sec]
                         if pair_cap_forced < 0:
                             pair_cap_forced = 0
-                        # New formula: fp_cap = ceil(raw_base + pair_cap_forced * 0.5) - ceil(raw_base)
-                        # The -1 indexing offset for section 0 (sec==0) cancels out in the delta.
+                        # Convert forced-count cap to an FP-target cap:
+                        # fp_cap = ceil(raw_fill + 0.5*cap) - ceil(raw_fill)
                         notes_with_cap = ti.ceil(non_fever_base_f + ti.cast(pair_cap_forced, ti.f32) * 0.5)
                         non_fever_base_ceiled = ti.ceil(non_fever_base_f)
-                        
-                        # Apply -1 offset outside ceil for sec 0 (for conceptual correctness, though it cancels in delta)
-                        fp_cap: ti.i32 = 0
-                        if sec == 0:
-                            fp_cap = ti.cast(notes_with_cap - 1, ti.i32) - ti.cast(non_fever_base_ceiled - 1, ti.i32)
-                        else:
-                            fp_cap = ti.cast(notes_with_cap, ti.i32) - ti.cast(non_fever_base_ceiled, ti.i32)
-                        
+                        fp_cap: ti.i32 = ti.cast(notes_with_cap, ti.i32) - ti.cast(non_fever_base_ceiled, ti.i32)
                         fp_target = ti.min(fp_target, fp_cap)
 
                 # Derive forced_val from fp_target using raw_fill-based inverse.
@@ -743,23 +736,14 @@ def fg_stage1_flat_kernel(
                     fp_target = 0
 
                 # Clamp by per-pair dynamic cap (stored as forced-count caps)
-                if sec < FG_MAX_SECTIONS:
-                    pair_cap_forced: ti.i32 = fg_pair_caps[ft_idx, ff_idx, sec]
-                    if pair_cap_forced < 0:
-                        pair_cap_forced = 0
-                    # New formula: fp_cap = ceil(raw_base + pair_cap_forced * 0.5) - ceil(raw_base)
-                    # The -1 indexing offset for section 0 (sec==0) cancels out in the delta.
-                    notes_with_cap = ti.ceil(non_fever_base_f + ti.cast(pair_cap_forced, ti.f32) * 0.5)
-                    non_fever_base_ceiled = ti.ceil(non_fever_base_f)
-                    
-                    # Apply -1 offset outside ceil for sec 0 (for conceptual correctness, though it cancels in delta)
-                    fp_cap: ti.i32 = 0
-                    if sec == 0:
-                        fp_cap = ti.cast(notes_with_cap - 1, ti.i32) - ti.cast(non_fever_base_ceiled - 1, ti.i32)
-                    else:
-                        fp_cap = ti.cast(notes_with_cap, ti.i32) - ti.cast(non_fever_base_ceiled, ti.i32)
-                    
-                    fp_target = ti.min(fp_target, fp_cap)
+                    if sec < FG_MAX_SECTIONS:
+                        pair_cap_forced: ti.i32 = fg_pair_caps[ft_idx, ff_idx, sec]
+                        if pair_cap_forced < 0:
+                            pair_cap_forced = 0
+                        notes_with_cap = ti.ceil(non_fever_base_f + ti.cast(pair_cap_forced, ti.f32) * 0.5)
+                        non_fever_base_ceiled = ti.ceil(non_fever_base_f)
+                        fp_cap: ti.i32 = ti.cast(notes_with_cap, ti.i32) - ti.cast(non_fever_base_ceiled, ti.i32)
+                        fp_target = ti.min(fp_target, fp_cap)
 
             # Derive forced_val from fp_target using raw_fill-based inverse.
             forced_val: ti.i32 = _forced_from_fp_target(

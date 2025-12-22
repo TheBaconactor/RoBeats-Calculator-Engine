@@ -10,8 +10,8 @@
 | $t_{last}$ | Last note time (song length proxy) |
 | $FT$ | Fever Time stat (0-160) |
 | $FF$ | Fever Fill Rate stat (0-160) |
-| $f_{FT}(x)$ | Fever Time lookup: stat → multiplier |
-| $f_{FF}(x)$ | Fever Fill Rate lookup: stat → multiplier |
+| $f_{FT}(x)$ | Fever Time lookup: stat -> multiplier |
+| $f_{FF}(x)$ | Fever Fill Rate lookup: stat -> multiplier |
 
 ---
 
@@ -25,15 +25,55 @@ $$\text{non\_fever\_base} = \lceil \text{non\_fever\_cas} \times f_{FF}(FF) \rce
 
 ### Fever Duration
 
-$$\text{fever\_duration} = t_{last} \times f_{FT}(FT)$$
+The game derives fever duration from a 15% base scaled by the song length, then applies the Fever Time stat multiplier:
+
+$$\text{fever\_time\_cas} = (t_{last} \times 0.15) + 0.15$$
+
+$$\text{fever\_duration} = \text{fever\_time\_cas} \times f_{FT}(FT)$$
 
 ### Fill Penalty (forced greats delay)
 
-$$\text{non\_fever\_great\_to\_fill} = \lceil \text{non\_fever\_cas} \times f_{FF}(FF) \times 2 \rceil$$
+In-game powerbar fill is continuous, and Great contributes **half** the fill of Perfect.
 
-$$\text{fill\_penalty}(k) = \left\lceil \frac{k}{\text{non\_fever\_great\_to\_fill}} \right\rceil$$
+Let:
 
-Where $k$ = number of forced greats in section.
+$$\text{raw\_fill} = \text{non\_fever\_cas} \times f_{FF}(FF)$$
+
+The number of hits required to activate fever when you force $k$ Greats (and the rest Perfects) before fever activates is:
+
+$$\text{notes\_to\_fill}(k) = \lceil \text{raw\_fill} + 0.5k \rceil$$
+
+Define the fill-penalty target (extra hits required vs all-Perfect):
+
+$$fp(k) = \lceil \text{raw\_fill} + 0.5k \rceil - \lceil \text{raw\_fill} \rceil$$
+
+Important: $\lceil a + b \rceil \neq \lceil a \rceil + \lceil b \rceil$ in general. The fractional part of `raw_fill` changes when a given number of Greats starts to increase `notes_to_fill`.
+
+#### Activation Note Inclusion (Indexing)
+
+The game scores each hit after updating powerbar state. On the server path, the order is effectively:
+
+1) apply fill/drain for the hit
+2) update the powerbar by delta time
+3) score the hit
+
+See `<redacted-place-path>`.
+
+This means the hit that crosses the fill threshold is scored as a Fever note (activation is on the note itself).
+
+However, the same ordering also creates a "transition note" after each fever window:
+- The note where fever expires is scored as non-fever,
+- but it did not contribute fill (because fill/drain was applied while still in fever).
+
+Therefore the number of non-fever scored notes before the fever window begins is section-dependent:
+
+- Section 1 (start of song): `notes_to_fill(k) - 1`
+- Section 2+ (after a fever window): `notes_to_fill(k)`
+
+Current Metafinder Status
+- The intended parity behavior includes both:
+  - activation note is Fever, and
+  - the transition-note effect after each fever window (see `docs/Implementation Records/FEVER_FIX_PLAN.md`).
 
 ---
 
@@ -46,7 +86,7 @@ $$\text{fever\_end\_time} = t_i + \text{fever\_duration}$$
 Find $j$ such that:
 $$t_j \geq \text{fever\_end\_time} \quad \text{and} \quad t_{j-1} < \text{fever\_end\_time}$$
 
-**This uses `side="left"` binary search (≥ condition)**
+**This uses `side="left"` binary search (>= condition)**
 
 ```python
 j = binary_search_left(T, fever_end_time)
@@ -59,13 +99,15 @@ j = binary_search_left(T, fever_end_time)
 ```
 idx = 0                          # Current note index
 fever_activations = 0            # Count of fever windows
+section_number = 1               # Non-fever sections are 1-indexed
 section_starts = []              # Where each non-fever section starts
 
 WHILE idx < N:
-    # Non-fever section: count notes until bar fills
+    # Non-fever section: count scored notes until fever activates
     section_start = idx
-    notes_needed = non_fever_base - 1  (first section) 
-                   OR non_fever_base   (later sections)
+    # Section 1: activation note is Fever -> advance by (notes_to_fill - 1)
+    # Section 2+: there is one transition note that does not fill -> advance by notes_to_fill
+    notes_needed = notes_to_fill(k) - 1 if section_number == 1 else notes_to_fill(k)
     
     idx += notes_needed
     
@@ -81,6 +123,7 @@ WHILE idx < N:
     section_starts.append(section_start)
     fever_activations += 1
     idx = fever_end_idx  # Jump past fever window
+    section_number += 1
 ```
 
 ---
@@ -92,15 +135,15 @@ A **breakpoint** at forced count $k$ exists if:
 $$\text{new\_section\_start}(k) \neq \text{new\_section\_start}(k-1)$$
 
 Where:
-$$\text{new\_section\_start}(k) = \text{baseline\_start} + k + \text{fill\_penalty}(k)$$
+$$\text{new\_section\_start}(k) = \text{baseline\_start} + \left(\text{notes\_to\_fill}(k) - \text{notes\_to\_fill}(0)\right)$$
 
 ### Optimization Insight
 
-Since $\text{fill\_penalty}(k)$ increases in discrete steps:
+Since $fp(k)$ increases in discrete steps:
 
-$$\text{Breakpoints} = \{0\} \cup \{k : \text{fill\_penalty}(k) \neq \text{fill\_penalty}(k-1)\}$$
+$$\text{Breakpoints} = \{0\} \cup \{k : fp(k) \neq fp(k-1)\}$$
 
-The fill penalty increases every $\text{non\_fever\_great\_to\_fill}$ forced greats.
+ForceGreatsFinder commonly enumerates breakpoint configs in **FP-target space** (per-section extra hits), then converts FP targets back into Great counts for output/scoring. That inverse depends on `raw_fill` and is documented in `docs/Implementation Records/FG_FP_TARGET_INVERSE_BUG_FIX.md`.
 
 ---
 
@@ -115,8 +158,8 @@ $$V_{great} = \left\lfloor (P_{val} \times 2 + S_{val}) \times \frac{2}{3} + 150
 ### Score Penalty per Forced Great
 $$\text{penalty} = V_{perfect} - V_{great}$$
 
-### Fill Penalty (extra perfects lost)
-$$\text{fill\_penalty\_score} = \text{fill\_penalty}(k) \times V_{perfect}$$
+### Fill Penalty
+Fill penalty is represented by the altered fever timeline (fewer Fever notes / more Normal notes). It should not be applied as an additional independent subtraction on top of the timeline-derived base score.
 
 ---
 
@@ -124,6 +167,15 @@ $$\text{fill\_penalty\_score} = \text{fill\_penalty}(k) \times V_{perfect}$$
 
 For a config $C = [c_0, c_1, ..., c_S]$ (forced greats per section):
 
-$$\text{total\_score} = \text{base\_score} - \sum_{s=0}^{S} \left( c_s \times \text{penalty}_s + \text{fill\_penalty}(c_s) \times V_{perfect} \right)$$
+1) Build the fever timeline implied by the config (via `notes_to_fill(k)` for each section).  
+2) Compute the base score for that timeline assuming Perfect hits.  
+3) Subtract Great penalties for the forced Great notes.
+
+In other words (high level):
+
+$$\text{total\_score}(C) = \text{score\_from\_timeline}(C) - \sum_{s=0}^{S}\sum_{i \in \text{forced\_great\_notes}(s)} \left(V_{perfect,i} - V_{great,i}\right)$$
 
 The optimizer finds $C^*$ that maximizes $\text{total\_score}$.
+
+Implementation Note
+- If you see any document claiming `fill_penalty(k) = ceil(k / non_fever_great_to_fill)`, treat it as legacy: the current solver uses `notes_to_fill(k) = ceil(raw_fill + 0.5k)` and derives FP targets from that.

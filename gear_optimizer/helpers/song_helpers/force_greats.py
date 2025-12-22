@@ -94,6 +94,7 @@ def process_force_greats(
                 iter_analytical_breakpoint_groups,
             )
             from ...solver.analytical_fg import create_scorer_from_calc_song
+            from ...solver.taichi_gem.force_greats import fields as fg_fields
             from ...solver.taichi_gem.force_greats.api import (
                 fg_reset_global_best,
                 fg_download_global_best,
@@ -176,6 +177,17 @@ def process_force_greats(
                 if expected_selected_element and cached_sel and cached_sel != expected_selected_element:
                     return False
                 return True
+
+            def _iter_ftff_chunks(pairs):
+                chunk_size = int(fg_fields.FG_MAX_FTFF)
+                if chunk_size <= 0:
+                    yield pairs
+                    return
+                if len(pairs) <= chunk_size:
+                    yield pairs
+                    return
+                for i in range(0, len(pairs), chunk_size):
+                    yield pairs[i:i + chunk_size]
 
             # Group work by (selected_element, n_sections, max_per_section)
             groups = {}
@@ -336,18 +348,12 @@ def process_force_greats(
             for (sel_color, n_sections, max_per_section), sig_map in groups.items():
                 _t_cfg0 = time.perf_counter() if perf else 0.0
 
-                # Build Union of FT/FF windows
-                centers = group_centers.get((sel_color, n_sections, max_per_section), [])
-                needed_pairs = set()
-                for c_ft, c_ff in centers:
-                    start_ft = max(0, c_ft - 5)
-                    end_ft = min(TOTAL_GEM_BUDGET, c_ft + 5)
-                    start_ff = max(0, c_ff - 5)
-                    end_ff = min(TOTAL_GEM_BUDGET, c_ff + 5)
-                    for ft in range(start_ft, end_ft + 1):
-                        for ff in range(start_ff, end_ff + 1):
-                            if ft + ff <= TOTAL_GEM_BUDGET:
-                                needed_pairs.add((ft, ff))
+                # Evaluate the full FT/FF search space (no windowing).
+                needed_pairs = [
+                    (ft, ff)
+                    for ft in range(TOTAL_GEM_BUDGET + 1)
+                    for ff in range(TOTAL_GEM_BUDGET - ft + 1)
+                ]
 
                 if len(needed_pairs) == 0:
                     ftff_pairs = []
@@ -375,10 +381,7 @@ def process_force_greats(
                             if bff < min_base_ff: min_base_ff = bff
                             if bff > max_base_ff: max_base_ff = bff
                     
-                    # Calculate stat bounds reachable by this group
-                    # Max gems ~10, Min gems 0.
-                    # But we specifically care about the 'needed_pairs' search window.
-                    # needed_pairs has (ft_gem, ff_gem).
+                    # Calculate stat bounds reachable by this group.
                     # MinStat = MinBase + MinGem*3
                     # MaxStat = MaxBase + MaxGem*3
                     
@@ -398,10 +401,6 @@ def process_force_greats(
                     stat_bounds = (bound_min_ft, bound_max_ft, bound_min_ff, bound_max_ff)
 
                 ftff_pairs = sorted(list(needed_pairs))
-                # Safety cap (should fit in 1024, but if not, we truncate to avoid crash)
-                if len(ftff_pairs) > 1024:
-                    print(f"[ForceGreats][GPU] Warning: FT/FF union size {len(ftff_pairs)} > 1024. Truncating.")
-                    ftff_pairs = ftff_pairs[:1024]
 
                 # Per-Group Analytic Config Collection using PURE MATH (100x faster)
                 # Create analytical scorer once per song (cached implicitly by calc_song)
@@ -571,28 +570,29 @@ def process_force_greats(
                             
                             _t_gpu0 = time.perf_counter() if perf else 0.0
                             # Use accumulate_global=True to skip download, with base_cfg_offset for global indexing
-                            solve_force_greats_finder_gpu(
-                                genome_stats_arr,
-                                timestamps,
-                                long_notes,
-                                last_note_time,
-                                counts_list,
-                                group_pairs,
-                                n_sections=n_sections,
-                                is_p_ft=is_p_ft, is_s_ft=is_s_ft,
-                                is_p_ff=is_p_ff, is_s_ff=is_s_ff,
-                                is_p_pp=is_p_pp, is_s_pp=is_s_pp,
-                                is_p_cm=is_p_cm, is_s_cm=is_s_cm,
-                                is_p_fm=is_p_fm, is_s_fm=is_s_fm,
-                                is_p_ov=is_p_ov, is_s_ov=is_s_ov,
-                                ref_arrays=ref_arrays,
-                                total_budget=TOTAL_GEM_BUDGET,
-                                gem_scale_fever=GEM_SCALE_FEVER,
-                                pair_caps_grid=pair_caps_grid,
-                                return_raw=True,
-                                accumulate_global=True,
-                                base_cfg_offset=group_cfg_offset,
-                            )
+                            for ftff_chunk in _iter_ftff_chunks(group_pairs):
+                                solve_force_greats_finder_gpu(
+                                    genome_stats_arr,
+                                    timestamps,
+                                    long_notes,
+                                    last_note_time,
+                                    counts_list,
+                                    ftff_chunk,
+                                    n_sections=n_sections,
+                                    is_p_ft=is_p_ft, is_s_ft=is_s_ft,
+                                    is_p_ff=is_p_ff, is_s_ff=is_s_ff,
+                                    is_p_pp=is_p_pp, is_s_pp=is_s_pp,
+                                    is_p_cm=is_p_cm, is_s_cm=is_s_cm,
+                                    is_p_fm=is_p_fm, is_s_fm=is_s_fm,
+                                    is_p_ov=is_p_ov, is_s_ov=is_s_ov,
+                                    ref_arrays=ref_arrays,
+                                    total_budget=TOTAL_GEM_BUDGET,
+                                    gem_scale_fever=GEM_SCALE_FEVER,
+                                    pair_caps_grid=pair_caps_grid,
+                                    return_raw=True,
+                                    accumulate_global=True,
+                                    base_cfg_offset=group_cfg_offset,
+                                )
                             if perf:
                                 t_gpu_calls_sec += time.perf_counter() - _t_gpu0
                                 n_gpu_calls += 1
@@ -653,26 +653,52 @@ def process_force_greats(
                     else:
                         _t_gpu0 = time.perf_counter() if perf else 0.0
                         # Use return_raw=True for numpy results (skip dict building in API)
-                        gpu_results = solve_force_greats_finder_gpu(
-                            genome_stats_arr,  # numpy array instead of list[dict]
-                            timestamps,
-                            long_notes,
-                            last_note_time,
-                            counts_list,
-                            ftff_pairs,
-                            n_sections=n_sections,
-                            is_p_ft=is_p_ft, is_s_ft=is_s_ft,
-                            is_p_ff=is_p_ff, is_s_ff=is_s_ff,
-                            is_p_pp=is_p_pp, is_s_pp=is_s_pp,
-                            is_p_cm=is_p_cm, is_s_cm=is_s_cm,
-                            is_p_fm=is_p_fm, is_s_fm=is_s_fm,
-                            is_p_ov=is_p_ov, is_s_ov=is_s_ov,
-                            ref_arrays=ref_arrays,
-                            total_budget=TOTAL_GEM_BUDGET,
-                            gem_scale_fever=GEM_SCALE_FEVER,
-                            pair_caps_grid=pair_caps_grid,
-                            return_raw=True,  # Return numpy arrays, not list[dict]
-                        )
+                        if len(ftff_pairs) > int(fg_fields.FG_MAX_FTFF):
+                            fg_reset_global_best(n_pending)
+                            for ftff_chunk in _iter_ftff_chunks(ftff_pairs):
+                                solve_force_greats_finder_gpu(
+                                    genome_stats_arr,  # numpy array instead of list[dict]
+                                    timestamps,
+                                    long_notes,
+                                    last_note_time,
+                                    counts_list,
+                                    ftff_chunk,
+                                    n_sections=n_sections,
+                                    is_p_ft=is_p_ft, is_s_ft=is_s_ft,
+                                    is_p_ff=is_p_ff, is_s_ff=is_s_ff,
+                                    is_p_pp=is_p_pp, is_s_pp=is_s_pp,
+                                    is_p_cm=is_p_cm, is_s_cm=is_s_cm,
+                                    is_p_fm=is_p_fm, is_s_fm=is_s_fm,
+                                    is_p_ov=is_p_ov, is_s_ov=is_s_ov,
+                                    ref_arrays=ref_arrays,
+                                    total_budget=TOTAL_GEM_BUDGET,
+                                    gem_scale_fever=GEM_SCALE_FEVER,
+                                    pair_caps_grid=pair_caps_grid,
+                                    return_raw=True,  # Return numpy arrays, not list[dict]
+                                    accumulate_global=True,
+                                )
+                            gpu_results = fg_download_global_best(n_pending)
+                        else:
+                            gpu_results = solve_force_greats_finder_gpu(
+                                genome_stats_arr,  # numpy array instead of list[dict]
+                                timestamps,
+                                long_notes,
+                                last_note_time,
+                                counts_list,
+                                ftff_pairs,
+                                n_sections=n_sections,
+                                is_p_ft=is_p_ft, is_s_ft=is_s_ft,
+                                is_p_ff=is_p_ff, is_s_ff=is_s_ff,
+                                is_p_pp=is_p_pp, is_s_pp=is_s_pp,
+                                is_p_cm=is_p_cm, is_s_cm=is_s_cm,
+                                is_p_fm=is_p_fm, is_s_fm=is_s_fm,
+                                is_p_ov=is_p_ov, is_s_ov=is_s_ov,
+                                ref_arrays=ref_arrays,
+                                total_budget=TOTAL_GEM_BUDGET,
+                                gem_scale_fever=GEM_SCALE_FEVER,
+                                pair_caps_grid=pair_caps_grid,
+                                return_raw=True,  # Return numpy arrays, not list[dict]
+                            )
                         if perf:
                             t_gpu_calls_sec += time.perf_counter() - _t_gpu0
                             n_gpu_calls += 1

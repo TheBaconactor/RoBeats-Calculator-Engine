@@ -287,7 +287,7 @@ class AnalyticalFGScorer:
             # Fill penalty: extra notes needed due to forced greats using fill bar
             # Uses ceil(raw_base + raw_penalty) - ceil(raw_base)
             fill_penalty = self.get_fill_penalty(forced, raw_fever_fill, bool(section == 0))
-            
+
             notes_needed = ceil(raw_fever_fill + forced * 0.5)
             if section == 0:
                 notes_needed -= 1

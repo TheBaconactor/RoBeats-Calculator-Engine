@@ -1,35 +1,63 @@
-You may see magic numbers like 0.333 for fever fill. What does it mean?
-Well, 0.333 is base 0 stat for the in-game value, but this base unit, we then convert to our fever fill number that the optimizer is then using.
+Fever Fill / Fever Time Formula Notes (Game-Parity)
 
-Such that:
-=1/((Total Notes - Long Notes)*0.333) is OUR fill contribution per hit, where each hit >= 1. fever activates.
+This file is a plain-English companion to:
+- `docs/FEVER_TIMELINE_MATH.md` (math spec)
+- `docs/Implementation Records/FEVER_FIX_PLAN.md` (server-parity timeline details)
 
-(in the game source code, hit object count is often referred as: Total Notes - Long Notes)
+Fever fill is based on "song key hit count"
 
-0.333 is the base fever fill stat in the game itself. We then apply 0.333*Gear_FeverFill
-Where Gear FeverFill is our Fever Fill Raw Stat (e.g 0.45241095)
+In the game source, the fill per hit is derived from the song's hit count (the number of key hits, not raw hit-objects). In our exported song data this is typically represented as:
 
-What about Fever Time?
+song_key_hit_count = Total Notes - Long Notes
 
-Fever Duration is derived as Last Note Time + 1000 ms where constant 1000 ms is 1s. You may see something like 0.15 seconds. This is because 15% * 1 seconds = 0.15. it is simply just simplified.
+Conceptually (see the legacy decompile in `OLD LEGACY SOURCE GAME CODE/.../Avatar/GearStats.lua`):
 
-15% is a fever time stat in the game itself, though we apply the same principle.
+fill_per_perfect = 1 / (song_key_hit_count * fill_base_perfect)
+fill_per_great   = 1 / (song_key_hit_count * fill_base_great)
 
-(LastNoteTime*0.15) + 0.15
+Where:
+- `fill_base_perfect` is derived from the Fever Fill Rate stat and is 0.333 at the base point on the stat curve.
+- `fill_base_great = 2 * fill_base_perfect`, so Great fills exactly half as much as Perfect.
 
-Furthermore, the Fever Draining mechanism goes like this:
+This is why "0.333" shows up: it is a key point on the Fever Fill Rate stat curve, not a magic constant.
 
-Total decay time = Sum of all (note_time[i] - note_time[i-1])
-                 = Last note time - First note time
-                 = LastNoteTime
+Why we use ceil for notes-to-fill
 
-Now you may ask. Why do we apply CEIL to fever fill?
+We often work in "perfect-note units" where:
 
-That's because in the game, fever activates on the note itself, so when we do something like:
-=1/((Total Notes - Long Notes)*(0.333*GEAR_FEVERFILL))*X, (e.g) say... 142.
-Where X is the number of times we hit.
+raw_fill = (song_key_hit_count * 0.333) * ff_factor(FF)
 
-Lets say we hit 142. It is past >=1 so fever activates. So the number is 142. the fever.
+Then the all-perfect notes required to reach or exceed the threshold is:
 
-BUT...
-Our calculator is using (Total Notes - Long Notes)*(0.333*GEAR_FEVERFILL)! It is NOT calculating fill per note! it's calculating how many notes in total to get there. This left us with 141.0110647... which is 1 left off from our actual in-game mechanic.
+notes_to_fill(0) = ceil(raw_fill)
+
+Activation is on the note itself
+
+The hit that crosses the threshold is scored as a Fever note (activation is "on the note itself"). So the number of non-fever scored notes before the first fever window is:
+
+non_fever_notes(section 1) = notes_to_fill(0) - 1
+
+The transition-note ("wasted note") effect
+
+On the server processing path, the ordering is effectively:
+1) apply fill/drain for the hit
+2) update the powerbar by delta time
+3) score the hit
+
+This creates a transition note after each fever window:
+- the note where fever expires is scored as non-fever,
+- but it did not contribute fill (because fill was applied while still in fever).
+
+As a result, the later non-fever sections use:
+
+non_fever_notes(section 2+) = notes_to_fill(0)
+
+This is the reason `FEVER_FIX_PLAN.md` and the solver use section-aware logic (section 1 uses -1, sections 2+ do not).
+
+Fever time (duration)
+
+The base fever duration scales with song length and a 15% constant:
+
+fever_time_cas = (last_note_time * 0.15) + 0.15
+
+Then the Fever Time stat applies a multiplier (see GearStats).
