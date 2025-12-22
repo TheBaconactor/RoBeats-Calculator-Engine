@@ -686,6 +686,29 @@ def fg_stage2_kernel(n_genomes: ti.i32, n_ftff: ti.i32):
 
 
 @ti.kernel
+def fg_pack_results_kernel(n_genomes: ti.i32):
+    """
+    Pack all 11 best result fields into a single contiguous array for efficient CPU download.
+    
+    This eliminates 11 separate to_numpy() calls (11 CPU waits) into 1 single download.
+    MASSIVE speedup on weak CPUs that bottleneck on GPU synchronization.
+    
+    Column order: [final_score, base_score, cfg_idx, ft, ff, g_pp, g_cm, g_fm, g_ov, score_penalty, fill_penalty]
+    """
+    for g in range(n_genomes):
+        fg_best_packed[g, 0] = fg_best_final_score[g]
+        fg_best_packed[g, 1] = fg_best_base_score[g]
+        fg_best_packed[g, 2] = fg_best_cfg_idx[g]
+        fg_best_packed[g, 3] = fg_best_ft[g]
+        fg_best_packed[g, 4] = fg_best_ff[g]
+        fg_best_packed[g, 5] = fg_best_g_pp[g]
+        fg_best_packed[g, 6] = fg_best_g_cm[g]
+        fg_best_packed[g, 7] = fg_best_g_fm[g]
+        fg_best_packed[g, 8] = fg_best_g_ov[g]
+        fg_best_packed[g, 9] = fg_best_score_penalty[g]
+        fg_best_packed[g, 10] =fg_best_fill_penalty[g]
+
+@ti.kernel
 def fg_stage1_flat_kernel(
     n_work_items: ti.i32,
     n_cfg: ti.i32,

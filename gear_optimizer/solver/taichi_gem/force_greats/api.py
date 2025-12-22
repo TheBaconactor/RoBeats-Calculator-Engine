@@ -549,18 +549,24 @@ def solve_force_greats_finder_gpu(
         t_kernel = time.perf_counter() - _t1
         _t2 = time.perf_counter()
 
-    # Download results
-    out_final = fg_fields.fg_best_final_score.to_numpy()[:n_genomes]
-    out_base = fg_fields.fg_best_base_score.to_numpy()[:n_genomes]
-    out_cfg = fg_fields.fg_best_cfg_idx.to_numpy()[:n_genomes]
-    out_ft = fg_fields.fg_best_ft.to_numpy()[:n_genomes]
-    out_ff = fg_fields.fg_best_ff.to_numpy()[:n_genomes]
-    out_gpp = fg_fields.fg_best_g_pp.to_numpy()[:n_genomes]
-    out_gcm = fg_fields.fg_best_g_cm.to_numpy()[:n_genomes]
-    out_gfm = fg_fields.fg_best_g_fm.to_numpy()[:n_genomes]
-    out_gov = fg_fields.fg_best_g_ov.to_numpy()[:n_genomes]
-    out_sp = fg_fields.fg_best_score_penalty.to_numpy()[:n_genomes]
-    out_fp = fg_fields.fg_best_fill_penalty.to_numpy()[:n_genomes]
+    # Pack results on GPU (all 11 fields → 1 array)
+    fg_kernels.fg_pack_results_kernel(n_genomes)
+    
+    # Download results (1 transfer instead of 11!)
+    packed_results = fg_fields.fg_best_packed.to_numpy()[:n_genomes, :]
+    
+    # Unpack on CPU (trivial cost compared to 11 GPU waits)
+    out_final = packed_results[:, 0]
+    out_base = packed_results[:, 1]
+    out_cfg = packed_results[:, 2]
+    out_ft = packed_results[:, 3]
+    out_ff = packed_results[:, 4]
+    out_gpp = packed_results[:, 5]
+    out_gcm = packed_results[:, 6]
+    out_gfm = packed_results[:, 7]
+    out_gov = packed_results[:, 8]
+    out_sp = packed_results[:, 9]
+    out_fp = packed_results[:, 10]
 
     # Mark end of download phase (before dict construction)
     if _perf:
