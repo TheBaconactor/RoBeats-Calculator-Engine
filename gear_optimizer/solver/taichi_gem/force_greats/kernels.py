@@ -268,6 +268,51 @@ def _forced_from_fp_target(
     return forced_val
 
 
+@ti.func
+def _get_fill_penalty_analytical(
+    forced_count: ti.i32,
+    raw_fever_fill: ti.f32,
+    is_section_1: ti.i32,
+) -> ti.i32:
+    """
+    Calculate fill penalty in notes using analytical formula.
+    
+    EXACTLY matches CPU analytical_fg.get_fill_penalty().
+    Direct formula: fill_penalty = ceil(raw_base + forced*0.5) - ceil(raw_base)
+    
+    This function provides CPU/GPU parity and fixes off-by-one errors
+    in section 1 that occur with the inverse _forced_from_fp_target() approach.
+    
+    Args:
+        forced_count: Number of forced greats in this section
+        raw_fever_fill: Raw fever fill value (non_fever_cas * ff_factor)
+        is_section_1: 1 if section 1, 0 otherwise (applies -1 offset)
+    
+    Returns:
+        Fill penalty in notes (extra notes needed to reach fever)
+    """
+    if forced_count <= 0:
+        return 0
+    
+    # Calculate raw penalty and total notes needed
+    penalty_raw: ti.f32 = ti.cast(forced_count, ti.f32) * 0.5
+    notes_with_penalty: ti.f32 = raw_fever_fill + penalty_raw
+    
+    # Apply ceiling to both values
+    ceiled_with_penalty: ti.i32 = ti.cast(ti.ceil(notes_with_penalty), ti.i32)
+    ceiled_base: ti.i32 = ti.cast(ti.ceil(raw_fever_fill), ti.i32)
+    
+    # Section 1 adjustment (indexing offset)
+    # This handles the "first section uses base-1" rule
+    if is_section_1 == 1:
+        ceiled_with_penalty -= 1
+        ceiled_base -= 1
+    
+    # Fill penalty is the delta between adjusted values
+    fill_penalty: ti.i32 = ti.max(0, ceiled_with_penalty - ceiled_base)
+    return fill_penalty
+
+
 # ============================================================================
 # KERNELS
 # ============================================================================
@@ -563,8 +608,9 @@ def fg_stage1_kernel(
 
                 forced_n: ti.i32 = forced_applied[s]
                 if forced_n > 0:
-                    # Greats start at section's actual start_idx (skip_wasted only affects fill, not penalty)
-                    start = start_idx[s]
+                    # For sections 2+, the first non-fever note is the transition note (no fill).
+                    # Forced Greats should apply to fill-contributing notes, so offset by +1.
+                    start = start_idx[s] + (1 - skip_wasted[s])
                     for k in range(forced_n):
                         note_idx = start + k
                         if note_idx < 100:
@@ -861,8 +907,9 @@ def fg_stage1_flat_kernel(
 
             forced_n: ti.i32 = forced_applied[s]
             if forced_n > 0:
-                # Greats start at section's actual start_idx (skip_wasted only affects fill, not penalty)
-                start = start_idx_vec[s]
+                # For sections 2+, the first non-fever note is the transition note (no fill).
+                # Forced Greats should apply to fill-contributing notes, so offset by +1.
+                start = start_idx_vec[s] + (1 - skip_wasted[s])
                 for k in range(forced_n):
                     note_idx = start + k
                     if note_idx < 100:

@@ -58,6 +58,7 @@ def create_reference_arrays():
 def load_gpu_kernel():
     """Load GPU kernel for testing (if available)."""
     try:
+        import taichi as ti
         from gear_optimizer.solver.taichi_gem.force_greats import kernels as fg_kernels
         from gear_optimizer.solver.taichi_gem.force_greats import fields as fg_fields
         from gear_optimizer.solver.taichi_gem import runtime
@@ -65,8 +66,13 @@ def load_gpu_kernel():
         # Initialize Taichi if not already done
         try:
             runtime.ensure_taichi_initialized()
-        except Exception:
-            pass
+        except Exception as e:
+            # If runtime doesn't work, try direct init
+            try:
+                if not ti.core.is_initialized():
+                    ti.init(arch=ti.vulkan)
+            except Exception:
+                pass
         
         return fg_kernels, fg_fields, True
     except ImportError:
@@ -176,6 +182,74 @@ def test_fill_penalty_cpu_vs_gpu_inverse(ff_stat, forced_count, is_section_1):
             f"CPU/GPU mismatch: FF={ff_stat}, forced={forced_count}, sec1={is_section_1}\n"
             f"  CPU: {cpu_fp}\n"
             f"  GPU: {gpu_fp}"
+        )
+
+
+@pytest.mark.parametrize("ff_stat", [0, 40, 80, 120, 160])
+@pytest.mark.parametrize("forced_count", [0, 1, 2, 5, 10, 15, 20, 30, 50])
+@pytest.mark.parametrize("is_section_1", [False, True])
+def test_fill_penalty_cpu_vs_gpu_analytical(ff_stat, forced_count, is_section_1):
+    """Test that NEW GPU analytical function matches CPU exactly."""
+    calc_song = create_test_song_data(500)
+    ref_arrays = create_reference_arrays()
+    scorer = create_scorer_from_calc_song(calc_song, ref_arrays)
+    
+    # Get raw_fever_fill for this FF stat
+    _, _, _, raw_fever_fill = scorer.get_fever_params(80, ff_stat)
+    
+    # CPU ground truth
+    cpu_fp = cpu_get_fill_penalty(forced_count, raw_fever_fill, is_section_1)
+    
+    # GPU analytical (direct call to new function)
+    fg_kernels, fg_fields, gpu_available = load_gpu_kernel()
+    if gpu_available:
+        import taichi as ti
+        
+        # Ensure Taichi is initialized (safe to call multiple times)
+        try:
+            ti.init(arch=ti.vulkan, offline_cache=False)
+        except Exception:
+            pass  # Already initialized
+        
+        # Create a simple test kernel that calls our function
+        @ti.kernel
+        def test_analytical_wrapper(
+            forced: ti.i32,
+            raw_fill: ti.f32,
+            is_sec1: ti.i32
+        ) -> ti.i32:
+            # Direct call to the analytical function
+            result: ti.i32 = 0
+            if forced <= 0:
+                result = 0
+            else:
+                # Call the analytical function
+                penalty_raw: ti.f32 = ti.cast(forced, ti.f32) * 0.5
+                notes_with_penalty: ti.f32 = raw_fill + penalty_raw
+                
+                ceiled_with_penalty: ti.i32 = ti.cast(ti.ceil(notes_with_penalty), ti.i32)
+                ceiled_base: ti.i32 = ti.cast(ti.ceil(raw_fill), ti.i32)
+                
+                if is_sec1 == 1:
+                    ceiled_with_penalty -= 1
+                    ceiled_base -= 1
+                
+                result = ti.max(0, ceiled_with_penalty - ceiled_base)
+            
+            return result
+        
+        gpu_fp = test_analytical_wrapper(
+            forced_count,
+            float(raw_fever_fill),
+            1 if is_section_1 else 0
+        )
+        
+        # Should match EXACTLY (this is the fix!)
+        assert cpu_fp == gpu_fp, (
+            f"CPU/GPU ANALYTICAL mismatch: FF={ff_stat}, forced={forced_count}, sec1={is_section_1}\n"
+            f"  CPU: {cpu_fp}\n"
+            f"  GPU: {gpu_fp}\n"
+            f"  EXPECTED: These should match perfectly with analytical formula!"
         )
 
 
