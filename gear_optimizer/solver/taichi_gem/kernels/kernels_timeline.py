@@ -66,11 +66,11 @@ def compute_timeline_grid_kernel(
     MAX_HEAD: ti.i32 = 100
     GRID_DIM: ti.i32 = 161
 
-    # Precompute song-invariant values
-    # Fever fill formula: non_fever_notes * 0.333 * ff_factor
-    non_fever_cas = ti.cast(total_notes - long_notes, ti.f32) * 0.333
-    # Fever time formula: song_duration * 0.15 * ft_factor + 0.15
-    fever_time_cas = last_note_time * 0.15 + 0.15
+    # Precompute song-invariant values (game formula constants from constants.py)
+    # Fever fill formula: non_fever_notes * FEVER_FILL_BASE_RATE * ff_factor
+    non_fever_cas = ti.cast(total_notes - long_notes, ti.f32) * 0.333  # constants.FEVER_FILL_BASE_RATE
+    # Fever time formula: song_duration * FEVER_TIME_SCALE * ft_factor + FEVER_TIME_OFFSET
+    fever_time_cas = last_note_time * 0.15 + 0.15  # constants.FEVER_TIME_SCALE + FEVER_TIME_OFFSET
 
     for idx in range(GRID_DIM * GRID_DIM):
         ft_idx = idx // GRID_DIM

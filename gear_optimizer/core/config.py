@@ -99,7 +99,8 @@ def load_force_greats_config(cfg):
             idx = max(0, safe_int(match.group(1)) - 1)
             val = max(0, safe_int(raw, 0))
             entries.append((idx, val))
-    except Exception:
+    except (ValueError, KeyError, AttributeError) as e:
+        logging.debug(f"[ForceGreats Config] Failed to parse ForceGreats section: {e}")
         return []
 
     if not entries:
@@ -170,9 +171,11 @@ def find_and_cache_paths():
                                 pass
                     if not targets_dirs and not targets_files:
                         break
-                except Exception:
+                except (OSError, PermissionError):
+                    # Skip files/directories we can't access
                     continue
-        except Exception:
+        except (OSError, PermissionError):
+            # Skip directories we can't scan
             continue
 
     # Save to cache
@@ -201,8 +204,8 @@ def load_paths_cache():
                 # Validate cache has essential keys
                 if all(cached.get(k) for k in ["Easy", "Normal", "Hard", "Gears", "Stats"]):
                     return cached
-        except Exception:
-            logging.debug("[Paths] Failed to load/validate paths_cache.json", exc_info=True)
+        except (OSError, json.JSONDecodeError, KeyError) as e:
+            logging.debug(f"[Paths] Failed to load/validate paths_cache.json: {e}", exc_info=True)
 
     # Cache doesn't exist or is invalid - discover paths
     print("[Paths] Discovering data file paths...")

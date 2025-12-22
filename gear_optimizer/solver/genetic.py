@@ -62,6 +62,63 @@ except ImportError:
     pass
 
 
+def _build_base_stats_array(base_stats_fixed: dict, cfg_data: dict) -> tuple:
+    """
+    Construct base stats array for GPU upload with user gem adjustments.
+
+    This helper consolidates the duplicated base stats array construction
+    logic used in both the GPU-native GA and fallback paths.
+
+    Args:
+        base_stats_fixed: Dict of fixed base stats (from config/team buffs)
+        cfg_data: Configuration dict containing user gem inputs
+
+    Returns:
+        tuple: (base_stats_arr, selected_color) where base_stats_arr is np.int32[10]
+    """
+    base_stats_arr = np.array([
+        base_stats_fixed.get("Perfect Points", 0),
+        base_stats_fixed.get("Combo Multiplier", 0),
+        base_stats_fixed.get("Fever Multiplier", 0),
+        base_stats_fixed.get("Fever Time", 0),
+        base_stats_fixed.get("Fever Fill Rate", 0),
+        base_stats_fixed.get("Beat", 0),
+        base_stats_fixed.get("Vibe", 0),
+        base_stats_fixed.get("Rush", 0),
+        base_stats_fixed.get("Flow", 0),
+        base_stats_fixed.get("Chill", 0),
+    ], dtype=np.int32)
+
+    user_pp = int(cfg_data.get("user_pp", 0))
+    user_cm = int(cfg_data.get("user_cm", 0))
+    user_fm = int(cfg_data.get("user_fm", 0))
+    user_ft = int(cfg_data.get("user_ft", 0))
+    user_ff = int(cfg_data.get("user_ff", 0))
+    static_elem_input = int(cfg_data.get("static_elem_input", 0))
+    selected_color = str(cfg_data.get("selected_color", ""))
+
+    if user_pp or user_cm or user_fm or user_ft or user_ff:
+        base_stats_arr[0] -= user_pp * GEM_SCALE_NORMAL
+        base_stats_arr[1] -= user_cm * GEM_SCALE_NORMAL
+        base_stats_arr[2] -= user_fm * GEM_SCALE_FEVER
+        base_stats_arr[3] -= user_ft * GEM_SCALE_FEVER
+        base_stats_arr[4] -= user_ff * GEM_SCALE_FEVER
+
+        base_stats_arr[9] -= user_pp * GEM_STAT_TO_ELEMENT_SCALE   # Chill
+        base_stats_arr[8] -= user_cm * GEM_STAT_TO_ELEMENT_SCALE   # Flow
+        base_stats_arr[7] -= user_fm * GEM_STAT_TO_ELEMENT_SCALE   # Rush
+        base_stats_arr[5] -= user_ft * GEM_STAT_TO_ELEMENT_SCALE   # Beat
+        base_stats_arr[6] -= user_ff * GEM_STAT_TO_ELEMENT_SCALE   # Vibe
+
+    if static_elem_input and selected_color:
+        color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
+        idx = color_to_idx.get(selected_color)
+        if idx is not None:
+            base_stats_arr[idx] -= static_elem_input * ELEMENTAL_GEM_SCALE
+
+    return base_stats_arr, selected_color
+
+
 def _run_gpu_native_ga(
     population: list,
     n_generations: int,
@@ -136,46 +193,7 @@ def _run_gpu_native_ga(
             gpu_data["slot_count"],
         )
 
-        base_stats_arr = np.array([
-            base_stats_fixed.get("Perfect Points", 0),
-            base_stats_fixed.get("Combo Multiplier", 0),
-            base_stats_fixed.get("Fever Multiplier", 0),
-            base_stats_fixed.get("Fever Time", 0),
-            base_stats_fixed.get("Fever Fill Rate", 0),
-            base_stats_fixed.get("Beat", 0),
-            base_stats_fixed.get("Vibe", 0),
-            base_stats_fixed.get("Rush", 0),
-            base_stats_fixed.get("Flow", 0),
-            base_stats_fixed.get("Chill", 0),
-        ], dtype=np.int32)
-
-        user_pp = int(cfg_data.get("user_pp", 0))
-        user_cm = int(cfg_data.get("user_cm", 0))
-        user_fm = int(cfg_data.get("user_fm", 0))
-        user_ft = int(cfg_data.get("user_ft", 0))
-        user_ff = int(cfg_data.get("user_ff", 0))
-        static_elem_input = int(cfg_data.get("static_elem_input", 0))
-        selected_color = str(cfg_data.get("selected_color", ""))
-
-        if user_pp or user_cm or user_fm or user_ft or user_ff:
-            base_stats_arr[0] -= user_pp * GEM_SCALE_NORMAL
-            base_stats_arr[1] -= user_cm * GEM_SCALE_NORMAL
-            base_stats_arr[2] -= user_fm * GEM_SCALE_FEVER
-            base_stats_arr[3] -= user_ft * GEM_SCALE_FEVER
-            base_stats_arr[4] -= user_ff * GEM_SCALE_FEVER
-
-            base_stats_arr[9] -= user_pp * GEM_STAT_TO_ELEMENT_SCALE   # Chill
-            base_stats_arr[8] -= user_cm * GEM_STAT_TO_ELEMENT_SCALE   # Flow
-            base_stats_arr[7] -= user_fm * GEM_STAT_TO_ELEMENT_SCALE   # Rush
-            base_stats_arr[5] -= user_ft * GEM_STAT_TO_ELEMENT_SCALE   # Beat
-            base_stats_arr[6] -= user_ff * GEM_STAT_TO_ELEMENT_SCALE   # Vibe
-
-        if static_elem_input and selected_color:
-            color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
-            idx = color_to_idx.get(selected_color)
-            if idx is not None:
-                base_stats_arr[idx] -= static_elem_input * ELEMENTAL_GEM_SCALE
-
+        base_stats_arr, _ = _build_base_stats_array(base_stats_fixed, cfg_data)
         gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
     else:
         if gpu_static.get("need_upload_item_stats"):
@@ -584,46 +602,7 @@ def solve_coevolution_genetic(
         )
 
         # Upload base fixed stats (team buffs + user gems from config)
-        base_stats_arr = np.array([
-            base_stats_fixed.get("Perfect Points", 0),
-            base_stats_fixed.get("Combo Multiplier", 0),
-            base_stats_fixed.get("Fever Multiplier", 0),
-            base_stats_fixed.get("Fever Time", 0),
-            base_stats_fixed.get("Fever Fill Rate", 0),
-            base_stats_fixed.get("Beat", 0),
-            base_stats_fixed.get("Vibe", 0),
-            base_stats_fixed.get("Rush", 0),
-            base_stats_fixed.get("Flow", 0),
-            base_stats_fixed.get("Chill", 0),
-        ], dtype=np.int32)
-
-        user_pp = int(cfg_data.get("user_pp", 0))
-        user_cm = int(cfg_data.get("user_cm", 0))
-        user_fm = int(cfg_data.get("user_fm", 0))
-        user_ft = int(cfg_data.get("user_ft", 0))
-        user_ff = int(cfg_data.get("user_ff", 0))
-        static_elem_input = int(cfg_data.get("static_elem_input", 0))
-        selected_color = str(cfg_data.get("selected_color", ""))
-
-        if user_pp or user_cm or user_fm or user_ft or user_ff:
-            base_stats_arr[0] -= user_pp * GEM_SCALE_NORMAL
-            base_stats_arr[1] -= user_cm * GEM_SCALE_NORMAL
-            base_stats_arr[2] -= user_fm * GEM_SCALE_FEVER
-            base_stats_arr[3] -= user_ft * GEM_SCALE_FEVER
-            base_stats_arr[4] -= user_ff * GEM_SCALE_FEVER
-
-            base_stats_arr[9] -= user_pp * GEM_STAT_TO_ELEMENT_SCALE   # Chill
-            base_stats_arr[8] -= user_cm * GEM_STAT_TO_ELEMENT_SCALE   # Flow
-            base_stats_arr[7] -= user_fm * GEM_STAT_TO_ELEMENT_SCALE   # Rush
-            base_stats_arr[5] -= user_ft * GEM_STAT_TO_ELEMENT_SCALE   # Beat
-            base_stats_arr[6] -= user_ff * GEM_STAT_TO_ELEMENT_SCALE   # Vibe
-
-        if static_elem_input and selected_color:
-            color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
-            idx = color_to_idx.get(selected_color)
-            if idx is not None:
-                base_stats_arr[idx] -= static_elem_input * ELEMENTAL_GEM_SCALE
-
+        base_stats_arr, _ = _build_base_stats_array(base_stats_fixed, cfg_data)
         gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
 
         # 4. Create simple rank caches for genome factory (not needed for random genomes, but required by function signature)

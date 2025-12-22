@@ -270,12 +270,14 @@ def local_search_from_hint(
     Returns:
         Vector of [score, gems_pp, gems_cm, gems_fm, gems_ov, p_val, s_val]
     """
-    GEM_SCALE_NORMAL: ti.i32 = 2
-    GEM_SCALE_FEVER: ti.i32 = 3
-    ELEMENTAL_GEM_SCALE: ti.i32 = 6
-    GEM_STAT_TO_ELEMENT: ti.i32 = 3
-    MAX_STAT: ti.i32 = 160
-    MAX_ITER: ti.i32 = 20
+    # Import constants from constants.py at compile time
+    # Note: These are hardcoded here for GPU kernel compilation
+    GEM_SCALE_NORMAL: ti.i32 = 2  # gear_optimizer.core.constants.GEM_SCALE_NORMAL
+    GEM_SCALE_FEVER: ti.i32 = 3  # gear_optimizer.core.constants.GEM_SCALE_FEVER
+    ELEMENTAL_GEM_SCALE: ti.i32 = 6  # gear_optimizer.core.constants.ELEMENTAL_GEM_SCALE
+    GEM_STAT_TO_ELEMENT: ti.i32 = 3  # gear_optimizer.core.constants.GEM_STAT_TO_ELEMENT_SCALE
+    MAX_STAT: ti.i32 = 160  # gear_optimizer.core.constants.MAX_STAT_INDEX
+    MAX_ITER: ti.i32 = 20  # gear_optimizer.core.constants.LOCAL_SEARCH_MAX_ITERATIONS
     
     # Load cached bitmasks once
     m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
@@ -485,11 +487,12 @@ def optimize_core_device(
         Vector of [score, gems_pp, gems_cm, gems_fm, gems_ov, p_val, s_val]
     """
     # Constants (matching constants.py)
-    GEM_SCALE_NORMAL: ti.i32 = 2
-    GEM_SCALE_FEVER: ti.i32 = 3
-    ELEMENTAL_GEM_SCALE: ti.i32 = 6
-    GEM_STAT_TO_ELEMENT: ti.i32 = 3
-    MAX_STAT: ti.i32 = 160
+    # Note: These are hardcoded here for GPU kernel compilation
+    GEM_SCALE_NORMAL: ti.i32 = 2  # gear_optimizer.core.constants.GEM_SCALE_NORMAL
+    GEM_SCALE_FEVER: ti.i32 = 3  # gear_optimizer.core.constants.GEM_SCALE_FEVER
+    ELEMENTAL_GEM_SCALE: ti.i32 = 6  # gear_optimizer.core.constants.ELEMENTAL_GEM_SCALE
+    GEM_STAT_TO_ELEMENT: ti.i32 = 3  # gear_optimizer.core.constants.GEM_STAT_TO_ELEMENT_SCALE
+    MAX_STAT: ti.i32 = 160  # gear_optimizer.core.constants.MAX_STAT_INDEX
     m0: ti.u32 = ti.u32(0)
     m1: ti.u32 = ti.u32(0)
     m2: ti.u32 = ti.u32(0)
@@ -506,7 +509,7 @@ def optimize_core_device(
     gems_fm: ti.i32 = 0
     gems_ov: ti.i32 = 0
     remaining: ti.i32 = budget
-    PP_TIE_LOOKAHEAD_MAX: ti.i32 = 8
+    PP_TIE_LOOKAHEAD_MAX: ti.i32 = 8  # gear_optimizer.core.constants.PP_TIE_LOOKAHEAD_MAX
 
     # Mutable state
     pp: ti.i32 = cur_pp

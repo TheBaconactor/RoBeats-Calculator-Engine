@@ -16,9 +16,25 @@ MAX_STAT_INDEX = 160
 TOTAL_GEM_BUDGET = 90
 TOTAL_ROWS = 160
 
+# --- GAME FORMULA CONSTANTS (RoBeats Server Parity) ---
+# These values are reverse-engineered from RoBeats game source code
+# and must match server-side calculations for score accuracy.
+# Reference: docs/FORMULA EXPLANATION.txt, docs/FEVER_TIMELINE_MATH.md
+
+# Fever Fill Rate base multiplier (key point on the stat curve)
+# Formula: non_fever_cas = (total_notes - long_notes) * FEVER_FILL_BASE_RATE
+FEVER_FILL_BASE_RATE = 0.333
+
+# Fever Time duration scaling factor (percentage of song length)
+# Formula: fever_time_cas = last_note_time * FEVER_TIME_SCALE + FEVER_TIME_OFFSET
+FEVER_TIME_SCALE = 0.15
+
+# Fever Time constant offset added to scaled duration (seconds)
+FEVER_TIME_OFFSET = 0.15
+
 # --- GA (GENETIC ALGORITHM) CONSTANTS ---
 # These will be overwritten by config.ini if present
-# 
+#
 # EXPLORATION vs EXPLOITATION TUNING:
 # - Higher mutation_rate = more exploration (random changes)
 # - More multi_runs = more fresh starts (escape local optima)
@@ -29,6 +45,10 @@ GA_MUTATION_RATE = 0.35           # INCREASED: 0.275 → 0.35 (more exploration)
 GA_ELITISM = 1                    # Keep 1 elite (exploitation anchor)
 GA_MULTI_RUNS_DEFAULT = 5         # INCREASED: 3 → 5 (more fresh starts)
 GA_MUTATION_RATE_MAX = 0.55       # INCREASED: 0.45 → 0.55 (allow more aggressive mutation on stagnation)
+
+# Local search constants
+PP_TIE_LOOKAHEAD_MAX = 8          # Max lookahead iterations for PP tie-breaking in gem optimization
+LOCAL_SEARCH_MAX_ITERATIONS = 20  # Max iterations for local search refinement
 
 # --- GPU GA ISLAND MODEL ---
 GPU_GA_NUM_ISLANDS = 5            # Number of sub-populations (islands)

@@ -6,10 +6,11 @@ import hashlib
 import json
 import os
 import sqlite3
+from typing import Dict, List, Optional, Tuple, Any
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS, DB_FILE
 
 
-def get_evolution_db_path():
+def get_evolution_db_path() -> str:
     """
     Return the configured evolution DB location (env override supported).
 
@@ -20,7 +21,7 @@ def get_evolution_db_path():
     return env_path if env_path else PATHS.evolution_db_default
 
 
-def get_db_connection(db_path=None):
+def get_db_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     """
     Create a SQLite connection with optimized settings.
 
@@ -176,15 +177,15 @@ def _expand_minis_from_db(mini_names, minis_by_name):
     return [minis_by_name.get(name, {"Name": name}) for name in mini_names]
 
 
-def get_loadout_hash(gear_list, mini_list):
+def get_loadout_hash(gear_list: List[Any], mini_list: List[Any]) -> str:
     """
     Generate a unique hash for a loadout (gear + minis).
     Sorts items by name to ensure consistent hashing regardless of order.
     Handles both dicts (with 'Name' key) and plain strings.
 
     Args:
-        gear_list: List of gear items
-        mini_list: List of mini items
+        gear_list: List of gear items (dicts or strings)
+        mini_list: List of mini items (dicts or strings)
 
     Returns:
         str: MD5 hash of the loadout
@@ -266,11 +267,15 @@ def _deduplicate_entries(entries):
             deduplicated.append(group[0])
         else:
             # Multiple entries with same score and loadout - keep one with highest overflow AND FG score
-            best_entry = max(group, key=lambda e: (
-                _get_overflow_from_details(e.get("details", {})),
-                e.get("fg_score", 0)
-            ))
-            deduplicated.append(best_entry)
+            try:
+                best_entry = max(group, key=lambda e: (
+                    _get_overflow_from_details(e.get("details", {})),
+                    e.get("fg_score", 0)
+                ))
+                deduplicated.append(best_entry)
+            except (ValueError, KeyError):
+                # If comparison fails, just keep first entry
+                deduplicated.append(group[0])
 
     return deduplicated
 
@@ -334,7 +339,8 @@ def _deduplicate_db_loadouts(conn, song_name, table_name="loadouts"):
                 if loadout["details_json"]:
                     try:
                         details = json.loads(loadout["details_json"])
-                    except Exception:
+                    except json.JSONDecodeError:
+                        # Corrupted JSON, skip this loadout's details
                         pass
                 overflow = _get_overflow_from_details(details)
                 loadouts_with_overflow.append({
@@ -359,7 +365,7 @@ def _deduplicate_db_loadouts(conn, song_name, table_name="loadouts"):
             return len(hashes_to_delete)
 
         return 0
-    except Exception as e:
+    except (sqlite3.Error, json.JSONDecodeError) as e:
         print(f"[DB] Error deduplicating loadouts in {table_name}: {e}")
         return 0
 
@@ -379,7 +385,7 @@ def save_loadout_to_db(song_name, score, fg_score, gear, minis, details, force_d
     save_loadouts_batch(song_name, [entry])
 
 
-def save_loadouts_batch(song_name, entries):
+def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
     """
     Batch insert/update loadouts for a song in a single transaction.
     Splits data into 'loadouts' (All) and 'fg_loadouts' (Valid FG Only).
@@ -504,21 +510,26 @@ def save_loadouts_batch(song_name, entries):
                 """, (song_name, song_name, LOADOUTS_PER_SONG_LIMIT))
 
         conn.commit()
-    except Exception as e:
+    except sqlite3.Error as e:
         print(f"[DB] Error saving batch loadouts: {e}")
         try:
             conn.rollback()
-        except Exception:
+        except sqlite3.Error:
             pass
     finally:
         try:
             conn.execute("PRAGMA synchronous=FULL;")
-        except Exception:
+        except sqlite3.Error:
             pass
         conn.close()
 
 
-def get_best_loadouts(song_name, limit=LOADOUTS_PER_SONG_LIMIT, gears_by_name=None, minis_by_name=None):
+def get_best_loadouts(
+    song_name: str,
+    limit: int = LOADOUTS_PER_SONG_LIMIT,
+    gears_by_name: Optional[Dict[str, Any]] = None,
+    minis_by_name: Optional[Dict[str, Any]] = None
+) -> List[Dict[str, Any]]:
     """
     Retrieve the top N loadouts for a song to seed the GA.
 
@@ -597,7 +608,7 @@ def get_best_loadouts(song_name, limit=LOADOUTS_PER_SONG_LIMIT, gears_by_name=No
             process_row(row)
 
         return results
-    except Exception as e:
+    except (sqlite3.Error, json.JSONDecodeError) as e:
         print(f"[DB] Error retrieving loadouts: {e}")
         return []
     finally:

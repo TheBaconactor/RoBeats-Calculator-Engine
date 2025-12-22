@@ -9,7 +9,12 @@ import numpy as np
 from math import ceil
 
 from ..core.jit_setup import jit
-from ..core.constants import TOTAL_ROWS
+from ..core.constants import (
+    TOTAL_ROWS,
+    FEVER_FILL_BASE_RATE,
+    FEVER_TIME_SCALE,
+    FEVER_TIME_OFFSET,
+)
 
 
 # Global cache for SongTimelineGrid instances (one per song)
@@ -56,9 +61,10 @@ def calculate_fever_timeline_indices(
         tuple: (fever_mask_head, count_body_fever, count_body_normal, fever_activations, last_fever_end_idx)
                last_fever_end_idx = where the last fever window ends (for gap calculation)
     """
-    non_fever_cas = (total_notes - long_notes_count) * 0.333
+    # Game formula constants (see constants.FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET)
+    non_fever_cas = (total_notes - long_notes_count) * 0.333  # FEVER_FILL_BASE_RATE
     non_fever_base = ceil(non_fever_cas * fever_fill_rate)
-    fever_time_cas = last_note_time * 0.15 + 0.15
+    fever_time_cas = last_note_time * 0.15 + 0.15  # FEVER_TIME_SCALE + FEVER_TIME_OFFSET
     real_fever_time = fever_time_cas * fever_time_stat
 
     is_fever = fever_mask_buffer
@@ -121,12 +127,13 @@ def calculate_non_fever_sections(
 
     Matches the section stepping logic used by fg_baseline_params (scoring.py).
     """
-    non_fever_cas = (total_notes - long_notes_count) * 0.333
+    # Game formula constants (see constants.FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET)
+    non_fever_cas = (total_notes - long_notes_count) * 0.333  # FEVER_FILL_BASE_RATE
     if non_fever_cas < 0.0:
         non_fever_cas = 0.0
 
     non_fever_base = ceil(non_fever_cas * fever_fill_rate)
-    fever_time_cas = last_note_time * 0.15 + 0.15
+    fever_time_cas = last_note_time * 0.15 + 0.15  # FEVER_TIME_SCALE + FEVER_TIME_OFFSET
     real_fever_time = fever_time_cas * fever_time_stat
 
     current_idx = 0
@@ -242,7 +249,8 @@ def calculate_force_greats_timeline_indices(
     - clamp_forced_to_section_notes: match evaluate_force_greats*() (True) vs
       evaluate_fg_with_gem_iteration() (False).
     """
-    non_fever_cas = (total_notes - long_notes_count) * 0.333
+    # Game formula constants (see constants.FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET)
+    non_fever_cas = (total_notes - long_notes_count) * 0.333  # FEVER_FILL_BASE_RATE
     if non_fever_cas < 0.0:
         non_fever_cas = 0.0
 
@@ -252,7 +260,7 @@ def calculate_force_greats_timeline_indices(
     # Note: non_fever_great_to_fill is kept for forced_val clamping compatibility
     non_fever_great_to_fill = ceil(max(1.0, raw_fever_fill * 2.0))
 
-    fever_time_cas = last_note_time * 0.15 + 0.15
+    fever_time_cas = last_note_time * 0.15 + 0.15  # FEVER_TIME_SCALE + FEVER_TIME_OFFSET
     real_fever_time = fever_time_cas * fever_time_stat
 
     is_fever = fever_mask_buffer
@@ -400,10 +408,11 @@ class SongTimelineGrid:
         self.total_notes = len(self.song_timestamps)
         self.long_notes = int(calc_song["metadata"].get("Long Notes", 0))
         self.last_note_time = float(calc_song["metadata"].get("Last Note Time", 0))
-        
+
         # Precompute constants that don't change with stats
-        self.non_fever_cas = (self.total_notes - self.long_notes) * 0.333
-        self.fever_time_cas = self.last_note_time * 0.15 + 0.15
+        # Game formula constants (see constants.FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET)
+        self.non_fever_cas = (self.total_notes - self.long_notes) * FEVER_FILL_BASE_RATE
+        self.fever_time_cas = self.last_note_time * FEVER_TIME_SCALE + FEVER_TIME_OFFSET
         
         # Precompute all FT/FF multipliers (161 each)
         ref_ft = ref_arrays["Fever Time"]

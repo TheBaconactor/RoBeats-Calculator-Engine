@@ -15,6 +15,8 @@ import numpy as np
 from math import ceil, floor
 from typing import List, Tuple, Dict, Optional
 
+from ..core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET
+
 
 class AnalyticalFGScorer:
     """
@@ -56,10 +58,10 @@ class AnalyticalFGScorer:
         self.ref_ft = ref_ft
         self.ref_ff = ref_ff
         
-        # Pre-compute invariants
+        # Pre-compute invariants (game formula constants from constants.py)
         self.head_len = min(100, total_notes)
-        self.non_fever_cas = (total_notes - long_notes) * 0.333
-        self.fever_time_cas = last_note_time * 0.15 + 0.15
+        self.non_fever_cas = (total_notes - long_notes) * FEVER_FILL_BASE_RATE
+        self.fever_time_cas = last_note_time * FEVER_TIME_SCALE + FEVER_TIME_OFFSET
         
     def _lookup(self, ref: np.ndarray, idx: int) -> float:
         """Safe lookup with clamping to [0, 160]."""
