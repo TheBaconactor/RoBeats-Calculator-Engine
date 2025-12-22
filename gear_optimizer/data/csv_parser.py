@@ -221,7 +221,9 @@ def parse_mini_rows(filepath):
                     "Rush": safe_int(_first_val(row_map, ("rush",))),
                     "Beat": safe_int(_first_val(row_map, ("beat",))),
                     "Vibe": safe_int(_first_val(row_map, ("vibe",))),
-                    "Perfect Points": 0,
+                    "Perfect Points": safe_int(
+                        _first_val(row_map, ("ppoint", "perfect points", "pp", "ppoints"))
+                    ),
                     "Combo Multiplier": safe_int(
                         _first_val(row_map, ("cbmlt", "cmult", "combo multiplier", "combo"))
                     ),
@@ -252,11 +254,11 @@ def parse_mini_rows(filepath):
                     "Rush": safe_int(row[4]),
                     "Beat": safe_int(row[5]),
                     "Vibe": safe_int(row[6]),
-                    "Perfect Points": 0,
-                    "Combo Multiplier": safe_int(row[8]),
-                    "Fever Multiplier": safe_int(row[9]),
-                    "Fever Time": safe_int(row[10]),
-                    "Fever Fill Rate": safe_int(row[11]),
+                    "Perfect Points": safe_int(row[7]) if len(row) > 7 else 0,
+                    "Combo Multiplier": safe_int(row[8]) if len(row) > 8 else 0,
+                    "Fever Multiplier": safe_int(row[9]) if len(row) > 9 else 0,
+                    "Fever Time": safe_int(row[10]) if len(row) > 10 else 0,
+                    "Fever Fill Rate": safe_int(row[11]) if len(row) > 11 else 0,
                 }
                 minis_list.append(stats)
     except Exception as exc:

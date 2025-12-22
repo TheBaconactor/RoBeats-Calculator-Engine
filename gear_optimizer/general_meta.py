@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Optional
 
 from .core.constants import PATHS, SCRIPT_DIR, TOTAL_ROWS
-from .core.utils import empty_stats, safe_int
+from .core.utils import empty_stats, safe_int, cfg_to_dict
 from .data.database import get_db_connection, get_evolution_db_path
 from .data.csv_parser import (
     load_all_gears_list,
@@ -25,6 +25,7 @@ from .data.csv_parser import (
     resolve_stats_csv,
     load_csv_db,
 )
+from .core.stats_calculator import build_base_stats_from_config, compute_full_stats
 from .pipeline.song_processor import scan_song_header, read_song_file
 
 
@@ -234,40 +235,36 @@ def find_most_common_loadout(
     return gear_names, mini_names, count, avg_gems, avg_score, songs_with_set
 
 
-def compute_loadout_stats(
-    gear_names: List[str],
-    mini_names: List[str],
-    gears_by_name: dict,
-    minis_by_name: dict,
-    team_buff_stats: dict,
-) -> dict:
-    """
-    Compute total stats for a fixed loadout (gear + minis + team buff).
-    Does NOT include gem contributions (those are optimized separately).
-    """
-    stats = empty_stats()
-    
-    # Add team buff
-    for k, v in team_buff_stats.items():
-        stats[k] = stats.get(k, 0) + v
-    
-    # Add gear stats
-    for name in gear_names:
-        if name in gears_by_name:
-            gear = gears_by_name[name]
-            for k in stats.keys():
-                if k in gear:
-                    stats[k] += gear.get(k, 0)
-    
-    # Add mini stats
-    for name in mini_names:
-        if name in minis_by_name:
-            mini = minis_by_name[name]
-            for k in stats.keys():
-                if k in mini:
-                    stats[k] += mini.get(k, 0)
-    
     return stats
+
+
+def sort_gears_by_slot(gear_names: List[str], gears_by_name: dict) -> List[str]:
+    """Sort gear names by canonical slot order."""
+    slot_order = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
+    
+    def get_slot_index(name):
+        gear = gears_by_name.get(name)
+        if not gear:
+            return 99
+        slot = gear.get("type", "Item")
+        try:
+            return slot_order.index(slot)
+        except ValueError:
+            return 99
+
+    return sorted(gear_names, key=get_slot_index)
+
+
+def format_gem_counts(avg_gems):
+    """Convert flat gem dict to GemCounts format for compute_full_stats."""
+    return {
+        "Perfect Points": avg_gems.get("PP", 0),
+        "Combo Multiplier": avg_gems.get("CM", 0),
+        "Fever Multiplier": avg_gems.get("FM", 0),
+        "Fever Time": avg_gems.get("FT", 0),
+        "Fever Fill Rate": avg_gems.get("FF", 0),
+        "Element": avg_gems.get("Element", 0),
+    }
 
 
 def optimize_gems_across_songs(
@@ -463,6 +460,10 @@ def run_general_meta(cfg, paths: dict) -> dict:
             print(f"  No loadouts found for this category")
             continue
         
+        # Sort gear by slot and minis alphabetically
+        gear_names = sort_gears_by_slot(gear_names, gears_by_name)
+        mini_names = sorted(mini_names)
+        
         print(f"  Most common loadout appears in {count}/{len(songs)} songs (best in DB)")
         print(f"  Found pre-optimized entries for {songs_with_set}/{len(songs)} songs")
         print(f"    Gear: {gear_names}")
@@ -470,10 +471,13 @@ def run_general_meta(cfg, paths: dict) -> dict:
         print(f"    Avg Gems: PP={avg_gems['PP']}, CM={avg_gems['CM']}, FM={avg_gems['FM']}, FT={avg_gems['FT']}, FF={avg_gems['FF']}, OV={avg_gems['Element']}")
         print(f"    Avg Score: {avg_score:,}")
         
-        # Get detailed stats for this loadout
-        team_buff_stats = get_fixed_stats(cfg)
-        loadout_stats = compute_loadout_stats(
-            gear_names, mini_names, gears_by_name, minis_by_name, team_buff_stats
+        # Get detailed stats for this loadout including gems
+        team_buff_stats = build_base_stats_from_config(cfg_to_dict(cfg))
+        gem_counts = format_gem_counts(avg_gems)
+        
+        full_stats = compute_full_stats(
+            gear_names, mini_names, gem_counts, primary,
+            gears_by_name, minis_by_name, team_buff_stats
         )
         
         results[combo_key] = {
@@ -482,7 +486,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
             "gear": gear_names,
             "minis": mini_names,
             "loadout_frequency": count,
-            "stats": loadout_stats,
+            "stats": full_stats,
             "selected_element": primary,
             "gems": avg_gems,
             "avg_score": avg_score,
