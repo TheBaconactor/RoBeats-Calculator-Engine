@@ -366,13 +366,12 @@ def ga_write_best_and_update_global_kernel(
     """
     FUSED: Write best results + store hints + update global best in one kernel.
 
-    OPTIMIZED: Now reads cached gem allocations from chunk_best_results instead
-    of re-running optimize_core_device. This eliminates ~250 redundant scoring
-    calls per generation.
+    FIX: Re-evaluates the winning combo to get correct gem allocations, instead of
+    reading cached results which may have race conditions with the combo selection.
 
     For each genome:
-    1. Unpack best combo + score from chunk_best_key (or chunk_best_score on Metal)
-    2. Read cached gem allocation [pp, cm, fm, ov] from chunk_best_results
+    1. Unpack best combo_idx from chunk_best_key (or chunk_best_idx on Metal)
+    2. Re-evaluate with optimize_core_device to get correct gems for this combo
     3. Write genome_result_stats and ga_scores
     4. Store hints for next generation (warm-start)
     5. Atomically update global best if improved
@@ -380,29 +379,28 @@ def ga_write_best_and_update_global_kernel(
     Args:
         n_genomes: Number of genomes
         n_slots: Number of equipment slots
-        total_budget: Total gem budget (unused now, kept for API compat)
-        gem_scale_fever: Gems per fever stat point (unused now, kept for API compat)
-        is_*: Color contribution flags (unused now, kept for API compat)
-        song_slot: Grid slot for batch coalescing (unused now, kept for API compat)
+        total_budget: Total gem budget
+        gem_scale_fever: Gems per fever stat point
+        is_*: Color contribution flags
+        song_slot: Grid slot for batch coalescing
     """
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    GEM_STAT_TO_ELEMENT: ti.i32 = 3
+    MAX_STAT: ti.i32 = 160
 
     for genome_idx in range(n_genomes):
         combo_idx = 0
-        score = -1
         valid = False
 
         if ti.static(not IS_METAL):
             key = kernels_helpers.chunk_best_key[genome_idx]
             if key != 0:
                 combo_idx = ti.cast(key & ti.u64(0xFFFFFFFF), ti.i32)
-                score = ti.cast((key >> 32) - 1, ti.i32)
                 valid = True
         else:
             idx = kernels_helpers.chunk_best_idx[genome_idx]
             if idx >= 0:
                 combo_idx = idx
-                score = kernels_helpers.chunk_best_score[genome_idx]
                 valid = True
 
         if not valid:
@@ -414,11 +412,53 @@ def ga_write_best_and_update_global_kernel(
         ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
         ff: ti.i32 = kernels_helpers.ftff_combo_ff[combo_idx]
 
-        # Read cached gem allocations (set during evaluation kernel)
-        pp_gems: ti.i32 = kernels_helpers.chunk_best_results[genome_idx, 0]
-        cm_gems: ti.i32 = kernels_helpers.chunk_best_results[genome_idx, 1]
-        fm_gems: ti.i32 = kernels_helpers.chunk_best_results[genome_idx, 2]
-        ov_gems: ti.i32 = kernels_helpers.chunk_best_results[genome_idx, 3]
+        # Load genome base stats: [pp, cm, fm, p_val, s_val, ft_stat, ff_stat]
+        stats = kernels_helpers.genome_base_stats[genome_idx]
+        base_pp: ti.i32 = stats[0]
+        base_cm: ti.i32 = stats[1]
+        base_fm: ti.i32 = stats[2]
+        base_p_val: ti.i32 = stats[3]
+        base_s_val: ti.i32 = stats[4]
+        base_ft_stat: ti.i32 = stats[5]
+        base_ff_stat: ti.i32 = stats[6]
+
+        # Calculate stat indices for grid lookup
+        ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
+        ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
+        ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
+        ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
+
+        # Get song structure from grid
+        count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
+        count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
+        head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
+
+        # Calculate budget for PP/CM/FM/OV gems (CRITICAL: must match the winning combo's FT/FF)
+        budget: ti.i32 = total_budget - ft - ff
+
+        # Adjust p/s values with FT/FF elemental contributions
+        p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
+        s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
+
+        # RE-EVALUATE: Get correct gem allocation for this specific combo
+        # This fixes the race condition where cached results could be from a different combo
+        res_vec = optimize_core_device(
+            0, budget,
+            base_pp, base_cm, base_fm,
+            p_val, s_val,
+            is_p_pp, is_s_pp,
+            is_p_cm, is_s_cm,
+            is_p_fm, is_s_fm,
+            is_p_ov, is_s_ov,
+            head_len, count_fever, count_normal,
+            1, song_slot, ft_idx, ff_idx,
+        )
+
+        score: ti.i32 = res_vec[0]
+        pp_gems: ti.i32 = res_vec[1]
+        cm_gems: ti.i32 = res_vec[2]
+        fm_gems: ti.i32 = res_vec[3]
+        ov_gems: ti.i32 = res_vec[4]
 
         kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([
             score, ft, ff, pp_gems, cm_gems, fm_gems, ov_gems
