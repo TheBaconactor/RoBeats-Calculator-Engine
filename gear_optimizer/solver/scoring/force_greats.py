@@ -185,7 +185,14 @@ def evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=None):
 
     base_value = (primary_val * 2) + secondary_val + pp_factor
     combo_value = floor(base_value * combo_mul)
-    great_penalty_base = floor(((primary_val * 2) + secondary_val) * (2.0 / 3.0) + 150.0)
+    # Great base uses a floor-sensitive split in the game code for 2-color charts:
+    # floor((4/3)*primary) + floor((2/3)*secondary) + 150
+    # (as opposed to a single floor over the combined expression).
+    great_penalty_base = (
+        floor((primary_val * 2) * (2.0 / 3.0))
+        + floor(secondary_val * (2.0 / 3.0))
+        + 150
+    )
     great_combo_value = floor(great_penalty_base * combo_mul)
     penalty_table = build_great_penalty_table(base_value, combo_mul, great_penalty_base)
     body_penalty = max(0, combo_value - great_combo_value)
@@ -587,8 +594,10 @@ def evaluate_fg_with_gem_iteration(
 
         # FG penalties (score penalty for greats + fill penalty)
         combo_value = floor(base_value * combo_mul)
-        great_penalty_base = floor(
-            ((final_p_val * 2) + final_s_val) * (2.0 / 3.0) + 150.0
+        great_penalty_base = (
+            floor((final_p_val * 2) * (2.0 / 3.0))
+            + floor(final_s_val * (2.0 / 3.0))
+            + 150
         )
         penalty_table = build_great_penalty_table(
             base_value, combo_mul, great_penalty_base

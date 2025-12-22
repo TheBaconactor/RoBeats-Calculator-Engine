@@ -601,9 +601,18 @@ def fg_stage1_kernel(
             base_value: ti.f32 = ti.cast((final_p_val * 2) + final_s_val, ti.f32) + pp_factor
             combo_value: ti.i32 = ti.cast(ti.floor(base_value * combo_mul), ti.i32)
 
-            great_penalty_base: ti.i32 = ti.cast(
-                ti.floor((ti.cast((final_p_val * 2) + final_s_val, ti.f32) * (2.0 / 3.0)) + 150.0),
-                ti.i32,
+            # Match the game's floor-sensitive split for Great color bonus on 2-color charts:
+            # floor((4/3)*primary) + floor((2/3)*secondary) + 150
+            great_penalty_base: ti.i32 = (
+                ti.cast(
+                    ti.floor(ti.cast(final_p_val * 2, ti.f32) * (2.0 / 3.0)),
+                    ti.i32,
+                )
+                + ti.cast(
+                    ti.floor(ti.cast(final_s_val, ti.f32) * (2.0 / 3.0)),
+                    ti.i32,
+                )
+                + 150
             )
             great_combo_value: ti.i32 = ti.cast(ti.floor(ti.cast(great_penalty_base, ti.f32) * combo_mul), ti.i32)
             body_penalty: ti.i32 = ti.max(0, combo_value - great_combo_value)
@@ -931,9 +940,16 @@ def fg_stage1_flat_kernel(
         base_value: ti.f32 = ti.cast((final_p_val * 2) + final_s_val, ti.f32) + pp_factor
         combo_value: ti.i32 = ti.cast(ti.floor(base_value * combo_mul), ti.i32)
 
-        great_penalty_base: ti.i32 = ti.cast(
-            ti.floor((ti.cast((final_p_val * 2) + final_s_val, ti.f32) * (2.0 / 3.0)) + 150.0),
-            ti.i32,
+        great_penalty_base: ti.i32 = (
+            ti.cast(
+                ti.floor(ti.cast(final_p_val * 2, ti.f32) * (2.0 / 3.0)),
+                ti.i32,
+            )
+            + ti.cast(
+                ti.floor(ti.cast(final_s_val, ti.f32) * (2.0 / 3.0)),
+                ti.i32,
+            )
+            + 150
         )
         great_combo_value: ti.i32 = ti.cast(ti.floor(ti.cast(great_penalty_base, ti.f32) * combo_mul), ti.i32)
         body_penalty: ti.i32 = ti.max(0, combo_value - great_combo_value)
