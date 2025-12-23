@@ -143,41 +143,66 @@ def find_most_common_loadout(
     if not loadouts_by_song:
         return []
     
-    # Count how many songs have each unique loadout SET in DB
-    # (count each song only once per SET, even if it has multiple entries with that SET)
-    set_counter = Counter()  # set_key -> number of songs that have this SET
+    # ---------------------------------------------------------
+    # STEP 1: Candidate Selection
+    # Identify the Top N candidates by probing ONLY the #1 best non-FG loadout per song.
+    # ---------------------------------------------------------
+    
+    # Identify the #1 best loadout for each song in this section
+    best_loadouts_per_song = {}
     for song_name, loadouts in loadouts_by_song.items():
-        seen_sets = set()
-        for loadout in loadouts:
-            try:
-                gear = tuple(sorted(json.loads(loadout["gear_json"]))) if loadout["gear_json"] else ()
-                minis = tuple(sorted(json.loads(loadout["minis_json"]))) if loadout["minis_json"] else ()
-                set_key = (gear, minis)
-                if set_key not in seen_sets:
-                    set_counter[set_key] += 1
-                    seen_sets.add(set_key)
-            except json.JSONDecodeError:
-                continue
-    
-    if not set_counter:
+        if not loadouts:
+            continue
+        # Assuming loadouts are from DB query `ORDER BY score DESC`, the first one is best.
+        # We re-sort just to be absolutely safe and independent of DB query order.
+        best_loadout = max(loadouts, key=lambda x: x["score"])
+        best_loadouts_per_song[song_name] = best_loadout
+
+    # Count frequency of being #1
+    candidates_counter = Counter()
+    for loadout in best_loadouts_per_song.values():
+        try:
+            gear = tuple(sorted(json.loads(loadout["gear_json"]))) if loadout["gear_json"] else ()
+            minis = tuple(sorted(json.loads(loadout["minis_json"]))) if loadout["minis_json"] else ()
+            set_key = (gear, minis)
+            candidates_counter[set_key] += 1
+        except json.JSONDecodeError:
+            continue
+
+    if not candidates_counter:
         return []
-    
-    # Get top N most common loadout SETs (ranked by songs_with_set)
-    # Build full result data for top N sets
+
+    # Get the Top N winners
+    top_candidates = candidates_counter.most_common(top_n)
+
+    # ---------------------------------------------------------
+    # STEP 2: Stat Aggregation
+    # For the selected candidates, probe ALL database entries to calculate accurate averages.
+    # ---------------------------------------------------------
     results = []
-    for rank, (set_key, songs_with_set) in enumerate(set_counter.most_common(top_n), 1):
+    
+    for rank, (set_key, win_frequency) in enumerate(top_candidates, 1):
         target_gear, target_minis = set_key
         gear_names = list(target_gear)
         mini_names = list(target_minis)
         
-        # Find the BEST entry for each song that uses this exact SET
-        total_score = 0
-        songs_counted = 0
+        total_score_sum = 0
+        total_songs_with_set_count = 0 
+        entries_aggregated = 0
+        
         gem_totals = {"PP": 0, "CM": 0, "FM": 0, "FT": 0, "FF": 0, "Element": 0}
         
+        # Iterate ALL loadouts for ALL songs in this section
         for song_name, loadouts in loadouts_by_song.items():
-            best_matching = None
-            best_matching_score = -1
+            song_has_set = False
+            best_entry_for_song = None
+            best_entry_score = -1
+
+            # Find best entry for this song to represent it in the average
+            # (We could average ALL entries, but usually we want one representative per song to avoid skewing)
+            # User said: "probe all loadout in the database... for accurate average gem distribution"
+            # Averaging EVERY entry might overweigh songs with more runs.
+            # Standard practice: Take the best run for each song that uses this loadout, and average across songs.
             
             for loadout in loadouts:
                 try:
@@ -185,19 +210,21 @@ def find_most_common_loadout(
                     minis = tuple(sorted(json.loads(loadout["minis_json"]))) if loadout["minis_json"] else ()
                     
                     if gear == target_gear and minis == target_minis:
-                        if loadout["score"] > best_matching_score:
-                            best_matching = loadout
-                            best_matching_score = loadout["score"]
+                        song_has_set = True
+                        if loadout["score"] > best_entry_score:
+                            best_entry_score = loadout["score"]
+                            best_entry_for_song = loadout
                 except json.JSONDecodeError:
                     continue
             
-            if best_matching:
-                total_score += best_matching["score"]
-                songs_counted += 1
+            if song_has_set and best_entry_for_song:
+                total_songs_with_set_count += 1
+                total_score_sum += best_entry_for_song["score"]
                 
-                if best_matching["details_json"]:
+                # Accumulate gems from the representative entry
+                if best_entry_for_song["details_json"]:
                     try:
-                        details = json.loads(best_matching["details_json"])
+                        details = json.loads(best_entry_for_song["details_json"])
                         gem_counts = details.get("GemCounts", {})
                         gem_totals["PP"] += gem_counts.get("Perfect Points", 0)
                         gem_totals["CM"] += gem_counts.get("Combo Multiplier", 0)
@@ -207,37 +234,36 @@ def find_most_common_loadout(
                         gem_totals["FF"] += details.get("FF", details.get("FeverFillGems", 0))
                     except json.JSONDecodeError:
                         pass
-        
-        if songs_counted == 0:
-            avg_gems = {"PP": 0, "CM": 0, "FM": 0, "FT": 0, "FF": 0, "Element": 0}
-            avg_score = 0
+
+        if total_songs_with_set_count == 0:
+             avg_gems = {"PP": 0, "CM": 0, "FM": 0, "FT": 0, "FF": 0, "Element": 0}
+             avg_score = 0
         else:
-            # Calculate average gems
-            avg_gems = {
-                "PP": gem_totals["PP"] // songs_counted,
-                "CM": gem_totals["CM"] // songs_counted,
-                "FM": gem_totals["FM"] // songs_counted,
-                "FT": gem_totals["FT"] // songs_counted,
-                "FF": gem_totals["FF"] // songs_counted,
-                "Element": gem_totals["Element"] // songs_counted,
+             avg_gems = {
+                "PP": gem_totals["PP"] // total_songs_with_set_count,
+                "CM": gem_totals["CM"] // total_songs_with_set_count,
+                "FM": gem_totals["FM"] // total_songs_with_set_count,
+                "FT": gem_totals["FT"] // total_songs_with_set_count,
+                "FF": gem_totals["FF"] // total_songs_with_set_count,
+                "Element": gem_totals["Element"] // total_songs_with_set_count,
             }
-            
-            # Ensure gem total equals 90 (adjust Element to compensate for rounding)
-            GEM_BUDGET = 90
-            current_total = sum(avg_gems.values())
-            if current_total != GEM_BUDGET:
+             # Ensure budget consistency
+             GEM_BUDGET = 90
+             current_total = sum(avg_gems.values())
+             if current_total != GEM_BUDGET:
                 diff = GEM_BUDGET - current_total
                 avg_gems["Element"] = max(0, avg_gems["Element"] + diff)
-            
-            avg_score = total_score // songs_counted
-        
+             
+             avg_score = total_score_sum // total_songs_with_set_count
+
         results.append({
             "rank": rank,
             "gear_names": gear_names,
             "mini_names": mini_names,
             "avg_gems": avg_gems,
             "avg_score": avg_score,
-            "songs_with_set": songs_with_set,
+            "songs_with_set": total_songs_with_set_count,
+            "win_frequency": win_frequency # Added back for user visibility if needed
         })
     
     return results
@@ -452,16 +478,17 @@ def run_general_meta(cfg, paths: dict) -> dict:
     print(f"  Found {len(all_loadouts)} loadout records")
     
     # Process each elemental combo
+    # Process each elemental combo
     results = {}
-    TOP_N = 3  # Number of top loadouts to show per category
+    # TOP_N = None  # Show ALL dynamic Top 1 winners
     
     for combo, songs in songs_by_combo.items():
         primary, secondary = combo
         combo_key = f"{primary}/{secondary}"
         print(f"\n--- Processing {combo_key} ({len(songs)} songs) ---")
         
-        # Find top N most common loadouts
-        top_loadouts = find_most_common_loadout(songs, all_loadouts, top_n=TOP_N)
+        # Find all unique #1 loadouts (top_n=None)
+        top_loadouts = find_most_common_loadout(songs, all_loadouts, top_n=None)
         
         if not top_loadouts:
             print(f"  No loadouts found for this category")
@@ -474,7 +501,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
             mini_names = sorted(loadout_data["mini_names"])
             avg_gems = loadout_data["avg_gems"]
             
-            print(f"  #{loadout_data['rank']} loadout appears in {loadout_data['songs_with_set']}/{len(songs)} songs")
+            print(f"  #{loadout_data['rank']} loadout: {loadout_data['win_frequency']} wins (stats averaged from {loadout_data['songs_with_set']} entries)")
             print(f"    Gear: {gear_names}")
             print(f"    Minis: {mini_names}")
             print(f"    Avg Gems: PP={avg_gems['PP']}, CM={avg_gems['CM']}, FM={avg_gems['FM']}, FT={avg_gems['FT']}, FF={avg_gems['FF']}, OV={avg_gems['Element']}")
@@ -497,6 +524,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
                 "gear": gear_names,
                 "minis": mini_names,
                 "songs_with_set": loadout_data["songs_with_set"],
+                "win_frequency": loadout_data["win_frequency"],
                 "stats": full_stats,
                 "gems": avg_gems,
                 "avg_score": loadout_data["avg_score"],
@@ -525,8 +553,8 @@ def run_general_meta(cfg, paths: dict) -> dict:
         combo_key = f"{primary}/All"
         print(f"\n--- Processing {combo_key} ({len(songs)} songs) ---")
         
-        # Find top N most common loadouts across all songs with this primary element
-        top_loadouts = find_most_common_loadout(songs, all_loadouts, top_n=TOP_N)
+        # Find all unique #1 loadouts (top_n=None)
+        top_loadouts = find_most_common_loadout(songs, all_loadouts, top_n=None)
         
         if not top_loadouts:
             print(f"  No loadouts found for this category")
@@ -539,7 +567,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
             mini_names = sorted(loadout_data["mini_names"])
             avg_gems = loadout_data["avg_gems"]
             
-            print(f"  #{loadout_data['rank']} loadout appears in {loadout_data['songs_with_set']}/{len(songs)} songs")
+            print(f"  #{loadout_data['rank']} loadout: {loadout_data['win_frequency']} wins (stats averaged from {loadout_data['songs_with_set']} entries)")
             print(f"    Gear: {gear_names}")
             print(f"    Minis: {mini_names}")
             print(f"    Avg Gems: PP={avg_gems['PP']}, CM={avg_gems['CM']}, FM={avg_gems['FM']}, FT={avg_gems['FT']}, FF={avg_gems['FF']}, OV={avg_gems['Element']}")
@@ -562,6 +590,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
                 "gear": gear_names,
                 "minis": mini_names,
                 "songs_with_set": loadout_data["songs_with_set"],
+                "win_frequency": loadout_data["win_frequency"],
                 "stats": full_stats,
                 "gems": avg_gems,
                 "avg_score": loadout_data["avg_score"],
