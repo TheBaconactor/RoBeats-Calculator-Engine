@@ -1,0 +1,56 @@
+[project]
+name = "robeats-metafinder"
+version = "2.0.0"
+description = "High-performance genetic algorithm solver for optimizing gear and mini loadouts"
+readme = "README.md"
+requires-python = ">=3.9"
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+# Include all Python files
+include = ["gear_optimizer/**/*.py", "tests/**/*.py", "scripts/**/*.py", "tools/**/*.py", "*.py"]
+
+[tool.ruff.lint]
+# Start with a minimal safe set, expand as cleanup progresses
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+]
+ignore = [
+    # Ignore these during initial adoption (will clean up progressively)
+    "E501",  # line too long (let formatter handle this)
+    "E402",  # module level import not at top of file (common in this codebase)
+    "E701",  # multiple statements on one line (mostly in scripts)
+    "F401",  # imported but unused (will clean up separately)
+    "F841",  # local variable assigned but never used
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Relax rules for scripts and tools
+"scripts/**/*.py" = ["E", "W", "F"]
+"tools/**/*.py" = ["E", "W", "F"]
+# Test files can have unused imports (fixtures) and assertions
+"tests/**/*.py" = ["F401", "F841"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "gpu: marks tests that require GPU (deselect with '-m \"not gpu\"')",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]

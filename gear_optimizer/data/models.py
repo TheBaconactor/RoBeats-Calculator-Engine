@@ -121,23 +121,3 @@ class GASettings:
             mini_rank_max,
         )
 
-
-class MemoryGuardResumeTracker:
-    """Tracks partial completion state for memory guard resume functionality."""
-
-    def __init__(self):
-        self.completed_songs = set()
-        self.total_count = 0
-        self.original_args = None
-
-    def mark_completed(self, song_name):
-        """Mark a song as completed."""
-        self.completed_songs.add(song_name)
-
-    def is_completed(self, song_name):
-        """Check if a song was already completed."""
-        return song_name in self.completed_songs
-
-    def get_progress(self):
-        """Get completion progress as (completed, total)."""
-        return len(self.completed_songs), self.total_count

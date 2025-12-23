@@ -529,7 +529,7 @@ def process_song_task(args):
             db_loadouts_full_count = 0
             if use_evo_db:
                 try:
-                    from .database import get_best_loadouts
+                    from ..data.database import get_best_loadouts
                     db_loadouts_full = get_best_loadouts(
                         found_song_name, limit=FG_CANDIDATE_LIMIT,
                         gears_by_name=gears_by_name, minis_by_name=minis_by_name

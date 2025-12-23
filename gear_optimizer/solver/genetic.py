@@ -370,11 +370,32 @@ def _run_gpu_native_ga(
         stat_names = ["Perfect Points", "Combo Multiplier", "Fever Multiplier", 
                       "Fever Time", "Fever Fill Rate", "Beat", "Vibe", "Rush", "Flow", "Chill"]
         
-        # Build candidate dicts from vectorized results
+        # OPTIMIZATION: Two-pass lazy evaluation
+        # Pass 1: Filter unique genomes by ID tuple (fast, no decode_genome)
+        # Pass 2: Decode and construct dicts only for unique candidates
+        seen_id_hashes = set()
+        unique_candidate_indices = []  # Indices into top_indices
+        
         for i, idx in enumerate(top_indices):
             score_val = int(scores[idx])
             if score_val <= 0:
                 continue
+            
+            genome_ids = pop_snapshot[idx]
+            # Fast hash: tuple of genome IDs (no string conversion needed)
+            id_hash = tuple(genome_ids.tolist())
+            
+            if id_hash not in seen_id_hashes:
+                seen_id_hashes.add(id_hash)
+                unique_candidate_indices.append(i)
+                
+                if len(unique_candidate_indices) >= LOADOUTS_PER_SONG_LIMIT:
+                    break
+        
+        # Pass 2: Decode and build dicts only for unique candidates
+        for i in unique_candidate_indices:
+            idx = top_indices[i]
+            score_val = int(scores[idx])
             
             genome_ids = pop_snapshot[idx]
             genome = registry.decode_genome(genome_ids)
@@ -424,9 +445,6 @@ def _run_gpu_native_ga(
                 }
             }
             all_evaluated.append(cand_data)
-            
-            if len(all_evaluated) >= LOADOUTS_PER_SONG_LIMIT:
-                break
     
     return best_genome, best_score, best_result, all_evaluated
 

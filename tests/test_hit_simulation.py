@@ -70,3 +70,35 @@ def test_simulate_perfect_hit_timestamps_with_great_candidates_respects_late_onl
     assert 41 <= int(great_delta[0]) <= 190
     assert 81 <= int(great_delta[1]) <= 380
     assert 41 <= int(great_delta[2]) <= 190
+
+
+def test_simulate_perfect_hit_timestamps_with_great_candidates_full_mode_includes_early_extension_beyond_perfect():
+    """
+    In source `GearStats.get_note_times`, the Great window is an extension beyond Perfect
+    on BOTH sides:
+      great_lower_abs = perfect_lower + great_lower_extra
+      great_upper_abs = perfect_upper + great_upper_extra
+
+    At stat=0:
+      perfect: [-20, +40]
+      great extra lower: -75  => great lower abs: -95
+      great extra upper: +150 => great upper abs: +190
+      (held tails x2)
+    """
+    timestamps = np.array([1.000, 1.050, 1.100], dtype=np.float64)
+    note_types = np.array([1, 3, 1], dtype=np.int16)  # middle note is held tail
+
+    _, great_candidates, _ = simulate_perfect_hit_timestamps_with_great_candidates(
+        timestamps, note_types, seed=1234, great_mode="full"
+    )
+
+    base_ms = np.floor(timestamps * 1000.0 + 1e-6).astype(np.int64)
+    great_ms = np.floor(great_candidates * 1000.0 + 1e-6).astype(np.int64)
+    great_delta = great_ms - base_ms
+
+    # Head notes: Great full window [-95, +190]
+    assert -95 <= int(great_delta[0]) <= 190
+    assert -95 <= int(great_delta[2]) <= 190
+
+    # Tail note: Great full window [-190, +380]
+    assert -190 <= int(great_delta[1]) <= 380

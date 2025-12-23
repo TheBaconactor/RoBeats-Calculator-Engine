@@ -261,11 +261,18 @@ def simulate_perfect_hit_timestamps_with_great_candidates(
         great_high_ms = great_upper_ms
     elif great_mode == "early":
         # Early-only: [great_lower, perfect_lower-1]
-        great_low_ms = (int(great_lower_ms) * mult).astype(np.int32)
-        great_high_ms = (int(perfect_lower_ms) * mult - 1).astype(np.int32)
+        # In `GearStats.get_note_times`, Great extends Perfect on the early side too:
+        #   great_lower_abs = perfect_lower + great_lower_extra
+        perfect_low_abs_ms = perfect_low_ms.astype(np.int32)
+        great_low_abs_ms = perfect_low_abs_ms + (int(great_lower_ms) * mult).astype(np.int32)
+        great_low_ms = great_low_abs_ms
+        great_high_ms = perfect_low_abs_ms - 1
     elif great_mode == "full":
         # Full window: [great_lower, great_upper]
-        great_low_ms = (int(great_lower_ms) * mult).astype(np.int32)
+        # See note above for early-side absolute lower bound.
+        perfect_low_abs_ms = perfect_low_ms.astype(np.int32)
+        great_low_abs_ms = perfect_low_abs_ms + (int(great_lower_ms) * mult).astype(np.int32)
+        great_low_ms = great_low_abs_ms
         great_high_ms = great_upper_ms
     else:
         raise ValueError(f"Invalid great_mode: {great_mode}")

@@ -3,7 +3,6 @@
 A high-performance genetic algorithm solver for optimizing gear and mini loadouts in rhythm games. Features JIT-compiled scoring, GPU-accelerated gem allocation, parallel song processing, and intelligent caching for maximum throughput.
 
 **Version:** 2.0.0
-**Codebase Quality:** A- (8.4/10) - [See Assessment](CODEBASE_QUALITY_ASSESSMENT.md)
 
 ---
 
@@ -54,11 +53,11 @@ The optimizer will:
 
 ### 💾 Data Management
 - **SQLite Database:** Efficient storage with WAL mode, batch inserts, indexed queries
-- **Loadout Deduplication:** SHA256 hashing prevents redundant evaluations
+- **Loadout Deduplication:** MD5 hashing prevents redundant evaluations
 - **Stats Signatures:** Deterministic cache keys for identical configurations
 - **Database Merging:** Utilities for combining results from multiple runs
 - **Discord Integration:** Real-time progress reporting with rate limiting
-- **Dual-Table Architecture:** Clean separation of Base and Force Greats loadouts ([View Schema](docs/DATABASE_SCHEMA.md))
+- **Dual-Table Architecture:** Clean separation of Base and Force Greats loadouts
 
 ---
 
@@ -72,14 +71,14 @@ Edit `config.ini` to customize behavior:
 [IterationEngine]
 # GA Settings
 GA_SearchDepth = 75           # Generations per GA run (default: 75)
-GA_NumRestarts = 3            # Multi-start restarts (default: 3, deep mining: 30)
+GA_MultiStart = 3             # Multi-start restarts (default: 3, deep mining: 30)
 
-# GPU Settings
-UseGPU = 1                    # Enable GPU acceleration (1=yes, 0=no)
+# GPU Settings  
+GPU_Mode = true               # Enable GPU acceleration
 MaxParallelSongs = 4          # Max concurrent song workers (default: 4)
 
 # Force Greats
-EnableForceGreats = 0         # Force greats simulation (1=yes, 0=no)
+ForceGreatsFinder = false     # Force greats optimization (true/false)
 
 [Gear]
 # Default gear loadout (6 slots)
@@ -133,8 +132,7 @@ RoBeats-Calculator-Engine/
 ├── requirements.txt                  # Runtime dependencies
 ├── requirements-dev.txt              # Dev/test dependencies
 ├── evolution.db                      # SQLite results database
-├── CODEBASE_QUALITY_REPORT.md        # Quality analysis (A- rating)
-├── CODEBASE_QUALITY_ASSESSMENT.md    # Full repo assessment (living)
+├── pyproject.toml                    # Ruff + pytest configuration
 │
 ├── gear_optimizer/                   # Main package (v2.0.0, 70+ files)
 │   ├── __init__.py                   # Package metadata
@@ -400,8 +398,6 @@ pytest tests/test_parity_smoke.py
 - ✅ **Documentation:** Architecture docs, implementation records
 - ✅ **Maintainability:** Modular design, extracted helpers (16 functions)
 
-See [CODEBASE_QUALITY_REPORT.md](CODEBASE_QUALITY_REPORT.md) for detailed quality analysis.
-
 ### Recent Improvements (Phase 3 & 4 - December 2024)
 
 #### Phase 4 - GPU Batch Execution
@@ -493,6 +489,6 @@ This project is for personal use. All rights reserved.
 
 ## Contributing
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for system design details and [CODEBASE_QUALITY_REPORT.md](CODEBASE_QUALITY_REPORT.md) for quality standards.
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for system design details.
 
-**Quality Grade: A- (8.5/10)** - Clean, well-tested, production-ready codebase.
+Run `tools/quality_check.ps1` to verify code quality before submitting changes.
