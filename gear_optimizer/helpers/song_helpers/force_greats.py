@@ -78,6 +78,7 @@ def process_force_greats(
                 ELEMENTAL_GEM_SCALE,
                 TOTAL_GEM_BUDGET,
                 TOTAL_ROWS,
+                FG_SEARCH_RADIUS,
             )
             from ...solver.scoring import _extract_base_stats, fg_baseline_params, FG_CACHE, _force_greats_counts_to_dict
             from ...solver.taichi_gem_solver import solve_force_greats_finder_gpu
@@ -125,6 +126,25 @@ def process_force_greats(
                 if sel_color:
                     out[sel_color] = out.get(sel_color, 0) + g_ov * ELEMENTAL_GEM_SCALE
                 return out
+
+            # OPTIMIZED: Fast version with raw int values (avoids dict lookups in hot loop)
+            def _apply_gems_to_base_fast(base: dict, sel_color: str, ft: int, ff: int, 
+                                         g_pp: int, g_cm: int, g_fm: int, g_ov: int) -> dict:
+                out = dict(base or {})
+                out["Perfect Points"] = out.get("Perfect Points", 0) + g_pp * GEM_SCALE_NORMAL
+                out["Combo Multiplier"] = out.get("Combo Multiplier", 0) + g_cm * GEM_SCALE_NORMAL
+                out["Fever Multiplier"] = out.get("Fever Multiplier", 0) + g_fm * GEM_SCALE_FEVER
+                out["Fever Time"] = out.get("Fever Time", 0) + ft * GEM_SCALE_FEVER
+                out["Fever Fill Rate"] = out.get("Fever Fill Rate", 0) + ff * GEM_SCALE_FEVER
+                out["Chill"] = out.get("Chill", 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
+                out["Flow"] = out.get("Flow", 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
+                out["Rush"] = out.get("Rush", 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
+                out["Beat"] = out.get("Beat", 0) + ft * GEM_STAT_TO_ELEMENT_SCALE
+                out["Vibe"] = out.get("Vibe", 0) + ff * GEM_STAT_TO_ELEMENT_SCALE
+                if sel_color:
+                    out[sel_color] = out.get(sel_color, 0) + g_ov * ELEMENTAL_GEM_SCALE
+                return out
+
 
             def _fp_targets_to_forced_counts(
                 fp_counts: list,
@@ -348,18 +368,18 @@ def process_force_greats(
             for (sel_color, n_sections, max_per_section), sig_map in groups.items():
                 _t_cfg0 = time.perf_counter() if perf else 0.0
 
-                # Use +-5 window around loadout centers for FT/FF search.
+                # Use configurable window around loadout centers for FT/FF search.
                 # Collect all centers from this group
                 centers = group_centers.get((sel_color, n_sections, max_per_section), set())
                 needed_pairs_set = set()
                 
-                # For each center, add all pairs within +-5 window
+                # For each center, add all pairs within +-FG_SEARCH_RADIUS window
                 for center_ft, center_ff in centers:
-                    for ft_offset in range(-5, 6):  # -5 to +5 inclusive
+                    for ft_offset in range(-FG_SEARCH_RADIUS, FG_SEARCH_RADIUS + 1):
                         ft = center_ft + ft_offset
                         if ft < 0 or ft > TOTAL_GEM_BUDGET:
                             continue
-                        for ff_offset in range(-5, 6):
+                        for ff_offset in range(-FG_SEARCH_RADIUS, FG_SEARCH_RADIUS + 1):
                             ff = center_ff + ff_offset
                             if ff < 0 or ft + ff > TOTAL_GEM_BUDGET:
                                 continue
@@ -522,7 +542,7 @@ def process_force_greats(
                         # Read merge thresholds from env (same as before)
                         try:
                             max_union_cfg = int(os.environ.get("FG_MERGE_MAX_CONFIGS", "5000"))
-                            max_union_threads = int(os.environ.get("FG_MERGE_MAX_THREADS", "20000000"))
+                            max_union_threads = int(os.environ.get("FG_MERGE_MAX_THREADS", "50000000"))
                         except Exception:
                             max_union_cfg = 5000
                             max_union_threads = 20000000
@@ -764,7 +784,7 @@ def process_force_greats(
                         except Exception:
                             forced_counts = cfg_counts
 
-                        # Build gem_counts dict
+                        # Build gem_counts dict (still needed for output, but not for _apply_gems_to_base)
                         gem_counts = {
                             "Perfect Points": g_pp,
                             "Combo Multiplier": g_cm,
@@ -772,12 +792,13 @@ def process_force_greats(
                             "Element": g_ov,
                         }
 
-                        final_stats = _apply_gems_to_base(
+                        # OPTIMIZED: Use fast version with raw values (avoids dict lookups)
+                        final_stats = _apply_gems_to_base_fast(
                             bs,
                             str(sel_color),
                             ft_val,
                             ff_val,
-                            gem_counts,
+                            g_pp, g_cm, g_fm, g_ov,
                         )
 
                         fg_info = {
@@ -850,6 +871,12 @@ def process_force_greats(
                         )
                 except Exception:
                     pass
+            
+            # Always-on compact workload summary (helps correlate GPU spikes with workload size)
+            print(
+                f"[ForceGreats] GPU complete: {len(fg_variants)} variants, "
+                f"{n_gpu_calls} GPU calls, {computed} genomes computed"
+            )
             return fg_variants
         except Exception as e:
             print(f"[ForceGreats][GPU] Batch FG finder failed; falling back to CPU per-loadout: {e}")
