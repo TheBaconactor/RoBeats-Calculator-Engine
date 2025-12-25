@@ -72,6 +72,10 @@ _fg_ftff_upload_buf: dict[str, np.ndarray] | None = None
 _fg_genome_stats_buf: np.ndarray | None = None
 _fg_flat_work_buf: dict[str, np.ndarray] | None = None
 
+# Upload/build caches (avoid huge repeated host->device transfers)
+_fg_genome_stats_upload_key: tuple[int, int] | None = None  # (n_genomes, hash)
+_fg_flat_work_key: tuple[int, int] | None = None  # (n_genomes, n_ftff)
+
 # Pair-caps upload state. The flat kernel clamps FP targets using per-section
 # forced-count caps stored in fg_pair_caps.
 # leaving this field uninitialized (default zeros) effectively disables forced
@@ -86,6 +90,7 @@ def reset_force_greats_api_state() -> None:
     global _fg_last_song_key, _fg_last_great_key
     global _fg_song_upload_buf, _fg_great_upload_buf, _fg_forced_upload_buf, _fg_ftff_upload_buf
     global _fg_genome_stats_buf, _fg_flat_work_buf
+    global _fg_genome_stats_upload_key, _fg_flat_work_key
     global _fg_pair_caps_state, _fg_pair_caps_default_buf, _fg_pair_caps_custom_key
 
     _fg_last_song_key = None
@@ -96,6 +101,8 @@ def reset_force_greats_api_state() -> None:
     _fg_ftff_upload_buf = None
     _fg_genome_stats_buf = None
     _fg_flat_work_buf = None
+    _fg_genome_stats_upload_key = None
+    _fg_flat_work_key = None
     _fg_pair_caps_state = None
     _fg_pair_caps_default_buf = None
     _fg_pair_caps_custom_key = None
@@ -422,7 +429,14 @@ def _solve_force_greats_finder_gpu_impl(
             stats_buf[i, 5] = int(st.get("base_ft_stat", 0))
             stats_buf[i, 6] = int(st.get("base_ff_stat", 0))
 
-    gem_fields.genome_base_stats.from_numpy(stats_buf)
+    # OPTIMIZATION: Skip upload if genome stats unchanged (saves repeated host->device copies across FG groups).
+    # Only hash the active slice; kernels never read beyond n_genomes.
+    global _fg_genome_stats_upload_key
+    stats_hash = hash(stats_buf[:n_genomes, :7].tobytes())
+    stats_key = (n_genomes, stats_hash)
+    if _fg_genome_stats_upload_key != stats_key:
+        gem_fields.genome_base_stats.from_numpy(stats_buf)
+        _fg_genome_stats_upload_key = stats_key
 
     # Upload FT/FF list
     n_ftff = int(len(ftff_pairs))
@@ -467,28 +481,13 @@ def _solve_force_greats_finder_gpu_impl(
     if n_work_items > fg_fields.FG_MAX_FLAT_WORK_ITEMS:
         raise ValueError(f"Too many flat work items: {n_work_items} > {fg_fields.FG_MAX_FLAT_WORK_ITEMS}")
     
-    # Build flat work item arrays (cached allocation)
-    global _fg_flat_work_buf
-    if _fg_flat_work_buf is None:
-        _fg_flat_work_buf = {
-            "genome": np.zeros(fg_fields.FG_MAX_FLAT_WORK_ITEMS, dtype=np.int32),
-            "ftff": np.zeros(fg_fields.FG_MAX_FLAT_WORK_ITEMS, dtype=np.int32),
-        }
-    
-    genome_buf = _fg_flat_work_buf["genome"]
-    ftff_buf = _fg_flat_work_buf["ftff"]
-    
-    # Fast vectorized generation of (genome, ftff) pairs
-    genome_ids = np.arange(n_genomes, dtype=np.int32)
-    ftff_ids = np.arange(n_ftff, dtype=np.int32)
-    
-    # Create grid of (genome, ftff) pairs
-    g_grid, f_grid = np.meshgrid(genome_ids, ftff_ids, indexing='ij')
-    genome_buf[:n_work_items] = g_grid.ravel()
-    ftff_buf[:n_work_items] = f_grid.ravel()
-    
-    fg_fields.fg_flat_work_genome.from_numpy(genome_buf)
-    fg_fields.fg_flat_work_ftff.from_numpy(ftff_buf)
+    # Build flat work items ON GPU (cached by (n_genomes, n_ftff)).
+    # This avoids uploading two 4M-element arrays from CPU on every call.
+    global _fg_flat_work_key
+    flat_key = (n_genomes, n_ftff)
+    if _fg_flat_work_key != flat_key:
+        fg_kernels.fg_build_flat_work_kernel(int(n_genomes), int(n_ftff))
+        _fg_flat_work_key = flat_key
 
     # Pair caps (once per call). The flat kernel always clamps by fg_pair_caps,
     # so we must ensure it is initialized even when the caller does not supply
@@ -562,7 +561,8 @@ def _solve_force_greats_finder_gpu_impl(
                 limit = min(n_sections, len(cfg))
                 buf[i, :limit] = cfg[:limit]
 
-        fg_fields.fg_forced_counts.from_numpy(buf)
+        # Upload only the active chunk via a small external array (avoid 64MB from_numpy each call).
+        fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), buf[:n_cfg, :])
 
         # Call Kernel based on platform
         # On Metal (macOS), 64-bit atomics for the flat kernel are not supported.

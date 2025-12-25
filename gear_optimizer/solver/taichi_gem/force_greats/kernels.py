@@ -564,6 +564,32 @@ def _local_search_bits_from_hint(
 # ============================================================================
 
 @ti.kernel
+def fg_upload_forced_counts_kernel(n_cfg: ti.i32, data: ti.types.ndarray(dtype=ti.i32, ndim=2)):
+    """
+    Upload the per-config forced-count grid from a small external array.
+
+    This avoids `field.from_numpy()` on the huge `(FG_MAX_CONFIGS, FG_MAX_SECTIONS)` field.
+    `data` must be shaped `(n_cfg, FG_MAX_SECTIONS)` and contain zeros for unused sections.
+    """
+    for i, j in ti.ndrange(n_cfg, FG_MAX_SECTIONS):
+        fg_forced_counts[i, j] = data[i, j]
+
+
+@ti.kernel
+def fg_build_flat_work_kernel(n_genomes: ti.i32, n_ftff: ti.i32):
+    """
+    Build the flat work-item arrays on GPU.
+
+    Each work item is (genome_id, ftff_id). This avoids uploading two 4M-element
+    arrays from CPU on every FG call.
+    """
+    for g, f in ti.ndrange(n_genomes, n_ftff):
+        idx: ti.i32 = g * n_ftff + f
+        fg_flat_work_genome[idx] = g
+        fg_flat_work_ftff[idx] = f
+
+
+@ti.kernel
 def fg_reset_best_kernel(n_genomes: ti.i32):
     for i in range(n_genomes):
         fg_best_final_score[i] = -1

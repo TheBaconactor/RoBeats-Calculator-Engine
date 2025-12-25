@@ -1046,6 +1046,8 @@ def apply_force_greats_to_result(
         return None
 
     fg_info = {
+        "enabled": True,
+        "algo_version": FORCE_GREATS_ALGO_VERSION,
         "config": fg_result["config_dict"],
         "final_score": fg_result["final_score"],
     }
