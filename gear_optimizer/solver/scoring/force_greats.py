@@ -24,6 +24,7 @@ from ...core.constants import (
     GEM_SCALE_FEVER,
     GEM_STAT_TO_ELEMENT_SCALE,
     ELEMENTAL_GEM_SCALE,
+    FG_SEARCH_RADIUS,
 )
 from ...core.utils import safe_int, safe_float, stats_signature
 
@@ -675,7 +676,7 @@ def run_force_greats_hill_climb(
     selected_color=None,
     center_ft=None,
     center_ff=None,
-    search_radius=5,
+    search_radius=FG_SEARCH_RADIUS,
     use_gpu: bool = False,
 ):
     """
@@ -976,7 +977,7 @@ def apply_force_greats_to_result(
     manual_counts=None,
     use_finder=False,
     use_gpu: bool = False,
-    search_radius=5,
+    search_radius=FG_SEARCH_RADIUS,
 ):
     """
     Evaluate forced-great penalties (manual config or hill-climb finder) for a result dict.

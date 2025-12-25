@@ -66,6 +66,10 @@ MAX_TIMELINE_CACHE_GLOBAL = 10000  # ~10MB max (was 500K per song)
 MAX_GEM_SOLVER_CACHE = 5000        # ~10MB max
 MAX_FG_CACHE = 2000                # ~6MB max
 
+# --- FORCE GREATS OPTIMIZATION ---
+# FT/FF search radius around loadout centers (default ±5)
+FG_SEARCH_RADIUS = int(os.environ.get("FG_SEARCH_RADIUS", "5"))
+
 # --- MEMORY MANAGEMENT CONSTANTS ---
 DEFAULT_MEMORY_GUARD_PERCENT = 50.0
 STRICT_PLATFORM_MEMORY_GUARD_PERCENT = 35.0

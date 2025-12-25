@@ -412,6 +412,10 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
         except Exception:
             pass
 
+        # Pre-build parameter lists for executemany (faster than per-entry execute)
+        loadouts_params = []
+        fg_loadouts_params = []
+        
         for entry in deduplicated_entries:
             score = entry.get("score", 0)
             fg_score = entry.get("fg_score", 0)
@@ -429,8 +433,26 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
             details_json = json.dumps(details, separators=(',', ':')) if details else None
             force_json = json.dumps(force_data, separators=(',', ':')) if force_data else None
 
-            # 1. Insert into Base Score Table (loadouts) - Always
-            conn.execute("""
+            # All entries go to loadouts table
+            loadouts_params.append((
+                song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_json
+            ))
+            
+            # Only FG-valid entries go to fg_loadouts table
+            if fg_score > 0 and force_data is not None:
+                fg_loadouts_params.append((
+                    song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_json
+                ))
+
+            # Track best scores
+            if best_score_max is None or score > best_score_max:
+                best_score_max = score
+            if fg_score and (best_fg_max is None or fg_score > best_fg_max):
+                best_fg_max = fg_score
+
+        # Batch insert into loadouts table
+        if loadouts_params:
+            conn.executemany("""
                 INSERT INTO loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
                 ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
@@ -444,34 +466,23 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
                         ELSE force_details_json 
                     END,
                     timestamp = strftime('%s', 'now')
-            """, (
-                song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_json
-            ))
+            """, loadouts_params)
 
-            # 2. Insert into Force Greats Table (fg_loadouts) - Only if FG Score > 0 AND Valid Config
-            # Note: We rely on upstream (persistence.py) to set fg_score=0/force=None if invalid.
-            # So simple checks here suffice.
-            if fg_score > 0 and force_data is not None:
-                conn.execute("""
-                    INSERT INTO fg_loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
-                    ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
-                        score = excluded.score, -- Keeping context updated
-                        fg_score = MAX(fg_score, excluded.fg_score),
-                        gear_json = excluded.gear_json,
-                        minis_json = excluded.minis_json,
-                        details_json = excluded.details_json,
-                        force_details_json = excluded.force_details_json,
-                        timestamp = strftime('%s', 'now')
-                """, (
-                    song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_json
-                ))
+        # Batch insert into fg_loadouts table
+        if fg_loadouts_params:
+            conn.executemany("""
+                INSERT INTO fg_loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+                ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
+                    score = excluded.score,
+                    fg_score = MAX(fg_score, excluded.fg_score),
+                    gear_json = excluded.gear_json,
+                    minis_json = excluded.minis_json,
+                    details_json = excluded.details_json,
+                    force_details_json = excluded.force_details_json,
+                    timestamp = strftime('%s', 'now')
+            """, fg_loadouts_params)
 
-
-            if best_score_max is None or score > best_score_max:
-                best_score_max = score
-            if fg_score and (best_fg_max is None or fg_score > best_fg_max):
-                best_fg_max = fg_score
 
         # Update Song Stats
         if best_score_max is not None:

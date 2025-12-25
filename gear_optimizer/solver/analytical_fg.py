@@ -14,6 +14,7 @@ Key insight: Instead of simulating note-by-note on GPU, we can calculate:
 import numpy as np
 from math import ceil, floor
 from typing import List, Tuple, Dict, Optional
+from functools import lru_cache
 
 from ..core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET
 
@@ -63,6 +64,9 @@ class AnalyticalFGScorer:
         self.non_fever_cas = (total_notes - long_notes) * FEVER_FILL_BASE_RATE
         self.fever_time_cas = last_note_time * FEVER_TIME_SCALE + FEVER_TIME_OFFSET
         
+        # Per-instance caches for expensive analysis results
+        self._section_analysis_cache: Dict[Tuple[int, int], dict] = {}
+        
     def _lookup(self, ref: np.ndarray, idx: int) -> float:
         """Safe lookup with clamping to [0, 160]."""
         return float(ref[max(0, min(160, idx))])
@@ -100,6 +104,11 @@ class AnalyticalFGScorer:
                 'useful_sections': Max meaningful section index
                 'section_caps': Recommended cap per section based on gap
         """
+        # Fast path: return cached result if available
+        cache_key = (int(ft_stat), int(ff_stat))
+        if cache_key in self._section_analysis_cache:
+            return self._section_analysis_cache[cache_key]
+        
         non_fever_base, fever_duration, _, raw_fever_fill = self.get_fever_params(ft_stat, ff_stat)
         
         idx = 0
@@ -149,13 +158,16 @@ class AnalyticalFGScorer:
                 cap = int(base_cap * 0.3)
             section_caps.append(max(0, cap))
         
-        return {
+        result = {
             'fever_activations': activations,
             'gap': gap,
             'useful_sections': useful_sections,
             'section_caps': section_caps,
             'non_fever_base': non_fever_base,
         }
+        # Cache the result for future lookups
+        self._section_analysis_cache[cache_key] = result
+        return result
     
     def get_fill_penalty(self, forced_count: int, raw_fever_fill: float, is_section_1: bool) -> int:
         """
