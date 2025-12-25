@@ -307,22 +307,19 @@ def _run_gpu_native_ga(
                 n_elites=total_elites,
             )
 
-    # --- END OF RUN: Download global best from GPU ---
-    # GPU-side global best tracking captured the best genome and results during the loop
-    best_score, best_genome_ids, best_result_row = gpu_api.ga_download_global_best()
-
-
-    # --- END OF GA RUN: Download final population for FG candidate extraction ---
-    # NOTE: best_genome_ids and best_result_row were captured when best score was found (during loop)
-    # We need pop_snapshot for extracting OTHER candidates.
-    pop_snapshot = gpu_api.ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
+    # --- END OF RUN: Download best + population snapshot with a single transfer ---
+    # This avoids multiple `to_numpy()` calls (each forces a GPU sync on Vulkan).
+    (
+        best_score,
+        best_genome_ids,
+        best_result_row,
+        pop_snapshot,
+        results,
+        scores,
+    ) = gpu_api.ga_download_run_payload(n_genomes=n_genomes, n_slots=n_slots)
     
     # Decode best genome (already captured correctly during loop)
     best_genome = registry.decode_genome(best_genome_ids) if best_genome_ids is not None else []
-    
-    # Download final results and scores for FG candidate gem allocations and ranking
-    results = gpu_api.ga_download_results(n_genomes)
-    scores = gpu_api.ga_download_scores(n_genomes)  # For FG candidate ranking
     
     # Best result uses the captured best_result_row (has correct gem allocations from when best was found)
     if best_result_row is not None:

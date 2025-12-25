@@ -53,6 +53,7 @@ from .kernels_helpers import (
     ga_global_best_score,
     ga_global_best_genome,
     ga_global_best_results,
+    ga_run_payload_packed,
     # GPU-side island elitism
     island_boundaries,
     island_elite_indices,
@@ -127,6 +128,7 @@ from .kernels_ga_eval import (
     # GPU-side global best tracking
     ga_init_global_best_kernel,
     ga_update_global_best_kernel,
+    ga_pack_run_payload_kernel,
     # GPU-side island elitism
     ga_find_island_elites_kernel,
     # GPU-side island migration
@@ -228,6 +230,7 @@ __all__ = [
     # GPU-side global best tracking
     "ga_init_global_best_kernel",
     "ga_update_global_best_kernel",
+    "ga_pack_run_payload_kernel",
     # GPU-side island migration
     "ga_island_migration_kernel",
     # Warm-start optimization

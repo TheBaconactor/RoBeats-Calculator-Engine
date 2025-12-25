@@ -36,16 +36,20 @@ if project_root not in sys.path:
 
 
 def _typeperf_start(counter: str, out_csv: Path, *, sample_interval_sec: int = 1, max_samples: int = 120) -> subprocess.Popen:
-    # typeperf is picky; pass a single argument string with quoted counter.
-    arg_str = f"\"{counter}\" -si {int(sample_interval_sec)} -sc {int(max_samples)} -f CSV -o \"{out_csv}\""
-    # On Windows, typeperf's argument parsing expects cmd.exe style tokenization.
-    cmd = f"typeperf {arg_str}"
-    return subprocess.Popen(
-        ["cmd.exe", "/c", cmd],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+    args = [
+        "typeperf",
+        counter,
+        "-si",
+        str(int(sample_interval_sec)),
+        "-sc",
+        str(int(max_samples)),
+        "-f",
+        "CSV",
+        "-o",
+        str(out_csv),
+    ]
+    # Keep output quiet; typeperf writes CSV to disk when it exits.
+    return subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def _typeperf_stop(proc: subprocess.Popen | None) -> None:
@@ -83,8 +87,22 @@ if __name__ == "__main__":
 
     print("\n>> HOT RUN: starting typeperf + cProfile...")
     pid = os.getpid()
-    gpu_tp = _typeperf_start(rf"\GPU Engine(pid_{pid}*)\Utilization Percentage", gpu_csv)
-    cpu_tp = _typeperf_start(r"\Processor(_Total)\% Processor Time", cpu_csv)
+    # typeperf writes the output file when it exits; run it for a fixed window
+    # (slightly longer than the expected hot run) so we always get CSVs.
+    sample_interval = int(os.environ.get("TYPEPERF_SAMPLE_INTERVAL_SEC", "1"))
+    max_samples = int(os.environ.get("TYPEPERF_MAX_SAMPLES", "60"))
+    gpu_tp = _typeperf_start(
+        rf"\GPU Engine(pid_{pid}*)\Utilization Percentage",
+        gpu_csv,
+        sample_interval_sec=sample_interval,
+        max_samples=max_samples,
+    )
+    cpu_tp = _typeperf_start(
+        r"\Processor(_Total)\% Processor Time",
+        cpu_csv,
+        sample_interval_sec=sample_interval,
+        max_samples=max_samples,
+    )
 
     profiler = cProfile.Profile()
     profiler.enable()
@@ -94,8 +112,15 @@ if __name__ == "__main__":
     finally:
         t1 = time.perf_counter()
         profiler.disable()
-        _typeperf_stop(gpu_tp)
-        _typeperf_stop(cpu_tp)
+        # Wait for typeperf to finish its fixed sample window so it flushes CSV.
+        tp_timeout = sample_interval * max_samples + 10
+        for proc in (gpu_tp, cpu_tp):
+            if not proc:
+                continue
+            try:
+                proc.wait(timeout=tp_timeout)
+            except Exception:
+                _typeperf_stop(proc)
 
     profiler.dump_stats(str(prof_path))
 

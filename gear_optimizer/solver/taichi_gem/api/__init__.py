@@ -82,6 +82,7 @@ try:
         ga_download_population_indices,
         ga_download_scores,
         ga_download_results,
+        ga_download_run_payload,
         # GPU-side global best tracking
         ga_init_global_best,
         ga_update_global_best,
@@ -141,6 +142,7 @@ __all__ = [
     "ga_download_population_indices",
     "ga_download_scores",
     "ga_download_results",
+    "ga_download_run_payload",
     # GPU-side global best tracking
     "ga_init_global_best",
     "ga_update_global_best",

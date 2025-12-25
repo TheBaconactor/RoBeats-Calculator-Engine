@@ -103,6 +103,8 @@ ga_parent_b: ti.Field = None         # (MAX_GENOMES,) int32 selected parent inde
 ga_global_best_score: ti.Field = None     # (1,) i32 - best score across all generations
 ga_global_best_genome: ti.Field = None    # (MAX_SLOTS,) i32 - item IDs of best genome
 ga_global_best_results: ti.Field = None   # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for best genome
+# Packed GA download payload (reduce CPU<->GPU transfers): row 0 = global best, rows 1..n = per-genome snapshot.
+ga_run_payload_packed: ti.Field = None    # (MAX_GENOMES+1, 17) i32 - [score, slot_ids(9), result(7)]
 
 # GPU-side island elitism (avoids per-generation score downloads)
 MAX_ISLANDS = 16  # Maximum number of islands
@@ -213,6 +215,7 @@ def reset_fields_state() -> None:
     global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results
+    global ga_run_payload_packed
     global island_boundaries, island_elite_indices, island_elite_count
 
     # Main refs
@@ -277,6 +280,7 @@ def reset_fields_state() -> None:
     ga_global_best_score = None
     ga_global_best_genome = None
     ga_global_best_results = None
+    ga_run_payload_packed = None
     song_flags = None
 
     # Results
@@ -342,6 +346,7 @@ def allocate_fields():
     global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results
+    global ga_run_payload_packed
     global island_boundaries, island_elite_indices, island_elite_count
     
     if _fields_allocated:
@@ -412,6 +417,7 @@ def allocate_fields():
     ga_global_best_score = ti.field(dtype=ti.i32, shape=1)
     ga_global_best_genome = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
     ga_global_best_results = ti.field(dtype=ti.i32, shape=7)  # [score, ft, ff, pp, cm, fm, ov]
+    ga_run_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES + 1, 1 + MAX_SLOTS + 7))
     
     # GPU-side island elitism (avoids per-generation score downloads)
     # Islands are contiguous ranges in the population
@@ -546,6 +552,7 @@ def bind_fields(kernels_module):
     target.ga_global_best_score = ga_global_best_score
     target.ga_global_best_genome = ga_global_best_genome
     target.ga_global_best_results = ga_global_best_results
+    target.ga_run_payload_packed = ga_run_payload_packed
     
     # GPU-side island elitism
     target.island_boundaries = island_boundaries

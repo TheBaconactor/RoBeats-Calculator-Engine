@@ -614,6 +614,30 @@ def ga_download_results(n_genomes: int) -> np.ndarray:
     return np.asarray(out[:n_genomes], dtype=np.int32)
 
 
+def ga_download_run_payload(*, n_genomes: int, n_slots: int = 9) -> tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Download a GA run snapshot with a single GPU->CPU transfer.
+
+    Returns:
+        (best_score, best_genome_ids, best_results, population_indices, results, scores)
+    """
+    ensure_ready()
+    n_genomes = int(n_genomes)
+    n_slots = int(n_slots)
+    kernels.ga_pack_run_payload_kernel(n_genomes, n_slots)
+    packed = fields.ga_run_payload_packed.to_numpy()
+
+    best_score = int(packed[0, 0])
+    best_genome_ids = np.asarray(packed[0, 1 : 1 + n_slots], dtype=np.int32).copy()
+    best_results = np.asarray(packed[0, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32).copy()
+
+    pop_snapshot = np.asarray(packed[1 : n_genomes + 1, 1 : 1 + n_slots], dtype=np.int32).copy()
+    results = np.asarray(packed[1 : n_genomes + 1, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32).copy()
+    scores = np.asarray(packed[1 : n_genomes + 1, 0], dtype=np.int32).copy()
+
+    return best_score, best_genome_ids, best_results, pop_snapshot, results, scores
+
+
 # ============================================================================
 # GPU-SIDE GLOBAL BEST TRACKING
 # ============================================================================
