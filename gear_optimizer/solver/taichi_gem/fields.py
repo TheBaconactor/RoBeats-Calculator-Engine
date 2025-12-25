@@ -32,6 +32,7 @@ MAX_SONG_NOTES = 200000  # Maximum song length for GPU timeline computation
 MAX_SONG_SLOTS = 8  # Concurrent song grid slots for batch coalescing
 MAX_TOTAL_BUDGET = 90  # Max supported total_budget for FT/FF combo tables
 MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 when MAX_TOTAL_BUDGET=90
+MAX_BP_PAIRS = 256  # Breakpoint kernel scan pairs
 
 
 # ============================================================================
@@ -70,6 +71,11 @@ work_ff_gems: ti.Field = None
 work_head_len: ti.Field = None
 work_genome_id: ti.Field = None
 work_items: ti.Field = None  # Vector field [budget, cnt_fever, cnt_normal, ft, ff, hl, gid, song_slot]
+
+# Breakpoint detection kernel inputs/outputs (bound into kernels_breakpoints)
+bp_pair_ft: ti.Field = None      # (MAX_BP_PAIRS,) i32
+bp_pair_ff: ti.Field = None      # (MAX_BP_PAIRS,) i32
+bp_result_mask: ti.Field = None  # (16, 64) i32
 
 # Per-genome base stats (lookup by genome_id in kernel)
 genome_base_pp: ti.Field = None
@@ -192,6 +198,7 @@ def reset_fields_state() -> None:
     global song_timestamps
     global fever_masks, work_budgets, work_count_fever, work_count_normal
     global work_ft_gems, work_ff_gems, work_head_len, work_genome_id, work_items
+    global bp_pair_ft, bp_pair_ff, bp_result_mask
     global genome_base_pp, genome_base_cm, genome_base_fm, genome_base_p_val, genome_base_s_val
     global genome_base_ft, genome_base_ff, genome_base_stats
     global population_indices, population_next_indices, item_stats, base_fixed_stats
@@ -237,6 +244,11 @@ def reset_fields_state() -> None:
     work_head_len = None
     work_genome_id = None
     work_items = None
+
+    # Breakpoint detection
+    bp_pair_ft = None
+    bp_pair_ff = None
+    bp_result_mask = None
 
     # Genome base
     genome_base_pp = None
@@ -315,6 +327,7 @@ def allocate_fields():
     global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
     global fever_masks, work_budgets, work_count_fever, work_count_normal
     global work_ft_gems, work_ff_gems, work_head_len, work_genome_id, work_items
+    global bp_pair_ft, bp_pair_ff, bp_result_mask
     global genome_base_pp, genome_base_cm, genome_base_fm, genome_base_p_val, genome_base_s_val
     global genome_base_ft, genome_base_ff, genome_base_stats
     global population_indices, population_next_indices, item_stats, base_fixed_stats
@@ -340,6 +353,11 @@ def allocate_fields():
     ref_fm_field = ti.field(dtype=ti.f32, shape=161)
     ref_ft_field = ti.field(dtype=ti.f32, shape=161)
     ref_ff_field = ti.field(dtype=ti.f32, shape=161)
+
+    # Breakpoint detection kernel inputs/outputs (small, always-on)
+    bp_pair_ft = ti.field(dtype=ti.i32, shape=MAX_BP_PAIRS)
+    bp_pair_ff = ti.field(dtype=ti.i32, shape=MAX_BP_PAIRS)
+    bp_result_mask = ti.field(dtype=ti.i32, shape=(16, 64))
     
     # Work item inputs (Vector field for single-shot upload)
     # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id, song_slot]
@@ -434,8 +452,10 @@ def allocate_grid_fields():
     # Fever activations count per (FT, FF) - sections beyond this have no fever
     grid_fever_activations = ti.field(dtype=ti.i8, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     
-    # Song timestamps for GPU timeline computation
-    song_timestamps = ti.field(dtype=ti.f32, shape=MAX_SONG_NOTES)
+    # Song timestamps for GPU timeline computation (may already be allocated by
+    # ensure_fields_allocated for non-grid kernels).
+    if song_timestamps is None:
+        song_timestamps = ti.field(dtype=ti.f32, shape=MAX_SONG_NOTES)
     
     _grid_fields_allocated = True
     print(f"[Taichi] Allocated grid fields: {MAX_SONG_SLOTS}×{GRID_SIZE}×{GRID_SIZE} timeline grid slots")
@@ -532,6 +552,16 @@ def bind_fields(kernels_module):
     target.island_elite_indices = island_elite_indices
     target.island_elite_count = island_elite_count
 
+    # Bind breakpoint-detection fields to kernels_breakpoints (separate module)
+    try:
+        from .kernels import kernels_breakpoints
+        kernels_breakpoints.bp_pair_ft = bp_pair_ft
+        kernels_breakpoints.bp_pair_ff = bp_pair_ff
+        kernels_breakpoints.bp_result_mask = bp_result_mask
+    except Exception:
+        # Keep binding best-effort; breakpoint kernels aren't always imported.
+        pass
+
 
 def ensure_fields_allocated():
     """
@@ -545,6 +575,13 @@ def ensure_fields_allocated():
     
     if not _fields_allocated:
         allocate_fields()
+
+        # Some kernels/tests rely on `song_timestamps` without needing the full
+        # timeline grid fields. Allocate it eagerly once Taichi is initialized.
+        global song_timestamps
+        if song_timestamps is None:
+            song_timestamps = ti.field(dtype=ti.f32, shape=MAX_SONG_NOTES)
+
         # Import kernels here to avoid circular import at module load time
         from . import kernels
         bind_fields(kernels)

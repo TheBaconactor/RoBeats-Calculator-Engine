@@ -66,6 +66,7 @@ fg_global_best_g_fm = None
 fg_global_best_g_ov = None
 fg_global_best_score_penalty = None
 fg_global_best_fill_penalty = None
+fg_global_best_packed = None
 
 # Warm-start hint allocation (bound from fields.py)
 fg_genome_hint_allocation = None
@@ -996,6 +997,28 @@ def fg_pack_results_kernel(n_genomes: ti.i32):
         fg_best_packed[g, 8] = fg_best_g_ov[g]
         fg_best_packed[g, 9] = fg_best_score_penalty[g]
         fg_best_packed[g, 10] =fg_best_fill_penalty[g]
+
+
+@ti.kernel
+def fg_pack_global_best_kernel(n_genomes: ti.i32):
+    """
+    Pack all 11 global-best fields into a single contiguous array for efficient CPU download.
+
+    Mirrors `fg_pack_results_kernel`, but for the GPU-resident global best buffers used by
+    multi-group accumulation.
+    """
+    for g in range(n_genomes):
+        fg_global_best_packed[g, 0] = fg_global_best_final_score[g]
+        fg_global_best_packed[g, 1] = fg_global_best_base_score[g]
+        fg_global_best_packed[g, 2] = fg_global_best_cfg_idx[g]
+        fg_global_best_packed[g, 3] = fg_global_best_ft[g]
+        fg_global_best_packed[g, 4] = fg_global_best_ff[g]
+        fg_global_best_packed[g, 5] = fg_global_best_g_pp[g]
+        fg_global_best_packed[g, 6] = fg_global_best_g_cm[g]
+        fg_global_best_packed[g, 7] = fg_global_best_g_fm[g]
+        fg_global_best_packed[g, 8] = fg_global_best_g_ov[g]
+        fg_global_best_packed[g, 9] = fg_global_best_score_penalty[g]
+        fg_global_best_packed[g, 10] = fg_global_best_fill_penalty[g]
 
 @ti.kernel
 def fg_stage1_flat_kernel(

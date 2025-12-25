@@ -93,6 +93,7 @@ fg_global_best_g_fm: ti.Field | None = None            # (MAX_GENOMES,) i32
 fg_global_best_g_ov: ti.Field | None = None            # (MAX_GENOMES,) i32
 fg_global_best_score_penalty: ti.Field | None = None   # (MAX_GENOMES,) i32
 fg_global_best_fill_penalty: ti.Field | None = None    # (MAX_GENOMES,) i32
+fg_global_best_packed: ti.Field | None = None          # (MAX_GENOMES, 11) i32
 
 # Warm-start hints for FG gem allocation (local search optimization)
 # Stores: [pp_gems, cm_gems, fm_gems, ov_gems] from previous best allocation
@@ -162,7 +163,7 @@ def reset_fields_state() -> None:
     global fg_global_best_final_score, fg_global_best_base_score, fg_global_best_cfg_idx
     global fg_global_best_ft, fg_global_best_ff
     global fg_global_best_g_pp, fg_global_best_g_cm, fg_global_best_g_fm, fg_global_best_g_ov
-    global fg_global_best_score_penalty, fg_global_best_fill_penalty
+    global fg_global_best_score_penalty, fg_global_best_fill_penalty, fg_global_best_packed
     global fg_genome_hint_allocation
     fg_global_best_final_score = None
     fg_global_best_base_score = None
@@ -175,6 +176,7 @@ def reset_fields_state() -> None:
     fg_global_best_g_ov = None
     fg_global_best_score_penalty = None
     fg_global_best_fill_penalty = None
+    fg_global_best_packed = None
     fg_genome_hint_allocation = None
 
     _fields_allocated = False
@@ -234,6 +236,7 @@ def bind_fields(kernels_module) -> None:
     kernels_module.fg_global_best_g_ov = fg_global_best_g_ov
     kernels_module.fg_global_best_score_penalty = fg_global_best_score_penalty
     kernels_module.fg_global_best_fill_penalty = fg_global_best_fill_penalty
+    kernels_module.fg_global_best_packed = fg_global_best_packed
     kernels_module.fg_genome_hint_allocation = fg_genome_hint_allocation
 
 
@@ -296,7 +299,7 @@ def allocate_fields() -> None:
     global fg_global_best_final_score, fg_global_best_base_score, fg_global_best_cfg_idx
     global fg_global_best_ft, fg_global_best_ff
     global fg_global_best_g_pp, fg_global_best_g_cm, fg_global_best_g_fm, fg_global_best_g_ov
-    global fg_global_best_score_penalty, fg_global_best_fill_penalty
+    global fg_global_best_score_penalty, fg_global_best_fill_penalty, fg_global_best_packed
     fg_global_best_final_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_global_best_base_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_global_best_cfg_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
@@ -308,6 +311,7 @@ def allocate_fields() -> None:
     fg_global_best_g_ov = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_global_best_score_penalty = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_global_best_fill_penalty = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    fg_global_best_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, 11))
 
     # Warm-start hints for FG gem allocation
     global fg_genome_hint_allocation
@@ -396,6 +400,10 @@ def warmup_kernels() -> None:
     # Warmup global best kernels (new for GPU-resident accumulation)
     fg_kernels.fg_reset_global_best_kernel(n_genomes)
     fg_kernels.fg_update_global_best_kernel(n_genomes)
+
+    # Warmup packing kernels (avoid first-download JIT hiccup)
+    fg_kernels.fg_pack_results_kernel(n_genomes)
+    fg_kernels.fg_pack_global_best_kernel(n_genomes)
     
     # Sync to ensure JIT is complete
     ti.sync()

@@ -84,13 +84,36 @@ def collect_breakpoints_gpu(scorer, num_sections, section_caps=None):
         
         # Upload song timestamps to GPU (if not already uploaded)
         timestamps_np = np.asarray(scorer.timestamps, dtype=np.float32)
-        fields.song_timestamps.from_numpy(np.pad(timestamps_np, (0, fields.FG_MAX_SONG_NOTES - len(timestamps_np))))
+        fields.song_timestamps.from_numpy(np.pad(timestamps_np, (0, fields.MAX_SONG_NOTES - len(timestamps_np))))
+
+        # Upload reference lookup tables required by kernels_breakpoints.
+        # The CPU scorer carries ref_ft/ref_ff; the GPU kernels read from
+        # kernels_helpers.ref_ft_field/ref_ff_field (bound via fields.bind_fields).
+        fields.ref_ft_field.from_numpy(np.asarray(scorer.ref_ft, dtype=np.float32))
+        fields.ref_ff_field.from_numpy(np.asarray(scorer.ref_ff, dtype=np.float32))
         
         # Prepare FT/FF pairs for GPU kernel
         # Use representative FT=80 and sample FF values (same as CPU version)
         ft_pairs_list = [80]
         ff_pairs_list = list(range(0, 161, 10))  # 17 samples
-        
+
+        # CPU code enumerates breakpoints in *fill-penalty (FP)* units, where
+        # FP = ceil(raw_fill + forced*0.5) - ceil(raw_fill). Compute the max FP
+        # per section across the same FF sample set so the GPU kernel scans the
+        # same [0..max_fp] range.
+        from gear_optimizer.helpers.fg_utils import _fp_cap_from_forced
+        max_fp_per_section = []
+        for sec in range(actual_sections):
+            if section_caps[sec] <= 0:
+                max_fp_per_section.append(0)
+                continue
+            max_fp = 0
+            for ff_stat in ff_pairs_list:
+                fp_cap = _fp_cap_from_forced(scorer, 80, ff_stat, int(section_caps[sec]))
+                if fp_cap > max_fp:
+                    max_fp = fp_cap
+            max_fp_per_section.append(int(max_fp))
+         
         n_pairs = len(ft_pairs_list) * len(ff_pairs_list)
         ft_array = np.zeros(256, dtype=np.int32)
         ff_array = np.zeros(256, dtype=np.int32)
@@ -110,7 +133,7 @@ def collect_breakpoints_gpu(scorer, num_sections, section_caps=None):
         kernels_breakpoints.reset_breakpoint_mask_kernel()
         
         # Collect breakpoints on GPU
-        max_count = max(section_caps) if section_caps else 50
+        max_count = max(max_fp_per_section) if max_fp_per_section else 0
         kernels_breakpoints.collect_breakpoints_kernel(
             n_pairs=idx,
             total_notes=scorer.total_notes,
@@ -127,11 +150,12 @@ def collect_breakpoints_gpu(scorer, num_sections, section_caps=None):
         # Extract breakpoints from mask (same as proposed in optimization doc)
         section_breakpoints = []
         for sec in range(actual_sections):
-            if section_caps[sec] <= 0:
+            sec_cap = max_fp_per_section[sec]
+            if sec_cap <= 0:
                 section_breakpoints.append([0])
             else:
                 breakpoints = [0]  # Always include 0
-                for count in range(1, max_count + 1):
+                for count in range(1, sec_cap + 1):
                     if mask[sec, count] > 0:
                         breakpoints.append(count)
                 section_breakpoints.append(breakpoints)

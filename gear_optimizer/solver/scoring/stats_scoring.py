@@ -22,6 +22,10 @@ from ..fever_timeline import (
 from ..scoring_core import fast_calculate_score
 
 
+_FG_BASELINE_CACHE: dict[tuple, tuple[int, int]] = {}
+_FG_BASELINE_CACHE_MAX = 8192
+
+
 def evaluate_stats_score(
     stats,
     calc_song,
@@ -133,6 +137,19 @@ def fg_baseline_params(stats, calc_song, ref_arrays):
     if not stats or not calc_song:
         return 0, 0
 
+    # Cache by song + FT/FF stats. This is called many times during FG candidate
+    # collection; caching avoids repeated Python timeline stepping.
+    try:
+        song_key = _song_cache_key(calc_song)
+        ft_stat_raw = int(safe_int(stats.get("Fever Time", 0), 0))
+        ff_stat_raw = int(safe_int(stats.get("Fever Fill Rate", 0), 0))
+        cache_key = (song_key, ft_stat_raw, ff_stat_raw)
+        cached = _FG_BASELINE_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
+    except Exception:
+        cache_key = None
+
     song_data = calc_song.get("song_data", {}) or {}
     timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
     total_notes = len(timestamps)
@@ -160,7 +177,12 @@ def fg_baseline_params(stats, calc_song, ref_arrays):
         last_note_time,
     )
 
-    return int(non_fever_section), int(non_fever_base)
+    result = (int(non_fever_section), int(non_fever_base))
+    if cache_key is not None:
+        if len(_FG_BASELINE_CACHE) >= _FG_BASELINE_CACHE_MAX:
+            _FG_BASELINE_CACHE.clear()
+        _FG_BASELINE_CACHE[cache_key] = result
+    return result
 
 
 def _song_cache_key(calc_song):

@@ -97,7 +97,12 @@ def _is_same_variant(v1, v2):
     # Compare Score (FG score vs Base score)
     # Note: d2 usually has "fg_score" if it's an FG-processed entry
     s1 = int(round(d1.get("Score", 0)))
-    s2 = int(round(d2.get("fg_score") or d2.get("Score", 0)))
+    # Cached FG reuse stores the score at the wrapper level (`v2['fg_score']`),
+    # while `d2` may only contain `details` without a Score field.
+    s2_raw = v2.get("fg_score")
+    if s2_raw is None:
+        s2_raw = d2.get("fg_score") or d2.get("Score", 0)
+    s2 = int(round(s2_raw or 0))
     if s1 != s2: 
         return False
     
@@ -173,6 +178,10 @@ def _print_detailed_debug(found_song_name, entry, ref_arrays, calc_song, cfg):
     """Print detailed debug output for a specific variant entry."""
     variant_data = entry.get("data", {})
     
-    final_score = variant_data.get("fg_score") or variant_data.get("Score", 0)
+    # Prefer wrapper-level fg_score for cached FG reuse entries (where `data` is
+    # just the persisted details dict without a Score field).
+    final_score = entry.get("fg_score")
+    if final_score is None:
+        final_score = variant_data.get("fg_score") or variant_data.get("Score", 0)
     print(f"\nTotal Score: {int(final_score)}")
 
