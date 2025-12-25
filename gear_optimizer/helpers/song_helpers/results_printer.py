@@ -181,7 +181,18 @@ def _print_detailed_debug(found_song_name, entry, ref_arrays, calc_song, cfg):
     # Prefer wrapper-level fg_score for cached FG reuse entries (where `data` is
     # just the persisted details dict without a Score field).
     final_score = entry.get("fg_score")
-    if final_score is None:
-        final_score = variant_data.get("fg_score") or variant_data.get("Score", 0)
-    print(f"\nTotal Score: {int(final_score)}")
+    if final_score is None or final_score == 0:
+        final_score = variant_data.get("fg_score") or variant_data.get("Score")
+    if (final_score is None or final_score == 0) and isinstance(variant_data.get("ForceGreats"), dict):
+        final_score = variant_data.get("ForceGreats", {}).get("final_score")
+
+    try:
+        final_score_int = int(final_score)
+    except Exception:
+        try:
+            final_score_int = int(float(final_score))
+        except Exception:
+            final_score_int = 0
+
+    print(f"\nTotal Score: {final_score_int}")
 

@@ -53,13 +53,16 @@ _ITEM_STATS_CACHE: dict = {"sig": None}
 
 # Cache state for base_fixed_stats (simple tuple comparison)
 _BASE_FIXED_STATS_CACHE: tuple | None = None
+# Cache state for island boundaries (simple tuple comparison)
+_ISLAND_BOUNDARIES_CACHE: tuple | None = None
 
 
 def reset_ga_upload_caches() -> None:
     """Reset upload caches after ti.reset() or when switching songs."""
-    global _ITEM_STATS_CACHE, _BASE_FIXED_STATS_CACHE
+    global _ITEM_STATS_CACHE, _BASE_FIXED_STATS_CACHE, _ISLAND_BOUNDARIES_CACHE
     _ITEM_STATS_CACHE = {"sig": None}
     _BASE_FIXED_STATS_CACHE = None
+    _ISLAND_BOUNDARIES_CACHE = None
 
 
 # ============================================================================
@@ -90,6 +93,47 @@ def ga_upload_population_indices(population_indices_np: np.ndarray, *, n_slots: 
     pop_buf[:n_genomes, : int(n_slots)] = np.asarray(population_indices_np[:, : int(n_slots)], dtype=np.int32)
     fields.population_indices.from_numpy(pop_buf)
     return n_genomes
+
+
+def ga_upload_initial_populations(populations_np: np.ndarray, *, n_runs: int, n_genomes: int, n_slots: int = 9) -> None:
+    """
+    Upload a batch of initial populations for multi-start GA runs.
+
+    `populations_np` is expected to contain encoded item IDs with shape (n_runs, n_genomes, n_slots).
+    Data is padded to the fixed GPU buffer shapes and uploaded in one transfer.
+    """
+    ensure_ready()
+    n_runs = int(n_runs)
+    n_genomes = int(n_genomes)
+    n_slots = int(n_slots)
+    if n_runs <= 0 or n_genomes <= 0:
+        return
+    if n_runs > fields.MAX_GA_RUNS:
+        raise ValueError(f"Too many runs: {n_runs} > {fields.MAX_GA_RUNS}")
+    if n_genomes > fields.MAX_GA_RUN_GENOMES:
+        raise ValueError(f"Too many genomes: {n_genomes} > {fields.MAX_GA_RUN_GENOMES}")
+    if n_slots > fields.MAX_SLOTS:
+        raise ValueError(f"Too many slots: {n_slots} > {fields.MAX_SLOTS}")
+
+    buf = np.zeros((fields.MAX_GA_RUNS, fields.MAX_GA_RUN_GENOMES, fields.MAX_SLOTS), dtype=np.int32)
+    src = np.asarray(populations_np, dtype=np.int32)
+    buf[:n_runs, :n_genomes, :n_slots] = src[:n_runs, :n_genomes, :n_slots]
+    fields.ga_initial_populations.from_numpy(buf)
+
+
+def ga_load_initial_population(*, run_idx: int, n_genomes: int, n_slots: int = 9) -> None:
+    """
+    Load a staged initial population (run_idx) into the active GA `population_indices`.
+    """
+    ensure_ready()
+    run_idx = int(run_idx)
+    n_genomes = int(n_genomes)
+    n_slots = int(n_slots)
+    if run_idx < 0 or run_idx >= fields.MAX_GA_RUNS:
+        raise ValueError(f"run_idx out of range: {run_idx} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
+    if n_genomes < 0 or n_genomes > fields.MAX_GA_RUN_GENOMES:
+        raise ValueError(f"Too many genomes: {n_genomes} > {fields.MAX_GA_RUN_GENOMES}")
+    kernels.ga_load_initial_population_kernel(run_idx, n_genomes, n_slots)
 
 
 def ga_seed_rng(n_genomes: int, seed: int = 12345) -> None:
@@ -301,18 +345,9 @@ def ga_evaluate_population(
             use_hints_i,
         )
 
-    kernels.ga_write_best_results_from_key_kernel(
-        n_genomes,
-        total_budget_i,
-        gem_scale_fever_i,
-        int(is_p_ft), int(is_s_ft),
-        int(is_p_ff), int(is_s_ff),
-        int(is_p_pp), int(is_s_pp),
-        int(is_p_cm), int(is_s_cm),
-        int(is_p_fm), int(is_s_fm),
-        int(is_p_ov), int(is_s_ov),
-        song_slot_i,
-    )
+    # NOTE: Result materialization (re-evaluating the winning combo to get correct
+    # gem allocations, updating ga_scores, storing hints, and updating global best)
+    # is handled by `ga_write_best_and_update_global()` in the GA loop.
 
 
 def ga_write_best_and_update_global(
@@ -638,6 +673,46 @@ def ga_download_run_payload(*, n_genomes: int, n_slots: int = 9) -> tuple[int, n
     return best_score, best_genome_ids, best_results, pop_snapshot, results, scores
 
 
+def ga_store_run_payload(*, run_idx: int, n_genomes: int, n_slots: int = 9) -> None:
+    """
+    Store a GA run snapshot into the GPU multi-run buffer (no CPU readback).
+    """
+    ensure_ready()
+    run_idx = int(run_idx)
+    n_genomes = int(n_genomes)
+    n_slots = int(n_slots)
+    if run_idx < 0 or run_idx >= fields.MAX_GA_RUNS:
+        raise ValueError(f"run_idx out of range: {run_idx} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
+    if n_genomes < 0 or n_genomes > fields.MAX_GA_RUN_GENOMES:
+        raise ValueError(
+            f"n_genomes out of range for run buffer: {n_genomes} (MAX_GA_RUN_GENOMES={fields.MAX_GA_RUN_GENOMES})"
+        )
+    kernels.ga_pack_and_store_run_payload_kernel(run_idx, n_genomes, n_slots)
+
+
+def ga_download_runs_payload(*, n_runs: int, n_genomes: int, n_slots: int = 9) -> np.ndarray:
+    """
+    Download stored GA run snapshots from the GPU multi-run buffer in one transfer.
+
+    Returns:
+        np.ndarray[int32] with shape (n_runs, n_genomes+1, 1+n_slots+7)
+    """
+    ensure_ready()
+    n_runs = int(n_runs)
+    n_genomes = int(n_genomes)
+    n_slots = int(n_slots)
+    if n_runs < 0 or n_runs > fields.MAX_GA_RUNS:
+        raise ValueError(f"n_runs out of range: {n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
+    if n_genomes < 0 or n_genomes > fields.MAX_GA_RUN_GENOMES:
+        raise ValueError(
+            f"n_genomes out of range for run buffer: {n_genomes} (MAX_GA_RUN_GENOMES={fields.MAX_GA_RUN_GENOMES})"
+        )
+
+    cols = 1 + n_slots + 7
+    out = fields.ga_runs_payload_packed.to_numpy()
+    return np.asarray(out[:n_runs, : n_genomes + 1, :cols], dtype=np.int32).copy()
+
+
 # ============================================================================
 # GPU-SIDE GLOBAL BEST TRACKING
 # ============================================================================
@@ -698,11 +773,18 @@ def ga_upload_island_boundaries(island_starts: np.ndarray) -> None:
                       Format: [start0, start1, ..., end_last]
                       Island i owns indices [start[i], start[i+1])
     """
+    global _ISLAND_BOUNDARIES_CACHE
+
     ensure_ready()
-    buf = np.zeros(fields.MAX_ISLANDS + 1, dtype=np.int32)
     n = min(len(island_starts), fields.MAX_ISLANDS + 1)
+    key = tuple(int(x) for x in np.asarray(island_starts[:n], dtype=np.int32))
+    if _ISLAND_BOUNDARIES_CACHE == key:
+        return
+
+    buf = np.zeros(fields.MAX_ISLANDS + 1, dtype=np.int32)
     buf[:n] = np.asarray(island_starts[:n], dtype=np.int32)
     fields.island_boundaries.from_numpy(buf)
+    _ISLAND_BOUNDARIES_CACHE = key
 
 
 def ga_find_island_elites(n_genomes: int, n_islands: int, elites_per_island: int) -> None:

@@ -53,6 +53,7 @@ from .kernels_helpers import (
     ga_global_best_score,
     ga_global_best_genome,
     ga_global_best_results,
+    ga_runs_payload_packed,
     ga_run_payload_packed,
     # GPU-side island elitism
     island_boundaries,
@@ -82,6 +83,7 @@ from .kernels_helpers import (
 # Import GA kernels
 from .kernels_ga import (
     ga_seed_rng_kernel,
+    ga_load_initial_population_kernel,
     ga_select_parents_tournament_kernel,
     ga_crossover_mutate_kernel,
     ga_swap_populations_kernel,
@@ -128,6 +130,7 @@ from .kernels_ga_eval import (
     # GPU-side global best tracking
     ga_init_global_best_kernel,
     ga_update_global_best_kernel,
+    ga_pack_and_store_run_payload_kernel,
     ga_pack_run_payload_kernel,
     # GPU-side island elitism
     ga_find_island_elites_kernel,
@@ -192,6 +195,7 @@ __all__ = [
     "_xorshift32",
     # GA kernels
     "ga_seed_rng_kernel",
+    "ga_load_initial_population_kernel",
     "ga_select_parents_tournament_kernel",
     "ga_crossover_mutate_kernel",
     "ga_swap_populations_kernel",
@@ -230,6 +234,7 @@ __all__ = [
     # GPU-side global best tracking
     "ga_init_global_best_kernel",
     "ga_update_global_best_kernel",
+    "ga_pack_and_store_run_payload_kernel",
     "ga_pack_run_payload_kernel",
     # GPU-side island migration
     "ga_island_migration_kernel",

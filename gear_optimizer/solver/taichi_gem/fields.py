@@ -92,6 +92,8 @@ genome_base_stats: ti.Field = None  # Vector field [pp, cm, fm, p, s, ft, ff]
 # They exist as prep work for a future GPU-native GA where the entire population lives on GPU.
 population_indices: ti.Field = None  # (MAX_GENOMES, MAX_SLOTS) item_id per (genome,slot)
 population_next_indices: ti.Field = None  # (MAX_GENOMES, MAX_SLOTS) next generation buffer
+# Initial populations staged on GPU for multi-start runs (uploaded once per segment, then copied run-by-run).
+ga_initial_populations: ti.Field = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES, MAX_SLOTS) item_id per (run,genome,slot)
 item_stats: ti.Field = None          # (MAX_ITEMS, ITEM_STAT_DIM) dense item stats table
 base_fixed_stats: ti.Field = None    # (ITEM_STAT_DIM,) fixed base stats (added to all genomes)
 ga_scores: ti.Field = None           # (MAX_GENOMES,) int32 fitness scores (from evaluation)
@@ -105,6 +107,10 @@ ga_global_best_genome: ti.Field = None    # (MAX_SLOTS,) i32 - item IDs of best 
 ga_global_best_results: ti.Field = None   # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for best genome
 # Packed GA download payload (reduce CPU<->GPU transfers): row 0 = global best, rows 1..n = per-genome snapshot.
 ga_run_payload_packed: ti.Field = None    # (MAX_GENOMES+1, 17) i32 - [score, slot_ids(9), result(7)]
+# Multi-start GA snapshot buffer (stores packed payload per run to avoid per-run downloads).
+MAX_GA_RUNS = 128  # Stores up to this many GA runs before a flush/download.
+MAX_GA_RUN_GENOMES = 1024  # Must be >= GA_POPULATION_SIZE (250).
+ga_runs_payload_packed: ti.Field = None   # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17) i32
 
 # GPU-side island elitism (avoids per-generation score downloads)
 MAX_ISLANDS = 16  # Maximum number of islands
@@ -203,7 +209,7 @@ def reset_fields_state() -> None:
     global bp_pair_ft, bp_pair_ff, bp_result_mask
     global genome_base_pp, genome_base_cm, genome_base_fm, genome_base_p_val, genome_base_s_val
     global genome_base_ft, genome_base_ff, genome_base_stats
-    global population_indices, population_next_indices, item_stats, base_fixed_stats
+    global population_indices, population_next_indices, ga_initial_populations, item_stats, base_fixed_stats
     global ga_scores, ga_rng_state, ga_parent_a, ga_parent_b
     global slot_start, slot_count
     global song_flags
@@ -215,6 +221,7 @@ def reset_fields_state() -> None:
     global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results
+    global ga_runs_payload_packed
     global ga_run_payload_packed
     global island_boundaries, island_elite_indices, island_elite_count
 
@@ -266,6 +273,7 @@ def reset_fields_state() -> None:
     # GA fields
     population_indices = None
     population_next_indices = None
+    ga_initial_populations = None
     item_stats = None
     base_fixed_stats = None
     ga_scores = None
@@ -280,6 +288,7 @@ def reset_fields_state() -> None:
     ga_global_best_score = None
     ga_global_best_genome = None
     ga_global_best_results = None
+    ga_runs_payload_packed = None
     ga_run_payload_packed = None
     song_flags = None
 
@@ -334,7 +343,7 @@ def allocate_fields():
     global bp_pair_ft, bp_pair_ff, bp_result_mask
     global genome_base_pp, genome_base_cm, genome_base_fm, genome_base_p_val, genome_base_s_val
     global genome_base_ft, genome_base_ff, genome_base_stats
-    global population_indices, population_next_indices, item_stats, base_fixed_stats
+    global population_indices, population_next_indices, ga_initial_populations, item_stats, base_fixed_stats
     global ga_scores, ga_rng_state, ga_parent_a, ga_parent_b
     global slot_start, slot_count
     global song_flags
@@ -346,6 +355,7 @@ def allocate_fields():
     global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results
+    global ga_runs_payload_packed
     global ga_run_payload_packed
     global island_boundaries, island_elite_indices, island_elite_count
     
@@ -376,6 +386,7 @@ def allocate_fields():
     # GPU-native GA / stat aggregation (Phase 3/4)
     population_indices = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, MAX_SLOTS))
     population_next_indices = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, MAX_SLOTS))
+    ga_initial_populations = ti.field(dtype=ti.i32, shape=(MAX_GA_RUNS, MAX_GA_RUN_GENOMES, MAX_SLOTS))
     item_stats = ti.field(dtype=ti.i32, shape=(MAX_ITEMS, ITEM_STAT_DIM))
     base_fixed_stats = ti.field(dtype=ti.i32, shape=ITEM_STAT_DIM)
     ga_scores = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
@@ -418,6 +429,7 @@ def allocate_fields():
     ga_global_best_genome = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
     ga_global_best_results = ti.field(dtype=ti.i32, shape=7)  # [score, ft, ff, pp, cm, fm, ov]
     ga_run_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES + 1, 1 + MAX_SLOTS + 7))
+    ga_runs_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GA_RUNS, MAX_GA_RUN_GENOMES + 1, 1 + MAX_SLOTS + 7))
     
     # GPU-side island elitism (avoids per-generation score downloads)
     # Islands are contiguous ranges in the population
@@ -524,6 +536,7 @@ def bind_fields(kernels_module):
     # GPU-native GA / stat aggregation
     target.population_indices = population_indices
     target.population_next_indices = population_next_indices
+    target.ga_initial_populations = ga_initial_populations
     target.item_stats = item_stats
     target.base_fixed_stats = base_fixed_stats
     target.ga_scores = ga_scores
@@ -552,6 +565,7 @@ def bind_fields(kernels_module):
     target.ga_global_best_score = ga_global_best_score
     target.ga_global_best_genome = ga_global_best_genome
     target.ga_global_best_results = ga_global_best_results
+    target.ga_runs_payload_packed = ga_runs_payload_packed
     target.ga_run_payload_packed = ga_run_payload_packed
     
     # GPU-side island elitism

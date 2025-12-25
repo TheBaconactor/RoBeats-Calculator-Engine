@@ -499,26 +499,73 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
 
         # Deduplicate and Prune BOTH tables
         for table in ["loadouts", "fg_loadouts"]:
-             # Deduplicate
+            # Deduplicate
             _deduplicate_db_loadouts(conn, song_name, table)
-            
+
             # Prune (Limit size)
             cursor = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE song_name = ?", (song_name,))
             count = cursor.fetchone()[0]
-            if count > LOADOUTS_PER_SONG_LIMIT:
-                # For 'loadouts' we prioritize SCORE. For 'fg_loadouts' we prioritize FG_SCORE.
-                sort_col = "score" if table == "loadouts" else "fg_score"
-                
-                conn.execute(f"""
-                    DELETE FROM {table}
+            if count <= LOADOUTS_PER_SONG_LIMIT:
+                continue
+
+            if table == "loadouts":
+                # Double-retention policy:
+                # - Keep top-N by base score
+                # - Also keep the single best FG loadout (even if its base score is low)
+                keep_hashes = [
+                    r[0]
+                    for r in conn.execute(
+                        """
+                        SELECT loadout_hash
+                        FROM loadouts
+                        WHERE song_name = ?
+                        ORDER BY score DESC
+                        LIMIT ?
+                        """,
+                        (song_name, LOADOUTS_PER_SONG_LIMIT),
+                    ).fetchall()
+                ]
+
+                best_fg_row = conn.execute(
+                    """
+                    SELECT loadout_hash
+                    FROM fg_loadouts
+                    WHERE song_name = ?
+                    ORDER BY fg_score DESC
+                    LIMIT 1
+                    """,
+                    (song_name,),
+                ).fetchone()
+                if best_fg_row and best_fg_row[0] is not None:
+                    keep_hashes.append(best_fg_row[0])
+
+                # Stable de-dupe while preserving order (top score first, then best FG)
+                keep_hashes = list(dict.fromkeys(keep_hashes))
+                if keep_hashes:
+                    placeholders = ",".join("?" * len(keep_hashes))
+                    conn.execute(
+                        f"""
+                        DELETE FROM loadouts
+                        WHERE song_name = ?
+                        AND loadout_hash NOT IN ({placeholders})
+                        """,
+                        (song_name, *keep_hashes),
+                    )
+            else:
+                # For fg_loadouts we prioritize FG_SCORE only.
+                conn.execute(
+                    """
+                    DELETE FROM fg_loadouts
                     WHERE song_name = ?
                     AND loadout_hash NOT IN (
-                        SELECT loadout_hash FROM {table}
+                        SELECT loadout_hash FROM fg_loadouts
                         WHERE song_name = ?
-                        ORDER BY {sort_col} DESC
+                        ORDER BY fg_score DESC
                         LIMIT ?
                     )
-                """, (song_name, song_name, LOADOUTS_PER_SONG_LIMIT))
+                    """,
+                    (song_name, song_name, LOADOUTS_PER_SONG_LIMIT),
+                )
 
         conn.commit()
     except sqlite3.Error as e:

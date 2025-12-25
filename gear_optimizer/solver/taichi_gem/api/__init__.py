@@ -70,6 +70,8 @@ except ImportError:
 try:
     from .ga_operations import (
         ga_upload_population_indices,
+        ga_upload_initial_populations,
+        ga_load_initial_population,
         ga_seed_rng,
         ga_upload_item_stats,
         ga_upload_base_fixed_stats,
@@ -83,6 +85,8 @@ try:
         ga_download_scores,
         ga_download_results,
         ga_download_run_payload,
+        ga_store_run_payload,
+        ga_download_runs_payload,
         # GPU-side global best tracking
         ga_init_global_best,
         ga_update_global_best,
@@ -130,6 +134,8 @@ __all__ = [
     "solve_genomes_from_registry",
     # GA operations
     "ga_upload_population_indices",
+    "ga_upload_initial_populations",
+    "ga_load_initial_population",
     "ga_seed_rng",
     "ga_upload_item_stats",
     "ga_upload_base_fixed_stats",
@@ -143,6 +149,8 @@ __all__ = [
     "ga_download_scores",
     "ga_download_results",
     "ga_download_run_payload",
+    "ga_store_run_payload",
+    "ga_download_runs_payload",
     # GPU-side global best tracking
     "ga_init_global_best",
     "ga_update_global_best",

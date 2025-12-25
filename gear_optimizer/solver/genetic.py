@@ -119,8 +119,164 @@ def _build_base_stats_array(base_stats_fixed: dict, cfg_data: dict) -> tuple:
     return base_stats_arr, selected_color
 
 
+def _extract_fg_candidates_from_ga_snapshot(
+    *,
+    registry: "ItemRegistry",
+    cfg_data: dict,
+    base_stats_fixed: dict,
+    pop_snapshot: "np.ndarray",
+    results: "np.ndarray",
+    scores: "np.ndarray",
+    n_genomes: int,
+) -> list:
+    """
+    Extract top unique genomes from a GA run snapshot to seed the Force Greats solver.
+
+    This mirrors the vectorized extraction logic used in `_run_gpu_native_ga`, but is
+    factored out so the multi-start loop can run fully GPU-side (no per-run readbacks)
+    and do candidate extraction after a single download at end-of-song.
+    """
+    all_evaluated: list = []
+    if pop_snapshot is None or results is None or scores is None:
+        return all_evaluated
+
+    n_genomes = int(n_genomes)
+    if n_genomes <= 0:
+        return all_evaluated
+
+    limit = min(n_genomes, LOADOUTS_PER_SONG_LIMIT * 2)  # 2x buffer for duplicates
+
+    # Map selected color to stat index for overflow gem contribution
+    color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
+    sel_color = cfg_data.get("selected_color", "")
+    sel_color_idx = color_to_idx.get(sel_color, -1)
+
+    # Build base stats array for vectorized computation
+    base_stats_arr = np.array(
+        [
+            base_stats_fixed.get("Perfect Points", 0),
+            base_stats_fixed.get("Combo Multiplier", 0),
+            base_stats_fixed.get("Fever Multiplier", 0),
+            base_stats_fixed.get("Fever Time", 0),
+            base_stats_fixed.get("Fever Fill Rate", 0),
+            base_stats_fixed.get("Beat", 0),
+            base_stats_fixed.get("Vibe", 0),
+            base_stats_fixed.get("Rush", 0),
+            base_stats_fixed.get("Flow", 0),
+            base_stats_fixed.get("Chill", 0),
+        ],
+        dtype=np.int32,
+    )
+
+    # VECTORIZED: Get top-K indices, item stats, and gem contributions in one call
+    top_indices, item_stats_sum, gem_contributions = registry.batch_decode_stats_numpy(
+        pop_snapshot,
+        results,
+        scores,
+        base_stats_arr,
+        limit,
+        gem_scale_normal=GEM_SCALE_NORMAL,
+        gem_scale_fever=GEM_SCALE_FEVER,
+        gem_stat_to_element=GEM_STAT_TO_ELEMENT_SCALE,
+        elemental_gem_scale=ELEMENTAL_GEM_SCALE,
+        sel_color_idx=sel_color_idx,
+    )
+
+    # Stat names for dict construction (only done for final candidates)
+    stat_names = [
+        "Perfect Points",
+        "Combo Multiplier",
+        "Fever Multiplier",
+        "Fever Time",
+        "Fever Fill Rate",
+        "Beat",
+        "Vibe",
+        "Rush",
+        "Flow",
+        "Chill",
+    ]
+
+    # OPTIMIZATION: Two-pass lazy evaluation
+    # Pass 1: Filter unique genomes by ID tuple (fast, no decode_genome)
+    # Pass 2: Decode and construct dicts only for unique candidates
+    seen_id_hashes = set()
+    unique_candidate_indices = []  # Indices into top_indices
+
+    for i, idx in enumerate(top_indices):
+        score_val = int(scores[idx])
+        if score_val <= 0:
+            continue
+
+        genome_ids = pop_snapshot[idx]
+        # Fast hash: tuple of genome IDs (no string conversion needed)
+        id_hash = tuple(genome_ids.tolist())
+
+        if id_hash not in seen_id_hashes:
+            seen_id_hashes.add(id_hash)
+            unique_candidate_indices.append(i)
+
+            if len(unique_candidate_indices) >= LOADOUTS_PER_SONG_LIMIT:
+                break
+
+    # Pass 2: Decode and build dicts only for unique candidates
+    for i in unique_candidate_indices:
+        idx = top_indices[i]
+        score_val = int(scores[idx])
+
+        genome_ids = pop_snapshot[idx]
+        genome = registry.decode_genome(genome_ids)
+
+        # Get gem allocations from results array
+        res_row = results[idx]
+        g_ft, g_ff = int(res_row[1]), int(res_row[2])
+        g_pp, g_cm, g_fm, g_ov = int(res_row[3]), int(res_row[4]), int(res_row[5]), int(res_row[6])
+
+        # Compute final stats: base + item_stats + gem_contributions
+        final_stats = base_stats_arr + item_stats_sum[i] + gem_contributions[i]
+
+        # Build stats dict from numpy array (fast)
+        current_stats = {stat_names[j]: int(final_stats[j]) for j in range(10)}
+
+        data_obj = {
+            "Score": score_val,
+            "FT": g_ft,
+            "FF": g_ff,
+            "GemCounts": {
+                "Perfect Points": g_pp,
+                "Combo Multiplier": g_cm,
+                "Fever Multiplier": g_fm,
+                "Element": g_ov,
+            },
+            "Stats": current_stats,
+            "Selected Element": sel_color,
+            "BaseScore": score_val,
+        }
+
+        cand_data = {
+            "Score": score_val,
+            "BaseScore": score_val,
+            "Genome": genome,
+            "Gear": genome[:6],
+            "Minis": genome[6:9],
+            "GearNames": [g.get("Name", "None") for g in genome[:6]],
+            "MiniNames": [m.get("Name", "None") for m in genome[6:9]],
+            "Data": data_obj,
+            "Details": {
+                "FeverGems": g_ft,
+                "FeverFillGems": g_ff,
+                "PP": g_pp,
+                "CM": g_cm,
+                "FM": g_fm,
+                "OV": g_ov,
+            },
+        }
+        all_evaluated.append(cand_data)
+
+    return all_evaluated
+
+
 def _run_gpu_native_ga(
-    population: list,
+    population: list | None,
     n_generations: int,
     registry: "ItemRegistry",
     cfg_data: dict,
@@ -134,6 +290,10 @@ def _run_gpu_native_ga(
     color_flags: dict = None,
     status_cb=None,
     song_slot: int = 0,  # GPU slot for prefetched timeline
+    store_payload_idx: int | None = None,
+    store_payload_only: bool = False,
+    n_genomes_override: int | None = None,
+    population_preloaded: bool = False,
 ) -> tuple:
     """
     Run GPU-native GA loop (internal function).
@@ -160,7 +320,12 @@ def _run_gpu_native_ga(
     if not _GPU_NATIVE_AVAILABLE:
         raise RuntimeError("GPU-native GA not available (missing dependencies)")
     
-    n_genomes = len(population)
+    if n_genomes_override is not None:
+        n_genomes = int(n_genomes_override)
+    else:
+        if population is None:
+            raise ValueError("population is required unless n_genomes_override is provided")
+        n_genomes = len(population)
     n_slots = 9
     
     # Ensure color flags are set
@@ -208,9 +373,12 @@ def _run_gpu_native_ga(
     # NOTE: Timeline grid is already precomputed by caller (solve_coevolution_genetic)
     # No need to re-upload here - GPU fields persist across calls
 
-    # Encode and upload initial population
-    pop_ids = registry.encode_population(population)
-    gpu_api.ga_upload_population_indices(pop_ids, n_slots=n_slots)
+    # Encode and upload initial population (unless already staged/loaded by caller).
+    if not population_preloaded:
+        if population is None:
+            raise ValueError("population is required unless population_preloaded is True")
+        pop_ids = registry.encode_population(population)
+        gpu_api.ga_upload_population_indices(pop_ids, n_slots=n_slots)
     gpu_api.ga_seed_rng(n_genomes, seed=42)
     
     # CPU-side best tracking (faster than GPU-side for this use case)
@@ -307,6 +475,12 @@ def _run_gpu_native_ga(
                 n_elites=total_elites,
             )
 
+    # Optionally store run payload to the multi-run GPU buffer (no CPU readback).
+    if store_payload_idx is not None:
+        gpu_api.ga_store_run_payload(run_idx=store_payload_idx, n_genomes=n_genomes, n_slots=n_slots)
+        if store_payload_only:
+            return None, None, None, None
+
     # --- END OF RUN: Download best + population snapshot with a single transfer ---
     # This avoids multiple `to_numpy()` calls (each forces a GPU sync on Vulkan).
     (
@@ -327,122 +501,16 @@ def _run_gpu_native_ga(
     else:
         best_result = np.zeros(7, dtype=np.int32)
 
-    # --- FG CANDIDATE EXTRACTION (VECTORIZED) ---
-    # Extract top N unique genomes to seed Force Greats solver
-    # Uses vectorized numpy operations instead of Python loops for ~3x speedup
-    all_evaluated = []
-    if best_genome_ids is not None:
-        limit = min(n_genomes, LOADOUTS_PER_SONG_LIMIT * 2)  # 2x buffer for duplicates
-        
-        # Map selected color to stat index for overflow gem contribution
-        color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
-        sel_color = cfg_data.get("selected_color", "")
-        sel_color_idx = color_to_idx.get(sel_color, -1)
-        
-        # Build base stats array for vectorized computation
-        base_stats_arr = np.array([
-            base_stats_fixed.get("Perfect Points", 0),
-            base_stats_fixed.get("Combo Multiplier", 0),
-            base_stats_fixed.get("Fever Multiplier", 0),
-            base_stats_fixed.get("Fever Time", 0),
-            base_stats_fixed.get("Fever Fill Rate", 0),
-            base_stats_fixed.get("Beat", 0),
-            base_stats_fixed.get("Vibe", 0),
-            base_stats_fixed.get("Rush", 0),
-            base_stats_fixed.get("Flow", 0),
-            base_stats_fixed.get("Chill", 0),
-        ], dtype=np.int32)
-        
-        # VECTORIZED: Get top-K indices, item stats, and gem contributions in one call
-        top_indices, item_stats_sum, gem_contributions = registry.batch_decode_stats_numpy(
-            pop_snapshot, results, scores, base_stats_arr, limit,
-            gem_scale_normal=GEM_SCALE_NORMAL,
-            gem_scale_fever=GEM_SCALE_FEVER,
-            gem_stat_to_element=GEM_STAT_TO_ELEMENT_SCALE,
-            elemental_gem_scale=ELEMENTAL_GEM_SCALE,
-            sel_color_idx=sel_color_idx,
-        )
-        
-        # Stat names for dict construction (only done for final candidates)
-        stat_names = ["Perfect Points", "Combo Multiplier", "Fever Multiplier", 
-                      "Fever Time", "Fever Fill Rate", "Beat", "Vibe", "Rush", "Flow", "Chill"]
-        
-        # OPTIMIZATION: Two-pass lazy evaluation
-        # Pass 1: Filter unique genomes by ID tuple (fast, no decode_genome)
-        # Pass 2: Decode and construct dicts only for unique candidates
-        seen_id_hashes = set()
-        unique_candidate_indices = []  # Indices into top_indices
-        
-        for i, idx in enumerate(top_indices):
-            score_val = int(scores[idx])
-            if score_val <= 0:
-                continue
-            
-            genome_ids = pop_snapshot[idx]
-            # Fast hash: tuple of genome IDs (no string conversion needed)
-            id_hash = tuple(genome_ids.tolist())
-            
-            if id_hash not in seen_id_hashes:
-                seen_id_hashes.add(id_hash)
-                unique_candidate_indices.append(i)
-                
-                if len(unique_candidate_indices) >= LOADOUTS_PER_SONG_LIMIT:
-                    break
-        
-        # Pass 2: Decode and build dicts only for unique candidates
-        for i in unique_candidate_indices:
-            idx = top_indices[i]
-            score_val = int(scores[idx])
-            
-            genome_ids = pop_snapshot[idx]
-            genome = registry.decode_genome(genome_ids)
-            
-            # Get gem allocations from results array
-            res_row = results[idx]
-            g_ft, g_ff = int(res_row[1]), int(res_row[2])
-            g_pp, g_cm, g_fm, g_ov = int(res_row[3]), int(res_row[4]), int(res_row[5]), int(res_row[6])
-            
-            # Compute final stats: base + item_stats + gem_contributions
-            final_stats = base_stats_arr + item_stats_sum[i] + gem_contributions[i]
-            
-            # Build stats dict from numpy array (fast)
-            current_stats = {stat_names[j]: int(final_stats[j]) for j in range(10)}
-            
-            data_obj = {
-                "Score": score_val,
-                "FT": g_ft,
-                "FF": g_ff,
-                "GemCounts": {
-                    "Perfect Points": g_pp,
-                    "Combo Multiplier": g_cm,
-                    "Fever Multiplier": g_fm,
-                    "Element": g_ov,
-                },
-                "Stats": current_stats,
-                "Selected Element": sel_color,
-                "BaseScore": score_val
-            }
-            
-            cand_data = {
-                "Score": score_val,
-                "BaseScore": score_val,
-                "Genome": genome,
-                "Gear": genome[:6],
-                "Minis": genome[6:9],
-                "GearNames": [g.get("Name", "None") for g in genome[:6]],
-                "MiniNames": [m.get("Name", "None") for m in genome[6:9]],
-                "Data": data_obj,
-                "Details": {
-                    "FeverGems": g_ft,
-                    "FeverFillGems": g_ff,
-                    "PP": g_pp,
-                    "CM": g_cm,
-                    "FM": g_fm,
-                    "OV": g_ov,
-                }
-            }
-            all_evaluated.append(cand_data)
-    
+    all_evaluated = _extract_fg_candidates_from_ga_snapshot(
+        registry=registry,
+        cfg_data=cfg_data,
+        base_stats_fixed=base_stats_fixed,
+        pop_snapshot=pop_snapshot,
+        results=results,
+        scores=scores,
+        n_genomes=n_genomes,
+    )
+
     return best_genome, best_score, best_result, all_evaluated
 
 
@@ -637,10 +705,25 @@ def solve_coevolution_genetic(
         
         print(f"  Multi-start runs: {num_runs} (generations per run: {gens_per_run})")
 
-        best_global_score = -1
-        best_global_genome = None
-        best_global_res_arr = None
-        all_evaluated_global = []
+        # Buffer per-run snapshots on GPU and download once per song to avoid
+        # per-run GPU->CPU sync (Vulkan `to_numpy()` is expensive).
+        from .taichi_gem import fields as gpu_fields
+
+        n_slots = 9
+        n_genomes = None
+        payload_segments: list[np.ndarray] = []
+        segment_runs = 0
+
+        def _flush_ga_run_payload_segment() -> None:
+            nonlocal segment_runs
+            if segment_runs <= 0:
+                return
+            if n_genomes is None:
+                raise RuntimeError("Internal error: n_genomes not set before GA payload flush")
+            payload_segments.append(
+                gpu_api.ga_download_runs_payload(n_runs=segment_runs, n_genomes=n_genomes, n_slots=n_slots)
+            )
+            segment_runs = 0
 
         def _is_vulkan_semaphore_failure(exc: BaseException) -> bool:
             msg = str(exc)
@@ -664,11 +747,51 @@ def solve_coevolution_genetic(
         except Exception:
             max_retries = 1
 
+        # Segment state for batched initial population uploads.
+        segment_start_global = 0
+        segment_total_runs = 0
+        segment_pop_ids = None  # np.ndarray[int32] shape (segment_total_runs, n_genomes, n_slots)
+        segment_pop_uploaded = False
+
         for run_idx in range(num_runs):
+            # Start a new segment whenever we exhausted the staged buffer.
+            if segment_pop_ids is None or run_idx >= (segment_start_global + segment_total_runs):
+                segment_start_global = run_idx
+                segment_total_runs = min(gpu_fields.MAX_GA_RUNS, num_runs - run_idx)
+                segment_pop_uploaded = False
+
+                print(f"  >> Prebuilding {segment_total_runs} initial populations (batched upload)...")
+                seg_buf = None
+                for j in range(segment_total_runs):
+                    pop = build_initial_population(
+                        create_random_genome,
+                        create_heuristic_genome,
+                        reconstruct_genome_from_db_list,
+                        build_seed_list_from_record,
+                        mutate_genome_once,
+                        db_seed,
+                        ga_settings,
+                        fixed_gear,
+                        fixed_minis,
+                        force_db_seed=False,
+                    )
+                    if n_genomes is None:
+                        n_genomes = len(pop)
+                        if n_genomes > gpu_fields.MAX_GA_RUN_GENOMES:
+                            raise RuntimeError(
+                                f"GPU GA population too large for run buffer: {n_genomes} > {gpu_fields.MAX_GA_RUN_GENOMES}"
+                            )
+                    if seg_buf is None:
+                        seg_buf = np.zeros((segment_total_runs, n_genomes, n_slots), dtype=np.int32)
+                    seg_buf[j, :, :n_slots] = registry.encode_population(pop)
+                segment_pop_ids = seg_buf
+
             print(f"  >> GPU GA Run {run_idx + 1}/{num_runs}...")
 
             if reset_every_runs > 0 and run_idx > 0 and (run_idx % reset_every_runs) == 0:
                 try:
+                    # Preserve buffered run payloads before resetting Taichi runtime.
+                    _flush_ga_run_payload_segment()
                     gpu_api.hard_reset_taichi(reason=f"periodic Vulkan reset at run {run_idx + 1}/{num_runs}")
                     load_ref_arrays(ref_arrays)
                     precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
@@ -678,29 +801,30 @@ def solve_coevolution_genetic(
                         gpu_data["slot_count"],
                     )
                     gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
+                    segment_pop_uploaded = False
                 except Exception as e:
                     print(f"[GPU GA] Warning: periodic reset failed: {e}")
-            
-            # Re-initialize population for each run to get fresh random start
-            initial_pop = build_initial_population(
-                create_random_genome,
-                create_heuristic_genome,
-                reconstruct_genome_from_db_list,
-                build_seed_list_from_record,
-                mutate_genome_once,
-                db_seed,
-                ga_settings,
-                fixed_gear,
-                fixed_minis,
-                force_db_seed=False,
-            )
+
+            # Ensure the segment's initial populations are staged on GPU (re-upload after resets).
+            if not segment_pop_uploaded:
+                gpu_api.ga_upload_initial_populations(
+                    segment_pop_ids,
+                    n_runs=segment_total_runs,
+                    n_genomes=n_genomes,
+                    n_slots=n_slots,
+                )
+                segment_pop_uploaded = True
+
+            # Load this run's initial population into active GA buffers (GPU->GPU copy).
+            local_run_idx = run_idx - segment_start_global
+            gpu_api.ga_load_initial_population(run_idx=local_run_idx, n_genomes=n_genomes, n_slots=n_slots)
 
             # Run GPU-Native GA (retry/reset on Vulkan semaphore failures)
             last_exc = None
             for attempt in range(max_retries + 1):
                 try:
-                    run_best_genome, run_best_score, run_best_res_arr, run_evaluated = _run_gpu_native_ga(
-                        population=initial_pop,
+                    _run_gpu_native_ga(
+                        population=None,
                         n_generations=gens_per_run,
                         registry=registry,
                         cfg_data=cfg_data,
@@ -734,6 +858,10 @@ def solve_coevolution_genetic(
                         },
                         status_cb=status_cb,
                         song_slot=song_slot,  # Use prefetched GPU slot
+                        store_payload_idx=segment_runs,
+                        store_payload_only=True,
+                        n_genomes_override=n_genomes,
+                        population_preloaded=True,
                     )
                     last_exc = None
                     break
@@ -743,6 +871,8 @@ def solve_coevolution_genetic(
                         break
                     print(f"[GPU GA] Vulkan backend error; retrying run after reset (attempt {attempt + 1}/{max_retries})")
                     try:
+                        # Preserve buffered run payloads before resetting Taichi runtime.
+                        _flush_ga_run_payload_segment()
                         gpu_api.hard_reset_taichi(reason=str(e).splitlines()[0][:200])
                         load_ref_arrays(ref_arrays)
                         precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
@@ -752,29 +882,79 @@ def solve_coevolution_genetic(
                             gpu_data["slot_count"],
                         )
                         gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
+                        # Restore staged initial populations for the retry (reset clears GPU buffers).
+                        gpu_api.ga_upload_initial_populations(
+                            segment_pop_ids,
+                            n_runs=segment_total_runs,
+                            n_genomes=n_genomes,
+                            n_slots=n_slots,
+                        )
+                        segment_pop_uploaded = True
+                        gpu_api.ga_load_initial_population(run_idx=local_run_idx, n_genomes=n_genomes, n_slots=n_slots)
                     except Exception as reset_exc:
                         print(f"[GPU GA] Reset failed: {reset_exc}")
                         break
 
             if last_exc is not None:
                 raise last_exc
-            
-            # Aggregate candidates
-            all_evaluated_global.extend(run_evaluated)
-            
-            # Update global best
+
+            segment_runs += 1
+            if segment_runs >= gpu_fields.MAX_GA_RUNS:
+                _flush_ga_run_payload_segment()
+
+        _flush_ga_run_payload_segment()
+
+        # One-time download and CPU-side aggregation (preserves prior behavior/order).
+        if not payload_segments:
+            raise RuntimeError("Internal error: no GA run payloads were stored")
+        runs_payload = payload_segments[0] if len(payload_segments) == 1 else np.concatenate(payload_segments, axis=0)
+        if runs_payload.shape[0] != num_runs:
+            runs_payload = runs_payload[:num_runs]
+
+        best_global_score = -1
+        best_global_genome = None
+        best_global_res_arr = None
+        all_evaluated_global = []
+
+        for r in range(num_runs):
+            run_pack = runs_payload[r]
+            run_best_score = int(run_pack[0, 0])
+            run_best_ids = np.asarray(run_pack[0, 1 : 1 + n_slots], dtype=np.int32)
+            run_best_res = np.asarray(run_pack[0, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32)
+
             if run_best_score > best_global_score:
                 best_global_score = run_best_score
-                best_global_genome = run_best_genome
-                best_global_res_arr = run_best_res_arr
+                best_global_genome = registry.decode_genome(run_best_ids)
+                best_global_res_arr = run_best_res.copy()
+
+            pop_snapshot = run_pack[1 : n_genomes + 1, 1 : 1 + n_slots]
+            results_snapshot = run_pack[1 : n_genomes + 1, 1 + n_slots : 1 + n_slots + 7]
+            scores_snapshot = run_pack[1 : n_genomes + 1, 0]
+            all_evaluated_global.extend(
+                _extract_fg_candidates_from_ga_snapshot(
+                    registry=registry,
+                    cfg_data=cfg_data,
+                    base_stats_fixed=base_stats_fixed,
+                    pop_snapshot=pop_snapshot,
+                    results=results_snapshot,
+                    scores=scores_snapshot,
+                    n_genomes=n_genomes,
+                )
+            )
 
         # 8. Format results to match expected return signature
         # Use simple fallback if no valid genome found (shouldn't happen)
         if best_global_genome is None:
-             # Should practically never happen unless 0 runs
-             best_global_genome = initial_pop[0]
-             best_global_score = 0
-             best_global_res_arr = [0]*7
+             # Should practically never happen unless 0 runs / all scores invalid.
+             try:
+                 fallback_ids = np.asarray(runs_payload[0, 0, 1 : 1 + n_slots], dtype=np.int32)
+                 best_global_genome = registry.decode_genome(fallback_ids)
+                 best_global_score = int(runs_payload[0, 0, 0])
+                 best_global_res_arr = np.asarray(runs_payload[0, 0, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32).copy()
+             except Exception:
+                 best_global_genome = []
+                 best_global_score = 0
+                 best_global_res_arr = [0] * 7
 
         best_gear = best_global_genome[:6]
         best_minis = best_global_genome[6:9]

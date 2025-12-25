@@ -123,8 +123,8 @@ def gpu_get_fill_penalty_simulation(
     
     # Then simulate GPU's inverse: forced_from_fp_target
     base_ceil = ceil(raw_fever_fill)
-    if is_section_1:
-        base_ceil -= 1
+    # NOTE: GPU inverse uses ceil(raw_fill) (not section-1 adjusted base notes).
+    # Section-1 adjustment applies to notes_to_fill/base_notes, not the inverse itself.
     
     # GPU inverse formula (from kernels.py:250-268)
     forced_val = 0

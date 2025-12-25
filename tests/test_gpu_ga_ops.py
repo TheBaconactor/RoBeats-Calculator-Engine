@@ -60,6 +60,31 @@ def test_gpu_ga_ops_smoke_valid_ranges():
     assert int(out.max()) < 1000
 
 
+@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
+def test_gpu_ga_initial_population_buffer_roundtrip():
+    """
+    Ensure the multi-start initial population staging path works:
+      upload N populations once -> load run_idx -> matches the uploaded IDs.
+    """
+    from gear_optimizer.solver.taichi_gem.api import (
+        ga_upload_initial_populations,
+        ga_load_initial_population,
+        ga_download_population_indices,
+    )
+
+    n_runs = 3
+    n_genomes = 64
+    n_slots = 9
+    pops = np.random.default_rng(123).integers(0, 1000, size=(n_runs, n_genomes, n_slots), dtype=np.int32)
+
+    ga_upload_initial_populations(pops, n_runs=n_runs, n_genomes=n_genomes, n_slots=n_slots)
+
+    for r in range(n_runs):
+        ga_load_initial_population(run_idx=r, n_genomes=n_genomes, n_slots=n_slots)
+        out = ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
+        assert np.array_equal(out, pops[r])
+
+
 
 
 

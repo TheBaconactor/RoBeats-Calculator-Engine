@@ -41,6 +41,21 @@ def ga_seed_rng_kernel(n_genomes: ti.i32, seed: ti.u32):
 
 
 @ti.kernel
+def ga_load_initial_population_kernel(run_idx: ti.i32, n_genomes: ti.i32, n_slots: ti.i32):
+    """
+    Copy a staged initial population into `population_indices`.
+
+    This enables batching CPU->GPU uploads for multi-start runs:
+      1) Upload N initial populations once into `ga_initial_populations`
+      2) For each run, copy run_idx into `population_indices` via this kernel
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for g in range(n_genomes):
+        for s in range(n_slots):
+            kernels_helpers.population_indices[g, s] = kernels_helpers.ga_initial_populations[run_idx, g, s]
+
+
+@ti.kernel
 def ga_select_parents_tournament_kernel(n_genomes: ti.i32, tournament_k: ti.i32):
     """
     Tournament selection on GPU.

@@ -102,3 +102,51 @@ def test_results_printer_fg_debug_uses_data_score_when_present(capsys):
     assert "=== FORCE GREATS OPTIMIZATION DEBUG ===" in out
     assert "\nTotal Score: 777\n" in out
 
+
+def test_results_printer_fg_debug_falls_back_to_force_greats_final_score(capsys):
+    """
+    Regression test:
+    Some callers may pass a wrapper-level `fg_score` of 0 while the persisted
+    details dict contains the real FG score under ForceGreats.final_score.
+    The debug printer should still display the real score (not 0).
+    """
+    from gear_optimizer.helpers.song_helpers.results_printer import print_results
+
+    found_song_name = "Test Song"
+    best_data = {"Score": 123, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"}
+
+    fg_variant = {
+        "data": {
+            "FT": 1,
+            "FF": 2,
+            "GemCounts": {"Fever Multiplier": 0, "Combo Multiplier": 0, "Perfect Points": 0, "Element": 0},
+            "Stats": {},
+            "SelectedElement": "Rush",
+            "ForceGreats": {"config": {"NonFever1": 1}, "final_score": 999},
+        },
+        "gear": [{"Name": "G1", "type": "Hat"}],
+        "minis": [{"Name": "M1"}],
+        "score": 123,
+        "fg_score": 0,
+    }
+
+    print_results(
+        found_song_name,
+        best_data=best_data,
+        best_gear=[],
+        best_minis=[],
+        current_gear_list=[],
+        current_mini_list=[],
+        enable_gear=True,
+        enable_mini=True,
+        fg_variants=[fg_variant],
+        status_emit_fn=_noop_status_emit,
+        fg_debug=True,
+        ref_arrays={"dummy": 1},
+        calc_song={"dummy": 1},
+        cfg=None,
+    )
+
+    out = capsys.readouterr().out
+    assert "=== FORCE GREATS OPTIMIZATION DEBUG ===" in out
+    assert "\nTotal Score: 999\n" in out
