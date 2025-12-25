@@ -129,7 +129,8 @@ class GearOptimizerApp:
 
         try:
             cfg = configparser.ConfigParser()
-            cfg.read("config.ini", encoding="utf-8-sig")
+            cfg_path = os.environ.get("METAFINDER_CONFIG_PATH", "config.ini")
+            cfg.read(cfg_path, encoding="utf-8-sig")
             paths = load_paths_cache()
             set_memory_watchdog_limit(compute_memory_guard_limit(cfg))
             db_display_name = os.path.basename(get_evolution_db_path())

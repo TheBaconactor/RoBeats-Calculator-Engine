@@ -9,16 +9,37 @@ class Tee:
     """Writes to multiple targets (e.g., stdout + buffer) for live logging."""
 
     def __init__(self, *targets):
-        self.targets = targets
+        # Some targets (e.g., closed/redirected stdio handles on Windows) can become invalid
+        # during multiprocessing shutdown or console detach; keep this best-effort.
+        self.targets = list(targets)
 
     def write(self, data):
+        if not self.targets:
+            return len(data)
+
+        still_ok = []
         for t in self.targets:
-            t.write(data)
+            try:
+                t.write(data)
+                still_ok.append(t)
+            except Exception:
+                # Best-effort: drop broken targets so logging doesn't crash the run.
+                pass
+        self.targets = still_ok
         return len(data)
 
     def flush(self):
+        if not self.targets:
+            return
+
+        still_ok = []
         for t in self.targets:
-            t.flush()
+            try:
+                t.flush()
+                still_ok.append(t)
+            except Exception:
+                pass
+        self.targets = still_ok
 
 
 class WarnOnce:

@@ -49,6 +49,13 @@ def _maybe_sync(*, for_timing: bool = False) -> None:
 # Enable detailed FG GPU timing output
 _PERF_TIMING = os.environ.get("PERF_TIMING", "0") == "1"
 
+# Recovery: Taichi/Vulkan backend can occasionally fault on Windows (driver reset,
+# device lost, or internal assertion failures). Retry with a hard Taichi reset.
+try:
+    _FG_VULKAN_RETRIES = int(os.environ.get("FG_VULKAN_RETRIES", "1"))
+except Exception:
+    _FG_VULKAN_RETRIES = 1
+
 
 # ============================================================================
 # UPLOAD CACHES (avoid repeated large allocations)
@@ -92,6 +99,21 @@ def reset_force_greats_api_state() -> None:
     _fg_pair_caps_state = None
     _fg_pair_caps_default_buf = None
     _fg_pair_caps_custom_key = None
+
+
+def _is_vulkan_backend_failure(exc: BaseException) -> bool:
+    msg = str(exc)
+    needles = (
+        "taichi::lang::gfx",
+        "RHI Error",
+        "Vulkan",
+        "failed to create semaphore",
+        "device_->map(",
+        "HostDeviceContextBlitter",
+        "VK_ERROR_DEVICE_LOST",
+        "VK_ERROR_OUT_OF_DEVICE_MEMORY",
+    )
+    return any(n in msg for n in needles)
 
 
 # ============================================================================
@@ -276,7 +298,7 @@ def _fg_upload_great_candidate_timestamps(candidate_np: np.ndarray, n: int) -> N
     _fg_use_great_candidate_field()
 
 
-def solve_force_greats_finder_gpu(
+def _solve_force_greats_finder_gpu_impl(
     genome_stats_list: list[dict[str, Any]] | np.ndarray,
     timestamps_np: np.ndarray,
     great_candidate_timestamps_np: np.ndarray | None,
@@ -513,7 +535,7 @@ def solve_force_greats_finder_gpu(
     
     if _perf:
         print(f"[PERF] FG adaptive chunking: n_work={n_work_items} cfg_chunk={cfg_chunk} "
-              f"n_cfg={n_cfg_total} n_chunks={n_chunks} threads/kernel≈{n_work_items * cfg_chunk:,}")
+              f"n_cfg={n_cfg_total} n_chunks={n_chunks} threads_per_kernel~={n_work_items * cfg_chunk:,}")
     
     # Pre-fetch buffer reference
     buf = _fg_forced_upload_buf
@@ -720,6 +742,90 @@ def solve_force_greats_finder_gpu(
         )
 
     return results
+
+
+def solve_force_greats_finder_gpu(*args, **kwargs) -> list[dict[str, Any]] | dict[str, np.ndarray] | None:
+    """
+    Wrapper with recovery for transient Taichi/Vulkan backend failures.
+
+    Also accepts an older positional calling convention used by some scripts:
+      - v1: (genome_stats_list, timestamps_np, long_notes, last_note_time, fg_configs, ftff_pairs, *, ...)
+      - v2: (genome_stats_list, timestamps_np, great_candidate_timestamps_np, long_notes, last_note_time, fg_configs, ftff_pairs, *, ...)
+    """
+    # Normalize positional args across legacy and current call patterns.
+    if len(args) == 6:
+        # Legacy: no great-candidate array positional.
+        genome_stats_list, timestamps_np, long_notes, last_note_time, fg_configs, ftff_pairs = args
+        great_candidate_timestamps_np = None
+    elif len(args) == 7:
+        genome_stats_list, timestamps_np, great_candidate_timestamps_np, long_notes, last_note_time, fg_configs, ftff_pairs = args
+    else:
+        raise TypeError(
+            "solve_force_greats_finder_gpu expected 6 or 7 positional args: "
+            "(genomes, timestamps, [great_candidates], long_notes, last_note_time, fg_configs, ftff_pairs)"
+        )
+
+    # Required keyword-only args (kept explicit to avoid silently wrong dispatch).
+    required = (
+        "n_sections",
+        "is_p_ft",
+        "is_s_ft",
+        "is_p_ff",
+        "is_s_ff",
+        "is_p_pp",
+        "is_s_pp",
+        "is_p_cm",
+        "is_s_cm",
+        "is_p_fm",
+        "is_s_fm",
+        "is_p_ov",
+        "is_s_ov",
+        "ref_arrays",
+    )
+    missing = [k for k in required if k not in kwargs]
+    if missing:
+        raise TypeError(f"solve_force_greats_finder_gpu missing required keyword arguments: {', '.join(missing)}")
+
+    for attempt in range(max(0, _FG_VULKAN_RETRIES) + 1):
+        try:
+            return _solve_force_greats_finder_gpu_impl(
+                genome_stats_list,
+                timestamps_np,
+                great_candidate_timestamps_np,
+                int(long_notes),
+                float(last_note_time),
+                fg_configs,
+                ftff_pairs,
+                n_sections=int(kwargs["n_sections"]),
+                is_p_ft=int(kwargs["is_p_ft"]),
+                is_s_ft=int(kwargs["is_s_ft"]),
+                is_p_ff=int(kwargs["is_p_ff"]),
+                is_s_ff=int(kwargs["is_s_ff"]),
+                is_p_pp=int(kwargs["is_p_pp"]),
+                is_s_pp=int(kwargs["is_s_pp"]),
+                is_p_cm=int(kwargs["is_p_cm"]),
+                is_s_cm=int(kwargs["is_s_cm"]),
+                is_p_fm=int(kwargs["is_p_fm"]),
+                is_s_fm=int(kwargs["is_s_fm"]),
+                is_p_ov=int(kwargs["is_p_ov"]),
+                is_s_ov=int(kwargs["is_s_ov"]),
+                ref_arrays=kwargs["ref_arrays"],
+                total_budget=int(kwargs.get("total_budget", 90)),
+                gem_scale_fever=int(kwargs.get("gem_scale_fever", 3)),
+                pair_caps_grid=kwargs.get("pair_caps_grid"),
+                cfg_chunk=kwargs.get("cfg_chunk"),
+                return_raw=bool(kwargs.get("return_raw", False)),
+                accumulate_global=bool(kwargs.get("accumulate_global", False)),
+                base_cfg_offset=int(kwargs.get("base_cfg_offset", 0)),
+            )
+        except Exception as e:
+            if attempt >= max(0, _FG_VULKAN_RETRIES) or not _is_vulkan_backend_failure(e):
+                raise
+            print(
+                "[FG GPU] Vulkan backend error; retrying after hard reset "
+                f"(attempt {attempt + 1}/{max(0, _FG_VULKAN_RETRIES)})"
+            )
+            gem_api.hard_reset_taichi(reason=str(e).splitlines()[0][:200])
 
 
 
