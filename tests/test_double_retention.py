@@ -50,10 +50,17 @@ def test_retention_keeps_top_scores_and_best_fg(tmp_path, monkeypatch):
             "SELECT count(*) FROM loadouts WHERE song_name=? AND fg_score >= 5000",
             (song_name,),
         ).fetchone()[0]
+        fg_total = conn.execute(
+            "SELECT count(*) FROM fg_loadouts WHERE song_name=?", (song_name,)
+        ).fetchone()[0]
     finally:
         conn.close()
 
     assert count_raw == limit
-    assert count_fg == 1
-    assert total == limit + 1
+    # Base leaderboard retains top-N by base score only.
+    assert total == limit
+    # Best FG is retained in the dedicated FG table.
+    assert fg_total == 1
+    # And may or may not be present in the base table depending on base score.
+    assert count_fg in (0, 1)
 

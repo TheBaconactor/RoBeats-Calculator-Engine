@@ -438,8 +438,10 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
                 song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_json
             ))
             
-            # Only FG-valid entries go to fg_loadouts table
-            if fg_score > 0 and force_data is not None:
+            # Only FG-improving entries go to fg_loadouts table (FG leaderboard):
+            # We require fg_score strictly better than base score to avoid storing
+            # "FG results" that are worse than the base outcome.
+            if force_data is not None and fg_score > score:
                 fg_loadouts_params.append((
                     song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_json
                 ))
@@ -447,7 +449,7 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
             # Track best scores
             if best_score_max is None or score > best_score_max:
                 best_score_max = score
-            if fg_score and (best_fg_max is None or fg_score > best_fg_max):
+            if force_data is not None and fg_score > score and (best_fg_max is None or fg_score > best_fg_max):
                 best_fg_max = fg_score
 
         # Batch insert into loadouts table
@@ -474,12 +476,12 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
                 INSERT INTO fg_loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
                 ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
-                    score = excluded.score,
+                    score = CASE WHEN excluded.fg_score > fg_score THEN excluded.score ELSE score END,
                     fg_score = MAX(fg_score, excluded.fg_score),
                     gear_json = excluded.gear_json,
                     minis_json = excluded.minis_json,
-                    details_json = excluded.details_json,
-                    force_details_json = excluded.force_details_json,
+                    details_json = CASE WHEN excluded.fg_score > fg_score THEN excluded.details_json ELSE details_json END,
+                    force_details_json = CASE WHEN excluded.fg_score > fg_score THEN excluded.force_details_json ELSE force_details_json END,
                     timestamp = strftime('%s', 'now')
             """, fg_loadouts_params)
 
@@ -497,6 +499,17 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
                 ON CONFLICT(name) DO UPDATE SET best_fg_score = MAX(best_fg_score, excluded.best_fg_score), last_updated = strftime('%s', 'now')
             """, (song_name, best_fg_max))
 
+        # Enforce FG leaderboard invariant (in case older DB rows exist):
+        # fg_loadouts should only contain entries where FG strictly beats base.
+        conn.execute(
+            """
+            DELETE FROM fg_loadouts
+            WHERE song_name = ?
+            AND fg_score <= score
+            """,
+            (song_name,),
+        )
+
         # Deduplicate and Prune BOTH tables
         for table in ["loadouts", "fg_loadouts"]:
             # Deduplicate
@@ -509,48 +522,20 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
                 continue
 
             if table == "loadouts":
-                # Double-retention policy:
-                # - Keep top-N by base score
-                # - Also keep the single best FG loadout (even if its base score is low)
-                keep_hashes = [
-                    r[0]
-                    for r in conn.execute(
-                        """
-                        SELECT loadout_hash
-                        FROM loadouts
+                # Base leaderboard retention: keep top-N by base score only.
+                conn.execute(
+                    """
+                    DELETE FROM loadouts
+                    WHERE song_name = ?
+                    AND loadout_hash NOT IN (
+                        SELECT loadout_hash FROM loadouts
                         WHERE song_name = ?
                         ORDER BY score DESC
                         LIMIT ?
-                        """,
-                        (song_name, LOADOUTS_PER_SONG_LIMIT),
-                    ).fetchall()
-                ]
-
-                best_fg_row = conn.execute(
-                    """
-                    SELECT loadout_hash
-                    FROM fg_loadouts
-                    WHERE song_name = ?
-                    ORDER BY fg_score DESC
-                    LIMIT 1
-                    """,
-                    (song_name,),
-                ).fetchone()
-                if best_fg_row and best_fg_row[0] is not None:
-                    keep_hashes.append(best_fg_row[0])
-
-                # Stable de-dupe while preserving order (top score first, then best FG)
-                keep_hashes = list(dict.fromkeys(keep_hashes))
-                if keep_hashes:
-                    placeholders = ",".join("?" * len(keep_hashes))
-                    conn.execute(
-                        f"""
-                        DELETE FROM loadouts
-                        WHERE song_name = ?
-                        AND loadout_hash NOT IN ({placeholders})
-                        """,
-                        (song_name, *keep_hashes),
                     )
+                    """,
+                    (song_name, song_name, LOADOUTS_PER_SONG_LIMIT),
+                )
             else:
                 # For fg_loadouts we prioritize FG_SCORE only.
                 conn.execute(
