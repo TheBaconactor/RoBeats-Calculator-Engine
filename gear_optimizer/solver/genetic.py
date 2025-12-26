@@ -350,11 +350,21 @@ def _neighbor_sweep_fg_candidates(
 
     slot_name_to_idx = {name: idx for idx, name in enumerate(slots)}
     sweep_slots: list[int] = []
-    for slot_name in _parse_cfg_csv_list(sweep_slots_raw):
-        idx = slot_name_to_idx.get(slot_name.strip().title())
+    sweep_minis = False
+    mini_tokens = {"mini", "minis", "miniteam", "mini-team", "mini_teams", "miniteams"}
+    for token in _parse_cfg_csv_list(sweep_slots_raw):
+        raw = token.strip()
+        if not raw:
+            continue
+        normalized = raw.lower().replace(" ", "").replace("_", "-")
+        if normalized in mini_tokens:
+            sweep_minis = True
+            continue
+        idx = slot_name_to_idx.get(raw.title())
         if idx is not None:
             sweep_slots.append(idx)
-    if not sweep_slots:
+
+    if not sweep_slots and not sweep_minis:
         return []
 
     meta = calc_song.get("metadata", {}) or {}
@@ -392,10 +402,43 @@ def _neighbor_sweep_fg_candidates(
         mini_names = tuple(sorted(((it or {}).get("Name", "") for it in genome[6:9])))
         return gear_names + mini_names
 
+    def _build_interesting_items(pool: list[dict]) -> list[dict]:
+        if not pool:
+            return []
+        interesting: dict[str, dict] = {}
+        if top_by_heuristic > 0:
+            ranked = sorted(pool, key=_heuristic_item_score, reverse=True)
+            for it in ranked[: max(1, top_by_heuristic)]:
+                if not it:
+                    continue
+                name = it.get("Name")
+                if name and name not in interesting:
+                    interesting[name] = it
+
+        for key in base_stat_keys:
+            ranked = sorted(pool, key=lambda it: int((it or {}).get(key, 0) or 0), reverse=True)
+            for it in ranked[: max(1, top_per_stat)]:
+                if not it:
+                    continue
+                name = it.get("Name")
+                if name and name not in interesting:
+                    interesting[name] = it
+
+        return list(interesting.values())
+
+    gear_candidates_by_slot: dict[int, list[dict]] = {}
+    for slot_idx in sweep_slots:
+        slot_name = slots[slot_idx]
+        pool = gear_pool.get(slot_name) or []
+        gear_candidates_by_slot[slot_idx] = _build_interesting_items(pool)
+
+    mini_candidates: list[dict] = _build_interesting_items(mini_pool) if sweep_minis else []
+
     # Seed selection: prefer mini-team diversity so we don't miss FG-relevant
     # loadouts that are lower-ranked by base score but have different minis.
     existing_candidate_keys = set()
     seen_mini_sets = set()
+    seen_seed_keys = set()
     seeds: list[list[dict]] = []
     for cand in existing_candidates:
         genome = cand.get("Genome")
@@ -408,9 +451,27 @@ def _neighbor_sweep_fg_candidates(
         if mini_key in seen_mini_sets:
             continue
         seen_mini_sets.add(mini_key)
+        if full_key in seen_seed_keys:
+            continue
+        seen_seed_keys.add(full_key)
         seeds.append(genome)
         if len(seeds) >= seed_top_k:
             break
+
+    # If the mini-diverse pass didn't fill the seed budget (common on converged runs),
+    # fill with the next best unique genomes so we still explore multiple gear variants.
+    if len(seeds) < seed_top_k:
+        for cand in existing_candidates:
+            genome = cand.get("Genome")
+            if not genome:
+                continue
+            full_key = _candidate_key_from_genome(genome)
+            if full_key in seen_seed_keys:
+                continue
+            seen_seed_keys.add(full_key)
+            seeds.append(genome)
+            if len(seeds) >= seed_top_k:
+                break
 
     if not seeds:
         return []
@@ -418,55 +479,142 @@ def _neighbor_sweep_fg_candidates(
     neighbor_genomes: list[list[dict]] = []
     neighbor_keys = set(existing_candidate_keys)
 
+    def _try_add(genome: list[dict]) -> bool:
+        mini_names = [m.get("Name", "") for m in genome[6:9] if m]
+        if len(mini_names) != len(set(mini_names)):
+            return False
+        key = _candidate_key_from_genome(genome)
+        if key in neighbor_keys:
+            return False
+        neighbor_keys.add(key)
+        neighbor_genomes.append(genome)
+        return True
+
+    mini_positions = (6, 7, 8)
+    gear_pairs: list[tuple[int, int]] = []
+    if len(sweep_slots) >= 2:
+        for i, a in enumerate(sweep_slots):
+            for b in sweep_slots[i + 1 :]:
+                gear_pairs.append((a, b))
+
+    pair_top = max(1, min(8, top_by_heuristic))
+    mini_combo_top = max(1, min(8, top_by_heuristic))
+
     for seed in seeds:
-        for slot_idx in sweep_slots:
-            slot_name = slots[slot_idx]
-            pool = gear_pool.get(slot_name) or []
-            if not pool:
-                continue
+        seed_minis = [m for m in seed[6:9] if m]
+        seed_mini_names = {m.get("Name", "") for m in seed_minis}
 
-            interesting_items: dict[str, dict] = {}
-            if top_by_heuristic > 0:
-                ranked = sorted(pool, key=_heuristic_item_score, reverse=True)
-                for it in ranked[: max(1, top_by_heuristic)]:
-                    if not it:
-                        continue
-                    name = it.get("Name")
-                    if name:
-                        interesting_items[name] = it
+        # Pairwise gear sweep (2-slot combos) + optional mini swap on the weakest mini.
+        if gear_pairs:
+            weakest_pos = 6
+            weakest_score = None
+            for pos in mini_positions:
+                it = seed[pos] or {}
+                score = _heuristic_item_score(it)
+                if weakest_score is None or score < weakest_score:
+                    weakest_score = score
+                    weakest_pos = pos
 
-            for key in base_stat_keys:
-                ranked = sorted(pool, key=lambda it: int((it or {}).get(key, 0) or 0), reverse=True)
-                for it in ranked[: max(1, top_per_stat)]:
-                    if not it:
-                        continue
-                    name = it.get("Name")
-                    if name:
-                        interesting_items[name] = it
-
-            current_item = seed[slot_idx] or {}
-            current_name = current_item.get("Name", "")
-            for it in interesting_items.values():
-                if it.get("Name", "") == current_name:
+            for a, b in gear_pairs:
+                items_a = (gear_candidates_by_slot.get(a) or [])[:pair_top]
+                items_b = (gear_candidates_by_slot.get(b) or [])[:pair_top]
+                if not items_a or not items_b:
                     continue
 
-                genome = list(seed)
-                genome[slot_idx] = it
+                curr_a = (seed[a] or {}).get("Name", "")
+                curr_b = (seed[b] or {}).get("Name", "")
 
-                # Ensure mini uniqueness (defensive; we don't mutate minis here).
-                mini_names = [m.get("Name", "") for m in genome[6:9] if m]
-                if len(mini_names) != len(set(mini_names)):
-                    continue
+                for it_a in items_a:
+                    name_a = (it_a or {}).get("Name", "")
+                    for it_b in items_b:
+                        name_b = (it_b or {}).get("Name", "")
+                        if name_a == curr_a and name_b == curr_b:
+                            continue
 
-                key = _candidate_key_from_genome(genome)
-                if key in neighbor_keys:
-                    continue
-                neighbor_keys.add(key)
-                neighbor_genomes.append(genome)
+                        genome_pair = list(seed)
+                        if name_a and name_a != curr_a:
+                            genome_pair[a] = it_a
+                        if name_b and name_b != curr_b:
+                            genome_pair[b] = it_b
+
+                        _try_add(genome_pair)
+                        if len(neighbor_genomes) >= max_new:
+                            break
+
+                        if sweep_minis and mini_candidates:
+                            for mini in mini_candidates[:mini_combo_top]:
+                                mini_name = mini.get("Name", "")
+                                if not mini_name or mini_name in seed_mini_names:
+                                    continue
+                                genome_combo = list(genome_pair)
+                                genome_combo[weakest_pos] = mini
+                                _try_add(genome_combo)
+                                if len(neighbor_genomes) >= max_new:
+                                    break
+                        if len(neighbor_genomes) >= max_new:
+                            break
+                    if len(neighbor_genomes) >= max_new:
+                        break
                 if len(neighbor_genomes) >= max_new:
                     break
             if len(neighbor_genomes) >= max_new:
                 break
+
+        # Gear sweep (optionally combined with mini swaps when "Minis" is included).
+        for slot_idx in sweep_slots:
+            pool_items = gear_candidates_by_slot.get(slot_idx) or []
+            if not pool_items:
+                continue
+
+            current_item = seed[slot_idx] or {}
+            current_name = current_item.get("Name", "")
+
+            for it in pool_items:
+                if (it or {}).get("Name", "") == current_name:
+                    continue
+
+                genome_gear = list(seed)
+                genome_gear[slot_idx] = it
+                _try_add(genome_gear)
+                if len(neighbor_genomes) >= max_new:
+                    break
+
+                if sweep_minis and mini_candidates:
+                    for mini in mini_candidates:
+                        mini_name = mini.get("Name", "")
+                        if not mini_name or mini_name in seed_mini_names:
+                            continue
+
+                        for pos in mini_positions:
+                            genome_combo = list(genome_gear)
+                            genome_combo[pos] = mini
+                            _try_add(genome_combo)
+                            if len(neighbor_genomes) >= max_new:
+                                break
+                        if len(neighbor_genomes) >= max_new:
+                            break
+
+                if len(neighbor_genomes) >= max_new:
+                    break
+            if len(neighbor_genomes) >= max_new:
+                break
+        if len(neighbor_genomes) >= max_new:
+            break
+
+        # Mini-only sweep (useful when minis are the missing axis, or when no gear slots are enabled).
+        if sweep_minis and mini_candidates and len(neighbor_genomes) < max_new:
+            for mini in mini_candidates:
+                mini_name = mini.get("Name", "")
+                if not mini_name or mini_name in seed_mini_names:
+                    continue
+                for pos in mini_positions:
+                    genome_mini = list(seed)
+                    genome_mini[pos] = mini
+                    _try_add(genome_mini)
+                    if len(neighbor_genomes) >= max_new:
+                        break
+                if len(neighbor_genomes) >= max_new:
+                    break
         if len(neighbor_genomes) >= max_new:
             break
 
@@ -1338,17 +1486,14 @@ def solve_coevolution_genetic(
                         seen.add(k)
                         merged.append(cand)
 
-                    limit = max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit)
-                    priority = [c for c in merged if c.get("_fg_priority")]
-                    non_priority = [c for c in merged if not c.get("_fg_priority")]
-
-                    priority.sort(key=lambda c: c.get("Score", 0), reverse=True)
-                    non_priority.sort(key=lambda c: c.get("Score", 0), reverse=True)
-
-                    unique_evaluated = []
-                    unique_evaluated.extend(priority[:limit])
-                    if len(unique_evaluated) < limit:
-                        unique_evaluated.extend(non_priority[: max(0, limit - len(unique_evaluated))])
+                    # Keep a wider candidate funnel here; the downstream FG stage is
+                    # explicitly capped by `FG_CandidateLimit` and should decide which
+                    # candidates to evaluate. Truncating here by base score can
+                    # accidentally drop low-base but high-FG potential loadouts.
+                    merged.sort(key=lambda c: c.get("Score", 0), reverse=True)
+                    max_keep = max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit)
+                    max_keep = max(max_keep, min(5000, max_keep * 10))
+                    unique_evaluated = merged[:max_keep]
         except Exception:
             # Never allow candidate augmentation to crash the GA solver.
             pass
