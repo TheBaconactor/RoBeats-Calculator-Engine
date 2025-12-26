@@ -18,6 +18,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 import time
 
 from ..core.stats_calculator import build_base_stats_from_config
+import numpy as np
 
 
 @dataclass
@@ -224,13 +225,75 @@ class SongPreloader:
         preparing data structures for the GA.
         """
         try:
-            from ..helpers.song_helpers import calculate_song
-            
-            # Calculate song data from file
-            calc_song = calculate_song(req.file_path, req.difficulty)
-            
-            if not calc_song:
-                raise ValueError(f"Failed to load song: {req.song_name}")
+            from ..pipeline.song_processor import read_song_file
+            from ..solver.hit_simulation import (
+                simulate_perfect_hit_timestamps_with_great_candidates,
+                stable_seed_from_text,
+            )
+
+            song_data = read_song_file(req.file_path)
+            if not song_data:
+                raise ValueError(f"Failed to read song file: {req.file_path}")
+
+            timestamps = song_data.get("timestamps") or []
+            if not timestamps:
+                raise ValueError(f"Song has no timestamps: {req.song_name}")
+
+            timestamps_np = np.asarray(timestamps, dtype=np.float64)
+            note_types = song_data.get("note_types") or []
+            note_types_np = np.asarray(note_types, dtype=np.int16) if note_types else np.ones(timestamps_np.shape[0], dtype=np.int16)
+            if note_types_np.shape[0] != timestamps_np.shape[0]:
+                note_types_np = np.ones(timestamps_np.shape[0], dtype=np.int16)
+
+            calc_song = {
+                "metadata": song_data.get("song_details", {}) or {},
+                "song_data": {
+                    "timestamps": timestamps_np,
+                    "note_types": note_types_np,
+                },
+            }
+
+            # Optional: HumanHitSim (same semantics as song_processor.py) so GPU prefetch
+            # and the main song run see identical timestamps.
+            human_cfg = req.cfg_dict.get("HumanHitSim", {}) or {}
+            sim_enabled = str(human_cfg.get("enabled", "0")).strip().lower() in {"1", "true", "yes", "on"}
+            if sim_enabled and timestamps_np.size:
+                apply_to = str(human_cfg.get("applyto", "FG")).strip().upper()
+                if apply_to not in {"FG", "ALL"}:
+                    apply_to = "FG"
+
+                try:
+                    seed_in = int(str(human_cfg.get("seed", "0") or "0"))
+                except Exception:
+                    seed_in = 0
+
+                dist = str(human_cfg.get("distribution", "uniform")).strip().lower()
+                great_mode = str(human_cfg.get("greatmode", "late")).strip().lower()
+
+                if seed_in == 0:
+                    song_key = str(calc_song.get("metadata", {}).get("Song Name", "")) or str(req.song_name)
+                    seed_in = stable_seed_from_text(song_key)
+
+                sim_ts, sim_great_candidates, sim_dbg = simulate_perfect_hit_timestamps_with_great_candidates(
+                    timestamps_np,
+                    note_types_np,
+                    seed=seed_in,
+                    distribution=dist,
+                    great_mode=great_mode,
+                )
+
+                calc_song["song_data"]["fg_timestamps"] = np.asarray(sim_ts, dtype=np.float64)
+                calc_song["song_data"]["fg_great_candidate_timestamps"] = np.asarray(
+                    sim_great_candidates, dtype=np.float64
+                )
+                calc_song["metadata"]["HumanHitSimSeed"] = int(seed_in)
+                calc_song["metadata"]["HumanHitSimApplyTo"] = apply_to
+                calc_song["metadata"]["HumanHitSimDistribution"] = dist
+                calc_song["metadata"]["HumanHitSimGreatMode"] = great_mode
+                calc_song["metadata"]["HumanHitSimDebug"] = sim_dbg
+                calc_song["metadata"]["HumanHitSimApplied"] = True
+                if apply_to == "ALL":
+                    calc_song["song_data"]["timestamps"] = np.asarray(sim_ts, dtype=np.float64)
 
             # Build base stats from config
             base_stats_fixed = build_base_stats_from_config(req.cfg_dict)

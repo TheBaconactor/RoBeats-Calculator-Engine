@@ -30,6 +30,7 @@ from ..core.constants import (
     GEM_STAT_TO_ELEMENT_SCALE,
     ELEMENTAL_GEM_SCALE,
     LOADOUTS_PER_SONG_LIMIT,
+    FG_CANDIDATE_LIMIT,
     SKIP_ITEM_KEYS,
     GPU_GA_NUM_ISLANDS,
     GPU_GA_GENS_PER_MIGRATION,
@@ -128,6 +129,7 @@ def _extract_fg_candidates_from_ga_snapshot(
     results: "np.ndarray",
     scores: "np.ndarray",
     n_genomes: int,
+    candidate_limit: int,
 ) -> list:
     """
     Extract top unique genomes from a GA run snapshot to seed the Force Greats solver.
@@ -144,7 +146,15 @@ def _extract_fg_candidates_from_ga_snapshot(
     if n_genomes <= 0:
         return all_evaluated
 
-    limit = min(n_genomes, LOADOUTS_PER_SONG_LIMIT * 2)  # 2x buffer for duplicates
+    candidate_limit = int(candidate_limit)
+    if candidate_limit <= 0:
+        return all_evaluated
+
+    # NOTE: We scan the full final population here to maximize unique candidate
+    # coverage for downstream ForceGreats evaluation. With the GPU-native GA the
+    # population often converges, so looking only at a small top-K window can
+    # yield too few unique genomes.
+    limit = n_genomes
 
     # Map selected color to stat index for overflow gem contribution
     color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
@@ -215,7 +225,10 @@ def _extract_fg_candidates_from_ga_snapshot(
             seen_id_hashes.add(id_hash)
             unique_candidate_indices.append(i)
 
-            if len(unique_candidate_indices) >= LOADOUTS_PER_SONG_LIMIT:
+            # Keep a wider funnel for ForceGreats evaluation than what we persist in the DB.
+            # When the DB is empty (first run / user deletes DB), ForceGreatsFinder only
+            # sees GA candidates, so a too-small candidate cap makes FG results vary a lot.
+            if len(unique_candidate_indices) >= max(LOADOUTS_PER_SONG_LIMIT, candidate_limit):
                 break
 
     # Pass 2: Decode and build dicts only for unique candidates
@@ -509,6 +522,7 @@ def _run_gpu_native_ga(
         results=results,
         scores=scores,
         n_genomes=n_genomes,
+        candidate_limit=int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT)),
     )
 
     return best_genome, best_score, best_result, all_evaluated
@@ -619,6 +633,13 @@ def solve_coevolution_genetic(
         "selected_color": selected_color,
         "use_gpu": use_gpu_mode,
         "use_gpu_native": use_gpu_native,
+        "fg_candidate_limit": max(
+            LOADOUTS_PER_SONG_LIMIT,
+            min(
+                5000,
+                safe_int(cfg.get("IterationEngine", "FG_CandidateLimit", fallback=FG_CANDIDATE_LIMIT), FG_CANDIDATE_LIMIT),
+            ),
+        ),
 
         "user_ft": safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0)),
         "user_ff": safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0)),
@@ -916,6 +937,10 @@ def solve_coevolution_genetic(
         best_global_res_arr = None
         all_evaluated_global = []
 
+        fg_candidate_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT))
+        if fg_candidate_limit <= 0:
+            fg_candidate_limit = FG_CANDIDATE_LIMIT
+
         for r in range(num_runs):
             run_pack = runs_payload[r]
             run_best_score = int(run_pack[0, 0])
@@ -939,6 +964,7 @@ def solve_coevolution_genetic(
                     results=results_snapshot,
                     scores=scores_snapshot,
                     n_genomes=n_genomes,
+                    candidate_limit=fg_candidate_limit,
                 )
             )
 
@@ -1039,9 +1065,9 @@ def solve_coevolution_genetic(
                 seen_hashes.add(cand_hash)
                 unique_evaluated.append(cand)
 
-        # Sort by score descending and truncate to limit
+        # Sort by score descending and truncate for downstream ForceGreats evaluation.
         unique_evaluated.sort(key=lambda c: c.get("Score", 0), reverse=True)
-        unique_evaluated = unique_evaluated[:LOADOUTS_PER_SONG_LIMIT]
+        unique_evaluated = unique_evaluated[: max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit)]
 
         return best_data, best_gear, best_minis, None, [], [], unique_evaluated
 

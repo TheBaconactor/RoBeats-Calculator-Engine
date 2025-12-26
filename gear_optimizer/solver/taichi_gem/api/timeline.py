@@ -5,10 +5,9 @@ This module provides GPU-accelerated timeline precomputation:
 - precompute_timeline_gpu: Compute all 161×161 fever timelines on GPU
 - _upload_timeline_grid: Upload timeline grid to GPU fields with caching
 """
-from __future__ import annotations
-
 import time
 import numpy as np
+import taichi as ti
 
 from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
 from ..fields import (
@@ -65,11 +64,35 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     meta = calc_song.get("metadata", {}) or {}
     song_data = calc_song.get("song_data", {}) or {}
     timestamps = song_data.get("timestamps", ())
+    first_ms = 0
+    last_ms = 0
+    try:
+        if hasattr(timestamps, "__len__") and len(timestamps):
+            first_ms = int(float(timestamps[0]) * 1000.0)
+            last_ms = int(float(timestamps[len(timestamps) - 1]) * 1000.0)
+    except Exception:
+        first_ms = 0
+        last_ms = 0
+
+    try:
+        human_seed = int(meta.get("HumanHitSimSeed") or 0)
+    except Exception:
+        human_seed = 0
+    human_apply_to = str(meta.get("HumanHitSimApplyTo", "")).strip().upper()
+    human_dist = str(meta.get("HumanHitSimDistribution", "")).strip().lower()
+    human_great_mode = str(meta.get("HumanHitSimGreatMode", "")).strip().lower()
+
     song_key = (
         str(meta.get("Song Name", "")),
         int(len(timestamps)),
         float(meta.get("Last Note Time", 0) or 0),
         int(meta.get("Long Notes", 0) or 0),
+        int(first_ms),
+        int(last_ms),
+        int(human_seed),
+        human_apply_to,
+        human_dist,
+        human_great_mode,
     )
     song_slot = int(song_slot)
     if song_slot < 0 or song_slot >= MAX_SONG_SLOTS:
@@ -126,6 +149,35 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
 _grid_uploaded = False
 
 
+@ti.kernel
+def _upload_grid_slot0_counts_kernel(
+    n: ti.i32,
+    cbf: ti.types.ndarray(dtype=ti.i32, ndim=2),
+    cbn: ti.types.ndarray(dtype=ti.i32, ndim=2),
+    hl: ti.types.ndarray(dtype=ti.i32, ndim=2),
+    gap: ti.types.ndarray(dtype=ti.i32, ndim=2),
+    fevact: ti.types.ndarray(dtype=ti.i32, ndim=2),
+) -> None:
+    for i, j in ti.ndrange(n, n):
+        fields.grid_count_body_fever[0, i, j] = cbf[i, j]
+        fields.grid_count_body_normal[0, i, j] = cbn[i, j]
+        fields.grid_head_len[0, i, j] = hl[i, j]
+        fields.grid_gap[0, i, j] = gap[i, j]
+        fields.grid_fever_activations[0, i, j] = fevact[i, j]
+
+
+@ti.kernel
+def _upload_grid_slot0_masks_kernel(
+    n: ti.i32,
+    masks: ti.types.ndarray(dtype=ti.i32, ndim=3),
+    masks_bits: ti.types.ndarray(dtype=ti.u32, ndim=3),
+) -> None:
+    for i, j, k in ti.ndrange(n, n, MAX_HEAD_NOTES):
+        fields.grid_fever_masks[0, i, j, k] = masks[i, j, k]
+    for i, j, k in ti.ndrange(n, n, 4):
+        fields.grid_fever_masks_bits[0, i, j, k] = masks_bits[i, j, k]
+
+
 def _upload_timeline_grid(timeline_grid):
     """Upload timeline grid to GPU fields (with caching)."""
     global _grid_uploaded
@@ -149,14 +201,27 @@ def _upload_timeline_grid(timeline_grid):
     # This avoids 2.6M Python loop iterations!
     _t_extract = time.perf_counter()
 
-    # Allocate 3D arrays matching slotted grid fields (slot 0 for CPU upload path)
-    cbf_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int16)
-    cbn_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int16)
-    hl_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int8)
-    masks_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES), dtype=np.int8)
-    masks_bits_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, 4), dtype=np.uint32)
-    gap_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int16)
-    fevact_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int8)
+    # Avoid allocating giant (MAX_SONG_SLOTS, ...) CPU staging arrays when users
+    # increase `GPU_SONG_SLOTS` for VRAM timeline caching. For large slot counts
+    # we only stage slot 0 on CPU and upload it via small Taichi kernels.
+    kernel_upload = MAX_SONG_SLOTS > 32
+    if kernel_upload:
+        cbf_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
+        cbn_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
+        hl_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
+        masks_np = np.zeros((GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES), dtype=np.int32)
+        masks_bits_np = np.zeros((GRID_SIZE, GRID_SIZE, 4), dtype=np.uint32)
+        gap_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
+        fevact_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
+    else:
+        # Allocate 3D arrays matching slotted grid fields (slot 0 for CPU upload path)
+        cbf_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int16)
+        cbn_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int16)
+        hl_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int8)
+        masks_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES), dtype=np.int8)
+        masks_bits_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, 4), dtype=np.uint32)
+        gap_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int16)
+        fevact_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int8)
 
     # Fill slot 0 with timeline data
     song_slot = 0
@@ -169,13 +234,23 @@ def _upload_timeline_grid(timeline_grid):
             timeline = row[ff_idx]
             if timeline is not None:
                 fever_mask_head, count_fever, count_normal, fevact, last_fever_end = timeline
-                cbf_np[song_slot, ft_idx, ff_idx] = count_fever
-                cbn_np[song_slot, ft_idx, ff_idx] = count_normal
-                fevact_np[song_slot, ft_idx, ff_idx] = fevact
-                gap_np[song_slot, ft_idx, ff_idx] = total_notes - last_fever_end
+                if kernel_upload:
+                    cbf_np[ft_idx, ff_idx] = count_fever
+                    cbn_np[ft_idx, ff_idx] = count_normal
+                    fevact_np[ft_idx, ff_idx] = fevact
+                    gap_np[ft_idx, ff_idx] = total_notes - last_fever_end
+                else:
+                    cbf_np[song_slot, ft_idx, ff_idx] = count_fever
+                    cbn_np[song_slot, ft_idx, ff_idx] = count_normal
+                    fevact_np[song_slot, ft_idx, ff_idx] = fevact
+                    gap_np[song_slot, ft_idx, ff_idx] = total_notes - last_fever_end
                 head_len = min(len(fever_mask_head), MAX_HEAD_NOTES)
-                hl_np[song_slot, ft_idx, ff_idx] = head_len
-                masks_np[song_slot, ft_idx, ff_idx, :head_len] = fever_mask_head[:head_len].astype(np.int8)
+                if kernel_upload:
+                    hl_np[ft_idx, ff_idx] = head_len
+                    masks_np[ft_idx, ff_idx, :head_len] = fever_mask_head[:head_len].astype(np.int32)
+                else:
+                    hl_np[song_slot, ft_idx, ff_idx] = head_len
+                    masks_np[song_slot, ft_idx, ff_idx, :head_len] = fever_mask_head[:head_len].astype(np.int8)
 
                 # OPTIMIZED: Vectorized bit packing using NumPy
                 # Convert bool array to bit positions, then pack
@@ -184,19 +259,26 @@ def _upload_timeline_grid(timeline_grid):
                     for bit_pos in fever_bits:
                         word_idx = bit_pos >> 5  # bit_pos // 32
                         bit_in_word = bit_pos & 31  # bit_pos % 32
-                        masks_bits_np[song_slot, ft_idx, ff_idx, word_idx] |= np.uint32(1) << bit_in_word
+                        if kernel_upload:
+                            masks_bits_np[ft_idx, ff_idx, word_idx] |= np.uint32(1) << bit_in_word
+                        else:
+                            masks_bits_np[song_slot, ft_idx, ff_idx, word_idx] |= np.uint32(1) << bit_in_word
 
     _profiler.record_upload(time.perf_counter() - _t_extract)
 
     # Upload to GPU
     _t_gpu_upload = time.perf_counter()
-    fields.grid_count_body_fever.from_numpy(cbf_np)
-    fields.grid_count_body_normal.from_numpy(cbn_np)
-    fields.grid_head_len.from_numpy(hl_np)
-    fields.grid_fever_masks.from_numpy(masks_np)
-    fields.grid_fever_masks_bits.from_numpy(masks_bits_np)
-    fields.grid_gap.from_numpy(gap_np)
-    fields.grid_fever_activations.from_numpy(fevact_np)
+    if kernel_upload:
+        _upload_grid_slot0_counts_kernel(GRID_SIZE, cbf_np, cbn_np, hl_np, gap_np, fevact_np)
+        _upload_grid_slot0_masks_kernel(GRID_SIZE, masks_np, masks_bits_np)
+    else:
+        fields.grid_count_body_fever.from_numpy(cbf_np)
+        fields.grid_count_body_normal.from_numpy(cbn_np)
+        fields.grid_head_len.from_numpy(hl_np)
+        fields.grid_fever_masks.from_numpy(masks_np)
+        fields.grid_fever_masks_bits.from_numpy(masks_bits_np)
+        fields.grid_gap.from_numpy(gap_np)
+        fields.grid_fever_activations.from_numpy(fevact_np)
     _profiler.record_upload(time.perf_counter() - _t_gpu_upload)
 
     _grid_uploaded = True

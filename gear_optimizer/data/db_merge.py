@@ -99,7 +99,7 @@ def validate_database_schema(db_path: str) -> Tuple[bool, str]:
         # Check for required tables
         cursor.execute("""
             SELECT name FROM sqlite_master
-            WHERE type='table' AND name IN ('songs', 'loadouts')
+            WHERE type='table' AND name IN ('songs', 'loadouts', 'fg_loadouts')
         """)
         tables = {row[0] for row in cursor.fetchall()}
 
@@ -121,6 +121,15 @@ def validate_database_schema(db_path: str) -> Tuple[bool, str]:
         if missing_columns:
             conn.close()
             return False, f"Missing required columns: {', '.join(missing_columns)}"
+
+        # Validate optional fg_loadouts table if present
+        if 'fg_loadouts' in tables:
+            cursor.execute("PRAGMA table_info(fg_loadouts)")
+            fg_columns = {row[1] for row in cursor.fetchall()}
+            missing_fg_columns = required_columns - fg_columns
+            if missing_fg_columns:
+                conn.close()
+                return False, f"Missing required columns in fg_loadouts: {', '.join(missing_fg_columns)}"
 
         conn.close()
         return True, ""
@@ -149,6 +158,15 @@ def get_database_stats(db_path: str) -> Dict[str, int]:
         cursor.execute("SELECT COUNT(*) FROM loadouts")
         loadout_count = cursor.fetchone()[0]
 
+        fg_loadout_count = 0
+        cursor.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name='fg_loadouts'
+        """)
+        if cursor.fetchone():
+            cursor.execute("SELECT COUNT(*) FROM fg_loadouts")
+            fg_loadout_count = cursor.fetchone()[0]
+
         cursor.execute("SELECT SUM(best_score) FROM songs")
         result = cursor.fetchone()[0]
         total_score = result if result else 0
@@ -158,11 +176,12 @@ def get_database_stats(db_path: str) -> Dict[str, int]:
         return {
             'song_count': song_count,
             'loadout_count': loadout_count,
+            'fg_loadout_count': fg_loadout_count,
             'total_score': total_score
         }
     except Exception as e:
         logging.warning(f"[DB Merge] Failed to get stats: {e}")
-        return {'song_count': 0, 'loadout_count': 0, 'total_score': 0}
+        return {'song_count': 0, 'loadout_count': 0, 'fg_loadout_count': 0, 'total_score': 0}
 
 
 def merge_databases(
@@ -178,6 +197,7 @@ def merge_databases(
     - Attach secondary database
     - Merge songs table (keep higher scores)
     - Merge loadouts table (upsert with conflict resolution)
+    - Merge fg_loadouts table (if present)
     - Maintain data integrity (foreign keys, unique constraints)
     - Provide detailed statistics
 
@@ -202,9 +222,19 @@ def merge_databases(
         main_stats_before = get_database_stats(main_db_path)
         secondary_stats = get_database_stats(secondary_db_path)
 
-        logging.info(f"[DB Merge] Starting merge:")
-        logging.info(f"  Main DB: {main_stats_before['song_count']} songs, {main_stats_before['loadout_count']} loadouts")
-        logging.info(f"  Secondary DB: {secondary_stats['song_count']} songs, {secondary_stats['loadout_count']} loadouts")
+        logging.info("[DB Merge] Starting merge:")
+        logging.info(
+            "  Main DB: %s songs, %s loadouts, %s fg_loadouts",
+            main_stats_before['song_count'],
+            main_stats_before['loadout_count'],
+            main_stats_before.get('fg_loadout_count', 0),
+        )
+        logging.info(
+            "  Secondary DB: %s songs, %s loadouts, %s fg_loadouts",
+            secondary_stats['song_count'],
+            secondary_stats['loadout_count'],
+            secondary_stats.get('fg_loadout_count', 0),
+        )
 
         # Create backup if requested
         if backup_before_merge:
@@ -367,6 +397,142 @@ def merge_databases(
             updated_loadouts_count = cursor.rowcount
             loadouts_merged = new_loadouts_count + updated_loadouts_count
 
+            # Merge fg_loadouts table (optional, only if it exists in secondary)
+            fg_loadouts_merged = 0
+            secondary_has_fg_loadouts = False
+            try:
+                cursor = conn.execute("""
+                    SELECT 1 FROM secondary.sqlite_master
+                    WHERE type='table' AND name='fg_loadouts'
+                    LIMIT 1
+                """)
+                secondary_has_fg_loadouts = cursor.fetchone() is not None
+            except Exception:
+                secondary_has_fg_loadouts = False
+
+            if secondary_has_fg_loadouts:
+                # Ensure destination table exists (older main DBs may predate fg_loadouts).
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS fg_loadouts (
+                        song_name TEXT,
+                        loadout_hash TEXT,
+                        score INTEGER,
+                        fg_score INTEGER,
+                        gear_json TEXT,
+                        minis_json TEXT,
+                        details_json TEXT,
+                        force_details_json TEXT,
+                        timestamp REAL,
+                        PRIMARY KEY (song_name, loadout_hash),
+                        FOREIGN KEY (song_name) REFERENCES songs(name)
+                    );
+                """)
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_fg_loadouts_score ON fg_loadouts (song_name, fg_score DESC);"
+                )
+
+                insert_new_fg_loadouts_sql = """
+                    INSERT OR IGNORE INTO fg_loadouts (
+                        song_name, loadout_hash, score, fg_score,
+                        gear_json, minis_json, details_json, force_details_json, timestamp
+                    )
+                    SELECT
+                        song_name, loadout_hash, score, fg_score,
+                        gear_json, minis_json, details_json, force_details_json, timestamp
+                    FROM secondary.fg_loadouts
+                """
+                cursor = conn.execute(insert_new_fg_loadouts_sql)
+                new_fg_loadouts_count = cursor.rowcount
+
+                update_existing_fg_loadouts_sql = """
+                    UPDATE fg_loadouts
+                    SET
+                        score = (
+                            SELECT CASE
+                                WHEN secondary.fg_loadouts.fg_score > main.fg_loadouts.fg_score
+                                THEN secondary.fg_loadouts.score
+                                ELSE main.fg_loadouts.score
+                            END
+                            FROM secondary.fg_loadouts
+                            WHERE secondary.fg_loadouts.song_name = main.fg_loadouts.song_name
+                            AND secondary.fg_loadouts.loadout_hash = main.fg_loadouts.loadout_hash
+                        ),
+                        fg_score = (
+                            SELECT CASE
+                                WHEN secondary.fg_loadouts.fg_score > main.fg_loadouts.fg_score
+                                THEN secondary.fg_loadouts.fg_score
+                                ELSE main.fg_loadouts.fg_score
+                            END
+                            FROM secondary.fg_loadouts
+                            WHERE secondary.fg_loadouts.song_name = main.fg_loadouts.song_name
+                            AND secondary.fg_loadouts.loadout_hash = main.fg_loadouts.loadout_hash
+                        ),
+                        gear_json = (
+                            SELECT CASE
+                                WHEN secondary.fg_loadouts.fg_score > main.fg_loadouts.fg_score
+                                THEN secondary.fg_loadouts.gear_json
+                                ELSE main.fg_loadouts.gear_json
+                            END
+                            FROM secondary.fg_loadouts
+                            WHERE secondary.fg_loadouts.song_name = main.fg_loadouts.song_name
+                            AND secondary.fg_loadouts.loadout_hash = main.fg_loadouts.loadout_hash
+                        ),
+                        minis_json = (
+                            SELECT CASE
+                                WHEN secondary.fg_loadouts.fg_score > main.fg_loadouts.fg_score
+                                THEN secondary.fg_loadouts.minis_json
+                                ELSE main.fg_loadouts.minis_json
+                            END
+                            FROM secondary.fg_loadouts
+                            WHERE secondary.fg_loadouts.song_name = main.fg_loadouts.song_name
+                            AND secondary.fg_loadouts.loadout_hash = main.fg_loadouts.loadout_hash
+                        ),
+                        details_json = (
+                            SELECT CASE
+                                WHEN secondary.fg_loadouts.fg_score > main.fg_loadouts.fg_score
+                                THEN secondary.fg_loadouts.details_json
+                                ELSE main.fg_loadouts.details_json
+                            END
+                            FROM secondary.fg_loadouts
+                            WHERE secondary.fg_loadouts.song_name = main.fg_loadouts.song_name
+                            AND secondary.fg_loadouts.loadout_hash = main.fg_loadouts.loadout_hash
+                        ),
+                        force_details_json = (
+                            SELECT CASE
+                                WHEN secondary.fg_loadouts.fg_score > main.fg_loadouts.fg_score
+                                THEN secondary.fg_loadouts.force_details_json
+                                ELSE main.fg_loadouts.force_details_json
+                            END
+                            FROM secondary.fg_loadouts
+                            WHERE secondary.fg_loadouts.song_name = main.fg_loadouts.song_name
+                            AND secondary.fg_loadouts.loadout_hash = main.fg_loadouts.loadout_hash
+                        ),
+                        timestamp = (
+                            SELECT MAX(main.fg_loadouts.timestamp, secondary.fg_loadouts.timestamp)
+                            FROM secondary.fg_loadouts
+                            WHERE secondary.fg_loadouts.song_name = main.fg_loadouts.song_name
+                            AND secondary.fg_loadouts.loadout_hash = main.fg_loadouts.loadout_hash
+                        )
+                    WHERE EXISTS (
+                        SELECT 1 FROM secondary.fg_loadouts
+                        WHERE secondary.fg_loadouts.song_name = main.fg_loadouts.song_name
+                        AND secondary.fg_loadouts.loadout_hash = main.fg_loadouts.loadout_hash
+                    )
+                """
+                cursor = conn.execute(update_existing_fg_loadouts_sql)
+                updated_fg_loadouts_count = cursor.rowcount
+                fg_loadouts_merged = new_fg_loadouts_count + updated_fg_loadouts_count
+
+                # Enforce invariant: fg_loadouts should only contain entries where
+                # FG strictly beats base (matches current persistence behavior).
+                conn.execute(
+                    """
+                    DELETE FROM fg_loadouts
+                    WHERE song_name IN (SELECT DISTINCT song_name FROM secondary.fg_loadouts)
+                    AND fg_score <= score
+                    """
+                )
+
             # Commit transaction
             conn.commit()
 
@@ -397,8 +563,12 @@ def merge_databases(
             'loadouts_before': main_stats_before['loadout_count'],
             'loadouts_after': main_stats_after['loadout_count'],
             'loadouts_added': main_stats_after['loadout_count'] - main_stats_before['loadout_count'],
+            'fg_loadouts_before': main_stats_before.get('fg_loadout_count', 0),
+            'fg_loadouts_after': main_stats_after.get('fg_loadout_count', 0),
+            'fg_loadouts_added': main_stats_after.get('fg_loadout_count', 0) - main_stats_before.get('fg_loadout_count', 0),
             'secondary_songs': secondary_stats['song_count'],
             'secondary_loadouts': secondary_stats['loadout_count'],
+            'secondary_fg_loadouts': secondary_stats.get('fg_loadout_count', 0),
             'duration': time.time() - start_time,
         }
 
@@ -413,8 +583,12 @@ def merge_databases(
         # Build success message
         message = (
             f"Database merge successful! "
-            f"Added {merge_stats['songs_added']} songs, {merge_stats['loadouts_added']} loadouts. "
-            f"Total: {merge_stats['songs_after']} songs, {merge_stats['loadouts_after']} loadouts. "
+            f"Added {merge_stats['songs_added']} songs, "
+            f"{merge_stats['loadouts_added']} loadouts, "
+            f"{merge_stats['fg_loadouts_added']} fg_loadouts. "
+            f"Total: {merge_stats['songs_after']} songs, "
+            f"{merge_stats['loadouts_after']} loadouts, "
+            f"{merge_stats['fg_loadouts_after']} fg_loadouts. "
             f"Duration: {merge_stats['duration']:.2f}s"
         )
 
@@ -478,7 +652,7 @@ def auto_merge_secondary_databases(
             except Exception as e:
                 logging.warning(f"[DB Merge] {db_name} is locked or in use: {e}")
                 total_failed += 1
-                merge_details.append(f"✗ {db_name} (locked)")
+                merge_details.append(f"[SKIP] {db_name} (locked)")
                 continue
 
             # Only backup before first merge
@@ -496,14 +670,15 @@ def auto_merge_secondary_databases(
             if success:
                 total_merged += 1
                 detail = (
-                    f"✓ {db_name}: "
+                    f"[OK] {db_name}: "
                     f"+{stats.get('songs_added', 0)} songs, "
-                    f"+{stats.get('loadouts_added', 0)} loadouts"
+                    f"+{stats.get('loadouts_added', 0)} loadouts, "
+                    f"+{stats.get('fg_loadouts_added', 0)} fg_loadouts"
                 )
                 merge_details.append(detail)
             else:
                 total_failed += 1
-                merge_details.append(f"✗ {db_name}: {message}")
+                merge_details.append(f"[FAIL] {db_name}: {message}")
                 logging.error(f"[DB Merge] Failed to merge {db_name}: {message}")
 
         # Build summary message

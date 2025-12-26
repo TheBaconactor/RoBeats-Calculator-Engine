@@ -44,8 +44,6 @@ class PrefetchedSlot:
     """Tracking info for a prefetched song slot."""
     slot_id: int
     song_key: str  # Unique song identifier (name + difficulty)
-    calc_song: dict
-    ref_arrays: dict
     prefetch_time_ms: float
 
 
@@ -57,14 +55,16 @@ class GPUPrefetchManager:
     to overlap timeline computation with other Python work.
     """
     
-    def __init__(self, num_slots: int = DEFAULT_NUM_SLOTS):
+    def __init__(self, num_slots: int = DEFAULT_NUM_SLOTS, *, keep_slots: bool = False):
         """
         Initialize prefetch manager.
         
         Args:
             num_slots: Number of GPU slots to use (1-based, 0 is fallback)
+            keep_slots: If True, `release()` becomes a no-op and slots stay pinned.
         """
         self.num_slots = num_slots
+        self._keep_slots = bool(keep_slots)
         
         # Ring buffer of slot IDs (1 to num_slots)
         self._free_slots: deque[int] = deque(range(1, num_slots + 1))
@@ -81,14 +81,41 @@ class GPUPrefetchManager:
         self._total_prefetch_ms = 0.0
     
     def _make_song_key(self, calc_song: dict) -> str:
-        """Create unique key for a song (name + difficulty + note count)."""
+        """Create a stable key for a song timeline variant.
+
+        Includes lightweight timestamp signature + HumanHitSim parameters so we
+        never reuse a prefetched timeline across different simulated timestamp
+        streams (ApplyTo=ALL) or different sim configs.
+        """
         meta = calc_song.get("metadata", {})
         song_name = str(meta.get("Song Name", ""))
         difficulty = str(meta.get("Difficulty", ""))
         song_data = calc_song.get("song_data", {})
         timestamps = song_data.get("timestamps", ())
         note_count = len(timestamps) if hasattr(timestamps, "__len__") else 0
-        return f"{song_name}|{difficulty}|{note_count}"
+
+        first_ms = 0
+        last_ms = 0
+        try:
+            if note_count:
+                first_ms = int(float(timestamps[0]) * 1000.0)
+                last_ms = int(float(timestamps[note_count - 1]) * 1000.0)
+        except Exception:
+            first_ms = 0
+            last_ms = 0
+
+        try:
+            human_seed = int(meta.get("HumanHitSimSeed") or 0)
+        except Exception:
+            human_seed = 0
+        human_apply_to = str(meta.get("HumanHitSimApplyTo", "")).strip().upper()
+        human_dist = str(meta.get("HumanHitSimDistribution", "")).strip().lower()
+        human_great_mode = str(meta.get("HumanHitSimGreatMode", "")).strip().lower()
+
+        return (
+            f"{song_name}|{difficulty}|{note_count}|{first_ms}|{last_ms}|"
+            f"{human_seed}|{human_apply_to}|{human_dist}|{human_great_mode}"
+        )
     
     def is_prefetched(self, calc_song: dict) -> bool:
         """Check if a song is already prefetched."""
@@ -138,8 +165,6 @@ class GPUPrefetchManager:
         self._prefetched[key] = PrefetchedSlot(
             slot_id=slot_id,
             song_key=key,
-            calc_song=calc_song,
-            ref_arrays=ref_arrays,
             prefetch_time_ms=elapsed_ms,
         )
         self._slot_to_key[slot_id] = key
@@ -181,6 +206,8 @@ class GPUPrefetchManager:
         Args:
             slot_id: Slot to release (0 is ignored)
         """
+        if self._keep_slots:
+            return
         if slot_id == 0:
             return  # Slot 0 is always available
         
@@ -217,13 +244,30 @@ class GPUPrefetchManager:
 _prefetch_manager: Optional[GPUPrefetchManager] = None
 
 
-def get_gpu_prefetch_manager(num_slots: int = DEFAULT_NUM_SLOTS) -> GPUPrefetchManager:
+def get_gpu_prefetch_manager(
+    num_slots: int = DEFAULT_NUM_SLOTS, *, keep_slots: bool = False
+) -> GPUPrefetchManager:
     """Get the global GPU prefetch manager instance."""
     global _prefetch_manager
-    
+
+    # Clamp to allocated grid slots (slot 0 reserved for fallback).
+    try:
+        from ..fields import MAX_SONG_SLOTS
+        max_slots = max(1, int(MAX_SONG_SLOTS) - 1)
+        num_slots = max(1, min(int(num_slots), max_slots))
+    except Exception:
+        num_slots = max(1, int(num_slots))
+
     if _prefetch_manager is None:
-        _prefetch_manager = GPUPrefetchManager(num_slots=num_slots)
-    
+        _prefetch_manager = GPUPrefetchManager(num_slots=num_slots, keep_slots=keep_slots)
+        return _prefetch_manager
+
+    # If settings changed, rebuild (avoids subtle mismatch where callers think slots exist).
+    if int(getattr(_prefetch_manager, "num_slots", 0)) != int(num_slots) or bool(
+        getattr(_prefetch_manager, "_keep_slots", False)
+    ) != bool(keep_slots):
+        _prefetch_manager = GPUPrefetchManager(num_slots=num_slots, keep_slots=keep_slots)
+
     return _prefetch_manager
 
 

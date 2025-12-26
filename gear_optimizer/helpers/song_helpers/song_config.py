@@ -39,9 +39,20 @@ def setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_
         force_greats_finder = False
 
     # Import here to avoid circular dependency
-    from ...core.config import load_force_greats_config
+    from ...core.config import load_force_greats_config, load_force_greats_inline
     force_greats_config = load_force_greats_config(cfg)
+
+    # Prefer explicit [ForceGreats] section; fall back to inline config if section is absent/empty.
+    if not force_greats_config:
+        inline_cfg = load_force_greats_inline(cfg, key="ForceGreatsManual")
+        if inline_cfg:
+            force_greats_config = inline_cfg
+
     manual_force_greats = force_greats_mode and any(force_greats_config)
+    if manual_force_greats:
+        # Manual config is a deliberate override for testing; allow it to work regardless of
+        # ForceGreatsFinder setting by disabling finder when manual values are provided.
+        force_greats_finder = False
 
     # --- Auto Select Buff & Color Logic ---
     if auto_buff:

@@ -77,12 +77,20 @@ GA_MultiStart = 3             # Multi-start restarts (default: 3, deep mining: 3
 GPU_Mode = true               # Enable GPU acceleration
 MaxParallelSongs = 4          # Max concurrent song workers (default: 4)
 
-# Force Greats
-ForceGreatsFinder = false     # Force greats optimization (true/false)
+  # Force Greats
+  ForceGreatsMode = false       # Enable ForceGreats evaluation (true/false)
+  ForceGreatsFinder = false     # Auto ForceGreats optimization (true/false)
+  # Manual ForceGreats (only used when ForceGreatsFinder=false)
+  # Option A: Inline list (NonFever1, NonFever2, ...):
+  # ForceGreatsManual = 3,0,1
+  # Option B: Explicit section:
+  # [ForceGreats]
+  # NonFever1 = 3
+  # NonFever2 = 0
 
-[Gear]
-# Default gear loadout (6 slots)
-Slot1 = Gear Name Here
+  [Gear]
+  # Default gear loadout (6 slots)
+  Slot1 = Gear Name Here
 ...
 
 [Minis]

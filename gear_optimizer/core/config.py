@@ -113,6 +113,65 @@ def load_force_greats_config(cfg):
     return values
 
 
+def load_force_greats_inline(cfg, *, key: str = "ForceGreatsManual"):
+    """
+    Parse an inline ForceGreats manual config from [IterationEngine].
+
+    Supported formats:
+      - Comma/space-separated ints: "0,1,0" or "0 1 0"
+      - JSON list: "[0, 1, 0]"
+      - Single int: "3" (equivalent to "3" for NonFever1)
+
+    Returns:
+      list[int]: Parsed values (may be empty).
+    """
+    if not cfg:
+        return []
+    try:
+        raw = cfg.get("IterationEngine", key, fallback="").strip()
+    except Exception:
+        return []
+    if not raw:
+        return []
+
+    # JSON list form
+    if raw.startswith("[") and raw.endswith("]"):
+        try:
+            arr = json.loads(raw)
+            if not isinstance(arr, list):
+                return []
+            out = []
+            for v in arr:
+                out.append(max(0, safe_int(v, 0)))
+            # Trim trailing zeros to keep behavior consistent with section parsing
+            while out and out[-1] == 0:
+                out.pop()
+            return out
+        except Exception as e:
+            logging.debug(f"[ForceGreats Config] Failed to parse {key} JSON list: {e}")
+            return []
+
+    # Split by commas and/or whitespace.
+    parts = re.split(r"[,\s]+", raw)
+    values = []
+    for p in parts:
+        p = (p or "").strip()
+        if not p:
+            continue
+        # Allow a "NonFeverN=V" mini-syntax for convenience.
+        if "=" in p:
+            try:
+                _, rhs = p.split("=", 1)
+                p = rhs.strip()
+            except Exception:
+                continue
+        values.append(max(0, safe_int(p, 0)))
+
+    while values and values[-1] == 0:
+        values.pop()
+    return values
+
+
 def find_and_cache_paths():
     """
     Automatically discover data file paths and cache them.

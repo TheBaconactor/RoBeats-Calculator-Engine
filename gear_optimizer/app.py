@@ -6,6 +6,7 @@ import gc
 import logging
 import multiprocessing
 import os
+import queue as queue_module
 import re
 import threading
 import time
@@ -23,6 +24,8 @@ from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS
 from gear_optimizer.core.config import (
     compute_memory_guard_limit,
     load_paths_cache,
+    load_force_greats_config,
+    load_force_greats_inline,
 )
 from gear_optimizer.data.database import (
     init_db,
@@ -73,10 +76,129 @@ def _gpu_worker_initializer(request_queue, registrations, counter, lock):
     set_gpu_worker_mode(worker_id, request_queue, response_queue)
 
 
+class _AsyncDbSaver:
+    """
+    Background DB writer to avoid blocking the main loop between songs.
+
+    This keeps `save_loadouts_batch()` off the critical path so the next song can
+    start immediately (GPU stays busier) while DB inserts/dedup/prune run in a
+    background thread.
+    """
+
+    def __init__(self, discord_reporter: DiscordReporter | None = None):
+        self._discord_reporter = discord_reporter
+        self._queue: queue_module.Queue = queue_module.Queue()
+        self._thread: threading.Thread | None = None
+        self._running = False
+        self._lock = threading.Lock()
+
+    def start(self) -> None:
+        with self._lock:
+            if self._running:
+                return
+            self._running = True
+            self._thread = threading.Thread(
+                target=self._loop,
+                name="AsyncDbSaver",
+                daemon=True,
+            )
+            self._thread.start()
+
+    def submit(self, song_name: str, entries: list[dict]) -> None:
+        if not entries:
+            return
+        if not self._running:
+            self.start()
+        self._queue.put((song_name, entries))
+
+    def flush(self, timeout: float = 30.0) -> None:
+        if not self._running:
+            return
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while getattr(self._queue, "unfinished_tasks", 0) > 0:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.05, remaining))
+
+        if getattr(self._queue, "unfinished_tasks", 0) > 0:
+            try:
+                pending = int(getattr(self._queue, "unfinished_tasks", 0))
+            except Exception:
+                pending = -1
+            msg = f"[DB] Warning: async DB flush timed out; pending_tasks={pending}"
+            try:
+                print(msg)
+            except Exception:
+                pass
+            try:
+                logging.warning(msg)
+            except Exception:
+                pass
+            try:
+                if self._discord_reporter is not None:
+                    self._discord_reporter.send_log(msg)
+            except Exception:
+                pass
+
+    def shutdown(self, timeout: float = 30.0) -> None:
+        if not self._running:
+            return
+
+        # Best-effort flush before stopping.
+        self.flush(timeout=timeout)
+
+        try:
+            self._queue.put(None)
+        except Exception:
+            pass
+
+        try:
+            if self._thread is not None:
+                self._thread.join(timeout=timeout)
+        except Exception:
+            pass
+
+        with self._lock:
+            self._running = False
+            self._thread = None
+
+    def _loop(self) -> None:
+        while True:
+            item = self._queue.get()
+            try:
+                if item is None:
+                    return
+                song_name, entries = item
+                try:
+                    save_loadouts_batch(song_name, entries)
+                except Exception as exc:
+                    msg = f"[DB] Async save failed for {song_name}: {type(exc).__name__}: {exc}"
+                    try:
+                        print(msg)
+                    except Exception:
+                        pass
+                    try:
+                        logging.error(msg)
+                    except Exception:
+                        pass
+                    try:
+                        if self._discord_reporter is not None:
+                            self._discord_reporter.send_log(msg)
+                    except Exception:
+                        pass
+            finally:
+                try:
+                    self._queue.task_done()
+                except Exception:
+                    pass
+
+
 class GearOptimizerApp:
     def __init__(self):
         self.setup_logging()
         self.discord_reporter = self.setup_discord()
+        self._async_db_saver = _AsyncDbSaver(self.discord_reporter)
 
     def setup_logging(self):
         os.makedirs(BIN_DIR, exist_ok=True)
@@ -151,8 +273,26 @@ class GearOptimizerApp:
             auto_buff = cfg.getboolean("IterationEngine", "AutoSelectBuffAndColor", fallback=False)
             
             if force_greats_mode:
-                fg_status = "ForceGreatsFinder" if force_greats_finder else "Manual Config"
-                print(f" >> [ForceGreats] Mode enabled ({fg_status})")
+                force_greats_config = load_force_greats_config(cfg)
+                if not force_greats_config:
+                    inline_cfg = load_force_greats_inline(cfg, key="ForceGreatsManual")
+                    if inline_cfg:
+                        force_greats_config = inline_cfg
+
+                manual_force_greats = bool(force_greats_config) and any(force_greats_config)
+                if manual_force_greats:
+                    # Manual config is a deliberate override; the per-song config loader enforces
+                    # this too, but we want the startup banner to match actual behavior.
+                    force_greats_finder = False
+
+                if force_greats_finder:
+                    fg_status = "ForceGreatsFinder"
+                elif manual_force_greats:
+                    fg_status = f"Manual Config {force_greats_config}"
+                else:
+                    fg_status = "Enabled but inactive (no manual config; ForceGreatsFinder=false)"
+
+                print(f" >> [ForceGreats] {fg_status}")
 
             ga_depth = safe_int(cfg.get("IterationEngine", "GA_SearchDepth", fallback=50))
             use_evo_db = cfg.getboolean("IterationEngine", "UseEvolutionDB", fallback=True)
@@ -493,6 +633,7 @@ class GearOptimizerApp:
         
         def _safe_sequential_gen(task_list):
             preload_idx = 5  # Start preloading from index 5
+            preloaded_by_name = {}
             
             # GPU prefetch manager for ahead-of-time timeline computation
             _gpu_prefetch_mgr = None
@@ -500,7 +641,14 @@ class GearOptimizerApp:
             if use_gpu_preload:
                 try:
                     from gear_optimizer.solver.taichi_gem.api.gpu_prefetch import get_gpu_prefetch_manager
-                    _gpu_prefetch_mgr = get_gpu_prefetch_manager()
+                    prefetch_slots = safe_int(os.environ.get("GPU_PREFETCH_SLOTS", 0))
+                    if prefetch_slots <= 0:
+                        prefetch_slots = 5  # default
+                    keep_slots = str(os.environ.get("GPU_PREFETCH_KEEP_SLOTS", "0")).strip().lower() in {"1", "true", "yes", "on"}
+                    _gpu_prefetch_mgr = get_gpu_prefetch_manager(
+                        num_slots=prefetch_slots,
+                        keep_slots=keep_slots,
+                    )
                     gpu_prefetch_enabled = True
                 except Exception:
                     pass
@@ -513,6 +661,23 @@ class GearOptimizerApp:
                     continue
                 
                 song_name = t[1]
+
+                # Drain any newly preloaded songs into a local map for reuse.
+                if use_gpu_preload and preloader is not None:
+                    try:
+                        while True:
+                            preloaded = preloader.get_if_ready()
+                            if preloaded is None:
+                                break
+                            preloaded_by_name[preloaded.song_name] = preloaded
+                    except Exception:
+                        pass
+
+                # Prefer preloaded calc_song for this song (skips disk I/O + parsing).
+                task_args = t
+                preloaded_current = preloaded_by_name.pop(song_name, None)
+                if preloaded_current is not None and preloaded_current.calc_song and not preloaded_current.error:
+                    task_args = t + (preloaded_current.calc_song,)
                 
                 # Queue next song for CPU preloading
                 if use_gpu_preload and preload_idx < len(task_list):
@@ -520,31 +685,37 @@ class GearOptimizerApp:
                     if next_task[1] not in completed_songs:
                         self._queue_song_for_preload(preloader, next_task)
                     preload_idx += 1
-                
-                # LOOK-AHEAD GPU PREFETCH: Prefetch timelines for next 3-4 songs
-                # This happens BEFORE processing the current song, so by the time
-                # we get to those songs, their timelines are already on GPU.
+
+                try:
+                    res = safe_process_song_task(task_args)
+                except Exception as seq_err:
+                    res = {"_error": str(seq_err), "_error_type": type(seq_err).__name__, "_song_name": t[1]}
+
+                # POST-SONG GPU PREFETCH: Kick off the next song's timeline kernel
+                # now so it can run while we do CPU-only result handling (DB, logs).
                 if gpu_prefetch_enabled and _gpu_prefetch_mgr is not None:
-                    # Drain all ready preloaded songs and prefetch their GPU timelines
                     try:
-                        drained_count = 0
-                        while drained_count < 5:  # Don't drain too many at once
-                            preloaded = preloader.get_if_ready()
-                            if preloaded is None:
-                                break
-                            
-                            if preloaded.calc_song and not preloaded.error:
-                                if preloaded.song_name not in gpu_prefetched_set:
-                                    slot = _gpu_prefetch_mgr.prefetch(
-                                        preloaded.calc_song,
-                                        preloaded.ref_arrays
-                                    )
-                                    if slot is not None:
-                                        gpu_prefetched_set.add(preloaded.song_name)
-                                        drained_count += 1
+                        # Pick the immediate next song if it has been preloaded; else pick any ready one.
+                        pick = None
+                        if i + 1 < len(task_list):
+                            next_name = task_list[i + 1][1]
+                            cand = preloaded_by_name.get(next_name)
+                            if cand is not None and cand.calc_song and not cand.error:
+                                pick = cand
+
+                        if pick is None:
+                            for cand in preloaded_by_name.values():
+                                if cand is not None and cand.calc_song and not cand.error:
+                                    pick = cand
+                                    break
+
+                        if pick is not None and pick.song_name not in gpu_prefetched_set:
+                            slot = _gpu_prefetch_mgr.prefetch(pick.calc_song, pick.ref_arrays)
+                            if slot is not None:
+                                gpu_prefetched_set.add(pick.song_name)
                     except Exception:
                         pass
-                    
+
                     # Log prefetch stats periodically
                     if i > 0 and i % 10 == 0:
                         stats = _gpu_prefetch_mgr.stats()
@@ -552,11 +723,8 @@ class GearOptimizerApp:
                             print(f"[GPU Prefetch] Songs prefetched: {stats['prefetch_count']}, "
                                   f"cache hits: {stats['cache_hits']}, "
                                   f"avg time: {stats['avg_prefetch_ms']:.1f}ms")
-                
-                try:
-                    yield safe_process_song_task(t)
-                except Exception as seq_err:
-                    yield {"_error": str(seq_err), "_error_type": type(seq_err).__name__, "_song_name": t[1]}
+
+                yield res
                 
                 # After processing, release the slot for this song to free it for reuse
                 if gpu_prefetch_enabled and _gpu_prefetch_mgr is not None and song_name in gpu_prefetched_set:
@@ -803,14 +971,14 @@ class GearOptimizerApp:
                      if e.get("score", 0) > 0 and (e.get("gear") or e.get("minis"))
                  ]
                  if valid_entries:
-                     save_loadouts_batch(res["song"], valid_entries)
+                     self._async_db_saver.submit(res["song"], valid_entries)
                  else:
                      print(f"[DB] Skipped save for {res['song']}: no valid entries (score=0 or empty loadout)")
             elif res.get("db_payload"):
                  pl = res["db_payload"]
                  # Only save if score > 0 and has gear/minis (prevents tainting on errors)
                  if pl.get("score", 0) > 0 and (pl.get("gear") or pl.get("minis")):
-                     save_loadouts_batch(res["song"], [{
+                     self._async_db_saver.submit(res["song"], [{
                          "score": pl.get("score", 0),
                          "fg_score": pl.get("fg_score", 0),
                          "gear": pl.get("gear", []),
@@ -849,6 +1017,12 @@ class GearOptimizerApp:
             if manager:
                 try:
                     manager.shutdown()
+                except Exception:
+                    pass
+            # Flush pending DB writes (best-effort)
+            if hasattr(self, "_async_db_saver"):
+                try:
+                    self._async_db_saver.shutdown(timeout=30.0)
                 except Exception:
                     pass
             # Graceful shutdown of async Discord reporter

@@ -322,6 +322,13 @@ def allocate_fields() -> None:
 
 def ensure_fields_allocated() -> None:
     """Ensure ForceGreats fields are allocated and bound to kernels."""
+    # ForceGreatsFinder kernels reuse core scoring helpers in `taichi_gem.kernels_helpers`,
+    # which depend on the main gem solver fields being allocated and bound.
+    # In calculate-only runs (MetaFinder disabled), the app may reach FG init before
+    # the main gem fields are initialized; ensure they exist first.
+    from .. import fields as gem_fields
+    gem_fields.ensure_fields_allocated()
+
     if not is_initialized():
         init_taichi_vulkan()
 

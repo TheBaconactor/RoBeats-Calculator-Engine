@@ -1047,7 +1047,12 @@ def apply_force_greats_to_result(
 
     fg_info = {
         "enabled": True,
+        "mode": "finder" if use_finder else "manual",
         "algo_version": FORCE_GREATS_ALGO_VERSION,
+        "search_radius": int(search_radius),
+        "center_ft": int(ft_gems),
+        "center_ff": int(ff_gems),
+        "use_gpu": bool(use_gpu),
         "config": fg_result["config_dict"],
         "final_score": fg_result["final_score"],
     }

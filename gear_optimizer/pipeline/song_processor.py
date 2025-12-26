@@ -45,7 +45,7 @@ from ..solver.scoring import (
 )
 from ..solver.gpu_profiler import get_gpu_profiler
 from ..core.memory import log_memory_usage
-from ..core.utils import cfg_from_dict
+from ..core.utils import cfg_from_dict, safe_int
 from ..helpers.song_helpers import (
     load_database_context,
     setup_song_config,
@@ -206,6 +206,7 @@ def process_song_task(args):
     FEVER_TIMELINE_CACHE.clear()
     FG_CACHE.clear()
 
+    args_list = list(args) if isinstance(args, (list, tuple)) else [args]
     (
         fp,
         found_song_name,
@@ -223,7 +224,10 @@ def process_song_task(args):
         status_queue,
         parallel_workers,
         fg_debug,
-    ) = args
+    ) = args_list[:16]
+
+    # Optional: preloaded calc_song dict to avoid repeated disk I/O + parsing.
+    preloaded_calc_song = args_list[16] if len(args_list) > 16 else None
 
     # Initialize variables at function start to avoid 'in locals()' pattern issues
     local_executor = None
@@ -261,19 +265,22 @@ def process_song_task(args):
         cfg = cfg_from_dict(cfg_dict)
         gpu_mode = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False)
 
-        song_data = read_song_file(fp)
+        if isinstance(preloaded_calc_song, dict) and preloaded_calc_song.get("song_data"):
+            calc_song = preloaded_calc_song
+        else:
+            song_data = read_song_file(fp)
 
-        # OPTIMIZATION: store timestamps as NumPy array once per song
-        song_timestamps_np = np.array(song_data["timestamps"], dtype=np.float64)
-        song_note_types_np = np.array(song_data.get("note_types") or [], dtype=np.int16)
-        if song_note_types_np.shape[0] != song_timestamps_np.shape[0]:
-            # Older song dumps may not include note types; default to "normal note".
-            song_note_types_np = np.ones(song_timestamps_np.shape[0], dtype=np.int16)
+            # OPTIMIZATION: store timestamps as NumPy array once per song
+            song_timestamps_np = np.array(song_data["timestamps"], dtype=np.float64)
+            song_note_types_np = np.array(song_data.get("note_types") or [], dtype=np.int16)
+            if song_note_types_np.shape[0] != song_timestamps_np.shape[0]:
+                # Older song dumps may not include note types; default to "normal note".
+                song_note_types_np = np.ones(song_timestamps_np.shape[0], dtype=np.int16)
 
-        calc_song = {
-            "metadata": song_data["song_details"],
-            "song_data": {"timestamps": song_timestamps_np, "note_types": song_note_types_np},
-        }
+            calc_song = {
+                "metadata": song_data["song_details"],
+                "song_data": {"timestamps": song_timestamps_np, "note_types": song_note_types_np},
+            }
 
         # ------------------------------------------------------------------
         # Optional: Synthetic human hit-time simulation (Perfect-only).
@@ -284,7 +291,8 @@ def process_song_task(args):
         except Exception:
             sim_enabled = False
 
-        if sim_enabled and song_timestamps_np.size:
+        sim_already_applied = bool(calc_song.get("metadata", {}).get("HumanHitSimApplied"))
+        if sim_enabled and (not sim_already_applied) and calc_song.get("song_data", {}).get("timestamps") is not None:
             from ..solver.hit_simulation import (
                 simulate_perfect_hit_timestamps_with_great_candidates,
                 stable_seed_from_text,
@@ -307,9 +315,14 @@ def process_song_task(args):
                 song_key = str(calc_song.get("metadata", {}).get("Song Name", "")) or str(found_song_name)
                 seed_in = stable_seed_from_text(song_key)
 
+            base_ts = np.asarray(calc_song["song_data"].get("timestamps", ()), dtype=np.float64)
+            base_types = np.asarray(calc_song["song_data"].get("note_types", ()), dtype=np.int16)
+            if base_types.shape[0] != base_ts.shape[0]:
+                base_types = np.ones(base_ts.shape[0], dtype=np.int16)
+
             sim_ts, sim_great_candidates, sim_dbg = simulate_perfect_hit_timestamps_with_great_candidates(
-                song_timestamps_np,
-                song_note_types_np,
+                base_ts,
+                base_types,
                 seed=seed_in,
                 distribution=dist,
                 great_mode=great_mode,
@@ -321,7 +334,11 @@ def process_song_task(args):
                 sim_great_candidates, dtype=np.float64
             )
             calc_song["metadata"]["HumanHitSimSeed"] = int(seed_in)
+            calc_song["metadata"]["HumanHitSimApplyTo"] = apply_to
+            calc_song["metadata"]["HumanHitSimDistribution"] = dist
+            calc_song["metadata"]["HumanHitSimGreatMode"] = great_mode
             calc_song["metadata"]["HumanHitSimDebug"] = sim_dbg
+            calc_song["metadata"]["HumanHitSimApplied"] = True
             try:
                 print(
                     f"[HumanHitSim] Enabled (ApplyTo={apply_to}, dist={dist}, seed={seed_in}, "
@@ -461,7 +478,10 @@ def process_song_task(args):
 
         else:
             # Run Gem Solver only (enable_fever) or Calculate-Only Mode (nothing enabled)
-            all_evaluated = []  # No GA, so no evaluated loadouts
+            # No GA population; include the current fixed loadout as a single
+            # "evaluated candidate" so downstream ForceGreatsFinder can still
+            # evaluate the active configuration even when MetaFinder is disabled.
+            all_evaluated = []
             if not enable_fever:
                 print("[Calculate-Only Mode] MetaFinder disabled - calculating score with current config...")
 
@@ -482,18 +502,60 @@ def process_song_task(args):
             )
             best_gear = current_gear_list
             best_minis = current_mini_list
+            if best_data:
+                base_score = best_data.get("BaseScore") or best_data.get("Score", 0) or 0
+                all_evaluated = [
+                    {
+                        "Score": base_score,
+                        "BaseScore": base_score,
+                        "Gear": best_gear,
+                        "Minis": best_minis,
+                        "Data": best_data,
+                    }
+                ]
 
-        # Cap GA candidates for downstream processing to the DB loadout limit.
-        # Ranked by Score (base score) for DB seeding.
-        # Use FG_CANDIDATE_LIMIT (1000) to allow high-FG/low-Score loadouts to be evaluated.
-        # The final DB save will still truncate to LOADOUTS_PER_SONG_LIMIT (51).
-        ga_candidates = all_evaluated or []
-        if ga_candidates and len(ga_candidates) > FG_CANDIDATE_LIMIT:
+        # Cap GA candidates for downstream processing.
+        # Ranked by Score (base score) for DB seeding. We keep a wider funnel so
+        # ForceGreatsFinder can evaluate more unique loadouts even on a cold start
+        # (empty DB). The final DB save still truncates to LOADOUTS_PER_SONG_LIMIT (51).
+        ga_candidates = list(all_evaluated or [])
+        if best_data and best_gear and best_minis:
+            base_score = best_data.get("BaseScore") or best_data.get("Score", 0) or 0
+            ga_candidates.append(
+                {
+                    "Score": base_score,
+                    "BaseScore": base_score,
+                    "Gear": best_gear,
+                    "Minis": best_minis,
+                    "Data": best_data,
+                }
+            )
+        # Configurable FG funnel size (default FG_CANDIDATE_LIMIT).
+        fg_candidate_limit = safe_int(
+            cfg.get("IterationEngine", "FG_CandidateLimit", fallback=FG_CANDIDATE_LIMIT),
+            FG_CANDIDATE_LIMIT,
+        )
+        # Clamp to avoid extreme values causing huge DB reads or GPU batches.
+        fg_candidate_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, fg_candidate_limit))
+
+        fg_search_radius = None
+        try:
+            raw_fg_radius = str(cfg.get("IterationEngine", "FG_SearchRadius", fallback="") or "").strip()
+        except Exception:
+            raw_fg_radius = ""
+        if raw_fg_radius:
+            fg_search_radius = safe_int(raw_fg_radius, -1)
+        # `FG_SearchRadius` semantics:
+        # - unset/empty => use default radius (FG_SEARCH_RADIUS / env default 5)
+        # - -1 => full window over all FT/FF gem allocations within TOTAL_GEM_BUDGET
+        # - >=0 => radius in gem-space around each loadout's (FT, FF) center
+
+        if ga_candidates and len(ga_candidates) > fg_candidate_limit:
             ga_candidates = sorted(
                 ga_candidates,
                 key=lambda r: r.get("Score", 0),
                 reverse=True,
-            )[:FG_CANDIDATE_LIMIT]
+            )[:fg_candidate_limit]
 
         def build_details(data_dict):
             if not data_dict:
@@ -519,7 +581,7 @@ def process_song_task(args):
                 found_song_name,
                 use_evo_db,
                 ga_candidates,
-                FG_CANDIDATE_LIMIT,  # Pass the larger budget to build_loadout_entries
+                fg_candidate_limit,  # Pass the larger budget to build_loadout_entries
                 gears_by_name,
                 minis_by_name,
                 build_details,
@@ -531,7 +593,8 @@ def process_song_task(args):
                 try:
                     from ..data.database import get_best_loadouts
                     db_loadouts_full = get_best_loadouts(
-                        found_song_name, limit=FG_CANDIDATE_LIMIT,
+                        found_song_name,
+                        limit=fg_candidate_limit,
                         gears_by_name=gears_by_name, minis_by_name=minis_by_name
                     )
                     db_loadouts_full_count = len(db_loadouts_full)
@@ -550,6 +613,7 @@ def process_song_task(args):
                 build_details,
                 db_loadouts_full_count,
                 use_gpu=gpu_mode,
+                fg_search_radius=fg_search_radius,
                 perf_timing=PERF_TIMING_ENABLED,
             )
             fg_time_sec = time.perf_counter() - fg_start

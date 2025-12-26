@@ -1339,13 +1339,37 @@ def fg_update_global_best_kernel(n_genomes: ti.i32):
     for gid in range(n_genomes):
         new_score = fg_best_final_score[gid]
         old_score = fg_global_best_final_score[gid]
-        
+        new_cfg = fg_best_cfg_idx[gid]
+        old_cfg = fg_global_best_cfg_idx[gid]
+        new_ft = fg_best_ft[gid]
+        old_ft = fg_global_best_ft[gid]
+        new_ff = fg_best_ff[gid]
+        old_ff = fg_global_best_ff[gid]
+
+        # Deterministic tie-breaking:
+        # 1) Higher final score wins.
+        # 2) If scores tie, prefer lower cfg_idx (matches stage1 packed tie-break).
+        # 3) If still tied, prefer lower (ft, ff) lexicographically for stability.
+        better = False
         if new_score > old_score:
+            better = True
+        elif new_score == old_score:
+            if old_cfg < 0 and new_cfg >= 0:
+                better = True
+            elif new_cfg >= 0 and new_cfg < old_cfg:
+                better = True
+            elif new_cfg == old_cfg:
+                if new_ft < old_ft:
+                    better = True
+                elif new_ft == old_ft and new_ff < old_ff:
+                    better = True
+
+        if better:
             fg_global_best_final_score[gid] = new_score
             fg_global_best_base_score[gid] = fg_best_base_score[gid]
-            fg_global_best_cfg_idx[gid] = fg_best_cfg_idx[gid]
-            fg_global_best_ft[gid] = fg_best_ft[gid]
-            fg_global_best_ff[gid] = fg_best_ff[gid]
+            fg_global_best_cfg_idx[gid] = new_cfg
+            fg_global_best_ft[gid] = new_ft
+            fg_global_best_ff[gid] = new_ff
             fg_global_best_g_pp[gid] = fg_best_g_pp[gid]
             fg_global_best_g_cm[gid] = fg_best_g_cm[gid]
             fg_global_best_g_fm[gid] = fg_best_g_fm[gid]

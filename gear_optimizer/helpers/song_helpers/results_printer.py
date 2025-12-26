@@ -40,8 +40,29 @@ def print_results(
     }
 
     if fg_variants:
+        def _has_nonzero_fg_config(entry: dict) -> bool:
+            try:
+                data = entry.get("data", {}) or {}
+                fg_meta = data.get("ForceGreats") or {}
+                if not isinstance(fg_meta, dict):
+                    return False
+                config = fg_meta.get("config") or {}
+                if not isinstance(config, dict) or not config:
+                    return False
+                total = 0
+                for v in config.values():
+                    try:
+                        total += int(v)
+                    except Exception:
+                        continue
+                return total > 0
+            except Exception:
+                return False
+
+        valid_fg_variants = [v for v in fg_variants if _has_nonzero_fg_config(v)]
         best_fg_entry = max(
-            fg_variants, key=lambda p: p.get("fg_score", 0) or p.get("score", -1)
+            valid_fg_variants or fg_variants,
+            key=lambda p: p.get("fg_score", 0) or p.get("score", -1),
         )
         
         is_same = _is_same_variant(base_entry, best_fg_entry)
@@ -154,9 +175,20 @@ def _print_loadout_section(title, variant):
         
     if data.get("ForceGreats"):
         fg_meta = data.get("ForceGreats", {})
-        config = fg_meta.get("config", {})
-        if config:
+        config = fg_meta.get("config", {}) or {}
+        forced_total = 0
+        if isinstance(config, dict):
+            for v in config.values():
+                try:
+                    forced_total += int(v)
+                except Exception:
+                    continue
+
+        if forced_total > 0:
             print(f"FG Config: {config}")
+        else:
+            # Make it explicit when FG ran but the optimal configuration is "no forced greats".
+            print("FG Config: (none)")
             
     _print_gem_allocation(data)
 

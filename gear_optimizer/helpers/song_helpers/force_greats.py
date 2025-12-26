@@ -9,6 +9,7 @@ import time
 
 from ...solver.scoring import apply_force_greats_to_result
 from ...core.utils import stats_signature
+from ...solver.scoring.force_greats import FORCE_GREATS_ALGO_VERSION
 
 
 def process_force_greats(
@@ -22,6 +23,7 @@ def process_force_greats(
     build_details_fn,
     db_loadouts_full_count,
     use_gpu: bool = False,
+    fg_search_radius: int | None = None,
     perf_timing: bool = False,
 ):
     """
@@ -192,6 +194,19 @@ def process_force_greats(
                     return False
                 # Must have config with section greats
                 if not fg_meta.get("config"):
+                    return False
+                # If present, require compatible finder metadata.
+                # (Backwards-compatible: older DB entries may not have these fields.)
+                try:
+                    if fg_meta.get("mode") not in (None, "", "finder"):
+                        return False
+                    algo = fg_meta.get("algo_version")
+                    if algo is not None and int(algo) != int(FORCE_GREATS_ALGO_VERSION):
+                        return False
+                    sr = fg_meta.get("search_radius")
+                    if sr is not None and int(sr) != int(os.environ.get("FG_SEARCH_RADIUS", "5")):
+                        return False
+                except Exception:
                     return False
                 cached_sel = details.get("SelectedElement") or details.get("Selected Element") or ""
                 if expected_selected_element and cached_sel and cached_sel != expected_selected_element:
@@ -369,21 +384,40 @@ def process_force_greats(
                 _t_cfg0 = time.perf_counter() if perf else 0.0
 
                 # Use configurable window around loadout centers for FT/FF search.
+                # - fg_search_radius < 0: full search over all FT/FF gem allocations (within TOTAL_GEM_BUDGET).
+                # - Otherwise: radius in gem-space around each loadout's (FT, FF) center.
+                search_radius = fg_search_radius if fg_search_radius is not None else FG_SEARCH_RADIUS
+                try:
+                    search_radius = int(search_radius)
+                except Exception:
+                    search_radius = int(FG_SEARCH_RADIUS)
+
                 # Collect all centers from this group
                 centers = group_centers.get((sel_color, n_sections, max_per_section), set())
                 needed_pairs_set = set()
                 
-                # For each center, add all pairs within +-FG_SEARCH_RADIUS window
-                for center_ft, center_ff in centers:
-                    for ft_offset in range(-FG_SEARCH_RADIUS, FG_SEARCH_RADIUS + 1):
-                        ft = center_ft + ft_offset
-                        if ft < 0 or ft > TOTAL_GEM_BUDGET:
-                            continue
-                        for ff_offset in range(-FG_SEARCH_RADIUS, FG_SEARCH_RADIUS + 1):
-                            ff = center_ff + ff_offset
-                            if ff < 0 or ft + ff > TOTAL_GEM_BUDGET:
-                                continue
+                # Clamp to gem budget; any radius >= TOTAL_GEM_BUDGET implies full window.
+                if search_radius >= TOTAL_GEM_BUDGET:
+                    search_radius = TOTAL_GEM_BUDGET
+
+                if search_radius < 0 or search_radius >= TOTAL_GEM_BUDGET:
+                    # Full window: all valid (ft, ff) pairs within the FT/FF gem budget.
+                    for ft in range(0, TOTAL_GEM_BUDGET + 1):
+                        max_ff = TOTAL_GEM_BUDGET - ft
+                        for ff in range(0, max_ff + 1):
                             needed_pairs_set.add((ft, ff))
+                else:
+                    # For each center, add all pairs within +-search_radius window
+                    for center_ft, center_ff in centers:
+                        for ft_offset in range(-search_radius, search_radius + 1):
+                            ft = center_ft + ft_offset
+                            if ft < 0 or ft > TOTAL_GEM_BUDGET:
+                                continue
+                            for ff_offset in range(-search_radius, search_radius + 1):
+                                ff = center_ff + ff_offset
+                                if ff < 0 or ft + ff > TOTAL_GEM_BUDGET:
+                                    continue
+                                needed_pairs_set.add((ft, ff))
                 
                 needed_pairs = sorted(list(needed_pairs_set))
                 if len(needed_pairs) == 0:

@@ -7,6 +7,7 @@ This module handles:
 - Grid fields for timeline lookups
 - bind_fields() to inject live field objects into kernels module
 """
+import os
 import sys
 
 import taichi as ti
@@ -29,7 +30,27 @@ MAX_SLOTS = 9  # 6 gear + 3 minis (GPU-native GA representation)
 MAX_ITEMS = 65536  # Upper bound for (type,Name)-deduped items per song (row 0 reserved)
 ITEM_STAT_DIM = 10  # PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill
 MAX_SONG_NOTES = 200000  # Maximum song length for GPU timeline computation
-MAX_SONG_SLOTS = 8  # Concurrent song grid slots for batch coalescing
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except Exception:
+        return default
+
+
+def _clamp_song_slots(n: int) -> int:
+    # Slot 0 is always reserved; keep at least one additional slot for prefetch/batching.
+    if n < 2:
+        return 2
+    # Prevent accidental huge allocations (each slot is ~3MB of timeline grids).
+    if n > 8192:
+        return 8192
+    return n
+
+
+# Concurrent song grid slots for batch coalescing / timeline caching.
+# Override via env var `GPU_SONG_SLOTS` (set before process start).
+MAX_SONG_SLOTS = _clamp_song_slots(_env_int("GPU_SONG_SLOTS", 8))
 MAX_TOTAL_BUDGET = 90  # Max supported total_budget for FT/FF combo tables
 MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 when MAX_TOTAL_BUDGET=90
 MAX_BP_PAIRS = 256  # Breakpoint kernel scan pairs
