@@ -557,6 +557,7 @@ def ga_next_generation_fused(
     n_genomes: int,
     n_slots: int = 9,
     mutation_rate: float = 0.02,
+    immigrant_rate: float = 0.0,
     tournament_k: int = 3,
     n_elites: int = 10,
 ) -> None:
@@ -573,6 +574,7 @@ def ga_next_generation_fused(
         n_genomes: Population size
         n_slots: Slots per genome (default 9)
         mutation_rate: Probability of mutation per genome (default 0.02)
+        immigrant_rate: Probability of fully re-rolling a genome per generation (default 0.0)
         tournament_k: Tournament size for selection (default 3)
         n_elites: Total number of elites to preserve (n_islands * elites_per_island)
     """
@@ -601,8 +603,16 @@ def ga_next_generation_fused(
     else:
         mr_fp = np.uint32(int(mr * 4294967295.0))
 
-    # FUSED: Selection + Crossover + Mutation + Elitism (all in one kernel)
-    kernels.ga_next_generation_full_kernel(n_genomes, n_slots, n_elites, tournament_k, mr_fp)
+    ir = float(immigrant_rate)
+    if ir <= 0.0:
+        ir_fp = np.uint32(0)
+    elif ir >= 1.0:
+        ir_fp = np.uint32(0xFFFFFFFF)
+    else:
+        ir_fp = np.uint32(int(ir * 4294967295.0))
+
+    # FUSED: Selection + Crossover + Mutation + Elitism (+ optional immigrants) (all in one kernel)
+    kernels.ga_next_generation_full_kernel(n_genomes, n_slots, n_elites, tournament_k, mr_fp, ir_fp)
     
     # FUSED: Swap + Hint Inheritance (second kernel)
     kernels.ga_swap_and_inherit_hints_kernel(n_genomes, n_slots)

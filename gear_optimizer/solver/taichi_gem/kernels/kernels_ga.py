@@ -585,6 +585,7 @@ def ga_next_generation_full_kernel(
     n_elites: ti.i32,
     tournament_k: ti.i32,
     mutation_rate_fp: ti.u32,
+    immigrant_rate_fp: ti.u32,
 ):
     """
     FULLY FUSED: Selection + Crossover + Mutation + Elitism + Swap + Hint Inheritance.
@@ -695,6 +696,49 @@ def ga_next_generation_full_kernel(
                 kernels_helpers.population_next_indices[g, 6] = m0
                 kernels_helpers.population_next_indices[g, 7] = m1
                 kernels_helpers.population_next_indices[g, 8] = m2
+
+            # Random immigrants (exploration): occasionally re-roll the entire genome.
+            # This keeps diversity even when selection pressure is high.
+            if immigrant_rate_fp != ti.u32(0):
+                state = kernels_helpers._xorshift32(state)
+                if state < immigrant_rate_fp:
+                    for s in range(n_slots):
+                        pool_start = kernels_helpers.slot_start[s]
+                        pool_count = kernels_helpers.slot_count[s]
+                        if pool_count > 0:
+                            state = kernels_helpers._xorshift32(state)
+                            new_item = pool_start + ti.cast(state % ti.cast(pool_count, ti.u32), ti.i32)
+                            kernels_helpers.population_next_indices[g, s] = new_item
+
+                    # Repair mini uniqueness again after re-roll
+                    m0 = kernels_helpers.population_next_indices[g, 6]
+                    m1 = kernels_helpers.population_next_indices[g, 7]
+                    m2 = kernels_helpers.population_next_indices[g, 8]
+
+                    mini_pool_start = kernels_helpers.slot_start[6]
+                    mini_pool_count = kernels_helpers.slot_count[6]
+
+                    if mini_pool_count > 1:
+                        tries = 0
+                        while m1 == m0 and tries < 10:
+                            state = kernels_helpers._xorshift32(state)
+                            m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+                            tries += 1
+
+                        tries = 0
+                        while (m2 == m0 or m2 == m1) and tries < 10:
+                            state = kernels_helpers._xorshift32(state)
+                            m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+                            tries += 1
+
+                        kernels_helpers.population_next_indices[g, 6] = m0
+                        kernels_helpers.population_next_indices[g, 7] = m1
+                        kernels_helpers.population_next_indices[g, 8] = m2
+
+                    # Reset hints for immigrants (avoid inheriting misleading warm-starts).
+                    for i in range(4):
+                        kernels_helpers.genome_hint_allocation[g][i] = 0
+                    pa = g
 
         kernels_helpers.ga_rng_state[g] = state
         

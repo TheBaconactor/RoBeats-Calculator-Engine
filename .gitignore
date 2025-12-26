@@ -55,3 +55,8 @@ bin/
 
 # Generated results files
 general_meta_results.json
+
+# Local benchmark / run artifacts
+artifacts/
+runs*/
+run_*.log

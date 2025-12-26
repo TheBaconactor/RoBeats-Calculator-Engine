@@ -36,7 +36,7 @@ from ..core.constants import (
     GPU_GA_GENS_PER_MIGRATION,
     GPU_GA_MIGRATE_COUNT,
 )
-from ..core.utils import prune_dominated_gear, safe_int
+from ..core.utils import prune_dominated_gear, safe_int, safe_float
 from ..data.database import get_loadout_hash
 from .scoring import worker_coevolution_evaluate, GEM_SOLVER_CACHE, FG_CACHE, FEVER_TIMELINE_CACHE
 from ..data.models import GASettings
@@ -288,6 +288,221 @@ def _extract_fg_candidates_from_ga_snapshot(
     return all_evaluated
 
 
+def _parse_cfg_csv_list(raw: str) -> list[str]:
+    if not raw:
+        return []
+    parts = []
+    for chunk in str(raw).replace(";", ",").replace("|", ",").split(","):
+        val = chunk.strip()
+        if val:
+            parts.append(val)
+    return parts
+
+
+def _neighbor_sweep_fg_candidates(
+    *,
+    cfg,
+    existing_candidates: list[dict],
+    registry: "ItemRegistry",
+    gear_pool: dict,
+    mini_pool: list,
+    slots: list[str],
+    cfg_data: dict,
+    base_stats_fixed: dict,
+    calc_song: dict,
+    ref_arrays: dict,
+) -> list[dict]:
+    """
+    Evaluate a small set of "neighbor" loadouts (single-slot swaps) and return
+    them as fully-evaluated GA-style candidates for ForceGreatsFinder.
+
+    Goal: include FG-relevant loadouts that may be far from the base-score optimum,
+    without relying on DB seeds (cold start).
+    """
+    if cfg is None or not hasattr(cfg, "getboolean"):
+        return []
+    if not existing_candidates:
+        return []
+
+    enabled = cfg.getboolean("IterationEngine", "FG_NeighborSweep", fallback=False)
+    if not enabled:
+        return []
+
+    try:
+        if cfg.getboolean("IterationEngine", "ForceGreatsDebug", fallback=False):
+            print("[FG Sweep] NeighborSweep enabled")
+    except Exception:
+        pass
+
+    try:
+        from .scoring import batch_evaluate_genomes
+    except Exception:
+        return []
+
+    seed_top_k = safe_int(cfg.get("IterationEngine", "FG_NeighborSweepSeeds", fallback=12), 12)
+    max_new = safe_int(cfg.get("IterationEngine", "FG_NeighborSweepMaxEvals", fallback=200), 200)
+    top_per_stat = safe_int(cfg.get("IterationEngine", "FG_NeighborSweepTopPerStat", fallback=2), 2)
+    top_by_heuristic = safe_int(cfg.get("IterationEngine", "FG_NeighborSweepTopByHeuristic", fallback=12), 12)
+    sweep_slots_raw = cfg.get("IterationEngine", "FG_NeighborSweepSlots", fallback="Back")
+
+    if max_new <= 0 or seed_top_k <= 0:
+        return []
+
+    slot_name_to_idx = {name: idx for idx, name in enumerate(slots)}
+    sweep_slots: list[int] = []
+    for slot_name in _parse_cfg_csv_list(sweep_slots_raw):
+        idx = slot_name_to_idx.get(slot_name.strip().title())
+        if idx is not None:
+            sweep_slots.append(idx)
+    if not sweep_slots:
+        return []
+
+    meta = calc_song.get("metadata", {}) or {}
+    p_color = str(meta.get("Primary Color", "") or "")
+    s_color = str(meta.get("Secondary Color", "") or "")
+    color_stats = ("Rush", "Flow", "Chill", "Beat", "Vibe")
+
+    base_stat_keys = [
+        "Perfect Points",
+        "Combo Multiplier",
+        "Fever Multiplier",
+        "Fever Time",
+        "Fever Fill Rate",
+    ]
+    # Always include elemental stats so "specialist" items (e.g., Flow-heavy backs)
+    # can enter the FG funnel even if they're not top-K by base-score heuristics.
+    base_stat_keys.extend(color_stats)
+
+    def _heuristic_item_score(item: dict) -> int:
+        if not item:
+            return 0
+        pp = int(item.get("Perfect Points", 0) or 0)
+        cm = int(item.get("Combo Multiplier", 0) or 0)
+        fm = int(item.get("Fever Multiplier", 0) or 0)
+        ft = int(item.get("Fever Time", 0) or 0)
+        ff = int(item.get("Fever Fill Rate", 0) or 0)
+        primary_val = int(item.get(p_color, 0) or 0) if p_color else 0
+        secondary_val = int(item.get(s_color, 0) or 0) if (s_color and s_color != p_color) else 0
+        modern_base = (pp * 3) + (cm * 3) + (fm * 3) + (ft * 2) + (ff * 2)
+        modern_elemental_bonus = (primary_val * 2) + (secondary_val * 1)
+        return int(modern_base + (modern_elemental_bonus // 2))
+
+    def _candidate_key_from_genome(genome: list[dict]) -> tuple:
+        gear_names = tuple((it or {}).get("Name", "") for it in genome[:6])
+        mini_names = tuple(sorted(((it or {}).get("Name", "") for it in genome[6:9])))
+        return gear_names + mini_names
+
+    # Seed selection: prefer mini-team diversity so we don't miss FG-relevant
+    # loadouts that are lower-ranked by base score but have different minis.
+    existing_candidate_keys = set()
+    seen_mini_sets = set()
+    seeds: list[list[dict]] = []
+    for cand in existing_candidates:
+        genome = cand.get("Genome")
+        if not genome:
+            continue
+        full_key = _candidate_key_from_genome(genome)
+        existing_candidate_keys.add(full_key)
+
+        mini_key = tuple(sorted(((it or {}).get("Name", "") for it in genome[6:9])))
+        if mini_key in seen_mini_sets:
+            continue
+        seen_mini_sets.add(mini_key)
+        seeds.append(genome)
+        if len(seeds) >= seed_top_k:
+            break
+
+    if not seeds:
+        return []
+
+    neighbor_genomes: list[list[dict]] = []
+    neighbor_keys = set(existing_candidate_keys)
+
+    for seed in seeds:
+        for slot_idx in sweep_slots:
+            slot_name = slots[slot_idx]
+            pool = gear_pool.get(slot_name) or []
+            if not pool:
+                continue
+
+            interesting_items: dict[str, dict] = {}
+            if top_by_heuristic > 0:
+                ranked = sorted(pool, key=_heuristic_item_score, reverse=True)
+                for it in ranked[: max(1, top_by_heuristic)]:
+                    if not it:
+                        continue
+                    name = it.get("Name")
+                    if name:
+                        interesting_items[name] = it
+
+            for key in base_stat_keys:
+                ranked = sorted(pool, key=lambda it: int((it or {}).get(key, 0) or 0), reverse=True)
+                for it in ranked[: max(1, top_per_stat)]:
+                    if not it:
+                        continue
+                    name = it.get("Name")
+                    if name:
+                        interesting_items[name] = it
+
+            current_item = seed[slot_idx] or {}
+            current_name = current_item.get("Name", "")
+            for it in interesting_items.values():
+                if it.get("Name", "") == current_name:
+                    continue
+
+                genome = list(seed)
+                genome[slot_idx] = it
+
+                # Ensure mini uniqueness (defensive; we don't mutate minis here).
+                mini_names = [m.get("Name", "") for m in genome[6:9] if m]
+                if len(mini_names) != len(set(mini_names)):
+                    continue
+
+                key = _candidate_key_from_genome(genome)
+                if key in neighbor_keys:
+                    continue
+                neighbor_keys.add(key)
+                neighbor_genomes.append(genome)
+                if len(neighbor_genomes) >= max_new:
+                    break
+            if len(neighbor_genomes) >= max_new:
+                break
+        if len(neighbor_genomes) >= max_new:
+            break
+
+    if not neighbor_genomes:
+        try:
+            if cfg.getboolean("IterationEngine", "ForceGreatsDebug", fallback=False):
+                print("[FG Sweep] NeighborSweep generated 0 swaps")
+        except Exception:
+            pass
+        return []
+
+    try:
+        if cfg.getboolean("IterationEngine", "ForceGreatsDebug", fallback=False):
+            print(f"[FG Sweep] NeighborSweep: seeds={len(seeds)}, swaps={len(neighbor_genomes)}, slots={sweep_slots_raw}")
+    except Exception:
+        pass
+
+    evaluated = batch_evaluate_genomes(
+        neighbor_genomes,
+        base_stats_fixed,
+        cfg_data,
+        calc_song,
+        ref_arrays,
+        registry=registry,
+    )
+    out = []
+    for e in evaluated:
+        if not e:
+            continue
+        # Mark as high-priority for FG funnel retention (these can have lower base scores).
+        e["_fg_priority"] = 1
+        e["_fg_source"] = "neighbor_sweep"
+        out.append(e)
+    return out
+
+
 def _run_gpu_native_ga(
     population: list | None,
     n_generations: int,
@@ -299,6 +514,7 @@ def _run_gpu_native_ga(
     gpu_static: dict | None = None,
     elite_count: int = 2,
     mutation_rate: float = 0.02,
+    immigrant_rate: float = 0.0,
     tournament_k: int = 3,
     color_flags: dict = None,
     status_cb=None,
@@ -323,6 +539,7 @@ def _run_gpu_native_ga(
         ref_arrays: Reference lookup arrays (PP, CM, FM, FT, FF)
         elite_count: Number of elites to preserve per generation
         mutation_rate: Mutation probability
+        immigrant_rate: Probability of fully re-rolling a genome per generation
         tournament_k: Tournament size for selection
         color_flags: Dict with is_p_*, is_s_* flags
         status_cb: Optional status callback
@@ -484,6 +701,7 @@ def _run_gpu_native_ga(
                 n_genomes=n_genomes,
                 n_slots=n_slots,
                 mutation_rate=mutation_rate,
+                immigrant_rate=immigrant_rate,
                 tournament_k=tournament_k,
                 n_elites=total_elites,
             )
@@ -726,6 +944,16 @@ def solve_coevolution_genetic(
         
         print(f"  Multi-start runs: {num_runs} (generations per run: {gens_per_run})")
 
+        # GPU-native GA exploration knobs (optional; defaults preserve current behavior)
+        gpu_tournament_k = safe_int(cfg.get("IterationEngine", "GPU_GA_TournamentK", fallback=3), 3)
+        gpu_tournament_k = max(1, min(8, int(gpu_tournament_k)))
+
+        gpu_mutation_rate = safe_float(cfg.get("IterationEngine", "GPU_GA_MutationRate", fallback=GA_MUTATION_RATE), GA_MUTATION_RATE)
+        gpu_mutation_rate = max(0.0, min(1.0, float(gpu_mutation_rate)))
+
+        gpu_immigrant_rate = safe_float(cfg.get("IterationEngine", "GPU_GA_ImmigrantRate", fallback=0.0), 0.0)
+        gpu_immigrant_rate = max(0.0, min(1.0, float(gpu_immigrant_rate)))
+
         # Buffer per-run snapshots on GPU and download once per song to avoid
         # per-run GPU->CPU sync (Vulkan `to_numpy()` is expensive).
         from .taichi_gem import fields as gpu_fields
@@ -861,7 +1089,9 @@ def solve_coevolution_genetic(
                             "base_fixed_stats": base_stats_arr,
                         },
                         elite_count=GA_ELITISM,
-                        mutation_rate=GA_MUTATION_RATE,
+                        mutation_rate=gpu_mutation_rate,
+                        immigrant_rate=gpu_immigrant_rate,
+                        tournament_k=gpu_tournament_k,
                         # Use color flags for correct p_val/s_val calculation
                         color_flags={
                             "is_p_ft": 1 if p_color == "Beat" else 0,
@@ -1068,6 +1298,60 @@ def solve_coevolution_genetic(
         # Sort by score descending and truncate for downstream ForceGreats evaluation.
         unique_evaluated.sort(key=lambda c: c.get("Score", 0), reverse=True)
         unique_evaluated = unique_evaluated[: max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit)]
+
+        # Optional: FG neighbor sweep (cold-start reliability)
+        try:
+            if cfg.getboolean("IterationEngine", "ForceGreatsFinder", fallback=False):
+                neighbors = _neighbor_sweep_fg_candidates(
+                    cfg=cfg,
+                    existing_candidates=unique_evaluated,
+                    registry=registry,
+                    gear_pool=gear_pool,
+                    mini_pool=mini_pool,
+                    slots=slots,
+                    cfg_data=cfg_data,
+                    base_stats_fixed=base_stats_fixed,
+                    calc_song=calc_song,
+                    ref_arrays=ref_arrays,
+                )
+                if neighbors:
+                    merged = []
+                    seen = set()
+
+                    def _key(cand: dict) -> tuple:
+                        genome = cand.get("Genome") or []
+                        gear_names = tuple((it or {}).get("Name", "") for it in genome[:6])
+                        mini_names = tuple(sorted(((it or {}).get("Name", "") for it in genome[6:9])))
+                        return gear_names + mini_names
+
+                    for cand in unique_evaluated:
+                        k = _key(cand)
+                        if k in seen:
+                            continue
+                        seen.add(k)
+                        merged.append(cand)
+
+                    for cand in neighbors:
+                        k = _key(cand)
+                        if k in seen:
+                            continue
+                        seen.add(k)
+                        merged.append(cand)
+
+                    limit = max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit)
+                    priority = [c for c in merged if c.get("_fg_priority")]
+                    non_priority = [c for c in merged if not c.get("_fg_priority")]
+
+                    priority.sort(key=lambda c: c.get("Score", 0), reverse=True)
+                    non_priority.sort(key=lambda c: c.get("Score", 0), reverse=True)
+
+                    unique_evaluated = []
+                    unique_evaluated.extend(priority[:limit])
+                    if len(unique_evaluated) < limit:
+                        unique_evaluated.extend(non_priority[: max(0, limit - len(unique_evaluated))])
+        except Exception:
+            # Never allow candidate augmentation to crash the GA solver.
+            pass
 
         return best_data, best_gear, best_minis, None, [], [], unique_evaluated
 

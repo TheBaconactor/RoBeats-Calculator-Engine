@@ -550,12 +550,46 @@ def process_song_task(args):
         # - -1 => full window over all FT/FF gem allocations within TOTAL_GEM_BUDGET
         # - >=0 => radius in gem-space around each loadout's (FT, FF) center
 
+        def _cand_key(cand: dict) -> tuple:
+            gear_names = tuple((it or {}).get("Name", "") for it in (cand.get("Gear") or []))
+            mini_names = tuple(sorted(((it or {}).get("Name", "") for it in (cand.get("Minis") or []))))
+            return gear_names + mini_names
+
+        def _truncate_candidates_with_fg_priority(candidates: list[dict], limit: int) -> list[dict]:
+            if not candidates or limit <= 0:
+                return []
+
+            priority = [c for c in candidates if c.get("_fg_priority")]
+            non_priority = [c for c in candidates if not c.get("_fg_priority")]
+
+            priority.sort(key=lambda r: r.get("Score", 0), reverse=True)
+            non_priority.sort(key=lambda r: r.get("Score", 0), reverse=True)
+
+            merged = []
+            seen = set()
+
+            for c in priority:
+                k = _cand_key(c)
+                if k in seen:
+                    continue
+                seen.add(k)
+                merged.append(c)
+                if len(merged) >= limit:
+                    return merged
+
+            for c in non_priority:
+                k = _cand_key(c)
+                if k in seen:
+                    continue
+                seen.add(k)
+                merged.append(c)
+                if len(merged) >= limit:
+                    break
+
+            return merged
+
         if ga_candidates and len(ga_candidates) > fg_candidate_limit:
-            ga_candidates = sorted(
-                ga_candidates,
-                key=lambda r: r.get("Score", 0),
-                reverse=True,
-            )[:fg_candidate_limit]
+            ga_candidates = _truncate_candidates_with_fg_priority(ga_candidates, fg_candidate_limit)
 
         def build_details(data_dict):
             if not data_dict:
