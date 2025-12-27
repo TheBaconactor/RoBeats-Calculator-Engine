@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from collections.abc import Iterable
 from typing import Dict, List, Optional, Tuple, Any
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS, DB_FILE
 
@@ -656,3 +657,71 @@ def get_best_loadouts(
         return []
     finally:
         conn.close()
+
+
+def get_song_names_present_in_db(song_names: Iterable[str], db_path: Optional[str] = None) -> set[str]:
+    """
+    Return the subset of song names that are already present in the DB.
+
+    Presence is defined as having a row in `songs` OR any row in `loadouts`/`fg_loadouts`.
+    """
+    names = [name for name in (song_names or []) if name]
+    if not names:
+        return set()
+
+    if db_path is None:
+        db_path = get_evolution_db_path()
+
+    conn = get_db_connection(db_path)
+    try:
+        present: set[str] = set()
+        batch_size = 900  # sqlite default parameter cap is commonly 999
+        for offset in range(0, len(names), batch_size):
+            batch = names[offset : offset + batch_size]
+            placeholders = ",".join("?" for _ in batch)
+
+            try:
+                rows = conn.execute(
+                    f"SELECT name FROM songs WHERE name IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                present.update(row[0] for row in rows if row and row[0])
+            except sqlite3.Error:
+                pass
+
+            for table in ("loadouts", "fg_loadouts"):
+                try:
+                    rows = conn.execute(
+                        f"SELECT DISTINCT song_name FROM {table} WHERE song_name IN ({placeholders})",
+                        batch,
+                    ).fetchall()
+                    present.update(row[0] for row in rows if row and row[0])
+                except sqlite3.Error:
+                    continue
+
+        return present
+    finally:
+        conn.close()
+
+
+def prioritize_song_queue_missing_db(
+    song_queue: list[tuple[str, str, str]],
+    db_path: Optional[str] = None,
+) -> list[tuple[str, str, str]]:
+    """
+    Reorder a discovered song queue so songs not in the DB run first.
+
+    Stable partition: preserves relative order within each group.
+    """
+    if not song_queue:
+        return []
+
+    present = get_song_names_present_in_db((item[1] for item in song_queue), db_path=db_path)
+    if not present:
+        return song_queue
+
+    missing: list[tuple[str, str, str]] = []
+    existing: list[tuple[str, str, str]] = []
+    for item in song_queue:
+        (existing if item[1] in present else missing).append(item)
+    return missing + existing

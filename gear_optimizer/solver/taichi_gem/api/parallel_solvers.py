@@ -536,7 +536,39 @@ def solve_genomes_parallel_merged(
     ensure_ready(ref0, need_grid=True)
     log_batches = ENV.gpu_batch_log
 
-    # Assign slots 0..N-1 in payload order.
+    # Assign slots:
+    # - Prefer explicit payload["song_slot"] to preserve warm timeline caching.
+    # - Otherwise, assign the next free slot.
+    used_slots: set[int] = set()
+    slot_ids: list[int] = []
+    for payload in payloads:
+        raw = payload.get("song_slot", None)
+        if raw is None:
+            slot_ids.append(-1)
+            continue
+        try:
+            slot = int(raw)
+        except Exception as exc:
+            raise ValueError(f"Merged solve: invalid song_slot={raw!r}") from exc
+        if slot < 0 or slot >= fields.MAX_SONG_SLOTS:
+            raise ValueError(f"Merged solve: song_slot out of range: {slot} (max={fields.MAX_SONG_SLOTS})")
+        if slot in used_slots:
+            raise ValueError(f"Merged solve: duplicate song_slot {slot} in payloads")
+        used_slots.add(slot)
+        slot_ids.append(slot)
+
+    if any(s < 0 for s in slot_ids):
+        for i, s in enumerate(slot_ids):
+            if s >= 0:
+                continue
+            for cand in range(fields.MAX_SONG_SLOTS):
+                if cand not in used_slots:
+                    slot_ids[i] = cand
+                    used_slots.add(cand)
+                    break
+            if slot_ids[i] < 0:
+                raise ValueError("Merged solve: no free song slots available")
+
     slot_to_flags: dict[int, tuple[int, ...]] = {}
     genome_ranges: list[tuple[int, int]] = []
 
@@ -546,7 +578,8 @@ def solve_genomes_parallel_merged(
 
     # Build merged genome_base_stats and precompute per-slot grids/flags.
     genome_offset = 0
-    for slot, payload in enumerate(payloads):
+    for payload_idx, payload in enumerate(payloads):
+        slot = slot_ids[payload_idx]
         calc_song = payload.get("timeline_grid")
         if not (isinstance(calc_song, dict) and "metadata" in calc_song and "song_data" in calc_song):
             raise ValueError("Merged solve requires calc_song dict payload['timeline_grid']")
@@ -599,9 +632,10 @@ def solve_genomes_parallel_merged(
     cur = 0
     total_work = 0
     chunks = 0
-    for slot, payload in enumerate(payloads):
+    for payload_idx, payload in enumerate(payloads):
+        slot = slot_ids[payload_idx]
         g_list = payload.get("genome_stats_list") or []
-        base_gid = genome_ranges[slot][0]
+        base_gid = genome_ranges[payload_idx][0]
         for local_idx, stats in enumerate(g_list):
             gid = base_gid + local_idx
 
@@ -676,7 +710,11 @@ def solve_genomes_parallel_merged(
         chunks += 1
 
     if log_batches:
-        print(f"[GPU_BATCH] merged_requests={len(payloads)} genomes={n_total_genomes} work_items={total_work} chunks={chunks}")
+        slots_str = ",".join(str(s) for s in slot_ids)
+        print(
+            f"[GPU_BATCH] merged_requests={len(payloads)} slots=[{slots_str}] genomes={n_total_genomes} "
+            f"work_items={total_work} chunks={chunks}"
+        )
 
     # Download O(total_genomes) results once and demux.
     results_np = fields.genome_result_stats.to_numpy()[:n_total_genomes]

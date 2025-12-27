@@ -226,8 +226,18 @@ def process_song_task(args):
         fg_debug,
     ) = args_list[:16]
 
-    # Optional: preloaded calc_song dict to avoid repeated disk I/O + parsing.
-    preloaded_calc_song = args_list[16] if len(args_list) > 16 else None
+    # Optional extras (sequential pipeline mode):
+    # - preloaded calc_song dict to avoid repeated disk I/O + parsing
+    # - defer_post: if True, skip persistence/reporting and return raw compute payload
+    preloaded_calc_song = None
+    defer_post = False
+    extras = args_list[16:] if len(args_list) > 16 else []
+    if extras:
+        if isinstance(extras[0], dict) and extras[0].get("song_data") is not None:
+            preloaded_calc_song = extras[0]
+            extras = extras[1:]
+        if extras:
+            defer_post = bool(extras[0])
 
     # Initialize variables at function start to avoid 'in locals()' pattern issues
     local_executor = None
@@ -252,9 +262,19 @@ def process_song_task(args):
 
     # Memory leak tracking: Log memory at start of song
     log_memory_usage(f"Start: {found_song_name}")
-    
+
     # GPU profiler: track song processing time
     _gpu_profiler.start_song(found_song_name)
+
+    result_payload = None
+    stage_timing: dict[str, float] = {}
+    _song_wall_t0 = time.perf_counter()
+    _cpu_prep_t0 = _song_wall_t0
+    ga_time_sec = 0.0
+    fg_time_sec = 0.0
+    db_payload_time_sec = 0.0
+    persist_build_time_sec = 0.0
+    report_time_sec = 0.0
 
     try:
         best_data = None
@@ -267,7 +287,9 @@ def process_song_task(args):
 
         if isinstance(preloaded_calc_song, dict) and preloaded_calc_song.get("song_data"):
             calc_song = preloaded_calc_song
+            stage_timing["cpu_read_sec"] = 0.0
         else:
+            _t_read0 = time.perf_counter()
             song_data = read_song_file(fp)
 
             # OPTIMIZATION: store timestamps as NumPy array once per song
@@ -281,6 +303,7 @@ def process_song_task(args):
                 "metadata": song_data["song_details"],
                 "song_data": {"timestamps": song_timestamps_np, "note_types": song_note_types_np},
             }
+            stage_timing["cpu_read_sec"] = time.perf_counter() - _t_read0
 
         # ------------------------------------------------------------------
         # Optional: Synthetic human hit-time simulation (Perfect-only).
@@ -320,6 +343,7 @@ def process_song_task(args):
             if base_types.shape[0] != base_ts.shape[0]:
                 base_types = np.ones(base_ts.shape[0], dtype=np.int16)
 
+            _t_sim0 = time.perf_counter()
             sim_ts, sim_great_candidates, sim_dbg = simulate_perfect_hit_timestamps_with_great_candidates(
                 base_ts,
                 base_types,
@@ -327,6 +351,7 @@ def process_song_task(args):
                 distribution=dist,
                 great_mode=great_mode,
             )
+            stage_timing["cpu_human_hit_sim_sec"] = time.perf_counter() - _t_sim0
 
             # Store for downstream FG scorers; only override full timestamps when requested.
             calc_song["song_data"]["fg_timestamps"] = np.asarray(sim_ts, dtype=np.float64)
@@ -352,6 +377,7 @@ def process_song_task(args):
         meta_secondary_color = calc_song["metadata"].get("Secondary Color", "")
 
         # Setup configuration and load current stats
+        _t_setup0 = time.perf_counter()
         (
             ga_settings,
             fixed_stats,
@@ -368,6 +394,7 @@ def process_song_task(args):
             force_greats_config,
             manual_force_greats,
         ) = setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_name)
+        stage_timing["cpu_setup_sec"] = time.perf_counter() - _t_setup0
 
         # --- DB KEY MODIFICATION ---
         # The song name from the file header already includes difficulty suffix like "(Hard)" or "(Easy)"
@@ -375,12 +402,14 @@ def process_song_task(args):
         db_key = found_song_name
 
         # Load database context (prev_record, known_loadouts)
+        _t_db0 = time.perf_counter()
         prev_record, known_loadouts = load_database_context(
             found_song_name, use_evo_db, gears_by_name, minis_by_name
         )
+        stage_timing["cpu_db_load_sec"] = time.perf_counter() - _t_db0
 
         db_seed = prev_record if prev_record else None
-        
+
         # Calculate best FG score from DB before known_loadouts is cleared
         # known_loadouts structure: {hash: (score, fg_score, force_data, details_data)}
         db_best_fg_score = 0
@@ -407,14 +436,11 @@ def process_song_task(args):
 
         emit("START")
 
+        stage_timing["cpu_prep_sec"] = time.perf_counter() - _cpu_prep_t0
+
         # --- LOGIC BRANCHING BASED ON FINDERS ---
         # Performance timing variables (opt-in; enable via PERF_TIMING=1)
-        ga_time_sec = 0.0
-        fg_time_sec = 0.0
-        db_payload_time_sec = 0.0
-        persist_build_time_sec = 0.0
-        report_time_sec = 0.0
-        
+
         if enable_gear or enable_mini:
             # Get GPU slot for timeline prefetch (prefetched or on-demand)
             _gpu_song_slot = 0
@@ -422,10 +448,12 @@ def process_song_task(args):
                 try:
                     from gear_optimizer.solver.taichi_gem.api.gpu_prefetch import get_gpu_prefetch_manager
                     _prefetch_mgr = get_gpu_prefetch_manager()
+                    _t_timeline0 = time.perf_counter()
                     _gpu_song_slot = _prefetch_mgr.get_slot(calc_song, ref_arrays)
+                    stage_timing["gpu_timeline_precompute_sec"] = time.perf_counter() - _t_timeline0
                 except Exception as _pfx_err:
                     pass  # Fallback to slot 0
-            
+
             # Run Genetic Algorithm (now memetic-enhanced)
             ga_start = time.perf_counter()
             (
@@ -459,14 +487,14 @@ def process_song_task(args):
                 song_slot=_gpu_song_slot,  # Use prefetched GPU slot
             )
             ga_time_sec = time.perf_counter() - ga_start
-            
+
             # Release GPU slot for reuse
             if gpu_mode and _gpu_song_slot > 0:
                 try:
                     _prefetch_mgr.release(_gpu_song_slot)
                 except Exception:
                     pass
-            
+
             if PERF_TIMING_ENABLED:
                 print(f"[PERF] GA: {ga_time_sec:.2f}s")
 
@@ -717,13 +745,125 @@ def process_song_task(args):
                 perf_timing=PERF_TIMING_ENABLED,
             )
             fg_time_sec = time.perf_counter() - fg_start
-            
+
             if PERF_TIMING_ENABLED:
                 n_loadouts = len(loadout_entries) if loadout_entries else 0
                 print(f"[PERF] ForceGreats: {fg_time_sec:.2f}s ({n_loadouts} loadouts, finder={force_greats_finder})")
 
 
         # --- REPORTING & DB UPDATE (payload only; saved by coordinator) ---
+        if defer_post and best_data:
+            def _item_name(item):
+                if isinstance(item, dict):
+                    return item.get("Name", "")
+                return str(item) if item else ""
+
+            def _compact_items(items):
+                return [_item_name(it) for it in (items or [])]
+
+            def _compact_fg_variants(variants):
+                out = []
+                for v in variants or []:
+                    if not isinstance(v, dict):
+                        continue
+                    out.append(
+                        {
+                            "score": v.get("score", 0),
+                            "fg_score": v.get("fg_score", 0),
+                            "gear": _compact_items(v.get("gear")),
+                            "minis": _compact_items(v.get("minis")),
+                            "data": v.get("data") or {},
+                        }
+                    )
+                return out
+
+            def _compact_ga_candidates(candidates):
+                out = []
+                for c in candidates or []:
+                    if not isinstance(c, dict):
+                        continue
+                    out.append(
+                        {
+                            "Score": c.get("Score", 0),
+                            "BaseScore": c.get("BaseScore", c.get("Score", 0)),
+                            "Gear": _compact_items(c.get("Gear")),
+                            "Minis": _compact_items(c.get("Minis")),
+                            "Data": c.get("Data") or {},
+                            "_fg_priority": c.get("_fg_priority", 0),
+                        }
+                    )
+                return out
+
+            def _compact_loadout_entries(entries):
+                if entries is None:
+                    return None
+                out = {}
+                for k, v in entries.items():
+                    if not isinstance(v, dict):
+                        continue
+                    out[str(k)] = {
+                        "score": v.get("score", 0),
+                        "base_score": v.get("base_score", v.get("score", 0)),
+                        "fg_score": v.get("fg_score", 0),
+                        "gear": _compact_items(v.get("gear")),
+                        "minis": _compact_items(v.get("minis")),
+                        "details": v.get("details") or {},
+                        "force": v.get("force"),
+                    }
+                return out
+
+            def _compact_prev_record(record):
+                if not isinstance(record, dict):
+                    return None
+                out = dict(record)
+                out["gear"] = _compact_items(record.get("gear"))
+                out["minis"] = _compact_items(record.get("minis"))
+                if isinstance(out.get("loadout"), (list, tuple)):
+                    out["loadout"] = [str(x) if x is not None else "" for x in out.get("loadout")]
+                force_obj = out.get("force")
+                if isinstance(force_obj, dict):
+                    force_copy = dict(force_obj)
+                    if isinstance(force_copy.get("gear"), (list, tuple)):
+                        force_copy["gear"] = [str(x) if x is not None else "" for x in force_copy.get("gear")]
+                    if isinstance(force_copy.get("minis"), (list, tuple)):
+                        force_copy["minis"] = [str(x) if x is not None else "" for x in force_copy.get("minis")]
+                    out["force"] = force_copy
+                return out
+
+            # BUG FIX: Capture buffer content BEFORE finally block closes it
+            buf_content = buf.getvalue() if buf else ""
+
+            result_payload = {
+                "_deferred_post": True,
+                "song": found_song_name,
+                "db_key": db_key,
+                "file_path": fp,
+                "difficulty": effective_difficulty,
+                "use_evo_db": bool(use_evo_db),
+                "cfg_dict": cfg_dict,
+                "ref_arrays": ref_arrays,
+                "calc_song": calc_song,
+                "best_data": best_data,
+                "best_gear": _compact_items(best_gear),
+                "best_minis": _compact_items(best_minis),
+                "current_gear": _compact_items(current_gear_list),
+                "current_minis": _compact_items(current_mini_list),
+                "enable_gear": bool(enable_gear),
+                "enable_mini": bool(enable_mini),
+                "fg_variants": _compact_fg_variants(fg_variants),
+                "ga_candidates": _compact_ga_candidates(ga_candidates),
+                "loadout_entries": _compact_loadout_entries(loadout_entries),
+                "prev_record": _compact_prev_record(prev_record),
+                "attempt_lifetime": attempt_lifetime,
+                "prev_attempts_first": prev_attempts_first,
+                "db_best_fg_score": db_best_fg_score,
+                "meta_primary_color": meta_primary_color,
+                "meta_secondary_color": meta_secondary_color,
+                "fg_debug": bool(fg_debug),
+                "log": buf_content,
+            }
+            return result_payload
+
         if best_data:
             # Build database payload
             _t_db0 = time.perf_counter()
@@ -796,7 +936,7 @@ def process_song_task(args):
         # BUG FIX: Capture buffer content BEFORE finally block closes it
         buf_content = buf.getvalue() if buf else ""
 
-        return {
+        result_payload = {
             "song": found_song_name,
             "db_key": db_key,
             "db_payload": db_payload,
@@ -806,12 +946,31 @@ def process_song_task(args):
             "persist_entries": persist_entries if best_data else [],
             "log": buf_content,
         }
+        return result_payload
     finally:
         # Memory leak tracking: Log before cleanup
         log_memory_usage(f"Before cleanup: {found_song_name}")
-        
+
         # GPU profiler: end song tracking
-        _gpu_profiler.end_song()
+        _song_gpu_timing = _gpu_profiler.end_song()
+        stage_timing["song_wall_sec"] = time.perf_counter() - _song_wall_t0
+        stage_timing["cpu_post_sec"] = float(db_payload_time_sec) + float(persist_build_time_sec) + float(report_time_sec)
+        stage_timing["cpu_ga_wall_sec"] = float(ga_time_sec)
+        stage_timing["cpu_fg_wall_sec"] = float(fg_time_sec)
+
+        if isinstance(result_payload, dict):
+            result_payload.setdefault("_stage_timing", {}).update(stage_timing)
+            if _song_gpu_timing is not None:
+                result_payload.setdefault("_gpu_timing", {}).update(
+                    {
+                        "kernel_sec": float(getattr(_song_gpu_timing, "kernel_sec", 0.0) or 0.0),
+                        "upload_sec": float(getattr(_song_gpu_timing, "upload_sec", 0.0) or 0.0),
+                        "download_sec": float(getattr(_song_gpu_timing, "download_sec", 0.0) or 0.0),
+                        "kernel_calls": int(getattr(_song_gpu_timing, "kernel_calls", 0) or 0),
+                        "genome_evaluations": int(getattr(_song_gpu_timing, "genome_evaluations", 0) or 0),
+                        "total_sec": float(getattr(_song_gpu_timing, "total_sec", 0.0) or 0.0),
+                    }
+                )
 
         if local_executor:
             local_executor.shutdown()

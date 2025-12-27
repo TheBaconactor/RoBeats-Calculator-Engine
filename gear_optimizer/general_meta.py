@@ -615,7 +615,8 @@ def export_general_meta_json(results: dict, output_path: str = None) -> str:
     Export GeneralMeta results to JSON file.
     """
     if output_path is None:
-        output_path = os.path.join(SCRIPT_DIR, "general_meta_results.json")
+        output_path = PATHS.bin_path("general_meta_results.json")
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)

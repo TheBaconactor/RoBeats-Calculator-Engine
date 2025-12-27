@@ -32,6 +32,7 @@ from gear_optimizer.data.database import (
     save_loadouts_batch,
     get_db_connection,
     get_evolution_db_path,
+    prioritize_song_queue_missing_db,
 )
 from gear_optimizer.core.memory import (
     set_memory_watchdog_limit,
@@ -519,10 +520,16 @@ class GearOptimizerApp:
             print("Error: No matching songs found.")
             return []
 
+        if use_evo_db:
+            try:
+                song_queue = prioritize_song_queue_missing_db(song_queue)
+            except Exception as exc:
+                logging.warning(f"[DB] Failed to prioritize song queue: {type(exc).__name__}: {exc}")
+
         # Queue all discovered songs; filtering is handled by difficulty folder + optional search string.
         if not filter_search:
             return song_queue
-         
+          
         print(f"Found {len(song_queue)} songs to process.")
         return song_queue
 
@@ -630,6 +637,281 @@ class GearOptimizerApp:
             except Exception as e:
                 print(f"[Song Preloader] Not available: {e}")
                 use_gpu_preload = False
+
+        # ------------------------------------------------------------------
+        # In-flight multi-song pipeline (opt-in):
+        # Interleave multiple songs' CPU GA orchestration while a single GPU-owner
+        # thread runs Taichi kernels via the GPU executor. This is different from
+        # MaxParallelSongs: it stays within one process and avoids per-song worker
+        # overhead.
+        # Enable via IterationEngine.InFlightSongs (or env var IN_FLIGHT_SONGS).
+        # ------------------------------------------------------------------
+        inflight_songs = 0
+        try:
+            cfg_dict0 = tasks[0][3] if tasks else {}
+            ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
+            inflight_songs = safe_int(ie.get("InFlightSongs", 0), 0)
+        except Exception:
+            inflight_songs = 0
+        try:
+            inflight_songs_env = safe_int(os.environ.get("IN_FLIGHT_SONGS", 0), 0)
+            if inflight_songs_env > 0:
+                inflight_songs = inflight_songs_env
+        except Exception:
+            pass
+
+        if inflight_songs and inflight_songs > 1 and len(tasks) > 1:
+            inflight_ok = False
+            post_queue = None
+            post_proc = None
+            try:
+                from gear_optimizer.pipeline.post_processor import run_post_processor
+
+                post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 8), 8)
+                post_queue = multiprocessing.Queue(maxsize=max(1, post_queue_size))
+                post_proc = multiprocessing.Process(
+                    target=run_post_processor,
+                    args=(post_queue, len(tasks)),
+                    daemon=True,
+                    name="SongPostProcessor",
+                )
+                post_proc.start()
+
+                from gear_optimizer.solver.inflight_orchestrator import run_inflight_song_pipeline
+
+                run_inflight_song_pipeline(
+                    tasks,
+                    in_flight_songs=int(inflight_songs),
+                    completed_songs=completed_songs,
+                    memory_resume_tracker=memory_resume_tracker,
+                    post_queue=post_queue,
+                    total_tasks=len(tasks),
+                )
+                inflight_ok = True
+            except Exception as inflight_err:
+                print(f"[InFlight] Disabled: {type(inflight_err).__name__}: {inflight_err}")
+            finally:
+                try:
+                    if post_queue is not None:
+                        post_queue.put(None)
+                except Exception:
+                    pass
+                try:
+                    if post_proc is not None:
+                        post_proc.join(timeout=120.0)
+                except Exception:
+                    pass
+                try:
+                    if post_proc is not None and post_proc.is_alive():
+                        post_proc.terminate()
+                        post_proc.join(timeout=5.0)
+                except Exception:
+                    pass
+                try:
+                    if use_gpu_preload and preloader is not None:
+                        preloader.stop()
+                except Exception:
+                    pass
+            if inflight_ok:
+                return
+
+        # ------------------------------------------------------------------
+        # Continuous pipeline mode (major refactor):
+        # Offload CPU-heavy reporting/persistence to a background process so the
+        # main process can continuously feed the GPU with the next song.
+        # ------------------------------------------------------------------
+        pipeline_enabled = False
+        try:
+            cfg_dict0 = tasks[0][3] if tasks else {}
+            ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
+
+            def _truthy(v):
+                return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
+
+            def _get_ci(d: dict, key: str, default=None):
+                if not isinstance(d, dict):
+                    return default
+                if key in d:
+                    return d[key]
+                lk = str(key).lower()
+                if lk in d:
+                    return d[lk]
+                return d.get(lk, default)
+
+            raw = _get_ci(ie, "ContinuousPipeline", None)
+            if raw is None:
+                # Default: enable for single-worker GPU runs where post-processing stalls are noticeable.
+                pipeline_enabled = _truthy(_get_ci(ie, "GPU_Mode", "0")) and len(tasks) > 1
+            else:
+                pipeline_enabled = _truthy(raw)
+        except Exception:
+            pipeline_enabled = False
+
+        if pipeline_enabled:
+            post_queue = None
+            post_proc = None
+            try:
+                from gear_optimizer.pipeline.post_processor import run_post_processor
+
+                post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 8), 8)
+                post_queue = multiprocessing.Queue(maxsize=max(1, post_queue_size))
+                post_proc = multiprocessing.Process(
+                    target=run_post_processor,
+                    args=(post_queue, len(tasks)),
+                    daemon=True,
+                    name="SongPostProcessor",
+                )
+                post_proc.start()
+
+                preload_idx = 5  # Start preloading from index 5
+                preloaded_by_name = {}
+
+                # GPU prefetch manager for ahead-of-time timeline computation
+                _gpu_prefetch_mgr = None
+                gpu_prefetch_enabled = False
+                if use_gpu_preload:
+                    try:
+                        from gear_optimizer.solver.taichi_gem.api.gpu_prefetch import (
+                            get_gpu_prefetch_manager,
+                        )
+
+                        prefetch_slots = safe_int(os.environ.get("GPU_PREFETCH_SLOTS", 0))
+                        if prefetch_slots <= 0:
+                            prefetch_slots = 5  # default
+                        keep_slots = (
+                            str(os.environ.get("GPU_PREFETCH_KEEP_SLOTS", "0"))
+                            .strip()
+                            .lower()
+                            in {"1", "true", "yes", "on"}
+                        )
+                        _gpu_prefetch_mgr = get_gpu_prefetch_manager(
+                            num_slots=prefetch_slots,
+                            keep_slots=keep_slots,
+                        )
+                        gpu_prefetch_enabled = True
+                    except Exception:
+                        pass
+
+                gpu_prefetched_set = set()
+
+                for i, t in enumerate(tasks):
+                    if t[1] in completed_songs:
+                        continue
+
+                    song_name = t[1]
+
+                    # Drain any newly preloaded songs into a local map for reuse.
+                    if use_gpu_preload and preloader is not None:
+                        try:
+                            while True:
+                                preloaded = preloader.get_if_ready()
+                                if preloaded is None:
+                                    break
+                                preloaded_by_name[preloaded.song_name] = preloaded
+                        except Exception:
+                            pass
+
+                    # Prefer preloaded calc_song for this song (skips disk I/O + parsing).
+                    task_args = t
+                    preloaded_current = preloaded_by_name.pop(song_name, None)
+                    if (
+                        preloaded_current is not None
+                        and preloaded_current.calc_song
+                        and not preloaded_current.error
+                    ):
+                        task_args = t + (preloaded_current.calc_song, True)
+                    else:
+                        task_args = t + (True,)
+
+                    # Queue next song for CPU preloading
+                    if use_gpu_preload and preload_idx < len(tasks):
+                        next_task = tasks[preload_idx]
+                        if next_task[1] not in completed_songs:
+                            self._queue_song_for_preload(preloader, next_task)
+                        preload_idx += 1
+
+                    try:
+                        res = safe_process_song_task(task_args)
+                    except Exception as seq_err:
+                        res = {
+                            "_error": str(seq_err),
+                            "_error_type": type(seq_err).__name__,
+                            "_song_name": song_name,
+                            "song": song_name,
+                        }
+
+                    # POST-SONG GPU PREFETCH: Kick off the next song's timeline kernel
+                    # while the post-processor builds payloads/prints/saves DB.
+                    if gpu_prefetch_enabled and _gpu_prefetch_mgr is not None:
+                        try:
+                            pick = None
+                            if i + 1 < len(tasks):
+                                next_name = tasks[i + 1][1]
+                                cand = preloaded_by_name.get(next_name)
+                                if cand is not None and cand.calc_song and not cand.error:
+                                    pick = cand
+
+                            if pick is None:
+                                for cand in preloaded_by_name.values():
+                                    if cand is not None and cand.calc_song and not cand.error:
+                                        pick = cand
+                                        break
+
+                            if pick is not None and pick.song_name not in gpu_prefetched_set:
+                                slot = _gpu_prefetch_mgr.prefetch(pick.calc_song, pick.ref_arrays)
+                                if slot is not None:
+                                    gpu_prefetched_set.add(pick.song_name)
+                        except Exception:
+                            pass
+
+                        if i > 0 and i % 10 == 0:
+                            stats = _gpu_prefetch_mgr.stats()
+                            if stats["prefetch_count"] > 0:
+                                print(
+                                    f"[GPU Prefetch] Songs prefetched: {stats['prefetch_count']}, "
+                                    f"cache hits: {stats['cache_hits']}, "
+                                    f"avg time: {stats['avg_prefetch_ms']:.1f}ms"
+                                )
+
+                    # Enqueue for post-processing (non-blocking relative to GPU compute).
+                    if post_queue is not None:
+                        post_queue.put(res)
+
+                    # Track completion for resume queue (only for successful compute payloads).
+                    if isinstance(res, dict) and "_error" not in res:
+                        done_name = res.get("song") or song_name
+                        if done_name:
+                            completed_songs.add(done_name)
+                            if memory_resume_tracker:
+                                memory_resume_tracker.mark_completed(done_name)
+
+                    if memory_release_requested():
+                        print("[MemoryGuard] Early stop in sequential pipeline loop")
+                        break
+
+            finally:
+                try:
+                    if post_queue is not None:
+                        post_queue.put(None)
+                except Exception:
+                    pass
+                try:
+                    if post_proc is not None:
+                        post_proc.join(timeout=120.0)
+                except Exception:
+                    pass
+                try:
+                    if post_proc is not None and post_proc.is_alive():
+                        post_proc.terminate()
+                        post_proc.join(timeout=5.0)
+                except Exception:
+                    pass
+                try:
+                    if use_gpu_preload and preloader is not None:
+                        preloader.stop()
+                except Exception:
+                    pass
+            return
         
         def _safe_sequential_gen(task_list):
             preload_idx = 5  # Start preloading from index 5

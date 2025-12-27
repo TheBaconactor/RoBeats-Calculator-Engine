@@ -6,7 +6,7 @@ This package splits the monolithic kernels.py (1,757 lines) into 6 focused modul
 2. kernels_ga.py - 8 GA kernels (selection, crossover, mutation, etc.)
 3. kernels_scoring.py - Score calculation & optimize_core_device
 4. kernels_solvers_batch.py - Batch solver kernels
-5. kernels_ga_eval.py - GA evaluation & reduction kernels
+5. ga_eval/ (kernels_ga_eval.py) - GA evaluation & reduction kernels
 6. kernels_timeline.py - Timeline computation kernel
 
 This __init__.py provides backward-compatible imports so existing code continues to work.
@@ -120,7 +120,7 @@ from .kernels_solvers_batch import (
 )
 
 # Import GA evaluation & reduction kernels
-from .kernels_ga_eval import (
+from .ga_eval import (
     init_genome_results_kernel,
     init_chunk_best_key_kernel,
     reduce_chunk_to_best_key_kernel,

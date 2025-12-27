@@ -73,9 +73,10 @@ Edit `config.ini` to customize behavior:
 GA_SearchDepth = 75           # Generations per GA run (default: 75)
 GA_MultiStart = 3             # Multi-start restarts (default: 3, deep mining: 30)
 
-# GPU Settings  
-GPU_Mode = true               # Enable GPU acceleration
-MaxParallelSongs = 4          # Max concurrent song workers (default: 4)
+  # GPU Settings  
+  GPU_Mode = true               # Enable GPU acceleration
+  MaxParallelSongs = 4          # Max concurrent song workers (default: 4)
+  InFlightSongs = 0             # Experimental: single-process multi-song pipeline (set >1)
 
   # Force Greats
   ForceGreatsMode = false       # Enable ForceGreats evaluation (true/false)
@@ -131,6 +132,8 @@ export GA_SEED=42
 ---
 
 ## Project Structure
+
+Quick navigation: see `docs/NAVIGATION.md`.
 
 ```
 RoBeats-Calculator-Engine/

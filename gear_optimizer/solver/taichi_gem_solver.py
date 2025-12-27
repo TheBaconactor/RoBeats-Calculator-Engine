@@ -165,6 +165,13 @@ def solve_genomes_parallel(*args, **kwargs):
 # We intentionally keep it out of __all__ (since it's not part of the stable surface),
 # but it remains available as an attribute.
 def solve_force_greats_finder_gpu(*args, **kwargs):
+    from .gpu_executor import (
+        is_gpu_worker_mode,
+        is_in_process_gpu_request_queue,
+        submit_gpu_solve_force_greats_finder,
+    )
+    if is_gpu_worker_mode() and is_in_process_gpu_request_queue():
+        return submit_gpu_solve_force_greats_finder(*args, **kwargs)
     from .taichi_gem.force_greats.api import solve_force_greats_finder_gpu as _impl
     return _impl(*args, **kwargs)
 

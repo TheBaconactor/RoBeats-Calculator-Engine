@@ -11,11 +11,11 @@ Usage:
 """
 import configparser
 import multiprocessing
+from pathlib import Path
 import sys
-import os
 
-# Add parent directory to path for imports
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(REPO_ROOT))
 
 from gear_optimizer.general_meta import run_general_meta, export_general_meta_json
 from gear_optimizer.core.config import load_paths_cache
@@ -34,7 +34,7 @@ def main():
     try:
         # Load config
         cfg = configparser.ConfigParser()
-        cfg.read("config.ini", encoding="utf-8-sig")
+        cfg.read(str(REPO_ROOT / "config.ini"), encoding="utf-8-sig")
         paths = load_paths_cache()
         
         # Ensure database exists

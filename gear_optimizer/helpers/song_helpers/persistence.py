@@ -87,8 +87,18 @@ def build_db_payload(
         minis_names = [get_name(m) for m in (minis_items or [])]
         return gear_names, minis_names
 
-    best_gear_names = [g.get("Name") for g in best_gear]
-    best_mini_names = [m.get("Name") for m in best_minis]
+    def _names(items):
+        out = []
+        for it in items or []:
+            if isinstance(it, dict):
+                name = it.get("Name", "")
+            else:
+                name = str(it) if it else ""
+            out.append(name)
+        return out
+
+    best_gear_names = _names(best_gear)
+    best_mini_names = _names(best_minis)
     best_details = build_details_fn(best_data)
 
     attempts_first = (
@@ -116,8 +126,8 @@ def build_db_payload(
         fg_gear = fg_entry.get("gear", [])
         fg_minis = fg_entry.get("minis", [])
         fg_data = fg_entry.get("data", {})
-        fg_gear_names = [g.get("Name") for g in fg_gear] if fg_gear else []
-        fg_mini_names = [m.get("Name") for m in fg_minis] if fg_minis else []
+        fg_gear_names = _names(fg_gear)
+        fg_mini_names = _names(fg_minis)
         current_run_fg_candidates.append(
             {
                 "score": fg_entry.get("fg_score", 0),
