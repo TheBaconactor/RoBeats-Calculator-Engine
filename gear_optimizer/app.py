@@ -30,7 +30,6 @@ from gear_optimizer.core.config import (
 from gear_optimizer.data.database import (
     init_db,
     save_loadouts_batch,
-    get_db_connection,
     get_evolution_db_path,
     prioritize_song_queue_missing_db,
 )
@@ -50,7 +49,7 @@ from gear_optimizer.data.csv_parser import (
     load_all_minis_list,
     read_table,
 )
-from gear_optimizer.core.utils import safe_int, cfg_to_dict
+from gear_optimizer.core.utils import safe_int, cfg_to_dict, cfg_from_dict
 from gear_optimizer.solver.scoring import FEVER_TIMELINE_CACHE, FG_CACHE
 from gear_optimizer.solver.genetic import GEM_SOLVER_CACHE
 
@@ -230,7 +229,7 @@ class GearOptimizerApp:
 
     def run(self):
         multiprocessing.freeze_support()
-        
+
         while True:
             should_loop = self._run_single_iteration()
             if not should_loop:
@@ -272,7 +271,7 @@ class GearOptimizerApp:
             force_greats_finder = cfg.getboolean("IterationEngine", "ForceGreatsFinder", fallback=False)
             fg_debug = cfg.getboolean("IterationEngine", "ForceGreatsDebug", fallback=False)
             auto_buff = cfg.getboolean("IterationEngine", "AutoSelectBuffAndColor", fallback=False)
-            
+
             if force_greats_mode:
                 force_greats_config = load_force_greats_config(cfg)
                 if not force_greats_config:
@@ -299,6 +298,7 @@ class GearOptimizerApp:
             use_evo_db = cfg.getboolean("IterationEngine", "UseEvolutionDB", fallback=True)
             loop_forever = cfg.getboolean("IterationEngine", "LoopForever", fallback=False)
             eval_cpu_limit = safe_int(cfg.get("IterationEngine", "EvalCPUCores", fallback=0))
+            self._apply_inflight_overrides(cfg)
 
             stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
 
@@ -313,7 +313,7 @@ class GearOptimizerApp:
             minis_by_name = {m["Name"]: m for m in all_minis}
 
             song_queue = self._build_song_queue(cfg, paths, use_evo_db)
-            
+
             self.discord_reporter.send_log(f"Queued {len(song_queue)} song(s) for processing.")
 
             memory_resume_tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)
@@ -323,7 +323,7 @@ class GearOptimizerApp:
 
             manager = multiprocessing.Manager()
             status_queue = manager.Queue()
-            
+
             status_thread = threading.Thread(
                 target=self._status_listener, args=(status_queue,), daemon=True
             )
@@ -336,15 +336,10 @@ class GearOptimizerApp:
             )
 
             parallel_workers = 1
-            # MaxParallelSongs limits concurrent song workers to reduce GPU queue contention
-            # Default 6 provides good balance between parallelism and per-song latency
-            max_parallel_songs = safe_int(cfg.get("IterationEngine", "MaxParallelSongs", fallback=6))
-            if max_parallel_songs <= 0:
-                max_parallel_songs = 6  # Fallback if invalid
-            
+
             self._execute_tasks(
-                tasks, eval_cpu_limit, parallel_workers, memory_resume_tracker, 
-                manager, status_queue, status_thread, loop_forever, max_parallel_songs
+                tasks, eval_cpu_limit, parallel_workers, memory_resume_tracker,
+                manager, status_queue, status_thread, loop_forever
             )
 
 
@@ -360,7 +355,7 @@ class GearOptimizerApp:
 
         finally:
             self._cleanup_resources(status_queue, status_thread, manager)
-            
+
 
             elapsed = time.time() - start_time
             done_msg = f"Run completed in {elapsed:.2f}s"
@@ -441,7 +436,7 @@ class GearOptimizerApp:
         target_primary_raw = cfg.get("CalculateSong", "TargetPrimary", fallback="")
         target_secondary_raw = cfg.get("CalculateSong", "TargetSecondary", fallback="")
         legacy_target_raw = cfg.get("CalculateSong", "TargetColor", fallback="")
-        
+
         if not target_primary_raw and legacy_target_raw:
             target_primary_raw = legacy_target_raw
         if not target_secondary_raw:
@@ -449,16 +444,16 @@ class GearOptimizerApp:
 
         target_primary_all, target_primary_colors = _parse_color_targets(target_primary_raw)
         target_secondary_all, target_secondary_colors = _parse_color_targets(target_secondary_raw)
-        
+
         return (diff_lower, filter_search, target_primary_all, target_primary_colors, target_secondary_all, target_secondary_colors)
 
     def _build_song_queue(self, cfg, paths, use_evo_db):
         diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols = self._get_filter_params(cfg)
-        
+
         resume_context = build_memory_guard_resume_context(
              diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols
         )
-        
+
         resume_seed_queue = load_memory_guard_resume_queue(resume_context)
         if resume_seed_queue:
             print(f"[MemoryGuard] Resuming {len(resume_seed_queue)} song(s) from previous interrupted run.")
@@ -466,7 +461,7 @@ class GearOptimizerApp:
 
         diff = cfg.get("CalculateSong", "Difficulty", fallback="Hard")
         search_dir = paths.get(diff, SCRIPT_DIR)
-        
+
         song_queue = []
         seen_paths = set()
 
@@ -493,7 +488,7 @@ class GearOptimizerApp:
 
                         name = meta["Song Name"]
                         name_lower = name.lower()
-                        
+
                         # Infer difficulty from parent folder name
                         parent_folder = os.path.basename(root).lower()
                         if parent_folder == "hard": detected_diff = "Hard"
@@ -529,7 +524,7 @@ class GearOptimizerApp:
         # Queue all discovered songs; filtering is handled by difficulty folder + optional search string.
         if not filter_search:
             return song_queue
-          
+
         print(f"Found {len(song_queue)} songs to process.")
         return song_queue
 
@@ -549,10 +544,10 @@ class GearOptimizerApp:
             self.discord_reporter.send_log(str(msg))
 
     def _prepare_tasks(self, song_queue, cfg, paths, ref_arrays, all_gears, all_minis,
-                      gears_by_name, minis_by_name, use_evo_db, auto_buff, ga_depth, status_queue, fg_debug):
+                       gears_by_name, minis_by_name, use_evo_db, auto_buff, ga_depth, status_queue, fg_debug):
         cfg_dict = cfg_to_dict(cfg)
         tasks = []
-        parallel_workers = 1 
+        parallel_workers = 1
         for fp, found_song_name, task_diff in song_queue:
             print(f"[QUEUE] {found_song_name}")
             tasks.append((
@@ -563,33 +558,98 @@ class GearOptimizerApp:
             ))
         return tasks
 
-    def _execute_tasks(self, tasks, eval_cpu_limit, parallel_workers, memory_resume_tracker,
-                       manager, status_queue, status_thread, loop_forever, max_parallel_songs=6):
-        """Execute tasks with configurable parallelism.
-        
-        Args:
-            max_parallel_songs: Max concurrent song workers (default 6).
-                               This limits GPU executor queue depth to improve
-                               per-song latency without affecting total throughput.
+    @staticmethod
+    def _truthy(v) -> bool:
+        return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _get_inflight_songs_requested(self, cfg) -> int:
+        inflight_songs = 0
+        try:
+            inflight_songs = safe_int(cfg.get("IterationEngine", "InFlightSongs", fallback="0"), 0)
+        except Exception:
+            inflight_songs = 0
+
+        try:
+            inflight_songs_env = safe_int(os.environ.get("IN_FLIGHT_SONGS", 0), 0)
+            if inflight_songs_env > 0:
+                inflight_songs = inflight_songs_env
+        except Exception:
+            pass
+
+        return inflight_songs
+
+    def _apply_inflight_overrides(self, cfg) -> None:
+        """Normalize config so InFlightSongs behaves predictably.
+
+        - InFlightSongs is a single-process, GPU-backed pipeline.
+        - It is incompatible with GPU_Native_GA (in-flight uses CPU GA orchestration).
         """
+        inflight_songs = self._get_inflight_songs_requested(cfg)
+        if inflight_songs > 0:
+            if not cfg.has_section("IterationEngine"):
+                cfg.add_section("IterationEngine")
+            cfg.set("IterationEngine", "InFlightSongs", str(int(inflight_songs)))
+
+        if inflight_songs <= 1:
+            return
+
+        gpu_mode = False
+        try:
+            gpu_mode = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False)
+        except Exception:
+            gpu_mode = False
+
+        if not gpu_mode:
+            print("[InFlight] InFlightSongs>1 requires GPU_Mode=true; disabling in-flight pipeline.")
+            cfg.set("IterationEngine", "InFlightSongs", "0")
+            return
+
+        gpu_native_ga = False
+        try:
+            gpu_native_ga = cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=False)
+        except Exception:
+            gpu_native_ga = False
+        if gpu_native_ga:
+            print("[InFlight] InFlightSongs>1 is incompatible with GPU_Native_GA; forcing GPU_Native_GA=false.")
+            cfg.set("IterationEngine", "GPU_Native_GA", "false")
+
+    def _execute_tasks(self, tasks, eval_cpu_limit, parallel_workers, memory_resume_tracker,
+                       manager, status_queue, status_thread, loop_forever):
+        """Execute tasks with automatic parallelism."""
+        inflight_songs = 0
+        gpu_mode_cfg = False
+        try:
+            cfg_dict0 = tasks[0][3] if tasks else {}
+            ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
+            if isinstance(ie, dict):
+                inflight_songs = safe_int(ie.get("inflightsongs", 0), 0)
+                gpu_mode_cfg = self._truthy(ie.get("gpu_mode", "0"))
+        except Exception:
+            inflight_songs = 0
+            gpu_mode_cfg = False
+
         logical_cpus = os.cpu_count() or 1
         available_cpus = logical_cpus
         if eval_cpu_limit and eval_cpu_limit > 0:
             available_cpus = max(1, min(logical_cpus, eval_cpu_limit))
-        
-        song_worker_limit = max(1, available_cpus // max(1, parallel_workers))
-        # Apply MaxParallelSongs cap to reduce GPU executor queue contention
-        max_workers = max(1, min(len(tasks), song_worker_limit, max_parallel_songs))
-        
+
+        if gpu_mode_cfg:
+            max_workers = 1
+        else:
+            max_workers = max(1, min(len(tasks), max(1, available_cpus - 1)))
+
         if available_cpus != logical_cpus:
              print(f"EvalCPUCores cap applied: using {available_cpus} of {logical_cpus} cores.")
+
+        if inflight_songs > 1 and len(tasks) > 1:
+            print(f"[InFlight] Requested: InFlightSongs={inflight_songs} (single-process).")
 
         print(f"Parallel plan -> songs: {len(tasks)}, concurrent workers: {max_workers}, cores per song: {parallel_workers}")
         print(f"Using {available_cpus} logical CPU cores")
 
 
         completed_songs = set()
-        
+
         if len(tasks) > 1 and max_workers > 1:
             self._run_parallel(
                 tasks, max_workers, completed_songs, memory_resume_tracker,
@@ -611,109 +671,140 @@ class GearOptimizerApp:
 
     def _run_sequential(self, tasks, completed_songs, memory_resume_tracker):
         """Sequential song processing with async preloading and GPU look-ahead prefetch.
-        
+
         While GPU processes current song, next songs are being:
         1. CPU preloaded (file I/O, parsing) in background thread
         2. GPU prefetched (timeline kernel) for slots 1-5
         """
         completed_offset = len(completed_songs)
-        
-        # Check if GPU preloading should be used
-        use_gpu_preload = len(tasks) > 1
-        preloader = None
-        
-        if use_gpu_preload:
-            try:
-                from .helpers.song_preloader import get_song_preloader
-                preloader = get_song_preloader()
-                preloader.start()
-                
-                # Queue first 5 songs for preloading
-                for i, t in enumerate(tasks[:5]):
-                    if t[1] not in completed_songs:
-                        self._queue_song_for_preload(preloader, t)
-                
-                print("[Song Preloader] Async preloading enabled")
-            except Exception as e:
-                print(f"[Song Preloader] Not available: {e}")
-                use_gpu_preload = False
 
         # ------------------------------------------------------------------
         # In-flight multi-song pipeline (opt-in):
         # Interleave multiple songs' CPU GA orchestration while a single GPU-owner
         # thread runs Taichi kernels via the GPU executor. This is different from
-        # MaxParallelSongs: it stays within one process and avoids per-song worker
-        # overhead.
+        # per-song multiprocessing: it stays within one process and avoids per-song
+        # worker overhead.
         # Enable via IterationEngine.InFlightSongs (or env var IN_FLIGHT_SONGS).
         # ------------------------------------------------------------------
         inflight_songs = 0
         try:
             cfg_dict0 = tasks[0][3] if tasks else {}
             ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
-            inflight_songs = safe_int(ie.get("InFlightSongs", 0), 0)
+            if isinstance(ie, dict):
+                raw = ie.get("inflightsongs", 0)
+            else:
+                raw = 0
+            inflight_songs = safe_int(raw, 0)
         except Exception:
             inflight_songs = 0
-        try:
-            inflight_songs_env = safe_int(os.environ.get("IN_FLIGHT_SONGS", 0), 0)
-            if inflight_songs_env > 0:
-                inflight_songs = inflight_songs_env
-        except Exception:
-            pass
+
+        # Check if GPU preloading should be used (sequential/non-inflight path).
+        use_gpu_preload = len(tasks) > 1
+        preloader = None
+        if not (inflight_songs and inflight_songs > 1 and len(tasks) > 1):
+            if use_gpu_preload:
+                try:
+                    from .helpers.song_preloader import get_song_preloader
+
+                    preloader = get_song_preloader()
+                    preloader.start()
+
+                    # Queue first 5 songs for preloading
+                    for i, t in enumerate(tasks[:5]):
+                        if t[1] not in completed_songs:
+                            self._queue_song_for_preload(preloader, t)
+
+                    print("[Song Preloader] Async preloading enabled")
+                except Exception as e:
+                    print(f"[Song Preloader] Not available: {e}")
+                    use_gpu_preload = False
 
         if inflight_songs and inflight_songs > 1 and len(tasks) > 1:
-            inflight_ok = False
-            post_queue = None
-            post_proc = None
+            # In-flight is a CPU GA driver (with GPU evaluation). It is incompatible with
+            # GPU_Native_GA (enforced at startup via _apply_inflight_overrides()).
+            gpu_native_ga = False
             try:
-                from gear_optimizer.pipeline.post_processor import run_post_processor
+                cfg_dict0 = tasks[0][3] if tasks else {}
+                cfg0 = cfg_from_dict(cfg_dict0) if cfg_dict0 else configparser.ConfigParser()
+                gpu_native_ga = cfg0.getboolean("IterationEngine", "GPU_Native_GA", fallback=False)
+            except Exception:
+                gpu_native_ga = False
 
-                post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 8), 8)
-                post_queue = multiprocessing.Queue(maxsize=max(1, post_queue_size))
-                post_proc = multiprocessing.Process(
-                    target=run_post_processor,
-                    args=(post_queue, len(tasks)),
-                    daemon=True,
-                    name="SongPostProcessor",
-                )
-                post_proc.start()
+            if gpu_native_ga:
+                print("[InFlight] Disabled: GPU_Native_GA=true is incompatible with InFlightSongs>1.")
+            else:
+                inflight_ok = False
+                post_queue = None
+                post_proc = None
+                try:
+                    from gear_optimizer.pipeline.post_processor import run_post_processor
 
-                from gear_optimizer.solver.inflight_orchestrator import run_inflight_song_pipeline
+                    post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 8), 8)
+                    post_queue = multiprocessing.Queue(maxsize=max(1, post_queue_size))
+                    post_proc = multiprocessing.Process(
+                        target=run_post_processor,
+                        args=(post_queue, len(tasks)),
+                        daemon=True,
+                        name="SongPostProcessor",
+                    )
+                    post_proc.start()
 
-                run_inflight_song_pipeline(
-                    tasks,
-                    in_flight_songs=int(inflight_songs),
-                    completed_songs=completed_songs,
-                    memory_resume_tracker=memory_resume_tracker,
-                    post_queue=post_queue,
-                    total_tasks=len(tasks),
-                )
-                inflight_ok = True
-            except Exception as inflight_err:
-                print(f"[InFlight] Disabled: {type(inflight_err).__name__}: {inflight_err}")
-            finally:
-                try:
-                    if post_queue is not None:
-                        post_queue.put(None)
-                except Exception:
-                    pass
-                try:
-                    if post_proc is not None:
-                        post_proc.join(timeout=120.0)
-                except Exception:
-                    pass
-                try:
-                    if post_proc is not None and post_proc.is_alive():
-                        post_proc.terminate()
-                        post_proc.join(timeout=5.0)
-                except Exception:
-                    pass
-                try:
-                    if use_gpu_preload and preloader is not None:
-                        preloader.stop()
-                except Exception:
-                    pass
-            if inflight_ok:
-                return
+                    from gear_optimizer.solver.inflight_orchestrator import run_inflight_song_pipeline
+
+                    run_inflight_song_pipeline(
+                        tasks,
+                        in_flight_songs=int(inflight_songs),
+                        completed_songs=completed_songs,
+                        memory_resume_tracker=memory_resume_tracker,
+                        post_queue=post_queue,
+                        total_tasks=len(tasks),
+                    )
+                    inflight_ok = True
+                except Exception as inflight_err:
+                    print(f"[InFlight] Disabled: {type(inflight_err).__name__}: {inflight_err}")
+                finally:
+                    try:
+                        if post_queue is not None:
+                            post_queue.put(None)
+                    except Exception:
+                        pass
+                    try:
+                        if post_proc is not None:
+                            post_proc.join(timeout=120.0)
+                    except Exception:
+                        pass
+                    try:
+                        if post_proc is not None and post_proc.is_alive():
+                            post_proc.terminate()
+                            post_proc.join(timeout=5.0)
+                    except Exception:
+                        pass
+                    try:
+                        if use_gpu_preload and preloader is not None:
+                            preloader.stop()
+                    except Exception:
+                        pass
+                if inflight_ok:
+                    return
+
+                # If inflight was configured but failed to start, fall through to the normal
+                # sequential pipeline. Ensure the preloader is running for that path.
+                if use_gpu_preload and preloader is None:
+                    try:
+                        from .helpers.song_preloader import get_song_preloader
+
+                        preloader = get_song_preloader()
+                        preloader.start()
+
+                        # Queue first 5 songs for preloading
+                        for i, t in enumerate(tasks[:5]):
+                            if t[1] not in completed_songs:
+                                self._queue_song_for_preload(preloader, t)
+
+                        print("[Song Preloader] Async preloading enabled")
+                    except Exception as e:
+                        print(f"[Song Preloader] Not available: {e}")
+                        use_gpu_preload = False
 
         # ------------------------------------------------------------------
         # Continuous pipeline mode (major refactor):
@@ -912,11 +1003,11 @@ class GearOptimizerApp:
                 except Exception:
                     pass
             return
-        
+
         def _safe_sequential_gen(task_list):
             preload_idx = 5  # Start preloading from index 5
             preloaded_by_name = {}
-            
+
             # GPU prefetch manager for ahead-of-time timeline computation
             _gpu_prefetch_mgr = None
             gpu_prefetch_enabled = False
@@ -934,14 +1025,14 @@ class GearOptimizerApp:
                     gpu_prefetch_enabled = True
                 except Exception:
                     pass
-            
+
             # Track which songs we've GPU-prefetched
             gpu_prefetched_set = set()
-            
+
             for i, t in enumerate(task_list):
                 if t[1] in completed_songs:
                     continue
-                
+
                 song_name = t[1]
 
                 # Drain any newly preloaded songs into a local map for reuse.
@@ -960,7 +1051,7 @@ class GearOptimizerApp:
                 preloaded_current = preloaded_by_name.pop(song_name, None)
                 if preloaded_current is not None and preloaded_current.calc_song and not preloaded_current.error:
                     task_args = t + (preloaded_current.calc_song,)
-                
+
                 # Queue next song for CPU preloading
                 if use_gpu_preload and preload_idx < len(task_list):
                     next_task = task_list[preload_idx]
@@ -1007,7 +1098,7 @@ class GearOptimizerApp:
                                   f"avg time: {stats['avg_prefetch_ms']:.1f}ms")
 
                 yield res
-                
+
                 # After processing, release the slot for this song to free it for reuse
                 if gpu_prefetch_enabled and _gpu_prefetch_mgr is not None and song_name in gpu_prefetched_set:
                     try:
@@ -1024,17 +1115,17 @@ class GearOptimizerApp:
             memory_resume_tracker=memory_resume_tracker,
             total_tasks=len(tasks)
         )
-    
+
     def _queue_song_for_preload(self, preloader, task):
         """Queue a song task for background preloading."""
         try:
             from .helpers.song_preloader import SongLoadRequest
-            
+
             fp, song_name, task_diff, cfg_dict, paths, ref_arrays, \
                 all_gears, all_minis, gears_by_name, minis_by_name, \
                 use_evo_db, auto_buff, ga_depth, status_queue, parallel_workers, \
                 fg_debug = task
-            
+
             request = SongLoadRequest(
                 song_name=song_name,
                 file_path=fp,
@@ -1058,7 +1149,7 @@ class GearOptimizerApp:
         max_pool_retries = 3
         broken_pool_failures = 0
         current_worker_cap = max_workers
-        
+
         # Start GPU executor for centralized GPU ownership
         gpu_executor = None
         try:
@@ -1073,7 +1164,7 @@ class GearOptimizerApp:
         while remaining_tasks:
             completed_offset = len(completed_songs)
             effective_workers = max(1, min(len(remaining_tasks), current_worker_cap))
-            
+
             try:
                 mp_ctx = multiprocessing.get_context("spawn")
             except ValueError:
@@ -1090,7 +1181,7 @@ class GearOptimizerApp:
                     for _ in range(effective_workers):
                         worker_id, req_q, resp_q = gpu_executor.register_worker()
                         worker_registrations.append((worker_id, req_q, resp_q))
-                
+
                 # Use module-level initializer (local functions can't be pickled for spawn)
                 if worker_registrations:
                     # All workers share the same request queue, but each worker must have its
@@ -1099,7 +1190,7 @@ class GearOptimizerApp:
                     registrations = [(wid, resp_q) for (wid, _req_q, resp_q) in worker_registrations]
                     reg_counter = mp_ctx.Value("i", 0)
                     reg_lock = mp_ctx.Lock()
-                    
+
                     with concurrent.futures.ProcessPoolExecutor(
                         max_workers=effective_workers,
                         mp_context=mp_ctx,
@@ -1116,7 +1207,7 @@ class GearOptimizerApp:
                             memory_resume_tracker=memory_resume_tracker,
                             total_tasks=len(tasks)
                         )
-                        
+
                         if memory_release_requested():
                              print("[MemoryGuard] Stopping parallel loop after soft limit.")
                              break
@@ -1133,7 +1224,7 @@ class GearOptimizerApp:
                             memory_resume_tracker=memory_resume_tracker,
                             total_tasks=len(tasks)
                         )
-                        
+
                         if memory_release_requested():
                              print("[MemoryGuard] Stopping parallel loop after soft limit.")
                              break
@@ -1144,7 +1235,7 @@ class GearOptimizerApp:
                 print(warn_msg)
                 logging.error(warn_msg)
                 self.discord_reporter.send_log(warn_msg)
-                
+
                 # Restart status infra
                 self._cleanup_resources(status_queue, status_thread, manager)
                 manager = multiprocessing.Manager()
@@ -1158,19 +1249,19 @@ class GearOptimizerApp:
                 for t in remaining_songs:
                      # Recreate tuple with new status queue
                      new_t = list(t)
-                     new_t[13] = status_queue 
+                     new_t[13] = status_queue
                      remaining_tasks.append(tuple(new_t))
-                
+
                 current_worker_cap = max(1, effective_workers - 1)
-                
+
                 if broken_pool_failures >= max_pool_retries:
                     print("[Auto-Recover] Max retries hit; sequential fallback.")
                     self._run_sequential(remaining_tasks, completed_songs, memory_resume_tracker)
-                    break 
+                    break
                 continue
-            
+
             break
-        
+
         # Stop GPU executor
         if gpu_executor and gpu_executor.is_running:
             try:
@@ -1184,7 +1275,7 @@ class GearOptimizerApp:
         completed = completed_offset
         failed = 0
         total = total_tasks or 0 # approximate if unknown
-        
+
         for item in results_iter:
             completed += 1
             if future_map:
@@ -1226,7 +1317,7 @@ class GearOptimizerApp:
                         logging.error(res.get("_trace"))
                     self.discord_reporter.send_log(err_msg)
                     continue
-            
+
             song_name = res.get("song", "Unknown")
             if completed_songs is not None and song_name:
                 completed_songs.add(song_name)
@@ -1242,14 +1333,14 @@ class GearOptimizerApp:
             print(f"PROCESSING SONG: {res['song']}")
             print("=" * 60)
             self.discord_reporter.send_stats(build_stats_summary(res, completed, total))
-            
+
             # DB Stuff - Only save valid entries (non-zero score, has gear/minis)
             use_evo_db = True # Assumed true if we got here usually, or check config
             persisted = res.get("persist_entries")
             if persisted:
                  # Filter: only save entries with score > 0 and at least some gear
                  valid_entries = [
-                     e for e in persisted 
+                     e for e in persisted
                      if e.get("score", 0) > 0 and (e.get("gear") or e.get("minis"))
                  ]
                  if valid_entries:

@@ -3,6 +3,7 @@ Utility functions and helpers for the gear optimizer.
 Pure functions with no external dependencies.
 """
 import configparser
+
 from .constants import SKIP_ITEM_KEYS
 
 

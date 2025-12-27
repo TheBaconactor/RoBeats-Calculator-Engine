@@ -7,8 +7,9 @@ import json
 import os
 import sqlite3
 from collections.abc import Iterable
-from typing import Dict, List, Optional, Tuple, Any
-from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS, DB_FILE
+from typing import Dict, List, Optional, Any
+from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
+from .migrations import ensure_schema
 
 
 def get_evolution_db_path() -> str:
@@ -38,6 +39,7 @@ def get_db_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     # Enable WAL mode for better concurrency
     conn.execute("PRAGMA journal_mode=WAL;")
+    ensure_schema(conn)
     return conn
 
 
@@ -53,46 +55,8 @@ def init_db():
     db_path = get_evolution_db_path()
     conn = get_db_connection(db_path)
     try:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS songs (
-                name TEXT PRIMARY KEY,
-                best_score INTEGER DEFAULT 0,
-                best_fg_score INTEGER DEFAULT 0,
-                last_updated REAL
-            );
-            CREATE TABLE IF NOT EXISTS loadouts (
-                song_name TEXT,
-                loadout_hash TEXT,
-                score INTEGER,
-                fg_score INTEGER DEFAULT 0,
-                gear_json TEXT,
-                minis_json TEXT,
-                details_json TEXT,
-                force_details_json TEXT,
-                timestamp REAL,
-                PRIMARY KEY (song_name, loadout_hash),
-                FOREIGN KEY (song_name) REFERENCES songs(name)
-            );
-            
-            -- Separate table for Force Greats loadouts to prevent leaderboard pollution
-            CREATE TABLE IF NOT EXISTS fg_loadouts (
-                song_name TEXT,
-                loadout_hash TEXT,
-                score INTEGER, -- Base score context
-                fg_score INTEGER,
-                gear_json TEXT,
-                minis_json TEXT,
-                details_json TEXT,
-                force_details_json TEXT,
-                timestamp REAL,
-                PRIMARY KEY (song_name, loadout_hash),
-                FOREIGN KEY (song_name) REFERENCES songs(name)
-            );
-            
-            CREATE INDEX IF NOT EXISTS idx_loadouts_score ON loadouts (song_name, score DESC);
-            CREATE INDEX IF NOT EXISTS idx_loadouts_fg_score ON loadouts (song_name, fg_score DESC); -- Legacy index, keep for now
-            CREATE INDEX IF NOT EXISTS idx_fg_loadouts_score ON fg_loadouts (song_name, fg_score DESC);
-        """)
+        # `get_db_connection()` already ensures schema/migrations; keep this function
+        # as a stable entry point for callers/tests.
         conn.commit()
     finally:
         conn.close()

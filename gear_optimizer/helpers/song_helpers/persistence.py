@@ -128,9 +128,16 @@ def build_db_payload(
         fg_data = fg_entry.get("data", {})
         fg_gear_names = _names(fg_gear)
         fg_mini_names = _names(fg_minis)
+        # Preserve the *base* score context for this FG entry so we can persist
+        # the loadout with correct base+fg pairing (score != fg_score).
+        base_score = fg_entry.get("base_score")
+        if base_score is None:
+            base_score = fg_entry.get("score", 0)
         current_run_fg_candidates.append(
             {
+                # "score" is intentionally the FG score in this list (historical naming).
                 "score": fg_entry.get("fg_score", 0),
+                "base_score": base_score or 0,
                 "gear": fg_gear_names,
                 "minis": fg_mini_names,
                 "details": build_details_fn(fg_data),
@@ -278,6 +285,7 @@ def build_db_payload(
         if best_fg_score > fg_score_val:
             updated_payload["best_fg"] = {
                 "score": best_fg_score,
+                "base_score": best_fg_entry.get("base_score", 0) or 0,
                 "gear": best_fg_entry.get("gear", []),
                 "minis": best_fg_entry.get("minis", []),
                 "details": best_fg_entry.get("details", {}),
@@ -349,6 +357,21 @@ def build_persistence_entries(
     # This ensures we always persist the highest-scoring FG loadout
     best_fg = db_payload.get("best_fg")
     if best_fg:
+        # If we already have `loadout_entries` (DB+GA union), the best FG loadout
+        # will be included in that loop with correct base_score+fg_score. Only
+        # emit a separate entry when it is missing (legacy path).
+        best_fg_hash = None
+        try:
+            from ...data.database import get_loadout_hash
+
+            best_fg_hash = get_loadout_hash(best_fg.get("gear", []), best_fg.get("minis", []))
+        except Exception:
+            best_fg_hash = None
+
+        if isinstance(loadout_entries, dict) and best_fg_hash and best_fg_hash in loadout_entries:
+            best_fg = None
+
+    if best_fg:
         best_fg_gear = best_fg.get("gear", [])
         best_fg_minis = best_fg.get("minis", [])
         best_fg_details = best_fg.get("details", {})
@@ -362,8 +385,24 @@ def build_persistence_entries(
             "details": best_fg_details,
         }
 
+        # Base score context for the best-FG loadout (never equals FG score).
+        base_score = best_fg.get("base_score")
+        if base_score is None:
+            base_score = best_fg_details.get("BaseScore") or best_fg_details.get("Score", 0)
+
+        # Fallback: recover from `loadout_entries` if present.
+        if (not base_score) and isinstance(loadout_entries, dict):
+            try:
+                from ...data.database import get_loadout_hash
+
+                h = get_loadout_hash(best_fg_gear, best_fg_minis)
+                entry = loadout_entries.get(h) or {}
+                base_score = entry.get("base_score") or entry.get("score", 0) or 0
+            except Exception:
+                base_score = base_score or 0
+
         _append_entry(
-            best_fg_details.get("BaseScore") or best_fg_details.get("Score", 0),  # Use BaseScore as main score (unpenalized)
+            base_score,  # Base score context (unpenalized)
             best_fg_gear,
             best_fg_minis,
             best_fg_details,

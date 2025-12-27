@@ -21,10 +21,7 @@ if _GA_SEED is not None:
     _GA_SEED = int(_GA_SEED)
     random.seed(_GA_SEED)
 
-from ...core.constants import GA_POPULATION_SIZE, GA_MUTATION_RATE, GA_MUTATION_RATE_MAX, GA_ELITISM
-from ...core.utils import prune_dominated_gear, SKIP_ITEM_KEYS
-from ...data.database import get_loadout_hash
-from ...solver.scoring import worker_coevolution_evaluate, batch_evaluate_genomes
+from ...core.utils import prune_dominated_gear
 
 
 def initialize_pools(all_gears, all_minis, p_color, slots, s_color=None):

@@ -67,3 +67,4 @@ __all__ = [
     # Results printer
     "print_results",
 ]
+__all__: list[str] = []

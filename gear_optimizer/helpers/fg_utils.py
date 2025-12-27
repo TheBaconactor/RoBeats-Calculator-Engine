@@ -484,7 +484,6 @@ def collect_analytic_configs(grid, total_rows=160, stat_bounds=None):
         stacklevel=2
     )
     
-    import numpy as np
     import itertools
     
     # Per-section sets of useful counts (union across all pairs)

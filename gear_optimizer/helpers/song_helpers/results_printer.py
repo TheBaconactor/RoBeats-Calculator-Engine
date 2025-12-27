@@ -1,10 +1,4 @@
-import numpy as np
-from math import floor, ceil
 
-from ...core.constants import TOTAL_ROWS, GEM_SCALE_NORMAL, GEM_SCALE_FEVER
-from ...solver.fever_timeline import lookup_reference_py
-from ...solver.scoring.stats_scoring import build_great_penalty_table
-from ...solver.analytical_fg import create_scorer_from_calc_song
 
 def print_results(
     found_song_name,

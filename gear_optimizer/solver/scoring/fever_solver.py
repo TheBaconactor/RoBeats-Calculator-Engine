@@ -22,7 +22,7 @@ from ...core.constants import (
     GEM_STAT_TO_ELEMENT_SCALE,
     ELEMENTAL_GEM_SCALE,
 )
-from ...core.utils import safe_int, safe_float
+from ...core.utils import safe_int
 
 from ..fever_timeline import (
     get_song_timeline_grid,

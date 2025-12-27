@@ -9,18 +9,12 @@ ported to GPU (Taichi). These functions perform:
 
 GPU port only needs to reimplement these functions in Taichi.
 """
-from math import floor
 
 import numpy as np
 
 from ..core.jit_setup import jit
 from ..core.constants import (
     TOTAL_ROWS,
-    MAX_STAT_INDEX,
-    GEM_SCALE_NORMAL,
-    GEM_SCALE_FEVER,
-    GEM_STAT_TO_ELEMENT_SCALE,
-    ELEMENTAL_GEM_SCALE,
 )
 
 

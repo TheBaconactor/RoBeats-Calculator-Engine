@@ -2,8 +2,6 @@
 Global constants and configuration values for the gear optimizer.
 """
 import os
-import configparser
-import logging
 from dataclasses import dataclass
 
 # --- SCORING CONSTANTS ---

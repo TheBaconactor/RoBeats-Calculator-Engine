@@ -30,8 +30,6 @@ from .initialization import (
 from .timeline import precompute_timeline_gpu, _upload_timeline_grid
 from .ga_operations import (
     ga_upload_population_indices,
-    ga_upload_item_stats,
-    ga_upload_base_fixed_stats,
     ga_aggregate_stats,
 )
 

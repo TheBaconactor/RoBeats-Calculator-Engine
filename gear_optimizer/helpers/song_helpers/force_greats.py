@@ -91,9 +91,7 @@ def process_force_greats(
             
             import numpy as np
             from ...helpers.fg_utils import (
-                calculate_section_caps,
                 collect_analytical_breakpoints,
-                collect_analytical_breakpoint_groups,
                 iter_analytical_breakpoint_groups,
             )
             from ...solver.analytical_fg import create_scorer_from_calc_song

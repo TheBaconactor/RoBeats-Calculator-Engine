@@ -14,11 +14,9 @@ REFACTORED: Helper functions extracted to .helpers.song_helpers for maintainabil
 import concurrent.futures
 import contextlib
 import gc
-import json
 import logging
 import multiprocessing
 import os
-import re
 import sys
 import time
 import traceback
@@ -26,16 +24,12 @@ from io import StringIO
 
 import numpy as np
 
-from ..data.models import Tee, GASettings, WarnOnce
+from ..data.models import Tee, WarnOnce
 from ..core.constants import (
     LOADOUTS_PER_SONG_LIMIT,
     FG_CANDIDATE_LIMIT,
 )
 
-from ..data.csv_parser import (
-    load_all_gears_list,
-    load_all_minis_list,
-)
 from ..solver.genetic import solve_coevolution_genetic
 from ..solver.scoring import (
     GEM_SOLVER_CACHE,

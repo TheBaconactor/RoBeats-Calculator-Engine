@@ -23,12 +23,11 @@ Usage:
     profiler.report()
 """
 
-import os
 import time
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 
 # Enable via env var

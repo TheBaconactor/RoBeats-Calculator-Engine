@@ -7,7 +7,7 @@ This module provides diversity and stagnation handling:
 """
 import random
 
-from ...core.constants import GA_MUTATION_RATE, GA_MUTATION_RATE_MAX, GA_POPULATION_SIZE, GA_ELITISM
+from ...core.constants import GA_MUTATION_RATE_MAX, GA_POPULATION_SIZE, GA_ELITISM
 def update_mutation_and_diversity(
     population,
     results,

@@ -11,7 +11,6 @@ import os
 import sys
 
 import taichi as ti
-import numpy as np
 
 from .runtime import is_initialized, init_taichi_vulkan
 

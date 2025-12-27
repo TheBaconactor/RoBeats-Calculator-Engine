@@ -73,10 +73,9 @@ Edit `config.ini` to customize behavior:
 GA_SearchDepth = 75           # Generations per GA run (default: 75)
 GA_MultiStart = 3             # Multi-start restarts (default: 3, deep mining: 30)
 
-  # GPU Settings  
-  GPU_Mode = true               # Enable GPU acceleration
-  MaxParallelSongs = 4          # Max concurrent song workers (default: 4)
-  InFlightSongs = 0             # Experimental: single-process multi-song pipeline (set >1)
+# GPU Settings
+GPU_Mode = true               # Enable GPU acceleration
+InFlightSongs = 0             # Experimental: single-process multi-song pipeline (set >1; forces GPU_Native_GA=false)
 
   # Force Greats
   ForceGreatsMode = false       # Enable ForceGreats evaluation (true/false)
@@ -392,7 +391,7 @@ pytest tests/test_parity_smoke.py
 ### Performance Tips
 
 1. **Memory Management:** Set `memory_limit_pct` to 70-80% for stable operation
-2. **Worker Count:** Use `MaxParallelSongs = CPU_count - 1` for best throughput
+2. **Worker Count:** CPU-only runs auto-parallelize songs (no config required)
 3. **GA Depth:** Increase `GA_SearchDepth` for better solutions (slower)
 4. **GPU Profiling:** Enable `GPU_EXECUTOR_PROFILE=1` to measure utilization
 5. **Caching:** Never clear `bin/build/` - contains JIT compilation cache
@@ -416,7 +415,7 @@ pytest tests/test_parity_smoke.py
 2. ✅ Implemented true batched kernel execution
 3. ✅ Added GPU executor batch gathering infrastructure
 4. ✅ Multi-song grid slot infrastructure (8 slots)
-5. ✅ Configurable `MaxParallelSongs` to limit concurrent workers
+5. ✅ In-flight single-process multi-song pipeline (`InFlightSongs`)
 6. ✅ Cleaned up codebase (removed stale `__pycache__`)
 
 #### Phase 3 - Large File Refactoring (COMPLETE)
@@ -455,7 +454,7 @@ pytest tests/test_parity_smoke.py
 - Delete `bin/paths_cache.json` and re-run `python main.py` to regenerate it automatically
 
 **"Memory limit exceeded"**
-- Increase `memory_limit_pct` in config.ini or reduce `MaxParallelSongs`
+- Increase `memory_limit_pct` in config.ini or reduce GA depth / multi-start
 
 **"No module named 'numba'" or "No module named 'taichi'"**
 - Install dependencies: `pip install -r requirements.txt`

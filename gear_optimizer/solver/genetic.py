@@ -20,11 +20,8 @@ if _GA_SEED is not None:
 
 from ..core.constants import (
     GA_POPULATION_SIZE,
-    GA_GENERATIONS,
     GA_MUTATION_RATE,
     GA_ELITISM,
-    GA_MUTATION_RATE_MAX,
-    GA_MULTI_RUNS_DEFAULT,
     GEM_SCALE_NORMAL,
     GEM_SCALE_FEVER,
     GEM_STAT_TO_ELEMENT_SCALE,
@@ -36,8 +33,7 @@ from ..core.constants import (
     GPU_GA_GENS_PER_MIGRATION,
     GPU_GA_MIGRATE_COUNT,
 )
-from ..core.utils import prune_dominated_gear, safe_int, safe_float
-from ..data.database import get_loadout_hash
+from ..core.utils import safe_int, safe_float
 from .scoring import worker_coevolution_evaluate, GEM_SOLVER_CACHE, FG_CACHE, FEVER_TIMELINE_CACHE
 from ..data.models import GASettings
 from ..helpers.ga_helpers import (
@@ -988,7 +984,20 @@ def solve_coevolution_genetic(
     # Read GPU mode setting from config
     use_gpu_mode = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False) if hasattr(cfg, 'getboolean') else False
     use_gpu_native = cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=True) if hasattr(cfg, 'getboolean') else True
-    
+
+    # GPU-native GA uses Taichi kernels directly (taichi_gem.api) and is not compatible with
+    # cross-process GPU ownership (GpuExecutor). In GPU worker mode, force CPU-GA + IPC GPU eval
+    # so we never initialize Taichi/Vulkan in multiple spawned processes.
+    if use_gpu_native:
+        try:
+            from .gpu_executor import is_gpu_worker_mode
+
+            if is_gpu_worker_mode():
+                use_gpu_native = False
+                print("[GPU] GPU_Native_GA disabled in GPU worker mode (using GpuExecutor IPC).")
+        except Exception:
+            pass
+     
     # FG fitness heuristic was removed: GA always optimizes true base score (all perfects).
     # The FG finder separately evaluates loadouts with FG configs to find the best FG score.
     if use_gpu_mode:

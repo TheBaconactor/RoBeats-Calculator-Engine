@@ -4,9 +4,7 @@ GA Local Search - Local search operations for genome refinement.
 This module provides local search functions:
 - create_local_search_function: Hill-climbing local search for genome refinement
 """
-import random
 
-from ...core.utils import SKIP_ITEM_KEYS
 def create_local_search_function(
     evaluate_genome_local,
     batch_evaluator,

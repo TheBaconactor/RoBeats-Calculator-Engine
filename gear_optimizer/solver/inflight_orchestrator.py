@@ -20,6 +20,7 @@ from typing import Any, Optional
 
 import numpy as np
 
+from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.utils import cfg_from_dict, safe_int
 from gear_optimizer.helpers.song_helpers.database_context import load_database_context
@@ -282,7 +283,7 @@ def run_inflight_song_pipeline(
     gpu_client = GpuServiceClient(gpu_executor)
     gpu_client.start(start_executor=False)
 
-    pending_tasks = [t for t in tasks if t[1] not in completed_songs]
+    pending_tasks = deque(t for t in tasks if t[1] not in completed_songs)
     active: list[_InflightSong] = []
 
     def _emit(status_queue, song_name: str, msg: str) -> None:
@@ -369,6 +370,17 @@ def run_inflight_song_pipeline(
 
         if status_queue:
             _emit(status_queue, found_song_name, f"InFlight slot={song_slot}")
+
+        # Warm up the per-song-slot timeline on the GPU as early as possible so the first
+        # population solve doesn't pay the initial grid compute cost.
+        try:
+            gpu_client.submit_precompute_timeline(
+                calc_song=calc_song,
+                ref_arrays=ref_arrays,
+                song_slot=int(song_slot),
+            )
+        except Exception:
+            pass
 
         ga_gen = solve_coevolution_genetic_inflight(
             cfg=cfg,
@@ -541,7 +553,7 @@ def run_inflight_song_pipeline(
         fg_candidate_limit = safe_int(
             cfg.get("IterationEngine", "FG_CandidateLimit", fallback=200), 200
         )
-        fg_candidate_limit = max(51, min(5000, int(fg_candidate_limit)))
+        fg_candidate_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(fg_candidate_limit)))
 
         fg_search_radius = None
         try:
@@ -647,7 +659,7 @@ def run_inflight_song_pipeline(
 
             # Admit up to inflight_limit.
             while pending_tasks and len(active) < inflight_limit:
-                nxt = pending_tasks.pop(0)
+                nxt = pending_tasks.popleft()
                 if nxt[1] in completed_songs:
                     continue
                 try:
@@ -671,6 +683,13 @@ def run_inflight_song_pipeline(
                     # Not eligible; let caller fall back to normal sequential mode by raising.
                     raise RuntimeError("InFlight pipeline rejected a song (not eligible)")
                 active.append(song)
+                # Submit this song's first eval immediately so the GPU can start working
+                # while we continue CPU admission for other songs.
+                try:
+                    _submit_next_eval(song, gpu_client)
+                except Exception:
+                    # If GA submission fails, let the outer loop handle the error on resume.
+                    pass
 
             # Kick off evals for any song without a pending GPU job.
             for song in list(active):

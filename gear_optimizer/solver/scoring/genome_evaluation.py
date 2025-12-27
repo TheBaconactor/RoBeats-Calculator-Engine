@@ -12,7 +12,7 @@ Key optimizations:
 - IPC routing: Route GPU calls through executor for parallel song processing
 """
 from dataclasses import dataclass
-from typing import Optional, Callable, Any
+from typing import Optional, Callable
 
 import numpy as np
 
@@ -23,9 +23,10 @@ from ...core.constants import (
     GEM_STAT_TO_ELEMENT_SCALE,
     ELEMENTAL_GEM_SCALE,
 )
-from ...core.utils import stats_signature, SKIP_ITEM_KEYS
+from ...core.constants import SKIP_ITEM_KEYS
+from ...core.utils import stats_signature
 
-from .gpu_solver import _get_gpu_solver, _GPU_LOCK, GEM_SOLVER_CACHE
+from .gpu_solver import _GPU_LOCK, GEM_SOLVER_CACHE
 from .fever_solver import solve_best_fever_combination
 
 
@@ -300,13 +301,17 @@ def finalize_gpu_batch_eval_plan(plan: GpuBatchEvalPlan, gpu_results: Optional[l
 
         for unique_idx, (sig, rep_stats) in enumerate(plan.unique_stats):
             if gpu_results is None or unique_idx >= len(gpu_results):
+                # CPU fallback (or GPU returned incomplete results): force CPU-only evaluation.
+                # This avoids accidental Taichi calls on non-owner threads (e.g. in-flight mode).
+                override_cfg = dict(cfg_data or {})
+                override_cfg["use_gpu"] = False
                 res = solve_best_fever_combination(
                     None,
                     rep_stats,
                     calc_song,
                     ref_arrays,
                     silent=True,
-                    override_cfg=cfg_data,
+                    override_cfg=override_cfg,
                 )
                 GEM_SOLVER_CACHE[sig] = res
                 members = plan.unique_members[unique_idx] if unique_idx < len(plan.unique_members) else []
@@ -370,13 +375,16 @@ def finalize_gpu_batch_eval_plan(plan: GpuBatchEvalPlan, gpu_results: Optional[l
             sig = base_sig + plan.config_sig
             res = GEM_SOLVER_CACHE.get(sig)
             if res is None:
+                # Safety-net: force CPU-only evaluation for missing signature entries.
+                override_cfg = dict(cfg_data or {})
+                override_cfg["use_gpu"] = False
                 res = solve_best_fever_combination(
                     None,
                     stats,
                     calc_song,
                     ref_arrays,
                     silent=True,
-                    override_cfg=cfg_data,
+                    override_cfg=override_cfg,
                 )
                 GEM_SOLVER_CACHE[sig] = res
             sig_to_result[i] = res

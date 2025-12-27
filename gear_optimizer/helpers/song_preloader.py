@@ -12,9 +12,8 @@ Architecture:
 """
 import threading
 import queue
-from typing import Any, Callable, Optional
-from dataclasses import dataclass, field
-from concurrent.futures import Future, ThreadPoolExecutor
+from typing import Optional
+from dataclasses import dataclass
 import time
 
 from ..core.stats_calculator import build_base_stats_from_config

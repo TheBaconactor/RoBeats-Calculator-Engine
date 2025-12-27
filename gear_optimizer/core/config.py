@@ -7,7 +7,6 @@ import logging
 import os
 import re
 import sys
-import time
 from .constants import (
     DEFAULT_MEMORY_GUARD_PERCENT,
     STRICT_PLATFORM_MEMORY_GUARD_PERCENT,

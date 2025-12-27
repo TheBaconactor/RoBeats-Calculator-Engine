@@ -31,7 +31,7 @@ import time
 from collections import defaultdict
 from time import perf_counter
 from dataclasses import dataclass
-from typing import Any, Optional, Dict, List
+from typing import Any, Optional, Dict
 from enum import Enum
 
 from gear_optimizer.core.env_config import ENV

@@ -17,7 +17,6 @@ try:
 except ImportError:
     requests = None
 
-from ..core.utils import safe_int
 from ..core.constants import SCRIPT_DIR, BIN_DIR, PATHS
 
 

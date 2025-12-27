@@ -7,7 +7,7 @@ This module provides population operations:
 """
 import random
 
-from ...core.constants import GA_POPULATION_SIZE, GA_MUTATION_RATE, GA_ELITISM
+from ...core.constants import GA_POPULATION_SIZE, GA_ELITISM
 def build_initial_population(
     create_random_genome,
     create_heuristic_genome,

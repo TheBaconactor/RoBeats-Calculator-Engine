@@ -9,23 +9,18 @@ Finds the "universal best" loadout per elemental category by:
 
 import json
 import os
-import sqlite3
 from collections import Counter
 from datetime import datetime
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple
 
 from .core.constants import PATHS, SCRIPT_DIR, TOTAL_ROWS
-from .core.utils import empty_stats, safe_int, cfg_to_dict
 from .data.database import get_db_connection, get_evolution_db_path
 from .data.csv_parser import (
     load_all_gears_list,
     load_all_minis_list,
     read_table,
-    get_fixed_stats,
-    resolve_stats_csv,
-    load_csv_db,
 )
-from .core.stats_calculator import build_base_stats_from_config, compute_full_stats
+from .core.stats_calculator import compute_full_stats
 from .pipeline.song_processor import scan_song_header, read_song_file
 
 

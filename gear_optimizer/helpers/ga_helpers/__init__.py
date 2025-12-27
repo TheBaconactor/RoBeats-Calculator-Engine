@@ -75,3 +75,4 @@ __all__ = [
     "update_mutation_and_diversity",
     "compute_dynamic_mutation",
 ]
+__all__: list[str] = []

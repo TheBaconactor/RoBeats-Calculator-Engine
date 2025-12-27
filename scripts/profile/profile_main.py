@@ -40,7 +40,6 @@ def _write_profile_config(project_root_dir: str) -> str:
     # Bound runtime: user config can be extremely heavy (e.g., depth=500, multistart=75).
     cfg.set("IterationEngine", "GA_SearchDepth", "50")
     cfg.set("IterationEngine", "GA_MultiStart", "5")
-    cfg.set("IterationEngine", "MaxParallelSongs", cfg.get("IterationEngine", "MaxParallelSongs", fallback="1"))
     cfg.set("IterationEngine", "LoopForever", "false")
     cfg.set("IterationEngine", "GPU_Mode", "true")
     cfg.set("IterationEngine", "GPU_Native_GA", cfg.get("IterationEngine", "GPU_Native_GA", fallback="true"))

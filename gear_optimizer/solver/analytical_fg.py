@@ -12,9 +12,8 @@ Key insight: Instead of simulating note-by-note on GPU, we can calculate:
 4. Score = head_score + body_score
 """
 import numpy as np
-from math import ceil, floor
-from typing import List, Tuple, Dict, Optional
-from functools import lru_cache
+from math import ceil
+from typing import List, Tuple, Dict
 
 from ..core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET
 

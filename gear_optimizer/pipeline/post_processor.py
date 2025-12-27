@@ -3,7 +3,6 @@ from __future__ import annotations
 import configparser
 import logging
 import os
-import queue as queue_module
 import traceback
 
 from gear_optimizer.core.utils import cfg_from_dict, safe_int
