@@ -15,33 +15,62 @@ from .constants import (
 
 def build_base_stats_from_config(cfg_dict):
     """
-    Build base stats from config including user input gems and team buffs.
+    Build base stats from config including user input gems, elemental gems, and team buffs.
 
     Args:
         cfg_dict: Config dictionary (from cfg_to_dict or similar)
 
     Returns:
-        dict: Base stats with user inputs and team buff applied
+        dict: Base stats with config contributions applied
     """
-    s = cfg_dict.get("UserInputStatsGems", {})
+    s = cfg_dict.get("UserInputStatsGems", {}) or {}
+    elem = cfg_dict.get("ElementalGems", {}) or {}
+
+    def _to_int(v) -> int:
+        try:
+            if v is None:
+                return 0
+            text = str(v).strip()
+            if not text:
+                return 0
+            return int(text)
+        except Exception:
+            return 0
+
+    # UserInputStatsGems values are GEM COUNTS (not raw stats).
+    g_pp = _to_int(s.get("perfect_points", 0))
+    g_cm = _to_int(s.get("combo_multiplier", 0))
+    g_fm = _to_int(s.get("fever_multiplier", 0))
+    g_ff = _to_int(s.get("fever_fill", s.get("fever_fill_rate", 0)))
+    g_ft = _to_int(s.get("fever_time", 0))
 
     base_stats = {
-        "Perfect Points": int(s.get("perfect_points", 0)),
-        "Combo Multiplier": int(s.get("combo_multiplier", 0)),
-        "Fever Multiplier": int(s.get("fever_multiplier", 0)),
-        "Fever Fill Rate": int(s.get("fever_fill", s.get("fever_fill_rate", 0))),
-        "Fever Time": int(s.get("fever_time", 0)),
-        "Beat": int(s.get("beat", 0)),
-        "Vibe": int(s.get("vibe", 0)),
-        "Rush": int(s.get("rush", 0)),
-        "Chill": int(s.get("chill", 0)),
-        "Flow": int(s.get("flow", 0)),
+        # Stat gem scaling
+        "Perfect Points": g_pp * GEM_SCALE_NORMAL,
+        "Combo Multiplier": g_cm * GEM_SCALE_NORMAL,
+        "Fever Multiplier": g_fm * GEM_SCALE_FEVER,
+        "Fever Fill Rate": g_ff * GEM_SCALE_FEVER,
+        "Fever Time": g_ft * GEM_SCALE_FEVER,
+        # Stat-to-element conversion
+        "Chill": g_pp * GEM_STAT_TO_ELEMENT_SCALE,
+        "Flow": g_cm * GEM_STAT_TO_ELEMENT_SCALE,
+        "Rush": g_fm * GEM_STAT_TO_ELEMENT_SCALE,
+        "Beat": g_ft * GEM_STAT_TO_ELEMENT_SCALE,
+        "Vibe": g_ff * GEM_STAT_TO_ELEMENT_SCALE,
     }
 
+    # Elemental gems (overflow gems) for each element.
+    elements = ["Chill", "Flow", "Rush", "Beat", "Vibe"]
+    for el in elements:
+        raw = elem.get(el, elem.get(el.lower(), 0))
+        gem_val = _to_int(raw)
+        if gem_val > 0:
+            base_stats[el] = base_stats.get(el, 0) + gem_val * ELEMENTAL_GEM_SCALE
+
     # Apply Team Buffs
-    team_section = cfg_dict.get("TeamContributionBuffConstant", {})
-    team_buff = team_section.get("teambuff", "").strip().upper()
-    team_color = team_section.get("teamcolor", "").strip().lower()
+    team_section = cfg_dict.get("TeamContributionBuffConstant", {}) or {}
+    team_buff = str(team_section.get("teambuff", team_section.get("TeamBuff", ""))).strip().upper()
+    team_color = str(team_section.get("teamcolor", team_section.get("TeamColor", ""))).strip()
 
     buff_tiers = {
         "T1": {"PP": 25, "Elem": 35},
@@ -53,12 +82,14 @@ def build_base_stats_from_config(cfg_dict):
     if team_buff in buff_tiers:
         buff_data = buff_tiers[team_buff]
         base_stats["Perfect Points"] += buff_data["PP"]
-
-        elements = ["Chill", "Flow", "Rush", "Beat", "Vibe"]
-        valid_color_key = next((k for k in elements if k.lower() == team_color), None)
-
+        valid_color_key = next(
+            (k for k in elements if k.lower() == team_color.lower()), None
+        )
         if valid_color_key:
             base_stats[valid_color_key] += buff_data["Elem"]
+        elif team_color:
+            # Match legacy behavior in csv_parser.get_fixed_stats().
+            base_stats["Perfect Points"] += buff_data["PP"]
 
     return base_stats
 

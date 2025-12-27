@@ -443,6 +443,12 @@ def solve_best_fever_combination(
     if best_tuple:
         (score, ft, ff, g_pp, g_cm, g_fm, g_ov) = best_tuple
         final_stats = base_stats.copy()
+        # Apply gem contributions to the *primary stats* as well as their elemental
+        # mappings. These are required for correct persistence/UI rendering and for
+        # downstream logic that reverses gem effects (e.g. ForceGreats base extraction).
+        final_stats["Perfect Points"] += g_pp * GEM_SCALE_NORMAL
+        final_stats["Combo Multiplier"] += g_cm * GEM_SCALE_NORMAL
+        final_stats["Fever Multiplier"] += g_fm * GEM_SCALE_FEVER
         final_stats["Fever Time"] += ft * GEM_SCALE_FEVER
         final_stats["Fever Fill Rate"] += ff * GEM_SCALE_FEVER
 

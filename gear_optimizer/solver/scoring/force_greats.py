@@ -1001,6 +1001,11 @@ def apply_force_greats_to_result(
     ft_gems = data_dict.get("FT", 0)
     ff_gems = data_dict.get("FF", 0)
 
+    # Extract base stats (remove gems) to avoid double counting during FG re-optimization.
+    # Needed even on cache hits so the returned FG variant can report the *actual*
+    # gem allocations/stats used for the FG score.
+    base_stats = _extract_base_stats(stats, gem_counts, selected_color, ft_gems, ff_gems)
+
     # Use stats directly - the original evaluate_force_greats correctly uses
     # the FT/FF values already in stats (from the main gem solver)
     # Our "optimized" version was broken because optimize_core_jit doesn't allocate FT/FF
@@ -1019,10 +1024,6 @@ def apply_force_greats_to_result(
     if cached_fg is not None:
         fg_result = cached_fg
     else:
-        # Extract base stats (remove gems) to avoid double counting during re-optimization
-        # The optimizer adds gems back in, so we must start clean.
-        base_stats = _extract_base_stats(stats, gem_counts, selected_color, ft_gems, ff_gems)
-
         if use_finder:
             fg_result = run_force_greats_hill_climb(
                 base_stats,
@@ -1064,4 +1065,41 @@ def apply_force_greats_to_result(
     fg_variant = data_dict.copy()
     fg_variant["Score"] = fg_result["final_score"]
     fg_variant["ForceGreats"] = fg_info
+
+    # Finder path re-optimizes gems for the FG timeline; reflect the actual
+    # gem allocation and resulting Stats in the returned variant so persistence/UI
+    # matches the computed FG score.
+    if use_finder:
+        try:
+            fg_gem_counts = fg_result.get("gem_counts") or {}
+            fg_ft = int(fg_result.get("FT", ft_gems) or 0)
+            fg_ff = int(fg_result.get("FF", ff_gems) or 0)
+
+            g_pp = int(fg_gem_counts.get("Perfect Points", 0) or 0)
+            g_cm = int(fg_gem_counts.get("Combo Multiplier", 0) or 0)
+            g_fm = int(fg_gem_counts.get("Fever Multiplier", 0) or 0)
+            g_ov = int(fg_gem_counts.get("Element", 0) or 0)
+
+            final_stats = base_stats.copy()
+            final_stats["Perfect Points"] = final_stats.get("Perfect Points", 0) + g_pp * GEM_SCALE_NORMAL
+            final_stats["Combo Multiplier"] = final_stats.get("Combo Multiplier", 0) + g_cm * GEM_SCALE_NORMAL
+            final_stats["Fever Multiplier"] = final_stats.get("Fever Multiplier", 0) + g_fm * GEM_SCALE_FEVER
+            final_stats["Fever Time"] = final_stats.get("Fever Time", 0) + fg_ft * GEM_SCALE_FEVER
+            final_stats["Fever Fill Rate"] = final_stats.get("Fever Fill Rate", 0) + fg_ff * GEM_SCALE_FEVER
+
+            final_stats["Chill"] = final_stats.get("Chill", 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
+            final_stats["Flow"] = final_stats.get("Flow", 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
+            final_stats["Rush"] = final_stats.get("Rush", 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
+            final_stats["Beat"] = final_stats.get("Beat", 0) + fg_ft * GEM_STAT_TO_ELEMENT_SCALE
+            final_stats["Vibe"] = final_stats.get("Vibe", 0) + fg_ff * GEM_STAT_TO_ELEMENT_SCALE
+
+            if selected_color:
+                final_stats[selected_color] = final_stats.get(selected_color, 0) + g_ov * ELEMENTAL_GEM_SCALE
+
+            fg_variant["FT"] = fg_ft
+            fg_variant["FF"] = fg_ff
+            fg_variant["GemCounts"] = fg_gem_counts
+            fg_variant["Stats"] = final_stats
+        except Exception:
+            pass
     return fg_variant

@@ -61,8 +61,11 @@ except Exception:
 # UPLOAD CACHES (avoid repeated large allocations)
 # ============================================================================
 
-_fg_last_song_key = None  # (n, first_ts, last_ts)
-_fg_last_great_key = None  # (n, first_ts, last_ts)
+# Upload cache keys. Endpoints-only keys caused collisions in tests (different songs
+# can share length/first/last but differ internally). Include the backing buffer
+# pointer plus a few sampled timestamps to keep this check O(1) and robust.
+_fg_last_song_key = None  # (ptr, n, first, last, mid, q1, q3)
+_fg_last_great_key = None  # (ptr, n, first, last, mid, q1, q3)
 _fg_song_upload_buf: np.ndarray | None = None
 _fg_great_upload_buf: np.ndarray | None = None
 _fg_forced_upload_buf: np.ndarray | None = None
@@ -84,6 +87,46 @@ _fg_forced_configs_upload_key: tuple[int, int, int] | None = None  # (id(fg_conf
 _fg_pair_caps_state: str | None = None  # "default" | "custom"
 _fg_pair_caps_default_buf: np.ndarray | None = None
 _fg_pair_caps_custom_key: tuple[int, int, int, int] | None = None  # (ptr, h, w, sections)
+
+
+def _forced_configs_sig(fg_configs: list, n_sections: int) -> tuple:
+    """
+    Lightweight, content-based signature for an FG config list.
+
+    Important: Caching by `id(fg_configs)` is unsafe because `id` values can be
+    reused after GC, leading to stale forced-config buffers being reused across
+    different config lists (wrong results). This signature is intentionally O(1)
+    (samples a few configs) to remain cheap in hot paths.
+    """
+    try:
+        n_total = int(len(fg_configs))
+    except Exception:
+        return (0, 0, ())
+
+    if n_total <= 0:
+        return (0, int(n_sections), ())
+
+    n_sections = int(n_sections)
+    if n_sections <= 0:
+        return (n_total, 0, ())
+
+    def _norm(cfg) -> tuple:
+        try:
+            seq = cfg  # tuple/list
+            k = len(seq)
+        except Exception:
+            return (0,) * n_sections
+        out = []
+        for i in range(n_sections):
+            out.append(int(seq[i]) if i < k else 0)
+        return tuple(out)
+
+    # Sample first/middle/last (and a second element when present).
+    first = _norm(fg_configs[0])
+    mid = _norm(fg_configs[n_total // 2])
+    last = _norm(fg_configs[n_total - 1])
+    second = _norm(fg_configs[1]) if n_total > 1 else first
+    return (n_total, n_sections, first, second, mid, last)
 
 
 def reset_force_greats_api_state() -> None:
@@ -248,8 +291,18 @@ def _fg_upload_song_timestamps(timestamps_np: np.ndarray) -> int:
             f"Song too long for FG GPU timestamps: {n} > {fg_fields.FG_MAX_SONG_NOTES}"
         )
 
-    # Cache by length + endpoints (cheap, good enough).
-    key = (n, float(timestamps_np[0]), float(timestamps_np[-1]))
+    # Cache key must disambiguate different charts with identical endpoints.
+    # Use backing pointer + a few sampled points (O(1), robust in practice).
+    try:
+        ptr = int(timestamps_np.__array_interface__["data"][0])
+    except Exception:
+        ptr = 0
+    first = float(timestamps_np[0])
+    last = float(timestamps_np[-1])
+    mid = float(timestamps_np[n // 2]) if n > 1 else first
+    q1 = float(timestamps_np[n // 4]) if n > 3 else mid
+    q3 = float(timestamps_np[(3 * n) // 4]) if n > 3 else mid
+    key = (ptr, n, first, last, mid, q1, q3)
     if _fg_last_song_key == key:
         return n
 
@@ -292,7 +345,16 @@ def _fg_upload_great_candidate_timestamps(candidate_np: np.ndarray, n: int) -> N
     if int(len(candidate_np)) != n:
         raise ValueError(f"great_candidate_timestamps length mismatch: {len(candidate_np)} != {n}")
 
-    key = (n, float(candidate_np[0]), float(candidate_np[-1]))
+    try:
+        ptr = int(candidate_np.__array_interface__["data"][0])
+    except Exception:
+        ptr = 0
+    first = float(candidate_np[0])
+    last = float(candidate_np[-1])
+    mid = float(candidate_np[n // 2]) if n > 1 else first
+    q1 = float(candidate_np[n // 4]) if n > 3 else mid
+    q3 = float(candidate_np[(3 * n) // 4]) if n > 3 else mid
+    key = (ptr, n, first, last, mid, q1, q3)
     if _fg_last_great_key == key:
         _fg_use_great_candidate_field()
         return
@@ -434,14 +496,13 @@ def _solve_force_greats_finder_gpu_impl(
             stats_buf[i, 5] = int(st.get("base_ft_stat", 0))
             stats_buf[i, 6] = int(st.get("base_ff_stat", 0))
 
-    # OPTIMIZATION: Skip upload if genome stats unchanged (saves repeated host->device copies across FG groups).
-    # Only hash the active slice; kernels never read beyond n_genomes.
-    global _fg_genome_stats_upload_key
-    stats_hash = hash(stats_buf[:n_genomes, :7].tobytes())
-    stats_key = (n_genomes, stats_hash)
-    if _fg_genome_stats_upload_key != stats_key:
-        gem_fields.genome_base_stats.from_numpy(stats_buf)
-        _fg_genome_stats_upload_key = stats_key
+    # Always upload genome base stats.
+    #
+    # IMPORTANT: `genome_base_stats` is shared across multiple GPU entrypoints
+    # (gem solver, GA solver, FG solver). Caching "last uploaded stats" inside
+    # the FG module is unsafe because another entrypoint may overwrite the field
+    # between FG calls, leading to stale stats being used and CPU/GPU mismatches.
+    gem_fields.genome_base_stats.from_numpy(stats_buf)
 
     # Upload FT/FF list
     n_ftff = int(len(ftff_pairs))
@@ -553,16 +614,14 @@ def _solve_force_greats_finder_gpu_impl(
     # Pre-fetch buffer reference
     buf = _fg_forced_upload_buf
     
-    # Config upload caching: when the exact same config list object is reused
-    # across calls (common with analytical breakpoint grouping), avoid repeated
-    # CPU packing and host->device uploads. Safe because it doesn't change the
-    # evaluated configs, only skips redundant transfers.
+    # Config upload caching: avoid repeated CPU packing and host->device uploads
+    # when the config list content is unchanged across calls.
     global _fg_forced_configs_upload_key
     cfg_upload_key = None
     can_skip_forced_upload = False
     if n_chunks == 1:
         try:
-            cfg_upload_key = (id(fg_configs), int(n_cfg_total), int(n_sections))
+            cfg_upload_key = _forced_configs_sig(fg_configs, int(n_sections))
             can_skip_forced_upload = _fg_forced_configs_upload_key == cfg_upload_key
         except Exception:
             cfg_upload_key = None

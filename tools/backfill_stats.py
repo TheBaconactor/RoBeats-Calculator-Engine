@@ -60,7 +60,11 @@ def main():
         details = json.loads(row["details_json"]) if row["details_json"] else {}
         gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
         mini_names = json.loads(row["minis_json"]) if row["minis_json"] else []
-        gem_counts = details.get("GemCounts", {})
+        gem_counts = dict(details.get("GemCounts", {}) or {})
+        # DB stores FT/FF gem allocations at the top level (not inside GemCounts).
+        # Include them so computed Stats match the score configuration.
+        gem_counts["Fever Time"] = int(details.get("FT", 0) or 0)
+        gem_counts["Fever Fill Rate"] = int(details.get("FF", 0) or 0)
         selected_element = details.get("SelectedElement") or details.get("Selected Element") or ""
 
         # Compute Stats (Unconditionally recompute to ensure Team Buffs are added)
