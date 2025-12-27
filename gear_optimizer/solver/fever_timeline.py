@@ -257,8 +257,6 @@ def calculate_force_greats_timeline_indices(
     # Raw fill value (before ceiling) - used for penalty calculation
     raw_fever_fill = non_fever_cas * fever_fill_rate
     non_fever_base = ceil(raw_fever_fill)
-    # Note: non_fever_great_to_fill is kept for forced_val clamping compatibility
-    non_fever_great_to_fill = ceil(max(1.0, raw_fever_fill * 2.0))
 
     fever_time_cas = last_note_time * 0.15 + 0.15  # FEVER_TIME_SCALE + FEVER_TIME_OFFSET
     real_fever_time = fever_time_cas * fever_time_stat

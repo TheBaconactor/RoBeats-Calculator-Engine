@@ -199,8 +199,6 @@ def solve_best_fever_combination(
     ref_pp = ref_arrays["Perfect Points"]
     ref_cm = ref_arrays["Combo Multiplier"]
     ref_fm = ref_arrays["Fever Multiplier"]
-    ref_ft = ref_arrays["Fever Time"]
-    ref_ff = ref_arrays["Fever Fill Rate"]
 
     if skip_optimizer:
         score = evaluate_stats_score(

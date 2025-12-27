@@ -131,8 +131,6 @@ def compute_timeline_grid_kernel(
                 break
 
         # Count body fever/normal (notes 100+)
-        count_body_fever = 0
-        count_body_normal = 0
         head_len = ti.min(total_notes, MAX_HEAD)
 
         # Re-simulate to count body notes (notes >= MAX_HEAD)

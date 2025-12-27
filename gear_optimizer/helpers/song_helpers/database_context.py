@@ -31,7 +31,6 @@ def load_database_context(found_song_name, use_evo_db, gears_by_name, minis_by_n
     Returns:
         tuple: (prev_record, known_loadouts)
     """
-    db_seed = None
     prev_record = None
     known_loadouts = {}
 
@@ -49,7 +48,6 @@ def load_database_context(found_song_name, use_evo_db, gears_by_name, minis_by_n
         )
         if best_loadouts:
             prev_record = best_loadouts[0]
-            db_seed = prev_record
 
         if prev_record:
             print(f"[DB] Found previous best: {prev_record.get('score', 0)}")

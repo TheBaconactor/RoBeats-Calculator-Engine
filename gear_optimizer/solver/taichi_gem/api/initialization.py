@@ -269,7 +269,7 @@ def is_refs_loaded() -> bool:
 # INITIALIZATION HELPERS
 # ============================================================================
 
-def ensure_ready(ref_arrays=None, *, need_grid=False, timeline_grid=None):
+def ensure_ready(ref_arrays=None, *, timeline_grid=None):
     """
     Ensure Taichi and GPU fields are ready for use.
 
@@ -278,8 +278,7 @@ def ensure_ready(ref_arrays=None, *, need_grid=False, timeline_grid=None):
 
     Args:
         ref_arrays: Reference arrays to load (optional)
-        need_grid: Whether grid fields are required
-        timeline_grid: Timeline grid to upload (optional, requires need_grid=True)
+        timeline_grid: Timeline grid to upload (optional)
     """
     # Import here to avoid circular dependency
     from .timeline import _upload_timeline_grid

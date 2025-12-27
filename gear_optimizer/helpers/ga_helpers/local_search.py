@@ -237,7 +237,7 @@ def create_local_search_function(
 
             # OPTIMIZATION: Only try 2-swap by default, skip expensive 3-swap (saves ~15s)
             # 3-swap generates 67,500 genomes vs 540 for 2-swap
-            improved = try_k_swap(2, "2-swap")
+            try_k_swap(2, "2-swap")
             # Conditionally try 3-swap if enabled in config (adds ~15s)
             if ga_settings and getattr(ga_settings, 'allow_3_swap', False):
                 try_k_swap(3, "3-swap")

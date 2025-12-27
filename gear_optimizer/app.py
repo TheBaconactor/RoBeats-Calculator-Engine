@@ -1141,7 +1141,7 @@ class GearOptimizerApp:
                 auto_buff=auto_buff,
             )
             preloader.queue_song(request)
-        except Exception as e:
+        except Exception:
             pass  # Preloading failure is non-fatal
 
     def _run_parallel(self, tasks, max_workers, completed_songs, memory_resume_tracker, manager, status_queue, status_thread):
@@ -1335,7 +1335,6 @@ class GearOptimizerApp:
             self.discord_reporter.send_stats(build_stats_summary(res, completed, total))
 
             # DB Stuff - Only save valid entries (non-zero score, has gear/minis)
-            use_evo_db = True # Assumed true if we got here usually, or check config
             persisted = res.get("persist_entries")
             if persisted:
                  # Filter: only save entries with score > 0 and at least some gear

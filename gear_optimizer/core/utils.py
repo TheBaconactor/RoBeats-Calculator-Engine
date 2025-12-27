@@ -4,9 +4,6 @@ Pure functions with no external dependencies.
 """
 import configparser
 
-from .constants import SKIP_ITEM_KEYS
-
-
 # --- STAT KEYS / HELPERS ---
 STAT_KEYS = [
     "Perfect Points",

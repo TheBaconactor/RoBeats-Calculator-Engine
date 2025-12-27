@@ -475,7 +475,6 @@ def run_inflight_song_pipeline(
             return
 
         fut = song.pending_eval
-        job = song.pending_job
         song.pending_eval = None
         song.pending_job = None
 

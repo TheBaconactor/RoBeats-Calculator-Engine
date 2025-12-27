@@ -138,7 +138,7 @@ def generate_dynamic_fg_configs(num_sections, non_fever_base, budget=None, gap=N
     return list(itertools.product(*ranges))
 
 
-def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, ff_bounds=None):
+def collect_analytical_breakpoints(scorer, num_sections, section_caps=None):
     """
     Collect minimal FG configs using pure math breakpoint detection.
     
@@ -156,8 +156,6 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, ff_b
         scorer: AnalyticalFGScorer instance
         num_sections: Requested number of sections (may be reduced by analysis)
         section_caps: Optional list of max FG per section. If None, uses analyzed caps.
-        ff_bounds: Optional tuple (min_ff, max_ff) to scope breakpoint calculation.
-                   If None, uses single representative point (80).
         
     Returns:
         List[tuple]: FG configs to evaluate, e.g. [(0,0), (0,2), (2,0), (2,2), ...]
@@ -228,79 +226,6 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, ff_b
         print(f"     Section {i+1}: {bp}")
     
     return list(itertools.product(*section_breakpoints))
-
-
-def collect_analytical_breakpoint_groups(
-    scorer,
-    num_sections,
-    ftff_pairs,
-    base_stats_pairs,
-    gem_scale_fever=3,
-):
-    """
-    Build per-FT/FF breakpoint groups for ForceGreatsFinder.
-
-    Returns:
-        List[dict]: Each dict has keys:
-            "ftff_pairs": list[(ft_gems, ff_gems)]
-            "counts_list": list[tuple] of FG configs
-    """
-    import itertools
-
-    if num_sections <= 0:
-        return [{"ftff_pairs": list(ftff_pairs), "counts_list": [()]}] if ftff_pairs else []
-
-    if not ftff_pairs:
-        return []
-
-    base_pairs = {(int(ft), int(ff)) for ft, ff in (base_stats_pairs or [])}
-    if not base_pairs:
-        return []
-
-    groups = {}
-    for ft_gems, ff_gems in ftff_pairs:
-        max_fp_by_sec = [0 for _ in range(num_sections)]
-
-        for base_ft_stat, base_ff_stat in base_pairs:
-            ft_stat = int(base_ft_stat) + int(ft_gems) * int(gem_scale_fever)
-            ff_stat = int(base_ff_stat) + int(ff_gems) * int(gem_scale_fever)
-
-            analysis = scorer.get_section_analysis(ft_stat, ff_stat)
-            useful_sections = min(num_sections, int(analysis.get("useful_sections", 0) or 0))
-            if useful_sections <= 0:
-                continue
-
-            analyzed_caps = analysis.get("section_caps") or []
-            for sec in range(useful_sections):
-                if sec < len(analyzed_caps) and analyzed_caps[sec] > 0:
-                    cap = min(
-                        int(analyzed_caps[sec]),
-                        MAX_SECTION_CAPS[sec] if sec < len(MAX_SECTION_CAPS) else 4,
-                    )
-                else:
-                    cap = MAX_SECTION_CAPS[sec] if sec < len(MAX_SECTION_CAPS) else 4
-
-                if cap <= 0:
-                    continue
-
-                fp_cap = _fp_cap_from_forced(scorer, ft_stat, ff_stat, cap)
-                if fp_cap > max_fp_by_sec[sec]:
-                    max_fp_by_sec[sec] = fp_cap
-
-        section_breakpoints = tuple(tuple(range(0, max_fp + 1)) for max_fp in max_fp_by_sec)
-        group = groups.get(section_breakpoints)
-        if group is None:
-            counts_list = list(itertools.product(*section_breakpoints))
-            group = {
-                "ftff_pairs": [],
-                "counts_list": counts_list,
-                "section_breakpoints": section_breakpoints,
-            }
-            groups[section_breakpoints] = group
-
-        group["ftff_pairs"].append((int(ft_gems), int(ff_gems)))
-
-    return list(groups.values())
 
 
 def iter_analytical_breakpoint_groups(
@@ -470,73 +395,3 @@ def iter_analytical_breakpoint_groups(
             yield group
 
 
-# DEPRECATED: Old simulation-based function (kept for reference)
-def collect_analytic_configs(grid, total_rows=160, stat_bounds=None):
-    """
-    DEPRECATED: Use collect_analytical_breakpoints instead (100x faster).
-    
-    This simulation-based function is kept temporarily for comparison.
-    """
-    import warnings
-    warnings.warn(
-        "collect_analytic_configs is deprecated. Use collect_analytical_breakpoints instead.",
-        DeprecationWarning,
-        stacklevel=2
-    )
-    
-    import itertools
-    
-    # Per-section sets of useful counts (union across all pairs)
-    breakpoints = [set([0]) for _ in range(16)]
-    
-    if stat_bounds:
-        min_ft, max_ft, min_ff, max_ff = stat_bounds
-        min_ft = max(0, min_ft)
-        max_ft = min(total_rows, max_ft)
-        min_ff = max(0, min_ff)
-        max_ff = min(total_rows, max_ff)
-    else:
-        min_ft, max_ft = 0, total_rows
-        min_ff, max_ff = 0, total_rows
-
-    max_sections = 0
-    stride = 10
-
-    for ft_idx in range(min_ft, max_ft + 1, stride):
-        for ff_idx in range(min_ff, max_ff + 1, stride):
-            res_0 = grid.get_timeline(ft_idx, ff_idx)
-            acts = res_0[3]
-            gap = max(0, grid.total_notes - res_0[4])
-            
-            if acts > max_sections:
-                max_sections = acts
-            
-            if gap <= 0:
-                continue
-            
-            limit_secs = min(acts, 4)
-            for sec in range(limit_secs):
-                hard_cap = MAX_SECTION_CAPS[sec] if sec < len(MAX_SECTION_CAPS) else 4
-                effective_cap = hard_cap
-                
-                current_mask_signature = (res_0[0].tobytes(), res_0[1])
-                
-                for c in range(1, effective_cap + 1):
-                    forced_counts_list = [0] * limit_secs
-                    forced_counts_list[sec] = c
-                    
-                    mask, cbf, cbn = grid.get_timeline_with_forced(ft_idx, ff_idx, forced_counts_list)
-                    new_signature = (mask.tobytes(), cbf)
-                    
-                    if new_signature != current_mask_signature:
-                        breakpoints[sec].add(c)
-                        current_mask_signature = new_signature
-
-    sorted_breakpoints = [sorted(list(bp)) for bp in breakpoints]
-    display_limit = max(1, max_sections)
-    
-    print(f"[FG] DEPRECATED Analytic Candidates (Active Sections 0-{max_sections-1}): "
-          f"{[len(b) for b in sorted_breakpoints[:display_limit]]}")
-    
-    final_ranges = sorted_breakpoints[:max(1, max_sections)]
-    return list(itertools.product(*final_ranges))

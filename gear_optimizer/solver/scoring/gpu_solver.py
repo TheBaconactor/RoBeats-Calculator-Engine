@@ -28,7 +28,6 @@ def _get_gpu_solver():
             from ..taichi_gem_solver import (
                 optimize_gems_gpu,
                 optimize_gems_batch_gpu,
-                load_ref_arrays,
             )
             _optimize_gems_gpu = optimize_gems_gpu
             _optimize_gems_batch_gpu = optimize_gems_batch_gpu

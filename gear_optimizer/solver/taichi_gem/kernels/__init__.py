@@ -49,16 +49,6 @@ from .kernels_helpers import (
     chunk_best_key,
     ftff_combo_ft,
     ftff_combo_ff,
-    # GPU-side global best tracking
-    ga_global_best_score,
-    ga_global_best_genome,
-    ga_global_best_results,
-    ga_runs_payload_packed,
-    ga_run_payload_packed,
-    # GPU-side island elitism
-    island_boundaries,
-    island_elite_indices,
-    island_elite_count,
 )
 
 # Import helper functions
@@ -238,6 +228,8 @@ __all__ = [
     "ga_pack_run_payload_kernel",
     # GPU-side island migration
     "ga_island_migration_kernel",
+    # GPU-side island elitism
+    "ga_find_island_elites_kernel",
     # Warm-start optimization
     "genome_hint_allocation",
     "ga_store_hints_kernel",
@@ -249,4 +241,3 @@ __all__ = [
     "binary_search_left",
     "compute_timeline_grid_kernel",
 ]
-__all__: list[str] = []

@@ -28,7 +28,7 @@ def test_mask_bits_parity():
 
     # Init Taichi + allocate grid fields
     init_taichi_vulkan()
-    ensure_ready(need_grid=True)
+    ensure_ready()
 
     # Build a deterministic mock song and reference arrays so the timeline grid is stable
     # (We only care about the fever masks being consistent between representations.)
@@ -58,7 +58,7 @@ def test_mask_bits_parity():
 
     grid = SongTimelineGrid(calc_song, ref_arrays)
     # Ensure grid is computed and uploaded (populates both i8 masks and bitset masks)
-    ensure_ready(need_grid=True, timeline_grid=grid)
+    ensure_ready(timeline_grid=grid)
 
     # Sample a handful of (ft,ff) cells including boundaries
     ft_samples = np.array([0, 1, 10, 50, 100, 159, 160], dtype=np.int32)

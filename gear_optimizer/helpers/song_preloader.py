@@ -112,7 +112,6 @@ class SongPreloader:
         self._preload_thread = None
         self._running = False
         self._initialized = True
-        self._max_preload = max_preload
         
         # Stats
         self._songs_preloaded = 0
@@ -152,12 +151,6 @@ class SongPreloader:
         
         self._request_queue.put((request.priority, request))
     
-    def queue_many(self, requests: list[SongLoadRequest]):
-        """Queue multiple songs in priority order."""
-        for i, req in enumerate(requests):
-            req.priority = i
-            self.queue_song(req)
-    
     def get_next(self, timeout: float = 30.0) -> Optional[PreloadedSong]:
         """
         Get the next preloaded song, blocking until ready.
@@ -179,16 +172,6 @@ class SongPreloader:
             return self._ready_queue.get_nowait()
         except queue.Empty:
             return None
-    
-    @property
-    def preloaded_count(self) -> int:
-        """Number of songs currently preloaded and waiting."""
-        return self._ready_queue.qsize()
-    
-    @property
-    def pending_count(self) -> int:
-        """Number of songs waiting to be preloaded."""
-        return self._request_queue.qsize()
     
     def _preload_loop(self):
         """Background thread loop for preloading songs."""
@@ -334,7 +317,6 @@ class SongPreloader:
         """Build cfg_data dictionary for evaluator."""
         metadata = calc_song.get("metadata", {})
         primary = metadata.get("Primary Color", "Rush")
-        secondary = metadata.get("Secondary Color", "Flow")
         
         # Determine selected color based on config or heuristics
         selected_color = primary  # Default to primary

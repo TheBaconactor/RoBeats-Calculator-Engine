@@ -183,7 +183,6 @@ def find_most_common_loadout(
         
         total_score_sum = 0
         total_songs_with_set_count = 0 
-        entries_aggregated = 0
         
         gem_totals = {"PP": 0, "CM": 0, "FM": 0, "FT": 0, "FF": 0, "Element": 0}
         
@@ -387,7 +386,7 @@ def optimize_gems_across_songs(
             
             songs_processed += 1
             
-        except Exception as e:
+        except Exception:
             continue
     
     if not gem_scores:

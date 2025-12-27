@@ -268,8 +268,7 @@ def merge_databases(
                 SELECT name, best_score, best_fg_score, last_updated
                 FROM secondary.songs
             """
-            cursor = conn.execute(insert_new_songs_sql)
-            new_songs_count = cursor.rowcount
+            conn.execute(insert_new_songs_sql)
 
             # Step 2: Update existing songs with better scores
             update_existing_songs_sql = """
@@ -294,9 +293,7 @@ def merge_databases(
                     SELECT 1 FROM secondary.songs WHERE secondary.songs.name = main.songs.name
                 )
             """
-            cursor = conn.execute(update_existing_songs_sql)
-            updated_songs_count = cursor.rowcount
-            songs_merged = new_songs_count + updated_songs_count
+            conn.execute(update_existing_songs_sql)
 
             # Merge loadouts table
             # Upsert: if loadout exists (same song_name + loadout_hash), keep higher score
@@ -314,8 +311,7 @@ def merge_databases(
                     gear_json, minis_json, details_json, force_details_json, timestamp
                 FROM secondary.loadouts
             """
-            cursor = conn.execute(insert_new_loadouts_sql)
-            new_loadouts_count = cursor.rowcount
+            conn.execute(insert_new_loadouts_sql)
 
             # Step 2: Update existing loadouts where secondary has better scores
             update_existing_loadouts_sql = """
@@ -393,12 +389,9 @@ def merge_databases(
                     AND secondary.loadouts.loadout_hash = main.loadouts.loadout_hash
                 )
             """
-            cursor = conn.execute(update_existing_loadouts_sql)
-            updated_loadouts_count = cursor.rowcount
-            loadouts_merged = new_loadouts_count + updated_loadouts_count
+            conn.execute(update_existing_loadouts_sql)
 
             # Merge fg_loadouts table (optional, only if it exists in secondary)
-            fg_loadouts_merged = 0
             secondary_has_fg_loadouts = False
             try:
                 cursor = conn.execute("""
@@ -441,8 +434,7 @@ def merge_databases(
                         gear_json, minis_json, details_json, force_details_json, timestamp
                     FROM secondary.fg_loadouts
                 """
-                cursor = conn.execute(insert_new_fg_loadouts_sql)
-                new_fg_loadouts_count = cursor.rowcount
+                conn.execute(insert_new_fg_loadouts_sql)
 
                 update_existing_fg_loadouts_sql = """
                     UPDATE fg_loadouts
@@ -519,9 +511,7 @@ def merge_databases(
                         AND secondary.fg_loadouts.loadout_hash = main.fg_loadouts.loadout_hash
                     )
                 """
-                cursor = conn.execute(update_existing_fg_loadouts_sql)
-                updated_fg_loadouts_count = cursor.rowcount
-                fg_loadouts_merged = new_fg_loadouts_count + updated_fg_loadouts_count
+                conn.execute(update_existing_fg_loadouts_sql)
 
                 # Enforce invariant: fg_loadouts should only contain entries where
                 # FG strictly beats base (matches current persistence behavior).

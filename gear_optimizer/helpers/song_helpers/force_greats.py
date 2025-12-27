@@ -918,7 +918,7 @@ def process_force_greats(
             unique_stats_seen = set()
     # CPU fallback: Process all loadouts (no budget limit)
     for entry in loadout_entries.values():
-        def _is_cached_force_valid(cached_force_obj, expected_selected_element, center_ft, center_ff, finder_enabled):
+        def _is_cached_force_valid(cached_force_obj, expected_selected_element):
             """
             Validate that a DB-cached ForceGreats payload is compatible with the current code/config.
             This prevents stale FG results (from older algorithms or wrong overflow target) from
@@ -943,13 +943,9 @@ def process_force_greats(
 
         cached_force = entry.get("force")
         expected_sel = None
-        expected_center_ft = 0
-        expected_center_ff = 0
         try:
             det0 = entry.get("details") or {}
             expected_sel = det0.get("SelectedElement") or det0.get("Selected Element") or meta_primary_color
-            expected_center_ft = det0.get("FT", 0) or 0
-            expected_center_ff = det0.get("FF", 0) or 0
         except Exception:
             expected_sel = meta_primary_color
 
@@ -957,7 +953,7 @@ def process_force_greats(
         if (
             cached_force
             and (cached_force.get("score") or entry.get("fg_score"))
-            and _is_cached_force_valid(cached_force, expected_sel, expected_center_ft, expected_center_ff, force_greats_finder)
+            and _is_cached_force_valid(cached_force, expected_sel)
         ):
             # Preserve base score when reusing cached FG
             base_score = entry.get("base_score") or entry.get("score", 0)

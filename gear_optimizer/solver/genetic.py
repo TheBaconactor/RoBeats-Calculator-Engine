@@ -759,7 +759,6 @@ def _run_gpu_native_ga(
     best_score = -1
     best_genome_ids = None
     best_result_row = None  # [score, ft, ff, pp, cm, fm, ov] - gem allocation for best genome
-    results_snapshot = None  # Downloaded with pop_snapshot to avoid race condition
 
     # --- ISLAND MODEL SETUP ---
     # Partition population into islands (contiguous index ranges)
@@ -776,7 +775,6 @@ def _run_gpu_native_ga(
 
     # Track population snapshot - only downloaded when best improves or during migrations
     pop_snapshot = None
-    pop_snapshot_gen = -1  # Generation when pop_snapshot was taken (-1 = invalid)
     
     # Warm-start control: force cold start on Gen 0
     gen_use_hints = 0

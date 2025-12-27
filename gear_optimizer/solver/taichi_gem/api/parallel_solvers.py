@@ -73,7 +73,7 @@ def solve_genomes_with_ftff(
     Returns:
         List of (score, ft, ff, pp, cm, fm, ov) tuples per genome
     """
-    ensure_ready(ref_arrays, need_grid=True)
+    ensure_ready(ref_arrays)
     if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
         precompute_timeline_gpu(timeline_grid, ref_arrays, song_slot=0)
     else:
@@ -177,7 +177,7 @@ def solve_genomes_parallel(
     """
 
     # Ensure grid fields are available; timeline data must be available in `song_slot`.
-    ensure_ready(ref_arrays, need_grid=True)
+    ensure_ready(ref_arrays)
 
     # If we were given a lightweight calc_song dict, compute the 161×161 grid on GPU
     # directly into this song slot (avoids pickling CPU timeline objects in parallel mode).
@@ -418,7 +418,7 @@ def solve_genomes_from_registry(
     Returns:
         List of (score, ft, ff, pp, cm, fm, ov) tuples per genome
     """
-    ensure_ready(ref_arrays, need_grid=True)
+    ensure_ready(ref_arrays)
     
     # Upload timeline grid if needed
     if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
@@ -531,7 +531,7 @@ def solve_genomes_parallel_merged(
         if _ref_arrays_sig(r) != sig0:
             raise ValueError("Merged solve requires compatible ref_arrays across payloads")
 
-    ensure_ready(ref0, need_grid=True)
+    ensure_ready(ref0)
     log_batches = ENV.gpu_batch_log
 
     # Assign slots:

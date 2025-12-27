@@ -437,7 +437,7 @@ class GpuExecutor:
                             success=True,
                             result=res,
                         ))
-                except Exception as e:
+                except Exception:
                     # Conservative fallback: process each request individually.
                     for req in sub:
                         try:

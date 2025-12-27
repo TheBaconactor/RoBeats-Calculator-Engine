@@ -1005,17 +1005,6 @@ def process_song_task(args):
 
         redirect_ctx.__exit__(None, None, None)
 
-    # Should never reach here; fallback to avoid crashes
-    return {
-        "song": found_song_name,
-        "db_key": found_song_name,
-        "db_payload": None,
-        "best_data": None,
-        "best_gear": [],
-        "best_minis": [],
-        "log": buf_content,  # Use captured content instead of buf.getvalue()
-    }
-
 
 def safe_process_song_task(args):
     """

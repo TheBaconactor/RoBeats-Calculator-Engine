@@ -716,10 +716,7 @@ def run_force_greats_hill_climb(
                 "Fever Time", "Fever Fill Rate", "Chill", "Flow", "Rush", "Beat", "Vibe"]:
         base_stats[key] = stats.get(key, 0)
 
-    # Get the max forced greats per section (notes-to-fill limit)
     non_fever_base = baseline.get("non_fever_base", 20)
-    max_per_section = min(non_fever_base, 15)  # Cap at 15 due to FT/FF iteration cost
-
     # Calculate FT/FF search window (kept tight; full FT/FF × all FG configs explodes combinatorially)
     search_ranges = None
     if center_ft is not None and center_ff is not None:

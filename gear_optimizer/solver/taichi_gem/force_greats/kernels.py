@@ -656,7 +656,6 @@ def fg_stage1_kernel(
     NO ATOMICS - each (g, f) pair has its own output slot.
     """
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
-    ELEMENTAL_GEM_SCALE: ti.i32 = 6
     MAX_STAT: ti.i32 = 160
 
     head_len: ti.i32 = ti.min(total_notes, 100)
@@ -692,9 +691,6 @@ def fg_stage1_kernel(
 
         non_fever_base_f: ti.f32 = non_fever_cas * ff_factor
         non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_base_f), ti.i32)
-        non_fever_great_to_fill: ti.i32 = ti.cast(
-            ti.ceil(ti.max(1.0, non_fever_cas * ff_factor * 2.0)), ti.i32
-        )
         real_fever_time: ti.f32 = fever_time_cas * ft_factor
 
         # Accumulate across cfg-chunks: seed from existing stage1 result
@@ -857,7 +853,6 @@ def fg_stage1_kernel(
             base_score: ti.i32 = opt[0]
             final_pp: ti.i32 = opt[1]
             final_cm: ti.i32 = opt[2]
-            final_fm: ti.i32 = opt[3]
             final_p_val: ti.i32 = opt[4]
             final_s_val: ti.i32 = opt[5]
             gems_pp: ti.i32 = opt[6]
@@ -1045,7 +1040,6 @@ def fg_stage1_flat_kernel(
     Uses atomic_max for reduction within each (genome, ftff) slot.
     """
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
-    ELEMENTAL_GEM_SCALE: ti.i32 = 6
     MAX_STAT: ti.i32 = 160
 
     head_len: ti.i32 = ti.min(total_notes, 100)
@@ -1086,9 +1080,6 @@ def fg_stage1_flat_kernel(
 
         non_fever_base_f: ti.f32 = non_fever_cas * ff_factor
         non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_base_f), ti.i32)
-        non_fever_great_to_fill: ti.i32 = ti.cast(
-            ti.ceil(ti.max(1.0, non_fever_cas * ff_factor * 2.0)), ti.i32
-        )
         real_fever_time: ti.f32 = fever_time_cas * ft_factor
 
         # Timeline simulation for this ONE config
@@ -1218,7 +1209,6 @@ def fg_stage1_flat_kernel(
         base_score: ti.i32 = opt[0]
         final_pp: ti.i32 = opt[1]
         final_cm: ti.i32 = opt[2]
-        final_fm: ti.i32 = opt[3]
         final_p_val: ti.i32 = opt[4]
         final_s_val: ti.i32 = opt[5]
         gems_pp: ti.i32 = opt[6]

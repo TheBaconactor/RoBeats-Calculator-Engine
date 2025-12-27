@@ -102,7 +102,7 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
         return  # Already computed
 
     # Ensure GPU is ready with refs and grid fields
-    ensure_ready(ref_arrays, need_grid=True)
+    ensure_ready(ref_arrays)
 
     # Upload song timestamps
     timestamps = np.asarray(calc_song["song_data"]["timestamps"], dtype=np.float32)

@@ -224,7 +224,6 @@ def solve_ftff_parallel_kernel(
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
     MAX_STAT: ti.i32 = 160
-    ELEMENTAL_GEM_SCALE: ti.i32 = 6
 
     for i in range(n_work_items):
         item = kernels_helpers.work_items[i]

@@ -96,29 +96,3 @@ class EnvConfig:
 
 # Singleton instance - initialized once at module import
 ENV = EnvConfig.from_environment()
-
-
-# Convenience accessors for backward compatibility
-def get_ga_seed() -> Optional[str]:
-    """Get GA_SEED environment variable (backward compatibility)."""
-    return ENV.ga_seed
-
-
-def is_perf_timing_enabled() -> bool:
-    """Check if PERF_TIMING is enabled (backward compatibility)."""
-    return ENV.perf_timing
-
-
-def is_gpu_profiler_enabled() -> bool:
-    """Check if GPU_PROFILER is enabled (backward compatibility)."""
-    return ENV.gpu_profiler or ENV.perf_timing
-
-
-def is_gpu_sync_for_timing_enabled() -> bool:
-    """Check if GPU_SYNC_FOR_TIMING is enabled (backward compatibility)."""
-    return ENV.gpu_sync_for_timing
-
-
-def is_gpu_force_sync_enabled() -> bool:
-    """Check if GPU_FORCE_SYNC is enabled (backward compatibility)."""
-    return ENV.gpu_force_sync

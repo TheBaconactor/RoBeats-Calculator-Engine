@@ -61,7 +61,6 @@ def _simulate_timeline_signature(
     non_fever_cas = ti.cast(total_notes - long_notes, ti.f32) * 0.333  # FEVER_FILL_BASE_RATE
     non_fever_base_f = non_fever_cas * ff_factor
     non_fever_base = ti.i32(ti.ceil(non_fever_base_f))
-    non_fever_great_to_fill = ti.i32(ti.ceil(ti.max(1.0, non_fever_base_f * 2.0)))
     real_fever_time = (last_note_time * 0.15 + 0.15) * ft_factor  # FEVER_TIME_SCALE + FEVER_TIME_OFFSET
     
     # Initialize fever mask bits
