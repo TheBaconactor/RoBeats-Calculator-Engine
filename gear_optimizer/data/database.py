@@ -689,3 +689,118 @@ def prioritize_song_queue_missing_db(
     for item in song_queue:
         (existing if item[1] in present else missing).append(item)
     return missing + existing
+
+
+def upsert_pending_fg_job(song_name: str, candidates: List[Dict[str, Any]]) -> None:
+    """
+    Persist a crash-safe pending ForceGreats job for a song.
+
+    This stores a compact candidate list so FG can be computed later without
+    rerunning GA (e.g. when FG is deferred/interleaved for throughput).
+    """
+    song_name = str(song_name or "").strip()
+    if not song_name:
+        return
+    if not candidates:
+        delete_pending_fg_job(song_name)
+        return
+
+    payload = json.dumps(candidates, separators=(",", ":"))
+    db_path = get_evolution_db_path()
+    conn = get_db_connection(db_path)
+    try:
+        conn.execute(
+            """
+            INSERT INTO pending_fg_jobs (song_name, candidates_json, created_ts, updated_ts)
+            VALUES (?, ?, strftime('%s','now'), strftime('%s','now'))
+            ON CONFLICT(song_name) DO UPDATE SET
+                candidates_json = excluded.candidates_json,
+                updated_ts = strftime('%s','now')
+            """,
+            (song_name, payload),
+        )
+        conn.commit()
+    except sqlite3.Error:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+    finally:
+        conn.close()
+
+
+def delete_pending_fg_job(song_name: str) -> None:
+    song_name = str(song_name or "").strip()
+    if not song_name:
+        return
+    db_path = get_evolution_db_path()
+    conn = get_db_connection(db_path)
+    try:
+        conn.execute("DELETE FROM pending_fg_jobs WHERE song_name = ?", (song_name,))
+        conn.commit()
+    except sqlite3.Error:
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+    finally:
+        conn.close()
+
+
+def list_pending_fg_jobs(limit: int = 0) -> List[Dict[str, Any]]:
+    """
+    List pending FG jobs, newest-first.
+
+    Returns dicts with keys: song_name, candidates, created_ts, updated_ts.
+    """
+    db_path = get_evolution_db_path()
+    conn = get_db_connection(db_path)
+    try:
+        lim = int(limit or 0)
+        if lim > 0:
+            rows = conn.execute(
+                """
+                SELECT song_name, candidates_json, created_ts, updated_ts
+                FROM pending_fg_jobs
+                ORDER BY COALESCE(updated_ts, created_ts) DESC
+                LIMIT ?
+                """,
+                (lim,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT song_name, candidates_json, created_ts, updated_ts
+                FROM pending_fg_jobs
+                ORDER BY COALESCE(updated_ts, created_ts) DESC
+                """,
+            ).fetchall()
+
+        out: List[Dict[str, Any]] = []
+        for r in rows or []:
+            try:
+                song = r["song_name"] if isinstance(r, sqlite3.Row) else r[0]
+                cand_json = r["candidates_json"] if isinstance(r, sqlite3.Row) else r[1]
+                created_ts = r["created_ts"] if isinstance(r, sqlite3.Row) else r[2]
+                updated_ts = r["updated_ts"] if isinstance(r, sqlite3.Row) else r[3]
+            except Exception:
+                continue
+
+            try:
+                candidates = json.loads(cand_json) if cand_json else []
+            except Exception:
+                candidates = []
+
+            out.append(
+                {
+                    "song_name": song,
+                    "candidates": candidates,
+                    "created_ts": created_ts,
+                    "updated_ts": updated_ts,
+                }
+            )
+        return out
+    except sqlite3.Error:
+        return []
+    finally:
+        conn.close()

@@ -521,6 +521,27 @@ class GearOptimizerApp:
             except Exception as exc:
                 logging.warning(f"[DB] Failed to prioritize song queue: {type(exc).__name__}: {exc}")
 
+        # Optional deterministic limit (useful for benchmarks / iteration).
+        song_queue_limit = 0
+        try:
+            song_queue_limit = safe_int(cfg.get("IterationEngine", "SongQueueLimit", fallback="0"), 0)
+        except Exception:
+            song_queue_limit = 0
+        if song_queue_limit and song_queue_limit > 0 and len(song_queue) > song_queue_limit:
+            try:
+                song_queue = sorted(
+                    song_queue,
+                    key=lambda t: (
+                        str(t[1] or "").casefold(),
+                        str(t[2] or "").casefold(),
+                        os.path.abspath(str(t[0] or "")).casefold(),
+                    ),
+                )
+            except Exception:
+                pass
+            song_queue = song_queue[: int(song_queue_limit)]
+            print(f"[Queue] SongQueueLimit={song_queue_limit}: running {len(song_queue)} song(s)")
+
         # Queue all discovered songs; filtering is handled by difficulty folder + optional search string.
         if not filter_search:
             return song_queue
@@ -582,7 +603,7 @@ class GearOptimizerApp:
         """Normalize config so InFlightSongs behaves predictably.
 
         - InFlightSongs is a single-process, GPU-backed pipeline.
-        - It is incompatible with GPU_Native_GA (in-flight uses CPU GA orchestration).
+        - It supports both CPU GA (GPU eval) and GPU_Native_GA via separate orchestrators.
         """
         inflight_songs = self._get_inflight_songs_requested(cfg)
         if inflight_songs > 0:
@@ -604,14 +625,7 @@ class GearOptimizerApp:
             cfg.set("IterationEngine", "InFlightSongs", "0")
             return
 
-        gpu_native_ga = False
-        try:
-            gpu_native_ga = cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=False)
-        except Exception:
-            gpu_native_ga = False
-        if gpu_native_ga:
-            print("[InFlight] InFlightSongs>1 is incompatible with GPU_Native_GA; forcing GPU_Native_GA=false.")
-            cfg.set("IterationEngine", "GPU_Native_GA", "false")
+        # GPU_Native_GA is supported by a dedicated GPU-native in-flight orchestrator.
 
     def _execute_tasks(self, tasks, eval_cpu_limit, parallel_workers, memory_resume_tracker,
                        manager, status_queue, status_thread, loop_forever):
@@ -721,7 +735,7 @@ class GearOptimizerApp:
 
         if inflight_songs and inflight_songs > 1 and len(tasks) > 1:
             # In-flight is a CPU GA driver (with GPU evaluation). It is incompatible with
-            # GPU_Native_GA (enforced at startup via _apply_inflight_overrides()).
+            # GPU_Native_GA unless we use the dedicated GPU-native in-flight orchestrator.
             gpu_native_ga = False
             try:
                 cfg_dict0 = tasks[0][3] if tasks else {}
@@ -730,25 +744,34 @@ class GearOptimizerApp:
             except Exception:
                 gpu_native_ga = False
 
-            if gpu_native_ga:
-                print("[InFlight] Disabled: GPU_Native_GA=true is incompatible with InFlightSongs>1.")
-            else:
-                inflight_ok = False
-                post_queue = None
-                post_proc = None
-                try:
-                    from gear_optimizer.pipeline.post_processor import run_post_processor
+            inflight_ok = False
+            post_queue = None
+            post_proc = None
+            try:
+                from gear_optimizer.pipeline.post_processor import run_post_processor
 
-                    post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 8), 8)
-                    post_queue = multiprocessing.Queue(maxsize=max(1, post_queue_size))
-                    post_proc = multiprocessing.Process(
-                        target=run_post_processor,
-                        args=(post_queue, len(tasks)),
-                        daemon=True,
-                        name="SongPostProcessor",
+                post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 8), 8)
+                post_queue = multiprocessing.Queue(maxsize=max(1, post_queue_size))
+                post_proc = multiprocessing.Process(
+                    target=run_post_processor,
+                    args=(post_queue, len(tasks)),
+                    daemon=True,
+                    name="SongPostProcessor",
+                )
+                post_proc.start()
+
+                if gpu_native_ga:
+                    from gear_optimizer.solver.native_inflight_orchestrator import run_native_inflight_song_pipeline
+
+                    run_native_inflight_song_pipeline(
+                        tasks,
+                        in_flight_songs=int(inflight_songs),
+                        completed_songs=completed_songs,
+                        memory_resume_tracker=memory_resume_tracker,
+                        post_queue=post_queue,
+                        total_tasks=len(tasks),
                     )
-                    post_proc.start()
-
+                else:
                     from gear_optimizer.solver.inflight_orchestrator import run_inflight_song_pipeline
 
                     run_inflight_song_pipeline(
@@ -759,33 +782,33 @@ class GearOptimizerApp:
                         post_queue=post_queue,
                         total_tasks=len(tasks),
                     )
-                    inflight_ok = True
-                except Exception as inflight_err:
-                    print(f"[InFlight] Disabled: {type(inflight_err).__name__}: {inflight_err}")
-                finally:
-                    try:
-                        if post_queue is not None:
-                            post_queue.put(None)
-                    except Exception:
-                        pass
-                    try:
-                        if post_proc is not None:
-                            post_proc.join(timeout=120.0)
-                    except Exception:
-                        pass
-                    try:
-                        if post_proc is not None and post_proc.is_alive():
-                            post_proc.terminate()
-                            post_proc.join(timeout=5.0)
-                    except Exception:
-                        pass
-                    try:
-                        if use_gpu_preload and preloader is not None:
-                            preloader.stop()
-                    except Exception:
-                        pass
-                if inflight_ok:
-                    return
+                inflight_ok = True
+            except Exception as inflight_err:
+                print(f"[InFlight] Disabled: {type(inflight_err).__name__}: {inflight_err}")
+            finally:
+                try:
+                    if post_queue is not None:
+                        post_queue.put(None)
+                except Exception:
+                    pass
+                try:
+                    if post_proc is not None:
+                        post_proc.join(timeout=120.0)
+                except Exception:
+                    pass
+                try:
+                    if post_proc is not None and post_proc.is_alive():
+                        post_proc.terminate()
+                        post_proc.join(timeout=5.0)
+                except Exception:
+                    pass
+                try:
+                    if use_gpu_preload and preloader is not None:
+                        preloader.stop()
+                except Exception:
+                    pass
+            if inflight_ok:
+                return
 
                 # If inflight was configured but failed to start, fall through to the normal
                 # sequential pipeline. Ensure the preloader is running for that path.

@@ -6,10 +6,14 @@ This module provides force greats operations:
 """
 import os
 import time
+from typing import TYPE_CHECKING, Optional
 
 from ...solver.scoring import apply_force_greats_to_result
 from ...core.utils import stats_signature
 from ...solver.scoring.force_greats import FORCE_GREATS_ALGO_VERSION
+
+if TYPE_CHECKING:
+    from gear_optimizer.solver.gpu_service import GpuServiceClient
 
 
 def process_force_greats(
@@ -25,6 +29,7 @@ def process_force_greats(
     use_gpu: bool = False,
     fg_search_radius: int | None = None,
     perf_timing: bool = False,
+    gpu_client: Optional["GpuServiceClient"] = None,
 ):
     """
     Apply force greats to loadouts.
@@ -46,6 +51,31 @@ def process_force_greats(
     """
     fg_variants = []
     perf = bool(perf_timing)
+
+    # If we're not using the GPU finder path, the fallback loop may call other
+    # Taichi-backed helpers that aren't routed via `GpuServiceClient`. Preserve
+    # the "single Taichi owner thread" invariant by running the whole helper on
+    # the GPU-owner thread in that case.
+    if gpu_client is not None and use_gpu and not force_greats_finder:
+        try:
+            return gpu_client.submit_process_force_greats(
+                loadout_entries,
+                manual_force_greats,
+                force_greats_finder,
+                force_greats_config,
+                calc_song,
+                ref_arrays,
+                meta_primary_color,
+                build_details_fn,
+                db_loadouts_full_count,
+                use_gpu=use_gpu,
+                fg_search_radius=fg_search_radius,
+                perf_timing=perf_timing,
+                gpu_client=None,
+            ).future.result()
+        except Exception:
+            # If routing fails, fall through to the local implementation.
+            pass
 
     manual_counts = (
         force_greats_config if (manual_force_greats and not force_greats_finder) else []
@@ -100,6 +130,45 @@ def process_force_greats(
                 fg_reset_global_best,
                 fg_download_global_best,
             )
+            from ...solver.gpu_executor import GpuRequestType
+
+            def _submit_fg_reset_global_best(n_genomes: int) -> None:
+                if gpu_client is not None:
+                    gpu_client.submit(
+                        GpuRequestType.FG_RESET_GLOBAL_BEST,
+                        {"n_genomes": int(n_genomes)},
+                    ).future.result()
+                    return
+                fg_reset_global_best(int(n_genomes))
+
+            def _submit_fg_download_global_best(n_genomes: int):
+                if gpu_client is not None:
+                    return gpu_client.submit(
+                        GpuRequestType.FG_DOWNLOAD_GLOBAL_BEST,
+                        {"n_genomes": int(n_genomes)},
+                    ).future.result()
+                return fg_download_global_best(int(n_genomes))
+
+            def _submit_solve_force_greats_finder(*args, blocking: bool = True, **kwargs):
+                if gpu_client is not None:
+                    fut = gpu_client.submit_solve_force_greats_finder(*args, **kwargs).future
+                    return fut.result() if blocking else fut
+                return solve_force_greats_finder_gpu(*args, **kwargs)
+
+            fg_async_max_inflight = 8
+            try:
+                fg_async_max_inflight = int(os.environ.get("FG_ASYNC_MAX_INFLIGHT", "8"))
+            except Exception:
+                fg_async_max_inflight = 8
+            fg_async_max_inflight = max(1, int(fg_async_max_inflight))
+            fg_async_tasks_per_request = 8
+            try:
+                fg_async_tasks_per_request = int(os.environ.get("FG_ASYNC_TASKS_PER_REQUEST", "8"))
+            except Exception:
+                fg_async_tasks_per_request = 8
+            fg_async_tasks_per_request = max(1, int(fg_async_tasks_per_request))
+            fg_async_futures = []
+            fg_tasks_batch = []
 
             # Helper: apply gem allocations to base stats to produce a final Stats dict
             def _apply_gems_to_base(base: dict, sel_color: str, ft: int, ff: int, gem_counts: dict) -> dict:
@@ -221,6 +290,66 @@ def process_force_greats(
                     return
                 for i in range(0, len(pairs), chunk_size):
                     yield pairs[i:i + chunk_size]
+
+            def _flush_fg_tasks_batch() -> None:
+                nonlocal fg_tasks_batch
+                if gpu_client is None or not fg_tasks_batch:
+                    return
+
+                batch = fg_tasks_batch
+                fg_tasks_batch = []
+                first = batch[0] if batch else {}
+                if not isinstance(first, dict):
+                    return
+
+                placeholder_counts = first.get("counts_list")
+                placeholder_pairs = first.get("ftff_pairs")
+                if placeholder_counts is None or placeholder_pairs is None:
+                    return
+
+                submit_kwargs = dict(
+                    n_sections=n_sections,
+                    is_p_ft=is_p_ft,
+                    is_s_ft=is_s_ft,
+                    is_p_ff=is_p_ff,
+                    is_s_ff=is_s_ff,
+                    is_p_pp=is_p_pp,
+                    is_s_pp=is_s_pp,
+                    is_p_cm=is_p_cm,
+                    is_s_cm=is_s_cm,
+                    is_p_fm=is_p_fm,
+                    is_s_fm=is_s_fm,
+                    is_p_ov=is_p_ov,
+                    is_s_ov=is_s_ov,
+                    ref_arrays=ref_arrays,
+                    total_budget=TOTAL_GEM_BUDGET,
+                    gem_scale_fever=GEM_SCALE_FEVER,
+                    pair_caps_grid=pair_caps_grid,
+                    return_raw=True,
+                    accumulate_global=True,
+                    fg_tasks=batch,
+                )
+                if "base_cfg_offset" in first:
+                    try:
+                        submit_kwargs["base_cfg_offset"] = int(first.get("base_cfg_offset", 0) or 0)
+                    except Exception:
+                        submit_kwargs["base_cfg_offset"] = 0
+
+                fg_async_futures.append(
+                    _submit_solve_force_greats_finder(
+                        genome_stats_arr,
+                        timestamps,
+                        great_candidates,
+                        long_notes,
+                        last_note_time,
+                        placeholder_counts,
+                        placeholder_pairs,
+                        blocking=False,
+                        **submit_kwargs,
+                    )
+                )
+                if len(fg_async_futures) >= fg_async_max_inflight:
+                    fg_async_futures.pop(0).result()
 
             # Group work by (selected_element, n_sections, max_per_section)
             groups = {}
@@ -606,7 +735,7 @@ def process_force_greats(
                         master_configs = []  # Will be extended by each group
                         
                         # Reset global best on GPU before processing groups
-                        fg_reset_global_best(n_pending)
+                        _submit_fg_reset_global_best(n_pending)
 
                         # Pipelined processing with GPU accumulation:
                         # Process groups and accumulate best on GPU (no per-group downloads)
@@ -635,30 +764,48 @@ def process_force_greats(
                             
                             _t_gpu0 = time.perf_counter() if perf else 0.0
                             # Use accumulate_global=True to skip download, with base_cfg_offset for global indexing
-                            for ftff_chunk in _iter_ftff_chunks(group_pairs):
-                                solve_force_greats_finder_gpu(
-                                    genome_stats_arr,
-                                    timestamps,
-                                    great_candidates,
-                                    long_notes,
-                                    last_note_time,
-                                    counts_list,
-                                    ftff_chunk,
-                                    n_sections=n_sections,
-                                    is_p_ft=is_p_ft, is_s_ft=is_s_ft,
-                                    is_p_ff=is_p_ff, is_s_ff=is_s_ff,
-                                    is_p_pp=is_p_pp, is_s_pp=is_s_pp,
-                                    is_p_cm=is_p_cm, is_s_cm=is_s_cm,
-                                    is_p_fm=is_p_fm, is_s_fm=is_s_fm,
-                                    is_p_ov=is_p_ov, is_s_ov=is_s_ov,
-                                    ref_arrays=ref_arrays,
-                                    total_budget=TOTAL_GEM_BUDGET,
-                                    gem_scale_fever=GEM_SCALE_FEVER,
-                                    pair_caps_grid=pair_caps_grid,
-                                    return_raw=True,
-                                    accumulate_global=True,
-                                    base_cfg_offset=group_cfg_offset,
-                                )
+                            if gpu_client is not None:
+                                for ftff_chunk in _iter_ftff_chunks(group_pairs):
+                                    fg_tasks_batch.append(
+                                        {
+                                            "counts_list": counts_list,
+                                            "ftff_pairs": ftff_chunk,
+                                            "base_cfg_offset": int(group_cfg_offset),
+                                        }
+                                    )
+                                    if len(fg_tasks_batch) >= fg_async_tasks_per_request:
+                                        _flush_fg_tasks_batch()
+                            else:
+                                for ftff_chunk in _iter_ftff_chunks(group_pairs):
+                                    _submit_solve_force_greats_finder(
+                                        genome_stats_arr,
+                                        timestamps,
+                                        great_candidates,
+                                        long_notes,
+                                        last_note_time,
+                                        counts_list,
+                                        ftff_chunk,
+                                        n_sections=n_sections,
+                                        is_p_ft=is_p_ft,
+                                        is_s_ft=is_s_ft,
+                                        is_p_ff=is_p_ff,
+                                        is_s_ff=is_s_ff,
+                                        is_p_pp=is_p_pp,
+                                        is_s_pp=is_s_pp,
+                                        is_p_cm=is_p_cm,
+                                        is_s_cm=is_s_cm,
+                                        is_p_fm=is_p_fm,
+                                        is_s_fm=is_s_fm,
+                                        is_p_ov=is_p_ov,
+                                        is_s_ov=is_s_ov,
+                                        ref_arrays=ref_arrays,
+                                        total_budget=TOTAL_GEM_BUDGET,
+                                        gem_scale_fever=GEM_SCALE_FEVER,
+                                        pair_caps_grid=pair_caps_grid,
+                                        return_raw=True,
+                                        accumulate_global=True,
+                                        base_cfg_offset=group_cfg_offset,
+                                    )
                             if perf:
                                 t_gpu_calls_sec += time.perf_counter() - _t_gpu0
                                 n_gpu_calls += 1
@@ -690,7 +837,12 @@ def process_force_greats(
 
                         # Single download at end - this is the key optimization!
                         _t_download0 = time.perf_counter() if perf else 0.0
-                        global_results = fg_download_global_best(n_pending)
+                        _flush_fg_tasks_batch()
+                        for fut in fg_async_futures:
+                            fut.result()
+                        fg_async_futures.clear()
+
+                        global_results = _submit_fg_download_global_best(n_pending)
                         if perf:
                             t_download_sec = time.perf_counter() - _t_download0
                             print(f"[PERF] FG GPU global download: {t_download_sec*1000:.1f}ms")
@@ -720,33 +872,56 @@ def process_force_greats(
                         _t_gpu0 = time.perf_counter() if perf else 0.0
                         # Use return_raw=True for numpy results (skip dict building in API)
                         if len(ftff_pairs) > int(fg_fields.FG_MAX_FTFF):
-                            fg_reset_global_best(n_pending)
-                            for ftff_chunk in _iter_ftff_chunks(ftff_pairs):
-                                solve_force_greats_finder_gpu(
-                                    genome_stats_arr,  # numpy array instead of list[dict]
-                                    timestamps,
-                                    great_candidates,
-                                    long_notes,
-                                    last_note_time,
-                                    counts_list,
-                                    ftff_chunk,
-                                    n_sections=n_sections,
-                                    is_p_ft=is_p_ft, is_s_ft=is_s_ft,
-                                    is_p_ff=is_p_ff, is_s_ff=is_s_ff,
-                                    is_p_pp=is_p_pp, is_s_pp=is_s_pp,
-                                    is_p_cm=is_p_cm, is_s_cm=is_s_cm,
-                                    is_p_fm=is_p_fm, is_s_fm=is_s_fm,
-                                    is_p_ov=is_p_ov, is_s_ov=is_s_ov,
-                                    ref_arrays=ref_arrays,
-                                    total_budget=TOTAL_GEM_BUDGET,
-                                    gem_scale_fever=GEM_SCALE_FEVER,
-                                    pair_caps_grid=pair_caps_grid,
-                                    return_raw=True,  # Return numpy arrays, not list[dict]
-                                    accumulate_global=True,
-                                )
-                            gpu_results = fg_download_global_best(n_pending)
+                            _submit_fg_reset_global_best(n_pending)
+                            if gpu_client is not None:
+                                for ftff_chunk in _iter_ftff_chunks(ftff_pairs):
+                                    fg_tasks_batch.append(
+                                        {
+                                            "counts_list": counts_list,
+                                            "ftff_pairs": ftff_chunk,
+                                        }
+                                    )
+                                    if len(fg_tasks_batch) >= fg_async_tasks_per_request:
+                                        _flush_fg_tasks_batch()
+                            else:
+                                for ftff_chunk in _iter_ftff_chunks(ftff_pairs):
+                                    _submit_solve_force_greats_finder(
+                                        genome_stats_arr,  # numpy array instead of list[dict]
+                                        timestamps,
+                                        great_candidates,
+                                        long_notes,
+                                        last_note_time,
+                                        counts_list,
+                                        ftff_chunk,
+                                        n_sections=n_sections,
+                                        is_p_ft=is_p_ft,
+                                        is_s_ft=is_s_ft,
+                                        is_p_ff=is_p_ff,
+                                        is_s_ff=is_s_ff,
+                                        is_p_pp=is_p_pp,
+                                        is_s_pp=is_s_pp,
+                                        is_p_cm=is_p_cm,
+                                        is_s_cm=is_s_cm,
+                                        is_p_fm=is_p_fm,
+                                        is_s_fm=is_s_fm,
+                                        is_p_ov=is_p_ov,
+                                        is_s_ov=is_s_ov,
+                                        ref_arrays=ref_arrays,
+                                        total_budget=TOTAL_GEM_BUDGET,
+                                        gem_scale_fever=GEM_SCALE_FEVER,
+                                        pair_caps_grid=pair_caps_grid,
+                                        return_raw=True,  # Return numpy arrays, not list[dict]
+                                        accumulate_global=True,
+                                    )
+
+                            _flush_fg_tasks_batch()
+                            for fut in fg_async_futures:
+                                fut.result()
+                            fg_async_futures.clear()
+
+                            gpu_results = _submit_fg_download_global_best(n_pending)
                         else:
-                            gpu_results = solve_force_greats_finder_gpu(
+                            gpu_results = _submit_solve_force_greats_finder(
                                 genome_stats_arr,  # numpy array instead of list[dict]
                                 timestamps,
                                 great_candidates,

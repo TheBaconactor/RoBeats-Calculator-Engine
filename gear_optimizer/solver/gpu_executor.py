@@ -45,6 +45,9 @@ class GpuRequestType(Enum):
     PRECOMPUTE_TIMELINE = "precompute_timeline_gpu"
     SOLVE_FORCE_GREATS_FINDER = "solve_force_greats_finder_gpu"
     PROCESS_FORCE_GREATS = "process_force_greats"
+    GPU_NATIVE_GA_RUN = "gpu_native_ga_run"
+    FG_RESET_GLOBAL_BEST = "fg_reset_global_best"
+    FG_DOWNLOAD_GLOBAL_BEST = "fg_download_global_best"
     SHUTDOWN = "shutdown"
 
 
@@ -148,11 +151,43 @@ class GpuExecutor:
         self._batch_size_counts = defaultdict(int)
         self._batches_observed = 0
         self._batch_size_sum = 0
+        self._idle_gaps: list[float] = []
+        self._idle_sample_threshold_sec = 0.001
+        self._profile_loop_start_ts: Optional[float] = None
+        self._profile_first_work_ts: Optional[float] = None
+        self._profile_last_work_end_ts: Optional[float] = None
+        self._profile_shutdown_ts: Optional[float] = None
 
     def start(self, *, in_process: bool = False):
         """Start the GPU executor thread in the main process."""
         if self._running:
             return
+
+        # Reset per-run state (GpuExecutor is a singleton and may be started/stopped
+        # multiple times within one Python process during profiling/benchmarks).
+        self._requests_processed = 0
+        self._wait_sec = 0.0
+        self._exec_sec = 0.0
+        try:
+            self._req_type_counts.clear()
+            self._req_type_exec_sec.clear()
+            self._batch_size_counts.clear()
+        except Exception:
+            pass
+        self._batches_observed = 0
+        self._batch_size_sum = 0
+        self._idle_gaps = []
+        try:
+            idle_ms = float(os.environ.get("GPU_EXECUTOR_IDLE_SAMPLE_THRESHOLD_MS", "1.0"))
+        except Exception:
+            idle_ms = 1.0
+        self._idle_sample_threshold_sec = max(0.0, float(idle_ms) / 1000.0)
+        self._profile_loop_start_ts = None
+        self._profile_first_work_ts = None
+        self._profile_last_work_end_ts = None
+        self._profile_shutdown_ts = None
+        self._response_queues = {}
+        self._next_worker_id = 0
 
         self._in_process_queues = bool(in_process)
         self._request_queue = queue.Queue() if self._in_process_queues else multiprocessing.Queue()
@@ -187,6 +222,23 @@ class GpuExecutor:
 
         self._running = False
         if self._profile_enabled:
+            idle_total = float(sum(self._idle_gaps))
+            idle_max = float(max(self._idle_gaps)) if self._idle_gaps else 0.0
+            idle_p95 = 0.0
+            if self._idle_gaps:
+                gaps_sorted = sorted(self._idle_gaps)
+                idx = int(round(0.95 * (len(gaps_sorted) - 1)))
+                idx = max(0, min(idx, len(gaps_sorted) - 1))
+                idle_p95 = float(gaps_sorted[idx])
+
+            idle_initial = 0.0
+            if self._profile_loop_start_ts is not None and self._profile_first_work_ts is not None:
+                idle_initial = float(max(0.0, self._profile_first_work_ts - self._profile_loop_start_ts))
+
+            idle_tail = 0.0
+            if self._profile_shutdown_ts is not None and self._profile_last_work_end_ts is not None:
+                idle_tail = float(max(0.0, self._profile_shutdown_ts - self._profile_last_work_end_ts))
+
             total = self._wait_sec + self._exec_sec
             util = (self._exec_sec / total * 100.0) if total > 0 else 0.0
             avg = (self._exec_sec / self._requests_processed) if self._requests_processed else 0.0
@@ -206,6 +258,8 @@ class GpuExecutor:
                 "[GpuExecutor][PROFILE] "
                 f"wait={self._wait_sec:.2f}s exec={self._exec_sec:.2f}s util={util:.1f}% "
                 f"avg_exec_per_req={avg:.3f}s avg_batch={avg_batch:.2f} "
+                f"idle_gaps={len(self._idle_gaps)} idle_sum={idle_total:.2f}s idle_max={idle_max:.3f}s idle_p95={idle_p95:.3f}s "
+                f"idle_initial={idle_initial:.3f}s idle_tail={idle_tail:.3f}s "
                 f"types=[{top_types_str}] batch_sizes=[{batch_hist_str}]"
             )
         print(f"[GpuExecutor] Stopped. Processed {self._requests_processed} requests.")
@@ -258,9 +312,23 @@ class GpuExecutor:
                 if batch_max <= 0:
                     batch_max = 1
 
+                if self._profile_enabled and self._profile_loop_start_ts is None:
+                    self._profile_loop_start_ts = perf_counter()
+
                 t_wait0 = perf_counter()
                 batch = self._gather_batch(max_wait_ms=batch_wait_ms, max_batch_size=batch_max)
-                self._wait_sec += perf_counter() - t_wait0
+                dt_wait = perf_counter() - t_wait0
+                self._wait_sec += dt_wait
+
+                if self._profile_enabled:
+                    if float(dt_wait) >= float(self._idle_sample_threshold_sec):
+                        self._idle_gaps.append(float(dt_wait))
+                    if (
+                        self._profile_first_work_ts is None
+                        and batch
+                        and not any(r.request_type == GpuRequestType.SHUTDOWN for r in batch)
+                    ):
+                        self._profile_first_work_ts = perf_counter()
 
                 if self._profile_enabled and batch:
                     bs = len(batch)
@@ -273,6 +341,8 @@ class GpuExecutor:
 
                 # Check for shutdown
                 if any(r.request_type == GpuRequestType.SHUTDOWN for r in batch):
+                    if self._profile_enabled:
+                        self._profile_shutdown_ts = perf_counter()
                     break
 
                 # Group by request type
@@ -324,6 +394,9 @@ class GpuExecutor:
                         self._response_queues[req.worker_id].put(response)
                     self._requests_processed += 1
 
+                if self._profile_enabled:
+                    self._profile_last_work_end_ts = perf_counter()
+
             except Exception as e:
                 print(f"[GpuExecutor] Error: {e}")
                 traceback.print_exc()
@@ -348,7 +421,13 @@ class GpuExecutor:
                 break  # Deadline passed, return what we have
 
             try:
-                timeout = max(0.001, remaining) if len(batch) > 0 else 0.1
+                # In in-process (thread-queue) mode, avoid waiting to coalesce more work
+                # once we already have at least one request: the producer is local and
+                # we prefer low-latency dispatch to keep the GPU saturated.
+                if len(batch) > 0 and self._in_process_queues:
+                    timeout = 0.0
+                else:
+                    timeout = max(0.001, remaining) if len(batch) > 0 else 0.1
                 request = self._request_queue.get(timeout=timeout)
                 batch.append(request)
 
@@ -474,6 +553,12 @@ class GpuExecutor:
                 return self._execute_solve_force_greats_finder(request)
             elif request.request_type == GpuRequestType.PROCESS_FORCE_GREATS:
                 return self._execute_process_force_greats(request)
+            elif request.request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
+                return self._execute_gpu_native_ga_run(request)
+            elif request.request_type == GpuRequestType.FG_RESET_GLOBAL_BEST:
+                return self._execute_fg_reset_global_best(request)
+            elif request.request_type == GpuRequestType.FG_DOWNLOAD_GLOBAL_BEST:
+                return self._execute_fg_download_global_best(request)
             else:
                 return GpuResponse(
                     request_id=request.request_id,
@@ -552,7 +637,64 @@ class GpuExecutor:
                 error="Invalid payload for SOLVE_FORCE_GREATS_FINDER (expected kwargs dict)",
             )
 
-        result = solve_force_greats_finder_gpu(*args, **kwargs)
+        fg_tasks = kwargs.pop("fg_tasks", None)
+        if fg_tasks is not None:
+            if not isinstance(fg_tasks, (list, tuple)):
+                return GpuResponse(
+                    request_id=request.request_id,
+                    success=False,
+                    error="Invalid payload for SOLVE_FORCE_GREATS_FINDER (fg_tasks must be list/tuple)",
+                )
+            base_args = list(args)
+            if len(base_args) < 7:
+                return GpuResponse(
+                    request_id=request.request_id,
+                    success=False,
+                    error="Invalid payload for SOLVE_FORCE_GREATS_FINDER (fg_tasks requires >=7 args)",
+                )
+
+            result = None
+            kwargs_local = dict(kwargs)
+            for task in fg_tasks:
+                if not isinstance(task, dict):
+                    continue
+                if "counts_list" in task:
+                    base_args[5] = task["counts_list"]
+                if "ftff_pairs" in task:
+                    base_args[6] = task["ftff_pairs"]
+                if "base_cfg_offset" in task:
+                    try:
+                        kwargs_local["base_cfg_offset"] = int(task["base_cfg_offset"])
+                    except Exception:
+                        pass
+                result = solve_force_greats_finder_gpu(*base_args, **kwargs_local)
+            return GpuResponse(
+                request_id=request.request_id,
+                success=True,
+                result=result,
+            )
+
+        ftff_chunks = kwargs.pop("ftff_chunks", None)
+        if ftff_chunks is not None:
+            if not isinstance(ftff_chunks, (list, tuple)):
+                return GpuResponse(
+                    request_id=request.request_id,
+                    success=False,
+                    error="Invalid payload for SOLVE_FORCE_GREATS_FINDER (ftff_chunks must be list/tuple)",
+                )
+            base_args = list(args)
+            if len(base_args) < 7:
+                return GpuResponse(
+                    request_id=request.request_id,
+                    success=False,
+                    error="Invalid payload for SOLVE_FORCE_GREATS_FINDER (ftff_chunks requires >=7 args)",
+                )
+            result = None
+            for chunk in ftff_chunks:
+                base_args[6] = chunk
+                result = solve_force_greats_finder_gpu(*base_args, **kwargs)
+        else:
+            result = solve_force_greats_finder_gpu(*args, **kwargs)
         return GpuResponse(
             request_id=request.request_id,
             success=True,
@@ -620,6 +762,126 @@ class GpuExecutor:
             request_id=request.request_id,
             success=True,
             result=None,
+        )
+
+    def _execute_gpu_native_ga_run(self, request: GpuRequest) -> GpuResponse:
+        """
+        Execute a full GPU-native GA run on the GPU-owner thread.
+
+        This request is intended for the GPU-native in-flight pipeline where
+        CPU-side population building is done elsewhere and the GPU thread
+        stays busy running Taichi kernels back-to-back.
+        """
+        if not self._in_process_queues:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="GPU_NATIVE_GA_RUN requires in-process queues (avoid IPC pickling)",
+            )
+
+        payload = request.payload or {}
+        calc_song = payload.get("calc_song")
+        ref_arrays = payload.get("ref_arrays")
+        item_stats = payload.get("item_stats")
+        slot_start = payload.get("slot_start")
+        slot_count = payload.get("slot_count")
+        base_fixed_stats_arr = payload.get("base_fixed_stats_arr")
+        initial_populations = payload.get("initial_populations")
+        song_slot = int(payload.get("song_slot", 0) or 0)
+        n_generations = int(payload.get("n_generations", 1) or 1)
+        elite_count = int(payload.get("elite_count", 2) or 2)
+        mutation_rate = float(payload.get("mutation_rate", 0.02) or 0.02)
+        immigrant_rate = float(payload.get("immigrant_rate", 0.0) or 0.0)
+        tournament_k = int(payload.get("tournament_k", 3) or 3)
+        color_flags = payload.get("color_flags") or {}
+        cfg_data = payload.get("cfg_data") or {}
+
+        if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="Invalid payload for GPU_NATIVE_GA_RUN (expected calc_song/ref_arrays dicts)",
+            )
+
+        try:
+            from gear_optimizer.solver.genetic import run_gpu_native_ga_runs_payload_prebuilt
+
+            runs_payload = run_gpu_native_ga_runs_payload_prebuilt(
+                calc_song=calc_song,
+                ref_arrays=ref_arrays,
+                song_slot=song_slot,
+                item_stats=item_stats,
+                slot_start=slot_start,
+                slot_count=slot_count,
+                base_fixed_stats_arr=base_fixed_stats_arr,
+                initial_populations=initial_populations,
+                n_generations=n_generations,
+                elite_count=elite_count,
+                mutation_rate=mutation_rate,
+                immigrant_rate=immigrant_rate,
+                tournament_k=tournament_k,
+                color_flags=dict(color_flags),
+                cfg_data=dict(cfg_data),
+            )
+        except Exception as e:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error=f"{type(e).__name__}: {e}",
+            )
+
+        return GpuResponse(
+            request_id=request.request_id,
+            success=True,
+            result=runs_payload,
+        )
+
+    def _execute_fg_reset_global_best(self, request: GpuRequest) -> GpuResponse:
+        """Reset FG global-best accumulation fields on the GPU."""
+        if not self._in_process_queues:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="FG_RESET_GLOBAL_BEST requires in-process queues (avoid IPC pickling)",
+            )
+
+        payload = request.payload or {}
+        try:
+            n_genomes = int(payload.get("n_genomes", 0) or 0)
+        except Exception:
+            n_genomes = 0
+
+        from .taichi_gem.force_greats.api import fg_reset_global_best
+
+        fg_reset_global_best(int(n_genomes))
+        return GpuResponse(
+            request_id=request.request_id,
+            success=True,
+            result=None,
+        )
+
+    def _execute_fg_download_global_best(self, request: GpuRequest) -> GpuResponse:
+        """Download FG global-best accumulation results from the GPU."""
+        if not self._in_process_queues:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="FG_DOWNLOAD_GLOBAL_BEST requires in-process queues (avoid IPC pickling)",
+            )
+
+        payload = request.payload or {}
+        try:
+            n_genomes = int(payload.get("n_genomes", 0) or 0)
+        except Exception:
+            n_genomes = 0
+
+        from .taichi_gem.force_greats.api import fg_download_global_best
+
+        result = fg_download_global_best(int(n_genomes))
+        return GpuResponse(
+            request_id=request.request_id,
+            success=True,
+            result=result,
         )
 
     def _execute_optimize_gems_batch(self, request: GpuRequest) -> GpuResponse:

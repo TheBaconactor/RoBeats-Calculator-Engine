@@ -63,6 +63,22 @@ CREATE TABLE fg_loadouts (
 );
 ```
 
+### 4. `pending_fg_jobs` Table (Deferred Force Greats Work)
+Stores a compact snapshot of GA candidates for songs whose Force Greats evaluation is **deferred** (e.g. GPU-native in-flight mode that interleaves FG at a fixed cadence).
+
+This exists to:
+- Keep FG candidates safe even if the base leaderboards are pruned (`LOADOUTS_PER_SONG_LIMIT`).
+- Allow FG work to be resumed later without rerunning GA (best-effort; depends on config consistency).
+
+```sql
+CREATE TABLE pending_fg_jobs (
+    song_name TEXT PRIMARY KEY,
+    candidates_json TEXT NOT NULL,  -- JSON array of compact GA candidates
+    created_ts REAL,
+    updated_ts REAL
+);
+```
+
 ---
 
 ## Developer Guide: How to Query

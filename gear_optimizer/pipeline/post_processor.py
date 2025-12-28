@@ -94,6 +94,38 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
         if item is None:
             break
 
+        # Deferred ForceGreats updates (do not affect completed/total counts).
+        if isinstance(item, dict) and item.get("_fg_update"):
+            try:
+                song_name = item.get("song", "Unknown")
+                db_key = item.get("db_key") or song_name
+                if item.get("use_evo_db", True):
+                    persisted = item.get("persist_entries") or []
+                    if persisted:
+                        valid_entries = [
+                            e
+                            for e in persisted
+                            if e.get("score", 0) > 0 and (e.get("gear") or e.get("minis"))
+                        ]
+                        if valid_entries:
+                            save_loadouts_batch(db_key, valid_entries)
+                        else:
+                            print(f"[DB] Skipped FG update for {song_name}: no valid entries")
+                    try:
+                        from gear_optimizer.data.database import delete_pending_fg_job
+
+                        delete_pending_fg_job(db_key)
+                    except Exception:
+                        pass
+            except Exception as exc:
+                msg = f"[POST][FG] Error: {type(exc).__name__}: {exc}"
+                print(msg)
+                try:
+                    logging.error(msg + "\n" + traceback.format_exc())
+                except Exception:
+                    pass
+            continue
+
         # Propagate compute failures
         if isinstance(item, dict) and "_error" in item:
             failed += 1
@@ -153,6 +185,18 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     item.get("loadout_entries"),
                     build_details,
                 )
+
+                # Crash-safe deferred FG: store GA candidates so FG can run later without rerunning GA.
+                if item.get("_pending_fg_job") and item.get("use_evo_db", True):
+                    try:
+                        from gear_optimizer.data.database import upsert_pending_fg_job
+
+                        upsert_pending_fg_job(
+                            item.get("db_key", item.get("song", "Unknown")),
+                            item.get("ga_candidates") or [],
+                        )
+                    except Exception:
+                        pass
 
                 # Print results (including optional FG debug) in post process so GPU can move on.
                 def _emit(_msg: str) -> None:

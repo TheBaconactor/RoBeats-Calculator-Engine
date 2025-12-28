@@ -144,6 +144,15 @@ class GpuServiceClient:
     def submit_solve_genomes(self, payload: dict[str, Any]) -> GpuJobHandle:
         return self.submit(GpuRequestType.SOLVE_GENOMES_PARALLEL, dict(payload or {}))
 
+    def submit_gpu_native_ga_run(self, payload: dict[str, Any]) -> GpuJobHandle:
+        return self.submit(GpuRequestType.GPU_NATIVE_GA_RUN, dict(payload or {}))
+
+    def submit_solve_force_greats_finder(self, *args: Any, **kwargs: Any) -> GpuJobHandle:
+        return self.submit(
+            GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+            {"args": args, "kwargs": kwargs},
+        )
+
     def submit_process_force_greats(self, *args: Any, **kwargs: Any) -> GpuJobHandle:
         return self.submit(
             GpuRequestType.PROCESS_FORCE_GREATS,

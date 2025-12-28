@@ -11,7 +11,7 @@ from typing import Callable, Dict
 
 Migration = Callable[[sqlite3.Connection], None]
 
-LATEST_SCHEMA_VERSION = 1
+LATEST_SCHEMA_VERSION = 2
 
 
 def _migration_1_init_schema(conn: sqlite3.Connection) -> None:
@@ -59,8 +59,25 @@ def _migration_1_init_schema(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_2_add_pending_fg_jobs(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS pending_fg_jobs (
+            song_name TEXT PRIMARY KEY,
+            candidates_json TEXT NOT NULL,
+            created_ts REAL,
+            updated_ts REAL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pending_fg_jobs_updated
+            ON pending_fg_jobs (updated_ts DESC);
+        """
+    )
+
+
 _MIGRATIONS: Dict[int, Migration] = {
     1: _migration_1_init_schema,
+    2: _migration_2_add_pending_fg_jobs,
 }
 
 
@@ -91,4 +108,3 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
                 raise RuntimeError(f"Missing migration for schema version {version}.")
             migration(conn)
             set_schema_version(conn, version)
-
