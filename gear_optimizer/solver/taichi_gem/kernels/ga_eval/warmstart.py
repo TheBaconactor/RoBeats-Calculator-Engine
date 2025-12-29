@@ -37,7 +37,7 @@ def ga_find_best_combo_warmstart_kernel(
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
     song_slot: ti.i32,
-    use_hints: ti.i32,  # 0 = cold start (full greedy), 1 = warm start (local search from hint)
+    use_hints: ti.template(),  # 0 = cold start (full greedy), 1 = warm start (local search from hint)
 ):
     """
     GPU-parallel evaluation with optional warm-start from hints.
@@ -120,7 +120,7 @@ def ga_find_best_combo_warmstart_kernel(
 
         res_vec = ti.Vector([0, 0, 0, 0, 0, 0, 0])
 
-        if use_hints != 0:
+        if ti.static(use_hints):
             # Warm start: use hint from previous generation
             hint = kernels_helpers.genome_hint_allocation[genome_idx]
             res_vec = local_search_from_hint(

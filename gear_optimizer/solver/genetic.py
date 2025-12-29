@@ -1143,9 +1143,6 @@ def _run_gpu_native_ga(
             song_slot=song_slot,
         )
 
-        # GPU-side island elite selection (no CPU download!)
-        gpu_api.ga_find_island_elites(n_genomes, num_islands, elite_count)
-
         # --- MIGRATION PHASE (every GPU_GA_GENS_PER_MIGRATION generations) ---
         # Now fully GPU-side: no CPU downloads/uploads needed!
         is_migration_gen = num_islands > 1 and (gen + 1) % GPU_GA_GENS_PER_MIGRATION == 0
@@ -1163,15 +1160,15 @@ def _run_gpu_native_ga(
         # This saves one generation step per run (30 total per song)
         if gen < n_generations - 1:
             # Run next generation using FUSED kernel (2 launches instead of 4!)
-            # Includes: select + crossover + mutate + elitism + swap + hints
-            total_elites = num_islands * elite_count
+            # Includes: select + crossover + mutate + island elitism + swap + hint inheritance
             gpu_api.ga_next_generation_fused(
                 n_genomes=n_genomes,
                 n_slots=n_slots,
                 mutation_rate=mutation_rate,
                 immigrant_rate=immigrant_rate,
                 tournament_k=tournament_k,
-                n_elites=total_elites,
+                n_islands=num_islands,
+                elites_per_island=elite_count,
             )
 
     # Optionally store run payload to the multi-run GPU buffer (no CPU readback).

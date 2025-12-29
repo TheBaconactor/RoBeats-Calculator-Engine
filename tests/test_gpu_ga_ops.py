@@ -86,3 +86,49 @@ def test_gpu_ga_initial_population_buffer_roundtrip():
         ga_load_initial_population(run_idx=r, n_genomes=n_genomes, n_slots=n_slots)
         out = ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
         assert np.array_equal(out, pops[r])
+
+
+@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
+def test_gpu_ga_next_generation_fused_smoke_valid_ranges():
+    """
+    Smoke test for the fused GPU next-generation kernel used by the GPU-native GA:
+    - runs without error
+    - output stays within the original item_id range and preserves shape
+    """
+    from gear_optimizer.solver.taichi_gem.api import (
+        ga_upload_island_boundaries,
+        ga_upload_population_indices,
+        ga_seed_rng,
+        ga_set_scores,
+        ga_next_generation_fused,
+        ga_download_population_indices,
+    )
+
+    n_genomes = 64
+    n_slots = 9
+
+    pop = np.random.default_rng(123).integers(0, 1000, size=(n_genomes, n_slots), dtype=np.int32)
+    ga_upload_population_indices(pop, n_slots=n_slots)
+
+    scores = np.arange(n_genomes, dtype=np.int32)
+    ga_set_scores(scores, n_genomes=n_genomes)
+    ga_seed_rng(n_genomes, seed=42)
+
+    # 4 equal-sized islands of 16 genomes each.
+    ga_upload_island_boundaries(np.array([0, 16, 32, 48, 64], dtype=np.int32))
+
+    ga_next_generation_fused(
+        n_genomes=n_genomes,
+        n_slots=n_slots,
+        mutation_rate=0.25,
+        immigrant_rate=0.0,
+        tournament_k=3,
+        n_islands=4,
+        elites_per_island=2,
+    )
+
+    out = ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
+    assert out.shape == (n_genomes, n_slots)
+    assert out.dtype == np.int32
+    assert int(out.min()) >= 0
+    assert int(out.max()) < 1000

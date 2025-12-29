@@ -89,6 +89,7 @@ from .kernels_ga import (
     ga_aggregate_and_init_best_kernel,
     ga_select_crossover_mutate_kernel,
     ga_next_generation_full_kernel,  # FULLY FUSED: select+crossover+mutate+elitism
+    ga_next_generation_full_islands_kernel,  # FUSED: island elites computed on-the-fly
     ga_swap_and_inherit_hints_kernel,  # FUSED: swap+hints
 )
 
@@ -199,6 +200,7 @@ __all__ = [
     "ga_aggregate_and_init_best_kernel",
     "ga_select_crossover_mutate_kernel",
     "ga_next_generation_full_kernel",
+    "ga_next_generation_full_islands_kernel",
     "ga_swap_and_inherit_hints_kernel",
     "ga_write_best_and_update_global_kernel",
     # Scoring functions

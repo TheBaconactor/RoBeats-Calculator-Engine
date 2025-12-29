@@ -400,6 +400,7 @@ def _solve_force_greats_finder_gpu_impl(
     return_raw: bool = False,
     accumulate_global: bool = False,
     base_cfg_offset: int = 0,
+    upload_genome_stats: bool = True,
 ) -> list[dict[str, Any]] | dict[str, np.ndarray] | None:
     """
     Full GPU ForceGreatsFinder (tolerant mode).
@@ -474,31 +475,55 @@ def _solve_force_greats_finder_gpu_impl(
     t_download = 0.0
     _t0 = time.perf_counter() if _perf else 0.0
 
-    # Upload per-genome base stats using cached buffers
-    stats_buf = _get_genome_stats_buf()
+    global _fg_genome_stats_upload_key
+    if upload_genome_stats:
+        # Upload per-genome base stats using cached buffers
+        stats_buf = _get_genome_stats_buf()
 
-    # Fast path: if genome_stats_list is already a numpy array, use directly
-    if isinstance(genome_stats_list, np.ndarray):
-        # Expect shape (n_genomes, 7) with columns: pp, cm, fm, p_val, s_val, ft_stat, ff_stat
-        stats_buf[:n_genomes, :7] = genome_stats_list[:n_genomes, :7]
+        # Fast path: if genome_stats_list is already a numpy array, use directly
+        if isinstance(genome_stats_list, np.ndarray):
+            # Expect shape (n_genomes, 7) with columns: pp, cm, fm, p_val, s_val, ft_stat, ff_stat
+            stats_buf[:n_genomes, :7] = genome_stats_list[:n_genomes, :7]
+        else:
+            # Slow path: unpack list of dicts
+            for i, st in enumerate(genome_stats_list):
+                stats_buf[i, 0] = int(st.get("base_pp", 0))
+                stats_buf[i, 1] = int(st.get("base_cm", 0))
+                stats_buf[i, 2] = int(st.get("base_fm", 0))
+                stats_buf[i, 3] = int(st.get("base_p_val", 0))
+                stats_buf[i, 4] = int(st.get("base_s_val", 0))
+                stats_buf[i, 5] = int(st.get("base_ft_stat", 0))
+                stats_buf[i, 6] = int(st.get("base_ff_stat", 0))
+
+        # Upload genome base stats.
+        #
+        # IMPORTANT: `genome_base_stats` is shared across multiple GPU entrypoints
+        # (gem solver, GA solver, FG solver). Caching across independent entrypoints
+        # can be unsafe because another entrypoint may overwrite the field.
+        #
+        # For in-process batched FG tasks (GpuExecutor), callers can intentionally
+        # set `upload_genome_stats=False` for subsequent tasks when they know the
+        # field is still valid (no intervening GPU entrypoints).
+        gem_fields.genome_base_stats.from_numpy(stats_buf)
+
+        try:
+            if isinstance(genome_stats_list, np.ndarray):
+                ptr = int(genome_stats_list.__array_interface__["data"][0])
+            else:
+                ptr = int(id(genome_stats_list))
+        except Exception:
+            ptr = int(id(genome_stats_list))
+        _fg_genome_stats_upload_key = (int(n_genomes), int(ptr))
     else:
-        # Slow path: unpack list of dicts
-        for i, st in enumerate(genome_stats_list):
-            stats_buf[i, 0] = int(st.get("base_pp", 0))
-            stats_buf[i, 1] = int(st.get("base_cm", 0))
-            stats_buf[i, 2] = int(st.get("base_fm", 0))
-            stats_buf[i, 3] = int(st.get("base_p_val", 0))
-            stats_buf[i, 4] = int(st.get("base_s_val", 0))
-            stats_buf[i, 5] = int(st.get("base_ft_stat", 0))
-            stats_buf[i, 6] = int(st.get("base_ff_stat", 0))
-
-    # Always upload genome base stats.
-    #
-    # IMPORTANT: `genome_base_stats` is shared across multiple GPU entrypoints
-    # (gem solver, GA solver, FG solver). Caching "last uploaded stats" inside
-    # the FG module is unsafe because another entrypoint may overwrite the field
-    # between FG calls, leading to stale stats being used and CPU/GPU mismatches.
-    gem_fields.genome_base_stats.from_numpy(stats_buf)
+        try:
+            ok = _fg_genome_stats_upload_key is not None and int(_fg_genome_stats_upload_key[0]) == int(n_genomes)
+        except Exception:
+            ok = False
+        if not ok:
+            raise RuntimeError(
+                "Skipping genome stats upload without a compatible prior upload; "
+                "this indicates a misuse of upload_genome_stats=False."
+            )
 
     # Upload FT/FF list
     n_ftff = int(len(ftff_pairs))
@@ -945,3 +970,103 @@ def solve_force_greats_finder_gpu(*args, **kwargs) -> list[dict[str, Any]] | dic
                 f"(attempt {attempt + 1}/{max(0, _FG_VULKAN_RETRIES)})"
             )
             gem_api.hard_reset_taichi(reason=str(e).splitlines()[0][:200])
+
+
+def solve_force_greats_finder_gpu_tasks(
+    genome_stats_list: list[dict[str, Any]] | np.ndarray,
+    timestamps_np: np.ndarray,
+    great_candidate_timestamps_np: np.ndarray | None,
+    long_notes: int,
+    last_note_time: float,
+    *,
+    fg_tasks: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    n_sections: int,
+    is_p_ft: int,
+    is_s_ft: int,
+    is_p_ff: int,
+    is_s_ff: int,
+    is_p_pp: int,
+    is_s_pp: int,
+    is_p_cm: int,
+    is_s_cm: int,
+    is_p_fm: int,
+    is_s_fm: int,
+    is_p_ov: int,
+    is_s_ov: int,
+    ref_arrays: dict,
+    total_budget: int = 90,
+    gem_scale_fever: int = 3,
+    pair_caps_grid: np.ndarray | None = None,
+    cfg_chunk: int | None = None,
+    base_cfg_offset: int = 0,
+    accumulate_global: bool = True,
+    return_raw: bool = True,
+) -> None:
+    """
+    Execute multiple FG finder tasks as one logical GPU job.
+
+    This is intended for `GpuExecutor` in in-process mode so we can amortize the
+    expensive `genome_base_stats` upload across many small breakpoint groups.
+
+    Each task must be a dict containing:
+      - counts_list: list of forced-count configs
+      - ftff_pairs: list of (ft_gems, ff_gems)
+      - optional base_cfg_offset: global cfg index offset
+    """
+    if not accumulate_global:
+        raise ValueError("solve_force_greats_finder_gpu_tasks requires accumulate_global=True")
+    if not return_raw:
+        raise ValueError("solve_force_greats_finder_gpu_tasks requires return_raw=True")
+    if not isinstance(fg_tasks, (list, tuple)):
+        raise TypeError("solve_force_greats_finder_gpu_tasks fg_tasks must be a list/tuple of dicts")
+    if not fg_tasks:
+        return
+
+    uploaded = False
+    for task in fg_tasks:
+        if not isinstance(task, dict):
+            continue
+        fg_configs = task.get("counts_list")
+        ftff_pairs = task.get("ftff_pairs")
+        if not fg_configs or not ftff_pairs:
+            continue
+
+        task_offset = int(base_cfg_offset)
+        if "base_cfg_offset" in task:
+            try:
+                task_offset = int(task.get("base_cfg_offset", task_offset) or task_offset)
+            except Exception:
+                task_offset = int(base_cfg_offset)
+
+        _solve_force_greats_finder_gpu_impl(
+            genome_stats_list,
+            timestamps_np,
+            great_candidate_timestamps_np,
+            int(long_notes),
+            float(last_note_time),
+            fg_configs,
+            ftff_pairs,
+            n_sections=int(n_sections),
+            is_p_ft=int(is_p_ft),
+            is_s_ft=int(is_s_ft),
+            is_p_ff=int(is_p_ff),
+            is_s_ff=int(is_s_ff),
+            is_p_pp=int(is_p_pp),
+            is_s_pp=int(is_s_pp),
+            is_p_cm=int(is_p_cm),
+            is_s_cm=int(is_s_cm),
+            is_p_fm=int(is_p_fm),
+            is_s_fm=int(is_s_fm),
+            is_p_ov=int(is_p_ov),
+            is_s_ov=int(is_s_ov),
+            ref_arrays=ref_arrays,
+            total_budget=int(total_budget),
+            gem_scale_fever=int(gem_scale_fever),
+            pair_caps_grid=pair_caps_grid,
+            cfg_chunk=cfg_chunk,
+            return_raw=True,
+            accumulate_global=True,
+            base_cfg_offset=int(task_offset),
+            upload_genome_stats=(not uploaded),
+        )
+        uploaded = True

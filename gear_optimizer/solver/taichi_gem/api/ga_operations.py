@@ -611,16 +611,15 @@ def ga_next_generation_fused(
     mutation_rate: float = 0.02,
     immigrant_rate: float = 0.0,
     tournament_k: int = 3,
-    n_elites: int = 10,
+    n_islands: int = 1,
+    elites_per_island: int = 1,
 ) -> None:
     """
     FULLY FUSED next generation: 2 kernel launches instead of 4.
 
     This combines:
-    1. ga_next_generation_full_kernel: select + crossover + mutate + elite copy
+    1. ga_next_generation_full_islands_kernel: select + crossover + mutate + island elites (computed on-the-fly)
     2. ga_swap_and_inherit_hints_kernel: swap + hint inheritance
-
-    Uses GPU-resident island_elite_indices (set by ga_find_island_elites).
 
     Args:
         n_genomes: Population size
@@ -628,21 +627,23 @@ def ga_next_generation_fused(
         mutation_rate: Probability of mutation per genome (default 0.02)
         immigrant_rate: Probability of fully re-rolling a genome per generation (default 0.0)
         tournament_k: Tournament size for selection (default 3)
-        n_elites: Total number of elites to preserve (n_islands * elites_per_island)
+        n_islands: Number of islands (must match uploaded island_boundaries)
+        elites_per_island: Elites preserved per island
     """
     ensure_ready()
     n_genomes = int(n_genomes)
     n_slots = int(n_slots)
-    n_elites = int(n_elites)
+    n_islands = int(n_islands)
+    elites_per_island = int(elites_per_island)
     tournament_k = int(tournament_k)
     if n_genomes <= 0:
         return
     if n_slots <= 0 or n_slots > fields.MAX_SLOTS:
         raise ValueError(f"Invalid n_slots: {n_slots}")
-    if n_elites < 0:
-        n_elites = 0
-    if n_elites > n_genomes:
-        n_elites = n_genomes
+    if n_islands < 1:
+        n_islands = 1
+    if elites_per_island < 0:
+        elites_per_island = 0
     if tournament_k < 1:
         tournament_k = 1
 
@@ -664,7 +665,15 @@ def ga_next_generation_fused(
         ir_fp = np.uint32(int(ir * 4294967295.0))
 
     # FUSED: Selection + Crossover + Mutation + Elitism (+ optional immigrants) (all in one kernel)
-    kernels.ga_next_generation_full_kernel(n_genomes, n_slots, n_elites, tournament_k, mr_fp, ir_fp)
+    kernels.ga_next_generation_full_islands_kernel(
+        n_genomes,
+        n_slots,
+        n_islands,
+        elites_per_island,
+        tournament_k,
+        mr_fp,
+        ir_fp,
+    )
 
     # FUSED: Swap + Hint Inheritance (second kernel)
     kernels.ga_swap_and_inherit_hints_kernel(n_genomes, n_slots)

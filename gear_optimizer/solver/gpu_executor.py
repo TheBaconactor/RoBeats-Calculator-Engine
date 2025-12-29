@@ -164,6 +164,10 @@ class GpuExecutor:
         self._idle_transitions_sec = defaultdict(float)
         self._idle_transitions_count = defaultdict(int)
         self._last_work_req_type: Optional[GpuRequestType] = None
+        self._fg_tasks_batches = 0
+        self._fg_tasks_total = 0
+        self._fg_tasks_max = 0
+        self._fg_tasks_batch_hist = defaultdict(int)
 
     def start(self, *, in_process: bool = False):
         """Start the GPU executor thread in the main process."""
@@ -196,6 +200,10 @@ class GpuExecutor:
         self._idle_transitions_sec = defaultdict(float)
         self._idle_transitions_count = defaultdict(int)
         self._last_work_req_type = None
+        self._fg_tasks_batches = 0
+        self._fg_tasks_total = 0
+        self._fg_tasks_max = 0
+        self._fg_tasks_batch_hist = defaultdict(int)
         self._response_queues = {}
         self._next_worker_id = 0
 
@@ -257,13 +265,23 @@ class GpuExecutor:
             top_types_str = ", ".join(f"{t.value}:{self._req_type_counts[t]} ({sec:.2f}s)" for t, sec in top_types)
             top_batch_sizes = sorted(self._batch_size_counts.items(), key=lambda kv: kv[0])[:16]
             batch_hist_str = ", ".join(f"{sz}:{cnt}" for sz, cnt in top_batch_sizes if cnt)
+            fg_tasks_avg = (self._fg_tasks_total / self._fg_tasks_batches) if self._fg_tasks_batches else 0.0
+            fg_tasks_hist = ""
+            if self._fg_tasks_batches:
+                try:
+                    top_fg = sorted(self._fg_tasks_batch_hist.items(), key=lambda kv: (-kv[1], kv[0]))[:8]
+                    fg_tasks_hist = ", ".join(f"{sz}:{cnt}" for sz, cnt in top_fg if cnt)
+                except Exception:
+                    fg_tasks_hist = ""
             print(
                 "[GpuExecutor][PROFILE] "
                 f"wait={self._wait_sec:.2f}s exec={self._exec_sec:.2f}s util={util:.1f}% "
                 f"avg_exec_per_req={avg:.3f}s avg_batch={avg_batch:.2f} "
                 f"idle_gaps={len(self._idle_gaps)} idle_sum={idle_total:.2f}s idle_max={idle_max:.3f}s idle_p95={idle_p95:.3f}s "
                 f"idle_initial={idle_initial:.3f}s idle_tail={idle_tail:.3f}s "
-                f"types=[{top_types_str}] batch_sizes=[{batch_hist_str}]"
+                f"types=[{top_types_str}] batch_sizes=[{batch_hist_str}] "
+                f"fg_task_batches={self._fg_tasks_batches} fg_tasks_total={self._fg_tasks_total} "
+                f"fg_tasks_avg={fg_tasks_avg:.1f} fg_tasks_max={self._fg_tasks_max} fg_tasks_hist=[{fg_tasks_hist}]"
             )
             try:
                 top_transitions = sorted(self._idle_transitions_sec.items(), key=lambda kv: kv[1], reverse=True)[:6]
@@ -659,7 +677,12 @@ class GpuExecutor:
 
     def _execute_solve_force_greats_finder(self, request: GpuRequest) -> GpuResponse:
         """Execute solve_force_greats_finder_gpu on GPU."""
-        from .taichi_gem.force_greats.api import solve_force_greats_finder_gpu
+        from .taichi_gem.force_greats.api import (
+            fg_download_global_best,
+            fg_reset_global_best,
+            solve_force_greats_finder_gpu,
+            solve_force_greats_finder_gpu_tasks,
+        )
 
         payload = request.payload or {}
         args = payload.get("args", ())
@@ -689,50 +712,67 @@ class GpuExecutor:
 
             reset_before = bool(kwargs.pop("fg_reset_before", False))
             download_after = bool(kwargs.pop("fg_download_after", False))
-            base_args = list(args)
-            if len(base_args) < 7:
+            if self._profile_enabled:
+                try:
+                    task_count = int(len(fg_tasks))
+                except Exception:
+                    task_count = 0
+                self._fg_tasks_batches += 1
+                self._fg_tasks_total += task_count
+                if task_count > self._fg_tasks_max:
+                    self._fg_tasks_max = task_count
+                self._fg_tasks_batch_hist[task_count] += 1
+
+            # Normalize positional args (support both legacy and current calling conventions).
+            if len(args) == 6:
+                # Legacy: no great-candidate array positional.
+                genome_stats_list, timestamps_np, long_notes, last_note_time, _fg_configs, _ftff_pairs = args
+                great_candidate_timestamps_np = None
+            elif len(args) == 7:
+                (
+                    genome_stats_list,
+                    timestamps_np,
+                    great_candidate_timestamps_np,
+                    long_notes,
+                    last_note_time,
+                    _fg_configs,
+                    _ftff_pairs,
+                ) = args
+            else:
                 return GpuResponse(
                     request_id=request.request_id,
                     success=False,
-                    error="Invalid payload for SOLVE_FORCE_GREATS_FINDER (fg_tasks requires >=7 args)",
+                    error="Invalid payload for SOLVE_FORCE_GREATS_FINDER (expected 6 or 7 positional args)",
+                )
+
+            try:
+                n_genomes = int(len(genome_stats_list))
+            except Exception:
+                n_genomes = 0
+
+            kwargs_local = dict(kwargs)
+            kwargs_local["accumulate_global"] = True
+            kwargs_local["return_raw"] = True
+
+            if reset_before:
+                fg_reset_global_best(int(n_genomes))
+
+            if fg_tasks:
+                solve_force_greats_finder_gpu_tasks(
+                    genome_stats_list,
+                    timestamps_np,
+                    great_candidate_timestamps_np,
+                    int(long_notes),
+                    float(last_note_time),
+                    fg_tasks=fg_tasks,
+                    **kwargs_local,
                 )
 
             result = None
-            kwargs_local = dict(kwargs)
-            if reset_before or download_after:
-                from .taichi_gem.force_greats.api import fg_download_global_best, fg_reset_global_best
-
-                try:
-                    n_genomes = int(len(base_args[0]))
-                except Exception:
-                    n_genomes = 0
-
-                kwargs_local["accumulate_global"] = True
-                kwargs_local["return_raw"] = True
-                if reset_before:
-                    fg_reset_global_best(int(n_genomes))
-
-            for task in fg_tasks:
-                if not isinstance(task, dict):
-                    continue
-                if "counts_list" in task:
-                    base_args[5] = task["counts_list"]
-                if "ftff_pairs" in task:
-                    base_args[6] = task["ftff_pairs"]
-                if "base_cfg_offset" in task:
-                    try:
-                        kwargs_local["base_cfg_offset"] = int(task["base_cfg_offset"])
-                    except Exception:
-                        pass
-                result = solve_force_greats_finder_gpu(*base_args, **kwargs_local)
-
             if download_after:
                 result = fg_download_global_best(int(n_genomes))
-            return GpuResponse(
-                request_id=request.request_id,
-                success=True,
-                result=result,
-            )
+
+            return GpuResponse(request_id=request.request_id, success=True, result=result)
 
         ftff_chunks = kwargs.pop("ftff_chunks", None)
         if ftff_chunks is not None:
