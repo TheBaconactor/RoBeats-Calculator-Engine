@@ -152,7 +152,8 @@ def _optimize_core_bits(
         pp_score: ti.i32 = -1
 
         # PP gem
-        if pp < MAX_STAT:
+        allow_pp: ti.i32 = is_p_pp | is_s_pp
+        if allow_pp != 0 and pp < MAX_STAT:
             t_pp: ti.i32 = pp + GEM_SCALE_NORMAL
             t_p = p_val + (GEM_STAT_TO_ELEMENT * is_p_pp) + (fill_bonus * is_p_ov)
             t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_pp) + (fill_bonus * is_s_ov)
@@ -166,7 +167,7 @@ def _optimize_core_bits(
                 best_opt = 0
 
         # CM gem
-        if cm < MAX_STAT:
+        if cm < MAX_STAT and (cm <= 50 or is_p_cm != 0 or is_s_cm != 0):
             t_cm: ti.i32 = cm + GEM_SCALE_NORMAL
             t_p = p_val + (GEM_STAT_TO_ELEMENT * is_p_cm) + (fill_bonus * is_p_ov)
             t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_cm) + (fill_bonus * is_s_ov)
@@ -196,7 +197,7 @@ def _optimize_core_bits(
                 best_opt = 2
 
         # PP lookahead (optional)
-        if best_opt == 3 and pp_score == best_score and remaining > 1:
+        if allow_pp != 0 and best_opt == 3 and pp_score == best_score and remaining > 1:
             max_k: ti.i32 = remaining
             if max_k > PP_TIE_LOOKAHEAD_MAX:
                 max_k = PP_TIE_LOOKAHEAD_MAX
@@ -276,6 +277,48 @@ def _forced_from_fp_target(
     if forced_val > non_fever_base:
         forced_val = non_fever_base
     return forced_val
+
+
+@ti.func
+def _mask_range_u32(lo: ti.i32, hi: ti.i32) -> ti.u32:
+    """
+    Build a u32 mask with bits [lo, hi) set (0 <= lo < hi <= 32).
+
+    Avoids per-bit loops when setting head fever masks.
+    """
+    full = ti.u32(0xFFFFFFFF)
+    left = full << ti.cast(lo, ti.u32)
+    right = full if hi == 32 else (full >> ti.cast(32 - hi, ti.u32))
+    return left & right
+
+
+@ti.func
+def _or_head_mask_range(m0: ti.u32, m1: ti.u32, m2: ti.u32, m3: ti.u32, start: ti.i32, end: ti.i32) -> ti.types.vector(
+    4, ti.u32
+):
+    """OR-in the [start, end) range into the 4-word head mask bitset."""
+    if start < end:
+        lo0 = start
+        hi0 = ti.min(end, 32)
+        if lo0 < hi0:
+            m0 |= _mask_range_u32(lo0, hi0)
+
+        lo1 = ti.max(start, 32) - 32
+        hi1 = ti.min(end, 64) - 32
+        if lo1 < hi1:
+            m1 |= _mask_range_u32(lo1, hi1)
+
+        lo2 = ti.max(start, 64) - 64
+        hi2 = ti.min(end, 96) - 64
+        if lo2 < hi2:
+            m2 |= _mask_range_u32(lo2, hi2)
+
+        lo3 = ti.max(start, 96) - 96
+        hi3 = ti.min(end, 128) - 96
+        if lo3 < hi3:
+            m3 |= _mask_range_u32(lo3, hi3)
+
+    return ti.Vector([m0, m1, m2, m3])
 
 
 @ti.func
@@ -808,17 +851,11 @@ def fg_stage1_kernel(
                 # Mark head fever notes (bitset)
                 if current_idx < head_len:
                     head_end = ti.min(head_len, fever_end_idx)
-                    for i in range(current_idx, head_end):
-                        word = i >> 5
-                        bit = ti.cast(1, ti.u32) << ti.cast(i & 31, ti.u32)
-                        if word == 0:
-                            m0 |= bit
-                        elif word == 1:
-                            m1 |= bit
-                        elif word == 2:
-                            m2 |= bit
-                        else:
-                            m3 |= bit
+                    masks = _or_head_mask_range(m0, m1, m2, m3, current_idx, head_end)
+                    m0 = masks[0]
+                    m1 = masks[1]
+                    m2 = masks[2]
+                    m3 = masks[3]
 
                 # Count body fever notes
                 if fever_end_idx > head_len:
@@ -881,6 +918,7 @@ def fg_stage1_kernel(
             pp_factor: ti.f32 = kernels_helpers.lookup_ref_pp(final_pp)
             combo_mul: ti.f32 = kernels_helpers.lookup_ref_cm(final_cm)
             combo_span: ti.f32 = combo_mul - 1.0
+            combo_span_scaled: ti.f32 = combo_span * 0.01
 
             base_value: ti.f32 = ti.cast((final_p_val * 2) + final_s_val, ti.f32) + pp_factor
             combo_value: ti.i32 = ti.cast(ti.floor(base_value * combo_mul), ti.i32)
@@ -900,6 +938,7 @@ def fg_stage1_kernel(
             )
             great_combo_value: ti.i32 = ti.cast(ti.floor(ti.cast(great_penalty_base, ti.f32) * combo_mul), ti.i32)
             body_penalty: ti.i32 = ti.max(0, combo_value - great_combo_value)
+            great_penalty_base_f: ti.f32 = ti.cast(great_penalty_base, ti.f32)
 
             score_penalty_total: ti.i32 = 0
             fill_penalty_total: ti.i32 = 0
@@ -913,16 +952,24 @@ def fg_stage1_kernel(
                     # For sections 2+, the first non-fever note is the transition note (no fill).
                     # Forced Greats should apply to fill-contributing notes, so offset by +1.
                     start = start_idx[s] + (1 - skip_wasted[s])
-                    for k in range(forced_n):
-                        note_idx = start + k
-                        if note_idx < 100:
-                            scaling: ti.f32 = 1.0 + combo_span * (ti.cast(note_idx + 1, ti.f32) / 100.0)
-                            perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
-                            great_val: ti.i32 = ti.cast(ti.floor(ti.cast(great_penalty_base, ti.f32) * scaling), ti.i32)
-                            pen: ti.i32 = ti.max(0, perfect_val - great_val)
-                            score_penalty_total += pen
-                        else:
-                            score_penalty_total += body_penalty
+                    head_cap: ti.i32 = 100 - start
+                    if head_cap < 0:
+                        head_cap = 0
+                    head_n: ti.i32 = forced_n
+                    if head_n > head_cap:
+                        head_n = head_cap
+                    body_n: ti.i32 = forced_n - head_n
+
+                    # All forced notes at indices >= 100 have the same body penalty.
+                    score_penalty_total += body_n * body_penalty
+
+                    for k in range(head_n):
+                        note_idx = start + k  # guaranteed < 100
+                        scaling: ti.f32 = 1.0 + combo_span_scaled * ti.cast(note_idx + 1, ti.f32)
+                        perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
+                        great_val: ti.i32 = ti.cast(ti.floor(great_penalty_base_f * scaling), ti.i32)
+                        pen: ti.i32 = ti.max(0, perfect_val - great_val)
+                        score_penalty_total += pen
 
             final_score: ti.i32 = base_score - score_penalty_total
             if final_score < 0:
@@ -1219,17 +1266,11 @@ def fg_stage1_flat_kernel(
                 # Mark head fever notes (bitset)
                 if current_idx < head_len:
                     head_end = ti.min(head_len, fever_end_idx)
-                    for i in range(current_idx, head_end):
-                        word = i >> 5
-                        bit = ti.cast(1, ti.u32) << ti.cast(i & 31, ti.u32)
-                        if word == 0:
-                            m0 |= bit
-                        elif word == 1:
-                            m1 |= bit
-                        elif word == 2:
-                            m2 |= bit
-                        else:
-                            m3 |= bit
+                    masks = _or_head_mask_range(m0, m1, m2, m3, current_idx, head_end)
+                    m0 = masks[0]
+                    m1 = masks[1]
+                    m2 = masks[2]
+                    m3 = masks[3]
 
                 # Count body fever notes
                 if fever_end_idx > head_len:
@@ -1281,6 +1322,7 @@ def fg_stage1_flat_kernel(
             pp_factor: ti.f32 = kernels_helpers.lookup_ref_pp(final_pp)
             combo_mul: ti.f32 = kernels_helpers.lookup_ref_cm(final_cm)
             combo_span: ti.f32 = combo_mul - 1.0
+            combo_span_scaled: ti.f32 = combo_span * 0.01
 
             base_value: ti.f32 = ti.cast((final_p_val * 2) + final_s_val, ti.f32) + pp_factor
             combo_value: ti.i32 = ti.cast(ti.floor(base_value * combo_mul), ti.i32)
@@ -1298,6 +1340,7 @@ def fg_stage1_flat_kernel(
             )
             great_combo_value: ti.i32 = ti.cast(ti.floor(ti.cast(great_penalty_base, ti.f32) * combo_mul), ti.i32)
             body_penalty: ti.i32 = ti.max(0, combo_value - great_combo_value)
+            great_penalty_base_f: ti.f32 = ti.cast(great_penalty_base, ti.f32)
 
             score_penalty_total: ti.i32 = 0
             fill_penalty_total: ti.i32 = 0
@@ -1311,19 +1354,23 @@ def fg_stage1_flat_kernel(
                     # For sections 2+, the first non-fever note is the transition note (no fill).
                     # Forced Greats should apply to fill-contributing notes, so offset by +1.
                     start = start_idx_vec[s] + (1 - skip_wasted[s])
-                    for k in range(forced_n):
-                        note_idx = start + k
-                        if note_idx < 100:
-                            scaling: ti.f32 = 1.0 + combo_span * (ti.cast(note_idx + 1, ti.f32) / 100.0)
-                            perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
-                            great_val: ti.i32 = ti.cast(
-                                ti.floor(ti.cast(great_penalty_base, ti.f32) * scaling),
-                                ti.i32,
-                            )
-                            pen: ti.i32 = ti.max(0, perfect_val - great_val)
-                            score_penalty_total += pen
-                        else:
-                            score_penalty_total += body_penalty
+                    head_cap: ti.i32 = 100 - start
+                    if head_cap < 0:
+                        head_cap = 0
+                    head_n: ti.i32 = forced_n
+                    if head_n > head_cap:
+                        head_n = head_cap
+                    body_n: ti.i32 = forced_n - head_n
+
+                    score_penalty_total += body_n * body_penalty
+
+                    for k in range(head_n):
+                        note_idx = start + k  # guaranteed < 100
+                        scaling: ti.f32 = 1.0 + combo_span_scaled * ti.cast(note_idx + 1, ti.f32)
+                        perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
+                        great_val: ti.i32 = ti.cast(ti.floor(great_penalty_base_f * scaling), ti.i32)
+                        pen: ti.i32 = ti.max(0, perfect_val - great_val)
+                        score_penalty_total += pen
 
             final_score: ti.i32 = base_score - score_penalty_total
             if final_score < 0:
