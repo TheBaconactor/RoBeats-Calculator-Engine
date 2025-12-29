@@ -1,0 +1,14 @@
+* text=auto
+
+# Keep repo text files consistent across platforms
+*.py text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.ini text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# PowerShell scripts are typically edited/run on Windows
+*.ps1 text eol=crlf

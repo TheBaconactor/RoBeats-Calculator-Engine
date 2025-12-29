@@ -31,6 +31,7 @@ Desktop.ini
 
 # Profiling artifacts
 *.prof
+*.pstats
 
 # Sensitive credentials (NEVER commit these!)
 Discord.env
@@ -52,6 +53,7 @@ RoBeatMetaWebsite/
 
 # Local bin folder (logs, temp files, local databases)
 bin/
+gear_optimizer/bin/
 
 # Generated results files
 general_meta_results.json

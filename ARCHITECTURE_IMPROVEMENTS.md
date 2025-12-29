@@ -749,8 +749,8 @@ Developer guidelines for tools:
 | File | Lines | Purpose |
 |------|-------|---------|
 | `config.ini` | 119 | Main configuration file |
-| `config_profile_baseline.ini` | - | Baseline profiling config |
-| `config_profile_inflight.ini` | - | In-flight pipeline profiling config |
+| `configs/profile/config_profile_baseline.ini` | - | Baseline profiling config |
+| `configs/profile/config_profile_inflight.ini` | - | In-flight pipeline profiling config |
 
 ### config.ini Sections
 
@@ -928,9 +928,9 @@ artifacts/
 ```
 
 ### Root-Level Profiling Files
-- `prof_baseline.pstats` - Baseline performance profile
-- `prof_inflight.pstats` - In-flight pipeline profile
-- `prof_inflight_native_skip.pstats` - Native skip variant
+- `artifacts/profiles/prof_baseline.pstats` - Baseline performance profile (generated; gitignored)
+- `artifacts/profiles/prof_inflight.pstats` - In-flight pipeline profile (generated; gitignored)
+- `artifacts/profiles/prof_inflight_native_skip.pstats` - Native skip variant (generated; gitignored)
 
 ---
 
