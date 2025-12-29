@@ -25,30 +25,32 @@ def ga_init_global_best_kernel():
 @ti.kernel
 def ga_update_global_best_kernel(n_genomes: ti.i32, n_slots: ti.i32):
     """
-    GPU-side global best update: atomically track best genome across all generations.
+    GPU-side global best update: track best genome across all generations.
 
-    For each genome, if its score is better than the current global best,
-    atomically update the best score and copy the genome's item IDs AND results.
-
-    This avoids expensive per-generation CPU downloads by keeping the best
-    genome on GPU until the end of the run.
+    IMPORTANT: This must update `ga_global_best_score`, `ga_global_best_genome`, and
+    `ga_global_best_results` *consistently*. The previous atomic-max approach could
+    leave the score from one genome but the IDs/results from another due to races.
 
     Args:
         n_genomes: Number of genomes to check
         n_slots: Number of equipment slots per genome
     """
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    for g in range(n_genomes):
-        score: ti.i32 = kernels_helpers.ga_scores[g]
-        old_best: ti.i32 = ti.atomic_max(kernels_helpers.ga_global_best_score[0], score)
+    # Single-thread deterministic scan to keep score/ids/results aligned.
+    for _ in range(1):
+        prev_best: ti.i32 = kernels_helpers.ga_global_best_score[0]
+        best_score: ti.i32 = prev_best
+        best_g: ti.i32 = -1
 
-        # If we improved the global best, copy our genome AND results
-        # Note: Race condition possible if two threads have same max score,
-        # but both would copy valid genomes with that score, so result is correct.
-        if old_best < score:
+        for g in range(n_genomes):
+            score: ti.i32 = kernels_helpers.ga_scores[g]
+            if score > best_score:
+                best_score = score
+                best_g = g
+
+        if best_g >= 0:
+            kernels_helpers.ga_global_best_score[0] = best_score
             for s in range(n_slots):
-                kernels_helpers.ga_global_best_genome[s] = kernels_helpers.population_indices[g, s]
-            # Also copy gem allocation results: [score, ft, ff, pp, cm, fm, ov]
-            res = kernels_helpers.genome_result_stats[g]
+                kernels_helpers.ga_global_best_genome[s] = kernels_helpers.population_indices[best_g, s]
+            res = kernels_helpers.genome_result_stats[best_g]
             for r in ti.static(range(7)):
                 kernels_helpers.ga_global_best_results[r] = res[r]

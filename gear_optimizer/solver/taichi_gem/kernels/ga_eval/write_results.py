@@ -280,12 +280,25 @@ def ga_write_best_and_update_global_kernel(
         kernels_helpers.genome_hint_allocation[genome_idx][2] = fm_gems
         kernels_helpers.genome_hint_allocation[genome_idx][3] = ov_gems
 
-        old_best: ti.i32 = ti.atomic_max(kernels_helpers.ga_global_best_score[0], score)
-        if old_best < score:
+    # Deterministic global-best update (single thread) to keep score/ids/results aligned.
+    for _ in range(1):
+        prev_best: ti.i32 = kernels_helpers.ga_global_best_score[0]
+        best_score: ti.i32 = prev_best
+        best_g: ti.i32 = -1
+
+        for g in range(n_genomes):
+            score: ti.i32 = kernels_helpers.ga_scores[g]
+            if score > best_score:
+                best_score = score
+                best_g = g
+
+        if best_g >= 0:
+            kernels_helpers.ga_global_best_score[0] = best_score
             for s in range(n_slots):
-                kernels_helpers.ga_global_best_genome[s] = kernels_helpers.population_indices[genome_idx, s]
+                kernels_helpers.ga_global_best_genome[s] = kernels_helpers.population_indices[best_g, s]
+            res = kernels_helpers.genome_result_stats[best_g]
             for r in ti.static(range(7)):
-                kernels_helpers.ga_global_best_results[r] = kernels_helpers.genome_result_stats[genome_idx][r]
+                kernels_helpers.ga_global_best_results[r] = res[r]
 
 
 @ti.kernel
