@@ -20,6 +20,6 @@ if ($Fix) {
 
 # 3. Quick tests (use python -m pytest for reliable package imports)
 Write-Host "`n== Quick tests =="
-python -m pytest tests/test_fg_performance.py tests/test_taichi_parity.py -q --tb=short
+python -m pytest tests/test_api_stability.py tests/test_taichi_parity.py -q --tb=short
 
 Write-Host "`nOK"

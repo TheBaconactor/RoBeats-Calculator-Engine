@@ -6,11 +6,13 @@ through the full GA pipeline.
 """
 
 import sys
-import os
+from pathlib import Path
 import numpy as np
 import random
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 def run_ga_gpu_test():
@@ -175,9 +177,9 @@ def run_ga_gpu_test():
 
     print("\n" + "=" * 60)
     if gpu_score == expected_score:
-        print(f"✓ PASSED: GPU GA ({gpu_score}) == CPU expected ({expected_score})")
+        print(f"[PASS] GPU GA ({gpu_score}) == expected ({expected_score})")
     else:
-        print(f"✗ DIFFERENT: GPU GA ({gpu_score}) != CPU expected ({expected_score})")
+        print(f"[FAIL] GPU GA ({gpu_score}) != expected ({expected_score})")
         print(f"  Diff: {gpu_score - expected_score}")
         print("  (Note: Minor differences may be due to GPU floating point)")
     print("=" * 60)

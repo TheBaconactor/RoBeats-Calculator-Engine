@@ -9,10 +9,13 @@ This test:
 """
 
 import sys
+from pathlib import Path
 import time
 import numpy as np
 
-sys.path.insert(0, ".")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 def run_regression_test():
@@ -103,7 +106,7 @@ def run_regression_test():
             gt_mask, gt_bf, gt_bn = gt_results[i]
 
             match = (an_bf == gt_bf) and (an_bn == gt_bn)
-            status = "✓" if match else "✗"
+            status = "[PASS]" if match else "[FAIL]"
 
             if not match:
                 all_match = False
@@ -115,9 +118,9 @@ def run_regression_test():
         print("-" * 70)
 
         if all_match:
-            print("\n✓ ALL RESULTS MATCH!")
+            print("\n[PASS] ALL RESULTS MATCH!")
         else:
-            print("\n✗ SOME RESULTS DO NOT MATCH")
+            print("\n[FAIL] SOME RESULTS DO NOT MATCH")
 
         # Larger benchmark
         print("\n4. Large-scale benchmark...")

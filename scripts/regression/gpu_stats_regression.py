@@ -12,11 +12,13 @@ regressions in stats calculation, specifically the 'double deduction' bug.
 
 import numpy as np
 import sys
-import os
 import json
+from pathlib import Path
 
 # Add parent to path for imports
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from gear_optimizer.solver.scoring import batch_evaluate_genomes, solve_best_fever_combination
 from gear_optimizer.core.constants import (

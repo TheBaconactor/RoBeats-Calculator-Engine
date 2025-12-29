@@ -1,11 +1,13 @@
 import sys
-import os
+from pathlib import Path
 import numpy as np
 import time
 import logging
 
 # Ensure we can import gear_optimizer
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from gear_optimizer.solver.scoring import solve_best_fever_combination, apply_force_greats_to_result
 from gear_optimizer.core.constants import TOTAL_ROWS

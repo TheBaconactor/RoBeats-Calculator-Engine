@@ -5,12 +5,15 @@ This test uses SongTimelineGrid directly to validate the analytical scorer.
 """
 
 import sys
+from pathlib import Path
+
 import numpy as np
-from math import floor, ceil
 
-sys.path.insert(0, "..")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
-from test_analytical_fg_scorer import AnalyticalFGScorer
+from gear_optimizer.solver.analytical_fg import AnalyticalFGScorer
 
 
 def create_mock_ref_arrays():
@@ -105,7 +108,7 @@ def run_standalone_validation():
 
             # Compare body counts
             match = (gt_bf == an_bf) and (gt_bn == an_bn)
-            status = "✓" if match else "✗"
+            status = "[PASS]" if match else "[FAIL]"
 
             if not match:
                 all_match = False
@@ -129,9 +132,9 @@ def run_standalone_validation():
         print("-" * 70)
 
         if all_match:
-            print("\n✓ ALL BASELINE COMPARISONS MATCH!")
+            print("\n[PASS] ALL BASELINE COMPARISONS MATCH!")
         else:
-            print(f"\n✗ {len(mismatches)} MISMATCHES found:")
+            print(f"\n[FAIL] {len(mismatches)} MISMATCHES found:")
             for m in mismatches[:3]:
                 print(f"   FT={m['ft']}, FF={m['ff']}: GT({m['gt_bf']},{m['gt_bn']}) != AN({m['an_bf']},{m['an_bn']})")
 
@@ -153,7 +156,7 @@ def run_standalone_validation():
                 an_mask, an_bf, an_bn = scorer.compute_timeline_with_forced(ft_stat, ff_stat, forced_counts_padded)
 
                 match = (gt_bf == an_bf) and (gt_bn == an_bn)
-                status = "✓" if match else "✗"
+                status = "[PASS]" if match else "[FAIL]"
 
                 if not match:
                     fg_match = False
@@ -167,9 +170,9 @@ def run_standalone_validation():
         print("-" * 70)
 
         if fg_match:
-            print("\n✓ ALL FORCED GREATS COMPARISONS MATCH!")
+            print("\n[PASS] ALL FORCED GREATS COMPARISONS MATCH!")
         else:
-            print("\n✗ FORCED GREATS MISMATCHES found - investigation needed")
+            print("\n[FAIL] FORCED GREATS MISMATCHES found - investigation needed")
 
         print("\n" + "=" * 70)
         print("VALIDATION COMPLETE")

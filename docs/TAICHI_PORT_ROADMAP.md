@@ -83,7 +83,7 @@ At each stage, add a CPU vs GPU equivalence harness:
 - Compare aggregated stats and fitness distributions.
 - Keep existing correctness tests for scoring parity:
   - `tests/test_gpu_integration.py`
-  - `tests/test_gpu_stats_regression.py`
+  - `scripts/regression/gpu_stats_regression.py`
 
 ## Notes specific to RX 7900 XTX (Vulkan)
 - Use `TAICHI_BLOCK_DIM` tuning (default currently set to 128 for this workload).
