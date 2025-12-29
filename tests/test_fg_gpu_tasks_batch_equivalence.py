@@ -138,4 +138,3 @@ def test_solve_force_greats_finder_gpu_tasks_matches_sequential_accumulation():
         assert isinstance(b, np.ndarray)
         assert a.shape == b.shape
         assert np.array_equal(a, b), f"Mismatch for key={k}"
-

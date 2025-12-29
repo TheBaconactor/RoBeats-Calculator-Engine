@@ -1145,7 +1145,11 @@ def _run_gpu_native_ga(
 
         # --- MIGRATION PHASE (every GPU_GA_GENS_PER_MIGRATION generations) ---
         # Now fully GPU-side: no CPU downloads/uploads needed!
-        is_migration_gen = num_islands > 1 and (gen + 1) % GPU_GA_GENS_PER_MIGRATION == 0
+        #
+        # IMPORTANT: Skip migration on the final generation. Migration updates
+        # population+scores but not genome_result_stats; performing it after the
+        # last evaluation would corrupt the final snapshot payload.
+        is_migration_gen = num_islands > 1 and (gen + 1) % GPU_GA_GENS_PER_MIGRATION == 0 and gen < n_generations - 1
         if is_migration_gen:
             # GPU-side ring topology migration (replaces expensive CPU round-trip)
             gpu_api.ga_island_migration(n_genomes, num_islands, GPU_GA_MIGRATE_COUNT, n_slots)
@@ -1328,6 +1332,56 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         "base_fixed_stats": base_fixed_stats_arr,
     }
 
+    is_p_ft = color_flags.get("is_p_ft", 0)
+    is_s_ft = color_flags.get("is_s_ft", 0)
+    is_p_ff = color_flags.get("is_p_ff", 0)
+    is_s_ff = color_flags.get("is_s_ff", 0)
+    is_p_pp = color_flags.get("is_p_pp", 0)
+    is_s_pp = color_flags.get("is_s_pp", 0)
+    is_p_cm = color_flags.get("is_p_cm", 0)
+    is_s_cm = color_flags.get("is_s_cm", 0)
+    is_p_fm = color_flags.get("is_p_fm", 0)
+    is_s_fm = color_flags.get("is_s_fm", 0)
+    is_p_ov = color_flags.get("is_p_ov", 0)
+    is_s_ov = color_flags.get("is_s_ov", 0)
+
+    total_budget = int(cfg_data.get("TotalBudget", 90))
+    gem_scale_fever = int(cfg_data.get("GemScaleFever", 3))
+
+    # Island model (mirrors _run_gpu_native_ga)
+    num_islands = min(GPU_GA_NUM_ISLANDS, n_genomes // 10)  # At least 10 per island
+    if num_islands < 1:
+        num_islands = 1
+
+    # Determine an auto batch size that avoids combo-chunking in ga_evaluate_population.
+    # Chunking increases kernel launch count, so we prefer keeping n_total*n_combos <= MAX_WORK_ITEMS.
+    try:
+        n_combos = int(gpu_api._ensure_ftff_combo_tables(total_budget))
+    except Exception:
+        n_combos = 0
+    denom = int(n_genomes) * max(1, n_combos)
+    # Avoid running right up against MAX_WORK_ITEMS: the warm-start evaluation kernel uses
+    # atomic reductions per genome, and near-saturation can be measurably slower on Vulkan.
+    soft_work_items = (int(gpu_fields.MAX_WORK_ITEMS) * 90) // 100  # 90% headroom
+    max_runs_by_work = int(soft_work_items // denom) if denom > 0 else 1
+    if max_runs_by_work < 1:
+        max_runs_by_work = 1
+    max_runs_by_genomes = int(gpu_fields.MAX_GENOMES // int(n_genomes)) if int(n_genomes) > 0 else 1
+    if max_runs_by_genomes < 1:
+        max_runs_by_genomes = 1
+
+    batch_runs_env = os.environ.get("GPU_NATIVE_GA_BATCH_RUNS", "0").strip()
+    try:
+        batch_runs_override = int(batch_runs_env)
+    except Exception:
+        batch_runs_override = 0
+
+    batch_runs_default = min(max_runs_by_work, max_runs_by_genomes)
+    if batch_runs_default < 1:
+        batch_runs_default = 1
+    if batch_runs_override > 0:
+        batch_runs_default = batch_runs_override
+
     payload_segments: list[np.ndarray] = []
 
     run_start_global = 0
@@ -1342,7 +1396,15 @@ def run_gpu_native_ga_runs_payload_prebuilt(
             n_slots=int(n_slots),
         )
 
-        for local_run_idx in range(seg_len):
+        # Initialize per-run best rows for this segment (used by batched execution).
+        gpu_api.ga_init_runs_best(run_idx_start=0, n_runs=int(seg_len), n_slots=int(n_slots))
+
+        batch_runs = min(int(batch_runs_default), int(seg_len))
+        if batch_runs < 1:
+            batch_runs = 1
+
+        local_run_idx = 0
+        while local_run_idx < seg_len:
             global_run_idx = run_start_global + local_run_idx
 
             if reset_every_runs > 0 and global_run_idx > 0 and (global_run_idx % reset_every_runs) == 0:
@@ -1357,37 +1419,122 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                     n_genomes=int(n_genomes),
                     n_slots=int(n_slots),
                 )
+                gpu_api.ga_init_runs_best(run_idx_start=0, n_runs=int(seg_len), n_slots=int(n_slots))
 
-            gpu_api.ga_load_initial_population(
-                run_idx=int(local_run_idx),
-                n_genomes=int(n_genomes),
-                n_slots=int(n_slots),
-            )
+            batch_len = min(batch_runs, seg_len - local_run_idx)
+            # Avoid crossing a periodic reset boundary within a batch.
+            if reset_every_runs > 0 and global_run_idx > 0:
+                remaining_until_reset = reset_every_runs - (global_run_idx % reset_every_runs)
+                if remaining_until_reset <= 0:
+                    remaining_until_reset = reset_every_runs
+                if batch_len > remaining_until_reset:
+                    batch_len = remaining_until_reset
+            if batch_len <= 0:
+                batch_len = 1
 
             last_exc = None
             for attempt in range(max_retries + 1):
                 try:
-                    _run_gpu_native_ga(
-                        population=None,
-                        n_generations=int(n_generations),
-                        registry=None,
-                        cfg_data=cfg_data,
-                        calc_song=calc_song,
-                        ref_arrays=ref_arrays,
-                        base_stats_fixed={},
-                        gpu_static=gpu_static,
-                        elite_count=int(elite_count),
-                        mutation_rate=float(mutation_rate),
-                        immigrant_rate=float(immigrant_rate),
-                        tournament_k=int(tournament_k),
-                        color_flags=color_flags,
-                        status_cb=None,
-                        song_slot=int(song_slot),
-                        store_payload_idx=int(local_run_idx),
-                        store_payload_only=True,
-                        n_genomes_override=int(n_genomes),
-                        population_preloaded=True,
+                    # Pack batch initial populations contiguously, preserving per-run semantics.
+                    gpu_api.ga_load_initial_populations_batch(
+                        run_idx_start=int(local_run_idx),
+                        n_runs=int(batch_len),
+                        n_genomes_per_run=int(n_genomes),
+                        n_slots=int(n_slots),
                     )
+                    gpu_api.ga_seed_rng_runs(n_runs=int(batch_len), n_genomes_per_run=int(n_genomes), seed=42)
+
+                    gen_use_hints = 0  # Force cold start on Gen 0
+                    n_total = int(batch_len) * int(n_genomes)
+
+                    for gen in range(int(n_generations)):
+                        gpu_api.ga_evaluate_population(
+                            n_genomes=n_total,
+                            n_slots=int(n_slots),
+                            total_budget=total_budget,
+                            gem_scale_fever=gem_scale_fever,
+                            song_slot=int(song_slot),
+                            is_p_ft=is_p_ft,
+                            is_s_ft=is_s_ft,
+                            is_p_ff=is_p_ff,
+                            is_s_ff=is_s_ff,
+                            is_p_pp=is_p_pp,
+                            is_s_pp=is_s_pp,
+                            is_p_cm=is_p_cm,
+                            is_s_cm=is_s_cm,
+                            is_p_fm=is_p_fm,
+                            is_s_fm=is_s_fm,
+                            is_p_ov=is_p_ov,
+                            is_s_ov=is_s_ov,
+                            use_hints=gen_use_hints,
+                        )
+
+                        # Materialize best + store hints (no global-best update; we track per-run best in payload row 0).
+                        gpu_api.ga_write_best_and_store_hints(
+                            n_total,
+                            total_budget,
+                            gem_scale_fever,
+                            is_p_ft=is_p_ft,
+                            is_s_ft=is_s_ft,
+                            is_p_ff=is_p_ff,
+                            is_s_ff=is_s_ff,
+                            is_p_pp=is_p_pp,
+                            is_s_pp=is_s_pp,
+                            is_p_cm=is_p_cm,
+                            is_s_cm=is_s_cm,
+                            is_p_fm=is_p_fm,
+                            is_s_fm=is_s_fm,
+                            is_p_ov=is_p_ov,
+                            is_s_ov=is_s_ov,
+                            song_slot=int(song_slot),
+                        )
+
+                        # Track best per run across generations.
+                        gpu_api.ga_update_runs_best(
+                            run_idx_start=int(local_run_idx),
+                            n_runs=int(batch_len),
+                            n_genomes_per_run=int(n_genomes),
+                            n_slots=int(n_slots),
+                        )
+
+                        # Migration only if another generation will be evaluated (avoid corrupting final snapshots).
+                        is_migration_gen = (
+                            num_islands > 1
+                            and (gen + 1) % GPU_GA_GENS_PER_MIGRATION == 0
+                            and gen < (int(n_generations) - 1)
+                        )
+                        if is_migration_gen:
+                            gpu_api.ga_island_migration_runs(
+                                n_runs=int(batch_len),
+                                n_genomes_per_run=int(n_genomes),
+                                n_islands=int(num_islands),
+                                migrate_count=int(GPU_GA_MIGRATE_COUNT),
+                                n_slots=int(n_slots),
+                            )
+                            gen_use_hints = 0
+                        else:
+                            gen_use_hints = 1
+
+                        if gen < int(n_generations) - 1:
+                            gpu_api.ga_next_generation_fused_runs(
+                                n_runs=int(batch_len),
+                                n_genomes_per_run=int(n_genomes),
+                                n_slots=int(n_slots),
+                                mutation_rate=float(mutation_rate),
+                                immigrant_rate=float(immigrant_rate),
+                                tournament_k=int(tournament_k),
+                                n_islands=int(num_islands),
+                                elites_per_island=int(elite_count),
+                            )
+
+                    # Store final per-genome snapshot rows (row 0 already contains best across all generations).
+                    gpu_api.ga_store_runs_payload_snapshot_segmented(
+                        run_idx_start=int(local_run_idx),
+                        n_runs=int(batch_len),
+                        n_genomes_per_run=int(n_genomes),
+                        n_slots=int(n_slots),
+                    )
+
                     last_exc = None
                     break
                 except Exception as e:
@@ -1406,16 +1553,14 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             n_genomes=int(n_genomes),
                             n_slots=int(n_slots),
                         )
-                        gpu_api.ga_load_initial_population(
-                            run_idx=int(local_run_idx),
-                            n_genomes=int(n_genomes),
-                            n_slots=int(n_slots),
-                        )
+                        gpu_api.ga_init_runs_best(run_idx_start=0, n_runs=int(seg_len), n_slots=int(n_slots))
                     except Exception:
                         break
 
             if last_exc is not None:
                 raise last_exc
+
+            local_run_idx += int(batch_len)
 
         payload_segments.append(
             gpu_api.ga_download_runs_payload(n_runs=int(seg_len), n_genomes=int(n_genomes), n_slots=int(n_slots))

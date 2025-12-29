@@ -42,6 +42,24 @@ def ga_seed_rng_kernel(n_genomes: ti.i32, seed: ti.u32):
 
 
 @ti.kernel
+def ga_seed_rng_runs_kernel(n_genomes_total: ti.i32, n_genomes_per_run: ti.i32, seed: ti.u32):
+    """
+    Initialize per-genome RNG state for multiple independent runs packed contiguously.
+
+    This mirrors ga_seed_rng_kernel, but seeds each run as if its genomes were indexed
+    [0..n_genomes_per_run) with the same seed (i.e., run-local indexing).
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    if n_genomes_per_run > 0:
+        for g in range(n_genomes_total):
+            local_g = g - (g // n_genomes_per_run) * n_genomes_per_run
+            s = seed ^ (ti.cast(local_g, ti.u32) * ti.u32(747796405)) ^ ti.u32(2891336453)
+            if s == ti.u32(0):
+                s = ti.u32(1)
+            kernels_helpers.ga_rng_state[g] = s
+
+
+@ti.kernel
 def ga_load_initial_population_kernel(run_idx: ti.i32, n_genomes: ti.i32, n_slots: ti.i32):
     """
     Copy a staged initial population into `population_indices`.
@@ -54,6 +72,33 @@ def ga_load_initial_population_kernel(run_idx: ti.i32, n_genomes: ti.i32, n_slot
     for g in range(n_genomes):
         for s in range(n_slots):
             kernels_helpers.population_indices[g, s] = kernels_helpers.ga_initial_populations[run_idx, g, s]
+
+
+@ti.kernel
+def ga_load_initial_populations_batch_kernel(
+    run_idx_start: ti.i32,
+    n_runs: ti.i32,
+    n_genomes_per_run: ti.i32,
+    n_slots: ti.i32,
+):
+    """
+    Copy a batch of staged initial populations into `population_indices`.
+
+    The output layout is contiguous by run:
+      output genome index g in [0, n_runs*n_genomes_per_run)
+        run = g // n_genomes_per_run
+        local = g % n_genomes_per_run
+      population_indices[g] = ga_initial_populations[run_idx_start + run, local]
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    if n_genomes_per_run > 0 and n_runs > 0:
+        n_total = n_runs * n_genomes_per_run
+        for g in range(n_total):
+            run = g // n_genomes_per_run
+            local_g = g - run * n_genomes_per_run
+            src_run = run_idx_start + run
+            for s in range(n_slots):
+                kernels_helpers.population_indices[g, s] = kernels_helpers.ga_initial_populations[src_run, local_g, s]
 
 
 @ti.kernel
@@ -883,7 +928,9 @@ def ga_next_generation_full_islands_kernel(
                         src_genome = isl_start
 
                     for s in range(n_slots):
-                        kernels_helpers.population_next_indices[g, s] = kernels_helpers.population_indices[src_genome, s]
+                        kernels_helpers.population_next_indices[g, s] = kernels_helpers.population_indices[
+                            src_genome, s
+                        ]
                     pa = src_genome
                 else:
                     elite_rank = -1
@@ -910,6 +957,238 @@ def ga_next_generation_full_islands_kernel(
         for _ in range(tournament_k_i):
             state = kernels_helpers._xorshift32(state)
             idx = ti.cast(state % ti.cast(n_genomes, ti.u32), ti.i32)
+            sc = kernels_helpers.ga_scores[idx]
+            if sc > best_b_score:
+                best_b_score = sc
+                best_b = idx
+
+        pa = best_a
+        pb = best_b
+
+        for s in range(n_slots):
+            state = kernels_helpers._xorshift32(state)
+            take_a = (state & ti.u32(1)) != 0
+            if take_a:
+                kernels_helpers.population_next_indices[g, s] = kernels_helpers.population_indices[pa, s]
+            else:
+                kernels_helpers.population_next_indices[g, s] = kernels_helpers.population_indices[pb, s]
+
+        state = kernels_helpers._xorshift32(state)
+        if state < mutation_rate_fp:
+            state = kernels_helpers._xorshift32(state)
+            mut_slot = ti.cast(state % ti.cast(n_slots, ti.u32), ti.i32)
+
+            pool_start = kernels_helpers.slot_start[mut_slot]
+            pool_count = kernels_helpers.slot_count[mut_slot]
+            if pool_count > 0:
+                state = kernels_helpers._xorshift32(state)
+                new_item = pool_start + ti.cast(state % ti.cast(pool_count, ti.u32), ti.i32)
+                kernels_helpers.population_next_indices[g, mut_slot] = new_item
+
+        m0 = kernels_helpers.population_next_indices[g, 6]
+        m1 = kernels_helpers.population_next_indices[g, 7]
+        m2 = kernels_helpers.population_next_indices[g, 8]
+
+        mini_pool_start = kernels_helpers.slot_start[6]
+        mini_pool_count = kernels_helpers.slot_count[6]
+
+        if mini_pool_count > 1:
+            tries = 0
+            while m1 == m0 and tries < 10:
+                state = kernels_helpers._xorshift32(state)
+                m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+                tries += 1
+
+            tries = 0
+            while (m2 == m0 or m2 == m1) and tries < 10:
+                state = kernels_helpers._xorshift32(state)
+                m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+                tries += 1
+
+            kernels_helpers.population_next_indices[g, 6] = m0
+            kernels_helpers.population_next_indices[g, 7] = m1
+            kernels_helpers.population_next_indices[g, 8] = m2
+
+        if immigrant_rate_fp != ti.u32(0):
+            state = kernels_helpers._xorshift32(state)
+            if state < immigrant_rate_fp:
+                for s in range(n_slots):
+                    pool_start = kernels_helpers.slot_start[s]
+                    pool_count = kernels_helpers.slot_count[s]
+                    if pool_count > 0:
+                        state = kernels_helpers._xorshift32(state)
+                        new_item = pool_start + ti.cast(state % ti.cast(pool_count, ti.u32), ti.i32)
+                        kernels_helpers.population_next_indices[g, s] = new_item
+
+                m0 = kernels_helpers.population_next_indices[g, 6]
+                m1 = kernels_helpers.population_next_indices[g, 7]
+                m2 = kernels_helpers.population_next_indices[g, 8]
+
+                mini_pool_start = kernels_helpers.slot_start[6]
+                mini_pool_count = kernels_helpers.slot_count[6]
+
+                if mini_pool_count > 1:
+                    tries = 0
+                    while m1 == m0 and tries < 10:
+                        state = kernels_helpers._xorshift32(state)
+                        m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+                        tries += 1
+
+                    tries = 0
+                    while (m2 == m0 or m2 == m1) and tries < 10:
+                        state = kernels_helpers._xorshift32(state)
+                        m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+                        tries += 1
+
+                    kernels_helpers.population_next_indices[g, 6] = m0
+                    kernels_helpers.population_next_indices[g, 7] = m1
+                    kernels_helpers.population_next_indices[g, 8] = m2
+
+                for i in range(4):
+                    kernels_helpers.genome_hint_allocation[g][i] = 0
+                pa = g
+
+        kernels_helpers.ga_rng_state[g] = state
+        kernels_helpers.ga_parent_a[g] = pa
+
+
+@ti.kernel
+def ga_next_generation_full_runs_kernel(
+    n_runs: ti.i32,
+    n_genomes_per_run: ti.i32,
+    n_slots: ti.i32,
+    n_islands: ti.i32,
+    elites_per_island: ti.i32,
+    tournament_k: ti.i32,
+    mutation_rate_fp: ti.u32,
+    immigrant_rate_fp: ti.u32,
+):
+    """
+    FUSED next generation for multiple independent runs packed contiguously.
+
+    This kernel preserves the per-run "multi-start" semantics by ensuring:
+    - Tournament selection samples only within the run segment
+    - Island elitism is computed per-run and elites are written within each run segment
+    - No cross-run migration / mixing occurs
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+
+    MAX_ELITES_PER_ISLAND: ti.i32 = 16
+
+    n_runs_i: ti.i32 = n_runs
+    n_genomes_per_run_i: ti.i32 = n_genomes_per_run
+    n_islands_i: ti.i32 = n_islands
+    elites_per_island_i: ti.i32 = elites_per_island
+    tournament_k_i: ti.i32 = tournament_k
+
+    if n_runs_i < 1:
+        n_runs_i = 1
+    if n_genomes_per_run_i < 1:
+        n_genomes_per_run_i = 1
+    if n_islands_i < 1:
+        n_islands_i = 1
+    if n_islands_i > n_genomes_per_run_i:
+        n_islands_i = n_genomes_per_run_i
+    if elites_per_island_i < 1:
+        elites_per_island_i = 1
+    if elites_per_island_i > MAX_ELITES_PER_ISLAND:
+        elites_per_island_i = MAX_ELITES_PER_ISLAND
+    if tournament_k_i < 1:
+        tournament_k_i = 1
+
+    island_size: ti.i32 = n_genomes_per_run_i // n_islands_i
+    if island_size < 1:
+        island_size = 1
+
+    n_elites_per_run: ti.i32 = n_islands_i * elites_per_island_i
+    if n_elites_per_run > n_genomes_per_run_i:
+        n_elites_per_run = n_genomes_per_run_i
+
+    n_total: ti.i32 = n_runs_i * n_genomes_per_run_i
+
+    for g in range(n_total):
+        run: ti.i32 = g // n_genomes_per_run_i
+        local_g: ti.i32 = g - run * n_genomes_per_run_i
+        run_start: ti.i32 = run * n_genomes_per_run_i
+
+        state = kernels_helpers.ga_rng_state[g]
+        pa = run_start  # Parent A (global index)
+
+        # --- Elitism (per-run, per-island) ---
+        if local_g < n_elites_per_run:
+            isl: ti.i32 = local_g // elites_per_island_i
+            elite_rank: ti.i32 = local_g - (isl * elites_per_island_i)
+
+            if isl < n_islands_i:
+                isl_start_local: ti.i32 = isl * island_size
+                isl_end_local: ti.i32 = (isl + 1) * island_size
+                if isl == n_islands_i - 1:
+                    isl_end_local = n_genomes_per_run_i
+
+                isl_start: ti.i32 = run_start + isl_start_local
+                isl_end: ti.i32 = run_start + isl_end_local
+                isl_size: ti.i32 = isl_end - isl_start
+
+                k: ti.i32 = elites_per_island_i
+                if k > isl_size:
+                    k = isl_size
+
+                if k > 0 and elite_rank < k:
+                    top_scores = ti.Vector([-1] * 16)
+                    top_indices = ti.Vector([-1] * 16)
+
+                    for local_idx in range(isl_size):
+                        idx = isl_start + local_idx
+                        score: ti.i32 = kernels_helpers.ga_scores[idx]
+
+                        if score > top_scores[k - 1]:
+                            insert_pos: ti.i32 = k - 1
+                            found_better: ti.i32 = 0
+                            for j in ti.static(range(16)):
+                                if found_better == 0 and j < k and score > top_scores[j]:
+                                    insert_pos = j
+                                    found_better = 1
+
+                            for j in ti.static(range(15, 0, -1)):
+                                if j > insert_pos and j < k:
+                                    top_scores[j] = top_scores[j - 1]
+                                    top_indices[j] = top_indices[j - 1]
+
+                            top_scores[insert_pos] = score
+                            top_indices[insert_pos] = idx
+
+                    src_genome: ti.i32 = top_indices[elite_rank]
+                    if src_genome < 0:
+                        src_genome = isl_start
+
+                    for s in range(n_slots):
+                        kernels_helpers.population_next_indices[g, s] = kernels_helpers.population_indices[
+                            src_genome, s
+                        ]
+                    pa = src_genome
+
+                    kernels_helpers.ga_rng_state[g] = state
+                    kernels_helpers.ga_parent_a[g] = pa
+                    continue
+
+        # --- Non-elite path: tournament selection within run + crossover + mutation ---
+        best_a = run_start
+        best_a_score = ti.cast(-2147483648, ti.i32)
+        for _ in range(tournament_k_i):
+            state = kernels_helpers._xorshift32(state)
+            idx_local = ti.cast(state % ti.cast(n_genomes_per_run_i, ti.u32), ti.i32)
+            idx = run_start + idx_local
+            sc = kernels_helpers.ga_scores[idx]
+            if sc > best_a_score:
+                best_a_score = sc
+                best_a = idx
+
+        best_b = run_start
+        best_b_score = ti.cast(-2147483648, ti.i32)
+        for _ in range(tournament_k_i):
+            state = kernels_helpers._xorshift32(state)
+            idx_local = ti.cast(state % ti.cast(n_genomes_per_run_i, ti.u32), ti.i32)
+            idx = run_start + idx_local
             sc = kernels_helpers.ga_scores[idx]
             if sc > best_b_score:
                 best_b_score = sc

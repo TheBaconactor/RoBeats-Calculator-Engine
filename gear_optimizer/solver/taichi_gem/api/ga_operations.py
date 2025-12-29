@@ -144,11 +144,63 @@ def ga_load_initial_population(*, run_idx: int, n_genomes: int, n_slots: int = 9
     kernels.ga_load_initial_population_kernel(run_idx, n_genomes, n_slots)
 
 
+def ga_load_initial_populations_batch(
+    *, run_idx_start: int, n_runs: int, n_genomes_per_run: int, n_slots: int = 9
+) -> int:
+    """
+    Load a batch of staged initial populations into the active GA `population_indices`.
+
+    Returns:
+        Total genomes loaded (n_runs * n_genomes_per_run).
+    """
+    ensure_ready()
+    run_idx_start = int(run_idx_start)
+    n_runs = int(n_runs)
+    n_genomes_per_run = int(n_genomes_per_run)
+    n_slots = int(n_slots)
+    if n_runs <= 0 or n_genomes_per_run <= 0:
+        return 0
+    if run_idx_start < 0 or run_idx_start >= fields.MAX_GA_RUNS:
+        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
+    if run_idx_start + n_runs > fields.MAX_GA_RUNS:
+        raise ValueError(
+            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})"
+        )
+    if n_genomes_per_run < 0 or n_genomes_per_run > fields.MAX_GA_RUN_GENOMES:
+        raise ValueError(f"Too many genomes: {n_genomes_per_run} > {fields.MAX_GA_RUN_GENOMES}")
+    if n_slots > fields.MAX_SLOTS:
+        raise ValueError(f"Too many slots: {n_slots} > {fields.MAX_SLOTS}")
+
+    n_total = n_runs * n_genomes_per_run
+    if n_total > fields.MAX_GENOMES:
+        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
+
+    kernels.ga_load_initial_populations_batch_kernel(run_idx_start, n_runs, n_genomes_per_run, n_slots)
+    return n_total
+
+
 def ga_seed_rng(n_genomes: int, seed: int = 12345) -> None:
     """Seed per-genome RNG state for GPU GA operators."""
     ensure_ready()
     kernels.ga_seed_rng_kernel(int(n_genomes), np.uint32(seed))
     # GPU-only op; no CPU readback needed.
+
+
+def ga_seed_rng_runs(*, n_runs: int, n_genomes_per_run: int, seed: int = 12345) -> None:
+    """
+    Seed per-genome RNG state for multiple independent runs packed contiguously.
+
+    Each run is seeded as if its genomes were indexed [0..n_genomes_per_run).
+    """
+    ensure_ready()
+    n_runs = int(n_runs)
+    n_genomes_per_run = int(n_genomes_per_run)
+    if n_runs <= 0 or n_genomes_per_run <= 0:
+        return
+    n_total = n_runs * n_genomes_per_run
+    if n_total > fields.MAX_GENOMES:
+        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
+    kernels.ga_seed_rng_runs_kernel(int(n_total), int(n_genomes_per_run), np.uint32(seed))
 
 
 def ga_upload_item_stats(
@@ -448,6 +500,52 @@ def ga_write_best_and_update_global(
     )
 
 
+def ga_write_best_and_store_hints(
+    n_genomes: int,
+    total_budget: int,
+    gem_scale_fever: int,
+    *,
+    is_p_ft: int = 0,
+    is_s_ft: int = 0,
+    is_p_ff: int = 0,
+    is_s_ff: int = 0,
+    is_p_pp: int = 0,
+    is_s_pp: int = 0,
+    is_p_cm: int = 0,
+    is_s_cm: int = 0,
+    is_p_fm: int = 0,
+    is_s_fm: int = 0,
+    is_p_ov: int = 0,
+    is_s_ov: int = 0,
+    song_slot: int = 0,
+) -> None:
+    """
+    Materialize best results + store hints (no global-best update).
+
+    This is used for batched multi-run execution where each run is packed into
+    a segment of the population arrays and per-run best is computed at packing time.
+    """
+    ensure_ready()
+    kernels.ga_write_best_and_store_hints_kernel(
+        int(n_genomes),
+        int(total_budget),
+        int(gem_scale_fever),
+        int(is_p_ft),
+        int(is_s_ft),
+        int(is_p_ff),
+        int(is_s_ff),
+        int(is_p_pp),
+        int(is_s_pp),
+        int(is_p_cm),
+        int(is_s_cm),
+        int(is_p_fm),
+        int(is_s_fm),
+        int(is_p_ov),
+        int(is_s_ov),
+        int(song_slot),
+    )
+
+
 def ga_store_hints(n_genomes: int) -> None:
     """
     Store current best gem allocations as hints for next generation.
@@ -679,6 +777,75 @@ def ga_next_generation_fused(
     kernels.ga_swap_and_inherit_hints_kernel(n_genomes, n_slots)
 
 
+def ga_next_generation_fused_runs(
+    *,
+    n_runs: int,
+    n_genomes_per_run: int,
+    n_slots: int = 9,
+    mutation_rate: float = 0.02,
+    immigrant_rate: float = 0.0,
+    tournament_k: int = 3,
+    n_islands: int = 1,
+    elites_per_island: int = 1,
+) -> None:
+    """
+    FULLY FUSED next generation for multiple independent runs packed contiguously.
+
+    Executes:
+    1) ga_next_generation_full_runs_kernel (select+crossover+mutate+elitism within each run)
+    2) ga_swap_and_inherit_hints_kernel (swap + hint inheritance) for the combined population
+    """
+    ensure_ready()
+    n_runs = int(n_runs)
+    n_genomes_per_run = int(n_genomes_per_run)
+    n_slots = int(n_slots)
+    n_islands = int(n_islands)
+    elites_per_island = int(elites_per_island)
+    tournament_k = int(tournament_k)
+    if n_runs <= 0 or n_genomes_per_run <= 0:
+        return
+    if n_slots <= 0 or n_slots > fields.MAX_SLOTS:
+        raise ValueError(f"Invalid n_slots: {n_slots}")
+    if n_islands < 1:
+        n_islands = 1
+    if elites_per_island < 0:
+        elites_per_island = 0
+    if tournament_k < 1:
+        tournament_k = 1
+
+    n_total = n_runs * n_genomes_per_run
+    if n_total > fields.MAX_GENOMES:
+        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
+
+    mr = float(mutation_rate)
+    if mr <= 0.0:
+        mr_fp = np.uint32(0)
+    elif mr >= 1.0:
+        mr_fp = np.uint32(0xFFFFFFFF)
+    else:
+        mr_fp = np.uint32(int(mr * 4294967295.0))
+
+    ir = float(immigrant_rate)
+    if ir <= 0.0:
+        ir_fp = np.uint32(0)
+    elif ir >= 1.0:
+        ir_fp = np.uint32(0xFFFFFFFF)
+    else:
+        ir_fp = np.uint32(int(ir * 4294967295.0))
+
+    kernels.ga_next_generation_full_runs_kernel(
+        n_runs,
+        n_genomes_per_run,
+        n_slots,
+        n_islands,
+        elites_per_island,
+        tournament_k,
+        mr_fp,
+        ir_fp,
+    )
+    kernels.ga_swap_and_inherit_hints_kernel(int(n_total), n_slots)
+
+
 def ga_download_population_indices(*, n_genomes: int, n_slots: int = 9) -> np.ndarray:
     """Download the current resident population indices (for testing / debugging)."""
     ensure_ready()
@@ -761,6 +928,99 @@ def ga_store_run_payload(*, run_idx: int, n_genomes: int, n_slots: int = 9) -> N
             f"n_genomes out of range for run buffer: {n_genomes} (MAX_GA_RUN_GENOMES={fields.MAX_GA_RUN_GENOMES})"
         )
     kernels.ga_pack_and_store_run_payload_kernel(run_idx, n_genomes, n_slots)
+
+
+def ga_init_runs_best(*, run_idx_start: int, n_runs: int, n_slots: int = 9) -> None:
+    """
+    Initialize per-run best rows (row 0) for multi-run payload packing.
+    """
+    ensure_ready()
+    run_idx_start = int(run_idx_start)
+    n_runs = int(n_runs)
+    n_slots = int(n_slots)
+    if n_runs <= 0:
+        return
+    if run_idx_start < 0 or run_idx_start >= fields.MAX_GA_RUNS:
+        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
+    if run_idx_start + n_runs > fields.MAX_GA_RUNS:
+        raise ValueError(
+            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})"
+        )
+    kernels.ga_init_runs_best_kernel(run_idx_start, n_runs, n_slots)
+
+
+def ga_update_runs_best(*, run_idx_start: int, n_runs: int, n_genomes_per_run: int, n_slots: int = 9) -> None:
+    """
+    Update per-run best rows (row 0) for packed multi-run execution.
+    """
+    ensure_ready()
+    run_idx_start = int(run_idx_start)
+    n_runs = int(n_runs)
+    n_genomes_per_run = int(n_genomes_per_run)
+    n_slots = int(n_slots)
+    if n_runs <= 0 or n_genomes_per_run <= 0:
+        return
+    if run_idx_start < 0 or run_idx_start >= fields.MAX_GA_RUNS:
+        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
+    if run_idx_start + n_runs > fields.MAX_GA_RUNS:
+        raise ValueError(
+            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})"
+        )
+    n_total = n_runs * n_genomes_per_run
+    if n_total > fields.MAX_GENOMES:
+        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
+    kernels.ga_update_runs_best_kernel(run_idx_start, n_runs, n_genomes_per_run, n_slots)
+
+
+def ga_store_runs_payload_snapshot_segmented(
+    *, run_idx_start: int, n_runs: int, n_genomes_per_run: int, n_slots: int = 9
+) -> None:
+    """
+    Store per-genome snapshot rows (1..n_genomes) into the multi-run buffer for packed execution.
+
+    This does not touch each run's row 0 best.
+    """
+    ensure_ready()
+    run_idx_start = int(run_idx_start)
+    n_runs = int(n_runs)
+    n_genomes_per_run = int(n_genomes_per_run)
+    n_slots = int(n_slots)
+    if n_runs <= 0 or n_genomes_per_run <= 0:
+        return
+    if run_idx_start < 0 or run_idx_start >= fields.MAX_GA_RUNS:
+        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
+    if run_idx_start + n_runs > fields.MAX_GA_RUNS:
+        raise ValueError(
+            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})"
+        )
+    if n_genomes_per_run < 0 or n_genomes_per_run > fields.MAX_GA_RUN_GENOMES:
+        raise ValueError(
+            f"n_genomes_per_run out of range: {n_genomes_per_run} (MAX_GA_RUN_GENOMES={fields.MAX_GA_RUN_GENOMES})"
+        )
+    n_total = n_runs * n_genomes_per_run
+    if n_total > fields.MAX_GENOMES:
+        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
+    kernels.ga_store_runs_payload_snapshot_segmented_kernel(run_idx_start, n_runs, n_genomes_per_run, n_slots)
+
+
+def ga_store_run_payload_segmented(*, run_idx: int, start_offset: int, n_genomes: int, n_slots: int = 9) -> None:
+    """
+    Store a GA run snapshot into the multi-run buffer for a run stored at an offset.
+    """
+    ensure_ready()
+    run_idx = int(run_idx)
+    start_offset = int(start_offset)
+    n_genomes = int(n_genomes)
+    n_slots = int(n_slots)
+    if run_idx < 0 or run_idx >= fields.MAX_GA_RUNS:
+        raise ValueError(f"run_idx out of range: {run_idx} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
+    if n_genomes < 0 or n_genomes > fields.MAX_GA_RUN_GENOMES:
+        raise ValueError(
+            f"n_genomes out of range for run buffer: {n_genomes} (MAX_GA_RUN_GENOMES={fields.MAX_GA_RUN_GENOMES})"
+        )
+    if start_offset < 0 or (start_offset + n_genomes) > fields.MAX_GENOMES:
+        raise ValueError(f"Invalid start_offset/n_genomes: start={start_offset} n_genomes={n_genomes}")
+    kernels.ga_pack_and_store_run_payload_segmented_kernel(run_idx, start_offset, n_genomes, n_slots)
 
 
 def ga_download_runs_payload(*, n_runs: int, n_genomes: int, n_slots: int = 9) -> np.ndarray:
@@ -916,3 +1176,25 @@ def ga_island_migration(n_genomes: int, n_islands: int, migrate_count: int, n_sl
     """
     ensure_ready()
     kernels.ga_island_migration_kernel(int(n_genomes), int(n_islands), int(migrate_count), int(n_slots))
+
+
+def ga_island_migration_runs(
+    *, n_runs: int, n_genomes_per_run: int, n_islands: int, migrate_count: int, n_slots: int = 9
+) -> None:
+    """
+    GPU-side island migration using ring topology for multiple independent runs.
+    """
+    ensure_ready()
+    n_runs = int(n_runs)
+    n_genomes_per_run = int(n_genomes_per_run)
+    n_islands = int(n_islands)
+    migrate_count = int(migrate_count)
+    n_slots = int(n_slots)
+    if n_runs <= 0 or n_genomes_per_run <= 0:
+        return
+    if n_slots <= 0 or n_slots > fields.MAX_SLOTS:
+        raise ValueError(f"Invalid n_slots: {n_slots}")
+    n_total = n_runs * n_genomes_per_run
+    if n_total > fields.MAX_GENOMES:
+        raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
+    kernels.ga_island_migration_runs_kernel(n_runs, n_genomes_per_run, n_islands, migrate_count, n_slots)

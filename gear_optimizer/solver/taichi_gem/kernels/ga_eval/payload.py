@@ -71,3 +71,134 @@ def ga_pack_and_store_run_payload_kernel(run_idx: ti.i32, n_genomes: ti.i32, n_s
         res = kernels_helpers.genome_result_stats[g]
         for r in ti.static(range(7)):
             kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 1 + n_slots + r] = res[r]
+
+
+@ti.kernel
+def ga_pack_and_store_run_payload_segmented_kernel(
+    run_idx: ti.i32,
+    start_offset: ti.i32,
+    n_genomes: ti.i32,
+    n_slots: ti.i32,
+):
+    """
+    Pack a GA snapshot for a run stored at an offset into the active population arrays.
+
+    This is used when multiple independent runs are packed contiguously into
+    `population_indices`/`ga_scores`/`genome_result_stats`.
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+
+    # Row 0: best genome for this run (single thread, deterministic scan)
+    for _ in range(1):
+        best_score: ti.i32 = -1
+        best_g: ti.i32 = start_offset
+        for local_g in range(n_genomes):
+            g = start_offset + local_g
+            score = kernels_helpers.ga_scores[g]
+            if score > best_score:
+                best_score = score
+                best_g = g
+
+        kernels_helpers.ga_runs_payload_packed[run_idx, 0, 0] = best_score
+        for s in range(n_slots):
+            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + s] = kernels_helpers.population_indices[best_g, s]
+        res_best = kernels_helpers.genome_result_stats[best_g]
+        for r in ti.static(range(7)):
+            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + n_slots + r] = res_best[r]
+
+    # Rows 1..n_genomes: per-genome snapshot for this run
+    for local_g in range(n_genomes):
+        g = start_offset + local_g
+        out_row = local_g + 1
+        kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 0] = kernels_helpers.ga_scores[g]
+        for s in range(n_slots):
+            kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 1 + s] = kernels_helpers.population_indices[g, s]
+        res = kernels_helpers.genome_result_stats[g]
+        for r in ti.static(range(7)):
+            kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 1 + n_slots + r] = res[r]
+
+
+@ti.kernel
+def ga_init_runs_best_kernel(run_idx_start: ti.i32, n_runs: ti.i32, n_slots: ti.i32):
+    """
+    Initialize per-run "best row" (row 0) in `ga_runs_payload_packed`.
+
+    This is used for batched multi-run execution where we track each run's best
+    across generations directly in the output buffer.
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for r in range(n_runs):
+        run_idx = run_idx_start + r
+        kernels_helpers.ga_runs_payload_packed[run_idx, 0, 0] = -1
+        for s in range(n_slots):
+            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + s] = 0
+        # [score, ft, ff, pp, cm, fm, ov]
+        kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + n_slots + 0] = -1
+        for j in ti.static(range(1, 7)):
+            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + n_slots + j] = 0
+
+
+@ti.kernel
+def ga_update_runs_best_kernel(run_idx_start: ti.i32, n_runs: ti.i32, n_genomes_per_run: ti.i32, n_slots: ti.i32):
+    """
+    Update per-run best (row 0) in `ga_runs_payload_packed` for packed multi-run execution.
+
+    Each run is scanned deterministically; ties keep the first-seen genome (strict `>`).
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    if n_runs > 0 and n_genomes_per_run > 0:
+        for r in range(n_runs):
+            start_offset: ti.i32 = r * n_genomes_per_run
+
+            best_score: ti.i32 = -1
+            best_g: ti.i32 = start_offset
+            for local_g in range(n_genomes_per_run):
+                g = start_offset + local_g
+                score = kernels_helpers.ga_scores[g]
+                if score > best_score:
+                    best_score = score
+                    best_g = g
+
+            run_idx = run_idx_start + r
+            prev_best: ti.i32 = kernels_helpers.ga_runs_payload_packed[run_idx, 0, 0]
+            if best_score > prev_best:
+                kernels_helpers.ga_runs_payload_packed[run_idx, 0, 0] = best_score
+                for s in range(n_slots):
+                    kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + s] = kernels_helpers.population_indices[
+                        best_g, s
+                    ]
+                res_best = kernels_helpers.genome_result_stats[best_g]
+                for j in ti.static(range(7)):
+                    kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + n_slots + j] = res_best[j]
+
+
+@ti.kernel
+def ga_store_runs_payload_snapshot_segmented_kernel(
+    run_idx_start: ti.i32,
+    n_runs: ti.i32,
+    n_genomes_per_run: ti.i32,
+    n_slots: ti.i32,
+):
+    """
+    Store per-genome snapshot rows (1..n_genomes_per_run) into `ga_runs_payload_packed`
+    for packed multi-run execution.
+
+    Row 0 (per-run best) is intentionally left untouched.
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    if n_runs > 0 and n_genomes_per_run > 0:
+        n_total = n_runs * n_genomes_per_run
+        for g in range(n_total):
+            run = g // n_genomes_per_run
+            local_g = g - run * n_genomes_per_run
+            run_idx = run_idx_start + run
+            out_row = local_g + 1
+
+            kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 0] = kernels_helpers.ga_scores[g]
+            for s in range(n_slots):
+                kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 1 + s] = kernels_helpers.population_indices[
+                    g, s
+                ]
+            res = kernels_helpers.genome_result_stats[g]
+            for j in ti.static(range(7)):
+                kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 1 + n_slots + j] = res[j]

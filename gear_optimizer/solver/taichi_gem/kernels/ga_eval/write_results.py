@@ -286,3 +286,117 @@ def ga_write_best_and_update_global_kernel(
                 kernels_helpers.ga_global_best_genome[s] = kernels_helpers.population_indices[genome_idx, s]
             for r in ti.static(range(7)):
                 kernels_helpers.ga_global_best_results[r] = kernels_helpers.genome_result_stats[genome_idx][r]
+
+
+@ti.kernel
+def ga_write_best_and_store_hints_kernel(
+    n_genomes: ti.i32,
+    total_budget: ti.i32,
+    gem_scale_fever: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+    song_slot: ti.i32,
+):
+    """
+    Materialize best results + store hints (no global-best update).
+
+    This is used for batched multi-run execution where each run is packed into
+    a segment of the population arrays and global best is computed during packing.
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    GEM_STAT_TO_ELEMENT: ti.i32 = 3
+    MAX_STAT: ti.i32 = 160
+
+    for genome_idx in range(n_genomes):
+        combo_idx = 0
+        valid = False
+
+        if ti.static(not IS_METAL):
+            key = kernels_helpers.chunk_best_key[genome_idx]
+            if key != 0:
+                combo_idx = ti.cast(key & ti.u64(0xFFFFFFFF), ti.i32)
+                valid = True
+        else:
+            idx = kernels_helpers.chunk_best_idx[genome_idx]
+            if idx >= 0:
+                combo_idx = idx
+                valid = True
+
+        if not valid:
+            kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([-1, 0, 0, 0, 0, 0, 0])
+            kernels_helpers.ga_scores[genome_idx] = -1
+            continue
+
+        ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
+        ff: ti.i32 = kernels_helpers.ftff_combo_ff[combo_idx]
+
+        stats = kernels_helpers.genome_base_stats[genome_idx]
+        base_pp: ti.i32 = stats[0]
+        base_cm: ti.i32 = stats[1]
+        base_fm: ti.i32 = stats[2]
+        base_p_val: ti.i32 = stats[3]
+        base_s_val: ti.i32 = stats[4]
+        base_ft_stat: ti.i32 = stats[5]
+        base_ff_stat: ti.i32 = stats[6]
+
+        ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
+        ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
+        ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
+        ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
+
+        count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
+        count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
+        head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
+
+        budget: ti.i32 = total_budget - ft - ff
+        p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
+        s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
+
+        res_vec = optimize_core_device(
+            0,
+            budget,
+            base_pp,
+            base_cm,
+            base_fm,
+            p_val,
+            s_val,
+            is_p_pp,
+            is_s_pp,
+            is_p_cm,
+            is_s_cm,
+            is_p_fm,
+            is_s_fm,
+            is_p_ov,
+            is_s_ov,
+            head_len,
+            count_fever,
+            count_normal,
+            1,
+            song_slot,
+            ft_idx,
+            ff_idx,
+        )
+
+        score: ti.i32 = res_vec[0]
+        pp_gems: ti.i32 = res_vec[1]
+        cm_gems: ti.i32 = res_vec[2]
+        fm_gems: ti.i32 = res_vec[3]
+        ov_gems: ti.i32 = res_vec[4]
+
+        kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([score, ft, ff, pp_gems, cm_gems, fm_gems, ov_gems])
+        kernels_helpers.ga_scores[genome_idx] = score
+
+        kernels_helpers.genome_hint_allocation[genome_idx][0] = pp_gems
+        kernels_helpers.genome_hint_allocation[genome_idx][1] = cm_gems
+        kernels_helpers.genome_hint_allocation[genome_idx][2] = fm_gems
+        kernels_helpers.genome_hint_allocation[genome_idx][3] = ov_gems

@@ -72,7 +72,9 @@ try:
         ga_upload_population_indices,
         ga_upload_initial_populations,
         ga_load_initial_population,
+        ga_load_initial_populations_batch,
         ga_seed_rng,
+        ga_seed_rng_runs,
         ga_upload_item_stats,
         ga_upload_base_fixed_stats,
         ga_aggregate_stats,
@@ -81,11 +83,16 @@ try:
         ga_next_generation,
         ga_next_generation_gpu_elites,  # GPU-resident elitism (avoids CPU download)
         ga_next_generation_fused,  # FULLY FUSED (2 kernels instead of 4)
+        ga_next_generation_fused_runs,  # FULLY FUSED multi-run batching
         ga_download_population_indices,
         ga_download_scores,
         ga_download_results,
         ga_download_run_payload,
         ga_store_run_payload,
+        ga_init_runs_best,
+        ga_update_runs_best,
+        ga_store_runs_payload_snapshot_segmented,
+        ga_store_run_payload_segmented,
         ga_download_runs_payload,
         # GPU-side global best tracking
         ga_init_global_best,
@@ -97,11 +104,13 @@ try:
         ga_download_island_elite_indices,
         # GPU-side island migration
         ga_island_migration,
+        ga_island_migration_runs,
         # Warm-start
         ga_store_hints,
         ga_inherit_hints,
         # FUSED kernel APIs
         ga_write_best_and_update_global,
+        ga_write_best_and_store_hints,
     )
 except ImportError:
     pass
@@ -136,7 +145,9 @@ __all__ = [
     "ga_upload_population_indices",
     "ga_upload_initial_populations",
     "ga_load_initial_population",
+    "ga_load_initial_populations_batch",
     "ga_seed_rng",
+    "ga_seed_rng_runs",
     "ga_upload_item_stats",
     "ga_upload_base_fixed_stats",
     "ga_aggregate_stats",
@@ -145,11 +156,16 @@ __all__ = [
     "ga_next_generation",
     "ga_next_generation_gpu_elites",
     "ga_next_generation_fused",
+    "ga_next_generation_fused_runs",
     "ga_download_population_indices",
     "ga_download_scores",
     "ga_download_results",
     "ga_download_run_payload",
     "ga_store_run_payload",
+    "ga_init_runs_best",
+    "ga_update_runs_best",
+    "ga_store_runs_payload_snapshot_segmented",
+    "ga_store_run_payload_segmented",
     "ga_download_runs_payload",
     # GPU-side global best tracking
     "ga_init_global_best",
@@ -161,10 +177,11 @@ __all__ = [
     "ga_download_island_elite_indices",
     # GPU-side island migration
     "ga_island_migration",
+    "ga_island_migration_runs",
     # Warm-start
     "ga_store_hints",
     "ga_inherit_hints",
     # FUSED kernel APIs
     "ga_write_best_and_update_global",
+    "ga_write_best_and_store_hints",
 ]
-__all__: list[str] = []

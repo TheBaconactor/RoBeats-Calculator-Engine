@@ -73,7 +73,9 @@ from .kernels_helpers import (
 # Import GA kernels
 from .kernels_ga import (
     ga_seed_rng_kernel,
+    ga_seed_rng_runs_kernel,
     ga_load_initial_population_kernel,
+    ga_load_initial_populations_batch_kernel,
     ga_upload_item_stats_and_slots_kernel,
     ga_select_parents_tournament_kernel,
     ga_crossover_mutate_kernel,
@@ -90,6 +92,7 @@ from .kernels_ga import (
     ga_select_crossover_mutate_kernel,
     ga_next_generation_full_kernel,  # FULLY FUSED: select+crossover+mutate+elitism
     ga_next_generation_full_islands_kernel,  # FUSED: island elites computed on-the-fly
+    ga_next_generation_full_runs_kernel,  # FUSED: independent multi-run batching
     ga_swap_and_inherit_hints_kernel,  # FUSED: swap+hints
 )
 
@@ -123,15 +126,21 @@ from .ga_eval import (
     ga_init_global_best_kernel,
     ga_update_global_best_kernel,
     ga_pack_and_store_run_payload_kernel,
+    ga_pack_and_store_run_payload_segmented_kernel,
     ga_pack_run_payload_kernel,
+    ga_init_runs_best_kernel,
+    ga_update_runs_best_kernel,
+    ga_store_runs_payload_snapshot_segmented_kernel,
     # GPU-side island elitism
     ga_find_island_elites_kernel,
     # GPU-side island migration
     ga_island_migration_kernel,
+    ga_island_migration_runs_kernel,
     # Warm-start evaluation
     ga_find_best_combo_warmstart_kernel,
     # FUSED kernels
     ga_write_best_and_update_global_kernel,
+    ga_write_best_and_store_hints_kernel,
 )
 
 # Import timeline kernel
@@ -187,7 +196,9 @@ __all__ = [
     "_xorshift32",
     # GA kernels
     "ga_seed_rng_kernel",
+    "ga_seed_rng_runs_kernel",
     "ga_load_initial_population_kernel",
+    "ga_load_initial_populations_batch_kernel",
     "ga_upload_item_stats_and_slots_kernel",
     "ga_select_parents_tournament_kernel",
     "ga_crossover_mutate_kernel",
@@ -201,8 +212,10 @@ __all__ = [
     "ga_select_crossover_mutate_kernel",
     "ga_next_generation_full_kernel",
     "ga_next_generation_full_islands_kernel",
+    "ga_next_generation_full_runs_kernel",
     "ga_swap_and_inherit_hints_kernel",
     "ga_write_best_and_update_global_kernel",
+    "ga_write_best_and_store_hints_kernel",
     # Scoring functions
     "_calc_body_score",
     "_calc_head_factor",
@@ -229,9 +242,14 @@ __all__ = [
     "ga_init_global_best_kernel",
     "ga_update_global_best_kernel",
     "ga_pack_and_store_run_payload_kernel",
+    "ga_pack_and_store_run_payload_segmented_kernel",
     "ga_pack_run_payload_kernel",
+    "ga_init_runs_best_kernel",
+    "ga_update_runs_best_kernel",
+    "ga_store_runs_payload_snapshot_segmented_kernel",
     # GPU-side island migration
     "ga_island_migration_kernel",
+    "ga_island_migration_runs_kernel",
     # GPU-side island elitism
     "ga_find_island_elites_kernel",
     # Warm-start optimization
