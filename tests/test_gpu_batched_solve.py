@@ -1,6 +1,9 @@
 import pytest
 
 
+pytestmark = pytest.mark.gpu
+
+
 def _has_taichi() -> bool:
     try:
         import taichi  # noqa: F401

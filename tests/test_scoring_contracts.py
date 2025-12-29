@@ -5,6 +5,9 @@ import numpy as np
 import pytest
 
 
+pytestmark = pytest.mark.gpu
+
+
 def _has_taichi() -> bool:
     try:
         import taichi as _  # noqa: F401
@@ -175,4 +178,3 @@ def test_apply_force_greats_to_result_contract_cpu_gpu():
 
     # Tolerant parity (avoid flakes from f32/searchsorted edge cases).
     assert abs(int(fg_cpu.get("Score", 0)) - int(fg_gpu.get("Score", 0))) <= 5
-

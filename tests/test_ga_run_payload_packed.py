@@ -2,6 +2,9 @@ import numpy as np
 import pytest
 
 
+pytestmark = pytest.mark.gpu
+
+
 def _has_taichi() -> bool:
     try:
         import taichi as _  # noqa: F401
@@ -76,4 +79,3 @@ def test_ga_download_run_payload_matches_individual_downloads():
     assert np.array_equal(pop_snapshot, pop2)
     assert np.array_equal(results_snapshot, res2)
     assert np.array_equal(scores_snapshot, scores2)
-

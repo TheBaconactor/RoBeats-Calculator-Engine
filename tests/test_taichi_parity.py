@@ -12,6 +12,7 @@ For each test case:
 import numpy as np
 import sys
 import os
+import pytest
 
 # Add parent to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -154,26 +155,25 @@ def test_optimize_core_parity():
     assert gems_pp + gems_cm + gems_fm + gems_ov == budget, "Budget mismatch!"
     
     print("  [PASS] optimize_core_jit baseline OK")
-    
-    return result, ref_arrays, fever_mask_head
 
 
+@pytest.mark.gpu
 def test_gpu_parity():
     """Compare GPU output to CPU baseline."""
     print("\nTesting GPU parity (Taichi Vulkan)...")
-    
-    try:
-        from gear_optimizer.solver.taichi_gem_solver import (
-            init_taichi_vulkan,
-            load_ref_arrays,
-            optimize_gems_batch_gpu,
-        )
-    except ImportError as e:
-        print(f"  [SKIP] Taichi not available: {e}")
-        return
+
+    pytest.importorskip("taichi")
+    from gear_optimizer.solver.taichi_gem_solver import (
+        init_taichi_vulkan,
+        load_ref_arrays,
+        optimize_gems_batch_gpu,
+    )
     
     # Initialize Taichi
-    init_taichi_vulkan()
+    try:
+        init_taichi_vulkan()
+    except Exception as exc:
+        pytest.skip(f"Taichi Vulkan init failed: {exc}")
     
     # Get CPU baseline
     ref_arrays = create_test_ref_arrays()
@@ -274,38 +274,8 @@ def test_gpu_parity():
         diff_pct = diff / cpu_score * 100 if cpu_score > 0 else 0
         print(f"  [WARN] Score difference: {diff} ({diff_pct:.4f}%)")
         
-        if diff_pct < 0.01:
-            print("  [PASS] Within acceptable tolerance (f32 precision)")
-        else:
-            print("  [FAIL] Score difference too large!")
-            return False
+        assert diff_pct < 0.01, "Score difference too large"
+        print("  [PASS] Within acceptable tolerance (f32 precision)")
     
-    return True
-
-
-def main():
-    print("=" * 60)
-    print("Taichi Gem Solver Parity Test")
-    print("=" * 60)
-    print()
-    
-    # CPU baseline tests
-    test_lookup_parity()
-    test_fast_calculate_score_parity()
-    test_optimize_core_parity()
-    
-    # GPU parity test
-    success = test_gpu_parity()
-    
-    print()
-    print("=" * 60)
-    if success:
-        print("ALL TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-        sys.exit(1)
-    print("=" * 60)
-
-
 if __name__ == "__main__":
-    main()
+    raise SystemExit(pytest.main([__file__, "-v", "-s"]))

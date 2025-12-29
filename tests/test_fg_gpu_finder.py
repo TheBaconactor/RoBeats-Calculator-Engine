@@ -7,6 +7,7 @@ import pytest
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+@pytest.mark.gpu
 def test_fg_finder_gpu_tolerant_parity():
     """
     Tolerant parity test for the full GPU ForceGreatsFinder path.

@@ -14,12 +14,27 @@ import numpy as np
 from math import floor
 import sys
 import os
+import pytest
 
 # Add parent to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from gear_optimizer.solver.scoring import batch_evaluate_genomes, solve_best_fever_combination
 from gear_optimizer.core.constants import TOTAL_ROWS
+
+
+pytestmark = pytest.mark.gpu
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _taichi_vulkan_ready():
+    pytest.importorskip("taichi")
+    try:
+        from gear_optimizer.solver.taichi_gem.runtime import init_taichi_vulkan
+
+        init_taichi_vulkan()
+    except Exception as exc:
+        pytest.skip(f"Taichi Vulkan init failed: {exc}")
 
 
 def create_mock_song(primary_color="Beat", secondary_color="Flow"):
@@ -92,7 +107,7 @@ def test_multi_genome_parity():
     cfg_data["use_gpu"] = False
     cpu_results = batch_evaluate_genomes(genomes, base_stats_fixed, cfg_data, calc_song, ref_arrays)
     
-    all_match = True
+    mismatches = []
     for i, (gpu, cpu) in enumerate(zip(gpu_results, cpu_results)):
         gpu_score = gpu["Score"] if gpu else 0
         cpu_score = cpu["Score"] if cpu else 0
@@ -102,19 +117,16 @@ def test_multi_genome_parity():
         print(f"  Genome {i+1}: GPU={gpu_score:,}, CPU={cpu_score:,} {status}")
         
         if not match:
-            all_match = False
+            mismatches.append((i, gpu_score, cpu_score))
             print(f"    MISMATCH! Difference: {gpu_score - cpu_score:,}")
     
     # CRITICAL: Check that different genomes produce DIFFERENT scores
     cfg_data["use_gpu"] = True
     scores = [r["Score"] for r in gpu_results if r]
-    if len(set(scores)) == 1:
-        print("  [FAIL] All genomes have same score - per-genome stats NOT working!")
-        all_match = False
-    else:
-        print(f"  [PASS] Scores vary by genome ({len(set(scores))} unique scores)")
-    
-    return all_match
+    assert len(set(scores)) > 1, "All genomes have same score - per-genome stats NOT working!"
+    print(f"  [PASS] Scores vary by genome ({len(set(scores))} unique scores)")
+
+    assert not mismatches, f"GPU/CPU mismatches: {mismatches}"
 
 
 def test_elemental_color_mapping():
@@ -146,7 +158,7 @@ def test_elemental_color_mapping():
     base_stats_fixed = {k: 0 for k in ["Perfect Points", "Combo Multiplier", "Fever Multiplier",
                                         "Fever Time", "Fever Fill Rate", "Beat", "Flow", "Vibe", "Rush", "Chill"]}
     
-    all_match = True
+    mismatches = []
     
     for primary, secondary in color_combos:
         calc_song = create_mock_song(primary_color=primary, secondary_color=secondary)
@@ -166,9 +178,9 @@ def test_elemental_color_mapping():
         print(f"  {primary}/{secondary}: GPU={gpu_score:,}, CPU={cpu_score:,} {status}")
         
         if not match:
-            all_match = False
-    
-    return all_match
+            mismatches.append((primary, secondary, gpu_score, cpu_score))
+
+    assert not mismatches, f"GPU/CPU mismatches: {mismatches}"
 
 
 def test_single_genome_via_solver():
@@ -229,34 +241,8 @@ def test_single_genome_via_solver():
     status = "[PASS]" if match else "[FAIL]"
     print(f"  CPU: {cpu_score:,}, GPU: {gpu_score:,} {status}")
     
-    return match
+    assert match
 
 
 if __name__ == "__main__":
-    print("="*70)
-    print("GPU INTEGRATION REGRESSION TEST")
-    print("="*70)
-    print("Tests FULL batch_evaluate_genomes GPU path to catch integration bugs.")
-    
-    results = []
-    results.append(("Multi-Genome Parity", test_multi_genome_parity()))
-    results.append(("Elemental Color Mapping", test_elemental_color_mapping()))
-    results.append(("Single Genome via Solver", test_single_genome_via_solver()))
-    
-    print("\n" + "="*70)
-    print("SUMMARY")
-    print("="*70)
-    
-    all_passed = True
-    for name, passed in results:
-        status = "[PASS]" if passed else "[FAIL]"
-        print(f"  {name}: {status}")
-        if not passed:
-            all_passed = False
-    
-    print("="*70)
-    if all_passed:
-        print("ALL INTEGRATION TESTS PASSED")
-    else:
-        print("SOME TESTS FAILED")
-        sys.exit(1)
+    raise SystemExit(pytest.main([__file__, "-v", "-s"]))

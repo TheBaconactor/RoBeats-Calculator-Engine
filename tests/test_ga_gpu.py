@@ -127,13 +127,13 @@ def run_ga_gpu_test():
         def getint(self, section, option, fallback=0):
             try:
                 return int(self.get(section, option, fallback))
-            except:
+            except (TypeError, ValueError):
                 return int(fallback)
 
         def getfloat(self, section, option, fallback=0.0):
             try:
                 return float(self.get(section, option, fallback))
-            except:
+            except (TypeError, ValueError):
                 return float(fallback)
 
     # Run with GPU

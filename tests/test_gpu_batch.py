@@ -7,15 +7,14 @@ sequential single-item calls.
 import sys
 import os
 import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from gear_optimizer.solver.taichi_gem_solver import (
-    init_taichi_vulkan,
-    optimize_gems_gpu,
-    optimize_gems_batch_gpu,
-)
 from gear_optimizer.core.constants import TOTAL_ROWS
+
+
+pytestmark = pytest.mark.gpu
 
 
 def test_batch_parity():
@@ -24,7 +23,17 @@ def test_batch_parity():
     print("Batched GPU Parity Test")
     print("=" * 60)
     
-    init_taichi_vulkan()
+    pytest.importorskip("taichi")
+    from gear_optimizer.solver.taichi_gem_solver import (
+        init_taichi_vulkan,
+        optimize_gems_gpu,
+        optimize_gems_batch_gpu,
+    )
+
+    try:
+        init_taichi_vulkan()
+    except Exception as exc:
+        pytest.skip(f"Taichi Vulkan init failed: {exc}")
     
     # Reference arrays
     rows = TOTAL_ROWS + 1
@@ -117,21 +126,20 @@ def test_batch_parity():
             all_match = False
             mismatches += 1
             if mismatches <= 3:  # Show first 3 mismatches
-                print(f"  ✗ Mismatch at index {i}:")
+                print(f"  [MISMATCH] at index {i}:")
                 print(f"    Batch: {batch_results[i]}")
                 print(f"    Sequential: {sequential_results[i]}")
     
     print("\n" + "=" * 60)
     if all_match:
-        print(f"✓ PASSED: All {batch_size} results match!")
+        print(f"[PASS] All {batch_size} results match!")
         print(f"  Batch processing enables {batch_size}x parallelism")
     else:
-        print(f"✗ FAILED: {mismatches}/{batch_size} mismatches")
+        print(f"[FAIL] {mismatches}/{batch_size} mismatches")
     print("=" * 60)
     
-    return all_match
+    assert all_match, f"{mismatches}/{batch_size} mismatches"
 
 
 if __name__ == "__main__":
-    success = test_batch_parity()
-    sys.exit(0 if success else 1)
+    raise SystemExit(pytest.main([__file__, "-v", "-s"]))

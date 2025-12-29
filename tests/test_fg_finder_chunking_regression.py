@@ -16,6 +16,7 @@ def _has_taichi() -> bool:
     return True
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_solve_force_greats_finder_gpu_cfg_chunk_invariant():
     """

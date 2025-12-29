@@ -298,8 +298,6 @@ def test_reconstruction_performance(test_data):
     """Benchmark performance improvement."""
     
     # Run manually to compare (pytest-benchmark would be better)
-    import time
-    
     # Warm up caches/JIT and reduce first-run noise
     for _ in range(10):
         mock_genome_reconstruction_original(**test_data)

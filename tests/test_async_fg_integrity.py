@@ -7,10 +7,11 @@ Verifies:
 3. No data loss under concurrent access
 """
 
-from gear_optimizer.solver.taichi_gem.force_greats.async_buffers import AsyncResultProcessor
 import numpy as np
 import threading
 import time
+
+from gear_optimizer.solver.taichi_gem.force_greats.async_buffers import AsyncResultProcessor
 
 def test_array_copy_isolation():
     """Test that arrays are copied, preventing cross-contamination."""
@@ -33,7 +34,6 @@ def test_array_copy_isolation():
     assert results[0]["val"] == 1, "FAIL: Array was not copied!"
     print("  PASS: Arrays are properly copied")
     proc.shutdown()
-    return True
 
 
 def test_result_ordering():
@@ -55,7 +55,6 @@ def test_result_ordering():
     assert batches == expected, f"FAIL: Order wrong! Expected {expected}, got {batches}"
     print("  PASS: Results in correct order")
     proc.shutdown()
-    return True
 
 
 def test_concurrent_access():
@@ -80,30 +79,16 @@ def test_concurrent_access():
     for t in threads:
         t.join()
 
-    if errors:
-        print(f"  FAIL: Errors during concurrent access: {errors}")
-        return False
+    assert not errors, f"Errors during concurrent access: {errors}"
     
     all_results = proc.get_results()
     print(f"  Got {len(all_results)} results from 10 concurrent submits")
     assert len(all_results) == 10, f"FAIL: Lost data! Got {len(all_results)}"
     print("  PASS: No data loss under concurrency")
     proc.shutdown()
-    return True
 
 
 if __name__ == "__main__":
-    print("=== DATA INTEGRITY TEST ===")
-    print()
-    
-    all_passed = True
-    all_passed &= test_array_copy_isolation()
-    all_passed &= test_result_ordering()
-    all_passed &= test_concurrent_access()
-    
-    print()
-    if all_passed:
-        print("=== ALL DATA INTEGRITY TESTS PASSED ===")
-    else:
-        print("=== SOME TESTS FAILED ===")
-        exit(1)
+    import pytest
+
+    raise SystemExit(pytest.main([__file__, "-v", "-s"]))

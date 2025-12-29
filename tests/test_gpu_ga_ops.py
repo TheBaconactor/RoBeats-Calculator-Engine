@@ -16,6 +16,9 @@ def _has_taichi() -> bool:
     return True
 
 
+pytestmark = pytest.mark.gpu
+
+
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_ga_ops_smoke_valid_ranges():
     """

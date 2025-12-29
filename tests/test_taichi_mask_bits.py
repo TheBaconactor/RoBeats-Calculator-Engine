@@ -11,12 +11,17 @@ Requirement: GPU path must remain EXACT (bit-identical scores and allocations).
 import os
 import sys
 import numpy as np
+import pytest
 
 # Add parent to path for imports
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+pytestmark = pytest.mark.gpu
+
+
 def test_mask_bits_parity():
+    pytest.importorskip("taichi")
     import taichi as ti
 
     from gear_optimizer.solver.fever_timeline import SongTimelineGrid
@@ -27,7 +32,10 @@ def test_mask_bits_parity():
     from gear_optimizer.core.constants import TOTAL_ROWS
 
     # Init Taichi + allocate grid fields
-    init_taichi_vulkan()
+    try:
+        init_taichi_vulkan()
+    except Exception as exc:
+        pytest.skip(f"Taichi Vulkan init failed: {exc}")
     ensure_ready()
 
     # Build a deterministic mock song and reference arrays so the timeline grid is stable

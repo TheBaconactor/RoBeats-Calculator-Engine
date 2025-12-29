@@ -173,6 +173,7 @@ def collect_breakpoints_gpu(scorer, num_sections, section_caps=None):
     (1000, 120.0), # Long song
 ])
 @pytest.mark.parametrize("num_sections", [2, 3, 4])
+@pytest.mark.gpu
 def test_cpu_vs_gpu_breakpoints(song_notes, duration, num_sections):
     """Test that GPU breakpoint kernel produces identical results to CPU."""
     calc_song = create_test_song_data(song_notes, duration=duration)
