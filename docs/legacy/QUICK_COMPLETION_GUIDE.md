@@ -1,5 +1,8 @@
 # Quick Completion Guide - Finish in 4 Hours
 
+> [!WARNING]
+> **Legacy / archived:** This document lives under `docs/legacy/` and may not match the current code layout/config. See `docs/NAVIGATION.md` for current entrypoints/paths.
+
 ## 🎯 Current Status: 60% Complete!
 
 **Completed:**

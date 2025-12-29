@@ -347,6 +347,45 @@ def reset_fields_state() -> None:
 # FIELD ALLOCATION
 # ============================================================================
 
+def _clamp_ga_runs(n: int) -> int:
+    if n < 1:
+        return 1
+    # Prevent accidental huge allocations.
+    if n > 8192:
+        return 8192
+    return n
+
+
+def _clamp_ga_genomes(n: int) -> int:
+    # Must be >= GA_POPULATION_SIZE (currently 250) for GPU-native GA.
+    if n < 250:
+        return 250
+    if n > MAX_GENOMES:
+        return MAX_GENOMES
+    return n
+
+
+def configure_ga_run_buffers(*, max_runs: int | None = None, max_genomes: int | None = None) -> None:
+    """
+    Configure GPU-native GA buffer sizes before fields are allocated.
+
+    This reduces large padded CPU↔GPU transfers in GA multi-run mode by shrinking
+    `ga_initial_populations` and `ga_runs_payload_packed` to the smallest required
+    shapes for the current session.
+
+    Callers MUST invoke this before the first `ensure_fields_allocated()`/kernel run.
+    """
+    global MAX_GA_RUNS, MAX_GA_RUN_GENOMES
+
+    if _fields_allocated:
+        return
+
+    if max_runs is not None:
+        MAX_GA_RUNS = _clamp_ga_runs(int(max_runs))
+    if max_genomes is not None:
+        MAX_GA_RUN_GENOMES = _clamp_ga_genomes(int(max_genomes))
+
+
 def allocate_fields():
     """
     Allocate GPU fields. Must be called after ti.init().

@@ -43,25 +43,28 @@ def _run_main(*, config_path: Path, out_log: Path, env_overrides: dict[str, str]
     env.update({k: str(v) for k, v in (env_overrides or {}).items()})
 
     t0 = time.time()
-    proc = subprocess.run(
-        [sys.executable, "main.py"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        env=env,
-        cwd=str(Path.cwd()),
-    )
+    out_log.parent.mkdir(parents=True, exist_ok=True)
+    # Write logs directly to disk to avoid large in-memory captures and to prevent
+    # Windows pipe inheritance from hanging subprocess output collection.
+    with out_log.open("wb") as f:
+        proc = subprocess.run(
+            [sys.executable, "main.py"],
+            stdout=f,
+            stderr=subprocess.STDOUT,
+            env=env,
+            cwd=str(Path.cwd()),
+        )
     dt = time.time() - t0
 
-    out_log.parent.mkdir(parents=True, exist_ok=True)
-    out_log.write_text(proc.stdout, encoding="utf-8", errors="replace")
+    try:
+        log_text = out_log.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        log_text = ""
 
     return {
         "exit_code": int(proc.returncode),
         "elapsed_sec": float(dt),
-        "gpu_executor_profile": _parse_gpu_executor_profile(proc.stdout),
+        "gpu_executor_profile": _parse_gpu_executor_profile(log_text),
     }
 
 
@@ -96,6 +99,7 @@ def main() -> int:
 
         common_env = {
             "GPU_EXECUTOR_PROFILE": "1",
+            "METAFINDER_IGNORE_RESUME_QUEUE": "1",
         }
 
         baseline = _run_main(

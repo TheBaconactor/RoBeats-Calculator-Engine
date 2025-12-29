@@ -74,6 +74,7 @@ from .kernels_helpers import (
 from .kernels_ga import (
     ga_seed_rng_kernel,
     ga_load_initial_population_kernel,
+    ga_upload_item_stats_and_slots_kernel,
     ga_select_parents_tournament_kernel,
     ga_crossover_mutate_kernel,
     ga_swap_populations_kernel,
@@ -186,6 +187,7 @@ __all__ = [
     # GA kernels
     "ga_seed_rng_kernel",
     "ga_load_initial_population_kernel",
+    "ga_upload_item_stats_and_slots_kernel",
     "ga_select_parents_tournament_kernel",
     "ga_crossover_mutate_kernel",
     "ga_swap_populations_kernel",

@@ -1,5 +1,8 @@
 # Implementation Summary
 
+> [!WARNING]
+> **Legacy / out-of-date:** This document describes an older task set and references pre-refactor paths (e.g. `gear_optimizer/config.py`). For the current layout, start at `docs/NAVIGATION.md`.
+
 This document summarizes the changes made to implement the three requested features:
 
 1. **Remove Bootstrapper dependency** - Automatic file discovery

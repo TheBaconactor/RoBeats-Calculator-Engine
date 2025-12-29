@@ -35,6 +35,13 @@ def get_db_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     """
     if db_path is None:
         db_path = get_evolution_db_path()
+    # Ensure parent directory exists for custom paths (e.g. benchmark artifacts).
+    try:
+        parent = os.path.dirname(os.path.abspath(db_path))
+        if parent and not os.path.exists(parent):
+            os.makedirs(parent, exist_ok=True)
+    except Exception:
+        pass
     conn = sqlite3.connect(db_path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     # Enable WAL mode for better concurrency

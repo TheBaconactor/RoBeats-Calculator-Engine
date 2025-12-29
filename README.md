@@ -68,35 +68,48 @@ The optimizer will:
 Edit `config.ini` to customize behavior:
 
 ```ini
+[CalculateSong]
+Song_Name = Aether
+Difficulty = All
+
 [IterationEngine]
-# GA Settings
-GA_SearchDepth = 75           # Generations per GA run (default: 75)
-GA_MultiStart = 3             # Multi-start restarts (default: 3, deep mining: 30)
+; Main optimizer toggles
+MetaFinder = true
 
-# GPU Settings
-GPU_Mode = true               # Enable GPU acceleration
-InFlightSongs = 0             # Experimental: single-process multi-song pipeline (set >1; forces GPU_Native_GA=false)
+; GPU acceleration (Taichi/Vulkan)
+GPU_Mode = true
+GPU_Native_GA = true
+InFlightSongs = 0
 
-  # Force Greats
-  ForceGreatsMode = false       # Enable ForceGreats evaluation (true/false)
-  ForceGreatsFinder = false     # Auto ForceGreats optimization (true/false)
-  # Manual ForceGreats (only used when ForceGreatsFinder=false)
-  # Option A: Inline list (NonFever1, NonFever2, ...):
-  # ForceGreatsManual = 3,0,1
-  # Option B: Explicit section:
-  # [ForceGreats]
-  # NonFever1 = 3
-  # NonFever2 = 0
+; Force Greats
+ForceGreatsMode = true
+ForceGreatsFinder = true
+FG_CandidateLimit = 200
+FG_SearchRadius = 5
 
-  [Gear]
-  # Default gear loadout (6 slots)
-  Slot1 = Gear Name Here
-...
+; GA settings
+GA_SearchDepth = 500
+GA_MultiStart = 35
+
+; Resource limits
+EvalCPUCores = 0
+MemorySoftLimitGB = 7
+MemorySoftLimitPercent = 0
+
+[Gear]
+; Leave blank to let GA choose a starting point
+Hat =
+Neck =
+Face =
+Shirt =
+Back =
+Pant =
 
 [Minis]
-# Default mini loadout (3 slots)
-Slot1 = Mini Name Here
-...
+; Leave blank to let GA choose a starting point
+1 =
+2 =
+3 =
 ```
 
 ### Discord Integration (Optional)
@@ -114,18 +127,19 @@ STATSCHANNEL=987654321
 Environment variable overrides:
 
 ```bash
+# Custom config.ini location
+export METAFINDER_CONFIG_PATH=/path/to/config.ini
+
 # Custom database location
 export EVOLUTION_DB_PATH=/path/to/evolution.db
 
-# Status JSON for deployments
-export METAFINDER_STATUS_FILE=/path/to/metafinder_status.json
-
-# GPU profiling
-export GPU_EXECUTOR_PROFILE=1
-export GPU_BATCH_LOG=1
-
 # Deterministic testing
 export GA_SEED=42
+
+# Profiling / timing (opt-in)
+export PERF_TIMING=1
+export GPU_PROFILER=1
+export GPU_EXECUTOR_PROFILE=1
 ```
 
 ---
@@ -133,6 +147,26 @@ export GA_SEED=42
 ## Project Structure
 
 Quick navigation: see `docs/NAVIGATION.md`.
+
+High-level layout (current):
+
+```text
+RoBeats-Calculator-Engine/
+├── main.py                      # Optimizer entrypoint
+├── general_meta_main.py         # Cross-song/meta analysis entrypoint
+├── config.ini                   # User configuration
+├── gear_optimizer/              # Main package
+├── tests/                       # Pytest suite
+├── tools/                       # Maintained utilities/bench/verifiers
+├── scripts/                     # Ad-hoc profiling/debug scripts
+├── docs/                        # Design + math + schema docs
+├── Data/                        # Inputs (songs + gear metadata)
+├── bin/                         # Caches/logs/profiles (generated)
+└── artifacts/                   # Run outputs (generated)
+```
+
+<details>
+<summary>Legacy: detailed tree (may be out-of-date)</summary>
 
 ```
 RoBeats-Calculator-Engine/
@@ -266,7 +300,9 @@ RoBeats-Calculator-Engine/
     └── legacy/                       # Historical refactoring guides
 ```
 
-**Total Codebase:** 100+ files, 18,000+ lines of code (refactored from 7,216 monolithic lines)
+</details>
+
+**Note:** `bin/`, `artifacts/`, and `evolution.db` are typically generated during runs.
 
 ---
 
@@ -277,40 +313,41 @@ RoBeats-Calculator-Engine/
 ```
 ┌─────────────────────────────────────────┐
 │      Orchestration Layer               │
-│  app.py (GearOptimizerApp)             │
-│  song_processor.py                     │
+│  main.py                               │
+│  gear_optimizer/app.py (GearOptimizerApp) │
+│  gear_optimizer/pipeline/song_processor.py │
 └────────────────────┬────────────────────┘
                      │
 ┌────────────────────┴────────────────────┐
 │      Algorithm Layer                   │
-│  genetic.py (GA solver)                │
-│  scoring.py (fitness evaluation)       │
-│  gpu_executor.py (GPU coordination)    │
+│  gear_optimizer/solver/genetic.py (CPU GA) │
+│  gear_optimizer/solver/inflight_* (in-flight) │
+│  gear_optimizer/solver/gpu_executor.py (GPU IPC) │
 └────────────────────┬────────────────────┘
                      │
 ┌────────────────────┴────────────────────┐
 │      Rules/Compute Layers              │
-│  fever_timeline.py (CPU logic)         │
-│  scoring_core.py (JIT scoring)         │
-│  taichi_gem/*.py (GPU kernels)         │
+│  gear_optimizer/solver/scoring/ (CPU/GPU dispatch) │
+│  gear_optimizer/solver/scoring_core.py (JIT scoring) │
+│  gear_optimizer/solver/fever_timeline.py (CPU logic) │
+│  gear_optimizer/solver/taichi_gem/ (GPU kernels) │
 └────────────────────┬────────────────────┘
                      │
 ┌────────────────────┴────────────────────┐
 │      Helper Layer                      │
-│  ga_helpers.py, song_helpers.py        │
-│  song_preloader.py                     │
+│  gear_optimizer/helpers/ga_helpers/ + song_helpers/ │
+│  gear_optimizer/helpers/song_preloader.py │
 └────────────────────┬────────────────────┘
                      │
 ┌────────────────────┴────────────────────┐
 │      Data Layer                        │
-│  database.py, csv_parser.py            │
-│  discord_reporter.py                   │
+│  gear_optimizer/data/database.py + migrations/ │
+│  gear_optimizer/data/csv_parser.py + discord_reporter.py │
 └────────────────────┬────────────────────┘
                      │
 ┌────────────────────┴────────────────────┐
 │      Foundation Layer                  │
-│  constants.py, config.py, utils.py     │
-│  memory.py, models.py                  │
+│  gear_optimizer/core/                  │
 └─────────────────────────────────────────┘
 ```
 
@@ -328,7 +365,7 @@ RoBeats-Calculator-Engine/
 - **Elitism:** Preserve top 10% across generations
 - **Memetic Search:** Local hill-climbing on elite offspring
 
-#### Scoring Engine ([scoring.py](gear_optimizer/solver/scoring.py) + [scoring_core.py](gear_optimizer/solver/scoring_core.py))
+#### Scoring Engine ([scoring/](gear_optimizer/solver/scoring/) + [scoring_core.py](gear_optimizer/solver/scoring_core.py))
 - **Reference Lookup:** JIT-compiled O(1) stat-to-multiplier conversion
 - **Fever Timeline:** CPU-side complex fever calculations ([fever_timeline.py](gear_optimizer/solver/fever_timeline.py))
 - **Gem Optimization:** GPU-accelerated greedy gem allocation ([taichi_gem/](gear_optimizer/solver/taichi_gem/))
@@ -351,27 +388,18 @@ RoBeats-Calculator-Engine/
 
 ```bash
 # All tests
-pytest tests/
+python -m pytest tests/
 
-# GPU integration tests
-pytest tests/test_gpu_*.py
+# CPU-only
+python -m pytest -m "not gpu" tests/
 
-# Regression tests
-pytest tests/regression_*.py
-
-# Smoke tests
-pytest tests/test_parity_smoke.py
+# GPU (Taichi/Vulkan)
+python -m pytest -m gpu tests/
 ```
 
 ### Test Coverage
 
-**26 test files (3,862 LOC):**
-- **GPU Integration:** 8 files (executor, batch ops, integration)
-- **Taichi Parity:** 2 files (GPU/CPU validation)
-- **Force Greats:** 4 files (correctness & performance)
-- **GA Validation:** 3 files (return values, deep mining)
-- **Regression:** 2 files (fixed bugs, GA stability)
-- **API Stability:** 1 file (compatibility checks)
+See `tests/` for CPU/GPU parity checks, DB correctness, and regression coverage.
 
 ---
 
@@ -390,11 +418,11 @@ pytest tests/test_parity_smoke.py
 
 ### Performance Tips
 
-1. **Memory Management:** Set `memory_limit_pct` to 70-80% for stable operation
+1. **Memory Management:** Set `MemorySoftLimitGB` or `MemorySoftLimitPercent` (under `[IterationEngine]`) for stable operation
 2. **Worker Count:** CPU-only runs auto-parallelize songs (no config required)
 3. **GA Depth:** Increase `GA_SearchDepth` for better solutions (slower)
 4. **GPU Profiling:** Enable `GPU_EXECUTOR_PROFILE=1` to measure utilization
-5. **Caching:** Never clear `bin/build/` - contains JIT compilation cache
+5. **Caching:** Avoid clearing `bin/numba_cache/` (JIT cache) and `bin/paths_cache.json` (data discovery cache) unless troubleshooting
 
 ---
 
@@ -454,7 +482,7 @@ pytest tests/test_parity_smoke.py
 - Delete `bin/paths_cache.json` and re-run `python main.py` to regenerate it automatically
 
 **"Memory limit exceeded"**
-- Increase `memory_limit_pct` in config.ini or reduce GA depth / multi-start
+- Increase `MemorySoftLimitGB` / `MemorySoftLimitPercent` in `config.ini` or reduce GA depth / multi-start
 
 **"No module named 'numba'" or "No module named 'taichi'"**
 - Install dependencies: `pip install -r requirements.txt`
@@ -465,7 +493,7 @@ pytest tests/test_parity_smoke.py
 **GPU not detected**
 - Ensure Taichi with Vulkan backend is installed: `pip install taichi`
 - Check GPU availability: `python -c "import taichi as ti; ti.init(arch=ti.vulkan)"`
-- Fallback to CPU mode: Set `UseGPU = 0` in config.ini
+- Fallback to CPU mode: Set `GPU_Mode = false` (and optionally `GPU_Native_GA = false`) in `config.ini`
 
 ---
 
@@ -501,4 +529,4 @@ This project is for personal use. All rights reserved.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for system design details.
 
-Run `tools/quality_check.ps1` to verify code quality before submitting changes.
+Run `powershell -ExecutionPolicy Bypass -File tools/dev/quality_check.ps1` to verify code quality before submitting changes.

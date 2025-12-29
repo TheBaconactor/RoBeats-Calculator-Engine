@@ -1,5 +1,8 @@
 # Gear Optimizer - Software Architecture
 
+> [!NOTE]
+> This is a high-level overview. For the current file-level map, start at `docs/NAVIGATION.md`.
+
 ## System Overview
 
 ```
@@ -16,7 +19,7 @@
                              ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │                      SONG PROCESSOR LAYER                            │
-│                      (song_processor.py)                             │
+│                      (pipeline/song_processor.py)                     │
 │                                                                       │
 │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐              │
 │  │ Read Song    │──│ Parse Config │──│ Execute      │              │
@@ -28,7 +31,7 @@
             ▼                          ▼
 ┌───────────────────────┐    ┌───────────────────────┐
 │  GENETIC ALGORITHM    │    │  SCORING ENGINE       │
-│  (genetic.py)         │◄───│  (scoring.py)         │
+│  (solver/genetic.py)  │◄───│  (solver/scoring/)    │
 │                       │    │                       │
 │  - Population mgmt    │    │  - Score calculation  │
 │  - Mutation/crossover │    │  - Gem optimization   │
@@ -43,11 +46,11 @@
 │                                                                     │
 │  ┌────────────────┐    ┌────────────────┐    ┌────────────────┐ │
 │  │  DATABASE      │    │  CSV PARSER    │    │  CONFIG        │ │
-│  │  (database.py) │    │  (csv_parser.py)│   │  (config.py)   │ │
+│  │  (database.py) │    │  (csv_parser.py)│   │  (core/config.py)│ │
 │  │                │    │                 │    │                 │ │
 │  │ - SQLite ops   │    │ - Load gear    │    │ - Parse ini    │ │
 │  │ - Loadout CRUD │    │ - Load minis   │    │ - Validate     │ │
-│  │ - Compression  │    │ - Load stats   │    │ - Status file  │ │
+│  │ - Compression  │    │ - Load stats   │    │ - Cache paths  │ │
 │  └────────────────┘    └────────────────┘    └────────────────┘ │
 └───────────────────────────────────────────────────────────────────┘
             │                            │
@@ -81,25 +84,25 @@
 
 ```
 Level 1 (No Dependencies):
-  └─ constants.py
-  └─ models.py
-  └─ utils.py
+  └─ core/constants.py
+  └─ data/models.py
+  └─ core/utils.py
 
 Level 2 (Depend on Level 1):
-  └─ config.py      [constants, utils]
-  └─ csv_parser.py  [constants, utils]
-  └─ memory.py      [constants, models]
+  └─ core/config.py      [constants, utils]
+  └─ data/csv_parser.py  [constants, utils]
+  └─ core/memory.py      [constants, models]
 
 Level 3 (Depend on Levels 1-2):
-  └─ database.py    [constants, utils, config]
-  └─ scoring.py     [constants, utils, models]
+  └─ data/database.py    [constants, utils, config]
+  └─ solver/scoring/     [constants, utils, models]
 
 Level 4 (Depend on Levels 1-3):
-  └─ genetic.py     [constants, models, utils, database, scoring]
-  └─ discord_reporter.py [config]
+  └─ solver/genetic.py     [constants, models, utils, database, scoring]
+  └─ data/discord_reporter.py [config]
 
 Level 5 (Orchestration):
-  └─ song_processor.py [ALL]
+  └─ pipeline/song_processor.py [ALL]
   └─ main.py          [ALL]
 ```
 
@@ -139,7 +142,7 @@ Level 5 (Orchestration):
 │           ▼             │  │  Multi-start
 │  ┌─────────────────┐   │  │  Loop (3x)
 │  │ Evaluate        │◄──┼──┘
-│  │ (scoring.py)    │   │
+│  │ (solver/scoring/)│   │
 │  └────────┬────────┘   │
 │           │            │
 │           ▼            │
@@ -169,9 +172,9 @@ Level 5 (Orchestration):
 
 ### 1. **Separation of Concerns**
 - Each module has single, well-defined responsibility
-- Data access isolated in `database.py` and `csv_parser.py`
-- Business logic in `genetic.py` and `scoring.py`
-- Infrastructure in `memory.py` and `config.py`
+- Data access isolated in `gear_optimizer/data/database.py` and `gear_optimizer/data/csv_parser.py`
+- Business logic in `gear_optimizer/solver/genetic.py` and `gear_optimizer/solver/scoring/`
+- Infrastructure in `gear_optimizer/core/memory.py` and `gear_optimizer/core/config.py`
 
 ### 2. **Dependency Injection**
 ```python
@@ -187,7 +190,7 @@ def solve_genetic(cfg: ConfigParser, ...):
 
 ### 3. **Cache Abstraction**
 ```python
-# scoring.py
+# solver/scoring/*
 from cachetools import LRUCache
 
 # Global caches with bounded memory
@@ -221,7 +224,7 @@ def process_song_task(args):
 
 ## Performance Optimizations
 
-### 1. **JIT Compilation** (scoring.py)
+### 1. **JIT Compilation** (solver/scoring_core.py)
 ```python
 try:
     from numba import jit
@@ -238,7 +241,7 @@ def lookup_reference_jit(value, ref_array, total_rows):
     # 10x faster than Python loop
 ```
 
-### 2. **LRU Caching** (scoring.py)
+### 2. **LRU Caching** (solver/scoring/)
 ```python
 # Cache key based on inputs that matter
 signature = stats_signature(stats, calc_song, selected_color)

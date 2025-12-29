@@ -115,8 +115,13 @@ def ga_upload_initial_populations(populations_np: np.ndarray, *, n_runs: int, n_
     if n_slots > fields.MAX_SLOTS:
         raise ValueError(f"Too many slots: {n_slots} > {fields.MAX_SLOTS}")
 
-    buf = np.zeros((fields.MAX_GA_RUNS, fields.MAX_GA_RUN_GENOMES, fields.MAX_SLOTS), dtype=np.int32)
     src = np.asarray(populations_np, dtype=np.int32)
+    expected_shape = (fields.MAX_GA_RUNS, fields.MAX_GA_RUN_GENOMES, fields.MAX_SLOTS)
+    if src.shape == expected_shape:
+        fields.ga_initial_populations.from_numpy(np.ascontiguousarray(src))
+        return
+
+    buf = np.zeros((fields.MAX_GA_RUNS, fields.MAX_GA_RUN_GENOMES, fields.MAX_SLOTS), dtype=np.int32)
     buf[:n_runs, :n_genomes, :n_slots] = src[:n_runs, :n_genomes, :n_slots]
     fields.ga_initial_populations.from_numpy(buf)
 
@@ -177,19 +182,20 @@ def ga_upload_item_stats(
     )
     if _ITEM_STATS_CACHE.get("sig") == sig:
         return n_items  # Already uploaded
-    
-    # Upload item stats (padded to MAX_ITEMS)
-    stats_buf = np.zeros((fields.MAX_ITEMS, fields.ITEM_STAT_DIM), dtype=np.int32)
-    stats_buf[:n_items, :] = np.asarray(item_stats_np[:, :fields.ITEM_STAT_DIM], dtype=np.int32)
-    fields.item_stats.from_numpy(stats_buf)
-    
-    # Upload slot pool boundaries
-    start_buf = np.zeros(fields.MAX_SLOTS, dtype=np.int32)
-    count_buf = np.zeros(fields.MAX_SLOTS, dtype=np.int32)
-    start_buf[:len(slot_start_np)] = np.asarray(slot_start_np, dtype=np.int32)
-    count_buf[:len(slot_count_np)] = np.asarray(slot_count_np, dtype=np.int32)
-    fields.slot_start.from_numpy(start_buf)
-    fields.slot_count.from_numpy(count_buf)
+
+    # Upload only the active rows instead of a full MAX_ITEMS padded table.
+    stats_src = np.ascontiguousarray(item_stats_np[:n_items, :fields.ITEM_STAT_DIM], dtype=np.int32)
+
+    slot_start_arr = np.zeros(fields.MAX_SLOTS, dtype=np.int32)
+    slot_count_arr = np.zeros(fields.MAX_SLOTS, dtype=np.int32)
+    start_np = np.asarray(slot_start_np, dtype=np.int32).reshape(-1)
+    count_np = np.asarray(slot_count_np, dtype=np.int32).reshape(-1)
+    n_slot_vals = min(int(fields.MAX_SLOTS), int(start_np.shape[0]), int(count_np.shape[0]))
+    if n_slot_vals > 0:
+        slot_start_arr[:n_slot_vals] = start_np[:n_slot_vals]
+        slot_count_arr[:n_slot_vals] = count_np[:n_slot_vals]
+
+    kernels.ga_upload_item_stats_and_slots_kernel(stats_src, int(n_items), slot_start_arr, slot_count_arr)
     
     _ITEM_STATS_CACHE["sig"] = sig
     return n_items

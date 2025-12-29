@@ -1,5 +1,8 @@
 # Scoring Module Extraction Plan
 
+> [!WARNING]
+> **Legacy / archived:** This document lives under `docs/legacy/` and may not match the current code layout/config. See `docs/NAVIGATION.md` for current entrypoints/paths.
+
 ## Status: Creating scoring.py module
 
 Due to the size and complexity of the scoring engine (~600-800 lines), I'm creating a comprehensive module that includes:

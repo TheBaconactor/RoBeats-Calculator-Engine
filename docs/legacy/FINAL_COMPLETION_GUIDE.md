@@ -1,5 +1,8 @@
 # Final Completion Guide - Remaining 50%
 
+> [!WARNING]
+> **Legacy / archived:** This document lives under `docs/legacy/` and may not match the current code layout/config. See `docs/NAVIGATION.md` for current entrypoints/paths.
+
 ## 🎉 Current Achievement: 50% Complete!
 
 You now have **7 fully functional modules** (1,629 lines of professional code):

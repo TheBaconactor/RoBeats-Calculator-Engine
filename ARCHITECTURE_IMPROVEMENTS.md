@@ -1,5 +1,8 @@
 # RoBeats MetaFinder - Architecture Improvements Proposal
 
+> [!WARNING]
+> **Legacy / out-of-date:** This is a historical proposal and may not reflect the current module layout or file names. For the current code map, see `docs/NAVIGATION.md`.
+
 ## Current State Analysis
 
 **RoBeats MetaFinder v2.0.0** is a high-performance genetic algorithm (GA) solver for optimizing gear and mini loadouts in rhythm games. It features:

@@ -1,8 +1,8 @@
 # Taichi Port Roadmap (End-to-End GPU GA)
 
 ## Current State (what’s already on GPU)
-- **Gem optimization** is on Taichi/Vulkan via `solve_genomes_parallel()` in [`gear_optimizer/solver/taichi_gem_solver.py`](gear_optimizer/solver/taichi_gem_solver.py).
-- The GA evaluation path (`batch_evaluate_genomes`) calls it from [`gear_optimizer/solver/scoring.py`](gear_optimizer/solver/scoring.py).
+- **Gem optimization** is on Taichi/Vulkan via `solve_genomes_parallel()` in [`gear_optimizer/solver/taichi_gem_solver.py`](../gear_optimizer/solver/taichi_gem_solver.py).
+- The GA evaluation path (`batch_evaluate_genomes`) calls it from [`gear_optimizer/solver/scoring/genome_evaluation.py`](../gear_optimizer/solver/scoring/genome_evaluation.py).
 - The V3 path:
   - Uses a **precomputed (FT,FF) combo table** on GPU.
   - Computes best (score, FT, FF) per genome using **on-GPU atomic reduction**.

@@ -109,6 +109,14 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         ]
                         if valid_entries:
                             save_loadouts_batch(db_key, valid_entries)
+                            try:
+                                best_fg = max(int(e.get("fg_score", 0) or 0) for e in valid_entries)
+                            except Exception:
+                                best_fg = 0
+                            print(
+                                f"[POST][FG] Saved {len(valid_entries)} FG variant(s) for {song_name} "
+                                f"(best_fg={best_fg})"
+                            )
                         else:
                             print(f"[DB] Skipped FG update for {song_name}: no valid entries")
                     try:

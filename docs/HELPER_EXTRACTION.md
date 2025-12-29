@@ -1,5 +1,8 @@
 # Helper Extraction - Refactoring Complete
 
+> [!WARNING]
+> **Legacy / out-of-date:** This summary references old helper module layouts (single-file `song_helpers.py`/`ga_helpers.py`). The current helpers live under `gear_optimizer/helpers/ga_helpers/` and `gear_optimizer/helpers/song_helpers/`.
+
 **Date:** December 7, 2025
 **Status:** ✅ Complete
 

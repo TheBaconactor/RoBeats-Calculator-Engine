@@ -1,5 +1,8 @@
 # Refactoring Status & Next Steps
 
+> [!WARNING]
+> **Legacy / archived:** This document lives under `docs/legacy/` and may not match the current code layout/config. See `docs/NAVIGATION.md` for current entrypoints/paths.
+
 ## ✅ What Has Been Created
 
 ### 1. Package Structure

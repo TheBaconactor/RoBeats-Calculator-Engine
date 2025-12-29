@@ -454,10 +454,28 @@ class GearOptimizerApp:
              diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols
         )
 
-        resume_seed_queue = load_memory_guard_resume_queue(resume_context)
-        if resume_seed_queue:
-            print(f"[MemoryGuard] Resuming {len(resume_seed_queue)} song(s) from previous interrupted run.")
-            return resume_seed_queue
+        ignore_resume = False
+        try:
+            ignore_resume = cfg.getboolean("IterationEngine", "IgnoreResumeQueue", fallback=False)
+        except Exception:
+            ignore_resume = False
+        if self._truthy(os.environ.get("METAFINDER_IGNORE_RESUME_QUEUE", "")):
+            ignore_resume = True
+
+        if not ignore_resume:
+            resume_seed_queue = load_memory_guard_resume_queue(resume_context)
+            if resume_seed_queue:
+                print(f"[MemoryGuard] Resuming {len(resume_seed_queue)} song(s) from previous interrupted run.")
+                # Optional deterministic limit (useful for benchmarks / iteration), even in resume mode.
+                song_queue_limit = 0
+                try:
+                    song_queue_limit = safe_int(cfg.get("IterationEngine", "SongQueueLimit", fallback="0"), 0)
+                except Exception:
+                    song_queue_limit = 0
+                if song_queue_limit and song_queue_limit > 0 and len(resume_seed_queue) > song_queue_limit:
+                    resume_seed_queue = resume_seed_queue[: int(song_queue_limit)]
+                    print(f"[Queue] SongQueueLimit={song_queue_limit}: running {len(resume_seed_queue)} song(s) (resume)")
+                return resume_seed_queue
 
         diff = cfg.get("CalculateSong", "Difficulty", fallback="Hard")
         search_dir = paths.get(diff, SCRIPT_DIR)

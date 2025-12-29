@@ -1,5 +1,8 @@
 # Phase 3 Status: Core Algorithm Extraction
 
+> [!WARNING]
+> **Legacy / archived:** This document lives under `docs/legacy/` and may not match the current code layout/config. See `docs/NAVIGATION.md` for current entrypoints/paths.
+
 ## Challenge Encountered
 
 The scoring module is **extremely large** (~800 lines) with:

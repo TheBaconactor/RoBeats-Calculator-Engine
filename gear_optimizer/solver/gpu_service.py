@@ -52,12 +52,18 @@ class GpuServiceClient:
         self._counter = itertools.count(1)
         self._pending: dict[int, Future] = {}
         self._lock = threading.Lock()
+        self._submit_lock = threading.Lock()
         self._rx_thread: Optional[threading.Thread] = None
         self._running = False
 
     @property
     def executor(self) -> GpuExecutor:
         return self._executor
+
+    @property
+    def submit_lock(self) -> threading.Lock:
+        """Serialize multi-request submit sequences (prevents interleaving across threads)."""
+        return self._submit_lock
 
     def start(self, *, start_executor: bool = False, in_process_queues: bool = True) -> None:
         """

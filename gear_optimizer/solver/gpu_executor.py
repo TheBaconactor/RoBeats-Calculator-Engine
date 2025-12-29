@@ -39,6 +39,7 @@ from gear_optimizer.core.env_config import ENV
 
 class GpuRequestType(Enum):
     """Types of GPU requests that can be submitted."""
+
     SOLVE_GENOMES_PARALLEL = "solve_genomes_parallel"
     OPTIMIZE_GEMS_BATCH = "optimize_gems_batch_gpu"
     LOAD_REF_ARRAYS = "load_ref_arrays"
@@ -54,6 +55,7 @@ class GpuRequestType(Enum):
 @dataclass
 class GpuRequest:
     """A request to execute on the GPU executor."""
+
     request_type: GpuRequestType
     request_id: int
     worker_id: int
@@ -63,6 +65,7 @@ class GpuRequest:
 @dataclass
 class GpuResponse:
     """Response from GPU executor."""
+
     request_id: int
     success: bool
     result: Any = None
@@ -143,6 +146,7 @@ class GpuExecutor:
         # Stats
         self._requests_processed = 0
         from gear_optimizer.core.env_config import ENV
+
         self._profile_enabled = ENV.gpu_executor_profile
         self._wait_sec = 0.0
         self._exec_sec = 0.0
@@ -157,6 +161,9 @@ class GpuExecutor:
         self._profile_first_work_ts: Optional[float] = None
         self._profile_last_work_end_ts: Optional[float] = None
         self._profile_shutdown_ts: Optional[float] = None
+        self._idle_transitions_sec = defaultdict(float)
+        self._idle_transitions_count = defaultdict(int)
+        self._last_work_req_type: Optional[GpuRequestType] = None
 
     def start(self, *, in_process: bool = False):
         """Start the GPU executor thread in the main process."""
@@ -186,6 +193,9 @@ class GpuExecutor:
         self._profile_first_work_ts = None
         self._profile_last_work_end_ts = None
         self._profile_shutdown_ts = None
+        self._idle_transitions_sec = defaultdict(float)
+        self._idle_transitions_count = defaultdict(int)
+        self._last_work_req_type = None
         self._response_queues = {}
         self._next_worker_id = 0
 
@@ -243,16 +253,9 @@ class GpuExecutor:
             util = (self._exec_sec / total * 100.0) if total > 0 else 0.0
             avg = (self._exec_sec / self._requests_processed) if self._requests_processed else 0.0
             avg_batch = (self._batch_size_sum / self._batches_observed) if self._batches_observed else 0.0
-            top_types = sorted(
-                self._req_type_exec_sec.items(), key=lambda kv: kv[1], reverse=True
-            )[:6]
-            top_types_str = ", ".join(
-                f"{t.value}:{self._req_type_counts[t]} ({sec:.2f}s)"
-                for t, sec in top_types
-            )
-            top_batch_sizes = sorted(
-                self._batch_size_counts.items(), key=lambda kv: kv[0]
-            )[:16]
+            top_types = sorted(self._req_type_exec_sec.items(), key=lambda kv: kv[1], reverse=True)[:6]
+            top_types_str = ", ".join(f"{t.value}:{self._req_type_counts[t]} ({sec:.2f}s)" for t, sec in top_types)
+            top_batch_sizes = sorted(self._batch_size_counts.items(), key=lambda kv: kv[0])[:16]
             batch_hist_str = ", ".join(f"{sz}:{cnt}" for sz, cnt in top_batch_sizes if cnt)
             print(
                 "[GpuExecutor][PROFILE] "
@@ -262,6 +265,27 @@ class GpuExecutor:
                 f"idle_initial={idle_initial:.3f}s idle_tail={idle_tail:.3f}s "
                 f"types=[{top_types_str}] batch_sizes=[{batch_hist_str}]"
             )
+            try:
+                top_transitions = sorted(self._idle_transitions_sec.items(), key=lambda kv: kv[1], reverse=True)[:6]
+                if top_transitions:
+                    parts = []
+                    for (prev_t, next_t), sec in top_transitions:
+                        prev_s = prev_t.value if prev_t is not None else "<start>"
+                        next_s = next_t.value if next_t is not None else "<none>"
+                        cnt = int(self._idle_transitions_count.get((prev_t, next_t), 0))
+                        parts.append(f"{prev_s}->{next_s}:{sec:.2f}s({cnt})")
+                    print(f"[GpuExecutor][IDLE] transitions=[{', '.join(parts)}]")
+            except Exception:
+                pass
+
+        if os.environ.get("TAICHI_KERNEL_PROFILER_PRINT", "0").strip().lower() in {"1", "true", "yes", "on"}:
+            try:
+                import taichi as ti
+
+                ti.sync()
+                ti.profiler.print_kernel_profiler_info()
+            except Exception:
+                pass
         print(f"[GpuExecutor] Stopped. Processed {self._requests_processed} requests.")
 
     def register_worker(self) -> tuple:
@@ -289,6 +313,7 @@ class GpuExecutor:
         # Initialize Taichi ONCE
         try:
             from .taichi_gem.runtime import init_taichi_vulkan
+
             init_taichi_vulkan()
             self._taichi_ready = True
             print("[GpuExecutor] Taichi initialized")
@@ -323,6 +348,14 @@ class GpuExecutor:
                 if self._profile_enabled:
                     if float(dt_wait) >= float(self._idle_sample_threshold_sec):
                         self._idle_gaps.append(float(dt_wait))
+                        next_type = None
+                        for r in batch or []:
+                            if r.request_type == GpuRequestType.SHUTDOWN:
+                                continue
+                            next_type = r.request_type
+                            break
+                        self._idle_transitions_sec[(self._last_work_req_type, next_type)] += float(dt_wait)
+                        self._idle_transitions_count[(self._last_work_req_type, next_type)] += 1
                     if (
                         self._profile_first_work_ts is None
                         and batch
@@ -361,6 +394,7 @@ class GpuExecutor:
                         for _ in solve_requests:
                             self._req_type_counts[GpuRequestType.SOLVE_GENOMES_PARALLEL] += 1
                             self._req_type_exec_sec[GpuRequestType.SOLVE_GENOMES_PARALLEL] += per_req
+                            self._last_work_req_type = GpuRequestType.SOLVE_GENOMES_PARALLEL
 
                         # Dispatch responses back to originating workers
                         for req, resp in zip(solve_requests, responses):
@@ -375,11 +409,11 @@ class GpuExecutor:
                         self._exec_sec += dt_exec
                         self._req_type_counts[req.request_type] += 1
                         self._req_type_exec_sec[req.request_type] += dt_exec
+                        self._last_work_req_type = req.request_type
 
                         if req.worker_id in self._response_queues:
                             self._response_queues[req.worker_id].put(response)
                         self._requests_processed += 1
-
 
                 # Process other request types individually
                 for req in other_requests:
@@ -389,6 +423,7 @@ class GpuExecutor:
                     self._exec_sec += dt_exec
                     self._req_type_counts[req.request_type] += 1
                     self._req_type_exec_sec[req.request_type] += dt_exec
+                    self._last_work_req_type = req.request_type
 
                     if req.worker_id in self._response_queues:
                         self._response_queues[req.worker_id].put(response)
@@ -491,6 +526,7 @@ class GpuExecutor:
             # If group is too large for available slots, split further.
             try:
                 from .taichi_gem import fields as _gem_fields
+
                 max_slots = int(getattr(_gem_fields, "MAX_SONG_SLOTS", 8) or 8)
             except Exception:
                 max_slots = 8
@@ -498,7 +534,9 @@ class GpuExecutor:
                 sub = group[start : start + max_slots]
                 try:
                     if log_batches and len(sub) > 1:
-                        print(f"[GpuExecutor][BATCH] requests={len(sub)} budget={int(sub[0].payload.get('total_budget', 90))} scale={int(sub[0].payload.get('gem_scale_fever', 3))}")
+                        print(
+                            f"[GpuExecutor][BATCH] requests={len(sub)} budget={int(sub[0].payload.get('total_budget', 90))} scale={int(sub[0].payload.get('gem_scale_fever', 3))}"
+                        )
                     # Require calc_song dict inputs for true batching; otherwise fall back.
                     if any(not isinstance(r.payload.get("timeline_grid"), dict) for r in sub):
                         raise ValueError("non-dict timeline_grid in batch")
@@ -511,27 +549,30 @@ class GpuExecutor:
                         gem_scale_fever=gem_scale_fever,
                     )
                     for req, res in zip(sub, merged_results):
-                        out.append(GpuResponse(
-                            request_id=req.request_id,
-                            success=True,
-                            result=res,
-                        ))
+                        out.append(
+                            GpuResponse(
+                                request_id=req.request_id,
+                                success=True,
+                                result=res,
+                            )
+                        )
                 except Exception:
                     # Conservative fallback: process each request individually.
                     for req in sub:
                         try:
                             out.append(self._execute_solve_genomes(req, song_slot=0))
                         except Exception as e2:
-                            out.append(GpuResponse(
-                                request_id=req.request_id,
-                                success=False,
-                                error=f"{type(e2).__name__}: {e2}",
-                            ))
+                            out.append(
+                                GpuResponse(
+                                    request_id=req.request_id,
+                                    success=False,
+                                    error=f"{type(e2).__name__}: {e2}",
+                                )
+                            )
 
         # Preserve original request order for caller.
         by_id = {r.request_id: r for r in out}
         return [by_id.get(req.request_id) for req in requests]
-
 
     def _execute_request(self, request: GpuRequest) -> GpuResponse:
         """Execute a single GPU request."""
@@ -645,6 +686,9 @@ class GpuExecutor:
                     success=False,
                     error="Invalid payload for SOLVE_FORCE_GREATS_FINDER (fg_tasks must be list/tuple)",
                 )
+
+            reset_before = bool(kwargs.pop("fg_reset_before", False))
+            download_after = bool(kwargs.pop("fg_download_after", False))
             base_args = list(args)
             if len(base_args) < 7:
                 return GpuResponse(
@@ -655,6 +699,19 @@ class GpuExecutor:
 
             result = None
             kwargs_local = dict(kwargs)
+            if reset_before or download_after:
+                from .taichi_gem.force_greats.api import fg_download_global_best, fg_reset_global_best
+
+                try:
+                    n_genomes = int(len(base_args[0]))
+                except Exception:
+                    n_genomes = 0
+
+                kwargs_local["accumulate_global"] = True
+                kwargs_local["return_raw"] = True
+                if reset_before:
+                    fg_reset_global_best(int(n_genomes))
+
             for task in fg_tasks:
                 if not isinstance(task, dict):
                     continue
@@ -668,6 +725,9 @@ class GpuExecutor:
                     except Exception:
                         pass
                 result = solve_force_greats_finder_gpu(*base_args, **kwargs_local)
+
+            if download_after:
+                result = fg_download_global_best(int(n_genomes))
             return GpuResponse(
                 request_id=request.request_id,
                 success=True,
@@ -966,12 +1026,18 @@ def get_gpu_executor() -> GpuExecutor:
 def submit_gpu_solve_genomes(
     genome_stats_list: list,
     timeline_grid,
-    is_p_ft: int, is_s_ft: int,
-    is_p_ff: int, is_s_ff: int,
-    is_p_pp: int, is_s_pp: int,
-    is_p_cm: int, is_s_cm: int,
-    is_p_fm: int, is_s_fm: int,
-    is_p_ov: int, is_s_ov: int,
+    is_p_ft: int,
+    is_s_ft: int,
+    is_p_ff: int,
+    is_s_ff: int,
+    is_p_pp: int,
+    is_s_pp: int,
+    is_p_cm: int,
+    is_s_cm: int,
+    is_p_fm: int,
+    is_s_fm: int,
+    is_p_ov: int,
+    is_s_ov: int,
     ref_arrays: dict,
     total_budget: int = 90,
     gem_scale_fever: int = 3,
@@ -1060,9 +1126,7 @@ def submit_gpu_solve_genomes(
 
     result = response.result
     if isinstance(result, list) and len(result) != len(genome_stats_list):
-        raise RuntimeError(
-            f"GPU executor returned {len(result)} results for {len(genome_stats_list)} genomes"
-        )
+        raise RuntimeError(f"GPU executor returned {len(result)} results for {len(genome_stats_list)} genomes")
     return result
 
 
@@ -1155,9 +1219,7 @@ def submit_gpu_optimize_gems_batch(
 
     result = response.result
     if isinstance(result, list) and len(result) != len(batch_input):
-        raise RuntimeError(
-            f"GPU executor returned {len(result)} results for {len(batch_input)} items"
-        )
+        raise RuntimeError(f"GPU executor returned {len(result)} results for {len(batch_input)} items")
     return result
 
 

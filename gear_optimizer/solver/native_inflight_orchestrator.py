@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
+import queue
+import threading
 import time
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -36,6 +38,108 @@ from gear_optimizer.solver.item_registry import ItemRegistry
 
 def _truthy(v: Any) -> bool:
     return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+_POOL_CACHE_MAX = 32
+_REGISTRY_CACHE_MAX = 32
+_PREP_CACHE_LOCK = threading.Lock()
+_POOL_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...]], tuple[list, list]]" = OrderedDict()
+_REGISTRY_GPU_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...]], tuple[ItemRegistry, dict]]" = OrderedDict()
+_FG_JIT_WARMED = False
+
+
+def _lru_get(cache: OrderedDict, key: tuple) -> Any:
+    try:
+        value = cache.get(key)
+    except Exception:
+        return None
+    if value is not None:
+        try:
+            cache.move_to_end(key)
+        except Exception:
+            pass
+    return value
+
+
+def _lru_put(cache: OrderedDict, key: tuple, value: Any, *, maxsize: int) -> None:
+    try:
+        cache[key] = value
+        cache.move_to_end(key)
+    except Exception:
+        return
+    try:
+        while len(cache) > int(maxsize):
+            cache.popitem(last=False)
+    except Exception:
+        pass
+
+
+def _warmup_fg_jit(calc_song: dict, ref_arrays: dict) -> None:
+    global _FG_JIT_WARMED
+    if _FG_JIT_WARMED:
+        return
+    if not calc_song or not ref_arrays:
+        return
+    try:
+        from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
+
+        fg_baseline_params({"Fever Time": 0, "Fever Fill Rate": 0}, calc_song, ref_arrays)
+    except Exception:
+        pass
+    try:
+        from gear_optimizer.core.constants import TOTAL_ROWS
+        from gear_optimizer.solver.fever_timeline import get_song_timeline_grid
+
+        grid = get_song_timeline_grid(calc_song, ref_arrays)
+        grid.get_timeline(0, int(TOTAL_ROWS))
+        grid.to_gpu_arrays_minimal()
+    except Exception:
+        pass
+    _FG_JIT_WARMED = True
+
+
+class _PostSender:
+    def __init__(self, post_queue) -> None:
+        self._post_queue = post_queue
+        backlog = 256
+        try:
+            backlog = int(os.environ.get("POST_LOCAL_BACKLOG", backlog))
+        except Exception:
+            backlog = 256
+        self._q: queue.Queue[Any] = queue.Queue(maxsize=max(1, backlog))
+        self._sentinel = object()
+        self._thread = threading.Thread(target=self._run, name="PostQueueSender", daemon=True)
+        self._thread.start()
+
+    def send(self, item: Any) -> None:
+        if self._post_queue is None:
+            return
+        try:
+            self._q.put(item, block=False)
+        except queue.Full:
+            self._q.put(item, block=True)
+
+    def close(self, *, timeout: float = 30.0) -> None:
+        if self._post_queue is None:
+            return
+        try:
+            self._q.put(self._sentinel, block=True, timeout=max(0.0, float(timeout)))
+        except Exception:
+            return
+        try:
+            self._thread.join(timeout=timeout)
+        except Exception:
+            pass
+
+    def _run(self) -> None:
+        while True:
+            item = self._q.get()
+            if item is self._sentinel:
+                return
+            try:
+                self._post_queue.put(item)
+            except Exception:
+                pass
 
 
 def _compact_items(items: list) -> list[str]:
@@ -190,6 +294,7 @@ class _NativeSong:
 
     # Runtime state
     ga_future: Optional[concurrent.futures.Future] = None
+    decode_future: Optional[concurrent.futures.Future] = None
     ga_candidates: Optional[list[dict]] = None
     best_data: Optional[dict] = None
     best_gear: Optional[list] = None
@@ -197,6 +302,10 @@ class _NativeSong:
 
     loadout_entries: Optional[dict] = None
     fg_variants: Optional[list[dict]] = None
+    fg_candidate_limit: int = 0
+    fg_search_radius: Optional[int] = None
+    fg_db_loadouts_full_count: int = 0
+    fg_prep_future: Optional[concurrent.futures.Future] = None
 
     def __post_init__(self) -> None:
         if self.ga_candidates is None:
@@ -207,6 +316,7 @@ class _NativeSong:
 
 def _prepare_song(task: tuple) -> _NativeSong:
     from gear_optimizer.core.constants import GA_ELITISM, GA_MUTATION_RATE
+    from gear_optimizer.core.constants import GA_POPULATION_SIZE
     from gear_optimizer.helpers.ga_helpers import build_initial_population, create_genome_functions, initialize_pools
 
     (
@@ -268,9 +378,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
     if not (enable_gear or enable_mini):
         raise RuntimeError("GPU-native in-flight currently requires MetaFinder (enable gear or minis).")
 
-    prev_record, known_loadouts = load_database_context(
-        found_song_name, bool(use_evo_db), gears_by_name, minis_by_name
-    )
+    prev_record, known_loadouts = load_database_context(found_song_name, bool(use_evo_db), gears_by_name, minis_by_name)
 
     db_best_fg_score = 0
     if known_loadouts:
@@ -291,18 +399,33 @@ def _prepare_song(task: tuple) -> _NativeSong:
     selected_color = p_color
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
 
-    pools = initialize_pools(all_gears, all_minis, p_color, slots, s_color=s_color)
-    if pools is None:
-        raise RuntimeError("initialize_pools returned None")
-    if len(pools) == 4:
-        gear_pool, mini_pool, _total_before, _total_after = pools
+    pool_key = (str(p_color), str(s_color), tuple(slots))
+    with _PREP_CACHE_LOCK:
+        cached_pools = _lru_get(_POOL_CACHE, pool_key)
+    if cached_pools is None:
+        pools = initialize_pools(all_gears, all_minis, p_color, slots, s_color=s_color)
+        if pools is None:
+            raise RuntimeError("initialize_pools returned None")
+        if len(pools) == 4:
+            gear_pool, mini_pool, _total_before, _total_after = pools
+        else:
+            gear_pool, mini_pool, _total_before, _total_after, _whitelisted_minis = pools
+        if gear_pool is None:
+            raise RuntimeError("initialize_pools failed (gear_pool is None)")
+        with _PREP_CACHE_LOCK:
+            _lru_put(_POOL_CACHE, pool_key, (gear_pool, mini_pool), maxsize=_POOL_CACHE_MAX)
     else:
-        gear_pool, mini_pool, _total_before, _total_after, _whitelisted_minis = pools
-    if gear_pool is None:
-        raise RuntimeError("initialize_pools failed (gear_pool is None)")
+        gear_pool, mini_pool = cached_pools
 
-    registry = ItemRegistry(gear_pool, mini_pool, slots)
-    gpu_data = registry.to_gpu_arrays()
+    with _PREP_CACHE_LOCK:
+        cached_registry = _lru_get(_REGISTRY_GPU_CACHE, pool_key)
+    if cached_registry is None:
+        registry = ItemRegistry(gear_pool, mini_pool, slots)
+        gpu_data = registry.to_gpu_arrays()
+        with _PREP_CACHE_LOCK:
+            _lru_put(_REGISTRY_GPU_CACHE, pool_key, (registry, gpu_data), maxsize=_REGISTRY_CACHE_MAX)
+    else:
+        registry, gpu_data = cached_registry
 
     fg_candidate_limit = max(
         LOADOUTS_PER_SONG_LIMIT,
@@ -333,7 +456,9 @@ def _prepare_song(task: tuple) -> _NativeSong:
     tournament_k = safe_int(cfg.get("IterationEngine", "GPU_GA_TournamentK", fallback=3), 3)
     tournament_k = max(1, min(8, int(tournament_k)))
 
-    mutation_rate = safe_float(cfg.get("IterationEngine", "GPU_GA_MutationRate", fallback=GA_MUTATION_RATE), GA_MUTATION_RATE)
+    mutation_rate = safe_float(
+        cfg.get("IterationEngine", "GPU_GA_MutationRate", fallback=GA_MUTATION_RATE), GA_MUTATION_RATE
+    )
     mutation_rate = max(0.0, min(1.0, float(mutation_rate)))
 
     immigrant_rate = safe_float(cfg.get("IterationEngine", "GPU_GA_ImmigrantRate", fallback=0.0), 0.0)
@@ -371,28 +496,146 @@ def _prepare_song(task: tuple) -> _NativeSong:
         ga_depth = 1
     gens_per_run = max(1, (ga_depth + num_runs - 1) // num_runs)
 
-    pops_encoded: list[np.ndarray] = []
-    n_genomes = None
-    for _ in range(num_runs):
-        pop = build_initial_population(
-            create_random_genome,
-            create_heuristic_genome,
-            reconstruct_genome_from_db_list,
-            build_seed_list_from_record,
-            mutate_genome_once,
-            db_seed,
-            ga_settings,
-            current_gear_list,
-            current_mini_list,
-            force_db_seed=False,
-        )
-        if n_genomes is None:
-            n_genomes = len(pop)
-        if len(pop) != int(n_genomes):
-            raise RuntimeError(f"Population size changed across runs: {len(pop)} != {n_genomes}")
-        pops_encoded.append(registry.encode_population(pop))
+    fast_init = True
+    try:
+        fast_init = cfg.getboolean("IterationEngine", "GPU_GA_FastInit", fallback=True)
+    except Exception:
+        fast_init = True
 
-    initial_populations = np.stack(pops_encoded, axis=0).astype(np.int32, copy=False)
+    if fast_init:
+        import hashlib
+
+        seed_list = build_seed_list_from_record(db_seed) if db_seed else []
+
+        fixed_genome: list[dict] = []
+        fixed_genome.extend(list(current_gear_list or [])[:6])
+        while len(fixed_genome) < 6:
+            fixed_genome.append({})
+        fixed_genome.extend(list(current_mini_list or [])[:3])
+        while len(fixed_genome) < 9:
+            fixed_genome.append({})
+        fixed_ids = registry.encode_genome(fixed_genome)
+
+        heuristic_ids: list[np.ndarray] = []
+        for _ in range(25):
+            heuristic_ids.append(registry.encode_genome(create_heuristic_genome()))
+        heuristic_block = np.stack(heuristic_ids, axis=0).astype(np.int32, copy=False) if heuristic_ids else None
+        heuristic_len = int(heuristic_block.shape[0]) if heuristic_block is not None else 0
+
+        seed_base = None
+        ga_seed_env = str(os.environ.get("GA_SEED") or "").strip()
+        if ga_seed_env:
+            try:
+                seed_base = int(ga_seed_env)
+            except Exception:
+                seed_base = None
+
+        if seed_base is not None:
+            digest = hashlib.md5(str(found_song_name).encode("utf-8")).digest()
+            song_seed = int.from_bytes(digest[:4], "little", signed=False)
+            rng = np.random.default_rng((int(seed_base) ^ song_seed) & 0xFFFFFFFF)
+        else:
+            rng = np.random.default_rng()
+
+        slot_start_arr = np.asarray(gpu_data["slot_start"], dtype=np.int32).reshape(-1)
+        slot_count_arr = np.asarray(gpu_data["slot_count"], dtype=np.int32).reshape(-1)
+        if slot_start_arr.shape[0] < 9 or slot_count_arr.shape[0] < 9:
+            raise RuntimeError("Invalid registry slot arrays for GPU-native GA (expected 9 slots).")
+
+        mini_start = int(slot_start_arr[6])
+        mini_count = int(slot_count_arr[6])
+
+        def _fill_random_rows(out: np.ndarray, start_row: int) -> None:
+            n_rows = int(out.shape[0] - start_row)
+            if n_rows <= 0:
+                return
+            for slot_idx in range(9):
+                if slot_idx < 6 and not enable_gear:
+                    out[start_row:, slot_idx] = int(fixed_ids[slot_idx])
+                    continue
+                if slot_idx >= 6 and not enable_mini:
+                    out[start_row:, slot_idx] = int(fixed_ids[slot_idx])
+                    continue
+                c = int(slot_count_arr[slot_idx])
+                if c <= 0:
+                    continue
+                out[start_row:, slot_idx] = int(slot_start_arr[slot_idx]) + rng.integers(
+                    0, c, size=n_rows, dtype=np.int32
+                )
+
+            if enable_mini and mini_count >= 3:
+                dup = (
+                    (out[start_row:, 6] == out[start_row:, 7])
+                    | (out[start_row:, 6] == out[start_row:, 8])
+                    | (out[start_row:, 7] == out[start_row:, 8])
+                )
+                if np.any(dup):
+                    idxs = np.nonzero(dup)[0]
+                    for j in idxs:
+                        picks = rng.choice(mini_count, size=3, replace=False)
+                        out[start_row + int(j), 6:9] = np.asarray(mini_start + picks, dtype=np.int32)
+
+        populations = np.zeros((int(num_runs), int(GA_POPULATION_SIZE), 9), dtype=np.int32)
+        for run_idx in range(int(num_runs)):
+            row = 0
+            # Optional DB seed injection (mirrors build_initial_population probability gate).
+            if seed_list:
+                try:
+                    should_inject = bool(rng.random() < float(getattr(ga_settings, "db_seed_prob", 0.0) or 0.0))
+                except Exception:
+                    should_inject = False
+                if should_inject:
+                    try:
+                        seed_genome = reconstruct_genome_from_db_list(seed_list)
+                        populations[run_idx, row] = registry.encode_genome(seed_genome)
+                        row += 1
+                        populations[run_idx, row] = registry.encode_genome(mutate_genome_once(seed_genome))
+                        row += 1
+                    except Exception:
+                        row = row
+
+            if heuristic_block is not None and heuristic_len > 0 and row < GA_POPULATION_SIZE:
+                take = min(int(heuristic_len), int(GA_POPULATION_SIZE - row))
+                populations[run_idx, row : row + take] = heuristic_block[:take]
+                row += take
+
+            _fill_random_rows(populations[run_idx], row)
+
+            # Enforce fixed slots for non-optimized dimensions (heuristics/seed may have picked different items).
+            if not enable_gear:
+                populations[run_idx, :, :6] = fixed_ids[:6]
+            if not enable_mini:
+                populations[run_idx, :, 6:9] = fixed_ids[6:9]
+
+            # Randomize row order for this run so seeded genomes don't always occupy
+            # the same indices (preserves multi-start diversity).
+            perm = rng.permutation(int(GA_POPULATION_SIZE))
+            populations[run_idx] = populations[run_idx][perm]
+
+        initial_populations = populations
+    else:
+        pops_encoded: list[np.ndarray] = []
+        n_genomes = None
+        for _ in range(num_runs):
+            pop = build_initial_population(
+                create_random_genome,
+                create_heuristic_genome,
+                reconstruct_genome_from_db_list,
+                build_seed_list_from_record,
+                mutate_genome_once,
+                db_seed,
+                ga_settings,
+                current_gear_list,
+                current_mini_list,
+                force_db_seed=False,
+            )
+            if n_genomes is None:
+                n_genomes = len(pop)
+            if len(pop) != int(n_genomes):
+                raise RuntimeError(f"Population size changed across runs: {len(pop)} != {n_genomes}")
+            pops_encoded.append(registry.encode_population(pop))
+
+        initial_populations = np.stack(pops_encoded, axis=0).astype(np.int32, copy=False)
 
     color_flags = {
         "is_p_ft": 1 if p_color == "Beat" else 0,
@@ -483,12 +726,27 @@ def run_native_inflight_song_pipeline(
         fg_every = 12
     fg_every = max(1, int(fg_every))
 
+    fg_drain_at_end = True
+    try:
+        fg_drain_at_end = cfg0.getboolean("IterationEngine", "FG_DrainAtEnd", fallback=True)
+    except Exception:
+        fg_drain_at_end = True
+
     gpu_executor = get_gpu_executor()
     gpu_executor.start(in_process=True)
     gpu_client = GpuServiceClient(gpu_executor)
     gpu_client.start(start_executor=False)
 
+    post_sender = _PostSender(post_queue) if post_queue is not None else None
+
+    def _post(item: dict) -> None:
+        if post_sender is not None:
+            post_sender.send(item)
+
     pending_tasks = deque(t for t in tasks if t[1] not in completed_songs)
+    # If the queue is shorter than the configured FG cadence, cap the effective cadence
+    # so small runs still execute at least one FG job (instead of deferring forever).
+    fg_every = max(1, min(int(fg_every), len(pending_tasks)))
     prepared: deque[_NativeSong] = deque()
     pending_fg: deque[_NativeSong] = deque()
 
@@ -496,16 +754,178 @@ def run_native_inflight_song_pipeline(
     # backlog so CPU-side decode/post-processing can't create GPU idle gaps.
     ga_inflight: deque[_NativeSong] = deque()
 
-    fg_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="FG")
-    fg_future: Optional[concurrent.futures.Future] = None
+    ga_seed = str(os.environ.get("GA_SEED") or "").strip()
+    prep_workers = 0
+    try:
+        prep_workers = int(os.environ.get("INFLIGHT_PREP_WORKERS", "0") or "0")
+    except Exception:
+        prep_workers = 0
+    if prep_workers <= 0:
+        if ga_seed:
+            prep_workers = 1
+        else:
+            prep_workers = max(1, min(inflight_limit, os.cpu_count() or 1))
+
+    prep_executor = concurrent.futures.ThreadPoolExecutor(max_workers=prep_workers, thread_name_prefix="SongPrep")
+    prep_inflight: deque[tuple[tuple, concurrent.futures.Future]] = deque()
+
+    decode_workers = 0
+    try:
+        decode_workers = int(os.environ.get("INFLIGHT_DECODE_WORKERS", "0") or "0")
+    except Exception:
+        decode_workers = 0
+    if decode_workers <= 0:
+        decode_workers = max(1, min(inflight_limit, os.cpu_count() or 1))
+    decode_executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=decode_workers,
+        thread_name_prefix="GADecode",
+    )
+    decode_inflight: deque[_NativeSong] = deque()
+
+    fg_workers_default = min(4, inflight_limit)
+    fg_workers = fg_workers_default
+    try:
+        fg_workers = int(os.environ.get("INFLIGHT_FG_WORKERS", str(fg_workers_default)) or str(fg_workers_default))
+    except Exception:
+        fg_workers = fg_workers_default
+    fg_workers = max(1, min(int(fg_workers), inflight_limit))
+
+    fg_executor = concurrent.futures.ThreadPoolExecutor(max_workers=fg_workers, thread_name_prefix="FG")
+    fg_futures: deque[concurrent.futures.Future] = deque()
     ga_completed_since_last_fg = 0
 
+    fg_prep_workers = 0
     try:
-        while pending_tasks or prepared or pending_fg or ga_inflight or fg_future is not None:
+        fg_prep_workers = int(os.environ.get("INFLIGHT_FG_PREP_WORKERS", "0") or "0")
+    except Exception:
+        fg_prep_workers = 0
+    if fg_prep_workers <= 0:
+        fg_prep_workers = max(1, min(inflight_limit, os.cpu_count() or 1))
+    fg_prep_executor = concurrent.futures.ThreadPoolExecutor(max_workers=fg_prep_workers, thread_name_prefix="FGPrep")
+    fg_prep_inflight: deque[_NativeSong] = deque()
+    fg_jit_warmup_submitted = False
+
+    # Prime the pipeline: pre-prepare a small backlog synchronously so the GPU queue
+    # doesn't starve on the first few song boundaries while prep workers spin up.
+    prime_target = min(2, inflight_limit, len(pending_tasks))
+    for _ in range(int(prime_target)):
+        first = pending_tasks.popleft()
+        song_name = first[1]
+        if song_name in completed_songs:
+            continue
+        try:
+            prepared.append(_prepare_song(first))
+        except Exception as exc:
+            _post(
+                {
+                    "_error": str(exc),
+                    "_error_type": type(exc).__name__,
+                    "_song_name": song_name,
+                    "song": song_name,
+                }
+            )
+            completed_songs.add(song_name)
+            if memory_resume_tracker:
+                memory_resume_tracker.mark_completed(song_name)
+
+    try:
+        if prepared and not fg_jit_warmup_submitted:
+            fg_prep_executor.submit(_warmup_fg_jit, prepared[0].calc_song, prepared[0].ref_arrays)
+            fg_jit_warmup_submitted = True
+    except Exception:
+        pass
+
+    def _pop_next_ready_fg() -> Optional[_NativeSong]:
+        for candidate in list(pending_fg):
+            fut = candidate.fg_prep_future
+            if fut is None:
+                try:
+                    pending_fg.remove(candidate)
+                except Exception:
+                    pass
+                return candidate
+            try:
+                if fut.done():
+                    pending_fg.remove(candidate)
+                    return candidate
+            except Exception:
+                continue
+        return None
+
+    try:
+        last_progress = time.monotonic()
+        last_stall_report = last_progress
+        while (
+            pending_tasks
+            or prepared
+            or prep_inflight
+            or pending_fg
+            or ga_inflight
+            or decode_inflight
+            or fg_prep_inflight
+            or fg_futures
+        ):
             if memory_release_requested():
                 break
 
             did_work = False
+
+            # Move completed song preps into the staging queue.
+            for task, fut in list(prep_inflight):
+                if not fut.done():
+                    continue
+                prep_inflight.remove((task, fut))
+                did_work = True
+                song_name = task[1]
+                if song_name in completed_songs:
+                    continue
+                try:
+                    prepared.append(fut.result())
+                    if prepared and not fg_jit_warmup_submitted:
+                        try:
+                            fg_prep_executor.submit(_warmup_fg_jit, prepared[0].calc_song, prepared[0].ref_arrays)
+                            fg_jit_warmup_submitted = True
+                        except Exception:
+                            pass
+                except Exception as exc:
+                    _post(
+                        {
+                            "_error": str(exc),
+                            "_error_type": type(exc).__name__,
+                            "_song_name": song_name,
+                            "song": song_name,
+                        }
+                    )
+                    completed_songs.add(song_name)
+                    if memory_resume_tracker:
+                        memory_resume_tracker.mark_completed(song_name)
+
+            # Finalize prepared FG jobs (CPU prep done) so the GPU stage can start immediately when scheduled.
+            for song in list(fg_prep_inflight):
+                # `fg_prep_future` may be consumed by the FG worker (it waits on the
+                # future and then clears it). Ensure we still drain the tracking deque
+                # so the main loop can terminate cleanly.
+                if song.fg_prep_future is None:
+                    fg_prep_inflight.remove(song)
+                    did_work = True
+                    continue
+                if not song.fg_prep_future.done():
+                    continue
+                fg_prep_inflight.remove(song)
+                did_work = True
+                try:
+                    song.fg_prep_future.result()
+                except Exception as exc:
+                    _post(
+                        {
+                            "_error": str(exc),
+                            "_error_type": type(exc).__name__,
+                            "_song_name": song.song_name,
+                            "song": song.song_name,
+                        }
+                    )
+                finally:
+                    song.fg_prep_future = None
 
             # Keep the GPU queue full while using spare CPU time to prep future songs.
             #
@@ -537,15 +957,14 @@ def run_native_inflight_song_pipeline(
                     try:
                         handle = gpu_client.submit_gpu_native_ga_run(payload)
                     except Exception as exc:
-                        if post_queue is not None:
-                            post_queue.put(
-                                {
-                                    "_error": str(exc),
-                                    "_error_type": type(exc).__name__,
-                                    "_song_name": song.song_name,
-                                    "song": song.song_name,
-                                }
-                            )
+                        _post(
+                            {
+                                "_error": str(exc),
+                                "_error_type": type(exc).__name__,
+                                "_song_name": song.song_name,
+                                "song": song.song_name,
+                            }
+                        )
                         completed_songs.add(song.song_name)
                         if memory_resume_tracker:
                             memory_resume_tracker.mark_completed(song.song_name)
@@ -559,23 +978,22 @@ def run_native_inflight_song_pipeline(
 
                 # CPU prep: keep a staging buffer of prepared jobs so the GPU queue
                 # doesn't starve if CPU prep briefly falls behind GPU throughput.
-                if pending_tasks and len(prepared) < prep_limit:
+                if pending_tasks and (len(prepared) + len(prep_inflight) < prep_limit):
                     nxt = pending_tasks.popleft()
                     if nxt[1] in completed_songs:
                         did_work = True
                         continue
                     try:
-                        prepared.append(_prepare_song(nxt))
+                        prep_inflight.append((nxt, prep_executor.submit(_prepare_song, nxt)))
                     except Exception as exc:
-                        if post_queue is not None:
-                            post_queue.put(
-                                {
-                                    "_error": str(exc),
-                                    "_error_type": type(exc).__name__,
-                                    "_song_name": nxt[1],
-                                    "song": nxt[1],
-                                }
-                            )
+                        _post(
+                            {
+                                "_error": str(exc),
+                                "_error_type": type(exc).__name__,
+                                "_song_name": nxt[1],
+                                "song": nxt[1],
+                            }
+                        )
                         completed_songs.add(nxt[1])
                         if memory_resume_tracker:
                             memory_resume_tracker.mark_completed(nxt[1])
@@ -586,37 +1004,59 @@ def run_native_inflight_song_pipeline(
 
                 break
 
-            # Finalize completed GA jobs in FIFO order.
-            while ga_inflight and ga_inflight[0].ga_future is not None and ga_inflight[0].ga_future.done():
-                song = ga_inflight.popleft()
+            # Drain completed GA jobs quickly to free inflight capacity; do the heavier
+            # CPU-side decode on a background thread so the GPU queue stays fed.
+            for song in list(ga_inflight):
+                if song.ga_future is None or not song.ga_future.done():
+                    continue
+                ga_inflight.remove(song)
                 did_work = True
 
                 try:
                     runs_payload = song.ga_future.result()
-                    best_data, best_gear, best_minis, ga_candidates = decode_gpu_native_ga_runs_payload(
-                        runs_payload=runs_payload,
-                        registry=song.registry,
-                        cfg_data=song.cfg_data,
-                        base_stats_fixed=song.fixed_stats,
-                        fg_candidate_limit=safe_int(
-                            song.cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT),
-                            FG_CANDIDATE_LIMIT,
-                        ),
-                    )
                 except Exception as exc:
-                    if post_queue is not None:
-                        post_queue.put(
-                            {
-                                "_error": str(exc),
-                                "_error_type": type(exc).__name__,
-                                "_song_name": song.song_name,
-                                "song": song.song_name,
-                            }
-                        )
+                    _post(
+                        {
+                            "_error": str(exc),
+                            "_error_type": type(exc).__name__,
+                            "_song_name": song.song_name,
+                            "song": song.song_name,
+                        }
+                    )
                     completed_songs.add(song.song_name)
                     if memory_resume_tracker:
                         memory_resume_tracker.mark_completed(song.song_name)
                     continue
+
+                song.ga_future = None
+                song.decode_future = decode_executor.submit(_decode_ga_payload_sync, song, runs_payload)
+                decode_inflight.append(song)
+                ga_completed_since_last_fg += 1
+
+            # Finalize decoded GA results (lightweight formatting + enqueue for post/FG).
+            for song in list(decode_inflight):
+                if song.decode_future is None or not song.decode_future.done():
+                    continue
+                decode_inflight.remove(song)
+                did_work = True
+
+                try:
+                    best_data, best_gear, best_minis, ga_candidates = song.decode_future.result()
+                except Exception as exc:
+                    _post(
+                        {
+                            "_error": str(exc),
+                            "_error_type": type(exc).__name__,
+                            "_song_name": song.song_name,
+                            "song": song.song_name,
+                        }
+                    )
+                    completed_songs.add(song.song_name)
+                    if memory_resume_tracker:
+                        memory_resume_tracker.mark_completed(song.song_name)
+                    continue
+                finally:
+                    song.decode_future = None
 
                 song.best_data = best_data
                 song.best_gear = best_gear
@@ -625,113 +1065,258 @@ def run_native_inflight_song_pipeline(
 
                 if song.manual_force_greats or song.force_greats_finder:
                     pending_fg.append(song)
+                    if song.fg_prep_future is None:
+                        try:
+                            song.fg_prep_future = fg_prep_executor.submit(_prepare_fg_job_sync, song)
+                            fg_prep_inflight.append(song)
+                        except Exception:
+                            song.fg_prep_future = None
 
-                if post_queue is not None:
-                    post_queue.put(
-                        {
-                            "_deferred_post": True,
-                            "_pending_fg_job": bool(song.manual_force_greats or song.force_greats_finder),
-                            "song": song.song_name,
-                            "db_key": song.song_name,
-                            "file_path": song.fp,
-                            "difficulty": song.effective_difficulty,
-                            "use_evo_db": bool(song.use_evo_db),
-                            "cfg_dict": song.cfg_dict,
-                            "ref_arrays": song.ref_arrays,
-                            "calc_song": song.calc_song,
-                            "best_data": song.best_data or {},
-                            "best_gear": _compact_items(best_gear),
-                            "best_minis": _compact_items(best_minis),
-                            "current_gear": _compact_items(song.current_gear_list),
-                            "current_minis": _compact_items(song.current_mini_list),
-                            "enable_gear": bool(song.enable_gear),
-                            "enable_mini": bool(song.enable_mini),
-                            "fg_variants": [],
-                            "ga_candidates": [
-                                {
-                                    "Score": c.get("Score", 0),
-                                    "BaseScore": c.get("BaseScore", c.get("Score", 0)),
-                                    "Gear": _compact_items(c.get("Gear")),
-                                    "Minis": _compact_items(c.get("Minis")),
-                                    "Data": c.get("Data") or {},
-                                    "_fg_priority": c.get("_fg_priority", 0),
-                                }
-                                for c in (song.ga_candidates or [])
-                            ],
-                            "loadout_entries": None,
-                            "prev_record": _compact_prev_record(song.prev_record),
-                            "attempt_lifetime": int(song.attempt_lifetime or 0),
-                            "prev_attempts_first": int(song.prev_attempts_first or 0),
-                            "db_best_fg_score": int(song.db_best_fg_score or 0),
-                            "meta_primary_color": song.meta_primary_color,
-                            "meta_secondary_color": song.meta_secondary_color,
-                            "fg_debug": bool(song.fg_debug),
-                            "log": "",
-                        }
-                    )
+                _post(
+                    {
+                        "_deferred_post": True,
+                        "_pending_fg_job": bool(song.manual_force_greats or song.force_greats_finder),
+                        "song": song.song_name,
+                        "db_key": song.song_name,
+                        "file_path": song.fp,
+                        "difficulty": song.effective_difficulty,
+                        "use_evo_db": bool(song.use_evo_db),
+                        "cfg_dict": song.cfg_dict,
+                        # Avoid pickling large song/ref objects across the post-process queue
+                        # unless FG debug output explicitly needs them.
+                        "ref_arrays": song.ref_arrays if song.fg_debug else None,
+                        "calc_song": song.calc_song if song.fg_debug else None,
+                        "best_data": song.best_data or {},
+                        "best_gear": _compact_items(best_gear),
+                        "best_minis": _compact_items(best_minis),
+                        "current_gear": _compact_items(song.current_gear_list),
+                        "current_minis": _compact_items(song.current_mini_list),
+                        "enable_gear": bool(song.enable_gear),
+                        "enable_mini": bool(song.enable_mini),
+                        "fg_variants": [],
+                        "ga_candidates": [
+                            {
+                                "Score": c.get("Score", 0),
+                                "BaseScore": c.get("BaseScore", c.get("Score", 0)),
+                                "Gear": _compact_items(c.get("Gear")),
+                                "Minis": _compact_items(c.get("Minis")),
+                                "Data": c.get("Data") or {},
+                                "_fg_priority": c.get("_fg_priority", 0),
+                            }
+                            for c in (song.ga_candidates or [])
+                        ],
+                        "loadout_entries": None,
+                        "prev_record": _compact_prev_record(song.prev_record),
+                        "attempt_lifetime": int(song.attempt_lifetime or 0),
+                        "prev_attempts_first": int(song.prev_attempts_first or 0),
+                        "db_best_fg_score": int(song.db_best_fg_score or 0),
+                        "meta_primary_color": song.meta_primary_color,
+                        "meta_secondary_color": song.meta_secondary_color,
+                        "fg_debug": bool(song.fg_debug),
+                        "log": "",
+                    }
+                )
 
                 completed_songs.add(song.song_name)
                 if memory_resume_tracker:
                     memory_resume_tracker.mark_completed(song.song_name)
-                ga_completed_since_last_fg += 1
 
-            # Reap FG worker (capture errors) and schedule the next one.
-            if fg_future is not None and fg_future.done():
-                did_work = True
+            # Reap completed FG workers (capture errors).
+            if fg_futures:
+                still_pending: deque[concurrent.futures.Future] = deque()
+                for fut in list(fg_futures):
+                    try:
+                        done = fut.done()
+                    except Exception:
+                        done = False
+                    if done:
+                        did_work = True
+                        try:
+                            fut.result()
+                        except Exception:
+                            pass
+                    else:
+                        still_pending.append(fut)
+                fg_futures = still_pending
+
+            should_start_fg = bool(pending_fg) and (
+                ga_completed_since_last_fg >= fg_every
+                or (
+                    fg_drain_at_end and (not pending_tasks and not prepared and not prep_inflight) and (not ga_inflight)
+                )
+                # If GA can't currently feed the GPU (no in-flight GA and no prepared
+                # work), run FG to avoid GPU idle gaps even if the configured cadence
+                # hasn't been met yet.
+                or (not ga_inflight and not prepared)
+            )
+
+            if should_start_fg:
+                drain_mode = bool(
+                    fg_drain_at_end and (not pending_tasks and not prepared and not prep_inflight) and (not ga_inflight)
+                )
+                if (not drain_mode) and fg_futures:
+                    pass
+                elif len(fg_futures) < fg_workers:
+                    submit_budget = fg_workers if drain_mode else 1
+                    while submit_budget > 0 and len(fg_futures) < fg_workers and pending_fg:
+                        fg_song = _pop_next_ready_fg()
+                        if fg_song is None:
+                            break
+                        fg_futures.append(
+                            fg_executor.submit(
+                                _run_fg_job_sync,
+                                fg_song,
+                                gpu_client=gpu_client,
+                                post_sender=post_sender,
+                            )
+                        )
+                        ga_completed_since_last_fg = 0
+                        did_work = True
+                        submit_budget -= 1
+
+            if did_work:
+                last_progress = time.monotonic()
+
+            # If we're not draining FG at end, allow the GA pipeline to finish once all
+            # GA work is complete, even if some FG jobs remain deferred.
+            if (
+                (not fg_drain_at_end)
+                and pending_fg
+                and (ga_completed_since_last_fg < fg_every)
+                and (not pending_tasks)
+                and (not prepared)
+                and (not prep_inflight)
+                and (not ga_inflight)
+                and (not decode_inflight)
+                and (not fg_prep_inflight)
+                and (not fg_futures)
+            ):
                 try:
-                    fg_future.result()
+                    print(
+                        f"[InFlight][FG] Deferred {len(pending_fg)} pending FG job(s) "
+                        f"(FG_InterleaveEvery={fg_every}, FG_DrainAtEnd=false). "
+                        "Candidates were persisted to DB for later processing."
+                    )
                 except Exception:
                     pass
-                fg_future = None
-
-            if (
-                fg_future is None
-                and pending_fg
-                and (ga_completed_since_last_fg >= fg_every or (not pending_tasks and not prepared and not ga_inflight))
-            ):
-                fg_song = pending_fg.popleft()
-                fg_future = fg_executor.submit(
-                    _run_fg_job_sync,
-                    fg_song,
-                    gpu_client=gpu_client,
-                    post_queue=post_queue,
-                )
-                ga_completed_since_last_fg = 0
-                did_work = True
+                break
 
             # Avoid tight spin.
             if not did_work:
+                no_active_work = (
+                    (not ga_inflight)
+                    and (not decode_inflight)
+                    and (not prep_inflight)
+                    and (not fg_prep_inflight)
+                    and (not fg_futures)
+                )
+                if (
+                    no_active_work
+                    and (pending_tasks or prepared or pending_fg or fg_futures)
+                    and (time.monotonic() - last_stall_report) >= 10.0
+                    and _truthy(os.environ.get("INFLIGHT_STALL_DEBUG", "0"))
+                ):
+                    last_stall_report = time.monotonic()
+                    try:
+                        fg_done = sum(1 for f in fg_futures if f.done())
+                        fg_inflight = len(fg_futures)
+                    except Exception:
+                        fg_done = None
+                        fg_inflight = None
+                    print(
+                        "[InFlight][STALL] "
+                        f"pending={len(pending_tasks)} prepared={len(prepared)} prep_inflight={len(prep_inflight)} "
+                        f"ga_inflight={len(ga_inflight)} decode_inflight={len(decode_inflight)} "
+                        f"pending_fg={len(pending_fg)} fg_prep={len(fg_prep_inflight)} "
+                        f"fg_inflight={fg_inflight} fg_done={fg_done}"
+                    )
+
                 wait_futures: list[concurrent.futures.Future] = []
-                if ga_inflight and ga_inflight[0].ga_future is not None:
-                    wait_futures.append(ga_inflight[0].ga_future)
-                if fg_future is not None:
-                    wait_futures.append(fg_future)
+                for song in ga_inflight:
+                    if song.ga_future is not None:
+                        wait_futures.append(song.ga_future)
+                for _task, fut in prep_inflight:
+                    if fut is not None:
+                        wait_futures.append(fut)
+                for song in decode_inflight:
+                    if song.decode_future is not None:
+                        wait_futures.append(song.decode_future)
+                for song in fg_prep_inflight:
+                    if song.fg_prep_future is not None:
+                        wait_futures.append(song.fg_prep_future)
+                for fut in fg_futures:
+                    wait_futures.append(fut)
                 if wait_futures:
                     concurrent.futures.wait(
                         wait_futures,
-                        timeout=0.05,
+                        timeout=0.02,
                         return_when=concurrent.futures.FIRST_COMPLETED,
                     )
                 else:
                     time.sleep(0.001)
 
     finally:
+        shutdown_debug = _truthy(os.environ.get("INFLIGHT_SHUTDOWN_DEBUG", "0"))
         try:
+            if shutdown_debug:
+                print("[InFlight][SHUTDOWN] fg_executor.shutdown")
             fg_executor.shutdown(wait=True, cancel_futures=True)
         except Exception:
             pass
         try:
+            if shutdown_debug:
+                print("[InFlight][SHUTDOWN] decode_executor.shutdown")
+            decode_executor.shutdown(wait=True, cancel_futures=True)
+        except Exception:
+            pass
+        try:
+            if shutdown_debug:
+                print("[InFlight][SHUTDOWN] fg_prep_executor.shutdown")
+            fg_prep_executor.shutdown(wait=True, cancel_futures=True)
+        except Exception:
+            pass
+        try:
+            if shutdown_debug:
+                print("[InFlight][SHUTDOWN] prep_executor.shutdown")
+            prep_executor.shutdown(wait=True, cancel_futures=True)
+        except Exception:
+            pass
+        try:
+            if post_sender is not None:
+                if shutdown_debug:
+                    print("[InFlight][SHUTDOWN] post_sender.close")
+                post_sender.close(timeout=10.0)
+        except Exception:
+            pass
+        try:
+            if shutdown_debug:
+                print("[InFlight][SHUTDOWN] gpu_client.close")
             gpu_client.close(timeout=2.0)
         except Exception:
             pass
         try:
             if gpu_executor.is_running:
+                if shutdown_debug:
+                    print("[InFlight][SHUTDOWN] gpu_executor.stop")
                 gpu_executor.stop()
         except Exception:
             pass
 
 
-def _run_fg_job_sync(song: _NativeSong, *, gpu_client: GpuServiceClient, post_queue=None) -> None:
+def _decode_ga_payload_sync(song: _NativeSong, runs_payload: np.ndarray) -> tuple[dict, list, list, list[dict]]:
+    return decode_gpu_native_ga_runs_payload(
+        runs_payload=runs_payload,
+        registry=song.registry,
+        cfg_data=song.cfg_data,
+        base_stats_fixed=song.fixed_stats,
+        fg_candidate_limit=safe_int(
+            song.cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT),
+            FG_CANDIDATE_LIMIT,
+        ),
+    )
+
+
+def _prepare_fg_job_sync(song: _NativeSong) -> None:
     cfg = song.cfg
 
     fg_candidate_limit = safe_int(
@@ -739,6 +1324,7 @@ def _run_fg_job_sync(song: _NativeSong, *, gpu_client: GpuServiceClient, post_qu
         FG_CANDIDATE_LIMIT,
     )
     fg_candidate_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(fg_candidate_limit)))
+    song.fg_candidate_limit = int(fg_candidate_limit)
 
     fg_search_radius = None
     try:
@@ -747,11 +1333,13 @@ def _run_fg_job_sync(song: _NativeSong, *, gpu_client: GpuServiceClient, post_qu
         raw_fg_radius = ""
     if raw_fg_radius:
         fg_search_radius = safe_int(raw_fg_radius, -1)
+    song.fg_search_radius = fg_search_radius
 
     ga_candidates = list(song.ga_candidates or [])
     ga_candidates.sort(key=lambda x: x.get("Score", 0), reverse=True)
     if ga_candidates and len(ga_candidates) > fg_candidate_limit:
         ga_candidates = ga_candidates[:fg_candidate_limit]
+    song.ga_candidates = ga_candidates
 
     def build_details(data_dict: dict) -> dict:
         if not data_dict:
@@ -768,7 +1356,7 @@ def _run_fg_job_sync(song: _NativeSong, *, gpu_client: GpuServiceClient, post_qu
             "ForceGreats": data_dict.get("ForceGreats", {}),
         }
 
-    loadout_entries = build_loadout_entries(
+    song.loadout_entries = build_loadout_entries(
         song.song_name,
         bool(song.use_evo_db),
         ga_candidates,
@@ -777,9 +1365,8 @@ def _run_fg_job_sync(song: _NativeSong, *, gpu_client: GpuServiceClient, post_qu
         song.minis_by_name,
         build_details,
     )
-    song.loadout_entries = loadout_entries
 
-    db_loadouts_full_count = 0
+    song.fg_db_loadouts_full_count = 0
     if song.use_evo_db:
         try:
             from gear_optimizer.data.database import get_best_loadouts
@@ -790,12 +1377,45 @@ def _run_fg_job_sync(song: _NativeSong, *, gpu_client: GpuServiceClient, post_qu
                 gears_by_name=song.gears_by_name,
                 minis_by_name=song.minis_by_name,
             )
-            db_loadouts_full_count = len(db_loadouts_full)
+            song.fg_db_loadouts_full_count = len(db_loadouts_full)
         except Exception:
-            db_loadouts_full_count = 0
+            song.fg_db_loadouts_full_count = 0
+
+
+def _run_fg_job_sync(
+    song: _NativeSong,
+    *,
+    gpu_client: GpuServiceClient,
+    post_sender: Optional[_PostSender] = None,
+) -> None:
+    if song.fg_prep_future is not None:
+        try:
+            song.fg_prep_future.result()
+        except Exception:
+            pass
+        finally:
+            song.fg_prep_future = None
+
+    if song.loadout_entries is None:
+        _prepare_fg_job_sync(song)
+
+    def build_details(data_dict: dict) -> dict:
+        if not data_dict:
+            return {}
+        return {
+            "FT": data_dict.get("FT", 0),
+            "FF": data_dict.get("FF", 0),
+            "GemCounts": data_dict.get("GemCounts", {}),
+            "Stats": data_dict.get("Stats", {}),
+            "SelectedElement": data_dict.get("Selected Element", ""),
+            "PrimaryColor": song.meta_primary_color,
+            "SecondaryColor": song.meta_secondary_color,
+            "Difficulty": song.effective_difficulty,
+            "ForceGreats": data_dict.get("ForceGreats", {}),
+        }
 
     fg_variants = process_force_greats(
-        loadout_entries,
+        song.loadout_entries or {},
         bool(song.manual_force_greats),
         bool(song.force_greats_finder),
         song.force_greats_config,
@@ -803,17 +1423,17 @@ def _run_fg_job_sync(song: _NativeSong, *, gpu_client: GpuServiceClient, post_qu
         song.ref_arrays,
         song.meta_primary_color,
         build_details,
-        int(db_loadouts_full_count),
+        int(song.fg_db_loadouts_full_count or 0),
         use_gpu=True,
-        fg_search_radius=fg_search_radius,
+        fg_search_radius=song.fg_search_radius,
         perf_timing=_truthy(os.environ.get("PERF_TIMING", "0")),
         gpu_client=gpu_client,
     )
 
     song.fg_variants = list(fg_variants or [])
 
-    if post_queue is not None:
-        post_queue.put(
+    if post_sender is not None:
+        post_sender.send(
             {
                 "_fg_update": True,
                 "song": song.song_name,

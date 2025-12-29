@@ -11,7 +11,7 @@ import json
 import os
 from collections import Counter
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .core.constants import PATHS, SCRIPT_DIR, TOTAL_ROWS
 from .data.database import get_db_connection, get_evolution_db_path
@@ -104,10 +104,83 @@ def get_all_loadouts_from_db() -> List[dict]:
         conn.close()
 
 
+_ELEMENT_ORDER = ("Chill", "Flow", "Rush", "Beat", "Vibe")
+
+
+def _relevant_elements_for_category(songs: List[dict]) -> Tuple[str, ...]:
+    """
+    Determine which element stats can affect scoring for this category.
+
+    - For (Primary, Secondary) combo categories, this will be {Primary, Secondary}.
+    - For Primary/All categories (where secondary varies), this will be {Primary} U {all secondaries present}.
+    """
+    elements = set()
+    for song in songs:
+        primary = (song.get("primary") or "").strip()
+        secondary = (song.get("secondary") or "").strip()
+        if primary:
+            elements.add(primary)
+        if secondary:
+            elements.add(secondary)
+
+    order = {name: idx for idx, name in enumerate(_ELEMENT_ORDER)}
+    return tuple(sorted(elements, key=lambda el: order.get(el, 999)))
+
+
+def _mini_set_effect_signature(
+    mini_names: Tuple[str, ...],
+    minis_by_name: Dict[str, dict],
+    relevant_elements: Tuple[str, ...],
+) -> Tuple[Any, ...]:
+    """
+    Build a category-aware signature for a mini set.
+
+    This allows GeneralMeta to merge mini variants that differ only in stats that
+    cannot affect scoring for the current category (e.g., extra Rush in a Vibe/Vibe category).
+    """
+    if not mini_names:
+        return ("stats", 0, 0, 0, 0, 0, *([0] * len(relevant_elements)))
+
+    # If we can't resolve any mini, fall back to name-based identity to avoid over-merging.
+    for name in mini_names:
+        if name not in minis_by_name:
+            return ("names", mini_names)
+
+    pp = cm = fm = ft = ff = 0
+    elem_totals = [0] * len(relevant_elements)
+
+    for name in mini_names:
+        m = minis_by_name.get(name) or {}
+        pp += int(m.get("Perfect Points", 0) or 0)
+        cm += int(m.get("Combo Multiplier", 0) or 0)
+        fm += int(m.get("Fever Multiplier", 0) or 0)
+        ft += int(m.get("Fever Time", 0) or 0)
+        ff += int(m.get("Fever Fill Rate", 0) or 0)
+        for idx, el in enumerate(relevant_elements):
+            elem_totals[idx] += int(m.get(el, 0) or 0)
+
+    return ("stats", pp, cm, fm, ft, ff, *elem_totals)
+
+
+def _pick_representative_variant(variants: Counter) -> Tuple[str, ...]:
+    """
+    Pick a deterministic representative from a Counter of name-tuples.
+
+    - Prefer the most frequent variant.
+    - Break ties lexicographically for determinism.
+    """
+    if not variants:
+        return ()
+    max_count = max(variants.values())
+    tied = [variant for variant, count in variants.items() if count == max_count]
+    return min(tied)
+
+
 def find_most_common_loadout(
     songs: List[dict],
     all_loadouts: List[dict],
-    top_n: int = 1
+    minis_by_name: Dict[str, dict],
+    top_n: Optional[int] = 1,
 ) -> List[dict]:
     """
     Find the most frequently appearing gear+mini SETs for songs in this category.
@@ -124,6 +197,7 @@ def find_most_common_loadout(
         Returns empty list if none found.
     """
     song_names = {s["song_name"] for s in songs}
+    relevant_elements = _relevant_elements_for_category(songs)
     
     # Build index: song_name -> list of all loadouts for that song
     loadouts_by_song = {}
@@ -152,15 +226,18 @@ def find_most_common_loadout(
         # We re-sort just to be absolutely safe and independent of DB query order.
         best_loadout = max(loadouts, key=lambda x: x["score"])
         best_loadouts_per_song[song_name] = best_loadout
-
+     
     # Count frequency of being #1
     candidates_counter = Counter()
+    variants_by_key: Dict[Tuple[Tuple[str, ...], Tuple[Any, ...]], Counter] = {}
     for loadout in best_loadouts_per_song.values():
         try:
             gear = tuple(sorted(json.loads(loadout["gear_json"]))) if loadout["gear_json"] else ()
             minis = tuple(sorted(json.loads(loadout["minis_json"]))) if loadout["minis_json"] else ()
-            set_key = (gear, minis)
+            mini_sig = _mini_set_effect_signature(minis, minis_by_name, relevant_elements)
+            set_key = (gear, mini_sig)
             candidates_counter[set_key] += 1
+            variants_by_key.setdefault(set_key, Counter())[minis] += 1
         except json.JSONDecodeError:
             continue
 
@@ -175,11 +252,19 @@ def find_most_common_loadout(
     # For the selected candidates, probe ALL database entries to calculate accurate averages.
     # ---------------------------------------------------------
     results = []
-    
+     
     for rank, (set_key, win_frequency) in enumerate(top_candidates, 1):
-        target_gear, target_minis = set_key
+        target_gear, target_mini_sig = set_key
         gear_names = list(target_gear)
-        mini_names = list(target_minis)
+        variants_counter = variants_by_key.get(set_key, Counter())
+        rep_minis = _pick_representative_variant(variants_counter)
+        mini_names = list(rep_minis)
+        mini_variants = [
+            {"mini_names": list(variant), "count_as_top1": int(count)}
+            for variant, count in sorted(
+                variants_counter.items(), key=lambda item: (-item[1], item[0])
+            )
+        ]
         
         total_score_sum = 0
         total_songs_with_set_count = 0 
@@ -202,8 +287,11 @@ def find_most_common_loadout(
                 try:
                     gear = tuple(sorted(json.loads(loadout["gear_json"]))) if loadout["gear_json"] else ()
                     minis = tuple(sorted(json.loads(loadout["minis_json"]))) if loadout["minis_json"] else ()
-                    
-                    if gear == target_gear and minis == target_minis:
+                    if gear != target_gear:
+                        continue
+
+                    mini_sig = _mini_set_effect_signature(minis, minis_by_name, relevant_elements)
+                    if mini_sig == target_mini_sig:
                         song_has_set = True
                         if loadout["score"] > best_entry_score:
                             best_entry_score = loadout["score"]
@@ -254,6 +342,8 @@ def find_most_common_loadout(
             "rank": rank,
             "gear_names": gear_names,
             "mini_names": mini_names,
+            "mini_variants": mini_variants,
+            "mini_effective_elements": list(relevant_elements),
             "avg_gems": avg_gems,
             "avg_score": avg_score,
             "songs_with_set": total_songs_with_set_count,
@@ -482,7 +572,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
         print(f"\n--- Processing {combo_key} ({len(songs)} songs) ---")
         
         # Find all unique #1 loadouts (top_n=None)
-        top_loadouts = find_most_common_loadout(songs, all_loadouts, top_n=None)
+        top_loadouts = find_most_common_loadout(songs, all_loadouts, minis_by_name, top_n=None)
         
         if not top_loadouts:
             print(f"  No loadouts found for this category")
@@ -517,6 +607,8 @@ def run_general_meta(cfg, paths: dict) -> dict:
                 "rank": loadout_data["rank"],
                 "gear": gear_names,
                 "minis": mini_names,
+                "mini_variants": loadout_data.get("mini_variants", []),
+                "mini_effective_elements": loadout_data.get("mini_effective_elements", []),
                 "songs_with_set": loadout_data["songs_with_set"],
                 "win_frequency": loadout_data["win_frequency"],
                 "stats": full_stats,
@@ -548,7 +640,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
         print(f"\n--- Processing {combo_key} ({len(songs)} songs) ---")
         
         # Find all unique #1 loadouts (top_n=None)
-        top_loadouts = find_most_common_loadout(songs, all_loadouts, top_n=None)
+        top_loadouts = find_most_common_loadout(songs, all_loadouts, minis_by_name, top_n=None)
         
         if not top_loadouts:
             print(f"  No loadouts found for this category")
@@ -583,6 +675,8 @@ def run_general_meta(cfg, paths: dict) -> dict:
                 "rank": loadout_data["rank"],
                 "gear": gear_names,
                 "minis": mini_names,
+                "mini_variants": loadout_data.get("mini_variants", []),
+                "mini_effective_elements": loadout_data.get("mini_effective_elements", []),
                 "songs_with_set": loadout_data["songs_with_set"],
                 "win_frequency": loadout_data["win_frequency"],
                 "stats": full_stats,

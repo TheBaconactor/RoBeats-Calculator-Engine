@@ -1,5 +1,8 @@
 # Codebase Cleanup & Reorganization Plan
 
+> [!WARNING]
+> **Legacy / out-of-date:** This plan references files that no longer exist (e.g. `Bootstrapper.py`, monolith scripts). Use `README.md` + `docs/NAVIGATION.md` for the current structure.
+
 ## Current Situation Analysis
 
 Your root directory has **23 files** including:

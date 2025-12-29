@@ -340,26 +340,32 @@ def _calc_head_score_bits(
         Head score as float
     """
     head_score = ti.i32(0)
-    for i in range(head_len):
+    # Split by bitmask word to avoid per-iteration branching on i<32/64/96.
+    n0 = ti.min(head_len, 32)
+    for i in range(n0):
         ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
-        word = ti.u32(0)
-        shift = ti.u32(i & 31)
+        is_fever = (m0 >> ti.u32(i)) & ti.u32(1)
+        head_score += ti.cast(ti.floor(ramp_val * fever_mul), ti.i32) if is_fever != 0 else ti.cast(ti.floor(ramp_val), ti.i32)
 
-        if i < 32:
-            word = m0
-        elif i < 64:
-            word = m1
-        elif i < 96:
-            word = m2
-        else:
-            word = m3
+    if head_len > 32:
+        n1 = ti.min(head_len, 64)
+        for i in range(32, n1):
+            ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
+            is_fever = (m1 >> ti.u32(i - 32)) & ti.u32(1)
+            head_score += ti.cast(ti.floor(ramp_val * fever_mul), ti.i32) if is_fever != 0 else ti.cast(ti.floor(ramp_val), ti.i32)
 
-        is_fever = (word >> shift) & ti.u32(1)
-        if is_fever != 0:
-            # Convert to i32 immediately after floor to use exact integer addition
-            head_score += ti.cast(ti.floor(ramp_val * fever_mul), ti.i32)
-        else:
-            head_score += ti.cast(ti.floor(ramp_val), ti.i32)
+    if head_len > 64:
+        n2 = ti.min(head_len, 96)
+        for i in range(64, n2):
+            ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
+            is_fever = (m2 >> ti.u32(i - 64)) & ti.u32(1)
+            head_score += ti.cast(ti.floor(ramp_val * fever_mul), ti.i32) if is_fever != 0 else ti.cast(ti.floor(ramp_val), ti.i32)
+
+    if head_len > 96:
+        for i in range(96, head_len):
+            ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
+            is_fever = (m3 >> ti.u32(i - 96)) & ti.u32(1)
+            head_score += ti.cast(ti.floor(ramp_val * fever_mul), ti.i32) if is_fever != 0 else ti.cast(ti.floor(ramp_val), ti.i32)
     return ti.cast(head_score, ti.f32)
 
 

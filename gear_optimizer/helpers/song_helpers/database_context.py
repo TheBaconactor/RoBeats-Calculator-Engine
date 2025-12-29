@@ -5,6 +5,10 @@ This module provides database operations:
 - load_database_context: Load database seeds and known loadouts
 """
 import json
+import logging
+import os
+import threading
+import time
 
 from ...data.database import (
     get_db_connection,
@@ -16,6 +20,44 @@ from ...data.models import WarnOnce
 
 # Global warn-once instance
 WARN_ONCE = WarnOnce()
+
+_WAL_MAINT_LOCK = threading.Lock()
+_LAST_WAL_MAINT_TS = 0.0
+
+
+def _maybe_wal_maintenance(conn) -> None:
+    """
+    Opportunistic WAL maintenance for long-running sessions.
+
+    This MUST NOT run on every per-song DB read: TRUNCATE checkpoints can take locks
+    and stall concurrent writers, which can indirectly starve the GPU pipeline.
+    """
+    try:
+        interval_sec = float(os.environ.get("DB_WAL_MAINT_INTERVAL_SEC", "30") or "30")
+    except Exception:
+        interval_sec = 30.0
+
+    if interval_sec <= 0:
+        return
+
+    global _LAST_WAL_MAINT_TS
+    now = time.monotonic()
+    with _WAL_MAINT_LOCK:
+        if (now - _LAST_WAL_MAINT_TS) < interval_sec:
+            return
+        _LAST_WAL_MAINT_TS = now
+
+    try:
+        # PASSIVE is non-blocking; it won't force truncation, but it helps keep WAL
+        # growth in check without taking disruptive locks.
+        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+    except Exception:
+        logging.debug("[DB] WAL checkpoint(PASSIVE) failed", exc_info=True)
+
+    try:
+        conn.execute("PRAGMA optimize")
+    except Exception:
+        logging.debug("[DB] PRAGMA optimize failed", exc_info=True)
 
 
 def load_database_context(found_song_name, use_evo_db, gears_by_name, minis_by_name):
@@ -111,15 +153,8 @@ def load_database_context(found_song_name, use_evo_db, gears_by_name, minis_by_n
                     force_data,
                     details_data,
                 )
-            # Memory leak fix #2: Checkpoint WAL before closing connection
-            # Prevents WAL file growth (5-50 MB per 1000 songs)
-            try:
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                conn.execute("PRAGMA optimize")
-            except Exception as e:
-                # CRITICAL FIX: Log checkpoint failures (was silently suppressed)
-                import logging
-                logging.warning(f"[DB] WAL checkpoint/optimize failed: {e}")
+
+            _maybe_wal_maintenance(conn)
             conn.close()
         except Exception as e:
             print(f"[DB] Error fetching known loadouts: {e}")

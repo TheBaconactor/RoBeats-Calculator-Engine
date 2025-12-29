@@ -1,5 +1,8 @@
 # Gear Optimizer Refactoring Guide
 
+> [!WARNING]
+> **Legacy / archived:** This document lives under `docs/legacy/` and may not match the current code layout/config. See `docs/NAVIGATION.md` for current entrypoints/paths.
+
 ## Executive Summary
 
 Your 5,196-line monolith needs to be split into **8 focused modules** with clean separation of concerns. This guide provides the complete architecture and step-by-step instructions.

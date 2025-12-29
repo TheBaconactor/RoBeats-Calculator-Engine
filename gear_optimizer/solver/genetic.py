@@ -1074,7 +1074,8 @@ def _run_gpu_native_ga(
     island_starts = [i * island_size for i in range(num_islands)]
     island_starts.append(n_genomes)  # Sentinel for last island end
     
-    print(f"  >> Island Model: {num_islands} islands, ~{island_size} genomes each")
+    if os.environ.get("GPU_NATIVE_GA_LOG_ISLAND_MODEL", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        print(f"  >> Island Model: {num_islands} islands, ~{island_size} genomes each")
 
     # Track population snapshot - only downloaded when best improves or during migrations
     pop_snapshot = None
@@ -1270,6 +1271,11 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     if n_slots != 9:
         raise ValueError(f"GPU-native GA expects n_slots=9, got {n_slots}")
+
+    # Reduce padded CPU↔GPU transfers by sizing multi-run GA buffers to the
+    # current session's needs. This MUST happen before the first Taichi field
+    # allocation (i.e., before load_ref_arrays/precompute_timeline triggers ensure_ready()).
+    gpu_fields.configure_ga_run_buffers(max_runs=num_runs, max_genomes=n_genomes)
 
     # Optional stability toggles (mirrors solve_coevolution_genetic GPU-native path)
     reset_every_runs_env = os.environ.get("GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", "0")
@@ -1683,7 +1689,8 @@ def solve_coevolution_genetic(
                 segment_total_runs = min(gpu_fields.MAX_GA_RUNS, num_runs - run_idx)
                 segment_pop_uploaded = False
 
-                print(f"  >> Prebuilding {segment_total_runs} initial populations (batched upload)...")
+                if os.environ.get("GPU_NATIVE_GA_LOG_PROGRESS", "0").strip().lower() in {"1", "true", "yes", "on"}:
+                    print(f"  >> Prebuilding {segment_total_runs} initial populations (batched upload)...")
                 seg_buf = None
                 for j in range(segment_total_runs):
                     pop = build_initial_population(
@@ -1709,7 +1716,8 @@ def solve_coevolution_genetic(
                     seg_buf[j, :, :n_slots] = registry.encode_population(pop)
                 segment_pop_ids = seg_buf
 
-            print(f"  >> GPU GA Run {run_idx + 1}/{num_runs}...")
+            if os.environ.get("GPU_NATIVE_GA_LOG_PROGRESS", "0").strip().lower() in {"1", "true", "yes", "on"}:
+                print(f"  >> GPU GA Run {run_idx + 1}/{num_runs}...")
 
             if reset_every_runs > 0 and run_idx > 0 and (run_idx % reset_every_runs) == 0:
                 try:

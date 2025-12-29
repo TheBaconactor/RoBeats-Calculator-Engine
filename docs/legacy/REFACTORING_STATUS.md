@@ -1,5 +1,8 @@
 #Refactoring Status Report
 
+> [!WARNING]
+> **Legacy / archived:** This document lives under `docs/legacy/` and may not match the current code layout/config. See `docs/NAVIGATION.md` for current entrypoints/paths.
+
 ## 🎉 PHASE 1 & 2 COMPLETE!
 
 **Date:** December 7, 2025

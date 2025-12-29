@@ -2,9 +2,10 @@
 
 ## Start Here (Typical Run)
 
-- Entry point: `main.py` → `gear_optimizer/app.py` (`GearOptimizerApp.run`)
+- Entry point: `main.py` -> `gear_optimizer/app.py` (`GearOptimizerApp.run`)
 - Per-song execution: `gear_optimizer/pipeline/song_processor.py`
 - GA loop (CPU): `gear_optimizer/solver/genetic.py`
+- In-flight (single-process, multi-song): `gear_optimizer/solver/inflight_orchestrator.py`, `gear_optimizer/solver/native_inflight_orchestrator.py`
 - Scoring (CPU/GPU dispatch): `gear_optimizer/solver/scoring/`
 - Database/persistence: `gear_optimizer/data/database.py`
 - Config + paths: `gear_optimizer/core/config.py`, `gear_optimizer/core/constants.py`

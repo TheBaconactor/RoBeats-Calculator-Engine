@@ -1,5 +1,8 @@
 # 🎉 Refactoring: 50% COMPLETE!
 
+> [!WARNING]
+> **Legacy / archived:** This document lives under `docs/legacy/` and may not match the current code layout/config. See `docs/NAVIGATION.md` for current entrypoints/paths.
+
 ## Executive Summary
 
 Your 5,196-line monolith has been **transformed** into a professional, modular architecture.
