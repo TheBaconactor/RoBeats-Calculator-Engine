@@ -1,10 +1,9 @@
 import sqlite3
 import json
 
-conn = sqlite3.connect('evolution.db')
+conn = sqlite3.connect("evolution.db")
 r = conn.execute(
-    "SELECT force_details_json FROM loadouts WHERE song_name=? AND fg_score > 0",
-    ("Feeling Alright (Hard) by Rutra",)
+    "SELECT force_details_json FROM loadouts WHERE song_name=? AND fg_score > 0", ("Feeling Alright (Hard) by Rutra",)
 ).fetchone()
 
 if r and r[0]:

@@ -5,6 +5,7 @@ This module provides the main gem optimization entry points:
 - optimize_gems_gpu: Single-item optimization (wrapper for batch API)
 - optimize_gems_batch_gpu: Batch gem optimization with automatic genome mapping
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -23,17 +24,25 @@ kernels = get_kernels()
 # SINGLE-ITEM OPTIMIZATION
 # ============================================================================
 
+
 def optimize_gems_gpu(
     budget: int,
     fever_mask_head: np.ndarray,
     count_body_fever: int,
     count_body_normal: int,
-    cur_pp: int, cur_cm: int, cur_fm: int,
-    cur_p_val: int, cur_s_val: int,
-    is_p_pp: int, is_s_pp: int,
-    is_p_cm: int, is_s_cm: int,
-    is_p_fm: int, is_s_fm: int,
-    is_p_ov: int, is_s_ov: int,
+    cur_pp: int,
+    cur_cm: int,
+    cur_fm: int,
+    cur_p_val: int,
+    cur_s_val: int,
+    is_p_pp: int,
+    is_s_pp: int,
+    is_p_cm: int,
+    is_s_cm: int,
+    is_p_fm: int,
+    is_s_fm: int,
+    is_p_ov: int,
+    is_s_ov: int,
     ref_arrays: dict,
 ):
     """
@@ -41,26 +50,36 @@ def optimize_gems_gpu(
 
     Wraps the batch API for single-item use.
     """
-    batch_input = [{
-        "budget": budget,
-        "fever_mask_head": fever_mask_head,
-        "count_body_fever": count_body_fever,
-        "count_body_normal": count_body_normal,
-        "ft_gems": 0,
-        "ff_gems": 0,
-    }]
+    batch_input = [
+        {
+            "budget": budget,
+            "fever_mask_head": fever_mask_head,
+            "count_body_fever": count_body_fever,
+            "count_body_normal": count_body_normal,
+            "ft_gems": 0,
+            "ff_gems": 0,
+        }
+    ]
 
     results = optimize_gems_batch_gpu(
         batch_input,
-        cur_pp, cur_cm, cur_fm,
+        cur_pp,
+        cur_cm,
+        cur_fm,
         base_p_val=cur_p_val,
         base_s_val=cur_s_val,
-        is_p_ft=0, is_s_ft=0,
-        is_p_ff=0, is_s_ff=0,
-        is_p_pp=is_p_pp, is_s_pp=is_s_pp,
-        is_p_cm=is_p_cm, is_s_cm=is_s_cm,
-        is_p_fm=is_p_fm, is_s_fm=is_s_fm,
-        is_p_ov=is_p_ov, is_s_ov=is_s_ov,
+        is_p_ft=0,
+        is_s_ft=0,
+        is_p_ff=0,
+        is_s_ff=0,
+        is_p_pp=is_p_pp,
+        is_s_pp=is_s_pp,
+        is_p_cm=is_p_cm,
+        is_s_cm=is_s_cm,
+        is_p_fm=is_p_fm,
+        is_s_fm=is_s_fm,
+        is_p_ov=is_p_ov,
+        is_s_ov=is_s_ov,
         ref_arrays=ref_arrays,
     )
 
@@ -71,16 +90,26 @@ def optimize_gems_gpu(
 # BATCH OPTIMIZATION
 # ============================================================================
 
+
 def optimize_gems_batch_gpu(
     batch_input: list,
-    cur_pp: int, cur_cm: int, cur_fm: int,
-    base_p_val: int, base_s_val: int,
-    is_p_ft: int, is_s_ft: int,
-    is_p_ff: int, is_s_ff: int,
-    is_p_pp: int, is_s_pp: int,
-    is_p_cm: int, is_s_cm: int,
-    is_p_fm: int, is_s_fm: int,
-    is_p_ov: int, is_s_ov: int,
+    cur_pp: int,
+    cur_cm: int,
+    cur_fm: int,
+    base_p_val: int,
+    base_s_val: int,
+    is_p_ft: int,
+    is_s_ft: int,
+    is_p_ff: int,
+    is_s_ff: int,
+    is_p_pp: int,
+    is_s_pp: int,
+    is_p_cm: int,
+    is_s_cm: int,
+    is_p_fm: int,
+    is_s_fm: int,
+    is_p_ov: int,
+    is_s_ov: int,
     ref_arrays: dict,
 ) -> list:
     """
@@ -105,11 +134,24 @@ def optimize_gems_batch_gpu(
             chunk_end = min(chunk_start + MAX_WORK_ITEMS, n)
             chunk = batch_input[chunk_start:chunk_end]
             chunk_results = optimize_gems_batch_gpu(
-                chunk, cur_pp, cur_cm, cur_fm,
-                base_p_val, base_s_val,
-                is_p_ft, is_s_ft, is_p_ff, is_s_ff,
-                is_p_pp, is_s_pp, is_p_cm, is_s_cm,
-                is_p_fm, is_s_fm, is_p_ov, is_s_ov,
+                chunk,
+                cur_pp,
+                cur_cm,
+                cur_fm,
+                base_p_val,
+                base_s_val,
+                is_p_ft,
+                is_s_ft,
+                is_p_ff,
+                is_s_ff,
+                is_p_pp,
+                is_s_pp,
+                is_p_cm,
+                is_s_cm,
+                is_p_fm,
+                is_s_fm,
+                is_p_ov,
+                is_s_ov,
                 ref_arrays,
             )
             all_results.extend(chunk_results)
@@ -190,9 +232,18 @@ def optimize_gems_batch_gpu(
     # Launch kernel
     kernels.solve_batch_kernel(
         n,
-        is_p_ft, is_s_ft, is_p_ff, is_s_ff,
-        is_p_pp, is_s_pp, is_p_cm, is_s_cm,
-        is_p_fm, is_s_fm, is_p_ov, is_s_ov,
+        is_p_ft,
+        is_s_ft,
+        is_p_ff,
+        is_s_ff,
+        is_p_pp,
+        is_s_pp,
+        is_p_cm,
+        is_s_cm,
+        is_p_fm,
+        is_s_fm,
+        is_p_ov,
+        is_s_ov,
     )
     # NOTE: ti.sync() removed - to_numpy() internally syncs
 
@@ -201,9 +252,18 @@ def optimize_gems_batch_gpu(
     results_np = fields.result_stats.to_numpy()[:n]
 
     results = [
-        (int(row[0]), int(row[1]), int(row[2]), int(row[3]),
-         int(row[5]), int(row[6]),  # p_val, s_val
-         int(row[1]), int(row[2]), int(row[3]), int(row[4]))  # repeats for generic tuple format
+        (
+            int(row[0]),
+            int(row[1]),
+            int(row[2]),
+            int(row[3]),
+            int(row[5]),
+            int(row[6]),  # p_val, s_val
+            int(row[1]),
+            int(row[2]),
+            int(row[3]),
+            int(row[4]),
+        )  # repeats for generic tuple format
         for row in results_np
     ]
 

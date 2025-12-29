@@ -121,4 +121,3 @@ def test_general_meta_does_not_merge_mini_variants_when_secondary_varies():
     assert len(results) == 2
     assert [r["win_frequency"] for r in results] == [1, 1]
     assert all(set(r["mini_effective_elements"]) == {"Vibe", "Rush"} for r in results)
-

@@ -9,7 +9,7 @@ from gear_optimizer.data.database import get_db_connection
 
 SONG_NAME = "Test Song (Hard)"
 
-conn = get_db_connection() # Uses default (real) DB path
+conn = get_db_connection()  # Uses default (real) DB path
 print(f"Cleaning up '{SONG_NAME}' from DB...")
 
 # Check if exists

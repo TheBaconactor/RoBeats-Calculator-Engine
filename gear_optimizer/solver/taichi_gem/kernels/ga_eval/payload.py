@@ -58,7 +58,9 @@ def ga_pack_and_store_run_payload_kernel(run_idx: ti.i32, n_genomes: ti.i32, n_s
         for s in range(n_slots):
             kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + s] = kernels_helpers.ga_global_best_genome[s]
         for r in ti.static(range(7)):
-            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + n_slots + r] = kernels_helpers.ga_global_best_results[r]
+            kernels_helpers.ga_runs_payload_packed[run_idx, 0, 1 + n_slots + r] = (
+                kernels_helpers.ga_global_best_results[r]
+            )
 
     # Rows 1..n_genomes: per-genome snapshot
     for g in range(n_genomes):
@@ -69,4 +71,3 @@ def ga_pack_and_store_run_payload_kernel(run_idx: ti.i32, n_genomes: ti.i32, n_s
         res = kernels_helpers.genome_result_stats[g]
         for r in ti.static(range(7)):
             kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 1 + n_slots + r] = res[r]
-

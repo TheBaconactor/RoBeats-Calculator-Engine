@@ -137,4 +137,3 @@ def test_mask_bits_parity():
 
     # Exact equality required
     assert np.array_equal(old_np, new_np), f"Mask-bit parity mismatch: old={old_np}, new={new_np}"
-

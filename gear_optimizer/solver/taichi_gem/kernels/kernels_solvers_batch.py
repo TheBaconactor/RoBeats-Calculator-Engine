@@ -8,6 +8,7 @@ This module contains batch solving kernels:
 
 All kernels use optimize_core_device from kernels_scoring for greedy gem allocation.
 """
+
 import taichi as ti
 
 from . import kernels_helpers
@@ -18,12 +19,18 @@ from .kernels_scoring import optimize_core_device
 @ti.kernel
 def solve_batch_kernel(
     n_items: ti.i32,
-    is_p_ft: ti.i32, is_s_ft: ti.i32,
-    is_p_ff: ti.i32, is_s_ff: ti.i32,
-    is_p_pp: ti.i32, is_s_pp: ti.i32,
-    is_p_cm: ti.i32, is_s_cm: ti.i32,
-    is_p_fm: ti.i32, is_s_fm: ti.i32,
-    is_p_ov: ti.i32, is_s_ov: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
 ):
     """
     Main kernel - processes all work items in parallel.
@@ -67,15 +74,28 @@ def solve_batch_kernel(
         s_val = base_s_val + (ft_gems * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff_gems * GEM_STAT_TO_ELEMENT * is_s_ff)
 
         score_vec = optimize_core_device(
-            i, budget,
-            base_pp, base_cm, base_fm,
-            p_val, s_val,
-            is_p_pp, is_s_pp,
-            is_p_cm, is_s_cm,
-            is_p_fm, is_s_fm,
-            is_p_ov, is_s_ov,
-            head_len, count_fever, count_normal,
-            0, 0, 0, 0,
+            i,
+            budget,
+            base_pp,
+            base_cm,
+            base_fm,
+            p_val,
+            s_val,
+            is_p_pp,
+            is_s_pp,
+            is_p_cm,
+            is_s_cm,
+            is_p_fm,
+            is_s_fm,
+            is_p_ov,
+            is_s_ov,
+            head_len,
+            count_fever,
+            count_normal,
+            0,
+            0,
+            0,
+            0,
         )
         # [score, pp, cm, fm, ov, p_val, s_val]
         kernels_helpers.result_stats[i] = score_vec
@@ -86,12 +106,18 @@ def solve_genomes_with_ftff_kernel(
     n_genomes: ti.i32,
     total_budget: ti.i32,
     gem_scale_fever: ti.i32,
-    is_p_ft: ti.i32, is_s_ft: ti.i32,
-    is_p_ff: ti.i32, is_s_ff: ti.i32,
-    is_p_pp: ti.i32, is_s_pp: ti.i32,
-    is_p_cm: ti.i32, is_s_cm: ti.i32,
-    is_p_fm: ti.i32, is_s_fm: ti.i32,
-    is_p_ov: ti.i32, is_s_ov: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
     song_slot: ti.i32,  # Grid slot for batch coalescing (0 for single-song)
 ):
     """
@@ -153,7 +179,9 @@ def solve_genomes_with_ftff_kernel(
 
                 # O(1) lookup from grid using song_slot
                 count_fever: ti.i32 = ti.cast(kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx], ti.i32)
-                count_normal: ti.i32 = ti.cast(kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx], ti.i32)
+                count_normal: ti.i32 = ti.cast(
+                    kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx], ti.i32
+                )
                 head_len: ti.i32 = ti.cast(kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx], ti.i32)
 
                 # Budget remaining for PP/CM/FM/OV gems
@@ -165,15 +193,28 @@ def solve_genomes_with_ftff_kernel(
 
                 # Run greedy gem allocation (shared optimize_core_device) for exact behavioral match
                 res_vec = optimize_core_device(
-                    0, budget,
-                    base_pp, base_cm, base_fm,
-                    p_val, s_val,
-                    is_p_pp, is_s_pp,
-                    is_p_cm, is_s_cm,
-                    is_p_fm, is_s_fm,
-                    is_p_ov, is_s_ov,
-                    head_len, count_fever, count_normal,
-                    1, song_slot, ft_idx, ff_idx,
+                    0,
+                    budget,
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    p_val,
+                    s_val,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    1,
+                    song_slot,
+                    ft_idx,
+                    ff_idx,
                 )
                 local_best_score: ti.i32 = res_vec[0]
                 gems_pp: ti.i32 = res_vec[1]
@@ -193,7 +234,9 @@ def solve_genomes_with_ftff_kernel(
 
         # Store result
         # [score, ft, ff, pp, cm, fm, ov]
-        kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([best_score, best_ft, best_ff, best_g_pp, best_g_cm, best_g_fm, best_g_ov])
+        kernels_helpers.genome_result_stats[genome_idx] = ti.Vector(
+            [best_score, best_ft, best_ff, best_g_pp, best_g_cm, best_g_fm, best_g_ov]
+        )
 
 
 @ti.kernel
@@ -201,12 +244,18 @@ def solve_ftff_parallel_kernel(
     n_work_items: ti.i32,
     total_budget: ti.i32,
     gem_scale_fever: ti.i32,
-    is_p_ft: ti.i32, is_s_ft: ti.i32,
-    is_p_ff: ti.i32, is_s_ff: ti.i32,
-    is_p_pp: ti.i32, is_s_pp: ti.i32,
-    is_p_cm: ti.i32, is_s_cm: ti.i32,
-    is_p_fm: ti.i32, is_s_fm: ti.i32,
-    is_p_ov: ti.i32, is_s_ov: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
 ):
     """
     V2 kernel: Parallelize across (genome, ft, ff) combinations.
@@ -275,22 +324,34 @@ def solve_ftff_parallel_kernel(
         count_normal = ti.cast(kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx], ti.i32)
         head_len = ti.cast(kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx], ti.i32)
 
-
         # Adjust p/s values
         p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * f_is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * f_is_p_ff)
         s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * f_is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * f_is_s_ff)
 
         # Run greedy gem allocation
         res_vec = optimize_core_device(
-            i, budget,
-            base_pp, base_cm, base_fm,
-            p_val, s_val,
-            f_is_p_pp, f_is_s_pp,
-            f_is_p_cm, f_is_s_cm,
-            f_is_p_fm, f_is_s_fm,
-            f_is_p_ov, f_is_s_ov,
-            head_len, count_fever, count_normal,
-            1, song_slot, ft_idx, ff_idx,
+            i,
+            budget,
+            base_pp,
+            base_cm,
+            base_fm,
+            p_val,
+            s_val,
+            f_is_p_pp,
+            f_is_s_pp,
+            f_is_p_cm,
+            f_is_s_cm,
+            f_is_p_fm,
+            f_is_s_fm,
+            f_is_p_ov,
+            f_is_s_ov,
+            head_len,
+            count_fever,
+            count_normal,
+            1,
+            song_slot,
+            ft_idx,
+            ff_idx,
         )
 
         kernels_helpers.result_stats[i] = res_vec

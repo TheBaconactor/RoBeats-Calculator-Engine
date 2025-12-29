@@ -38,12 +38,14 @@ _configure_test_db_path()
 
 try:
     import pytest_benchmark  # noqa: F401
+
     _HAS_PYTEST_BENCHMARK = True
 except Exception:
     _HAS_PYTEST_BENCHMARK = False
 
 
 if not _HAS_PYTEST_BENCHMARK:
+
     @pytest.fixture
     def benchmark():
         """
@@ -62,6 +64,7 @@ if not _HAS_PYTEST_BENCHMARK:
 # -----------------------------------------------------------------------------
 # Taichi/Vulkan test isolation
 # -----------------------------------------------------------------------------
+
 
 @pytest.fixture(scope="module", autouse=True)
 def _taichi_module_isolation(request):

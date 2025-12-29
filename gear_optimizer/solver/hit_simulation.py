@@ -251,10 +251,10 @@ def simulate_perfect_hit_timestamps_with_great_candidates(
     # Great window per note (ms, with tail multiplier) - mode-based.
     is_tail = note_types == int(held_tail_type)
     mult = np.where(is_tail, int(held_tail_time_multiplier), 1).astype(np.int16)
-    
+
     # Calculate Great window bounds based on mode
     great_upper_ms = ((int(perfect_upper_ms) + int(great_extra_upper_ms)) * mult).astype(np.int32)
-    
+
     if great_mode == "late":
         # Late-only: [perfect_upper+1, great_upper]
         great_low_ms = (int(perfect_upper_ms) * mult + 1).astype(np.int32)
@@ -276,7 +276,6 @@ def simulate_perfect_hit_timestamps_with_great_candidates(
         great_high_ms = great_upper_ms
     else:
         raise ValueError(f"Invalid great_mode: {great_mode}")
-
 
     rng = np.random.default_rng(int(seed) & 0xFFFFFFFF)
 

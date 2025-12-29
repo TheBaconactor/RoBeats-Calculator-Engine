@@ -67,12 +67,18 @@ def test_solve_force_greats_finder_gpu_cfg_chunk_invariant():
 
     # Flags: keep mapping simple/deterministic
     flags = dict(
-        is_p_ft=0, is_s_ft=0,
-        is_p_ff=0, is_s_ff=0,
-        is_p_pp=0, is_s_pp=0,
-        is_p_cm=0, is_s_cm=0,
-        is_p_fm=0, is_s_fm=0,
-        is_p_ov=1, is_s_ov=0,
+        is_p_ft=0,
+        is_s_ft=0,
+        is_p_ff=0,
+        is_s_ff=0,
+        is_p_pp=0,
+        is_s_pp=0,
+        is_p_cm=0,
+        is_s_cm=0,
+        is_p_fm=0,
+        is_s_fm=0,
+        is_p_ov=1,
+        is_s_ov=0,
     )
 
     # Force chunking (multiple cfg uploads)
@@ -116,5 +122,3 @@ def test_solve_force_greats_finder_gpu_cfg_chunk_invariant():
     assert int(a.get("FT", -1)) == int(b.get("FT", -2))
     assert int(a.get("FF", -1)) == int(b.get("FF", -2))
     assert (a.get("gem_counts") or {}) == (b.get("gem_counts") or {})
-
-

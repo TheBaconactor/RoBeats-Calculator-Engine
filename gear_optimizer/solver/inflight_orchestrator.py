@@ -90,9 +90,7 @@ def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg) -> dict:
         )
 
         calc_song["song_data"]["fg_timestamps"] = np.asarray(sim_ts, dtype=np.float64)
-        calc_song["song_data"]["fg_great_candidate_timestamps"] = np.asarray(
-            sim_great_candidates, dtype=np.float64
-        )
+        calc_song["song_data"]["fg_great_candidate_timestamps"] = np.asarray(sim_great_candidates, dtype=np.float64)
         calc_song["metadata"]["HumanHitSimSeed"] = int(seed_in)
         calc_song["metadata"]["HumanHitSimApplyTo"] = apply_to
         calc_song["metadata"]["HumanHitSimDistribution"] = dist
@@ -269,6 +267,7 @@ def run_inflight_song_pipeline(
 
     try:
         from gear_optimizer.solver.taichi_gem.fields import MAX_SONG_SLOTS
+
         max_song_slots = int(MAX_SONG_SLOTS)
     except Exception:
         max_song_slots = 8
@@ -549,9 +548,7 @@ def run_inflight_song_pipeline(
             gpu_mode = False
 
         # Candidate funnel size (reuse existing config key).
-        fg_candidate_limit = safe_int(
-            cfg.get("IterationEngine", "FG_CandidateLimit", fallback=200), 200
-        )
+        fg_candidate_limit = safe_int(cfg.get("IterationEngine", "FG_CandidateLimit", fallback=200), 200)
         fg_candidate_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(fg_candidate_limit)))
 
         fg_search_radius = None

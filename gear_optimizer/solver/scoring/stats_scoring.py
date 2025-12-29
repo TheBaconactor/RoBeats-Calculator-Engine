@@ -7,6 +7,7 @@ This module provides functions for evaluating fixed stats without gem optimizati
 - fg_baseline_params: Lightweight baseline computation for ForceGreatsFinder batching
 - Helper functions for song caching and config conversion
 """
+
 import numpy as np
 from math import floor
 
@@ -52,15 +53,9 @@ def evaluate_stats_score(
     Returns:
         int: Total score
     """
-    timestamps = (
-        song_timestamps if song_timestamps is not None else calc_song["song_data"]["timestamps"]
-    )
+    timestamps = song_timestamps if song_timestamps is not None else calc_song["song_data"]["timestamps"]
     total_notes = len(timestamps)
-    long_count = (
-        long_notes
-        if long_notes is not None
-        else safe_int(calc_song["metadata"].get("Long Notes"), 0)
-    )
+    long_count = long_notes if long_notes is not None else safe_int(calc_song["metadata"].get("Long Notes"), 0)
     default_last_note = timestamps[-1] if total_notes else 0.0
     last_time = (
         last_note

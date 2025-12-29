@@ -11,6 +11,7 @@ Contains the main process_song_task function that coordinates:
 
 REFACTORED: Helper functions extracted to .helpers.song_helpers for maintainability.
 """
+
 import concurrent.futures
 import contextlib
 import gc
@@ -61,6 +62,7 @@ PERF_TIMING_ENABLED = os.environ.get("PERF_TIMING", "0") == "1"
 
 # GPU profiler for songs/hour tracking
 _gpu_profiler = get_gpu_profiler()
+
 
 def scan_song_header(fp):
     """
@@ -130,9 +132,7 @@ def read_song_file(fp):
     try:
         with open(fp, "r", encoding="utf-8-sig") as f:
             lines = f.read().splitlines()
-        marker = next(
-            (i for i, line in enumerate(lines) if line.strip() == "Song Data"), -1
-        )
+        marker = next((i for i, line in enumerate(lines) if line.strip() == "Song Data"), -1)
         if marker == -1:
             return data
         for line in lines[:marker]:
@@ -145,7 +145,7 @@ def read_song_file(fp):
                     data["song_details"][key] = parts[1].strip() or "0"
 
         note_lines = []
-        for line in lines[marker + 1:]:
+        for line in lines[marker + 1 :]:
             s = line.strip()
             if not s:
                 continue
@@ -166,8 +166,6 @@ def read_song_file(fp):
     except Exception as exc:
         WARN_ONCE.warn("song-file", f"Failed to read song file {fp}: {exc}")
         return data
-
-
 
 
 def process_song_task(args):
@@ -349,9 +347,7 @@ def process_song_task(args):
 
             # Store for downstream FG scorers; only override full timestamps when requested.
             calc_song["song_data"]["fg_timestamps"] = np.asarray(sim_ts, dtype=np.float64)
-            calc_song["song_data"]["fg_great_candidate_timestamps"] = np.asarray(
-                sim_great_candidates, dtype=np.float64
-            )
+            calc_song["song_data"]["fg_great_candidate_timestamps"] = np.asarray(sim_great_candidates, dtype=np.float64)
             calc_song["metadata"]["HumanHitSimSeed"] = int(seed_in)
             calc_song["metadata"]["HumanHitSimApplyTo"] = apply_to
             calc_song["metadata"]["HumanHitSimDistribution"] = dist
@@ -397,9 +393,7 @@ def process_song_task(args):
 
         # Load database context (prev_record, known_loadouts)
         _t_db0 = time.perf_counter()
-        prev_record, known_loadouts = load_database_context(
-            found_song_name, use_evo_db, gears_by_name, minis_by_name
-        )
+        prev_record, known_loadouts = load_database_context(found_song_name, use_evo_db, gears_by_name, minis_by_name)
         stage_timing["cpu_db_load_sec"] = time.perf_counter() - _t_db0
 
         db_seed = prev_record if prev_record else None
@@ -441,6 +435,7 @@ def process_song_task(args):
             if gpu_mode:
                 try:
                     from gear_optimizer.solver.taichi_gem.api.gpu_prefetch import get_gpu_prefetch_manager
+
                     _prefetch_mgr = get_gpu_prefetch_manager()
                     _t_timeline0 = time.perf_counter()
                     _gpu_song_slot = _prefetch_mgr.get_slot(calc_song, ref_arrays)
@@ -496,7 +491,6 @@ def process_song_task(args):
             # This dict now caps at the per-song loadout limit (small footprint)
             if known_loadouts:
                 known_loadouts.clear()
-
 
         else:
             # Run Gem Solver only (enable_fever) or Calculate-Only Mode (nothing enabled)
@@ -714,10 +708,12 @@ def process_song_task(args):
             if use_evo_db:
                 try:
                     from ..data.database import get_best_loadouts
+
                     db_loadouts_full = get_best_loadouts(
                         found_song_name,
                         limit=fg_candidate_limit,
-                        gears_by_name=gears_by_name, minis_by_name=minis_by_name
+                        gears_by_name=gears_by_name,
+                        minis_by_name=minis_by_name,
                     )
                     db_loadouts_full_count = len(db_loadouts_full)
                 except Exception:
@@ -744,9 +740,9 @@ def process_song_task(args):
                 n_loadouts = len(loadout_entries) if loadout_entries else 0
                 print(f"[PERF] ForceGreats: {fg_time_sec:.2f}s ({n_loadouts} loadouts, finder={force_greats_finder})")
 
-
         # --- REPORTING & DB UPDATE (payload only; saved by coordinator) ---
         if defer_post and best_data:
+
             def _item_name(item):
                 if isinstance(item, dict):
                     return item.get("Name", "")
@@ -920,11 +916,8 @@ def process_song_task(args):
                 "fg_score": 0,
                 "gear": [],
                 "minis": [],
-                "details": {
-                    "Error": "Optimization failed - no valid loadout found",
-                    "LogTail": log_tail
-                },
-                "force": None
+                "details": {"Error": "Optimization failed - no valid loadout found", "LogTail": log_tail},
+                "force": None,
             }
 
         # BUG FIX: Capture buffer content BEFORE finally block closes it
@@ -948,7 +941,9 @@ def process_song_task(args):
         # GPU profiler: end song tracking
         _song_gpu_timing = _gpu_profiler.end_song()
         stage_timing["song_wall_sec"] = time.perf_counter() - _song_wall_t0
-        stage_timing["cpu_post_sec"] = float(db_payload_time_sec) + float(persist_build_time_sec) + float(report_time_sec)
+        stage_timing["cpu_post_sec"] = (
+            float(db_payload_time_sec) + float(persist_build_time_sec) + float(report_time_sec)
+        )
         stage_timing["cpu_ga_wall_sec"] = float(ga_time_sec)
         stage_timing["cpu_fg_wall_sec"] = float(fg_time_sec)
 

@@ -13,6 +13,7 @@ import time
 
 from gear_optimizer.solver.taichi_gem.force_greats.async_buffers import AsyncResultProcessor
 
+
 def test_array_copy_isolation():
     """Test that arrays are copied, preventing cross-contamination."""
     print("Test 1: Array copy isolation...")
@@ -65,11 +66,7 @@ def test_concurrent_access():
 
     def concurrent_submit(batch_id):
         try:
-            proc.submit_result_build(
-                {"id": np.array([batch_id])}, 
-                1, 
-                lambda a, n: [{"batch": int(a["id"][0])}]
-            )
+            proc.submit_result_build({"id": np.array([batch_id])}, 1, lambda a, n: [{"batch": int(a["id"][0])}])
         except Exception as e:
             errors.append(str(e))
 
@@ -80,7 +77,7 @@ def test_concurrent_access():
         t.join()
 
     assert not errors, f"Errors during concurrent access: {errors}"
-    
+
     all_results = proc.get_results()
     print(f"  Got {len(all_results)} results from 10 concurrent submits")
     assert len(all_results) == 10, f"FAIL: Lost data! Got {len(all_results)}"

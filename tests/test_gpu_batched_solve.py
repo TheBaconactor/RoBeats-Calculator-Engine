@@ -7,6 +7,7 @@ pytestmark = pytest.mark.gpu
 def _has_taichi() -> bool:
     try:
         import taichi  # noqa: F401
+
         return True
     except Exception:
         return False
@@ -62,23 +63,35 @@ def test_solve_genomes_parallel_merged_parity_small():
     payload_a = {
         "genome_stats_list": genomes,
         "timeline_grid": make_song("MERGE_A"),
-        "is_p_ft": 0, "is_s_ft": 0,
-        "is_p_ff": 0, "is_s_ff": 0,
-        "is_p_pp": 1, "is_s_pp": 0,
-        "is_p_cm": 0, "is_s_cm": 1,
-        "is_p_fm": 0, "is_s_fm": 0,
-        "is_p_ov": 1, "is_s_ov": 0,
+        "is_p_ft": 0,
+        "is_s_ft": 0,
+        "is_p_ff": 0,
+        "is_s_ff": 0,
+        "is_p_pp": 1,
+        "is_s_pp": 0,
+        "is_p_cm": 0,
+        "is_s_cm": 1,
+        "is_p_fm": 0,
+        "is_s_fm": 0,
+        "is_p_ov": 1,
+        "is_s_ov": 0,
         "ref_arrays": ref_arrays,
     }
     payload_b = {
         "genome_stats_list": genomes,
         "timeline_grid": make_song("MERGE_B"),
-        "is_p_ft": 0, "is_s_ft": 0,
-        "is_p_ff": 0, "is_s_ff": 0,
-        "is_p_pp": 1, "is_s_pp": 0,
-        "is_p_cm": 0, "is_s_cm": 1,
-        "is_p_fm": 0, "is_s_fm": 0,
-        "is_p_ov": 0, "is_s_ov": 1,
+        "is_p_ft": 0,
+        "is_s_ft": 0,
+        "is_p_ff": 0,
+        "is_s_ff": 0,
+        "is_p_pp": 1,
+        "is_s_pp": 0,
+        "is_p_cm": 0,
+        "is_s_cm": 1,
+        "is_p_fm": 0,
+        "is_s_fm": 0,
+        "is_p_ov": 0,
+        "is_s_ov": 1,
         "ref_arrays": ref_arrays,
     }
 
@@ -89,9 +102,18 @@ def test_solve_genomes_parallel_merged_parity_small():
     res_a = solve_genomes_parallel(
         payload_a["genome_stats_list"],
         payload_a["timeline_grid"],
-        payload_a["is_p_ft"], payload_a["is_s_ft"], payload_a["is_p_ff"], payload_a["is_s_ff"],
-        payload_a["is_p_pp"], payload_a["is_s_pp"], payload_a["is_p_cm"], payload_a["is_s_cm"],
-        payload_a["is_p_fm"], payload_a["is_s_fm"], payload_a["is_p_ov"], payload_a["is_s_ov"],
+        payload_a["is_p_ft"],
+        payload_a["is_s_ft"],
+        payload_a["is_p_ff"],
+        payload_a["is_s_ff"],
+        payload_a["is_p_pp"],
+        payload_a["is_s_pp"],
+        payload_a["is_p_cm"],
+        payload_a["is_s_cm"],
+        payload_a["is_p_fm"],
+        payload_a["is_s_fm"],
+        payload_a["is_p_ov"],
+        payload_a["is_s_ov"],
         payload_a["ref_arrays"],
         total_budget=total_budget,
         gem_scale_fever=gem_scale_fever,
@@ -100,9 +122,18 @@ def test_solve_genomes_parallel_merged_parity_small():
     res_b = solve_genomes_parallel(
         payload_b["genome_stats_list"],
         payload_b["timeline_grid"],
-        payload_b["is_p_ft"], payload_b["is_s_ft"], payload_b["is_p_ff"], payload_b["is_s_ff"],
-        payload_b["is_p_pp"], payload_b["is_s_pp"], payload_b["is_p_cm"], payload_b["is_s_cm"],
-        payload_b["is_p_fm"], payload_b["is_s_fm"], payload_b["is_p_ov"], payload_b["is_s_ov"],
+        payload_b["is_p_ft"],
+        payload_b["is_s_ft"],
+        payload_b["is_p_ff"],
+        payload_b["is_s_ff"],
+        payload_b["is_p_pp"],
+        payload_b["is_s_pp"],
+        payload_b["is_p_cm"],
+        payload_b["is_s_cm"],
+        payload_b["is_p_fm"],
+        payload_b["is_s_fm"],
+        payload_b["is_p_ov"],
+        payload_b["is_s_ov"],
         payload_b["ref_arrays"],
         total_budget=total_budget,
         gem_scale_fever=gem_scale_fever,
@@ -118,4 +149,3 @@ def test_solve_genomes_parallel_merged_parity_small():
 
     assert merged[0] == res_a
     assert merged[1] == res_b
-

@@ -79,7 +79,7 @@ def _py_force_greats_timeline(
         # Use raw values and ceiling AFTER adding: ceil(raw_base + raw_penalty)
         raw_penalty = max(0.0, forced_val * 0.5)
         raw_fever_fill = non_fever_cas * float(fever_fill_rate)
-        
+
         notes_to_fill = ceil(raw_fever_fill + raw_penalty)
         if non_fever_section == 1:
             notes_to_fill -= 1
@@ -155,8 +155,8 @@ def test_force_greats_timeline_jit_matches_python_for_both_semantics():
     forced_counts = [5, 0, 10, 2]
 
     for clamp_base_notes_nonnegative, clamp_forced_to_section_notes in (
-        (True, True),   # evaluate_force_greats
-        (False, False), # evaluate_fg_with_gem_iteration
+        (True, True),  # evaluate_force_greats
+        (False, False),  # evaluate_fg_with_gem_iteration
     ):
         py = _py_force_greats_timeline(
             timestamps,
@@ -222,4 +222,3 @@ def test_force_greats_timeline_jit_matches_python_for_both_semantics():
             )
 
         assert jit_sections == py_sections
-

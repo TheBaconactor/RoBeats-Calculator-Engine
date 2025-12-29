@@ -2,6 +2,7 @@
 CSV parsing functions for loading gear, minis, and stats data.
 Handles both modern and legacy CSV formats.
 """
+
 import csv
 import os
 from ..core.constants import (
@@ -98,9 +99,7 @@ def parse_gear_rows(filepath):
         header = [h.strip() for h in rows[0]]
         header_lower = [h.lower() for h in header]
 
-        modern_format = "type" in header_lower and any(
-            name in header_lower for name in ("gear name", "name", "gear")
-        )
+        modern_format = "type" in header_lower and any(name in header_lower for name in ("gear name", "name", "gear"))
 
         if modern_format:
             for row in rows[1:]:
@@ -119,15 +118,9 @@ def parse_gear_rows(filepath):
                     "Rush": safe_int(_first_val(row_map, ("rush",))),
                     "Beat": safe_int(_first_val(row_map, ("beat",))),
                     "Vibe": safe_int(_first_val(row_map, ("vibe",))),
-                    "Perfect Points": safe_int(
-                        _first_val(row_map, ("ppoint", "perfect points", "pp", "ppoints"))
-                    ),
-                    "Combo Multiplier": safe_int(
-                        _first_val(row_map, ("cmult", "cbmlt", "combo multiplier", "combo"))
-                    ),
-                    "Fever Multiplier": safe_int(
-                        _first_val(row_map, ("fmult", "fmlt", "fever multiplier"))
-                    ),
+                    "Perfect Points": safe_int(_first_val(row_map, ("ppoint", "perfect points", "pp", "ppoints"))),
+                    "Combo Multiplier": safe_int(_first_val(row_map, ("cmult", "cbmlt", "combo multiplier", "combo"))),
+                    "Fever Multiplier": safe_int(_first_val(row_map, ("fmult", "fmlt", "fever multiplier"))),
                 }
                 # IMPORTANT: Perfect Time (often stored as "PTime") is a
                 # completely different mechanic from Fever Time and must
@@ -200,9 +193,7 @@ def parse_mini_rows(filepath):
         header = [h.strip() for h in rows[0]]
         header_lower = [h.lower() for h in header]
 
-        modern_format = "type" in header_lower and any(
-            name in header_lower for name in ("mini name", "name", "mini")
-        )
+        modern_format = "type" in header_lower and any(name in header_lower for name in ("mini name", "name", "mini"))
 
         if modern_format:
             for row in rows[1:]:
@@ -221,21 +212,11 @@ def parse_mini_rows(filepath):
                     "Rush": safe_int(_first_val(row_map, ("rush",))),
                     "Beat": safe_int(_first_val(row_map, ("beat",))),
                     "Vibe": safe_int(_first_val(row_map, ("vibe",))),
-                    "Perfect Points": safe_int(
-                        _first_val(row_map, ("ppoint", "perfect points", "pp", "ppoints"))
-                    ),
-                    "Combo Multiplier": safe_int(
-                        _first_val(row_map, ("cbmlt", "cmult", "combo multiplier", "combo"))
-                    ),
-                    "Fever Multiplier": safe_int(
-                        _first_val(row_map, ("fmult", "fmlt", "fvmlt", "fever multiplier"))
-                    ),
-                    "Fever Time": safe_int(
-                        _first_val(row_map, ("fvtim", "time", "ft", "fever time"))
-                    ),
-                    "Fever Fill Rate": safe_int(
-                        _first_val(row_map, ("fvfil", "fill", "ff", "fever fill"))
-                    ),
+                    "Perfect Points": safe_int(_first_val(row_map, ("ppoint", "perfect points", "pp", "ppoints"))),
+                    "Combo Multiplier": safe_int(_first_val(row_map, ("cbmlt", "cmult", "combo multiplier", "combo"))),
+                    "Fever Multiplier": safe_int(_first_val(row_map, ("fmult", "fmlt", "fvmlt", "fever multiplier"))),
+                    "Fever Time": safe_int(_first_val(row_map, ("fvtim", "time", "ft", "fever time"))),
+                    "Fever Fill Rate": safe_int(_first_val(row_map, ("fvfil", "fill", "ff", "fever fill"))),
                 }
                 minis_list.append(stats)
         else:

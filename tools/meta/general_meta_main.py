@@ -8,6 +8,7 @@ repo root.
 Usage:
     python tools/meta/general_meta_main.py
 """
+
 from __future__ import annotations
 
 import runpy

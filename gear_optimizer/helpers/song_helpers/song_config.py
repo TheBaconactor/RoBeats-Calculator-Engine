@@ -4,6 +4,7 @@ Song Helpers - Song Config - Song configuration setup.
 This module provides configuration operations:
 - setup_song_config: Setup configuration, auto-buff, load current stats
 """
+
 from ...data.models import GASettings
 from ...data.csv_parser import get_fixed_stats, get_config_gear_stats, get_config_mini_stats
 
@@ -40,6 +41,7 @@ def setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_
 
     # Import here to avoid circular dependency
     from ...core.config import load_force_greats_config, load_force_greats_inline
+
     force_greats_config = load_force_greats_config(cfg)
 
     # Prefer explicit [ForceGreats] section; fall back to inline config if section is absent/empty.
@@ -66,12 +68,8 @@ def setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_
     fixed_stats = get_fixed_stats(cfg)
 
     # Load Current Config for Seeding / Fallback
-    current_gear_stats, current_gear_list = get_config_gear_stats(
-        cfg, paths, gears_by_name
-    )
-    current_mini_stats, current_mini_list = get_config_mini_stats(
-        cfg, paths, minis_by_name
-    )
+    current_gear_stats, current_gear_list = get_config_gear_stats(cfg, paths, gears_by_name)
+    current_mini_stats, current_mini_list = get_config_mini_stats(cfg, paths, minis_by_name)
 
     return (
         ga_settings,

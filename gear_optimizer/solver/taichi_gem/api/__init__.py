@@ -80,7 +80,7 @@ try:
         ga_set_scores,
         ga_next_generation,
         ga_next_generation_gpu_elites,  # GPU-resident elitism (avoids CPU download)
-        ga_next_generation_fused,       # FULLY FUSED (2 kernels instead of 4)
+        ga_next_generation_fused,  # FULLY FUSED (2 kernels instead of 4)
         ga_download_population_indices,
         ga_download_scores,
         ga_download_results,

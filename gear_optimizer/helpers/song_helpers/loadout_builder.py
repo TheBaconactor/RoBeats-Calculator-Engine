@@ -4,6 +4,7 @@ Song Helpers - Loadout Builder - Build union of DB + GA loadouts.
 This module provides loadout building operations:
 - build_loadout_entries: Build union of DB + GA loadouts
 """
+
 from ...data.database import (
     get_best_loadouts,
     get_loadout_hash,

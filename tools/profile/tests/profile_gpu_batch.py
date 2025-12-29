@@ -67,48 +67,61 @@ def create_mock_ref():
 
 def create_random_genome():
     """Create a genome with random stats (simulates different gear loadouts)."""
-    return [{
-        "Name": f"Mock_{random.randint(0, 10000)}",
-        "Perfect Points": random.randint(0, 50),
-        "Combo Multiplier": random.randint(0, 50),
-        "Fever Multiplier": random.randint(0, 50),
-        "Fever Fill Rate": random.randint(0, 50),
-        "Fever Time": random.randint(0, 50),
-        "Rush": random.randint(0, 100),
-        "Flow": random.randint(0, 100),
-        "Beat": random.randint(0, 100),
-        "Vibe": random.randint(0, 100),
-        "Chill": random.randint(0, 100),
-    }]
+    return [
+        {
+            "Name": f"Mock_{random.randint(0, 10000)}",
+            "Perfect Points": random.randint(0, 50),
+            "Combo Multiplier": random.randint(0, 50),
+            "Fever Multiplier": random.randint(0, 50),
+            "Fever Fill Rate": random.randint(0, 50),
+            "Fever Time": random.randint(0, 50),
+            "Rush": random.randint(0, 100),
+            "Flow": random.randint(0, 100),
+            "Beat": random.randint(0, 100),
+            "Vibe": random.randint(0, 100),
+            "Chill": random.randint(0, 100),
+        }
+    ]
 
 
 def profile_batch_evaluation(population_size=500, num_iterations=3):
     """Profile the GPU batch evaluation with detailed timing."""
-    
+
     from gear_optimizer.solver.scoring import batch_evaluate_genomes, GEM_SOLVER_CACHE
     from gear_optimizer.solver.fever_timeline import SONG_TIMELINE_GRIDS
-    
+
     print("=" * 60)
     print(f"GPU Batch Profiling: {population_size} genomes, {num_iterations} iterations")
     print("=" * 60)
-    
+
     # Setup
     ref_arrays = create_mock_ref()
     calc_song = create_mock_song()
-    
+
     cfg_data = {
         "selected_color": "Beat",
         "use_gpu": True,
-        "user_ft": 0, "user_ff": 0, "user_pp": 0, "user_cm": 0, "user_fm": 0,
+        "user_ft": 0,
+        "user_ff": 0,
+        "user_pp": 0,
+        "user_cm": 0,
+        "user_fm": 0,
         "static_elem_input": 0,
     }
-    
+
     base_stats_fixed = {
-        "Perfect Points": 50, "Combo Multiplier": 50, "Fever Multiplier": 50,
-        "Fever Fill Rate": 50, "Fever Time": 50,
-        "Rush": 50, "Flow": 50, "Beat": 50, "Vibe": 50, "Chill": 50,
+        "Perfect Points": 50,
+        "Combo Multiplier": 50,
+        "Fever Multiplier": 50,
+        "Fever Fill Rate": 50,
+        "Fever Time": 50,
+        "Rush": 50,
+        "Flow": 50,
+        "Beat": 50,
+        "Vibe": 50,
+        "Chill": 50,
     }
-    
+
     # Warm up (Taichi JIT compilation)
     print("\n[WARMUP] Compiling Taichi kernels...")
     warmup_pop = [create_random_genome() for _ in range(10)]
@@ -116,32 +129,32 @@ def profile_batch_evaluation(population_size=500, num_iterations=3):
     batch_evaluate_genomes(warmup_pop, base_stats_fixed, cfg_data, calc_song, ref_arrays)
     warmup_time = time.perf_counter() - t0
     print(f"[WARMUP] First call (includes JIT): {warmup_time:.3f}s")
-    
+
     # Clear caches to simulate fresh generation
     GEM_SOLVER_CACHE.clear()
     SONG_TIMELINE_GRIDS.clear()
-    
+
     # Profile multiple iterations
     times = []
-    
+
     for i in range(num_iterations):
         # Generate fresh population each time (simulate new GA generation)
         population = [create_random_genome() for _ in range(population_size)]
-        
+
         # Clear gem solver cache (but NOT timeline grid - it's song-specific)
         GEM_SOLVER_CACHE.clear()
-        
+
         t0 = time.perf_counter()
         results = batch_evaluate_genomes(population, base_stats_fixed, cfg_data, calc_song, ref_arrays)
         elapsed = time.perf_counter() - t0
-        
+
         times.append(elapsed)
-        print(f"[Iteration {i+1}] {elapsed:.3f}s ({len(results)} results)")
-    
+        print(f"[Iteration {i + 1}] {elapsed:.3f}s ({len(results)} results)")
+
     avg_time = sum(times) / len(times)
     min_time = min(times)
     max_time = max(times)
-    
+
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
@@ -152,43 +165,46 @@ def profile_batch_evaluation(population_size=500, num_iterations=3):
     print(f"Max time:         {max_time:.3f}s")
     print(f"Time per genome:  {avg_time / population_size * 1000:.2f}ms")
     print()
-    
+
     # Now profile with more granularity
     print("=" * 60)
     print("DETAILED BREAKDOWN (instrumented run)")
     print("=" * 60)
-    
+
     profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc_song, ref_arrays)
 
 
 def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc_song, ref_arrays):
     """Profile individual phases of batch_evaluate_genomes."""
-    
+
     from gear_optimizer.solver.scoring import GEM_SOLVER_CACHE
     from gear_optimizer.solver.fever_timeline import get_song_timeline_grid, SONG_TIMELINE_GRIDS
     from gear_optimizer.core.utils import stats_signature, SKIP_ITEM_KEYS
     from gear_optimizer.core.constants import (
-        TOTAL_GEM_BUDGET, GEM_SCALE_NORMAL, GEM_SCALE_FEVER,
-        GEM_STAT_TO_ELEMENT_SCALE, ELEMENTAL_GEM_SCALE,
+        TOTAL_GEM_BUDGET,
+        GEM_SCALE_NORMAL,
+        GEM_SCALE_FEVER,
+        GEM_STAT_TO_ELEMENT_SCALE,
+        ELEMENTAL_GEM_SCALE,
     )
     from gear_optimizer.solver.taichi_gem_solver import solve_genomes_parallel
     import taichi as ti
-    
+
     population = [create_random_genome() for _ in range(population_size)]
     GEM_SOLVER_CACHE.clear()
     SONG_TIMELINE_GRIDS.clear()
-    
+
     sel_color = cfg_data["selected_color"]
     p_color = calc_song["metadata"].get("Primary Color", "")
     s_color = calc_song["metadata"].get("Secondary Color", "")
-    
+
     user_ft = cfg_data["user_ft"]
     user_ff = cfg_data["user_ff"]
     user_pp = cfg_data["user_pp"]
     user_cm = cfg_data["user_cm"]
     user_fm = cfg_data["user_fm"]
     static_elem_input = cfg_data["static_elem_input"]
-    
+
     # Phase 1: Aggregate stats
     t0 = time.perf_counter()
     all_stats = []
@@ -201,7 +217,7 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
         all_stats.append(current_stats)
     phase1_time = time.perf_counter() - t0
     print(f"Phase 1 (Stat aggregation):     {phase1_time:.4f}s")
-    
+
     # Phase 2: Deduplication
     t0 = time.perf_counter()
     unique_stats = []
@@ -211,13 +227,13 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
         unique_stats.append((sig, stats))
     phase2_time = time.perf_counter() - t0
     print(f"Phase 2 (Signature dedup):      {phase2_time:.4f}s")
-    
+
     # Phase 3: Timeline grid init + precompute + upload (done inside solve_genomes_parallel once/song)
     t0 = time.perf_counter()
     grid = get_song_timeline_grid(calc_song, ref_arrays)
     phase3a_time = time.perf_counter() - t0
     print(f"Phase 3a (Timeline grid init):  {phase3a_time:.4f}s")
-    
+
     # Build genome_stats_list (same shape as scoring.py GPU V2/V3 path expects)
     t0 = time.perf_counter()
     genome_stats_list = []
@@ -234,25 +250,32 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
         base_flow = stats.get("Flow", 0) - user_cm * GEM_STAT_TO_ELEMENT_SCALE
         base_chill = stats.get("Chill", 0) - user_pp * GEM_STAT_TO_ELEMENT_SCALE
 
-        if sel_color == "Beat": base_beat -= static_elem_input * ELEMENTAL_GEM_SCALE
-        elif sel_color == "Vibe": base_vibe -= static_elem_input * ELEMENTAL_GEM_SCALE
-        elif sel_color == "Rush": base_rush -= static_elem_input * ELEMENTAL_GEM_SCALE
-        elif sel_color == "Flow": base_flow -= static_elem_input * ELEMENTAL_GEM_SCALE
-        elif sel_color == "Chill": base_chill -= static_elem_input * ELEMENTAL_GEM_SCALE
+        if sel_color == "Beat":
+            base_beat -= static_elem_input * ELEMENTAL_GEM_SCALE
+        elif sel_color == "Vibe":
+            base_vibe -= static_elem_input * ELEMENTAL_GEM_SCALE
+        elif sel_color == "Rush":
+            base_rush -= static_elem_input * ELEMENTAL_GEM_SCALE
+        elif sel_color == "Flow":
+            base_flow -= static_elem_input * ELEMENTAL_GEM_SCALE
+        elif sel_color == "Chill":
+            base_chill -= static_elem_input * ELEMENTAL_GEM_SCALE
 
         color_vals = {"Beat": base_beat, "Vibe": base_vibe, "Rush": base_rush, "Flow": base_flow, "Chill": base_chill}
         base_p_val = color_vals.get(p_color, 0)
         base_s_val = color_vals.get(s_color, 0)
 
-        genome_stats_list.append({
-            "base_pp": int(base_pp),
-            "base_cm": int(base_cm),
-            "base_fm": int(base_fm),
-            "base_p_val": int(base_p_val),
-            "base_s_val": int(base_s_val),
-            "base_ft_stat": int(base_ft_stat),
-            "base_ff_stat": int(base_ff_stat),
-        })
+        genome_stats_list.append(
+            {
+                "base_pp": int(base_pp),
+                "base_cm": int(base_cm),
+                "base_fm": int(base_fm),
+                "base_p_val": int(base_p_val),
+                "base_s_val": int(base_s_val),
+                "base_ft_stat": int(base_ft_stat),
+                "base_ff_stat": int(base_ff_stat),
+            }
+        )
     phase3b_time = time.perf_counter() - t0
     print(f"Phase 3b (Build genome_stats_list): {phase3b_time:.4f}s")
 
@@ -279,9 +302,18 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
     _ = solve_genomes_parallel(
         genome_stats_list,
         grid,
-        is_p_ft, is_s_ft, is_p_ff, is_s_ff,
-        is_p_pp, is_s_pp, is_p_cm, is_s_cm,
-        is_p_fm, is_s_fm, is_p_ov, is_s_ov,
+        is_p_ft,
+        is_s_ft,
+        is_p_ff,
+        is_s_ff,
+        is_p_pp,
+        is_s_pp,
+        is_p_cm,
+        is_s_cm,
+        is_p_fm,
+        is_s_fm,
+        is_p_ov,
+        is_s_ov,
         ref_arrays,
         total_budget=TOTAL_GEM_BUDGET,
         gem_scale_fever=GEM_SCALE_FEVER,
@@ -292,8 +324,14 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
     if profile:
         print("  Internal breakdown:")
         for k in [
-            "grid_upload_s", "genome_upload_s", "combo_upload_s", "reset_best_s",
-            "kernel_combo_s", "kernel_finalize_s", "download_s", "total_s"
+            "grid_upload_s",
+            "genome_upload_s",
+            "combo_upload_s",
+            "reset_best_s",
+            "kernel_combo_s",
+            "kernel_finalize_s",
+            "download_s",
+            "total_s",
         ]:
             if k in profile:
                 print(f"    {k:18s}: {profile[k]:.6f}s")
@@ -306,7 +344,7 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
         ti.profiler.clear_kernel_profiler_info()
     except Exception:
         pass
-    
+
     print()
     print("CONCLUSION:")
     print("-" * 40)
@@ -321,6 +359,7 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
 
 
 if __name__ == "__main__":
+
     def _arg_int(flag: str, default: int) -> int:
         if flag in sys.argv:
             try:

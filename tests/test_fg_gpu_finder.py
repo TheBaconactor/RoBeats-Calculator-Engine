@@ -118,12 +118,3 @@ def test_fg_finder_gpu_tolerant_parity():
 
     # Tolerant: allow small drift
     assert abs(cpu_score - gpu_score) <= 5
-
-
-
-
-
-
-
-
-

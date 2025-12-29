@@ -300,9 +300,7 @@ def solve_coevolution_genetic_inflight(
                 for idx, slot in enumerate(slots):
                     curr_item = best_genome[idx]
                     current_name = (
-                        curr_item.get("Name")
-                        if isinstance(curr_item, dict)
-                        else str(curr_item) if curr_item else ""
+                        curr_item.get("Name") if isinstance(curr_item, dict) else str(curr_item) if curr_item else ""
                     )
                     for cand in local_gear_rank.get(slot, []):
                         if cand.get("Name") == current_name:
@@ -322,9 +320,7 @@ def solve_coevolution_genetic_inflight(
                 for idx in range(6, 9):
                     curr_item = best_genome[idx]
                     curr_name = (
-                        curr_item.get("Name")
-                        if isinstance(curr_item, dict)
-                        else str(curr_item) if curr_item else ""
+                        curr_item.get("Name") if isinstance(curr_item, dict) else str(curr_item) if curr_item else ""
                     )
                     for cand in local_mini_rank:
                         c_name = cand.get("Name")
@@ -396,9 +392,7 @@ def solve_coevolution_genetic_inflight(
                     curr = current_genome[idx]
                     curr_name = curr.get("Name") if isinstance(curr, dict) else ""
                     choices_by_idx[idx] = [
-                        cand
-                        for cand in local_gear_rank.get(slot, [])
-                        if cand.get("Name") != curr_name
+                        cand for cand in local_gear_rank.get(slot, []) if cand.get("Name") != curr_name
                     ]
 
                 swap_candidates = []
@@ -485,7 +479,9 @@ def solve_coevolution_genetic_inflight(
                         current_name = (
                             curr_item.get("Name")
                             if isinstance(curr_item, dict)
-                            else str(curr_item) if curr_item else ""
+                            else str(curr_item)
+                            if curr_item
+                            else ""
                         )
                         for cand in local_gear_rank.get(slot, []):
                             if cand.get("Name") == current_name:
@@ -507,7 +503,9 @@ def solve_coevolution_genetic_inflight(
                         curr_name = (
                             curr_item.get("Name")
                             if isinstance(curr_item, dict)
-                            else str(curr_item) if curr_item else ""
+                            else str(curr_item)
+                            if curr_item
+                            else ""
                         )
                         for cand in local_mini_rank:
                             c_name = cand.get("Name")
@@ -708,9 +706,7 @@ def solve_coevolution_genetic_inflight(
 
     # Soft non-regression guard: if GA regresses vs DB seed, fall back.
     ga_true_score = (
-        best_global_data.get("BaseScore", best_global_data.get("Score", 0))
-        if best_global_data
-        else best_global_score
+        best_global_data.get("BaseScore", best_global_data.get("Score", 0)) if best_global_data else best_global_score
     )
     if db_seed_score > ga_true_score and db_seed_genome:
         best_global_score = int(db_seed_score)

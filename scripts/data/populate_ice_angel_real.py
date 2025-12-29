@@ -1,4 +1,3 @@
-
 import sys
 import os
 import configparser
@@ -14,24 +13,25 @@ from gear_optimizer.core.constants import PATHS, TOTAL_ROWS
 from gear_optimizer.core.config import load_paths_cache
 from gear_optimizer.core.utils import cfg_to_dict
 
+
 def run_real_solver():
     # 1. Clear existing entries for Ice Angel (Easy)
     db_path = get_evolution_db_path()
-    init_db() # Ensure schema
+    init_db()  # Ensure schema
     conn = get_db_connection(db_path)
     song_name_target = "Ice Angel (Easy)"
-    
+
     print(f"Clearing old entries for '{song_name_target}'...")
     conn.execute("DELETE FROM loadouts WHERE song_name = ?", (song_name_target,))
     conn.execute("DELETE FROM songs WHERE name = ?", (song_name_target,))
     conn.commit()
     conn.close()
-    
+
     # 2. Setup Solver Environment
     cfg = configparser.ConfigParser()
     cfg.read("config.ini", encoding="utf-8-sig")
     paths = load_paths_cache()
-    
+
     # Load reference arrays
     stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
     stat_names = ["Perfect Points", "Combo Multiplier", "Fever Multiplier", "Fever Fill Rate", "Fever Time"]
@@ -46,12 +46,12 @@ def run_real_solver():
                 val = 0
             temp_list.append(val)
         ref_arrays[name] = np.array(temp_list, dtype=np.float64)
-    
+
     all_gears = load_all_gears_list(paths)
     all_minis = load_all_minis_list(paths)
     gears_by_name = {g["Name"]: g for g in all_gears}
     minis_by_name = {m["Name"]: m for m in all_minis}
-    
+
     # 3. Locate File
     song_file = r"Data\Easy\Ice Angel (Easy) by Yooh.txt"
     if not os.path.exists(song_file):
@@ -59,7 +59,7 @@ def run_real_solver():
         return
 
     # process_song_task may derive name from file path, so clear both possible variants.
-    
+
     conn = get_db_connection(db_path)
     conn.execute("DELETE FROM loadouts WHERE song_name = ?", ("Ice Angel (Easy) by Yooh",))
     conn.execute("DELETE FROM songs WHERE name = ?", ("Ice Angel (Easy) by Yooh",))
@@ -68,17 +68,17 @@ def run_real_solver():
 
     song_name = "Ice Angel (Easy) by Yooh"
     print(f"Profiling: {song_name}...")
-    
+
     cfg_dict = cfg_to_dict(cfg)
     # Ensure optimized settings for quick run but valid results
-    cfg_dict["IterationEngine"]["GA_SearchDepth"] = "10" 
-    cfg_dict["IterationEngine"]["MetaFinder"] = "true" # Enable FG batching
-    cfg_dict["IterationEngine"]["ForceGreatsFinder"] = "true" # Explicitly enable FG optimization
+    cfg_dict["IterationEngine"]["GA_SearchDepth"] = "10"
+    cfg_dict["IterationEngine"]["MetaFinder"] = "true"  # Enable FG batching
+    cfg_dict["IterationEngine"]["ForceGreatsFinder"] = "true"  # Explicitly enable FG optimization
     # Force Greats needs to be enabled? It defaults to TRUE usually.
-    
+
     args = (
         song_file,
-        song_name, # Second arg is song_name
+        song_name,  # Second arg is song_name
         "Easy",
         cfg_dict,
         paths,
@@ -87,16 +87,17 @@ def run_real_solver():
         all_minis,
         gears_by_name,
         minis_by_name,
-        True,   # use_evo_db=True (CRITICAL)
-        True,   # auto_buff
-        5,      # ga_depth
-        None,   # status_queue
-        1,      # parallel_workers
+        True,  # use_evo_db=True (CRITICAL)
+        True,  # auto_buff
+        5,  # ga_depth
+        None,  # status_queue
+        1,  # parallel_workers
     )
-    
+
     print("Running solver (this may take 10-20s)...")
     process_song_task(args)
     print("Done!")
+
 
 if __name__ == "__main__":
     run_real_solver()

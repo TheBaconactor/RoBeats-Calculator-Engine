@@ -10,6 +10,7 @@ Architecture:
     Preload Thread:          Load Song B → Load Song C → ...
                      ↑ No idle!
 """
+
 import threading
 import queue
 from typing import Optional
@@ -23,6 +24,7 @@ import numpy as np
 @dataclass
 class PreloadedSong:
     """Data for a preloaded song ready for GPU processing."""
+
     song_name: str
     file_path: str
     difficulty: str
@@ -42,6 +44,7 @@ class PreloadedSong:
 @dataclass
 class SongLoadRequest:
     """Request to preload a song."""
+
     song_name: str
     file_path: str
     difficulty: str
@@ -67,27 +70,27 @@ class SongLoadRequest:
 class SongPreloader:
     """
     Async song preloader for GPU pipeline.
-    
+
     Loads next song's data in a background thread while the GPU processes
     the current song. Eliminates idle time between song transitions.
-    
+
     Usage:
         preloader = SongPreloader()
         preloader.start()
-        
+
         # Queue songs to preload
         for song_args in song_queue:
             preloader.queue_song(song_args)
-        
+
         # Get next preloaded song (blocks until ready)
         song = preloader.get_next()
-        
+
         preloader.stop()
     """
-    
+
     _instance = None
     _lock = threading.Lock()
-    
+
     def __new__(cls):
         """Singleton pattern."""
         if cls._instance is None:
@@ -96,32 +99,32 @@ class SongPreloader:
                     cls._instance = super().__new__(cls)
                     cls._instance._initialized = False
         return cls._instance
-    
+
     def __init__(self, max_preload: int = 2):
         """
         Initialize preloader.
-        
+
         Args:
             max_preload: Maximum songs to preload ahead (default: 2)
         """
         if self._initialized:
             return
-        
+
         self._request_queue = queue.PriorityQueue()
         self._ready_queue = queue.Queue(maxsize=max_preload)
         self._preload_thread = None
         self._running = False
         self._initialized = True
-        
+
         # Stats
         self._songs_preloaded = 0
         self._total_preload_time_ms = 0
-    
+
     def start(self):
         """Start the preloader thread."""
         if self._running:
             return
-        
+
         self._running = True
         self._preload_thread = threading.Thread(
             target=self._preload_loop,
@@ -130,34 +133,34 @@ class SongPreloader:
         )
         self._preload_thread.start()
         print("[Song Preloader] Started")
-    
+
     def stop(self):
         """Stop the preloader thread."""
         if not self._running:
             return
-        
+
         self._running = False
         self._request_queue.put((999, None))  # Poison pill
         if self._preload_thread:
             self._preload_thread.join(timeout=5.0)
-        
+
         avg_time = self._total_preload_time_ms / max(1, self._songs_preloaded)
         print(f"[Song Preloader] Stopped. Preloaded {self._songs_preloaded} songs, avg {avg_time:.1f}ms each")
-    
+
     def queue_song(self, request: SongLoadRequest):
         """Queue a song for preloading."""
         if not self._running:
             self.start()
-        
+
         self._request_queue.put((request.priority, request))
-    
+
     def get_next(self, timeout: float = 30.0) -> Optional[PreloadedSong]:
         """
         Get the next preloaded song, blocking until ready.
-        
+
         Args:
             timeout: Max seconds to wait
-            
+
         Returns:
             PreloadedSong or None if timeout
         """
@@ -165,44 +168,44 @@ class SongPreloader:
             return self._ready_queue.get(timeout=timeout)
         except queue.Empty:
             return None
-    
+
     def get_if_ready(self) -> Optional[PreloadedSong]:
         """Get next preloaded song if available, non-blocking."""
         try:
             return self._ready_queue.get_nowait()
         except queue.Empty:
             return None
-    
+
     def _preload_loop(self):
         """Background thread loop for preloading songs."""
         while self._running:
             try:
                 priority, request = self._request_queue.get(timeout=0.1)
-                
+
                 if request is None:  # Poison pill
                     break
-                
+
                 # Load the song
                 start = time.perf_counter()
                 preloaded = self._load_song(request)
                 elapsed_ms = (time.perf_counter() - start) * 1000
-                
+
                 preloaded.preload_time_ms = elapsed_ms
                 self._songs_preloaded += 1
                 self._total_preload_time_ms += elapsed_ms
-                
+
                 # Put in ready queue (blocks if full)
                 self._ready_queue.put(preloaded)
-                
+
             except queue.Empty:
                 continue
             except Exception as e:
                 print(f"[Song Preloader] Error: {e}")
-    
+
     def _load_song(self, req: SongLoadRequest) -> PreloadedSong:
         """
         Load song data from file.
-        
+
         This does the CPU-intensive work of parsing song file and
         preparing data structures for the GA.
         """
@@ -223,7 +226,11 @@ class SongPreloader:
 
             timestamps_np = np.asarray(timestamps, dtype=np.float64)
             note_types = song_data.get("note_types") or []
-            note_types_np = np.asarray(note_types, dtype=np.int16) if note_types else np.ones(timestamps_np.shape[0], dtype=np.int16)
+            note_types_np = (
+                np.asarray(note_types, dtype=np.int16)
+                if note_types
+                else np.ones(timestamps_np.shape[0], dtype=np.int16)
+            )
             if note_types_np.shape[0] != timestamps_np.shape[0]:
                 note_types_np = np.ones(timestamps_np.shape[0], dtype=np.int16)
 
@@ -282,7 +289,7 @@ class SongPreloader:
 
             # Build cfg_data for evaluator
             cfg_data = self._build_cfg_data(req.cfg_dict, calc_song)
-            
+
             return PreloadedSong(
                 song_name=req.song_name,
                 file_path=req.file_path,
@@ -296,7 +303,7 @@ class SongPreloader:
                 minis_by_name=req.minis_by_name,
                 cfg_data=cfg_data,
             )
-            
+
         except Exception as e:
             return PreloadedSong(
                 song_name=req.song_name,
@@ -317,13 +324,13 @@ class SongPreloader:
         """Build cfg_data dictionary for evaluator."""
         metadata = calc_song.get("metadata", {})
         primary = metadata.get("Primary Color", "Rush")
-        
+
         # Determine selected color based on config or heuristics
         selected_color = primary  # Default to primary
-        
+
         s = cfg_dict.get("UserInputStatsGems", {})
         elem = cfg_dict.get("ElementalGems", {})
-        
+
         return {
             "selected_color": selected_color,
             "use_gpu": cfg_dict.get("IterationEngine", {}).get("GPU_Mode", False),

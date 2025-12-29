@@ -11,6 +11,7 @@ Key optimizations:
 - Signature deduplication: Evaluate unique stat combinations only once
 - IPC routing: Route GPU calls through executor for parallel song processing
 """
+
 from dataclasses import dataclass
 from typing import Optional, Callable
 
@@ -656,19 +657,27 @@ def batch_evaluate_genomes(
                 base_chill -= static_elem_input * ELEMENTAL_GEM_SCALE
 
             # Select P/S values from deducted stats
-            color_vals = {"Beat": base_beat, "Vibe": base_vibe, "Rush": base_rush, "Flow": base_flow, "Chill": base_chill}
+            color_vals = {
+                "Beat": base_beat,
+                "Vibe": base_vibe,
+                "Rush": base_rush,
+                "Flow": base_flow,
+                "Chill": base_chill,
+            }
             base_p_val = color_vals.get(p_color, 0)
             base_s_val = color_vals.get(s_color, 0)
 
-            genome_stats_list.append({
-                "base_pp": int(base_pp),
-                "base_cm": int(base_cm),
-                "base_fm": int(base_fm),
-                "base_p_val": int(base_p_val),
-                "base_s_val": int(base_s_val),
-                "base_ft_stat": int(base_ft_stat),
-                "base_ff_stat": int(base_ff_stat),
-            })
+            genome_stats_list.append(
+                {
+                    "base_pp": int(base_pp),
+                    "base_cm": int(base_cm),
+                    "base_fm": int(base_fm),
+                    "base_p_val": int(base_p_val),
+                    "base_s_val": int(base_s_val),
+                    "base_ft_stat": int(base_ft_stat),
+                    "base_ff_stat": int(base_ff_stat),
+                }
+            )
 
         # Color flags (shared across all genomes for the same song)
         is_p_pp = 1 if "Chill" == p_color else 0
@@ -697,9 +706,18 @@ def batch_evaluate_genomes(
                 gpu_results = submit_gpu_solve_genomes(
                     genome_stats_list,
                     calc_song,
-                    is_p_ft, is_s_ft, is_p_ff, is_s_ff,
-                    is_p_pp, is_s_pp, is_p_cm, is_s_cm,
-                    is_p_fm, is_s_fm, is_p_ov, is_s_ov,
+                    is_p_ft,
+                    is_s_ft,
+                    is_p_ff,
+                    is_s_ff,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
                     ref_arrays,
                     total_budget=TOTAL_GEM_BUDGET,
                     gem_scale_fever=GEM_SCALE_FEVER,
@@ -713,17 +731,16 @@ def batch_evaluate_genomes(
                     ga_upload_item_stats,
                     ga_upload_base_fixed_stats,
                 )
-                
+
                 # Build representative genome list for unique stat signatures
                 # unique_members[i][0] = first genome index with this signature
                 representative_genomes = [
-                    uncached_genomes[unique_members[unique_idx][0]]
-                    for unique_idx in range(len(unique_stats))
+                    uncached_genomes[unique_members[unique_idx][0]] for unique_idx in range(len(unique_stats))
                 ]
-                
+
                 # Encode representatives using registry
                 population_indices = registry.encode_population(representative_genomes)
-                
+
                 # Ensure item_stats and base_fixed_stats are uploaded (cached)
                 gpu_arrays = registry.to_gpu_arrays()
                 ga_upload_item_stats(
@@ -731,36 +748,48 @@ def batch_evaluate_genomes(
                     gpu_arrays["slot_start"],
                     gpu_arrays["slot_count"],
                 )
-                
+
                 # Build base_fixed_stats with user gem adjustments
-                base_stats_arr = np.array([
-                    base_stats_fixed.get("Perfect Points", 0) - user_pp * GEM_SCALE_NORMAL,
-                    base_stats_fixed.get("Combo Multiplier", 0) - user_cm * GEM_SCALE_NORMAL,
-                    base_stats_fixed.get("Fever Multiplier", 0) - user_fm * GEM_SCALE_FEVER,
-                    base_stats_fixed.get("Fever Time", 0) - user_ft * GEM_SCALE_FEVER,
-                    base_stats_fixed.get("Fever Fill Rate", 0) - user_ff * GEM_SCALE_FEVER,
-                    base_stats_fixed.get("Beat", 0) - user_ft * GEM_STAT_TO_ELEMENT_SCALE,
-                    base_stats_fixed.get("Vibe", 0) - user_ff * GEM_STAT_TO_ELEMENT_SCALE,
-                    base_stats_fixed.get("Rush", 0) - user_fm * GEM_STAT_TO_ELEMENT_SCALE,
-                    base_stats_fixed.get("Flow", 0) - user_cm * GEM_STAT_TO_ELEMENT_SCALE,
-                    base_stats_fixed.get("Chill", 0) - user_pp * GEM_STAT_TO_ELEMENT_SCALE,
-                ], dtype=np.int32)
-                
+                base_stats_arr = np.array(
+                    [
+                        base_stats_fixed.get("Perfect Points", 0) - user_pp * GEM_SCALE_NORMAL,
+                        base_stats_fixed.get("Combo Multiplier", 0) - user_cm * GEM_SCALE_NORMAL,
+                        base_stats_fixed.get("Fever Multiplier", 0) - user_fm * GEM_SCALE_FEVER,
+                        base_stats_fixed.get("Fever Time", 0) - user_ft * GEM_SCALE_FEVER,
+                        base_stats_fixed.get("Fever Fill Rate", 0) - user_ff * GEM_SCALE_FEVER,
+                        base_stats_fixed.get("Beat", 0) - user_ft * GEM_STAT_TO_ELEMENT_SCALE,
+                        base_stats_fixed.get("Vibe", 0) - user_ff * GEM_STAT_TO_ELEMENT_SCALE,
+                        base_stats_fixed.get("Rush", 0) - user_fm * GEM_STAT_TO_ELEMENT_SCALE,
+                        base_stats_fixed.get("Flow", 0) - user_cm * GEM_STAT_TO_ELEMENT_SCALE,
+                        base_stats_fixed.get("Chill", 0) - user_pp * GEM_STAT_TO_ELEMENT_SCALE,
+                    ],
+                    dtype=np.int32,
+                )
+
                 if static_elem_input and sel_color:
                     color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
                     idx = color_to_idx.get(sel_color)
                     if idx is not None:
                         base_stats_arr[idx] -= static_elem_input * ELEMENTAL_GEM_SCALE
-                
+
                 ga_upload_base_fixed_stats(base_stats_arr)
-                
+
                 with _GPU_LOCK:
                     gpu_results = solve_genomes_from_registry(
                         population_indices,
                         grid,
-                        is_p_ft, is_s_ft, is_p_ff, is_s_ff,
-                        is_p_pp, is_s_pp, is_p_cm, is_s_cm,
-                        is_p_fm, is_s_fm, is_p_ov, is_s_ov,
+                        is_p_ft,
+                        is_s_ft,
+                        is_p_ff,
+                        is_s_ff,
+                        is_p_pp,
+                        is_s_pp,
+                        is_p_cm,
+                        is_s_cm,
+                        is_p_fm,
+                        is_s_fm,
+                        is_p_ov,
+                        is_s_ov,
                         ref_arrays,
                         total_budget=TOTAL_GEM_BUDGET,
                         gem_scale_fever=GEM_SCALE_FEVER,
@@ -771,9 +800,18 @@ def batch_evaluate_genomes(
                     gpu_results = solve_genomes_parallel(
                         genome_stats_list,
                         grid,  # Timeline grid - uploaded once
-                        is_p_ft, is_s_ft, is_p_ff, is_s_ff,
-                        is_p_pp, is_s_pp, is_p_cm, is_s_cm,
-                        is_p_fm, is_s_fm, is_p_ov, is_s_ov,
+                        is_p_ft,
+                        is_s_ft,
+                        is_p_ff,
+                        is_s_ff,
+                        is_p_pp,
+                        is_s_pp,
+                        is_p_cm,
+                        is_s_cm,
+                        is_p_fm,
+                        is_s_fm,
+                        is_p_ov,
+                        is_s_ov,
                         ref_arrays,
                         total_budget=TOTAL_GEM_BUDGET,
                         gem_scale_fever=GEM_SCALE_FEVER,
@@ -795,8 +833,12 @@ def batch_evaluate_genomes(
             if gpu_results is None or unique_idx >= len(gpu_results):
                 # CPU fallback for this signature (or entire GPU path failed).
                 res = solve_best_fever_combination(
-                    None, rep_stats, calc_song, ref_arrays,
-                    silent=True, override_cfg=cfg_data,
+                    None,
+                    rep_stats,
+                    calc_song,
+                    ref_arrays,
+                    silent=True,
+                    override_cfg=cfg_data,
                 )
                 GEM_SOLVER_CACHE[sig] = res
                 members = unique_members[unique_idx] if unique_idx < len(unique_members) else []
@@ -867,8 +909,12 @@ def batch_evaluate_genomes(
             res = GEM_SOLVER_CACHE.get(sig)
             if res is None:
                 res = solve_best_fever_combination(
-                    None, stats, calc_song, ref_arrays,
-                    silent=True, override_cfg=cfg_data,
+                    None,
+                    stats,
+                    calc_song,
+                    ref_arrays,
+                    silent=True,
+                    override_cfg=cfg_data,
                 )
                 GEM_SOLVER_CACHE[sig] = res
             sig_to_result[i] = res

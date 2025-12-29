@@ -1,6 +1,7 @@
 """
 Data models and utility classes for the gear optimizer.
 """
+
 import logging
 from dataclasses import dataclass
 
@@ -65,6 +66,7 @@ class WarnOnce:
 @dataclass
 class GASettings:
     """Configuration settings for the Genetic Algorithm."""
+
     db_seed_prob: float
     fixed_seed_copies: int
     memetic_elites: int
@@ -97,8 +99,8 @@ class GASettings:
                 True,
                 "modern",
                 True,  # allow_3_swap default
-                40,   # gear_rank_max default
-                40,   # mini_rank_max default
+                40,  # gear_rank_max default
+                40,  # mini_rank_max default
             )
 
         def get_option(option, fallback):
@@ -141,4 +143,3 @@ class GASettings:
             gear_rank_max,
             mini_rank_max,
         )
-

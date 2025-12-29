@@ -10,6 +10,7 @@ Coordinates between:
 - Compute Layer (scoring_core.py): Score calculation, gem optimization
 - GPU Layer (taichi_gem_solver): GPU-accelerated batch optimization
 """
+
 import numpy as np
 from math import floor
 
@@ -104,16 +105,18 @@ def precompute_fever_timelines(
             # O(1) lookup from grid (lazy-computed if first access)
             timeline = grid.get_timeline(ft_idx, ff_idx)
 
-            results.append({
-                "ft_gems": ft,
-                "ff_gems": ff,
-                "ft_stat_val": stat_ft_val,
-                "ff_stat_val": stat_ff_val,
-                "ft_factor": ft_factor,
-                "ff_factor": ff_factor,
-                "timeline": timeline,
-                "remaining_budget": budget - ft - ff
-            })
+            results.append(
+                {
+                    "ft_gems": ft,
+                    "ff_gems": ff,
+                    "ft_stat_val": stat_ft_val,
+                    "ff_stat_val": stat_ff_val,
+                    "ft_factor": ft_factor,
+                    "ff_factor": ff_factor,
+                    "timeline": timeline,
+                    "remaining_budget": budget - ft - ff,
+                }
+            )
 
     return results
 
@@ -160,17 +163,11 @@ def solve_best_fever_combination(
         user_ft = safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0))
         user_ff = safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0))
         user_pp = safe_int(cfg.get("UserInputStatsGems", "perfect_points", fallback=0))
-        user_cm = safe_int(
-            cfg.get("UserInputStatsGems", "combo_multiplier", fallback=0)
-        )
-        user_fm = safe_int(
-            cfg.get("UserInputStatsGems", "fever_multiplier", fallback=0)
-        )
+        user_cm = safe_int(cfg.get("UserInputStatsGems", "combo_multiplier", fallback=0))
+        user_fm = safe_int(cfg.get("UserInputStatsGems", "fever_multiplier", fallback=0))
         selected_color = calc_song["metadata"].get("Primary Color", "Rush")
-        static_elem_input = safe_int(
-            cfg.get("ElementalGems", selected_color, fallback=0)
-        )
-        use_gpu = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False) if hasattr(cfg, 'getboolean') else False
+        static_elem_input = safe_int(cfg.get("ElementalGems", selected_color, fallback=0))
+        use_gpu = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False) if hasattr(cfg, "getboolean") else False
 
     base_stats = initial_stats.copy()
 
@@ -312,21 +309,25 @@ def solve_best_fever_combination(
                 count_body_fever = timeline[1]
                 count_body_normal = timeline[2]
 
-                batch_input.append({
-                    "budget": current_budget,
-                    "fever_mask_head": fever_mask_head,
-                    "count_body_fever": count_body_fever,
-                    "count_body_normal": count_body_normal,
-                    "ft_gems": ft,
-                    "ff_gems": ff,
-                })
+                batch_input.append(
+                    {
+                        "budget": current_budget,
+                        "fever_mask_head": fever_mask_head,
+                        "count_body_fever": count_body_fever,
+                        "count_body_normal": count_body_normal,
+                        "ft_gems": ft,
+                        "ff_gems": ff,
+                    }
+                )
 
             # SINGLE GPU kernel launch for ALL timelines - GPU-resident!
             # Direct call with lock for minimal overhead (scheduler queue was too slow)
             with _GPU_LOCK:
                 batch_results = batch_solver(
                     batch_input,
-                    cur_pp, cur_cm, cur_fm,
+                    cur_pp,
+                    cur_cm,
+                    cur_fm,
                     base_p_val=base_p_val,
                     base_s_val=base_s_val,
                     is_p_ft=is_p_ft,
@@ -420,9 +421,7 @@ def solve_best_fever_combination(
                 MAX_STAT_INDEX,
             )
 
-            base = (final_p_val * 2) + final_s_val + lookup_reference_py(
-                final_pp, ref_pp, TOTAL_ROWS
-            )
+            base = (final_p_val * 2) + final_s_val + lookup_reference_py(final_pp, ref_pp, TOTAL_ROWS)
             c_mul = lookup_reference_py(final_cm, ref_cm, TOTAL_ROWS)
             f_mul = lookup_reference_py(final_fm, ref_fm, TOTAL_ROWS)
             total_score = fast_calculate_score(
@@ -453,12 +452,8 @@ def solve_best_fever_combination(
         final_stats["Chill"] += g_pp * GEM_STAT_TO_ELEMENT_SCALE
         final_stats["Flow"] += g_cm * GEM_STAT_TO_ELEMENT_SCALE
         final_stats["Rush"] += g_fm * GEM_STAT_TO_ELEMENT_SCALE
-        final_stats["Beat"] = base_stats.get("Beat", 0) + (
-            ft * GEM_STAT_TO_ELEMENT_SCALE
-        )
-        final_stats["Vibe"] = base_stats.get("Vibe", 0) + (
-            ff * GEM_STAT_TO_ELEMENT_SCALE
-        )
+        final_stats["Beat"] = base_stats.get("Beat", 0) + (ft * GEM_STAT_TO_ELEMENT_SCALE)
+        final_stats["Vibe"] = base_stats.get("Vibe", 0) + (ff * GEM_STAT_TO_ELEMENT_SCALE)
 
         if selected_color in final_stats:
             final_stats[selected_color] += g_ov * ELEMENTAL_GEM_SCALE

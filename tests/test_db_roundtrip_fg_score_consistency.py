@@ -143,7 +143,7 @@ def test_db_roundtrip_force_greats_manual_score_is_self_consistent():
 
     stored_details = json.loads(row["details_json"])
     stored_force = json.loads(row["force_details_json"])
-    cfg = ((stored_force.get("ForceGreats") or {}).get("config") or {})
+    cfg = (stored_force.get("ForceGreats") or {}).get("config") or {}
     counts = _config_dict_to_counts(cfg)
     assert counts == forced_counts
 
@@ -151,4 +151,3 @@ def test_db_roundtrip_force_greats_manual_score_is_self_consistent():
     fg_eval_roundtrip = evaluate_force_greats(stored_stats, calc_song, ref_arrays, counts)
     assert fg_eval_roundtrip is not None
     assert int(fg_eval_roundtrip["final_score"]) == fg_score
-

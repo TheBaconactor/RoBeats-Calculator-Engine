@@ -36,11 +36,11 @@ def main():
     cfg_dict = cfg_to_dict(cfg)
     base_stats = build_base_stats_from_config(cfg_dict)
     print(f"Base Stats (Config + Team Buffs): {base_stats}")
-    
+
     db_path = get_evolution_db_path()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
-    
+
     print("Fetching entries...")
     # Find entries to update
     cur = conn.execute("""
@@ -48,15 +48,15 @@ def main():
         FROM loadouts
     """)
     rows = cur.fetchall()
-    
+
     updated = 0
-    
+
     print(f"Processing {len(rows)} entries... this may take a moment.")
-    
+
     for i, row in enumerate(rows):
         if i % 10000 == 0:
             print(f"Processed {i}/{len(rows)}...")
-            
+
         details = json.loads(row["details_json"]) if row["details_json"] else {}
         gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
         mini_names = json.loads(row["minis_json"]) if row["minis_json"] else []
@@ -69,24 +69,21 @@ def main():
 
         # Compute Stats (Unconditionally recompute to ensure Team Buffs are added)
         computed_stats = compute_full_stats(
-            gear_names, mini_names, gem_counts, selected_element,
-            gears_by_name, minis_by_name, base_stats
+            gear_names, mini_names, gem_counts, selected_element, gears_by_name, minis_by_name, base_stats
         )
-        
+
         # Update details with computed Stats
         details["Stats"] = computed_stats
-        
+
         # Write back
-        conn.execute(
-            "UPDATE loadouts SET details_json = ? WHERE rowid = ?",
-            (json.dumps(details), row["rowid"])
-        )
+        conn.execute("UPDATE loadouts SET details_json = ? WHERE rowid = ?", (json.dumps(details), row["rowid"]))
         updated += 1
-    
+
     conn.commit()
     conn.close()
-    
+
     print(f"Done! Updated {updated} entries.")
+
 
 if __name__ == "__main__":
     main()

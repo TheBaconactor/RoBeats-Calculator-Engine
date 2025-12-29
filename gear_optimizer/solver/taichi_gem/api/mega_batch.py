@@ -4,6 +4,7 @@ API Mega Batch - Multi-genome batch population solver.
 This module provides the highest-performance mega-batch solver:
 - mega_batch_solve_population: Process all work items from ALL genomes in one kernel
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -22,16 +23,23 @@ kernels = get_kernels()
 # MEGA-BATCH POPULATION SOLVER
 # ============================================================================
 
+
 def mega_batch_solve_population(
     work_items: list,
     genome_ids: np.ndarray,
     genome_stats: dict,  # {genome_idx: (base_pp, base_cm, base_fm, base_p_val, base_s_val)}
-    is_p_ft: int, is_s_ft: int,
-    is_p_ff: int, is_s_ff: int,
-    is_p_pp: int, is_s_pp: int,
-    is_p_cm: int, is_s_cm: int,
-    is_p_fm: int, is_s_fm: int,
-    is_p_ov: int, is_s_ov: int,
+    is_p_ft: int,
+    is_s_ft: int,
+    is_p_ff: int,
+    is_s_ff: int,
+    is_p_pp: int,
+    is_s_pp: int,
+    is_p_cm: int,
+    is_s_cm: int,
+    is_p_fm: int,
+    is_s_fm: int,
+    is_p_ov: int,
+    is_s_ov: int,
     ref_arrays: dict,
 ) -> dict:
     """
@@ -70,10 +78,21 @@ def mega_batch_solve_population(
             chunk_items = work_items[chunk_start:chunk_end]
             chunk_genome_ids = genome_ids[chunk_start:chunk_end]
             chunk_results = mega_batch_solve_population(
-                chunk_items, chunk_genome_ids, genome_stats,
-                is_p_ft, is_s_ft, is_p_ff, is_s_ff,
-                is_p_pp, is_s_pp, is_p_cm, is_s_cm,
-                is_p_fm, is_s_fm, is_p_ov, is_s_ov,
+                chunk_items,
+                chunk_genome_ids,
+                genome_stats,
+                is_p_ft,
+                is_s_ft,
+                is_p_ff,
+                is_s_ff,
+                is_p_pp,
+                is_s_pp,
+                is_p_cm,
+                is_s_cm,
+                is_p_fm,
+                is_s_fm,
+                is_p_ov,
+                is_s_ov,
                 ref_arrays,
             )
             # Merge results (keep best per genome)
@@ -130,9 +149,18 @@ def mega_batch_solve_population(
     # Launch kernel (uses genome lookup for base stats)
     kernels.solve_batch_kernel(
         n,
-        is_p_ft, is_s_ft, is_p_ff, is_s_ff,
-        is_p_pp, is_s_pp, is_p_cm, is_s_cm,
-        is_p_fm, is_s_fm, is_p_ov, is_s_ov,
+        is_p_ft,
+        is_s_ft,
+        is_p_ff,
+        is_s_ff,
+        is_p_pp,
+        is_s_pp,
+        is_p_cm,
+        is_s_cm,
+        is_p_fm,
+        is_s_fm,
+        is_p_ov,
+        is_s_ov,
     )
     # NOTE: ti.sync() removed - to_numpy() internally syncs
 
@@ -156,10 +184,17 @@ def mega_batch_solve_population(
 
             best_per_genome[genome_idx] = (
                 score,
-                int(row[1]), int(row[2]), int(row[3]),
-                int(row[5]), int(row[6]),  # p, s
-                int(row[1]), int(row[2]), int(row[3]), int(row[4]),  # g_pp, g_cm, g_fm, g_ov
-                int(ft_in), int(ff_in)  # Added FT/FF specific to this result
+                int(row[1]),
+                int(row[2]),
+                int(row[3]),
+                int(row[5]),
+                int(row[6]),  # p, s
+                int(row[1]),
+                int(row[2]),
+                int(row[3]),
+                int(row[4]),  # g_pp, g_cm, g_fm, g_ov
+                int(ft_in),
+                int(ff_in),  # Added FT/FF specific to this result
             )
 
     return best_per_genome

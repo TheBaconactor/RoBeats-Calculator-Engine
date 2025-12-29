@@ -11,6 +11,7 @@ This module contains:
 IMPORTANT: Do NOT import fields directly at module load time.
 The field variables below are placeholders that get populated by bind_fields().
 """
+
 import taichi as ti
 
 from ..runtime import get_block_dim
@@ -43,7 +44,7 @@ grid_fever_activations = None  # (MAX_SONG_SLOTS, 161, 161) i8 - fever activatio
 # Song data for timeline computation
 song_timestamps = None  # (MAX_SONG_NOTES,) f32
 song_total_notes = None  # scalar i32
-song_long_notes = None   # scalar i32
+song_long_notes = None  # scalar i32
 song_last_note_time = None  # scalar f32
 
 # Work item data
@@ -68,8 +69,8 @@ ga_scores = None
 ga_rng_state = None
 ga_parent_a = None
 ga_parent_b = None
-slot_start = None    # (MAX_SLOTS,) per-slot first valid item_id
-slot_count = None    # (MAX_SLOTS,) per-slot item count
+slot_start = None  # (MAX_SLOTS,) per-slot first valid item_id
+slot_count = None  # (MAX_SLOTS,) per-slot item count
 
 # Results
 result_stats = None
@@ -81,27 +82,28 @@ genome_result_stats = None
 genome_hint_allocation = None  # [pp_gems, cm_gems, fm_gems, ov_gems] - warm-start hints
 chunk_best_key = None  # u64 packed key per genome for safe reduction
 chunk_best_score = None  # (MAX_GENOMES,) i32 best score per genome (Metal)
-chunk_best_idx = None    # (MAX_GENOMES,) i32 work item index (Metal)
-ftff_combo_ft = None   # (MAX_FTFF_COMBOS,) i32
-ftff_combo_ff = None   # (MAX_FTFF_COMBOS,) i32
+chunk_best_idx = None  # (MAX_GENOMES,) i32 work item index (Metal)
+ftff_combo_ft = None  # (MAX_FTFF_COMBOS,) i32
+ftff_combo_ff = None  # (MAX_FTFF_COMBOS,) i32
 chunk_best_results = None  # (MAX_GENOMES, 4) i32 - cached [pp, cm, fm, ov] from winning combo
 
 # GPU-side global best tracking (avoids per-generation CPU downloads)
-ga_global_best_score = None   # (1,) i32 - best score across all generations
+ga_global_best_score = None  # (1,) i32 - best score across all generations
 ga_global_best_genome = None  # (MAX_SLOTS,) i32 - item IDs of best genome
-ga_global_best_results = None # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for best genome
-ga_runs_payload_packed = None # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17) i32 - packed snapshots per run
+ga_global_best_results = None  # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for best genome
+ga_runs_payload_packed = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17) i32 - packed snapshots per run
 ga_run_payload_packed = None  # (MAX_GENOMES+1, 17) i32 - packed snapshot payload for one-shot downloads
 
 # GPU-side island elitism (avoids per-generation score downloads)
-island_boundaries = None       # (MAX_ISLANDS+1,) i32 - island start/end indices
-island_elite_indices = None    # (MAX_GENOMES,) i32 - output: elite genome indices
-island_elite_count = None      # (1,) i32 - output: total elites found
+island_boundaries = None  # (MAX_ISLANDS+1,) i32 - island start/end indices
+island_elite_indices = None  # (MAX_GENOMES,) i32 - output: elite genome indices
+island_elite_count = None  # (1,) i32 - output: total elites found
 
 
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
+
 
 @ti.func
 def _clamp_stat_idx(value: ti.i32) -> ti.i32:
@@ -211,10 +213,9 @@ def _xorshift32(x: ti.u32) -> ti.u32:
 # SEARCH HELPERS
 # ============================================================================
 
+
 @ti.func
-def binary_search_left_from(
-    timestamps: ti.template(), n: ti.i32, target: ti.f32, lo: ti.i32
-) -> ti.i32:
+def binary_search_left_from(timestamps: ti.template(), n: ti.i32, target: ti.f32, lo: ti.i32) -> ti.i32:
     """
     Binary search for leftmost index where timestamps[i] >= target, starting at `lo`.
 
@@ -260,6 +261,7 @@ def binary_search_left(timestamps: ti.template(), n: ti.i32, target: ti.f32) -> 
 # ============================================================================
 # SCORING HELPERS
 # ============================================================================
+
 
 @ti.func
 def _calc_body_score(
@@ -345,27 +347,41 @@ def _calc_head_score_bits(
     for i in range(n0):
         ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
         is_fever = (m0 >> ti.u32(i)) & ti.u32(1)
-        head_score += ti.cast(ti.floor(ramp_val * fever_mul), ti.i32) if is_fever != 0 else ti.cast(ti.floor(ramp_val), ti.i32)
+        head_score += (
+            ti.cast(ti.floor(ramp_val * fever_mul), ti.i32) if is_fever != 0 else ti.cast(ti.floor(ramp_val), ti.i32)
+        )
 
     if head_len > 32:
         n1 = ti.min(head_len, 64)
         for i in range(32, n1):
             ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
             is_fever = (m1 >> ti.u32(i - 32)) & ti.u32(1)
-            head_score += ti.cast(ti.floor(ramp_val * fever_mul), ti.i32) if is_fever != 0 else ti.cast(ti.floor(ramp_val), ti.i32)
+            head_score += (
+                ti.cast(ti.floor(ramp_val * fever_mul), ti.i32)
+                if is_fever != 0
+                else ti.cast(ti.floor(ramp_val), ti.i32)
+            )
 
     if head_len > 64:
         n2 = ti.min(head_len, 96)
         for i in range(64, n2):
             ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
             is_fever = (m2 >> ti.u32(i - 64)) & ti.u32(1)
-            head_score += ti.cast(ti.floor(ramp_val * fever_mul), ti.i32) if is_fever != 0 else ti.cast(ti.floor(ramp_val), ti.i32)
+            head_score += (
+                ti.cast(ti.floor(ramp_val * fever_mul), ti.i32)
+                if is_fever != 0
+                else ti.cast(ti.floor(ramp_val), ti.i32)
+            )
 
     if head_len > 96:
         for i in range(96, head_len):
             ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
             is_fever = (m3 >> ti.u32(i - 96)) & ti.u32(1)
-            head_score += ti.cast(ti.floor(ramp_val * fever_mul), ti.i32) if is_fever != 0 else ti.cast(ti.floor(ramp_val), ti.i32)
+            head_score += (
+                ti.cast(ti.floor(ramp_val * fever_mul), ti.i32)
+                if is_fever != 0
+                else ti.cast(ti.floor(ramp_val), ti.i32)
+            )
     return ti.cast(head_score, ti.f32)
 
 
@@ -401,9 +417,7 @@ def calc_score_with_grid_bits(
     Returns:
         Total score as int32
     """
-    body_score = _calc_body_score(
-        base_value, combo_mul, fever_mul, count_fever, count_normal
-    )
+    body_score = _calc_body_score(base_value, combo_mul, fever_mul, count_fever, count_normal)
     factor = _calc_head_factor(base_value, combo_mul)
     head_score = _calc_head_score_bits(base_value, factor, fever_mul, m0, m1, m2, m3, head_len)
     # Cast each component to i32 first, then add as integers for exact result

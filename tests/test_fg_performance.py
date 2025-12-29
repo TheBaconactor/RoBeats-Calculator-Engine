@@ -1,4 +1,3 @@
-
 import sys
 import os
 import numpy as np
@@ -11,9 +10,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from gear_optimizer.solver.scoring import solve_best_fever_combination, apply_force_greats_to_result
 from gear_optimizer.core.constants import TOTAL_ROWS
 
+
 def run_performance_test():
     logging.basicConfig(level=logging.ERROR)
-    
+
     # 1. Mock Song (Short song for speed, but long enough to have sections)
     timestamps = np.linspace(0, 120, 100).tolist()
     calc_song = {
@@ -28,9 +28,9 @@ def run_performance_test():
         },
         "song_data": {
             "timestamps": timestamps,
-        }
+        },
     }
-    
+
     # 2. Stats
     base_stats_fixed = {
         "Perfect Points": 100,
@@ -44,7 +44,7 @@ def run_performance_test():
         "Vibe": 50,
         "Chill": 50,
     }
-    
+
     # 3. Ref Arrays
     rows = TOTAL_ROWS + 1
     ref_arrays = {
@@ -58,7 +58,7 @@ def run_performance_test():
     # 4. Config
     cfg_data = {
         "selected_color": "Rush",
-        "use_gpu": False, # Force CPU
+        "use_gpu": False,  # Force CPU
         "user_ft": 0,
         "user_ff": 0,
         "user_pp": 0,
@@ -77,59 +77,54 @@ def run_performance_test():
         silent=True,
         override_cfg=cfg_data,
     )
-    
+
     print("Running Force Greats Hill Climb (Optimized)...")
     start_time = time.time()
-    
+
     # This calls run_force_greats_hill_climb internally
-    fg_result = apply_force_greats_to_result(
-        data_dict,
-        calc_song,
-        ref_arrays,
-        use_finder=True
-    )
-    
+    fg_result = apply_force_greats_to_result(data_dict, calc_song, ref_arrays, use_finder=True)
+
     end_time = time.time()
     duration = end_time - start_time
-    
+
     print(f"FG Calculation took: {duration:.4f} seconds")
-    
+
     # Assert performance constraint (should be well under 1 second for this small problem)
     # The unoptimized version with 4000 iterations would take significantly longer if simulated properly,
     # but here we just want to ensure it's fast.
     if duration > 10.0:
         raise AssertionError(f"Force Greats calculation too slow! Took {duration:.4f}s")
-        
+
     # Verify we actually got a result and applied FG
     assert fg_result is not None
     assert fg_result.get("ForceGreats", {}).get("enabled") is True
-    
+
     print(f"Initial Score: {data_dict['Score']}")
     # fg_base = fg_result['ForceGreats']['base_score']  <-- REMOVED
     # print(f"FG Base Score: {fg_base}")
-    
+
     print(f"ForceGreats JSON: {fg_result['ForceGreats']}")
-    
+
     # VERIFICATION: Ensure base_score is GONE from the JSON
-    if "base_score" in fg_result['ForceGreats']:
+    if "base_score" in fg_result["ForceGreats"]:
         raise AssertionError("base_score should NOT be in ForceGreats JSON anymore!")
-        
+
     # Verify final_score (penalized) is present
-    fg_final = fg_result['ForceGreats'].get("final_score")
+    fg_final = fg_result["ForceGreats"].get("final_score")
     if fg_final is None:
         raise AssertionError("final_score (penalized) MUST be in ForceGreats JSON!")
-        
+
     print(f"FG Final Score (Penalized): {fg_final}")
-    
+
     # We can still check ratio using the returned Score vs BaseScore (if available)
     # But for this test, let's just use the final score
-    fg_base = fg_result.get("BaseScore", data_dict['Score'])
-    
+    fg_base = fg_result.get("BaseScore", data_dict["Score"])
+
     # Verify no massive inflation (Double counting bug check)
-    ratio = fg_base / data_dict['Score']
+    ratio = fg_base / data_dict["Score"]
     if ratio > 1.2:
         raise AssertionError(f"Score Inflation Detected! Ratio: {ratio:.2f} (Double counting gems?)")
-    
+
     print("Performance Test Passed!")
 
     # --------------------------------------------------------------------
@@ -137,6 +132,7 @@ def run_performance_test():
     # --------------------------------------------------------------------
     try:
         from gear_optimizer.solver.scoring import _get_gpu_solver, FG_CACHE, FG_TIMELINE_CACHE
+
         _, batch_solver = _get_gpu_solver()
     except Exception:
         batch_solver = None
@@ -170,6 +166,7 @@ def run_performance_test():
     gpu_score = fg_result_gpu.get("Score", 0)
     if cpu_score != gpu_score:
         raise AssertionError(f"GPU FG mismatch! CPU={cpu_score}, GPU={gpu_score}")
+
 
 if __name__ == "__main__":
     run_performance_test()

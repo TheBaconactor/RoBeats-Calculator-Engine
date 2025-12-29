@@ -86,12 +86,3 @@ def test_gpu_ga_initial_population_buffer_roundtrip():
         ga_load_initial_population(run_idx=r, n_genomes=n_genomes, n_slots=n_slots)
         out = ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
         assert np.array_equal(out, pops[r])
-
-
-
-
-
-
-
-
-

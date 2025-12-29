@@ -3,6 +3,7 @@ Profile the Genetic Algorithm to identify bottlenecks.
 
 Usage: python tools/profile_ga.py
 """
+
 import cProfile
 import pstats
 import io
@@ -11,6 +12,7 @@ import os
 
 # Add parent to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 
 def run_ga():
     """Run a minimal GA to profile."""
@@ -21,12 +23,12 @@ def run_ga():
     from gear_optimizer.data.minis import load_minis
     from gear_optimizer.data.songs import load_song_data
     from gear_optimizer.core.references import load_stat_references
-    
+
     # Load data
     gears = load_gears()
     minis = load_minis()
     ref_arrays = load_stat_references()
-    
+
     # Load a test song
     song_data = load_song_data()
     test_song = None
@@ -34,24 +36,24 @@ def run_ga():
         if "ATENA" in song.get("Title", ""):
             test_song = song
             break
-    
+
     if not test_song:
         test_song = song_data[0] if song_data else None
-    
+
     if not test_song:
         print("No song found!")
         return
-    
+
     print(f"Profiling with song: {test_song.get('Title', 'Unknown')}")
-    
+
     # Build calc_song
     calc_song = {
         "metadata": test_song,
         "song_data": {
             "timestamps": test_song.get("timestamps", [0.0] * 100),
-        }
+        },
     }
-    
+
     # Config
     cfg_data = {
         "selected_color": "Beat",
@@ -63,17 +65,24 @@ def run_ga():
         "static_elem_input": 0,
         "use_gpu": True,
     }
-    
+
     base_stats = {
-        "Beat": 50, "Vibe": 30, "Rush": 20, "Flow": 25, "Chill": 15,
-        "Perfect Points": 40, "Combo Multiplier": 35, "Fever Multiplier": 30,
-        "Fever Time": 25, "Fever Fill Rate": 20,
+        "Beat": 50,
+        "Vibe": 30,
+        "Rush": 20,
+        "Flow": 25,
+        "Chill": 15,
+        "Perfect Points": 40,
+        "Combo Multiplier": 35,
+        "Fever Multiplier": 30,
+        "Fever Time": 25,
+        "Fever Fill Rate": 20,
     }
-    
+
     # GA Settings - reduced for profiling
     ga_settings = GASettings()
     ga_settings.multi_start = 1  # Single run
-    
+
     # Run GA
     result = solve_coevolution_genetic(
         cfg=None,
@@ -93,7 +102,7 @@ def run_ga():
         status_cb=None,
         ga_settings=ga_settings,
     )
-    
+
     print(f"Best score: {result.get('Score', 0):,}")
 
 
@@ -101,27 +110,27 @@ if __name__ == "__main__":
     print("=" * 60)
     print("GA Profiler")
     print("=" * 60)
-    
+
     # Profile
     pr = cProfile.Profile()
     pr.enable()
-    
+
     run_ga()
-    
+
     pr.disable()
-    
+
     # Print stats
     s = io.StringIO()
-    ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')
+    ps = pstats.Stats(pr, stream=s).sort_stats("cumulative")
     ps.print_stats(30)  # Top 30 functions
     print("\n" + "=" * 60)
     print("TOP 30 BY CUMULATIVE TIME")
     print("=" * 60)
     print(s.getvalue())
-    
+
     # Also print by tottime
     s2 = io.StringIO()
-    ps2 = pstats.Stats(pr, stream=s2).sort_stats('tottime')
+    ps2 = pstats.Stats(pr, stream=s2).sort_stats("tottime")
     ps2.print_stats(20)  # Top 20 functions
     print("\n" + "=" * 60)
     print("TOP 20 BY TOTAL TIME (self)")

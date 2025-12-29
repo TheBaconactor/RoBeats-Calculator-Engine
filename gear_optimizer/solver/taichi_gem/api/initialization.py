@@ -7,6 +7,7 @@ This module provides initialization and setup functions:
 - Song flags and FT/FF combo table upload
 - Centralized ensure_ready() initialization
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -87,12 +88,14 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
     # Clear all Taichi field allocation state (fields are invalid after reset)
     try:
         from ..fields import reset_fields_state as _reset_fields_state
+
         _reset_fields_state()
     except Exception:
         pass
 
     try:
         from ..force_greats.fields import reset_fields_state as _reset_fg_fields_state
+
         _reset_fg_fields_state()
     except Exception:
         pass
@@ -105,18 +108,21 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
 
     try:
         from .timeline import reset_timeline_state as _reset_timeline_state
+
         _reset_timeline_state()
     except Exception:
         pass
 
     try:
         from ..force_greats.api import reset_force_greats_api_state as _reset_fg_api_state
+
         _reset_fg_api_state()
     except Exception:
         pass
 
     try:
         from .ga_operations import reset_ga_upload_caches as _reset_ga_caches
+
         _reset_ga_caches()
     except Exception:
         pass
@@ -163,9 +169,7 @@ def _ensure_ftff_combo_tables(total_budget: int) -> int:
     if total_budget < 0:
         total_budget = 0
     if total_budget > fields.MAX_TOTAL_BUDGET:
-        raise ValueError(
-            f"total_budget={total_budget} exceeds fields.MAX_TOTAL_BUDGET={fields.MAX_TOTAL_BUDGET}"
-        )
+        raise ValueError(f"total_budget={total_budget} exceeds fields.MAX_TOTAL_BUDGET={fields.MAX_TOTAL_BUDGET}")
 
     cached_budget = _FTFF_COMBO_CACHE.get("budget")
     if cached_budget == total_budget:
@@ -252,7 +256,6 @@ def _ensure_parallel_staging():
         # Per-genome stats (uploaded once per call)
         # [pp, cm, fm, p_val, s_val, ft, ff]
         "genome_base_stats": np.zeros((MAX_GENOMES, 7), dtype=np.int16),
-
         # Per-work-item buffers (reused per chunk)
         # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id, song_slot]
         "work_items": np.zeros((MAX_WORK_ITEMS, 8), dtype=np.int32),
@@ -268,6 +271,7 @@ def is_refs_loaded() -> bool:
 # ============================================================================
 # INITIALIZATION HELPERS
 # ============================================================================
+
 
 def ensure_ready(ref_arrays=None, *, timeline_grid=None):
     """
@@ -313,6 +317,7 @@ def ensure_ready(ref_arrays=None, *, timeline_grid=None):
 # ============================================================================
 # REFERENCE ARRAY LOADING
 # ============================================================================
+
 
 def load_ref_arrays(ref_arrays: dict):
     """

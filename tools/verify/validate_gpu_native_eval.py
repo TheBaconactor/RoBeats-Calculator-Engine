@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 
 import sys
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from gear_optimizer.core.config import load_paths_cache
@@ -256,12 +257,18 @@ def main() -> int:
     ref_results = gpu_api.solve_genomes_parallel(
         genome_stats_list,
         calc_song,
-        flags["is_p_ft"], flags["is_s_ft"],
-        flags["is_p_ff"], flags["is_s_ff"],
-        flags["is_p_pp"], flags["is_s_pp"],
-        flags["is_p_cm"], flags["is_s_cm"],
-        flags["is_p_fm"], flags["is_s_fm"],
-        flags["is_p_ov"], flags["is_s_ov"],
+        flags["is_p_ft"],
+        flags["is_s_ft"],
+        flags["is_p_ff"],
+        flags["is_s_ff"],
+        flags["is_p_pp"],
+        flags["is_s_pp"],
+        flags["is_p_cm"],
+        flags["is_s_cm"],
+        flags["is_p_fm"],
+        flags["is_s_fm"],
+        flags["is_p_ov"],
+        flags["is_s_ov"],
         ref_arrays,
         total_budget=TOTAL_GEM_BUDGET,
         gem_scale_fever=GEM_SCALE_FEVER,
@@ -347,7 +354,9 @@ def main() -> int:
     if base_mism.size:
         print(f"[BASE_MISMATCH] {base_mism.size}/{len(population)} genome_base_stats rows differ (showing up to 5)")
         for idx in base_mism[:5]:
-            print(f" idx={int(idx)} expected={tuple(map(int, expected_base[idx]))} native={tuple(map(int, native_base[idx]))}")
+            print(
+                f" idx={int(idx)} expected={tuple(map(int, expected_base[idx]))} native={tuple(map(int, native_base[idx]))}"
+            )
 
     # Compare
     mismatches = 0
@@ -362,10 +371,7 @@ def main() -> int:
             worst_delta = max(worst_delta, abs(delta))
             mismatch_indices.append(int(i))
             if mismatches <= 10:
-                print(
-                    f"[MISMATCH #{mismatches}] idx={i} "
-                    f"ref={ref_row} native={tuple(map(int, nat_row))} delta={delta}"
-                )
+                print(f"[MISMATCH #{mismatches}] idx={i} ref={ref_row} native={tuple(map(int, nat_row))} delta={delta}")
 
     if mismatches:
         # Spot-check against CPU solver for the first mismatch to identify which path is wrong.

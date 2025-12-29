@@ -56,15 +56,11 @@ def test_songs_best_scores_and_fg_scores_update(db_path):
 
     conn = get_db_connection(db_path)
     try:
-        song_row = conn.execute(
-            "SELECT best_score, best_fg_score FROM songs WHERE name=?", (song,)
-        ).fetchone()
+        song_row = conn.execute("SELECT best_score, best_fg_score FROM songs WHERE name=?", (song,)).fetchone()
         assert song_row["best_score"] == 1100
         assert song_row["best_fg_score"] == 5000
 
-        fg_count = conn.execute(
-            "SELECT COUNT(*) FROM fg_loadouts WHERE song_name=?", (song,)
-        ).fetchone()[0]
+        fg_count = conn.execute("SELECT COUNT(*) FROM fg_loadouts WHERE song_name=?", (song,)).fetchone()[0]
         assert fg_count == 2  # two distinct FG-valid loadouts were inserted
     finally:
         conn.close()
@@ -89,12 +85,8 @@ def test_fg_loadouts_requires_force_details(db_path):
 
     conn = get_db_connection(db_path)
     try:
-        loadouts_count = conn.execute(
-            "SELECT COUNT(*) FROM loadouts WHERE song_name=?", (song,)
-        ).fetchone()[0]
-        fg_count = conn.execute(
-            "SELECT COUNT(*) FROM fg_loadouts WHERE song_name=?", (song,)
-        ).fetchone()[0]
+        loadouts_count = conn.execute("SELECT COUNT(*) FROM loadouts WHERE song_name=?", (song,)).fetchone()[0]
+        fg_count = conn.execute("SELECT COUNT(*) FROM fg_loadouts WHERE song_name=?", (song,)).fetchone()[0]
         assert loadouts_count == 1
         assert fg_count == 0
     finally:
@@ -120,15 +112,11 @@ def test_fg_loadouts_requires_fg_beats_base(db_path):
 
     conn = get_db_connection(db_path)
     try:
-        loadouts_count = conn.execute(
-            "SELECT COUNT(*) FROM loadouts WHERE song_name=?", (song,)
-        ).fetchone()[0]
-        fg_count = conn.execute(
-            "SELECT COUNT(*) FROM fg_loadouts WHERE song_name=?", (song,)
-        ).fetchone()[0]
-        best_fg_score = conn.execute(
-            "SELECT best_fg_score FROM songs WHERE name=?", (song,)
-        ).fetchone()["best_fg_score"]
+        loadouts_count = conn.execute("SELECT COUNT(*) FROM loadouts WHERE song_name=?", (song,)).fetchone()[0]
+        fg_count = conn.execute("SELECT COUNT(*) FROM fg_loadouts WHERE song_name=?", (song,)).fetchone()[0]
+        best_fg_score = conn.execute("SELECT best_fg_score FROM songs WHERE name=?", (song,)).fetchone()[
+            "best_fg_score"
+        ]
         assert loadouts_count == 1
         assert fg_count == 0
         assert best_fg_score == 0
@@ -202,14 +190,10 @@ def test_concurrent_save_loadouts_batch_no_corruption(db_path):
 
     conn = get_db_connection(db_path)
     try:
-        row = conn.execute(
-            "SELECT best_score FROM songs WHERE name=?", (song,)
-        ).fetchone()
+        row = conn.execute("SELECT best_score FROM songs WHERE name=?", (song,)).fetchone()
         assert row["best_score"] == max(scores)
 
-        count = conn.execute(
-            "SELECT COUNT(*) FROM loadouts WHERE song_name=?", (song,)
-        ).fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) FROM loadouts WHERE song_name=?", (song,)).fetchone()[0]
         assert count == len(scores)
     finally:
         conn.close()

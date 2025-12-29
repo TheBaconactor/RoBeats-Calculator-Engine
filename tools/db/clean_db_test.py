@@ -1,5 +1,7 @@
 """Clean DB for Take Your Time and insert inferior record to test GA discovery."""
+
 import os, sys
+
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -19,7 +21,7 @@ for table in tables:
     cursor.execute(f"SELECT sql FROM sqlite_master WHERE name='{table}'")
     schema = cursor.fetchone()
     print(f"\n{table}: {schema[0][:200] if schema else 'no schema'}...")
-    
+
 # Delete data for our test song
 for table in tables:
     try:

@@ -84,4 +84,3 @@ def ga_find_island_elites_kernel(
 
     # Set total elite count
     kernels_helpers.island_elite_count[0] = n_islands * elites_per_island
-

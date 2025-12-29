@@ -27,19 +27,19 @@ def profile_ga_with_gpu():
     from gear_optimizer.solver.genetic import solve_coevolution_genetic
     from gear_optimizer.core.constants import TOTAL_ROWS
     from gear_optimizer.data.models import GASettings
-    
+
     print("=" * 70)
     print("GPU-ENABLED GA PROFILING")
     print("=" * 70)
-    
+
     # Load real data from a song file if available
     # Otherwise use synthetic data
     SEED = 42
     np.random.seed(SEED)
     random.seed(SEED)
-    
+
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
-    
+
     # Generate realistic gear items (50 per slot)
     all_gears = []
     gears_by_name = {}
@@ -62,7 +62,7 @@ def profile_ga_with_gpu():
             }
             all_gears.append(item)
             gears_by_name[name] = item
-    
+
     # Generate minis
     all_minis = []
     minis_by_name = {}
@@ -99,15 +99,22 @@ def profile_ga_with_gpu():
         },
         "song_data": {
             "timestamps": timestamps,
-        }
+        },
     }
 
     base_stats_fixed = {
-        "Perfect Points": 100, "Combo Multiplier": 100, "Fever Multiplier": 100,
-        "Fever Fill Rate": 100, "Fever Time": 100,
-        "Rush": 100, "Flow": 100, "Beat": 150, "Vibe": 150, "Chill": 100,
+        "Perfect Points": 100,
+        "Combo Multiplier": 100,
+        "Fever Multiplier": 100,
+        "Fever Fill Rate": 100,
+        "Fever Time": 100,
+        "Rush": 100,
+        "Flow": 100,
+        "Beat": 150,
+        "Vibe": 150,
+        "Chill": 100,
     }
-    
+
     rows = TOTAL_ROWS + 1
     ref_arrays = {
         "Perfect Points": np.linspace(1.0, 2.0, rows),
@@ -135,10 +142,12 @@ def profile_ga_with_gpu():
             if option == "GPU_Mode":
                 return True
             val = self.get(section, option, fallback)
-            if isinstance(val, bool): return val
-            if str(val).lower() in ("true", "1", "yes"): return True
+            if isinstance(val, bool):
+                return val
+            if str(val).lower() in ("true", "1", "yes"):
+                return True
             return False
-            
+
         def getint(self, section, option, fallback=0):
             try:
                 return int(self.get(section, option, fallback))
@@ -152,7 +161,7 @@ def profile_ga_with_gpu():
                 return float(fallback)
 
     cfg = MockCfg()
-    
+
     # GA settings matching production
     ga_settings = GASettings(
         db_seed_prob=0.5,
@@ -168,31 +177,33 @@ def profile_ga_with_gpu():
         gear_rank_max=40,
         mini_rank_max=40,
     )
-    
-    print(f"  Gear items: {len(all_gears)} ({len(all_gears)//6} per slot)")
+
+    print(f"  Gear items: {len(all_gears)} ({len(all_gears) // 6} per slot)")
     print(f"  Mini items: {len(all_minis)}")
     print(f"  Song notes: {len(timestamps)}")
     print(f"  Multi-start runs: {ga_settings.multi_start}")
     print(f"  ga_depth: 13")
     print()
-    
+
     # Warmup Taichi
     print("Warming up Taichi GPU...")
     from gear_optimizer.solver.taichi_gem import api as gem_api
+
     gem_api.ensure_ready(ref_arrays)
     import taichi as ti
+
     ti.sync()
     print("GPU ready.\n")
-    
+
     # Profile with timing breakdown
     phase_times = {}
-    
+
     print("Running GA with profiling...")
     t0 = time.perf_counter()
-    
+
     profiler = cProfile.Profile()
     profiler.enable()
-    
+
     best_data, best_gear, best_minis, _, _, _, _ = solve_coevolution_genetic(
         cfg=cfg,
         base_stats_fixed=base_stats_fixed,
@@ -208,35 +219,35 @@ def profile_ga_with_gpu():
         ga_depth=13,  # Match production depth
         ga_settings=ga_settings,
     )
-    
+
     profiler.disable()
-    
+
     total_time = time.perf_counter() - t0
-    
-    print(f"\n{'='*70}")
+
+    print(f"\n{'=' * 70}")
     print(f"RESULT: Score={best_data['Score']} in {total_time:.2f}s")
-    print(f"{'='*70}")
-    
+    print(f"{'=' * 70}")
+
     # Print top functions by cumulative time
     print("\nTOP 25 FUNCTIONS (by cumulative time):")
     print("-" * 70)
     stream = io.StringIO()
     stats = pstats.Stats(profiler, stream=stream)
     stats.strip_dirs()
-    stats.sort_stats('cumulative')
+    stats.sort_stats("cumulative")
     stats.print_stats(25)
     print(stream.getvalue())
-    
+
     # Print top functions by total (self) time
     print("\nTOP 25 FUNCTIONS (by total/self time):")
     print("-" * 70)
     stream2 = io.StringIO()
     stats2 = pstats.Stats(profiler, stream=stream2)
     stats2.strip_dirs()
-    stats2.sort_stats('tottime')
+    stats2.sort_stats("tottime")
     stats2.print_stats(25)
     print(stream2.getvalue())
-    
+
     # Save full results
     output_file = os.path.join(project_root, "tests", "ga_gpu_profile_results.txt")
     with open(output_file, "w") as f:
@@ -244,27 +255,27 @@ def profile_ga_with_gpu():
         f.write(f"Total time: {total_time:.2f}s\n")
         f.write(f"Final score: {best_data['Score']}\n")
         f.write("=" * 70 + "\n\n")
-        
+
         f.write("TOP 50 BY CUMULATIVE TIME:\n")
         f.write("-" * 70 + "\n")
         stream3 = io.StringIO()
         stats3 = pstats.Stats(profiler, stream=stream3)
         stats3.strip_dirs()
-        stats3.sort_stats('cumulative')
+        stats3.sort_stats("cumulative")
         stats3.print_stats(50)
         f.write(stream3.getvalue())
-        
+
         f.write("\n\nTOP 50 BY TOTAL TIME:\n")
         f.write("-" * 70 + "\n")
         stream4 = io.StringIO()
         stats4 = pstats.Stats(profiler, stream=stream4)
         stats4.strip_dirs()
-        stats4.sort_stats('tottime')
+        stats4.sort_stats("tottime")
         stats4.print_stats(50)
         f.write(stream4.getvalue())
-    
+
     print(f"\nFull results saved to: {output_file}")
-    
+
     return best_data["Score"], total_time
 
 

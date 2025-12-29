@@ -1,4 +1,3 @@
-
 import sys
 import os
 import time
@@ -8,11 +7,12 @@ import random
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+
 def run_ga_regression():
     print("=" * 60)
     print("Running Seeded GA Regression Test (Main Solver)")
     print("=" * 60)
-    
+
     # 1. Set Seeds for Determinism
     SEED = 42
     np.random.seed(SEED)
@@ -25,7 +25,7 @@ def run_ga_regression():
     # 2. Mock Data
     print("\n--- Generation Mock Data ---")
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
-    
+
     # Generate 50 items per slot
     all_gears = []
     gears_by_name = {}
@@ -48,7 +48,7 @@ def run_ga_regression():
             }
             all_gears.append(item)
             gears_by_name[name] = item
-    
+
     all_minis = []
     minis_by_name = {}
     for i in range(20):
@@ -85,15 +85,22 @@ def run_ga_regression():
         },
         "song_data": {
             "timestamps": timestamps,
-        }
+        },
     }
 
     base_stats_fixed = {
-        "Perfect Points": 100, "Combo Multiplier": 100, "Fever Multiplier": 100,
-        "Fever Fill Rate": 100, "Fever Time": 100,
-        "Rush": 100, "Flow": 100, "Beat": 50, "Vibe": 50, "Chill": 50,
+        "Perfect Points": 100,
+        "Combo Multiplier": 100,
+        "Fever Multiplier": 100,
+        "Fever Fill Rate": 100,
+        "Fever Time": 100,
+        "Rush": 100,
+        "Flow": 100,
+        "Beat": 50,
+        "Vibe": 50,
+        "Chill": 50,
     }
-    
+
     rows = TOTAL_ROWS + 1
     ref_arrays = {
         "Perfect Points": np.linspace(1.0, 2.0, rows),
@@ -112,7 +119,7 @@ def run_ga_regression():
                 return 0
             if section == "IterationEngine":
                 if option in ["MemeticElites", "MemeticSteps", "MemeticTopGear", "MemeticTopMinis"]:
-                    return 0 # Disable memetic for faster regression
+                    return 0  # Disable memetic for faster regression
                 if option == "MultiStartRuns":
                     return 1
                 if option == "DeepMining":
@@ -121,10 +128,12 @@ def run_ga_regression():
 
         def getboolean(self, section, option, fallback=False):
             val = self.get(section, option, fallback)
-            if isinstance(val, bool): return val
-            if str(val).lower() in ("true", "1", "yes"): return True
+            if isinstance(val, bool):
+                return val
+            if str(val).lower() in ("true", "1", "yes"):
+                return True
             return False
-            
+
         def getint(self, section, option, fallback=0):
             try:
                 return int(self.get(section, option, fallback))
@@ -138,15 +147,15 @@ def run_ga_regression():
                 return float(fallback)
 
     cfg = MockCfg()
-    paths = None # Not used by solver if db_seed is None
+    paths = None  # Not used by solver if db_seed is None
 
     # 3. Runs Evolution
     print("\nStarting evolution...")
-    
+
     # Reset seeds again
     np.random.seed(SEED)
     random.seed(SEED)
-    
+
     best_data, best_gear, best_minis, _, _, _, _ = solve_coevolution_genetic(
         cfg=cfg,
         base_stats_fixed=base_stats_fixed,
@@ -159,19 +168,20 @@ def run_ga_regression():
         minis_by_name=minis_by_name,
         optimize_gear=True,
         optimize_minis=True,
-        ga_depth=10, # Short run
+        ga_depth=10,  # Short run
     )
-    
+
     score = best_data["Score"]
     print(f"Final Score: {score}")
-    
+
     # 4. Assert
     # expected_score = 1662978  # Old baseline with strong seeding
     expected_score = 1656772  # New baseline after removing strong global_elites seeding
     assert score == expected_score, f"Expected {expected_score}, got {score}"
     print("[OK] Regression score match!")
-    
+
     return score
+
 
 if __name__ == "__main__":
     run_ga_regression()

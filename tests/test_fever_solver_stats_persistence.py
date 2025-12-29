@@ -80,4 +80,3 @@ def test_solve_best_fever_combination_stats_include_gem_contributions():
     assert int(stats.get("Perfect Points", -1)) == int(base_stats["Perfect Points"]) + g_pp * GEM_SCALE_NORMAL
     assert int(stats.get("Combo Multiplier", -1)) == int(base_stats["Combo Multiplier"]) + g_cm * GEM_SCALE_NORMAL
     assert int(stats.get("Fever Multiplier", -1)) == int(base_stats["Fever Multiplier"]) + g_fm * GEM_SCALE_FEVER
-

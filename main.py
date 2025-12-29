@@ -4,6 +4,7 @@ Gear Optimizer - Main Entry Point
 
 Refactored to use GearOptimizerApp.
 """
+
 import multiprocessing
 import sys
 from gear_optimizer.app import GearOptimizerApp

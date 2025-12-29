@@ -12,6 +12,7 @@ This module provides the force greats optimization pipeline:
 Force Greats optimization allows forcing greats in non-fever sections to reduce
 fill penalties at the cost of score penalties from great notes.
 """
+
 import numpy as np
 from math import floor, ceil
 from cachetools import LRUCache
@@ -80,11 +81,7 @@ def _compute_force_greats_timeline(
     """
     fever_mask_buffer = np.zeros(total_notes, dtype=np.bool_)
 
-    forced_arr = (
-        np.asarray(force_counts, dtype=np.int32)
-        if force_counts
-        else np.zeros(0, dtype=np.int32)
-    )
+    forced_arr = np.asarray(force_counts, dtype=np.int32) if force_counts else np.zeros(0, dtype=np.int32)
 
     # Worst-case: section count is bounded by note count (+1 for safety).
     section_cap = int(total_notes) + 1
@@ -189,11 +186,7 @@ def evaluate_force_greats(stats, calc_song, ref_arrays, forced_counts=None):
     # Great base uses a floor-sensitive split in the game code for 2-color charts:
     # floor((4/3)*primary) + floor((2/3)*secondary) + 150
     # (as opposed to a single floor over the combined expression).
-    great_penalty_base = (
-        floor((primary_val * 2) * (2.0 / 3.0))
-        + floor(secondary_val * (2.0 / 3.0))
-        + 150
-    )
+    great_penalty_base = floor((primary_val * 2) * (2.0 / 3.0)) + floor(secondary_val * (2.0 / 3.0)) + 150
     great_combo_value = floor(great_penalty_base * combo_mul)
     penalty_table = build_great_penalty_table(base_value, combo_mul, great_penalty_base)
     body_penalty = max(0, combo_value - great_combo_value)
@@ -425,30 +418,16 @@ def evaluate_fg_with_gem_iteration(
                 cached = (fever_mask_head, count_body_fever, count_body_normal, section_details)
                 FG_TIMELINE_CACHE[fg_cache_key] = cached
 
-            fever_mask_head, count_body_fever, count_body_normal, section_details = (
-                cached
-            )
+            fever_mask_head, count_body_fever, count_body_normal, section_details = cached
 
             # CPU optimizer expects p/s values with FT/FF elemental contributions already applied.
             cur_beat = base_beat + ft_gems * GEM_STAT_TO_ELEMENT_SCALE
             cur_vibe = base_vibe + ff_gems * GEM_STAT_TO_ELEMENT_SCALE
             cur_p_val = (
-                cur_beat
-                if p_color == "Beat"
-                else (
-                    cur_vibe
-                    if p_color == "Vibe"
-                    else base_stats.get(p_color, 0)
-                )
+                cur_beat if p_color == "Beat" else (cur_vibe if p_color == "Vibe" else base_stats.get(p_color, 0))
             )
             cur_s_val = (
-                cur_beat
-                if s_color == "Beat"
-                else (
-                    cur_vibe
-                    if s_color == "Vibe"
-                    else base_stats.get(s_color, 0)
-                )
+                cur_beat if s_color == "Beat" else (cur_vibe if s_color == "Vibe" else base_stats.get(s_color, 0))
             )
 
             candidates.append(
@@ -595,14 +574,8 @@ def evaluate_fg_with_gem_iteration(
 
         # FG penalties (score penalty for greats + fill penalty)
         combo_value = floor(base_value * combo_mul)
-        great_penalty_base = (
-            floor((final_p_val * 2) * (2.0 / 3.0))
-            + floor(final_s_val * (2.0 / 3.0))
-            + 150
-        )
-        penalty_table = build_great_penalty_table(
-            base_value, combo_mul, great_penalty_base
-        )
+        great_penalty_base = floor((final_p_val * 2) * (2.0 / 3.0)) + floor(final_s_val * (2.0 / 3.0)) + 150
+        penalty_table = build_great_penalty_table(base_value, combo_mul, great_penalty_base)
         body_penalty = max(0, combo_value - floor(great_penalty_base * combo_mul))
 
         total_score_penalty = 0
@@ -652,9 +625,7 @@ def evaluate_fg_with_gem_iteration(
                 "num_non_fever_sections": len(section_details),
                 "penalty_analysis": penalty_analysis,
                 "config_counts": force_counts[:],
-                "config_dict": _force_greats_counts_to_dict(
-                    force_counts, max(2, len(force_counts))
-                ),
+                "config_dict": _force_greats_counts_to_dict(force_counts, max(2, len(force_counts))),
                 "non_fever_base": non_fever_base,
                 "gem_counts": {
                     "Perfect Points": gems_pp,
@@ -712,8 +683,18 @@ def run_force_greats_hill_climb(
     # For simplicity, we can use the stats as-is since evaluate_fg_with_gem_iteration
     # handles the gem allocation internally
     base_stats = {}
-    for key in ["Perfect Points", "Combo Multiplier", "Fever Multiplier",
-                "Fever Time", "Fever Fill Rate", "Chill", "Flow", "Rush", "Beat", "Vibe"]:
+    for key in [
+        "Perfect Points",
+        "Combo Multiplier",
+        "Fever Multiplier",
+        "Fever Time",
+        "Fever Fill Rate",
+        "Chill",
+        "Flow",
+        "Rush",
+        "Beat",
+        "Vibe",
+    ]:
         base_stats[key] = stats.get(key, 0)
 
     non_fever_base = baseline.get("non_fever_base", 20)
@@ -750,6 +731,7 @@ def run_force_greats_hill_climb(
                     counts_list.append((s0, s1, s2))
     else:
         from itertools import product
+
         cap = min(int(non_fever_base or 0), 5)
         for counts in product(range(cap + 1), repeat=num_sections):
             counts_list.append(tuple(counts))
@@ -815,15 +797,17 @@ def run_force_greats_hill_climb(
                         ftff_pairs.append((ft, ff))
 
             # Single-genome input (base stats; GPU allocates gems)
-            genome_stats_list = [{
-                "base_pp": int(base_stats.get("Perfect Points", 0)),
-                "base_cm": int(base_stats.get("Combo Multiplier", 0)),
-                "base_fm": int(base_stats.get("Fever Multiplier", 0)),
-                "base_ft_stat": int(base_stats.get("Fever Time", 0)),
-                "base_ff_stat": int(base_stats.get("Fever Fill Rate", 0)),
-                "base_p_val": int(base_stats.get(p_color, 0)),
-                "base_s_val": int(base_stats.get(s_color, 0)),
-            }]
+            genome_stats_list = [
+                {
+                    "base_pp": int(base_stats.get("Perfect Points", 0)),
+                    "base_cm": int(base_stats.get("Combo Multiplier", 0)),
+                    "base_fm": int(base_stats.get("Fever Multiplier", 0)),
+                    "base_ft_stat": int(base_stats.get("Fever Time", 0)),
+                    "base_ff_stat": int(base_stats.get("Fever Fill Rate", 0)),
+                    "base_p_val": int(base_stats.get(p_color, 0)),
+                    "base_s_val": int(base_stats.get(s_color, 0)),
+                }
+            ]
 
             out = solve_force_greats_finder_gpu(
                 genome_stats_list,
@@ -834,12 +818,18 @@ def run_force_greats_hill_climb(
                 counts_list,
                 ftff_pairs,
                 n_sections=len(counts_list[0]) if counts_list else 1,
-                is_p_ft=is_p_ft, is_s_ft=is_s_ft,
-                is_p_ff=is_p_ff, is_s_ff=is_s_ff,
-                is_p_pp=is_p_pp, is_s_pp=is_s_pp,
-                is_p_cm=is_p_cm, is_s_cm=is_s_cm,
-                is_p_fm=is_p_fm, is_s_fm=is_s_fm,
-                is_p_ov=is_p_ov, is_s_ov=is_s_ov,
+                is_p_ft=is_p_ft,
+                is_s_ft=is_s_ft,
+                is_p_ff=is_p_ff,
+                is_s_ff=is_s_ff,
+                is_p_pp=is_p_pp,
+                is_s_pp=is_s_pp,
+                is_p_cm=is_p_cm,
+                is_s_cm=is_s_cm,
+                is_p_fm=is_p_fm,
+                is_s_fm=is_s_fm,
+                is_p_ov=is_p_ov,
+                is_s_ov=is_s_ov,
                 ref_arrays=ref_arrays,
                 total_budget=TOTAL_GEM_BUDGET,
                 gem_scale_fever=GEM_SCALE_FEVER,
@@ -849,7 +839,9 @@ def run_force_greats_hill_climb(
                 return None
 
             cfg_idx = best.get("cfg_idx", -1)
-            cfg_counts = list(counts_list[cfg_idx]) if (cfg_idx is not None and 0 <= int(cfg_idx) < len(counts_list)) else []
+            cfg_counts = (
+                list(counts_list[cfg_idx]) if (cfg_idx is not None and 0 <= int(cfg_idx) < len(counts_list)) else []
+            )
 
             result = {
                 "base_score": best.get("base_score", 0),
@@ -992,9 +984,7 @@ def apply_force_greats_to_result(
         return None
 
     gem_counts = data_dict.get("GemCounts") or {}
-    selected_color = data_dict.get(
-        "Selected Element", calc_song["metadata"].get("Primary Color", "")
-    )
+    selected_color = data_dict.get("Selected Element", calc_song["metadata"].get("Primary Color", ""))
     ft_gems = data_dict.get("FT", 0)
     ff_gems = data_dict.get("FF", 0)
 

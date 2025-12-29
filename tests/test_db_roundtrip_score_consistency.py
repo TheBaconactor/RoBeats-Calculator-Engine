@@ -115,4 +115,3 @@ def test_db_roundtrip_base_score_is_self_consistent():
     stored_stats = stored_details.get("Stats") or {}
     stored_score = evaluate_stats_score(stored_stats, calc_song, ref_arrays)
     assert int(stored_score) == score
-

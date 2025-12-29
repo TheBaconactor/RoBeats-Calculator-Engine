@@ -2,6 +2,7 @@
 Profile the Genetic Algorithm to identify performance bottlenecks.
 Uses cProfile and pstats to generate a detailed performance report.
 """
+
 import sys
 import os
 import cProfile
@@ -17,13 +18,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirna
 def setup_ga_test_data():
     """Create mock data for GA profiling."""
     from gear_optimizer.core.constants import TOTAL_ROWS
-    
+
     SEED = 42
     np.random.seed(SEED)
     random.seed(SEED)
-    
+
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
-    
+
     # Generate 50 items per slot (300 total gear items)
     all_gears = []
     gears_by_name = {}
@@ -46,7 +47,7 @@ def setup_ga_test_data():
             }
             all_gears.append(item)
             gears_by_name[name] = item
-    
+
     # Generate 20 minis
     all_minis = []
     minis_by_name = {}
@@ -83,15 +84,22 @@ def setup_ga_test_data():
         },
         "song_data": {
             "timestamps": timestamps,
-        }
+        },
     }
 
     base_stats_fixed = {
-        "Perfect Points": 100, "Combo Multiplier": 100, "Fever Multiplier": 100,
-        "Fever Fill Rate": 100, "Fever Time": 100,
-        "Rush": 100, "Flow": 100, "Beat": 50, "Vibe": 50, "Chill": 50,
+        "Perfect Points": 100,
+        "Combo Multiplier": 100,
+        "Fever Multiplier": 100,
+        "Fever Fill Rate": 100,
+        "Fever Time": 100,
+        "Rush": 100,
+        "Flow": 100,
+        "Beat": 50,
+        "Vibe": 50,
+        "Chill": 50,
     }
-    
+
     rows = TOTAL_ROWS + 1
     ref_arrays = {
         "Perfect Points": np.linspace(1.0, 2.0, rows),
@@ -119,10 +127,12 @@ def setup_ga_test_data():
 
         def getboolean(self, section, option, fallback=False):
             val = self.get(section, option, fallback)
-            if isinstance(val, bool): return val
-            if str(val).lower() in ("true", "1", "yes"): return True
+            if isinstance(val, bool):
+                return val
+            if str(val).lower() in ("true", "1", "yes"):
+                return True
             return False
-            
+
         def getint(self, section, option, fallback=0):
             try:
                 return int(self.get(section, option, fallback))
@@ -136,7 +146,7 @@ def setup_ga_test_data():
                 return float(fallback)
 
     cfg = MockCfg()
-    
+
     return {
         "cfg": cfg,
         "base_stats_fixed": base_stats_fixed,
@@ -152,10 +162,10 @@ def setup_ga_test_data():
 def run_ga(data, ga_depth=50):
     """Run the GA solver."""
     from gear_optimizer.solver.genetic import solve_coevolution_genetic
-    
+
     np.random.seed(42)
     random.seed(42)
-    
+
     best_data, best_gear, best_minis, _, _, _, _ = solve_coevolution_genetic(
         cfg=data["cfg"],
         base_stats_fixed=data["base_stats_fixed"],
@@ -170,7 +180,7 @@ def run_ga(data, ga_depth=50):
         optimize_minis=True,
         ga_depth=ga_depth,
     )
-    
+
     return best_data["Score"]
 
 
@@ -179,44 +189,44 @@ def profile_ga(ga_depth=50):
     print("=" * 70)
     print(f"Profiling Genetic Algorithm (ga_depth={ga_depth})")
     print("=" * 70)
-    
+
     # Setup data outside of profiling
     print("\nSetting up test data...")
     data = setup_ga_test_data()
     print("Test data ready.\n")
-    
+
     # Profile the GA run
     profiler = cProfile.Profile()
     profiler.enable()
-    
+
     score = run_ga(data, ga_depth)
-    
+
     profiler.disable()
-    
+
     print(f"\nFinal Score: {score}")
     print("\n" + "=" * 70)
     print("PROFILING RESULTS (Top 30 by cumulative time)")
     print("=" * 70)
-    
+
     # Sort by cumulative time
     stream = io.StringIO()
     stats = pstats.Stats(profiler, stream=stream)
     stats.strip_dirs()
-    stats.sort_stats('cumulative')
+    stats.sort_stats("cumulative")
     stats.print_stats(30)
     print(stream.getvalue())
-    
+
     print("\n" + "=" * 70)
     print("PROFILING RESULTS (Top 30 by total time)")
     print("=" * 70)
-    
+
     stream2 = io.StringIO()
     stats2 = pstats.Stats(profiler, stream=stream2)
     stats2.strip_dirs()
-    stats2.sort_stats('tottime')
+    stats2.sort_stats("tottime")
     stats2.print_stats(30)
     print(stream2.getvalue())
-    
+
     # Save to file
     output_file = os.path.join(os.path.dirname(__file__), "ga_profile_results.txt")
     with open(output_file, "w") as f:
@@ -224,32 +234,33 @@ def profile_ga(ga_depth=50):
         f.write("=" * 70 + "\n\n")
         f.write("TOP 50 BY CUMULATIVE TIME:\n")
         f.write("-" * 70 + "\n")
-        
+
         stream3 = io.StringIO()
         stats3 = pstats.Stats(profiler, stream=stream3)
         stats3.strip_dirs()
-        stats3.sort_stats('cumulative')
+        stats3.sort_stats("cumulative")
         stats3.print_stats(50)
         f.write(stream3.getvalue())
-        
+
         f.write("\n\nTOP 50 BY TOTAL TIME:\n")
         f.write("-" * 70 + "\n")
-        
+
         stream4 = io.StringIO()
         stats4 = pstats.Stats(profiler, stream=stream4)
         stats4.strip_dirs()
-        stats4.sort_stats('tottime')
+        stats4.sort_stats("tottime")
         stats4.print_stats(50)
         f.write(stream4.getvalue())
-    
+
     print(f"\nFull results saved to: {output_file}")
     return score
 
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser(description="Profile the Genetic Algorithm")
     parser.add_argument("--depth", type=int, default=50, help="GA depth (generations)")
     args = parser.parse_args()
-    
+
     profile_ga(ga_depth=args.depth)

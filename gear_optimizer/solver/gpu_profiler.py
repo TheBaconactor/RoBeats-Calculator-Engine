@@ -39,6 +39,7 @@ GPU_PROFILER_ENABLED = ENV.gpu_profiler or ENV.perf_timing
 @dataclass
 class TimingEntry:
     """A single timing measurement."""
+
     name: str
     duration_sec: float
     count: int = 1
@@ -47,6 +48,7 @@ class TimingEntry:
 @dataclass
 class SongTiming:
     """Timing data for a single song."""
+
     song_name: str
     start_time: float
     end_time: float = 0.0
@@ -164,9 +166,7 @@ class GpuProfiler:
             if self._current_song is None:
                 return
 
-            self._current_song.measurements.append(
-                TimingEntry(name=name, duration_sec=duration)
-            )
+            self._current_song.measurements.append(TimingEntry(name=name, duration_sec=duration))
 
             # Categorize timing
             name_lower = name.lower()

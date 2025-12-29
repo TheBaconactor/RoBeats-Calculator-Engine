@@ -5,6 +5,7 @@ This module provides GPU-accelerated timeline precomputation:
 - precompute_timeline_gpu: Compute all 161×161 fever timelines on GPU
 - _upload_timeline_grid: Upload timeline grid to GPU fields with caching
 """
+
 import time
 import numpy as np
 import taichi as ti

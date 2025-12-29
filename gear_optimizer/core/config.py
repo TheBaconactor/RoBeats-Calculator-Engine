@@ -2,6 +2,7 @@
 Configuration management for the gear optimizer.
 Handles config.ini parsing, validation, and status file writing.
 """
+
 import json
 import logging
 import os
@@ -32,15 +33,14 @@ def compute_memory_guard_limit(cfg):
     """
     # Import here to avoid circular dependency
     from .memory import detect_total_physical_memory
+
     platform_default_percent = (
         STRICT_PLATFORM_MEMORY_GUARD_PERCENT
         if sys.platform in ("win32", "cygwin", "darwin")
         else DEFAULT_MEMORY_GUARD_PERCENT
     )
 
-    limit_gb = safe_float(
-        cfg.get("IterationEngine", "MemorySoftLimitGB", fallback=0.0), default=0.0
-    )
+    limit_gb = safe_float(cfg.get("IterationEngine", "MemorySoftLimitGB", fallback=0.0), default=0.0)
     limit_percent = safe_float(
         cfg.get(
             "IterationEngine",
@@ -51,28 +51,21 @@ def compute_memory_guard_limit(cfg):
     )
 
     # Clamp percent to the stricter platform default to avoid overly loose limits on Windows/macOS
-    effective_percent = (
-        min(limit_percent, platform_default_percent) if limit_percent > 0 else 0.0
-    )
+    effective_percent = min(limit_percent, platform_default_percent) if limit_percent > 0 else 0.0
 
     candidates = []
     if limit_gb > 0:
-        candidates.append(limit_gb * (1024 ** 3))
+        candidates.append(limit_gb * (1024**3))
     if effective_percent > 0:
         total_ram = detect_total_physical_memory()
         if total_ram > 0:
             candidates.append(total_ram * (effective_percent / 100.0))
         else:
-            logging.warning(
-                "[MemoryGuard] Physical RAM auto-detect failed; percent limit ignored."
-            )
+            logging.warning("[MemoryGuard] Physical RAM auto-detect failed; percent limit ignored.")
 
     if not candidates:
         return 0
     return int(min(candidates))
-
-
-
 
 
 def load_force_greats_config(cfg):

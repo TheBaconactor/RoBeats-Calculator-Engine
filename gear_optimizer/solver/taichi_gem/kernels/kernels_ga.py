@@ -13,11 +13,12 @@ This module contains 8 kernels implementing genetic algorithm operators:
 These kernels enable fully GPU-native GA execution, avoiding CPU-GPU transfers
 during population evolution.
 """
+
 import sys
 import taichi as ti
 
 # Platform detection for atomic operations
-IS_METAL = (sys.platform == "darwin")
+IS_METAL = sys.platform == "darwin"
 
 from . import kernels_helpers
 
@@ -284,12 +285,18 @@ def ga_copy_island_elites_kernel(
 def ga_aggregate_genome_stats_kernel(
     n_genomes: ti.i32,
     n_slots: ti.i32,
-    is_p_ft: ti.i32, is_s_ft: ti.i32,
-    is_p_ff: ti.i32, is_s_ff: ti.i32,
-    is_p_pp: ti.i32, is_s_pp: ti.i32,
-    is_p_cm: ti.i32, is_s_cm: ti.i32,
-    is_p_fm: ti.i32, is_s_fm: ti.i32,
-    is_p_ov: ti.i32, is_s_ov: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
 ):
     """
     Aggregate item stats into genome_base_stats for all genomes.
@@ -366,12 +373,18 @@ def ga_aggregate_genome_stats_kernel(
 def ga_aggregate_and_init_best_kernel(
     n_genomes: ti.i32,
     n_slots: ti.i32,
-    is_p_ft: ti.i32, is_s_ft: ti.i32,
-    is_p_ff: ti.i32, is_s_ff: ti.i32,
-    is_p_pp: ti.i32, is_s_pp: ti.i32,
-    is_p_cm: ti.i32, is_s_cm: ti.i32,
-    is_p_fm: ti.i32, is_s_fm: ti.i32,
-    is_p_ov: ti.i32, is_s_ov: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
 ):
     """
     FUSED: Aggregate item stats AND initialize chunk_best_key in one kernel.
@@ -555,13 +568,13 @@ def ga_select_crossover_mutate_kernel(
 def ga_store_hints_kernel(n_genomes: ti.i32):
     """
     Store current best gem allocation as hints for next generation.
-    
+
     Reads from genome_result_stats[g] = [score, ft, ff, pp, cm, fm, ov]
     Writes to genome_hint_allocation[g] = [pp, cm, fm, ov]
-    
+
     Call this AFTER evaluation, BEFORE crossover/mutation.
     The hints will be used to warm-start the solver in the next generation.
-    
+
     Args:
         n_genomes: Number of genomes
     """
@@ -580,15 +593,15 @@ def ga_store_hints_kernel(n_genomes: ti.i32):
 def ga_inherit_hints_kernel(n_genomes: ti.i32):
     """
     Inherit hints from parents to children after crossover.
-    
+
     Each child inherits the hint from parent A (the first parent).
     This provides a warm-start point for the next evaluation.
-    
+
     Call this AFTER crossover/mutation, BEFORE evaluation.
-    
+
     The hint_next buffer is used to store inherited hints, then swapped.
     For simplicity, we just copy from parent A's hint to child's hint.
-    
+
     Args:
         n_genomes: Number of genomes
     """
@@ -611,18 +624,18 @@ def ga_next_generation_full_kernel(
 ):
     """
     FULLY FUSED: Selection + Crossover + Mutation + Elitism + Swap + Hint Inheritance.
-    
+
     This kernel combines 4 separate kernels into 1 to reduce launch overhead:
     1. Tournament selection (picks pa, pb)
     2. Crossover + mutation (writes to population_next_indices)
     3. Elite copy (from GPU-resident island_elite_indices)
     4. Swap (next -> current) + hint inheritance
-    
+
     The kernel operates in two phases:
     - Phase 1 (g >= n_elites): Tournament + crossover + mutation for non-elite slots
     - Phase 2 (g < n_elites): Copy elites directly
     - Phase 3: Swap and inherit hints (done in same iteration)
-    
+
     Args:
         n_genomes: Population size
         n_slots: Slots per genome (typically 9)
@@ -635,7 +648,7 @@ def ga_next_generation_full_kernel(
     for g in range(n_genomes):
         state = kernels_helpers.ga_rng_state[g]
         pa = 0  # Initialize pa (used for hint inheritance)
-        
+
         # For elites (g < n_elites): copy from original population
         # For non-elites (g >= n_elites): do tournament + crossover + mutation
         if g < n_elites:
@@ -763,7 +776,7 @@ def ga_next_generation_full_kernel(
                     pa = g
 
         kernels_helpers.ga_rng_state[g] = state
-        
+
         # Store parent_a for hint inheritance (used in second pass)
         kernels_helpers.ga_parent_a[g] = pa
 
@@ -772,11 +785,11 @@ def ga_next_generation_full_kernel(
 def ga_swap_and_inherit_hints_kernel(n_genomes: ti.i32, n_slots: ti.i32):
     """
     FUSED: Swap populations AND inherit hints in one kernel.
-    
+
     This is Phase 2 of the fused next-generation operation:
     1. Copy population_next_indices -> population_indices (swap)
     2. Inherit hints from parent A (stored in ga_parent_a) to child
-    
+
     Args:
         n_genomes: Population size
         n_slots: Slots per genome
@@ -786,7 +799,7 @@ def ga_swap_and_inherit_hints_kernel(n_genomes: ti.i32, n_slots: ti.i32):
         # Swap
         for s in range(n_slots):
             kernels_helpers.population_indices[g, s] = kernels_helpers.population_next_indices[g, s]
-        
+
         # Inherit hints from parent A
         parent_a = kernels_helpers.ga_parent_a[g]
         for i in range(4):

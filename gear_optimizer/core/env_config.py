@@ -14,6 +14,7 @@ Usage:
     if ENV.perf_timing:
         # Enable performance timing
 """
+
 import os
 from dataclasses import dataclass
 from typing import Optional
@@ -57,18 +58,19 @@ class EnvConfig:
     This provides type safety, consistent access patterns, and makes it
     easy to see all available environment variables in one place.
     """
+
     # GPU Performance & Timing
     gpu_sync_for_timing: bool  # GPU_SYNC_FOR_TIMING: Force GPU sync for accurate timing
-    gpu_force_sync: bool       # GPU_FORCE_SYNC: Force GPU synchronization
-    gpu_executor_profile: bool # GPU_EXECUTOR_PROFILE: Enable GPU executor profiling
-    gpu_profiler: bool         # GPU_PROFILER: Enable GPU profiler
-    gpu_batch_log: bool        # GPU_BATCH_LOG: Log GPU batch operations
+    gpu_force_sync: bool  # GPU_FORCE_SYNC: Force GPU synchronization
+    gpu_executor_profile: bool  # GPU_EXECUTOR_PROFILE: Enable GPU executor profiling
+    gpu_profiler: bool  # GPU_PROFILER: Enable GPU profiler
+    gpu_batch_log: bool  # GPU_BATCH_LOG: Log GPU batch operations
 
     # General Performance
-    perf_timing: bool          # PERF_TIMING: Enable performance timing globally
+    perf_timing: bool  # PERF_TIMING: Enable performance timing globally
 
     # Genetic Algorithm
-    ga_seed: Optional[str]     # GA_SEED: Seed for genetic algorithm RNG
+    ga_seed: Optional[str]  # GA_SEED: Seed for genetic algorithm RNG
 
     @classmethod
     def from_environment(cls) -> "EnvConfig":
@@ -85,10 +87,8 @@ class EnvConfig:
             gpu_executor_profile=_env_bool("GPU_EXECUTOR_PROFILE"),
             gpu_profiler=_env_bool("GPU_PROFILER"),
             gpu_batch_log=_env_bool("GPU_BATCH_LOG"),
-
             # General Performance
             perf_timing=_env_bool("PERF_TIMING"),
-
             # Genetic Algorithm
             ga_seed=_env_str("GA_SEED"),
         )

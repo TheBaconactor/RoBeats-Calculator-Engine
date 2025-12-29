@@ -88,8 +88,8 @@ from .kernels_ga import (
     # FUSED kernels
     ga_aggregate_and_init_best_kernel,
     ga_select_crossover_mutate_kernel,
-    ga_next_generation_full_kernel,      # FULLY FUSED: select+crossover+mutate+elitism
-    ga_swap_and_inherit_hints_kernel,    # FUSED: swap+hints
+    ga_next_generation_full_kernel,  # FULLY FUSED: select+crossover+mutate+elitism
+    ga_swap_and_inherit_hints_kernel,  # FUSED: swap+hints
 )
 
 # Import scoring functions and optimize_core_device

@@ -2,13 +2,14 @@ import argparse
 import os
 from pathlib import Path
 
+
 def count_note_types(filepath):
     print(f"Scanning {filepath}...")
     type_counts = {}
     total_lines = 0
     in_data = False
-    
-    with open(filepath, 'r', encoding='utf-8-sig') as f:
+
+    with open(filepath, "r", encoding="utf-8-sig") as f:
         for line in f:
             line = line.strip()
             if line == "Song Data":
@@ -18,9 +19,9 @@ def count_note_types(filepath):
                 continue
             if not line:
                 continue
-            
+
             # Assuming format: Time ID Lane Type
-            parts = line.split('\t')
+            parts = line.split("\t")
             if len(parts) >= 4:
                 try:
                     t = int(parts[3])
@@ -29,13 +30,14 @@ def count_note_types(filepath):
                 except ValueError:
                     pass
             elif len(parts) >= 2:
-                 # Some formats might differ
-                 pass
+                # Some formats might differ
+                pass
 
     print(f"Total Note Lines: {total_lines}")
     print("Type Counts:")
     for t in sorted(type_counts.keys()):
         print(f"Type {t}: {type_counts[t]}")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Count note types in a RoBeats song .txt file.")

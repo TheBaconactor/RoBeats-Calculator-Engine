@@ -1,6 +1,7 @@
 """
 Verify exact score for a specific loadout using explicit gem counts.
 """
+
 import os
 import sys
 import json
@@ -15,8 +16,12 @@ from gear_optimizer.data.csv_parser import load_csv_db, read_table
 from gear_optimizer.solver.scoring import evaluate_stats_score
 from gear_optimizer.core.utils import safe_int, safe_float
 from gear_optimizer.core.constants import (
-    GEM_SCALE_FEVER, GEM_SCALE_NORMAL, GEM_STAT_TO_ELEMENT_SCALE, 
-    ELEMENTAL_GEM_SCALE, MAX_STAT_INDEX, TOTAL_ROWS
+    GEM_SCALE_FEVER,
+    GEM_SCALE_NORMAL,
+    GEM_STAT_TO_ELEMENT_SCALE,
+    ELEMENTAL_GEM_SCALE,
+    MAX_STAT_INDEX,
+    TOTAL_ROWS,
 )
 
 # Hardcode paths
@@ -25,44 +30,42 @@ MINI_CSV = os.path.join(PROJECT_ROOT, "Data", "Gear", "Minis.csv")
 SONGS_DIR = os.path.join(PROJECT_ROOT, "Data", "Hard")
 STATS_TXT = os.path.join(PROJECT_ROOT, "Data", "Gear", "Stats.txt")
 
+
 # --- Custom Song Parser for .txt files ---
 def parse_song_file(filepath):
     meta = {}
     timestamps = []
-    
+
     with open(filepath, "r", encoding="utf-8") as f:
         lines = [l.strip() for l in f.readlines()]
-        
+
     # Section pointers
     in_song_data = False
-    
+
     for line in lines:
-        if not line: continue
-        
+        if not line:
+            continue
+
         if line.startswith("Song Data"):
             in_song_data = True
             continue
-            
+
         if in_song_data:
             # Format: Timestamp <tab> ...
-            parts = line.split('\t')
+            parts = line.split("\t")
             if parts:
                 try:
                     t = float(parts[0])
                     timestamps.append(t)
                 except:
                     pass
-        elif '\t' in line:
+        elif "\t" in line:
             # Metadata key-value
-            k, v = line.split('\t', 1)
+            k, v = line.split("\t", 1)
             meta[k.strip()] = v.strip()
-            
-    return {
-        "metadata": meta,
-        "song_data": {
-            "timestamps": np.array(timestamps, dtype=np.float64)
-        }
-    }
+
+    return {"metadata": meta, "song_data": {"timestamps": np.array(timestamps, dtype=np.float64)}}
+
 
 def find_and_load_song(name_part):
     for f in os.listdir(SONGS_DIR):
@@ -70,11 +73,15 @@ def find_and_load_song(name_part):
             return parse_song_file(os.path.join(SONGS_DIR, f))
     return None
 
+
 # --- Ref Arrays (Copied from app.py) ---
 def preload_ref_arrays(stats_table):
     stat_names = [
-        "Perfect Points", "Combo Multiplier", "Fever Multiplier",
-        "Fever Fill Rate", "Fever Time",
+        "Perfect Points",
+        "Combo Multiplier",
+        "Fever Multiplier",
+        "Fever Fill Rate",
+        "Fever Time",
     ]
     ref_arrays = {}
     for i, name in enumerate(stat_names):
@@ -88,6 +95,7 @@ def preload_ref_arrays(stats_table):
             temp_list.append(val)
         ref_arrays[name] = np.array(temp_list, dtype=np.float64)
     return ref_arrays
+
 
 # --- Load Data ---
 gears = load_csv_db(GEAR_CSV, "gear")
@@ -111,23 +119,41 @@ user_gems = {
     "Fever Multiplier": 5,
     "Combo Multiplier": 0,
     "Perfect Points": 0,
-    "Element": 72  # Assumed Vibe
+    "Element": 72,  # Assumed Vibe
 }
 
 print("=== LOADOUT ===")
-base_stats = {k: 0 for k in ['Perfect Points', 'Combo Multiplier', 'Fever Multiplier', 'Fever Time', 'Fever Fill Rate', 'Beat', 'Vibe', 'Rush', 'Flow', 'Chill']}
+base_stats = {
+    k: 0
+    for k in [
+        "Perfect Points",
+        "Combo Multiplier",
+        "Fever Multiplier",
+        "Fever Time",
+        "Fever Fill Rate",
+        "Beat",
+        "Vibe",
+        "Rush",
+        "Flow",
+        "Chill",
+    ]
+}
 
 for n in gear_names:
     g = gears.get(n)
-    if not g: print(f"MISSING GEAR: {n}")
+    if not g:
+        print(f"MISSING GEAR: {n}")
     else:
-        for k in base_stats: base_stats[k] += g.get(k, 0)
-        
+        for k in base_stats:
+            base_stats[k] += g.get(k, 0)
+
 for n in mini_names:
     m = minis.get(n)
-    if not m: print(f"MISSING MINI: {n}")
+    if not m:
+        print(f"MISSING MINI: {n}")
     else:
-        for k in base_stats: base_stats[k] += m.get(k, 0)
+        for k in base_stats:
+            base_stats[k] += m.get(k, 0)
 
 print(f"Base Stats (Raw): {base_stats}")
 
@@ -174,12 +200,16 @@ s_color = song["metadata"].get("Secondary Color", "")
 primary_val = calc_stats.get(p_color, 0)
 secondary_val = calc_stats.get(s_color, 0)
 
+
 # Lookup values
 def lookup(val, arr, max_idx=TOTAL_ROWS):
     idx = int(val)
-    if idx < 0: idx = 0
-    if idx >= max_idx: idx = max_idx - 1
+    if idx < 0:
+        idx = 0
+    if idx >= max_idx:
+        idx = max_idx - 1
     return arr[idx]
+
 
 base_pp = lookup(calc_stats["Perfect Points"], ref_arrays["Perfect Points"], TOTAL_ROWS)
 combo_mul = lookup(calc_stats["Combo Multiplier"], ref_arrays["Combo Multiplier"], TOTAL_ROWS)
@@ -192,7 +222,7 @@ total_base = (primary_val * 2) + secondary_val + base_pp
 print(f"\n--- DEBUG VALUES ---")
 print(f"Total Notes: {total_notes}")
 print(f"Long Notes:  {long_notes}")
-print(f"Primary ({p_color}): {primary_val} * 2 = {primary_val*2}")
+print(f"Primary ({p_color}): {primary_val} * 2 = {primary_val * 2}")
 print(f"Secondary ({s_color}): {secondary_val}")
 print(f"Base PP ({calc_stats['Perfect Points']}): {base_pp}")
 print(f"Total Base: {total_base}")
@@ -202,11 +232,7 @@ print(f"FT Factor ({calc_stats['Fever Time']}): {ft_factor}")
 print(f"FF Factor ({calc_stats['Fever Fill Rate']}): {ff_factor}")
 print(f"--------------------\n")
 
-score = evaluate_stats_score(
-    calc_stats,
-    song,
-    ref_arrays
-)
+score = evaluate_stats_score(calc_stats, song, ref_arrays)
 
 print(f"\nCALCULATED SCORE: {score:,}")
 print(f"Goal Score:       33,420,761")

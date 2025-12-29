@@ -67,4 +67,3 @@ def test_extract_base_stats_roundtrip_fuzz():
             ff_gems,
         )
         assert recovered == base_stats
-

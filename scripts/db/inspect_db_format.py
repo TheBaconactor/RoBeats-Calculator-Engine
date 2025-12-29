@@ -56,25 +56,25 @@ if loadout:
     print(f"score: {loadout['score']}")
     print(f"fg_score: {loadout['fg_score']}")
     print(f"timestamp: {loadout['timestamp']}")
-    
+
     print(f"\ngear_json (raw): {loadout['gear_json']}")
-    gear = json.loads(loadout['gear_json']) if loadout['gear_json'] else []
+    gear = json.loads(loadout["gear_json"]) if loadout["gear_json"] else []
     print(f"gear_json (parsed): {gear}")
-    
+
     print(f"\nminis_json (raw): {loadout['minis_json']}")
-    minis = json.loads(loadout['minis_json']) if loadout['minis_json'] else []
+    minis = json.loads(loadout["minis_json"]) if loadout["minis_json"] else []
     print(f"minis_json (parsed): {minis}")
-    
+
     print(f"\ndetails_json (raw, first 200 chars): {(loadout['details_json'] or '')[:200]}...")
-    if loadout['details_json']:
-        details = json.loads(loadout['details_json'])
+    if loadout["details_json"]:
+        details = json.loads(loadout["details_json"])
         print(f"details_json keys: {list(details.keys())}")
-        if 'GemCounts' in details:
+        if "GemCounts" in details:
             print(f"  GemCounts: {details['GemCounts']}")
-    
+
     print(f"\nforce_details_json (raw, first 200 chars): {(loadout['force_details_json'] or '')[:200]}...")
-    if loadout['force_details_json']:
-        force = json.loads(loadout['force_details_json'])
+    if loadout["force_details_json"]:
+        force = json.loads(loadout["force_details_json"])
         print(f"force_details_json (parsed): {json.dumps(force, indent=2)}")
 
 conn.close()

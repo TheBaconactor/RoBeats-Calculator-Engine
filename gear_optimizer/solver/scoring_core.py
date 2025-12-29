@@ -78,9 +78,7 @@ def fast_calculate_score(
     combo_val_per_note = int(base_f * combo_mul_f)
     fever_val_per_note = int(base_f * combo_mul_f * fever_mul_f)
 
-    body_score = (count_body_fever * fever_val_per_note) + (
-        count_body_normal * combo_val_per_note
-    )
+    body_score = (count_body_fever * fever_val_per_note) + (count_body_normal * combo_val_per_note)
 
     factor = (combo_mul_f - np.float32(1.0)) * base_f / np.float32(100.0)
     total_head = 0
@@ -186,12 +184,8 @@ def optimize_core_jit(
 
         if allow_pp and cur_pp < MAX_STAT_INDEX:
             t_pp = cur_pp + GEM_SCALE_NORMAL
-            t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_pp) + (
-                fill_bonus * is_p_ov
-            )
-            t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_pp) + (
-                fill_bonus * is_s_ov
-            )
+            t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_pp) + (fill_bonus * is_p_ov)
+            t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_pp) + (fill_bonus * is_s_ov)
             pp_factor = np.float32(lookup_reference_jit(t_pp, ref_pp, TOTAL_ROWS))
             base = np.float32((t_p * 2) + t_s) + pp_factor
             pp_score = fast_calculate_score(
@@ -209,12 +203,8 @@ def optimize_core_jit(
         # Option 1: CM gem
         if cur_cm < MAX_STAT_INDEX and (cur_cm <= 50 or is_p_cm or is_s_cm):
             t_cm = cur_cm + GEM_SCALE_NORMAL
-            t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_cm) + (
-                fill_bonus * is_p_ov
-            )
-            t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_cm) + (
-                fill_bonus * is_s_ov
-            )
+            t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_cm) + (fill_bonus * is_p_ov)
+            t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_cm) + (fill_bonus * is_s_ov)
             pp_factor = np.float32(lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS))
             base = np.float32((t_p * 2) + t_s) + pp_factor
             c_mul = np.float32(lookup_reference_jit(t_cm, ref_cm, TOTAL_ROWS))
@@ -233,12 +223,8 @@ def optimize_core_jit(
         # Option 2: FM gem
         if cur_fm < MAX_STAT_INDEX:
             t_fm = cur_fm + GEM_SCALE_FEVER
-            t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_fm) + (
-                fill_bonus * is_p_ov
-            )
-            t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_fm) + (
-                fill_bonus * is_s_ov
-            )
+            t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_fm) + (fill_bonus * is_p_ov)
+            t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_fm) + (fill_bonus * is_s_ov)
             pp_factor = np.float32(lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS))
             base = np.float32((t_p * 2) + t_s) + pp_factor
             f_mul = np.float32(lookup_reference_jit(t_fm, ref_fm, TOTAL_ROWS))
@@ -256,12 +242,7 @@ def optimize_core_jit(
 
         # PP lookahead: if OV wins a tie *now*, but a few PP gems would break the tie
         # into a real improvement soon, start investing in PP.
-        if (
-            allow_pp
-            and best_opt_idx == 3
-            and pp_score == best_score
-            and remaining_budget > 1
-        ):
+        if allow_pp and best_opt_idx == 3 and pp_score == best_score and remaining_budget > 1:
             max_k = remaining_budget
             if max_k > PP_TIE_LOOKAHEAD_MAX:
                 max_k = PP_TIE_LOOKAHEAD_MAX
@@ -269,12 +250,8 @@ def optimize_core_jit(
             while k <= max_k:
                 fill_bonus_k = (remaining_budget - k) * ELEMENTAL_GEM_SCALE
                 t_pp = cur_pp + (k * GEM_SCALE_NORMAL)
-                t_p = cur_p_val + (k * GEM_STAT_TO_ELEMENT_SCALE * is_p_pp) + (
-                    fill_bonus_k * is_p_ov
-                )
-                t_s = cur_s_val + (k * GEM_STAT_TO_ELEMENT_SCALE * is_s_pp) + (
-                    fill_bonus_k * is_s_ov
-                )
+                t_p = cur_p_val + (k * GEM_STAT_TO_ELEMENT_SCALE * is_p_pp) + (fill_bonus_k * is_p_ov)
+                t_s = cur_s_val + (k * GEM_STAT_TO_ELEMENT_SCALE * is_s_pp) + (fill_bonus_k * is_s_ov)
                 pp_factor = np.float32(lookup_reference_jit(t_pp, ref_pp, TOTAL_ROWS))
                 base = np.float32((t_p * 2) + t_s) + pp_factor
                 score_k = fast_calculate_score(

@@ -35,4 +35,3 @@ TeamColor = Vibe
 
     cfg_dict = cfg_to_dict(cfg)
     assert build_base_stats_from_config(cfg_dict) == get_fixed_stats(cfg)
-

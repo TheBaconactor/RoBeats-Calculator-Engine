@@ -95,7 +95,9 @@ def main() -> int:
             "scores": scores,
         }
         runs.append(run)
-        print(f"[{i}/{args.runs}] exit={proc.returncode} time={dt:.1f}s hard_fg={scores.get(SONG_KEYS[1], {}).get('best_fg_score', 0)}")
+        print(
+            f"[{i}/{args.runs}] exit={proc.returncode} time={dt:.1f}s hard_fg={scores.get(SONG_KEYS[1], {}).get('best_fg_score', 0)}"
+        )
 
     summary_path = outdir / "summary.json"
     summary_path.write_text(json.dumps({"runs": runs}, indent=2), encoding="utf-8")

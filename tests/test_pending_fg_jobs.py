@@ -66,4 +66,3 @@ def test_upsert_pending_fg_job_empty_deletes(db_path):
 
     upsert_pending_fg_job(song, [])
     assert next((j for j in list_pending_fg_jobs() if j.get("song_name") == song), None) is None
-

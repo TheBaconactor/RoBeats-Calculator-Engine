@@ -5,6 +5,7 @@ This module contains the "Rules Layer" - the complex fever timeline logic
 that determines when fever starts/ends based on stats. This logic stays
 on CPU and is NOT ported to GPU.
 """
+
 import numpy as np
 from math import ceil
 
@@ -288,11 +289,11 @@ def calculate_force_greats_timeline_indices(
 
         # Use raw values and ceiling AFTER adding: ceil(raw_base + raw_penalty)
         raw_penalty = max(0.0, forced_val * 0.5)
-        
+
         notes_to_fill = ceil(raw_fever_fill + raw_penalty)
         if non_fever_section == 1:
             notes_to_fill -= 1
-            
+
         fill_penalty_notes = notes_to_fill - (non_fever_base - 1 if non_fever_section == 1 else non_fever_base)
 
         section_start = current_idx
@@ -359,21 +360,21 @@ def calculate_force_greats_timeline_indices(
 class SongTimelineGrid:
     """
     Pre-computed 161x161 grid of fever timelines for a specific song.
-    
+
     Caches all possible timelines based on raw FT/FF stat indices (0-160).
     Provides O(1) lookup for the gem solver and Force Greats.
-    
+
     Key insight: Force Greats just increases fill requirement per section,
     so we cache base parameters (non_fever_base, real_fever_time) and
     compute adjusted timelines dynamically.
     """
-    
+
     GRID_SIZE = TOTAL_ROWS + 1  # 0 to 160 inclusive = 161
-    
+
     def __init__(self, calc_song, ref_arrays):
         """
         Initialize the timeline grid for a song.
-        
+
         Args:
             calc_song: Song calculation context with timestamps/metadata
             ref_arrays: Reference lookup arrays for stat -> multiplier conversion
@@ -390,19 +391,17 @@ class SongTimelineGrid:
             float(meta.get("Last Note Time", 0) or 0),
             int(meta.get("Long Notes", 0) or 0),
         )
-        
+
         # Extract song data
         song_data = calc_song["song_data"]
         self.song_timestamps = song_data["timestamps"]
-        
+
         # Extract FG-specific timestamps when HumanHitSim is enabled
         # These provide simulated Perfect hit times and late-only Great times
         # Fallback to regular timestamps when HumanHitSim is disabled
         self.fg_timestamps = song_data.get("fg_timestamps", self.song_timestamps)
-        self.fg_great_candidate_timestamps = song_data.get(
-            "fg_great_candidate_timestamps", self.song_timestamps
-        )
-        
+        self.fg_great_candidate_timestamps = song_data.get("fg_great_candidate_timestamps", self.song_timestamps)
+
         self.total_notes = len(self.song_timestamps)
         self.long_notes = int(calc_song["metadata"].get("Long Notes", 0))
         self.last_note_time = float(calc_song["metadata"].get("Last Note Time", 0))
@@ -411,7 +410,7 @@ class SongTimelineGrid:
         # Game formula constants (see constants.FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET)
         self.non_fever_cas = (self.total_notes - self.long_notes) * FEVER_FILL_BASE_RATE
         self.fever_time_cas = self.last_note_time * FEVER_TIME_SCALE + FEVER_TIME_OFFSET
-        
+
         # Precompute all FT/FF multipliers (161 each)
         ref_ft = ref_arrays["Fever Time"]
         ref_ff = ref_arrays["Fever Fill Rate"]
@@ -420,55 +419,57 @@ class SongTimelineGrid:
         # Numba-friendly arrays (avoid Python loops/boxing in JIT grid builders)
         self._ft_factors_np = np.asarray(self.ft_factors, dtype=np.float64)
         self._ff_factors_np = np.asarray(self.ff_factors, dtype=np.float64)
-        
+
         # Lazy-loaded 2D grid: [ft_idx][ff_idx] -> (mask_head, body_fever, body_normal, activations)
         # Using None to indicate not-yet-computed
         self._timeline_grid = [[None] * self.GRID_SIZE for _ in range(self.GRID_SIZE)]
-        
+
         # Shared buffer for timeline calculation
         self._fever_mask_buffer = np.zeros(self.total_notes, dtype=np.bool_)
-        
+
         # Flag to track if precompute_all has been called
         self._precomputed = False
 
         # Cached fast grids (do not require fever_mask_head copies)
         self._fever_activations_grid = None
         self._last_fever_end_grid = None
-    
+
     def get_timeline(self, ft_idx, ff_idx):
         """
         Get cached timeline for given FT/FF stat indices.
         Computes and caches if not already present.
-        
+
         Args:
             ft_idx: Fever Time stat index (0-160)
             ff_idx: Fever Fill Rate stat index (0-160)
-            
+
         Returns:
             tuple: (fever_mask_head, count_body_fever, count_body_normal, fever_activations, last_fever_end_idx)
         """
         # Clamp indices to valid range
         ft_idx = max(0, min(TOTAL_ROWS, int(ft_idx)))
         ff_idx = max(0, min(TOTAL_ROWS, int(ff_idx)))
-        
+
         cached = self._timeline_grid[ft_idx][ff_idx]
         if cached is not None:
             return cached
-        
+
         # Compute timeline
         ft_factor = self.ft_factors[ft_idx]
         ff_factor = self.ff_factors[ff_idx]
-        
-        fever_mask_head, count_body_fever, count_body_normal, fever_activations, last_fever_end_idx = calculate_fever_timeline_indices(
-            self.song_timestamps,
-            self.total_notes,
-            ff_factor,
-            ft_factor,
-            self.long_notes,
-            self.last_note_time,
-            self._fever_mask_buffer,
+
+        fever_mask_head, count_body_fever, count_body_normal, fever_activations, last_fever_end_idx = (
+            calculate_fever_timeline_indices(
+                self.song_timestamps,
+                self.total_notes,
+                ff_factor,
+                ft_factor,
+                self.long_notes,
+                self.last_note_time,
+                self._fever_mask_buffer,
+            )
         )
-        
+
         # Copy the head slice (buffer is reused)
         result = (fever_mask_head.copy(), count_body_fever, count_body_normal, fever_activations, last_fever_end_idx)
         self._timeline_grid[ft_idx][ff_idx] = result
@@ -478,12 +479,12 @@ class SongTimelineGrid:
         """
         Calculates timeline dynamics with specific forced greats counts.
         Used for analytic breakpoint finding.
-        
+
         Args:
             ft_idx: Fever Time stat index
             ff_idx: Fever Fill Rate stat index
             forced_counts: List/Tuple of forced greats counts per section
-            
+
         Returns:
             tuple: (fever_mask_head, count_body_fever, count_body_normal, fever_activations, last_fever_end_idx)
         """
@@ -491,24 +492,24 @@ class SongTimelineGrid:
         ff_idx = max(0, min(TOTAL_ROWS, int(ff_idx)))
         ft_factor = self.ft_factors[ft_idx]
         ff_factor = self.ff_factors[ff_idx]
-        
+
         # Prepare buffers for the kernel
         max_sections = 16
         forced_counts_arr = np.array(forced_counts, dtype=np.int32)
         forced_len = len(forced_counts)
         padded_counts = np.zeros(max_sections, dtype=np.int32)
         padded_counts[:forced_len] = forced_counts_arr
-        
+
         section_start_out = np.zeros(max_sections, dtype=np.int32)
         section_forced_out = np.zeros(max_sections, dtype=np.int32)
         section_fill_penalty_out = np.zeros(max_sections, dtype=np.int32)
         section_skip_wasted_out = np.zeros(max_sections, dtype=np.int32)
-        
+
         # We reuse the thread-local buffer if single-threaded, but to be safe create new or copy header
         # Actually calculate_force_greats_timeline_indices writes to fever_mask_buffer.
         # We can reuse self._fever_mask_buffer if this is single-threaded CPU.
         # Yes, standard python thread.
-        
+
         mask_result, cbf, cbn, base, sec_cnt = calculate_force_greats_timeline_indices(
             self.fg_timestamps,
             self.fg_great_candidate_timestamps,
@@ -519,25 +520,25 @@ class SongTimelineGrid:
             self.last_note_time,
             padded_counts,
             forced_len,
-            True, # clamp_base_notes_nonnegative
-            True, # clamp_forced_to_section_notes
-            False, # use_forced_great_timing
+            True,  # clamp_base_notes_nonnegative
+            True,  # clamp_forced_to_section_notes
+            False,  # use_forced_great_timing
             self._fever_mask_buffer,
             section_start_out,
             section_forced_out,
             section_fill_penalty_out,
-            section_skip_wasted_out
+            section_skip_wasted_out,
         )
-        
+
         # We need "last_fever_end_idx". The kernel calculates fever mask.
         # We can find the last True index in mask? Or recalculate?
         # calculate_force_greats_timeline_indices doesn't return last_end explicitly in its tuple.
         # It updates mask. We can scan mask.
-        
+
         # Fast way to find last non-zero index in boolean array:
         # np.max(np.nonzero(mask))
         # But mask is reused.
-        
+
         # Actually, let's look at calculate_fever_timeline_indices (the standard one).
         # It returns last_fever_end_idx.
         # calculate_force_greats_timeline_indices does NOT return it.
@@ -545,47 +546,46 @@ class SongTimelineGrid:
         # Deriving it requires scanning the array which is slow O(N).
         # Updating the kernel is better.
         # But I cannot easily update the kernel signature without breaking other callers (e.g. scoring.py).
-        
+
         # Check usage in scoring.py.
         # scoring.py calls it.
-        
+
         # Alternative: The "Breakpoints" logic only cares if the *Set of Covered Notes* changes.
         # Set of Covered Notes = (mask_head + body_fever).
         # We have these.
         # If (mask_head hash, body_fever) changes, then the config is distinct.
-        # We don't technically need last_fever_end_idx for the breakpoint logic itself, 
+        # We don't technically need last_fever_end_idx for the breakpoint logic itself,
         # unless we use it for Gap calculation.
         # But we use `get_timeline`(standard) for the Gap check.
         # So we represent the result by (mask_head.copy(), cbf, cbn).
-        
+
         return mask_result.copy(), cbf, cbn
 
-    
     def get_fever_params(self, ft_idx, ff_idx):
         """
         Get fever parameters for Force Greats calculation.
-        
+
         Args:
             ft_idx: Fever Time stat index (0-160)
             ff_idx: Fever Fill Rate stat index (0-160)
-            
+
         Returns:
             tuple: (non_fever_base, real_fever_time, non_fever_great_to_fill, raw_fever_fill)
         """
         ft_idx = max(0, min(TOTAL_ROWS, int(ft_idx)))
         ff_idx = max(0, min(TOTAL_ROWS, int(ff_idx)))
-        
+
         ft_factor = self.ft_factors[ft_idx]
         ff_factor = self.ff_factors[ff_idx]
-        
+
         raw_fever_fill = self.non_fever_cas * ff_factor
         non_fever_base = ceil(raw_fever_fill)
         real_fever_time = self.fever_time_cas * ft_factor
         # Max greats to fill: effectively 2x the base (perfect judgement fills faster)
         non_fever_great_to_fill = ceil(max(1.0, raw_fever_fill * 2.0))
-        
+
         return non_fever_base, real_fever_time, non_fever_great_to_fill, raw_fever_fill
-    
+
     def precompute_all(self):
         """
         Eagerly compute all 161x161 timeline entries.
@@ -593,17 +593,17 @@ class SongTimelineGrid:
         """
         if self._precomputed:
             return  # Already computed - skip!
-        
+
         for ft in range(self.GRID_SIZE):
             for ff in range(self.GRID_SIZE):
                 self.get_timeline(ft, ff)  # Populates internal cache
-        
+
         self._precomputed = True
-    
+
     def to_gpu_arrays(self):
         """
         Convert timeline grid to GPU-friendly NumPy arrays.
-        
+
         Returns:
             dict: {
                 'count_body_fever': (161, 161) int32 array,
@@ -614,19 +614,19 @@ class SongTimelineGrid:
                 'ft_factors': (161,) float32 array,
                 'ff_factors': (161,) float32 array,
             }
-        
+
         Note: fever_mask_head varies in size per timeline, so we store
         count_body_fever/normal/activations which are sufficient for scoring.
         """
         # Ensure all entries are computed
         self.precompute_all()
-        
+
         count_body_fever = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
         count_body_normal = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
         fever_activations = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
         last_fever_end = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
         gap = np.zeros((self.GRID_SIZE, self.GRID_SIZE), dtype=np.int32)
-        
+
         for ft in range(self.GRID_SIZE):
             for ff in range(self.GRID_SIZE):
                 timeline = self._timeline_grid[ft][ff]
@@ -637,15 +637,15 @@ class SongTimelineGrid:
                     fever_activations[ft, ff] = acts
                     last_fever_end[ft, ff] = lfe
                     gap[ft, ff] = self.total_notes - lfe
-        
+
         return {
-            'count_body_fever': count_body_fever,
-            'count_body_normal': count_body_normal,
-            'fever_activations': fever_activations,
-            'last_fever_end': last_fever_end,
-            'gap': gap,
-            'ft_factors': np.array(self.ft_factors, dtype=np.float32),
-            'ff_factors': np.array(self.ff_factors, dtype=np.float32),
+            "count_body_fever": count_body_fever,
+            "count_body_normal": count_body_normal,
+            "fever_activations": fever_activations,
+            "last_fever_end": last_fever_end,
+            "gap": gap,
+            "ft_factors": np.array(self.ft_factors, dtype=np.float32),
+            "ff_factors": np.array(self.ff_factors, dtype=np.float32),
         }
 
     def to_gpu_arrays_minimal(self):
@@ -684,11 +684,11 @@ class SongTimelineGrid:
 def get_song_timeline_grid(calc_song, ref_arrays):
     """
     Get or create a SongTimelineGrid for the given song.
-    
+
     Args:
         calc_song: Song calculation context
         ref_arrays: Reference lookup arrays
-        
+
     Returns:
         SongTimelineGrid: Cached or newly created grid
     """
@@ -697,8 +697,8 @@ def get_song_timeline_grid(calc_song, ref_arrays):
         calc_song["metadata"].get("Song Name", ""),
         len(calc_song["song_data"]["timestamps"]),
     )
-    
+
     if song_key not in SONG_TIMELINE_GRIDS:
         SONG_TIMELINE_GRIDS[song_key] = SongTimelineGrid(calc_song, ref_arrays)
-    
+
     return SONG_TIMELINE_GRIDS[song_key]

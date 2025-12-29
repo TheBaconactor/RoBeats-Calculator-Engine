@@ -1,4 +1,3 @@
-
 import sys
 import os
 import sqlite3
@@ -7,6 +6,7 @@ import sqlite3
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 from gear_optimizer.data.database import get_evolution_db_path
+
 
 def list_songs():
     db_path = get_evolution_db_path()
@@ -27,6 +27,7 @@ def list_songs():
         else:
             # print(song[0]) # Commented out to avoid clutter, only looking for Remember
             pass
+
 
 if __name__ == "__main__":
     list_songs()

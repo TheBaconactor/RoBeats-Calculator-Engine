@@ -52,4 +52,3 @@ def ga_update_global_best_kernel(n_genomes: ti.i32, n_slots: ti.i32):
             res = kernels_helpers.genome_result_stats[g]
             for r in ti.static(range(7)):
                 kernels_helpers.ga_global_best_results[r] = res[r]
-

@@ -13,7 +13,7 @@ from .. import kernels_helpers
 from ..kernels_scoring import local_search_from_hint, optimize_core_device
 
 # Platform detection for atomic operations
-IS_METAL = (sys.platform == "darwin")
+IS_METAL = sys.platform == "darwin"
 
 
 @ti.kernel
@@ -24,12 +24,18 @@ def ga_find_best_combo_warmstart_kernel(
     combo_count: ti.i32,
     total_budget: ti.i32,
     gem_scale_fever: ti.i32,
-    is_p_ft: ti.i32, is_s_ft: ti.i32,
-    is_p_ff: ti.i32, is_s_ff: ti.i32,
-    is_p_pp: ti.i32, is_s_pp: ti.i32,
-    is_p_cm: ti.i32, is_s_cm: ti.i32,
-    is_p_fm: ti.i32, is_s_fm: ti.i32,
-    is_p_ov: ti.i32, is_s_ov: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
     song_slot: ti.i32,
     use_hints: ti.i32,  # 0 = cold start (full greedy), 1 = warm start (local search from hint)
 ):
@@ -118,29 +124,56 @@ def ga_find_best_combo_warmstart_kernel(
             # Warm start: use hint from previous generation
             hint = kernels_helpers.genome_hint_allocation[genome_idx]
             res_vec = local_search_from_hint(
-                hint[0], hint[1], hint[2], hint[3],  # pp, cm, fm, ov hints
+                hint[0],
+                hint[1],
+                hint[2],
+                hint[3],  # pp, cm, fm, ov hints
                 budget,
-                base_pp, base_cm, base_fm,
-                p_val, s_val,
-                is_p_pp, is_s_pp,
-                is_p_cm, is_s_cm,
-                is_p_fm, is_s_fm,
-                is_p_ov, is_s_ov,
-                head_len, count_fever, count_normal,
-                song_slot, ft_idx, ff_idx,
+                base_pp,
+                base_cm,
+                base_fm,
+                p_val,
+                s_val,
+                is_p_pp,
+                is_s_pp,
+                is_p_cm,
+                is_s_cm,
+                is_p_fm,
+                is_s_fm,
+                is_p_ov,
+                is_s_ov,
+                head_len,
+                count_fever,
+                count_normal,
+                song_slot,
+                ft_idx,
+                ff_idx,
             )
         else:
             # Cold start: full greedy search
             res_vec = optimize_core_device(
-                0, budget,
-                base_pp, base_cm, base_fm,
-                p_val, s_val,
-                is_p_pp, is_s_pp,
-                is_p_cm, is_s_cm,
-                is_p_fm, is_s_fm,
-                is_p_ov, is_s_ov,
-                head_len, count_fever, count_normal,
-                1, song_slot, ft_idx, ff_idx,
+                0,
+                budget,
+                base_pp,
+                base_cm,
+                base_fm,
+                p_val,
+                s_val,
+                is_p_pp,
+                is_s_pp,
+                is_p_cm,
+                is_s_cm,
+                is_p_fm,
+                is_s_fm,
+                is_p_ov,
+                is_s_ov,
+                head_len,
+                count_fever,
+                count_normal,
+                1,
+                song_slot,
+                ft_idx,
+                ff_idx,
             )
 
         score: ti.i32 = res_vec[0]
@@ -163,4 +196,3 @@ def ga_find_best_combo_warmstart_kernel(
                     kernels_helpers.chunk_best_results[genome_idx, 1] = res_vec[2]  # cm
                     kernels_helpers.chunk_best_results[genome_idx, 2] = res_vec[3]  # fm
                     kernels_helpers.chunk_best_results[genome_idx, 3] = res_vec[4]  # ov
-

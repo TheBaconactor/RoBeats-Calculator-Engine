@@ -7,6 +7,7 @@ This module handles:
 - Grid fields for timeline lookups
 - bind_fields() to inject live field objects into kernels module
 """
+
 import os
 import sys
 
@@ -29,6 +30,7 @@ MAX_SLOTS = 9  # 6 gear + 3 minis (GPU-native GA representation)
 MAX_ITEMS = 65536  # Upper bound for (type,Name)-deduped items per song (row 0 reserved)
 ITEM_STAT_DIM = 10  # PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill
 MAX_SONG_NOTES = 200000  # Maximum song length for GPU timeline computation
+
 
 def _env_int(name: str, default: int) -> int:
     try:
@@ -68,12 +70,12 @@ ref_ff_field: ti.Field = None  # Fever Fill Rate multipliers
 
 # Timeline grid with song slots (MAX_SONG_SLOTS, 161, 161)
 # Slot 0 is default for single-song mode; slots 1-7 for batch mode
-grid_count_body_fever: ti.Field = None   # (MAX_SONG_SLOTS, 161, 161) i32
+grid_count_body_fever: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32
 grid_count_body_normal: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32
-grid_head_len: ti.Field = None           # (MAX_SONG_SLOTS, 161, 161) i32
-grid_fever_masks: ti.Field = None        # (MAX_SONG_SLOTS, 161, 161, 100) i8 - head masks
-grid_fever_masks_bits: ti.Field = None   # (MAX_SONG_SLOTS, 161, 161, 4) u32 - bitpacked head masks
-grid_gap: ti.Field = None                 # (MAX_SONG_SLOTS, 161, 161) i16 - gap to song end per (FT, FF)
+grid_head_len: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32
+grid_fever_masks: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161, 100) i8 - head masks
+grid_fever_masks_bits: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161, 4) u32 - bitpacked head masks
+grid_gap: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i16 - gap to song end per (FT, FF)
 grid_fever_activations: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i8 - fever activations per (FT, FF)
 
 # Song data for GPU timeline computation
@@ -93,8 +95,8 @@ work_genome_id: ti.Field = None
 work_items: ti.Field = None  # Vector field [budget, cnt_fever, cnt_normal, ft, ff, hl, gid, song_slot]
 
 # Breakpoint detection kernel inputs/outputs (bound into kernels_breakpoints)
-bp_pair_ft: ti.Field = None      # (MAX_BP_PAIRS,) i32
-bp_pair_ff: ti.Field = None      # (MAX_BP_PAIRS,) i32
+bp_pair_ft: ti.Field = None  # (MAX_BP_PAIRS,) i32
+bp_pair_ff: ti.Field = None  # (MAX_BP_PAIRS,) i32
 bp_result_mask: ti.Field = None  # (16, 64) i32
 
 # Per-genome base stats (lookup by genome_id in kernel)
@@ -114,34 +116,34 @@ population_indices: ti.Field = None  # (MAX_GENOMES, MAX_SLOTS) item_id per (gen
 population_next_indices: ti.Field = None  # (MAX_GENOMES, MAX_SLOTS) next generation buffer
 # Initial populations staged on GPU for multi-start runs (uploaded once per segment, then copied run-by-run).
 ga_initial_populations: ti.Field = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES, MAX_SLOTS) item_id per (run,genome,slot)
-item_stats: ti.Field = None          # (MAX_ITEMS, ITEM_STAT_DIM) dense item stats table
-base_fixed_stats: ti.Field = None    # (ITEM_STAT_DIM,) fixed base stats (added to all genomes)
-ga_scores: ti.Field = None           # (MAX_GENOMES,) int32 fitness scores (from evaluation)
-ga_rng_state: ti.Field = None        # (MAX_GENOMES,) uint32 RNG state per genome/thread
-ga_parent_a: ti.Field = None         # (MAX_GENOMES,) int32 selected parent index A
-ga_parent_b: ti.Field = None         # (MAX_GENOMES,) int32 selected parent index B
+item_stats: ti.Field = None  # (MAX_ITEMS, ITEM_STAT_DIM) dense item stats table
+base_fixed_stats: ti.Field = None  # (ITEM_STAT_DIM,) fixed base stats (added to all genomes)
+ga_scores: ti.Field = None  # (MAX_GENOMES,) int32 fitness scores (from evaluation)
+ga_rng_state: ti.Field = None  # (MAX_GENOMES,) uint32 RNG state per genome/thread
+ga_parent_a: ti.Field = None  # (MAX_GENOMES,) int32 selected parent index A
+ga_parent_b: ti.Field = None  # (MAX_GENOMES,) int32 selected parent index B
 
 # GPU-side global best tracking (avoids per-generation CPU downloads)
-ga_global_best_score: ti.Field = None     # (1,) i32 - best score across all generations
-ga_global_best_genome: ti.Field = None    # (MAX_SLOTS,) i32 - item IDs of best genome
-ga_global_best_results: ti.Field = None   # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for best genome
+ga_global_best_score: ti.Field = None  # (1,) i32 - best score across all generations
+ga_global_best_genome: ti.Field = None  # (MAX_SLOTS,) i32 - item IDs of best genome
+ga_global_best_results: ti.Field = None  # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for best genome
 # Packed GA download payload (reduce CPU<->GPU transfers): row 0 = global best, rows 1..n = per-genome snapshot.
-ga_run_payload_packed: ti.Field = None    # (MAX_GENOMES+1, 17) i32 - [score, slot_ids(9), result(7)]
+ga_run_payload_packed: ti.Field = None  # (MAX_GENOMES+1, 17) i32 - [score, slot_ids(9), result(7)]
 # Multi-start GA snapshot buffer (stores packed payload per run to avoid per-run downloads).
 MAX_GA_RUNS = 128  # Stores up to this many GA runs before a flush/download.
 MAX_GA_RUN_GENOMES = 1024  # Must be >= GA_POPULATION_SIZE (250).
-ga_runs_payload_packed: ti.Field = None   # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17) i32
+ga_runs_payload_packed: ti.Field = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17) i32
 
 # GPU-side island elitism (avoids per-generation score downloads)
 MAX_ISLANDS = 16  # Maximum number of islands
-island_boundaries: ti.Field = None        # (MAX_ISLANDS+1,) i32 - island start indices + end sentinel
-island_elite_indices: ti.Field = None     # (MAX_GENOMES,) i32 - output: elite genome indices
-island_elite_count: ti.Field = None       # (1,) i32 - output: total elites found
+island_boundaries: ti.Field = None  # (MAX_ISLANDS+1,) i32 - island start indices + end sentinel
+island_elite_indices: ti.Field = None  # (MAX_GENOMES,) i32 - output: elite genome indices
+island_elite_count: ti.Field = None  # (1,) i32 - output: total elites found
 
 # Slot pools for GPU mutation - contiguous ID ranges per slot
 # Allows O(1) mutation: new_id = slot_start[s] + (rand % slot_count[s])
-slot_start: ti.Field = None          # (MAX_SLOTS,) int32 - first valid item_id for slot
-slot_count: ti.Field = None          # (MAX_SLOTS,) int32 - number of items in slot pool
+slot_start: ti.Field = None  # (MAX_SLOTS,) int32 - first valid item_id for slot
+slot_count: ti.Field = None  # (MAX_SLOTS,) int32 - number of items in slot pool
 
 # Per-slot song flags for batch coalescing (12 flags per slot)
 # Indices: [is_p_ft, is_s_ft, is_p_ff, is_s_ff, is_p_pp, is_s_pp,
@@ -169,16 +171,16 @@ genome_result_fm: ti.Field = None
 genome_result_ov: ti.Field = None
 genome_result_stats: ti.Field = None  # Vector field [score, ft, ff, pp, cm, fm, ov]
 genome_hint_allocation: ti.Field = None  # Vector field [pp, cm, fm, ov] - warm-start hints from previous gen
-chunk_best_key: ti.Field = None       # (MAX_GENOMES,) u64 packed key for safe per-chunk reduction
-ftff_combo_ft: ti.Field = None        # (MAX_FTFF_COMBOS,) i32 FT gems per combo
-ftff_combo_ff: ti.Field = None        # (MAX_FTFF_COMBOS,) i32 FF gems per combo
+chunk_best_key: ti.Field = None  # (MAX_GENOMES,) u64 packed key for safe per-chunk reduction
+ftff_combo_ft: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FT gems per combo
+ftff_combo_ff: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FF gems per combo
 
 # Metal-specific 32-bit fields (used instead of u64 atomics on macOS)
-chunk_best_score: ti.Field = None     # (MAX_GENOMES,) i32 best score per genome (Metal)
-chunk_best_idx: ti.Field = None       # (MAX_GENOMES,) i32 work item index (Metal)
+chunk_best_score: ti.Field = None  # (MAX_GENOMES,) i32 best score per genome (Metal)
+chunk_best_idx: ti.Field = None  # (MAX_GENOMES,) i32 work item index (Metal)
 
 # Cached evaluation results per genome (eliminates redundant optimize_core_device calls)
-chunk_best_results: ti.Field = None   # (MAX_GENOMES, 4) i32 - [pp, cm, fm, ov] from winning combo
+chunk_best_results: ti.Field = None  # (MAX_GENOMES, 4) i32 - [pp, cm, fm, ov] from winning combo
 
 
 # ============================================================================
@@ -347,6 +349,7 @@ def reset_fields_state() -> None:
 # FIELD ALLOCATION
 # ============================================================================
 
+
 def _clamp_ga_runs(n: int) -> int:
     if n < 1:
         return 1
@@ -389,7 +392,7 @@ def configure_ga_run_buffers(*, max_runs: int | None = None, max_genomes: int | 
 def allocate_fields():
     """
     Allocate GPU fields. Must be called after ti.init().
-    
+
     This allocates:
     - Reference tables (161 entries each, f32)
     - Work item inputs/outputs (MAX_WORK_ITEMS)
@@ -417,10 +420,10 @@ def allocate_fields():
     global ga_runs_payload_packed
     global ga_run_payload_packed
     global island_boundaries, island_elite_indices, island_elite_count
-    
+
     if _fields_allocated:
         return
-    
+
     # Reference tables (f32 for performance)
     ref_pp_field = ti.field(dtype=ti.f32, shape=161)
     ref_cm_field = ti.field(dtype=ti.f32, shape=161)
@@ -432,12 +435,12 @@ def allocate_fields():
     bp_pair_ft = ti.field(dtype=ti.i32, shape=MAX_BP_PAIRS)
     bp_pair_ff = ti.field(dtype=ti.i32, shape=MAX_BP_PAIRS)
     bp_result_mask = ti.field(dtype=ti.i32, shape=(16, 64))
-    
+
     # Work item inputs (Vector field for single-shot upload)
     # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id, song_slot]
     fever_masks = ti.field(dtype=ti.i8, shape=(MAX_WORK_ITEMS, MAX_HEAD_NOTES))
     work_items = ti.Vector.field(n=8, dtype=ti.i32, shape=MAX_WORK_ITEMS)
-    
+
     # Per-genome base stats (lookup by work_genome_id in kernel)
     # [pp, cm, fm, p_val, s_val, ft, ff]
     genome_base_stats = ti.Vector.field(n=7, dtype=ti.i16, shape=MAX_GENOMES)
@@ -452,19 +455,19 @@ def allocate_fields():
     ga_rng_state = ti.field(dtype=ti.u32, shape=MAX_GENOMES)
     ga_parent_a = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     ga_parent_b = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    
+
     # Slot pools for GPU mutation
     slot_start = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
     slot_count = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
-    
+
     # Per-slot song flags for batch coalescing
     # [is_p_ft, is_s_ft, is_p_ff, is_s_ff, is_p_pp, is_s_pp, is_p_cm, is_s_cm, is_p_fm, is_s_fm, is_p_ov, is_s_ov]
     song_flags = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, 12))
-    
+
     # Per-work-item results (Vector field for single-shot download)
     # [score, pp, cm, fm, ov, p_val, s_val]
     result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_WORK_ITEMS)
-    
+
     # Per-genome results (for FT/FF iteration kernel)
     # [score, ft, ff, pp, cm, fm, ov]
     genome_result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_GENOMES)
@@ -482,30 +485,31 @@ def allocate_fields():
     ftff_combo_ff = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
     # Cached evaluation results per genome [pp, cm, fm, ov] - avoids redundant scoring
     chunk_best_results = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, 4))
-    
+
     # GPU-side global best tracking (avoids per-generation CPU downloads)
     ga_global_best_score = ti.field(dtype=ti.i32, shape=1)
     ga_global_best_genome = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
     ga_global_best_results = ti.field(dtype=ti.i32, shape=7)  # [score, ft, ff, pp, cm, fm, ov]
     ga_run_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES + 1, 1 + MAX_SLOTS + 7))
     ga_runs_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GA_RUNS, MAX_GA_RUN_GENOMES + 1, 1 + MAX_SLOTS + 7))
-    
+
     # GPU-side island elitism (avoids per-generation score downloads)
     # Islands are contiguous ranges in the population
     MAX_ISLANDS = 16  # Maximum number of islands
     island_boundaries = ti.field(dtype=ti.i32, shape=MAX_ISLANDS + 1)  # [start0, start1, ..., end_last]
     island_elite_indices = ti.field(dtype=ti.i32, shape=MAX_GENOMES)  # Output: elite genome indices
     island_elite_count = ti.field(dtype=ti.i32, shape=1)  # Output: total elites found
-    
-    _fields_allocated = True
-    print(f"[Taichi] Allocated GPU fields: {MAX_WORK_ITEMS} work items, {MAX_HEAD_NOTES} head notes, {MAX_GENOMES} genomes")
 
+    _fields_allocated = True
+    print(
+        f"[Taichi] Allocated GPU fields: {MAX_WORK_ITEMS} work items, {MAX_HEAD_NOTES} head notes, {MAX_GENOMES} genomes"
+    )
 
 
 def allocate_grid_fields():
     """
     Allocate GPU fields for timeline grid. Must be called after ti.init().
-    
+
     This allocates MAX_SONG_SLOTS × 161×161 timeline grids for batch coalescing.
     Each song slot can hold a different song's grid for parallel processing.
     """
@@ -513,10 +517,10 @@ def allocate_grid_fields():
     global grid_gap, grid_fever_activations
     global song_timestamps
     global _grid_fields_allocated
-    
+
     if _grid_fields_allocated:
         return
-    
+
     # Timeline grid with song slots (MAX_SONG_SLOTS × 161×161)
     # Slot 0 is default for single-song mode; slots 0-7 for batch mode
     grid_count_body_fever = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
@@ -528,12 +532,12 @@ def allocate_grid_fields():
     grid_gap = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     # Fever activations count per (FT, FF) - sections beyond this have no fever
     grid_fever_activations = ti.field(dtype=ti.i8, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
-    
+
     # Song timestamps for GPU timeline computation (may already be allocated by
     # ensure_fields_allocated for non-grid kernels).
     if song_timestamps is None:
         song_timestamps = ti.field(dtype=ti.f32, shape=MAX_SONG_NOTES)
-    
+
     _grid_fields_allocated = True
     print(f"[Taichi] Allocated grid fields: {MAX_SONG_SLOTS}×{GRID_SIZE}×{GRID_SIZE} timeline grid slots")
 
@@ -541,6 +545,7 @@ def allocate_grid_fields():
 # ============================================================================
 # FIELD BINDING (for kernels module)
 # ============================================================================
+
 
 def bind_fields(kernels_module):
     """
@@ -559,6 +564,7 @@ def bind_fields(kernels_module):
     # Otherwise bind to the module directly (monolithic kernels.py)
     try:
         from . import kernels
+
         target = kernels.kernels_helpers
     except (ImportError, AttributeError):
         target = kernels_module
@@ -619,14 +625,14 @@ def bind_fields(kernels_module):
     target.ftff_combo_ft = ftff_combo_ft
     target.ftff_combo_ff = ftff_combo_ff
     target.chunk_best_results = chunk_best_results
-    
+
     # GPU-side global best tracking
     target.ga_global_best_score = ga_global_best_score
     target.ga_global_best_genome = ga_global_best_genome
     target.ga_global_best_results = ga_global_best_results
     target.ga_runs_payload_packed = ga_runs_payload_packed
     target.ga_run_payload_packed = ga_run_payload_packed
-    
+
     # GPU-side island elitism
     target.island_boundaries = island_boundaries
     target.island_elite_indices = island_elite_indices
@@ -635,6 +641,7 @@ def bind_fields(kernels_module):
     # Bind breakpoint-detection fields to kernels_breakpoints (separate module)
     try:
         from .kernels import kernels_breakpoints
+
         kernels_breakpoints.bp_pair_ft = bp_pair_ft
         kernels_breakpoints.bp_pair_ff = bp_pair_ff
         kernels_breakpoints.bp_result_mask = bp_result_mask
@@ -646,13 +653,13 @@ def bind_fields(kernels_module):
 def ensure_fields_allocated():
     """
     Ensure Taichi is initialized and fields are allocated.
-    
+
     This is the main entry point for ensuring the GPU is ready.
     Initializes Taichi if needed, allocates fields, and binds them to kernels.
     """
     if not is_initialized():
         init_taichi_vulkan()
-    
+
     if not _fields_allocated:
         allocate_fields()
 
@@ -664,12 +671,14 @@ def ensure_fields_allocated():
 
         # Import kernels here to avoid circular import at module load time
         from . import kernels
+
         bind_fields(kernels)
-        
+
         # Bind Metal-specific NON-GRID fields if on macOS
         # Grid fields are bound later in ensure_grid_fields_allocated()
         if IS_METAL:
             from . import kernels_metal
+
             kernels_metal.chunk_best_score = chunk_best_score
             kernels_metal.chunk_best_idx = chunk_best_idx
             # Bind shared non-grid fields needed by Metal kernels
@@ -686,27 +695,30 @@ def ensure_fields_allocated():
 def ensure_grid_fields_allocated():
     """
     Ensure grid fields are allocated for timeline lookups.
-    
+
     Call this before uploading or using the timeline grid.
     """
     ensure_fields_allocated()  # Main fields must be allocated first
-    
+
     if not _grid_fields_allocated:
         allocate_grid_fields()
         # Re-bind to include grid fields
         from . import kernels
+
         bind_fields(kernels)
-        
+
         # Bind Metal-specific GRID fields if on macOS
         if IS_METAL:
             from . import kernels_metal
+
             kernels_metal.grid_count_body_fever = grid_count_body_fever
             kernels_metal.grid_count_body_normal = grid_count_body_normal
             kernels_metal.grid_head_len = grid_head_len
             kernels_metal.grid_fever_masks_bits = grid_fever_masks_bits
             kernels_metal.grid_gap = grid_gap
             kernels_metal.grid_fever_activations = grid_fever_activations
-            
+
             # Now that ALL fields are bound, apply Metal kernel patches
             from .kernel_loader import apply_metal_patches
+
             apply_metal_patches()

@@ -5,9 +5,12 @@ This module provides population operations:
 - build_initial_population: Heuristic + random + DB seed population
 - perform_crossover_mutation: Tournament selection, crossover, mutation, elitism
 """
+
 import random
 
 from ...core.constants import GA_POPULATION_SIZE, GA_ELITISM
+
+
 def build_initial_population(
     create_random_genome,
     create_heuristic_genome,
@@ -42,22 +45,16 @@ def build_initial_population(
     population = []
     seed_list = build_seed_list_from_record(db_seed)
     rand_val = random.random()
-    should_inject = bool(seed_list) and (
-        force_db_seed or (rand_val < ga_settings.db_seed_prob)
-    )
+    should_inject = bool(seed_list) and (force_db_seed or (rand_val < ga_settings.db_seed_prob))
     # DEBUG: Print probability values
     if seed_list and not force_db_seed:
         print(f" >> [DEBUG] db_seed_prob={ga_settings.db_seed_prob}, random={rand_val:.4f}, inject={should_inject}")
     if seed_list and should_inject:
         try:
             if force_db_seed:
-                print(
-                    f" >> [Evolution] Injecting previous best (forced) (Score: {db_seed.get('score', 0)})"
-                )
+                print(f" >> [Evolution] Injecting previous best (forced) (Score: {db_seed.get('score', 0)})")
             else:
-                print(
-                    f" >> [Evolution] Injecting previous best (Score: {db_seed.get('score', 0)})"
-                )
+                print(f" >> [Evolution] Injecting previous best (Score: {db_seed.get('score', 0)})")
             seed_genome = reconstruct_genome_from_db_list(seed_list)
             population.append(seed_genome[:])
             population.append(mutate_genome_once(seed_genome))
@@ -71,7 +68,7 @@ def build_initial_population(
         for _ in range(ga_settings.fixed_seed_copies):
             population.append(seed_genome[:])
 
-    # Inject more heuristic genomes (25 instead of 10) to ensure each of the 
+    # Inject more heuristic genomes (25 instead of 10) to ensure each of the
     # top-ranked minis gets tested in at least a few combinations.
     # This helps discover synergistic combos that don't rank highest individually.
     for _ in range(25):
@@ -146,7 +143,7 @@ def perform_crossover_mutation(
             p1 = random.choice(global_elites)
         else:
             p1 = random.choice(results[:parent_pool_size])["Genome"]
-        
+
         if global_elites and random.random() < elite_crossover_prob:
             p2 = random.choice(global_elites)
         else:
@@ -210,17 +207,11 @@ def perform_crossover_mutation(
                     if gear_pool[slot_type]:
                         child[mutate_idx] = random.choice(gear_pool[slot_type])
                 elif mutate_idx >= 6 and optimize_minis:
-                    current_mini_names = {
-                        m.get("Name") for m in child[6:] if isinstance(m, dict)
-                    }
-                    candidates = [
-                        m for m in mini_pool if m["Name"] not in current_mini_names
-                    ]
+                    current_mini_names = {m.get("Name") for m in child[6:] if isinstance(m, dict)}
+                    candidates = [m for m in mini_pool if m["Name"] not in current_mini_names]
                     if candidates:
                         child[mutate_idx] = random.choice(candidates)
 
         next_gen.append(child)
 
     return next_gen
-
-

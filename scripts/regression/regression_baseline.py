@@ -10,6 +10,7 @@ Usage:
   python scripts/regression_baseline.py --save  # Save baseline for comparison
   python scripts/regression_baseline.py --check # Compare against saved baseline
 """
+
 import os
 import sys
 import random
@@ -37,7 +38,7 @@ def patch_ga_seed():
     # Import modules to patch
     from gear_optimizer.helpers import ga_helpers
     from gear_optimizer.solver import genetic
-    
+
     # Patch random in both modules
     ga_helpers.random = random
     genetic.random = random
@@ -47,35 +48,36 @@ def run_single_song_test():
     """Run GA on a single song and return results."""
     from gear_optimizer.core.config import config_get
     from gear_optimizer.app import GearOptimizerApp
-    
+
     # Force single song mode
     import configparser
+
     config = configparser.ConfigParser()
     config.read(os.path.join(project_root, "config.ini"))
-    
+
     # Temporarily modify config for test
     original_song = config.get("CalculateSong", "Song_Name", fallback="")
     config.set("CalculateSong", "Song_Name", TEST_SONG)
-    
+
     # Write temporary config
     temp_config = os.path.join(project_root, "config_test.ini")
     with open(temp_config, "w") as f:
         config.write(f)
-    
+
     try:
         # Initialize app
         app = GearOptimizerApp()
-        
+
         # Set seed BEFORE any GA operations
         set_deterministic_seed()
         patch_ga_seed()
-        
+
         print(f"[Regression Test] Running with song: {TEST_SONG}")
         print(f"[Regression Test] Fixed seed: {FIXED_SEED}")
-        
+
         # Run the app (single song, single pass)
         app.run()
-        
+
         # Extract results from the last run
         # We'll capture stdout or check the database
         return {
@@ -83,7 +85,7 @@ def run_single_song_test():
             "song": TEST_SONG,
             "seed": FIXED_SEED,
         }
-        
+
     finally:
         # Cleanup
         if os.path.exists(temp_config):
@@ -95,29 +97,29 @@ def main():
     parser.add_argument("--save", action="store_true", help="Save baseline")
     parser.add_argument("--check", action="store_true", help="Check against baseline")
     args = parser.parse_args()
-    
+
     # Set seed early
     set_deterministic_seed()
     patch_ga_seed()
-    
+
     print("=" * 60)
     print("REGRESSION BASELINE TEST")
     print("=" * 60)
-    
+
     result = run_single_song_test()
-    
+
     print(f"\n[Result] {result}")
-    
+
     if args.save:
         with open(BASELINE_FILE, "w") as f:
             json.dump(result, f, indent=2)
         print(f"\n[Saved] Baseline written to {BASELINE_FILE}")
-    
+
     if args.check:
         if os.path.exists(BASELINE_FILE):
             with open(BASELINE_FILE, "r") as f:
                 baseline = json.load(f)
-            
+
             # Compare
             if result == baseline:
                 print("\n✓ PASS: Results match baseline!")

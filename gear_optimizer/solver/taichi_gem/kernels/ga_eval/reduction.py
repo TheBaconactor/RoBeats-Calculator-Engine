@@ -15,7 +15,7 @@ import taichi as ti
 from .. import kernels_helpers
 
 # Platform detection for atomic operations
-IS_METAL = (sys.platform == "darwin")
+IS_METAL = sys.platform == "darwin"
 
 
 @ti.kernel
@@ -105,19 +105,20 @@ def merge_chunk_best_to_genomes_kernel(n_genomes: ti.i32):
         else:
             score = kernels_helpers.chunk_best_score[g]
             i = kernels_helpers.chunk_best_idx[g]
-            valid = (i >= 0)
+            valid = i >= 0
 
         if valid:
             if score > kernels_helpers.genome_result_stats[g][0]:
                 item = kernels_helpers.work_items[i]
                 res = kernels_helpers.result_stats[i]
-                kernels_helpers.genome_result_stats[g] = ti.Vector([
-                    score,
-                    item[3],  # ft
-                    item[4],  # ff
-                    res[1],   # pp
-                    res[2],   # cm
-                    res[3],   # fm
-                    res[4],   # ov
-                ])
-
+                kernels_helpers.genome_result_stats[g] = ti.Vector(
+                    [
+                        score,
+                        item[3],  # ft
+                        item[4],  # ff
+                        res[1],  # pp
+                        res[2],  # cm
+                        res[3],  # fm
+                        res[4],  # ov
+                    ]
+                )

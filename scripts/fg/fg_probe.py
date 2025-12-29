@@ -68,7 +68,9 @@ def main() -> int:
         description="Probe ForceGreats configurations for a song/loadout using full FT/FF search."
     )
     parser.add_argument("--db", default="evolution.db", help="Path to evolution.db (default: evolution.db)")
-    parser.add_argument("--song", required=True, help="Song name key (must match DB song_name, including difficulty suffix if present)")
+    parser.add_argument(
+        "--song", required=True, help="Song name key (must match DB song_name, including difficulty suffix if present)"
+    )
     parser.add_argument(
         "--forced",
         action="append",
@@ -134,7 +136,9 @@ def main() -> int:
 
     base_score = int(baseline["final_score"])
     print(f"Song: {song_name}")
-    print(f"DB Best (forced=[0,0]): {base_score:,}  (FT={baseline['FT']}, FF={baseline['FF']}, gems={baseline['gem_counts']})")
+    print(
+        f"DB Best (forced=[0,0]): {base_score:,}  (FT={baseline['FT']}, FF={baseline['FF']}, gems={baseline['gem_counts']})"
+    )
 
     forced_specs = args.forced or []
     if not forced_specs:
@@ -158,7 +162,9 @@ def main() -> int:
             continue
         score = int(res["final_score"])
         delta = score - base_score
-        print(f"forced={forced} -> {score:,}  (delta {delta:+,})  (FT={res['FT']}, FF={res['FF']}, gems={res['gem_counts']})")
+        print(
+            f"forced={forced} -> {score:,}  (delta {delta:+,})  (FT={res['FT']}, FF={res['FF']}, gems={res['gem_counts']})"
+        )
 
     return 0
 

@@ -30,12 +30,15 @@ os.environ.setdefault("PYTHONUTF8", "1")
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
+
 project_root = str(_repo_root())
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 
-def _typeperf_start(counter: str, out_csv: Path, *, sample_interval_sec: int = 1, max_samples: int = 120) -> subprocess.Popen:
+def _typeperf_start(
+    counter: str, out_csv: Path, *, sample_interval_sec: int = 1, max_samples: int = 120
+) -> subprocess.Popen:
     args = [
         "typeperf",
         counter,

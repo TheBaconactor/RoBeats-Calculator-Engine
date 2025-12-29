@@ -123,22 +123,22 @@ def create_evaluation_functions(
 
     def genome_key(genome):
         """Generate a unique key for a genome for caching.
-        
+
         OPTIMIZATION: Inlined get_name, avoid isinstance where possible.
         This function is called 241K+ times per run.
         """
         # Gear (first 6 slots): order matters because slots are positional.
         # Inline name extraction: most items are dicts
         gear_names = tuple(
-            (item.get("Name", "") if isinstance(item, dict) else (str(item) if item else ""))
-            for item in genome[:6]
+            (item.get("Name", "") if isinstance(item, dict) else (str(item) if item else "")) for item in genome[:6]
         )
         # Minis (last 3 slots): order-invariant - only the set/multiset matters.
         # Sorting canonicalizes permutations so [A,B,C] and [C,B,A] share a key.
-        mini_names = tuple(sorted(
-            (item.get("Name", "") if isinstance(item, dict) else (str(item) if item else ""))
-            for item in genome[6:]
-        ))
+        mini_names = tuple(
+            sorted(
+                (item.get("Name", "") if isinstance(item, dict) else (str(item) if item else "")) for item in genome[6:]
+            )
+        )
         return gear_names + mini_names
 
     evaluation_cache = {}
@@ -177,11 +177,11 @@ def create_evaluation_functions(
                 fitness_score = base_score
 
                 data_dict = {
-                    "Score": base_score, # Data.Score is typically the base score
+                    "Score": base_score,  # Data.Score is typically the base score
                     "_cached_db": True,
                     "ForceDetails": force_data,
                 }
-                
+
                 # Verify details_data contains expected fields before updating
                 if details_data and isinstance(details_data, dict):
                     # Only update if it looks like valid details (has GemCounts or FT/FF)
@@ -195,9 +195,7 @@ def create_evaluation_functions(
                     "Genome": genome,
                     "Gear": gear_part,
                     "Minis": mini_part,
-                    "MiniNames": [
-                        m.get("Name", "") if isinstance(m, dict) else str(m) for m in mini_part
-                    ],
+                    "MiniNames": [m.get("Name", "") if isinstance(m, dict) else str(m) for m in mini_part],
                     "Data": data_dict,
                     "_cached": True,  # Flag so we force a full re-eval when polishing
                 }
@@ -215,9 +213,7 @@ def create_evaluation_functions(
             cache_hits_tracker[0] += 1
             return cached_res
 
-        res = worker_coevolution_evaluate(
-            (genome, base_stats_fixed, cfg_data, calc_song, ref_arrays)
-        )
+        res = worker_coevolution_evaluate((genome, base_stats_fixed, cfg_data, calc_song, ref_arrays))
         evaluation_cache[k] = res
         return res
 
@@ -228,7 +224,7 @@ def create_evaluation_functions(
         """
         if not population:
             return []
-            
+
         return evaluate_population_parallel(
             population,
             genome_key,
@@ -238,9 +234,9 @@ def create_evaluation_functions(
             cfg_data,
             calc_song,
             ref_arrays,
-            None, # No executor needed for GPU path
+            None,  # No executor needed for GPU path
             cache_hits_tracker,
-            use_gpu_batch=cfg_data.get("use_gpu", False)
+            use_gpu_batch=cfg_data.get("use_gpu", False),
         )
 
     return (
@@ -251,7 +247,6 @@ def create_evaluation_functions(
         evaluation_cache,
         batch_evaluator,
     )
-
 
 
 def evaluate_population_parallel(
@@ -299,7 +294,7 @@ def evaluate_population_parallel(
                     if cached_res:
                         evaluation_cache[k] = cached_res
                         cache_hits_tracker[0] += 1
-        
+
         # Use batch evaluation with deduplication
         results = batch_evaluate_genomes(
             population,
@@ -312,7 +307,7 @@ def evaluate_population_parallel(
         )
         results.sort(key=lambda x: x["Score"], reverse=True)
         return results
-    
+
     # CPU parallel path (original implementation)
     key_to_genome = {}
     pending_keys = []
@@ -342,15 +337,11 @@ def evaluate_population_parallel(
 
         if keys_to_calc:
             if executor:
-                worker_count = getattr(executor, "_max_workers", None) or (
-                    os.cpu_count() or 1
-                )
+                worker_count = getattr(executor, "_max_workers", None) or (os.cpu_count() or 1)
                 chunk = max(1, len(tasks_to_calc) // (worker_count * 4))
                 for k, res in zip(
                     keys_to_calc,
-                    executor.map(
-                        worker_coevolution_evaluate, tasks_to_calc, chunksize=chunk
-                    ),
+                    executor.map(worker_coevolution_evaluate, tasks_to_calc, chunksize=chunk),
                 ):
                     evaluation_cache[k] = res
             else:
@@ -361,4 +352,3 @@ def evaluate_population_parallel(
     results.sort(key=lambda x: x["Score"], reverse=True)
 
     return results
-

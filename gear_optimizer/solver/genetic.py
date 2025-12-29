@@ -8,6 +8,7 @@ and memetic local search.
 The main function solve_coevolution_genetic() has been refactored to use helper functions
 from helpers.ga_helpers for improved modularity and maintainability.
 """
+
 import os
 import random
 
@@ -54,6 +55,7 @@ try:
     from .item_registry import ItemRegistry
     from .taichi_gem import api as gpu_api
     import numpy as np
+
     _GPU_NATIVE_AVAILABLE = True
 except ImportError:
     pass
@@ -73,18 +75,21 @@ def _build_base_stats_array(base_stats_fixed: dict, cfg_data: dict) -> tuple:
     Returns:
         tuple: (base_stats_arr, selected_color) where base_stats_arr is np.int32[10]
     """
-    base_stats_arr = np.array([
-        base_stats_fixed.get("Perfect Points", 0),
-        base_stats_fixed.get("Combo Multiplier", 0),
-        base_stats_fixed.get("Fever Multiplier", 0),
-        base_stats_fixed.get("Fever Time", 0),
-        base_stats_fixed.get("Fever Fill Rate", 0),
-        base_stats_fixed.get("Beat", 0),
-        base_stats_fixed.get("Vibe", 0),
-        base_stats_fixed.get("Rush", 0),
-        base_stats_fixed.get("Flow", 0),
-        base_stats_fixed.get("Chill", 0),
-    ], dtype=np.int32)
+    base_stats_arr = np.array(
+        [
+            base_stats_fixed.get("Perfect Points", 0),
+            base_stats_fixed.get("Combo Multiplier", 0),
+            base_stats_fixed.get("Fever Multiplier", 0),
+            base_stats_fixed.get("Fever Time", 0),
+            base_stats_fixed.get("Fever Fill Rate", 0),
+            base_stats_fixed.get("Beat", 0),
+            base_stats_fixed.get("Vibe", 0),
+            base_stats_fixed.get("Rush", 0),
+            base_stats_fixed.get("Flow", 0),
+            base_stats_fixed.get("Chill", 0),
+        ],
+        dtype=np.int32,
+    )
 
     user_pp = int(cfg_data.get("user_pp", 0))
     user_cm = int(cfg_data.get("user_cm", 0))
@@ -101,11 +106,11 @@ def _build_base_stats_array(base_stats_fixed: dict, cfg_data: dict) -> tuple:
         base_stats_arr[3] -= user_ft * GEM_SCALE_FEVER
         base_stats_arr[4] -= user_ff * GEM_SCALE_FEVER
 
-        base_stats_arr[9] -= user_pp * GEM_STAT_TO_ELEMENT_SCALE   # Chill
-        base_stats_arr[8] -= user_cm * GEM_STAT_TO_ELEMENT_SCALE   # Flow
-        base_stats_arr[7] -= user_fm * GEM_STAT_TO_ELEMENT_SCALE   # Rush
-        base_stats_arr[5] -= user_ft * GEM_STAT_TO_ELEMENT_SCALE   # Beat
-        base_stats_arr[6] -= user_ff * GEM_STAT_TO_ELEMENT_SCALE   # Vibe
+        base_stats_arr[9] -= user_pp * GEM_STAT_TO_ELEMENT_SCALE  # Chill
+        base_stats_arr[8] -= user_cm * GEM_STAT_TO_ELEMENT_SCALE  # Flow
+        base_stats_arr[7] -= user_fm * GEM_STAT_TO_ELEMENT_SCALE  # Rush
+        base_stats_arr[5] -= user_ft * GEM_STAT_TO_ELEMENT_SCALE  # Beat
+        base_stats_arr[6] -= user_ff * GEM_STAT_TO_ELEMENT_SCALE  # Vibe
 
     if static_elem_input and selected_color:
         color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
@@ -927,7 +932,9 @@ def _neighbor_sweep_fg_candidates(
 
     try:
         if cfg.getboolean("IterationEngine", "ForceGreatsDebug", fallback=False):
-            print(f"[FG Sweep] NeighborSweep: seeds={len(seeds)}, swaps={len(neighbor_genomes)}, slots={sweep_slots_raw}")
+            print(
+                f"[FG Sweep] NeighborSweep: seeds={len(seeds)}, swaps={len(neighbor_genomes)}, slots={sweep_slots_raw}"
+            )
     except Exception:
         pass
 
@@ -996,7 +1003,7 @@ def _run_gpu_native_ga(
     """
     if not _GPU_NATIVE_AVAILABLE:
         raise RuntimeError("GPU-native GA not available (missing dependencies)")
-    
+
     if n_genomes_override is not None:
         n_genomes = int(n_genomes_override)
     else:
@@ -1004,7 +1011,7 @@ def _run_gpu_native_ga(
             raise ValueError("population is required unless n_genomes_override is provided")
         n_genomes = len(population)
     n_slots = 9
-    
+
     # Ensure color flags are set
     color_flags = color_flags or {}
     is_p_ft = color_flags.get("is_p_ft", 0)
@@ -1019,7 +1026,7 @@ def _run_gpu_native_ga(
     is_s_fm = color_flags.get("is_s_fm", 0)
     is_p_ov = color_flags.get("is_p_ov", 0)
     is_s_ov = color_flags.get("is_s_ov", 0)
-    
+
     total_budget = cfg_data.get("TotalBudget", 90)
     gem_scale_fever = cfg_data.get("GemScaleFever", 3)
 
@@ -1057,7 +1064,7 @@ def _run_gpu_native_ga(
         pop_ids = registry.encode_population(population)
         gpu_api.ga_upload_population_indices(pop_ids, n_slots=n_slots)
     gpu_api.ga_seed_rng(n_genomes, seed=42)
-    
+
     # CPU-side best tracking (faster than GPU-side for this use case)
     best_score = -1
     best_genome_ids = None
@@ -1069,24 +1076,24 @@ def _run_gpu_native_ga(
     if num_islands < 1:
         num_islands = 1
     island_size = n_genomes // num_islands
-    
+
     # Island boundaries: island i owns indices [island_start[i], island_start[i+1])
     island_starts = [i * island_size for i in range(num_islands)]
     island_starts.append(n_genomes)  # Sentinel for last island end
-    
+
     if os.environ.get("GPU_NATIVE_GA_LOG_ISLAND_MODEL", "0").strip().lower() in {"1", "true", "yes", "on"}:
         print(f"  >> Island Model: {num_islands} islands, ~{island_size} genomes each")
 
     # Track population snapshot - only downloaded when best improves or during migrations
     pop_snapshot = None
-    
+
     # Warm-start control: force cold start on Gen 0
     gen_use_hints = 0
-    
+
     # Upload island boundaries to GPU (once per run)
     island_boundaries_np = np.array(island_starts, dtype=np.int32)
     gpu_api.ga_upload_island_boundaries(island_boundaries_np)
-    
+
     # Initialize GPU-side global best tracking
     gpu_api.ga_init_global_best()
 
@@ -1099,44 +1106,59 @@ def _run_gpu_native_ga(
             total_budget=total_budget,
             gem_scale_fever=gem_scale_fever,
             song_slot=song_slot,
-            is_p_ft=is_p_ft, is_s_ft=is_s_ft,
-            is_p_ff=is_p_ff, is_s_ff=is_s_ff,
-            is_p_pp=is_p_pp, is_s_pp=is_s_pp,
-            is_p_cm=is_p_cm, is_s_cm=is_s_cm,
-            is_p_fm=is_p_fm, is_s_fm=is_s_fm,
-            is_p_ov=is_p_ov, is_s_ov=is_s_ov,
+            is_p_ft=is_p_ft,
+            is_s_ft=is_s_ft,
+            is_p_ff=is_p_ff,
+            is_s_ff=is_s_ff,
+            is_p_pp=is_p_pp,
+            is_s_pp=is_s_pp,
+            is_p_cm=is_p_cm,
+            is_s_cm=is_s_cm,
+            is_p_fm=is_p_fm,
+            is_s_fm=is_s_fm,
+            is_p_ov=is_p_ov,
+            is_s_ov=is_s_ov,
             use_hints=gen_use_hints,  # 0=cold, 1=warm
         )
 
         # FUSED: Write best + store hints + update global best (was 3 kernels, now 1)
         # This replaces: ga_write_best_results_from_key + ga_store_hints + ga_update_global_best
         gpu_api.ga_write_best_and_update_global(
-            n_genomes, n_slots, total_budget, gem_scale_fever,
-            is_p_ft=is_p_ft, is_s_ft=is_s_ft,
-            is_p_ff=is_p_ff, is_s_ff=is_s_ff,
-            is_p_pp=is_p_pp, is_s_pp=is_s_pp,
-            is_p_cm=is_p_cm, is_s_cm=is_s_cm,
-            is_p_fm=is_p_fm, is_s_fm=is_s_fm,
-            is_p_ov=is_p_ov, is_s_ov=is_s_ov,
+            n_genomes,
+            n_slots,
+            total_budget,
+            gem_scale_fever,
+            is_p_ft=is_p_ft,
+            is_s_ft=is_s_ft,
+            is_p_ff=is_p_ff,
+            is_s_ff=is_s_ff,
+            is_p_pp=is_p_pp,
+            is_s_pp=is_s_pp,
+            is_p_cm=is_p_cm,
+            is_s_cm=is_s_cm,
+            is_p_fm=is_p_fm,
+            is_s_fm=is_s_fm,
+            is_p_ov=is_p_ov,
+            is_s_ov=is_s_ov,
             song_slot=song_slot,
         )
-        
+
         # GPU-side island elite selection (no CPU download!)
         gpu_api.ga_find_island_elites(n_genomes, num_islands, elite_count)
-        
+
         # --- MIGRATION PHASE (every GPU_GA_GENS_PER_MIGRATION generations) ---
         # Now fully GPU-side: no CPU downloads/uploads needed!
         is_migration_gen = num_islands > 1 and (gen + 1) % GPU_GA_GENS_PER_MIGRATION == 0
         if is_migration_gen:
             # GPU-side ring topology migration (replaces expensive CPU round-trip)
             gpu_api.ga_island_migration(n_genomes, num_islands, GPU_GA_MIGRATE_COUNT, n_slots)
-            
+
             # Force cold start after migration, as hints are scrambled
             gen_use_hints = 0
         else:
             # Enable warm start for next generation (unless overridden by migration)
             gen_use_hints = 1
-        
+
         # Skip ga_next_generation on final iteration - we don't use that population
         # This saves one generation step per run (30 total per song)
         if gen < n_generations - 1:
@@ -1168,10 +1190,10 @@ def _run_gpu_native_ga(
         results,
         scores,
     ) = gpu_api.ga_download_run_payload(n_genomes=n_genomes, n_slots=n_slots)
-    
+
     # Decode best genome (already captured correctly during loop)
     best_genome = registry.decode_genome(best_genome_ids) if best_genome_ids is not None else []
-    
+
     # Best result uses the captured best_result_row (has correct gem allocations from when best was found)
     if best_result_row is not None:
         best_result = best_result_row.copy()
@@ -1255,8 +1277,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         initial_populations = np.asarray(initial_populations, dtype=np.int32)
     if initial_populations.ndim != 3:
         raise ValueError(
-            "initial_populations must have shape (n_runs, n_genomes, n_slots); "
-            f"got ndim={initial_populations.ndim}"
+            f"initial_populations must have shape (n_runs, n_genomes, n_slots); got ndim={initial_populations.ndim}"
         )
 
     num_runs = int(initial_populations.shape[0])
@@ -1265,8 +1286,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     if num_runs <= 0 or n_genomes <= 0 or n_slots <= 0:
         raise ValueError(
-            "initial_populations has invalid shape: "
-            f"(n_runs={num_runs}, n_genomes={n_genomes}, n_slots={n_slots})"
+            f"initial_populations has invalid shape: (n_runs={num_runs}, n_genomes={n_genomes}, n_slots={n_slots})"
         )
 
     if n_slots != 9:
@@ -1499,14 +1519,18 @@ def solve_coevolution_genetic(
     if gear_pool is None:
         print(f"[GA Error] initialize_pools failed for song {calc_song['metadata'].get('Song Name', 'Unknown')}")
         return None, [], [], None, [], [], []
-    
+
     if whitelisted_minis:
         print(f"[GA] Force-including {len(whitelisted_minis)} whitelisted minis in initialization.")
 
     # Build configuration data
     # Read GPU mode setting from config
-    use_gpu_mode = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False) if hasattr(cfg, 'getboolean') else False
-    use_gpu_native = cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=True) if hasattr(cfg, 'getboolean') else True
+    use_gpu_mode = (
+        cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False) if hasattr(cfg, "getboolean") else False
+    )
+    use_gpu_native = (
+        cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=True) if hasattr(cfg, "getboolean") else True
+    )
 
     # GPU-native GA uses Taichi kernels directly (taichi_gem.api) and is not compatible with
     # cross-process GPU ownership (GpuExecutor). In GPU worker mode, force CPU-GA + IPC GPU eval
@@ -1520,12 +1544,11 @@ def solve_coevolution_genetic(
                 print("[GPU] GPU_Native_GA disabled in GPU worker mode (using GpuExecutor IPC).")
         except Exception:
             pass
-     
+
     # FG fitness heuristic was removed: GA always optimizes true base score (all perfects).
     # The FG finder separately evaluates loadouts with FG configs to find the best FG score.
     if use_gpu_mode:
         print(f"[GPU] GPU_Mode enabled (Native GA: {use_gpu_native})")
-    
 
     cfg_data = {
         "selected_color": selected_color,
@@ -1535,22 +1558,17 @@ def solve_coevolution_genetic(
             LOADOUTS_PER_SONG_LIMIT,
             min(
                 5000,
-                safe_int(cfg.get("IterationEngine", "FG_CandidateLimit", fallback=FG_CANDIDATE_LIMIT), FG_CANDIDATE_LIMIT),
+                safe_int(
+                    cfg.get("IterationEngine", "FG_CandidateLimit", fallback=FG_CANDIDATE_LIMIT), FG_CANDIDATE_LIMIT
+                ),
             ),
         ),
-
         "user_ft": safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0)),
         "user_ff": safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0)),
         "user_pp": safe_int(cfg.get("UserInputStatsGems", "perfect_points", fallback=0)),
-        "user_cm": safe_int(
-            cfg.get("UserInputStatsGems", "combo_multiplier", fallback=0)
-        ),
-        "user_fm": safe_int(
-            cfg.get("UserInputStatsGems", "fever_multiplier", fallback=0)
-        ),
-        "static_elem_input": safe_int(
-            cfg.get("ElementalGems", selected_color, fallback=0)
-        ),
+        "user_cm": safe_int(cfg.get("UserInputStatsGems", "combo_multiplier", fallback=0)),
+        "user_fm": safe_int(cfg.get("UserInputStatsGems", "fever_multiplier", fallback=0)),
+        "static_elem_input": safe_int(cfg.get("ElementalGems", selected_color, fallback=0)),
     }
 
     # --- GPU-NATIVE GA PATH ---
@@ -1621,14 +1639,16 @@ def solve_coevolution_genetic(
         # Match CPU logic: split total depth across runs (Micro-GA strategy)
         # or use full depth if multi-start is 1.
         gens_per_run = max(1, (ga_depth + num_runs - 1) // num_runs)
-        
+
         print(f"  Multi-start runs: {num_runs} (generations per run: {gens_per_run})")
 
         # GPU-native GA exploration knobs (optional; defaults preserve current behavior)
         gpu_tournament_k = safe_int(cfg.get("IterationEngine", "GPU_GA_TournamentK", fallback=3), 3)
         gpu_tournament_k = max(1, min(8, int(gpu_tournament_k)))
 
-        gpu_mutation_rate = safe_float(cfg.get("IterationEngine", "GPU_GA_MutationRate", fallback=GA_MUTATION_RATE), GA_MUTATION_RATE)
+        gpu_mutation_rate = safe_float(
+            cfg.get("IterationEngine", "GPU_GA_MutationRate", fallback=GA_MUTATION_RATE), GA_MUTATION_RATE
+        )
         gpu_mutation_rate = max(0.0, min(1.0, float(gpu_mutation_rate)))
 
         gpu_immigrant_rate = safe_float(cfg.get("IterationEngine", "GPU_GA_ImmigrantRate", fallback=0.0), 0.0)
@@ -1802,7 +1822,9 @@ def solve_coevolution_genetic(
                     last_exc = e
                     if attempt >= max_retries or not _is_vulkan_semaphore_failure(e):
                         break
-                    print(f"[GPU GA] Vulkan backend error; retrying run after reset (attempt {attempt + 1}/{max_retries})")
+                    print(
+                        f"[GPU GA] Vulkan backend error; retrying run after reset (attempt {attempt + 1}/{max_retries})"
+                    )
                     try:
                         # Preserve buffered run payloads before resetting Taichi runtime.
                         _flush_ga_run_payload_segment()
@@ -1883,27 +1905,29 @@ def solve_coevolution_genetic(
         # 8. Format results to match expected return signature
         # Use simple fallback if no valid genome found (shouldn't happen)
         if best_global_genome is None:
-             # Should practically never happen unless 0 runs / all scores invalid.
-             try:
-                 fallback_ids = np.asarray(runs_payload[0, 0, 1 : 1 + n_slots], dtype=np.int32)
-                 best_global_genome = registry.decode_genome(fallback_ids)
-                 best_global_score = int(runs_payload[0, 0, 0])
-                 best_global_res_arr = np.asarray(runs_payload[0, 0, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32).copy()
-             except Exception:
-                 best_global_genome = []
-                 best_global_score = 0
-                 best_global_res_arr = [0] * 7
+            # Should practically never happen unless 0 runs / all scores invalid.
+            try:
+                fallback_ids = np.asarray(runs_payload[0, 0, 1 : 1 + n_slots], dtype=np.int32)
+                best_global_genome = registry.decode_genome(fallback_ids)
+                best_global_score = int(runs_payload[0, 0, 0])
+                best_global_res_arr = np.asarray(
+                    runs_payload[0, 0, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32
+                ).copy()
+            except Exception:
+                best_global_genome = []
+                best_global_score = 0
+                best_global_res_arr = [0] * 7
 
         best_gear = best_global_genome[:6]
         best_minis = best_global_genome[6:9]
-        
+
         # Compute full stats for best genome (like FG candidates)
         best_stats = base_stats_fixed.copy()
         for item in best_global_genome:
             for k, v in item.items():
                 if k not in SKIP_ITEM_KEYS:
                     best_stats[k] = best_stats.get(k, 0) + v
-        
+
         # Add gem contributions
         g_ft = int(best_global_res_arr[1])
         g_ff = int(best_global_res_arr[2])
@@ -1911,22 +1935,22 @@ def solve_coevolution_genetic(
         g_cm = int(best_global_res_arr[4])
         g_fm = int(best_global_res_arr[5])
         g_ov = int(best_global_res_arr[6])
-        
+
         best_stats["Perfect Points"] = best_stats.get("Perfect Points", 0) + g_pp * GEM_SCALE_NORMAL
         best_stats["Combo Multiplier"] = best_stats.get("Combo Multiplier", 0) + g_cm * GEM_SCALE_NORMAL
         best_stats["Fever Multiplier"] = best_stats.get("Fever Multiplier", 0) + g_fm * GEM_SCALE_FEVER
         best_stats["Fever Time"] = best_stats.get("Fever Time", 0) + g_ft * GEM_SCALE_FEVER
         best_stats["Fever Fill Rate"] = best_stats.get("Fever Fill Rate", 0) + g_ff * GEM_SCALE_FEVER
-        
+
         best_stats["Chill"] = best_stats.get("Chill", 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
         best_stats["Flow"] = best_stats.get("Flow", 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
         best_stats["Rush"] = best_stats.get("Rush", 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
         best_stats["Beat"] = best_stats.get("Beat", 0) + g_ft * GEM_STAT_TO_ELEMENT_SCALE
         best_stats["Vibe"] = best_stats.get("Vibe", 0) + g_ff * GEM_STAT_TO_ELEMENT_SCALE
-        
+
         if selected_color:
             best_stats[selected_color] = best_stats.get(selected_color, 0) + g_ov * ELEMENTAL_GEM_SCALE
-        
+
         best_data = {
             "Score": best_global_score,
             "BaseScore": best_global_score,
@@ -1955,23 +1979,23 @@ def solve_coevolution_genetic(
                 "CM": g_cm,
                 "FM": g_fm,
                 "OV": g_ov,
-            }
+            },
         }
-        
+
         print(f"=== GPU-NATIVE GA COMPLETE: Best Score {best_global_score} ===")
-        
+
         # Deduplicate all_evaluated to prevent duplicate loadouts from multiple runs
         # Key by tuple of names (Gear + Minis)
         unique_evaluated = []
         seen_hashes = set()
-        
+
         for cand in all_evaluated_global:
             # Create a stable hashable key from gear names and mini names
             # Genome usually has 9 dicts.
             key_parts = []
             for item in cand.get("Genome", []):
                 key_parts.append(item.get("Name", ""))
-            
+
             cand_hash = tuple(key_parts)
             if cand_hash not in seen_hashes:
                 seen_hashes.add(cand_hash)
@@ -2065,12 +2089,9 @@ def solve_coevolution_genetic(
     )
 
     # Build ranked candidate caches
-    gear_rank_max = getattr(ga_settings, 'gear_rank_max', 40)
-    mini_rank_max = getattr(ga_settings, 'mini_rank_max', 40)
-    gear_rank_cache = {
-        s: sorted(gear_pool[s], key=score_candidate, reverse=True)[:gear_rank_max]
-        for s in slots
-    }
+    gear_rank_max = getattr(ga_settings, "gear_rank_max", 40)
+    mini_rank_max = getattr(ga_settings, "mini_rank_max", 40)
+    gear_rank_cache = {s: sorted(gear_pool[s], key=score_candidate, reverse=True)[:gear_rank_max] for s in slots}
     sorted_minis = sorted(mini_pool, key=score_candidate, reverse=True)
     mini_rank_cache = sorted_minis[:mini_rank_max]
 
@@ -2096,17 +2117,19 @@ def solve_coevolution_genetic(
     )
 
     # Create local search functions
-    run_local_search, polish_best_genome, memetic_local_search, batch_memetic_local_search = create_local_search_function(
-        evaluate_genome_local,
-        batch_evaluator,
-        gear_rank_cache,
-        mini_rank_cache,
-        mini_pool,
-        gear_pool,
-        slots,
-        optimize_gear,
-        optimize_minis,
-        ga_settings=ga_settings,
+    run_local_search, polish_best_genome, memetic_local_search, batch_memetic_local_search = (
+        create_local_search_function(
+            evaluate_genome_local,
+            batch_evaluator,
+            gear_rank_cache,
+            mini_rank_cache,
+            mini_pool,
+            gear_pool,
+            slots,
+            optimize_gear,
+            optimize_minis,
+            ga_settings=ga_settings,
+        )
     )
 
     # Setup multi-start runs
@@ -2136,18 +2159,14 @@ def solve_coevolution_genetic(
             seed_list = build_seed_list_from_record(db_seed)
             if seed_list:
                 seed_genome = reconstruct_genome_from_db_list(seed_list)
-                seed_res = worker_coevolution_evaluate(
-                    (seed_genome, base_stats_fixed, cfg_data, calc_song, ref_arrays)
-                )
+                seed_res = worker_coevolution_evaluate((seed_genome, base_stats_fixed, cfg_data, calc_song, ref_arrays))
                 evaluation_cache[genome_key(seed_genome)] = seed_res
                 # Use BaseScore (true score) for DB comparison. (Score is the GA fitness score
                 # and is currently the same as BaseScore.)
                 db_seed_score = seed_res.get("BaseScore") or seed_res["Score"]
                 db_seed_genome = seed_genome
                 db_seed_data = seed_res["Data"]
-                print(
-                    f" >> [Evolution] DB seed baseline (soft): {db_seed_score}"
-                )
+                print(f" >> [Evolution] DB seed baseline (soft): {db_seed_score}")
         except Exception as exc:
             print(f" >> [Evolution] Warning: failed to evaluate DB seed: {exc}")
 
@@ -2248,7 +2267,7 @@ def solve_coevolution_genetic(
             # --- MEMETIC GA STEP: local search on top elites ---
             if ga_settings.memetic_elites > 0 and ga_settings.memetic_steps > 0:
                 elite_count = min(ga_settings.memetic_elites, len(results))
-                
+
                 # BATCHED PATH: Process all elites simultaneously
                 # This reduces kernel launch overhead by packing all neighbors into fewer batches.
                 seed_genomes = [results[i]["Genome"] for i in range(elite_count)]
@@ -2258,12 +2277,12 @@ def solve_coevolution_genetic(
                     ga_settings.memetic_top_gear,
                     ga_settings.memetic_top_minis,
                 )
-                
+
                 # Update population with improved versions if score increased
                 for i, improved_res in enumerate(improved_results):
                     if improved_res["Score"] > results[i]["Score"]:
                         results[i] = improved_res
-                
+
                 # Resort after memetic improvements
                 results.sort(key=lambda x: x["Score"], reverse=True)
 
@@ -2279,21 +2298,16 @@ def solve_coevolution_genetic(
             promote_status = consider_candidate(best_cand)
             if promote_status == 2:
                 m_names = best_cand["MiniNames"]
-                print(
-                    f"  >> Gen {generation} (Run {run_idx + 1}): New Best {best_global_score} (Minis: {m_names})"
-                )
+                print(f"  >> Gen {generation} (Run {run_idx + 1}): New Best {best_global_score} (Minis: {m_names})")
                 if status_cb:
-                    status_cb(
-                        f"Run {run_idx + 1}/{num_runs} Gen {generation}: New Best {best_global_score}"
-                    )
+                    status_cb(f"Run {run_idx + 1}/{num_runs} Gen {generation}: New Best {best_global_score}")
             elif promote_status == 1:
                 # Tie score, but a different loadout at the same global score.
                 # Don't call it a "new best" to avoid confusing plateaus with improvements.
                 if generation % 10 == 0:
                     m_names = best_cand["MiniNames"]
                     print(
-                        f"  >> Gen {generation} (Run {run_idx + 1}): "
-                        f"BestVariant {best_global_score} (Minis: {m_names})"
+                        f"  >> Gen {generation} (Run {run_idx + 1}): BestVariant {best_global_score} (Minis: {m_names})"
                     )
             else:
                 if generation % 10 == 0:
@@ -2404,9 +2418,7 @@ def solve_coevolution_genetic(
     # This ensures we never regress while still allowing free exploration.
     # Compare using true base score.
     ga_true_score = (
-        best_global_data.get("BaseScore", best_global_data.get("Score", 0))
-        if best_global_data
-        else best_global_score
+        best_global_data.get("BaseScore", best_global_data.get("Score", 0)) if best_global_data else best_global_score
     )
     if db_seed_score > ga_true_score and db_seed_genome:
         print(f" >> [Evolution] GA best ({ga_true_score}) < DB seed ({db_seed_score}); using DB seed.")
@@ -2435,7 +2447,7 @@ def solve_coevolution_genetic(
     # Memory leak fix: Clear all generation-scoped data before returning
     population = None
     results = None
-    
+
     if not best_global_data:
         print(f"[GA Error] GA completed but found no valid candidates (best_global_score={best_global_score})")
 

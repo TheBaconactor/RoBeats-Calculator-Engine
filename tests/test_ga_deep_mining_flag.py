@@ -68,5 +68,3 @@ def test_compute_dynamic_mutation_respects_deep_mining_flag():
 
     assert mut_on > base_mutation
     assert mut_off == pytest.approx(base_mutation)
-
-

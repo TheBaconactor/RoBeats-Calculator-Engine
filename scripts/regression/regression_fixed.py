@@ -1,4 +1,3 @@
-
 import sys
 import os
 import numpy as np
@@ -10,9 +9,10 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from gear_optimizer.solver.scoring import solve_best_fever_combination
 from gear_optimizer.core.constants import TOTAL_ROWS
 
+
 def run_regression():
     logging.basicConfig(level=logging.ERROR)
-    
+
     # 1. Mock Song
     # Simple song: 100 notes, 120 seconds.
     # Timestamps: 0, 1.2, 2.4, ...
@@ -29,9 +29,9 @@ def run_regression():
         },
         "song_data": {
             "timestamps": timestamps,
-        }
+        },
     }
-    
+
     # 2. Mock Stats (All 100 to keep it simple)
     base_stats_fixed = {
         "Perfect Points": 100,
@@ -39,13 +39,13 @@ def run_regression():
         "Fever Multiplier": 100,
         "Fever Fill Rate": 100,
         "Fever Time": 100,
-        "Rush": 100, # Primary
-        "Flow": 100, # Secondary
+        "Rush": 100,  # Primary
+        "Flow": 100,  # Secondary
         "Beat": 50,
         "Vibe": 50,
         "Chill": 50,
     }
-    
+
     # 3. Ref Arrays (Linear scaling)
     # 0 to 160 index.
     # Value = index * 10 (just for simple math)
@@ -62,7 +62,7 @@ def run_regression():
     # 4. Config
     cfg_data = {
         "selected_color": "Rush",
-        "use_gpu": False, # Force CPU for deterministic simple test
+        "use_gpu": False,  # Force CPU for deterministic simple test
         "user_ft": 0,
         "user_ff": 0,
         "user_pp": 0,
@@ -80,15 +80,16 @@ def run_regression():
         silent=True,
         override_cfg=cfg_data,
     )
-    
+
     score = result.get("Score")
     print(f"Regression Score: {score}")
-    
+
     expected_score = 493177
     assert score == expected_score, f"Expected {expected_score}, got {score}"
     print("Regression Test Passed!")
-    
+
     return score
+
 
 if __name__ == "__main__":
     run_regression()

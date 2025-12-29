@@ -39,65 +39,65 @@ song_timestamps_great_candidate: ti.Field | None = None  # (FG_MAX_SONG_NOTES,) 
 # FG finder inputs (GPU-resident)
 # Stores fill-penalty targets (fp) per section (not raw forced counts).
 fg_forced_counts: ti.Field | None = None  # (FG_MAX_CONFIGS, FG_MAX_SECTIONS) i32
-fg_pair_caps: ti.Field | None = None      # (FG_MAX_STAT+1, FG_MAX_STAT+1, FG_MAX_SECTIONS) i32
-fg_ft_list: ti.Field | None = None        # (FG_MAX_FTFF,) i32
-fg_ff_list: ti.Field | None = None        # (FG_MAX_FTFF,) i32
+fg_pair_caps: ti.Field | None = None  # (FG_MAX_STAT+1, FG_MAX_STAT+1, FG_MAX_SECTIONS) i32
+fg_ft_list: ti.Field | None = None  # (FG_MAX_FTFF,) i32
+fg_ff_list: ti.Field | None = None  # (FG_MAX_FTFF,) i32
 
 # FG finder outputs (per genome)
-fg_best_final_score: ti.Field | None = None     # (MAX_GENOMES,) i32
-fg_best_base_score: ti.Field | None = None      # (MAX_GENOMES,) i32
-fg_best_cfg_idx: ti.Field | None = None         # (MAX_GENOMES,) i32
-fg_best_ft: ti.Field | None = None              # (MAX_GENOMES,) i32
-fg_best_ff: ti.Field | None = None              # (MAX_GENOMES,) i32
-fg_best_g_pp: ti.Field | None = None            # (MAX_GENOMES,) i32
-fg_best_g_cm: ti.Field | None = None            # (MAX_GENOMES,) i32
-fg_best_g_fm: ti.Field | None = None            # (MAX_GENOMES,) i32
-fg_best_g_ov: ti.Field | None = None            # (MAX_GENOMES,) i32
-fg_best_score_penalty: ti.Field | None = None   # (MAX_GENOMES,) i32
-fg_best_fill_penalty: ti.Field | None = None    # (MAX_GENOMES,) i32
+fg_best_final_score: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_best_base_score: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_best_cfg_idx: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_best_ft: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_best_ff: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_best_g_pp: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_best_g_cm: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_best_g_fm: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_best_g_ov: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_best_score_penalty: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_best_fill_penalty: ti.Field | None = None  # (MAX_GENOMES,) i32
 
 # Packed results for efficient CPU download (all 11 fields in one transfer)
 # Format: (MAX_GENOMES, 11) with columns: [final_score, base_score, cfg_idx, ft, ff, g_pp, g_cm, g_fm, g_ov, score_penalty, fill_penalty]
-fg_best_packed: ti.Field | None = None          # (MAX_GENOMES, 11) i32
+fg_best_packed: ti.Field | None = None  # (MAX_GENOMES, 11) i32
 
 # NEW: Packed 64-bit field for atomic (score, cfg_idx) updates - fixes race condition
 # Format: (score << 32) | (cfg_idx & 0xFFFFFFFF) - score in upper 32 bits for correct atomic_max ordering
-fg_stage1_packed: ti.Field | None = None        # (MAX_GENOMES, FG_MAX_FTFF) i64
+fg_stage1_packed: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF) i64
 
 # FG finder intermediate outputs (per genome × ftff) - for two-stage reduction
-fg_stage1_final_score: ti.Field | None = None   # (MAX_GENOMES, FG_MAX_FTFF) i32
-fg_stage1_base_score: ti.Field | None = None    # (MAX_GENOMES, FG_MAX_FTFF) i32
-fg_stage1_cfg_idx: ti.Field | None = None       # (MAX_GENOMES, FG_MAX_FTFF) i32
-fg_stage1_g_pp: ti.Field | None = None          # (MAX_GENOMES, FG_MAX_FTFF) i32
-fg_stage1_g_cm: ti.Field | None = None          # (MAX_GENOMES, FG_MAX_FTFF) i32
-fg_stage1_g_fm: ti.Field | None = None          # (MAX_GENOMES, FG_MAX_FTFF) i32
-fg_stage1_g_ov: ti.Field | None = None          # (MAX_GENOMES, FG_MAX_FTFF) i32
-fg_stage1_score_penalty: ti.Field | None = None # (MAX_GENOMES, FG_MAX_FTFF) i32
+fg_stage1_final_score: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF) i32
+fg_stage1_base_score: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF) i32
+fg_stage1_cfg_idx: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF) i32
+fg_stage1_g_pp: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF) i32
+fg_stage1_g_cm: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF) i32
+fg_stage1_g_fm: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF) i32
+fg_stage1_g_ov: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF) i32
+fg_stage1_score_penalty: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF) i32
 fg_stage1_fill_penalty: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF) i32
 
 # Flat work items for GPU-friendly parallelization
 # Each item is (genome_id, ftff_id) - cfg is batched in chunks
-fg_flat_work_genome: ti.Field | None = None     # (FG_MAX_FLAT_WORK_ITEMS,) i32
-fg_flat_work_ftff: ti.Field | None = None       # (FG_MAX_FLAT_WORK_ITEMS,) i32
+fg_flat_work_genome: ti.Field | None = None  # (FG_MAX_FLAT_WORK_ITEMS,) i32
+fg_flat_work_ftff: ti.Field | None = None  # (FG_MAX_FLAT_WORK_ITEMS,) i32
 
 # Global best fields for GPU-resident accumulation (persist across group calls)
 # These track the best results found across all GPU calls within a single FG batch
-fg_global_best_final_score: ti.Field | None = None     # (MAX_GENOMES,) i32
-fg_global_best_base_score: ti.Field | None = None      # (MAX_GENOMES,) i32
-fg_global_best_cfg_idx: ti.Field | None = None         # (MAX_GENOMES,) i32
-fg_global_best_ft: ti.Field | None = None              # (MAX_GENOMES,) i32
-fg_global_best_ff: ti.Field | None = None              # (MAX_GENOMES,) i32
-fg_global_best_g_pp: ti.Field | None = None            # (MAX_GENOMES,) i32
-fg_global_best_g_cm: ti.Field | None = None            # (MAX_GENOMES,) i32
-fg_global_best_g_fm: ti.Field | None = None            # (MAX_GENOMES,) i32
-fg_global_best_g_ov: ti.Field | None = None            # (MAX_GENOMES,) i32
-fg_global_best_score_penalty: ti.Field | None = None   # (MAX_GENOMES,) i32
-fg_global_best_fill_penalty: ti.Field | None = None    # (MAX_GENOMES,) i32
-fg_global_best_packed: ti.Field | None = None          # (MAX_GENOMES, 11) i32
+fg_global_best_final_score: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_global_best_base_score: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_global_best_cfg_idx: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_global_best_ft: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_global_best_ff: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_global_best_g_pp: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_global_best_g_cm: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_global_best_g_fm: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_global_best_g_ov: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_global_best_score_penalty: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_global_best_fill_penalty: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_global_best_packed: ti.Field | None = None  # (MAX_GENOMES, 11) i32
 
 # Warm-start hints for FG gem allocation (local search optimization)
 # Stores: [pp_gems, cm_gems, fm_gems, ov_gems] from previous best allocation
-fg_genome_hint_allocation: ti.Field | None = None      # (MAX_GENOMES, 4) i32
+fg_genome_hint_allocation: ti.Field | None = None  # (MAX_GENOMES, 4) i32
 
 
 # ============================================================================
@@ -287,7 +287,7 @@ def allocate_fields() -> None:
     fg_stage1_g_ov = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
     fg_stage1_score_penalty = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
     fg_stage1_fill_penalty = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
-    
+
     # Packed 64-bit field for atomic (score, cfg_idx) updates
     fg_stage1_packed = ti.field(dtype=ti.i64, shape=(MAX_GENOMES, FG_MAX_FTFF))
 
@@ -327,6 +327,7 @@ def ensure_fields_allocated() -> None:
     # In calculate-only runs (MetaFinder disabled), the app may reach FG init before
     # the main gem fields are initialized; ensure they exist first.
     from .. import fields as gem_fields
+
     gem_fields.ensure_fields_allocated()
 
     if not is_initialized():
@@ -337,6 +338,7 @@ def ensure_fields_allocated() -> None:
 
     # Bind fields into kernel placeholders
     from . import kernels as _kernels
+
     bind_fields(_kernels)
 
 
@@ -350,18 +352,18 @@ _kernels_warmed = False
 def warmup_kernels() -> None:
     """
     Pre-compile FG kernels to eliminate first-call JIT overhead (~150ms).
-    
+
     Call this once during initialization (after ensure_fields_allocated).
     The warmup runs minimal workloads just to trigger Taichi JIT compilation.
     """
     global _kernels_warmed
-    
+
     if _kernels_warmed:
         return
-    
+
     import taichi as ti
     from . import kernels as fg_kernels
-    
+
     # Minimal warmup parameters
     n_genomes = 1
     n_ftff = 1
@@ -374,36 +376,70 @@ def warmup_kernels() -> None:
     total_budget = 90
     gem_scale_fever = 3
     n_sections = 2
-    
+
     # Warmup reset kernel
     fg_kernels.fg_reset_best_kernel(n_genomes)
-    
+
     # Warmup stage1 init kernel
     fg_kernels.fg_stage1_init_kernel(n_genomes, n_ftff)
-    
+
     # Warmup FLAT stage1 kernel (the heavy one)
     # Check if we are on Metal to decide which kernel to warm up
     from ..fields import IS_METAL
-    
+
     if IS_METAL:
         fg_kernels.fg_stage1_kernel(
             n_genomes,
-            total_notes, long_notes, last_note_time,
-            total_budget, gem_scale_fever, n_cfg, n_sections, n_ftff,
+            total_notes,
+            long_notes,
+            last_note_time,
+            total_budget,
+            gem_scale_fever,
+            n_cfg,
+            n_sections,
+            n_ftff,
             cfg_offset,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 # color flags
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,  # color flags
         )
     else:
         fg_kernels.fg_stage1_flat_kernel(
-            n_work_items, n_cfg, cfg_offset,
-            total_notes, long_notes, last_note_time,
-            total_budget, gem_scale_fever, n_sections,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0  # color flags
+            n_work_items,
+            n_cfg,
+            cfg_offset,
+            total_notes,
+            long_notes,
+            last_note_time,
+            total_budget,
+            gem_scale_fever,
+            n_sections,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,  # color flags
         )
-    
+
     # Warmup stage2 reduction kernel
     fg_kernels.fg_stage2_kernel(n_genomes, n_ftff)
-    
+
     # Warmup global best kernels (new for GPU-resident accumulation)
     fg_kernels.fg_reset_global_best_kernel(n_genomes)
     fg_kernels.fg_update_global_best_kernel(n_genomes)
@@ -411,27 +447,19 @@ def warmup_kernels() -> None:
     # Warmup packing kernels (avoid first-download JIT hiccup)
     fg_kernels.fg_pack_results_kernel(n_genomes)
     fg_kernels.fg_pack_global_best_kernel(n_genomes)
-    
+
     # Sync to ensure JIT is complete
     ti.sync()
-    
+
     _kernels_warmed = True
 
 
 def ensure_ready_with_warmup() -> None:
     """
     Ensure FG fields are allocated AND kernels are pre-warmed.
-    
+
     This is the preferred initialization entry point for FG processing
     to avoid first-call JIT latency.
     """
     ensure_fields_allocated()
     warmup_kernels()
-
-
-
-
-
-
-
-

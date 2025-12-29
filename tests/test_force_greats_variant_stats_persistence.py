@@ -159,4 +159,3 @@ def test_apply_force_greats_to_result_updates_stats_and_gems_on_finder_cache_hit
     ):
         assert int(got.get(k, 0)) == int(expected.get(k, 0))
     assert int(got.get(sel, 0)) == int(expected.get(sel, 0))
-

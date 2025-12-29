@@ -1,4 +1,3 @@
-
 import concurrent.futures
 from concurrent.futures.process import BrokenProcessPool
 import configparser
@@ -16,8 +15,10 @@ import numpy as np
 try:
     from dotenv import load_dotenv
 except ImportError:
+
     def load_dotenv(_path=None):
         return False
+
 
 # Import from refactored modules
 from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS
@@ -52,7 +53,6 @@ from gear_optimizer.data.csv_parser import (
 from gear_optimizer.core.utils import safe_int, cfg_to_dict, cfg_from_dict
 from gear_optimizer.solver.scoring import FEVER_TIMELINE_CACHE, FG_CACHE
 from gear_optimizer.solver.genetic import GEM_SOLVER_CACHE
-
 
 
 # Module-level worker initializer for GPU executor (must be picklable)
@@ -204,9 +204,7 @@ class GearOptimizerApp:
         os.makedirs(BIN_DIR, exist_ok=True)
         log_file_path = os.path.join(BIN_DIR, "error.log")
         logging.basicConfig(
-            filename=log_file_path,
-            level=logging.WARNING,
-            format="%(asctime)s %(levelname)s: %(message)s"
+            filename=log_file_path, level=logging.WARNING, format="%(asctime)s %(levelname)s: %(message)s"
         )
 
     def setup_discord(self):
@@ -239,7 +237,7 @@ class GearOptimizerApp:
         memory_guard_restart = False
         memory_resume_tracker = None
         start_time = time.time()
-        loop_forever = False # Default, updated from config
+        loop_forever = False  # Default, updated from config
 
         FEVER_TIMELINE_CACHE.clear()
         GEM_SOLVER_CACHE.clear()
@@ -256,13 +254,10 @@ class GearOptimizerApp:
             paths = load_paths_cache()
             set_memory_watchdog_limit(compute_memory_guard_limit(cfg))
             db_display_name = os.path.basename(get_evolution_db_path())
-            self.discord_reporter.send_log(
-                f"Gear Optimizer run started. DB file: {db_display_name}"
-            )
+            self.discord_reporter.send_log(f"Gear Optimizer run started. DB file: {db_display_name}")
 
             init_db()
             self._auto_merge_databases()
-
 
             # Config reading
             meta_finder = cfg.getboolean("IterationEngine", "MetaFinder", fallback=False)
@@ -317,32 +312,42 @@ class GearOptimizerApp:
             self.discord_reporter.send_log(f"Queued {len(song_queue)} song(s) for processing.")
 
             memory_resume_tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)
-            memory_resume_tracker.prime(song_queue, build_memory_guard_resume_context(
-                *self._get_filter_params(cfg)
-            ))
+            memory_resume_tracker.prime(song_queue, build_memory_guard_resume_context(*self._get_filter_params(cfg)))
 
             manager = multiprocessing.Manager()
             status_queue = manager.Queue()
 
-            status_thread = threading.Thread(
-                target=self._status_listener, args=(status_queue,), daemon=True
-            )
+            status_thread = threading.Thread(target=self._status_listener, args=(status_queue,), daemon=True)
             status_thread.start()
 
             tasks = self._prepare_tasks(
-                song_queue, cfg, paths, ref_arrays, all_gears, all_minis,
-                gears_by_name, minis_by_name, use_evo_db, auto_buff,
-                ga_depth, status_queue, fg_debug
+                song_queue,
+                cfg,
+                paths,
+                ref_arrays,
+                all_gears,
+                all_minis,
+                gears_by_name,
+                minis_by_name,
+                use_evo_db,
+                auto_buff,
+                ga_depth,
+                status_queue,
+                fg_debug,
             )
 
             parallel_workers = 1
 
             self._execute_tasks(
-                tasks, eval_cpu_limit, parallel_workers, memory_resume_tracker,
-                manager, status_queue, status_thread, loop_forever
+                tasks,
+                eval_cpu_limit,
+                parallel_workers,
+                memory_resume_tracker,
+                manager,
+                status_queue,
+                status_thread,
+                loop_forever,
             )
-
-
 
             # Check if we need to restart due to memory guard
             if memory_release_requested() and loop_forever:
@@ -356,7 +361,6 @@ class GearOptimizerApp:
         finally:
             self._cleanup_resources(status_queue, status_thread, manager)
 
-
             elapsed = time.time() - start_time
             done_msg = f"Run completed in {elapsed:.2f}s"
             print(done_msg)
@@ -365,7 +369,7 @@ class GearOptimizerApp:
 
         if memory_guard_restart:
             restart_process_for_memory_guard()
-            return False # Process replaced
+            return False  # Process replaced
         elif loop_forever:
             self._handle_loop_restart(wait_time=3)
             return True
@@ -377,9 +381,9 @@ class GearOptimizerApp:
     def _auto_merge_databases(self):
         try:
             from gear_optimizer.data.db_merge import auto_merge_secondary_databases
+
             merge_success, merge_message = auto_merge_secondary_databases(
-                delete_after_merge=True,
-                backup_before_merge=True
+                delete_after_merge=True, backup_before_merge=True
             )
             if merge_success and "No secondary databases" not in merge_message:
                 print(f"[DB Merge] {merge_message}")
@@ -391,10 +395,10 @@ class GearOptimizerApp:
             logging.error(f"[DB Merge] Unexpected error: {e}")
             print(f"[DB Merge] Error: {e}")
 
-
-
     def _disable_inputs_to_prevent_taint(self, cfg):
-        print(" >> [Auto-Mode] Finders active: Ignoring manual [UserInputStatsGems] & [ElementalGems] to prevent database tainting.")
+        print(
+            " >> [Auto-Mode] Finders active: Ignoring manual [UserInputStatsGems] & [ElementalGems] to prevent database tainting."
+        )
         if not cfg.has_section("UserInputStatsGems"):
             cfg.add_section("UserInputStatsGems")
         for key in ["perfect_points", "combo_multiplier", "fever_multiplier", "fever_fill", "fever_time"]:
@@ -407,8 +411,11 @@ class GearOptimizerApp:
 
     def _preload_ref_arrays(self, stats_table):
         stat_names = [
-            "Perfect Points", "Combo Multiplier", "Fever Multiplier",
-            "Fever Fill Rate", "Fever Time",
+            "Perfect Points",
+            "Combo Multiplier",
+            "Fever Multiplier",
+            "Fever Fill Rate",
+            "Fever Time",
         ]
         ref_arrays = {}
         for i, name in enumerate(stat_names):
@@ -445,14 +452,19 @@ class GearOptimizerApp:
         target_primary_all, target_primary_colors = _parse_color_targets(target_primary_raw)
         target_secondary_all, target_secondary_colors = _parse_color_targets(target_secondary_raw)
 
-        return (diff_lower, filter_search, target_primary_all, target_primary_colors, target_secondary_all, target_secondary_colors)
+        return (
+            diff_lower,
+            filter_search,
+            target_primary_all,
+            target_primary_colors,
+            target_secondary_all,
+            target_secondary_colors,
+        )
 
     def _build_song_queue(self, cfg, paths, use_evo_db):
         diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols = self._get_filter_params(cfg)
 
-        resume_context = build_memory_guard_resume_context(
-             diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols
-        )
+        resume_context = build_memory_guard_resume_context(diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols)
 
         ignore_resume = False
         try:
@@ -474,7 +486,9 @@ class GearOptimizerApp:
                     song_queue_limit = 0
                 if song_queue_limit and song_queue_limit > 0 and len(resume_seed_queue) > song_queue_limit:
                     resume_seed_queue = resume_seed_queue[: int(song_queue_limit)]
-                    print(f"[Queue] SongQueueLimit={song_queue_limit}: running {len(resume_seed_queue)} song(s) (resume)")
+                    print(
+                        f"[Queue] SongQueueLimit={song_queue_limit}: running {len(resume_seed_queue)} song(s) (resume)"
+                    )
                 return resume_seed_queue
 
         diff = cfg.get("CalculateSong", "Difficulty", fallback="Hard")
@@ -509,10 +523,14 @@ class GearOptimizerApp:
 
                         # Infer difficulty from parent folder name
                         parent_folder = os.path.basename(root).lower()
-                        if parent_folder == "hard": detected_diff = "Hard"
-                        elif parent_folder == "normal": detected_diff = "Normal"
-                        elif parent_folder == "easy": detected_diff = "Easy"
-                        else: detected_diff = "Unknown"
+                        if parent_folder == "hard":
+                            detected_diff = "Hard"
+                        elif parent_folder == "normal":
+                            detected_diff = "Normal"
+                        elif parent_folder == "easy":
+                            detected_diff = "Easy"
+                        else:
+                            detected_diff = "Unknown"
 
                         if diff_lower in ("easy", "normal", "hard") and detected_diff.lower() != diff_lower:
                             continue
@@ -520,8 +538,10 @@ class GearOptimizerApp:
                         primary_color = (meta.get("Primary Color") or "").strip().lower()
                         secondary_color = (meta.get("Secondary Color") or "").strip().lower()
 
-                        if not tp_all and (not primary_color or primary_color not in tp_cols): continue
-                        if not ts_all and (not secondary_color or secondary_color not in ts_cols): continue
+                        if not tp_all and (not primary_color or primary_color not in tp_cols):
+                            continue
+                        if not ts_all and (not secondary_color or secondary_color not in ts_cols):
+                            continue
 
                         if filter_search and filter_search not in name_lower:
                             continue
@@ -582,19 +602,47 @@ class GearOptimizerApp:
                 pass
             self.discord_reporter.send_log(str(msg))
 
-    def _prepare_tasks(self, song_queue, cfg, paths, ref_arrays, all_gears, all_minis,
-                       gears_by_name, minis_by_name, use_evo_db, auto_buff, ga_depth, status_queue, fg_debug):
+    def _prepare_tasks(
+        self,
+        song_queue,
+        cfg,
+        paths,
+        ref_arrays,
+        all_gears,
+        all_minis,
+        gears_by_name,
+        minis_by_name,
+        use_evo_db,
+        auto_buff,
+        ga_depth,
+        status_queue,
+        fg_debug,
+    ):
         cfg_dict = cfg_to_dict(cfg)
         tasks = []
         parallel_workers = 1
         for fp, found_song_name, task_diff in song_queue:
             print(f"[QUEUE] {found_song_name}")
-            tasks.append((
-                fp, found_song_name, task_diff, cfg_dict, paths, ref_arrays,
-                all_gears, all_minis, gears_by_name, minis_by_name,
-                use_evo_db, auto_buff, ga_depth, status_queue, parallel_workers,
-                fg_debug,
-            ))
+            tasks.append(
+                (
+                    fp,
+                    found_song_name,
+                    task_diff,
+                    cfg_dict,
+                    paths,
+                    ref_arrays,
+                    all_gears,
+                    all_minis,
+                    gears_by_name,
+                    minis_by_name,
+                    use_evo_db,
+                    auto_buff,
+                    ga_depth,
+                    status_queue,
+                    parallel_workers,
+                    fg_debug,
+                )
+            )
         return tasks
 
     @staticmethod
@@ -645,8 +693,17 @@ class GearOptimizerApp:
 
         # GPU_Native_GA is supported by a dedicated GPU-native in-flight orchestrator.
 
-    def _execute_tasks(self, tasks, eval_cpu_limit, parallel_workers, memory_resume_tracker,
-                       manager, status_queue, status_thread, loop_forever):
+    def _execute_tasks(
+        self,
+        tasks,
+        eval_cpu_limit,
+        parallel_workers,
+        memory_resume_tracker,
+        manager,
+        status_queue,
+        status_thread,
+        loop_forever,
+    ):
         """Execute tasks with automatic parallelism."""
         inflight_songs = 0
         gpu_mode_cfg = False
@@ -671,21 +728,21 @@ class GearOptimizerApp:
             max_workers = max(1, min(len(tasks), max(1, available_cpus - 1)))
 
         if available_cpus != logical_cpus:
-             print(f"EvalCPUCores cap applied: using {available_cpus} of {logical_cpus} cores.")
+            print(f"EvalCPUCores cap applied: using {available_cpus} of {logical_cpus} cores.")
 
         if inflight_songs > 1 and len(tasks) > 1:
             print(f"[InFlight] Requested: InFlightSongs={inflight_songs} (single-process).")
 
-        print(f"Parallel plan -> songs: {len(tasks)}, concurrent workers: {max_workers}, cores per song: {parallel_workers}")
+        print(
+            f"Parallel plan -> songs: {len(tasks)}, concurrent workers: {max_workers}, cores per song: {parallel_workers}"
+        )
         print(f"Using {available_cpus} logical CPU cores")
-
 
         completed_songs = set()
 
         if len(tasks) > 1 and max_workers > 1:
             self._run_parallel(
-                tasks, max_workers, completed_songs, memory_resume_tracker,
-                manager, status_queue, status_thread
+                tasks, max_workers, completed_songs, memory_resume_tracker, manager, status_queue, status_thread
             )
         else:
             self._run_sequential(tasks, completed_songs, memory_resume_tracker)
@@ -694,9 +751,7 @@ class GearOptimizerApp:
             print("[MemoryGuard] Soft limit reached; pending songs saved for resume.")
             if loop_forever:
                 print("[MemoryGuard] LoopForever enabled; scheduling automatic restart.")
-                self.discord_reporter.send_log(
-                    "Memory soft limit reached; restarting MetaFinder to release RAM."
-                )
+                self.discord_reporter.send_log("Memory soft limit reached; restarting MetaFinder to release RAM.")
 
         if memory_resume_tracker:
             memory_resume_tracker.finalize(memory_release_requested())
@@ -910,12 +965,12 @@ class GearOptimizerApp:
                         prefetch_slots = safe_int(os.environ.get("GPU_PREFETCH_SLOTS", 0))
                         if prefetch_slots <= 0:
                             prefetch_slots = 5  # default
-                        keep_slots = (
-                            str(os.environ.get("GPU_PREFETCH_KEEP_SLOTS", "0"))
-                            .strip()
-                            .lower()
-                            in {"1", "true", "yes", "on"}
-                        )
+                        keep_slots = str(os.environ.get("GPU_PREFETCH_KEEP_SLOTS", "0")).strip().lower() in {
+                            "1",
+                            "true",
+                            "yes",
+                            "on",
+                        }
                         _gpu_prefetch_mgr = get_gpu_prefetch_manager(
                             num_slots=prefetch_slots,
                             keep_slots=keep_slots,
@@ -946,11 +1001,7 @@ class GearOptimizerApp:
                     # Prefer preloaded calc_song for this song (skips disk I/O + parsing).
                     task_args = t
                     preloaded_current = preloaded_by_name.pop(song_name, None)
-                    if (
-                        preloaded_current is not None
-                        and preloaded_current.calc_song
-                        and not preloaded_current.error
-                    ):
+                    if preloaded_current is not None and preloaded_current.calc_song and not preloaded_current.error:
                         task_args = t + (preloaded_current.calc_song, True)
                     else:
                         task_args = t + (True,)
@@ -1055,10 +1106,16 @@ class GearOptimizerApp:
             if use_gpu_preload:
                 try:
                     from gear_optimizer.solver.taichi_gem.api.gpu_prefetch import get_gpu_prefetch_manager
+
                     prefetch_slots = safe_int(os.environ.get("GPU_PREFETCH_SLOTS", 0))
                     if prefetch_slots <= 0:
                         prefetch_slots = 5  # default
-                    keep_slots = str(os.environ.get("GPU_PREFETCH_KEEP_SLOTS", "0")).strip().lower() in {"1", "true", "yes", "on"}
+                    keep_slots = str(os.environ.get("GPU_PREFETCH_KEEP_SLOTS", "0")).strip().lower() in {
+                        "1",
+                        "true",
+                        "yes",
+                        "on",
+                    }
                     _gpu_prefetch_mgr = get_gpu_prefetch_manager(
                         num_slots=prefetch_slots,
                         keep_slots=keep_slots,
@@ -1134,9 +1191,11 @@ class GearOptimizerApp:
                     if i > 0 and i % 10 == 0:
                         stats = _gpu_prefetch_mgr.stats()
                         if stats["prefetch_count"] > 0:
-                            print(f"[GPU Prefetch] Songs prefetched: {stats['prefetch_count']}, "
-                                  f"cache hits: {stats['cache_hits']}, "
-                                  f"avg time: {stats['avg_prefetch_ms']:.1f}ms")
+                            print(
+                                f"[GPU Prefetch] Songs prefetched: {stats['prefetch_count']}, "
+                                f"cache hits: {stats['cache_hits']}, "
+                                f"avg time: {stats['avg_prefetch_ms']:.1f}ms"
+                            )
 
                 yield res
 
@@ -1154,7 +1213,7 @@ class GearOptimizerApp:
             completed_songs=completed_songs,
             completed_offset=completed_offset,
             memory_resume_tracker=memory_resume_tracker,
-            total_tasks=len(tasks)
+            total_tasks=len(tasks),
         )
 
     def _queue_song_for_preload(self, preloader, task):
@@ -1162,10 +1221,24 @@ class GearOptimizerApp:
         try:
             from .helpers.song_preloader import SongLoadRequest
 
-            fp, song_name, task_diff, cfg_dict, paths, ref_arrays, \
-                all_gears, all_minis, gears_by_name, minis_by_name, \
-                use_evo_db, auto_buff, ga_depth, status_queue, parallel_workers, \
-                fg_debug = task
+            (
+                fp,
+                song_name,
+                task_diff,
+                cfg_dict,
+                paths,
+                ref_arrays,
+                all_gears,
+                all_minis,
+                gears_by_name,
+                minis_by_name,
+                use_evo_db,
+                auto_buff,
+                ga_depth,
+                status_queue,
+                parallel_workers,
+                fg_debug,
+            ) = task
 
             request = SongLoadRequest(
                 song_name=song_name,
@@ -1185,7 +1258,9 @@ class GearOptimizerApp:
         except Exception:
             pass  # Preloading failure is non-fatal
 
-    def _run_parallel(self, tasks, max_workers, completed_songs, memory_resume_tracker, manager, status_queue, status_thread):
+    def _run_parallel(
+        self, tasks, max_workers, completed_songs, memory_resume_tracker, manager, status_queue, status_thread
+    ):
         remaining_tasks = list(tasks)
         max_pool_retries = 3
         broken_pool_failures = 0
@@ -1195,6 +1270,7 @@ class GearOptimizerApp:
         gpu_executor = None
         try:
             from gear_optimizer.solver.gpu_executor import get_gpu_executor
+
             gpu_executor = get_gpu_executor()
             gpu_executor.start()
             print("[GPU Executor] Started for parallel song processing")
@@ -1246,15 +1322,17 @@ class GearOptimizerApp:
                             completed_songs=completed_songs,
                             completed_offset=completed_offset,
                             memory_resume_tracker=memory_resume_tracker,
-                            total_tasks=len(tasks)
+                            total_tasks=len(tasks),
                         )
 
                         if memory_release_requested():
-                             print("[MemoryGuard] Stopping parallel loop after soft limit.")
-                             break
+                            print("[MemoryGuard] Stopping parallel loop after soft limit.")
+                            break
                 else:
                     # Fallback: no GPU executor, workers use direct GPU (may conflict)
-                    with concurrent.futures.ProcessPoolExecutor(max_workers=effective_workers, mp_context=mp_ctx) as executor:
+                    with concurrent.futures.ProcessPoolExecutor(
+                        max_workers=effective_workers, mp_context=mp_ctx
+                    ) as executor:
                         future_map = {executor.submit(safe_process_song_task, t): t[1] for t in remaining_tasks}
                         self._consume_results(
                             concurrent.futures.as_completed(future_map),
@@ -1263,12 +1341,12 @@ class GearOptimizerApp:
                             completed_songs=completed_songs,
                             completed_offset=completed_offset,
                             memory_resume_tracker=memory_resume_tracker,
-                            total_tasks=len(tasks)
+                            total_tasks=len(tasks),
                         )
 
                         if memory_release_requested():
-                             print("[MemoryGuard] Stopping parallel loop after soft limit.")
-                             break
+                            print("[MemoryGuard] Stopping parallel loop after soft limit.")
+                            break
 
             except BrokenProcessPool as bpp:
                 broken_pool_failures += 1
@@ -1288,10 +1366,10 @@ class GearOptimizerApp:
                 remaining_songs = [t for t in tasks if t[1] not in completed_songs]
                 remaining_tasks = []
                 for t in remaining_songs:
-                     # Recreate tuple with new status queue
-                     new_t = list(t)
-                     new_t[13] = status_queue
-                     remaining_tasks.append(tuple(new_t))
+                    # Recreate tuple with new status queue
+                    new_t = list(t)
+                    new_t[13] = status_queue
+                    remaining_tasks.append(tuple(new_t))
 
                 current_worker_cap = max(1, effective_workers - 1)
 
@@ -1310,12 +1388,19 @@ class GearOptimizerApp:
             except Exception:
                 pass
 
-
-    def _consume_results(self, results_iter, future_map=None, propagate_broken_pool=False,
-                         completed_songs=None, completed_offset=0, memory_resume_tracker=None, total_tasks=0):
+    def _consume_results(
+        self,
+        results_iter,
+        future_map=None,
+        propagate_broken_pool=False,
+        completed_songs=None,
+        completed_offset=0,
+        memory_resume_tracker=None,
+        total_tasks=0,
+    ):
         completed = completed_offset
         failed = 0
-        total = total_tasks or 0 # approximate if unknown
+        total = total_tasks or 0  # approximate if unknown
 
         for item in results_iter:
             completed += 1
@@ -1378,29 +1463,31 @@ class GearOptimizerApp:
             # DB Stuff - Only save valid entries (non-zero score, has gear/minis)
             persisted = res.get("persist_entries")
             if persisted:
-                 # Filter: only save entries with score > 0 and at least some gear
-                 valid_entries = [
-                     e for e in persisted
-                     if e.get("score", 0) > 0 and (e.get("gear") or e.get("minis"))
-                 ]
-                 if valid_entries:
-                     self._async_db_saver.submit(res["song"], valid_entries)
-                 else:
-                     print(f"[DB] Skipped save for {res['song']}: no valid entries (score=0 or empty loadout)")
+                # Filter: only save entries with score > 0 and at least some gear
+                valid_entries = [e for e in persisted if e.get("score", 0) > 0 and (e.get("gear") or e.get("minis"))]
+                if valid_entries:
+                    self._async_db_saver.submit(res["song"], valid_entries)
+                else:
+                    print(f"[DB] Skipped save for {res['song']}: no valid entries (score=0 or empty loadout)")
             elif res.get("db_payload"):
-                 pl = res["db_payload"]
-                 # Only save if score > 0 and has gear/minis (prevents tainting on errors)
-                 if pl.get("score", 0) > 0 and (pl.get("gear") or pl.get("minis")):
-                     self._async_db_saver.submit(res["song"], [{
-                         "score": pl.get("score", 0),
-                         "fg_score": pl.get("fg_score", 0),
-                         "gear": pl.get("gear", []),
-                         "minis": pl.get("minis", []),
-                         "details": pl.get("details", {}),
-                         "force": pl.get("force"),
-                     }])
-                 else:
-                     print(f"[DB] Skipped save for {res['song']}: invalid payload (score=0 or empty loadout)")
+                pl = res["db_payload"]
+                # Only save if score > 0 and has gear/minis (prevents tainting on errors)
+                if pl.get("score", 0) > 0 and (pl.get("gear") or pl.get("minis")):
+                    self._async_db_saver.submit(
+                        res["song"],
+                        [
+                            {
+                                "score": pl.get("score", 0),
+                                "fg_score": pl.get("fg_score", 0),
+                                "gear": pl.get("gear", []),
+                                "minis": pl.get("minis", []),
+                                "details": pl.get("details", {}),
+                                "force": pl.get("force"),
+                            }
+                        ],
+                    )
+                else:
+                    print(f"[DB] Skipped save for {res['song']}: invalid payload (score=0 or empty loadout)")
 
             log_content = (res.get("log") or "").strip()
             if log_content:
@@ -1409,8 +1496,10 @@ class GearOptimizerApp:
 
             # Cleanup
             res["log"] = None
-            if "persist_entries" in res: res["persist_entries"] = None
-            if "db_payload" in res: res["db_payload"] = None
+            if "persist_entries" in res:
+                res["persist_entries"] = None
+            if "db_payload" in res:
+                res["db_payload"] = None
 
         if failed > 0:
             print(f"[SUMMARY] {failed}/{total} songs failed.")
@@ -1439,12 +1528,12 @@ class GearOptimizerApp:
                 except Exception:
                     pass
             # Graceful shutdown of async Discord reporter
-            if hasattr(self.discord_reporter, 'shutdown'):
+            if hasattr(self.discord_reporter, "shutdown"):
                 try:
                     self.discord_reporter.shutdown(timeout=5.0)
                 except Exception:
                     pass
-             # Force GC on manager
+            # Force GC on manager
             old_manager = manager
             del old_manager
             gc.collect(generation=0)

@@ -6,6 +6,7 @@ This test ensures:
 2. Elites are preserved correctly (high-scoring genomes survive)
 3. Results match between ga_next_generation (CPU elites) and ga_next_generation_gpu_elites (GPU elites)
 """
+
 import os
 import sys
 import numpy as np
@@ -98,13 +99,13 @@ def test_gpu_elites_preservation():
     # Build a population with distinct elite genomes
     rng = np.random.default_rng(456)
     pop = rng.integers(100, 500, size=(n_genomes, n_slots), dtype=np.int32)
-    
+
     # Make sure top genome per island has unique IDs
     island_size = n_genomes // n_islands
     for isl in range(n_islands):
         elite_idx = (isl + 1) * island_size - 1  # Last genome in each island
         pop[elite_idx, :] = 900 + isl  # Distinct elite values (900, 901, 902, 903)
-    
+
     ga_upload_population_indices(pop, n_slots=n_slots)
 
     # Give elite genomes the highest scores within their islands
@@ -134,20 +135,21 @@ def test_gpu_elites_preservation():
     )
 
     out = ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
-    
+
     # First n_elites genomes should be the elites (indices 0..3)
     for i in range(total_elites):
         elite_genome = out[i]
         # Each elite should have one of our distinct values (900-903)
         # Check that at least one slot has the elite marker
-        assert any(v in [900, 901, 902, 903] for v in elite_genome), \
+        assert any(v in [900, 901, 902, 903] for v in elite_genome), (
             f"Elite {i} should have elite marker values, got {elite_genome}"
+        )
 
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_gpu_elites_vs_cpu_elites_parity():
     """
-    Verify ga_next_generation_gpu_elites produces the same result as 
+    Verify ga_next_generation_gpu_elites produces the same result as
     ga_next_generation when given the same elite indices.
     """
     from gear_optimizer.solver.taichi_gem.api import (
@@ -180,11 +182,11 @@ def test_gpu_elites_vs_cpu_elites_parity():
     ga_seed_rng(n_genomes, seed=42)
     ga_upload_island_boundaries(island_starts)
     ga_find_island_elites(n_genomes, n_islands, elites_per_island)
-    
+
     # Download elite indices (CPU path)
     total_elites = n_islands * elites_per_island
     elite_indices = ga_download_island_elite_indices(total_elites)
-    
+
     ga_next_generation(
         n_genomes=n_genomes,
         n_slots=n_slots,
@@ -201,7 +203,7 @@ def test_gpu_elites_vs_cpu_elites_parity():
     ga_seed_rng(n_genomes, seed=42)  # Same seed!
     ga_upload_island_boundaries(island_starts)
     ga_find_island_elites(n_genomes, n_islands, elites_per_island)
-    
+
     ga_next_generation_gpu_elites(
         n_genomes=n_genomes,
         n_slots=n_slots,
@@ -212,8 +214,7 @@ def test_gpu_elites_vs_cpu_elites_parity():
     gpu_out = ga_download_population_indices(n_genomes=n_genomes, n_slots=n_slots)
 
     # Compare outputs
-    np.testing.assert_array_equal(cpu_out, gpu_out, 
-        err_msg="CPU and GPU elite paths should produce identical results")
+    np.testing.assert_array_equal(cpu_out, gpu_out, err_msg="CPU and GPU elite paths should produce identical results")
 
 
 if __name__ == "__main__":

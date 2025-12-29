@@ -4,6 +4,7 @@ Test GA with GPU Gem Solver enabled.
 Verifies that the GPU gem solver produces the same results when used
 through the full GA pipeline.
 """
+
 import sys
 import os
 import numpy as np
@@ -11,22 +12,23 @@ import random
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+
 def run_ga_gpu_test():
     print("=" * 60)
     print("GA GPU Integration Test")
     print("=" * 60)
-    
+
     SEED = 42
-    
+
     from gear_optimizer.solver.genetic import solve_coevolution_genetic
     from gear_optimizer.core.constants import TOTAL_ROWS
 
     # Generate deterministic mock data
     np.random.seed(SEED)
     random.seed(SEED)
-    
+
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
-    
+
     all_gears = []
     gears_by_name = {}
     for slot in slots:
@@ -48,7 +50,7 @@ def run_ga_gpu_test():
             }
             all_gears.append(item)
             gears_by_name[name] = item
-    
+
     all_minis = []
     minis_by_name = {}
     for i in range(20):
@@ -83,15 +85,22 @@ def run_ga_gpu_test():
         },
         "song_data": {
             "timestamps": timestamps,
-        }
+        },
     }
 
     base_stats_fixed = {
-        "Perfect Points": 100, "Combo Multiplier": 100, "Fever Multiplier": 100,
-        "Fever Fill Rate": 100, "Fever Time": 100,
-        "Rush": 100, "Flow": 100, "Beat": 50, "Vibe": 50, "Chill": 50,
+        "Perfect Points": 100,
+        "Combo Multiplier": 100,
+        "Fever Multiplier": 100,
+        "Fever Fill Rate": 100,
+        "Fever Time": 100,
+        "Rush": 100,
+        "Flow": 100,
+        "Beat": 50,
+        "Vibe": 50,
+        "Chill": 50,
     }
-    
+
     rows = TOTAL_ROWS + 1
     ref_arrays = {
         "Perfect Points": np.linspace(1.0, 2.0, rows),
@@ -120,10 +129,12 @@ def run_ga_gpu_test():
 
         def getboolean(self, section, option, fallback=False):
             val = self.get(section, option, fallback)
-            if isinstance(val, bool): return val
-            if str(val).lower() in ("true", "1", "yes"): return True
+            if isinstance(val, bool):
+                return val
+            if str(val).lower() in ("true", "1", "yes"):
+                return True
             return False
-            
+
         def getint(self, section, option, fallback=0):
             try:
                 return int(self.get(section, option, fallback))
@@ -140,7 +151,7 @@ def run_ga_gpu_test():
     print("\nRunning GA with GPU Gem Solver...")
     np.random.seed(SEED)
     random.seed(SEED)
-    
+
     best_data, best_gear, best_minis, _, _, _, _ = solve_coevolution_genetic(
         cfg=MockCfgGPU(),
         base_stats_fixed=base_stats_fixed,
@@ -155,13 +166,13 @@ def run_ga_gpu_test():
         optimize_minis=True,
         ga_depth=10,
     )
-    
+
     gpu_score = best_data["Score"]
     print(f"\nGPU GA Score: {gpu_score}")
-    
+
     # Expected score from CPU regression
     expected_score = 1662978
-    
+
     print("\n" + "=" * 60)
     if gpu_score == expected_score:
         print(f"✓ PASSED: GPU GA ({gpu_score}) == CPU expected ({expected_score})")
@@ -170,8 +181,9 @@ def run_ga_gpu_test():
         print(f"  Diff: {gpu_score - expected_score}")
         print("  (Note: Minor differences may be due to GPU floating point)")
     print("=" * 60)
-    
+
     return gpu_score == expected_score
+
 
 if __name__ == "__main__":
     success = run_ga_gpu_test()

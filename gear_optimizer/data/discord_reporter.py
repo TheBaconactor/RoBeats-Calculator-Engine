@@ -7,6 +7,7 @@ via webhook API. Includes rate limit handling and message sanitization.
 OPTIMIZATION: HTTP calls run in a background thread to avoid blocking
 the main optimization loop (~12s savings per song, profiled Dec 2024).
 """
+
 import os
 import time
 import threading
@@ -45,21 +46,21 @@ class DiscordReporter:
         self.token = token
         self.log_channel_id = log_channel_id
         self.stats_channel_id = stats_channel_id
-        
+
         # Stats batching
         self._stats_batch_size = stats_batch_size
         self._stats_buffer: list[str] = []  # Actually used for logs (legacy naming)
         self._stats_msg_buffer: list[str] = []  # For actual stats messages
         self._stats_lock = threading.Lock()
-        
+
         # Background thread for async HTTP posting
         self._queue: queue_module.Queue = queue_module.Queue()
         self._worker_thread: threading.Thread | None = None
         self._shutdown = False
-        
+
         if self.token and requests is not None:
             self._start_worker()
-    
+
     def _start_worker(self):
         """Start the background HTTP worker thread."""
         if self._worker_thread is not None and self._worker_thread.is_alive():
@@ -71,7 +72,7 @@ class DiscordReporter:
             daemon=True,
         )
         self._worker_thread.start()
-    
+
     def _worker_loop(self):
         """Background thread that processes HTTP posts from queue."""
         while not self._shutdown:
@@ -80,25 +81,25 @@ class DiscordReporter:
                 item = self._queue.get(timeout=1.0)
             except queue_module.Empty:
                 continue
-            
+
             if item is None:  # Shutdown signal
                 break
-            
+
             channel_id, content = item
             self._post_sync(channel_id, content)
             self._queue.task_done()
-    
+
     def shutdown(self, timeout: float = 5.0):
         """Gracefully shutdown the background worker, waiting for pending posts."""
         # Flush any pending batched logs/stats before shutdown
         self.flush_logs()
         self.flush_stats()
-        
+
         self._shutdown = True
         if self._worker_thread is not None and self._worker_thread.is_alive():
             self._queue.put(None)  # Shutdown signal
             self._worker_thread.join(timeout=timeout)
-    
+
     def _post(self, channel_id, content):
         """Queue message for async posting (non-blocking)."""
         if not self.token or not channel_id or not content or requests is None:
@@ -117,7 +118,7 @@ class DiscordReporter:
         if not self.token or not channel_id or not content or requests is None:
             return
 
-        chunks = [content[i:i + 1800] for i in range(0, len(content), 1800)] or [content]
+        chunks = [content[i : i + 1800] for i in range(0, len(content), 1800)] or [content]
         headers = {
             "Authorization": f"Bot {self.token}",
             "Content-Type": "application/json",
@@ -143,10 +144,7 @@ class DiscordReporter:
                         time.sleep(max(retry_after, 0.5))
                         continue
                     if resp.status_code >= 300:
-                        print(
-                            f"[DiscordReporter] Failed to send to {channel_id}: "
-                            f"{resp.status_code} {resp.text}"
-                        )
+                        print(f"[DiscordReporter] Failed to send to {channel_id}: {resp.status_code} {resp.text}")
                     break
                 except Exception as e:
                     print(f"[DiscordReporter] Error sending Discord message: {e}")
@@ -155,21 +153,21 @@ class DiscordReporter:
     def send_log(self, content, force_flush=False):
         """
         Add log message to batch buffer. Sends when buffer reaches batch size.
-        
+
         Args:
             content: Log message content
             force_flush: If True, immediately flush the buffer after adding
         """
         if not content:
             return
-        
+
         sanitized = sanitize_public_message(content)
         if not sanitized:
             return
-            
+
         with self._stats_lock:  # Reusing lock for log buffer too
             self._stats_buffer.append(sanitized)
-            
+
             # Flush if buffer is full or force requested
             if len(self._stats_buffer) >= self._stats_batch_size or force_flush:
                 self._flush_log_buffer()
@@ -177,7 +175,7 @@ class DiscordReporter:
     def send_stats(self, content, force_flush=False):
         """
         Add stats message to batch buffer. Sends when buffer reaches batch size.
-        
+
         Args:
             content: Stats message content
             force_flush: If True, immediately flush the buffer after adding
@@ -187,7 +185,7 @@ class DiscordReporter:
 
         with self._stats_lock:
             self._stats_msg_buffer.append(content)
-            
+
             # Flush if buffer is full or force requested
             if len(self._stats_msg_buffer) >= self._stats_batch_size or force_flush:
                 self._flush_stats_buffer()
@@ -201,28 +199,28 @@ class DiscordReporter:
         """Internal: Send all buffered stats as a single message (caller holds lock)."""
         if not self._stats_msg_buffer:
             return
-        
+
         # Join messages with a detailed separator
         combined = "\n" + "─" * 40 + "\n"
         combined = combined.join(self._stats_msg_buffer)
-        
+
         self._post(self.stats_channel_id, combined)
         self._stats_msg_buffer.clear()
-    
+
     def flush_logs(self):
         """Force flush any pending logs in the buffer."""
         with self._stats_lock:
             self._flush_log_buffer()
-    
+
     def _flush_log_buffer(self):
         """Internal: Send all buffered logs as a single message (caller holds lock)."""
         if not self._stats_buffer:
             return
-        
+
         # Join messages with a separator line
         combined = "\n" + "─" * 40 + "\n"
         combined = combined.join(self._stats_buffer)
-        
+
         self._post(self.log_channel_id, combined)
         self._stats_buffer.clear()
 

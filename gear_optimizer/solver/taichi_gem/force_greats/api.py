@@ -30,7 +30,6 @@ from . import kernels as fg_kernels
 _USE_ASYNC_FG = os.environ.get("USE_ASYNC_FG", "1") == "1"
 
 
-
 # ============================================================================
 # SYNC POLICY
 # ============================================================================
@@ -173,13 +172,14 @@ def _is_vulkan_backend_failure(exc: BaseException) -> bool:
 # GLOBAL BEST API (GPU-resident accumulation across groups)
 # ============================================================================
 
+
 def fg_reset_global_best(n_genomes: int) -> None:
     """
     Reset global best fields before multi-group processing.
-    
+
     Call this once at the start of a batch of FG groups, before the loop.
     All global best scores will be set to -1 (sentinel).
-    
+
     Args:
         n_genomes: Number of genomes to reset
     """
@@ -190,10 +190,10 @@ def fg_reset_global_best(n_genomes: int) -> None:
 def fg_accumulate_global_best(n_genomes: int) -> None:
     """
     Update global best with current call's results (GPU-side comparison).
-    
+
     Call this after each solve_force_greats_finder_gpu() call (with accumulate_global=True)
     to track the best results across all groups without downloading to CPU.
-    
+
     Args:
         n_genomes: Number of genomes to compare
     """
@@ -203,12 +203,12 @@ def fg_accumulate_global_best(n_genomes: int) -> None:
 def fg_download_global_best(n_genomes: int) -> dict[str, np.ndarray]:
     """
     Download final global best results after all groups processed.
-    
+
     Call this once at the end of multi-group processing to get the final results.
-    
+
     Args:
         n_genomes: Number of genomes to download
-        
+
     Returns:
         Dict with numpy arrays for all result fields (same format as return_raw=True)
     """
@@ -229,6 +229,7 @@ def fg_download_global_best(n_genomes: int) -> dict[str, np.ndarray]:
         "score_penalty": packed[:, 9],
         "fill_penalty": packed[:, 10],
     }
+
 
 def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
     global _fg_pair_caps_state, _fg_pair_caps_default_buf
@@ -256,9 +257,7 @@ def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
 
     arr = np.asarray(pair_caps_grid, dtype=np.int32)
     if arr.shape != expected_shape:
-        raise ValueError(
-            f"pair_caps_grid must be shape {expected_shape}, got {arr.shape}"
-        )
+        raise ValueError(f"pair_caps_grid must be shape {expected_shape}, got {arr.shape}")
     try:
         ptr = int(arr.__array_interface__["data"][0])
     except Exception:
@@ -269,6 +268,7 @@ def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
     fg_fields.fg_pair_caps.from_numpy(arr)
     _fg_pair_caps_state = "custom"
     _fg_pair_caps_custom_key = key
+
 
 def _get_genome_stats_buf() -> np.ndarray:
     """Get or allocate a persistent buffer for genome stats (N, 7)."""
@@ -287,9 +287,7 @@ def _fg_upload_song_timestamps(timestamps_np: np.ndarray) -> int:
     if n <= 0:
         return 0
     if n > fg_fields.FG_MAX_SONG_NOTES:
-        raise ValueError(
-            f"Song too long for FG GPU timestamps: {n} > {fg_fields.FG_MAX_SONG_NOTES}"
-        )
+        raise ValueError(f"Song too long for FG GPU timestamps: {n} > {fg_fields.FG_MAX_SONG_NOTES}")
 
     # Cache key must disambiguate different charts with identical endpoints.
     # Use backing pointer + a few sampled points (O(1), robust in practice).
@@ -410,7 +408,7 @@ def _solve_force_greats_finder_gpu_impl(
         genome_stats_list: Either list[dict] with keys base_pp/cm/fm/p_val/s_val/ft_stat/ff_stat,
                           OR numpy array of shape (n_genomes, 7) with same column order.
         return_raw: If True, return dict of numpy arrays instead of list[dict].
-                    Keys: 'final_score', 'base_score', 'cfg_idx', 'FT', 'FF', 
+                    Keys: 'final_score', 'base_score', 'cfg_idx', 'FT', 'FF',
                           'g_pp', 'g_cm', 'g_fm', 'g_ov', 'score_penalty', 'fill_penalty'
         accumulate_global: If True, update GPU-resident global best fields instead of downloading.
                           Caller must use fg_reset_global_best() before the loop and
@@ -435,9 +433,7 @@ def _solve_force_greats_finder_gpu_impl(
         return [] if not return_raw else {}
 
     if "Fever Time" not in ref_arrays or "Fever Fill Rate" not in ref_arrays:
-        raise KeyError(
-            "FG finder GPU requires ref_arrays to include 'Fever Time' and 'Fever Fill Rate'"
-        )
+        raise KeyError("FG finder GPU requires ref_arrays to include 'Fever Time' and 'Fever Fill Rate'")
 
     # Ensure shared Taichi runtime + base fields + reference arrays are ready.
     gem_api.ensure_ready(ref_arrays)
@@ -480,7 +476,7 @@ def _solve_force_greats_finder_gpu_impl(
 
     # Upload per-genome base stats using cached buffers
     stats_buf = _get_genome_stats_buf()
-    
+
     # Fast path: if genome_stats_list is already a numpy array, use directly
     if isinstance(genome_stats_list, np.ndarray):
         # Expect shape (n_genomes, 7) with columns: pp, cm, fm, p_val, s_val, ft_stat, ff_stat
@@ -555,7 +551,7 @@ def _solve_force_greats_finder_gpu_impl(
     n_work_items = n_genomes * n_ftff
     if n_work_items > fg_fields.FG_MAX_FLAT_WORK_ITEMS:
         raise ValueError(f"Too many flat work items: {n_work_items} > {fg_fields.FG_MAX_FLAT_WORK_ITEMS}")
-    
+
     # Build flat work items ON GPU (cached by (n_genomes, n_ftff)).
     # This avoids uploading two 4M-element arrays from CPU on every call.
     global _fg_flat_work_key
@@ -581,15 +577,13 @@ def _solve_force_greats_finder_gpu_impl(
     global _fg_forced_upload_buf
     # Ensure buffer is allocated AND large enough (in case FG_MAX_CONFIGS changed)
     if _fg_forced_upload_buf is None or _fg_forced_upload_buf.shape[0] < fg_fields.FG_MAX_CONFIGS:
-        _fg_forced_upload_buf = np.zeros(
-            (fg_fields.FG_MAX_CONFIGS, fg_fields.FG_MAX_SECTIONS), dtype=np.int32
-        )
+        _fg_forced_upload_buf = np.zeros((fg_fields.FG_MAX_CONFIGS, fg_fields.FG_MAX_SECTIONS), dtype=np.int32)
 
     # Adaptive cfg_chunk: target ~2M threads per kernel to avoid TDR while staying 100% utilized
     # TDR (Timeout Detection and Recovery) triggers after ~2s on Windows if GPU is unresponsive
     # With heavy per-thread work (90-iteration gem optimization), we need to limit threads per launch
     TARGET_THREADS_PER_KERNEL = 2_000_000
-    
+
     if cfg_chunk is None or int(cfg_chunk) <= 0:
         # Auto-calculate based on work items
         if gem_fields.IS_METAL:
@@ -603,17 +597,19 @@ def _solve_force_greats_finder_gpu_impl(
             cfg_chunk = max(256, TARGET_THREADS_PER_KERNEL // max(1, n_work_items))
     else:
         cfg_chunk = int(cfg_chunk)
-    
+
     cfg_chunk = min(cfg_chunk, n_cfg_total, fg_fields.FG_MAX_CONFIGS)
     n_chunks = (n_cfg_total + cfg_chunk - 1) // cfg_chunk
-    
+
     if _perf:
-        print(f"[PERF] FG adaptive chunking: n_work={n_work_items} cfg_chunk={cfg_chunk} "
-              f"n_cfg={n_cfg_total} n_chunks={n_chunks} threads_per_kernel~={n_work_items * cfg_chunk:,}")
-    
+        print(
+            f"[PERF] FG adaptive chunking: n_work={n_work_items} cfg_chunk={cfg_chunk} "
+            f"n_cfg={n_cfg_total} n_chunks={n_chunks} threads_per_kernel~={n_work_items * cfg_chunk:,}"
+        )
+
     # Pre-fetch buffer reference
     buf = _fg_forced_upload_buf
-    
+
     # Config upload caching: avoid repeated CPU packing and host->device uploads
     # when the config list content is unchanged across calls.
     global _fg_forced_configs_upload_key
@@ -632,7 +628,7 @@ def _solve_force_greats_finder_gpu_impl(
     for cfg_offset in range(0, n_cfg_total, cfg_chunk):
         chunk = fg_configs[cfg_offset : cfg_offset + cfg_chunk]
         n_cfg = int(len(chunk))
-        
+
         if can_skip_forced_upload:
             # Configs unchanged (n_chunks==1 only); keep existing GPU buffer.
             can_skip_forced_upload = False
@@ -676,12 +672,18 @@ def _solve_force_greats_finder_gpu_impl(
                 int(n_sections),
                 int(n_ftff),
                 int(global_cfg_offset),
-                int(is_p_ft), int(is_s_ft),
-                int(is_p_ff), int(is_s_ff),
-                int(is_p_pp), int(is_s_pp),
-                int(is_p_cm), int(is_s_cm),
-                int(is_p_fm), int(is_s_fm),
-                int(is_p_ov), int(is_s_ov),
+                int(is_p_ft),
+                int(is_s_ft),
+                int(is_p_ff),
+                int(is_s_ff),
+                int(is_p_pp),
+                int(is_s_pp),
+                int(is_p_cm),
+                int(is_s_cm),
+                int(is_p_fm),
+                int(is_s_fm),
+                int(is_p_ov),
+                int(is_s_ov),
             )
         else:
             # FLATTENED kernel (GPU-friendly: one thread per work_item * cfg)
@@ -695,12 +697,18 @@ def _solve_force_greats_finder_gpu_impl(
                 int(total_budget),
                 int(gem_scale_fever),
                 int(n_sections),
-                int(is_p_ft), int(is_s_ft),
-                int(is_p_ff), int(is_s_ff),
-                int(is_p_pp), int(is_s_pp),
-                int(is_p_cm), int(is_s_cm),
-                int(is_p_fm), int(is_s_fm),
-                int(is_p_ov), int(is_s_ov),
+                int(is_p_ft),
+                int(is_s_ft),
+                int(is_p_ff),
+                int(is_s_ff),
+                int(is_p_pp),
+                int(is_s_pp),
+                int(is_p_cm),
+                int(is_s_cm),
+                int(is_p_fm),
+                int(is_s_fm),
+                int(is_p_ov),
+                int(is_s_ov),
             )
         # Optional per-chunk sync for TDR-prone systems (disabled by default)
         if _SYNC_PER_CHUNK:
@@ -723,8 +731,8 @@ def _solve_force_greats_finder_gpu_impl(
             t_total = t_upload + t_kernel
             n_chunks = (n_cfg_total + cfg_chunk - 1) // cfg_chunk
             print(
-                f"[PERF] FG GPU (ACCUMULATE): upload={t_upload*1000:.1f}ms kernel={t_kernel*1000:.1f}ms "
-                f"total={t_total*1000:.1f}ms (genomes={n_genomes}, cfgs={n_cfg_total}, ftff={n_ftff}, chunks={n_chunks})"
+                f"[PERF] FG GPU (ACCUMULATE): upload={t_upload * 1000:.1f}ms kernel={t_kernel * 1000:.1f}ms "
+                f"total={t_total * 1000:.1f}ms (genomes={n_genomes}, cfgs={n_cfg_total}, ftff={n_ftff}, chunks={n_chunks})"
             )
         return None  # Results accumulated on GPU, not downloaded
 
@@ -735,10 +743,10 @@ def _solve_force_greats_finder_gpu_impl(
 
     # Pack results on GPU (all 11 fields → 1 array)
     fg_kernels.fg_pack_results_kernel(n_genomes)
-    
+
     # Download results (1 transfer instead of 11!)
     packed_results = fg_fields.fg_best_packed.to_numpy()[:n_genomes, :]
-    
+
     # Unpack on CPU (trivial cost compared to 11 GPU waits)
     out_final = packed_results[:, 0]
     out_base = packed_results[:, 1]
@@ -783,10 +791,17 @@ def _solve_force_greats_finder_gpu_impl(
 
     # Pack arrays for helper function
     arrays_dict = {
-        "final": out_final, "base": out_base, "cfg": out_cfg,
-        "ft": out_ft, "ff": out_ff,
-        "gpp": out_gpp, "gcm": out_gcm, "gfm": out_gfm, "gov": out_gov,
-        "sp": out_sp, "fp": out_fp,
+        "final": out_final,
+        "base": out_base,
+        "cfg": out_cfg,
+        "ft": out_ft,
+        "ff": out_ff,
+        "gpp": out_gpp,
+        "gcm": out_gcm,
+        "gfm": out_gfm,
+        "gov": out_gov,
+        "sp": out_sp,
+        "fp": out_fp,
     }
 
     # Fast path: return raw numpy arrays (skip expensive dict building)
@@ -796,8 +811,8 @@ def _solve_force_greats_finder_gpu_impl(
             t_total = t_upload + t_kernel + t_download
             n_chunks = (n_cfg_total + cfg_chunk - 1) // cfg_chunk
             print(
-                f"[PERF] FG GPU (RAW): upload={t_upload*1000:.1f}ms kernel={t_kernel*1000:.1f}ms "
-                f"download={t_download*1000:.1f}ms total={t_total*1000:.1f}ms "
+                f"[PERF] FG GPU (RAW): upload={t_upload * 1000:.1f}ms kernel={t_kernel * 1000:.1f}ms "
+                f"download={t_download * 1000:.1f}ms total={t_total * 1000:.1f}ms "
                 f"(genomes={n_genomes}, cfgs={n_cfg_total}, ftff={n_ftff}, chunks={n_chunks})"
             )
         return {
@@ -817,6 +832,7 @@ def _solve_force_greats_finder_gpu_impl(
     if _USE_ASYNC_FG:
         # Async path: offload dict construction to background thread
         from .async_buffers import get_result_processor
+
         proc = get_result_processor()
         proc.submit_result_build(arrays_dict, n_genomes, _build_results)
         results = proc.get_results()  # Wait for completion (for now, single-call)
@@ -831,8 +847,8 @@ def _solve_force_greats_finder_gpu_impl(
         n_chunks = (n_cfg_total + cfg_chunk - 1) // cfg_chunk
         async_tag = " [ASYNC]" if _USE_ASYNC_FG else ""
         print(
-            f"[PERF] FG GPU: upload={t_upload*1000:.1f}ms kernel={t_kernel*1000:.1f}ms "
-            f"download={t_download*1000:.1f}ms dict={t_dict_build*1000:.1f}ms total={t_total*1000:.1f}ms "
+            f"[PERF] FG GPU: upload={t_upload * 1000:.1f}ms kernel={t_kernel * 1000:.1f}ms "
+            f"download={t_download * 1000:.1f}ms dict={t_dict_build * 1000:.1f}ms total={t_total * 1000:.1f}ms "
             f"(genomes={n_genomes}, cfgs={n_cfg_total}, ftff={n_ftff}, chunks={n_chunks}){async_tag}"
         )
 
@@ -853,7 +869,15 @@ def solve_force_greats_finder_gpu(*args, **kwargs) -> list[dict[str, Any]] | dic
         genome_stats_list, timestamps_np, long_notes, last_note_time, fg_configs, ftff_pairs = args
         great_candidate_timestamps_np = None
     elif len(args) == 7:
-        genome_stats_list, timestamps_np, great_candidate_timestamps_np, long_notes, last_note_time, fg_configs, ftff_pairs = args
+        (
+            genome_stats_list,
+            timestamps_np,
+            great_candidate_timestamps_np,
+            long_notes,
+            last_note_time,
+            fg_configs,
+            ftff_pairs,
+        ) = args
     else:
         raise TypeError(
             "solve_force_greats_finder_gpu expected 6 or 7 positional args: "
@@ -921,8 +945,3 @@ def solve_force_greats_finder_gpu(*args, **kwargs) -> list[dict[str, Any]] | dic
                 f"(attempt {attempt + 1}/{max(0, _FG_VULKAN_RETRIES)})"
             )
             gem_api.hard_reset_taichi(reason=str(e).splitlines()[0][:200])
-
-
-
-
-

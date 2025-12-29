@@ -2,6 +2,7 @@
 Utility functions and helpers for the gear optimizer.
 Pure functions with no external dependencies.
 """
+
 import configparser
 
 # --- STAT KEYS / HELPERS ---

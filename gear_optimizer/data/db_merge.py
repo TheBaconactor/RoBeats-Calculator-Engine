@@ -5,6 +5,7 @@ Handles automatic merging of a secondary database (evo.db) into the main
 evolution.db. Ensures data integrity, handles conflicts intelligently, and
 provides comprehensive logging.
 """
+
 import logging
 import os
 import sqlite3
@@ -36,7 +37,7 @@ def find_secondary_databases():
     try:
         for filename in os.listdir(db_dir):
             # Check if it's a .db file
-            if not filename.endswith('.db'):
+            if not filename.endswith(".db"):
                 continue
 
             # Skip main database
@@ -44,11 +45,11 @@ def find_secondary_databases():
                 continue
 
             # Skip backup files
-            if '.backup_' in filename:
+            if ".backup_" in filename:
                 continue
 
             # Skip WAL/SHM files (they end with .db-wal, .db-shm)
-            if filename.endswith(('.db-wal', '.db-shm', '.db-journal')):
+            if filename.endswith((".db-wal", ".db-shm", ".db-journal")):
                 continue
 
             full_path = os.path.join(db_dir, filename)
@@ -103,7 +104,7 @@ def validate_database_schema(db_path: str) -> Tuple[bool, str]:
         """)
         tables = {row[0] for row in cursor.fetchall()}
 
-        if 'songs' not in tables or 'loadouts' not in tables:
+        if "songs" not in tables or "loadouts" not in tables:
             conn.close()
             return False, "Missing required tables (songs or loadouts)"
 
@@ -112,9 +113,15 @@ def validate_database_schema(db_path: str) -> Tuple[bool, str]:
         columns = {row[1] for row in cursor.fetchall()}
 
         required_columns = {
-            'song_name', 'loadout_hash', 'score', 'fg_score',
-            'gear_json', 'minis_json', 'details_json',
-            'force_details_json', 'timestamp'
+            "song_name",
+            "loadout_hash",
+            "score",
+            "fg_score",
+            "gear_json",
+            "minis_json",
+            "details_json",
+            "force_details_json",
+            "timestamp",
         }
 
         missing_columns = required_columns - columns
@@ -123,7 +130,7 @@ def validate_database_schema(db_path: str) -> Tuple[bool, str]:
             return False, f"Missing required columns: {', '.join(missing_columns)}"
 
         # Validate optional fg_loadouts table if present
-        if 'fg_loadouts' in tables:
+        if "fg_loadouts" in tables:
             cursor.execute("PRAGMA table_info(fg_loadouts)")
             fg_columns = {row[1] for row in cursor.fetchall()}
             missing_fg_columns = required_columns - fg_columns
@@ -174,21 +181,18 @@ def get_database_stats(db_path: str) -> Dict[str, int]:
         conn.close()
 
         return {
-            'song_count': song_count,
-            'loadout_count': loadout_count,
-            'fg_loadout_count': fg_loadout_count,
-            'total_score': total_score
+            "song_count": song_count,
+            "loadout_count": loadout_count,
+            "fg_loadout_count": fg_loadout_count,
+            "total_score": total_score,
         }
     except Exception as e:
         logging.warning(f"[DB Merge] Failed to get stats: {e}")
-        return {'song_count': 0, 'loadout_count': 0, 'fg_loadout_count': 0, 'total_score': 0}
+        return {"song_count": 0, "loadout_count": 0, "fg_loadout_count": 0, "total_score": 0}
 
 
 def merge_databases(
-    main_db_path: str,
-    secondary_db_path: str,
-    delete_after_merge: bool = True,
-    backup_before_merge: bool = True
+    main_db_path: str, secondary_db_path: str, delete_after_merge: bool = True, backup_before_merge: bool = True
 ) -> Tuple[bool, str, Dict]:
     """
     Merge secondary database into main database.
@@ -225,15 +229,15 @@ def merge_databases(
         logging.info("[DB Merge] Starting merge:")
         logging.info(
             "  Main DB: %s songs, %s loadouts, %s fg_loadouts",
-            main_stats_before['song_count'],
-            main_stats_before['loadout_count'],
-            main_stats_before.get('fg_loadout_count', 0),
+            main_stats_before["song_count"],
+            main_stats_before["loadout_count"],
+            main_stats_before.get("fg_loadout_count", 0),
         )
         logging.info(
             "  Secondary DB: %s songs, %s loadouts, %s fg_loadouts",
-            secondary_stats['song_count'],
-            secondary_stats['loadout_count'],
-            secondary_stats.get('fg_loadout_count', 0),
+            secondary_stats["song_count"],
+            secondary_stats["loadout_count"],
+            secondary_stats.get("fg_loadout_count", 0),
         )
 
         # Create backup if requested
@@ -241,6 +245,7 @@ def merge_databases(
             backup_path = main_db_path + f".backup_{int(time.time())}"
             try:
                 import shutil
+
                 shutil.copy2(main_db_path, backup_path)
                 logging.info(f"[DB Merge] Created backup: {backup_path}")
             except Exception as e:
@@ -252,7 +257,7 @@ def merge_databases(
 
         try:
             # Attach secondary database
-            conn.execute(f"ATTACH DATABASE ? AS secondary", (secondary_db_path,))
+            conn.execute("ATTACH DATABASE ? AS secondary", (secondary_db_path,))
 
             # Start transaction for atomic merge
             conn.execute("BEGIN IMMEDIATE")
@@ -547,19 +552,20 @@ def merge_databases(
 
         # Calculate merge statistics
         merge_stats = {
-            'songs_before': main_stats_before['song_count'],
-            'songs_after': main_stats_after['song_count'],
-            'songs_added': main_stats_after['song_count'] - main_stats_before['song_count'],
-            'loadouts_before': main_stats_before['loadout_count'],
-            'loadouts_after': main_stats_after['loadout_count'],
-            'loadouts_added': main_stats_after['loadout_count'] - main_stats_before['loadout_count'],
-            'fg_loadouts_before': main_stats_before.get('fg_loadout_count', 0),
-            'fg_loadouts_after': main_stats_after.get('fg_loadout_count', 0),
-            'fg_loadouts_added': main_stats_after.get('fg_loadout_count', 0) - main_stats_before.get('fg_loadout_count', 0),
-            'secondary_songs': secondary_stats['song_count'],
-            'secondary_loadouts': secondary_stats['loadout_count'],
-            'secondary_fg_loadouts': secondary_stats.get('fg_loadout_count', 0),
-            'duration': time.time() - start_time,
+            "songs_before": main_stats_before["song_count"],
+            "songs_after": main_stats_after["song_count"],
+            "songs_added": main_stats_after["song_count"] - main_stats_before["song_count"],
+            "loadouts_before": main_stats_before["loadout_count"],
+            "loadouts_after": main_stats_after["loadout_count"],
+            "loadouts_added": main_stats_after["loadout_count"] - main_stats_before["loadout_count"],
+            "fg_loadouts_before": main_stats_before.get("fg_loadout_count", 0),
+            "fg_loadouts_after": main_stats_after.get("fg_loadout_count", 0),
+            "fg_loadouts_added": main_stats_after.get("fg_loadout_count", 0)
+            - main_stats_before.get("fg_loadout_count", 0),
+            "secondary_songs": secondary_stats["song_count"],
+            "secondary_loadouts": secondary_stats["loadout_count"],
+            "secondary_fg_loadouts": secondary_stats.get("fg_loadout_count", 0),
+            "duration": time.time() - start_time,
         }
 
         # Delete secondary database if requested and merge was successful
@@ -593,8 +599,7 @@ def merge_databases(
 
 
 def auto_merge_secondary_databases(
-    delete_after_merge: bool = True,
-    backup_before_merge: bool = True
+    delete_after_merge: bool = True, backup_before_merge: bool = True
 ) -> Tuple[bool, str]:
     """
     Automatically find and merge all secondary databases.
@@ -651,10 +656,7 @@ def auto_merge_secondary_databases(
             # Perform merge
             logging.info(f"[DB Merge] Merging {idx + 1}/{len(secondary_dbs)}: {db_name}")
             success, message, stats = merge_databases(
-                main_path,
-                secondary_path,
-                delete_after_merge=delete_after_merge,
-                backup_before_merge=do_backup
+                main_path, secondary_path, delete_after_merge=delete_after_merge, backup_before_merge=do_backup
             )
 
             if success:
@@ -673,10 +675,7 @@ def auto_merge_secondary_databases(
 
         # Build summary message
         if total_merged > 0:
-            summary = (
-                f"Database auto-merge complete! "
-                f"Merged {total_merged}/{len(secondary_dbs)} databases"
-            )
+            summary = f"Database auto-merge complete! Merged {total_merged}/{len(secondary_dbs)} databases"
             if total_failed > 0:
                 summary += f" ({total_failed} failed)"
 

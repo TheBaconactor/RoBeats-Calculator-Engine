@@ -2,6 +2,7 @@
 Database operations for the gear optimizer.
 Handles all SQLite interactions for loadout persistence and retrieval.
 """
+
 import hashlib
 import json
 import os
@@ -164,7 +165,7 @@ def get_loadout_hash(gear_list: List[Any], mini_list: List[Any]) -> str:
     """
     # Extract names, handling both dict and string inputs
     gear_names = []
-    for g in (gear_list or []):
+    for g in gear_list or []:
         if isinstance(g, dict):
             gear_names.append(g.get("Name", ""))
         else:
@@ -172,7 +173,7 @@ def get_loadout_hash(gear_list: List[Any], mini_list: List[Any]) -> str:
     gear_names = sorted([n for n in gear_names if n])
 
     mini_names = []
-    for m in (mini_list or []):
+    for m in mini_list or []:
         if isinstance(m, dict):
             mini_names.append(m.get("Name", ""))
         else:
@@ -240,10 +241,9 @@ def _deduplicate_entries(entries):
         else:
             # Multiple entries with same score and loadout - keep one with highest overflow AND FG score
             try:
-                best_entry = max(group, key=lambda e: (
-                    _get_overflow_from_details(e.get("details", {})),
-                    e.get("fg_score", 0)
-                ))
+                best_entry = max(
+                    group, key=lambda e: (_get_overflow_from_details(e.get("details", {})), e.get("fg_score", 0))
+                )
                 deduplicated.append(best_entry)
             except (ValueError, KeyError):
                 # If comparison fails, just keep first entry
@@ -273,13 +273,16 @@ def _deduplicate_db_loadouts(conn, song_name, table_name="loadouts"):
         # But here we are deduplicating BY SCORE (base score collisions).
         # Actually for fg_loadouts we might want to deduplicate by FG score?
         # For now, stick to standard deduplication logic (Score + Hash) to prevent spam.
-        
-        cursor = conn.execute(f"""
+
+        cursor = conn.execute(
+            f"""
             SELECT loadout_hash, score, details_json, fg_score
             FROM {table_name}
             WHERE song_name = ?
             ORDER BY score DESC, fg_score DESC
-        """, (song_name,))
+        """,
+            (song_name,),
+        )
 
         rows = cursor.fetchall()
         if not rows:
@@ -291,12 +294,14 @@ def _deduplicate_db_loadouts(conn, song_name, table_name="loadouts"):
             score = row["score"]
             if score not in score_groups:
                 score_groups[score] = []
-            score_groups[score].append({
-                "loadout_hash": row["loadout_hash"],
-                "score": score,
-                "details_json": row["details_json"],
-                "fg_score": row["fg_score"],
-            })
+            score_groups[score].append(
+                {
+                    "loadout_hash": row["loadout_hash"],
+                    "score": score,
+                    "details_json": row["details_json"],
+                    "fg_score": row["fg_score"],
+                }
+            )
 
         hashes_to_delete = set()
 
@@ -315,10 +320,12 @@ def _deduplicate_db_loadouts(conn, song_name, table_name="loadouts"):
                         # Corrupted JSON, skip this loadout's details
                         pass
                 overflow = _get_overflow_from_details(details)
-                loadouts_with_overflow.append({
-                    **loadout,
-                    "overflow": overflow,
-                })
+                loadouts_with_overflow.append(
+                    {
+                        **loadout,
+                        "overflow": overflow,
+                    }
+                )
 
             # Sort by overflow (descending), then fg_score (descending)
             loadouts_with_overflow.sort(key=lambda x: (x["overflow"], x["fg_score"]), reverse=True)
@@ -330,10 +337,13 @@ def _deduplicate_db_loadouts(conn, song_name, table_name="loadouts"):
         # Delete duplicates
         if hashes_to_delete:
             placeholders = ",".join("?" * len(hashes_to_delete))
-            conn.execute(f"""
+            conn.execute(
+                f"""
                 DELETE FROM {table_name}
                 WHERE song_name = ? AND loadout_hash IN ({placeholders})
-            """, (song_name, *hashes_to_delete))
+            """,
+                (song_name, *hashes_to_delete),
+            )
             return len(hashes_to_delete)
 
         return 0
@@ -352,7 +362,7 @@ def save_loadout_to_db(song_name, score, fg_score, gear, minis, details, force_d
         "gear": gear,
         "minis": minis,
         "details": details,
-        "force": force_data
+        "force": force_data,
     }
     save_loadouts_batch(song_name, [entry])
 
@@ -376,7 +386,7 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
     conn = get_db_connection(db_path)
     best_score_max = None
     best_fg_max = None
-    
+
     try:
         # Relax sync during batch for throughput
         try:
@@ -387,7 +397,7 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
         # Pre-build parameter lists for executemany (faster than per-entry execute)
         loadouts_params = []
         fg_loadouts_params = []
-        
+
         for entry in deduplicated_entries:
             score = entry.get("score", 0)
             fg_score = entry.get("fg_score", 0)
@@ -399,24 +409,24 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
             loadout_hash = get_loadout_hash(gear, minis)
             gear_names = _compact_gear_for_db(gear)
             mini_names = _compact_minis_for_db(minis)
-            
-            gear_json = json.dumps(gear_names, separators=(',', ':'))
-            minis_json = json.dumps(mini_names, separators=(',', ':'))
-            details_json = json.dumps(details, separators=(',', ':')) if details else None
-            force_json = json.dumps(force_data, separators=(',', ':')) if force_data else None
+
+            gear_json = json.dumps(gear_names, separators=(",", ":"))
+            minis_json = json.dumps(mini_names, separators=(",", ":"))
+            details_json = json.dumps(details, separators=(",", ":")) if details else None
+            force_json = json.dumps(force_data, separators=(",", ":")) if force_data else None
 
             # All entries go to loadouts table
-            loadouts_params.append((
-                song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_json
-            ))
-            
+            loadouts_params.append(
+                (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_json)
+            )
+
             # Only FG-improving entries go to fg_loadouts table (FG leaderboard):
             # We require fg_score strictly better than base score to avoid storing
             # "FG results" that are worse than the base outcome.
             if force_data is not None and fg_score > score:
-                fg_loadouts_params.append((
-                    song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_json
-                ))
+                fg_loadouts_params.append(
+                    (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_json)
+                )
 
             # Track best scores
             if best_score_max is None or score > best_score_max:
@@ -426,7 +436,8 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
 
         # Batch insert into loadouts table
         if loadouts_params:
-            conn.executemany("""
+            conn.executemany(
+                """
                 INSERT INTO loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
                 ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
@@ -435,16 +446,19 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
                     gear_json = excluded.gear_json,
                     minis_json = excluded.minis_json,
                     details_json = CASE WHEN excluded.score > score THEN excluded.details_json ELSE details_json END,
-                    force_details_json = CASE 
-                        WHEN excluded.fg_score > fg_score THEN excluded.force_details_json 
-                        ELSE force_details_json 
+                    force_details_json = CASE
+                        WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
+                        ELSE force_details_json
                     END,
                     timestamp = strftime('%s', 'now')
-            """, loadouts_params)
+            """,
+                loadouts_params,
+            )
 
         # Batch insert into fg_loadouts table
         if fg_loadouts_params:
-            conn.executemany("""
+            conn.executemany(
+                """
                 INSERT INTO fg_loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
                 ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
@@ -455,21 +469,28 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
                     details_json = CASE WHEN excluded.fg_score > fg_score THEN excluded.details_json ELSE details_json END,
                     force_details_json = CASE WHEN excluded.fg_score > fg_score THEN excluded.force_details_json ELSE force_details_json END,
                     timestamp = strftime('%s', 'now')
-            """, fg_loadouts_params)
-
+            """,
+                fg_loadouts_params,
+            )
 
         # Update Song Stats
         if best_score_max is not None:
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO songs (name, best_score) VALUES (?, ?)
                 ON CONFLICT(name) DO UPDATE SET best_score = MAX(best_score, excluded.best_score), last_updated = strftime('%s', 'now')
-            """, (song_name, best_score_max))
+            """,
+                (song_name, best_score_max),
+            )
 
         if best_fg_max:
-            conn.execute("""
+            conn.execute(
+                """
                 INSERT INTO songs (name, best_fg_score) VALUES (?, ?)
                 ON CONFLICT(name) DO UPDATE SET best_fg_score = MAX(best_fg_score, excluded.best_fg_score), last_updated = strftime('%s', 'now')
-            """, (song_name, best_fg_max))
+            """,
+                (song_name, best_fg_max),
+            )
 
         # Enforce FG leaderboard invariant (in case older DB rows exist):
         # fg_loadouts should only contain entries where FG strictly beats base.
@@ -543,7 +564,7 @@ def get_best_loadouts(
     song_name: str,
     limit: int = LOADOUTS_PER_SONG_LIMIT,
     gears_by_name: Optional[Dict[str, Any]] = None,
-    minis_by_name: Optional[Dict[str, Any]] = None
+    minis_by_name: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Retrieve the top N loadouts for a song to seed the GA.
@@ -567,13 +588,16 @@ def get_best_loadouts(
     conn = get_db_connection(db_path)
     try:
         # 1. Fetch Top Base Score Loadouts
-        cursor = conn.execute("""
+        cursor = conn.execute(
+            """
             SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
             FROM loadouts
             WHERE song_name = ?
             ORDER BY score DESC
             LIMIT ?
-        """, (song_name, limit))
+        """,
+            (song_name, limit),
+        )
 
         results = []
         seen_hashes = set()
@@ -581,7 +605,7 @@ def get_best_loadouts(
         def process_row(row):
             if row["loadout_hash"] in seen_hashes:
                 return
-            
+
             gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
             mini_names = json.loads(row["minis_json"]) if row["minis_json"] else []
             force_block = json.loads(row["force_details_json"]) if row["force_details_json"] else None
@@ -597,28 +621,33 @@ def get_best_loadouts(
             else:
                 minis_data = mini_names
 
-            results.append({
-                "score": row["score"],
-                "fg_score": row["fg_score"],
-                "gear": gear_data,
-                "minis": minis_data,
-                "details": json.loads(row["details_json"]) if row["details_json"] else {},
-                "force": force_block if isinstance(force_block, dict) else None,
-            })
+            results.append(
+                {
+                    "score": row["score"],
+                    "fg_score": row["fg_score"],
+                    "gear": gear_data,
+                    "minis": minis_data,
+                    "details": json.loads(row["details_json"]) if row["details_json"] else {},
+                    "force": force_block if isinstance(force_block, dict) else None,
+                }
+            )
             seen_hashes.add(row["loadout_hash"])
 
         for row in cursor:
             process_row(row)
 
         # 2. Fetch Top Force Greats Loadouts
-        cursor = conn.execute("""
+        cursor = conn.execute(
+            """
             SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
             FROM fg_loadouts
             WHERE song_name = ?
             ORDER BY fg_score DESC
             LIMIT ?
-        """, (song_name, limit))
-        
+        """,
+            (song_name, limit),
+        )
+
         for row in cursor:
             process_row(row)
 

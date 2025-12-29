@@ -12,6 +12,7 @@ to improve code modularity and maintainability. These functions handle:
 - Parallel evaluation
 - Diversity and stagnation handling
 """
+
 import os
 import random
 
@@ -104,4 +105,3 @@ def initialize_pools(all_gears, all_minis, p_color, slots, s_color=None):
         print(f"[Dominance Pruning] Removed {total_before - total_after} dominated gear items.")
 
     return gear_pool, mini_pool, total_before, total_after, []  # No more whitelisted minis
-

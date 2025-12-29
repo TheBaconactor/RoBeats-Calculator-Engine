@@ -5,6 +5,7 @@ This module provides persistence operations:
 - build_db_payload: Build database persistence payload
 - build_persistence_entries: Build all persistence entries
 """
+
 import json
 
 
@@ -20,14 +21,14 @@ def _has_valid_fg_config(fg_container):
             fg_meta = data.get("ForceGreats", {})
             config = fg_meta.get("config", {})
             return bool(config and sum(config.values()) > 0)
-            
+
         # Path 2: Force object (direct details)
         details = fg_container.get("details", {})
         if details:
             fg_meta = details.get("ForceGreats", {})
             config = fg_meta.get("config", {})
             return bool(config and sum(config.values()) > 0)
-            
+
         return False
     except Exception:
         return False
@@ -71,6 +72,7 @@ def build_db_payload(
 
     def extract_names(record):
         """Extract names from record, handling both dict and string formats."""
+
         def get_name(item):
             if isinstance(item, dict):
                 return item.get("Name", "")
@@ -101,11 +103,7 @@ def build_db_payload(
     best_mini_names = _names(best_minis)
     best_details = build_details_fn(best_data)
 
-    attempts_first = (
-        1
-        if is_first or is_better
-        else (prev_attempts_first + 1 if prev_attempts_first else 1)
-    )
+    attempts_first = 1 if is_first or is_better else (prev_attempts_first + 1 if prev_attempts_first else 1)
 
     def attach_attempt_meta(details):
         """Copy details dict and tag attempt counters for DB persistence."""
@@ -117,12 +115,11 @@ def build_db_payload(
     # Build FG candidates from current run.
     # Always track best FG from this run independently.
     current_run_fg_candidates = []
-    
 
     for fg_entry in fg_variants:
         if not _has_valid_fg_config(fg_entry):
             continue
-            
+
         fg_gear = fg_entry.get("gear", [])
         fg_minis = fg_entry.get("minis", [])
         fg_data = fg_entry.get("data", {})
@@ -147,19 +144,18 @@ def build_db_payload(
     # Determine if FG improved
     best_fg_score_run = 0
     if current_run_fg_candidates:
-         best_cand = max(current_run_fg_candidates, key=lambda x: x.get("score", 0))
-         best_fg_score_run = best_cand.get("score", 0)
+        best_cand = max(current_run_fg_candidates, key=lambda x: x.get("score", 0))
+        best_fg_score_run = best_cand.get("score", 0)
 
     # Use the max FG score from DB (any loadout) if provided, else fallback to prev_record
-    prev_fg_score = db_best_fg_score if db_best_fg_score is not None else (prev_record.get("fg_score") if prev_record else 0)
+    prev_fg_score = (
+        db_best_fg_score if db_best_fg_score is not None else (prev_record.get("fg_score") if prev_record else 0)
+    )
     prev_fg_score = prev_fg_score or 0  # Ensure it's not None
     is_fg_better = best_fg_score_run > prev_fg_score
-    
+
     if is_first:
-        print(
-            " >> NEW RECORD! (First entry for this song/context). "
-            "Saving to Evolution Database..."
-        )
+        print(" >> NEW RECORD! (First entry for this song/context). Saving to Evolution Database...")
     elif is_better:
         msg = f" >> NEW RECORD! Previous: {prev_score} | New: {score}"
         if is_fg_better and best_fg_score_run > 0:
@@ -172,7 +168,7 @@ def build_db_payload(
         print(msg)
     else:
         msg = f" >> No improvement over DB Record (Base: {prev_score}, FG: {prev_fg_score})"
-        if is_first: # Edge case coverage
+        if is_first:  # Edge case coverage
             msg = " >> Record exists but no improvement found."
         print(msg)
 
@@ -199,9 +195,7 @@ def build_db_payload(
         }
     )
 
-    candidates = sorted(
-        candidates, key=lambda c: c.get("score", -1), reverse=True
-    )
+    candidates = sorted(candidates, key=lambda c: c.get("score", -1), reverse=True)
 
     def _sig(cand):
         gear_key = tuple(cand.get("gear") or [])
@@ -269,7 +263,7 @@ def build_db_payload(
             else:
                 updated_payload.pop("force", None)
         else:
-             updated_payload.pop("force", None)
+            updated_payload.pop("force", None)
     else:
         updated_payload.pop("force", None)
 
@@ -333,14 +327,16 @@ def build_persistence_entries(
         details_with_meta["attempt_lifetime"] = attempt_lifetime
         details_with_meta["attempts_first"] = attempts_first
 
-        persist_entries.append({
-            "score": score_val or 0,
-            "fg_score": fg_score_val or 0,
-            "gear": _names_list(gear_items),
-            "minis": _names_list(mini_items),
-            "details": details_with_meta,
-            "force": force_obj,
-        })
+        persist_entries.append(
+            {
+                "score": score_val or 0,
+                "fg_score": fg_score_val or 0,
+                "gear": _names_list(gear_items),
+                "minis": _names_list(mini_items),
+                "details": details_with_meta,
+                "force": force_obj,
+            }
+        )
 
     # Top 1 (base) - store with its OWN fg_score and force data (if available)
     # This ensures the force_details_json matches the loadout gear
@@ -410,7 +406,6 @@ def build_persistence_entries(
             best_fg_force,  # force object
         )
 
-
     # GA candidates (capped to DB limit)
     # NOTE: GA candidates are now handled in the loadout_entries loop below,
     # which includes their FG scores. This section is kept for backwards compatibility
@@ -439,12 +434,11 @@ def build_persistence_entries(
 
             fg_score_to_save = entry.get("fg_score", 0)
             force_obj = entry.get("force")
-            
 
             if force_obj and not _has_valid_fg_config(force_obj):
                 fg_score_to_save = 0
                 force_obj = None  # Explicitly clear valid force object if invalid (prevent empty JSON)
-            
+
             _append_entry(
                 entry.get("base_score") or entry.get("score", 0),
                 entry.get("gear", []),

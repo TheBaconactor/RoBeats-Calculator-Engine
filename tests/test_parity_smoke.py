@@ -197,5 +197,3 @@ def test_force_greats_finder_cpu_gpu_tolerant_parity_smoke():
     gpu_score = int(fg_gpu.get("Score", 0))
 
     assert abs(cpu_score - gpu_score) <= 5
-
-

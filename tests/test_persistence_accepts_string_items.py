@@ -55,4 +55,3 @@ def test_build_db_payload_accepts_string_items():
 
     assert payload["gear"] == ["Hat A", "Neck B"]
     assert payload["minis"] == ["Mini 1", "Mini 2", "Mini 3"]
-

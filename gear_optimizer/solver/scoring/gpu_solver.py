@@ -4,6 +4,7 @@ GPU Solver Initialization and Global Caches.
 This module handles lazy initialization of the GPU gem solver (Taichi)
 and provides global LRU caches for performance optimization.
 """
+
 import threading
 from cachetools import LRUCache
 
@@ -29,6 +30,7 @@ def _get_gpu_solver():
                 optimize_gems_gpu,
                 optimize_gems_batch_gpu,
             )
+
             _optimize_gems_gpu = optimize_gems_gpu
             _optimize_gems_batch_gpu = optimize_gems_batch_gpu
             _gpu_solver_loaded = True

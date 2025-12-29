@@ -30,6 +30,7 @@ try:
             return None
 
     from numba import jit as numba_jit
+
     HAS_NUMBA = True
 
     def jit(nopython=True, cache=True):
@@ -57,9 +58,11 @@ except ImportError:
         Fallback decorator when Numba is not available.
         Returns the function unchanged (no optimization).
         """
+
         def decorator(func):
             return func
+
         return decorator
 
 
-__all__ = ['jit', 'HAS_NUMBA']
+__all__ = ["jit", "HAS_NUMBA"]

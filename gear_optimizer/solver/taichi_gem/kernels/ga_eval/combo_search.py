@@ -13,7 +13,7 @@ from .. import kernels_helpers
 from ..kernels_scoring import optimize_core_device
 
 # Platform detection for atomic operations
-IS_METAL = (sys.platform == "darwin")
+IS_METAL = sys.platform == "darwin"
 
 
 @ti.kernel
@@ -24,12 +24,18 @@ def ga_find_best_combo_key_kernel(
     combo_count: ti.i32,
     total_budget: ti.i32,
     gem_scale_fever: ti.i32,
-    is_p_ft: ti.i32, is_s_ft: ti.i32,
-    is_p_ff: ti.i32, is_s_ff: ti.i32,
-    is_p_pp: ti.i32, is_s_pp: ti.i32,
-    is_p_cm: ti.i32, is_s_cm: ti.i32,
-    is_p_fm: ti.i32, is_s_fm: ti.i32,
-    is_p_ov: ti.i32, is_s_ov: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
     song_slot: ti.i32,
 ):
     """
@@ -111,15 +117,28 @@ def ga_find_best_combo_key_kernel(
         s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
         res_vec = optimize_core_device(
-            0, budget,
-            base_pp, base_cm, base_fm,
-            p_val, s_val,
-            is_p_pp, is_s_pp,
-            is_p_cm, is_s_cm,
-            is_p_fm, is_s_fm,
-            is_p_ov, is_s_ov,
-            head_len, count_fever, count_normal,
-            1, song_slot, ft_idx, ff_idx,
+            0,
+            budget,
+            base_pp,
+            base_cm,
+            base_fm,
+            p_val,
+            s_val,
+            is_p_pp,
+            is_s_pp,
+            is_p_cm,
+            is_s_cm,
+            is_p_fm,
+            is_s_fm,
+            is_p_ov,
+            is_s_ov,
+            head_len,
+            count_fever,
+            count_normal,
+            1,
+            song_slot,
+            ft_idx,
+            ff_idx,
         )
 
         score: ti.i32 = res_vec[0]
@@ -131,4 +150,3 @@ def ga_find_best_combo_key_kernel(
                 old = ti.atomic_max(kernels_helpers.chunk_best_score[genome_idx], score)
                 if old < score:
                     kernels_helpers.chunk_best_idx[genome_idx] = combo_idx
-

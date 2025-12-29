@@ -162,5 +162,3 @@ def create_genome_functions(
         build_seed_list_from_record,
         mutate_genome_once,
     )
-
-

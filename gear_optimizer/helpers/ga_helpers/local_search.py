@@ -5,6 +5,7 @@ This module provides local search functions:
 - create_local_search_function: Hill-climbing local search for genome refinement
 """
 
+
 def create_local_search_function(
     evaluate_genome_local,
     batch_evaluator,
@@ -46,9 +47,7 @@ def create_local_search_function(
         best_score = best_result["Score"]
 
         # Pre-trim candidate lists
-        local_gear_rank = {
-            s: gear_rank_cache.get(s, [])[:top_k_gear] for s in slots
-        }
+        local_gear_rank = {s: gear_rank_cache.get(s, [])[:top_k_gear] for s in slots}
         local_mini_rank = mini_rank_cache[:top_k_minis]
 
         steps = 0
@@ -56,17 +55,19 @@ def create_local_search_function(
 
         while steps < limit:
             candidates = []
-            
+
             # 1. Generate Gear Candidates
             if optimize_gear:
                 for idx, slot in enumerate(slots):
                     curr_item = best_genome[idx]
-                    current_name = curr_item.get("Name") if isinstance(curr_item, dict) else str(curr_item) if curr_item else ""
-                    
+                    current_name = (
+                        curr_item.get("Name") if isinstance(curr_item, dict) else str(curr_item) if curr_item else ""
+                    )
+
                     for cand in local_gear_rank.get(slot, []):
                         if cand.get("Name") == current_name:
                             continue
-                        
+
                         # Create candidate genome
                         trial = best_genome[:]
                         trial[idx] = cand
@@ -81,18 +82,20 @@ def create_local_search_function(
                         existing.add(m.get("Name", ""))
                     elif m:
                         existing.add(str(m))
-                        
+
                 for idx in range(6, 9):
                     curr_item = best_genome[idx]
-                    curr_name = curr_item.get("Name") if isinstance(curr_item, dict) else str(curr_item) if curr_item else ""
-                    
+                    curr_name = (
+                        curr_item.get("Name") if isinstance(curr_item, dict) else str(curr_item) if curr_item else ""
+                    )
+
                     for cand in local_mini_rank:
                         c_name = cand.get("Name")
                         if c_name == curr_name:
                             continue
                         if c_name in existing:
                             continue
-                            
+
                         trial = best_genome[:]
                         trial[idx] = cand
                         candidates.append(trial)
@@ -103,7 +106,7 @@ def create_local_search_function(
             # 3. Batch Evaluate All Candidates
             # This uses the GPU batch path if available!
             candidate_results = batch_evaluator(candidates)
-            
+
             # 4. Find Best Improvement
             step_best_res = None
             step_best_score = -1
@@ -144,33 +147,32 @@ def create_local_search_function(
         top_k_gear = 6
         top_k_minis_sweep = min(8, len(mini_rank_cache))  # Reduced from 10 -> C(8,3)=56 combos
         top_k_minis_local = min(20, len(mini_rank_cache))  # Reduced from 25
-        
+
         best_result = evaluate_genome_local(best_genome)
         best_score = best_result["Score"]
         current_genome = list(best_genome)
-        
-        # Phase 0 removed - the improved heuristic (MAX of color OR base-stat score) 
+
+        # Phase 0 removed - the improved heuristic (MAX of color OR base-stat score)
         # should now properly rank items with strong base stats, making exhaustive
         # search unnecessary.
-        
-        
+
         # === PHASE 1: Exhaustive Mini Permutation ===
         # Try ALL combinations of top-ranked minis with current gear
         # This guarantees finding the optimal mini team for the current gear.
         if optimize_minis and len(mini_rank_cache) >= 3:
             mini_candidates = mini_rank_cache[:top_k_minis_sweep]
             all_mini_combos = list(combinations(mini_candidates, 3))
-            
+
             if all_mini_combos:
                 # Build genomes for all mini combinations
                 mini_trial_genomes = []
                 for combo in all_mini_combos:
                     trial = current_genome[:6] + list(combo)
                     mini_trial_genomes.append(trial)
-                
+
                 # Batch evaluate all mini combinations
                 mini_results = batch_evaluator(mini_trial_genomes)
-                
+
                 if mini_results:
                     best_mini_result = max(mini_results, key=lambda x: x["Score"])
                     if best_mini_result["Score"] > best_score:
@@ -178,7 +180,7 @@ def create_local_search_function(
                         best_result = best_mini_result
                         current_genome = list(best_mini_result["Genome"])
                         print(f"  >> [Polish] Exhaustive mini sweep improved score to {best_score}")
-        
+
         # === PHASE 2: k-Swap Gear Neighborhood (k=2 then k=3) ===
         # Try coordinated k-slot changes to escape multi-move basins.
         if optimize_gear:
@@ -193,9 +195,7 @@ def create_local_search_function(
                     curr = current_genome[idx]
                     curr_name = curr.get("Name") if isinstance(curr, dict) else ""
                     choices_by_idx[idx] = [
-                        cand
-                        for cand in local_gear_rank.get(slot, [])
-                        if cand.get("Name") != curr_name
+                        cand for cand in local_gear_rank.get(slot, []) if cand.get("Name") != curr_name
                     ]
 
                 swap_candidates = []
@@ -239,15 +239,15 @@ def create_local_search_function(
             # 3-swap generates 67,500 genomes vs 540 for 2-swap
             try_k_swap(2, "2-swap")
             # Conditionally try 3-swap if enabled in config (adds ~15s)
-            if ga_settings and getattr(ga_settings, 'allow_3_swap', False):
+            if ga_settings and getattr(ga_settings, "allow_3_swap", False):
                 try_k_swap(3, "3-swap")
-        
+
         # === PHASE 3: Standard 1-Swap Local Search ===
         # Continue with traditional hill climbing until convergence
         final_result, final_genome = run_local_search(
             current_genome, 0, top_k_gear, top_k_minis_local, is_polishing=True
         )
-        
+
         if final_result["Score"] > best_score:
             return final_result, final_genome
         else:
@@ -275,27 +275,31 @@ def create_local_search_function(
         current_genomes = [list(g) for g in seed_genomes]
         current_results = batch_evaluator(current_genomes)
         current_scores = [r["Score"] for r in current_results]
-        
+
         # Pre-trim candidate lists (shared across all seeds)
-        local_gear_rank = {
-            s: gear_rank_cache.get(s, [])[:top_k_gear] for s in slots
-        }
+        local_gear_rank = {s: gear_rank_cache.get(s, [])[:top_k_gear] for s in slots}
         local_mini_rank = mini_rank_cache[:top_k_minis]
 
         for step in range(max_steps):
             all_candidates = []
-            candidate_map = [] # (seed_idx, start_idx, end_idx)
+            candidate_map = []  # (seed_idx, start_idx, end_idx)
 
             # Generate candidates for EACH seed
             for seed_idx, genome in enumerate(current_genomes):
                 start_cand_idx = len(all_candidates)
-                
+
                 # 1. Gear Candidates
                 if optimize_gear:
                     for idx, slot in enumerate(slots):
                         curr_item = genome[idx]
-                        current_name = curr_item.get("Name") if isinstance(curr_item, dict) else str(curr_item) if curr_item else ""
-                        
+                        current_name = (
+                            curr_item.get("Name")
+                            if isinstance(curr_item, dict)
+                            else str(curr_item)
+                            if curr_item
+                            else ""
+                        )
+
                         for cand in local_gear_rank.get(slot, []):
                             if cand.get("Name") == current_name:
                                 continue
@@ -311,11 +315,17 @@ def create_local_search_function(
                             existing.add(m.get("Name", ""))
                         elif m:
                             existing.add(str(m))
-                            
+
                     for idx in range(6, 9):
                         curr_item = genome[idx]
-                        curr_name = curr_item.get("Name") if isinstance(curr_item, dict) else str(curr_item) if curr_item else ""
-                        
+                        curr_name = (
+                            curr_item.get("Name")
+                            if isinstance(curr_item, dict)
+                            else str(curr_item)
+                            if curr_item
+                            else ""
+                        )
+
                         for cand in local_mini_rank:
                             c_name = cand.get("Name")
                             if c_name == curr_name:
@@ -325,7 +335,7 @@ def create_local_search_function(
                             trial = genome[:]
                             trial[idx] = cand
                             all_candidates.append(trial)
-                
+
                 end_cand_idx = len(all_candidates)
                 candidate_map.append((seed_idx, start_cand_idx, end_cand_idx))
 
@@ -334,22 +344,22 @@ def create_local_search_function(
 
             # Batch evaluate EVERYTHING (GPU handles chunking)
             all_results = batch_evaluator(all_candidates)
-            
+
             # Distribute results back to seeds
             improved_any = False
             for seed_idx, start_cand, end_cand in candidate_map:
                 if start_cand == end_cand:
                     continue
-                
+
                 # Careful slice bounds check
                 chunk_len = end_cand - start_cand
                 if chunk_len <= 0:
-                   continue
+                    continue
 
                 # Ensure we don't index out of bounds if batch_evaluator dropped items (unlikely)
                 if start_cand >= len(all_results):
                     continue
-                
+
                 chunk_results = all_results[start_cand:end_cand]
                 if not chunk_results:
                     continue
@@ -360,12 +370,10 @@ def create_local_search_function(
                     current_results[seed_idx] = best_cand_res
                     current_genomes[seed_idx] = best_cand_res["Genome"]
                     improved_any = True
-            
+
             if not improved_any:
                 break
-        
+
         return current_results
 
     return run_local_search, polish_best_genome, memetic_local_search, batch_memetic_local_search
-
-

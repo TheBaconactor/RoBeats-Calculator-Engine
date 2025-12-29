@@ -122,4 +122,3 @@ def test_merge_databases_includes_fg_loadouts(tmp_path: Path) -> None:
         assert rows == [(fg_hash, 80, 150)]
     finally:
         conn.close()
-

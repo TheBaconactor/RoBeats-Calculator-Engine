@@ -42,4 +42,3 @@ __all__ = [
     "ga_find_best_combo_warmstart_kernel",
     "ga_island_migration_kernel",
 ]
-

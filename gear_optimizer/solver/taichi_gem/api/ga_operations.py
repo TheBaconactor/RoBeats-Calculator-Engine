@@ -15,6 +15,7 @@ This module provides GPU-side GA operators (selection, crossover, mutation, eval
 These functions are prep work for future GPU-native GA where the entire
 population lives on GPU, avoiding CPU-GPU transfers during evolution.
 """
+
 from __future__ import annotations
 
 import numpy as np
@@ -36,6 +37,7 @@ kernels = get_kernels()
 # Cache base_fixed_stats (tiny but frequently called)
 
 import hashlib
+
 
 def _compute_array_sig(*arrays: np.ndarray) -> bytes:
     """Compute stable hash signature for numpy arrays."""
@@ -74,6 +76,7 @@ def reset_ga_upload_caches() -> None:
 #
 # To complete: need encoder (genome -> item_ids) and integration in genetic.py.
 # ============================================================================
+
 
 def ga_upload_population_indices(population_indices_np: np.ndarray, *, n_slots: int = 9) -> int:
     """
@@ -155,28 +158,28 @@ def ga_upload_item_stats(
 ) -> int:
     """
     Upload item stats and slot pool boundaries for GPU-native GA.
-    
+
     Caches uploads to avoid redundant transfers over Thunderbolt/eGPU.
-    
+
     Args:
         item_stats_np: (n_items, 10) int32 - per-item stats
         slot_start_np: (9,) int32 - first item_id per slot
         slot_count_np: (9,) int32 - count of items per slot
-        
+
     Returns:
         Number of items uploaded (or cached)
     """
     global _ITEM_STATS_CACHE
-    
+
     ensure_ready()
     n_items = int(item_stats_np.shape[0])
-    
+
     if n_items > fields.MAX_ITEMS:
         raise ValueError(f"Too many items: {n_items} > {fields.MAX_ITEMS}")
-    
+
     # Check cache - avoid redundant uploads (~2.6MB savings)
     sig = _compute_array_sig(
-        np.asarray(item_stats_np[:n_items, :fields.ITEM_STAT_DIM], dtype=np.int32),
+        np.asarray(item_stats_np[:n_items, : fields.ITEM_STAT_DIM], dtype=np.int32),
         np.asarray(slot_start_np, dtype=np.int32),
         np.asarray(slot_count_np, dtype=np.int32),
     )
@@ -184,7 +187,7 @@ def ga_upload_item_stats(
         return n_items  # Already uploaded
 
     # Upload only the active rows instead of a full MAX_ITEMS padded table.
-    stats_src = np.ascontiguousarray(item_stats_np[:n_items, :fields.ITEM_STAT_DIM], dtype=np.int32)
+    stats_src = np.ascontiguousarray(item_stats_np[:n_items, : fields.ITEM_STAT_DIM], dtype=np.int32)
 
     slot_start_arr = np.zeros(fields.MAX_SLOTS, dtype=np.int32)
     slot_count_arr = np.zeros(fields.MAX_SLOTS, dtype=np.int32)
@@ -196,7 +199,7 @@ def ga_upload_item_stats(
         slot_count_arr[:n_slot_vals] = count_np[:n_slot_vals]
 
     kernels.ga_upload_item_stats_and_slots_kernel(stats_src, int(n_items), slot_start_arr, slot_count_arr)
-    
+
     _ITEM_STATS_CACHE["sig"] = sig
     return n_items
 
@@ -204,24 +207,24 @@ def ga_upload_item_stats(
 def ga_upload_base_fixed_stats(base_stats_np: np.ndarray) -> None:
     """
     Upload fixed base stats (added to all genomes during aggregation).
-    
+
     Caches uploads to avoid redundant transfers.
-    
+
     Args:
         base_stats_np: (10,) int32 - base stats [PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill]
     """
     global _BASE_FIXED_STATS_CACHE
-    
+
     # Fast tuple comparison for small array
-    key = tuple(int(x) for x in base_stats_np[:fields.ITEM_STAT_DIM])
+    key = tuple(int(x) for x in base_stats_np[: fields.ITEM_STAT_DIM])
     if _BASE_FIXED_STATS_CACHE == key:
         return  # Already uploaded
-    
+
     ensure_ready()
     buf = np.zeros(fields.ITEM_STAT_DIM, dtype=np.int32)
-    buf[:len(base_stats_np)] = np.asarray(base_stats_np, dtype=np.int32)
+    buf[: len(base_stats_np)] = np.asarray(base_stats_np, dtype=np.int32)
     fields.base_fixed_stats.from_numpy(buf)
-    
+
     _BASE_FIXED_STATS_CACHE = key
 
 
@@ -229,24 +232,30 @@ def ga_aggregate_stats(
     n_genomes: int,
     n_slots: int = 9,
     *,
-    is_p_ft: int = 0, is_s_ft: int = 0,
-    is_p_ff: int = 0, is_s_ff: int = 0,
-    is_p_pp: int = 0, is_s_pp: int = 0,
-    is_p_cm: int = 0, is_s_cm: int = 0,
-    is_p_fm: int = 0, is_s_fm: int = 0,
-    is_p_ov: int = 0, is_s_ov: int = 0,
+    is_p_ft: int = 0,
+    is_s_ft: int = 0,
+    is_p_ff: int = 0,
+    is_s_ff: int = 0,
+    is_p_pp: int = 0,
+    is_s_pp: int = 0,
+    is_p_cm: int = 0,
+    is_s_cm: int = 0,
+    is_p_fm: int = 0,
+    is_s_fm: int = 0,
+    is_p_ov: int = 0,
+    is_s_ov: int = 0,
 ) -> None:
     """
     Aggregate item stats into genome_base_stats on GPU.
-    
+
     For each genome, sums base_fixed_stats + item_stats[population_indices[g, s]]
     across all slots, then computes p_val/s_val from color flags.
-    
+
     PREREQUISITES:
     - Call ga_upload_population_indices() first
     - Call ga_upload_item_stats() first
     - Call ga_upload_base_fixed_stats() first
-    
+
     Args:
         n_genomes: Number of genomes to aggregate
         n_slots: Number of slots per genome (default 9)
@@ -257,12 +266,18 @@ def ga_aggregate_stats(
     kernels.ga_aggregate_genome_stats_kernel(
         int(n_genomes),
         int(n_slots),
-        int(is_p_ft), int(is_s_ft),
-        int(is_p_ff), int(is_s_ff),
-        int(is_p_pp), int(is_s_pp),
-        int(is_p_cm), int(is_s_cm),
-        int(is_p_fm), int(is_s_fm),
-        int(is_p_ov), int(is_s_ov),
+        int(is_p_ft),
+        int(is_s_ft),
+        int(is_p_ff),
+        int(is_s_ff),
+        int(is_p_pp),
+        int(is_s_pp),
+        int(is_p_cm),
+        int(is_s_cm),
+        int(is_p_fm),
+        int(is_s_fm),
+        int(is_p_ov),
+        int(is_s_ov),
     )
 
 
@@ -273,28 +288,34 @@ def ga_evaluate_population(
     total_budget: int,
     gem_scale_fever: int = 3,
     song_slot: int = 0,
-    is_p_ft: int = 0, is_s_ft: int = 0,
-    is_p_ff: int = 0, is_s_ff: int = 0,
-    is_p_pp: int = 0, is_s_pp: int = 0,
-    is_p_cm: int = 0, is_s_cm: int = 0,
-    is_p_fm: int = 0, is_s_fm: int = 0,
-    is_p_ov: int = 0, is_s_ov: int = 0,
+    is_p_ft: int = 0,
+    is_s_ft: int = 0,
+    is_p_ff: int = 0,
+    is_s_ff: int = 0,
+    is_p_pp: int = 0,
+    is_s_pp: int = 0,
+    is_p_cm: int = 0,
+    is_s_cm: int = 0,
+    is_p_fm: int = 0,
+    is_s_fm: int = 0,
+    is_p_ov: int = 0,
+    is_s_ov: int = 0,
     use_hints: int = 0,
 ) -> None:
     """
     GPU-native population evaluation: aggregate stats + evaluate + copy scores.
-    
+
     This is the main GA evaluation function for GPU-native mode. It:
     1. Aggregates item stats → genome_base_stats (ga_aggregate_genome_stats_kernel)
     2. Evaluates all (ft, ff) combos → genome_result_stats (solve_genomes_with_ftff_kernel)
     3. Copies scores to ga_scores for selection (ga_copy_scores_kernel)
-    
+
     PREREQUISITES:
     - Call ga_upload_population_indices() with encoded population
     - Call ga_upload_item_stats() with item stats and slot pools
     - Call ga_upload_base_fixed_stats() with base stats
     - Upload timeline grid using precompute_timeline_gpu() or _upload_timeline_grid()
-    
+
     Args:
         n_genomes: Number of genomes to evaluate
         n_slots: Slots per genome (default 9)
@@ -309,13 +330,20 @@ def ga_evaluate_population(
 
     # Step 1: FUSED aggregate + init (was 2 kernels, now 1)
     kernels.ga_aggregate_and_init_best_kernel(
-        n_genomes, n_slots,
-        int(is_p_ft), int(is_s_ft),
-        int(is_p_ff), int(is_s_ff),
-        int(is_p_pp), int(is_s_pp),
-        int(is_p_cm), int(is_s_cm),
-        int(is_p_fm), int(is_s_fm),
-        int(is_p_ov), int(is_s_ov),
+        n_genomes,
+        n_slots,
+        int(is_p_ft),
+        int(is_s_ft),
+        int(is_p_ff),
+        int(is_s_ff),
+        int(is_p_pp),
+        int(is_s_pp),
+        int(is_p_cm),
+        int(is_s_cm),
+        int(is_p_fm),
+        int(is_s_fm),
+        int(is_p_ov),
+        int(is_s_ov),
     )
 
     # Step 2: Evaluate genomes using existing FT/FF iteration kernel
@@ -341,12 +369,18 @@ def ga_evaluate_population(
             int(min(combo_chunk, n_combos - offset)),
             total_budget_i,
             gem_scale_fever_i,
-            int(is_p_ft), int(is_s_ft),
-            int(is_p_ff), int(is_s_ff),
-            int(is_p_pp), int(is_s_pp),
-            int(is_p_cm), int(is_s_cm),
-            int(is_p_fm), int(is_s_fm),
-            int(is_p_ov), int(is_s_ov),
+            int(is_p_ft),
+            int(is_s_ft),
+            int(is_p_ff),
+            int(is_s_ff),
+            int(is_p_pp),
+            int(is_s_pp),
+            int(is_p_cm),
+            int(is_s_cm),
+            int(is_p_fm),
+            int(is_s_fm),
+            int(is_p_ov),
+            int(is_s_ov),
             song_slot_i,
             use_hints_i,
         )
@@ -362,12 +396,18 @@ def ga_write_best_and_update_global(
     total_budget: int,
     gem_scale_fever: int,
     *,
-    is_p_ft: int = 0, is_s_ft: int = 0,
-    is_p_ff: int = 0, is_s_ff: int = 0,
-    is_p_pp: int = 0, is_s_pp: int = 0,
-    is_p_cm: int = 0, is_s_cm: int = 0,
-    is_p_fm: int = 0, is_s_fm: int = 0,
-    is_p_ov: int = 0, is_s_ov: int = 0,
+    is_p_ft: int = 0,
+    is_s_ft: int = 0,
+    is_p_ff: int = 0,
+    is_s_ff: int = 0,
+    is_p_pp: int = 0,
+    is_s_pp: int = 0,
+    is_p_cm: int = 0,
+    is_s_cm: int = 0,
+    is_p_fm: int = 0,
+    is_s_fm: int = 0,
+    is_p_ov: int = 0,
+    is_s_ov: int = 0,
     song_slot: int = 0,
 ) -> None:
     """
@@ -392,12 +432,18 @@ def ga_write_best_and_update_global(
         int(n_slots),
         int(total_budget),
         int(gem_scale_fever),
-        int(is_p_ft), int(is_s_ft),
-        int(is_p_ff), int(is_s_ff),
-        int(is_p_pp), int(is_s_pp),
-        int(is_p_cm), int(is_s_cm),
-        int(is_p_fm), int(is_s_fm),
-        int(is_p_ov), int(is_s_ov),
+        int(is_p_ft),
+        int(is_s_ft),
+        int(is_p_ff),
+        int(is_s_ff),
+        int(is_p_pp),
+        int(is_s_pp),
+        int(is_p_cm),
+        int(is_s_cm),
+        int(is_p_fm),
+        int(is_s_fm),
+        int(is_p_ov),
+        int(is_s_ov),
         int(song_slot),
     )
 
@@ -448,7 +494,7 @@ def ga_next_generation(
     """
     Run one GPU-side GA operator step on resident population:
       selection -> crossover+mutation -> [elitism] -> swap buffers.
-    
+
     Args:
         n_genomes: Population size
         n_slots: Slots per genome (default 9)
@@ -495,7 +541,7 @@ def ga_next_generation(
         else:
             elite_indices = np.asarray(elite_indices[:elite_count], dtype=np.int32)
         kernels.ga_copy_elites_kernel(len(elite_indices), n_slots, elite_indices)
-    
+
     # Step 4: Swap buffers (next -> current)
     kernels.ga_swap_populations_kernel(n_genomes, n_slots)
 
@@ -510,11 +556,11 @@ def ga_next_generation_gpu_elites(
 ) -> None:
     """
     Run one GPU-side GA operator step using GPU-resident elite indices.
-    
+
     This is an optimized version of ga_next_generation that reads elite indices
     from the GPU-resident island_elite_indices field (set by ga_find_island_elites)
     instead of a CPU ndarray. This avoids the expensive GPU->CPU transfer per generation.
-    
+
     Args:
         n_genomes: Population size
         n_slots: Slots per genome (default 9)
@@ -553,7 +599,7 @@ def ga_next_generation_gpu_elites(
     # Step 3: Elitism - copy elite genomes from GPU-resident island_elite_indices
     if n_elites > 0:
         kernels.ga_copy_island_elites_kernel(n_elites, n_slots)
-    
+
     # Step 4: Swap buffers (next -> current)
     kernels.ga_swap_populations_kernel(n_genomes, n_slots)
 
@@ -569,13 +615,13 @@ def ga_next_generation_fused(
 ) -> None:
     """
     FULLY FUSED next generation: 2 kernel launches instead of 4.
-    
+
     This combines:
     1. ga_next_generation_full_kernel: select + crossover + mutate + elite copy
     2. ga_swap_and_inherit_hints_kernel: swap + hint inheritance
-    
+
     Uses GPU-resident island_elite_indices (set by ga_find_island_elites).
-    
+
     Args:
         n_genomes: Population size
         n_slots: Slots per genome (default 9)
@@ -619,7 +665,7 @@ def ga_next_generation_fused(
 
     # FUSED: Selection + Crossover + Mutation + Elitism (+ optional immigrants) (all in one kernel)
     kernels.ga_next_generation_full_kernel(n_genomes, n_slots, n_elites, tournament_k, mr_fp, ir_fp)
-    
+
     # FUSED: Swap + Hint Inheritance (second kernel)
     kernels.ga_swap_and_inherit_hints_kernel(n_genomes, n_slots)
 
@@ -636,10 +682,10 @@ def ga_download_population_indices(*, n_genomes: int, n_slots: int = 9) -> np.nd
 def ga_download_scores(n_genomes: int) -> np.ndarray:
     """
     Download fitness scores from GPU (for CPU-side elitism).
-    
+
     Args:
         n_genomes: Number of genomes to download
-        
+
     Returns:
         np.ndarray: (n_genomes,) int32 array of scores
     """
@@ -652,10 +698,10 @@ def ga_download_scores(n_genomes: int) -> np.ndarray:
 def ga_download_results(n_genomes: int) -> np.ndarray:
     """
     Download full evaluation results from GPU.
-    
+
     Args:
         n_genomes: Number of genomes to download
-        
+
     Returns:
         np.ndarray: (n_genomes, 7) int32 array [score, ft, ff, pp, cm, fm, ov]
     """
@@ -665,7 +711,9 @@ def ga_download_results(n_genomes: int) -> np.ndarray:
     return np.asarray(out[:n_genomes], dtype=np.int32)
 
 
-def ga_download_run_payload(*, n_genomes: int, n_slots: int = 9) -> tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def ga_download_run_payload(
+    *, n_genomes: int, n_slots: int = 9
+) -> tuple[int, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Download a GA run snapshot with a single GPU->CPU transfer.
 
@@ -733,10 +781,11 @@ def ga_download_runs_payload(*, n_runs: int, n_genomes: int, n_slots: int = 9) -
 # GPU-SIDE GLOBAL BEST TRACKING
 # ============================================================================
 
+
 def ga_init_global_best() -> None:
     """
     Initialize global best tracking at the start of a GA run.
-    
+
     Resets ga_global_best_score to -1 (no best yet).
     Call this once at the start of each GA run.
     """
@@ -747,12 +796,12 @@ def ga_init_global_best() -> None:
 def ga_update_global_best(n_genomes: int, n_slots: int = 9) -> None:
     """
     Update global best genome on GPU if current generation has a better score.
-    
+
     Atomically tracks the best genome across all generations on GPU,
     avoiding expensive per-generation CPU downloads.
-    
+
     Call this after each ga_evaluate_population() call.
-    
+
     Args:
         n_genomes: Number of genomes to check
         n_slots: Number of equipment slots per genome
@@ -764,7 +813,7 @@ def ga_update_global_best(n_genomes: int, n_slots: int = 9) -> None:
 def ga_download_global_best() -> tuple[int, np.ndarray, np.ndarray]:
     """
     Download the global best genome and results from GPU.
-    
+
     Returns:
         Tuple of (best_score, best_genome_ids, best_results):
         - best_score: int - the best score found across all generations
@@ -783,7 +832,7 @@ def ga_download_global_best() -> tuple[int, np.ndarray, np.ndarray]:
 def ga_upload_island_boundaries(island_starts: np.ndarray) -> None:
     """
     Upload island boundary indices to GPU for island-based elitism.
-    
+
     Args:
         island_starts: (n_islands + 1,) int32 array of island boundaries.
                       Format: [start0, start1, ..., end_last]
@@ -806,31 +855,29 @@ def ga_upload_island_boundaries(island_starts: np.ndarray) -> None:
 def ga_find_island_elites(n_genomes: int, n_islands: int, elites_per_island: int) -> None:
     """
     GPU-side island elite selection: find top-k genomes per island.
-    
+
     This replaces the CPU-side score download + argsort previously used.
     Must call ga_upload_island_boundaries() first.
-    
+
     After calling, elite indices are available in island_elite_indices field.
     Use ga_download_island_elite_indices() to retrieve them if needed.
-    
+
     Args:
         n_genomes: Total population size
         n_islands: Number of islands
         elites_per_island: Number of elites to select per island
     """
     ensure_ready()
-    kernels.ga_find_island_elites_kernel(
-        int(n_genomes), int(n_islands), int(elites_per_island)
-    )
+    kernels.ga_find_island_elites_kernel(int(n_genomes), int(n_islands), int(elites_per_island))
 
 
 def ga_download_island_elite_indices(n_elites: int) -> np.ndarray:
     """
     Download the elite genome indices computed by ga_find_island_elites.
-    
+
     Args:
         n_elites: Total number of elites (n_islands * elites_per_island)
-        
+
     Returns:
         np.ndarray: (n_elites,) int32 array of elite genome indices
     """
@@ -842,16 +889,16 @@ def ga_download_island_elite_indices(n_elites: int) -> np.ndarray:
 def ga_island_migration(n_genomes: int, n_islands: int, migrate_count: int, n_slots: int = 9) -> None:
     """
     GPU-side island migration using ring topology.
-    
+
     Migrates top-k genomes from each island to the next island (ring topology),
     replacing the worst-k genomes in the destination. This eliminates the expensive
     CPU round-trip (download scores, download population, upload patched population)
     that was previously required for migration.
-    
+
     Prerequisites:
     - Call ga_upload_island_boundaries() first
     - ga_scores must be populated from evaluation
-    
+
     Args:
         n_genomes: Total population size
         n_islands: Number of islands
@@ -859,8 +906,4 @@ def ga_island_migration(n_genomes: int, n_islands: int, migrate_count: int, n_sl
         n_slots: Number of equipment slots per genome (default 9)
     """
     ensure_ready()
-    kernels.ga_island_migration_kernel(
-        int(n_genomes), int(n_islands), int(migrate_count), int(n_slots)
-    )
-
-
+    kernels.ga_island_migration_kernel(int(n_genomes), int(n_islands), int(migrate_count), int(n_slots))

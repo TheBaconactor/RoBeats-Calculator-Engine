@@ -4,6 +4,7 @@ Shared stats calculation utilities.
 Consolidates stats computation logic from backfill_stats.py and song_preloader.py
 to ensure consistency and reduce maintenance burden.
 """
+
 from .constants import (
     GEM_SCALE_NORMAL,
     GEM_SCALE_FEVER,
@@ -82,9 +83,7 @@ def build_base_stats_from_config(cfg_dict):
     if team_buff in buff_tiers:
         buff_data = buff_tiers[team_buff]
         base_stats["Perfect Points"] += buff_data["PP"]
-        valid_color_key = next(
-            (k for k in elements if k.lower() == team_color.lower()), None
-        )
+        valid_color_key = next((k for k in elements if k.lower() == team_color.lower()), None)
         if valid_color_key:
             base_stats[valid_color_key] += buff_data["Elem"]
         elif team_color:
@@ -94,8 +93,7 @@ def build_base_stats_from_config(cfg_dict):
     return base_stats
 
 
-def compute_full_stats(gear_names, mini_names, gem_counts, selected_element,
-                       gears_by_name, minis_by_name, base_stats):
+def compute_full_stats(gear_names, mini_names, gem_counts, selected_element, gears_by_name, minis_by_name, base_stats):
     """
     Compute full stats from gear + minis + gems + base stats.
 

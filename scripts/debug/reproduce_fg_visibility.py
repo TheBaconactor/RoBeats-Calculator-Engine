@@ -30,26 +30,28 @@ SONG_NAME = "Test Song (Hard)"
 print(f"Inserting {LOADOUTS_PER_SONG_LIMIT} filler loadouts...")
 filler_entries = []
 for i in range(LOADOUTS_PER_SONG_LIMIT):
-    filler_entries.append({
-        "score": 1000 + i, # High base score
-        "fg_score": 0,
-        "gear": [f"FillerGear{i}"],
-        "minis": ["FillerMini"],
-        "details": {"note": "filler"},
-        "force": None
-    })
+    filler_entries.append(
+        {
+            "score": 1000 + i,  # High base score
+            "fg_score": 0,
+            "gear": [f"FillerGear{i}"],
+            "minis": ["FillerMini"],
+            "details": {"note": "filler"},
+            "force": None,
+        }
+    )
 
 save_loadouts_batch(SONG_NAME, filler_entries)
 
 # 2. Insert 1 "target" loadout with LOW base score, but HIGH FG score
 print("Inserting target loadout (Low Base, High FG)...")
 target_entry = {
-    "score": 500,       # Low base score (should be bottom of list)
-    "fg_score": 5000,   # Huge FG score (should be kept as best FG)
+    "score": 500,  # Low base score (should be bottom of list)
+    "fg_score": 5000,  # Huge FG score (should be kept as best FG)
     "gear": ["TargetGear"],
     "minis": ["TargetMini"],
     "details": {"note": "target"},
-    "force": {"score": 5000, "details": "Awesome FG"}
+    "force": {"score": 5000, "details": "Awesome FG"},
 }
 save_loadouts_batch(SONG_NAME, [target_entry])
 
@@ -76,7 +78,9 @@ conn = get_db_connection(TEST_DB_PATH)
 try:
     row = conn.execute("SELECT * FROM loadouts WHERE score=500").fetchone()
     if row:
-        print(f"Target IS present in the database (verify persistence worked). Rows: {conn.execute('SELECT count(*) FROM loadouts WHERE song_name=?', (SONG_NAME,)).fetchone()[0]}")
+        print(
+            f"Target IS present in the database (verify persistence worked). Rows: {conn.execute('SELECT count(*) FROM loadouts WHERE song_name=?', (SONG_NAME,)).fetchone()[0]}"
+        )
     else:
         print("Target is NOT present in the database (persistence failed).")
 finally:

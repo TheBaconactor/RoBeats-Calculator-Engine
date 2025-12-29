@@ -123,4 +123,3 @@ def ga_island_migration_kernel(
                     kernels_helpers.population_indices[dst_g, s] = kernels_helpers.population_indices[src_g, s]
                 # Also copy the score to avoid re-evaluation issues
                 kernels_helpers.ga_scores[dst_g] = kernels_helpers.ga_scores[src_g]
-

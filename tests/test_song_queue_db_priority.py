@@ -22,4 +22,3 @@ def test_prioritize_song_queue_missing_db_places_new_songs_first():
 
     prioritized = prioritize_song_queue_missing_db(song_queue)
     assert [item[1] for item in prioritized] == [song_missing, song_in_db]
-

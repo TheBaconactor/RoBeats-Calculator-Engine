@@ -44,7 +44,7 @@ def _clamp_block_dim(x: int) -> int:
 def _detect_backend() -> tuple:
     """
     Auto-detect the best GPU backend based on platform.
-    
+
     Returns:
         tuple: (taichi_arch, backend_name)
     """
@@ -73,9 +73,7 @@ def _get_offline_cache_dir() -> str:
     locations and makes cache cleanup straightforward.
     """
     try:
-        repo_root = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..", "..", "..", "..")
-        )
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
         cache_dir = os.path.join(repo_root, "bin", "taichi_cache")
         os.makedirs(cache_dir, exist_ok=True)
         return cache_dir
@@ -87,10 +85,10 @@ def _get_offline_cache_dir() -> str:
 def init_taichi():
     """
     Initialize Taichi with auto-detected GPU backend.
-    
+
     Called once by gpu_executor.py on the GPU thread, or lazily on first use.
     Uses f32 precision for performance (sufficient for score accuracy).
-    
+
     Backend selection:
     - macOS: Metal
     - Windows/Linux: Vulkan
@@ -117,9 +115,7 @@ def init_taichi():
         except Exception as e:
             # Be robust: if offline cache init fails for any reason, fall back to normal init.
             try:
-                print(
-                    f"[Taichi] Offline cache init failed ({type(e).__name__}: {e}); retrying without offline cache."
-                )
+                print(f"[Taichi] Offline cache init failed ({type(e).__name__}: {e}); retrying without offline cache.")
             except Exception:
                 pass
             init_kwargs.pop("offline_cache", None)
@@ -127,7 +123,9 @@ def init_taichi():
             ti.init(**init_kwargs)
         _ti_initialized = True
         kp = "on" if kernel_profiler else "off"
-        print(f"[Taichi] Initialized with {backend_name} backend - f32 precision (kernel_profiler={kp}, block_dim={block_dim})")
+        print(
+            f"[Taichi] Initialized with {backend_name} backend - f32 precision (kernel_profiler={kp}, block_dim={block_dim})"
+        )
 
         if kernel_profiler:
             try:

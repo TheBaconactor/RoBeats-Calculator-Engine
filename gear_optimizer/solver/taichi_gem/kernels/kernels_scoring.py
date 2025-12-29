@@ -14,12 +14,10 @@ This module contains score calculation functions and the critical optimize_core_
 The optimize_core_device function is the core of the gem optimizer - it evaluates
 4 gem options (PP, CM, FM, OV) at each iteration and greedily picks the best.
 """
+
 import taichi as ti
 
 from . import kernels_helpers
-
-
-
 
 
 @ti.func
@@ -95,9 +93,6 @@ def _calc_head_score_grid(
     return ti.cast(head_score, ti.f32)
 
 
-
-
-
 @ti.func
 def calc_score_device(
     base_value: ti.f32,  # Changed to f32 for performance
@@ -127,9 +122,7 @@ def calc_score_device(
     Returns:
         Total score as int32
     """
-    body_score = kernels_helpers._calc_body_score(
-        base_value, combo_mul, fever_mul, count_fever, count_normal
-    )
+    body_score = kernels_helpers._calc_body_score(base_value, combo_mul, fever_mul, count_fever, count_normal)
     factor = kernels_helpers._calc_head_factor(base_value, combo_mul)
     head_score = _calc_head_score_masks(base_value, factor, fever_mul, work_idx, head_len)
     # Cast each component to i32 first, then add as integers for exact result
@@ -166,18 +159,11 @@ def calc_score_with_grid(
     Returns:
         Total score as int32
     """
-    body_score = kernels_helpers._calc_body_score(
-        base_value, combo_mul, fever_mul, count_fever, count_normal
-    )
+    body_score = kernels_helpers._calc_body_score(base_value, combo_mul, fever_mul, count_fever, count_normal)
     factor = kernels_helpers._calc_head_factor(base_value, combo_mul)
-    head_score = _calc_head_score_grid(
-        base_value, factor, fever_mul, song_slot, ft_idx, ff_idx, head_len
-    )
+    head_score = _calc_head_score_grid(base_value, factor, fever_mul, song_slot, ft_idx, ff_idx, head_len)
     # Cast each component to i32 first, then add as integers for exact result
     return ti.cast(body_score, ti.i32) + ti.cast(head_score, ti.i32)
-
-
-
 
 
 @ti.func
@@ -220,9 +206,7 @@ def calc_score_cached_device(
     """
     score: ti.i32 = 0
     if mode == 0:
-        score = calc_score_device(
-            base_value, combo_mul, fever_mul, work_idx, head_len, count_fever, count_normal
-        )
+        score = calc_score_device(base_value, combo_mul, fever_mul, work_idx, head_len, count_fever, count_normal)
     else:
         score = kernels_helpers.calc_score_with_grid_bits(
             base_value,
@@ -241,24 +225,37 @@ def calc_score_cached_device(
 
 @ti.func
 def local_search_from_hint(
-    hint_pp: ti.i32, hint_cm: ti.i32, hint_fm: ti.i32, hint_ov: ti.i32,
+    hint_pp: ti.i32,
+    hint_cm: ti.i32,
+    hint_fm: ti.i32,
+    hint_ov: ti.i32,
     budget: ti.i32,
-    cur_pp: ti.i32, cur_cm: ti.i32, cur_fm: ti.i32,
-    cur_p_val: ti.i32, cur_s_val: ti.i32,
-    is_p_pp: ti.i32, is_s_pp: ti.i32,
-    is_p_cm: ti.i32, is_s_cm: ti.i32,
-    is_p_fm: ti.i32, is_s_fm: ti.i32,
-    is_p_ov: ti.i32, is_s_ov: ti.i32,
+    cur_pp: ti.i32,
+    cur_cm: ti.i32,
+    cur_fm: ti.i32,
+    cur_p_val: ti.i32,
+    cur_s_val: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
     head_len: ti.i32,
-    count_fever: ti.i32, count_normal: ti.i32,
-    song_slot: ti.i32, ft_idx: ti.i32, ff_idx: ti.i32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+    song_slot: ti.i32,
+    ft_idx: ti.i32,
+    ff_idx: ti.i32,
 ) -> ti.types.vector(7, ti.i32):
     """
     Local search refinement starting from a warm-start hint.
-    
+
     Instead of the 90-iteration greedy loop, we start at the hint allocation
     and iteratively try swapping gems (±1) to find a better score.
-    
+
     Args:
         hint_*: Starting allocation from parent genome
         budget: Total gem budget (hint values should sum to this)
@@ -266,7 +263,7 @@ def local_search_from_hint(
         is_*: Color contribution flags
         head_len, count_*: Song structure parameters
         song_slot, ft_idx, ff_idx: Grid lookup indices
-    
+
     Returns:
         Vector of [score, gems_pp, gems_cm, gems_fm, gems_ov, p_val, s_val]
     """
@@ -278,19 +275,19 @@ def local_search_from_hint(
     GEM_STAT_TO_ELEMENT: ti.i32 = 3  # gear_optimizer.core.constants.GEM_STAT_TO_ELEMENT_SCALE
     MAX_STAT: ti.i32 = 160  # gear_optimizer.core.constants.MAX_STAT_INDEX
     MAX_ITER: ti.i32 = 20  # gear_optimizer.core.constants.LOCAL_SEARCH_MAX_ITERATIONS
-    
+
     # Load cached bitmasks once
     m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
     m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
     m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
     m3 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
-    
+
     # Clamp hint to valid range (defensive)
     gems_pp: ti.i32 = ti.max(0, hint_pp)
     gems_cm: ti.i32 = ti.max(0, hint_cm)
     gems_fm: ti.i32 = ti.max(0, hint_fm)
     gems_ov: ti.i32 = ti.max(0, hint_ov)
-    
+
     # Ensure hint sums to budget - adjust ov if needed
     hint_sum: ti.i32 = gems_pp + gems_cm + gems_fm + gems_ov
     if hint_sum != budget:
@@ -301,7 +298,7 @@ def local_search_from_hint(
             gems_cm = 0
             gems_fm = 0
             gems_ov = budget
-    
+
     # Clamp to stat caps
     max_pp_gems: ti.i32 = (MAX_STAT - cur_pp) // GEM_SCALE_NORMAL
     max_cm_gems: ti.i32 = (MAX_STAT - cur_cm) // GEM_SCALE_NORMAL
@@ -311,20 +308,26 @@ def local_search_from_hint(
     gems_fm = ti.min(gems_fm, max_fm_gems)
     # Recalculate ov after clamping
     gems_ov = budget - gems_pp - gems_cm - gems_fm
-    
+
     # Calculate current stats from hint allocation
     pp: ti.i32 = cur_pp + gems_pp * GEM_SCALE_NORMAL
     cm: ti.i32 = cur_cm + gems_cm * GEM_SCALE_NORMAL
     fm: ti.i32 = cur_fm + gems_fm * GEM_SCALE_FEVER
-    p_val: ti.i32 = cur_p_val + (gems_pp * GEM_STAT_TO_ELEMENT * is_p_pp) + \
-                    (gems_cm * GEM_STAT_TO_ELEMENT * is_p_cm) + \
-                    (gems_fm * GEM_STAT_TO_ELEMENT * is_p_fm) + \
-                    (gems_ov * ELEMENTAL_GEM_SCALE * is_p_ov)
-    s_val: ti.i32 = cur_s_val + (gems_pp * GEM_STAT_TO_ELEMENT * is_s_pp) + \
-                    (gems_cm * GEM_STAT_TO_ELEMENT * is_s_cm) + \
-                    (gems_fm * GEM_STAT_TO_ELEMENT * is_s_fm) + \
-                    (gems_ov * ELEMENTAL_GEM_SCALE * is_s_ov)
-    
+    p_val: ti.i32 = (
+        cur_p_val
+        + (gems_pp * GEM_STAT_TO_ELEMENT * is_p_pp)
+        + (gems_cm * GEM_STAT_TO_ELEMENT * is_p_cm)
+        + (gems_fm * GEM_STAT_TO_ELEMENT * is_p_fm)
+        + (gems_ov * ELEMENTAL_GEM_SCALE * is_p_ov)
+    )
+    s_val: ti.i32 = (
+        cur_s_val
+        + (gems_pp * GEM_STAT_TO_ELEMENT * is_s_pp)
+        + (gems_cm * GEM_STAT_TO_ELEMENT * is_s_cm)
+        + (gems_fm * GEM_STAT_TO_ELEMENT * is_s_fm)
+        + (gems_ov * ELEMENTAL_GEM_SCALE * is_s_ov)
+    )
+
     # Calculate initial score
     pp_factor = kernels_helpers.lookup_ref_pp(pp)
     c_mul = kernels_helpers.lookup_ref_cm(cm)
@@ -333,27 +336,27 @@ def local_search_from_hint(
     best_score: ti.i32 = kernels_helpers.calc_score_with_grid_bits(
         base_value, c_mul, f_mul, m0, m1, m2, m3, head_len, count_fever, count_normal
     )
-    
+
     # Local search: try swapping 1 gem between types
     # Gem types: 0=PP, 1=CM, 2=FM, 3=OV
     # Each iteration: for each pair (remove, add), try swapping
     iteration: ti.i32 = 0
     improved: ti.i32 = 1
-    
+
     while improved != 0 and iteration < MAX_ITER:
         improved = 0
         iteration += 1
-        
+
         # Try all 12 swap combinations (4 remove × 3 add, excluding same type)
         for remove_type in range(4):
             for add_type in range(4):
                 if remove_type == add_type:
                     continue
-                
+
                 # Check if swap is valid
                 can_remove: ti.i32 = 0
                 can_add: ti.i32 = 0
-                
+
                 if remove_type == 0 and gems_pp > 0:
                     can_remove = 1
                 elif remove_type == 1 and gems_cm > 0:
@@ -362,7 +365,7 @@ def local_search_from_hint(
                     can_remove = 1
                 elif remove_type == 3 and gems_ov > 0:
                     can_remove = 1
-                
+
                 if add_type == 0 and pp + GEM_SCALE_NORMAL <= MAX_STAT:
                     can_add = 1
                 elif add_type == 1 and cm + GEM_SCALE_NORMAL <= MAX_STAT:
@@ -371,16 +374,16 @@ def local_search_from_hint(
                     can_add = 1
                 elif add_type == 3:
                     can_add = 1  # OV always allowed
-                
+
                 if can_remove == 0 or can_add == 0:
                     continue
-                
+
                 # Calculate new allocation
                 new_pp = gems_pp
                 new_cm = gems_cm
                 new_fm = gems_fm
                 new_ov = gems_ov
-                
+
                 if remove_type == 0:
                     new_pp -= 1
                 elif remove_type == 1:
@@ -389,7 +392,7 @@ def local_search_from_hint(
                     new_fm -= 1
                 else:
                     new_ov -= 1
-                
+
                 if add_type == 0:
                     new_pp += 1
                 elif add_type == 1:
@@ -398,20 +401,26 @@ def local_search_from_hint(
                     new_fm += 1
                 else:
                     new_ov += 1
-                
+
                 # Calculate new stats
                 new_pp_stat = cur_pp + new_pp * GEM_SCALE_NORMAL
                 new_cm_stat = cur_cm + new_cm * GEM_SCALE_NORMAL
                 new_fm_stat = cur_fm + new_fm * GEM_SCALE_FEVER
-                new_p_val = cur_p_val + (new_pp * GEM_STAT_TO_ELEMENT * is_p_pp) + \
-                            (new_cm * GEM_STAT_TO_ELEMENT * is_p_cm) + \
-                            (new_fm * GEM_STAT_TO_ELEMENT * is_p_fm) + \
-                            (new_ov * ELEMENTAL_GEM_SCALE * is_p_ov)
-                new_s_val = cur_s_val + (new_pp * GEM_STAT_TO_ELEMENT * is_s_pp) + \
-                            (new_cm * GEM_STAT_TO_ELEMENT * is_s_cm) + \
-                            (new_fm * GEM_STAT_TO_ELEMENT * is_s_fm) + \
-                            (new_ov * ELEMENTAL_GEM_SCALE * is_s_ov)
-                
+                new_p_val = (
+                    cur_p_val
+                    + (new_pp * GEM_STAT_TO_ELEMENT * is_p_pp)
+                    + (new_cm * GEM_STAT_TO_ELEMENT * is_p_cm)
+                    + (new_fm * GEM_STAT_TO_ELEMENT * is_p_fm)
+                    + (new_ov * ELEMENTAL_GEM_SCALE * is_p_ov)
+                )
+                new_s_val = (
+                    cur_s_val
+                    + (new_pp * GEM_STAT_TO_ELEMENT * is_s_pp)
+                    + (new_cm * GEM_STAT_TO_ELEMENT * is_s_cm)
+                    + (new_fm * GEM_STAT_TO_ELEMENT * is_s_fm)
+                    + (new_ov * ELEMENTAL_GEM_SCALE * is_s_ov)
+                )
+
                 # Calculate new score
                 new_pp_factor = kernels_helpers.lookup_ref_pp(new_pp_stat)
                 new_c_mul = kernels_helpers.lookup_ref_cm(new_cm_stat)
@@ -420,7 +429,7 @@ def local_search_from_hint(
                 new_score: ti.i32 = kernels_helpers.calc_score_with_grid_bits(
                     new_base, new_c_mul, new_f_mul, m0, m1, m2, m3, head_len, count_fever, count_normal
                 )
-                
+
                 if new_score > best_score:
                     best_score = new_score
                     gems_pp = new_pp
@@ -433,7 +442,7 @@ def local_search_from_hint(
                     p_val = new_p_val
                     s_val = new_s_val
                     improved = 1
-    
+
     return ti.Vector([best_score, gems_pp, gems_cm, gems_fm, gems_ov, p_val, s_val])
 
 
@@ -446,10 +455,14 @@ def optimize_core_device(
     cur_fm: ti.i32,
     cur_p_val: ti.i32,
     cur_s_val: ti.i32,
-    is_p_pp: ti.i32, is_s_pp: ti.i32,
-    is_p_cm: ti.i32, is_s_cm: ti.i32,
-    is_p_fm: ti.i32, is_s_fm: ti.i32,
-    is_p_ov: ti.i32, is_s_ov: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
     head_len: ti.i32,
     count_fever: ti.i32,
     count_normal: ti.i32,
@@ -542,7 +555,7 @@ def optimize_core_device(
 
         # Option 0: PP gem
         # Optimization: Skip PP if Chill is not in Primary/Secondary
-        allow_pp: ti.i32 = (is_p_pp | is_s_pp)
+        allow_pp: ti.i32 = is_p_pp | is_s_pp
 
         if allow_pp != 0 and pp < MAX_STAT:
             t_pp: ti.i32 = pp + GEM_SCALE_NORMAL

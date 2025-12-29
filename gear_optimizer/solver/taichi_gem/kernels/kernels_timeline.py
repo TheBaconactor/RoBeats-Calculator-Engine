@@ -13,6 +13,7 @@ gem optimization instead of recomputing timelines for each combination.
 This is a critical performance optimization that reduces timeline computation
 from O(n_combos × song_notes) to O(1) per combo after precomputation.
 """
+
 import taichi as ti
 
 from .kernels_helpers import (
@@ -21,8 +22,6 @@ from .kernels_helpers import (
 
 # Import kernels_helpers to access fields at runtime (they're bound by fields.bind_fields())
 from . import kernels_helpers
-
-
 
 
 @ti.kernel
@@ -113,7 +112,9 @@ def compute_timeline_grid_kernel(
                 end_time = start_time + real_fever_time
 
                 # Binary search for first note >= end_time
-                fever_end_idx = kernels_helpers.binary_search_left(kernels_helpers.song_timestamps, total_notes, end_time)
+                fever_end_idx = kernels_helpers.binary_search_left(
+                    kernels_helpers.song_timestamps, total_notes, end_time
+                )
 
                 # Mark fever notes in bitmask (for first MAX_HEAD notes)
                 for note_i in range(current_note, fever_end_idx):
@@ -157,7 +158,9 @@ def compute_timeline_grid_kernel(
             if current_note > 0:
                 start_time = kernels_helpers.song_timestamps[current_note]
                 end_time = start_time + real_fever_time
-                fever_end_idx = kernels_helpers.binary_search_left(kernels_helpers.song_timestamps, total_notes, end_time)
+                fever_end_idx = kernels_helpers.binary_search_left(
+                    kernels_helpers.song_timestamps, total_notes, end_time
+                )
 
                 # Count fever body notes
                 for ni in range(current_note, fever_end_idx):

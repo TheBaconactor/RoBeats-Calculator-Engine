@@ -10,6 +10,7 @@ a packed 64-bit key, and use 32-bit atomics.
 IMPORTANT: The kernel definitions are created lazily by create_metal_kernels()
 to ensure fields are bound before Taichi JIT-compiles the kernels.
 """
+
 import taichi as ti
 
 from .runtime import get_block_dim
@@ -22,7 +23,7 @@ _KERNEL_BLOCK_DIM = get_block_dim()
 
 # These are the Metal-specific 32-bit fields
 chunk_best_score = None  # (MAX_GENOMES,) i32 - best score per genome
-chunk_best_idx = None    # (MAX_GENOMES,) i32 - work item index for best score
+chunk_best_idx = None  # (MAX_GENOMES,) i32 - work item index for best score
 
 # Shared fields (bound at runtime)
 work_items = None
@@ -52,7 +53,7 @@ _kernels_created = False
 def create_metal_kernels():
     """
     Create Metal-safe kernel implementations.
-    
+
     This MUST be called AFTER all fields have been bound to this module.
     The kernels are defined here (not at module load time) to ensure
     Taichi JIT compiles them with the actual field references.
@@ -61,13 +62,13 @@ def create_metal_kernels():
     global merge_chunk_best_to_genomes_kernel, ga_find_best_combo_key_kernel
     global ga_write_best_results_from_key_kernel, ga_find_best_combo_warmstart_kernel
     global _kernels_created
-    
+
     if _kernels_created:
         return
-    
+
     # Import optimize_core_device and local_search_from_hint at kernel creation time
     from .kernels import optimize_core_device, local_search_from_hint
-    
+
     @ti.kernel
     def _init_chunk_best_key_kernel(n_genomes: ti.i32):
         """Initialize per-chunk best-score storage (Metal-safe 32-bit version)."""
@@ -99,15 +100,17 @@ def create_metal_kernels():
                 if score > genome_result_stats[g][0]:
                     item = work_items[i]
                     res = result_stats[i]
-                    genome_result_stats[g] = ti.Vector([
-                        score,
-                        item[3],  # ft
-                        item[4],  # ff
-                        res[1],   # pp
-                        res[2],   # cm
-                        res[3],   # fm
-                        res[4],   # ov
-                    ])
+                    genome_result_stats[g] = ti.Vector(
+                        [
+                            score,
+                            item[3],  # ft
+                            item[4],  # ff
+                            res[1],  # pp
+                            res[2],  # cm
+                            res[3],  # fm
+                            res[4],  # ov
+                        ]
+                    )
 
     @ti.kernel
     def _ga_find_best_combo_key_kernel(
@@ -117,12 +120,18 @@ def create_metal_kernels():
         combo_count: ti.i32,
         total_budget: ti.i32,
         gem_scale_fever: ti.i32,
-        is_p_ft: ti.i32, is_s_ft: ti.i32,
-        is_p_ff: ti.i32, is_s_ff: ti.i32,
-        is_p_pp: ti.i32, is_s_pp: ti.i32,
-        is_p_cm: ti.i32, is_s_cm: ti.i32,
-        is_p_fm: ti.i32, is_s_fm: ti.i32,
-        is_p_ov: ti.i32, is_s_ov: ti.i32,
+        is_p_ft: ti.i32,
+        is_s_ft: ti.i32,
+        is_p_ff: ti.i32,
+        is_s_ff: ti.i32,
+        is_p_pp: ti.i32,
+        is_s_pp: ti.i32,
+        is_p_cm: ti.i32,
+        is_s_cm: ti.i32,
+        is_p_fm: ti.i32,
+        is_s_fm: ti.i32,
+        is_p_ov: ti.i32,
+        is_s_ov: ti.i32,
         song_slot: ti.i32,
     ):
         """Metal-safe GPU-parallel evaluation across (genome, ft/ff combo)."""
@@ -178,15 +187,28 @@ def create_metal_kernels():
             s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
             res_vec = optimize_core_device(
-                0, budget,
-                base_pp, base_cm, base_fm,
-                p_val, s_val,
-                is_p_pp, is_s_pp,
-                is_p_cm, is_s_cm,
-                is_p_fm, is_s_fm,
-                is_p_ov, is_s_ov,
-                head_len, count_fever, count_normal,
-                1, song_slot, ft_idx, ff_idx,
+                0,
+                budget,
+                base_pp,
+                base_cm,
+                base_fm,
+                p_val,
+                s_val,
+                is_p_pp,
+                is_s_pp,
+                is_p_cm,
+                is_s_cm,
+                is_p_fm,
+                is_s_fm,
+                is_p_ov,
+                is_s_ov,
+                head_len,
+                count_fever,
+                count_normal,
+                1,
+                song_slot,
+                ft_idx,
+                ff_idx,
             )
 
             score: ti.i32 = res_vec[0]
@@ -200,12 +222,18 @@ def create_metal_kernels():
         n_genomes: ti.i32,
         total_budget: ti.i32,
         gem_scale_fever: ti.i32,
-        is_p_ft: ti.i32, is_s_ft: ti.i32,
-        is_p_ff: ti.i32, is_s_ff: ti.i32,
-        is_p_pp: ti.i32, is_s_pp: ti.i32,
-        is_p_cm: ti.i32, is_s_cm: ti.i32,
-        is_p_fm: ti.i32, is_s_fm: ti.i32,
-        is_p_ov: ti.i32, is_s_ov: ti.i32,
+        is_p_ft: ti.i32,
+        is_s_ft: ti.i32,
+        is_p_ff: ti.i32,
+        is_s_ff: ti.i32,
+        is_p_pp: ti.i32,
+        is_s_pp: ti.i32,
+        is_p_cm: ti.i32,
+        is_s_cm: ti.i32,
+        is_p_fm: ti.i32,
+        is_s_fm: ti.i32,
+        is_p_ov: ti.i32,
+        is_s_ov: ti.i32,
         song_slot: ti.i32,
     ):
         """Finalize best (ft, ff, gem counts) per genome from chunk_best_score/idx."""
@@ -216,7 +244,7 @@ def create_metal_kernels():
         for genome_idx in range(n_genomes):
             score = chunk_best_score[genome_idx]
             combo_idx = chunk_best_idx[genome_idx]
-            
+
             if score < 0 or combo_idx < 0:
                 genome_result_stats[genome_idx] = ti.Vector([-1, 0, 0, 0, 0, 0, 0])
                 ga_scores[genome_idx] = -1
@@ -248,27 +276,42 @@ def create_metal_kernels():
             s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
             res_vec = optimize_core_device(
-                0, budget,
-                base_pp, base_cm, base_fm,
-                p_val, s_val,
-                is_p_pp, is_s_pp,
-                is_p_cm, is_s_cm,
-                is_p_fm, is_s_fm,
-                is_p_ov, is_s_ov,
-                head_len, count_fever, count_normal,
-                1, song_slot, ft_idx, ff_idx,
+                0,
+                budget,
+                base_pp,
+                base_cm,
+                base_fm,
+                p_val,
+                s_val,
+                is_p_pp,
+                is_s_pp,
+                is_p_cm,
+                is_s_cm,
+                is_p_fm,
+                is_s_fm,
+                is_p_ov,
+                is_s_ov,
+                head_len,
+                count_fever,
+                count_normal,
+                1,
+                song_slot,
+                ft_idx,
+                ff_idx,
             )
 
             final_score: ti.i32 = res_vec[0]
-            genome_result_stats[genome_idx] = ti.Vector([
-                final_score,
-                ft,
-                ff,
-                res_vec[1],
-                res_vec[2],
-                res_vec[3],
-                res_vec[4],
-            ])
+            genome_result_stats[genome_idx] = ti.Vector(
+                [
+                    final_score,
+                    ft,
+                    ff,
+                    res_vec[1],
+                    res_vec[2],
+                    res_vec[3],
+                    res_vec[4],
+                ]
+            )
             ga_scores[genome_idx] = final_score
 
     @ti.kernel
@@ -279,12 +322,18 @@ def create_metal_kernels():
         combo_count: ti.i32,
         total_budget: ti.i32,
         gem_scale_fever: ti.i32,
-        is_p_ft: ti.i32, is_s_ft: ti.i32,
-        is_p_ff: ti.i32, is_s_ff: ti.i32,
-        is_p_pp: ti.i32, is_s_pp: ti.i32,
-        is_p_cm: ti.i32, is_s_cm: ti.i32,
-        is_p_fm: ti.i32, is_s_fm: ti.i32,
-        is_p_ov: ti.i32, is_s_ov: ti.i32,
+        is_p_ft: ti.i32,
+        is_s_ft: ti.i32,
+        is_p_ff: ti.i32,
+        is_s_ff: ti.i32,
+        is_p_pp: ti.i32,
+        is_s_pp: ti.i32,
+        is_p_cm: ti.i32,
+        is_s_cm: ti.i32,
+        is_p_fm: ti.i32,
+        is_s_fm: ti.i32,
+        is_p_ov: ti.i32,
+        is_s_ov: ti.i32,
         song_slot: ti.i32,
         use_hints: ti.i32,
     ):
@@ -346,29 +395,56 @@ def create_metal_kernels():
                 # Warm start: use hint from previous generation
                 hint = genome_hint_allocation[genome_idx]
                 res_vec = local_search_from_hint(
-                    hint[0], hint[1], hint[2], hint[3],
+                    hint[0],
+                    hint[1],
+                    hint[2],
+                    hint[3],
                     budget,
-                    base_pp, base_cm, base_fm,
-                    p_val, s_val,
-                    is_p_pp, is_s_pp,
-                    is_p_cm, is_s_cm,
-                    is_p_fm, is_s_fm,
-                    is_p_ov, is_s_ov,
-                    head_len, count_fever, count_normal,
-                    song_slot, ft_idx, ff_idx,
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    p_val,
+                    s_val,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    song_slot,
+                    ft_idx,
+                    ff_idx,
                 )
             else:
                 # Cold start: full greedy search
                 res_vec = optimize_core_device(
-                    0, budget,
-                    base_pp, base_cm, base_fm,
-                    p_val, s_val,
-                    is_p_pp, is_s_pp,
-                    is_p_cm, is_s_cm,
-                    is_p_fm, is_s_fm,
-                    is_p_ov, is_s_ov,
-                    head_len, count_fever, count_normal,
-                    1, song_slot, ft_idx, ff_idx,
+                    0,
+                    budget,
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    p_val,
+                    s_val,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    1,
+                    song_slot,
+                    ft_idx,
+                    ff_idx,
                 )
 
             score: ti.i32 = res_vec[0]
@@ -384,5 +460,5 @@ def create_metal_kernels():
     ga_find_best_combo_key_kernel = _ga_find_best_combo_key_kernel
     ga_write_best_results_from_key_kernel = _ga_write_best_results_from_key_kernel
     ga_find_best_combo_warmstart_kernel = _ga_find_best_combo_warmstart_kernel
-    
+
     _kernels_created = True

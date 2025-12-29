@@ -23,15 +23,18 @@ from __future__ import annotations
 
 def init_taichi_vulkan(*args, **kwargs):
     from .gpu_executor import is_gpu_worker_mode
+
     if is_gpu_worker_mode():
         # In worker mode, GPU ownership is centralized in GpuExecutor (main process).
         return None
     from .taichi_gem.runtime import init_taichi_vulkan as _impl
+
     return _impl(*args, **kwargs)
 
 
 def load_ref_arrays(*args, **kwargs):
     from .gpu_executor import is_gpu_worker_mode, submit_gpu_load_ref_arrays
+
     if is_gpu_worker_mode():
         # Keep signature compatibility: allow positional or keyword `ref_arrays`.
         if args:
@@ -42,11 +45,13 @@ def load_ref_arrays(*args, **kwargs):
             raise TypeError("load_ref_arrays missing required argument: ref_arrays")
         return submit_gpu_load_ref_arrays(ref_arrays)
     from .taichi_gem.api import load_ref_arrays as _impl
+
     return _impl(*args, **kwargs)
 
 
 def optimize_gems_gpu(*args, **kwargs):
     from .gpu_executor import is_gpu_worker_mode
+
     if is_gpu_worker_mode():
         from .gpu_executor import submit_gpu_optimize_gems_batch
 
@@ -126,38 +131,47 @@ def optimize_gems_gpu(*args, **kwargs):
         )
         return results[0] if results else None
     from .taichi_gem.api import optimize_gems_gpu as _impl
+
     return _impl(*args, **kwargs)
 
 
 def optimize_gems_batch_gpu(*args, **kwargs):
     from .gpu_executor import is_gpu_worker_mode, submit_gpu_optimize_gems_batch
+
     if is_gpu_worker_mode():
         return submit_gpu_optimize_gems_batch(*args, **kwargs)
     from .taichi_gem.api import optimize_gems_batch_gpu as _impl
+
     return _impl(*args, **kwargs)
 
 
 def mega_batch_solve_population(*args, **kwargs):
     from .gpu_executor import is_gpu_worker_mode
+
     if is_gpu_worker_mode():
         raise RuntimeError("mega_batch_solve_population is not supported in GPU worker mode")
     from .taichi_gem.api import mega_batch_solve_population as _impl
+
     return _impl(*args, **kwargs)
 
 
 def solve_genomes_with_ftff(*args, **kwargs):
     from .gpu_executor import is_gpu_worker_mode
+
     if is_gpu_worker_mode():
         raise RuntimeError("solve_genomes_with_ftff is not supported in GPU worker mode")
     from .taichi_gem.api import solve_genomes_with_ftff as _impl
+
     return _impl(*args, **kwargs)
 
 
 def solve_genomes_parallel(*args, **kwargs):
     from .gpu_executor import is_gpu_worker_mode, submit_gpu_solve_genomes
+
     if is_gpu_worker_mode():
         return submit_gpu_solve_genomes(*args, **kwargs)
     from .taichi_gem.api import solve_genomes_parallel as _impl
+
     return _impl(*args, **kwargs)
 
 
@@ -170,10 +184,13 @@ def solve_force_greats_finder_gpu(*args, **kwargs):
         is_in_process_gpu_request_queue,
         submit_gpu_solve_force_greats_finder,
     )
+
     if is_gpu_worker_mode() and is_in_process_gpu_request_queue():
         return submit_gpu_solve_force_greats_finder(*args, **kwargs)
     from .taichi_gem.force_greats.api import solve_force_greats_finder_gpu as _impl
+
     return _impl(*args, **kwargs)
+
 
 __all__ = [
     "init_taichi_vulkan",

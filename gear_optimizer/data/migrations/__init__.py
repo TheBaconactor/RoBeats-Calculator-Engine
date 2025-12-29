@@ -95,9 +95,7 @@ def set_schema_version(conn: sqlite3.Connection, version: int) -> None:
 def ensure_schema(conn: sqlite3.Connection) -> None:
     current = get_schema_version(conn)
     if current > LATEST_SCHEMA_VERSION:
-        raise RuntimeError(
-            f"DB schema version {current} is newer than this app supports ({LATEST_SCHEMA_VERSION})."
-        )
+        raise RuntimeError(f"DB schema version {current} is newer than this app supports ({LATEST_SCHEMA_VERSION}).")
     if current == LATEST_SCHEMA_VERSION:
         return
 

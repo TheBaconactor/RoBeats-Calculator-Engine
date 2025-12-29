@@ -10,6 +10,7 @@ Features:
 - Resume queue tracking for interrupted batches
 - Cross-platform memory detection (Windows, macOS, Linux)
 """
+
 import json
 import logging
 import os
@@ -40,7 +41,7 @@ MEMORY_GUARD_RESUME_FILE = PATHS.bin_path("memory_guard_resume.json")
 
 def _bytes_to_gb(value):
     """Convert bytes to gigabytes."""
-    return value / (1024 ** 3)
+    return value / (1024**3)
 
 
 def memory_release_requested():
@@ -101,6 +102,7 @@ def _process_tree_rss_bytes(root_process, include_compressed=False):
     Returns:
         int: Total RSS in bytes
     """
+
     def _rss_with_compressed(proc):
         try:
             info = proc.memory_full_info() if include_compressed else proc.memory_info()
@@ -151,9 +153,7 @@ def ensure_memory_watchdog_thread():
         return
     if MEMORY_WATCHDOG_THREAD and MEMORY_WATCHDOG_THREAD.is_alive():
         return
-    MEMORY_WATCHDOG_THREAD = threading.Thread(
-        target=_memory_watchdog_loop, name="MemoryWatchdog", daemon=True
-    )
+    MEMORY_WATCHDOG_THREAD = threading.Thread(target=_memory_watchdog_loop, name="MemoryWatchdog", daemon=True)
     MEMORY_WATCHDOG_THREAD.start()
 
 
@@ -172,9 +172,7 @@ def set_memory_watchdog_limit(limit_bytes):
         return
     if psutil is None:
         if not MEMORY_WATCHDOG_PSUTIL_WARNED:
-            warn = (
-                "[MemoryGuard] psutil is unavailable; memory watchdog cannot monitor RSS."
-            )
+            warn = "[MemoryGuard] psutil is unavailable; memory watchdog cannot monitor RSS."
             logging.warning(warn)
             print(warn)
             MEMORY_WATCHDOG_PSUTIL_WARNED = True
@@ -211,6 +209,7 @@ def detect_total_physical_memory():
         detectors.append(lambda: psutil.virtual_memory().total)
 
     if os.name == "nt":
+
         def _win32_ctypes_total():
             import ctypes
 
@@ -237,6 +236,7 @@ def detect_total_physical_memory():
 
         detectors.extend((_win32_ctypes_total, _wmic_total))
     else:
+
         def _sysconf_total():
             page_size = os.sysconf("SC_PAGE_SIZE")
             phys_pages = os.sysconf("SC_PHYS_PAGES")
@@ -245,6 +245,7 @@ def detect_total_physical_memory():
         detectors.append(_sysconf_total)
 
         if sys.platform == "darwin":
+
             def _sysctl_total():
                 out = subprocess.check_output(
                     ["sysctl", "-n", "hw.memsize"],
@@ -255,6 +256,7 @@ def detect_total_physical_memory():
 
             detectors.append(_sysctl_total)
         else:
+
             def _proc_meminfo_total():
                 try:
                     with open("/proc/meminfo", "r", encoding="utf-8") as fh:
@@ -279,16 +281,10 @@ def detect_total_physical_memory():
 
     if MEMORY_WATCHDOG_TOTAL_RAM_BYTES > 0:
         if not MEMORY_WATCHDOG_TOTAL_RAM_LOGGED:
-            print(
-                "[MemoryGuard] Detected physical RAM: "
-                f"{_bytes_to_gb(MEMORY_WATCHDOG_TOTAL_RAM_BYTES):.2f} GB"
-            )
+            print(f"[MemoryGuard] Detected physical RAM: {_bytes_to_gb(MEMORY_WATCHDOG_TOTAL_RAM_BYTES):.2f} GB")
             MEMORY_WATCHDOG_TOTAL_RAM_LOGGED = True
     elif not MEMORY_WATCHDOG_TOTAL_RAM_LOGGED:
-        logging.warning(
-            "[MemoryGuard] Unable to auto-detect physical RAM; percent-based soft "
-            "limit disabled."
-        )
+        logging.warning("[MemoryGuard] Unable to auto-detect physical RAM; percent-based soft limit disabled.")
         MEMORY_WATCHDOG_TOTAL_RAM_LOGGED = True
 
     return MEMORY_WATCHDOG_TOTAL_RAM_BYTES
@@ -320,13 +316,9 @@ def build_memory_guard_resume_context(
         "diff": (diff_key or "").strip().lower() or "all",
         "filter": (filter_text or "").strip().lower(),
         "primary_all": bool(primary_all),
-        "primary": sorted({c.strip().lower() for c in (primary_colors or set())})
-        if not primary_all
-        else [],
+        "primary": sorted({c.strip().lower() for c in (primary_colors or set())}) if not primary_all else [],
         "secondary_all": bool(secondary_all),
-        "secondary": sorted({c.strip().lower() for c in (secondary_colors or set())})
-        if not secondary_all
-        else [],
+        "secondary": sorted({c.strip().lower() for c in (secondary_colors or set())}) if not secondary_all else [],
     }
 
 
@@ -373,6 +365,7 @@ class MemoryGuardResumeTracker:
     Thread-safe tracker that maintains a resume queue on disk so interrupted
     batch processing can resume from where it left off.
     """
+
     def __init__(self, path):
         self.path = path
         self.lock = threading.Lock()
