@@ -1360,9 +1360,12 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     except Exception:
         n_combos = 0
     denom = int(n_genomes) * max(1, n_combos)
-    # Avoid running right up against MAX_WORK_ITEMS: the warm-start evaluation kernel uses
-    # atomic reductions per genome, and near-saturation can be measurably slower on Vulkan.
-    soft_work_items = (int(gpu_fields.MAX_WORK_ITEMS) * 90) // 100  # 90% headroom
+    # Keep a small safety margin below MAX_WORK_ITEMS to avoid accidental oversubscription.
+    # GA evaluation now reduces atomic contention (key tiling), so we can safely run much
+    # closer to the limit without the steep slowdowns seen previously on Vulkan.
+    soft_work_items = int(gpu_fields.MAX_WORK_ITEMS) - 8192  # 8k headroom
+    if soft_work_items < 1:
+        soft_work_items = int(gpu_fields.MAX_WORK_ITEMS)
     max_runs_by_work = int(soft_work_items // denom) if denom > 0 else 1
     if max_runs_by_work < 1:
         max_runs_by_work = 1

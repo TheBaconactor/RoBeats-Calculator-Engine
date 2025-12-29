@@ -63,9 +63,13 @@ def ga_write_best_results_from_key_kernel(
         valid = False
 
         if ti.static(not IS_METAL):
-            key = kernels_helpers.chunk_best_key[genome_idx]
-            if key != 0:
-                combo_idx = ti.cast(key & ti.u64(0xFFFFFFFF), ti.i32)
+            best_key = kernels_helpers.chunk_best_key[genome_idx]
+            for t in ti.static(range(kernels_helpers.CHUNK_BEST_KEY_TILES)):
+                k = kernels_helpers.chunk_best_key_tiles[genome_idx, t]
+                if k > best_key:
+                    best_key = k
+            if best_key != 0:
+                combo_idx = ti.cast(best_key & ti.u64(0xFFFFFFFF), ti.i32)
                 valid = True
         else:
             i = kernels_helpers.chunk_best_idx[genome_idx]
@@ -192,9 +196,13 @@ def ga_write_best_and_update_global_kernel(
         valid = False
 
         if ti.static(not IS_METAL):
-            key = kernels_helpers.chunk_best_key[genome_idx]
-            if key != 0:
-                combo_idx = ti.cast(key & ti.u64(0xFFFFFFFF), ti.i32)
+            best_key = kernels_helpers.chunk_best_key[genome_idx]
+            for t in ti.static(range(kernels_helpers.CHUNK_BEST_KEY_TILES)):
+                k = kernels_helpers.chunk_best_key_tiles[genome_idx, t]
+                if k > best_key:
+                    best_key = k
+            if best_key != 0:
+                combo_idx = ti.cast(best_key & ti.u64(0xFFFFFFFF), ti.i32)
                 valid = True
         else:
             idx = kernels_helpers.chunk_best_idx[genome_idx]
@@ -335,9 +343,13 @@ def ga_write_best_and_store_hints_kernel(
         valid = False
 
         if ti.static(not IS_METAL):
-            key = kernels_helpers.chunk_best_key[genome_idx]
-            if key != 0:
-                combo_idx = ti.cast(key & ti.u64(0xFFFFFFFF), ti.i32)
+            best_key = kernels_helpers.chunk_best_key[genome_idx]
+            for t in ti.static(range(kernels_helpers.CHUNK_BEST_KEY_TILES)):
+                k = kernels_helpers.chunk_best_key_tiles[genome_idx, t]
+                if k > best_key:
+                    best_key = k
+            if best_key != 0:
+                combo_idx = ti.cast(best_key & ti.u64(0xFFFFFFFF), ti.i32)
                 valid = True
         else:
             idx = kernels_helpers.chunk_best_idx[genome_idx]

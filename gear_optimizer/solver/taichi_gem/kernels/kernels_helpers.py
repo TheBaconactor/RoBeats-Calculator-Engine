@@ -19,6 +19,7 @@ from ..runtime import get_block_dim
 # Resolve once at import time so Taichi sees a plain constant in `ti.loop_config`.
 # (Calling Python functions inside kernels triggers Taichi AST warnings.)
 _KERNEL_BLOCK_DIM = get_block_dim()
+CHUNK_BEST_KEY_TILES = 8  # Must match fields.CHUNK_BEST_KEY_TILES
 
 
 # ============================================================================
@@ -81,6 +82,7 @@ genome_result_stats = None
 # [score, ft, ff, pp, cm, fm, ov]
 genome_hint_allocation = None  # [pp_gems, cm_gems, fm_gems, ov_gems] - warm-start hints
 chunk_best_key = None  # u64 packed key per genome for safe reduction
+chunk_best_key_tiles = None  # (MAX_GENOMES, CHUNK_BEST_KEY_TILES) u64 packed keys (contention reduction)
 chunk_best_score = None  # (MAX_GENOMES,) i32 best score per genome (Metal)
 chunk_best_idx = None  # (MAX_GENOMES,) i32 work item index (Metal)
 ftff_combo_ft = None  # (MAX_FTFF_COMBOS,) i32

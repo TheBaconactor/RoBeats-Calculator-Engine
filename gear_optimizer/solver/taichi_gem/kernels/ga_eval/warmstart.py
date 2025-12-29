@@ -180,19 +180,9 @@ def ga_find_best_combo_warmstart_kernel(
         if score >= 0:
             if ti.static(not IS_METAL):
                 key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
-                old_key = ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], key)
-                # Cache results if we won the atomic race (our key was better)
-                if key > old_key:
-                    kernels_helpers.chunk_best_results[genome_idx, 0] = res_vec[1]  # pp
-                    kernels_helpers.chunk_best_results[genome_idx, 1] = res_vec[2]  # cm
-                    kernels_helpers.chunk_best_results[genome_idx, 2] = res_vec[3]  # fm
-                    kernels_helpers.chunk_best_results[genome_idx, 3] = res_vec[4]  # ov
+                tile = combo_idx % kernels_helpers.CHUNK_BEST_KEY_TILES
+                ti.atomic_max(kernels_helpers.chunk_best_key_tiles[genome_idx, tile], key)
             else:
                 old = ti.atomic_max(kernels_helpers.chunk_best_score[genome_idx], score)
                 if old < score:
                     kernels_helpers.chunk_best_idx[genome_idx] = combo_idx
-                    # Cache results for Metal path too
-                    kernels_helpers.chunk_best_results[genome_idx, 0] = res_vec[1]  # pp
-                    kernels_helpers.chunk_best_results[genome_idx, 1] = res_vec[2]  # cm
-                    kernels_helpers.chunk_best_results[genome_idx, 2] = res_vec[3]  # fm
-                    kernels_helpers.chunk_best_results[genome_idx, 3] = res_vec[4]  # ov

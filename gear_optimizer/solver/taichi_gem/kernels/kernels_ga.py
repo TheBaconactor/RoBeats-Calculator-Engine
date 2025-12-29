@@ -449,6 +449,8 @@ def ga_aggregate_and_init_best_kernel(
     for g in range(n_genomes):
         if ti.static(not IS_METAL):
             kernels_helpers.chunk_best_key[g] = ti.u64(0)
+            for t in ti.static(range(kernels_helpers.CHUNK_BEST_KEY_TILES)):
+                kernels_helpers.chunk_best_key_tiles[g, t] = ti.u64(0)
         else:
             kernels_helpers.chunk_best_score[g] = ti.cast(-2147483648, ti.i32)
             kernels_helpers.chunk_best_idx[g] = -1

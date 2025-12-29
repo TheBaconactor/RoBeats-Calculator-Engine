@@ -55,6 +55,7 @@ MAX_SONG_SLOTS = _clamp_song_slots(_env_int("GPU_SONG_SLOTS", 8))
 MAX_TOTAL_BUDGET = 90  # Max supported total_budget for FT/FF combo tables
 MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 when MAX_TOTAL_BUDGET=90
 MAX_BP_PAIRS = 256  # Breakpoint kernel scan pairs
+CHUNK_BEST_KEY_TILES = 8  # Reduce atomic contention in GA warm-start reduction
 
 
 # ============================================================================
@@ -172,6 +173,7 @@ genome_result_ov: ti.Field = None
 genome_result_stats: ti.Field = None  # Vector field [score, ft, ff, pp, cm, fm, ov]
 genome_hint_allocation: ti.Field = None  # Vector field [pp, cm, fm, ov] - warm-start hints from previous gen
 chunk_best_key: ti.Field = None  # (MAX_GENOMES,) u64 packed key for safe per-chunk reduction
+chunk_best_key_tiles: ti.Field = None  # (MAX_GENOMES, CHUNK_BEST_KEY_TILES) u64 packed keys (contention reduction)
 ftff_combo_ft: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FT gems per combo
 ftff_combo_ff: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FF gems per combo
 
@@ -240,7 +242,7 @@ def reset_fields_state() -> None:
     global genome_result_scores, genome_result_ft, genome_result_ff
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
     global genome_hint_allocation
-    global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
+    global chunk_best_key, chunk_best_key_tiles, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results
     global ga_runs_payload_packed
@@ -334,6 +336,7 @@ def reset_fields_state() -> None:
     genome_result_stats = None
     genome_hint_allocation = None
     chunk_best_key = None
+    chunk_best_key_tiles = None
     chunk_best_score = None
     chunk_best_idx = None
     chunk_best_results = None
@@ -414,7 +417,7 @@ def allocate_fields():
     global genome_result_scores, genome_result_ft, genome_result_ff
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
     global genome_hint_allocation
-    global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
+    global chunk_best_key, chunk_best_key_tiles, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results
     global ga_runs_payload_packed
@@ -477,6 +480,7 @@ def allocate_fields():
     # NOTE: u64 atomics not supported on Metal, so we use separate 32-bit fields on macOS
     if not IS_METAL:
         chunk_best_key = ti.field(dtype=ti.u64, shape=MAX_GENOMES)
+        chunk_best_key_tiles = ti.field(dtype=ti.u64, shape=(MAX_GENOMES, CHUNK_BEST_KEY_TILES))
     else:
         chunk_best_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
         chunk_best_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
@@ -619,6 +623,7 @@ def bind_fields(kernels_module):
     target.genome_hint_allocation = genome_hint_allocation
     if not IS_METAL:
         target.chunk_best_key = chunk_best_key
+        target.chunk_best_key_tiles = chunk_best_key_tiles
     else:
         target.chunk_best_score = chunk_best_score
         target.chunk_best_idx = chunk_best_idx
