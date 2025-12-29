@@ -604,10 +604,20 @@ def _solve_force_greats_finder_gpu_impl(
     if _fg_forced_upload_buf is None or _fg_forced_upload_buf.shape[0] < fg_fields.FG_MAX_CONFIGS:
         _fg_forced_upload_buf = np.zeros((fg_fields.FG_MAX_CONFIGS, fg_fields.FG_MAX_SECTIONS), dtype=np.int32)
 
-    # Adaptive cfg_chunk: target ~2M threads per kernel to avoid TDR while staying 100% utilized
-    # TDR (Timeout Detection and Recovery) triggers after ~2s on Windows if GPU is unresponsive
-    # With heavy per-thread work (90-iteration gem optimization), we need to limit threads per launch
+    # Adaptive cfg_chunk: target ~2M threads per kernel to avoid TDR while staying 100% utilized.
+    #
+    # NOTE: The Vulkan stage1 flat kernel uses cfg-tiling: one thread handles up to FG_STAGE1_CFG_TILE configs.
+    # So "threads per kernel" is ~n_work_items * ceil(cfg_chunk / tile), not n_work_items * cfg_chunk.
+    #
+    # TDR (Timeout Detection and Recovery) triggers after ~2s on Windows if GPU is unresponsive.
+    # With heavy per-thread work (gem optimization + penalty loops), we need to limit work per launch.
     TARGET_THREADS_PER_KERNEL = 2_000_000
+    try:
+        stage1_cfg_tile = int(getattr(fg_kernels, "FG_STAGE1_CFG_TILE", 1))
+    except Exception:
+        stage1_cfg_tile = 1
+    if stage1_cfg_tile <= 0:
+        stage1_cfg_tile = 1
 
     if cfg_chunk is None or int(cfg_chunk) <= 0:
         # Auto-calculate based on work items
@@ -617,9 +627,9 @@ def _solve_force_greats_finder_gpu_impl(
             # A safe bet is ~16-32 configs per kernel launch.
             cfg_chunk = 16
         else:
-            # Flattened kernel (fg_stage1_flat_kernel) parallelizes over cfg_chunk.
-            # We want MANY threads.
-            cfg_chunk = max(256, TARGET_THREADS_PER_KERNEL // max(1, n_work_items))
+            # Flattened kernel parallelizes over cfg tiles (each thread handles up to stage1_cfg_tile configs).
+            target_tiles = max(1, TARGET_THREADS_PER_KERNEL // max(1, n_work_items))
+            cfg_chunk = max(256, int(target_tiles * stage1_cfg_tile))
     else:
         cfg_chunk = int(cfg_chunk)
 
@@ -627,9 +637,11 @@ def _solve_force_greats_finder_gpu_impl(
     n_chunks = (n_cfg_total + cfg_chunk - 1) // cfg_chunk
 
     if _perf:
+        approx_tiles = (cfg_chunk + stage1_cfg_tile - 1) // stage1_cfg_tile
         print(
             f"[PERF] FG adaptive chunking: n_work={n_work_items} cfg_chunk={cfg_chunk} "
-            f"n_cfg={n_cfg_total} n_chunks={n_chunks} threads_per_kernel~={n_work_items * cfg_chunk:,}"
+            f"n_cfg={n_cfg_total} n_chunks={n_chunks} threads_per_kernel~={n_work_items * approx_tiles:,} "
+            f"(tiles={approx_tiles}, tile={stage1_cfg_tile})"
         )
 
     # Pre-fetch buffer reference
@@ -711,30 +723,56 @@ def _solve_force_greats_finder_gpu_impl(
                 int(is_s_ov),
             )
         else:
-            # FLATTENED kernel (GPU-friendly: one thread per work_item * cfg)
-            fg_kernels.fg_stage1_flat_kernel(
-                int(n_work_items),
-                int(n_cfg),
-                int(global_cfg_offset),
-                int(total_notes),
-                int(long_notes),
-                float(last_note_time),
-                int(total_budget),
-                int(gem_scale_fever),
-                int(n_sections),
-                int(is_p_ft),
-                int(is_s_ft),
-                int(is_p_ff),
-                int(is_s_ff),
-                int(is_p_pp),
-                int(is_s_pp),
-                int(is_p_cm),
-                int(is_s_cm),
-                int(is_p_fm),
-                int(is_s_fm),
-                int(is_p_ov),
-                int(is_s_ov),
-            )
+            # FLATTENED kernel (GPU-friendly: one thread per (work_item, cfg_tile)).
+            # Specialize the local state for small section counts (common path) to reduce register pressure.
+            if int(n_sections) <= 3:
+                fg_kernels.fg_stage1_flat_kernel_small3(
+                    int(n_work_items),
+                    int(n_cfg),
+                    int(global_cfg_offset),
+                    int(total_notes),
+                    int(long_notes),
+                    float(last_note_time),
+                    int(total_budget),
+                    int(gem_scale_fever),
+                    int(n_sections),
+                    int(is_p_ft),
+                    int(is_s_ft),
+                    int(is_p_ff),
+                    int(is_s_ff),
+                    int(is_p_pp),
+                    int(is_s_pp),
+                    int(is_p_cm),
+                    int(is_s_cm),
+                    int(is_p_fm),
+                    int(is_s_fm),
+                    int(is_p_ov),
+                    int(is_s_ov),
+                )
+            else:
+                fg_kernels.fg_stage1_flat_kernel(
+                    int(n_work_items),
+                    int(n_cfg),
+                    int(global_cfg_offset),
+                    int(total_notes),
+                    int(long_notes),
+                    float(last_note_time),
+                    int(total_budget),
+                    int(gem_scale_fever),
+                    int(n_sections),
+                    int(is_p_ft),
+                    int(is_s_ft),
+                    int(is_p_ff),
+                    int(is_s_ff),
+                    int(is_p_pp),
+                    int(is_s_pp),
+                    int(is_p_cm),
+                    int(is_s_cm),
+                    int(is_p_fm),
+                    int(is_s_fm),
+                    int(is_p_ov),
+                    int(is_s_ov),
+                )
         # Optional per-chunk sync for TDR-prone systems (disabled by default)
         if _SYNC_PER_CHUNK:
             ti.sync()

@@ -219,8 +219,12 @@ def _extract_fg_candidates_from_ga_snapshot(
             continue
 
         genome_ids = pop_snapshot[idx]
-        # Fast hash: tuple of genome IDs (no string conversion needed)
-        id_hash = tuple(genome_ids.tolist())
+        # Fast hash: raw bytes for the 9 int32 IDs (avoids Python list/tuple allocation).
+        # This preserves exact identity and is deterministic across runs.
+        try:
+            id_hash = genome_ids[:9].tobytes()
+        except Exception:
+            id_hash = tuple(int(x) for x in genome_ids[:9])
 
         if id_hash not in seen_id_hashes:
             seen_id_hashes.add(id_hash)
