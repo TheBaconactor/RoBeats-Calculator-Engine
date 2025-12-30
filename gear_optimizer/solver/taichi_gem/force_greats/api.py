@@ -69,6 +69,13 @@ _fg_song_upload_buf: np.ndarray | None = None
 _fg_great_upload_buf: np.ndarray | None = None
 _fg_forced_upload_buf: np.ndarray | None = None
 _fg_ftff_upload_buf: dict[str, np.ndarray] | None = None
+_fg_forced_counts_staging: Any | None = None
+_fg_forced_counts_staging_rows: int = 0
+
+# IMPORTANT: Taichi specializes kernels on external-array shapes. Since FG config counts
+# vary per song, we must keep the `forced_counts` ndarray shape stable across the whole
+# runtime to avoid shape-mismatch recompilation errors (and CPU fallback).
+_FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT = 4096
 
 # Cached buffers for genome stats uploads (reuse to avoid alloc churn)
 _fg_genome_stats_buf: np.ndarray | None = None
@@ -132,6 +139,7 @@ def reset_force_greats_api_state() -> None:
     """Reset module-level upload caches after `ti.reset()`."""
     global _fg_last_song_key, _fg_last_great_key
     global _fg_song_upload_buf, _fg_great_upload_buf, _fg_forced_upload_buf, _fg_ftff_upload_buf
+    global _fg_forced_counts_staging, _fg_forced_counts_staging_rows
     global _fg_genome_stats_buf, _fg_flat_work_buf
     global _fg_genome_stats_upload_key, _fg_flat_work_key
     global _fg_forced_configs_upload_key
@@ -143,6 +151,8 @@ def reset_force_greats_api_state() -> None:
     _fg_great_upload_buf = None
     _fg_forced_upload_buf = None
     _fg_ftff_upload_buf = None
+    _fg_forced_counts_staging = None
+    _fg_forced_counts_staging_rows = 0
     _fg_genome_stats_buf = None
     _fg_flat_work_buf = None
     _fg_genome_stats_upload_key = None
@@ -634,6 +644,8 @@ def _solve_force_greats_finder_gpu_impl(
         cfg_chunk = int(cfg_chunk)
 
     cfg_chunk = min(cfg_chunk, n_cfg_total, fg_fields.FG_MAX_CONFIGS)
+    # Keep `forced_counts` external array shape stable by clamping chunk size to a fixed staging buffer.
+    cfg_chunk = min(cfg_chunk, _FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)
     n_chunks = (n_cfg_total + cfg_chunk - 1) // cfg_chunk
 
     if _perf:
@@ -646,6 +658,13 @@ def _solve_force_greats_finder_gpu_impl(
 
     # Pre-fetch buffer reference
     buf = _fg_forced_upload_buf
+    global _fg_forced_counts_staging, _fg_forced_counts_staging_rows
+    if _fg_forced_counts_staging is None:
+        _fg_forced_counts_staging = ti.ndarray(
+            dtype=ti.i32,
+            shape=(_FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT, fg_fields.FG_MAX_SECTIONS),
+        )
+        _fg_forced_counts_staging_rows = int(_FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)
 
     # Config upload caching: avoid repeated CPU packing and host->device uploads
     # when the config list content is unchanged across calls.
@@ -687,8 +706,11 @@ def _solve_force_greats_finder_gpu_impl(
                     limit = min(n_sections, len(cfg))
                     buf[i, :limit] = cfg[:limit]
 
-            # Upload only the active chunk via a small external array (avoid 64MB from_numpy each call).
-            fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), buf[:n_cfg, :])
+            # Upload using a persistent staging buffer with a stable shape (required for Taichi specialization).
+            # Only the first `n_cfg` rows are meaningful; the upload kernel clamps by `n_cfg`.
+            _fg_forced_counts_staging.from_numpy(buf[:_FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT, :])
+            fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), _fg_forced_counts_staging)
+
             if cfg_upload_key is not None and n_chunks == 1 and cfg_offset == 0:
                 _fg_forced_configs_upload_key = cfg_upload_key
 
@@ -782,12 +804,14 @@ def _solve_force_greats_finder_gpu_impl(
     ti.sync()
 
     # Stage 2: Reduce across ftff to find best per genome
-    fg_kernels.fg_stage2_kernel(n_genomes, n_ftff)
+    if accumulate_global:
+        fg_kernels.fg_stage2_and_update_global_best_kernel(n_genomes, n_ftff)
+    else:
+        fg_kernels.fg_stage2_kernel(n_genomes, n_ftff)
     _maybe_sync(for_timing=True)
 
     # Accumulate global best (GPU-resident) if requested
     if accumulate_global:
-        fg_kernels.fg_update_global_best_kernel(n_genomes)
         if _perf:
             ti.sync()
             t_kernel = time.perf_counter() - _t1

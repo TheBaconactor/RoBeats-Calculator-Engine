@@ -282,6 +282,16 @@ def local_search_from_hint(
     m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
     m3 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
 
+    # Elemental contribution deltas per gem (0/1 is_* flags).
+    pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_pp
+    pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_pp
+    cm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_cm
+    cm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_cm
+    fm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_fm
+    fm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_fm
+    ov_p_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_p_ov
+    ov_s_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_s_ov
+
     # Clamp hint to valid range (defensive)
     gems_pp: ti.i32 = ti.max(0, hint_pp)
     gems_cm: ti.i32 = ti.max(0, hint_cm)
@@ -314,18 +324,10 @@ def local_search_from_hint(
     cm: ti.i32 = cur_cm + gems_cm * GEM_SCALE_NORMAL
     fm: ti.i32 = cur_fm + gems_fm * GEM_SCALE_FEVER
     p_val: ti.i32 = (
-        cur_p_val
-        + (gems_pp * GEM_STAT_TO_ELEMENT * is_p_pp)
-        + (gems_cm * GEM_STAT_TO_ELEMENT * is_p_cm)
-        + (gems_fm * GEM_STAT_TO_ELEMENT * is_p_fm)
-        + (gems_ov * ELEMENTAL_GEM_SCALE * is_p_ov)
+        cur_p_val + (gems_pp * pp_p_delta) + (gems_cm * cm_p_delta) + (gems_fm * fm_p_delta) + (gems_ov * ov_p_delta)
     )
     s_val: ti.i32 = (
-        cur_s_val
-        + (gems_pp * GEM_STAT_TO_ELEMENT * is_s_pp)
-        + (gems_cm * GEM_STAT_TO_ELEMENT * is_s_cm)
-        + (gems_fm * GEM_STAT_TO_ELEMENT * is_s_fm)
-        + (gems_ov * ELEMENTAL_GEM_SCALE * is_s_ov)
+        cur_s_val + (gems_pp * pp_s_delta) + (gems_cm * cm_s_delta) + (gems_fm * fm_s_delta) + (gems_ov * ov_s_delta)
     )
 
     # Calculate initial score
@@ -337,6 +339,13 @@ def local_search_from_hint(
         base_value, c_mul, f_mul, m0, m1, m2, m3, head_len, count_fever, count_normal
     )
 
+    # Delta tables for swap search (index: 0=PP,1=CM,2=FM,3=OV).
+    p_delta = ti.Vector([pp_p_delta, cm_p_delta, fm_p_delta, ov_p_delta])
+    s_delta = ti.Vector([pp_s_delta, cm_s_delta, fm_s_delta, ov_s_delta])
+    pp_stat_delta = ti.Vector([GEM_SCALE_NORMAL, 0, 0, 0])
+    cm_stat_delta = ti.Vector([0, GEM_SCALE_NORMAL, 0, 0])
+    fm_stat_delta = ti.Vector([0, 0, GEM_SCALE_FEVER, 0])
+
     # Local search: try swapping 1 gem between types
     # Gem types: 0=PP, 1=CM, 2=FM, 3=OV
     # Each iteration: for each pair (remove, add), try swapping
@@ -347,7 +356,8 @@ def local_search_from_hint(
         improved = 0
         iteration += 1
 
-        # Try all 12 swap combinations (4 remove × 3 add, excluding same type)
+        # Try all 12 swap combinations (4 remove × 3 add, excluding same type).
+        # Unroll the small swap loops to reduce per-combo overhead.
         for remove_type in range(4):
             for add_type in range(4):
                 if remove_type == add_type:
@@ -370,52 +380,22 @@ def local_search_from_hint(
                 if add_type == 2 and fm + GEM_SCALE_FEVER > MAX_STAT:
                     continue
 
-                # Delta gem counts (swap 1 gem from remove_type to add_type).
-                d_pp: ti.i32 = 0
-                d_cm: ti.i32 = 0
-                d_fm: ti.i32 = 0
-                d_ov: ti.i32 = 0
-
-                if remove_type == 0:
-                    d_pp = -1
-                elif remove_type == 1:
-                    d_cm = -1
-                elif remove_type == 2:
-                    d_fm = -1
-                else:
-                    d_ov = -1
-
-                if add_type == 0:
-                    d_pp += 1
-                elif add_type == 1:
-                    d_cm += 1
-                elif add_type == 2:
-                    d_fm += 1
-                else:
-                    d_ov += 1
-
                 # Compute new stats incrementally (avoid rebuilding from cur_* each candidate).
-                new_pp_stat: ti.i32 = pp + d_pp * GEM_SCALE_NORMAL
-                new_cm_stat: ti.i32 = cm + d_cm * GEM_SCALE_NORMAL
-                new_fm_stat: ti.i32 = fm + d_fm * GEM_SCALE_FEVER
-                new_p_val: ti.i32 = (
-                    p_val
-                    + (d_pp * GEM_STAT_TO_ELEMENT * is_p_pp)
-                    + (d_cm * GEM_STAT_TO_ELEMENT * is_p_cm)
-                    + (d_fm * GEM_STAT_TO_ELEMENT * is_p_fm)
-                    + (d_ov * ELEMENTAL_GEM_SCALE * is_p_ov)
-                )
-                new_s_val: ti.i32 = (
-                    s_val
-                    + (d_pp * GEM_STAT_TO_ELEMENT * is_s_pp)
-                    + (d_cm * GEM_STAT_TO_ELEMENT * is_s_cm)
-                    + (d_fm * GEM_STAT_TO_ELEMENT * is_s_fm)
-                    + (d_ov * ELEMENTAL_GEM_SCALE * is_s_ov)
-                )
+                new_pp_stat: ti.i32 = pp + pp_stat_delta[add_type] - pp_stat_delta[remove_type]
+                new_cm_stat: ti.i32 = cm + cm_stat_delta[add_type] - cm_stat_delta[remove_type]
+                new_fm_stat: ti.i32 = fm + fm_stat_delta[add_type] - fm_stat_delta[remove_type]
+                new_p_val: ti.i32 = p_val + p_delta[add_type] - p_delta[remove_type]
+                new_s_val: ti.i32 = s_val + s_delta[add_type] - s_delta[remove_type]
 
-                new_pp_factor = pp_factor if d_pp == 0 else kernels_helpers.lookup_ref_pp(new_pp_stat)
-                new_c_mul = c_mul if d_cm == 0 else kernels_helpers.lookup_ref_cm(new_cm_stat)
-                new_f_mul = f_mul if d_fm == 0 else kernels_helpers.lookup_ref_fm(new_fm_stat)
+                new_pp_factor = pp_factor
+                new_c_mul = c_mul
+                new_f_mul = f_mul
+                if remove_type == 0 or add_type == 0:
+                    new_pp_factor = kernels_helpers.lookup_ref_pp(new_pp_stat)
+                if remove_type == 1 or add_type == 1:
+                    new_c_mul = kernels_helpers.lookup_ref_cm(new_cm_stat)
+                if remove_type == 2 or add_type == 2:
+                    new_f_mul = kernels_helpers.lookup_ref_fm(new_fm_stat)
                 new_base: ti.f32 = ti.cast((new_p_val * 2) + new_s_val, ti.f32) + new_pp_factor
                 new_score: ti.i32 = kernels_helpers.calc_score_with_grid_bits(
                     new_base, new_c_mul, new_f_mul, m0, m1, m2, m3, head_len, count_fever, count_normal
@@ -423,10 +403,23 @@ def local_search_from_hint(
 
                 if new_score > best_score:
                     best_score = new_score
-                    gems_pp += d_pp
-                    gems_cm += d_cm
-                    gems_fm += d_fm
-                    gems_ov += d_ov
+                    if remove_type == 0:
+                        gems_pp -= 1
+                    elif remove_type == 1:
+                        gems_cm -= 1
+                    elif remove_type == 2:
+                        gems_fm -= 1
+                    else:
+                        gems_ov -= 1
+
+                    if add_type == 0:
+                        gems_pp += 1
+                    elif add_type == 1:
+                        gems_cm += 1
+                    elif add_type == 2:
+                        gems_fm += 1
+                    else:
+                        gems_ov += 1
                     pp = new_pp_stat
                     cm = new_cm_stat
                     fm = new_fm_stat
@@ -518,6 +511,17 @@ def optimize_core_device(
     gems_ov: ti.i32 = 0
     remaining: ti.i32 = budget
     PP_TIE_LOOKAHEAD_MAX: ti.i32 = 8  # gear_optimizer.core.constants.PP_TIE_LOOKAHEAD_MAX
+    allow_pp: ti.i32 = is_p_pp | is_s_pp
+
+    # Precompute elemental deltas (avoid repeated multiplies in the inner loop).
+    pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_pp
+    pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_pp
+    cm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_cm
+    cm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_cm
+    fm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_fm
+    fm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_fm
+    ov_p_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_p_ov
+    ov_s_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_s_ov
 
     # Mutable state
     pp: ti.i32 = cur_pp
@@ -529,18 +533,23 @@ def optimize_core_device(
     best_final_score: ti.i32 = 0
 
     while remaining > 0:
-        fill_budget: ti.i32 = remaining - 1
-        fill_bonus: ti.i32 = fill_budget * ELEMENTAL_GEM_SCALE if fill_budget > 0 else 0
+        # Evaluate each "pick 1 gem now, fill the rest with OV" option.
+        # remaining > 0 here, so (remaining - 1) is always non-negative.
+        fill_bonus: ti.i32 = (remaining - 1) * ELEMENTAL_GEM_SCALE
+        fill_p: ti.i32 = fill_bonus * is_p_ov
+        fill_s: ti.i32 = fill_bonus * is_s_ov
+        base_p: ti.i32 = p_val + fill_p
+        base_s: ti.i32 = s_val + fill_s
 
         # Precompute current multipliers (unchanged for PP/OV checks)
         c_mul_cur: ti.f32 = kernels_helpers.lookup_ref_cm(cm)
         f_mul_cur: ti.f32 = kernels_helpers.lookup_ref_fm(fm)
+        pp_factor_cur: ti.f32 = kernels_helpers.lookup_ref_pp(pp)
 
         # Start with OV as default so OV wins exact ties.
-        t_p: ti.i32 = p_val + (ELEMENTAL_GEM_SCALE * is_p_ov) + (fill_bonus * is_p_ov)
-        t_s: ti.i32 = s_val + (ELEMENTAL_GEM_SCALE * is_s_ov) + (fill_bonus * is_s_ov)
-        pp_factor: ti.f32 = kernels_helpers.lookup_ref_pp(pp)
-        base: ti.f32 = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
+        t_p: ti.i32 = base_p + ov_p_delta
+        t_s: ti.i32 = base_s + ov_s_delta
+        base: ti.f32 = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_cur
         best_score: ti.i32 = calc_score_cached_device(
             mode, base, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
         )
@@ -550,14 +559,11 @@ def optimize_core_device(
 
         # Option 0: PP gem
         # Optimization: Skip PP if Chill is not in Primary/Secondary
-        allow_pp: ti.i32 = is_p_pp | is_s_pp
-
         if allow_pp != 0 and pp < MAX_STAT:
-            t_pp: ti.i32 = pp + GEM_SCALE_NORMAL
-            t_p = p_val + (GEM_STAT_TO_ELEMENT * is_p_pp) + (fill_bonus * is_p_ov)
-            t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_pp) + (fill_bonus * is_s_ov)
-            pp_factor = kernels_helpers.lookup_ref_pp(t_pp)
-            base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
+            t_p = base_p + pp_p_delta
+            t_s = base_s + pp_s_delta
+            pp_factor_pp: ti.f32 = kernels_helpers.lookup_ref_pp(pp + GEM_SCALE_NORMAL)
+            base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_pp
             pp_score = calc_score_cached_device(
                 mode, base, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
             )
@@ -567,12 +573,10 @@ def optimize_core_device(
 
         # Option 1: CM gem
         if cm < MAX_STAT and (cm <= 50 or is_p_cm or is_s_cm):
-            t_cm: ti.i32 = cm + GEM_SCALE_NORMAL
-            t_p = p_val + (GEM_STAT_TO_ELEMENT * is_p_cm) + (fill_bonus * is_p_ov)
-            t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_cm) + (fill_bonus * is_s_ov)
-            pp_factor = kernels_helpers.lookup_ref_pp(pp)
-            base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-            c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(t_cm)
+            t_p = base_p + cm_p_delta
+            t_s = base_s + cm_s_delta
+            base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_cur
+            c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm + GEM_SCALE_NORMAL)
             score: ti.i32 = calc_score_cached_device(
                 mode, base, c_mul, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
             )
@@ -582,12 +586,10 @@ def optimize_core_device(
 
         # Option 2: FM gem
         if fm < MAX_STAT:
-            t_fm: ti.i32 = fm + GEM_SCALE_FEVER
-            t_p = p_val + (GEM_STAT_TO_ELEMENT * is_p_fm) + (fill_bonus * is_p_ov)
-            t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_fm) + (fill_bonus * is_s_ov)
-            pp_factor = kernels_helpers.lookup_ref_pp(pp)
-            base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-            f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(t_fm)
+            t_p = base_p + fm_p_delta
+            t_s = base_s + fm_s_delta
+            base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_cur
+            f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm + GEM_SCALE_FEVER)
             score = calc_score_cached_device(
                 mode, base, c_mul_cur, f_mul, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
             )
@@ -603,12 +605,12 @@ def optimize_core_device(
                 max_k = PP_TIE_LOOKAHEAD_MAX
             k: ti.i32 = 2
             while k <= max_k:
-                fill_bonus_k: ti.i32 = (remaining - k) * ELEMENTAL_GEM_SCALE
-                t_pp: ti.i32 = pp + (k * GEM_SCALE_NORMAL)
-                t_p = p_val + (k * GEM_STAT_TO_ELEMENT * is_p_pp) + (fill_bonus_k * is_p_ov)
-                t_s = s_val + (k * GEM_STAT_TO_ELEMENT * is_s_pp) + (fill_bonus_k * is_s_ov)
-                pp_factor = kernels_helpers.lookup_ref_pp(t_pp)
-                base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
+                fill_p_k: ti.i32 = (remaining - k) * ov_p_delta
+                fill_s_k: ti.i32 = (remaining - k) * ov_s_delta
+                t_p = p_val + (k * pp_p_delta) + fill_p_k
+                t_s = s_val + (k * pp_s_delta) + fill_s_k
+                pp_factor_k: ti.f32 = kernels_helpers.lookup_ref_pp(pp + (k * GEM_SCALE_NORMAL))
+                base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_k
                 score_k: ti.i32 = calc_score_cached_device(
                     mode, base, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
                 )
@@ -620,22 +622,22 @@ def optimize_core_device(
         # Apply best option
         if best_opt == 0:
             pp += GEM_SCALE_NORMAL
-            p_val += GEM_STAT_TO_ELEMENT * is_p_pp
-            s_val += GEM_STAT_TO_ELEMENT * is_s_pp
+            p_val += pp_p_delta
+            s_val += pp_s_delta
             gems_pp += 1
         elif best_opt == 1:
             cm += GEM_SCALE_NORMAL
-            p_val += GEM_STAT_TO_ELEMENT * is_p_cm
-            s_val += GEM_STAT_TO_ELEMENT * is_s_cm
+            p_val += cm_p_delta
+            s_val += cm_s_delta
             gems_cm += 1
         elif best_opt == 2:
             fm += GEM_SCALE_FEVER
-            p_val += GEM_STAT_TO_ELEMENT * is_p_fm
-            s_val += GEM_STAT_TO_ELEMENT * is_s_fm
+            p_val += fm_p_delta
+            s_val += fm_s_delta
             gems_fm += 1
         else:
-            p_val += ELEMENTAL_GEM_SCALE * is_p_ov
-            s_val += ELEMENTAL_GEM_SCALE * is_s_ov
+            p_val += ov_p_delta
+            s_val += ov_s_delta
             gems_ov += 1
 
         remaining -= 1

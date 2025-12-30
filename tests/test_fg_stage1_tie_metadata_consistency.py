@@ -78,7 +78,12 @@ def test_fg_stage1_packed_and_metadata_stay_consistent_on_cfg_tie():
 
     # Single config: all zeros (no forced fill penalties).
     forced = np.zeros((n_cfg, fg_fields.FG_MAX_SECTIONS), dtype=np.int32)
-    fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), forced)
+    forced_staging_rows = 4096
+    forced_staging_np = np.zeros((forced_staging_rows, fg_fields.FG_MAX_SECTIONS), dtype=np.int32)
+    forced_staging_np[:n_cfg, :] = forced
+    forced_staging = ti.ndarray(dtype=ti.i32, shape=(forced_staging_rows, fg_fields.FG_MAX_SECTIONS))
+    forced_staging.from_numpy(forced_staging_np)
+    fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), forced_staging)
 
     fg_kernels.fg_build_flat_work_kernel(int(n_genomes), int(n_ftff))
     fg_kernels.fg_stage1_init_kernel(int(n_genomes), int(n_ftff))

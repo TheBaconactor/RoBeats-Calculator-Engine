@@ -477,8 +477,11 @@ class GpuExecutor:
                 # In in-process (thread-queue) mode, avoid waiting to coalesce more work
                 # once we already have at least one request: the producer is local and
                 # we prefer low-latency dispatch to keep the GPU saturated.
-                if len(batch) > 0 and self._in_process_queues:
-                    timeout = 0.0
+                if self._in_process_queues:
+                    # When running with in-process queues, keep latency low:
+                    # - If we already have at least one request, don't wait to coalesce.
+                    # - If the batch is empty, still respect the batch deadline (avoid a fixed 100ms stall).
+                    timeout = 0.0 if len(batch) > 0 else max(0.001, remaining)
                 else:
                     timeout = max(0.001, remaining) if len(batch) > 0 else 0.1
                 request = self._request_queue.get(timeout=timeout)

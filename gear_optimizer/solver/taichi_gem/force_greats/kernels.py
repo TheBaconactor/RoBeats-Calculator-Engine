@@ -1038,6 +1038,87 @@ def fg_stage2_kernel(n_genomes: ti.i32, n_ftff: ti.i32):
 
 
 @ti.kernel
+def fg_stage2_and_update_global_best_kernel(n_genomes: ti.i32, n_ftff: ti.i32):
+    """
+    Fused Stage 2 + global-best update.
+
+    Used by the Python API for accumulate_global=True to reduce kernel launches.
+    """
+    for gid in range(n_genomes):
+        best_packed: ti.i64 = ti.cast(-1, ti.i64) << 32  # Sentinel
+        best_ftff: ti.i32 = 0
+
+        for f in range(n_ftff):
+            packed = fg_stage1_packed[gid, f]
+            if packed > best_packed:
+                best_packed = packed
+                best_ftff = f
+
+        best_final: ti.i32 = ti.cast(best_packed >> 32, ti.i32)
+        if best_final < 0:
+            continue
+
+        inverted_cfg: ti.i32 = ti.cast(best_packed & 0x7FFFFFFF, ti.i32)
+        best_cfg: ti.i32 = 0x7FFFFFFF - inverted_cfg
+
+        base_score = fg_stage1_base_score[gid, best_ftff]
+        ft_val = fg_ft_list[best_ftff]
+        ff_val = fg_ff_list[best_ftff]
+        g_pp = fg_stage1_g_pp[gid, best_ftff]
+        g_cm = fg_stage1_g_cm[gid, best_ftff]
+        g_fm = fg_stage1_g_fm[gid, best_ftff]
+        g_ov = fg_stage1_g_ov[gid, best_ftff]
+        sp_val = fg_stage1_score_penalty[gid, best_ftff]
+        fp_val = fg_stage1_fill_penalty[gid, best_ftff]
+
+        # Write per-call best
+        fg_best_final_score[gid] = best_final
+        fg_best_base_score[gid] = base_score
+        fg_best_cfg_idx[gid] = best_cfg
+        fg_best_ft[gid] = ft_val
+        fg_best_ff[gid] = ff_val
+        fg_best_g_pp[gid] = g_pp
+        fg_best_g_cm[gid] = g_cm
+        fg_best_g_fm[gid] = g_fm
+        fg_best_g_ov[gid] = g_ov
+        fg_best_score_penalty[gid] = sp_val
+        fg_best_fill_penalty[gid] = fp_val
+
+        # Update global best (same tie-break as fg_update_global_best_kernel)
+        old_score = fg_global_best_final_score[gid]
+        old_cfg = fg_global_best_cfg_idx[gid]
+        old_ft = fg_global_best_ft[gid]
+        old_ff = fg_global_best_ff[gid]
+
+        better = False
+        if best_final > old_score:
+            better = True
+        elif best_final == old_score:
+            if old_cfg < 0 and best_cfg >= 0:
+                better = True
+            elif best_cfg >= 0 and best_cfg < old_cfg:
+                better = True
+            elif best_cfg == old_cfg:
+                if ft_val < old_ft:
+                    better = True
+                elif ft_val == old_ft and ff_val < old_ff:
+                    better = True
+
+        if better:
+            fg_global_best_final_score[gid] = best_final
+            fg_global_best_base_score[gid] = base_score
+            fg_global_best_cfg_idx[gid] = best_cfg
+            fg_global_best_ft[gid] = ft_val
+            fg_global_best_ff[gid] = ff_val
+            fg_global_best_g_pp[gid] = g_pp
+            fg_global_best_g_cm[gid] = g_cm
+            fg_global_best_g_fm[gid] = g_fm
+            fg_global_best_g_ov[gid] = g_ov
+            fg_global_best_score_penalty[gid] = sp_val
+            fg_global_best_fill_penalty[gid] = fp_val
+
+
+@ti.kernel
 def fg_pack_results_kernel(n_genomes: ti.i32):
     """
     Pack all 11 best result fields into a single contiguous array for efficient CPU download.

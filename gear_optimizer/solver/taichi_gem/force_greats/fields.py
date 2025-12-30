@@ -383,8 +383,9 @@ def warmup_kernels() -> None:
     # Warmup stage1 init kernel
     fg_kernels.fg_stage1_init_kernel(n_genomes, n_ftff)
 
-    # Warmup FLAT stage1 kernel (the heavy one)
-    # Check if we are on Metal to decide which kernel to warm up
+    # Warmup Stage 1 (the heavy one).
+    # Note: kernels read forced-count targets from `fg_forced_counts` (a GPU field). We don't need
+    # to populate it here; warmup outputs are discarded and the field is allocated/zeroed by Taichi.
     from ..fields import IS_METAL
 
     if IS_METAL:
@@ -442,6 +443,7 @@ def warmup_kernels() -> None:
 
     # Warmup global best kernels (new for GPU-resident accumulation)
     fg_kernels.fg_reset_global_best_kernel(n_genomes)
+    fg_kernels.fg_stage2_and_update_global_best_kernel(n_genomes, n_ftff)
     fg_kernels.fg_update_global_best_kernel(n_genomes)
 
     # Warmup packing kernels (avoid first-download JIT hiccup)
