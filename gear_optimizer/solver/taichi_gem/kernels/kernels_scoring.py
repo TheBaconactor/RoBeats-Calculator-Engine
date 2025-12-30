@@ -353,78 +353,69 @@ def local_search_from_hint(
                 if remove_type == add_type:
                     continue
 
-                # Check if swap is valid
-                can_remove: ti.i32 = 0
-                can_add: ti.i32 = 0
-
-                if remove_type == 0 and gems_pp > 0:
-                    can_remove = 1
-                elif remove_type == 1 and gems_cm > 0:
-                    can_remove = 1
-                elif remove_type == 2 and gems_fm > 0:
-                    can_remove = 1
-                elif remove_type == 3 and gems_ov > 0:
-                    can_remove = 1
-
-                if add_type == 0 and pp + GEM_SCALE_NORMAL <= MAX_STAT:
-                    can_add = 1
-                elif add_type == 1 and cm + GEM_SCALE_NORMAL <= MAX_STAT:
-                    can_add = 1
-                elif add_type == 2 and fm + GEM_SCALE_FEVER <= MAX_STAT:
-                    can_add = 1
-                elif add_type == 3:
-                    can_add = 1  # OV always allowed
-
-                if can_remove == 0 or can_add == 0:
+                # Check if swap is valid.
+                if remove_type == 0 and gems_pp <= 0:
+                    continue
+                if remove_type == 1 and gems_cm <= 0:
+                    continue
+                if remove_type == 2 and gems_fm <= 0:
+                    continue
+                if remove_type == 3 and gems_ov <= 0:
                     continue
 
-                # Calculate new allocation
-                new_pp = gems_pp
-                new_cm = gems_cm
-                new_fm = gems_fm
-                new_ov = gems_ov
+                if add_type == 0 and pp + GEM_SCALE_NORMAL > MAX_STAT:
+                    continue
+                if add_type == 1 and cm + GEM_SCALE_NORMAL > MAX_STAT:
+                    continue
+                if add_type == 2 and fm + GEM_SCALE_FEVER > MAX_STAT:
+                    continue
+
+                # Delta gem counts (swap 1 gem from remove_type to add_type).
+                d_pp: ti.i32 = 0
+                d_cm: ti.i32 = 0
+                d_fm: ti.i32 = 0
+                d_ov: ti.i32 = 0
 
                 if remove_type == 0:
-                    new_pp -= 1
+                    d_pp = -1
                 elif remove_type == 1:
-                    new_cm -= 1
+                    d_cm = -1
                 elif remove_type == 2:
-                    new_fm -= 1
+                    d_fm = -1
                 else:
-                    new_ov -= 1
+                    d_ov = -1
 
                 if add_type == 0:
-                    new_pp += 1
+                    d_pp += 1
                 elif add_type == 1:
-                    new_cm += 1
+                    d_cm += 1
                 elif add_type == 2:
-                    new_fm += 1
+                    d_fm += 1
                 else:
-                    new_ov += 1
+                    d_ov += 1
 
-                # Calculate new stats
-                new_pp_stat = cur_pp + new_pp * GEM_SCALE_NORMAL
-                new_cm_stat = cur_cm + new_cm * GEM_SCALE_NORMAL
-                new_fm_stat = cur_fm + new_fm * GEM_SCALE_FEVER
-                new_p_val = (
-                    cur_p_val
-                    + (new_pp * GEM_STAT_TO_ELEMENT * is_p_pp)
-                    + (new_cm * GEM_STAT_TO_ELEMENT * is_p_cm)
-                    + (new_fm * GEM_STAT_TO_ELEMENT * is_p_fm)
-                    + (new_ov * ELEMENTAL_GEM_SCALE * is_p_ov)
+                # Compute new stats incrementally (avoid rebuilding from cur_* each candidate).
+                new_pp_stat: ti.i32 = pp + d_pp * GEM_SCALE_NORMAL
+                new_cm_stat: ti.i32 = cm + d_cm * GEM_SCALE_NORMAL
+                new_fm_stat: ti.i32 = fm + d_fm * GEM_SCALE_FEVER
+                new_p_val: ti.i32 = (
+                    p_val
+                    + (d_pp * GEM_STAT_TO_ELEMENT * is_p_pp)
+                    + (d_cm * GEM_STAT_TO_ELEMENT * is_p_cm)
+                    + (d_fm * GEM_STAT_TO_ELEMENT * is_p_fm)
+                    + (d_ov * ELEMENTAL_GEM_SCALE * is_p_ov)
                 )
-                new_s_val = (
-                    cur_s_val
-                    + (new_pp * GEM_STAT_TO_ELEMENT * is_s_pp)
-                    + (new_cm * GEM_STAT_TO_ELEMENT * is_s_cm)
-                    + (new_fm * GEM_STAT_TO_ELEMENT * is_s_fm)
-                    + (new_ov * ELEMENTAL_GEM_SCALE * is_s_ov)
+                new_s_val: ti.i32 = (
+                    s_val
+                    + (d_pp * GEM_STAT_TO_ELEMENT * is_s_pp)
+                    + (d_cm * GEM_STAT_TO_ELEMENT * is_s_cm)
+                    + (d_fm * GEM_STAT_TO_ELEMENT * is_s_fm)
+                    + (d_ov * ELEMENTAL_GEM_SCALE * is_s_ov)
                 )
 
-                # Calculate new score
-                new_pp_factor = kernels_helpers.lookup_ref_pp(new_pp_stat)
-                new_c_mul = kernels_helpers.lookup_ref_cm(new_cm_stat)
-                new_f_mul = kernels_helpers.lookup_ref_fm(new_fm_stat)
+                new_pp_factor = pp_factor if d_pp == 0 else kernels_helpers.lookup_ref_pp(new_pp_stat)
+                new_c_mul = c_mul if d_cm == 0 else kernels_helpers.lookup_ref_cm(new_cm_stat)
+                new_f_mul = f_mul if d_fm == 0 else kernels_helpers.lookup_ref_fm(new_fm_stat)
                 new_base: ti.f32 = ti.cast((new_p_val * 2) + new_s_val, ti.f32) + new_pp_factor
                 new_score: ti.i32 = kernels_helpers.calc_score_with_grid_bits(
                     new_base, new_c_mul, new_f_mul, m0, m1, m2, m3, head_len, count_fever, count_normal
@@ -432,15 +423,19 @@ def local_search_from_hint(
 
                 if new_score > best_score:
                     best_score = new_score
-                    gems_pp = new_pp
-                    gems_cm = new_cm
-                    gems_fm = new_fm
-                    gems_ov = new_ov
+                    gems_pp += d_pp
+                    gems_cm += d_cm
+                    gems_fm += d_fm
+                    gems_ov += d_ov
                     pp = new_pp_stat
                     cm = new_cm_stat
                     fm = new_fm_stat
                     p_val = new_p_val
                     s_val = new_s_val
+                    pp_factor = new_pp_factor
+                    c_mul = new_c_mul
+                    f_mul = new_f_mul
+                    base_value = new_base
                     improved = 1
 
     return ti.Vector([best_score, gems_pp, gems_cm, gems_fm, gems_ov, p_val, s_val])
