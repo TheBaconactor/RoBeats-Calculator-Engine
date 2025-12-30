@@ -98,6 +98,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     failed = 0
     total = int(total_tasks or 0)
     timing = str(os.environ.get("POST_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    sync_output = str(os.environ.get("POST_SYNC_OUTPUT", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
     timing_threshold_ms = 50.0
     try:
         timing_threshold_ms = float(os.environ.get("POST_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))
@@ -112,6 +113,87 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             return
         prefix = f"[POST][TIMING] {song} " if song else "[POST][TIMING] "
         print(f"{prefix}{label}={ms:.1f}ms")
+
+    # In the native in-flight pipeline, the GA result is posted immediately while ForceGreats (FG)
+    # runs later in the main process; printing the final block immediately can make subsequent FG
+    # logs appear "after" the final output. To keep output coherent, we can delay printing per-song
+    # final output until we see the corresponding FG update message.
+    pending_final_print: dict[str, dict] = {}
+    pending_fg_summary: dict[str, dict] = {}
+
+    def _fg_variants_from_persist_entries(entries: list[dict]) -> list[dict]:
+        variants: list[dict] = []
+        for e in entries or []:
+            if not isinstance(e, dict):
+                continue
+            details = e.get("details") or {}
+            if not isinstance(details, dict):
+                details = {}
+            try:
+                fg_score = int(e.get("fg_score", 0) or 0)
+            except Exception:
+                fg_score = 0
+            try:
+                base_score = int(e.get("score", 0) or 0)
+            except Exception:
+                base_score = 0
+            data = dict(details)
+            data["Score"] = fg_score or base_score
+            variants.append(
+                {
+                    "data": data,
+                    "gear": e.get("gear") or [],
+                    "minis": e.get("minis") or [],
+                    "score": base_score,
+                    "fg_score": fg_score,
+                }
+            )
+        return variants
+
+    def _print_pending_final(song: str) -> None:
+        payload = pending_final_print.get(song)
+        if not payload:
+            return
+
+        fg_state = pending_fg_summary.get(song) or {}
+        fg_variants = fg_state.get("fg_variants") or []
+        saw_fg_update = bool(fg_state.get("saw_fg_update"))
+        try:
+            saved = int(fg_state.get("saved_count") or 0)
+        except Exception:
+            saved = 0
+        try:
+            best_fg = int(fg_state.get("best_fg") or 0)
+        except Exception:
+            best_fg = 0
+
+        try:
+            _t_print0 = time.perf_counter()
+            print_results(
+                payload.get("song", song),
+                payload.get("best_data") or {},
+                payload.get("best_gear") or [],
+                payload.get("best_minis") or [],
+                payload.get("current_gear") or [],
+                payload.get("current_minis") or [],
+                bool(payload.get("enable_gear")),
+                bool(payload.get("enable_mini")),
+                fg_variants,
+                payload.get("_emit") or (lambda _msg: None),
+                fg_debug=bool(payload.get("fg_debug")),
+                ref_arrays=payload.get("ref_arrays"),
+                calc_song=payload.get("calc_song"),
+                cfg=payload.get("cfg"),
+            )
+            _log_timing("print_results", time.perf_counter() - _t_print0, song=song)
+        except Exception:
+            pass
+
+        if saw_fg_update and saved > 0:
+            print(f"[POST][FG] Saved {saved} FG variant(s) for {song} (best_fg={best_fg})")
+
+        pending_final_print.pop(song, None)
+        pending_fg_summary.pop(song, None)
 
     while True:
         try:
@@ -128,28 +210,25 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             try:
                 song_name = item.get("song", "Unknown")
                 db_key = item.get("db_key") or song_name
+                fg_state = pending_fg_summary.get(song_name) or {}
+                fg_state["saw_fg_update"] = True
+                valid_entries: list[dict] = []
+
                 if item.get("use_evo_db", True):
                     persisted = item.get("persist_entries") or []
-                    if persisted:
-                        valid_entries = [
-                            e for e in persisted if e.get("score", 0) > 0 and (e.get("gear") or e.get("minis"))
-                        ]
-                        if valid_entries:
-                            if timing:
-                                print(f"[POST][FG] Saving {len(valid_entries)} FG variant(s) for {song_name}...")
-                            _t_db0 = time.perf_counter()
-                            save_loadouts_batch(db_key, valid_entries)
-                            _log_timing("fg_save_loadouts_batch", time.perf_counter() - _t_db0, song=song_name)
-                            try:
-                                best_fg = max(int(e.get("fg_score", 0) or 0) for e in valid_entries)
-                            except Exception:
-                                best_fg = 0
-                            print(
-                                f"[POST][FG] Saved {len(valid_entries)} FG variant(s) for {song_name} "
-                                f"(best_fg={best_fg})"
-                            )
-                        else:
+                    valid_entries = [
+                        e for e in (persisted or []) if e.get("score", 0) > 0 and (e.get("gear") or e.get("minis"))
+                    ]
+                    if valid_entries:
+                        if timing:
+                            print(f"[POST][FG] Saving {len(valid_entries)} FG variant(s) for {song_name}...")
+                        _t_db0 = time.perf_counter()
+                        save_loadouts_batch(db_key, valid_entries)
+                        _log_timing("fg_save_loadouts_batch", time.perf_counter() - _t_db0, song=song_name)
+                    else:
+                        if persisted:
                             print(f"[DB] Skipped FG update for {song_name}: no valid entries")
+
                     try:
                         from gear_optimizer.data.database import delete_pending_fg_job
 
@@ -158,6 +237,41 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         _log_timing("fg_delete_pending_job", time.perf_counter() - _t_del0, song=song_name)
                     except Exception:
                         pass
+
+                fg_state["saved_count"] = len(valid_entries)
+                try:
+                    fg_state["best_fg"] = max(int(e.get("fg_score", 0) or 0) for e in valid_entries)
+                except Exception:
+                    fg_state["best_fg"] = 0
+                fg_state["fg_variants"] = _fg_variants_from_persist_entries(valid_entries)
+                pending_fg_summary[song_name] = fg_state
+
+                if sync_output and song_name in pending_final_print:
+                    _print_pending_final(song_name)
+                elif not sync_output:
+                    try:
+                        saved = int(fg_state.get("saved_count") or 0)
+                    except Exception:
+                        saved = 0
+                    try:
+                        best_fg = int(fg_state.get("best_fg") or 0)
+                    except Exception:
+                        best_fg = 0
+                    if saved > 0:
+                        print(f"[POST][FG] Saved {saved} FG variant(s) for {song_name} (best_fg={best_fg})")
+                else:
+                    # If there's no pending final output, keep a small status line so users still
+                    # see that FG persistence happened.
+                    try:
+                        saved = int(fg_state.get("saved_count") or 0)
+                    except Exception:
+                        saved = 0
+                    try:
+                        best_fg = int(fg_state.get("best_fg") or 0)
+                    except Exception:
+                        best_fg = 0
+                    if saved > 0:
+                        print(f"[POST][FG] Saved {saved} FG variant(s) for {song_name} (best_fg={best_fg})")
             except Exception as exc:
                 msg = f"[POST][FG] Error: {type(exc).__name__}: {exc}"
                 print(msg)
@@ -253,27 +367,48 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 def _emit(_msg: str) -> None:
                     return
 
-                try:
-                    _t_print0 = time.perf_counter()
-                    print_results(
-                        item.get("song", "Unknown"),
-                        best_data,
-                        best_gear,
-                        best_minis,
-                        item.get("current_gear") or [],
-                        item.get("current_minis") or [],
-                        bool(item.get("enable_gear")),
-                        bool(item.get("enable_mini")),
-                        fg_variants,
-                        _emit,
-                        fg_debug=bool(item.get("fg_debug")),
-                        ref_arrays=item.get("ref_arrays"),
-                        calc_song=item.get("calc_song"),
-                        cfg=cfg,
-                    )
-                    _log_timing("print_results", time.perf_counter() - _t_print0, song=item.get("song"))
-                except Exception:
-                    pass
+                if sync_output and item.get("_pending_fg_job"):
+                    song_name_for_print = item.get("song", "Unknown")
+                    pending_final_print[song_name_for_print] = {
+                        "song": song_name_for_print,
+                        "best_data": best_data,
+                        "best_gear": best_gear,
+                        "best_minis": best_minis,
+                        "current_gear": item.get("current_gear") or [],
+                        "current_minis": item.get("current_minis") or [],
+                        "enable_gear": bool(item.get("enable_gear")),
+                        "enable_mini": bool(item.get("enable_mini")),
+                        "fg_debug": bool(item.get("fg_debug")),
+                        "ref_arrays": item.get("ref_arrays"),
+                        "calc_song": item.get("calc_song"),
+                        "cfg": cfg,
+                        "_emit": _emit,
+                    }
+                    # If the FG update arrived first (unlikely but possible), print immediately.
+                    if pending_fg_summary.get(song_name_for_print, {}).get("saw_fg_update"):
+                        _print_pending_final(song_name_for_print)
+                else:
+                    try:
+                        _t_print0 = time.perf_counter()
+                        print_results(
+                            item.get("song", "Unknown"),
+                            best_data,
+                            best_gear,
+                            best_minis,
+                            item.get("current_gear") or [],
+                            item.get("current_minis") or [],
+                            bool(item.get("enable_gear")),
+                            bool(item.get("enable_mini")),
+                            fg_variants,
+                            _emit,
+                            fg_debug=bool(item.get("fg_debug")),
+                            ref_arrays=item.get("ref_arrays"),
+                            calc_song=item.get("calc_song"),
+                            cfg=cfg,
+                        )
+                        _log_timing("print_results", time.perf_counter() - _t_print0, song=item.get("song"))
+                    except Exception:
+                        pass
 
                 res = {
                     "song": item.get("song", "Unknown"),
@@ -333,6 +468,10 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 pass
 
     try:
+        if pending_final_print:
+            for song_name in list(pending_final_print.keys()):
+                _print_pending_final(song_name)
+
         if failed > 0:
             print(f"[POST][SUMMARY] {failed}/{max(1, total)} songs failed.")
     except Exception:

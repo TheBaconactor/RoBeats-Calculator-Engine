@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import queue as queue_module
 import re
+import sys
 import threading
 import time
 
@@ -227,6 +228,13 @@ class GearOptimizerApp:
 
     def run(self):
         multiprocessing.freeze_support()
+        try:
+            if hasattr(sys.stdout, "reconfigure"):
+                sys.stdout.reconfigure(line_buffering=True)
+            if hasattr(sys.stderr, "reconfigure"):
+                sys.stderr.reconfigure(line_buffering=True)
+        except Exception:
+            pass
 
         while True:
             should_loop = self._run_single_iteration()
