@@ -48,10 +48,10 @@ def _calc_head_score_masks(
     for i in range(head_len):
         ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
         if kernels_helpers.fever_masks[work_idx, i] != 0:
-            # Convert to i32 immediately after floor to use exact integer addition
-            head_score += ti.cast(ti.floor(ramp_val * fever_mul), ti.i32)
+            # All values are non-negative; truncation toward zero matches floor and is faster.
+            head_score += ti.cast(ramp_val * fever_mul, ti.i32)
         else:
-            head_score += ti.cast(ti.floor(ramp_val), ti.i32)
+            head_score += ti.cast(ramp_val, ti.i32)
     return ti.cast(head_score, ti.f32)
 
 
@@ -86,10 +86,10 @@ def _calc_head_score_grid(
     for i in range(head_len):
         ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
         if kernels_helpers.grid_fever_masks[song_slot, ft_idx, ff_idx, i] != 0:
-            # Convert to i32 immediately after floor to use exact integer addition
-            head_score += ti.cast(ti.floor(ramp_val * fever_mul), ti.i32)
+            # All values are non-negative; truncation toward zero matches floor and is faster.
+            head_score += ti.cast(ramp_val * fever_mul, ti.i32)
         else:
-            head_score += ti.cast(ti.floor(ramp_val), ti.i32)
+            head_score += ti.cast(ramp_val, ti.i32)
     return ti.cast(head_score, ti.f32)
 
 

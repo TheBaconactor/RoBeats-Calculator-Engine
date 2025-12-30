@@ -805,11 +805,39 @@ def process_force_greats(
 
                 sig_list = list(sig_map.keys())
 
-                # Chunk unique genomes to fit GPU MAX_GENOMES (1024)
+                # Chunk unique genomes to fit GPU MAX_GENOMES (1024).
+                #
+                # When running per-FT/FF breakpoints, the total kernel work scales with:
+                #   n_genomes * n_ftff_pairs * n_cfg
+                # If n_genomes is large and n_sections >= 3, the heuristic may switch to
+                # streaming mode, producing many small breakpoint groups (lots of GPU tasks).
+                # Splitting genomes into smaller batches reduces the estimated work and
+                # allows more merging, cutting per-song GPU task count dramatically.
+                max_genomes_per_batch = 1024
+                if per_pair_breakpoints:
+                    try:
+                        merge_cfg_limit = int(os.environ.get("FG_MERGE_MAX_CONFIGS", "5000"))
+                        merge_threads_limit = int(os.environ.get("FG_MERGE_MAX_THREADS", "50000000"))
+                    except Exception:
+                        merge_cfg_limit = 5000
+                        merge_threads_limit = 50_000_000
+
+                    n_pairs_for_est = max(1, int(len(ftff_pairs)))
+                    est_cfgs = 1
+                    for _ in range(int(n_sections)):
+                        est_cfgs *= int(max_per_section) + 1
+                        if est_cfgs >= int(merge_cfg_limit):
+                            est_cfgs = int(merge_cfg_limit)
+                            break
+                    est_cfgs = max(1, int(min(int(merge_cfg_limit), int(est_cfgs * 1.25))))
+                    max_by_threads = int(merge_threads_limit // max(1, (n_pairs_for_est * est_cfgs)))
+                    if max_by_threads > 0:
+                        max_genomes_per_batch = max(1, min(int(max_genomes_per_batch), int(max_by_threads)))
+
                 idx0 = 0
                 while idx0 < len(sig_list):
-                    chunk_sigs = sig_list[idx0 : idx0 + 1024]
-                    idx0 += 1024
+                    chunk_sigs = sig_list[idx0 : idx0 + max_genomes_per_batch]
+                    idx0 += max_genomes_per_batch
 
                     # Check in-memory FG_CACHE first
                     _t_cache0 = time.perf_counter() if perf else 0.0
@@ -876,6 +904,18 @@ def process_force_greats(
                             max_union_cfg = 5000
                             max_union_threads = 20000000
 
+                        breakpoint_batch_size = 20
+                        try:
+                            n_ftff_pairs = int(len(ftff_pairs))
+                        except Exception:
+                            n_ftff_pairs = 0
+                        if n_ftff_pairs >= 200:
+                            breakpoint_batch_size = 80
+                        elif n_ftff_pairs >= 120:
+                            breakpoint_batch_size = 50
+                        elif n_ftff_pairs >= 60:
+                            breakpoint_batch_size = 30
+
                         # Use generator to build groups incrementally (Approach A)
                         # Generator includes integrated merge logic
                         group_gen = iter_analytical_breakpoint_groups(
@@ -884,7 +924,7 @@ def process_force_greats(
                             ftff_pairs,
                             base_stats_pairs,
                             gem_scale_fever=GEM_SCALE_FEVER,
-                            batch_size=20,  # Build 20 FT/FF pairs at a time
+                            batch_size=breakpoint_batch_size,
                             merge_threshold_cfgs=max_union_cfg,
                             merge_threshold_threads=max_union_threads,
                             n_genomes=n_pending,

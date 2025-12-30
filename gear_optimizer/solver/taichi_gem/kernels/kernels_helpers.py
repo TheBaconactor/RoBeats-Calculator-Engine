@@ -289,8 +289,9 @@ def _calc_body_score(
     Returns:
         Body score as float
     """
-    combo_val = ti.cast(ti.floor(base_value * combo_mul), ti.i32)
-    fever_val = ti.cast(ti.floor(base_value * combo_mul * fever_mul), ti.i32)
+    # All values are non-negative; truncation toward zero matches floor and is faster.
+    combo_val = ti.cast(base_value * combo_mul, ti.i32)
+    fever_val = ti.cast(base_value * combo_mul * fever_mul, ti.i32)
     # Use integer multiplication to avoid f32 precision loss with large counts
     return ti.cast((count_fever * fever_val) + (count_normal * combo_val), ti.f32)
 
@@ -349,41 +350,27 @@ def _calc_head_score_bits(
     for i in range(n0):
         ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
         is_fever = (m0 >> ti.u32(i)) & ti.u32(1)
-        head_score += (
-            ti.cast(ti.floor(ramp_val * fever_mul), ti.i32) if is_fever != 0 else ti.cast(ti.floor(ramp_val), ti.i32)
-        )
+        head_score += ti.cast(ramp_val * fever_mul, ti.i32) if is_fever != 0 else ti.cast(ramp_val, ti.i32)
 
     if head_len > 32:
         n1 = ti.min(head_len, 64)
         for i in range(32, n1):
             ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
             is_fever = (m1 >> ti.u32(i - 32)) & ti.u32(1)
-            head_score += (
-                ti.cast(ti.floor(ramp_val * fever_mul), ti.i32)
-                if is_fever != 0
-                else ti.cast(ti.floor(ramp_val), ti.i32)
-            )
+            head_score += ti.cast(ramp_val * fever_mul, ti.i32) if is_fever != 0 else ti.cast(ramp_val, ti.i32)
 
     if head_len > 64:
         n2 = ti.min(head_len, 96)
         for i in range(64, n2):
             ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
             is_fever = (m2 >> ti.u32(i - 64)) & ti.u32(1)
-            head_score += (
-                ti.cast(ti.floor(ramp_val * fever_mul), ti.i32)
-                if is_fever != 0
-                else ti.cast(ti.floor(ramp_val), ti.i32)
-            )
+            head_score += ti.cast(ramp_val * fever_mul, ti.i32) if is_fever != 0 else ti.cast(ramp_val, ti.i32)
 
     if head_len > 96:
         for i in range(96, head_len):
             ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
             is_fever = (m3 >> ti.u32(i - 96)) & ti.u32(1)
-            head_score += (
-                ti.cast(ti.floor(ramp_val * fever_mul), ti.i32)
-                if is_fever != 0
-                else ti.cast(ti.floor(ramp_val), ti.i32)
-            )
+            head_score += ti.cast(ramp_val * fever_mul, ti.i32) if is_fever != 0 else ti.cast(ramp_val, ti.i32)
     return ti.cast(head_score, ti.f32)
 
 
