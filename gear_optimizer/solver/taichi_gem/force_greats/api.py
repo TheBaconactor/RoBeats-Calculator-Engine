@@ -573,7 +573,10 @@ def _solve_force_greats_finder_gpu_impl(
 
     # Reset outputs and init stage1
     fg_kernels.fg_reset_best_kernel(n_genomes)
-    fg_kernels.fg_stage1_init_kernel(n_genomes, n_ftff)
+    if gem_fields.IS_METAL:
+        fg_kernels.fg_stage1_init_kernel(n_genomes, n_ftff)
+    else:
+        fg_kernels.fg_stage1_init_packed_kernel(n_genomes, n_ftff)
     _maybe_sync(for_timing=True)
 
     # Mark end of upload phase

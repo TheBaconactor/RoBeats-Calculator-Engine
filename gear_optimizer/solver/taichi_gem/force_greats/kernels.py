@@ -685,6 +685,18 @@ def fg_stage1_init_kernel(n_genomes: ti.i32, n_ftff: ti.i32):
 
 
 @ti.kernel
+def fg_stage1_init_packed_kernel(n_genomes: ti.i32, n_ftff: ti.i32):
+    """
+    Minimal Stage 1 init for the flattened Vulkan kernels.
+
+    Only the packed reduction key must be reset for correctness; per-result fields
+    are overwritten only when an entry wins the atomic update.
+    """
+    for g, f in ti.ndrange(n_genomes, n_ftff):
+        fg_stage1_packed[g, f] = ti.cast(-1, ti.i64) << 32
+
+
+@ti.kernel
 def fg_stage1_kernel(
     n_genomes: ti.i32,
     total_notes: ti.i32,
@@ -1251,7 +1263,6 @@ def fg_stage1_flat_kernel_small3(
         best_packed: ti.i64 = sentinel_packed
         best_final_score: ti.i32 = -1
         best_base_score: ti.i32 = 0
-        best_cfg_idx: ti.i32 = -1
         best_gems_pp: ti.i32 = 0
         best_gems_cm: ti.i32 = 0
         best_gems_fm: ti.i32 = 0
@@ -1439,7 +1450,6 @@ def fg_stage1_flat_kernel_small3(
                 best_packed = packed_val
                 best_final_score = final_score
                 best_base_score = base_score
-                best_cfg_idx = global_cfg_idx
                 best_gems_pp = gems_pp
                 best_gems_cm = gems_cm
                 best_gems_fm = gems_fm
@@ -1452,9 +1462,9 @@ def fg_stage1_flat_kernel_small3(
 
         old_packed = ti.atomic_max(fg_stage1_packed[g, ftff_idx], best_packed)
         if old_packed < best_packed:
-            fg_stage1_final_score[g, ftff_idx] = best_final_score
             fg_stage1_base_score[g, ftff_idx] = best_base_score
-            fg_stage1_cfg_idx[g, ftff_idx] = best_cfg_idx
+            inverted_cfg: ti.i32 = ti.cast(best_packed & 0x7FFFFFFF, ti.i32)
+            fg_stage1_cfg_idx[g, ftff_idx] = 0x7FFFFFFF - inverted_cfg
             fg_stage1_g_pp[g, ftff_idx] = best_gems_pp
             fg_stage1_g_cm[g, ftff_idx] = best_gems_cm
             fg_stage1_g_fm[g, ftff_idx] = best_gems_fm
@@ -1554,7 +1564,6 @@ def fg_stage1_flat_kernel(
         best_packed: ti.i64 = sentinel_packed
         best_final_score: ti.i32 = -1
         best_base_score: ti.i32 = 0
-        best_cfg_idx: ti.i32 = -1
         best_gems_pp: ti.i32 = 0
         best_gems_cm: ti.i32 = 0
         best_gems_fm: ti.i32 = 0
@@ -1760,7 +1769,6 @@ def fg_stage1_flat_kernel(
                 best_packed = packed_val
                 best_final_score = final_score
                 best_base_score = base_score
-                best_cfg_idx = global_cfg_idx
                 best_gems_pp = gems_pp
                 best_gems_cm = gems_cm
                 best_gems_fm = gems_fm
@@ -1773,9 +1781,9 @@ def fg_stage1_flat_kernel(
 
         old_packed = ti.atomic_max(fg_stage1_packed[g, ftff_idx], best_packed)
         if old_packed < best_packed:
-            fg_stage1_final_score[g, ftff_idx] = best_final_score
             fg_stage1_base_score[g, ftff_idx] = best_base_score
-            fg_stage1_cfg_idx[g, ftff_idx] = best_cfg_idx
+            inverted_cfg: ti.i32 = ti.cast(best_packed & 0x7FFFFFFF, ti.i32)
+            fg_stage1_cfg_idx[g, ftff_idx] = 0x7FFFFFFF - inverted_cfg
             fg_stage1_g_pp[g, ftff_idx] = best_gems_pp
             fg_stage1_g_cm[g, ftff_idx] = best_gems_cm
             fg_stage1_g_fm[g, ftff_idx] = best_gems_fm
