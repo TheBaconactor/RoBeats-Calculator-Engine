@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import time
 from collections.abc import Iterable
 from typing import Dict, List, Optional, Any
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
@@ -379,8 +380,27 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
     if not entries:
         return
 
+    timing = str(os.environ.get("DB_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    timing_threshold_ms = 50.0
+    try:
+        timing_threshold_ms = float(os.environ.get("DB_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))
+    except Exception:
+        timing_threshold_ms = 50.0
+
+    def _log_timing(label: str, dt_sec: float) -> None:
+        if not timing:
+            return
+        ms = float(dt_sec) * 1000.0
+        if ms < timing_threshold_ms:
+            return
+        print(f"[DB][TIMING] {song_name} {label}={ms:.1f}ms")
+
+    _t0 = time.perf_counter()
+
     # Deduplicate entries before DB insertion
+    _t_dedup0 = time.perf_counter()
     deduplicated_entries = _deduplicate_entries(entries)
+    _log_timing("dedup_entries", time.perf_counter() - _t_dedup0)
 
     db_path = get_evolution_db_path()
     conn = get_db_connection(db_path)
@@ -395,6 +415,7 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
             pass
 
         # Pre-build parameter lists for executemany (faster than per-entry execute)
+        _t_params0 = time.perf_counter()
         loadouts_params = []
         fg_loadouts_params = []
 
@@ -433,9 +454,11 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
                 best_score_max = score
             if force_data is not None and fg_score > score and (best_fg_max is None or fg_score > best_fg_max):
                 best_fg_max = fg_score
+        _log_timing("build_params_json", time.perf_counter() - _t_params0)
 
         # Batch insert into loadouts table
         if loadouts_params:
+            _t_ins0 = time.perf_counter()
             conn.executemany(
                 """
                 INSERT INTO loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
@@ -454,9 +477,11 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
             """,
                 loadouts_params,
             )
+            _log_timing("insert_loadouts", time.perf_counter() - _t_ins0)
 
         # Batch insert into fg_loadouts table
         if fg_loadouts_params:
+            _t_insfg0 = time.perf_counter()
             conn.executemany(
                 """
                 INSERT INTO fg_loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
@@ -472,9 +497,11 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
             """,
                 fg_loadouts_params,
             )
+            _log_timing("insert_fg_loadouts", time.perf_counter() - _t_insfg0)
 
         # Update Song Stats
         if best_score_max is not None:
+            _t_song0 = time.perf_counter()
             conn.execute(
                 """
                 INSERT INTO songs (name, best_score) VALUES (?, ?)
@@ -482,8 +509,10 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
             """,
                 (song_name, best_score_max),
             )
+            _log_timing("upsert_song_best_score", time.perf_counter() - _t_song0)
 
         if best_fg_max:
+            _t_songfg0 = time.perf_counter()
             conn.execute(
                 """
                 INSERT INTO songs (name, best_fg_score) VALUES (?, ?)
@@ -491,9 +520,11 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
             """,
                 (song_name, best_fg_max),
             )
+            _log_timing("upsert_song_best_fg_score", time.perf_counter() - _t_songfg0)
 
         # Enforce FG leaderboard invariant (in case older DB rows exist):
         # fg_loadouts should only contain entries where FG strictly beats base.
+        _t_inv0 = time.perf_counter()
         conn.execute(
             """
             DELETE FROM fg_loadouts
@@ -502,20 +533,26 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
             """,
             (song_name,),
         )
+        _log_timing("delete_fg_invariant", time.perf_counter() - _t_inv0)
 
         # Deduplicate and Prune BOTH tables
         for table in ["loadouts", "fg_loadouts"]:
             # Deduplicate
+            _t_dd0 = time.perf_counter()
             _deduplicate_db_loadouts(conn, song_name, table)
+            _log_timing(f"dedup_db_{table}", time.perf_counter() - _t_dd0)
 
             # Prune (Limit size)
+            _t_cnt0 = time.perf_counter()
             cursor = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE song_name = ?", (song_name,))
             count = cursor.fetchone()[0]
+            _log_timing(f"count_{table}", time.perf_counter() - _t_cnt0)
             if count <= LOADOUTS_PER_SONG_LIMIT:
                 continue
 
             if table == "loadouts":
                 # Base leaderboard retention: keep top-N by base score only.
+                _t_pr0 = time.perf_counter()
                 conn.execute(
                     """
                     DELETE FROM loadouts
@@ -529,8 +566,10 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
                     """,
                     (song_name, song_name, LOADOUTS_PER_SONG_LIMIT),
                 )
+                _log_timing("prune_loadouts", time.perf_counter() - _t_pr0)
             else:
                 # For fg_loadouts we prioritize FG_SCORE only.
+                _t_prfg0 = time.perf_counter()
                 conn.execute(
                     """
                     DELETE FROM fg_loadouts
@@ -544,8 +583,11 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
                     """,
                     (song_name, song_name, LOADOUTS_PER_SONG_LIMIT),
                 )
+                _log_timing("prune_fg_loadouts", time.perf_counter() - _t_prfg0)
 
+        _t_commit0 = time.perf_counter()
         conn.commit()
+        _log_timing("commit", time.perf_counter() - _t_commit0)
     except sqlite3.Error as e:
         print(f"[DB] Error saving batch loadouts: {e}")
         try:
@@ -558,6 +600,7 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
         except sqlite3.Error:
             pass
         conn.close()
+        _log_timing("total", time.perf_counter() - _t0)
 
 
 def get_best_loadouts(

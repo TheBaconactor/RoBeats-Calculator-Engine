@@ -132,12 +132,29 @@ class _PostSender:
             pass
 
     def _run(self) -> None:
+        timing = str(os.environ.get("POST_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+        threshold_ms = 50.0
+        try:
+            threshold_ms = float(os.environ.get("POST_TIMING_THRESHOLD_MS", str(threshold_ms)))
+        except Exception:
+            threshold_ms = 50.0
         while True:
             item = self._q.get()
             if item is self._sentinel:
                 return
             try:
+                t0 = time.perf_counter()
                 self._post_queue.put(item)
+                if timing:
+                    ms = (time.perf_counter() - t0) * 1000.0
+                    if ms >= threshold_ms:
+                        kind = None
+                        try:
+                            kind = item.get("song") if isinstance(item, dict) else None
+                        except Exception:
+                            kind = None
+                        prefix = f"[PostSender][TIMING] {kind} " if kind else "[PostSender][TIMING] "
+                        print(f"{prefix}post_queue_put={ms:.1f}ms")
             except Exception:
                 pass
 
