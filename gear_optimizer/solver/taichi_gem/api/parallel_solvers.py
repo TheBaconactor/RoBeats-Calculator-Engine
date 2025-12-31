@@ -31,7 +31,7 @@ from .initialization import (
 from .timeline import precompute_timeline_gpu, _upload_timeline_grid
 from .ga_operations import (
     ga_upload_population_indices,
-    ga_aggregate_stats,
+    ga_evaluate_population,
 )
 
 _profiler = get_gpu_profiler()
@@ -291,91 +291,43 @@ def solve_genomes_parallel(
         fields.genome_base_stats.from_numpy(genome_stats_np)
         _GENOME_STATS_CACHE = cache_key
 
-    # Generate work items: (genome_id, ft, ff) for all valid combinations
-    # Avoid huge Python list append overhead by precomputing size and filling arrays.
-    n_work = 0
-    for genome_idx in range(n_genomes):
-        max_ft = int(max_ft_list[genome_idx])
-        max_ff = int(max_ff_list[genome_idx])
-        for ft in range(max_ft + 1):
-            remaining = total_budget - ft
-            n_work += min(remaining, max_ff) + 1
-
-    work_genome = np.empty((n_work,), dtype=np.int32)
-    work_ft = np.empty((n_work,), dtype=np.int32)
-    work_ff = np.empty((n_work,), dtype=np.int32)
-    work_budgets = np.empty((n_work,), dtype=np.int32)  # Need budget per item
-
-    pos = 0
-    for genome_idx in range(n_genomes):
-        max_ft = int(max_ft_list[genome_idx])
-        max_ff = int(max_ff_list[genome_idx])
-        for ft in range(max_ft + 1):
-            remaining = total_budget - ft
-            ff_max = min(remaining, max_ff)
-            cnt = ff_max + 1
-            work_genome[pos : pos + cnt] = genome_idx
-            work_ft[pos : pos + cnt] = ft
-            work_ff[pos : pos + cnt] = np.arange(cnt, dtype=np.int32)
-            # Kernel reads budget from item[0], so we must precalculate it.
-            # budget = total_budget - ft - ff
-
-            # Vectorized budget fill:
-            # budget = total - ft - ff
-            # ff ranges from 0 to ff_max
-            # budget ranges from (total-ft) down to (total-ft-ff_max)
-            current_budget_base = total_budget - ft
-            work_budgets[pos : pos + cnt] = current_budget_base - np.arange(cnt, dtype=np.int32)
-
-            pos += cnt
-
-    # Safety: ensure we filled exactly what we allocated
-    if pos != n_work:
-        raise RuntimeError(f"Internal error: filled work items {pos} != allocated {n_work}")
-
-    if n_work == 0:
-        return [(0, 0, 0, 0, 0, 0, 0) for _ in range(n_genomes)]
-
-    # Process in chunks if exceeds MAX_WORK_ITEMS
+    # Generate work items directly into the fixed staging buffer to avoid per-call
+    # allocation of huge intermediate arrays (work_ft/work_ff/work_budget/...).
+    #
+    # This also avoids repeated small `np.arange()` allocations in the tight
+    # (genome, ft) loop, which can create CPU stalls and visible GPU idle gaps.
     chunk_size = MAX_WORK_ITEMS
-    num_chunks = (n_work + chunk_size - 1) // chunk_size
+    work_items_np = staging["work_items"]
+    ff_seq = np.arange(int(total_budget) + 1, dtype=np.int32)
 
     # Initialize genome results ONCE before any chunks
     kernels.init_genome_results_kernel(n_genomes)
 
-    # Get reusable work item buffers
-    work_items_np = staging["work_items"]
+    chunk_n = 0
+    generated_any = False
+    last_kernel_t0: float | None = None
+    last_kernel_work_n = 0
 
-    for chunk_idx in range(num_chunks):
-        start = chunk_idx * chunk_size
-        end = min(start + chunk_size, n_work)
-        chunk_n = end - start
+    def _flush_chunk() -> None:
+        nonlocal chunk_n, generated_any, last_kernel_t0, last_kernel_work_n
+        if chunk_n <= 0:
+            return
+        generated_any = True
 
-        # Copy work items into reusable buffers (no allocation needed)
-        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
-
-        # Pack work items: budget, ft, ff, genome_id.
-        # Kernel reads count_fever, count_normal, head_len from grid, so input values don't matter.
-
-        # Flattened packing
-        # Reset buffer for cleanliness (optional but safer)
-        # work_items_np[:chunk_n, :] = 0
-
-        work_items_np[:chunk_n, 0] = work_budgets[start:end]  # budget
-        work_items_np[:chunk_n, 3] = work_ft[start:end]  # ft_gems
-        work_items_np[:chunk_n, 4] = work_ff[start:end]  # ff_gems
-        work_items_np[:chunk_n, 6] = work_genome[start:end]  # genome_id
-        work_items_np[:chunk_n, 7] = song_slot  # song_slot (batch coalescing)
-
-        # OPTIMIZATION: Upload only when profiling disabled to reduce overhead
         if _profiler.enabled:
             _t_upload = time.perf_counter()
             fields.work_items.from_numpy(work_items_np)
-            _profiler.record_upload(time.perf_counter() - _t_upload)
+            try:
+                upload_bytes = int(work_items_np.nbytes)
+            except Exception:
+                upload_bytes = 0
+            _profiler.record_upload(time.perf_counter() - _t_upload, bytes_count=upload_bytes)
             _t_kernel = time.perf_counter()
         else:
-            # Fast path: no timing overhead
             fields.work_items.from_numpy(work_items_np)
+            _t_kernel = 0.0
+        last_kernel_t0 = float(_t_kernel) if _t_kernel else None
+        last_kernel_work_n = int(chunk_n)
 
         # Launch solve kernel
         kernels.solve_ftff_parallel_kernel(
@@ -400,12 +352,50 @@ def solve_genomes_parallel(
         kernels.init_chunk_best_key_kernel(n_genomes)
         kernels.reduce_chunk_to_best_key_kernel(chunk_n)
         kernels.merge_chunk_best_to_genomes_kernel(n_genomes)
-        # OPTIMIZATION: Only sync on last chunk to reduce overhead (558 syncs -> ~30 syncs)
-        # GPU kernels are already queued, sync before download is sufficient
-        is_last_chunk = chunk_idx == num_chunks - 1
-        if _profiler.enabled and _SYNC_FOR_TIMING and is_last_chunk:
-            _maybe_sync(for_timing=True)
-            _profiler.record_kernel(time.perf_counter() - _t_kernel, genome_count=chunk_n)
+
+        chunk_n = 0
+
+    for genome_idx in range(n_genomes):
+        max_ft = int(max_ft_list[genome_idx])
+        max_ff = int(max_ff_list[genome_idx])
+        for ft in range(max_ft + 1):
+            remaining = int(total_budget) - int(ft)
+            if remaining < 0:
+                continue
+            ff_max = min(int(remaining), int(max_ff))
+            if ff_max < 0:
+                continue
+
+            ff_start = 0
+            while ff_start <= ff_max:
+                avail = int(chunk_size) - int(chunk_n)
+                if avail <= 0:
+                    _flush_chunk()
+                    avail = int(chunk_size)
+                take = min(int(avail), int(ff_max - ff_start + 1))
+                pos0 = int(chunk_n)
+                pos1 = int(chunk_n + take)
+                ff_slice = ff_seq[ff_start : ff_start + take]
+
+                # Columns: [budget, _, _, ft, ff, _, genome_id, song_slot]
+                work_items_np[pos0:pos1, 0] = (int(total_budget) - int(ft)) - ff_slice
+                work_items_np[pos0:pos1, 3] = int(ft)
+                work_items_np[pos0:pos1, 4] = ff_slice
+                work_items_np[pos0:pos1, 6] = int(genome_idx)
+                work_items_np[pos0:pos1, 7] = int(song_slot)
+
+                chunk_n = pos1
+                ff_start += int(take)
+
+    # Flush final partial chunk
+    _flush_chunk()
+
+    if not generated_any:
+        return [(0, 0, 0, 0, 0, 0, 0) for _ in range(n_genomes)]
+
+    if _profiler.enabled and _SYNC_FOR_TIMING and last_kernel_t0 is not None and last_kernel_work_n > 0:
+        _maybe_sync(for_timing=True)
+        _profiler.record_kernel(time.perf_counter() - float(last_kernel_t0), genome_count=int(last_kernel_work_n))
 
     # Download only O(n_genomes) results (not O(n_work_items)!)
     # OPTIMIZATION: Ensure GPU work is complete before download
@@ -414,7 +404,11 @@ def solve_genomes_parallel(
     # [score, ft, ff, pp, cm, fm, ov]
     results_np = fields.genome_result_stats.to_numpy()[:n_genomes]
     if _profiler.enabled:
-        _profiler.record_download(time.perf_counter() - _t_download)
+        try:
+            download_bytes = int(results_np.nbytes)
+        except Exception:
+            download_bytes = 0
+        _profiler.record_download(time.perf_counter() - _t_download, bytes_count=download_bytes)
 
     # Build results in order
     results = []
@@ -467,8 +461,8 @@ def solve_genomes_from_registry(
 
     This function:
     1. Uploads population_indices (once per call)
-    2. Calls ga_aggregate_stats() kernel to compute genome_base_stats on GPU
-    3. Runs the standard evaluation kernel
+    2. Runs the GPU-native eval kernels (aggregate + FT/FF combo search)
+    3. Materializes the best combo per genome
 
     Args:
         population_indices: (n_genomes, 9) int32 - encoded genome IDs from ItemRegistry
@@ -522,43 +516,48 @@ def solve_genomes_from_registry(
     # Upload population indices (only ~150KB vs building/uploading genome_stats)
     ga_upload_population_indices(population_indices, n_slots=9)
 
-    # GPU-SIDE AGGREGATION: compute genome_base_stats on GPU from item_stats + population_indices
-    # This is the key optimization - no genome_base_stats upload needed!
-    ga_aggregate_stats(
+    # GPU-native eval:
+    # - Fused aggregate + best-key init
+    # - Parallel (genome, ft/ff) combo search (chunked to limit kernel wall time)
+    # - Materialize best allocations per genome (writes genome_result_stats)
+    ga_evaluate_population(
         n_genomes,
         n_slots=9,
-        is_p_ft=is_p_ft,
-        is_s_ft=is_s_ft,
-        is_p_ff=is_p_ff,
-        is_s_ff=is_s_ff,
-        is_p_pp=is_p_pp,
-        is_s_pp=is_s_pp,
-        is_p_cm=is_p_cm,
-        is_s_cm=is_s_cm,
-        is_p_fm=is_p_fm,
-        is_s_fm=is_s_fm,
-        is_p_ov=is_p_ov,
-        is_s_ov=is_s_ov,
+        total_budget=int(total_budget),
+        gem_scale_fever=int(gem_scale_fever),
+        song_slot=int(song_slot),
+        is_p_ft=int(is_p_ft),
+        is_s_ft=int(is_s_ft),
+        is_p_ff=int(is_p_ff),
+        is_s_ff=int(is_s_ff),
+        is_p_pp=int(is_p_pp),
+        is_s_pp=int(is_s_pp),
+        is_p_cm=int(is_p_cm),
+        is_s_cm=int(is_s_cm),
+        is_p_fm=int(is_p_fm),
+        is_s_fm=int(is_s_fm),
+        is_p_ov=int(is_p_ov),
+        is_s_ov=int(is_s_ov),
+        use_hints=0,
     )
 
-    # Now genome_base_stats is populated on GPU - run standard evaluation
-    kernels.solve_genomes_with_ftff_kernel(
-        n_genomes,
-        total_budget,
-        gem_scale_fever,
-        is_p_ft,
-        is_s_ft,
-        is_p_ff,
-        is_s_ff,
-        is_p_pp,
-        is_s_pp,
-        is_p_cm,
-        is_s_cm,
-        is_p_fm,
-        is_s_fm,
-        is_p_ov,
-        is_s_ov,
-        song_slot,
+    kernels.ga_write_best_results_from_key_kernel(
+        int(n_genomes),
+        int(total_budget),
+        int(gem_scale_fever),
+        int(is_p_ft),
+        int(is_s_ft),
+        int(is_p_ff),
+        int(is_s_ff),
+        int(is_p_pp),
+        int(is_s_pp),
+        int(is_p_cm),
+        int(is_s_cm),
+        int(is_p_fm),
+        int(is_s_fm),
+        int(is_p_ov),
+        int(is_s_ov),
+        int(song_slot),
     )
 
     # Download results

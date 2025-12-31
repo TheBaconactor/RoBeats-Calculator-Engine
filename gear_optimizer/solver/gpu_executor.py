@@ -305,6 +305,17 @@ class GpuExecutor:
                 ti.profiler.print_kernel_profiler_info()
             except Exception:
                 pass
+
+        # Surface transfer/throughput counters from the in-process GPU profiler.
+        # (Especially useful in in-flight mode where Windows GPU Engine counters
+        # can be noisy and queue/executor timings include host-side work.)
+        if ENV.perf_timing or ENV.gpu_profiler:
+            try:
+                from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
+
+                get_gpu_profiler().report(verbose=True)
+            except Exception:
+                pass
         print(f"[GpuExecutor] Stopped. Processed {self._requests_processed} requests.")
 
     def register_worker(self) -> tuple:
@@ -339,6 +350,22 @@ class GpuExecutor:
         except Exception as e:
             print(f"[GpuExecutor] Taichi init failed: {e}")
             return
+        # Warm up FG kernels up-front to avoid the first ForceGreatsFinder call
+        # incurring multi-second Taichi JIT latency (which shows up as a GA→FG GPU idle gap).
+        if ENV.gpu_executor_warmup_fg:
+            try:
+                t0 = perf_counter()
+                from .taichi_gem.force_greats import fields as fg_fields
+
+                fg_fields.ensure_ready_with_warmup()
+                dt_ms = (perf_counter() - t0) * 1000.0
+                if ENV.perf_timing:
+                    print(f"[GpuExecutor] Warmed FG kernels in {dt_ms:.1f}ms")
+            except Exception as e:
+                try:
+                    print(f"[GpuExecutor] FG warmup failed: {type(e).__name__}: {e}")
+                except Exception:
+                    pass
 
         while self._running:
             try:

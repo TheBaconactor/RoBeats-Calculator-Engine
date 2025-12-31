@@ -6,6 +6,7 @@ This module provides force greats operations:
 """
 
 import os
+import threading
 import time
 from contextlib import nullcontext
 from typing import TYPE_CHECKING, Optional
@@ -16,6 +17,9 @@ from ...solver.scoring.force_greats import FORCE_GREATS_ALGO_VERSION
 
 if TYPE_CHECKING:
     from gear_optimizer.solver.gpu_service import GpuServiceClient
+
+
+_FG_GPU_SEQUENCE_LOCK = threading.Lock()
 
 
 def process_force_greats(
@@ -54,30 +58,36 @@ def process_force_greats(
     fg_variants = []
     perf = bool(perf_timing)
 
-    # In the in-flight pipelines, Taichi/Vulkan must only be touched by the single
-    # GPU-owner thread. Route the entire helper through `GpuServiceClient` when
-    # provided to preserve that invariant (both finder and non-finder paths use
-    # Taichi-backed kernels).
-    if gpu_client is not None and use_gpu:
-        try:
-            return gpu_client.submit_process_force_greats(
-                loadout_entries,
-                manual_force_greats,
-                force_greats_finder,
-                force_greats_config,
-                calc_song,
-                ref_arrays,
-                meta_primary_color,
-                build_details_fn,
-                db_loadouts_full_count,
-                use_gpu=use_gpu,
-                fg_search_radius=fg_search_radius,
-                perf_timing=perf_timing,
-                gpu_client=None,
-            ).future.result()
-        except Exception:
-            # If routing fails, fall through to the local implementation.
-            pass
+    # NOTE:
+    # Historically we routed the *entire* helper to the GPU-owner thread to avoid
+    # touching Taichi from non-owner threads. That guarantees safety, but it also
+    # makes the GPU-owner thread do a lot of CPU work (grouping, dict building,
+    # cache checks, result application), which shows up as GPU utilization spikes
+    # and idle gaps during in-flight FG interleaving.
+    #
+    # The GPU Finder fast path below can submit Taichi work via `gpu_client`, so
+    # we default to doing CPU prep locally and sending only GPU kernels to the
+    # executor. Set `FG_ROUTE_PROCESS_FORCE_GREATS=1` to force legacy behavior.
+    if (
+        gpu_client is not None
+        and bool(use_gpu)
+        and str(os.environ.get("FG_ROUTE_PROCESS_FORCE_GREATS", "0")).strip() == "1"
+    ):
+        return gpu_client.submit_process_force_greats(
+            loadout_entries,
+            manual_force_greats,
+            force_greats_finder,
+            force_greats_config,
+            calc_song,
+            ref_arrays,
+            meta_primary_color,
+            build_details_fn,
+            db_loadouts_full_count,
+            use_gpu=use_gpu,
+            fg_search_radius=fg_search_radius,
+            perf_timing=perf_timing,
+            gpu_client=None,
+        ).future.result()
 
     manual_counts = force_greats_config if (manual_force_greats and not force_greats_finder) else []
 
@@ -102,6 +112,10 @@ def process_force_greats(
     # across loadouts and run the full FG finder on the GPU.
     # ------------------------------------------------------------------
     if use_gpu and force_greats_finder:
+        lock_acquired = False
+        if gpu_client is not None:
+            _FG_GPU_SEQUENCE_LOCK.acquire()
+            lock_acquired = True
         try:
             from ...core.constants import (
                 GEM_SCALE_NORMAL,
@@ -1333,10 +1347,35 @@ def process_force_greats(
             return fg_variants
         except Exception as e:
             print(f"[ForceGreats][GPU] Batch FG finder failed; falling back to CPU per-loadout: {e}")
+            if gpu_client is not None:
+                # Last-resort fallback: run the full helper on the GPU-owner thread.
+                # This preserves correctness (and allows GPU hill-climb paths) even
+                # if the batched finder path fails for a particular song.
+                try:
+                    return gpu_client.submit_process_force_greats(
+                        loadout_entries,
+                        manual_force_greats,
+                        force_greats_finder,
+                        force_greats_config,
+                        calc_song,
+                        ref_arrays,
+                        meta_primary_color,
+                        build_details_fn,
+                        db_loadouts_full_count,
+                        use_gpu=use_gpu,
+                        fg_search_radius=fg_search_radius,
+                        perf_timing=perf_timing,
+                        gpu_client=None,
+                    ).future.result()
+                except Exception:
+                    pass
             # Reset state to allow CPU manual loop to run from scratch
             fg_variants = []
             computed = 0
             unique_stats_seen = set()
+        finally:
+            if lock_acquired:
+                _FG_GPU_SEQUENCE_LOCK.release()
     # CPU fallback: Process all loadouts (no budget limit)
     for entry in loadout_entries.values():
 
@@ -1418,7 +1457,11 @@ def process_force_greats(
             ref_arrays,
             manual_counts=manual_counts,
             use_finder=force_greats_finder,
-            use_gpu=use_gpu,
+            # If we're running under `gpu_client`, we are *not* on the GPU-owner
+            # thread, so the per-loadout GPU hill-climb path is unsafe. The batched
+            # finder path above should cover the GPU case; this loop is a slow
+            # fallback and should remain CPU-only under orchestration.
+            use_gpu=bool(use_gpu) and (gpu_client is None),
         )
         computed += 1
         if fg_variant:

@@ -73,7 +73,8 @@ fg_global_best_packed = None
 fg_genome_hint_allocation = None
 
 # Stage 1 flat kernel cfg tiling (reduces atomic contention per (genome, ftff)).
-FG_STAGE1_CFG_TILE = 4
+# A larger tile reduces 64-bit atomic updates while keeping full search work identical.
+FG_STAGE1_CFG_TILE = 8
 
 
 # ============================================================================

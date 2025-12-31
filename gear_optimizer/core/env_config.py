@@ -63,8 +63,11 @@ class EnvConfig:
     gpu_sync_for_timing: bool  # GPU_SYNC_FOR_TIMING: Force GPU sync for accurate timing
     gpu_force_sync: bool  # GPU_FORCE_SYNC: Force GPU synchronization
     gpu_executor_profile: bool  # GPU_EXECUTOR_PROFILE: Enable GPU executor profiling
+    gpu_executor_warmup_fg: bool  # GPU_EXECUTOR_WARMUP_FG: Pre-warm FG Taichi kernels at executor startup
     gpu_profiler: bool  # GPU_PROFILER: Enable GPU profiler
     gpu_batch_log: bool  # GPU_BATCH_LOG: Log GPU batch operations
+    gpu_service_profile: bool  # GPU_SERVICE_PROFILE: Track GpuServiceClient request latencies
+    gpu_service_profile_print: bool  # GPU_SERVICE_PROFILE_PRINT: Print latency summary on close
 
     # General Performance
     perf_timing: bool  # PERF_TIMING: Enable performance timing globally
@@ -85,8 +88,11 @@ class EnvConfig:
             gpu_sync_for_timing=_env_bool("GPU_SYNC_FOR_TIMING"),
             gpu_force_sync=_env_bool("GPU_FORCE_SYNC"),
             gpu_executor_profile=_env_bool("GPU_EXECUTOR_PROFILE"),
+            gpu_executor_warmup_fg=_env_bool("GPU_EXECUTOR_WARMUP_FG", "1"),
             gpu_profiler=_env_bool("GPU_PROFILER"),
             gpu_batch_log=_env_bool("GPU_BATCH_LOG"),
+            gpu_service_profile=_env_bool("GPU_SERVICE_PROFILE"),
+            gpu_service_profile_print=_env_bool("GPU_SERVICE_PROFILE_PRINT"),
             # General Performance
             perf_timing=_env_bool("PERF_TIMING"),
             # Genetic Algorithm

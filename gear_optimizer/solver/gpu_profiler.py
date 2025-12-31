@@ -58,6 +58,8 @@ class SongTiming:
     kernel_sec: float = 0.0
     upload_sec: float = 0.0
     download_sec: float = 0.0
+    upload_bytes: int = 0
+    download_bytes: int = 0
 
     # Individual measurements
     measurements: List[TimingEntry] = field(default_factory=list)
@@ -101,6 +103,8 @@ class GpuProfiler:
         self._total_kernel_sec = 0.0
         self._total_upload_sec = 0.0
         self._total_download_sec = 0.0
+        self._total_upload_bytes = 0
+        self._total_download_bytes = 0
         self._total_genome_evals = 0
 
     @property
@@ -141,6 +145,8 @@ class GpuProfiler:
             self._total_kernel_sec += song.kernel_sec
             self._total_upload_sec += song.upload_sec
             self._total_download_sec += song.download_sec
+            self._total_upload_bytes += int(song.upload_bytes or 0)
+            self._total_download_bytes += int(song.download_bytes or 0)
             self._total_genome_evals += song.genome_evaluations
 
             self._current_song = None
@@ -188,24 +194,37 @@ class GpuProfiler:
                 self._current_song.kernel_sec += duration_sec
                 self._current_song.kernel_calls += 1
                 self._current_song.genome_evaluations += genome_count
+            else:
+                # In-flight mode can interleave songs, so we may not have a per-song
+                # context. Still accumulate global totals for transfer/throughput.
+                self._total_kernel_sec += float(duration_sec)
+                self._total_genome_evals += int(genome_count or 0)
 
-    def record_upload(self, duration_sec: float):
+    def record_upload(self, duration_sec: float, *, bytes_count: int = 0):
         """Record data upload time."""
         if not self._enabled:
             return
 
         with self._lock:
             if self._current_song:
-                self._current_song.upload_sec += duration_sec
+                self._current_song.upload_sec += float(duration_sec)
+                self._current_song.upload_bytes += int(bytes_count or 0)
+            else:
+                self._total_upload_sec += float(duration_sec)
+                self._total_upload_bytes += int(bytes_count or 0)
 
-    def record_download(self, duration_sec: float):
+    def record_download(self, duration_sec: float, *, bytes_count: int = 0):
         """Record data download time."""
         if not self._enabled:
             return
 
         with self._lock:
             if self._current_song:
-                self._current_song.download_sec += duration_sec
+                self._current_song.download_sec += float(duration_sec)
+                self._current_song.download_bytes += int(bytes_count or 0)
+            else:
+                self._total_download_sec += float(duration_sec)
+                self._total_download_bytes += int(bytes_count or 0)
 
     def songs_per_hour(self) -> float:
         """Calculate songs/hour throughput."""
@@ -222,6 +241,10 @@ class GpuProfiler:
         """Get summary statistics."""
         elapsed = time.time() - self._session_start
         gpu_compute_sec = self._total_kernel_sec + self._total_upload_sec + self._total_download_sec
+        upload_mb = float(self._total_upload_bytes) / (1024.0 * 1024.0)
+        download_mb = float(self._total_download_bytes) / (1024.0 * 1024.0)
+        total_mb = upload_mb + download_mb
+        bw_mb_s = (total_mb / elapsed) if elapsed > 0 else 0.0
 
         return {
             "total_songs": self._total_songs,
@@ -230,6 +253,10 @@ class GpuProfiler:
             "total_kernel_sec": self._total_kernel_sec,
             "total_upload_sec": self._total_upload_sec,
             "total_download_sec": self._total_download_sec,
+            "total_upload_bytes": int(self._total_upload_bytes),
+            "total_download_bytes": int(self._total_download_bytes),
+            "total_transfer_mb": float(total_mb),
+            "transfer_bw_mb_s": float(bw_mb_s),
             "gpu_compute_sec": gpu_compute_sec,
             "gpu_utilization_pct": (gpu_compute_sec / elapsed * 100) if elapsed > 0 else 0,
             "total_genome_evals": self._total_genome_evals,
@@ -252,6 +279,9 @@ class GpuProfiler:
             f"  Kernel execution: {stats['total_kernel_sec']:.2f}s",
             f"  Data upload: {stats['total_upload_sec']:.2f}s",
             f"  Data download: {stats['total_download_sec']:.2f}s",
+            f"  Upload bytes: {stats['total_upload_bytes'] / (1024**2):.1f} MiB",
+            f"  Download bytes: {stats['total_download_bytes'] / (1024**2):.1f} MiB",
+            f"  Transfer rate: {stats['transfer_bw_mb_s']:.1f} MiB/s",
             f"  GPU utilization: {stats['gpu_utilization_pct']:.1f}%",
             "",
             f"Genome evaluations: {stats['total_genome_evals']:,}",
@@ -276,6 +306,8 @@ class GpuProfiler:
             self._total_kernel_sec = 0.0
             self._total_upload_sec = 0.0
             self._total_download_sec = 0.0
+            self._total_upload_bytes = 0
+            self._total_download_bytes = 0
             self._total_genome_evals = 0
 
 

@@ -116,7 +116,12 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     # Create padded array
     ts_padded = np.zeros(fields.MAX_SONG_NOTES, dtype=np.float32)
     ts_padded[:total_notes] = timestamps
-    fields.song_timestamps.from_numpy(ts_padded)
+    if _profiler.enabled:
+        _t_ts = time.perf_counter()
+        fields.song_timestamps.from_numpy(ts_padded)
+        _profiler.record_upload(time.perf_counter() - _t_ts, bytes_count=int(ts_padded.nbytes))
+    else:
+        fields.song_timestamps.from_numpy(ts_padded)
 
     # Extract song metadata
     long_notes = int(calc_song["metadata"].get("Long Notes", 0))
@@ -280,7 +285,19 @@ def _upload_timeline_grid(timeline_grid):
         fields.grid_fever_masks_bits.from_numpy(masks_bits_np)
         fields.grid_gap.from_numpy(gap_np)
         fields.grid_fever_activations.from_numpy(fevact_np)
-    _profiler.record_upload(time.perf_counter() - _t_gpu_upload)
+    try:
+        upload_bytes = int(
+            cbf_np.nbytes
+            + cbn_np.nbytes
+            + hl_np.nbytes
+            + masks_np.nbytes
+            + masks_bits_np.nbytes
+            + gap_np.nbytes
+            + fevact_np.nbytes
+        )
+    except Exception:
+        upload_bytes = 0
+    _profiler.record_upload(time.perf_counter() - _t_gpu_upload, bytes_count=upload_bytes)
 
     _grid_uploaded = True
     set_last_uploaded_grid_id(grid_id)

@@ -15,9 +15,14 @@ from __future__ import annotations
 import itertools
 import queue
 import threading
+import time
+import random
 from concurrent.futures import Future
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Optional
+
+from gear_optimizer.core.env_config import ENV
 
 from .gpu_executor import (
     GpuExecutor,
@@ -50,11 +55,21 @@ class GpuServiceClient:
         self._request_queue: Any = None
         self._response_queue: Any = None
         self._counter = itertools.count(1)
-        self._pending: dict[int, Future] = {}
+        # request_id -> Future, or (Future, request_type, submit_ts) when profiling is enabled.
+        self._pending: dict[int, Any] = {}
         self._lock = threading.Lock()
         self._submit_lock = threading.Lock()
         self._rx_thread: Optional[threading.Thread] = None
         self._running = False
+
+        # Optional latency profiling (end-to-end submit -> response).
+        self._profile_enabled = bool(ENV.perf_timing or ENV.gpu_service_profile)
+        self._profile_print = bool(ENV.perf_timing or ENV.gpu_service_profile_print)
+        self._profile_counts: dict[GpuRequestType, int] = defaultdict(int)
+        self._profile_total_sec: dict[GpuRequestType, float] = defaultdict(float)
+        self._profile_max_sec: dict[GpuRequestType, float] = defaultdict(float)
+        self._profile_samples: dict[GpuRequestType, list[float]] = defaultdict(list)
+        self._profile_sample_cap = 5000
 
     @property
     def executor(self) -> GpuExecutor:
@@ -101,6 +116,12 @@ class GpuServiceClient:
             self._rx_thread.join(timeout=max(0.0, float(timeout)))
         self._rx_thread = None
 
+        if self._profile_enabled and self._profile_print:
+            try:
+                self.report_profile()
+            except Exception:
+                pass
+
         if self._worker_id is not None:
             try:
                 self._executor.unregister_worker(int(self._worker_id))
@@ -113,7 +134,12 @@ class GpuServiceClient:
         with self._lock:
             pending = list(self._pending.items())
             self._pending.clear()
-        for _req_id, fut in pending:
+        for _req_id, entry in pending:
+            fut = None
+            if isinstance(entry, tuple) and entry:
+                fut = entry[0]
+            else:
+                fut = entry
             if not fut.done():
                 fut.set_exception(RuntimeError("GPU client closed"))
 
@@ -122,9 +148,13 @@ class GpuServiceClient:
             raise RuntimeError("GpuServiceClient not started")
 
         request_id = int(next(self._counter))
+        t_submit = time.perf_counter() if self._profile_enabled else 0.0
         fut: Future = Future()
         with self._lock:
-            self._pending[request_id] = fut
+            if self._profile_enabled:
+                self._pending[request_id] = (fut, request_type, float(t_submit))
+            else:
+                self._pending[request_id] = fut
 
         req = GpuRequest(
             request_type=request_type,
@@ -178,12 +208,98 @@ class GpuServiceClient:
                 continue
 
             fut = None
+            req_type = None
+            t_submit = None
             with self._lock:
-                fut = self._pending.pop(int(resp.request_id), None)
+                entry = self._pending.pop(int(resp.request_id), None)
+                if self._profile_enabled and isinstance(entry, tuple) and len(entry) == 3:
+                    fut, req_type, t_submit = entry
+                else:
+                    fut = entry
             if fut is None:
                 continue
+
+            if self._profile_enabled and isinstance(req_type, GpuRequestType) and isinstance(t_submit, (int, float)):
+                try:
+                    latency = max(0.0, time.perf_counter() - float(t_submit))
+                    self._profile_counts[req_type] += 1
+                    self._profile_total_sec[req_type] += float(latency)
+                    if latency > float(self._profile_max_sec[req_type]):
+                        self._profile_max_sec[req_type] = float(latency)
+
+                    samples = self._profile_samples[req_type]
+                    # Reservoir sampling to cap memory usage in long runs.
+                    if len(samples) < int(self._profile_sample_cap):
+                        samples.append(float(latency))
+                    else:
+                        n = int(self._profile_counts[req_type])
+                        if n > 0:
+                            j = random.randint(0, n - 1)
+                            if j < int(self._profile_sample_cap):
+                                samples[j] = float(latency)
+                except Exception:
+                    pass
 
             if resp.success:
                 fut.set_result(resp.result)
             else:
                 fut.set_exception(RuntimeError(resp.error or "GPU job failed"))
+
+    def profile_summary(self) -> dict[str, Any]:
+        if not self._profile_enabled:
+            return {"enabled": False}
+
+        out: dict[str, Any] = {"enabled": True, "by_type": {}}
+        for req_type, count in sorted(self._profile_counts.items(), key=lambda kv: kv[0].value):
+            total = float(self._profile_total_sec.get(req_type, 0.0) or 0.0)
+            mx = float(self._profile_max_sec.get(req_type, 0.0) or 0.0)
+            avg = (total / count) if count else 0.0
+            samples = list(self._profile_samples.get(req_type, ()))
+            p95 = None
+            if samples:
+                try:
+                    samples_sorted = sorted(samples)
+                    idx = int(round(0.95 * (len(samples_sorted) - 1)))
+                    idx = max(0, min(idx, len(samples_sorted) - 1))
+                    p95 = float(samples_sorted[idx])
+                except Exception:
+                    p95 = None
+            out["by_type"][req_type.value] = {
+                "count": int(count),
+                "avg_sec": float(avg),
+                "p95_sec": p95,
+                "max_sec": float(mx),
+            }
+        return out
+
+    def report_profile(self) -> str:
+        summary = self.profile_summary()
+        if not summary.get("enabled"):
+            return ""
+
+        by_type = summary.get("by_type") or {}
+        # Keep output compact: sort by avg latency desc, show top 8.
+        items = []
+        for k, v in by_type.items():
+            try:
+                items.append((k, float(v.get("avg_sec", 0.0) or 0.0), v))
+            except Exception:
+                continue
+        items.sort(key=lambda t: t[1], reverse=True)
+        items = items[:8]
+
+        parts = []
+        for name, _avg, v in items:
+            try:
+                parts.append(
+                    f"{name}:n={int(v.get('count', 0))} avg={float(v.get('avg_sec', 0.0)):.3f}s "
+                    f"p95={float(v.get('p95_sec') or 0.0):.3f}s max={float(v.get('max_sec', 0.0)):.3f}s"
+                )
+            except Exception:
+                continue
+        line = "[GpuServiceClient][PROFILE] " + "; ".join(parts)
+        try:
+            print(line)
+        except Exception:
+            pass
+        return line
