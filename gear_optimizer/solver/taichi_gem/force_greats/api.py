@@ -69,13 +69,20 @@ _fg_song_upload_buf: np.ndarray | None = None
 _fg_great_upload_buf: np.ndarray | None = None
 _fg_forced_upload_buf: np.ndarray | None = None
 _fg_ftff_upload_buf: dict[str, np.ndarray] | None = None
-_fg_forced_counts_staging: Any | None = None
-_fg_forced_counts_staging_rows: int = 0
 
 # IMPORTANT: Taichi specializes kernels on external-array shapes. Since FG config counts
-# vary per song, we must keep the `forced_counts` ndarray shape stable across the whole
-# runtime to avoid shape-mismatch recompilation errors (and CPU fallback).
+# vary per song, we must keep external-array shapes stable across the whole runtime
+# to avoid shape-mismatch recompilation churn.
+#
+# To reduce wasted host->device uploads when n_cfg is small, we keep a small tiered
+# set of staging shapes and pick the smallest tier that fits each upload.
+#
+# Override tiers via:
+#   FG_FORCED_COUNTS_STAGING_TIERS="256,512,1024,2048,4096"
 _FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT = 4096
+_FG_FORCED_COUNTS_STAGING_TIERS_DEFAULT = (256, 512, 1024, 2048, _FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)
+_fg_forced_counts_staging_tiers: tuple[int, ...] | None = None
+_fg_forced_counts_staging_pool: dict[int, Any] | None = None
 
 # Cached buffers for genome stats uploads (reuse to avoid alloc churn)
 _fg_genome_stats_buf: np.ndarray | None = None
@@ -139,7 +146,7 @@ def reset_force_greats_api_state() -> None:
     """Reset module-level upload caches after `ti.reset()`."""
     global _fg_last_song_key, _fg_last_great_key
     global _fg_song_upload_buf, _fg_great_upload_buf, _fg_forced_upload_buf, _fg_ftff_upload_buf
-    global _fg_forced_counts_staging, _fg_forced_counts_staging_rows
+    global _fg_forced_counts_staging_tiers, _fg_forced_counts_staging_pool
     global _fg_genome_stats_buf, _fg_flat_work_buf
     global _fg_genome_stats_upload_key, _fg_flat_work_key
     global _fg_forced_configs_upload_key
@@ -151,8 +158,8 @@ def reset_force_greats_api_state() -> None:
     _fg_great_upload_buf = None
     _fg_forced_upload_buf = None
     _fg_ftff_upload_buf = None
-    _fg_forced_counts_staging = None
-    _fg_forced_counts_staging_rows = 0
+    _fg_forced_counts_staging_tiers = None
+    _fg_forced_counts_staging_pool = None
     _fg_genome_stats_buf = None
     _fg_flat_work_buf = None
     _fg_genome_stats_upload_key = None
@@ -161,6 +168,60 @@ def reset_force_greats_api_state() -> None:
     _fg_pair_caps_state = None
     _fg_pair_caps_default_buf = None
     _fg_pair_caps_custom_key = None
+
+
+def _get_forced_counts_staging_tiers() -> tuple[int, ...]:
+    global _fg_forced_counts_staging_tiers
+    if _fg_forced_counts_staging_tiers is not None:
+        return _fg_forced_counts_staging_tiers
+
+    raw = str(os.environ.get("FG_FORCED_COUNTS_STAGING_TIERS", "") or "").strip()
+    tiers: list[int] = []
+    if raw:
+        for tok in raw.split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            try:
+                tiers.append(int(tok))
+            except Exception:
+                continue
+
+    if not tiers:
+        tiers = list(_FG_FORCED_COUNTS_STAGING_TIERS_DEFAULT)
+
+    # Normalize: unique, ascending, clamped to max rows.
+    norm = sorted({int(x) for x in tiers if int(x) > 0})
+    norm = [int(x) for x in norm if int(x) <= int(_FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)]
+    if not norm:
+        norm = [int(_FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)]
+    if int(norm[-1]) != int(_FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT):
+        norm.append(int(_FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT))
+
+    _fg_forced_counts_staging_tiers = tuple(int(x) for x in norm)
+    return _fg_forced_counts_staging_tiers
+
+
+def _pick_forced_counts_staging_rows(n_cfg: int) -> int:
+    n_cfg = int(n_cfg)
+    for tier in _get_forced_counts_staging_tiers():
+        if n_cfg <= int(tier):
+            return int(tier)
+    return int(_get_forced_counts_staging_tiers()[-1])
+
+
+def _get_forced_counts_staging(rows: int) -> Any:
+    global _fg_forced_counts_staging_pool
+    rows = int(rows)
+    if rows <= 0:
+        rows = int(_FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)
+    if _fg_forced_counts_staging_pool is None:
+        _fg_forced_counts_staging_pool = {}
+    staging = _fg_forced_counts_staging_pool.get(rows)
+    if staging is None:
+        staging = ti.ndarray(dtype=ti.i32, shape=(int(rows), fg_fields.FG_MAX_SECTIONS))
+        _fg_forced_counts_staging_pool[int(rows)] = staging
+    return staging
 
 
 def _is_vulkan_backend_failure(exc: BaseException) -> bool:
@@ -613,9 +674,10 @@ def _solve_force_greats_finder_gpu_impl(
         raise ValueError(f"Too many FG sections: {n_sections} > {fg_fields.FG_MAX_SECTIONS}")
 
     global _fg_forced_upload_buf
-    # Ensure buffer is allocated AND large enough (in case FG_MAX_CONFIGS changed)
-    if _fg_forced_upload_buf is None or _fg_forced_upload_buf.shape[0] < fg_fields.FG_MAX_CONFIGS:
-        _fg_forced_upload_buf = np.zeros((fg_fields.FG_MAX_CONFIGS, fg_fields.FG_MAX_SECTIONS), dtype=np.int32)
+    # Host-side pack buffer: only needs to cover the max staging tier, not FG_MAX_CONFIGS.
+    max_staging_rows = int(_get_forced_counts_staging_tiers()[-1])
+    if _fg_forced_upload_buf is None or int(_fg_forced_upload_buf.shape[0]) < int(max_staging_rows):
+        _fg_forced_upload_buf = np.zeros((int(max_staging_rows), fg_fields.FG_MAX_SECTIONS), dtype=np.int32)
 
     # Adaptive cfg_chunk: target ~2M threads per kernel to avoid TDR while staying 100% utilized.
     #
@@ -661,13 +723,6 @@ def _solve_force_greats_finder_gpu_impl(
 
     # Pre-fetch buffer reference
     buf = _fg_forced_upload_buf
-    global _fg_forced_counts_staging, _fg_forced_counts_staging_rows
-    if _fg_forced_counts_staging is None:
-        _fg_forced_counts_staging = ti.ndarray(
-            dtype=ti.i32,
-            shape=(_FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT, fg_fields.FG_MAX_SECTIONS),
-        )
-        _fg_forced_counts_staging_rows = int(_FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)
 
     # Config upload caching: avoid repeated CPU packing and host->device uploads
     # when the config list content is unchanged across calls.
@@ -709,10 +764,12 @@ def _solve_force_greats_finder_gpu_impl(
                     limit = min(n_sections, len(cfg))
                     buf[i, :limit] = cfg[:limit]
 
-            # Upload using a persistent staging buffer with a stable shape (required for Taichi specialization).
+            # Upload using a small tiered staging buffer (bounded set of shapes).
             # Only the first `n_cfg` rows are meaningful; the upload kernel clamps by `n_cfg`.
-            _fg_forced_counts_staging.from_numpy(buf[:_FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT, :])
-            fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), _fg_forced_counts_staging)
+            staging_rows = _pick_forced_counts_staging_rows(int(n_cfg))
+            staging = _get_forced_counts_staging(int(staging_rows))
+            staging.from_numpy(buf[: int(staging_rows), :])
+            fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), staging)
 
             if cfg_upload_key is not None and n_chunks == 1 and cfg_offset == 0:
                 _fg_forced_configs_upload_key = cfg_upload_key

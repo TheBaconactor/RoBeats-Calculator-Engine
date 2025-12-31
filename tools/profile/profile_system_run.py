@@ -20,6 +20,7 @@ import datetime as _dt
 import json
 import os
 import platform
+import re
 import signal
 import subprocess
 import sys
@@ -96,6 +97,94 @@ def _start_typeperf(csv_path: Path, interval_sec: float) -> subprocess.Popen | N
         )
     except Exception:
         return None
+
+
+def _run_powershell_json(ps_script: str, *, timeout_sec: float = 10.0) -> Any | None:
+    """
+    Best-effort helper to run a short PowerShell script that emits JSON.
+
+    Returns parsed JSON, or None on failure.
+    """
+    if platform.system() != "Windows":
+        return None
+    ps_script = str(ps_script or "").strip()
+    if not ps_script:
+        return None
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_script],
+            capture_output=True,
+            text=True,
+            timeout=max(0.1, float(timeout_sec)),
+            check=False,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    out = (proc.stdout or "").strip()
+    if not out:
+        return None
+    try:
+        return json.loads(out)
+    except Exception:
+        return None
+
+
+def _windows_display_adapter_luid_name_map() -> dict[str, str]:
+    """
+    Map adapter LUIDs (as `0xhhhhhhhh_0xllllllll`) to friendly names on Windows.
+
+    This uses PnP device properties (no third-party deps). The property key
+    `{60B193CB-5276-4D0F-96FC-F173ABAD3EC6} 2` is the adapter LUID (UInt64).
+    """
+    if platform.system() != "Windows":
+        return {}
+
+    ps = r"""
+$key = '{60B193CB-5276-4D0F-96FC-F173ABAD3EC6} 2'
+$out = @()
+try {
+  $devs = Get-PnpDevice -Class Display -ErrorAction Stop | Select-Object FriendlyName, InstanceId
+} catch {
+  $devs = @()
+}
+foreach ($d in ($devs | Where-Object { $_ -ne $null })) {
+  $luid = $null
+  try {
+    $luid = (Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName $key -ErrorAction Stop).Data
+  } catch {
+    $luid = $null
+  }
+  if ($luid -eq $null) { continue }
+  $out += [pscustomobject]@{ name = $d.FriendlyName; luid = [uint64]$luid }
+}
+$out | ConvertTo-Json -Compress
+"""
+    data = _run_powershell_json(ps, timeout_sec=10.0)
+    if data is None:
+        return {}
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        return {}
+
+    out: dict[str, str] = {}
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        try:
+            luid_u64 = int(item.get("luid") or 0)
+        except Exception:
+            continue
+        hi = (luid_u64 >> 32) & 0xFFFFFFFF
+        lo = luid_u64 & 0xFFFFFFFF
+        luid_key = f"0x{hi:08x}_0x{lo:08x}".lower()
+        out[luid_key] = name
+    return out
 
 
 def _stop_typeperf(proc: subprocess.Popen | None, timeout_sec: float = 5.0) -> None:
@@ -267,10 +356,19 @@ class _CpuSampler:
                     time.sleep(remaining)
 
 
+def _clamp_pct(v: float) -> float:
+    if v < 0.0:
+        return 0.0
+    if v > 100.0:
+        return 100.0
+    return float(v)
+
+
 def _parse_typeperf_csv(
     csv_path: Path,
     *,
     target_pid: int,
+    luid_name_map: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     if not csv_path.exists():
         return {"ok": False, "error": "missing_csv"}
@@ -281,6 +379,7 @@ def _parse_typeperf_csv(
     #  - max engine utilization globally (across all engines)
     #  - max dedicated/shared adapter memory usage
     target_token = f"pid_{int(target_pid)}_"
+    luid_name_map = dict(luid_name_map or {})
 
     try:
         with csv_path.open("r", encoding="utf-8", newline="") as f:
@@ -300,6 +399,48 @@ def _parse_typeperf_csv(
             mem_ded_max_series: list[float] = []
             mem_shr_max_series: list[float] = []
 
+            # Optional breakdown by engine type (engtype_Compute, engtype_3D, ...).
+            engtype_re = re.compile(r"engtype_([A-Za-z0-9_]+)", re.IGNORECASE)
+            luid_re = re.compile(r"luid_0x([0-9A-Fa-f]+)_0x([0-9A-Fa-f]+)_phys_", re.IGNORECASE)
+            util_cols_by_type: dict[str, list[int]] = {}
+            pid_util_cols_by_type: dict[str, list[int]] = {}
+            util_cols_by_luid: dict[str, list[int]] = {}
+            pid_util_cols_by_luid: dict[str, list[int]] = {}
+            util_cols_by_luid_type: dict[tuple[str, str], list[int]] = {}
+            pid_util_cols_by_luid_type: dict[tuple[str, str], list[int]] = {}
+            for i in util_cols:
+                name = col_names[i]
+                m = engtype_re.search(name)
+                m2 = luid_re.search(name)
+                if m2:
+                    luid = f"0x{m2.group(1).lower()}_0x{m2.group(2).lower()}"
+                else:
+                    luid = ""
+                if not m:
+                    # Still allow per-adapter max aggregation even if we can't classify type.
+                    if luid:
+                        util_cols_by_luid.setdefault(luid, []).append(i)
+                        if target_token in name:
+                            pid_util_cols_by_luid.setdefault(luid, []).append(i)
+                    continue
+                typ = m.group(1).lower()
+                util_cols_by_type.setdefault(typ, []).append(i)
+                if luid:
+                    util_cols_by_luid.setdefault(luid, []).append(i)
+                    util_cols_by_luid_type.setdefault((luid, typ), []).append(i)
+                if target_token in name:
+                    pid_util_cols_by_type.setdefault(typ, []).append(i)
+                    if luid:
+                        pid_util_cols_by_luid.setdefault(luid, []).append(i)
+                        pid_util_cols_by_luid_type.setdefault((luid, typ), []).append(i)
+
+            util_global_by_type_series: dict[str, list[float]] = {k: [] for k in util_cols_by_type}
+            util_pid_by_type_series: dict[str, list[float]] = {k: [] for k in pid_util_cols_by_type}
+            util_global_by_luid_series: dict[str, list[float]] = {k: [] for k in util_cols_by_luid}
+            util_pid_by_luid_series: dict[str, list[float]] = {k: [] for k in pid_util_cols_by_luid}
+            util_global_by_luid_type_series: dict[tuple[str, str], list[float]] = {k: [] for k in util_cols_by_luid_type}
+            util_pid_by_luid_type_series: dict[tuple[str, str], list[float]] = {k: [] for k in pid_util_cols_by_luid_type}
+
             def _to_float(x: str) -> float | None:
                 try:
                     x2 = x.strip().strip('"')
@@ -318,13 +459,49 @@ def _parse_typeperf_csv(
                     vals = [_to_float(row[i]) for i in util_cols if i < len(row)]
                     vals = [v for v in vals if v is not None]
                     if vals:
-                        util_global_max_series.append(float(max(vals)))
+                        util_global_max_series.append(_clamp_pct(float(max(vals))))
 
                 if pid_util_cols:
                     vals = [_to_float(row[i]) for i in pid_util_cols if i < len(row)]
                     vals = [v for v in vals if v is not None]
                     if vals:
-                        util_pid_max_series.append(float(max(vals)))
+                        util_pid_max_series.append(_clamp_pct(float(max(vals))))
+
+                # Per-type utilization (max across engines of that type).
+                for typ, cols in util_cols_by_type.items():
+                    vals = [_to_float(row[i]) for i in cols if i < len(row)]
+                    vals = [v for v in vals if v is not None]
+                    if vals:
+                        util_global_by_type_series[typ].append(_clamp_pct(float(max(vals))))
+                for typ, cols in pid_util_cols_by_type.items():
+                    vals = [_to_float(row[i]) for i in cols if i < len(row)]
+                    vals = [v for v in vals if v is not None]
+                    if vals:
+                        util_pid_by_type_series[typ].append(_clamp_pct(float(max(vals))))
+
+                # Per-adapter (LUID) utilization.
+                for luid, cols in util_cols_by_luid.items():
+                    vals = [_to_float(row[i]) for i in cols if i < len(row)]
+                    vals = [v for v in vals if v is not None]
+                    if vals:
+                        util_global_by_luid_series[luid].append(_clamp_pct(float(max(vals))))
+                for luid, cols in pid_util_cols_by_luid.items():
+                    vals = [_to_float(row[i]) for i in cols if i < len(row)]
+                    vals = [v for v in vals if v is not None]
+                    if vals:
+                        util_pid_by_luid_series[luid].append(_clamp_pct(float(max(vals))))
+
+                # Per-adapter + engine type.
+                for key, cols in util_cols_by_luid_type.items():
+                    vals = [_to_float(row[i]) for i in cols if i < len(row)]
+                    vals = [v for v in vals if v is not None]
+                    if vals:
+                        util_global_by_luid_type_series[key].append(_clamp_pct(float(max(vals))))
+                for key, cols in pid_util_cols_by_luid_type.items():
+                    vals = [_to_float(row[i]) for i in cols if i < len(row)]
+                    vals = [v for v in vals if v is not None]
+                    if vals:
+                        util_pid_by_luid_type_series[key].append(_clamp_pct(float(max(vals))))
 
                 # Adapter memory is in bytes.
                 if ded_cols:
@@ -342,28 +519,576 @@ def _parse_typeperf_csv(
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
-    def _series_stats(series: list[float]) -> dict[str, Any]:
-        if not series:
-            return {"count": 0}
-        s = sorted(series)
-        n = len(s)
-        return {
-            "count": n,
-            "mean": float(sum(series) / n),
-            "max": float(s[-1]),
-            "p50": float(s[n // 2]),
-            "p95": float(s[min(n - 1, int(round(0.95 * (n - 1))))]),
-        }
+    # Summarize per-adapter stats, labeling with friendly names when available.
+    def _label_luid(luid: str) -> str:
+        luid = str(luid or "").lower()
+        name = str(luid_name_map.get(luid, "") or "").strip()
+        return f"{name} ({luid})" if name else luid
+
+    def _by_adapter_stats(series_map: dict[str, list[float]]) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for luid, series in sorted(series_map.items(), key=lambda kv: kv[0]):
+            if not series:
+                continue
+            out[_label_luid(luid)] = _series_stats(series)
+        return out
+
+    def _by_adapter_type_stats(series_map: dict[tuple[str, str], list[float]]) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        # structure: adapter_label -> {type -> stats}
+        grouped: dict[str, dict[str, Any]] = {}
+        for (luid, typ), series in series_map.items():
+            if not series:
+                continue
+            adapter = _label_luid(luid)
+            grouped.setdefault(adapter, {})[str(typ)] = _series_stats(series)
+        for adapter in sorted(grouped):
+            out[adapter] = grouped[adapter]
+        return out
 
     return {
         "ok": True,
         "target_pid": int(target_pid),
         "target_engine_util_pct_max": _series_stats(util_pid_max_series),
         "global_engine_util_pct_max": _series_stats(util_global_max_series),
+        "target_engine_util_pct_by_type_max": {k: _series_stats(v) for k, v in util_pid_by_type_series.items() if v},
+        "global_engine_util_pct_by_type_max": {k: _series_stats(v) for k, v in util_global_by_type_series.items() if v},
+        "target_engine_util_pct_by_adapter_max": _by_adapter_stats(util_pid_by_luid_series),
+        "global_engine_util_pct_by_adapter_max": _by_adapter_stats(util_global_by_luid_series),
+        "target_engine_util_pct_by_adapter_type_max": _by_adapter_type_stats(util_pid_by_luid_type_series),
+        "global_engine_util_pct_by_adapter_type_max": _by_adapter_type_stats(util_global_by_luid_type_series),
         "adapter_dedicated_usage_bytes_max": _series_stats(mem_ded_max_series),
         "adapter_shared_usage_bytes_max": _series_stats(mem_shr_max_series),
     }
 
+
+def _load_typeperf_pid_util_series(
+    csv_path: Path,
+    *,
+    target_pid: int,
+) -> list[float]:
+    """
+    Returns a per-sample series of "max GPU Engine utilization (%) across engines for target pid".
+
+    This deliberately ignores the timestamp column and only returns the numeric values; callers
+    can re-attach sample times based on the known typeperf interval and when typeperf started.
+    """
+    if not csv_path.exists():
+        return []
+
+    target_token = f"pid_{int(target_pid)}_"
+    series: list[float] = []
+
+    def _to_float(x: str) -> float | None:
+        try:
+            x2 = x.strip().strip('"')
+            if not x2:
+                return None
+            return float(x2)
+        except Exception:
+            return None
+
+    try:
+        with csv_path.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if not header or len(header) < 2:
+                return []
+
+            col_names = list(header)
+            util_cols = [i for i, name in enumerate(col_names) if name.endswith(r"\Utilization Percentage")]
+            pid_util_cols = [i for i in util_cols if target_token in col_names[i]]
+            if not pid_util_cols:
+                return []
+
+            for row in reader:
+                if not row or len(row) < 2:
+                    continue
+                vals = [_to_float(row[i]) for i in pid_util_cols if i < len(row)]
+                vals = [v for v in vals if v is not None]
+                if vals:
+                    series.append(_clamp_pct(float(max(vals))))
+    except Exception:
+        return []
+
+    return series
+
+
+def _typeperf_timestamp_to_epoch(ts: str) -> float | None:
+    ts = (ts or "").strip().strip('"')
+    if not ts:
+        return None
+    # Typical typeperf format: "12/31/2025 14:53:09.273"
+    for fmt in ("%m/%d/%Y %H:%M:%S.%f", "%m/%d/%Y %H:%M:%S"):
+        try:
+            dt = _dt.datetime.strptime(ts, fmt)
+            return float(dt.timestamp())
+        except Exception:
+            continue
+    return None
+
+
+def _load_typeperf_pid_util_timeseries(
+    csv_path: Path,
+    *,
+    target_pid: int,
+) -> list[tuple[float, float]]:
+    if not csv_path.exists():
+        return []
+
+    target_token = f"pid_{int(target_pid)}_"
+    out: list[tuple[float, float]] = []
+
+    def _to_float(x: str) -> float | None:
+        try:
+            x2 = x.strip().strip('"')
+            if not x2:
+                return None
+            return float(x2)
+        except Exception:
+            return None
+
+    try:
+        with csv_path.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if not header or len(header) < 2:
+                return []
+
+            col_names = list(header)
+            util_cols = [i for i, name in enumerate(col_names) if name.endswith(r"\Utilization Percentage")]
+            pid_util_cols = [i for i in util_cols if target_token in col_names[i]]
+            if not pid_util_cols:
+                return []
+
+            for row in reader:
+                if not row or len(row) < 2:
+                    continue
+                ts = _typeperf_timestamp_to_epoch(row[0])
+                if ts is None:
+                    continue
+                vals = [_to_float(row[i]) for i in pid_util_cols if i < len(row)]
+                vals = [v for v in vals if v is not None]
+                if vals:
+                    out.append((float(ts), _clamp_pct(float(max(vals)))))
+    except Exception:
+        return []
+
+    return out
+
+
+def _load_typeperf_global_util_series(csv_path: Path) -> list[float]:
+    """Returns a per-sample series of "max GPU Engine utilization (%) across all engines (global)"."""
+    if not csv_path.exists():
+        return []
+
+    series: list[float] = []
+
+    def _to_float(x: str) -> float | None:
+        try:
+            x2 = x.strip().strip('"')
+            if not x2:
+                return None
+            return float(x2)
+        except Exception:
+            return None
+
+    try:
+        with csv_path.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if not header or len(header) < 2:
+                return []
+
+            col_names = list(header)
+            util_cols = [i for i, name in enumerate(col_names) if name.endswith(r"\Utilization Percentage")]
+            if not util_cols:
+                return []
+
+            for row in reader:
+                if not row or len(row) < 2:
+                    continue
+                vals = [_to_float(row[i]) for i in util_cols if i < len(row)]
+                vals = [v for v in vals if v is not None]
+                if vals:
+                    series.append(_clamp_pct(float(max(vals))))
+    except Exception:
+        return []
+
+    return series
+
+
+def _load_typeperf_global_util_timeseries(csv_path: Path) -> list[tuple[float, float]]:
+    if not csv_path.exists():
+        return []
+
+    out: list[tuple[float, float]] = []
+
+    def _to_float(x: str) -> float | None:
+        try:
+            x2 = x.strip().strip('"')
+            if not x2:
+                return None
+            return float(x2)
+        except Exception:
+            return None
+
+    try:
+        with csv_path.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if not header or len(header) < 2:
+                return []
+
+            col_names = list(header)
+            util_cols = [i for i, name in enumerate(col_names) if name.endswith(r"\Utilization Percentage")]
+            if not util_cols:
+                return []
+
+            for row in reader:
+                if not row or len(row) < 2:
+                    continue
+                ts = _typeperf_timestamp_to_epoch(row[0])
+                if ts is None:
+                    continue
+                vals = [_to_float(row[i]) for i in util_cols if i < len(row)]
+                vals = [v for v in vals if v is not None]
+                if vals:
+                    out.append((float(ts), _clamp_pct(float(max(vals)))))
+    except Exception:
+        return []
+
+    return out
+
+
+def _series_stats(series: list[float] | list[int]) -> dict[str, Any]:
+    if not series:
+        return {"count": 0}
+    s = sorted(series)
+    n = len(s)
+    return {
+        "count": n,
+        "mean": float(sum(series) / n),
+        "max": float(s[-1]),
+        "p50": float(s[n // 2]),
+        "p95": float(s[min(n - 1, int(round(0.95 * (n - 1))))]),
+    }
+
+
+def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
+    if not trace_path.exists():
+        return {"ok": False, "error": "missing_trace"}
+
+    samples = 0
+    exec_events = 0
+    wait_events = 0
+    wait_sec_series: list[float] = []
+    wait_rows: list[dict[str, Any]] = []
+    fg_exec_events = 0
+    fg_exec_total_sec = 0.0
+    fg_intervals: list[tuple[float, float]] = []
+    fg_raw_intervals: list[tuple[float, float]] = []
+
+    fg_type_names = {
+        "process_force_greats",
+        "solve_force_greats_finder_gpu",
+        "fg_reset_global_best",
+        "fg_download_global_best",
+    }
+
+    def _types_has_fg(types: str) -> bool:
+        types = (types or "").strip()
+        if not types:
+            return False
+        for tok in types.split(";"):
+            tok = tok.strip()
+            if not tok:
+                continue
+            name = tok.split(":", 1)[0].strip()
+            if name in fg_type_names:
+                return True
+            if "force_great" in name:
+                return True
+        return False
+
+    try:
+        with trace_path.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if not row:
+                    continue
+                samples += 1
+                event = (row.get("event") or "").strip().lower()
+                if event == "wait":
+                    wait_events += 1
+                    try:
+                        wall_ts = float(row.get("wall_ts") or "0")
+                    except Exception:
+                        wall_ts = 0.0
+                    try:
+                        w = float(row.get("wait_sec") or "0")
+                    except Exception:
+                        w = 0.0
+                    w = max(0.0, float(w))
+                    wait_sec_series.append(w)
+                    try:
+                        batch_size = int(row.get("batch_size") or "0")
+                    except Exception:
+                        batch_size = 0
+                    types = (row.get("types") or "").strip()
+                    wait_rows.append(
+                        {
+                            "wall_ts": float(wall_ts),
+                            "wait_sec": float(w),
+                            "batch_size": int(batch_size),
+                            "types": str(types),
+                        }
+                    )
+                    continue
+                if event != "exec":
+                    continue
+                exec_events += 1
+                types = (row.get("types") or "").strip()
+                if not _types_has_fg(types):
+                    continue
+                fg_exec_events += 1
+                try:
+                    wall_ts = float(row.get("wall_ts") or "0")
+                except Exception:
+                    continue
+                try:
+                    exec_sec = float(row.get("exec_sec") or "0")
+                except Exception:
+                    exec_sec = 0.0
+                exec_sec = max(0.0, float(exec_sec))
+                fg_exec_total_sec += exec_sec
+                end_ts = float(wall_ts)
+                start_ts = float(end_ts - exec_sec)
+                if exec_sec > 0:
+                    fg_raw_intervals.append((start_ts, end_ts))
+                    fg_intervals.append((start_ts, end_ts))
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    # Derive "idle gap" windows by merging consecutive wait intervals.
+    # Notes:
+    # - The executor's internal gather loop caps individual waits (often 0.1s when no work),
+    #   so we merge intervals to recover longer contiguous idle periods.
+    # - We split by category:
+    #   - no_work: batch_size==0 (no requests available)
+    #   - coalesce: batch_size>0 (had work but waited to batch more)
+    def _merge_wait_windows(rows: list[dict[str, Any]], *, want_no_work: bool) -> list[tuple[float, float, dict[str, Any]]]:
+        windows: list[tuple[float, float, dict[str, Any]]] = []
+        for r in rows:
+            try:
+                bs = int(r.get("batch_size", 0) or 0)
+            except Exception:
+                bs = 0
+            if want_no_work and bs != 0:
+                continue
+            if not want_no_work and bs <= 0:
+                continue
+
+            try:
+                end_ts = float(r.get("wall_ts") or 0.0)
+            except Exception:
+                continue
+            try:
+                w = float(r.get("wait_sec") or 0.0)
+            except Exception:
+                w = 0.0
+            w = max(0.0, float(w))
+            start_ts = float(end_ts - w)
+            if w <= 0:
+                continue
+
+            meta = {"end_types": str(r.get("types") or ""), "end_batch_size": bs}
+            windows.append((start_ts, end_ts, meta))
+
+        if not windows:
+            return []
+        windows.sort(key=lambda t: t[0])
+
+        merged: list[list[Any]] = []
+        for a, b, meta in windows:
+            if not merged:
+                merged.append([float(a), float(b), meta])
+                continue
+            prev = merged[-1]
+            # If the next wait starts before the current one ends (or very close), merge.
+            if float(a) <= float(prev[1]) + 0.002:
+                prev[1] = max(float(prev[1]), float(b))
+                # Keep the "end" metadata from the latest window (closest to end of idle period).
+                prev[2] = meta
+            else:
+                merged.append([float(a), float(b), meta])
+
+        return [(float(a), float(b), dict(meta)) for a, b, meta in merged]
+
+    no_work_windows = _merge_wait_windows(wait_rows, want_no_work=True)
+    coalesce_windows = _merge_wait_windows(wait_rows, want_no_work=False)
+
+    def _window_stats(windows: list[tuple[float, float, dict[str, Any]]]) -> dict[str, Any]:
+        lens = [max(0.0, float(b - a)) for a, b, _ in windows]
+        return _series_stats(lens)
+
+    def _top_windows(windows: list[tuple[float, float, dict[str, Any]]], *, limit: int = 10) -> list[dict[str, Any]]:
+        rows_out: list[dict[str, Any]] = []
+        for a, b, meta in windows:
+            rows_out.append(
+                {
+                    "gap_sec": float(max(0.0, b - a)),
+                    "start_wall_ts": float(a),
+                    "end_wall_ts": float(b),
+                    "next_batch_size": int(meta.get("end_batch_size") or 0),
+                    "next_types": str(meta.get("end_types") or ""),
+                }
+            )
+        rows_out.sort(key=lambda x: x.get("gap_sec", 0.0), reverse=True)
+        return rows_out[: max(1, int(limit))]
+
+    if not fg_intervals:
+        return {
+            "ok": True,
+            "samples": int(samples),
+            "exec_events": int(exec_events),
+            "wait_events": int(wait_events),
+            "wait_sec": _series_stats(wait_sec_series),
+            "idle_no_work_gap_sec": _window_stats(no_work_windows),
+            "idle_no_work_gap_top": _top_windows(no_work_windows),
+            "idle_coalesce_gap_sec": _window_stats(coalesce_windows),
+            "idle_coalesce_gap_top": _top_windows(coalesce_windows),
+            "fg_exec_events": int(fg_exec_events),
+            "fg_exec_total_sec": float(fg_exec_total_sec),
+            "fg_intervals": [],
+        }
+
+    fg_intervals.sort(key=lambda t: t[0])
+    merged: list[list[float]] = []
+    for a, b in fg_intervals:
+        if not merged:
+            merged.append([float(a), float(b)])
+            continue
+        if a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], float(b))
+        else:
+            merged.append([float(a), float(b)])
+
+    fg_gaps: list[float] = []
+    fg_gap_top: list[dict[str, Any]] = []
+    try:
+        fg_raw_intervals.sort(key=lambda t: t[0])
+        prev_end = None
+        for a, b in fg_raw_intervals:
+            if prev_end is None:
+                prev_end = float(b)
+                continue
+            gap = float(a - float(prev_end))
+            if gap > 0:
+                fg_gaps.append(gap)
+                fg_gap_top.append(
+                    {
+                        "gap_sec": float(gap),
+                        "prev_end_wall_ts": float(prev_end),
+                        "next_start_wall_ts": float(a),
+                    }
+                )
+            prev_end = max(float(prev_end), float(b))
+        fg_gap_top.sort(key=lambda x: x.get("gap_sec", 0.0), reverse=True)
+        fg_gap_top = fg_gap_top[:10]
+    except Exception:
+        fg_gaps = []
+        fg_gap_top = []
+
+    fg_span_sec = 0.0
+    try:
+        fg_span_sec = float(max(0.0, merged[-1][1] - merged[0][0])) if merged else 0.0
+    except Exception:
+        fg_span_sec = 0.0
+    fg_exec_duty_pct = (float(fg_exec_total_sec) / float(fg_span_sec) * 100.0) if fg_span_sec > 0 else 0.0
+
+    return {
+        "ok": True,
+        "samples": int(samples),
+        "exec_events": int(exec_events),
+        "wait_events": int(wait_events),
+        "wait_sec": _series_stats(wait_sec_series),
+        "idle_no_work_gap_sec": _window_stats(no_work_windows),
+        "idle_no_work_gap_top": _top_windows(no_work_windows),
+        "idle_coalesce_gap_sec": _window_stats(coalesce_windows),
+        "idle_coalesce_gap_top": _top_windows(coalesce_windows),
+        "fg_exec_events": int(fg_exec_events),
+        "fg_exec_total_sec": float(fg_exec_total_sec),
+        "fg_span_sec": float(fg_span_sec),
+        "fg_exec_duty_pct": float(fg_exec_duty_pct),
+        "fg_gap_sec": _series_stats(fg_gaps),
+        "fg_gap_top": fg_gap_top,
+        "fg_intervals": [(float(a), float(b)) for a, b in merged],
+    }
+
+
+def _gpu_util_during_intervals(
+    util_series: list[float],
+    *,
+    series_start_wall_ts: float,
+    interval_sec: float,
+    intervals: list[tuple[float, float]],
+) -> dict[str, Any]:
+    if not util_series or not intervals:
+        return {"ok": False, "error": "missing_series_or_intervals"}
+
+    interval_sec = max(0.001, float(interval_sec))
+    intervals = sorted([(float(a), float(b)) for a, b in intervals], key=lambda t: t[0])
+
+    fg_vals: list[float] = []
+    non_fg_vals: list[float] = []
+
+    j = 0
+    for i, util in enumerate(util_series):
+        sample_start = float(series_start_wall_ts + float(i) * interval_sec)
+        sample_end = float(sample_start + interval_sec)
+        while j < len(intervals) and sample_start > intervals[j][1]:
+            j += 1
+        in_fg = j < len(intervals) and (sample_end >= intervals[j][0] and sample_start <= intervals[j][1])
+        (fg_vals if in_fg else non_fg_vals).append(float(util))
+
+    return {
+        "ok": True,
+        "fg": _series_stats(fg_vals),
+        "non_fg": _series_stats(non_fg_vals),
+    }
+
+
+def _gpu_util_during_intervals_ts(
+    util_ts: list[tuple[float, float]],
+    *,
+    sample_interval_sec: float,
+    intervals: list[tuple[float, float]],
+) -> dict[str, Any]:
+    if not util_ts or not intervals:
+        return {"ok": False, "error": "missing_series_or_intervals"}
+
+    sample_interval_sec = max(0.001, float(sample_interval_sec))
+    intervals = sorted([(float(a), float(b)) for a, b in intervals], key=lambda t: t[0])
+
+    fg_vals: list[float] = []
+    non_fg_vals: list[float] = []
+
+    j = 0
+    for ts, util in util_ts:
+        # Perfmon-style samples are averages over the preceding interval ending at `ts`.
+        sample_start = float(ts - sample_interval_sec)
+        sample_end = float(ts)
+        while j < len(intervals) and sample_start > intervals[j][1]:
+            j += 1
+        in_fg = j < len(intervals) and (sample_end >= intervals[j][0] and sample_start <= intervals[j][1])
+        (fg_vals if in_fg else non_fg_vals).append(float(util))
+
+    return {
+        "ok": True,
+        "fg": _series_stats(fg_vals),
+        "non_fg": _series_stats(non_fg_vals),
+    }
 
 def _parse_cpu_jsonl(cpu_path: Path) -> dict[str, Any]:
     if not cpu_path.exists():
@@ -396,19 +1121,6 @@ def _parse_cpu_jsonl(cpu_path: Path) -> dict[str, Any]:
     if samples <= 0:
         return {"ok": False, "error": "no_samples"}
 
-    def _series_stats(series: list[float] | list[int]) -> dict[str, Any]:
-        if not series:
-            return {"count": 0}
-        s = sorted(series)
-        n = len(s)
-        return {
-            "count": n,
-            "mean": float(sum(series) / n),
-            "max": float(s[-1]),
-            "p50": float(s[n // 2]),
-            "p95": float(s[min(n - 1, int(round(0.95 * (n - 1))))]),
-        }
-
     return {
         "ok": True,
         "samples": int(samples),
@@ -439,6 +1151,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Set a sane default bundle for profiling (PERF_TIMING=1, GPU_EXECUTOR_PROFILE=1) unless overridden.",
     )
+    parser.add_argument(
+        "--enable-gpu-executor-trace",
+        action="store_true",
+        help="Write GPU executor trace CSV (enables FG-phase GPU utilization breakdown when used with typeperf).",
+    )
     parser.add_argument("cmd", nargs=argparse.REMAINDER, help="Command to run after `--` (e.g. -- python main.py)")
 
     ns = parser.parse_args(argv)
@@ -462,10 +1179,24 @@ def main(argv: list[str] | None = None) -> int:
         summary_json=out_dir / "summary.json",
     )
 
+    try:
+        typeperf_interval_sec_effective = max(1, int(round(float(ns.typeperf_interval) or 0.0)))
+    except Exception:
+        typeperf_interval_sec_effective = 1
+
     child_env = os.environ.copy()
     if ns.enable_perf_defaults:
         child_env.setdefault("PERF_TIMING", "1")
         child_env.setdefault("GPU_EXECUTOR_PROFILE", "1")
+
+    # If requested (or implied by perf defaults), capture a per-request trace from the GPU executor.
+    trace_path: Path | None = None
+    if ns.enable_gpu_executor_trace or ns.enable_perf_defaults:
+        if not str(child_env.get("GPU_EXECUTOR_TRACE_PATH", "") or "").strip():
+            trace_path = paths.out_dir / "gpu_executor_trace.csv"
+            child_env["GPU_EXECUTOR_TRACE_PATH"] = str(trace_path)
+        else:
+            trace_path = Path(str(child_env["GPU_EXECUTOR_TRACE_PATH"]))
 
     for assignment in ns.set_env:
         if "=" not in assignment:
@@ -490,6 +1221,7 @@ def main(argv: list[str] | None = None) -> int:
         sampler = _CpuSampler(proc.pid, paths.cpu_jsonl, float(ns.interval))
         sampler.start()
         typeperf_proc = None
+        typeperf_started_at = None
         try:
             delay = max(0.0, float(ns.typeperf_start_delay))
         except Exception:
@@ -505,9 +1237,11 @@ def main(argv: list[str] | None = None) -> int:
                 time.sleep(min(0.1, max(0.0, deadline - time.perf_counter())))
         try:
             if proc.poll() is None:
-                typeperf_proc = _start_typeperf(paths.typeperf_csv, float(ns.typeperf_interval))
+                typeperf_started_at = time.time()
+                typeperf_proc = _start_typeperf(paths.typeperf_csv, float(typeperf_interval_sec_effective))
         except Exception:
             typeperf_proc = None
+            typeperf_started_at = None
 
         exit_code = None
         try:
@@ -528,26 +1262,80 @@ def main(argv: list[str] | None = None) -> int:
 
         t_wall1 = time.time()
 
+    display_adapters = _windows_display_adapter_luid_name_map()
+
     summary = {
+        "display_adapters": display_adapters,
         "cmd": cmd,
         "exit_code": int(exit_code) if exit_code is not None else None,
         "started_at_epoch_sec": float(t_wall0),
         "ended_at_epoch_sec": float(t_wall1),
         "elapsed_sec": float(max(0.0, t_wall1 - t_wall0)),
+        "typeperf_started_at_epoch_sec": float(typeperf_started_at) if typeperf_started_at is not None else None,
+        "typeperf_interval_sec": float(typeperf_interval_sec_effective),
         "paths": {
             "out_dir": str(paths.out_dir),
             "stdout_log": str(paths.stdout_log),
             "cpu_jsonl": str(paths.cpu_jsonl),
             "gpu_typeperf_csv": str(paths.typeperf_csv),
+            "gpu_executor_trace_csv": str(trace_path) if trace_path is not None else "",
         },
         "cpu_summary": _parse_cpu_jsonl(paths.cpu_jsonl),
-        "gpu_summary": _parse_typeperf_csv(paths.typeperf_csv, target_pid=int(proc.pid)),
+        "gpu_summary": _parse_typeperf_csv(
+            paths.typeperf_csv,
+            target_pid=int(proc.pid),
+            luid_name_map=display_adapters,
+        ),
+        "gpu_executor_trace_summary": _parse_gpu_executor_trace(trace_path) if trace_path is not None else {"ok": False},
         "host": {
             "platform": platform.platform(),
             "python": sys.version,
             "cpu_count_logical": int(os.cpu_count() or 0),
         },
     }
+
+    # Optional: FG-phase GPU utilization breakdown using typeperf (GPU Engine util)
+    # and GPU executor trace (request-type intervals).
+    try:
+        trace_summary = summary.get("gpu_executor_trace_summary") or {}
+        intervals = trace_summary.get("fg_intervals") or []
+        if (
+            intervals
+            and typeperf_started_at is not None
+            and paths.typeperf_csv.exists()
+            and float(typeperf_interval_sec_effective) >= 1.0
+        ):
+            # Prefer true wall-clock timestamps from typeperf (more accurate than approximating from start+interval).
+            util_ts = _load_typeperf_pid_util_timeseries(paths.typeperf_csv, target_pid=int(proc.pid))
+            series_kind = "target_pid_engine_util_pct_max"
+            if not util_ts:
+                util_ts = _load_typeperf_global_util_timeseries(paths.typeperf_csv)
+                series_kind = "global_engine_util_pct_max"
+
+            if util_ts:
+                summary["gpu_phase_summary"] = _gpu_util_during_intervals_ts(
+                    util_ts,
+                    sample_interval_sec=float(typeperf_interval_sec_effective),
+                    intervals=[(float(a), float(b)) for a, b in intervals],
+                )
+            else:
+                # Fallback: approximate sampling times when we can't parse timestamps.
+                util_series = _load_typeperf_pid_util_series(paths.typeperf_csv, target_pid=int(proc.pid))
+                if not util_series:
+                    util_series = _load_typeperf_global_util_series(paths.typeperf_csv)
+                    series_kind = "global_engine_util_pct_max"
+                summary["gpu_phase_summary"] = _gpu_util_during_intervals(
+                    util_series,
+                    series_start_wall_ts=float(typeperf_started_at),
+                    interval_sec=float(typeperf_interval_sec_effective),
+                    intervals=[(float(a), float(b)) for a, b in intervals],
+                )
+
+            summary["gpu_phase_summary"]["series_kind"] = str(series_kind)
+        else:
+            summary["gpu_phase_summary"] = {"ok": False, "error": "missing_inputs"}
+    except Exception as exc:
+        summary["gpu_phase_summary"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     with paths.summary_json.open("w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, sort_keys=True)

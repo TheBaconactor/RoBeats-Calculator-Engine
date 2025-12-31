@@ -287,6 +287,126 @@ def iter_analytical_breakpoint_groups(
     all_union_counts = set()
     streaming_mode = False  # Once True, yield groups as they're built
 
+    def _pack_groups_for_yield(groups: list[dict]) -> list[dict]:
+        """
+        Pack multiple breakpoint groups into a smaller set of "super-groups" bounded by:
+          - merge_threshold_cfgs
+          - merge_threshold_threads
+
+        Correctness is preserved because each super-group evaluates the union of configs across all
+        included FT/FF pairs. Config ordering preserves first-seen order so cfg-idx tie-breaking is
+        stable vs sequential processing.
+        """
+        out: list[dict] = []
+        if not groups:
+            return out
+
+        # Preserve insertion order of `all_groups` (stable tie-breaking in downstream cfg_idx usage).
+        items = []
+        for g in groups:
+            pairs = g.get("ftff_pairs") or []
+            cfg_list = g.get("counts_list") or []
+            if not pairs or not cfg_list:
+                continue
+            try:
+                cfg_set = set(cfg_list)
+            except Exception:
+                cfg_set = {tuple(x) for x in cfg_list}
+            items.append((g, list(pairs), list(cfg_list), cfg_set))
+
+        if not items:
+            return out
+
+        cur_pairs: list[tuple[int, int]] = []
+        cur_cfg_list: list[tuple] = []
+        cur_cfg_set: set[tuple] = set()
+        cur_breakpoints = None
+        cur_pair_count = 0
+        cur_is_single = True
+
+        def _flush_current() -> None:
+            nonlocal cur_pairs, cur_cfg_list, cur_cfg_set, cur_breakpoints, cur_pair_count, cur_is_single
+            if not cur_pairs or not cur_cfg_list:
+                cur_pairs = []
+                cur_cfg_list = []
+                cur_cfg_set = set()
+                cur_breakpoints = None
+                cur_pair_count = 0
+                cur_is_single = True
+                return
+            out.append(
+                {
+                    "ftff_pairs": cur_pairs,
+                    "counts_list": cur_cfg_list,
+                    "section_breakpoints": cur_breakpoints if cur_is_single else None,
+                }
+            )
+            cur_pairs = []
+            cur_cfg_list = []
+            cur_cfg_set = set()
+            cur_breakpoints = None
+            cur_pair_count = 0
+            cur_is_single = True
+
+        for g, pairs, cfg_list, cfg_set in items:
+            cfg_count = len(cfg_set)
+            pair_count = len(pairs)
+            est_threads = int(n_genomes) * int(pair_count) * int(cfg_count)
+
+            # If this group alone exceeds thresholds, emit it as-is (unmerged).
+            if cfg_count > int(merge_threshold_cfgs) or est_threads > int(merge_threshold_threads):
+                _flush_current()
+                out.append(
+                    {
+                        "ftff_pairs": pairs,
+                        "counts_list": cfg_list,
+                        "section_breakpoints": g.get("section_breakpoints"),
+                    }
+                )
+                continue
+
+            if not cur_pairs:
+                cur_pairs = pairs
+                cur_breakpoints = g.get("section_breakpoints")
+                cur_is_single = True
+                cur_pair_count = pair_count
+                cur_cfg_list = []
+                cur_cfg_set = set()
+                for cfg in cfg_list:
+                    if cfg not in cur_cfg_set:
+                        cur_cfg_set.add(cfg)
+                        cur_cfg_list.append(cfg)
+                continue
+
+            new_cfg_count = int(len(cur_cfg_set) + len(cfg_set - cur_cfg_set))
+            new_pair_count = int(cur_pair_count + pair_count)
+            new_threads = int(n_genomes) * int(new_pair_count) * int(new_cfg_count)
+
+            if new_cfg_count <= int(merge_threshold_cfgs) and new_threads <= int(merge_threshold_threads):
+                cur_pairs.extend(pairs)
+                cur_pair_count = new_pair_count
+                cur_is_single = False
+                cur_breakpoints = None
+                for cfg in cfg_list:
+                    if cfg not in cur_cfg_set:
+                        cur_cfg_set.add(cfg)
+                        cur_cfg_list.append(cfg)
+            else:
+                _flush_current()
+                cur_pairs = pairs
+                cur_breakpoints = g.get("section_breakpoints")
+                cur_is_single = True
+                cur_pair_count = pair_count
+                cur_cfg_list = []
+                cur_cfg_set = set()
+                for cfg in cfg_list:
+                    if cfg not in cur_cfg_set:
+                        cur_cfg_set.add(cfg)
+                        cur_cfg_list.append(cfg)
+
+        _flush_current()
+        return out
+
     def _process_pair(ft_gems, ff_gems):
         """Process a single FT/FF pair and return its section breakpoints."""
         max_fp_by_sec = [0 for _ in range(num_sections)]
@@ -350,20 +470,21 @@ def iter_analytical_breakpoint_groups(
 
             if est_total_cfgs > merge_threshold_cfgs or est_threads > merge_threshold_threads:
                 streaming_mode = True
-                # Yield all groups from first batch
-                for group in all_groups.values():
-                    if group["ftff_pairs"]:
-                        yield group
-                # Clear pairs for next batches
-                for grp in all_groups.values():
+                # Yield all groups from first batch, but pack into bounded super-groups to
+                # reduce tiny (n_ftff=1/2) GPU tasks.
+                groups_to_yield = [g for g in all_groups.values() if g.get("ftff_pairs")]
+                for packed in _pack_groups_for_yield(groups_to_yield):
+                    yield packed
+                for grp in groups_to_yield:
                     grp["ftff_pairs"] = []
 
         elif streaming_mode:
-            # Yield groups with new pairs from this batch
-            for group in all_groups.values():
-                if group["ftff_pairs"]:
-                    yield group
-                    group["ftff_pairs"] = []
+            # Yield groups with new pairs from this batch, packed to reduce tiny GPU tasks.
+            groups_to_yield = [g for g in all_groups.values() if g.get("ftff_pairs")]
+            for packed in _pack_groups_for_yield(groups_to_yield):
+                yield packed
+            for grp in groups_to_yield:
+                grp["ftff_pairs"] = []
 
     # Handle empty groups case
     if not all_groups or len(all_union_counts) == 0:
@@ -392,6 +513,7 @@ def iter_analytical_breakpoint_groups(
         }
         yield merged_group
     else:
-        # Yield groups individually
-        for group in all_groups.values():
-            yield group
+        # Yield groups, but pack into bounded super-groups to reduce tiny GPU tasks.
+        groups_to_yield = [g for g in all_groups.values() if g.get("ftff_pairs")]
+        for packed in _pack_groups_for_yield(groups_to_yield):
+            yield packed

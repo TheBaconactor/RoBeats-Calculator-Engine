@@ -54,6 +54,43 @@ def _detect_backend() -> tuple:
         return ti.vulkan, "Vulkan"
 
 
+def _maybe_set_vulkan_visible_device() -> None:
+    """
+    Optional Vulkan device selection for hybrid/dual-GPU systems.
+
+    Taichi's Vulkan backend will pick a default device if multiple adapters are present.
+    You can force a specific device index (as seen by Taichi) via:
+      - `TAICHI_VULKAN_VISIBLE_DEVICE=1`
+
+    Notes:
+    - This must run before `ti.init()`.
+    - We intentionally only accept simple comma-separated integer lists to avoid
+      crashing Taichi with unexpected strings.
+    """
+    raw = str(os.environ.get("TAICHI_VULKAN_VISIBLE_DEVICE", "") or "").strip()
+    if not raw:
+        return
+
+    # Allow: "0", "1", "0,1"
+    ok = True
+    for tok in raw.split(","):
+        tok = tok.strip()
+        if not tok.isdigit():
+            ok = False
+            break
+    if not ok:
+        print(f"[Taichi] Ignoring TAICHI_VULKAN_VISIBLE_DEVICE={raw!r} (expected device index like '1')")
+        return
+
+    try:
+        import taichi._lib.core as ti_core
+
+        ti_core.set_vulkan_visible_device(raw)
+        print(f"[Taichi] Vulkan visible device override: {raw}")
+    except Exception as exc:
+        print(f"[Taichi] Failed to set Vulkan visible device ({type(exc).__name__}): {exc}")
+
+
 # IMPORTANT: These are read when init_taichi() is called, so callers can
 # set env vars before initialization.
 def get_kernel_profiler_enabled() -> bool:
@@ -98,6 +135,9 @@ def init_taichi():
         kernel_profiler = get_kernel_profiler_enabled()
         block_dim = get_block_dim()
         arch, backend_name = _detect_backend()
+
+        if arch == ti.vulkan:
+            _maybe_set_vulkan_visible_device()
 
         init_kwargs = dict(
             arch=arch,

@@ -28,6 +28,7 @@ import queue
 import os
 import traceback
 import time
+from pathlib import Path
 from collections import defaultdict
 from time import perf_counter
 from dataclasses import dataclass
@@ -170,6 +171,17 @@ class GpuExecutor:
         self._fg_tasks_max = 0
         self._fg_tasks_batch_hist = defaultdict(int)
 
+        # Optional live utilization/trace (opt-in via env vars)
+        self._trace_fp = None
+        self._trace_start_perf: Optional[float] = None
+        self._trace_start_wall: Optional[float] = None
+        self._live_enabled = False
+        self._live_interval_sec = 1.0
+        self._live_last_report_ts: Optional[float] = None
+        self._live_wait_sec = 0.0
+        self._live_exec_sec = 0.0
+        self._live_type_counts = defaultdict(int)
+
     def start(self, *, in_process: bool = False):
         """Start the GPU executor thread in the main process."""
         if self._running:
@@ -208,6 +220,31 @@ class GpuExecutor:
         self._response_queues = {}
         self._next_worker_id = 0
 
+        # Optional: emit per-interval utilization and/or write a CSV trace.
+        self._live_enabled = str(os.environ.get("GPU_EXECUTOR_LIVE", "0")).strip().lower() in {"1", "true", "yes", "on"}
+        try:
+            self._live_interval_sec = float(os.environ.get("GPU_EXECUTOR_LIVE_INTERVAL_SEC", "1.0"))
+        except Exception:
+            self._live_interval_sec = 1.0
+        self._live_interval_sec = max(0.1, float(self._live_interval_sec))
+        self._live_last_report_ts = None
+        self._live_wait_sec = 0.0
+        self._live_exec_sec = 0.0
+        self._live_type_counts = defaultdict(int)
+
+        self._trace_fp = None
+        self._trace_start_perf = None
+        self._trace_start_wall = None
+        trace_path = str(os.environ.get("GPU_EXECUTOR_TRACE_PATH", "") or "").strip()
+        if trace_path:
+            try:
+                Path(trace_path).parent.mkdir(parents=True, exist_ok=True)
+                self._trace_fp = open(trace_path, "a", encoding="utf-8", buffering=1)
+                if self._trace_fp.tell() == 0:
+                    self._trace_fp.write("wall_ts,rel_ts,event,wait_sec,exec_sec,batch_size,types,in_process\n")
+            except Exception:
+                self._trace_fp = None
+
         self._in_process_queues = bool(in_process)
         self._request_queue = queue.Queue() if self._in_process_queues else multiprocessing.Queue()
         self._running = True
@@ -240,6 +277,12 @@ class GpuExecutor:
             self._executor_thread.join(timeout=10.0)
 
         self._running = False
+        if self._trace_fp is not None:
+            try:
+                self._trace_fp.close()
+            except Exception:
+                pass
+            self._trace_fp = None
         if self._profile_enabled:
             idle_total = float(sum(self._idle_gaps))
             idle_max = float(max(self._idle_gaps)) if self._idle_gaps else 0.0
@@ -276,7 +319,7 @@ class GpuExecutor:
                     fg_tasks_hist = ""
             print(
                 "[GpuExecutor][PROFILE] "
-                f"wait={self._wait_sec:.2f}s exec={self._exec_sec:.2f}s util={util:.1f}% "
+                f"wait={self._wait_sec:.2f}s exec={self._exec_sec:.2f}s busy={util:.1f}% (executor) "
                 f"avg_exec_per_req={avg:.3f}s avg_batch={avg_batch:.2f} "
                 f"idle_gaps={len(self._idle_gaps)} idle_sum={idle_total:.2f}s idle_max={idle_max:.3f}s idle_p95={idle_p95:.3f}s "
                 f"idle_initial={idle_initial:.3f}s idle_tail={idle_tail:.3f}s "
@@ -309,7 +352,7 @@ class GpuExecutor:
         # Surface transfer/throughput counters from the in-process GPU profiler.
         # (Especially useful in in-flight mode where Windows GPU Engine counters
         # can be noisy and queue/executor timings include host-side work.)
-        if ENV.perf_timing or ENV.gpu_profiler:
+        if ENV.gpu_profiler:
             try:
                 from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
 
@@ -332,6 +375,54 @@ class GpuExecutor:
         self._response_queues[worker_id] = response_queue
 
         return worker_id, self._request_queue, response_queue
+
+    def _trace_event(
+        self,
+        *,
+        event: str,
+        wait_sec: float = 0.0,
+        exec_sec: float = 0.0,
+        batch_size: int = 0,
+        types: str = "",
+    ) -> None:
+        fp = self._trace_fp
+        if fp is None:
+            return
+        if self._trace_start_perf is None:
+            self._trace_start_perf = perf_counter()
+        if self._trace_start_wall is None:
+            self._trace_start_wall = time.time()
+        rel_ts = perf_counter() - float(self._trace_start_perf)
+        wall_ts = time.time()
+        try:
+            fp.write(
+                f"{wall_ts:.6f},{rel_ts:.6f},{event},{float(wait_sec):.6f},{float(exec_sec):.6f},{int(batch_size)},"
+                f"{types},{int(bool(self._in_process_queues))}\n"
+            )
+        except Exception:
+            pass
+
+    def _maybe_live_report(self) -> None:
+        if not self._live_enabled:
+            return
+        now = perf_counter()
+        if self._live_last_report_ts is None:
+            self._live_last_report_ts = now
+            return
+        if (now - float(self._live_last_report_ts)) < float(self._live_interval_sec):
+            return
+        total = float(self._live_wait_sec) + float(self._live_exec_sec)
+        util = (float(self._live_exec_sec) / total * 100.0) if total > 0 else 0.0
+        top_types = sorted(self._live_type_counts.items(), key=lambda kv: kv[1], reverse=True)[:4]
+        types_str = ",".join(f"{t.value}:{int(n)}" for t, n in top_types) if top_types else ""
+        print(
+            f"[GpuExecutor][LIVE] busy={util:.1f}% (executor) wait={self._live_wait_sec * 1000:.1f}ms "
+            f"exec={self._live_exec_sec * 1000:.1f}ms types=[{types_str}]"
+        )
+        self._live_last_report_ts = now
+        self._live_wait_sec = 0.0
+        self._live_exec_sec = 0.0
+        self._live_type_counts = defaultdict(int)
 
     def unregister_worker(self, worker_id: int):
         """Unregister a worker (cleanup)."""
@@ -390,6 +481,23 @@ class GpuExecutor:
                 batch = self._gather_batch(max_wait_ms=batch_wait_ms, max_batch_size=batch_max)
                 dt_wait = perf_counter() - t_wait0
                 self._wait_sec += dt_wait
+                self._live_wait_sec += float(dt_wait)
+
+                type_counts = defaultdict(int)
+                for r in batch or []:
+                    if r.request_type == GpuRequestType.SHUTDOWN:
+                        continue
+                    type_counts[r.request_type] += 1
+                types_str = ";".join(
+                    f"{t.value}:{int(n)}" for t, n in sorted(type_counts.items(), key=lambda kv: kv[0].value)
+                )
+                self._trace_event(
+                    event="wait",
+                    wait_sec=float(dt_wait),
+                    batch_size=len(batch or []),
+                    types=types_str,
+                )
+                self._maybe_live_report()
 
                 if self._profile_enabled:
                     if float(dt_wait) >= float(self._idle_sample_threshold_sec):
@@ -447,6 +555,15 @@ class GpuExecutor:
                             if req.worker_id in self._response_queues:
                                 self._response_queues[req.worker_id].put(resp)
                             self._requests_processed += 1
+                        self._trace_event(
+                            event="exec",
+                            exec_sec=float(dt_exec),
+                            batch_size=len(solve_requests),
+                            types=f"{GpuRequestType.SOLVE_GENOMES_PARALLEL.value}:{len(solve_requests)}",
+                        )
+                        self._live_exec_sec += float(dt_exec)
+                        self._live_type_counts[GpuRequestType.SOLVE_GENOMES_PARALLEL] += len(solve_requests)
+                        self._maybe_live_report()
                     else:
                         req = solve_requests[0]
                         t_exec0 = perf_counter()
@@ -460,6 +577,15 @@ class GpuExecutor:
                         if req.worker_id in self._response_queues:
                             self._response_queues[req.worker_id].put(response)
                         self._requests_processed += 1
+                        self._trace_event(
+                            event="exec",
+                            exec_sec=float(dt_exec),
+                            batch_size=1,
+                            types=f"{req.request_type.value}:1",
+                        )
+                        self._live_exec_sec += float(dt_exec)
+                        self._live_type_counts[req.request_type] += 1
+                        self._maybe_live_report()
 
                 # Process other request types individually
                 for req in other_requests:
@@ -474,6 +600,15 @@ class GpuExecutor:
                     if req.worker_id in self._response_queues:
                         self._response_queues[req.worker_id].put(response)
                     self._requests_processed += 1
+                    self._trace_event(
+                        event="exec",
+                        exec_sec=float(dt_exec),
+                        batch_size=1,
+                        types=f"{req.request_type.value}:1",
+                    )
+                    self._live_exec_sec += float(dt_exec)
+                    self._live_type_counts[req.request_type] += 1
+                    self._maybe_live_report()
 
                 if self._profile_enabled:
                     self._profile_last_work_end_ts = perf_counter()
