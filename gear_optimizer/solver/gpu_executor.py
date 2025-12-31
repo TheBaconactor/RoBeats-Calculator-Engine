@@ -41,6 +41,7 @@ class GpuRequestType(Enum):
     """Types of GPU requests that can be submitted."""
 
     SOLVE_GENOMES_PARALLEL = "solve_genomes_parallel"
+    SOLVE_GENOMES_FROM_REGISTRY = "solve_genomes_from_registry"
     OPTIMIZE_GEMS_BATCH = "optimize_gems_batch_gpu"
     LOAD_REF_ARRAYS = "load_ref_arrays"
     PRECOMPUTE_TIMELINE = "precompute_timeline_gpu"
@@ -605,6 +606,13 @@ class GpuExecutor:
                 except Exception:
                     song_slot = 0
                 return self._execute_solve_genomes(request, song_slot=song_slot)
+            elif request.request_type == GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY:
+                payload = request.payload or {}
+                try:
+                    song_slot = int(payload.get("song_slot", 0) or 0)
+                except Exception:
+                    song_slot = 0
+                return self._execute_solve_genomes_from_registry(request, song_slot=song_slot)
             elif request.request_type == GpuRequestType.OPTIMIZE_GEMS_BATCH:
                 return self._execute_optimize_gems_batch(request)
             elif request.request_type == GpuRequestType.LOAD_REF_ARRAYS:
@@ -670,6 +678,54 @@ class GpuExecutor:
             total_budget=payload.get("total_budget", 90),
             gem_scale_fever=payload.get("gem_scale_fever", 3),
             song_slot=song_slot,  # Pass song slot for batch coalescing
+        )
+
+        return GpuResponse(
+            request_id=request.request_id,
+            success=True,
+            result=results,
+        )
+
+    def _execute_solve_genomes_from_registry(self, request: GpuRequest, song_slot: int = 0) -> GpuResponse:
+        """Execute solve_genomes_from_registry on GPU (GPU-resident stat aggregation path)."""
+        from .taichi_gem.api import (
+            ga_upload_base_fixed_stats,
+            ga_upload_item_stats,
+            load_ref_arrays,
+            solve_genomes_from_registry,
+        )
+
+        payload = request.payload or {}
+
+        if "ref_arrays" in payload:
+            load_ref_arrays(payload["ref_arrays"])
+
+        if "item_stats" in payload and "slot_start" in payload and "slot_count" in payload:
+            ga_upload_item_stats(payload["item_stats"], payload["slot_start"], payload["slot_count"])
+
+        if "base_fixed_stats" in payload:
+            ga_upload_base_fixed_stats(payload["base_fixed_stats"])
+
+        song_slot = int(payload.get("song_slot", song_slot) or 0)
+        results = solve_genomes_from_registry(
+            population_indices=payload["population_indices"],
+            timeline_grid=payload["timeline_grid"],
+            is_p_ft=payload["is_p_ft"],
+            is_s_ft=payload["is_s_ft"],
+            is_p_ff=payload["is_p_ff"],
+            is_s_ff=payload["is_s_ff"],
+            is_p_pp=payload["is_p_pp"],
+            is_s_pp=payload["is_s_pp"],
+            is_p_cm=payload["is_p_cm"],
+            is_s_cm=payload["is_s_cm"],
+            is_p_fm=payload["is_p_fm"],
+            is_s_fm=payload["is_s_fm"],
+            is_p_ov=payload["is_p_ov"],
+            is_s_ov=payload["is_s_ov"],
+            ref_arrays=payload["ref_arrays"],
+            total_budget=payload.get("total_budget", 90),
+            gem_scale_fever=payload.get("gem_scale_fever", 3),
+            song_slot=song_slot,
         )
 
         return GpuResponse(
@@ -1170,6 +1226,110 @@ def submit_gpu_solve_genomes(
     result = response.result
     if isinstance(result, list) and len(result) != len(genome_stats_list):
         raise RuntimeError(f"GPU executor returned {len(result)} results for {len(genome_stats_list)} genomes")
+    return result
+
+
+def submit_gpu_solve_genomes_from_registry(
+    population_indices,
+    item_stats,
+    slot_start,
+    slot_count,
+    base_fixed_stats,
+    timeline_grid,
+    is_p_ft: int,
+    is_s_ft: int,
+    is_p_ff: int,
+    is_s_ff: int,
+    is_p_pp: int,
+    is_s_pp: int,
+    is_p_cm: int,
+    is_s_cm: int,
+    is_p_fm: int,
+    is_s_fm: int,
+    is_p_ov: int,
+    is_s_ov: int,
+    ref_arrays: dict,
+    total_budget: int = 90,
+    gem_scale_fever: int = 3,
+    song_slot: int = 0,
+    timeout: float = 60.0,
+) -> list:
+    """
+    Submit solve_genomes_from_registry request via IPC (for worker processes).
+
+    This uses the GPU-resident stat aggregation path and avoids uploading large
+    work-item buffers for FT/FF permutations.
+    """
+    global _REQUEST_COUNTER
+
+    if not _WORKER_MODE:
+        raise RuntimeError("submit_gpu_solve_genomes_from_registry called but not in worker mode")
+
+    _REQUEST_COUNTER += 1
+    request_id = _REQUEST_COUNTER
+
+    request = GpuRequest(
+        request_type=GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
+        request_id=request_id,
+        worker_id=_WORKER_ID,
+        payload={
+            "population_indices": population_indices,
+            "item_stats": item_stats,
+            "slot_start": slot_start,
+            "slot_count": slot_count,
+            "base_fixed_stats": base_fixed_stats,
+            "timeline_grid": timeline_grid,
+            "is_p_ft": int(is_p_ft),
+            "is_s_ft": int(is_s_ft),
+            "is_p_ff": int(is_p_ff),
+            "is_s_ff": int(is_s_ff),
+            "is_p_pp": int(is_p_pp),
+            "is_s_pp": int(is_s_pp),
+            "is_p_cm": int(is_p_cm),
+            "is_s_cm": int(is_s_cm),
+            "is_p_fm": int(is_p_fm),
+            "is_s_fm": int(is_s_fm),
+            "is_p_ov": int(is_p_ov),
+            "is_s_ov": int(is_s_ov),
+            "ref_arrays": ref_arrays,
+            "total_budget": int(total_budget),
+            "gem_scale_fever": int(gem_scale_fever),
+            "song_slot": int(song_slot),
+        },
+    )
+
+    _REQUEST_QUEUE.put(request)
+
+    start = time.monotonic()
+    while True:
+        if request_id in _PENDING_RESPONSES:
+            response = _PENDING_RESPONSES.pop(request_id)
+            break
+
+        remaining = timeout - (time.monotonic() - start)
+        if remaining <= 0:
+            raise RuntimeError(f"GPU executor timeout after {timeout}s")
+
+        try:
+            response: GpuResponse = _RESPONSE_QUEUE.get(timeout=remaining)
+        except queue.Empty:
+            raise RuntimeError(f"GPU executor timeout after {timeout}s")
+
+        if response.request_id != request_id:
+            _PENDING_RESPONSES[response.request_id] = response
+            continue
+        break
+
+    if not response.success:
+        raise RuntimeError(f"GPU executor error: {response.error}")
+
+    result = response.result
+    try:
+        n_expected = int(getattr(population_indices, "shape", [len(population_indices)])[0])
+    except Exception:
+        n_expected = 0
+    if isinstance(result, list) and n_expected and len(result) != n_expected:
+        raise RuntimeError(f"GPU executor returned {len(result)} results for {n_expected} genomes")
     return result
 
 

@@ -27,6 +27,11 @@ from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.utils import cfg_from_dict, safe_float, safe_int
 from gear_optimizer.helpers.song_helpers.database_context import load_database_context
+from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_fg_candidates
+from gear_optimizer.helpers.song_helpers.fg_combo_booster import (
+    build_fg_combo_booster_candidates,
+    hydrate_fg_candidate_stats,
+)
 from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
 from gear_optimizer.helpers.song_helpers.loadout_builder import build_loadout_entries
 from gear_optimizer.helpers.song_helpers.song_config import setup_song_config
@@ -317,6 +322,10 @@ class _NativeSong:
     best_gear: Optional[list] = None
     best_minis: Optional[list] = None
 
+    # DB prefetch for FG (can overlap with GA)
+    db_loadouts_future: Optional[concurrent.futures.Future] = None
+    db_loadouts_full: Optional[list[dict]] = None
+
     loadout_entries: Optional[dict] = None
     fg_variants: Optional[list[dict]] = None
     fg_candidate_limit: int = 0
@@ -457,6 +466,8 @@ def _prepare_song(task: tuple) -> _NativeSong:
 
     cfg_data = {
         "selected_color": selected_color,
+        "primary_color": str(p_color or ""),
+        "secondary_color": str(s_color or ""),
         "use_gpu": True,
         "use_gpu_native": True,
         "fg_candidate_limit": int(fg_candidate_limit),
@@ -991,6 +1002,29 @@ def run_native_inflight_song_pipeline(
                     song.ga_future = handle.future
                     ga_inflight.append(song)
                     did_work = True
+
+                    # Prefetch DB loadouts early so FG prep after GA decode doesn't stall
+                    # waiting on SQLite reads (keeps the GPU fed during song boundaries).
+                    if (
+                        (song.manual_force_greats or song.force_greats_finder)
+                        and song.use_evo_db
+                        and song.db_loadouts_future is None
+                        and song.db_loadouts_full is None
+                    ):
+                        try:
+                            prefetch_limit = safe_int(
+                                song.cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT),
+                                FG_CANDIDATE_LIMIT,
+                            )
+                            song.db_loadouts_future = fg_prep_executor.submit(
+                                _prefetch_db_loadouts_sync,
+                                song.song_name,
+                                limit=int(prefetch_limit),
+                                gears_by_name=song.gears_by_name,
+                                minis_by_name=song.minis_by_name,
+                            )
+                        except Exception:
+                            song.db_loadouts_future = None
                     continue
 
                 # CPU prep: keep a staging buffer of prepared jobs so the GPU queue
@@ -1333,8 +1367,26 @@ def _decode_ga_payload_sync(song: _NativeSong, runs_payload: np.ndarray) -> tupl
     )
 
 
+def _prefetch_db_loadouts_sync(
+    song_name: str,
+    *,
+    limit: int,
+    gears_by_name: dict,
+    minis_by_name: dict,
+) -> list[dict]:
+    try:
+        from gear_optimizer.data.database import get_best_loadouts
+
+        return get_best_loadouts(song_name, limit=int(limit), gears_by_name=gears_by_name, minis_by_name=minis_by_name)
+    except Exception:
+        return []
+
+
 def _prepare_fg_job_sync(song: _NativeSong) -> None:
     cfg = song.cfg
+
+    perf = _truthy(os.environ.get("PERF_TIMING", "0"))
+    t0 = time.perf_counter() if perf else 0.0
 
     fg_candidate_limit = safe_int(
         cfg.get("IterationEngine", "FG_CandidateLimit", fallback=FG_CANDIDATE_LIMIT),
@@ -1353,10 +1405,25 @@ def _prepare_fg_job_sync(song: _NativeSong) -> None:
     song.fg_search_radius = fg_search_radius
 
     ga_candidates = list(song.ga_candidates or [])
-    ga_candidates.sort(key=lambda x: x.get("Score", 0), reverse=True)
-    if ga_candidates and len(ga_candidates) > fg_candidate_limit:
-        ga_candidates = ga_candidates[:fg_candidate_limit]
+    ga_candidates = select_fg_candidates(
+        ga_candidates,
+        limit=fg_candidate_limit,
+        primary_color=str(song.meta_primary_color or ""),
+        secondary_color=str(song.meta_secondary_color or ""),
+    )
     song.ga_candidates = ga_candidates
+    t_select = time.perf_counter() if perf else 0.0
+
+    db_loadouts_full = song.db_loadouts_full
+    if db_loadouts_full is None and song.db_loadouts_future is not None:
+        try:
+            db_loadouts_full = song.db_loadouts_future.result()
+            song.db_loadouts_full = db_loadouts_full
+        except Exception:
+            db_loadouts_full = None
+        finally:
+            song.db_loadouts_future = None
+    t_db = time.perf_counter() if perf else 0.0
 
     def build_details(data_dict: dict) -> dict:
         if not data_dict:
@@ -1381,22 +1448,33 @@ def _prepare_fg_job_sync(song: _NativeSong) -> None:
         song.gears_by_name,
         song.minis_by_name,
         build_details,
+        db_loadouts_full=db_loadouts_full,
     )
+    t_build = time.perf_counter() if perf else 0.0
 
     song.fg_db_loadouts_full_count = 0
-    if song.use_evo_db:
-        try:
-            from gear_optimizer.data.database import get_best_loadouts
 
-            db_loadouts_full = get_best_loadouts(
-                song.song_name,
-                limit=fg_candidate_limit,
-                gears_by_name=song.gears_by_name,
-                minis_by_name=song.minis_by_name,
-            )
-            song.fg_db_loadouts_full_count = len(db_loadouts_full)
+    if perf:
+        select_ms = (t_select - t0) * 1000.0
+        db_wait_ms = (t_db - t_select) * 1000.0
+        build_ms = (t_build - t_db) * 1000.0
+        total_ms = (t_build - t0) * 1000.0
+        try:
+            loadouts_n = len(song.loadout_entries or {})
         except Exception:
-            song.fg_db_loadouts_full_count = 0
+            loadouts_n = 0
+        db_n = -1
+        try:
+            if isinstance(db_loadouts_full, list):
+                db_n = len(db_loadouts_full)
+        except Exception:
+            db_n = -1
+        print(
+            "[PERF][FGPrep] "
+            f"limit={fg_candidate_limit} ga={len(ga_candidates)} loadouts={loadouts_n} "
+            f"select={select_ms:.1f}ms db_wait={db_wait_ms:.1f}ms build={build_ms:.1f}ms total={total_ms:.1f}ms "
+            f"db_prefetch={int(db_n >= 0)} db_n={db_n}"
+        )
 
 
 def _run_fg_job_sync(
@@ -1430,6 +1508,47 @@ def _run_fg_job_sync(
             "Difficulty": song.effective_difficulty,
             "ForceGreats": data_dict.get("ForceGreats", {}),
         }
+
+    # Always-on (ForceGreatsFinder): evaluate a capped set of 1–2-position combos around
+    # GA seeds to improve FG coverage when deeper GA runs crowd out fever-heavy variants.
+    try:
+        if song.force_greats_finder and song.ga_candidates:
+            boosted = build_fg_combo_booster_candidates(
+                existing_candidates=list(song.ga_candidates or []),
+                registry=song.registry,
+                base_stats_fixed=song.fixed_stats,
+                cfg_data=song.cfg_data,
+                calc_song=song.calc_song,
+                ref_arrays=song.ref_arrays,
+                primary_color=str(song.meta_primary_color or ""),
+                secondary_color=str(song.meta_secondary_color or ""),
+                song_slot=0,
+                gpu_client=gpu_client,
+            )
+            if boosted:
+                song.ga_candidates = select_fg_candidates(
+                    list(song.ga_candidates or []) + list(boosted),
+                    limit=int(song.fg_candidate_limit or 0),
+                    primary_color=str(song.meta_primary_color or ""),
+                    secondary_color=str(song.meta_secondary_color or ""),
+                )
+                hydrate_fg_candidate_stats(
+                    song.ga_candidates,
+                    base_stats_fixed=song.fixed_stats,
+                    selected_color=str(song.cfg_data.get("selected_color", "") or ""),
+                )
+                song.loadout_entries = build_loadout_entries(
+                    song.song_name,
+                    bool(song.use_evo_db),
+                    song.ga_candidates,
+                    int(song.fg_candidate_limit or 0),
+                    song.gears_by_name,
+                    song.minis_by_name,
+                    build_details,
+                    db_loadouts_full=song.db_loadouts_full,
+                )
+    except Exception:
+        pass
 
     fg_variants = process_force_greats(
         song.loadout_entries or {},

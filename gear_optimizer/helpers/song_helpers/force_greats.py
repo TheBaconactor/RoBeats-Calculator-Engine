@@ -54,11 +54,11 @@ def process_force_greats(
     fg_variants = []
     perf = bool(perf_timing)
 
-    # If we're not using the GPU finder path, the fallback loop may call other
-    # Taichi-backed helpers that aren't routed via `GpuServiceClient`. Preserve
-    # the "single Taichi owner thread" invariant by running the whole helper on
-    # the GPU-owner thread in that case.
-    if gpu_client is not None and use_gpu and not force_greats_finder:
+    # In the in-flight pipelines, Taichi/Vulkan must only be touched by the single
+    # GPU-owner thread. Route the entire helper through `GpuServiceClient` when
+    # provided to preserve that invariant (both finder and non-finder paths use
+    # Taichi-backed kernels).
+    if gpu_client is not None and use_gpu:
         try:
             return gpu_client.submit_process_force_greats(
                 loadout_entries,

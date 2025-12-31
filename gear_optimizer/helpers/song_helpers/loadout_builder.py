@@ -19,6 +19,7 @@ def build_loadout_entries(
     gears_by_name,
     minis_by_name,
     build_details_fn,
+    db_loadouts_full=None,
 ):
     """
     Build union of DB + GA loadouts.
@@ -27,10 +28,11 @@ def build_loadout_entries(
         found_song_name: Name of the song
         use_evo_db: Whether to use evolution database
         ga_candidates: List of GA candidate loadouts
-        db_loadouts_limit: Maximum number of DB loadouts to fetch
+        db_loadouts_limit: Maximum number of DB loadouts to fetch (when db_loadouts_full is not provided)
         gears_by_name: Dictionary of gears by name
         minis_by_name: Dictionary of minis by name
         build_details_fn: Function to build details dict from data dict
+        db_loadouts_full: Optional pre-fetched DB loadouts (skips DB query when provided)
 
     Returns:
         dict: Dictionary of loadout entries by hash
@@ -66,15 +68,21 @@ def build_loadout_entries(
         }
 
     # DB loadouts (up to the configured limit) for this song
-    db_loadouts_full = []
+    db_loadouts = []
     if use_evo_db:
-        try:
-            db_loadouts_full = get_best_loadouts(
-                found_song_name, limit=db_loadouts_limit, gears_by_name=gears_by_name, minis_by_name=minis_by_name
-            )
-        except Exception:
-            db_loadouts_full = []
-    for rec in db_loadouts_full or []:
+        if db_loadouts_full is not None:
+            db_loadouts = db_loadouts_full
+        else:
+            try:
+                db_loadouts = get_best_loadouts(
+                    found_song_name,
+                    limit=db_loadouts_limit,
+                    gears_by_name=gears_by_name,
+                    minis_by_name=minis_by_name,
+                )
+            except Exception:
+                db_loadouts = []
+    for rec in db_loadouts or []:
         _add_entry(
             rec.get("gear", []),
             rec.get("minis", []),

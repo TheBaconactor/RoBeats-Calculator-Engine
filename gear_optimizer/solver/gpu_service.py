@@ -150,6 +150,9 @@ class GpuServiceClient:
     def submit_solve_genomes(self, payload: dict[str, Any]) -> GpuJobHandle:
         return self.submit(GpuRequestType.SOLVE_GENOMES_PARALLEL, dict(payload or {}))
 
+    def submit_solve_genomes_from_registry(self, payload: dict[str, Any]) -> GpuJobHandle:
+        return self.submit(GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY, dict(payload or {}))
+
     def submit_gpu_native_ga_run(self, payload: dict[str, Any]) -> GpuJobHandle:
         return self.submit(GpuRequestType.GPU_NATIVE_GA_RUN, dict(payload or {}))
 

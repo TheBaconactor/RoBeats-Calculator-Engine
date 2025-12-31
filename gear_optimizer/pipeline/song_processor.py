@@ -45,11 +45,14 @@ from ..helpers.song_helpers import (
     load_database_context,
     setup_song_config,
     build_loadout_entries,
+    # Candidate selection for FG funnel (keeps low-base/high-FG candidates)
+    # without increasing FG_CandidateLimit.
     process_force_greats,
     build_db_payload,
     build_persistence_entries,
     print_results,
 )
+from ..helpers.song_helpers.fg_candidate_selector import select_fg_candidates
 
 # Global warn-once instance
 WARN_ONCE = WarnOnce()
@@ -565,113 +568,13 @@ def process_song_task(args):
         # - unset/empty => use default radius (FG_SEARCH_RADIUS / env default 5)
         # - -1 => full window over all FT/FF gem allocations within TOTAL_GEM_BUDGET
         # - >=0 => radius in gem-space around each loadout's (FT, FF) center
-
-        def _cand_key(cand: dict) -> tuple:
-            gear_names = tuple((it or {}).get("Name", "") for it in (cand.get("Gear") or []))
-            mini_names = tuple(sorted(((it or {}).get("Name", "") for it in (cand.get("Minis") or []))))
-            return gear_names + mini_names
-
-        def _truncate_candidates_with_fg_priority(candidates: list[dict], limit: int) -> list[dict]:
-            if not candidates or limit <= 0:
-                return []
-
-            # De-dupe by (gear, minis) key; keep the best base-score copy.
-            best_by_key: dict[tuple, dict] = {}
-            for c in candidates:
-                if not c:
-                    continue
-                k = _cand_key(c)
-                prev = best_by_key.get(k)
-                if prev is None or (c.get("Score", 0) or 0) > (prev.get("Score", 0) or 0):
-                    best_by_key[k] = c
-            uniq = list(best_by_key.values())
-            if len(uniq) <= limit:
-                return sorted(uniq, key=lambda r: r.get("Score", 0), reverse=True)
-
-            primary = str(meta_primary_color or "")
-            secondary = str(meta_secondary_color or "")
-
-            def _mini_key(c: dict) -> tuple:
-                minis = c.get("Minis") or []
-                return tuple(sorted(((it or {}).get("Name", "") for it in minis)))
-
-            def _fg_proxy(c: dict) -> int:
-                # Proxy for FG potential: emphasize fever stats and element alignment.
-                items = list(c.get("Gear") or []) + list(c.get("Minis") or [])
-                total = 0
-                for it in items:
-                    if not it:
-                        continue
-                    total += int(it.get("Fever Multiplier", 0) or 0) * 4
-                    total += int(it.get("Fever Fill Rate", 0) or 0) * 4
-                    total += int(it.get("Fever Time", 0) or 0) * 3
-                    total += int(it.get("Combo Multiplier", 0) or 0) * 2
-                    total += int(it.get("Perfect Points", 0) or 0)
-                    if primary:
-                        total += int(it.get(primary, 0) or 0) * 2
-                    if secondary and secondary != primary:
-                        total += int(it.get(secondary, 0) or 0)
-                return int(total)
-
-            selected: list[dict] = []
-            seen_keys: set[tuple] = set()
-            seen_minis: set[tuple] = set()
-
-            def _add(c: dict) -> bool:
-                k = _cand_key(c)
-                if k in seen_keys:
-                    return False
-                seen_keys.add(k)
-                selected.append(c)
-                seen_minis.add(_mini_key(c))
-                return True
-
-            # Budgets: keep a mix of exploitation (base score), exploration (FG proxy),
-            # and diversity (unique mini teams), while still honoring `_fg_priority`.
-            priority_min = min(limit, max(10, limit // 10))
-            base_budget = min(limit, max(0, int(limit * 0.55)))
-            fg_budget = min(limit, max(0, int(limit * 0.30)))
-
-            # 0) Ensure some priority candidates are always present (use FG proxy ordering).
-            priority = [c for c in uniq if c.get("_fg_priority")]
-            priority.sort(key=_fg_proxy, reverse=True)
-            for c in priority:
-                if len(selected) >= priority_min:
-                    break
-                _add(c)
-
-            # 1) Top by base score (stable "exploitation").
-            uniq.sort(key=lambda r: r.get("Score", 0), reverse=True)
-            for c in uniq:
-                if len(selected) >= base_budget:
-                    break
-                _add(c)
-
-            # 2) Top by FG proxy (captures low-base / high-FG candidates).
-            for c in sorted(uniq, key=_fg_proxy, reverse=True):
-                if len(selected) >= (base_budget + fg_budget):
-                    break
-                _add(c)
-
-            # 3) Mini-team diversity fill.
-            for c in uniq:
-                if len(selected) >= limit:
-                    break
-                mk = _mini_key(c)
-                if mk in seen_minis:
-                    continue
-                _add(c)
-
-            # 4) Final fill by base score.
-            for c in uniq:
-                if len(selected) >= limit:
-                    break
-                _add(c)
-
-            return selected[:limit]
-
-        if ga_candidates and len(ga_candidates) > fg_candidate_limit:
-            ga_candidates = _truncate_candidates_with_fg_priority(ga_candidates, fg_candidate_limit)
+        if manual_force_greats or force_greats_finder:
+            ga_candidates = select_fg_candidates(
+                ga_candidates,
+                limit=fg_candidate_limit,
+                primary_color=str(meta_primary_color or ""),
+                secondary_color=str(meta_secondary_color or ""),
+            )
 
         def build_details(data_dict):
             if not data_dict:

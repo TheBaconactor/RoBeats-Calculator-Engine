@@ -11,6 +11,7 @@ from helpers.ga_helpers for improved modularity and maintainability.
 
 import os
 import random
+import time
 
 # Support deterministic testing via GA_SEED environment variable
 _GA_SEED = os.environ.get("GA_SEED")
@@ -48,6 +49,8 @@ from ..helpers.ga_helpers import (
     update_mutation_and_diversity,
     compute_dynamic_mutation,
 )
+from ..helpers.song_helpers.fg_candidate_selector import select_fg_candidates
+from ..helpers.song_helpers.fg_combo_booster import build_fg_combo_booster_candidates, hydrate_fg_candidate_stats
 
 # Optional: GPU-native GA imports (only loaded if needed)
 _GPU_NATIVE_AVAILABLE = False
@@ -219,10 +222,12 @@ def _extract_fg_candidates_from_ga_snapshot(
             continue
 
         genome_ids = pop_snapshot[idx]
-        # Fast hash: raw bytes for the 9 int32 IDs (avoids Python list/tuple allocation).
-        # This preserves exact identity and is deterministic across runs.
+        # Canonicalize minis (order-invariant) so mini permutations don't consume
+        # candidate budget or downstream decode work.
         try:
-            id_hash = genome_ids[:9].tobytes()
+            gear_ids = tuple(int(x) for x in genome_ids[:6])
+            mini_ids = tuple(sorted(int(x) for x in genome_ids[6:9]))
+            id_hash = gear_ids + mini_ids
         except Exception:
             id_hash = tuple(int(x) for x in genome_ids[:9])
 
@@ -230,11 +235,8 @@ def _extract_fg_candidates_from_ga_snapshot(
             seen_id_hashes.add(id_hash)
             unique_candidate_indices.append(i)
 
-            # Keep a wider funnel for ForceGreats evaluation than what we persist in the DB.
-            # When the DB is empty (first run / user deletes DB), ForceGreatsFinder only
-            # sees GA candidates, so a too-small candidate cap makes FG results vary a lot.
-            if len(unique_candidate_indices) >= max(LOADOUTS_PER_SONG_LIMIT, candidate_limit):
-                break
+            # Keep scanning the full final population to maximize diversity for downstream
+            # ForceGreats evaluation; the final funnel size is selected later.
 
     # Pass 2: Decode and build dicts only for unique candidates
     for i in unique_candidate_indices:
@@ -332,13 +334,16 @@ def decode_gpu_native_ga_runs_payload(
         fg_candidate_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT) or FG_CANDIDATE_LIMIT)
     fg_candidate_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(fg_candidate_limit)))
 
+    perf = str(os.environ.get("PERF_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    t_total = time.perf_counter() if perf else 0.0
+
     best_global_score = -1
     best_global_genome = None
     best_global_res_arr = None
-    # Candidate stubs are collected without decoding genomes or computing full stats.
-    # We only decode/compute stats for the final deduped top-N set, which keeps the
-    # CPU-side decode from becoming a throughput bottleneck in in-flight mode.
-    candidate_stubs: list[tuple[int, bytes, int, int]] = []  # (score, ids_key, run_idx, pop_idx)
+    # Candidate stubs are collected without computing full stats. We canonicalize minis
+    # (order-invariant) to avoid over-counting mini permutations and collapsing the
+    # effective FG funnel.
+    t_scan = time.perf_counter() if perf else 0.0
 
     for r in range(n_runs):
         run_pack = runs_payload[r]
@@ -351,27 +356,65 @@ def decode_gpu_native_ga_runs_payload(
             best_global_genome = registry.decode_genome(run_best_ids)
             best_global_res_arr = run_best_res.copy()
 
-        pop_snapshot = run_pack[1 : n_genomes + 1, 1 : 1 + n_slots]
-        results_snapshot = run_pack[1 : n_genomes + 1, 1 + n_slots : 1 + n_slots + 7]
-        scores_snapshot = run_pack[1 : n_genomes + 1, 0]
+    # Vectorized stub collection in the same order as the historical scan:
+    # per run: candidates sorted by base score desc; runs processed in order.
+    stub_scores = np.empty((0,), dtype=np.int32)
+    stub_run_idx = np.empty((0,), dtype=np.int32)
+    stub_pop_idx = np.empty((0,), dtype=np.int32)
+    stub_keys_mat = np.empty((0, n_slots), dtype=np.int32)
 
-        # Collect the per-run unique top candidates by genome IDs only (fast).
-        max_keep = max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit)
-        top_indices = np.argsort(scores_snapshot)[::-1]
-        if top_indices.size:
-            top_indices = top_indices[scores_snapshot[top_indices] > 0]
+    try:
+        scores_snapshot_all = runs_payload[:, 1 : n_genomes + 1, 0]
+        pop_snapshot_all = runs_payload[:, 1 : n_genomes + 1, 1 : 1 + n_slots]
+        order = np.argsort(scores_snapshot_all, axis=1)[:, ::-1]
 
-        seen_ids: set[bytes] = set()
-        for idx in top_indices:
-            genome_ids = np.asarray(pop_snapshot[int(idx)], dtype=np.int32)
-            ids_key = genome_ids.tobytes()
-            if ids_key in seen_ids:
-                continue
-            seen_ids.add(ids_key)
-            score_val = int(scores_snapshot[int(idx)])
-            candidate_stubs.append((score_val, ids_key, int(r), int(idx)))
-            if len(seen_ids) >= max_keep:
-                break
+        ordered_scores = np.take_along_axis(scores_snapshot_all, order, axis=1)
+        ordered_pop = np.take_along_axis(pop_snapshot_all, order[:, :, None], axis=1)
+        ordered_pop_idx = order.astype(np.int32, copy=False)
+
+        flat_scores_all = ordered_scores.reshape(-1)
+        positive_mask = flat_scores_all > 0
+        if np.any(positive_mask):
+            flat_scores = flat_scores_all[positive_mask].astype(np.int32, copy=False)
+            flat_pop = ordered_pop.reshape(-1, n_slots)[positive_mask]
+            flat_pop_idx = ordered_pop_idx.reshape(-1)[positive_mask]
+            flat_run_idx = np.repeat(np.arange(n_runs, dtype=np.int32), n_genomes)[positive_mask]
+
+            minis_sorted = np.sort(flat_pop[:, 6:9], axis=1)
+            keys_mat = np.concatenate([flat_pop[:, :6], minis_sorted], axis=1).astype(np.int32, copy=False)
+            keys_contig = np.ascontiguousarray(keys_mat)
+            keys_void = keys_contig.view(
+                np.dtype((np.void, keys_contig.dtype.itemsize * keys_contig.shape[1]))
+            ).reshape(-1)
+
+            unique_void, inv = np.unique(keys_void, return_inverse=True)
+            n_stub = int(unique_void.shape[0])
+            scan_idx = np.arange(keys_void.shape[0], dtype=np.int32)
+
+            first_idx = np.full((n_stub,), scan_idx.shape[0], dtype=np.int32)
+            np.minimum.at(first_idx, inv, scan_idx)
+
+            max_score = np.full((n_stub,), np.iinfo(np.int32).min, dtype=np.int32)
+            np.maximum.at(max_score, inv, flat_scores)
+
+            best_scan = np.full((n_stub,), scan_idx.shape[0], dtype=np.int32)
+            best_rank = np.where(flat_scores == max_score[inv], scan_idx, scan_idx.shape[0])
+            np.minimum.at(best_scan, inv, best_rank)
+
+            group_order = np.argsort(first_idx, kind="stable")
+            best_pos = best_scan[group_order]
+
+            stub_scores = flat_scores[best_pos].astype(np.int32, copy=False)
+            stub_run_idx = flat_run_idx[best_pos].astype(np.int32, copy=False)
+            stub_pop_idx = flat_pop_idx[best_pos].astype(np.int32, copy=False)
+            stub_keys_mat = keys_contig[best_pos]
+    except Exception:
+        stub_scores = np.empty((0,), dtype=np.int32)
+        stub_run_idx = np.empty((0,), dtype=np.int32)
+        stub_pop_idx = np.empty((0,), dtype=np.int32)
+        stub_keys_mat = np.empty((0, n_slots), dtype=np.int32)
+
+    scan_ms = (time.perf_counter() - t_scan) * 1000.0 if perf else 0.0
 
     if best_global_genome is None or best_global_res_arr is None:
         try:
@@ -448,23 +491,118 @@ def decode_gpu_native_ga_runs_payload(
         },
     }
 
-    # Deduplicate by encoded genome IDs across runs (stable), then take the top-N by score.
-    unique_stubs: list[tuple[int, bytes, int, int]] = []
-    seen_ids_global: set[bytes] = set()
-    for stub in candidate_stubs:
-        _score_val, ids_key, _run_idx, _pop_idx = stub
-        if ids_key in seen_ids_global:
-            continue
-        seen_ids_global.add(ids_key)
-        unique_stubs.append(stub)
-
-    unique_stubs.sort(key=lambda t: t[0], reverse=True)
-    unique_stubs = unique_stubs[: max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit)]
-
-    if not unique_stubs:
+    if stub_scores.size == 0:
         return best_data, list(best_gear), list(best_minis), []
 
-    # Vectorized stats computation for final candidates only.
+    # Fast path: do FG-aware selection in ID-space (no dict genome decode) and only
+    # decode full genomes for the final bounded funnel.
+    t_stub = time.perf_counter() if perf else 0.0
+    n_stub = int(stub_scores.shape[0])
+
+    stub_rows = 1 + stub_pop_idx
+    stub_genome_ids = runs_payload[stub_run_idx, stub_rows, 1 : 1 + n_slots]
+    stub_res = runs_payload[stub_run_idx, stub_rows, 1 + n_slots : 1 + n_slots + 7]
+    stub_ft = np.asarray(stub_res[:, 1], dtype=np.int32)
+    stub_ff = np.asarray(stub_res[:, 2], dtype=np.int32)
+
+    if not hasattr(registry, "_item_stats_cache"):
+        gpu_arrays = registry.to_gpu_arrays()
+        registry._item_stats_cache = gpu_arrays["item_stats"]
+    item_stats = registry._item_stats_cache  # (n_items, 10)
+
+    stub_item_stats_sum = item_stats[stub_genome_ids].sum(axis=1)  # (n_stub, 10)
+    stub_item_stats_sum64 = stub_item_stats_sum.astype(np.int64, copy=False)
+
+    p_color = str(cfg_data.get("primary_color", "") or "")
+    s_color = str(cfg_data.get("secondary_color", "") or "")
+    color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
+    p_idx = color_to_idx.get(p_color, -1)
+    s_idx = color_to_idx.get(s_color, -1)
+
+    fg_proxy_vec = (
+        (stub_item_stats_sum64[:, 2] * 4)  # Fever Multiplier
+        + (stub_item_stats_sum64[:, 4] * 4)  # Fever Fill Rate
+        + (stub_item_stats_sum64[:, 3] * 3)  # Fever Time
+        + (stub_item_stats_sum64[:, 1] * 2)  # Combo Multiplier
+        + stub_item_stats_sum64[:, 0]  # Perfect Points
+    )
+    if 5 <= p_idx <= 9:
+        fg_proxy_vec = fg_proxy_vec + (stub_item_stats_sum64[:, p_idx] * 2)
+    if 5 <= s_idx <= 9 and s_idx != p_idx:
+        fg_proxy_vec = fg_proxy_vec + stub_item_stats_sum64[:, s_idx]
+
+    # Deterministic ordering helpers (stable for ties, matches select_fg_candidates behavior).
+    indices = list(range(n_stub))
+    metas_by_base = sorted(indices, key=lambda j: (int(stub_scores[j]), int(fg_proxy_vec[j])), reverse=True)
+    metas_by_fg = sorted(indices, key=lambda j: (int(fg_proxy_vec[j]), int(stub_scores[j])), reverse=True)
+
+    if n_stub <= fg_candidate_limit:
+        selected_stub_indices = sorted(indices, key=lambda k: int(stub_scores[k]), reverse=True)
+    else:
+        selected_stub_indices: list[int] = []
+        selected_set: set[int] = set()
+        seen_minis: set[tuple[int, ...]] = set()
+        center_keys = (stub_ft.astype(np.int64) << 32) | (stub_ff.astype(np.int64) & 0xFFFFFFFF)
+        seen_centers: set[int] = set()
+
+        mini_keys = [
+            (int(stub_keys_mat[j, 6]), int(stub_keys_mat[j, 7]), int(stub_keys_mat[j, 8])) for j in range(n_stub)
+        ]
+
+        def _add(j: int) -> bool:
+            if j in selected_set:
+                return False
+            selected_set.add(j)
+            selected_stub_indices.append(j)
+            seen_minis.add(mini_keys[j])
+            seen_centers.add(int(center_keys[j]))
+            return True
+
+        top_base_keep = min(int(fg_candidate_limit), int(LOADOUTS_PER_SONG_LIMIT))
+        for j in metas_by_base:
+            if len(selected_stub_indices) >= top_base_keep:
+                break
+            _add(j)
+
+        base_budget = min(int(fg_candidate_limit), max(top_base_keep, int(fg_candidate_limit * 0.55)))
+        fg_budget_end = min(int(fg_candidate_limit), base_budget + int(fg_candidate_limit * 0.30))
+
+        for j in metas_by_base:
+            if len(selected_stub_indices) >= base_budget:
+                break
+            _add(j)
+
+        for j in metas_by_fg:
+            if len(selected_stub_indices) >= fg_budget_end:
+                break
+            if int(center_keys[j]) in seen_centers:
+                continue
+            _add(j)
+        for j in metas_by_fg:
+            if len(selected_stub_indices) >= fg_budget_end:
+                break
+            _add(j)
+
+        for j in metas_by_base:
+            if len(selected_stub_indices) >= int(fg_candidate_limit):
+                break
+            mini_key = mini_keys[j]
+            if mini_key in seen_minis:
+                continue
+            _add(j)
+
+        for j in metas_by_base:
+            if len(selected_stub_indices) >= int(fg_candidate_limit):
+                break
+            _add(j)
+
+    selected_stub_indices = selected_stub_indices[: int(fg_candidate_limit)]
+    select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
+    if not selected_stub_indices:
+        return best_data, list(best_gear), list(best_minis), []
+
+    # Vectorized stats computation for selected candidates only.
+    t_stats = time.perf_counter() if perf else 0.0
     sel_color = str(cfg_data.get("selected_color", ""))
     color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
     sel_color_idx = color_to_idx.get(sel_color, -1)
@@ -499,22 +637,13 @@ def decode_gpu_native_ga_runs_payload(
         "Chill",
     ]
 
-    n_cand = len(unique_stubs)
-    genome_ids_mat = np.empty((n_cand, n_slots), dtype=np.int32)
-    results_mat = np.empty((n_cand, 7), dtype=np.int32)
-    scores_vec = np.empty((n_cand,), dtype=np.int32)
-    for i, (score_val, _ids_key, run_idx, pop_idx) in enumerate(unique_stubs):
-        row = 1 + int(pop_idx)
-        genome_ids_mat[i] = runs_payload[int(run_idx), row, 1 : 1 + n_slots]
-        results_mat[i] = runs_payload[int(run_idx), row, 1 + n_slots : 1 + n_slots + 7]
-        scores_vec[i] = int(score_val)
-
-    if not hasattr(registry, "_item_stats_cache"):
-        gpu_arrays = registry.to_gpu_arrays()
-        registry._item_stats_cache = gpu_arrays["item_stats"]
-    item_stats = registry._item_stats_cache  # (n_items, 10)
-
-    item_stats_sum = item_stats[genome_ids_mat].sum(axis=1)  # (n_cand, 10)
+    n_cand = len(selected_stub_indices)
+    genome_ids_mat = stub_genome_ids[selected_stub_indices]
+    item_stats_sum = stub_item_stats_sum[selected_stub_indices]
+    scores_vec = stub_scores[selected_stub_indices].astype(np.int32, copy=False)
+    sel_run_idx = stub_run_idx[selected_stub_indices]
+    sel_rows = 1 + stub_pop_idx[selected_stub_indices]
+    results_mat = runs_payload[sel_run_idx, sel_rows, 1 + n_slots : 1 + n_slots + 7]
 
     # Gem contributions: (n_cand, 10)
     gem_contributions = np.zeros((n_cand, 10), dtype=np.int32)
@@ -545,8 +674,7 @@ def decode_gpu_native_ga_runs_payload(
     unique_evaluated: list[dict] = []
     for i in range(n_cand):
         score_val = int(scores_vec[i])
-        genome_ids = genome_ids_mat[i]
-        genome = registry.decode_genome(genome_ids)
+        genome = registry.decode_genome(genome_ids_mat[i])
 
         # Build stats dict from numpy array (fast).
         current_stats = {stat_names[j]: int(final_stats_mat[i, j]) for j in range(10)}
@@ -592,6 +720,16 @@ def decode_gpu_native_ga_runs_payload(
             },
         }
         unique_evaluated.append(cand_data)
+
+    stats_ms = (time.perf_counter() - t_stats) * 1000.0 if perf else 0.0
+    total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
+    if perf:
+        print(
+            "[PERF][GADecode] "
+            f"runs={n_runs} pop={n_genomes} uniq={n_stub} "
+            f"scan={scan_ms:.1f}ms select={select_ms:.1f}ms stats={stats_ms:.1f}ms total={total_ms:.1f}ms "
+            f"selected={len(unique_evaluated)}"
+        )
 
     return best_data, list(best_gear), list(best_minis), unique_evaluated
 
@@ -1701,6 +1839,8 @@ def solve_coevolution_genetic(
 
     cfg_data = {
         "selected_color": selected_color,
+        "primary_color": str(p_color or ""),
+        "secondary_color": str(s_color or ""),
         "use_gpu": use_gpu_mode,
         "use_gpu_native": use_gpu_native,
         "fg_candidate_limit": max(
@@ -2150,9 +2290,13 @@ def solve_coevolution_genetic(
                 seen_hashes.add(cand_hash)
                 unique_evaluated.append(cand)
 
-        # Sort by score descending and truncate for downstream ForceGreats evaluation.
-        unique_evaluated.sort(key=lambda c: c.get("Score", 0), reverse=True)
-        unique_evaluated = unique_evaluated[: max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit)]
+        # Select an FG-aware funnel (mix base-score strength + fever-stat potential + diversity).
+        unique_evaluated = select_fg_candidates(
+            unique_evaluated,
+            limit=max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit),
+            primary_color=str(p_color or ""),
+            secondary_color=str(s_color or ""),
+        )
 
         # Optional: FG neighbor sweep (cold-start reliability)
         try:
@@ -2195,14 +2339,51 @@ def solve_coevolution_genetic(
 
                     # Keep a wider candidate funnel here; the downstream FG stage is
                     # explicitly capped by `FG_CandidateLimit` and should decide which
-                    # candidates to evaluate. Truncating here by base score can
-                    # accidentally drop low-base but high-FG potential loadouts.
-                    merged.sort(key=lambda c: c.get("Score", 0), reverse=True)
+                    # candidates to evaluate. Do not truncate purely by base score
+                    # (regression risk); if we must cap, use the FG-aware selector.
                     max_keep = max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit)
                     max_keep = max(max_keep, min(5000, max_keep * 10))
-                    unique_evaluated = merged[:max_keep]
+                    if len(merged) > max_keep:
+                        unique_evaluated = select_fg_candidates(
+                            merged,
+                            limit=max_keep,
+                            primary_color=str(p_color or ""),
+                            secondary_color=str(s_color or ""),
+                        )
+                    else:
+                        unique_evaluated = merged
         except Exception:
             # Never allow candidate augmentation to crash the GA solver.
+            pass
+
+        # Always-on: FG combo booster (capped) to improve ForceGreatsFinder coverage without
+        # inflating the downstream candidate limit (we re-select to the same funnel size).
+        try:
+            if cfg.getboolean("IterationEngine", "ForceGreatsFinder", fallback=False):
+                boosted = build_fg_combo_booster_candidates(
+                    existing_candidates=list(unique_evaluated or []),
+                    registry=registry,
+                    base_stats_fixed=base_stats_fixed,
+                    cfg_data=cfg_data,
+                    calc_song=calc_song,
+                    ref_arrays=ref_arrays,
+                    primary_color=str(p_color or ""),
+                    secondary_color=str(s_color or ""),
+                    song_slot=int(song_slot),
+                )
+                if boosted:
+                    unique_evaluated = select_fg_candidates(
+                        list(unique_evaluated or []) + list(boosted),
+                        limit=max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit),
+                        primary_color=str(p_color or ""),
+                        secondary_color=str(s_color or ""),
+                    )
+                    hydrate_fg_candidate_stats(
+                        unique_evaluated,
+                        base_stats_fixed=base_stats_fixed,
+                        selected_color=str(cfg_data.get("selected_color", "") or ""),
+                    )
+        except Exception:
             pass
 
         return best_data, best_gear, best_minis, None, [], [], unique_evaluated
