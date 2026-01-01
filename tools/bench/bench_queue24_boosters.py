@@ -98,6 +98,7 @@ class Mode:
     neighbor_sweep: bool
     combo_booster: bool
     beam_booster: bool
+    combo_booster_mode: str
     candidate_selector_mode: str
 
 
@@ -107,6 +108,7 @@ DEFAULT_MODES: dict[str, Mode] = {
         neighbor_sweep=False,
         combo_booster=False,
         beam_booster=False,
+        combo_booster_mode="classic",
         candidate_selector_mode="default",
     ),
     "neighbor_sweep": Mode(
@@ -114,6 +116,7 @@ DEFAULT_MODES: dict[str, Mode] = {
         neighbor_sweep=True,
         combo_booster=False,
         beam_booster=False,
+        combo_booster_mode="classic",
         candidate_selector_mode="default",
     ),
     "combo_booster": Mode(
@@ -121,6 +124,15 @@ DEFAULT_MODES: dict[str, Mode] = {
         neighbor_sweep=False,
         combo_booster=True,
         beam_booster=False,
+        combo_booster_mode="classic",
+        candidate_selector_mode="default",
+    ),
+    "combo_booster_multi_axis": Mode(
+        name="combo_booster_multi_axis",
+        neighbor_sweep=False,
+        combo_booster=True,
+        beam_booster=False,
+        combo_booster_mode="multi_axis",
         candidate_selector_mode="default",
     ),
     "combo_booster_slot_diverse": Mode(
@@ -128,6 +140,15 @@ DEFAULT_MODES: dict[str, Mode] = {
         neighbor_sweep=False,
         combo_booster=True,
         beam_booster=False,
+        combo_booster_mode="classic",
+        candidate_selector_mode="slot_diverse_archive",
+    ),
+    "combo_booster_multi_axis_slot_diverse": Mode(
+        name="combo_booster_multi_axis_slot_diverse",
+        neighbor_sweep=False,
+        combo_booster=True,
+        beam_booster=False,
+        combo_booster_mode="multi_axis",
         candidate_selector_mode="slot_diverse_archive",
     ),
     "beam_booster": Mode(
@@ -135,6 +156,7 @@ DEFAULT_MODES: dict[str, Mode] = {
         neighbor_sweep=False,
         combo_booster=False,
         beam_booster=True,
+        combo_booster_mode="classic",
         candidate_selector_mode="default",
     ),
     "promising_archive": Mode(
@@ -142,6 +164,7 @@ DEFAULT_MODES: dict[str, Mode] = {
         neighbor_sweep=False,
         combo_booster=False,
         beam_booster=False,
+        combo_booster_mode="classic",
         candidate_selector_mode="promising_archive",
     ),
 }
@@ -165,6 +188,10 @@ def _run_main(
 
     env["FG_COMBO_BOOSTER_ENABLED"] = "1" if mode.combo_booster else "0"
     env["FG_BEAM_BOOSTER_ENABLED"] = "1" if mode.beam_booster else "0"
+    if mode.combo_booster:
+        env["FG_COMBO_BOOSTER_MODE"] = str(mode.combo_booster_mode or "classic")
+    else:
+        env.pop("FG_COMBO_BOOSTER_MODE", None)
 
     if mode.candidate_selector_mode and mode.candidate_selector_mode != "default":
         env["FG_CANDIDATE_SELECTOR_MODE"] = str(mode.candidate_selector_mode)
@@ -284,7 +311,7 @@ def main() -> int:
     ap.add_argument("--seed-base", type=int, default=1000)
     ap.add_argument(
         "--modes",
-        default="baseline,neighbor_sweep,combo_booster,combo_booster_slot_diverse,beam_booster,promising_archive",
+        default="baseline,neighbor_sweep,combo_booster,combo_booster_multi_axis,combo_booster_multi_axis_slot_diverse,combo_booster_slot_diverse,beam_booster,promising_archive",
     )
     ap.add_argument("--outdir", default=str(Path("artifacts") / "bench" / "queue24_boosters"))
     ap.add_argument("--fg-promising-band-pct", type=float, default=0.1)

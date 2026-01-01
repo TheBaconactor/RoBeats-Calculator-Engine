@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import time
+import zlib
 from dataclasses import dataclass
 from typing import Optional, Iterable
 
@@ -109,6 +110,28 @@ def _fg_item_score(item: dict, *, primary_color: str, secondary_color: str) -> i
     return int(score)
 
 
+def _base_item_score(item: dict, *, primary_color: str, secondary_color: str) -> int:
+    if not isinstance(item, dict) or not item:
+        return 0
+
+    def _i(key: str) -> int:
+        return _int(item.get(key, 0), 0)
+
+    pp = _i("Perfect Points")
+    cm = _i("Combo Multiplier")
+    fm = _i("Fever Multiplier")
+    ft = _i("Fever Time")
+    ff = _i("Fever Fill Rate")
+
+    primary_val = _i(primary_color) if primary_color else 0
+    secondary_val = _i(secondary_color) if (secondary_color and secondary_color != primary_color) else 0
+
+    # Approximate "modern" heuristic score (similar shape to GA heuristics).
+    base = (pp * 3) + (cm * 3) + (fm * 3) + (ft * 2) + (ff * 2)
+    elem = (primary_val * 2) + (secondary_val * 1)
+    return int(base + (elem // 2))
+
+
 def _iter_slot_items(registry, slot_idx: int) -> Iterable[dict]:
     start = _int(getattr(registry, "slot_start", [0] * 9)[slot_idx], 0)
     count = _int(getattr(registry, "slot_count", [0] * 9)[slot_idx], 0)
@@ -183,6 +206,117 @@ def _build_interesting_items_by_slot(
                 seen.add(name)
                 out.append(it)
         by_slot[slot_idx] = out
+
+    return by_slot
+
+
+def _build_interesting_items_by_slot_multi_axis(
+    registry,
+    *,
+    primary_color: str,
+    secondary_color: str,
+    top_k: int,
+    items_per_slot: int,
+) -> dict[int, list[dict]]:
+    by_slot: dict[int, list[dict]] = {}
+
+    try:
+        top_k = int(top_k)
+    except Exception:
+        top_k = 0
+    if top_k <= 0:
+        top_k = 8
+
+    try:
+        items_per_slot = int(items_per_slot)
+    except Exception:
+        items_per_slot = 0
+    if items_per_slot <= 0:
+        items_per_slot = max(12, top_k * 2)
+    items_per_slot = max(8, min(64, int(items_per_slot)))
+
+    primary_color = str(primary_color or "")
+    secondary_color = str(secondary_color or "")
+
+    stat_keys = [
+        "Perfect Points",
+        "Combo Multiplier",
+        "Fever Multiplier",
+        "Fever Time",
+        "Fever Fill Rate",
+    ]
+    if primary_color:
+        stat_keys.append(primary_color)
+    if secondary_color and secondary_color != primary_color:
+        stat_keys.append(secondary_color)
+
+    top_per_stat = 2
+
+    for slot_idx in range(9):
+        items = list(_iter_slot_items(registry, slot_idx))
+        if not items:
+            by_slot[slot_idx] = []
+            continue
+
+        by_base = sorted(
+            items,
+            key=lambda it: (
+                _base_item_score(it, primary_color=primary_color, secondary_color=secondary_color),
+                it.get("Name", ""),
+            ),
+            reverse=True,
+        )
+        by_fg = sorted(
+            items,
+            key=lambda it: (
+                _fg_item_score(it, primary_color=primary_color, secondary_color=secondary_color),
+                it.get("Name", ""),
+            ),
+            reverse=True,
+        )
+
+        out: list[dict] = []
+        seen: set[str] = set()
+
+        def _add(it: dict) -> None:
+            if not it:
+                return
+            name = _item_name(it)
+            if not name or name in seen:
+                return
+            seen.add(name)
+            out.append(it)
+
+        # Interleave top-by-base and top-by-FG-proxy so early truncations keep coverage.
+        i = 0
+        base_cap = max(1, min(len(by_base), top_k))
+        fg_cap = max(1, min(len(by_fg), top_k))
+        while len(out) < items_per_slot and (i < base_cap or i < fg_cap):
+            if i < base_cap:
+                _add(by_base[i])
+            if len(out) >= items_per_slot:
+                break
+            if i < fg_cap:
+                _add(by_fg[i])
+            i += 1
+
+        # Add stat extremes (helps when the best FG loadout requires a "counterintuitive" swap).
+        for key in stat_keys:
+            ranked = sorted(items, key=lambda it: _int((it or {}).get(key, 0), 0), reverse=True)
+            for it in ranked[:top_per_stat]:
+                if len(out) >= items_per_slot:
+                    break
+                _add(it)
+            if len(out) >= items_per_slot:
+                break
+
+        # Fill remaining from base heuristic.
+        for it in by_base:
+            if len(out) >= items_per_slot:
+                break
+            _add(it)
+
+        by_slot[slot_idx] = out[:items_per_slot]
 
     return by_slot
 
@@ -312,6 +446,56 @@ def _pick_promising_positions(
     if best_overall:
         return [int(best_overall[0][2])]
     return []
+
+
+def _stable_seed_u32(seed_key: tuple[str, ...]) -> int:
+    try:
+        payload = "|".join(seed_key).encode("utf-8", errors="ignore")
+    except Exception:
+        payload = b""
+    return int(zlib.adler32(payload) & 0xFFFFFFFF)
+
+
+def _axis_slots(items_by_slot: dict[int, list[dict]], *, primary_color: str, secondary_color: str) -> list[int]:
+    def _range(items: list[dict], key: str) -> int:
+        vals = []
+        for it in items or []:
+            try:
+                vals.append(int((it or {}).get(key, 0) or 0))
+            except Exception:
+                vals.append(0)
+        if not vals:
+            return 0
+        return int(max(vals) - min(vals))
+
+    primary_color = str(primary_color or "")
+    secondary_color = str(secondary_color or "")
+
+    scored: list[tuple[int, int]] = []
+    for slot_idx in range(6):
+        items = items_by_slot.get(slot_idx) or []
+        if not items:
+            continue
+        fever_span = _range(items, "Fever Time") + _range(items, "Fever Fill Rate") + _range(items, "Fever Multiplier")
+        base_span = 0
+        try:
+            vals = [
+                _base_item_score(it, primary_color=primary_color, secondary_color=secondary_color) for it in (items or [])
+            ]
+            base_span = int(max(vals) - min(vals)) if vals else 0
+        except Exception:
+            base_span = 0
+        elem_span = 0
+        if primary_color:
+            elem_span += _range(items, primary_color)
+        if secondary_color and secondary_color != primary_color:
+            elem_span += _range(items, secondary_color)
+        score = int((fever_span * 10) + base_span + (elem_span * 2))
+        scored.append((score, slot_idx))
+
+    scored.sort(key=lambda t: (t[0], -t[1]), reverse=True)
+    out = [int(slot) for score, slot in scored if score > 0][:2]
+    return out
 
 
 def _options_for_position(seed: list[dict], pos: int, items_by_slot: dict[int, list[dict]]) -> list[dict]:
@@ -529,6 +713,204 @@ def generate_fg_combo_booster_genomes(
                     break
             if len(out) >= max_new:
                 break
+
+    return out
+
+
+def generate_fg_combo_booster_genomes_multi_axis(
+    *,
+    existing_candidates: list[dict],
+    registry,
+    primary_color: str,
+    secondary_color: str,
+    max_new: int = FG_COMBO_BOOSTER_MAX_EVALS,
+    top_k: int = FG_COMBO_BOOSTER_TOP_K,
+) -> list[list[dict]]:
+    """
+    Multi-axis booster (v2): generate a wider, more diverse set of near-seed genomes.
+
+    Key differences vs classic combo booster:
+    - Uses a richer per-slot "interesting items" list (base-heuristic, FG-proxy, and stat extremes).
+    - Explores more than 1-2 slots per seed (adds deterministic exploration slots).
+    - Generates a mix of single swaps and a few targeted pairs per seed.
+    """
+    try:
+        max_new = int(max_new)
+    except Exception:
+        max_new = FG_COMBO_BOOSTER_MAX_EVALS
+    max_new = max(0, min(FG_COMBO_BOOSTER_MAX_EVALS, max_new))
+    if max_new <= 0:
+        return []
+
+    try:
+        top_k = int(top_k)
+    except Exception:
+        top_k = FG_COMBO_BOOSTER_TOP_K
+    top_k = max(2, min(32, int(top_k)))
+
+    items_per_slot = _env_int("FG_MULTI_AXIS_ITEMS_PER_SLOT", max(16, top_k * 2))
+    items_by_slot = _build_interesting_items_by_slot_multi_axis(
+        registry,
+        primary_color=str(primary_color or ""),
+        secondary_color=str(secondary_color or ""),
+        top_k=int(top_k),
+        items_per_slot=int(items_per_slot),
+    )
+
+    existing_keys = set()
+    for cand in existing_candidates or []:
+        if not isinstance(cand, dict):
+            continue
+        existing_keys.add(_genome_key(_as_genome(cand)))
+
+    seeds = _select_seeds(
+        list(existing_candidates or []),
+        primary_color=str(primary_color or ""),
+        secondary_color=str(secondary_color or ""),
+        max_seeds=_env_int("FG_MULTI_AXIS_SEEDS", 256),
+    )
+    if not seeds:
+        return []
+
+    axis_slots = _axis_slots(
+        items_by_slot,
+        primary_color=str(primary_color or ""),
+        secondary_color=str(secondary_color or ""),
+    )
+
+    max_positions = _env_int("FG_MULTI_AXIS_MAX_POSITIONS", 4)
+    max_positions = max(2, min(8, int(max_positions)))
+
+    single_opts_gear = _env_int("FG_MULTI_AXIS_SINGLE_OPTS_GEAR", 8)
+    single_opts_mini = _env_int("FG_MULTI_AXIS_SINGLE_OPTS_MINI", 4)
+    single_opts_gear = max(1, min(32, int(single_opts_gear)))
+    single_opts_mini = max(1, min(16, int(single_opts_mini)))
+
+    pair_opts_gear = _env_int("FG_MULTI_AXIS_PAIR_OPTS_GEAR", 4)
+    pair_opts_mini = _env_int("FG_MULTI_AXIS_PAIR_OPTS_MINI", 3)
+    pair_opts_gear = max(1, min(16, int(pair_opts_gear)))
+    pair_opts_mini = max(1, min(12, int(pair_opts_mini)))
+
+    max_pairs = _env_int("FG_MULTI_AXIS_MAX_PAIRS", 3)
+    max_pairs = max(1, min(8, int(max_pairs)))
+
+    out: list[list[dict]] = []
+    seen = set(existing_keys)
+
+    for seed in seeds:
+        if len(out) >= max_new:
+            break
+
+        seed_hash = _stable_seed_u32(seed.key)
+        explore_gear = int(seed_hash % 6)
+        explore_mini = int(6 + ((seed_hash // 6) % 3))
+
+        fg_positions = _pick_promising_positions(
+            seed.genome,
+            items_by_slot=items_by_slot,
+            primary_color=str(primary_color or ""),
+            secondary_color=str(secondary_color or ""),
+            positions_per_seed=2,
+        )
+
+        positions = []
+        for p in list(fg_positions or []) + list(axis_slots or []) + [explore_gear, explore_mini]:
+            try:
+                pi = int(p)
+            except Exception:
+                continue
+            if pi < 0 or pi >= 9:
+                continue
+            if pi in positions:
+                continue
+            positions.append(pi)
+            if len(positions) >= max_positions:
+                break
+
+        if not positions:
+            continue
+
+        options_by_pos: dict[int, list[dict]] = {}
+        for pos in positions:
+            opts = _options_for_position(seed.genome, pos, items_by_slot)
+            if pos < 6:
+                cap = single_opts_gear
+            else:
+                cap = single_opts_mini
+            options_by_pos[pos] = opts[: 1 + cap]
+
+        # Single swaps: ensure every chosen position gets explored.
+        for pos in positions:
+            if len(out) >= max_new:
+                break
+            opts = options_by_pos.get(pos) or []
+            for it in opts[1:]:
+                genome = list(seed.genome)
+                genome[pos] = it
+                if not _minis_unique(genome):
+                    continue
+                k = _genome_key(genome)
+                if k in seen:
+                    continue
+                seen.add(k)
+                out.append(genome)
+                if len(out) >= max_new:
+                    break
+
+        if len(out) >= max_new:
+            break
+
+        # Targeted pairs: use FG positions as anchor when available.
+        anchor = None
+        if fg_positions:
+            anchor = int(fg_positions[0])
+        elif positions:
+            anchor = int(positions[0])
+
+        pairs: list[tuple[int, int]] = []
+        if fg_positions and len(fg_positions) >= 2:
+            a, b = int(fg_positions[0]), int(fg_positions[1])
+            if a != b:
+                pairs.append((a, b))
+
+        if anchor is not None:
+            for p in positions:
+                if len(pairs) >= max_pairs:
+                    break
+                if p == anchor:
+                    continue
+                pair = (int(anchor), int(p))
+                if pair[0] == pair[1] or pair in pairs:
+                    continue
+                pairs.append(pair)
+
+        for a, b in pairs:
+            if len(out) >= max_new:
+                break
+
+            opts_a = options_by_pos.get(a) or _options_for_position(seed.genome, a, items_by_slot)
+            opts_b = options_by_pos.get(b) or _options_for_position(seed.genome, b, items_by_slot)
+            cap_a = pair_opts_gear if a < 6 else pair_opts_mini
+            cap_b = pair_opts_gear if b < 6 else pair_opts_mini
+            opts_a = opts_a[: 1 + cap_a]
+            opts_b = opts_b[: 1 + cap_b]
+
+            for it_a in opts_a:
+                for it_b in opts_b:
+                    if len(out) >= max_new:
+                        break
+                    genome = list(seed.genome)
+                    genome[a] = it_a
+                    genome[b] = it_b
+                    if not _minis_unique(genome):
+                        continue
+                    k = _genome_key(genome)
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    out.append(genome)
+                if len(out) >= max_new:
+                    break
 
     return out
 
@@ -1078,15 +1460,28 @@ def build_fg_combo_booster_candidates(
         gpu_eval_cap = int(max_extra_evals)
     gpu_eval_cap = max(1, min(int(max_extra_evals), int(gpu_eval_cap)))
 
-    genomes = generate_fg_combo_booster_genomes(
-        existing_candidates=existing_candidates,
-        registry=registry,
-        primary_color=primary_color,
-        secondary_color=secondary_color,
-        max_new=int(max_extra_evals),
-        top_k=int(top_k),
-        positions_per_seed=int(positions_per_seed),
-    )
+    # Default to the improved multi-axis generator; users can set `FG_COMBO_BOOSTER_MODE=classic`
+    # if they want the legacy behavior for comparisons.
+    booster_mode = str(os.environ.get("FG_COMBO_BOOSTER_MODE", "multi_axis") or "").strip().lower()
+    if booster_mode in {"multi_axis", "multi-axis", "v2", "diverse"}:
+        genomes = generate_fg_combo_booster_genomes_multi_axis(
+            existing_candidates=existing_candidates,
+            registry=registry,
+            primary_color=primary_color,
+            secondary_color=secondary_color,
+            max_new=int(max_extra_evals),
+            top_k=int(top_k),
+        )
+    else:
+        genomes = generate_fg_combo_booster_genomes(
+            existing_candidates=existing_candidates,
+            registry=registry,
+            primary_color=primary_color,
+            secondary_color=secondary_color,
+            max_new=int(max_extra_evals),
+            top_k=int(top_k),
+            positions_per_seed=int(positions_per_seed),
+        )
     if not genomes:
         return []
     t_gen = time.perf_counter()
@@ -1129,7 +1524,7 @@ def build_fg_combo_booster_candidates(
             uniq = g
         print(
             "[PERF][FGBooster] "
-            f"generated={g} selected={g_sel} eval_cap={gpu_eval_cap} uniq={uniq} evaluated={p} "
+            f"mode={booster_mode} generated={g} selected={g_sel} eval_cap={gpu_eval_cap} uniq={uniq} evaluated={p} "
             f"gen={dt_gen * 1000:.1f}ms eval={dt_eval * 1000:.1f}ms total={dt_total * 1000:.1f}ms"
         )
     return out
