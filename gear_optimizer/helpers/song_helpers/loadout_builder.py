@@ -20,6 +20,8 @@ def build_loadout_entries(
     minis_by_name,
     build_details_fn,
     db_loadouts_full=None,
+    *,
+    lean_ga_candidates: bool = False,
 ):
     """
     Build union of DB + GA loadouts.
@@ -38,15 +40,6 @@ def build_loadout_entries(
         dict: Dictionary of loadout entries by hash
     """
     loadout_entries = {}
-
-    def _names_list(items):
-        names = []
-        for it in items or []:
-            if isinstance(it, dict):
-                names.append(it.get("Name", ""))
-            else:
-                names.append(str(it) if it else "")
-        return names
 
     def _add_entry(gear_items, mini_items, score_val, details_obj, fg_score_val=0, force_obj=None, eval_data=None):
         h = get_loadout_hash(gear_items, mini_items)
@@ -100,7 +93,13 @@ def build_loadout_entries(
         eval_score = eval_result.get("BaseScore") or eval_result.get("Score", 0)
         gear_items = eval_result.get("Gear", [])
         mini_items = eval_result.get("Minis", [])
-        eval_details = build_details_fn(eval_data) if eval_data else {}
+        # PERF: In GPU-native runs, `eval_data` already contains the fields we need.
+        # Building a separate `details` dict for every GA candidate adds a lot of Python
+        # overhead; allow callers to skip it and rely on `eval_data` instead.
+        eval_details = {} if lean_ga_candidates else (build_details_fn(eval_data) if eval_data else {})
+        selected_element = None
+        if lean_ga_candidates and isinstance(eval_data, dict):
+            selected_element = eval_data.get("Selected Element") or eval_data.get("SelectedElement")
         _add_entry(
             gear_items,
             mini_items,
@@ -110,5 +109,10 @@ def build_loadout_entries(
             None,
             eval_data,
         )
+        if selected_element is not None:
+            try:
+                loadout_entries[get_loadout_hash(gear_items, mini_items)]["selected_element"] = selected_element
+            except Exception:
+                pass
 
     return loadout_entries

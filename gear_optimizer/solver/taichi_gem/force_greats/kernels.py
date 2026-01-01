@@ -626,7 +626,7 @@ def _local_search_bits_from_hint(
 
 
 @ti.kernel
-def fg_upload_forced_counts_kernel(n_cfg: ti.i32, data: ti.types.ndarray(dtype=ti.i32, ndim=2)):
+def fg_upload_forced_counts_kernel(n_cfg: ti.i32, cfg_dst_offset: ti.i32, data: ti.types.ndarray(dtype=ti.i32, ndim=2)):
     """
     Upload the per-config forced-count grid from a small external array.
 
@@ -634,7 +634,7 @@ def fg_upload_forced_counts_kernel(n_cfg: ti.i32, data: ti.types.ndarray(dtype=t
     `data` must be shaped `(n_cfg, FG_MAX_SECTIONS)` and contain zeros for unused sections.
     """
     for i, j in ti.ndrange(n_cfg, FG_MAX_SECTIONS):
-        fg_forced_counts[i, j] = data[i, j]
+        fg_forced_counts[cfg_dst_offset + i, j] = data[i, j]
 
 
 @ti.kernel
@@ -709,6 +709,7 @@ def fg_stage1_kernel(
     n_sections: ti.i32,
     n_ftff: ti.i32,
     cfg_offset: ti.i32,
+    cfg_read_offset: ti.i32,
     is_p_ft: ti.i32,
     is_s_ft: ti.i32,
     is_p_ff: ti.i32,
@@ -809,7 +810,7 @@ def fg_stage1_kernel(
 
                 fp_target: ti.i32 = 0
                 if sec < n_sections:
-                    fp_target = fg_forced_counts[cfg_idx, sec]
+                    fp_target = fg_forced_counts[cfg_read_offset + cfg_idx, sec]
                     if fp_target < 0:
                         fp_target = 0
                     if sec < FG_MAX_SECTIONS:
@@ -1182,6 +1183,7 @@ def fg_stage1_flat_kernel_small3(
     n_work_items: ti.i32,
     n_cfg: ti.i32,
     cfg_offset: ti.i32,
+    cfg_read_offset: ti.i32,
     total_notes: ti.i32,
     long_notes: ti.i32,
     last_note_time: ti.f32,
@@ -1296,7 +1298,7 @@ def fg_stage1_flat_kernel_small3(
 
                 fp_target: ti.i32 = 0
                 if sec < n_sections:
-                    fp_target = fg_forced_counts[cfg_idx, sec]
+                    fp_target = fg_forced_counts[cfg_read_offset + cfg_idx, sec]
                     if fp_target < 0:
                         fp_target = 0
 
@@ -1479,6 +1481,7 @@ def fg_stage1_flat_kernel(
     n_work_items: ti.i32,
     n_cfg: ti.i32,
     cfg_offset: ti.i32,
+    cfg_read_offset: ti.i32,
     total_notes: ti.i32,
     long_notes: ti.i32,
     last_note_time: ti.f32,
@@ -1598,7 +1601,7 @@ def fg_stage1_flat_kernel(
 
                 fp_target: ti.i32 = 0
                 if sec < n_sections:
-                    fp_target = fg_forced_counts[cfg_idx, sec]
+                    fp_target = fg_forced_counts[cfg_read_offset + cfg_idx, sec]
                     if fp_target < 0:
                         fp_target = 0
 

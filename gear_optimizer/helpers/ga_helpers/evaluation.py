@@ -52,12 +52,27 @@ def create_evaluation_functions(
     if s_color:
         song_colors.add(s_color)
 
+    # Cache item primary/secondary colors by name to avoid repeated sorting in `score_candidate`.
+    # IMPORTANT: do NOT mutate item dicts (would affect stat aggregation unless SKIP_ITEM_KEYS is updated).
+    _item_color_cache: dict[str, tuple[str | None, str | None]] = {}
+
     def get_item_colors(item):
         """Get an item's primary and secondary colors (top 2 highest stat colors)."""
+        try:
+            name = item.get("Name", "") if isinstance(item, dict) else ""
+        except Exception:
+            name = ""
+        if name:
+            cached = _item_color_cache.get(name)
+            if cached is not None:
+                return cached
+
         color_values = [(c, item.get(c, 0)) for c in color_stats]
         sorted_colors = sorted(color_values, key=lambda cv: cv[1], reverse=True)
         primary = sorted_colors[0][0] if sorted_colors[0][1] > 0 else None
         secondary = sorted_colors[1][0] if len(sorted_colors) > 1 and sorted_colors[1][1] > 0 else None
+        if name:
+            _item_color_cache[name] = (primary, secondary)
         return primary, secondary
 
     def score_candidate(x):
@@ -281,21 +296,12 @@ def evaluate_population_parallel(
     Returns:
         list: Evaluated results sorted by score
     """
-    if not population:
-        return []
-
-    # Hot-path optimization: compute each genome's cache key ONCE.
-    #
-    # `genome_key()` is non-trivial (it canonicalizes minis by sorting names) and
-    # is called very frequently. Historically this function recomputed keys
-    # multiple times per generation; avoid that by memoizing per-population.
-    pop_keys = [genome_key(g) for g in population]
-
     # GPU batch path - evaluate all uncached genomes in single pass
     if use_gpu_batch:
         # First check persistent cache for all unique genomes
         key_to_genome = {}
-        for k, genome in zip(pop_keys, population):
+        for genome in population:
+            k = genome_key(genome)
             if k not in key_to_genome:
                 key_to_genome[k] = genome
                 if k not in evaluation_cache:
@@ -321,7 +327,8 @@ def evaluate_population_parallel(
     key_to_genome = {}
     pending_keys = []
     tasks = []
-    for k, genome in zip(pop_keys, population):
+    for genome in population:
+        k = genome_key(genome)
         if k in key_to_genome:
             continue
         key_to_genome[k] = genome
@@ -356,7 +363,7 @@ def evaluate_population_parallel(
                 for k, payload in zip(keys_to_calc, tasks_to_calc):
                     evaluation_cache[k] = worker_coevolution_evaluate(payload)
 
-    results = [evaluation_cache[k] for k in pop_keys]
+    results = [evaluation_cache[genome_key(g)] for g in population]
     results.sort(key=lambda x: x["Score"], reverse=True)
 
     return results

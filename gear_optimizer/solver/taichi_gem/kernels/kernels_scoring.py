@@ -530,6 +530,11 @@ def optimize_core_device(
     p_val: ti.i32 = cur_p_val
     s_val: ti.i32 = cur_s_val
 
+    # Precompute current multipliers once; update incrementally when the corresponding stat changes.
+    c_mul_cur: ti.f32 = kernels_helpers.lookup_ref_cm(cm)
+    f_mul_cur: ti.f32 = kernels_helpers.lookup_ref_fm(fm)
+    pp_factor_cur: ti.f32 = kernels_helpers.lookup_ref_pp(pp)
+
     best_final_score: ti.i32 = 0
 
     while remaining > 0:
@@ -541,10 +546,11 @@ def optimize_core_device(
         base_p: ti.i32 = p_val + fill_p
         base_s: ti.i32 = s_val + fill_s
 
-        # Precompute current multipliers (unchanged for PP/OV checks)
-        c_mul_cur: ti.f32 = kernels_helpers.lookup_ref_cm(cm)
-        f_mul_cur: ti.f32 = kernels_helpers.lookup_ref_fm(fm)
-        pp_factor_cur: ti.f32 = kernels_helpers.lookup_ref_pp(pp)
+        # Track "next" multipliers for the option we actually apply.
+        # Defaults: unchanged from current.
+        c_mul_next: ti.f32 = c_mul_cur
+        f_mul_next: ti.f32 = f_mul_cur
+        pp_factor_next: ti.f32 = pp_factor_cur
 
         # Start with OV as default so OV wins exact ties.
         t_p: ti.i32 = base_p + ov_p_delta
@@ -570,6 +576,7 @@ def optimize_core_device(
             if pp_score > best_score:
                 best_score = pp_score
                 best_opt = 0
+                pp_factor_next = pp_factor_pp
 
         # Option 1: CM gem
         if cm < MAX_STAT and (cm <= 50 or is_p_cm or is_s_cm):
@@ -583,6 +590,7 @@ def optimize_core_device(
             if score > best_score:
                 best_score = score
                 best_opt = 1
+                c_mul_next = c_mul
 
         # Option 2: FM gem
         if fm < MAX_STAT:
@@ -596,6 +604,7 @@ def optimize_core_device(
             if score > best_score:
                 best_score = score
                 best_opt = 2
+                f_mul_next = f_mul
 
         # PP lookahead: if OV wins a tie now, but a few PP gems would become a real
         # improvement soon, start investing in PP.
@@ -616,6 +625,9 @@ def optimize_core_device(
                 )
                 if score_k > best_score:
                     best_opt = 0
+                    # When we commit to PP, the next PP factor should match the +1 PP gem update.
+                    # (pp_score was computed using pp + GEM_SCALE_NORMAL when allow_pp != 0.)
+                    pp_factor_next = kernels_helpers.lookup_ref_pp(pp + GEM_SCALE_NORMAL)
                     break
                 k += 1
 
@@ -625,16 +637,19 @@ def optimize_core_device(
             p_val += pp_p_delta
             s_val += pp_s_delta
             gems_pp += 1
+            pp_factor_cur = pp_factor_next
         elif best_opt == 1:
             cm += GEM_SCALE_NORMAL
             p_val += cm_p_delta
             s_val += cm_s_delta
             gems_cm += 1
+            c_mul_cur = c_mul_next
         elif best_opt == 2:
             fm += GEM_SCALE_FEVER
             p_val += fm_p_delta
             s_val += fm_s_delta
             gems_fm += 1
+            f_mul_cur = f_mul_next
         else:
             p_val += ov_p_delta
             s_val += ov_s_delta

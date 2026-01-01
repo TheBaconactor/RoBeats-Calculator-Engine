@@ -14,6 +14,7 @@ fill penalties at the cost of score penalties from great notes.
 """
 
 import numpy as np
+import threading
 from math import floor, ceil
 from cachetools import LRUCache
 
@@ -47,6 +48,67 @@ from .stats_scoring import build_great_penalty_table, _force_greats_counts_to_di
 MAX_FT_FF_GEMS = TOTAL_GEM_BUDGET
 FG_TIMELINE_CACHE = LRUCache(maxsize=1000)
 
+# Thread-local scratch buffers for Force Greats timeline computation.
+# This avoids per-call NumPy allocations in hot loops without introducing
+# cross-thread aliasing issues.
+_FG_TIMELINE_TLS = threading.local()
+
+
+def _get_fg_timeline_buffers(total_notes: int):
+    """
+    Get (or allocate) reusable scratch buffers sized for `total_notes`.
+
+    Returns:
+        tuple: (fever_mask_buffer, section_start, section_forced, section_fill_penalty, section_skip_wasted)
+    """
+    n = int(total_notes)
+    if n < 0:
+        n = 0
+    # Worst-case: section count is bounded by note count (+1 for safety).
+    section_cap = n + 1
+
+    buf = getattr(_FG_TIMELINE_TLS, "buf", None)
+    if buf is None:
+        buf = {}
+        _FG_TIMELINE_TLS.buf = buf
+
+    fever_mask = buf.get("fever_mask")
+    if fever_mask is None or int(getattr(fever_mask, "shape", (0,))[0]) != n:
+        fever_mask = np.zeros(n, dtype=np.bool_)
+        buf["fever_mask"] = fever_mask
+    else:
+        fever_mask[:] = False
+
+    section_start = buf.get("section_start")
+    if section_start is None or int(getattr(section_start, "shape", (0,))[0]) != section_cap:
+        section_start = np.zeros(section_cap, dtype=np.int32)
+        buf["section_start"] = section_start
+    else:
+        section_start[:] = 0
+
+    section_forced = buf.get("section_forced")
+    if section_forced is None or int(getattr(section_forced, "shape", (0,))[0]) != section_cap:
+        section_forced = np.zeros(section_cap, dtype=np.int32)
+        buf["section_forced"] = section_forced
+    else:
+        section_forced[:] = 0
+
+    section_fill_penalty = buf.get("section_fill_penalty")
+    if section_fill_penalty is None or int(getattr(section_fill_penalty, "shape", (0,))[0]) != section_cap:
+        section_fill_penalty = np.zeros(section_cap, dtype=np.int32)
+        buf["section_fill_penalty"] = section_fill_penalty
+    else:
+        section_fill_penalty[:] = 0
+
+    section_skip_wasted = buf.get("section_skip_wasted")
+    if section_skip_wasted is None or int(getattr(section_skip_wasted, "shape", (0,))[0]) != section_cap:
+        section_skip_wasted = np.zeros(section_cap, dtype=np.bool_)
+        buf["section_skip_wasted"] = section_skip_wasted
+    else:
+        section_skip_wasted[:] = False
+
+    return fever_mask, section_start, section_forced, section_fill_penalty, section_skip_wasted
+
 
 def _compute_force_greats_timeline(
     timestamps,
@@ -79,16 +141,11 @@ def _compute_force_greats_timeline(
     Returns:
         tuple: (fever_mask_head, count_body_fever, count_body_normal, non_fever_base, section_details)
     """
-    fever_mask_buffer = np.zeros(total_notes, dtype=np.bool_)
-
     forced_arr = np.asarray(force_counts, dtype=np.int32) if force_counts else np.zeros(0, dtype=np.int32)
 
-    # Worst-case: section count is bounded by note count (+1 for safety).
-    section_cap = int(total_notes) + 1
-    section_start = np.zeros(section_cap, dtype=np.int32)
-    section_forced = np.zeros(section_cap, dtype=np.int32)
-    section_fill_penalty = np.zeros(section_cap, dtype=np.int32)
-    section_skip_wasted = np.zeros(section_cap, dtype=np.bool_)
+    fever_mask_buffer, section_start, section_forced, section_fill_penalty, section_skip_wasted = _get_fg_timeline_buffers(
+        int(total_notes)
+    )
 
     (
         fever_mask_head_view,

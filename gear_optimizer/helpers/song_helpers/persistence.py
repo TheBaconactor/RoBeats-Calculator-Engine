@@ -439,11 +439,21 @@ def build_persistence_entries(
                 fg_score_to_save = 0
                 force_obj = None  # Explicitly clear valid force object if invalid (prevent empty JSON)
 
+            # PERF: In some fast paths we avoid constructing `details` for GA candidates
+            # during FG prep to reduce Python overhead. For DB persistence we still want
+            # the full details payload, so build it lazily from `eval_data` here.
+            details_obj = entry.get("details", {}) or {}
+            if (not details_obj) and entry.get("eval_data") and build_details_fn is not None:
+                try:
+                    details_obj = build_details_fn(entry.get("eval_data") or {})
+                except Exception:
+                    details_obj = details_obj or {}
+
             _append_entry(
                 entry.get("base_score") or entry.get("score", 0),
                 entry.get("gear", []),
                 entry.get("minis", []),
-                entry.get("details", {}),
+                details_obj,
                 fg_score_to_save,
                 force_obj,
             )

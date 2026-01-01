@@ -151,6 +151,20 @@ def _expand_minis_from_db(mini_names, minis_by_name):
     return [minis_by_name.get(name, {"Name": name}) for name in mini_names]
 
 
+def _loadout_hash_from_names(gear_names: list[str], mini_names: list[str]) -> str:
+    """
+    Generate a stable loadout hash from pre-extracted item names.
+
+    Notes:
+    - Hashing is order-invariant: names are sorted before hashing.
+    - Inputs should already be filtered to non-empty strings.
+    """
+    g = sorted([n for n in (gear_names or []) if n])
+    m = sorted([n for n in (mini_names or []) if n])
+    payload = f"GEAR:{'|'.join(g)}::MINIS:{'|'.join(m)}"
+    return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
 def get_loadout_hash(gear_list: List[Any], mini_list: List[Any]) -> str:
     """
     Generate a unique hash for a loadout (gear + minis).
@@ -165,25 +179,9 @@ def get_loadout_hash(gear_list: List[Any], mini_list: List[Any]) -> str:
         str: MD5 hash of the loadout
     """
     # Extract names, handling both dict and string inputs
-    gear_names = []
-    for g in gear_list or []:
-        if isinstance(g, dict):
-            gear_names.append(g.get("Name", ""))
-        else:
-            gear_names.append(str(g) if g else "")
-    gear_names = sorted([n for n in gear_names if n])
-
-    mini_names = []
-    for m in mini_list or []:
-        if isinstance(m, dict):
-            mini_names.append(m.get("Name", ""))
-        else:
-            mini_names.append(str(m) if m else "")
-    mini_names = sorted([n for n in mini_names if n])
-
-    # Create a string representation
-    payload = f"GEAR:{'|'.join(gear_names)}::MINIS:{'|'.join(mini_names)}"
-    return hashlib.md5(payload.encode("utf-8")).hexdigest()
+    gear_names = _compact_gear_for_db(gear_list)
+    mini_names = _compact_minis_for_db(mini_list)
+    return _loadout_hash_from_names(gear_names, mini_names)
 
 
 def _get_overflow_from_details(details):
@@ -228,7 +226,8 @@ def _deduplicate_entries(entries):
         score = entry.get("score", 0)
         gear = entry.get("gear", [])
         minis = entry.get("minis", [])
-        loadout_hash = get_loadout_hash(gear, minis)
+        # Avoid double name extraction: we already have compact helpers.
+        loadout_hash = _loadout_hash_from_names(_compact_gear_for_db(gear), _compact_minis_for_db(minis))
         key = (score, loadout_hash)
 
         if key not in score_hash_groups:
@@ -427,9 +426,9 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
             details = entry.get("details", {})
             force_data = entry.get("force")
 
-            loadout_hash = get_loadout_hash(gear, minis)
             gear_names = _compact_gear_for_db(gear)
             mini_names = _compact_minis_for_db(minis)
+            loadout_hash = _loadout_hash_from_names(gear_names, mini_names)
 
             gear_json = json.dumps(gear_names, separators=(",", ":"))
             minis_json = json.dumps(mini_names, separators=(",", ":"))

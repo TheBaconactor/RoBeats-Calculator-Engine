@@ -536,12 +536,23 @@ def decode_gpu_native_ga_runs_payload(
         fg_proxy_vec = fg_proxy_vec + stub_item_stats_sum64[:, s_idx]
 
     # Deterministic ordering helpers (stable for ties, matches select_fg_candidates behavior).
-    indices = list(range(n_stub))
-    metas_by_base = sorted(indices, key=lambda j: (int(stub_scores[j]), int(fg_proxy_vec[j])), reverse=True)
-    metas_by_fg = sorted(indices, key=lambda j: (int(fg_proxy_vec[j]), int(stub_scores[j])), reverse=True)
+    #
+    # Avoid Python `sorted(..., key=lambda ...)` here: `n_stub` can be large and this code
+    # runs on the CPU between GPU jobs (a common throughput bottleneck).
+    #
+    # We use stable NumPy argsorts so the result matches Python's stable sort semantics:
+    # - metas_by_base: primary=stub_scores desc, secondary=fg_proxy desc
+    # - metas_by_fg: primary=fg_proxy desc, secondary=stub_scores desc
+    idx = np.arange(n_stub, dtype=np.int32)
+    # metas_by_base
+    _tmp = idx[np.argsort(-fg_proxy_vec, kind="stable")]
+    metas_by_base = _tmp[np.argsort(-stub_scores[_tmp], kind="stable")].tolist()
+    # metas_by_fg
+    _tmp2 = idx[np.argsort(-stub_scores, kind="stable")]
+    metas_by_fg = _tmp2[np.argsort(-fg_proxy_vec[_tmp2], kind="stable")].tolist()
 
     if n_stub <= fg_candidate_limit:
-        selected_stub_indices = sorted(indices, key=lambda k: int(stub_scores[k]), reverse=True)
+        selected_stub_indices = idx[np.argsort(-stub_scores, kind="stable")].tolist()
     else:
         selected_stub_indices: list[int] = []
         selected_set: set[int] = set()

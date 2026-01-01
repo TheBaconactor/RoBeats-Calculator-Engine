@@ -115,9 +115,12 @@ def process_force_greats_gpu_finder(
             in_process = False
 
     fg_async_max_inflight_default = 8
-    # In IPC mode, allow a bit more pipelining to keep the GPU queue saturated.
-    if gpu_client is not None and not in_process:
-        fg_async_max_inflight_default = 16
+    # Allow deeper pipelining to keep the GPU queue saturated.
+    # - IPC mode benefits from a deeper queue (hide host latency / serialization).
+    # - In-process mode can also benefit (hide CPU prep between submits) and does not
+    #   pay pickling overhead, so a modest bump is safe.
+    if gpu_client is not None:
+        fg_async_max_inflight_default = 16 if in_process else 16
     try:
         fg_async_max_inflight = int(os.environ.get("FG_ASYNC_MAX_INFLIGHT", str(fg_async_max_inflight_default)))
     except Exception:
@@ -328,8 +331,10 @@ def process_force_greats_gpu_finder(
         cached_force = entry.get("force")
         expected_sel = None
         try:
-            det0 = entry.get("details") or {}
-            expected_sel = det0.get("SelectedElement") or det0.get("Selected Element") or meta_primary_color
+            expected_sel = entry.get("selected_element")
+            if not expected_sel:
+                det0 = entry.get("details") or {}
+                expected_sel = det0.get("SelectedElement") or det0.get("Selected Element") or meta_primary_color
         except Exception:
             expected_sel = meta_primary_color
 
@@ -418,7 +423,25 @@ def process_force_greats_gpu_finder(
         from ....solver.fever_timeline import get_song_timeline_grid
         from ....helpers.fg_utils import vectorized_calculate_section_caps_grid
 
-        grid = get_song_timeline_grid(calc_song, ref_arrays)
+        # Cache the expensive pair-caps grid per song. `process_force_greats_gpu_finder`
+        # may be invoked multiple times per song (boosters / reprocessing), and this
+        # precompute can otherwise become a major CPU-side gap that leaves the GPU idle.
+        song_data_cache = calc_song.get("song_data", {}) if isinstance(calc_song, dict) else {}
+
+        cached_pair_caps = None
+        cached_max_per_section = None
+        try:
+            cached_pair_caps = song_data_cache.get("fg_pair_caps_grid")
+            cached_max_per_section = int(song_data_cache.get("fg_pair_caps_grid_max_per_section", 0) or 0)
+        except Exception:
+            cached_pair_caps = None
+            cached_max_per_section = 0
+
+        if isinstance(cached_pair_caps, np.ndarray) and cached_pair_caps.ndim == 3 and cached_max_per_section >= 100:
+            pair_caps_grid = cached_pair_caps
+            grid = None
+        else:
+            grid = get_song_timeline_grid(calc_song, ref_arrays)
 
         # Use conservative estimates for search space bounds:
         # 1. Maximize gap (Low FT, High FF) -> Index 0, TOTAL_ROWS
@@ -434,21 +457,29 @@ def process_force_greats_gpu_finder(
             f"[FG] Search bounds (at 0,{TOTAL_ROWS}) -> Gap: {song_gap}, Activations: {song_fever_activations}"
         )
 
-        # VECTORIZED: Precompute pair_caps_grid using NumPy (~100x faster)
-        # Uses the precomputed gap/activations arrays from the grid
-        _t_grid0 = time.perf_counter() if perf else 0.0
+        if grid is not None:
+            # VECTORIZED: Precompute pair_caps_grid using NumPy (~100x faster)
+            # Uses the precomputed gap/activations arrays from the grid
+            _t_grid0 = time.perf_counter() if perf else 0.0
 
-        gpu_arrays = grid.to_gpu_arrays_minimal()
-        gap_grid = gpu_arrays["gap"]  # (161, 161) int32
-        acts_grid = gpu_arrays["fever_activations"]  # (161, 161) int32
+            gpu_arrays = grid.to_gpu_arrays_minimal()
+            gap_grid = gpu_arrays["gap"]  # (161, 161) int32
+            acts_grid = gpu_arrays["fever_activations"]  # (161, 161) int32
 
-        # Vectorized computation - replaces 26K loop with NumPy broadcasting
-        pair_caps_grid = vectorized_calculate_section_caps_grid(gap_grid, acts_grid, max_per_section=100)
+            # Vectorized computation - replaces 26K loop with NumPy broadcasting
+            pair_caps_grid = vectorized_calculate_section_caps_grid(gap_grid, acts_grid, max_per_section=100)
 
-        if perf:
-            print(
-                f"[PERF] FG Pair Caps Grid precompute (VECTORIZED): {(time.perf_counter() - _t_grid0) * 1000:.1f}ms"
-            )
+            # Store for reuse within the same song.
+            try:
+                song_data_cache["fg_pair_caps_grid"] = pair_caps_grid
+                song_data_cache["fg_pair_caps_grid_max_per_section"] = 100
+            except Exception:
+                pass
+
+            if perf:
+                print(
+                    f"[PERF] FG Pair Caps Grid precompute (VECTORIZED): {(time.perf_counter() - _t_grid0) * 1000:.1f}ms"
+                )
     except Exception as e:
         print(f"[FG] Gap/Grid precomputation FAILED: {type(e).__name__}: {e}")
         # Fallback to permissive caps (50) to avoid 0-clamping on GPU
@@ -559,7 +590,15 @@ def process_force_greats_gpu_finder(
         if per_pair_breakpoints:
             try:
                 merge_cfg_limit = int(os.environ.get("FG_MERGE_MAX_CONFIGS", "5000"))
-                merge_threads_limit = int(os.environ.get("FG_MERGE_MAX_THREADS", "50000000"))
+                # `FG_MERGE_MAX_THREADS` indirectly controls how aggressively we split genome batches.
+                # In practice, too-low defaults cause *very* small genome batches (e.g. 3-6),
+                # which tanks kernel occupancy and makes GPU utilization appear low.
+                #
+                # In in-process mode (single Taichi owner thread), we can safely allow a larger
+                # thread budget to keep batches chunky; the solver itself already adaptively
+                # chunks configs (cfg_chunk/n_chunks) to stay within kernel limits.
+                threads_default = "200000000" if in_process else "50000000"
+                merge_threads_limit = int(os.environ.get("FG_MERGE_MAX_THREADS", threads_default))
             except Exception:
                 merge_cfg_limit = 5000
                 merge_threads_limit = 50_000_000
@@ -574,7 +613,13 @@ def process_force_greats_gpu_finder(
             est_cfgs = max(1, int(min(int(merge_cfg_limit), int(est_cfgs * 1.25))))
             max_by_threads = int(merge_threads_limit // max(1, (n_pairs_for_est * est_cfgs)))
             if max_by_threads > 0:
-                max_genomes_per_batch = max(1, min(int(max_genomes_per_batch), int(max_by_threads)))
+                # Guardrail: don't let the heuristic create tiny batches (poor occupancy).
+                # If the estimated work is too large, prefer letting the GPU solver's internal
+                # adaptive chunking split configs, rather than starving the GPU with 3-6 genomes.
+                #
+                # Keep the minimum slightly higher in-process where submit overhead is low.
+                min_batch = 32 if in_process else 16
+                max_genomes_per_batch = max(min_batch, min(int(max_genomes_per_batch), int(max_by_threads)))
 
         idx0 = 0
         while idx0 < len(sig_list):
@@ -614,8 +659,48 @@ def process_force_greats_gpu_finder(
                 genome_stats_arr[i, 6] = int(bs.get("Fever Fill Rate", 0))  # ff_stat
 
             song_data = calc_song.get("song_data", {}) or {}
+            # IMPORTANT: Taichi FG API uses float32 timestamps. If we pass float64 arrays here,
+            # the API will convert on every call, producing a new buffer pointer each time and
+            # defeating its upload cache (causing redundant host->device uploads).
+            #
+            # Convert once per song and store back into `calc_song["song_data"]` so repeated
+            # FG calls for the same song reuse the same float32 buffers.
             timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
             great_candidates = song_data.get("fg_great_candidate_timestamps")
+
+            try:
+                if isinstance(timestamps, np.ndarray) and timestamps.dtype != np.float32:
+                    timestamps_f32 = np.asarray(timestamps, dtype=np.float32)
+                    # Ensure contiguous for predictable upload speed/caching.
+                    if not timestamps_f32.flags["C_CONTIGUOUS"]:
+                        timestamps_f32 = np.ascontiguousarray(timestamps_f32)
+                    # Prefer storing under fg_timestamps when present; otherwise timestamps.
+                    if "fg_timestamps" in song_data:
+                        song_data["fg_timestamps"] = timestamps_f32
+                    else:
+                        song_data["timestamps"] = timestamps_f32
+                    timestamps = timestamps_f32
+                elif isinstance(timestamps, np.ndarray) and not timestamps.flags["C_CONTIGUOUS"]:
+                    timestamps = np.ascontiguousarray(timestamps, dtype=np.float32)
+                    if "fg_timestamps" in song_data:
+                        song_data["fg_timestamps"] = timestamps
+                    else:
+                        song_data["timestamps"] = timestamps
+            except Exception:
+                pass
+
+            try:
+                if isinstance(great_candidates, np.ndarray) and great_candidates.dtype != np.float32:
+                    gc_f32 = np.asarray(great_candidates, dtype=np.float32)
+                    if not gc_f32.flags["C_CONTIGUOUS"]:
+                        gc_f32 = np.ascontiguousarray(gc_f32)
+                    song_data["fg_great_candidate_timestamps"] = gc_f32
+                    great_candidates = gc_f32
+                elif isinstance(great_candidates, np.ndarray) and not great_candidates.flags["C_CONTIGUOUS"]:
+                    great_candidates = np.ascontiguousarray(great_candidates, dtype=np.float32)
+                    song_data["fg_great_candidate_timestamps"] = great_candidates
+            except Exception:
+                pass
             long_notes = int(calc_song.get("metadata", {}).get("Long Notes", 0) or 0)
             last_note_time = float(calc_song.get("metadata", {}).get("Last Note Time", 0) or 0.0)
             if perf:
@@ -641,7 +726,8 @@ def process_force_greats_gpu_finder(
                 # Read merge thresholds from env (same as before)
                 try:
                     max_union_cfg = int(os.environ.get("FG_MERGE_MAX_CONFIGS", "5000"))
-                    max_union_threads = int(os.environ.get("FG_MERGE_MAX_THREADS", "50000000"))
+                    threads_default = "200000000" if in_process else "50000000"
+                    max_union_threads = int(os.environ.get("FG_MERGE_MAX_THREADS", threads_default))
                 except Exception:
                     max_union_cfg = 5000
                     max_union_threads = 20000000

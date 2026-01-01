@@ -184,14 +184,31 @@ def solve_best_fever_combination(
 
     # Normalize ref arrays to float32 so CPU and GPU paths use identical numeric behavior
     # regardless of input dtype (tests may pass float64 arrays).
-    ref_arrays = {
-        **ref_arrays,
-        "Perfect Points": np.asarray(ref_arrays["Perfect Points"], dtype=np.float32),
-        "Combo Multiplier": np.asarray(ref_arrays["Combo Multiplier"], dtype=np.float32),
-        "Fever Multiplier": np.asarray(ref_arrays["Fever Multiplier"], dtype=np.float32),
-        "Fever Time": np.asarray(ref_arrays["Fever Time"], dtype=np.float32),
-        "Fever Fill Rate": np.asarray(ref_arrays["Fever Fill Rate"], dtype=np.float32),
-    }
+    #
+    # Performance: avoid rebuilding a new dict when inputs are already float32.
+    ref_pp_raw = ref_arrays["Perfect Points"]
+    ref_cm_raw = ref_arrays["Combo Multiplier"]
+    ref_fm_raw = ref_arrays["Fever Multiplier"]
+    ref_ft_raw = ref_arrays["Fever Time"]
+    ref_ff_raw = ref_arrays["Fever Fill Rate"]
+
+    need_ref_cast = False
+    for _arr in (ref_pp_raw, ref_cm_raw, ref_fm_raw, ref_ft_raw, ref_ff_raw):
+        try:
+            if np.asarray(_arr).dtype != np.float32:
+                need_ref_cast = True
+                break
+        except Exception:
+            need_ref_cast = True
+            break
+
+    if need_ref_cast:
+        ref_arrays = dict(ref_arrays)
+        ref_arrays["Perfect Points"] = np.asarray(ref_pp_raw, dtype=np.float32)
+        ref_arrays["Combo Multiplier"] = np.asarray(ref_cm_raw, dtype=np.float32)
+        ref_arrays["Fever Multiplier"] = np.asarray(ref_fm_raw, dtype=np.float32)
+        ref_arrays["Fever Time"] = np.asarray(ref_ft_raw, dtype=np.float32)
+        ref_arrays["Fever Fill Rate"] = np.asarray(ref_ff_raw, dtype=np.float32)
 
     ref_pp = ref_arrays["Perfect Points"]
     ref_cm = ref_arrays["Combo Multiplier"]

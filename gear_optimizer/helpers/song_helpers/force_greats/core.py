@@ -53,8 +53,10 @@ def _process_force_greats_cpu(
         cached_force = entry.get("force")
         expected_sel = None
         try:
-            det0 = entry.get("details") or {}
-            expected_sel = det0.get("SelectedElement") or det0.get("Selected Element") or meta_primary_color
+            expected_sel = entry.get("selected_element")
+            if not expected_sel:
+                det0 = entry.get("details") or {}
+                expected_sel = det0.get("SelectedElement") or det0.get("Selected Element") or meta_primary_color
         except Exception:
             expected_sel = meta_primary_color
 

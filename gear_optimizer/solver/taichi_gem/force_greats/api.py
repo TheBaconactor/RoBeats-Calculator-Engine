@@ -114,6 +114,7 @@ _fg_song_upload_buf: np.ndarray | None = None
 _fg_great_upload_buf: np.ndarray | None = None
 _fg_forced_upload_buf: np.ndarray | None = None
 _fg_ftff_upload_buf: dict[str, np.ndarray] | None = None
+_fg_last_ftff_key: tuple | None = None  # (n, first, mid, last) or (n, ptr, ...) depending on input type
 
 # IMPORTANT: Taichi specializes kernels on external-array shapes. Since FG config counts
 # vary per song, we must keep external-array shapes stable across the whole runtime
@@ -137,6 +138,10 @@ _fg_flat_work_buf: dict[str, np.ndarray] | None = None
 _fg_genome_stats_upload_key: tuple[int, int] | None = None  # (n_genomes, hash)
 _fg_flat_work_key: tuple[int, int] | None = None  # (n_genomes, n_ftff)
 _fg_forced_configs_upload_key: tuple[int, int, int] | None = None  # (id(fg_configs), n_cfg, n_sections)
+
+# Device-resident forced-config caching (upload full config list once, reuse across many FT/FF chunks).
+_fg_forced_resident_key: tuple | None = None  # signature from _forced_configs_sig
+_fg_forced_resident_n_cfg_total: int | None = None
 
 # Pair-caps upload state. The flat kernel clamps FP targets using per-section
 # forced-count caps stored in fg_pair_caps.
@@ -195,7 +200,9 @@ def reset_force_greats_api_state() -> None:
     global _fg_genome_stats_buf, _fg_flat_work_buf
     global _fg_genome_stats_upload_key, _fg_flat_work_key
     global _fg_forced_configs_upload_key
+    global _fg_forced_resident_key, _fg_forced_resident_n_cfg_total
     global _fg_pair_caps_state, _fg_pair_caps_default_buf, _fg_pair_caps_custom_key
+    global _fg_last_ftff_key
 
     _fg_last_song_key = None
     _fg_song_upload_buf = None
@@ -203,6 +210,7 @@ def reset_force_greats_api_state() -> None:
     _fg_great_upload_buf = None
     _fg_forced_upload_buf = None
     _fg_ftff_upload_buf = None
+    _fg_last_ftff_key = None
     _fg_forced_counts_staging_tiers = None
     _fg_forced_counts_staging_pool = None
     _fg_genome_stats_buf = None
@@ -210,6 +218,8 @@ def reset_force_greats_api_state() -> None:
     _fg_genome_stats_upload_key = None
     _fg_flat_work_key = None
     _fg_forced_configs_upload_key = None
+    _fg_forced_resident_key = None
+    _fg_forced_resident_n_cfg_total = None
     _fg_pair_caps_state = None
     _fg_pair_caps_default_buf = None
     _fg_pair_caps_custom_key = None
@@ -384,6 +394,53 @@ def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
     fg_fields.fg_pair_caps.from_numpy(arr)
     _fg_pair_caps_state = "custom"
     _fg_pair_caps_custom_key = key
+
+
+def _ftff_pairs_sig(ftff_pairs: Any, n: int) -> tuple:
+    """
+    Cheap, robust-ish signature for an FT/FF pair list to avoid redundant uploads.
+
+    We intentionally avoid hashing the full contents (could be large and would add CPU cost).
+    The FG pipeline frequently reuses the same FT/FF windows across tasks/groups, especially
+    when search radius and centers are stable. Skipping `from_numpy()` avoids a host->device
+    transfer and an implicit sync on some backends.
+    """
+    try:
+        n = int(n)
+    except Exception:
+        n = 0
+    if n <= 0:
+        return (0,)
+
+    # Numpy fast path: use data pointer + a few samples.
+    try:
+        if isinstance(ftff_pairs, np.ndarray):
+            arr = ftff_pairs
+            ptr = int(arr.__array_interface__["data"][0])
+            # Normalize view to at least (n,2) without copying if possible.
+            if arr.ndim == 2 and arr.shape[0] >= n and arr.shape[1] >= 2:
+                first = (int(arr[0, 0]), int(arr[0, 1]))
+                mid = (int(arr[n // 2, 0]), int(arr[n // 2, 1])) if n > 1 else first
+                last = (int(arr[n - 1, 0]), int(arr[n - 1, 1]))
+                return ("np", n, ptr, first, mid, last)
+    except Exception:
+        pass
+
+    # Generic sequence path: sample first/mid/last.
+    try:
+        first_ft, first_ff = ftff_pairs[0]
+        last_ft, last_ff = ftff_pairs[n - 1]
+        mid_ft, mid_ff = ftff_pairs[n // 2] if n > 1 else (first_ft, first_ff)
+        return (
+            "seq",
+            n,
+            (int(first_ft), int(first_ff)),
+            (int(mid_ft), int(mid_ff)),
+            (int(last_ft), int(last_ff)),
+        )
+    except Exception:
+        # Fallback: only length.
+        return ("seq", n)
 
 
 def _get_genome_stats_buf() -> np.ndarray:
@@ -648,6 +705,12 @@ def _solve_force_greats_finder_gpu_impl(
     if n_ftff > fg_fields.FG_MAX_FTFF:
         raise ValueError(f"Too many FT/FF pairs: {n_ftff} > {fg_fields.FG_MAX_FTFF}")
 
+    # Avoid redundant FT/FF uploads when the same pair list is reused across tasks.
+    # This is a pure host->device transfer optimization; kernel bounds already use n_ftff.
+    global _fg_last_ftff_key
+    ftff_key = _ftff_pairs_sig(ftff_pairs, n_ftff)
+    can_skip_ftff_upload = _fg_last_ftff_key == ftff_key
+
     global _fg_ftff_upload_buf
     if _fg_ftff_upload_buf is None:
         _fg_ftff_upload_buf = {
@@ -658,24 +721,26 @@ def _solve_force_greats_finder_gpu_impl(
     ft_buf = _fg_ftff_upload_buf["ft"]
     ff_buf = _fg_ftff_upload_buf["ff"]
 
-    # Fast path: vectorized fill (ftff_pairs is typically list[tuple[int,int]]).
-    # Kernel bounds use n_ftff, so we don't need to zero the remainder.
-    try:
-        arr_pairs = np.asarray(ftff_pairs, dtype=np.int32)
-        if arr_pairs.ndim == 2 and arr_pairs.shape[1] >= 2 and int(arr_pairs.shape[0]) >= n_ftff:
-            ft_buf[:n_ftff] = arr_pairs[:n_ftff, 0]
-            ff_buf[:n_ftff] = arr_pairs[:n_ftff, 1]
-        else:
+    if not can_skip_ftff_upload:
+        # Fast path: vectorized fill (ftff_pairs is typically list[tuple[int,int]]).
+        # Kernel bounds use n_ftff, so we don't need to zero the remainder.
+        try:
+            arr_pairs = np.asarray(ftff_pairs, dtype=np.int32)
+            if arr_pairs.ndim == 2 and arr_pairs.shape[1] >= 2 and int(arr_pairs.shape[0]) >= n_ftff:
+                ft_buf[:n_ftff] = arr_pairs[:n_ftff, 0]
+                ff_buf[:n_ftff] = arr_pairs[:n_ftff, 1]
+            else:
+                for i, (ftg, ffg) in enumerate(ftff_pairs):
+                    ft_buf[i] = int(ftg)
+                    ff_buf[i] = int(ffg)
+        except Exception:
             for i, (ftg, ffg) in enumerate(ftff_pairs):
                 ft_buf[i] = int(ftg)
                 ff_buf[i] = int(ffg)
-    except Exception:
-        for i, (ftg, ffg) in enumerate(ftff_pairs):
-            ft_buf[i] = int(ftg)
-            ff_buf[i] = int(ffg)
 
-    fg_fields.fg_ft_list.from_numpy(ft_buf)
-    fg_fields.fg_ff_list.from_numpy(ff_buf)
+        fg_fields.fg_ft_list.from_numpy(ft_buf)
+        fg_fields.fg_ff_list.from_numpy(ff_buf)
+        _fg_last_ftff_key = ftff_key
 
     # Reset outputs and init stage1
     fg_kernels.fg_reset_best_kernel(n_genomes)
@@ -713,6 +778,8 @@ def _solve_force_greats_finder_gpu_impl(
     n_cfg_total = int(len(fg_configs))
     if n_cfg_total <= 0:
         return []
+    if n_cfg_total > int(fg_fields.FG_MAX_CONFIGS):
+        raise ValueError(f"Too many FG configs: {n_cfg_total} > {int(fg_fields.FG_MAX_CONFIGS)}")
 
     n_sections = int(n_sections) if int(n_sections) > 0 else 1
     if n_sections > fg_fields.FG_MAX_SECTIONS:
@@ -770,30 +837,43 @@ def _solve_force_greats_finder_gpu_impl(
     # Pre-fetch buffer reference
     buf = _fg_forced_upload_buf
 
-    # Config upload caching: avoid repeated CPU packing and host->device uploads
-    # when the config list content is unchanged across calls.
-    global _fg_forced_configs_upload_key
-    cfg_upload_key = None
-    can_skip_forced_upload = False
-    if n_chunks == 1:
-        try:
-            cfg_upload_key = _forced_configs_sig(fg_configs, int(n_sections))
-            can_skip_forced_upload = _fg_forced_configs_upload_key == cfg_upload_key
-        except Exception:
-            cfg_upload_key = None
-    else:
-        # Chunked mode packs different slices into the same buffer; skip caching.
-        _fg_forced_configs_upload_key = None
+    # ------------------------------------------------------------------
+    # Config upload strategy (max throughput):
+    # Keep forced configs GPU-resident when possible so repeated calls that
+    # share the same config list (common across FT/FF chunking) don't pay
+    # repeated host packing + host->device uploads.
+    # ------------------------------------------------------------------
+    resident_enabled = str(os.environ.get("FG_RESIDENT_FORCED_CONFIGS", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
+    global _fg_forced_resident_key, _fg_forced_resident_n_cfg_total
 
-    for cfg_offset in range(0, n_cfg_total, cfg_chunk):
-        chunk = fg_configs[cfg_offset : cfg_offset + cfg_chunk]
-        n_cfg = int(len(chunk))
+    cfg_sig = None
+    try:
+        cfg_sig = _forced_configs_sig(fg_configs, int(n_sections))
+    except Exception:
+        cfg_sig = None
 
-        if can_skip_forced_upload:
-            # Configs unchanged (n_chunks==1 only); keep existing GPU buffer.
-            can_skip_forced_upload = False
-        else:
-            # Zero out and pack config chunk
+    resident_ok = (
+        resident_enabled
+        and cfg_sig is not None
+        and _fg_forced_resident_key == cfg_sig
+        and int(_fg_forced_resident_n_cfg_total or 0) == int(n_cfg_total)
+    )
+
+    if resident_enabled and (not resident_ok) and cfg_sig is not None:
+        # Upload the FULL config list into the device-resident buffer once.
+        # Subsequent calls can skip uploads and just change cfg_read_offset.
+        upload_rows = int(_FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)
+        if upload_rows <= 0:
+            upload_rows = 4096
+        upload_rows = min(upload_rows, int(max_staging_rows))
+
+        for cfg_off in range(0, n_cfg_total, upload_rows):
+            chunk = fg_configs[cfg_off : cfg_off + upload_rows]
+            n_cfg = int(len(chunk))
+            if n_cfg <= 0:
+                continue
+
+            # Zero out and pack chunk into host buffer
             buf[:n_cfg, :] = 0
             try:
                 arr_chunk = np.array(chunk, dtype=np.int32)
@@ -810,15 +890,48 @@ def _solve_force_greats_finder_gpu_impl(
                     limit = min(n_sections, len(cfg))
                     buf[i, :limit] = cfg[:limit]
 
-            # Upload using a small tiered staging buffer (bounded set of shapes).
-            # Only the first `n_cfg` rows are meaningful; the upload kernel clamps by `n_cfg`.
             staging_rows = _pick_forced_counts_staging_rows(int(n_cfg))
             staging = _get_forced_counts_staging(int(staging_rows))
             staging.from_numpy(buf[: int(staging_rows), :])
-            fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), staging)
+            fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), int(cfg_off), staging)
 
-            if cfg_upload_key is not None and n_chunks == 1 and cfg_offset == 0:
-                _fg_forced_configs_upload_key = cfg_upload_key
+        _fg_forced_resident_key = cfg_sig
+        _fg_forced_resident_n_cfg_total = int(n_cfg_total)
+        resident_ok = True
+
+    # Legacy cache key (n_chunks==1 only) is now redundant when resident mode is enabled.
+    global _fg_forced_configs_upload_key
+    if resident_ok:
+        _fg_forced_configs_upload_key = cfg_sig  # type: ignore[assignment]
+    else:
+        _fg_forced_configs_upload_key = None
+
+    for cfg_offset in range(0, n_cfg_total, cfg_chunk):
+        chunk = fg_configs[cfg_offset : cfg_offset + cfg_chunk]
+        n_cfg = int(len(chunk))
+
+        if not resident_ok:
+            # Legacy path: upload this chunk into row 0..n_cfg-1 each time.
+            buf[:n_cfg, :] = 0
+            try:
+                arr_chunk = np.array(chunk, dtype=np.int32)
+                if arr_chunk.ndim == 2:
+                    k = arr_chunk.shape[1]
+                    cols = min(k, n_sections)
+                    buf[:n_cfg, :cols] = arr_chunk[:, :cols]
+                else:
+                    for i, cfg in enumerate(chunk):
+                        limit = min(n_sections, len(cfg))
+                        buf[i, :limit] = cfg[:limit]
+            except Exception:
+                for i, cfg in enumerate(chunk):
+                    limit = min(n_sections, len(cfg))
+                    buf[i, :limit] = cfg[:limit]
+
+            staging_rows = _pick_forced_counts_staging_rows(int(n_cfg))
+            staging = _get_forced_counts_staging(int(staging_rows))
+            staging.from_numpy(buf[: int(staging_rows), :])
+            fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), 0, staging)
 
         # Call Kernel based on platform
         # On Metal (macOS), 64-bit atomics for the flat kernel are not supported.
@@ -837,6 +950,7 @@ def _solve_force_greats_finder_gpu_impl(
                 int(n_sections),
                 int(n_ftff),
                 int(global_cfg_offset),
+                int(cfg_offset if resident_ok else 0),
                 int(is_p_ft),
                 int(is_s_ft),
                 int(is_p_ff),
@@ -858,6 +972,7 @@ def _solve_force_greats_finder_gpu_impl(
                     int(n_work_items),
                     int(n_cfg),
                     int(global_cfg_offset),
+                    int(cfg_offset if resident_ok else 0),
                     int(total_notes),
                     int(long_notes),
                     float(last_note_time),
@@ -882,6 +997,7 @@ def _solve_force_greats_finder_gpu_impl(
                     int(n_work_items),
                     int(n_cfg),
                     int(global_cfg_offset),
+                    int(cfg_offset if resident_ok else 0),
                     int(total_notes),
                     int(long_notes),
                     float(last_note_time),

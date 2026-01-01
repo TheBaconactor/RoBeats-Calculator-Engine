@@ -6,6 +6,7 @@ that determines when fever starts/ends based on stats. This logic stays
 on CPU and is NOT ported to GPU.
 """
 
+import os
 import numpy as np
 from math import ceil
 
@@ -424,6 +425,30 @@ class SongTimelineGrid:
         # Using None to indicate not-yet-computed
         self._timeline_grid = [[None] * self.GRID_SIZE for _ in range(self.GRID_SIZE)]
 
+        # Optional timeline bucketing (cache key canonicalization).
+        #
+        # Modes:
+        # - off: legacy behavior (no bucketing).
+        # - b / factors: canonicalize by exact (FT factor, FF factor). This is safe if
+        #   factors come from lookup tables (plateaus) and equality is exact.
+        # - a / signature: canonicalize by computed timeline signature (always safe,
+        #   but cannot avoid first-time compute for a new signature).
+        #
+        # Default remains "off" for parity safety.
+        # Default to factor-based bucketing ("b") for performance.
+        # Set TIMELINE_BUCKET_MODE=off to disable.
+        self._bucket_mode = str(os.environ.get("TIMELINE_BUCKET_MODE", "b") or "b").strip().lower()
+        if self._bucket_mode in {"none", "0", "false"}:
+            self._bucket_mode = "off"
+        if self._bucket_mode in {"factor", "factors", "b"}:
+            self._bucket_mode = "b"
+        if self._bucket_mode in {"sig", "signature", "a"}:
+            self._bucket_mode = "a"
+
+        # Bucketing maps (per-song grid instance)
+        self._bucket_b = {}  # (ft_factor, ff_factor) -> (ft_idx, ff_idx)
+        self._bucket_sig = {}  # signature -> timeline tuple
+
         # Shared buffer for timeline calculation
         self._fever_mask_buffer = np.zeros(self.total_notes, dtype=np.bool_)
 
@@ -450,6 +475,19 @@ class SongTimelineGrid:
         ft_idx = max(0, min(TOTAL_ROWS, int(ft_idx)))
         ff_idx = max(0, min(TOTAL_ROWS, int(ff_idx)))
 
+        if self._bucket_mode == "b":
+            # Canonicalize by exact factors (plateaus in lookup tables).
+            # This avoids computing duplicate timelines for distinct indices
+            # that map to the same multipliers.
+            ft_factor_key = float(self.ft_factors[ft_idx])
+            ff_factor_key = float(self.ff_factors[ff_idx])
+            key = (ft_factor_key, ff_factor_key)
+            canon = self._bucket_b.get(key)
+            if canon is None:
+                canon = (ft_idx, ff_idx)
+                self._bucket_b[key] = canon
+            ft_idx, ff_idx = canon
+
         cached = self._timeline_grid[ft_idx][ff_idx]
         if cached is not None:
             return cached
@@ -472,6 +510,22 @@ class SongTimelineGrid:
 
         # Copy the head slice (buffer is reused)
         result = (fever_mask_head.copy(), count_body_fever, count_body_normal, fever_activations, last_fever_end_idx)
+
+        if self._bucket_mode == "a":
+            # Canonicalize by computed signature (always safe).
+            # This can unify timelines even when factors differ but the discrete
+            # stepping ends up identical for this song.
+            try:
+                sig = (result[0].tobytes(), int(result[1]), int(result[2]), int(result[3]), int(result[4]))
+                existing = self._bucket_sig.get(sig)
+                if existing is not None:
+                    result = existing
+                else:
+                    self._bucket_sig[sig] = result
+            except Exception:
+                # Never fail due to signature issues; fall back to per-index caching.
+                pass
+
         self._timeline_grid[ft_idx][ff_idx] = result
         return result
 

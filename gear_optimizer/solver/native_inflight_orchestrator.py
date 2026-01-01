@@ -743,21 +743,61 @@ def run_native_inflight_song_pipeline(
     if not tasks:
         return
 
+    cfg0 = None
+    try:
+        cfg0 = cfg_from_dict(tasks[0][3] or {})
+    except Exception:
+        cfg0 = None
+
     inflight_limit = max(1, int(in_flight_songs))
     inflight_limit = min(inflight_limit, len(tasks))
-    prep_limit = max(1, inflight_limit * 2)
+
+    # How deep we allow the GPU-native GA queue to get (number of submitted GA jobs).
+    # A deeper backlog reduces GPU idle gaps when CPU-side decode / FG prep briefly stalls.
+    ga_queue_mult = 0
+    if cfg0 is not None:
+        try:
+            ga_queue_mult = safe_int(cfg0.get("IterationEngine", "InFlight_GA_QueueMult", fallback="0"), 0)
+        except Exception:
+            ga_queue_mult = 0
+    try:
+        ga_queue_mult = int(os.environ.get("INFLIGHT_GA_QUEUE_MULT", "0") or "0")
+    except Exception:
+        ga_queue_mult = 0
+    if ga_queue_mult <= 0:
+        ga_queue_mult = 2
+    ga_queue_mult = max(1, min(int(ga_queue_mult), 8))
+    ga_queue_limit = max(1, int(inflight_limit) * int(ga_queue_mult))
+
+    # CPU prep staging buffer size (prepared songs + in-flight preps).
+    # Larger buffers avoid starvation on fast GPUs at the cost of RAM.
+    prep_buffer_mult = 0
+    if cfg0 is not None:
+        try:
+            prep_buffer_mult = safe_int(cfg0.get("IterationEngine", "InFlight_PrepBufferMult", fallback="0"), 0)
+        except Exception:
+            prep_buffer_mult = 0
+    try:
+        prep_buffer_mult = int(os.environ.get("INFLIGHT_PREP_BUFFER_MULT", "0") or "0")
+    except Exception:
+        prep_buffer_mult = 0
+    if prep_buffer_mult <= 0:
+        prep_buffer_mult = 4
+    prep_buffer_mult = max(1, min(int(prep_buffer_mult), 16))
+    prep_limit = max(1, int(inflight_limit) * int(prep_buffer_mult))
 
     fg_every = 12
     try:
-        cfg0 = cfg_from_dict(tasks[0][3] or {})
-        fg_every = safe_int(cfg0.get("IterationEngine", "FG_InterleaveEvery", fallback=12), 12)
+        if cfg0 is not None:
+            fg_every = safe_int(cfg0.get("IterationEngine", "FG_InterleaveEvery", fallback=12), 12)
     except Exception:
         fg_every = 12
     fg_every = max(1, int(fg_every))
 
     fg_drain_at_end = True
     try:
-        fg_drain_at_end = cfg0.getboolean("IterationEngine", "FG_DrainAtEnd", fallback=True)
+        if cfg0 is not None:
+            fg_drain_at_end = cfg0.getboolean("IterationEngine", "FG_DrainAtEnd", fallback=True)
     except Exception:
         fg_drain_at_end = True
 
@@ -785,6 +825,11 @@ def run_native_inflight_song_pipeline(
 
     ga_seed = str(os.environ.get("GA_SEED") or "").strip()
     prep_workers = 0
+    if cfg0 is not None:
+        try:
+            prep_workers = safe_int(cfg0.get("IterationEngine", "InFlight_PrepWorkers", fallback="0"), 0)
+        except Exception:
+            prep_workers = 0
     try:
         prep_workers = int(os.environ.get("INFLIGHT_PREP_WORKERS", "0") or "0")
     except Exception:
@@ -799,6 +844,11 @@ def run_native_inflight_song_pipeline(
     prep_inflight: deque[tuple[tuple, concurrent.futures.Future]] = deque()
 
     decode_workers = 0
+    if cfg0 is not None:
+        try:
+            decode_workers = safe_int(cfg0.get("IterationEngine", "InFlight_DecodeWorkers", fallback="0"), 0)
+        except Exception:
+            decode_workers = 0
     try:
         decode_workers = int(os.environ.get("INFLIGHT_DECODE_WORKERS", "0") or "0")
     except Exception:
@@ -824,6 +874,11 @@ def run_native_inflight_song_pipeline(
     ga_completed_since_last_fg = 0
 
     fg_prep_workers = 0
+    if cfg0 is not None:
+        try:
+            fg_prep_workers = safe_int(cfg0.get("IterationEngine", "InFlight_FGPrepWorkers", fallback="0"), 0)
+        except Exception:
+            fg_prep_workers = 0
     try:
         fg_prep_workers = int(os.environ.get("INFLIGHT_FG_PREP_WORKERS", "0") or "0")
     except Exception:
@@ -834,9 +889,25 @@ def run_native_inflight_song_pipeline(
     fg_prep_inflight: deque[_NativeSong] = deque()
     fg_jit_warmup_submitted = False
 
-    # Prime the pipeline: pre-prepare a small backlog synchronously so the GPU queue
-    # doesn't starve on the first few song boundaries while prep workers spin up.
-    prime_target = min(2, inflight_limit, len(pending_tasks))
+    # Prime the pipeline: pre-prepare a backlog synchronously so the GPU queue
+    # doesn't starve on early song boundaries while prep workers spin up.
+    #
+    # High-end GPUs can burn through the first GA jobs quickly; priming only 1–2 songs
+    # can still leave the GPU idle while CPU prep catches up. Default to priming up to
+    # `inflight_limit`, but allow override via env var for experimentation.
+    prime_target = 0
+    if cfg0 is not None:
+        try:
+            prime_target = safe_int(cfg0.get("IterationEngine", "InFlight_PrimeTarget", fallback="0"), 0)
+        except Exception:
+            prime_target = 0
+    try:
+        prime_target = int(os.environ.get("INFLIGHT_PRIME_TARGET", "0") or "0")
+    except Exception:
+        prime_target = 0
+    if prime_target <= 0:
+        prime_target = inflight_limit
+    prime_target = max(1, min(int(prime_target), inflight_limit, len(pending_tasks)))
     for _ in range(int(prime_target)):
         first = pending_tasks.popleft()
         song_name = first[1]
@@ -964,7 +1035,9 @@ def run_native_inflight_song_pipeline(
             # - We alternate submit/prep to minimize the initial "startup bubble".
             while True:
                 # Submit GA jobs whenever we have prepared work and GPU queue capacity.
-                if prepared and len(ga_inflight) < inflight_limit:
+                # We allow `ga_inflight` to exceed `inflight_limit` to create a backlog
+                # that keeps the GPU fed while CPU decode/FG prep runs.
+                if prepared and len(ga_inflight) < ga_queue_limit:
                     song = prepared.popleft()
                     payload = {
                         "calc_song": song.calc_song,
@@ -1450,6 +1523,7 @@ def _prepare_fg_job_sync(song: _NativeSong) -> None:
         song.minis_by_name,
         build_details,
         db_loadouts_full=db_loadouts_full,
+        lean_ga_candidates=not bool(song.fg_debug),
     )
     t_build = time.perf_counter() if perf else 0.0
 

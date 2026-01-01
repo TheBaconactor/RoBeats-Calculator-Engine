@@ -400,6 +400,7 @@ def warmup_kernels() -> None:
             n_sections,
             n_ftff,
             cfg_offset,
+            0,  # cfg_read_offset
             0,
             0,
             0,
@@ -418,6 +419,7 @@ def warmup_kernels() -> None:
             n_work_items,
             n_cfg,
             cfg_offset,
+            0,  # cfg_read_offset
             total_notes,
             long_notes,
             last_note_time,
