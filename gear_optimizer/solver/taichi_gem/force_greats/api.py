@@ -1144,8 +1144,70 @@ def solve_force_greats_finder_gpu_tasks(
     if not fg_tasks:
         return
 
-    uploaded = False
+    # Merge adjacent tasks that share the same forced-config list + cfg offset by concatenating
+    # their FT/FF pairs. This increases `n_ftff` (more parallel work per kernel launch) without
+    # changing correctness: it is equivalent to running the tasks sequentially and accumulating
+    # global best across the union of FT/FF pairs.
+    #
+    # This is especially important for tiny `n_ftff` tasks (often 1) which severely under-saturate
+    # the GPU on high-end cards.
+    try:
+        max_ftff = int(getattr(fg_fields, "FG_MAX_FTFF", 0) or 0)
+    except Exception:
+        max_ftff = 0
+    if max_ftff <= 0:
+        max_ftff = 1024
+
+    merged_tasks: list[dict[str, Any]] = []
     for task in fg_tasks:
+        if not isinstance(task, dict):
+            continue
+        fg_configs = task.get("counts_list")
+        ftff_pairs = task.get("ftff_pairs")
+        if not fg_configs or not ftff_pairs:
+            continue
+
+        try:
+            task_offset = int(task.get("base_cfg_offset", base_cfg_offset) or base_cfg_offset)
+        except Exception:
+            task_offset = int(base_cfg_offset)
+
+        # Normalize pairs to a list of (ft, ff) tuples.
+        try:
+            pairs_list = list(ftff_pairs)
+        except Exception:
+            pairs_list = []
+        if not pairs_list:
+            continue
+
+        key = (id(fg_configs), int(task_offset))
+        if merged_tasks:
+            prev = merged_tasks[-1]
+            if (
+                prev.get("_merge_key") == key
+                and int(len(prev.get("ftff_pairs") or ())) + int(len(pairs_list)) <= int(max_ftff)
+            ):
+                prev_pairs = prev.get("ftff_pairs")
+                if isinstance(prev_pairs, list):
+                    prev_pairs.extend(pairs_list)
+                else:
+                    prev["ftff_pairs"] = list(prev_pairs or []) + pairs_list
+                continue
+
+        merged_tasks.append(
+            {
+                "counts_list": fg_configs,
+                "ftff_pairs": pairs_list,
+                "base_cfg_offset": int(task_offset),
+                "_merge_key": key,
+            }
+        )
+
+    for t in merged_tasks:
+        t.pop("_merge_key", None)
+
+    uploaded = False
+    for task in merged_tasks:
         if not isinstance(task, dict):
             continue
         fg_configs = task.get("counts_list")

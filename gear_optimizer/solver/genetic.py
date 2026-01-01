@@ -50,7 +50,11 @@ from ..helpers.ga_helpers import (
     compute_dynamic_mutation,
 )
 from ..helpers.song_helpers.fg_candidate_selector import select_fg_candidates
-from ..helpers.song_helpers.fg_combo_booster import build_fg_combo_booster_candidates, hydrate_fg_candidate_stats
+from ..helpers.song_helpers.fg_combo_booster import (
+    build_fg_beam_booster_candidates,
+    build_fg_combo_booster_candidates,
+    hydrate_fg_candidate_stats,
+)
 
 # Optional: GPU-native GA imports (only loaded if needed)
 _GPU_NATIVE_AVAILABLE = False
@@ -1465,15 +1469,6 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
     gpu_api.ga_upload_base_fixed_stats(base_fixed_stats_arr)
 
-    gpu_static = {
-        "need_upload_item_stats": False,
-        "need_upload_base_fixed": False,
-        "item_stats": item_stats,
-        "slot_start": slot_start,
-        "slot_count": slot_count,
-        "base_fixed_stats": base_fixed_stats_arr,
-    }
-
     is_p_ft = color_flags.get("is_p_ft", 0)
     is_s_ft = color_flags.get("is_s_ft", 0)
     is_p_ff = color_flags.get("is_p_ff", 0)
@@ -2356,10 +2351,37 @@ def solve_coevolution_genetic(
             # Never allow candidate augmentation to crash the GA solver.
             pass
 
-        # Always-on: FG combo booster (capped) to improve ForceGreatsFinder coverage without
-        # inflating the downstream candidate limit (we re-select to the same funnel size).
+        # FG booster(s): optional candidate augmentation to improve ForceGreatsFinder coverage
+        # without inflating the downstream candidate limit (we re-select to the same funnel size).
         try:
-            if cfg.getboolean("IterationEngine", "ForceGreatsFinder", fallback=False):
+            force_greats_enabled = cfg.getboolean("IterationEngine", "ForceGreatsFinder", fallback=False)
+            beam_enabled = str(os.environ.get("FG_BEAM_BOOSTER_ENABLED", "0") or "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            combo_enabled = str(os.environ.get("FG_COMBO_BOOSTER_ENABLED", "1") or "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+
+            boosted = None
+            if force_greats_enabled and beam_enabled:
+                boosted = build_fg_beam_booster_candidates(
+                    existing_candidates=list(unique_evaluated or []),
+                    registry=registry,
+                    base_stats_fixed=base_stats_fixed,
+                    cfg_data=cfg_data,
+                    calc_song=calc_song,
+                    ref_arrays=ref_arrays,
+                    primary_color=str(p_color or ""),
+                    secondary_color=str(s_color or ""),
+                    song_slot=int(song_slot),
+                )
+            elif force_greats_enabled and combo_enabled:
                 boosted = build_fg_combo_booster_candidates(
                     existing_candidates=list(unique_evaluated or []),
                     registry=registry,
@@ -2371,18 +2393,19 @@ def solve_coevolution_genetic(
                     secondary_color=str(s_color or ""),
                     song_slot=int(song_slot),
                 )
-                if boosted:
-                    unique_evaluated = select_fg_candidates(
-                        list(unique_evaluated or []) + list(boosted),
-                        limit=max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit),
-                        primary_color=str(p_color or ""),
-                        secondary_color=str(s_color or ""),
-                    )
-                    hydrate_fg_candidate_stats(
-                        unique_evaluated,
-                        base_stats_fixed=base_stats_fixed,
-                        selected_color=str(cfg_data.get("selected_color", "") or ""),
-                    )
+
+            if boosted:
+                unique_evaluated = select_fg_candidates(
+                    list(unique_evaluated or []) + list(boosted),
+                    limit=max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit),
+                    primary_color=str(p_color or ""),
+                    secondary_color=str(s_color or ""),
+                )
+                hydrate_fg_candidate_stats(
+                    unique_evaluated,
+                    base_stats_fixed=base_stats_fixed,
+                    selected_color=str(cfg_data.get("selected_color", "") or ""),
+                )
         except Exception:
             pass
 

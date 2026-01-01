@@ -8,7 +8,6 @@ This module provides force greats operations:
 import os
 import threading
 import time
-from contextlib import nullcontext
 from typing import TYPE_CHECKING, Optional
 
 from ...solver.scoring import apply_force_greats_to_result
@@ -189,13 +188,18 @@ def process_force_greats(
             fg_async_tasks_per_request_default = 8
             if gpu_client is not None and "FG_ASYNC_TASKS_PER_REQUEST" not in os.environ:
                 try:
-                    import queue as _queue
+                    in_process = False
+                    try:
+                        ex = getattr(gpu_client, "executor", None)
+                        in_process = bool(getattr(ex, "_in_process_queues", False))
+                    except Exception:
+                        in_process = False
 
-                    if isinstance(getattr(gpu_client, "_request_queue", None), _queue.Queue):
+                    if in_process:
                         # In in-process (thread-queue) mode we can batch many FT/FF chunks into
                         # a single executor request so FG runs as one contiguous GPU job
                         # (reset + solve + download) with fewer request boundaries.
-                        fg_async_tasks_per_request_default = 1024
+                        fg_async_tasks_per_request_default = 4096
                 except Exception:
                     fg_async_tasks_per_request_default = 8
 
@@ -210,33 +214,7 @@ def process_force_greats(
             fg_async_futures = []
             fg_tasks_batch = []
 
-            # Helper: apply gem allocations to base stats to produce a final Stats dict
-            def _apply_gems_to_base(base: dict, sel_color: str, ft: int, ff: int, gem_counts: dict) -> dict:
-                out = dict(base or {})
-                g_pp = int((gem_counts or {}).get("Perfect Points", 0))
-                g_cm = int((gem_counts or {}).get("Combo Multiplier", 0))
-                g_fm = int((gem_counts or {}).get("Fever Multiplier", 0))
-                g_ov = int((gem_counts or {}).get("Element", 0))
-
-                out["Perfect Points"] = out.get("Perfect Points", 0) + g_pp * GEM_SCALE_NORMAL
-                out["Combo Multiplier"] = out.get("Combo Multiplier", 0) + g_cm * GEM_SCALE_NORMAL
-                out["Fever Multiplier"] = out.get("Fever Multiplier", 0) + g_fm * GEM_SCALE_FEVER
-                out["Fever Time"] = out.get("Fever Time", 0) + int(ft) * GEM_SCALE_FEVER
-                out["Fever Fill Rate"] = out.get("Fever Fill Rate", 0) + int(ff) * GEM_SCALE_FEVER
-
-                # Stat-to-element contributions
-                out["Chill"] = out.get("Chill", 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
-                out["Flow"] = out.get("Flow", 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
-                out["Rush"] = out.get("Rush", 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
-                out["Beat"] = out.get("Beat", 0) + int(ft) * GEM_STAT_TO_ELEMENT_SCALE
-                out["Vibe"] = out.get("Vibe", 0) + int(ff) * GEM_STAT_TO_ELEMENT_SCALE
-
-                # Overflow gems
-                if sel_color:
-                    out[sel_color] = out.get(sel_color, 0) + g_ov * ELEMENTAL_GEM_SCALE
-                return out
-
-            # OPTIMIZED: Fast version with raw int values (avoids dict lookups in hot loop)
+            # OPTIMIZED: Apply gem allocations to base stats with raw int values (avoids dict lookups in hot loop).
             def _apply_gems_to_base_fast(
                 base: dict, sel_color: str, ft: int, ff: int, g_pp: int, g_cm: int, g_fm: int, g_ov: int
             ) -> dict:
@@ -523,7 +501,6 @@ def process_force_greats(
             # Group work by (selected_element, n_sections, max_per_section)
             groups = {}
             group_centers = {}  # key -> set of (center_ft, center_ff)
-            group_items = []
 
             # PERF counters (opt-in; enabled via caller)
             t_collect_sec = 0.0
@@ -725,57 +702,7 @@ def process_force_greats(
                                     continue
                                 needed_pairs_set.add((ft, ff))
 
-                needed_pairs = sorted(list(needed_pairs_set))
-                if len(needed_pairs) == 0:
-                    ftff_pairs = []
-                    stat_bounds = (0, 0, 0, 0)  # Should not happen
-                else:
-                    ft_vals = [p[0] for p in needed_pairs]
-                    ff_vals = [p[1] for p in needed_pairs]
-                    # Map gem counts to stat indices for collect_analytic_configs.
-                    # Groups may contain loadouts with different base stats, so we need to find
-                    # the union of their active stat regions.
-                    # FT_Stat = Base + Gems*3, where Base varies per loadout.
-
-                    min_base_ft = 999
-                    max_base_ft = -999
-                    min_base_ff = 999
-                    max_base_ff = -999
-
-                    # sig_map: sig -> list of (entry, eval, base_stats)
-                    for _, items in sig_map.items():
-                        for _, _, bs in items:
-                            bft = bs.get("Fever Time", 0)
-                            bff = bs.get("Fever Fill Rate", 0)
-                            if bft < min_base_ft:
-                                min_base_ft = bft
-                            if bft > max_base_ft:
-                                max_base_ft = bft
-                            if bff < min_base_ff:
-                                min_base_ff = bff
-                            if bff > max_base_ff:
-                                max_base_ff = bff
-
-                    # Calculate stat bounds reachable by this group.
-                    # MinStat = MinBase + MinGem*3
-                    # MaxStat = MaxBase + MaxGem*3
-
-                    min_gem_ft = min(ft_vals)
-                    max_gem_ft = max(ft_vals)
-                    min_gem_ff = min(ff_vals)
-                    max_gem_ff = max(ff_vals)
-
-                    # Constants
-                    GEM_SCALE = 3
-
-                    bound_min_ft = max(0, min_base_ft + min_gem_ft * GEM_SCALE - 5)  # -5 margin
-                    bound_max_ft = min(TOTAL_ROWS, max_base_ft + max_gem_ft * GEM_SCALE + 5)
-                    bound_min_ff = max(0, min_base_ff + min_gem_ff * GEM_SCALE - 5)
-                    bound_max_ff = min(TOTAL_ROWS, max_base_ff + max_gem_ff * GEM_SCALE + 5)
-
-                    stat_bounds = (bound_min_ft, bound_max_ft, bound_min_ff, bound_max_ff)
-
-                ftff_pairs = sorted(list(needed_pairs))
+                ftff_pairs = sorted(needed_pairs_set)
 
                 # Per-Group Analytic Config Collection using PURE MATH (100x faster)
                 # Create analytical scorer once per song (cached implicitly by calc_song)
@@ -945,7 +872,6 @@ def process_force_greats(
                         )
 
                         # Logging (count groups as we go)
-                        log_key = (int(n_sections), int(len(ftff_pairs)))
                         logged_first = False
                         group_count = 0
 

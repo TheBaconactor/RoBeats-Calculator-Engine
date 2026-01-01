@@ -891,24 +891,24 @@ class GearOptimizerApp:
             if inflight_ok:
                 return
 
-                # If inflight was configured but failed to start, fall through to the normal
-                # sequential pipeline. Ensure the preloader is running for that path.
-                if use_gpu_preload and preloader is None:
-                    try:
-                        from .helpers.song_preloader import get_song_preloader
+            # If inflight was configured but failed to start, fall through to the normal
+            # sequential pipeline. Ensure the preloader is running for that path.
+            if use_gpu_preload and preloader is None:
+                try:
+                    from .helpers.song_preloader import get_song_preloader
 
-                        preloader = get_song_preloader()
-                        preloader.start()
+                    preloader = get_song_preloader()
+                    preloader.start()
 
-                        # Queue first 5 songs for preloading
-                        for i, t in enumerate(tasks[:5]):
-                            if t[1] not in completed_songs:
-                                self._queue_song_for_preload(preloader, t)
+                    # Queue first 5 songs for preloading
+                    for i, t in enumerate(tasks[:5]):
+                        if t[1] not in completed_songs:
+                            self._queue_song_for_preload(preloader, t)
 
-                        print("[Song Preloader] Async preloading enabled")
-                    except Exception as e:
-                        print(f"[Song Preloader] Not available: {e}")
-                        use_gpu_preload = False
+                    print("[Song Preloader] Async preloading enabled")
+                except Exception as e:
+                    print(f"[Song Preloader] Not available: {e}")
+                    use_gpu_preload = False
 
         # ------------------------------------------------------------------
         # Continuous pipeline mode (major refactor):

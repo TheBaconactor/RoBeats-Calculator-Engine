@@ -26,6 +26,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -784,6 +785,7 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
     wait_events = 0
     wait_sec_series: list[float] = []
     wait_rows: list[dict[str, Any]] = []
+    exec_raw_intervals: list[tuple[float, float, str]] = []
     fg_exec_events = 0
     fg_exec_total_sec = 0.0
     fg_intervals: list[tuple[float, float]] = []
@@ -849,9 +851,6 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
                     continue
                 exec_events += 1
                 types = (row.get("types") or "").strip()
-                if not _types_has_fg(types):
-                    continue
-                fg_exec_events += 1
                 try:
                     wall_ts = float(row.get("wall_ts") or "0")
                 except Exception:
@@ -861,9 +860,15 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
                 except Exception:
                     exec_sec = 0.0
                 exec_sec = max(0.0, float(exec_sec))
+                if exec_sec > 0:
+                    end_ts = float(wall_ts)
+                    start_ts = float(end_ts - exec_sec)
+                    exec_raw_intervals.append((start_ts, end_ts, str(types)))
+
+                if not _types_has_fg(types):
+                    continue
+                fg_exec_events += 1
                 fg_exec_total_sec += exec_sec
-                end_ts = float(wall_ts)
-                start_ts = float(end_ts - exec_sec)
                 if exec_sec > 0:
                     fg_raw_intervals.append((start_ts, end_ts))
                     fg_intervals.append((start_ts, end_ts))
@@ -928,6 +933,43 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
     no_work_windows = _merge_wait_windows(wait_rows, want_no_work=True)
     coalesce_windows = _merge_wait_windows(wait_rows, want_no_work=False)
 
+    # Compute gaps between *any* executor exec intervals (all request types).
+    exec_gaps: list[float] = []
+    exec_gap_top: list[dict[str, Any]] = []
+    try:
+        exec_raw_intervals.sort(key=lambda t: t[0])
+        prev_end = None
+        prev_types = ""
+        for start_ts, end_ts, types in exec_raw_intervals:
+            if prev_end is None:
+                prev_end = float(end_ts)
+                prev_types = str(types or "")
+                continue
+            gap = float(start_ts - float(prev_end))
+            if gap > 0:
+                exec_gaps.append(gap)
+                exec_gap_top.append(
+                    {
+                        "gap_sec": float(gap),
+                        "prev_end_wall_ts": float(prev_end),
+                        "next_start_wall_ts": float(start_ts),
+                        "prev_types": str(prev_types or ""),
+                        "next_types": str(types or ""),
+                    }
+                )
+                prev_end = float(end_ts)
+                prev_types = str(types or "")
+                continue
+            # Overlapping exec intervals: extend the current window if needed.
+            if float(end_ts) > float(prev_end):
+                prev_end = float(end_ts)
+                prev_types = str(types or "")
+        exec_gap_top.sort(key=lambda x: x.get("gap_sec", 0.0), reverse=True)
+        exec_gap_top = exec_gap_top[:10]
+    except Exception:
+        exec_gaps = []
+        exec_gap_top = []
+
     def _window_stats(windows: list[tuple[float, float, dict[str, Any]]]) -> dict[str, Any]:
         lens = [max(0.0, float(b - a)) for a, b, _ in windows]
         return _series_stats(lens)
@@ -958,6 +1000,8 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
             "idle_no_work_gap_top": _top_windows(no_work_windows),
             "idle_coalesce_gap_sec": _window_stats(coalesce_windows),
             "idle_coalesce_gap_top": _top_windows(coalesce_windows),
+            "exec_gap_sec": _series_stats(exec_gaps),
+            "exec_gap_top": exec_gap_top,
             "fg_exec_events": int(fg_exec_events),
             "fg_exec_total_sec": float(fg_exec_total_sec),
             "fg_intervals": [],
@@ -1017,6 +1061,8 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
         "idle_no_work_gap_top": _top_windows(no_work_windows),
         "idle_coalesce_gap_sec": _window_stats(coalesce_windows),
         "idle_coalesce_gap_top": _top_windows(coalesce_windows),
+        "exec_gap_sec": _series_stats(exec_gaps),
+        "exec_gap_top": exec_gap_top,
         "fg_exec_events": int(fg_exec_events),
         "fg_exec_total_sec": float(fg_exec_total_sec),
         "fg_span_sec": float(fg_span_sec),
@@ -1025,6 +1071,78 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
         "fg_gap_top": fg_gap_top,
         "fg_intervals": [(float(a), float(b)) for a, b in merged],
     }
+
+
+def _parse_gpu_executor_exec_intervals_by_label(
+    trace_path: Path,
+) -> dict[str, list[tuple[float, float]]]:
+    """
+    Parse `gpu_executor_trace.csv` and return merged exec intervals grouped by a label.
+
+    Label strategy:
+    - If the `types` column contains exactly one distinct request type, use it.
+    - Otherwise, bucket as "mixed".
+    """
+    if not trace_path.exists():
+        return {}
+
+    by_label: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    try:
+        with trace_path.open("r", encoding="utf-8", newline="") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                if not row:
+                    continue
+                if (row.get("event") or "").strip().lower() != "exec":
+                    continue
+                try:
+                    end_ts = float(row.get("wall_ts") or "0")
+                except Exception:
+                    continue
+                try:
+                    exec_sec = float(row.get("exec_sec") or "0")
+                except Exception:
+                    exec_sec = 0.0
+                exec_sec = max(0.0, float(exec_sec))
+                if exec_sec <= 0:
+                    continue
+                start_ts = float(end_ts - exec_sec)
+
+                types = (row.get("types") or "").strip()
+                names: list[str] = []
+                for tok in types.split(";"):
+                    tok = tok.strip()
+                    if not tok:
+                        continue
+                    name = tok.split(":", 1)[0].strip()
+                    if name:
+                        names.append(name)
+                if not names:
+                    continue
+                uniq = sorted(set(names))
+                label = uniq[0] if len(uniq) == 1 else "mixed"
+                by_label[label].append((start_ts, float(end_ts)))
+    except Exception:
+        return {}
+
+    # Merge intervals per label.
+    merged_by_label: dict[str, list[tuple[float, float]]] = {}
+    for label, ivs in by_label.items():
+        if not ivs:
+            continue
+        ivs.sort(key=lambda t: t[0])
+        merged: list[list[float]] = []
+        for a, b in ivs:
+            if not merged:
+                merged.append([float(a), float(b)])
+                continue
+            if float(a) <= float(merged[-1][1]):
+                merged[-1][1] = max(float(merged[-1][1]), float(b))
+            else:
+                merged.append([float(a), float(b)])
+        merged_by_label[str(label)] = [(float(a), float(b)) for a, b in merged]
+
+    return merged_by_label
 
 
 def _gpu_util_during_intervals(
@@ -1042,6 +1160,10 @@ def _gpu_util_during_intervals(
 
     fg_vals: list[float] = []
     non_fg_vals: list[float] = []
+    fg_overlap_sec = 0.0
+    non_fg_overlap_sec = 0.0
+    fg_weighted_sum = 0.0
+    non_fg_weighted_sum = 0.0
 
     j = 0
     for i, util in enumerate(util_series):
@@ -1052,10 +1174,34 @@ def _gpu_util_during_intervals(
         in_fg = j < len(intervals) and (sample_end >= intervals[j][0] and sample_start <= intervals[j][1])
         (fg_vals if in_fg else non_fg_vals).append(float(util))
 
+        # Weighted mean: attribute utilization proportionally by overlap time within the sample interval.
+        overlap = 0.0
+        k = j
+        while k < len(intervals) and intervals[k][0] < sample_end:
+            a, b = intervals[k]
+            overlap += max(0.0, min(sample_end, float(b)) - max(sample_start, float(a)))
+            if float(b) <= sample_end:
+                k += 1
+            else:
+                break
+        overlap = max(0.0, min(float(interval_sec), float(overlap)))
+        fg_overlap_sec += overlap
+        fg_weighted_sum += float(util) * overlap
+        non_overlap = max(0.0, float(interval_sec) - overlap)
+        non_fg_overlap_sec += non_overlap
+        non_fg_weighted_sum += float(util) * non_overlap
+
+    fg_weighted_mean = (fg_weighted_sum / fg_overlap_sec) if fg_overlap_sec > 0 else None
+    non_fg_weighted_mean = (non_fg_weighted_sum / non_fg_overlap_sec) if non_fg_overlap_sec > 0 else None
+
     return {
         "ok": True,
         "fg": _series_stats(fg_vals),
         "non_fg": _series_stats(non_fg_vals),
+        "fg_overlap_sec": float(fg_overlap_sec),
+        "non_fg_overlap_sec": float(non_fg_overlap_sec),
+        "fg_weighted_mean": float(fg_weighted_mean) if fg_weighted_mean is not None else None,
+        "non_fg_weighted_mean": float(non_fg_weighted_mean) if non_fg_weighted_mean is not None else None,
     }
 
 
@@ -1073,6 +1219,10 @@ def _gpu_util_during_intervals_ts(
 
     fg_vals: list[float] = []
     non_fg_vals: list[float] = []
+    fg_overlap_sec = 0.0
+    non_fg_overlap_sec = 0.0
+    fg_weighted_sum = 0.0
+    non_fg_weighted_sum = 0.0
 
     j = 0
     for ts, util in util_ts:
@@ -1084,10 +1234,144 @@ def _gpu_util_during_intervals_ts(
         in_fg = j < len(intervals) and (sample_end >= intervals[j][0] and sample_start <= intervals[j][1])
         (fg_vals if in_fg else non_fg_vals).append(float(util))
 
+        # Weighted mean: attribute utilization proportionally by overlap time within the sample interval.
+        overlap = 0.0
+        k = j
+        while k < len(intervals) and intervals[k][0] < sample_end:
+            a, b = intervals[k]
+            overlap += max(0.0, min(sample_end, float(b)) - max(sample_start, float(a)))
+            if float(b) <= sample_end:
+                k += 1
+            else:
+                break
+        overlap = max(0.0, min(float(sample_interval_sec), float(overlap)))
+        fg_overlap_sec += overlap
+        fg_weighted_sum += float(util) * overlap
+        non_overlap = max(0.0, float(sample_interval_sec) - overlap)
+        non_fg_overlap_sec += non_overlap
+        non_fg_weighted_sum += float(util) * non_overlap
+
+    fg_weighted_mean = (fg_weighted_sum / fg_overlap_sec) if fg_overlap_sec > 0 else None
+    non_fg_weighted_mean = (non_fg_weighted_sum / non_fg_overlap_sec) if non_fg_overlap_sec > 0 else None
+
     return {
         "ok": True,
         "fg": _series_stats(fg_vals),
         "non_fg": _series_stats(non_fg_vals),
+        "fg_overlap_sec": float(fg_overlap_sec),
+        "non_fg_overlap_sec": float(non_fg_overlap_sec),
+        "fg_weighted_mean": float(fg_weighted_mean) if fg_weighted_mean is not None else None,
+        "non_fg_weighted_mean": float(non_fg_weighted_mean) if non_fg_weighted_mean is not None else None,
+    }
+
+
+def _gpu_util_over_intervals(
+    util_series: list[float],
+    *,
+    series_start_wall_ts: float,
+    interval_sec: float,
+    intervals: list[tuple[float, float]],
+) -> dict[str, Any]:
+    """
+    Compute utilization stats for the time overlapping `intervals`.
+
+    Uses the same overlap model as `_gpu_util_during_intervals`, but returns a single
+    set of stats for "in intervals" (rather than fg/non-fg split).
+    """
+    if not util_series or not intervals:
+        return {"ok": False, "error": "missing_series_or_intervals"}
+
+    interval_sec = max(0.001, float(interval_sec))
+    intervals = sorted([(float(a), float(b)) for a, b in intervals], key=lambda t: t[0])
+
+    vals: list[float] = []
+    overlap_sec_total = 0.0
+    weighted_sum = 0.0
+
+    j = 0
+    for i, util in enumerate(util_series):
+        sample_start = float(series_start_wall_ts + float(i) * interval_sec)
+        sample_end = float(sample_start + interval_sec)
+        while j < len(intervals) and sample_start > intervals[j][1]:
+            j += 1
+
+        in_it = j < len(intervals) and (sample_end >= intervals[j][0] and sample_start <= intervals[j][1])
+        if in_it:
+            vals.append(float(util))
+
+        overlap = 0.0
+        k = j
+        while k < len(intervals) and intervals[k][0] < sample_end:
+            a, b = intervals[k]
+            overlap += max(0.0, min(sample_end, float(b)) - max(sample_start, float(a)))
+            if float(b) <= sample_end:
+                k += 1
+            else:
+                break
+        overlap = max(0.0, min(float(interval_sec), float(overlap)))
+        overlap_sec_total += overlap
+        weighted_sum += float(util) * overlap
+
+    weighted_mean = (weighted_sum / overlap_sec_total) if overlap_sec_total > 0 else None
+
+    return {
+        "ok": True,
+        "util": _series_stats(vals),
+        "overlap_sec": float(overlap_sec_total),
+        "weighted_mean": float(weighted_mean) if weighted_mean is not None else None,
+    }
+
+
+def _gpu_util_over_intervals_ts(
+    util_ts: list[tuple[float, float]],
+    *,
+    sample_interval_sec: float,
+    intervals: list[tuple[float, float]],
+) -> dict[str, Any]:
+    """
+    Timestamped variant of `_gpu_util_over_intervals`.
+    """
+    if not util_ts or not intervals:
+        return {"ok": False, "error": "missing_series_or_intervals"}
+
+    sample_interval_sec = max(0.001, float(sample_interval_sec))
+    intervals = sorted([(float(a), float(b)) for a, b in intervals], key=lambda t: t[0])
+
+    vals: list[float] = []
+    overlap_sec_total = 0.0
+    weighted_sum = 0.0
+
+    j = 0
+    for ts, util in util_ts:
+        sample_start = float(ts - sample_interval_sec)
+        sample_end = float(ts)
+        while j < len(intervals) and sample_start > intervals[j][1]:
+            j += 1
+
+        in_it = j < len(intervals) and (sample_end >= intervals[j][0] and sample_start <= intervals[j][1])
+        if in_it:
+            vals.append(float(util))
+
+        overlap = 0.0
+        k = j
+        while k < len(intervals) and intervals[k][0] < sample_end:
+            a, b = intervals[k]
+            overlap += max(0.0, min(sample_end, float(b)) - max(sample_start, float(a)))
+            if float(b) <= sample_end:
+                k += 1
+            else:
+                break
+        overlap = max(0.0, min(float(sample_interval_sec), float(overlap)))
+        overlap_sec_total += overlap
+        weighted_sum += float(util) * overlap
+
+    weighted_mean = (weighted_sum / overlap_sec_total) if overlap_sec_total > 0 else None
+
+    return {
+        "ok": True,
+        "util": _series_stats(vals),
+        "overlap_sec": float(overlap_sec_total),
+        "weighted_mean": float(weighted_mean) if weighted_mean is not None else None,
     }
 
 def _parse_cpu_jsonl(cpu_path: Path) -> dict[str, Any]:
@@ -1299,12 +1583,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         trace_summary = summary.get("gpu_executor_trace_summary") or {}
         intervals = trace_summary.get("fg_intervals") or []
-        if (
-            intervals
-            and typeperf_started_at is not None
-            and paths.typeperf_csv.exists()
-            and float(typeperf_interval_sec_effective) >= 1.0
-        ):
+        if intervals and typeperf_started_at is not None and paths.typeperf_csv.exists():
             # Prefer true wall-clock timestamps from typeperf (more accurate than approximating from start+interval).
             util_ts = _load_typeperf_pid_util_timeseries(paths.typeperf_csv, target_pid=int(proc.pid))
             series_kind = "target_pid_engine_util_pct_max"
@@ -1336,6 +1615,60 @@ def main(argv: list[str] | None = None) -> int:
             summary["gpu_phase_summary"] = {"ok": False, "error": "missing_inputs"}
     except Exception as exc:
         summary["gpu_phase_summary"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    # Optional: GPU utilization breakdown by request type (exec intervals) using the executor trace.
+    try:
+        if trace_path is not None and typeperf_started_at is not None and paths.typeperf_csv.exists():
+            by_label = _parse_gpu_executor_exec_intervals_by_label(trace_path)
+            if not by_label:
+                summary["gpu_request_type_summary"] = {"ok": False, "error": "missing_or_empty_trace"}
+            else:
+                util_ts = _load_typeperf_pid_util_timeseries(paths.typeperf_csv, target_pid=int(proc.pid))
+                series_kind = "target_pid_engine_util_pct_max"
+                if not util_ts:
+                    util_ts = _load_typeperf_global_util_timeseries(paths.typeperf_csv)
+                    series_kind = "global_engine_util_pct_max"
+
+                by_type: dict[str, Any] = {}
+                if util_ts:
+                    for label, ivs in sorted(by_label.items(), key=lambda kv: kv[0]):
+                        if not ivs:
+                            continue
+                        st = _gpu_util_over_intervals_ts(
+                            util_ts,
+                            sample_interval_sec=float(typeperf_interval_sec_effective),
+                            intervals=[(float(a), float(b)) for a, b in ivs],
+                        )
+                        st["interval_sec_total"] = float(sum(max(0.0, float(b - a)) for a, b in ivs))
+                        by_type[str(label)] = st
+                else:
+                    # Fallback: approximate sample times when we can't parse timestamps.
+                    util_series = _load_typeperf_pid_util_series(paths.typeperf_csv, target_pid=int(proc.pid))
+                    if not util_series:
+                        util_series = _load_typeperf_global_util_series(paths.typeperf_csv)
+                        series_kind = "global_engine_util_pct_max"
+                    for label, ivs in sorted(by_label.items(), key=lambda kv: kv[0]):
+                        if not ivs:
+                            continue
+                        st = _gpu_util_over_intervals(
+                            util_series,
+                            series_start_wall_ts=float(typeperf_started_at),
+                            interval_sec=float(typeperf_interval_sec_effective),
+                            intervals=[(float(a), float(b)) for a, b in ivs],
+                        )
+                        st["interval_sec_total"] = float(sum(max(0.0, float(b - a)) for a, b in ivs))
+                        by_type[str(label)] = st
+
+                summary["gpu_request_type_summary"] = {
+                    "ok": True,
+                    "series_kind": str(series_kind),
+                    "sample_interval_sec": float(typeperf_interval_sec_effective),
+                    "by_type": by_type,
+                }
+        else:
+            summary["gpu_request_type_summary"] = {"ok": False, "error": "missing_inputs"}
+    except Exception as exc:
+        summary["gpu_request_type_summary"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     with paths.summary_json.open("w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, sort_keys=True)

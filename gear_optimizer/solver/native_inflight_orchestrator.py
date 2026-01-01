@@ -29,6 +29,7 @@ from gear_optimizer.core.utils import cfg_from_dict, safe_float, safe_int
 from gear_optimizer.helpers.song_helpers.database_context import load_database_context
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_fg_candidates
 from gear_optimizer.helpers.song_helpers.fg_combo_booster import (
+    build_fg_beam_booster_candidates,
     build_fg_combo_booster_candidates,
     hydrate_fg_candidate_stats,
 )
@@ -1512,7 +1513,24 @@ def _run_fg_job_sync(
     # Always-on (ForceGreatsFinder): evaluate a capped set of 1–2-position combos around
     # GA seeds to improve FG coverage when deeper GA runs crowd out fever-heavy variants.
     try:
-        if song.force_greats_finder and song.ga_candidates:
+        beam_enabled = _truthy(os.environ.get("FG_BEAM_BOOSTER_ENABLED", "0"))
+        combo_enabled = _truthy(os.environ.get("FG_COMBO_BOOSTER_ENABLED", "1"))
+
+        boosted = None
+        if song.force_greats_finder and song.ga_candidates and beam_enabled:
+            boosted = build_fg_beam_booster_candidates(
+                existing_candidates=list(song.ga_candidates or []),
+                registry=song.registry,
+                base_stats_fixed=song.fixed_stats,
+                cfg_data=song.cfg_data,
+                calc_song=song.calc_song,
+                ref_arrays=song.ref_arrays,
+                primary_color=str(song.meta_primary_color or ""),
+                secondary_color=str(song.meta_secondary_color or ""),
+                song_slot=0,
+                gpu_client=gpu_client,
+            )
+        elif song.force_greats_finder and song.ga_candidates and combo_enabled:
             boosted = build_fg_combo_booster_candidates(
                 existing_candidates=list(song.ga_candidates or []),
                 registry=song.registry,
@@ -1525,28 +1543,29 @@ def _run_fg_job_sync(
                 song_slot=0,
                 gpu_client=gpu_client,
             )
-            if boosted:
-                song.ga_candidates = select_fg_candidates(
-                    list(song.ga_candidates or []) + list(boosted),
-                    limit=int(song.fg_candidate_limit or 0),
-                    primary_color=str(song.meta_primary_color or ""),
-                    secondary_color=str(song.meta_secondary_color or ""),
-                )
-                hydrate_fg_candidate_stats(
-                    song.ga_candidates,
-                    base_stats_fixed=song.fixed_stats,
-                    selected_color=str(song.cfg_data.get("selected_color", "") or ""),
-                )
-                song.loadout_entries = build_loadout_entries(
-                    song.song_name,
-                    bool(song.use_evo_db),
-                    song.ga_candidates,
-                    int(song.fg_candidate_limit or 0),
-                    song.gears_by_name,
-                    song.minis_by_name,
-                    build_details,
-                    db_loadouts_full=song.db_loadouts_full,
-                )
+
+        if boosted:
+            song.ga_candidates = select_fg_candidates(
+                list(song.ga_candidates or []) + list(boosted),
+                limit=int(song.fg_candidate_limit or 0),
+                primary_color=str(song.meta_primary_color or ""),
+                secondary_color=str(song.meta_secondary_color or ""),
+            )
+            hydrate_fg_candidate_stats(
+                song.ga_candidates,
+                base_stats_fixed=song.fixed_stats,
+                selected_color=str(song.cfg_data.get("selected_color", "") or ""),
+            )
+            song.loadout_entries = build_loadout_entries(
+                song.song_name,
+                bool(song.use_evo_db),
+                song.ga_candidates,
+                int(song.fg_candidate_limit or 0),
+                song.gears_by_name,
+                song.minis_by_name,
+                build_details,
+                db_loadouts_full=song.db_loadouts_full,
+            )
     except Exception:
         pass
 

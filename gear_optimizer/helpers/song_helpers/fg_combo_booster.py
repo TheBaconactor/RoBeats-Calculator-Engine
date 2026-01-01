@@ -25,6 +25,18 @@ FG_COMBO_BOOSTER_POSITIONS_PER_SEED = 2
 FG_COMBO_BOOSTER_DEFAULT_GPU_EVALS = FG_COMBO_BOOSTER_MAX_EVALS
 
 
+# Experimental: adaptive "beam" booster.
+# Unlike the combo booster (which enumerates 1-2-slot combos around many seeds),
+# the beam booster does a small number of sequential expansion rounds and keeps a
+# bounded "beam" of the most FG-promising genomes for deeper expansion.
+#
+# This can discover high-FG-potential loadouts that are >2 swaps away from the GA
+# basin without evaluating a full Cartesian product.
+FG_BEAM_BOOSTER_MAX_EVALS = 4096
+FG_BEAM_BOOSTER_TOP_K = 10
+FG_BEAM_BOOSTER_DEFAULT_GPU_EVALS = FG_BEAM_BOOSTER_MAX_EVALS
+
+
 def _item_name(item) -> str:
     if isinstance(item, dict):
         return str(item.get("Name", "") or "")
@@ -1120,4 +1132,393 @@ def build_fg_combo_booster_candidates(
             f"generated={g} selected={g_sel} eval_cap={gpu_eval_cap} uniq={uniq} evaluated={p} "
             f"gen={dt_gen * 1000:.1f}ms eval={dt_eval * 1000:.1f}ms total={dt_total * 1000:.1f}ms"
         )
+    return out
+
+
+def _env_float(name: str, default: float) -> float:
+    v = os.environ.get(name)
+    if v is None:
+        return float(default)
+    s = str(v).strip()
+    if not s:
+        return float(default)
+    try:
+        return float(s)
+    except Exception:
+        return float(default)
+
+
+def _pad_genome(genome: list[dict]) -> list[dict]:
+    out = list(genome or [])[:9]
+    while len(out) < 9:
+        out.append({})
+    return out
+
+
+def _fg_proxy_genome(genome: list[dict], *, primary_color: str, secondary_color: str) -> int:
+    try:
+        return int(
+            sum(_fg_item_score(it, primary_color=primary_color, secondary_color=secondary_color) for it in (genome or [])[:9])
+        )
+    except Exception:
+        return 0
+
+
+def _beam_rank_positions(
+    genome: list[dict],
+    *,
+    items_by_slot: dict[int, list[dict]],
+    primary_color: str,
+    secondary_color: str,
+    max_positions: int,
+) -> list[int]:
+    genome = _pad_genome(genome)
+    primary_color = str(primary_color or "")
+    secondary_color = str(secondary_color or "")
+
+    scored: list[tuple[int, int, int, int]] = []
+    for slot_idx in range(9):
+        cur = genome[slot_idx] if slot_idx < len(genome) else {}
+        cur_score = _fg_item_score(cur, primary_color=primary_color, secondary_color=secondary_color)
+        best_score = cur_score
+        for it in items_by_slot.get(slot_idx) or []:
+            s = _fg_item_score(it, primary_color=primary_color, secondary_color=secondary_color)
+            if s > best_score:
+                best_score = s
+        delta = int(best_score - cur_score)
+        is_gear = 1 if slot_idx < 6 else 0
+        # Deterministic tie-break: prefer gear first, then larger delta, then larger best_score, then slot index.
+        scored.append((is_gear, delta, int(best_score), int(slot_idx)))
+
+    scored.sort(key=lambda t: (t[0], t[1], t[2], -t[3]), reverse=True)
+
+    out = [slot_idx for _is_gear, delta, _best, slot_idx in scored if delta > 0]
+    if not out:
+        # If nothing shows improvement, still branch once to avoid a no-op.
+        scored2 = sorted(scored, key=lambda t: (t[2], -t[3]), reverse=True)
+        if scored2:
+            out = [int(scored2[0][3])]
+    return out[: max(0, int(max_positions))]
+
+
+def _beam_replacements_for_position(
+    genome: list[dict],
+    pos: int,
+    *,
+    items_by_slot: dict[int, list[dict]],
+    max_replacements: int,
+) -> list[dict]:
+    genome = _pad_genome(genome)
+    try:
+        pos = int(pos)
+    except Exception:
+        pos = 0
+    if pos < 0 or pos >= 9:
+        return []
+    try:
+        max_replacements = int(max_replacements)
+    except Exception:
+        max_replacements = 0
+    if max_replacements <= 0:
+        return []
+
+    cur = genome[pos] if pos < len(genome) else {}
+    cur_name = _item_name(cur)
+
+    out: list[dict] = []
+    seen: set[str] = set()
+    for it in items_by_slot.get(pos) or []:
+        name = _item_name(it)
+        if not name or name == cur_name or name in seen:
+            continue
+        seen.add(name)
+        out.append(it)
+        if len(out) >= max_replacements:
+            break
+    return out
+
+
+def _beam_select_genomes(
+    evaluated: list[dict],
+    *,
+    beam_width: int,
+    base_threshold: int,
+    primary_color: str,
+    secondary_color: str,
+) -> list[list[dict]]:
+    if not evaluated:
+        return []
+
+    try:
+        beam_width = int(beam_width)
+    except Exception:
+        beam_width = 0
+    if beam_width <= 0:
+        beam_width = 1
+
+    primary_color = str(primary_color or "")
+    secondary_color = str(secondary_color or "")
+
+    metas: list[tuple[int, int, tuple[str, ...], list[dict]]] = []
+    for cand in evaluated:
+        if not isinstance(cand, dict):
+            continue
+        base = _base_score(cand)
+        if base_threshold > 0 and base < base_threshold:
+            continue
+        gear = list(cand.get("Gear") or [])[:6]
+        minis = list(cand.get("Minis") or [])[:3]
+        genome = _pad_genome(gear + minis)
+        k = _genome_key(genome)
+        fg_proxy = _fg_proxy_genome(genome, primary_color=primary_color, secondary_color=secondary_color)
+        mini_key = k[6:9]
+        metas.append((int(fg_proxy), int(base), tuple(mini_key), genome))
+
+    if not metas:
+        # If the threshold is too strict, fall back to all evaluated genomes.
+        for cand in evaluated:
+            if not isinstance(cand, dict):
+                continue
+            base = _base_score(cand)
+            gear = list(cand.get("Gear") or [])[:6]
+            minis = list(cand.get("Minis") or [])[:3]
+            genome = _pad_genome(gear + minis)
+            k = _genome_key(genome)
+            fg_proxy = _fg_proxy_genome(genome, primary_color=primary_color, secondary_color=secondary_color)
+            mini_key = k[6:9]
+            metas.append((int(fg_proxy), int(base), tuple(mini_key), genome))
+
+    metas.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
+
+    selected: list[list[dict]] = []
+    seen_keys: set[tuple[str, ...]] = set()
+
+    # 1) Mini diversity pass: best genome per mini team.
+    best_by_mini: dict[tuple[str, ...], tuple[int, int, list[dict]]] = {}
+    for fg_proxy, base, mini_key, genome in metas:
+        prev = best_by_mini.get(mini_key)
+        if prev is None or (fg_proxy, base) > (prev[0], prev[1]):
+            best_by_mini[mini_key] = (fg_proxy, base, genome)
+
+    diverse = sorted(best_by_mini.items(), key=lambda kv: (kv[1][0], kv[1][1], kv[0]), reverse=True)
+    diverse_take = min(len(diverse), max(1, beam_width // 2))
+    for _mini_key, (fg_proxy, base, genome) in diverse[:diverse_take]:
+        k = _genome_key(genome)
+        if k in seen_keys:
+            continue
+        seen_keys.add(k)
+        selected.append(genome)
+        if len(selected) >= beam_width:
+            return selected
+
+    # 2) Fill remaining by (fg_proxy, base).
+    for fg_proxy, base, _mini_key, genome in metas:
+        if len(selected) >= beam_width:
+            break
+        k = _genome_key(genome)
+        if k in seen_keys:
+            continue
+        seen_keys.add(k)
+        selected.append(genome)
+
+    return selected[:beam_width]
+
+
+def build_fg_beam_booster_candidates(
+    *,
+    existing_candidates: list[dict],
+    registry,
+    base_stats_fixed: dict,
+    cfg_data: dict,
+    calc_song: dict,
+    ref_arrays: dict,
+    primary_color: str,
+    secondary_color: str,
+    song_slot: int = 0,
+    max_extra_evals: int = FG_BEAM_BOOSTER_MAX_EVALS,
+    top_k: int = FG_BEAM_BOOSTER_TOP_K,
+    gpu_client: Optional[object] = None,
+) -> list[dict]:
+    """
+    Adaptive FG booster that performs a small beam search around GA candidates.
+
+    It generates sequential 1-slot swaps, evaluates them on GPU, and keeps a bounded
+    "beam" of the most FG-promising genomes for a second expansion round. This is
+    intended to improve FG coverage with fewer wasted evals than a full Cartesian
+    combo enumeration.
+    """
+    if not existing_candidates or registry is None:
+        return []
+
+    # Never do this in CPU-only mode; it defeats the purpose of "cheap FG coverage".
+    if not bool(cfg_data.get("use_gpu", False)):
+        return []
+
+    perf = str(os.environ.get("PERF_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    t0 = time.perf_counter()
+
+    try:
+        max_extra_evals = int(max_extra_evals)
+    except Exception:
+        max_extra_evals = FG_BEAM_BOOSTER_MAX_EVALS
+    max_extra_evals = max(0, min(int(FG_BEAM_BOOSTER_MAX_EVALS), int(max_extra_evals)))
+    if max_extra_evals <= 0:
+        return []
+
+    gpu_eval_cap = _env_int("FG_BEAM_BOOSTER_GPU_EVALS", FG_BEAM_BOOSTER_DEFAULT_GPU_EVALS)
+    if gpu_eval_cap <= 0:
+        gpu_eval_cap = int(max_extra_evals)
+    gpu_eval_cap = max(1, min(int(max_extra_evals), int(gpu_eval_cap)))
+
+    seed_max = _env_int("FG_BEAM_BOOSTER_SEEDS", 128)
+    depth = _env_int("FG_BEAM_BOOSTER_DEPTH", 2)
+    depth = max(1, min(3, int(depth)))
+    beam_width = _env_int("FG_BEAM_BOOSTER_BEAM_WIDTH", 128)
+    beam_width = max(8, min(512, int(beam_width)))
+    max_positions = _env_int("FG_BEAM_BOOSTER_MAX_POSITIONS", 4)
+    max_positions = max(1, min(8, int(max_positions)))
+    branch = _env_int("FG_BEAM_BOOSTER_BRANCH", 3)
+    branch = max(1, min(10, int(branch)))
+
+    band_pct = _env_float("FG_BEAM_BOOSTER_BAND_PCT", 1.0)
+    if band_pct < 0:
+        band_pct = 0.0
+    if band_pct > 10.0:
+        band_pct = 10.0
+
+    primary_color = str(primary_color or "")
+    secondary_color = str(secondary_color or "")
+
+    # Seed pool: focus expansion near the top base-score basin (typical FG peak shape),
+    # but fall back to the full candidate set when the band is too narrow.
+    best_base = 0
+    for cand in existing_candidates or []:
+        if not isinstance(cand, dict):
+            continue
+        b = _base_score(cand)
+        if b > best_base:
+            best_base = b
+    base_threshold = int(best_base * (1.0 - (float(band_pct) / 100.0))) if best_base > 0 else 0
+
+    seed_pool: list[dict] = []
+    if base_threshold > 0:
+        seed_pool = [c for c in existing_candidates if isinstance(c, dict) and _base_score(c) >= base_threshold]
+    if not seed_pool:
+        seed_pool = list(existing_candidates or [])
+
+    seeds = _select_seeds(
+        seed_pool,
+        primary_color=primary_color,
+        secondary_color=secondary_color,
+        max_seeds=int(seed_max),
+    )
+    if not seeds:
+        return []
+
+    items_by_slot = _build_interesting_items_by_slot(
+        registry,
+        primary_color=primary_color,
+        secondary_color=secondary_color,
+        top_k=int(top_k),
+    )
+
+    existing_keys = set()
+    for cand in existing_candidates or []:
+        if not isinstance(cand, dict):
+            continue
+        existing_keys.add(_genome_key(_as_genome(cand)))
+
+    seen = set(existing_keys)
+    beam = [_pad_genome(s.genome) for s in seeds]
+    beam.sort(key=_genome_key)
+
+    # Allocate budgets per depth (equal split, deterministic).
+    budgets = [gpu_eval_cap // depth] * depth
+    rem = int(gpu_eval_cap - sum(budgets))
+    for i in range(min(depth, rem)):
+        budgets[i] += 1
+
+    out: list[dict] = []
+    t_gen_total = 0.0
+    t_eval_total = 0.0
+
+    for round_idx, budget in enumerate(budgets):
+        if budget <= 0 or not beam:
+            break
+
+        t_gen0 = time.perf_counter()
+        genomes: list[list[dict]] = []
+
+        for genome in beam:
+            if len(genomes) >= budget:
+                break
+            positions = _beam_rank_positions(
+                genome,
+                items_by_slot=items_by_slot,
+                primary_color=primary_color,
+                secondary_color=secondary_color,
+                max_positions=int(max_positions),
+            )
+            for pos in positions:
+                if len(genomes) >= budget:
+                    break
+                replacements = _beam_replacements_for_position(genome, pos, items_by_slot=items_by_slot, max_replacements=branch)
+                for it in replacements:
+                    if len(genomes) >= budget:
+                        break
+                    g2 = list(genome)
+                    g2[int(pos)] = it
+                    if not _minis_unique(g2):
+                        continue
+                    k = _genome_key(g2)
+                    if k in seen:
+                        continue
+                    seen.add(k)
+                    genomes.append(g2)
+
+        t_gen_total += time.perf_counter() - t_gen0
+        if not genomes:
+            break
+
+        t_eval0 = time.perf_counter()
+        evaluated = evaluate_fg_combo_booster_genomes(
+            genomes,
+            registry=registry,
+            base_stats_fixed=base_stats_fixed,
+            cfg_data=cfg_data,
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+            song_slot=int(song_slot),
+            gpu_client=gpu_client,
+        )
+        t_eval_total += time.perf_counter() - t_eval0
+
+        round_out = []
+        for cand in evaluated or []:
+            if not isinstance(cand, dict) or not cand:
+                continue
+            cand["_fg_priority"] = 1
+            cand["_fg_source"] = "beam_booster"
+            round_out.append(cand)
+
+        if round_out:
+            out.extend(round_out)
+
+        # Prepare next beam from the evaluated set.
+        beam = _beam_select_genomes(
+            round_out,
+            beam_width=int(beam_width),
+            base_threshold=int(base_threshold),
+            primary_color=primary_color,
+            secondary_color=secondary_color,
+        )
+
+    if perf:
+        dt_total = time.perf_counter() - t0
+        print(
+            "[PERF][FGBeamBooster] "
+            f"depth={depth} eval_cap={gpu_eval_cap} produced={len(out)} "
+            f"gen={t_gen_total * 1000:.1f}ms eval={t_eval_total * 1000:.1f}ms total={dt_total * 1000:.1f}ms"
+        )
+
     return out
