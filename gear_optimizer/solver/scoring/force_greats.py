@@ -912,8 +912,27 @@ def _extract_base_stats(stats, gem_counts, selected_color, ft_gems=0, ff_gems=0)
     Returns:
         dict: Base stats before gem optimization
     """
+    if not isinstance(stats, dict) or not stats:
+        return {}
+
+    # Only these keys affect gem optimization + FG math; copying full stats dicts is unnecessary
+    # and can be expensive for DB-cached payloads.
+    keys = (
+        "Perfect Points",
+        "Combo Multiplier",
+        "Fever Multiplier",
+        "Fever Time",
+        "Fever Fill Rate",
+        "Beat",
+        "Vibe",
+        "Rush",
+        "Flow",
+        "Chill",
+    )
+    gs = stats.get
+
     if not gem_counts:
-        return stats.copy()
+        return {k: gs(k, 0) for k in keys}
 
     # Quick check: would reversal make a key value negative?
     # If so, stats is already pre-gem (GPU batch path returns "Stats": stats)
@@ -923,11 +942,11 @@ def _extract_base_stats(stats, gem_counts, selected_color, ft_gems=0, ff_gems=0)
 
     # If subtracting overflow gems would make it negative, stats is already base stats
     if current_val - expected_reduction < -50:  # Small tolerance for rounding
-        # Stats is already pre-gem, just return a copy
-        return stats.copy()
+        # Stats is already pre-gem; return a minimal dict for downstream solvers.
+        return {k: gs(k, 0) for k in keys}
 
     # Stats has gem contributions baked in - need to reverse them
-    base = stats.copy()
+    base = {k: gs(k, 0) for k in keys}
 
     # Reverse gem contributions
     g_pp = gem_counts.get("Perfect Points", 0)

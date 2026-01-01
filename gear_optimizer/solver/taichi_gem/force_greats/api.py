@@ -39,6 +39,51 @@ _FORCE_SYNC = os.environ.get("GPU_FORCE_SYNC", "0") == "1"
 # Per-chunk sync fallback for TDR-prone Windows systems (default OFF for performance)
 _SYNC_PER_CHUNK = os.environ.get("FG_SYNC_PER_CHUNK", "0") == "1"
 
+# ============================================================================
+# ADAPTIVE CHUNKING POLICY
+# ============================================================================
+
+
+def _get_target_threads_per_kernel(n_work_items: int) -> int:
+    """
+    Pick an adaptive thread budget for the flattened Stage 1 FG kernel.
+
+    Goal: keep kernels large enough to amortize launch overhead (better GPU occupancy),
+    while remaining conservative enough to avoid watchdog/TDR issues on Windows.
+    """
+    try:
+        env = str(os.environ.get("FG_TARGET_THREADS_PER_KERNEL", "") or "").strip()
+    except Exception:
+        env = ""
+    if env:
+        try:
+            v = int(env)
+        except Exception:
+            v = 0
+        if v > 0:
+            return int(v)
+
+    try:
+        n_work_items = int(n_work_items)
+    except Exception:
+        n_work_items = 0
+    if n_work_items <= 0:
+        return 2_000_000
+
+    # Metal path uses a different kernel strategy; keep the conservative default.
+    if gem_fields.IS_METAL:
+        return 2_000_000
+
+    # Heuristic: increase chunking target when the flat work size is small (common case
+    # for narrow FT/FF windows), which reduces cfg chunk count and improves throughput.
+    if n_work_items <= 40_000:
+        return 6_000_000
+    if n_work_items <= 100_000:
+        return 4_000_000
+    if n_work_items <= 250_000:
+        return 3_000_000
+    return 2_000_000
+
 
 def _maybe_sync(*, for_timing: bool = False) -> None:
     if _FORCE_SYNC or (for_timing and _SYNC_FOR_TIMING):
@@ -679,14 +724,15 @@ def _solve_force_greats_finder_gpu_impl(
     if _fg_forced_upload_buf is None or int(_fg_forced_upload_buf.shape[0]) < int(max_staging_rows):
         _fg_forced_upload_buf = np.zeros((int(max_staging_rows), fg_fields.FG_MAX_SECTIONS), dtype=np.int32)
 
-    # Adaptive cfg_chunk: target ~2M threads per kernel to avoid TDR while staying 100% utilized.
+    # Adaptive cfg_chunk: pick a thread budget per kernel launch to avoid TDR while keeping
+    # kernels large enough to amortize launch overhead on fast GPUs.
     #
     # NOTE: The Vulkan stage1 flat kernel uses cfg-tiling: one thread handles up to FG_STAGE1_CFG_TILE configs.
     # So "threads per kernel" is ~n_work_items * ceil(cfg_chunk / tile), not n_work_items * cfg_chunk.
     #
     # TDR (Timeout Detection and Recovery) triggers after ~2s on Windows if GPU is unresponsive.
     # With heavy per-thread work (gem optimization + penalty loops), we need to limit work per launch.
-    TARGET_THREADS_PER_KERNEL = 2_000_000
+    TARGET_THREADS_PER_KERNEL = _get_target_threads_per_kernel(int(n_work_items))
     try:
         stage1_cfg_tile = int(getattr(fg_kernels, "FG_STAGE1_CFG_TILE", 1))
     except Exception:

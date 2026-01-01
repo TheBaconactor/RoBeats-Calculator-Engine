@@ -101,7 +101,6 @@ def process_force_greats(
 
     # FG processing: Process ALL loadouts (DB + GA) without artificial budget limits.
     # The budget was previously used to limit compute, but this caused incomplete FG coverage.
-    unique_stats_seen = set()
     computed = 0
     print(f"[ForceGreats] Processing {len(loadout_entries)} unique loadouts (DB + GA)...")
 
@@ -600,7 +599,6 @@ def process_force_greats(
 
                 key = (str(sel_color), int(n_sections), int(max_per_section))
                 sig = stats_signature(base_stats, calc_song, sel_color)
-                unique_stats_seen.add(sig)
 
                 groups.setdefault(key, {}).setdefault(sig, []).append((entry, eval_data, base_stats))
                 group_centers.setdefault(key, set()).add((int(center_ft), int(center_ff)))
@@ -1241,8 +1239,14 @@ def process_force_greats(
                         result_fill_penalty=gpu_results["fill_penalty"],
                     )
 
+            unique_sig_count = 0
+            try:
+                unique_sig_count = sum(len(sig_map) for sig_map in (groups or {}).values())
+            except Exception:
+                unique_sig_count = 0
             print(
-                f"[ForceGreats] {len(unique_stats_seen)} unique stat signatures, {len(fg_variants)} FG variants generated (computed {computed})"
+                f"[ForceGreats] {unique_sig_count} unique stat signatures, "
+                f"{len(fg_variants)} FG variants generated (computed {computed})"
             )
             if perf:
                 try:
@@ -1252,7 +1256,7 @@ def process_force_greats(
                         f"gpu_calls={t_gpu_calls_sec:.3f}s n_gpu_calls={n_gpu_calls} "
                         f"FG_CACHE(hit={fg_cache_hits},miss={fg_cache_misses}) "
                         f"db_reuse={db_cached_reuse} no_eval_skips={no_eval_skips} "
-                        f"groups={len(groups)} unique_sigs={len(unique_stats_seen)}"
+                        f"groups={len(groups)} unique_sigs={unique_sig_count}"
                     )
                     print(
                         "[PERF] FG Detailed: "
@@ -1303,6 +1307,7 @@ def process_force_greats(
             if lock_acquired:
                 _FG_GPU_SEQUENCE_LOCK.release()
     # CPU fallback: Process all loadouts (no budget limit)
+    unique_stats_seen = set()
     for entry in loadout_entries.values():
 
         def _is_cached_force_valid(cached_force_obj, expected_selected_element):
