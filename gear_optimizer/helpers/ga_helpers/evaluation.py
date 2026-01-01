@@ -281,12 +281,21 @@ def evaluate_population_parallel(
     Returns:
         list: Evaluated results sorted by score
     """
+    if not population:
+        return []
+
+    # Hot-path optimization: compute each genome's cache key ONCE.
+    #
+    # `genome_key()` is non-trivial (it canonicalizes minis by sorting names) and
+    # is called very frequently. Historically this function recomputed keys
+    # multiple times per generation; avoid that by memoizing per-population.
+    pop_keys = [genome_key(g) for g in population]
+
     # GPU batch path - evaluate all uncached genomes in single pass
     if use_gpu_batch:
         # First check persistent cache for all unique genomes
         key_to_genome = {}
-        for genome in population:
-            k = genome_key(genome)
+        for k, genome in zip(pop_keys, population):
             if k not in key_to_genome:
                 key_to_genome[k] = genome
                 if k not in evaluation_cache:
@@ -312,8 +321,7 @@ def evaluate_population_parallel(
     key_to_genome = {}
     pending_keys = []
     tasks = []
-    for genome in population:
-        k = genome_key(genome)
+    for k, genome in zip(pop_keys, population):
         if k in key_to_genome:
             continue
         key_to_genome[k] = genome
@@ -348,7 +356,7 @@ def evaluate_population_parallel(
                 for k, payload in zip(keys_to_calc, tasks_to_calc):
                     evaluation_cache[k] = worker_coevolution_evaluate(payload)
 
-    results = [evaluation_cache[genome_key(g)] for g in population]
+    results = [evaluation_cache[k] for k in pop_keys]
     results.sort(key=lambda x: x["Score"], reverse=True)
 
     return results
