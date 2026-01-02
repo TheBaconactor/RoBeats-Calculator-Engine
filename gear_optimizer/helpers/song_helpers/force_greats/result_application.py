@@ -11,6 +11,7 @@ from ....core.constants import (
     GEM_STAT_TO_ELEMENT_SCALE,
 )
 from ....solver.scoring import FG_CACHE, _force_greats_counts_to_dict
+from ....solver.scoring.force_greats import FORCE_GREATS_ALGO_VERSION
 
 
 def apply_gems_to_base_fast(
@@ -97,10 +98,16 @@ def apply_gpu_results_to_entries(
     result_g_ov: Any,
     result_score_penalty: Any,
     result_fill_penalty: Any,
-    fg_variants: list[dict[str, Any]],
-    build_details_fn: Callable[[dict[str, Any]], dict[str, Any]],
+    fg_variants: list[dict[str, Any]] | None,
+    build_details_fn: Callable[[dict[str, Any]], dict[str, Any]] | None,
     names_list_fn: Callable[[Any], list[str]],
     perf: bool,
+    # PERF/GPU-residency knobs:
+    # - When False, we avoid building per-loadout Python dict payloads (Stats/details),
+    #   and instead stash a compact raw payload on the entry for later materialization.
+    materialize_force_details: bool = True,
+    materialize_stats: bool = True,
+    store_raw: bool = False,
 ) -> float:
     t0 = time.perf_counter() if perf else 0.0
     for idx, (sig, bs) in enumerate(zip(pending_sigs, pending)):
@@ -136,21 +143,29 @@ def apply_gpu_results_to_entries(
             "Element": g_ov,
         }
 
-        final_stats = apply_gems_to_base_fast(
-            bs,
-            str(sel_color),
-            ft_val,
-            ff_val,
-            g_pp,
-            g_cm,
-            g_fm,
-            g_ov,
-        )
+        config_dict = _force_greats_counts_to_dict(forced_counts, max(2, len(forced_counts)))
 
         fg_info = {
-            "config": _force_greats_counts_to_dict(forced_counts, max(2, len(forced_counts))),
+            "enabled": True,
+            "mode": "finder",
+            "algo_version": int(FORCE_GREATS_ALGO_VERSION),
+            # Keep search_radius optional; when absent, cache validation remains permissive.
+            "config": config_dict,
             "final_score": final_score,
         }
+
+        final_stats = {}
+        if materialize_stats:
+            final_stats = apply_gems_to_base_fast(
+                bs,
+                str(sel_color),
+                ft_val,
+                ff_val,
+                g_pp,
+                g_cm,
+                g_fm,
+                g_ov,
+            )
 
         fg_variant = {
             "BaseScore": base_score,
@@ -163,27 +178,56 @@ def apply_gpu_results_to_entries(
             "ForceGreats": fg_info,
         }
 
+        raw_payload = None
+        if store_raw or (not materialize_force_details):
+            # Compact payload to allow downstream materialization without re-running GPU.
+            raw_payload = {
+                "BaseScore": base_score,
+                "Score": final_score,
+                "FT": ft_val,
+                "FF": ff_val,
+                "GemCounts": gem_counts,
+                # Store base stats so we can materialize Stats later without recomputing.
+                "BaseStats": bs,
+                "Selected Element": str(sel_color),
+                "ForceGreats": fg_info,
+                # Keep a copy of the config counts for callers that need per-section values.
+                "forced_counts": list(forced_counts) if forced_counts else [],
+            }
+
         for entry, eval_data, _ in sig_map.get(sig, []):
             if "base_score" not in entry:
                 entry["base_score"] = entry.get("score")
 
-            fg_variants.append(
-                {
-                    "data": fg_variant,
-                    "gear": entry.get("gear", []),
-                    "minis": entry.get("minis", []),
-                    "score": base_score,
-                    "fg_score": final_score,
-                    "base_score": base_score,
-                }
-            )
-            entry["force"] = {
-                "score": final_score,
-                "gear": names_list_fn(entry.get("gear", [])),
-                "minis": names_list_fn(entry.get("minis", [])),
-                "details": build_details_fn(fg_variant),
-            }
+            # Always store the numeric FG score for downstream ranking/retention.
             entry["fg_score"] = final_score
+
+            if raw_payload is not None:
+                entry["_fg_raw"] = raw_payload
+
+            if materialize_force_details and build_details_fn is not None:
+                # Full (legacy) materialization path.
+                if fg_variants is not None:
+                    fg_variants.append(
+                        {
+                            "data": fg_variant,
+                            "gear": entry.get("gear", []),
+                            "minis": entry.get("minis", []),
+                            "score": base_score,
+                            "fg_score": final_score,
+                            "base_score": base_score,
+                        }
+                    )
+                entry["force"] = {
+                    "score": final_score,
+                    "gear": names_list_fn(entry.get("gear", [])),
+                    "minis": names_list_fn(entry.get("minis", [])),
+                    "details": build_details_fn(fg_variant),
+                }
+            else:
+                # Lean path: don't build `force.details` (heavy) on the critical path.
+                # We only materialize for retained entries later (DB/UI).
+                entry.pop("force", None)
 
             c_ft = int(eval_data.get("FT", 0) or 0)
             c_ff = int(eval_data.get("FF", 0) or 0)

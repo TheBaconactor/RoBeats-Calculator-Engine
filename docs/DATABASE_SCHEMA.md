@@ -35,6 +35,7 @@ CREATE TABLE loadouts (
     minis_json TEXT,                -- JSON array of mini names
     details_json TEXT,              -- JSON details (GemCounts, etc.)
     force_details_json TEXT,        -- JSON Force Greats config (May be NULL/Empty)
+    swing_json TEXT,                -- JSON array of non-zero score deltas from SwingDetector
     timestamp REAL,
     PRIMARY KEY (song_name, loadout_hash),
     FOREIGN KEY (song_name) REFERENCES songs(name)
@@ -57,6 +58,7 @@ CREATE TABLE fg_loadouts (
     minis_json TEXT,
     details_json TEXT,
     force_details_json TEXT,        -- JSON Force Greats config (GUARANTEED VALID)
+    swing_json TEXT,                -- JSON array of non-zero FG score deltas from SwingDetector
     timestamp REAL,
     PRIMARY KEY (song_name, loadout_hash),
     FOREIGN KEY (song_name) REFERENCES songs(name)

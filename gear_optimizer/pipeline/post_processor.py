@@ -429,6 +429,19 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         e for e in persisted if e.get("score", 0) > 0 and (e.get("gear") or e.get("minis"))
                     ]
                     if valid_entries:
+                        # Optional: SwingDetector post-pass (CPU-only; does not touch GPU).
+                        try:
+                            from gear_optimizer.solver.swing_detector import attach_swings_to_entries
+
+                            attach_swings_to_entries(
+                                song_name=song_name,
+                                song_file_path=item.get("file_path"),
+                                entries=valid_entries,
+                                cfg=cfg,
+                            )
+                        except Exception:
+                            pass
+
                         _t_db0 = time.perf_counter()
                         save_loadouts_batch(db_key, valid_entries)
                         _log_timing("save_loadouts_batch", time.perf_counter() - _t_db0, song=song_name)

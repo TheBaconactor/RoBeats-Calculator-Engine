@@ -92,6 +92,67 @@ def _maybe_sync(*, for_timing: bool = False) -> None:
 
 # Enable detailed FG GPU timing output
 _PERF_TIMING = os.environ.get("PERF_TIMING", "0") == "1"
+_FG_TRANSFER_TRACE = str(os.environ.get("FG_TRANSFER_TRACE", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_gpu_profiler():
+    """
+    Lazy import of the global GPU profiler to avoid overhead when disabled.
+
+    Enabled when either PERF_TIMING or GPU_PROFILER is on.
+    """
+    if not (_PERF_TIMING or str(os.environ.get("GPU_PROFILER", "0") or "").strip().lower() in {"1", "true", "yes", "on"}):
+        return None
+    try:
+        from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
+
+        p = get_gpu_profiler()
+        return p if getattr(p, "enabled", False) else None
+    except Exception:
+        return None
+
+
+def _bytes_of_array(arr: Any) -> int:
+    try:
+        a = np.asarray(arr)
+        return int(a.nbytes)
+    except Exception:
+        return 0
+
+
+def _record_upload(name: str, dt_sec: float, bytes_count: int) -> None:
+    p = _get_gpu_profiler()
+    if p is None:
+        return
+    try:
+        p.record_upload(float(dt_sec), bytes_count=int(bytes_count or 0))
+        # Add a named measurement so `GpuProfiler.report(verbose=True)` shows a breakdown.
+        p._record(f"fg_upload::{name}", float(dt_sec))  # type: ignore[attr-defined]
+    except Exception:
+        return
+
+
+def _record_download(name: str, dt_sec: float, bytes_count: int) -> None:
+    p = _get_gpu_profiler()
+    if p is None:
+        return
+    try:
+        p.record_download(float(dt_sec), bytes_count=int(bytes_count or 0))
+        p._record(f"fg_download::{name}", float(dt_sec))  # type: ignore[attr-defined]
+    except Exception:
+        return
+
+
+def _record_kernel_wall(name: str, dt_sec: float, *, genome_count: int = 0) -> None:
+    p = _get_gpu_profiler()
+    if p is None:
+        return
+    try:
+        # "Kernel wall time" measured at sync boundaries (can include some dispatch/packing).
+        p.record_kernel(float(dt_sec), genome_count=int(genome_count or 0))
+        p._record(f"fg_kernel::{name}", float(dt_sec))  # type: ignore[attr-defined]
+    except Exception:
+        return
 
 # Recovery: Taichi/Vulkan backend can occasionally fault on Windows (driver reset,
 # device lost, or internal assertion failures). Retry with a hard Taichi reset.
@@ -338,10 +399,25 @@ def fg_download_global_best(n_genomes: int) -> dict[str, np.ndarray]:
     Returns:
         Dict with numpy arrays for all result fields (same format as return_raw=True)
     """
-    ti.sync()  # Ensure all GPU work is complete
+    # Ensure all GPU work is complete (sync cost is often the "wall time" people see
+    # as a utilization drop between bursts).
+    _t0 = time.perf_counter()
+    ti.sync()
+    _sync_sec = time.perf_counter() - _t0
     n = int(n_genomes)
     fg_kernels.fg_pack_global_best_kernel(n)
+    _t1 = time.perf_counter()
     packed = fg_fields.fg_global_best_packed.to_numpy()[:n, :]
+    _dl_sec = time.perf_counter() - _t1
+    _record_kernel_wall("global_best_sync", _sync_sec, genome_count=n)
+    _record_download("global_best_packed", _dl_sec, int(getattr(packed, "nbytes", 0) or 0))
+    if _FG_TRANSFER_TRACE:
+        try:
+            print(
+                f"[FG][XFER] global_best: sync={_sync_sec*1000:.2f}ms download={_dl_sec*1000:.2f}ms bytes={int(getattr(packed,'nbytes',0) or 0)}"
+            )
+        except Exception:
+            pass
     return {
         "final_score": packed[:, 0],
         "base_score": packed[:, 1],
@@ -376,7 +452,10 @@ def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
                 np.iinfo(np.int32).max,
                 dtype=np.int32,
             )
+        _t0 = time.perf_counter()
         fg_fields.fg_pair_caps.from_numpy(_fg_pair_caps_default_buf)
+        _dt = time.perf_counter() - _t0
+        _record_upload("pair_caps_default", _dt, _bytes_of_array(_fg_pair_caps_default_buf))
         _fg_pair_caps_state = "default"
         _fg_pair_caps_custom_key = None
         return
@@ -391,7 +470,10 @@ def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
     key = (ptr, int(arr.shape[0]), int(arr.shape[1]), int(arr.shape[2]))
     if _fg_pair_caps_state == "custom" and _fg_pair_caps_custom_key == key:
         return
+    _t0 = time.perf_counter()
     fg_fields.fg_pair_caps.from_numpy(arr)
+    _dt = time.perf_counter() - _t0
+    _record_upload("pair_caps_custom", _dt, _bytes_of_array(arr))
     _fg_pair_caps_state = "custom"
     _fg_pair_caps_custom_key = key
 
@@ -485,7 +567,11 @@ def _fg_upload_song_timestamps(timestamps_np: np.ndarray) -> int:
     if n < fg_fields.FG_MAX_SONG_NOTES:
         buf[n:] = 0.0
 
+    _t0 = time.perf_counter()
     fg_fields.song_timestamps.from_numpy(buf)
+    _dt = time.perf_counter() - _t0
+    # Fixed-size upload buffer (shape stability); bytes reflect full buffer size.
+    _record_upload("song_timestamps", _dt, _bytes_of_array(buf))
     _fg_last_song_key = key
     return n
 
@@ -538,7 +624,10 @@ def _fg_upload_great_candidate_timestamps(candidate_np: np.ndarray, n: int) -> N
     if n < fg_fields.FG_MAX_SONG_NOTES:
         buf[n:] = 0.0
 
+    _t0 = time.perf_counter()
     fg_fields.song_timestamps_great_candidate.from_numpy(buf)
+    _dt = time.perf_counter() - _t0
+    _record_upload("great_candidate_timestamps", _dt, _bytes_of_array(buf))
     _fg_last_great_key = key
     _fg_use_great_candidate_field()
 
@@ -677,7 +766,10 @@ def _solve_force_greats_finder_gpu_impl(
         # For in-process batched FG tasks (GpuExecutor), callers can intentionally
         # set `upload_genome_stats=False` for subsequent tasks when they know the
         # field is still valid (no intervening GPU entrypoints).
+        _t_up0 = time.perf_counter()
         gem_fields.genome_base_stats.from_numpy(stats_buf)
+        _t_up1 = time.perf_counter()
+        _record_upload("genome_base_stats", _t_up1 - _t_up0, _bytes_of_array(stats_buf))
 
         try:
             if isinstance(genome_stats_list, np.ndarray):
@@ -738,8 +830,13 @@ def _solve_force_greats_finder_gpu_impl(
                 ft_buf[i] = int(ftg)
                 ff_buf[i] = int(ffg)
 
+        _t_ft0 = time.perf_counter()
         fg_fields.fg_ft_list.from_numpy(ft_buf)
+        _t_ft1 = time.perf_counter()
         fg_fields.fg_ff_list.from_numpy(ff_buf)
+        _t_ft2 = time.perf_counter()
+        _record_upload("ft_list", _t_ft1 - _t_ft0, _bytes_of_array(ft_buf))
+        _record_upload("ff_list", _t_ft2 - _t_ft1, _bytes_of_array(ff_buf))
         _fg_last_ftff_key = ftff_key
 
     # Reset outputs and init stage1
@@ -836,6 +933,19 @@ def _solve_force_greats_finder_gpu_impl(
 
     # Pre-fetch buffer reference
     buf = _fg_forced_upload_buf
+    # Optional fast path: pre-pack the full config list once if it's rectangular.
+    # This avoids repeated `np.array(chunk)` conversions inside the hot cfg loop,
+    # which can otherwise burn CPU and stall the GPU between dispatches.
+    packed_configs = None
+    packed_cols = 0
+    try:
+        arr_full = np.asarray(fg_configs, dtype=np.int32)
+        if arr_full.ndim == 2 and int(arr_full.shape[0]) == int(n_cfg_total):
+            packed_configs = arr_full
+            packed_cols = int(arr_full.shape[1])
+    except Exception:
+        packed_configs = None
+        packed_cols = 0
 
     # ------------------------------------------------------------------
     # Config upload strategy (max throughput):
@@ -876,15 +986,19 @@ def _solve_force_greats_finder_gpu_impl(
             # Zero out and pack chunk into host buffer
             buf[:n_cfg, :] = 0
             try:
-                arr_chunk = np.array(chunk, dtype=np.int32)
-                if arr_chunk.ndim == 2:
-                    k = arr_chunk.shape[1]
-                    cols = min(k, n_sections)
-                    buf[:n_cfg, :cols] = arr_chunk[:, :cols]
+                if packed_configs is not None and packed_cols > 0:
+                    cols = min(int(packed_cols), int(n_sections))
+                    buf[:n_cfg, :cols] = packed_configs[cfg_off : cfg_off + n_cfg, :cols]
                 else:
-                    for i, cfg in enumerate(chunk):
-                        limit = min(n_sections, len(cfg))
-                        buf[i, :limit] = cfg[:limit]
+                    arr_chunk = np.array(chunk, dtype=np.int32)
+                    if arr_chunk.ndim == 2:
+                        k = arr_chunk.shape[1]
+                        cols = min(k, n_sections)
+                        buf[:n_cfg, :cols] = arr_chunk[:, :cols]
+                    else:
+                        for i, cfg in enumerate(chunk):
+                            limit = min(n_sections, len(cfg))
+                            buf[i, :limit] = cfg[:limit]
             except Exception:
                 for i, cfg in enumerate(chunk):
                     limit = min(n_sections, len(cfg))
@@ -892,7 +1006,10 @@ def _solve_force_greats_finder_gpu_impl(
 
             staging_rows = _pick_forced_counts_staging_rows(int(n_cfg))
             staging = _get_forced_counts_staging(int(staging_rows))
+            _t0 = time.perf_counter()
             staging.from_numpy(buf[: int(staging_rows), :])
+            _dt = time.perf_counter() - _t0
+            _record_upload("forced_counts_staging(resident)", _dt, _bytes_of_array(buf[: int(staging_rows), :]))
             fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), int(cfg_off), staging)
 
         _fg_forced_resident_key = cfg_sig
@@ -906,6 +1023,7 @@ def _solve_force_greats_finder_gpu_impl(
     else:
         _fg_forced_configs_upload_key = None
 
+    _t_stage1_wall0 = time.perf_counter()
     for cfg_offset in range(0, n_cfg_total, cfg_chunk):
         chunk = fg_configs[cfg_offset : cfg_offset + cfg_chunk]
         n_cfg = int(len(chunk))
@@ -914,15 +1032,19 @@ def _solve_force_greats_finder_gpu_impl(
             # Legacy path: upload this chunk into row 0..n_cfg-1 each time.
             buf[:n_cfg, :] = 0
             try:
-                arr_chunk = np.array(chunk, dtype=np.int32)
-                if arr_chunk.ndim == 2:
-                    k = arr_chunk.shape[1]
-                    cols = min(k, n_sections)
-                    buf[:n_cfg, :cols] = arr_chunk[:, :cols]
+                if packed_configs is not None and packed_cols > 0:
+                    cols = min(int(packed_cols), int(n_sections))
+                    buf[:n_cfg, :cols] = packed_configs[cfg_offset : cfg_offset + n_cfg, :cols]
                 else:
-                    for i, cfg in enumerate(chunk):
-                        limit = min(n_sections, len(cfg))
-                        buf[i, :limit] = cfg[:limit]
+                    arr_chunk = np.array(chunk, dtype=np.int32)
+                    if arr_chunk.ndim == 2:
+                        k = arr_chunk.shape[1]
+                        cols = min(k, n_sections)
+                        buf[:n_cfg, :cols] = arr_chunk[:, :cols]
+                    else:
+                        for i, cfg in enumerate(chunk):
+                            limit = min(n_sections, len(cfg))
+                            buf[i, :limit] = cfg[:limit]
             except Exception:
                 for i, cfg in enumerate(chunk):
                     limit = min(n_sections, len(cfg))
@@ -930,7 +1052,10 @@ def _solve_force_greats_finder_gpu_impl(
 
             staging_rows = _pick_forced_counts_staging_rows(int(n_cfg))
             staging = _get_forced_counts_staging(int(staging_rows))
+            _t0 = time.perf_counter()
             staging.from_numpy(buf[: int(staging_rows), :])
+            _dt = time.perf_counter() - _t0
+            _record_upload("forced_counts_staging(chunk)", _dt, _bytes_of_array(buf[: int(staging_rows), :]))
             fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), 0, staging)
 
         # Call Kernel based on platform
@@ -1024,13 +1149,26 @@ def _solve_force_greats_finder_gpu_impl(
     # Single sync after all config chunks dispatched - required before Stage 2
     # This is the key optimization: N chunks now cause 1 sync instead of N syncs
     ti.sync()
+    _stage1_wall = time.perf_counter() - _t_stage1_wall0
+    _record_kernel_wall("stage1_sync_wall", _stage1_wall, genome_count=n_genomes)
+    if _FG_TRANSFER_TRACE:
+        try:
+            print(
+                f"[FG][KERNEL] stage1_sync_wall={_stage1_wall*1000:.2f}ms (genomes={int(n_genomes)}, cfgs={int(n_cfg_total)}, ftff={int(n_ftff)}, chunks={int(n_chunks)})"
+            )
+        except Exception:
+            pass
 
     # Stage 2: Reduce across ftff to find best per genome
+    _t_stage2_wall0 = time.perf_counter()
     if accumulate_global:
         fg_kernels.fg_stage2_and_update_global_best_kernel(n_genomes, n_ftff)
     else:
         fg_kernels.fg_stage2_kernel(n_genomes, n_ftff)
     _maybe_sync(for_timing=True)
+    if _FORCE_SYNC or _SYNC_FOR_TIMING:
+        _stage2_wall = time.perf_counter() - _t_stage2_wall0
+        _record_kernel_wall("stage2_sync_wall", _stage2_wall, genome_count=n_genomes)
 
     # Accumulate global best (GPU-resident) if requested
     if accumulate_global:
@@ -1054,7 +1192,15 @@ def _solve_force_greats_finder_gpu_impl(
     fg_kernels.fg_pack_results_kernel(n_genomes)
 
     # Download results (1 transfer instead of 11!)
+    _t0 = time.perf_counter()
     packed_results = fg_fields.fg_best_packed.to_numpy()[:n_genomes, :]
+    _dt = time.perf_counter() - _t0
+    _record_download("best_packed", _dt, int(getattr(packed_results, "nbytes", 0) or 0))
+    if _FG_TRANSFER_TRACE:
+        try:
+            print(f"[FG][XFER] best_packed: download={_dt*1000:.2f}ms bytes={int(getattr(packed_results,'nbytes',0) or 0)}")
+        except Exception:
+            pass
 
     # Unpack on CPU (trivial cost compared to 11 GPU waits)
     out_final = packed_results[:, 0]

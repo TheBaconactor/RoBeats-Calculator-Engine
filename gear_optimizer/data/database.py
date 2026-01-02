@@ -435,9 +435,41 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
             details_json = json.dumps(details, separators=(",", ":")) if details else None
             force_json = json.dumps(force_data, separators=(",", ":")) if force_data else None
 
+            # Optional SwingDetector payloads (stored as compact JSON arrays of deltas).
+            # Key is present => persist (even if empty list); key absent => NULL (not computed).
+            swing_score_json = None
+            if "swing_score" in entry:
+                try:
+                    vals = entry.get("swing_score")
+                    vals = vals if isinstance(vals, list) else []
+                    vals = [int(v) for v in vals if int(v) != 0]
+                    swing_score_json = json.dumps(vals, separators=(",", ":"))
+                except Exception:
+                    swing_score_json = json.dumps([], separators=(",", ":"))
+
+            swing_fg_json = None
+            if "swing_fg" in entry:
+                try:
+                    vals = entry.get("swing_fg")
+                    vals = vals if isinstance(vals, list) else []
+                    vals = [int(v) for v in vals if int(v) != 0]
+                    swing_fg_json = json.dumps(vals, separators=(",", ":"))
+                except Exception:
+                    swing_fg_json = json.dumps([], separators=(",", ":"))
+
             # All entries go to loadouts table
             loadouts_params.append(
-                (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_json)
+                (
+                    song_name,
+                    loadout_hash,
+                    score,
+                    fg_score,
+                    gear_json,
+                    minis_json,
+                    details_json,
+                    force_json,
+                    swing_score_json,
+                )
             )
 
             # Only FG-improving entries go to fg_loadouts table (FG leaderboard):
@@ -445,7 +477,17 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
             # "FG results" that are worse than the base outcome.
             if force_data is not None and fg_score > score:
                 fg_loadouts_params.append(
-                    (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_json)
+                    (
+                        song_name,
+                        loadout_hash,
+                        score,
+                        fg_score,
+                        gear_json,
+                        minis_json,
+                        details_json,
+                        force_json,
+                        swing_fg_json,
+                    )
                 )
 
             # Track best scores
@@ -460,8 +502,8 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
             _t_ins0 = time.perf_counter()
             conn.executemany(
                 """
-                INSERT INTO loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+                INSERT INTO loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, swing_json, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
                 ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
                     score = CASE WHEN excluded.score > score THEN excluded.score ELSE score END,
                     fg_score = MAX(fg_score, excluded.fg_score),
@@ -471,6 +513,11 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
                     force_details_json = CASE
                         WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
                         ELSE force_details_json
+                    END,
+                    swing_json = CASE
+                        WHEN excluded.score > score THEN excluded.swing_json
+                        WHEN swing_json IS NULL AND excluded.swing_json IS NOT NULL THEN excluded.swing_json
+                        ELSE swing_json
                     END,
                     timestamp = strftime('%s', 'now')
             """,
@@ -483,8 +530,8 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
             _t_insfg0 = time.perf_counter()
             conn.executemany(
                 """
-                INSERT INTO fg_loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+                INSERT INTO fg_loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, swing_json, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
                 ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
                     score = CASE WHEN excluded.fg_score > fg_score THEN excluded.score ELSE score END,
                     fg_score = MAX(fg_score, excluded.fg_score),
@@ -492,6 +539,11 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
                     minis_json = excluded.minis_json,
                     details_json = CASE WHEN excluded.fg_score > fg_score THEN excluded.details_json ELSE details_json END,
                     force_details_json = CASE WHEN excluded.fg_score > fg_score THEN excluded.force_details_json ELSE force_details_json END,
+                    swing_json = CASE
+                        WHEN excluded.fg_score > fg_score THEN excluded.swing_json
+                        WHEN swing_json IS NULL AND excluded.swing_json IS NOT NULL THEN excluded.swing_json
+                        ELSE swing_json
+                    END,
                     timestamp = strftime('%s', 'now')
             """,
                 fg_loadouts_params,

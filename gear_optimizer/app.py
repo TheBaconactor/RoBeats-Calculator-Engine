@@ -105,12 +105,12 @@ class _AsyncDbSaver:
             )
             self._thread.start()
 
-    def submit(self, song_name: str, entries: list[dict]) -> None:
+    def submit(self, song_name: str, entries: list[dict], *, meta: dict | None = None) -> None:
         if not entries:
             return
         if not self._running:
             self.start()
-        self._queue.put((song_name, entries))
+        self._queue.put((song_name, entries, meta or {}))
 
     def flush(self, timeout: float = 30.0) -> None:
         if not self._running:
@@ -170,7 +170,25 @@ class _AsyncDbSaver:
             try:
                 if item is None:
                     return
-                song_name, entries = item
+                song_name, entries, meta = item
+                if not isinstance(meta, dict):
+                    meta = {}
+
+                # Optional: SwingDetector post-pass (CPU-only; does not touch GPU).
+                try:
+                    from gear_optimizer.core.utils import cfg_from_dict
+                    from gear_optimizer.solver.swing_detector import attach_swings_to_entries
+
+                    cfg_dict = meta.get("cfg_dict") or {}
+                    cfg = cfg_from_dict(cfg_dict) if isinstance(cfg_dict, dict) and cfg_dict else None
+                    attach_swings_to_entries(
+                        song_name=str(song_name),
+                        song_file_path=meta.get("file_path"),
+                        entries=entries,
+                        cfg=cfg,
+                    )
+                except Exception:
+                    pass
                 try:
                     save_loadouts_batch(song_name, entries)
                 except Exception as exc:
@@ -1474,7 +1492,15 @@ class GearOptimizerApp:
                 # Filter: only save entries with score > 0 and at least some gear
                 valid_entries = [e for e in persisted if e.get("score", 0) > 0 and (e.get("gear") or e.get("minis"))]
                 if valid_entries:
-                    self._async_db_saver.submit(res["song"], valid_entries)
+                    self._async_db_saver.submit(
+                        res["song"],
+                        valid_entries,
+                        meta={
+                            "file_path": res.get("file_path"),
+                            "cfg_dict": res.get("cfg_dict"),
+                            "db_key": res.get("db_key"),
+                        },
+                    )
                 else:
                     print(f"[DB] Skipped save for {res['song']}: no valid entries (score=0 or empty loadout)")
             elif res.get("db_payload"):
@@ -1493,6 +1519,11 @@ class GearOptimizerApp:
                                 "force": pl.get("force"),
                             }
                         ],
+                        meta={
+                            "file_path": res.get("file_path"),
+                            "cfg_dict": res.get("cfg_dict"),
+                            "db_key": res.get("db_key"),
+                        },
                     )
                 else:
                     print(f"[DB] Skipped save for {res['song']}: invalid payload (score=0 or empty loadout)")

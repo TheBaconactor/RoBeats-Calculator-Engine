@@ -68,6 +68,12 @@ def process_force_greats_gpu_finder(
         fg_download_global_best,
     )
     from ....solver.gpu_executor import GpuRequestType
+    from ....core.constants import LOADOUTS_PER_SONG_LIMIT
+
+    # Default to a "GPU-resident" pipeline: do NOT build per-loadout dict payloads (force.details/Stats)
+    # during the hot FG apply loop. We'll materialize only the retained set for DB/UI later.
+    _materialize_all_env = str(os.environ.get("FG_MATERIALIZE_ALL_FORCE_DETAILS", "0") or "").strip().lower()
+    materialize_all_force = _materialize_all_env in {"1", "true", "yes", "on"}
 
     def _submit_fg_reset_global_best(n_genomes: int, *, blocking: bool = True):
         if gpu_client is not None:
@@ -204,10 +210,13 @@ def process_force_greats_gpu_finder(
             result_g_ov=result_g_ov,
             result_score_penalty=result_score_penalty,
             result_fill_penalty=result_fill_penalty,
-            fg_variants=fg_variants,
-            build_details_fn=build_details_fn,
+            fg_variants=fg_variants if materialize_all_force else None,
+            build_details_fn=build_details_fn if materialize_all_force else None,
             names_list_fn=names_list_fn,
             perf=perf,
+            materialize_force_details=bool(materialize_all_force),
+            materialize_stats=bool(materialize_all_force),
+            store_raw=bool(not materialize_all_force),
         )
 
     def _is_cached_force_valid_for_finder(cached_force_obj, expected_selected_element, center_ft, center_ff):
@@ -380,19 +389,13 @@ def process_force_greats_gpu_finder(
         # Reuse DB cached FG finder results when compatible (major compute savings)
         if cached_force and _is_cached_force_valid_for_finder(cached_force, expected_sel, center_ft, center_ff):
             db_cached_reuse += 1
-            # Preserve base score when reusing cached FG
+            # Preserve base score when reusing cached FG. Avoid building per-loadout variants here;
+            # we will materialize the retained set at the end (GPU-resident pipeline).
             base_score = entry.get("base_score") or entry.get("score", 0)
             cached_fg_score = cached_force.get("score", entry.get("fg_score", 0))
-
-            fg_variants.append(
-                {
-                    "data": cached_force.get("details", {}),
-                    "gear": entry.get("gear", []),
-                    "minis": entry.get("minis", []),
-                    "score": base_score,  # Keep base score
-                    "fg_score": cached_fg_score,  # Store FG score separately
-                }
-            )
+            if "base_score" not in entry:
+                entry["base_score"] = base_score
+            entry["fg_score"] = cached_fg_score
             continue
         gem_counts_existing = eval_data.get("GemCounts", {}) or {}
 
@@ -1127,6 +1130,167 @@ def process_force_greats_gpu_finder(
                 result_score_penalty=gpu_results["score_penalty"],
                 result_fill_penalty=gpu_results["fill_penalty"],
             )
+
+    # ------------------------------------------------------------------
+    # Materialize only the retained set (DB/UI retention) when in lean mode.
+    # This is a major CPU overhead reduction and keeps the GPU pipeline flowing.
+    # ------------------------------------------------------------------
+    if not materialize_all_force:
+        try:
+            items = list(loadout_entries.items()) if isinstance(loadout_entries, dict) else []
+        except Exception:
+            items = []
+
+        def _base_score(e: dict) -> int:
+            try:
+                return int(e.get("base_score") or e.get("score", 0) or 0)
+            except Exception:
+                return 0
+
+        def _fg_score(e: dict) -> int:
+            try:
+                return int(e.get("fg_score", 0) or 0)
+            except Exception:
+                return 0
+
+        def _fg_config_dict(e: dict) -> dict:
+            # Prefer cached/persisted force details.
+            try:
+                force_obj = e.get("force") or {}
+                det = (force_obj.get("details") or {}) if isinstance(force_obj, dict) else {}
+                fg0 = det.get("ForceGreats") or {}
+                cfg0 = fg0.get("config") or {}
+                if isinstance(cfg0, dict):
+                    return cfg0
+            except Exception:
+                pass
+            # Fall back to raw payload (batch FG path).
+            try:
+                raw = e.get("_fg_raw") or {}
+                fg1 = raw.get("ForceGreats") or {}
+                cfg1 = fg1.get("config") or {}
+                if isinstance(cfg1, dict):
+                    return cfg1
+            except Exception:
+                pass
+            return {}
+
+        def _is_valid_cfg(cfg: dict) -> bool:
+            try:
+                return bool(cfg and sum(int(v or 0) for v in cfg.values()) > 0)
+            except Exception:
+                return False
+
+        # Select the retention set: top-N by base score + top-N by FG score (FG must beat base and be valid).
+        top_base = sorted(items, key=lambda kv: _base_score(kv[1]), reverse=True)[: int(LOADOUTS_PER_SONG_LIMIT)]
+
+        fg_candidates = []
+        for h, e in items:
+            base_s = _base_score(e)
+            fg_s = _fg_score(e)
+            if fg_s <= base_s:
+                continue
+            cfg = _fg_config_dict(e)
+            if not _is_valid_cfg(cfg):
+                continue
+            fg_candidates.append((h, e))
+
+        top_fg = sorted(fg_candidates, key=lambda kv: _fg_score(kv[1]), reverse=True)[: int(LOADOUTS_PER_SONG_LIMIT)]
+
+        retained_hashes = set()
+        for h, _e in list(top_base) + list(top_fg):
+            retained_hashes.add(str(h))
+
+        # Materialize force details for retained entries and build fg_variants for UI/debug.
+        fg_variants.clear()
+        for h, entry in items:
+            if str(h) not in retained_hashes:
+                continue
+
+            base_score = _base_score(entry)
+            fg_score = _fg_score(entry)
+
+            # If this entry already has a valid cached force payload, reuse it.
+            force_obj = entry.get("force") if isinstance(entry, dict) else None
+            if isinstance(force_obj, dict) and force_obj.get("details"):
+                cfg = _fg_config_dict(entry)
+                if _is_valid_cfg(cfg):
+                    fg_variants.append(
+                        {
+                            "data": force_obj.get("details") or {},
+                            "gear": entry.get("gear", []),
+                            "minis": entry.get("minis", []),
+                            "score": base_score,
+                            "fg_score": fg_score,
+                            "base_score": base_score,
+                        }
+                    )
+                    continue
+
+            raw = entry.get("_fg_raw") or {}
+            if not isinstance(raw, dict):
+                continue
+
+            try:
+                base_stats = raw.get("BaseStats") or {}
+                sel = raw.get("Selected Element") or ""
+                ft_val = int(raw.get("FT", 0) or 0)
+                ff_val = int(raw.get("FF", 0) or 0)
+                gem_counts = raw.get("GemCounts") or {}
+                g_pp = int(gem_counts.get("Perfect Points", 0) or 0)
+                g_cm = int(gem_counts.get("Combo Multiplier", 0) or 0)
+                g_fm = int(gem_counts.get("Fever Multiplier", 0) or 0)
+                g_ov = int(gem_counts.get("Element", 0) or 0)
+
+                # Compute full Stats only for the retained set.
+                final_stats = result_application.apply_gems_to_base_fast(
+                    base_stats,
+                    str(sel),
+                    ft_val,
+                    ff_val,
+                    g_pp,
+                    g_cm,
+                    g_fm,
+                    g_ov,
+                )
+
+                fg_info = raw.get("ForceGreats") or {}
+                fg_variant = {
+                    "BaseScore": int(raw.get("BaseScore", base_score) or base_score),
+                    "Score": int(raw.get("Score", fg_score) or fg_score),
+                    "FT": ft_val,
+                    "FF": ff_val,
+                    "GemCounts": dict(gem_counts),
+                    "Stats": final_stats,
+                    "Selected Element": str(sel),
+                    "ForceGreats": dict(fg_info),
+                }
+
+                entry["force"] = {
+                    "score": fg_score,
+                    "gear": names_list_fn(entry.get("gear", [])),
+                    "minis": names_list_fn(entry.get("minis", [])),
+                    "details": build_details_fn(fg_variant),
+                }
+
+                fg_variants.append(
+                    {
+                        "data": fg_variant,
+                        "gear": entry.get("gear", []),
+                        "minis": entry.get("minis", []),
+                        "score": base_score,
+                        "fg_score": fg_score,
+                        "base_score": base_score,
+                    }
+                )
+            except Exception:
+                continue
+
+        # Keep output deterministic and small (UI/debug only): sort by FG score descending.
+        try:
+            fg_variants.sort(key=lambda v: int(v.get("fg_score", 0) or 0), reverse=True)
+        except Exception:
+            pass
 
     unique_sig_count = 0
     try:

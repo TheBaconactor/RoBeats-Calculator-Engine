@@ -306,7 +306,19 @@ def build_persistence_entries(
     Returns:
         list: List of persistence entries
     """
+    from ...core.constants import LOADOUTS_PER_SONG_LIMIT
+
     persist_entries = []
+    seen_hashes: set[str] = set()
+
+    def _loadout_hash(gear_items, mini_items) -> str:
+        try:
+            from ...data.database import get_loadout_hash
+
+            return str(get_loadout_hash(gear_items, mini_items))
+        except Exception:
+            # Fallback: best-effort stable-ish signature
+            return str((tuple(gear_items or []), tuple(mini_items or [])))
 
     def _names_list(items):
         names = []
@@ -318,6 +330,12 @@ def build_persistence_entries(
         return names
 
     def _append_entry(score_val, gear_items, mini_items, details_obj, fg_score_val=0, force_obj=None):
+        # Avoid emitting duplicates (we may include top1/best_fg + retained union entries).
+        h = _loadout_hash(gear_items, mini_items)
+        if h in seen_hashes:
+            return
+        seen_hashes.add(h)
+
         # Extract attempt metadata from details for tagging
         attempt_lifetime = details_obj.get("attempt_lifetime", 0) if details_obj else 0
         attempts_first = details_obj.get("attempts_first", 0) if details_obj else 0
@@ -429,7 +447,51 @@ def build_persistence_entries(
 
     # Include DB+GA union entries (with updated FG) if available
     if loadout_entries is not None:
-        for entry in loadout_entries.values():
+        # PERF: The DB enforces `LOADOUTS_PER_SONG_LIMIT` by pruning, but building thousands of
+        # Python dicts + JSON payloads just to throw most away is expensive (and blocks GPU).
+        # Pre-prune here to the exact retention intent:
+        # - top-N by base score, plus
+        # - top-N by FG score (only when FG strictly beats base AND force config is valid).
+        try:
+            items = list(loadout_entries.items()) if isinstance(loadout_entries, dict) else []
+        except Exception:
+            items = []
+
+        def _base_score(entry: dict) -> int:
+            try:
+                return int(entry.get("base_score") or entry.get("score", 0) or 0)
+            except Exception:
+                return 0
+
+        def _fg_score(entry: dict) -> int:
+            try:
+                return int(entry.get("fg_score", 0) or 0)
+            except Exception:
+                return 0
+
+        # Top base (retain by base score only).
+        top_base = sorted(items, key=lambda kv: _base_score(kv[1]), reverse=True)[: int(LOADOUTS_PER_SONG_LIMIT)]
+
+        # Top FG (retain by fg_score, but only when valid FG details exist and FG beats base).
+        fg_candidates = []
+        for h, e in items:
+            try:
+                base_s = _base_score(e)
+                fg_s = _fg_score(e)
+                force_obj = e.get("force")
+                if fg_s > base_s and force_obj is not None and _has_valid_fg_config(force_obj):
+                    fg_candidates.append((h, e))
+            except Exception:
+                continue
+        top_fg = sorted(fg_candidates, key=lambda kv: _fg_score(kv[1]), reverse=True)[: int(LOADOUTS_PER_SONG_LIMIT)]
+
+        selected_hashes = set()
+        for h, _e in list(top_base) + list(top_fg):
+            selected_hashes.add(str(h))
+
+        for h, entry in items:
+            if str(h) not in selected_hashes:
+                continue
             # Ensure FG score is zeroed if configuration is invalid
 
             fg_score_to_save = entry.get("fg_score", 0)

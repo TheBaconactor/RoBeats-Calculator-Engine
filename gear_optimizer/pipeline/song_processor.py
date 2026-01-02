@@ -604,6 +604,9 @@ def process_song_task(args):
                 gears_by_name,
                 minis_by_name,
                 build_details,
+                # PERF: Avoid constructing a large `details` dict for every GA candidate.
+                # We can build details lazily later during persistence for the small retained set.
+                lean_ga_candidates=bool(gpu_mode),
             )
 
             # Process force greats
@@ -818,6 +821,9 @@ def process_song_task(args):
         result_payload = {
             "song": found_song_name,
             "db_key": db_key,
+            "file_path": fp,
+            "difficulty": effective_difficulty,
+            "cfg_dict": cfg_dict,
             "db_payload": db_payload,
             "best_data": best_data,
             "best_gear": best_gear,

@@ -51,6 +51,9 @@ evolution.db
 # Website export folder
 RoBeatMetaWebsite/
 
+# RoBeats Rojo project (legacy game code)
+RoBeats-Rojo/
+
 # Local bin folder (logs, temp files, local databases)
 bin/
 gear_optimizer/bin/

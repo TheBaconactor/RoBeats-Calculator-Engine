@@ -83,7 +83,8 @@ def test_fg_stage1_packed_and_metadata_stay_consistent_on_cfg_tie():
     forced_staging_np[:n_cfg, :] = forced
     forced_staging = ti.ndarray(dtype=ti.i32, shape=(forced_staging_rows, fg_fields.FG_MAX_SECTIONS))
     forced_staging.from_numpy(forced_staging_np)
-    fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), forced_staging)
+    # Kernel signature includes an explicit destination offset (cfg_dst_offset).
+    fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), 0, forced_staging)
 
     fg_kernels.fg_build_flat_work_kernel(int(n_genomes), int(n_ftff))
     fg_kernels.fg_stage1_init_kernel(int(n_genomes), int(n_ftff))
@@ -113,6 +114,7 @@ def test_fg_stage1_packed_and_metadata_stay_consistent_on_cfg_tie():
         int(n_work_items),
         int(n_cfg),
         1,  # cfg_offset
+        0,  # cfg_read_offset
         int(total_notes),
         int(long_notes),
         float(last_note_time),
@@ -125,6 +127,7 @@ def test_fg_stage1_packed_and_metadata_stay_consistent_on_cfg_tie():
         int(n_work_items),
         int(n_cfg),
         0,  # cfg_offset (lower should win ties)
+        0,  # cfg_read_offset
         int(total_notes),
         int(long_notes),
         float(last_note_time),

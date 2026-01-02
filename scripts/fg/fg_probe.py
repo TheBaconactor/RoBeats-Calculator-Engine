@@ -20,8 +20,8 @@ def _parse_counts(raw: str) -> list[int]:
     return out
 
 
-def _find_song_file(song_name: str) -> str | None:
-    data_root = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Data")
+def _find_song_file(repo_root: str, song_name: str) -> str | None:
+    data_root = os.path.join(repo_root, "Data")
     if not os.path.isdir(data_root):
         return None
     for diff in ("Easy", "Normal", "Hard"):
@@ -89,7 +89,7 @@ def main() -> int:
     sys.path.insert(0, repo_root)
 
     song_name = args.song.strip()
-    song_fp = _find_song_file(song_name)
+    song_fp = _find_song_file(repo_root, song_name)
     if not song_fp:
         raise SystemExit(f"Could not find song file for {song_name!r} in Data/(Easy|Normal|Hard)/")
 

@@ -11,7 +11,7 @@ from typing import Callable, Dict
 
 Migration = Callable[[sqlite3.Connection], None]
 
-LATEST_SCHEMA_VERSION = 2
+LATEST_SCHEMA_VERSION = 3
 
 
 def _migration_1_init_schema(conn: sqlite3.Connection) -> None:
@@ -75,9 +75,30 @@ def _migration_2_add_pending_fg_jobs(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_3_add_swing_json(conn: sqlite3.Connection) -> None:
+    """
+    Add SwingDetector storage columns.
+
+    `swing_json` is a compact JSON array of signed deltas (non-zero) that represent
+    score variance under HumanHitSim seeds.
+    """
+
+    def _has_column(table: str, column: str) -> bool:
+        try:
+            rows = conn.execute(f"PRAGMA table_info({table});").fetchall()
+            return any(r[1] == column for r in rows)
+        except Exception:
+            return False
+
+    for table in ("loadouts", "fg_loadouts"):
+        if not _has_column(table, "swing_json"):
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN swing_json TEXT;")
+
+
 _MIGRATIONS: Dict[int, Migration] = {
     1: _migration_1_init_schema,
     2: _migration_2_add_pending_fg_jobs,
+    3: _migration_3_add_swing_json,
 }
 
 
