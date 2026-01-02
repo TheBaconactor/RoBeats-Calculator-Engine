@@ -8,6 +8,8 @@ It reuses the shared scoring helpers from `gear_optimizer.solver.taichi_gem.kern
 Fields are bound at runtime via `force_greats.fields.bind_fields()`.
 """
 
+import os
+
 import taichi as ti
 
 from ..kernels import kernels_helpers
@@ -76,7 +78,14 @@ fg_genome_hint_allocation = None
 
 # Stage 1 flat kernel cfg tiling (reduces atomic contention per (genome, ftff)).
 # A larger tile reduces 64-bit atomic updates while keeping full search work identical.
-FG_STAGE1_CFG_TILE = 8
+#
+# On Vulkan/AMD, 64-bit atomics are a major throughput limiter for FG Stage 1. A larger
+# tile substantially reduces atomic pressure while keeping occupancy high.
+try:
+    FG_STAGE1_CFG_TILE = int(os.environ.get("FG_STAGE1_CFG_TILE", "32") or "32")
+except Exception:
+    FG_STAGE1_CFG_TILE = 32
+FG_STAGE1_CFG_TILE = max(1, min(int(FG_STAGE1_CFG_TILE), 128))
 
 
 # ============================================================================
