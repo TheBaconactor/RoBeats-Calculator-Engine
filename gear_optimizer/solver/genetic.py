@@ -511,27 +511,6 @@ def decode_gpu_native_ga_runs_payload(
 
     item_stats = registry.to_gpu_arrays()["item_stats"]  # (n_items, 10)
 
-    stub_item_stats_sum = item_stats[stub_genome_ids].sum(axis=1)  # (n_stub, 10)
-    stub_item_stats_sum64 = stub_item_stats_sum.astype(np.int64, copy=False)
-
-    p_color = str(cfg_data.get("primary_color", "") or "")
-    s_color = str(cfg_data.get("secondary_color", "") or "")
-    color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
-    p_idx = color_to_idx.get(p_color, -1)
-    s_idx = color_to_idx.get(s_color, -1)
-
-    fg_proxy_vec = (
-        (stub_item_stats_sum64[:, 2] * 4)  # Fever Multiplier
-        + (stub_item_stats_sum64[:, 4] * 4)  # Fever Fill Rate
-        + (stub_item_stats_sum64[:, 3] * 3)  # Fever Time
-        + (stub_item_stats_sum64[:, 1] * 2)  # Combo Multiplier
-        + stub_item_stats_sum64[:, 0]  # Perfect Points
-    )
-    if 5 <= p_idx <= 9:
-        fg_proxy_vec = fg_proxy_vec + (stub_item_stats_sum64[:, p_idx] * 2)
-    if 5 <= s_idx <= 9 and s_idx != p_idx:
-        fg_proxy_vec = fg_proxy_vec + stub_item_stats_sum64[:, s_idx]
-
     # Deterministic ordering helpers (stable for ties, matches select_fg_candidates behavior).
     #
     # Avoid Python `sorted(..., key=lambda ...)` here: `n_stub` can be large and this code
@@ -541,26 +520,93 @@ def decode_gpu_native_ga_runs_payload(
     # - metas_by_base: primary=stub_scores desc, secondary=fg_proxy desc
     # - metas_by_fg: primary=fg_proxy desc, secondary=stub_scores desc
     idx = np.arange(n_stub, dtype=np.int32)
-    # metas_by_base
-    _tmp = idx[np.argsort(-fg_proxy_vec, kind="stable")]
-    metas_by_base = _tmp[np.argsort(-stub_scores[_tmp], kind="stable")]
-    # metas_by_fg
-    _tmp2 = idx[np.argsort(-stub_scores, kind="stable")]
-    metas_by_fg = _tmp2[np.argsort(-fg_proxy_vec[_tmp2], kind="stable")]
+
+    p_color = str(cfg_data.get("primary_color", "") or "")
+    s_color = str(cfg_data.get("secondary_color", "") or "")
+    color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
+    p_idx = color_to_idx.get(p_color, -1)
+    s_idx = color_to_idx.get(s_color, -1)
+
+    def _fg_proxy_from_item_stats_sum(item_stats_sum64: np.ndarray) -> np.ndarray:
+        proxy = (
+            (item_stats_sum64[:, 2] * 4)  # Fever Multiplier
+            + (item_stats_sum64[:, 4] * 4)  # Fever Fill Rate
+            + (item_stats_sum64[:, 3] * 3)  # Fever Time
+            + (item_stats_sum64[:, 1] * 2)  # Combo Multiplier
+            + item_stats_sum64[:, 0]  # Perfect Points
+        )
+        if 5 <= p_idx <= 9:
+            proxy = proxy + (item_stats_sum64[:, p_idx] * 2)
+        if 5 <= s_idx <= 9 and s_idx != p_idx:
+            proxy = proxy + item_stats_sum64[:, s_idx]
+        return np.asarray(proxy, dtype=np.int64)
 
     if n_stub <= fg_candidate_limit:
-        selected_stub_indices = idx[np.argsort(-stub_scores, kind="stable")].tolist()
+        base_order = idx[np.argsort(-stub_scores, kind="stable")]
+        selected_idx_arr = base_order[: int(fg_candidate_limit)]
+        selected_stub_indices = selected_idx_arr.tolist()
         select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
     else:
         # Fast path: when the FG funnel limit is at/below the per-song loadout cap,
         # selection is simply "top base-score candidates (tie-break by FG proxy)".
-        # Avoid allocating O(n_stub) Python lists/sets (mini keys, centers) in this case.
+        # Avoid allocating O(n_stub) sums/sets in this case.
         if fg_candidate_limit <= LOADOUTS_PER_SONG_LIMIT:
-            selected_stub_indices = metas_by_base[: int(fg_candidate_limit)].tolist()
+            base_order = idx[np.argsort(-stub_scores, kind="stable")]
+            limit = int(fg_candidate_limit)
+            if base_order.shape[0] <= limit:
+                selected_idx_arr = base_order
+            else:
+                selected_idx_arr = base_order[:limit]
+
+                # If the score at the boundary is tied, pick the highest-FG-proxy members
+                # of the tied score group (matches `metas_by_base` behavior) without
+                # computing proxy for all stubs.
+                try:
+                    boundary_score = int(stub_scores[base_order[limit - 1]])
+                    next_score = int(stub_scores[base_order[limit]])
+                except Exception:
+                    boundary_score = None
+                    next_score = None
+
+                if boundary_score is not None and next_score is not None and next_score == boundary_score:
+                    ordered_scores = stub_scores[base_order]
+                    tie_pos = np.flatnonzero(ordered_scores == boundary_score)
+                    if tie_pos.size:
+                        block_start = int(tie_pos[0])
+                        block_end = int(tie_pos[-1] + 1)
+                        prefix = base_order[:block_start]
+                        tied = base_order[block_start:block_end]
+                        needed = max(0, limit - int(prefix.shape[0]))
+                        if needed and tied.size:
+                            tied_item_sum = item_stats[stub_genome_ids[tied]].sum(axis=1).astype(np.int64, copy=False)
+                            tied_proxy = _fg_proxy_from_item_stats_sum(tied_item_sum)
+                            tied_pick = tied[np.argsort(-tied_proxy, kind="stable")][:needed]
+                            selected_idx_arr = np.concatenate([prefix, tied_pick], axis=0)
+
+            # Final deterministic ordering for the selected set:
+            # sort by (score desc, fg_proxy desc) like `metas_by_base`, but only over ~200 rows.
+            sel_item_stats_sum64 = item_stats[stub_genome_ids[selected_idx_arr]].sum(axis=1).astype(np.int64, copy=False)
+            sel_proxy = _fg_proxy_from_item_stats_sum(sel_item_stats_sum64)
+            _tmp = selected_idx_arr[np.argsort(-sel_proxy, kind="stable")]
+            selected_idx_arr = _tmp[np.argsort(-stub_scores[_tmp], kind="stable")]
+            selected_stub_indices = selected_idx_arr.tolist()
+
+            # Keep this timing comparable to the old code path (includes proxy/ordering work).
             select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
             if not selected_stub_indices:
                 return best_data, list(best_gear), list(best_minis), []
         else:
+            # Full funnel path: compute FG proxy for all stubs (limit > LOADOUTS_PER_SONG_LIMIT).
+            stub_item_stats_sum64 = item_stats[stub_genome_ids].sum(axis=1).astype(np.int64, copy=False)
+            fg_proxy_vec = _fg_proxy_from_item_stats_sum(stub_item_stats_sum64)
+
+            # metas_by_base
+            _tmp = idx[np.argsort(-fg_proxy_vec, kind="stable")]
+            metas_by_base = _tmp[np.argsort(-stub_scores[_tmp], kind="stable")]
+            # metas_by_fg
+            _tmp2 = idx[np.argsort(-stub_scores, kind="stable")]
+            metas_by_fg = _tmp2[np.argsort(-fg_proxy_vec[_tmp2], kind="stable")]
+
             selected_stub_indices: list[int] = []
             selected_mask = np.zeros((n_stub,), dtype=np.bool_)
 
@@ -665,7 +711,7 @@ def decode_gpu_native_ga_runs_payload(
 
     n_cand = len(selected_stub_indices)
     genome_ids_mat = stub_genome_ids[selected_stub_indices]
-    item_stats_sum = stub_item_stats_sum[selected_stub_indices]
+    item_stats_sum = item_stats[genome_ids_mat].sum(axis=1)
     scores_vec = stub_scores[selected_stub_indices].astype(np.int32, copy=False)
     sel_run_idx = stub_run_idx[selected_stub_indices]
     sel_rows = 1 + stub_pop_idx[selected_stub_indices]
