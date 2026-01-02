@@ -1645,28 +1645,29 @@ def _run_fg_job_sync(
                 gpu_client=gpu_client,
             )
 
-        if boosted:
-            song.ga_candidates = select_fg_candidates(
-                list(song.ga_candidates or []) + list(boosted),
-                limit=int(song.fg_candidate_limit or 0),
-                primary_color=str(song.meta_primary_color or ""),
-                secondary_color=str(song.meta_secondary_color or ""),
-            )
-            hydrate_fg_candidate_stats(
-                song.ga_candidates,
-                base_stats_fixed=song.fixed_stats,
-                selected_color=str(song.cfg_data.get("selected_color", "") or ""),
-            )
-            song.loadout_entries = build_loadout_entries(
-                song.song_name,
-                bool(song.use_evo_db),
-                song.ga_candidates,
-                int(song.fg_candidate_limit or 0),
-                song.gears_by_name,
-                song.minis_by_name,
-                build_details,
-                db_loadouts_full=song.db_loadouts_full,
-            )
+            if boosted:
+                song.ga_candidates = select_fg_candidates(
+                    list(song.ga_candidates or []) + list(boosted),
+                    limit=int(song.fg_candidate_limit or 0),
+                    primary_color=str(song.meta_primary_color or ""),
+                    secondary_color=str(song.meta_secondary_color or ""),
+                )
+                hydrate_fg_candidate_stats(
+                    song.ga_candidates,
+                    base_stats_fixed=song.fixed_stats,
+                    selected_color=str(song.cfg_data.get("selected_color", "") or ""),
+                )
+                song.loadout_entries = build_loadout_entries(
+                    song.song_name,
+                    bool(song.use_evo_db),
+                    song.ga_candidates,
+                    int(song.fg_candidate_limit or 0),
+                    song.gears_by_name,
+                    song.minis_by_name,
+                    build_details,
+                    db_loadouts_full=song.db_loadouts_full,
+                    lean_ga_candidates=not bool(song.fg_debug),
+                )
     except Exception:
         pass
 
