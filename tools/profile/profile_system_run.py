@@ -100,6 +100,95 @@ def _start_typeperf(csv_path: Path, interval_sec: float) -> subprocess.Popen | N
         return None
 
 
+def _typeperf_target_token(pid: int) -> str:
+    return f"pid_{int(pid)}_"
+
+
+def _read_first_line(path: Path) -> str | None:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            return (f.readline() or "").strip()
+    except Exception:
+        return None
+
+
+def _typeperf_csv_header_has_pid(csv_path: Path, *, target_pid: int) -> bool:
+    """
+    Check whether a running `typeperf` capture includes GPU Engine instances for `target_pid`.
+
+    Important: `typeperf` resolves wildcard instances up-front. If the process hasn't used the GPU
+    yet when `typeperf` starts, its `pid_*` instances won't be present in the header and never
+    appear later. In that case we need to restart typeperf.
+    """
+    token = _typeperf_target_token(int(target_pid))
+    header = _read_first_line(csv_path)
+    if not header:
+        return False
+    return token in header
+
+
+def _start_typeperf_with_pid_retry(
+    csv_path: Path,
+    *,
+    interval_sec: float,
+    target_pid: int,
+    proc: subprocess.Popen | None,
+    max_attempts: int = 6,
+    header_wait_sec: float = 2.5,
+    retry_delay_sec: float = 1.5,
+) -> tuple[subprocess.Popen | None, float | None, bool]:
+    """
+    Start typeperf and (best-effort) ensure the CSV includes counters for `target_pid`.
+
+    Returns:
+        (typeperf_proc, typeperf_started_at_epoch_sec, target_pid_in_header)
+    """
+    if not _typeperf_available():
+        return None, None, False
+
+    max_attempts = max(1, int(max_attempts))
+    for attempt in range(max_attempts):
+        if proc is not None:
+            try:
+                if proc.poll() is not None:
+                    return None, None, False
+            except Exception:
+                pass
+
+        try:
+            csv_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        started_at = time.time()
+        typeperf_proc = _start_typeperf(csv_path, float(interval_sec))
+        if typeperf_proc is None:
+            return None, None, False
+
+        # Wait briefly for the header to be written, then check for pid instances.
+        deadline = time.perf_counter() + max(0.1, float(header_wait_sec))
+        pid_in_header = False
+        while time.perf_counter() < deadline:
+            if proc is not None:
+                try:
+                    if proc.poll() is not None:
+                        break
+                except Exception:
+                    break
+            if _typeperf_csv_header_has_pid(csv_path, target_pid=int(target_pid)):
+                pid_in_header = True
+                break
+            time.sleep(0.15)
+
+        if pid_in_header or (attempt >= max_attempts - 1):
+            return typeperf_proc, float(started_at), bool(pid_in_header)
+
+        _stop_typeperf(typeperf_proc, timeout_sec=2.0)
+        time.sleep(max(0.0, float(retry_delay_sec)))
+
+    return None, None, False
+
+
 def _run_powershell_json(ps_script: str, *, timeout_sec: float = 10.0) -> Any | None:
     """
     Best-effort helper to run a short PowerShell script that emits JSON.
@@ -136,55 +225,193 @@ def _windows_display_adapter_luid_name_map() -> dict[str, str]:
     """
     Map adapter LUIDs (as `0xhhhhhhhh_0xllllllll`) to friendly names on Windows.
 
-    This uses PnP device properties (no third-party deps). The property key
-    `{60B193CB-5276-4D0F-96FC-F173ABAD3EC6} 2` is the adapter LUID (UInt64).
+    Prefer DXGI (fast, does not require admin rights).
     """
     if platform.system() != "Windows":
         return {}
 
-    ps = r"""
-$key = '{60B193CB-5276-4D0F-96FC-F173ABAD3EC6} 2'
-$out = @()
-try {
-  $devs = Get-PnpDevice -Class Display -ErrorAction Stop | Select-Object FriendlyName, InstanceId
-} catch {
-  $devs = @()
-}
-foreach ($d in ($devs | Where-Object { $_ -ne $null })) {
-  $luid = $null
-  try {
-    $luid = (Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName $key -ErrorAction Stop).Data
-  } catch {
-    $luid = $null
-  }
-  if ($luid -eq $null) { continue }
-  $out += [pscustomobject]@{ name = $d.FriendlyName; luid = [uint64]$luid }
-}
-$out | ConvertTo-Json -Compress
-"""
-    data = _run_powershell_json(ps, timeout_sec=10.0)
-    if data is None:
+    # Fast path: DXGI enumeration exposes adapter descriptions + LUIDs directly.
+    return _windows_dxgi_adapter_luid_name_map()
+
+
+def _windows_dxgi_adapter_luid_name_map() -> dict[str, str]:
+    """
+    Best-effort adapter LUID -> name map via DXGI.
+
+    This is used to label `typeperf` GPU counters (which include adapter LUIDs) with
+    human-readable GPU names.
+    """
+    if platform.system() != "Windows":
         return {}
-    if isinstance(data, dict):
-        data = [data]
-    if not isinstance(data, list):
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+    except Exception:
+        return {}
+
+    HRESULT = ctypes.c_long
+
+    class _GUID(ctypes.Structure):
+        _fields_ = [
+            ("Data1", wintypes.DWORD),
+            ("Data2", wintypes.WORD),
+            ("Data3", wintypes.WORD),
+            ("Data4", wintypes.BYTE * 8),
+        ]
+
+    def _guid_from_hex(d1: int, d2: int, d3: int, d4: bytes) -> _GUID:
+        g = _GUID()
+        g.Data1 = wintypes.DWORD(int(d1))
+        g.Data2 = wintypes.WORD(int(d2))
+        g.Data3 = wintypes.WORD(int(d3))
+        if len(d4) != 8:
+            raise ValueError("bad_guid")
+        g.Data4[:] = d4
+        return g
+
+    # IID_IDXGIFactory1 = {770aae78-f26f-4dba-a829-253c83d1b387}
+    iid_factory1 = _guid_from_hex(
+        0x770AAE78, 0xF26F, 0x4DBA, bytes([0xA8, 0x29, 0x25, 0x3C, 0x83, 0xD1, 0xB3, 0x87])
+    )
+
+    class _LUID(ctypes.Structure):
+        _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
+
+    class _DXGI_ADAPTER_DESC1(ctypes.Structure):
+        _fields_ = [
+            ("Description", wintypes.WCHAR * 128),
+            ("VendorId", wintypes.UINT),
+            ("DeviceId", wintypes.UINT),
+            ("SubSysId", wintypes.UINT),
+            ("Revision", wintypes.UINT),
+            ("DedicatedVideoMemory", ctypes.c_size_t),
+            ("DedicatedSystemMemory", ctypes.c_size_t),
+            ("SharedSystemMemory", ctypes.c_size_t),
+            ("AdapterLuid", _LUID),
+            ("Flags", wintypes.UINT),
+        ]
+
+    def _vtbl(obj: ctypes.c_void_p) -> ctypes.POINTER(ctypes.c_void_p) | None:
+        if not obj:
+            return None
+        try:
+            return ctypes.cast(obj, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p))).contents
+        except Exception:
+            return None
+
+    def _release(obj: ctypes.c_void_p) -> None:
+        if not obj:
+            return
+        try:
+            v = _vtbl(obj)
+            if v is None:
+                return
+            release_ptr = v[2]
+            if not release_ptr:
+                return
+            release = ctypes.WINFUNCTYPE(wintypes.ULONG, ctypes.c_void_p)(release_ptr)
+            release(obj)
+        except Exception:
+            return
+
+    # Ensure COM is initialized (best-effort).
+    ole32 = ctypes.windll.ole32
+    try:
+        ole32.CoInitializeEx(None, 0)  # COINIT_MULTITHREADED
+    except Exception:
+        pass
+
+    dxgi = ctypes.windll.dxgi
+    create_factory1 = dxgi.CreateDXGIFactory1
+    create_factory1.argtypes = [ctypes.POINTER(_GUID), ctypes.POINTER(ctypes.c_void_p)]
+    create_factory1.restype = HRESULT
+
+    factory = ctypes.c_void_p()
+    hr = int(create_factory1(ctypes.byref(iid_factory1), ctypes.byref(factory)))
+    if hr < 0 or not factory:
         return {}
 
     out: dict[str, str] = {}
+    try:
+        v = _vtbl(factory)
+        if v is None:
+            return {}
+        enum_ptr = v[12]
+        if not enum_ptr:
+            return {}
+        enum_adapters1 = ctypes.WINFUNCTYPE(HRESULT, ctypes.c_void_p, wintypes.UINT, ctypes.POINTER(ctypes.c_void_p))(enum_ptr)
+        idx = 0
+        while True:
+            adapter = ctypes.c_void_p()
+            hr = int(enum_adapters1(factory, wintypes.UINT(idx), ctypes.byref(adapter)))
+            if hr != 0 or not adapter:
+                break
+
+            try:
+                av = _vtbl(adapter)
+                if av is None:
+                    break
+                desc_ptr = av[10]
+                if not desc_ptr:
+                    break
+                get_desc1 = ctypes.WINFUNCTYPE(HRESULT, ctypes.c_void_p, ctypes.POINTER(_DXGI_ADAPTER_DESC1))(desc_ptr)
+                desc = _DXGI_ADAPTER_DESC1()
+                if int(get_desc1(adapter, ctypes.byref(desc))) == 0:
+                    hi = int(desc.AdapterLuid.HighPart) & 0xFFFFFFFF
+                    lo = int(desc.AdapterLuid.LowPart) & 0xFFFFFFFF
+                    key = f"0x{hi:08x}_0x{lo:08x}".lower()
+                    name = str(desc.Description or "").strip()
+                    if name:
+                        out[key] = name
+            finally:
+                _release(adapter)
+
+            idx += 1
+    finally:
+        _release(factory)
+
+    return out
+
+
+def _windows_video_controller_summary() -> list[dict[str, Any]]:
+    """
+    Best-effort list of installed display adapters (does not require admin rights).
+
+    Note: This does not expose the perf-counter LUIDs directly, but it helps interpret
+    the system environment when LUID mapping isn't available.
+    """
+    if platform.system() != "Windows":
+        return []
+
+    ps = r"""
+try {
+  Get-CimInstance Win32_VideoController |
+    Select-Object Name, PNPDeviceID, AdapterRAM |
+    ConvertTo-Json -Compress
+} catch {
+  @() | ConvertTo-Json -Compress
+}
+"""
+    data = _run_powershell_json(ps, timeout_sec=5.0)
+    if data is None:
+        return []
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        return []
+
+    out: list[dict[str, Any]] = []
     for item in data:
         if not isinstance(item, dict):
             continue
-        name = str(item.get("name") or "").strip()
-        if not name:
-            continue
-        try:
-            luid_u64 = int(item.get("luid") or 0)
-        except Exception:
-            continue
-        hi = (luid_u64 >> 32) & 0xFFFFFFFF
-        lo = luid_u64 & 0xFFFFFFFF
-        luid_key = f"0x{hi:08x}_0x{lo:08x}".lower()
-        out[luid_key] = name
+        out.append(
+            {
+                "name": str(item.get("Name") or "").strip(),
+                "pnp_device_id": str(item.get("PNPDeviceID") or "").strip(),
+                "adapter_ram": item.get("AdapterRAM"),
+            }
+        )
     return out
 
 
@@ -409,6 +636,8 @@ def _parse_typeperf_csv(
             pid_util_cols_by_luid: dict[str, list[int]] = {}
             util_cols_by_luid_type: dict[tuple[str, str], list[int]] = {}
             pid_util_cols_by_luid_type: dict[tuple[str, str], list[int]] = {}
+            ded_cols_by_luid: dict[str, list[int]] = {}
+            shr_cols_by_luid: dict[str, list[int]] = {}
             for i in util_cols:
                 name = col_names[i]
                 m = engtype_re.search(name)
@@ -435,12 +664,30 @@ def _parse_typeperf_csv(
                         pid_util_cols_by_luid.setdefault(luid, []).append(i)
                         pid_util_cols_by_luid_type.setdefault((luid, typ), []).append(i)
 
+            for i in ded_cols:
+                name = col_names[i]
+                m = luid_re.search(name)
+                if not m:
+                    continue
+                luid = f"0x{m.group(1).lower()}_0x{m.group(2).lower()}"
+                ded_cols_by_luid.setdefault(luid, []).append(i)
+
+            for i in shr_cols:
+                name = col_names[i]
+                m = luid_re.search(name)
+                if not m:
+                    continue
+                luid = f"0x{m.group(1).lower()}_0x{m.group(2).lower()}"
+                shr_cols_by_luid.setdefault(luid, []).append(i)
+
             util_global_by_type_series: dict[str, list[float]] = {k: [] for k in util_cols_by_type}
             util_pid_by_type_series: dict[str, list[float]] = {k: [] for k in pid_util_cols_by_type}
             util_global_by_luid_series: dict[str, list[float]] = {k: [] for k in util_cols_by_luid}
             util_pid_by_luid_series: dict[str, list[float]] = {k: [] for k in pid_util_cols_by_luid}
             util_global_by_luid_type_series: dict[tuple[str, str], list[float]] = {k: [] for k in util_cols_by_luid_type}
             util_pid_by_luid_type_series: dict[tuple[str, str], list[float]] = {k: [] for k in pid_util_cols_by_luid_type}
+            mem_ded_by_luid_series: dict[str, list[float]] = {k: [] for k in ded_cols_by_luid}
+            mem_shr_by_luid_series: dict[str, list[float]] = {k: [] for k in shr_cols_by_luid}
 
             def _to_float(x: str) -> float | None:
                 try:
@@ -517,6 +764,18 @@ def _parse_typeperf_csv(
                     if vals:
                         mem_shr_max_series.append(float(max(vals)))
 
+                for luid, cols in ded_cols_by_luid.items():
+                    vals = [_to_float(row[i]) for i in cols if i < len(row)]
+                    vals = [v for v in vals if v is not None]
+                    if vals:
+                        mem_ded_by_luid_series[luid].append(float(max(vals)))
+
+                for luid, cols in shr_cols_by_luid.items():
+                    vals = [_to_float(row[i]) for i in cols if i < len(row)]
+                    vals = [v for v in vals if v is not None]
+                    if vals:
+                        mem_shr_by_luid_series[luid].append(float(max(vals)))
+
     except Exception as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
@@ -560,6 +819,8 @@ def _parse_typeperf_csv(
         "global_engine_util_pct_by_adapter_type_max": _by_adapter_type_stats(util_global_by_luid_type_series),
         "adapter_dedicated_usage_bytes_max": _series_stats(mem_ded_max_series),
         "adapter_shared_usage_bytes_max": _series_stats(mem_shr_max_series),
+        "adapter_dedicated_usage_bytes_by_adapter_max": _by_adapter_stats(mem_ded_by_luid_series),
+        "adapter_shared_usage_bytes_by_adapter_max": _by_adapter_stats(mem_shr_by_luid_series),
     }
 
 
@@ -1621,6 +1882,7 @@ def main(argv: list[str] | None = None) -> int:
         sampler.start()
         typeperf_proc = None
         typeperf_started_at = None
+        typeperf_target_pid_in_header = False
         try:
             delay = max(0.0, float(ns.typeperf_start_delay))
         except Exception:
@@ -1636,11 +1898,16 @@ def main(argv: list[str] | None = None) -> int:
                 time.sleep(min(0.1, max(0.0, deadline - time.perf_counter())))
         try:
             if proc.poll() is None:
-                typeperf_started_at = time.time()
-                typeperf_proc = _start_typeperf(paths.typeperf_csv, float(typeperf_interval_sec_effective))
+                typeperf_proc, typeperf_started_at, typeperf_target_pid_in_header = _start_typeperf_with_pid_retry(
+                    paths.typeperf_csv,
+                    interval_sec=float(typeperf_interval_sec_effective),
+                    target_pid=int(proc.pid),
+                    proc=proc,
+                )
         except Exception:
             typeperf_proc = None
             typeperf_started_at = None
+            typeperf_target_pid_in_header = False
 
         exit_code = None
         try:
@@ -1662,9 +1929,11 @@ def main(argv: list[str] | None = None) -> int:
         t_wall1 = time.time()
 
     display_adapters = _windows_display_adapter_luid_name_map()
+    video_controllers = _windows_video_controller_summary()
 
     summary = {
         "display_adapters": display_adapters,
+        "video_controllers": video_controllers,
         "cmd": cmd,
         "exit_code": int(exit_code) if exit_code is not None else None,
         "started_at_epoch_sec": float(t_wall0),
@@ -1672,6 +1941,7 @@ def main(argv: list[str] | None = None) -> int:
         "elapsed_sec": float(max(0.0, t_wall1 - t_wall0)),
         "typeperf_started_at_epoch_sec": float(typeperf_started_at) if typeperf_started_at is not None else None,
         "typeperf_interval_sec": float(typeperf_interval_sec_effective),
+        "typeperf_target_pid_in_header": bool(typeperf_target_pid_in_header),
         "paths": {
             "out_dir": str(paths.out_dir),
             "stdout_log": str(paths.stdout_log),
