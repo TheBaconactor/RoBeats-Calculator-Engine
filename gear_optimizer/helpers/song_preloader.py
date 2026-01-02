@@ -13,6 +13,7 @@ Architecture:
 
 import threading
 import queue
+import secrets
 from typing import Optional
 from dataclasses import dataclass
 import time
@@ -213,7 +214,6 @@ class SongPreloader:
             from ..pipeline.song_processor import read_song_file
             from ..solver.hit_simulation import (
                 simulate_perfect_hit_timestamps_with_great_candidates,
-                stable_seed_from_text,
             )
 
             song_data = read_song_file(req.file_path)
@@ -261,8 +261,7 @@ class SongPreloader:
                 great_mode = str(human_cfg.get("greatmode", "late")).strip().lower()
 
                 if sim_enabled and seed_in == 0:
-                    song_key = str(calc_song.get("metadata", {}).get("Song Name", "")) or str(req.song_name)
-                    seed_in = stable_seed_from_text(song_key)
+                    seed_in = secrets.randbits(32)
 
                 if sim_enabled:
                     sim_ts, sim_great_candidates, sim_dbg = simulate_perfect_hit_timestamps_with_great_candidates(

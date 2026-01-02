@@ -13,6 +13,7 @@ runner in `gear_optimizer/app.py`.
 from __future__ import annotations
 
 import concurrent.futures
+import secrets
 import time
 from collections import deque
 from dataclasses import dataclass
@@ -61,7 +62,6 @@ def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg) -> dict:
     if sim_enabled and calc_song.get("song_data", {}).get("timestamps") is not None:
         from gear_optimizer.solver.hit_simulation import (
             simulate_perfect_hit_timestamps_with_great_candidates,
-            stable_seed_from_text,
         )
 
         apply_to = cfg.get("HumanHitSim", "ApplyTo", fallback="FG").strip().upper()
@@ -77,8 +77,7 @@ def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg) -> dict:
         great_mode = cfg.get("HumanHitSim", "GreatMode", fallback="late").strip().lower()
 
         if sim_enabled and seed_in == 0:
-            song_key = str(calc_song.get("metadata", {}).get("Song Name", "")) or str(found_song_name)
-            seed_in = stable_seed_from_text(song_key)
+            seed_in = secrets.randbits(32)
 
         # NOTE: do not use `or` with NumPy arrays (truthiness is ambiguous).
         chart_ts = calc_song["song_data"].get("chart_timestamps")

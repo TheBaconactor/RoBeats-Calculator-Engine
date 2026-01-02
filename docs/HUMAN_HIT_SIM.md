@@ -4,7 +4,7 @@ RoBeats’ authoritative fever/score state is time-based: the server advances fe
 
 This repo’s optimizer normally assumes “perfectly on-time” hits (event time == chart time). For a small set of edge-case charts, tiny timing differences can flip fever boundaries by 1 note and cause mismatches.
 
-This feature generates a deterministic, synthetic “human” hit-time stream and routes ForceGreats modeling to use it.
+This feature generates a synthetic “human” hit-time stream (seeded RNG) and routes ForceGreats modeling to use it.
 
 ## What It Does
 
@@ -33,11 +33,11 @@ This feature generates a deterministic, synthetic “human” hit-time stream an
 [HumanHitSim]
 Enabled = False
 ApplyTo = FG        ; FG or ALL
-Seed = 0            ; 0 => deterministic per-song seed
+Seed = 0            ; 0 => random seed per song/run (the chosen seed is printed and stored in metadata)
 Distribution = uniform
 ```
 
-When enabled, the run prints a one-line summary:
+When enabled, the run prints a one-line summary (including the chosen seed):
 
 `[HumanHitSim] Enabled (ApplyTo=..., dist=..., seed=..., groups=..., forced_monotonic=...)`
 

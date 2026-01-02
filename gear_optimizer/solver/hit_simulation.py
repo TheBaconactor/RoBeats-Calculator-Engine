@@ -3,8 +3,8 @@ Synthetic human hit-time simulation for server-parity fever modeling.
 
 The real (server-authoritative) fever timeline depends on the *times* notes are
 validated at (integer milliseconds), not just the chart timestamps. For the
-optimizer, we can optionally generate a deterministic, human-like hit-time
-sequence by sampling offsets within the judgement windows.
+optimizer, we can optionally generate a seeded, human-like hit-time sequence by
+sampling offsets within the judgement windows.
 
 This module currently targets Perfect-only simulation (i.e., all notes hit as
 Perfect), with support for held tail notes having a wider window (x2), matching
@@ -13,7 +13,6 @@ the game code (GearStats.note_hit_mode_get_time_multiplier).
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 
 import numpy as np
@@ -23,23 +22,13 @@ import numpy as np
 class HumanHitSimConfig:
     enabled: bool
     apply_to: str  # "FG" | "ALL"
-    seed: int  # 0 => derive per-song
+    seed: int  # 0 => random each time HumanHitSim is applied
     distribution: str  # "uniform"
     perfect_lower_ms: int
     perfect_upper_ms: int
     held_tail_type: int
     held_tail_time_multiplier: int
     quantize_ms: bool
-
-
-def stable_seed_from_text(text: str) -> int:
-    """
-    Convert a string into a deterministic 32-bit seed.
-
-    Uses BLAKE2b to avoid Python's randomized hash() salt.
-    """
-    digest = hashlib.blake2b(text.encode("utf-8"), digest_size=4).digest()
-    return int.from_bytes(digest, byteorder="little", signed=False)
 
 
 def _floor_to_int_ms(timestamps_sec: np.ndarray) -> np.ndarray:
