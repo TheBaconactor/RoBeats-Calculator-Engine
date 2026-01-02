@@ -88,6 +88,19 @@ except Exception:
     FG_STAGE1_CFG_TILE = 8
 FG_STAGE1_CFG_TILE = max(1, min(int(FG_STAGE1_CFG_TILE), 128))
 
+# Per-section forced-count hard caps used by the CPU cap-grid path.
+# Must match `gear_optimizer.helpers.fg_utils.MAX_SECTION_CAPS`.
+_FG_SECTION_FORCED_CAPS = (50, 30, 15, 10, 8, 6, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4)
+
+
+@ti.func
+def _fg_section_forced_cap(sec: ti.i32) -> ti.i32:
+    cap: ti.i32 = 4
+    for i in ti.static(range(len(_FG_SECTION_FORCED_CAPS))):
+        if sec == ti.i32(i):
+            cap = ti.i32(_FG_SECTION_FORCED_CAPS[i])
+    return cap
+
 
 # ============================================================================
 
@@ -812,6 +825,8 @@ def fg_stage1_kernel(
     is_s_fm: ti.i32,
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
+    song_slot: ti.i32,
+    pair_caps_from_timeline: ti.i32,
 ):
     """
     Stage 1: Find best cfg for each (genome, ftff) pair.
@@ -850,6 +865,12 @@ def fg_stage1_kernel(
         ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
         ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
         ff_factor: ti.f32 = kernels_helpers.lookup_ref_ff(ff_idx)
+
+        fever_acts: ti.i32 = 0
+        if pair_caps_from_timeline != 0:
+            fever_acts = ti.cast(kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx], ti.i32)
+            if fever_acts < 0:
+                fever_acts = 0
 
         non_fever_base_f: ti.f32 = non_fever_cas * ff_factor
         non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_base_f), ti.i32)
@@ -902,7 +923,14 @@ def fg_stage1_kernel(
                     if fp_target < 0:
                         fp_target = 0
                     if sec < FG_MAX_SECTIONS:
-                        pair_cap_forced: ti.i32 = fg_pair_caps[ft_idx, ff_idx, sec]
+                        pair_cap_forced: ti.i32 = 0
+                        if pair_caps_from_timeline != 0:
+                            if sec < fever_acts:
+                                pair_cap_forced = _fg_section_forced_cap(sec)
+                            else:
+                                pair_cap_forced = 0
+                        else:
+                            pair_cap_forced = fg_pair_caps[ft_idx, ff_idx, sec]
                         if pair_cap_forced < 0:
                             pair_cap_forced = 0
                         # Convert forced-count cap to an FP-target cap:
@@ -1289,6 +1317,8 @@ def fg_stage1_flat_kernel_small3(
     is_s_fm: ti.i32,
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
+    song_slot: ti.i32,
+    pair_caps_from_timeline: ti.i32,
 ):
     """
     Stage 1 (Vulkan): optimized local state for n_sections<=3.
@@ -1332,6 +1362,12 @@ def fg_stage1_flat_kernel_small3(
         ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
         ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
         ff_factor: ti.f32 = kernels_helpers.lookup_ref_ff(ff_idx)
+
+        fever_acts: ti.i32 = 0
+        if pair_caps_from_timeline != 0:
+            fever_acts = ti.cast(kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx], ti.i32)
+            if fever_acts < 0:
+                fever_acts = 0
 
         non_fever_base_f: ti.f32 = non_fever_cas * ff_factor
         non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_base_f), ti.i32)
@@ -1389,7 +1425,14 @@ def fg_stage1_flat_kernel_small3(
 
                     # Clamp by per-pair dynamic cap (stored as forced-count caps)
                     if sec < FG_MAX_SECTIONS:
-                        pair_cap_forced: ti.i32 = fg_pair_caps[ft_idx, ff_idx, sec]
+                        pair_cap_forced: ti.i32 = 0
+                        if pair_caps_from_timeline != 0:
+                            if sec < fever_acts:
+                                pair_cap_forced = _fg_section_forced_cap(sec)
+                            else:
+                                pair_cap_forced = 0
+                        else:
+                            pair_cap_forced = fg_pair_caps[ft_idx, ff_idx, sec]
                         if pair_cap_forced < 0:
                             pair_cap_forced = 0
                         notes_with_cap = ti.ceil(non_fever_base_f + ti.cast(pair_cap_forced, ti.f32) * 0.5)
@@ -1584,6 +1627,8 @@ def fg_stage1_flat_kernel(
     is_s_fm: ti.i32,
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
+    song_slot: ti.i32,
+    pair_caps_from_timeline: ti.i32,
 ):
     """
     GPU-friendly Stage 1: One thread per (work_item, cfg-tile) pair.
@@ -1631,6 +1676,12 @@ def fg_stage1_flat_kernel(
         ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
         ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
         ff_factor: ti.f32 = kernels_helpers.lookup_ref_ff(ff_idx)
+
+        fever_acts: ti.i32 = 0
+        if pair_caps_from_timeline != 0:
+            fever_acts = ti.cast(kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx], ti.i32)
+            if fever_acts < 0:
+                fever_acts = 0
 
         non_fever_base_f: ti.f32 = non_fever_cas * ff_factor
         non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_base_f), ti.i32)
@@ -1689,7 +1740,14 @@ def fg_stage1_flat_kernel(
 
                     # Clamp by per-pair dynamic cap (stored as forced-count caps)
                     if sec < FG_MAX_SECTIONS:
-                        pair_cap_forced: ti.i32 = fg_pair_caps[ft_idx, ff_idx, sec]
+                        pair_cap_forced: ti.i32 = 0
+                        if pair_caps_from_timeline != 0:
+                            if sec < fever_acts:
+                                pair_cap_forced = _fg_section_forced_cap(sec)
+                            else:
+                                pair_cap_forced = 0
+                        else:
+                            pair_cap_forced = fg_pair_caps[ft_idx, ff_idx, sec]
                         if pair_cap_forced < 0:
                             pair_cap_forced = 0
                         notes_with_cap = ti.ceil(non_fever_base_f + ti.cast(pair_cap_forced, ti.f32) * 0.5)

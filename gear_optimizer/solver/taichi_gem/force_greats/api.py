@@ -676,6 +676,8 @@ def _solve_force_greats_finder_gpu_impl(
     total_budget: int = 90,
     gem_scale_fever: int = 3,
     pair_caps_grid: np.ndarray | None = None,
+    pair_caps_from_timeline: bool = False,
+    song_slot: int = 0,
     cfg_chunk: int | None = None,
     return_raw: bool = False,
     accumulate_global: bool = False,
@@ -889,7 +891,14 @@ def _solve_force_greats_finder_gpu_impl(
     # Pair caps (once per call). The flat kernel always clamps by fg_pair_caps,
     # so we must ensure it is initialized even when the caller does not supply
     # a caps grid.
-    _ensure_pair_caps_uploaded(pair_caps_grid)
+    pair_caps_from_timeline = bool(pair_caps_from_timeline) and (pair_caps_grid is None)
+    song_slot = int(song_slot)
+    if pair_caps_from_timeline:
+        # GPU-resident caps: derive forced-count caps from the already-computed timeline grid.
+        # This avoids CPU-side (161,161,16) cap-grid construction and a host->device upload.
+        pass
+    else:
+        _ensure_pair_caps_uploaded(pair_caps_grid)
 
     # Upload configs in chunks and run Stage 1 FLAT kernel
     n_cfg_total = int(len(fg_configs))
@@ -1108,6 +1117,8 @@ def _solve_force_greats_finder_gpu_impl(
                 int(is_s_fm),
                 int(is_p_ov),
                 int(is_s_ov),
+                int(song_slot),
+                int(1 if pair_caps_from_timeline else 0),
             )
         else:
             # FLATTENED kernel (GPU-friendly: one thread per (work_item, cfg_tile)).
@@ -1136,6 +1147,8 @@ def _solve_force_greats_finder_gpu_impl(
                     int(is_s_fm),
                     int(is_p_ov),
                     int(is_s_ov),
+                    int(song_slot),
+                    int(1 if pair_caps_from_timeline else 0),
                 )
             else:
                 fg_kernels.fg_stage1_flat_kernel(
@@ -1161,6 +1174,8 @@ def _solve_force_greats_finder_gpu_impl(
                     int(is_s_fm),
                     int(is_p_ov),
                     int(is_s_ov),
+                    int(song_slot),
+                    int(1 if pair_caps_from_timeline else 0),
                 )
         # Optional per-chunk sync for TDR-prone systems (disabled by default)
         if _SYNC_PER_CHUNK:
@@ -1407,6 +1422,8 @@ def solve_force_greats_finder_gpu(*args, **kwargs) -> list[dict[str, Any]] | dic
                 total_budget=int(kwargs.get("total_budget", 90)),
                 gem_scale_fever=int(kwargs.get("gem_scale_fever", 3)),
                 pair_caps_grid=kwargs.get("pair_caps_grid"),
+                pair_caps_from_timeline=bool(kwargs.get("pair_caps_from_timeline", False)),
+                song_slot=int(kwargs.get("song_slot", 0) or 0),
                 cfg_chunk=kwargs.get("cfg_chunk"),
                 return_raw=bool(kwargs.get("return_raw", False)),
                 accumulate_global=bool(kwargs.get("accumulate_global", False)),
@@ -1447,6 +1464,8 @@ def solve_force_greats_finder_gpu_tasks(
     total_budget: int = 90,
     gem_scale_fever: int = 3,
     pair_caps_grid: np.ndarray | None = None,
+    pair_caps_from_timeline: bool = False,
+    song_slot: int = 0,
     cfg_chunk: int | None = None,
     base_cfg_offset: int = 0,
     accumulate_global: bool = True,
@@ -1575,6 +1594,8 @@ def solve_force_greats_finder_gpu_tasks(
             total_budget=int(total_budget),
             gem_scale_fever=int(gem_scale_fever),
             pair_caps_grid=pair_caps_grid,
+            pair_caps_from_timeline=bool(pair_caps_from_timeline),
+            song_slot=int(song_slot),
             cfg_chunk=cfg_chunk,
             return_raw=True,
             accumulate_global=True,

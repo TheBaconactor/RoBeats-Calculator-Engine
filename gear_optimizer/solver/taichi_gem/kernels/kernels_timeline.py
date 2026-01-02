@@ -92,6 +92,8 @@ def compute_timeline_grid_kernel(
 
         current_note = 0
         fever_section = 0
+        fever_activations: ti.i32 = 0
+        last_fever_end_idx: ti.i32 = 0
 
         # Simulate fever timeline
         while current_note < total_notes:
@@ -108,6 +110,7 @@ def compute_timeline_grid_kernel(
 
             if current_note > 0:
                 # Fever activates
+                fever_activations += 1
                 start_time = kernels_helpers.song_timestamps[current_note]
                 end_time = start_time + real_fever_time
 
@@ -127,6 +130,7 @@ def compute_timeline_grid_kernel(
                     elif note_i < MAX_HEAD:
                         m3 |= ti.u32(1) << ti.u32(note_i - 96)
 
+                last_fever_end_idx = fever_end_idx
                 current_note = fever_end_idx
             else:
                 break
@@ -179,6 +183,8 @@ def compute_timeline_grid_kernel(
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1] = m1
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2] = m2
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3] = m3
+        kernels_helpers.grid_gap[song_slot, ft_idx, ff_idx] = ti.cast(total_notes - last_fever_end_idx, ti.i16)
+        kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx] = ti.cast(fever_activations, ti.i8)
 
         # Also write unpacked mask for compatibility
         for i in range(MAX_HEAD):

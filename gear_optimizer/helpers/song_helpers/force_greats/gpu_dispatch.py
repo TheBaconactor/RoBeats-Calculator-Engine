@@ -280,6 +280,8 @@ def process_force_greats_gpu_finder(
             total_budget=TOTAL_GEM_BUDGET,
             gem_scale_fever=GEM_SCALE_FEVER,
             pair_caps_grid=pair_caps_grid,
+            pair_caps_from_timeline=bool(pair_caps_from_timeline),
+            song_slot=int(song_slot),
             return_raw=True,
             accumulate_global=True,
             fg_tasks=batch,
@@ -414,73 +416,83 @@ def process_force_greats_gpu_finder(
     if perf:
         t_collect_sec = time.perf_counter() - _t_collect0
 
-    # Precompute gap and fever_activations ONCE per song
-    # Use a representative middle point (80, 80) - typical gem allocation
-    song_gap = None
-    song_fever_activations = None
+    # Pair-caps (161x161x16):
+    # Prefer a GPU-resident derivation from the already-computed timeline grid to avoid
+    # CPU-side cap-grid construction and the host->device upload (major GPU-queue starvation source).
+    pair_caps_grid = None
+    pair_caps_from_timeline = False
+    song_slot = 0
+
     try:
-        from ....solver.fever_timeline import get_song_timeline_grid
-        from ....helpers.fg_utils import vectorized_calculate_section_caps_grid
+        if isinstance(calc_song, dict):
+            song_slot = int(calc_song.get("_gpu_song_slot", 0) or 0)
+        else:
+            song_slot = 0
+    except Exception:
+        song_slot = 0
+    if song_slot < 0:
+        song_slot = 0
 
-        # Cache the expensive pair-caps grid per song. `process_force_greats_gpu_finder`
-        # may be invoked multiple times per song (boosters / reprocessing), and this
-        # precompute can otherwise become a major CPU-side gap that leaves the GPU idle.
-        song_data_cache = calc_song.get("song_data", {}) if isinstance(calc_song, dict) else {}
+    caps_mode = str(os.environ.get("FG_PAIR_CAPS_MODE", "timeline") or "").strip().lower()
+    if caps_mode in {"timeline", "gpu", "1", "true", "yes", "on", ""}:
+        pair_caps_from_timeline = True
+    elif caps_mode in {"none", "off", "0", "false", "no"}:
+        pair_caps_from_timeline = False
+        pair_caps_grid = None  # unlimited caps
+    elif caps_mode in {"cpu"}:
+        pair_caps_from_timeline = False
+    else:
+        pair_caps_from_timeline = True
 
-        cached_pair_caps = None
-        cached_max_per_section = None
+    if pair_caps_from_timeline:
         try:
-            cached_pair_caps = song_data_cache.get("fg_pair_caps_grid")
-            cached_max_per_section = int(song_data_cache.get("fg_pair_caps_grid_max_per_section", 0) or 0)
-        except Exception:
+            if gpu_client is not None:
+                gpu_client.submit_precompute_timeline(
+                    calc_song=calc_song,
+                    ref_arrays=ref_arrays,
+                    song_slot=int(song_slot),
+                ).future.result()
+            else:
+                from ....solver.taichi_gem.api.timeline import precompute_timeline_gpu
+
+                precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
+        except Exception as e:
+            print(f"[FG] Timeline precompute for pair-caps FAILED: {type(e).__name__}: {e}")
+            pair_caps_from_timeline = False
+
+    if (not pair_caps_from_timeline) and pair_caps_grid is None and caps_mode not in {"none", "off", "0", "false", "no"}:
+        # CPU fallback (rare): build the cap grid and cache it on the song payload.
+        try:
+            from ....solver.fever_timeline import get_song_timeline_grid
+            from ....helpers.fg_utils import vectorized_calculate_section_caps_grid
+
+            song_data_cache = calc_song.get("song_data", {}) if isinstance(calc_song, dict) else {}
             cached_pair_caps = None
             cached_max_per_section = 0
-
-        if isinstance(cached_pair_caps, np.ndarray) and cached_pair_caps.ndim == 3 and cached_max_per_section >= 100:
-            pair_caps_grid = cached_pair_caps
-            grid = None
-        else:
-            grid = get_song_timeline_grid(calc_song, ref_arrays)
-
-        # Use conservative estimates for search space bounds:
-        # 1. Maximize gap (Low FT, High FF) -> Index 0, TOTAL_ROWS
-        # Low FT (short fevers) + High FF (fast fill) = Fevers finish earliest -> Max Gap
-        # This ensures we find opportunities even if they only exist at high stats.
-        # Note: Previous (0,0) was flawed (Low FF pushes fevers late -> small gap).
-        _, _, _, acts_max, last_fever_end_early = grid.get_timeline(0, TOTAL_ROWS)
-
-        song_gap = max(0, grid.total_notes - last_fever_end_early)
-        song_fever_activations = acts_max
-
-        print(f"[FG] Search bounds (at 0,{TOTAL_ROWS}) -> Gap: {song_gap}, Activations: {song_fever_activations}")
-
-        if grid is not None:
-            # VECTORIZED: Precompute pair_caps_grid using NumPy (~100x faster)
-            # Uses the precomputed gap/activations arrays from the grid
-            _t_grid0 = time.perf_counter() if perf else 0.0
-
-            gpu_arrays = grid.to_gpu_arrays_minimal()
-            gap_grid = gpu_arrays["gap"]  # (161, 161) int32
-            acts_grid = gpu_arrays["fever_activations"]  # (161, 161) int32
-
-            # Vectorized computation - replaces 26K loop with NumPy broadcasting
-            pair_caps_grid = vectorized_calculate_section_caps_grid(gap_grid, acts_grid, max_per_section=100)
-
-            # Store for reuse within the same song.
             try:
-                song_data_cache["fg_pair_caps_grid"] = pair_caps_grid
-                song_data_cache["fg_pair_caps_grid_max_per_section"] = 100
+                cached_pair_caps = song_data_cache.get("fg_pair_caps_grid")
+                cached_max_per_section = int(song_data_cache.get("fg_pair_caps_grid_max_per_section", 0) or 0)
             except Exception:
-                pass
+                cached_pair_caps = None
+                cached_max_per_section = 0
 
-            if perf:
-                print(
-                    f"[PERF] FG Pair Caps Grid precompute (VECTORIZED): {(time.perf_counter() - _t_grid0) * 1000:.1f}ms"
-                )
-    except Exception as e:
-        print(f"[FG] Gap/Grid precomputation FAILED: {type(e).__name__}: {e}")
-        # Fallback to permissive caps (50) to avoid 0-clamping on GPU
-        pair_caps_grid = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1, 16), 50, dtype=np.int32)
+            if isinstance(cached_pair_caps, np.ndarray) and cached_pair_caps.ndim == 3 and cached_max_per_section >= 100:
+                pair_caps_grid = cached_pair_caps
+            else:
+                grid = get_song_timeline_grid(calc_song, ref_arrays)
+                gpu_arrays = grid.to_gpu_arrays_minimal()
+                gap_grid = gpu_arrays["gap"]  # (161, 161) int32
+                acts_grid = gpu_arrays["fever_activations"]  # (161, 161) int32
+                pair_caps_grid = vectorized_calculate_section_caps_grid(gap_grid, acts_grid, max_per_section=100)
+                try:
+                    song_data_cache["fg_pair_caps_grid"] = pair_caps_grid
+                    song_data_cache["fg_pair_caps_grid_max_per_section"] = 100
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[FG] CPU pair-caps precompute FAILED: {type(e).__name__}: {e}")
+            # Fallback to permissive caps (50) to avoid 0-clamping on GPU.
+            pair_caps_grid = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1, 16), 50, dtype=np.int32)
 
     # Generate SMART configs using Analytic Breakpoint Pruning
     # This scans the grid to find only the counts that fundamentally change fever coverage.
@@ -545,7 +557,7 @@ def process_force_greats_gpu_finder(
             group_counts_list = collect_analytical_breakpoints(fg_scorer, n_sections)
 
             if not group_counts_list:
-                group_counts_list = [tuple([0] * song_fever_activations)]
+                group_counts_list = [tuple([0] * int(n_sections))]
 
             # Already sliced to n_sections by collect_analytical_breakpoints
             # Just deduplicate and sort
@@ -840,6 +852,8 @@ def process_force_greats_gpu_finder(
                                 total_budget=TOTAL_GEM_BUDGET,
                                 gem_scale_fever=GEM_SCALE_FEVER,
                                 pair_caps_grid=pair_caps_grid,
+                                pair_caps_from_timeline=bool(pair_caps_from_timeline),
+                                song_slot=int(song_slot),
                                 return_raw=True,
                                 accumulate_global=True,
                                 base_cfg_offset=group_cfg_offset,
@@ -979,6 +993,8 @@ def process_force_greats_gpu_finder(
                                 total_budget=TOTAL_GEM_BUDGET,
                                 gem_scale_fever=GEM_SCALE_FEVER,
                                 pair_caps_grid=pair_caps_grid,
+                                pair_caps_from_timeline=bool(pair_caps_from_timeline),
+                                song_slot=int(song_slot),
                                 return_raw=True,  # Return numpy arrays, not list[dict]
                                 accumulate_global=True,
                             )
@@ -1017,6 +1033,8 @@ def process_force_greats_gpu_finder(
                         total_budget=TOTAL_GEM_BUDGET,
                         gem_scale_fever=GEM_SCALE_FEVER,
                         pair_caps_grid=pair_caps_grid,
+                        pair_caps_from_timeline=bool(pair_caps_from_timeline),
+                        song_slot=int(song_slot),
                         return_raw=True,  # Return numpy arrays, not list[dict]
                     )
                 if perf:

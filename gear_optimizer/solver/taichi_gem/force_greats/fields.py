@@ -429,6 +429,8 @@ def warmup_kernels() -> None:
             0,
             0,
             0,  # color flags
+            0,  # song_slot
+            0,  # pair_caps_from_timeline
         )
     else:
         fg_kernels.fg_stage1_flat_kernel(
@@ -454,6 +456,8 @@ def warmup_kernels() -> None:
             0,
             0,
             0,  # color flags
+            0,  # song_slot
+            0,  # pair_caps_from_timeline
         )
 
     # Warmup stage2 reduction kernel
@@ -481,5 +485,13 @@ def ensure_ready_with_warmup() -> None:
     This is the preferred initialization entry point for FG processing
     to avoid first-call JIT latency.
     """
+    # FG Stage 1 kernels can reference shared `taichi_gem.kernels_helpers` grid fields
+    # (e.g., timeline-derived pair caps), so ensure the base gem fields are allocated/bound first.
+    try:
+        from .. import api as gem_api
+
+        gem_api.ensure_ready()
+    except Exception:
+        pass
     ensure_fields_allocated()
     warmup_kernels()

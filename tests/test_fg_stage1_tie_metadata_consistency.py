@@ -107,6 +107,8 @@ def test_fg_stage1_packed_and_metadata_stay_consistent_on_cfg_tie():
         is_s_fm=0,
         is_p_ov=1,
         is_s_ov=0,
+        song_slot=0,
+        pair_caps_from_timeline=0,
     )
 
     # Process higher global cfg idx first, then lower one (tie-break winner).
