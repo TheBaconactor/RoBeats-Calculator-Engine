@@ -296,9 +296,20 @@ def process_song_task(args):
 
             calc_song = {
                 "metadata": song_data["song_details"],
-                "song_data": {"timestamps": song_timestamps_np, "note_types": song_note_types_np},
+                "song_data": {
+                    "timestamps": song_timestamps_np,
+                    "chart_timestamps": song_timestamps_np,
+                    "note_types": song_note_types_np,
+                },
             }
             stage_timing["cpu_read_sec"] = time.perf_counter() - _t_read0
+        try:
+            # Ensure chart_timestamps is always available for "HumanHitSim OFF" comparisons.
+            song_data = calc_song.get("song_data", {}) or {}
+            if "chart_timestamps" not in song_data and song_data.get("timestamps") is not None:
+                song_data["chart_timestamps"] = np.asarray(song_data.get("timestamps"), dtype=np.float64)
+        except Exception:
+            pass
 
         # ------------------------------------------------------------------
         # Optional: Synthetic human hit-time simulation (Perfect-only).
@@ -328,44 +339,50 @@ def process_song_task(args):
             dist = cfg.get("HumanHitSim", "Distribution", fallback="uniform").strip().lower()
             great_mode = cfg.get("HumanHitSim", "GreatMode", fallback="late").strip().lower()
 
-            # Default per-song deterministic seed when unset.
-            if seed_in == 0:
-                song_key = str(calc_song.get("metadata", {}).get("Song Name", "")) or str(found_song_name)
-                seed_in = stable_seed_from_text(song_key)
+            if sim_enabled:
+                # Default per-song deterministic seed when unset.
+                if seed_in == 0:
+                    song_key = str(calc_song.get("metadata", {}).get("Song Name", "")) or str(found_song_name)
+                    seed_in = stable_seed_from_text(song_key)
 
-            base_ts = np.asarray(calc_song["song_data"].get("timestamps", ()), dtype=np.float64)
-            base_types = np.asarray(calc_song["song_data"].get("note_types", ()), dtype=np.int16)
-            if base_types.shape[0] != base_ts.shape[0]:
-                base_types = np.ones(base_ts.shape[0], dtype=np.int16)
+                # NOTE: do not use `or` with NumPy arrays (truthiness is ambiguous).
+                song_data = calc_song.get("song_data", {}) or {}
+                chart_ts = song_data.get("chart_timestamps")
+                if chart_ts is None:
+                    chart_ts = song_data.get("timestamps", ())
+                base_ts = np.asarray(chart_ts, dtype=np.float64)
+                base_types = np.asarray(calc_song["song_data"].get("note_types", ()), dtype=np.int16)
+                if base_types.shape[0] != base_ts.shape[0]:
+                    base_types = np.ones(base_ts.shape[0], dtype=np.int16)
 
-            _t_sim0 = time.perf_counter()
-            sim_ts, sim_great_candidates, sim_dbg = simulate_perfect_hit_timestamps_with_great_candidates(
-                base_ts,
-                base_types,
-                seed=seed_in,
-                distribution=dist,
-                great_mode=great_mode,
-            )
-            stage_timing["cpu_human_hit_sim_sec"] = time.perf_counter() - _t_sim0
-
-            # Store for downstream FG scorers; only override full timestamps when requested.
-            calc_song["song_data"]["fg_timestamps"] = np.asarray(sim_ts, dtype=np.float64)
-            calc_song["song_data"]["fg_great_candidate_timestamps"] = np.asarray(sim_great_candidates, dtype=np.float64)
-            calc_song["metadata"]["HumanHitSimSeed"] = int(seed_in)
-            calc_song["metadata"]["HumanHitSimApplyTo"] = apply_to
-            calc_song["metadata"]["HumanHitSimDistribution"] = dist
-            calc_song["metadata"]["HumanHitSimGreatMode"] = great_mode
-            calc_song["metadata"]["HumanHitSimDebug"] = sim_dbg
-            calc_song["metadata"]["HumanHitSimApplied"] = True
-            try:
-                print(
-                    f"[HumanHitSim] Enabled (ApplyTo={apply_to}, dist={dist}, seed={seed_in}, "
-                    f"groups={sim_dbg.get('groups')}, forced_monotonic={sim_dbg.get('forced_monotonic')})"
+                _t_sim0 = time.perf_counter()
+                sim_ts, sim_great_candidates, sim_dbg = simulate_perfect_hit_timestamps_with_great_candidates(
+                    base_ts,
+                    base_types,
+                    seed=seed_in,
+                    distribution=dist,
+                    great_mode=great_mode,
                 )
-            except Exception:
-                pass
-            if apply_to == "ALL":
-                calc_song["song_data"]["timestamps"] = np.asarray(sim_ts, dtype=np.float64)
+                stage_timing["cpu_human_hit_sim_sec"] = time.perf_counter() - _t_sim0
+
+                # Store for downstream FG scorers; only override full timestamps when requested.
+                calc_song["song_data"]["fg_timestamps"] = np.asarray(sim_ts, dtype=np.float64)
+                calc_song["song_data"]["fg_great_candidate_timestamps"] = np.asarray(sim_great_candidates, dtype=np.float64)
+                calc_song["metadata"]["HumanHitSimSeed"] = int(seed_in)
+                calc_song["metadata"]["HumanHitSimApplyTo"] = apply_to
+                calc_song["metadata"]["HumanHitSimDistribution"] = dist
+                calc_song["metadata"]["HumanHitSimGreatMode"] = great_mode
+                calc_song["metadata"]["HumanHitSimDebug"] = sim_dbg
+                calc_song["metadata"]["HumanHitSimApplied"] = True
+                try:
+                    print(
+                        f"[HumanHitSim] Enabled (ApplyTo={apply_to}, dist={dist}, seed={seed_in}, "
+                        f"groups={sim_dbg.get('groups')}, forced_monotonic={sim_dbg.get('forced_monotonic')})"
+                    )
+                except Exception:
+                    pass
+                if apply_to == "ALL":
+                    calc_song["song_data"]["timestamps"] = np.asarray(sim_ts, dtype=np.float64)
         meta_primary_color = calc_song["metadata"].get("Primary Color", "")
         meta_secondary_color = calc_song["metadata"].get("Secondary Color", "")
 

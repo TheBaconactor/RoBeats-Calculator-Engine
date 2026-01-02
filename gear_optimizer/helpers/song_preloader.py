@@ -238,6 +238,7 @@ class SongPreloader:
                 "metadata": song_data.get("song_details", {}) or {},
                 "song_data": {
                     "timestamps": timestamps_np,
+                    "chart_timestamps": timestamps_np,
                     "note_types": note_types_np,
                 },
             }
@@ -259,30 +260,31 @@ class SongPreloader:
                 dist = str(human_cfg.get("distribution", "uniform")).strip().lower()
                 great_mode = str(human_cfg.get("greatmode", "late")).strip().lower()
 
-                if seed_in == 0:
+                if sim_enabled and seed_in == 0:
                     song_key = str(calc_song.get("metadata", {}).get("Song Name", "")) or str(req.song_name)
                     seed_in = stable_seed_from_text(song_key)
 
-                sim_ts, sim_great_candidates, sim_dbg = simulate_perfect_hit_timestamps_with_great_candidates(
-                    timestamps_np,
-                    note_types_np,
-                    seed=seed_in,
-                    distribution=dist,
-                    great_mode=great_mode,
-                )
+                if sim_enabled:
+                    sim_ts, sim_great_candidates, sim_dbg = simulate_perfect_hit_timestamps_with_great_candidates(
+                        timestamps_np,
+                        note_types_np,
+                        seed=seed_in,
+                        distribution=dist,
+                        great_mode=great_mode,
+                    )
 
-                calc_song["song_data"]["fg_timestamps"] = np.asarray(sim_ts, dtype=np.float64)
-                calc_song["song_data"]["fg_great_candidate_timestamps"] = np.asarray(
-                    sim_great_candidates, dtype=np.float64
-                )
-                calc_song["metadata"]["HumanHitSimSeed"] = int(seed_in)
-                calc_song["metadata"]["HumanHitSimApplyTo"] = apply_to
-                calc_song["metadata"]["HumanHitSimDistribution"] = dist
-                calc_song["metadata"]["HumanHitSimGreatMode"] = great_mode
-                calc_song["metadata"]["HumanHitSimDebug"] = sim_dbg
-                calc_song["metadata"]["HumanHitSimApplied"] = True
-                if apply_to == "ALL":
-                    calc_song["song_data"]["timestamps"] = np.asarray(sim_ts, dtype=np.float64)
+                    calc_song["song_data"]["fg_timestamps"] = np.asarray(sim_ts, dtype=np.float64)
+                    calc_song["song_data"]["fg_great_candidate_timestamps"] = np.asarray(
+                        sim_great_candidates, dtype=np.float64
+                    )
+                    calc_song["metadata"]["HumanHitSimSeed"] = int(seed_in)
+                    calc_song["metadata"]["HumanHitSimApplyTo"] = apply_to
+                    calc_song["metadata"]["HumanHitSimDistribution"] = dist
+                    calc_song["metadata"]["HumanHitSimGreatMode"] = great_mode
+                    calc_song["metadata"]["HumanHitSimDebug"] = sim_dbg
+                    calc_song["metadata"]["HumanHitSimApplied"] = True
+                    if apply_to == "ALL":
+                        calc_song["song_data"]["timestamps"] = np.asarray(sim_ts, dtype=np.float64)
 
             # Build base stats from config
             base_stats_fixed = build_base_stats_from_config(req.cfg_dict)

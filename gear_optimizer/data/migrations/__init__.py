@@ -11,7 +11,7 @@ from typing import Callable, Dict
 
 Migration = Callable[[sqlite3.Connection], None]
 
-LATEST_SCHEMA_VERSION = 3
+LATEST_SCHEMA_VERSION = 5
 
 
 def _migration_1_init_schema(conn: sqlite3.Connection) -> None:
@@ -95,10 +95,59 @@ def _migration_3_add_swing_json(conn: sqlite3.Connection) -> None:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN swing_json TEXT;")
 
 
+def _migration_4_add_pending_swing_jobs(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS pending_swing_jobs (
+            song_name TEXT PRIMARY KEY,
+            payload_json TEXT NOT NULL,
+            created_ts REAL,
+            updated_ts REAL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_pending_swing_jobs_updated
+            ON pending_swing_jobs (updated_ts DESC);
+        """
+    )
+
+
+def _migration_5_add_mock_swing_seed_columns(conn: sqlite3.Connection) -> None:
+    """
+    Replace the deprecated deferred SwingDetector job queue with song-level best-case metadata.
+
+    - Drops the unused `pending_swing_jobs` table (if present).
+    - Adds columns on `songs` to persist the best-case HumanHitSim seed selection derived from MockSwing.
+    """
+
+    def _has_column(table: str, column: str) -> bool:
+        try:
+            rows = conn.execute(f"PRAGMA table_info({table});").fetchall()
+            return any(r[1] == column for r in rows)
+        except Exception:
+            return False
+
+    conn.execute("DROP TABLE IF EXISTS pending_swing_jobs;")
+
+    # Best-case seed selection (used to drive HumanHitSim for future runs).
+    columns = [
+        ("mock_swing_best_mode", "TEXT"),
+        ("mock_swing_best_seed", "INTEGER"),
+        ("mock_swing_best_delta", "INTEGER"),
+        ("mock_swing_best_ff_stat", "INTEGER"),
+        ("mock_swing_best_ft_stat", "INTEGER"),
+        ("mock_swing_best_updated", "REAL"),
+    ]
+    for col, typ in columns:
+        if not _has_column("songs", col):
+            conn.execute(f"ALTER TABLE songs ADD COLUMN {col} {typ};")
+
+
 _MIGRATIONS: Dict[int, Migration] = {
     1: _migration_1_init_schema,
     2: _migration_2_add_pending_fg_jobs,
     3: _migration_3_add_swing_json,
+    4: _migration_4_add_pending_swing_jobs,
+    5: _migration_5_add_mock_swing_seed_columns,
 }
 
 

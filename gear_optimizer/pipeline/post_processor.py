@@ -429,7 +429,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         e for e in persisted if e.get("score", 0) > 0 and (e.get("gear") or e.get("minis"))
                     ]
                     if valid_entries:
-                        # Optional: SwingDetector post-pass (CPU-only; does not touch GPU).
+                        # Optional: SwingDetector post-pass (mock scoring, CPU-only).
                         try:
                             from gear_optimizer.solver.swing_detector import attach_swings_to_entries
 

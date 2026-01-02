@@ -46,7 +46,11 @@ def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg) -> dict:
 
     calc_song = {
         "metadata": song_data.get("song_details") or {},
-        "song_data": {"timestamps": song_timestamps_np, "note_types": song_note_types_np},
+        "song_data": {
+            "timestamps": song_timestamps_np,
+            "chart_timestamps": song_timestamps_np,
+            "note_types": song_note_types_np,
+        },
     }
 
     # Optional: HumanHitSim (match song_processor.py semantics).
@@ -72,33 +76,38 @@ def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg) -> dict:
         dist = cfg.get("HumanHitSim", "Distribution", fallback="uniform").strip().lower()
         great_mode = cfg.get("HumanHitSim", "GreatMode", fallback="late").strip().lower()
 
-        if seed_in == 0:
+        if sim_enabled and seed_in == 0:
             song_key = str(calc_song.get("metadata", {}).get("Song Name", "")) or str(found_song_name)
             seed_in = stable_seed_from_text(song_key)
 
-        base_ts = np.asarray(calc_song["song_data"].get("timestamps", ()), dtype=np.float64)
+        # NOTE: do not use `or` with NumPy arrays (truthiness is ambiguous).
+        chart_ts = calc_song["song_data"].get("chart_timestamps")
+        if chart_ts is None:
+            chart_ts = calc_song["song_data"].get("timestamps", ())
+        base_ts = np.asarray(chart_ts, dtype=np.float64)
         base_types = np.asarray(calc_song["song_data"].get("note_types", ()), dtype=np.int16)
         if base_types.shape[0] != base_ts.shape[0]:
             base_types = np.ones(base_ts.shape[0], dtype=np.int16)
 
-        sim_ts, sim_great_candidates, sim_dbg = simulate_perfect_hit_timestamps_with_great_candidates(
-            base_ts,
-            base_types,
-            seed=seed_in,
-            distribution=dist,
-            great_mode=great_mode,
-        )
+        if sim_enabled:
+            sim_ts, sim_great_candidates, sim_dbg = simulate_perfect_hit_timestamps_with_great_candidates(
+                base_ts,
+                base_types,
+                seed=seed_in,
+                distribution=dist,
+                great_mode=great_mode,
+            )
 
-        calc_song["song_data"]["fg_timestamps"] = np.asarray(sim_ts, dtype=np.float64)
-        calc_song["song_data"]["fg_great_candidate_timestamps"] = np.asarray(sim_great_candidates, dtype=np.float64)
-        calc_song["metadata"]["HumanHitSimSeed"] = int(seed_in)
-        calc_song["metadata"]["HumanHitSimApplyTo"] = apply_to
-        calc_song["metadata"]["HumanHitSimDistribution"] = dist
-        calc_song["metadata"]["HumanHitSimGreatMode"] = great_mode
-        calc_song["metadata"]["HumanHitSimDebug"] = sim_dbg
-        calc_song["metadata"]["HumanHitSimApplied"] = True
-        if apply_to == "ALL":
-            calc_song["song_data"]["timestamps"] = np.asarray(sim_ts, dtype=np.float64)
+            calc_song["song_data"]["fg_timestamps"] = np.asarray(sim_ts, dtype=np.float64)
+            calc_song["song_data"]["fg_great_candidate_timestamps"] = np.asarray(sim_great_candidates, dtype=np.float64)
+            calc_song["metadata"]["HumanHitSimSeed"] = int(seed_in)
+            calc_song["metadata"]["HumanHitSimApplyTo"] = apply_to
+            calc_song["metadata"]["HumanHitSimDistribution"] = dist
+            calc_song["metadata"]["HumanHitSimGreatMode"] = great_mode
+            calc_song["metadata"]["HumanHitSimDebug"] = sim_dbg
+            calc_song["metadata"]["HumanHitSimApplied"] = True
+            if apply_to == "ALL":
+                calc_song["song_data"]["timestamps"] = np.asarray(sim_ts, dtype=np.float64)
 
     return calc_song
 

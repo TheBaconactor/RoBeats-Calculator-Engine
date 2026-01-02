@@ -15,7 +15,9 @@ CREATE TABLE songs (
     name TEXT PRIMARY KEY,          -- Unique song name
     best_score INTEGER DEFAULT 0,   -- Best Base Score
     best_fg_score INTEGER DEFAULT 0,-- Best Force Greats Score
-    last_updated REAL               -- Timestamp of last update
+    last_updated REAL,              -- Timestamp of last update
+    -- NOTE: some DBs may contain deprecated `mock_swing_best_*` columns from an experimental build.
+    -- They are no longer used; MockSwing is stored per-loadout under `details_json.MockSwing`.
 );
 ```
 
@@ -24,6 +26,8 @@ Stores the primary leaderboard for normal gameplay. Contains **ALL** loadouts fo
 
 > [!NOTE]
 > This table may contain entries with invalid/empty Force Greats configs if they produced a high base score.
+>
+> `MockSwing` metadata (best-case seed/mode/delta) is stored inside `details_json.MockSwing`.
 
 ```sql
 CREATE TABLE loadouts (
@@ -35,7 +39,7 @@ CREATE TABLE loadouts (
     minis_json TEXT,                -- JSON array of mini names
     details_json TEXT,              -- JSON details (GemCounts, etc.)
     force_details_json TEXT,        -- JSON Force Greats config (May be NULL/Empty)
-    swing_json TEXT,                -- JSON array of non-zero score deltas from SwingDetector
+    swing_json TEXT,                -- JSON array of deduped positive deltas (>0) from MockSwing vs OFF baseline
     timestamp REAL,
     PRIMARY KEY (song_name, loadout_hash),
     FOREIGN KEY (song_name) REFERENCES songs(name)
@@ -58,7 +62,7 @@ CREATE TABLE fg_loadouts (
     minis_json TEXT,
     details_json TEXT,
     force_details_json TEXT,        -- JSON Force Greats config (GUARANTEED VALID)
-    swing_json TEXT,                -- JSON array of non-zero FG score deltas from SwingDetector
+    swing_json TEXT,                -- (reserved) JSON array of deltas (currently unused by MockSwing)
     timestamp REAL,
     PRIMARY KEY (song_name, loadout_hash),
     FOREIGN KEY (song_name) REFERENCES songs(name)
