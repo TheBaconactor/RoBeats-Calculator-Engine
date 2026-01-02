@@ -30,6 +30,7 @@ def process_force_greats_gpu_finder(
     computed = 0
 
     if names_list_fn is None:
+
         def names_list_fn(items):
             names = []
             for it in items or []:
@@ -48,7 +49,6 @@ def process_force_greats_gpu_finder(
     from ....solver.scoring import (
         _extract_base_stats,
         fg_baseline_params,
-        FG_CACHE,
     )
     from ....solver.taichi_gem_solver import solve_force_greats_finder_gpu
 
@@ -324,8 +324,6 @@ def process_force_greats_gpu_finder(
     t_genome_build_sec = 0.0
     t_result_apply_sec = 0.0
     n_gpu_calls = 0
-    fg_cache_hits = 0
-    fg_cache_misses = 0
     db_cached_reuse = 0
     no_eval_skips = 0
     gpu_call_shapes = []  # sample a few: (n_genomes, n_cfg, n_ftff, n_sections)
@@ -373,9 +371,7 @@ def process_force_greats_gpu_finder(
                 continue
             eval_data = {
                 "Stats": stats,
-                "Selected Element": det.get("SelectedElement")
-                or det.get("Selected Element")
-                or meta_primary_color,
+                "Selected Element": det.get("SelectedElement") or det.get("Selected Element") or meta_primary_color,
                 "FT": det.get("FT", 0),
                 "FF": det.get("FF", 0),
                 "GemCounts": det.get("GemCounts", {}),
@@ -456,9 +452,7 @@ def process_force_greats_gpu_finder(
         song_gap = max(0, grid.total_notes - last_fever_end_early)
         song_fever_activations = acts_max
 
-        print(
-            f"[FG] Search bounds (at 0,{TOTAL_ROWS}) -> Gap: {song_gap}, Activations: {song_fever_activations}"
-        )
+        print(f"[FG] Search bounds (at 0,{TOTAL_ROWS}) -> Gap: {song_gap}, Activations: {song_fever_activations}")
 
         if grid is not None:
             # VECTORIZED: Precompute pair_caps_grid using NumPy (~100x faster)
@@ -543,9 +537,7 @@ def process_force_greats_gpu_finder(
         # Create analytical scorer once per song (cached implicitly by calc_song)
         if "fg_scorer" not in locals():
             fg_scorer = create_scorer_from_calc_song(calc_song, ref_arrays)
-            print(
-                f"[FG] Created AnalyticalFGScorer: {fg_scorer.total_notes} notes, head_len={fg_scorer.head_len}"
-            )
+            print(f"[FG] Created AnalyticalFGScorer: {fg_scorer.total_notes} notes, head_len={fg_scorer.head_len}")
 
         counts_list = None
         if not per_pair_breakpoints:
@@ -796,13 +788,9 @@ def process_force_greats_gpu_finder(
                         logged_first = True
                         bps = group.get("section_breakpoints") or ()
                         if bps:
-                            print(
-                                f"[FG] Per-FT/FF Breakpoints (GPU accumulation): {len(ftff_pairs)} FT/FF pairs"
-                            )
+                            print(f"[FG] Per-FT/FF Breakpoints (GPU accumulation): {len(ftff_pairs)} FT/FF pairs")
                             for sec_idx, bp in enumerate(bps):
-                                print(
-                                    f"     Section {sec_idx + 1}: {list(bp)[:15]}{'...' if len(bp) > 15 else ''}"
-                                )
+                                print(f"     Section {sec_idx + 1}: {list(bp)[:15]}{'...' if len(bp) > 15 else ''}")
 
                     _t_gpu0 = time.perf_counter() if perf else 0.0
                     # Use accumulate_global=True to skip download, with base_cfg_offset for global indexing
@@ -859,9 +847,7 @@ def process_force_greats_gpu_finder(
                     if perf:
                         t_gpu_calls_sec += time.perf_counter() - _t_gpu0
                         if len(gpu_call_shapes) < 12:
-                            gpu_call_shapes.append(
-                                (n_pending, len(counts_list), len(group_pairs), int(n_sections))
-                            )
+                            gpu_call_shapes.append((n_pending, len(counts_list), len(group_pairs), int(n_sections)))
                     n_gpu_calls += 1
 
                 # Log merged status if we got a single batch (always log)
@@ -1307,7 +1293,6 @@ def process_force_greats_gpu_finder(
                 "[PERF] ForceGreatsFinder(GPU): "
                 f"collect={t_collect_sec:.3f}s cfg_build={t_cfg_build_sec:.3f}s "
                 f"gpu_calls={t_gpu_calls_sec:.3f}s n_gpu_calls={n_gpu_calls} "
-                f"FG_CACHE(hit={fg_cache_hits},miss={fg_cache_misses}) "
                 f"db_reuse={db_cached_reuse} no_eval_skips={no_eval_skips} "
                 f"groups={len(groups)} unique_sigs={unique_sig_count}"
             )
@@ -1324,7 +1309,6 @@ def process_force_greats_gpu_finder(
 
     # Always-on compact workload summary (helps correlate GPU spikes with workload size)
     print(
-        f"[ForceGreats] GPU complete: {len(fg_variants)} variants, "
-        f"{n_gpu_calls} GPU calls, {computed} genomes computed"
+        f"[ForceGreats] GPU complete: {len(fg_variants)} variants, {n_gpu_calls} GPU calls, {computed} genomes computed"
     )
     return fg_variants
