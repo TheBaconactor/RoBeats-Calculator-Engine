@@ -98,8 +98,31 @@ def process_force_greats_gpu_finder(
         return fg_download_global_best(int(n_genomes))
 
     def _submit_solve_force_greats_finder(*args, blocking: bool = True, **kwargs):
+        nonlocal timeline_precompute_queued
         if gpu_client is not None:
-            fut = gpu_client.submit_solve_force_greats_finder(*args, **kwargs).future
+            # Ensure the timeline grid for this song_slot is computed before the first FG solve
+            # when using GPU-resident pair caps. Serialize submit ordering to prevent cross-thread
+            # interleaving between the precompute and FG solve requests.
+            if kwargs.get("pair_caps_from_timeline") and not timeline_precompute_queued:
+                try:
+                    raw_slot = kwargs.get("song_slot", song_slot)
+                    slot = int(raw_slot) if raw_slot is not None else int(song_slot)
+                except Exception:
+                    slot = int(song_slot)
+                try:
+                    with gpu_client.submit_lock:
+                        gpu_client.submit_precompute_timeline(
+                            calc_song=calc_song,
+                            ref_arrays=ref_arrays,
+                            song_slot=int(slot),
+                        )
+                        timeline_precompute_queued = True
+                        fut = gpu_client.submit_solve_force_greats_finder(*args, **kwargs).future
+                except Exception:
+                    timeline_precompute_queued = True
+                    fut = gpu_client.submit_solve_force_greats_finder(*args, **kwargs).future
+            else:
+                fut = gpu_client.submit_solve_force_greats_finder(*args, **kwargs).future
             return fut.result() if blocking else fut
         return solve_force_greats_finder_gpu(*args, **kwargs)
 
@@ -239,6 +262,7 @@ def process_force_greats_gpu_finder(
             yield pairs[i : i + chunk_size]
 
     need_reset = False
+    timeline_precompute_queued = False
 
     def _flush_fg_tasks_batch(*, batch: list[dict] | None = None, download_after: bool = False):
         nonlocal fg_tasks_batch, need_reset
@@ -444,18 +468,13 @@ def process_force_greats_gpu_finder(
     else:
         pair_caps_from_timeline = True
 
-    if pair_caps_from_timeline:
+    if pair_caps_from_timeline and gpu_client is None:
+        # Direct (non-IPC) GPU path: ensure the timeline grid is computed synchronously on this thread
+        # before any FG kernels read grid_gap/grid_fever_activations.
         try:
-            if gpu_client is not None:
-                gpu_client.submit_precompute_timeline(
-                    calc_song=calc_song,
-                    ref_arrays=ref_arrays,
-                    song_slot=int(song_slot),
-                ).future.result()
-            else:
-                from ....solver.taichi_gem.api.timeline import precompute_timeline_gpu
+            from ....solver.taichi_gem.api.timeline import precompute_timeline_gpu
 
-                precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
+            precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
         except Exception as e:
             print(f"[FG] Timeline precompute for pair-caps FAILED: {type(e).__name__}: {e}")
             pair_caps_from_timeline = False
