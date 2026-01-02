@@ -37,7 +37,7 @@ from gear_optimizer.helpers.song_helpers.fg_combo_booster import (
 from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
 from gear_optimizer.helpers.song_helpers.loadout_builder import build_loadout_entries
 from gear_optimizer.helpers.song_helpers.song_config import setup_song_config
-from gear_optimizer.solver.genetic import _build_base_stats_array, decode_gpu_native_ga_runs_payload
+from gear_optimizer.solver.genetic import GA_POPULATION_SIZE, _build_base_stats_array, decode_gpu_native_ga_runs_payload
 from gear_optimizer.solver.gpu_executor import get_gpu_executor
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.item_registry import ItemRegistry
@@ -808,6 +808,25 @@ def run_native_inflight_song_pipeline(
             fg_drain_at_end = cfg0.getboolean("IterationEngine", "FG_DrainAtEnd", fallback=True)
     except Exception:
         fg_drain_at_end = True
+
+    # Configure GPU-native GA run buffers BEFORE the GPU executor initializes Taichi fields.
+    # The executor warms FG kernels on startup which triggers taichi_gem field allocation; if
+    # we don't size buffers up front, GA payload downloads become padded and require staging.
+    try:
+        from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+
+        ga_runs = 1
+        try:
+            from gear_optimizer.data.models import GASettings
+
+            settings = GASettings.from_cfg(cfg0) if cfg0 is not None else GASettings.from_cfg(None)
+            ga_runs = int(settings.multi_start)
+        except Exception:
+            ga_runs = 1
+
+        gpu_fields.configure_ga_run_buffers(max_runs=ga_runs, max_genomes=GA_POPULATION_SIZE)
+    except Exception:
+        pass
 
     gpu_executor = get_gpu_executor()
     gpu_executor.start(in_process=True)
