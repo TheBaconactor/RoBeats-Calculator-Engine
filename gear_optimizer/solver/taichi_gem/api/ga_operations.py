@@ -18,6 +18,9 @@ population lives on GPU, avoiding CPU-GPU transfers during evolution.
 
 from __future__ import annotations
 
+import os
+import time
+
 import numpy as np
 
 from .. import fields
@@ -1063,8 +1066,63 @@ def ga_download_runs_payload(*, n_runs: int, n_genomes: int, n_slots: int = 9) -
         )
 
     cols = 1 + n_slots + 7
-    out = fields.ga_runs_payload_packed.to_numpy()
-    return np.asarray(out[:n_runs, : n_genomes + 1, :cols], dtype=np.int32).copy()
+    n_rows = n_genomes + 1
+
+    perf = str(os.environ.get("PERF_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    t_total = time.perf_counter() if perf else 0.0
+
+    out = None
+    mode = "full"
+    copy_ms = 0.0
+
+    try:
+        full_shape = getattr(fields.ga_runs_payload_packed, "shape", None)
+        full_elems = int(full_shape[0]) * int(full_shape[1]) * int(full_shape[2]) if full_shape is not None else 0
+
+        staging_candidates = [
+            ("staging_16", fields.ga_runs_payload_download_staging_16),
+            ("staging_64", fields.ga_runs_payload_download_staging_64),
+            ("staging_128", fields.ga_runs_payload_download_staging_128),
+        ]
+        best = None
+        for name, fld in staging_candidates:
+            if fld is None:
+                continue
+            shape = getattr(fld, "shape", None)
+            if not shape or len(shape) < 3:
+                continue
+            if n_runs <= int(shape[0]) and n_rows <= int(shape[1]):
+                elems = int(shape[0]) * int(shape[1]) * int(shape[2])
+                if best is None or elems < best[0]:
+                    best = (elems, name, fld, shape)
+
+        if best is not None and full_elems > int(best[0]):
+            _, name, fld, shape = best
+            mode = str(name)
+            t_copy = time.perf_counter() if perf else 0.0
+            kernels.ga_copy_runs_payload_to_download_staging_kernel(fld, int(n_runs), int(n_genomes), int(n_slots))
+            copy_ms = (time.perf_counter() - t_copy) * 1000.0 if perf else 0.0
+            out = fld.to_numpy()
+    except Exception:
+        out = None
+
+    if out is None:
+        out = fields.ga_runs_payload_packed.to_numpy()
+
+    total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
+    if perf:
+        try:
+            shape = getattr(out, "shape", None)
+            elems = int(shape[0]) * int(shape[1]) * int(shape[2]) if shape is not None else 0
+            bytes_i32 = elems * 4
+        except Exception:
+            bytes_i32 = 0
+        print(
+            "[PERF][GADownloadRunsPayload] "
+            f"runs={n_runs} pop={n_genomes} mode={mode} copy={copy_ms:.1f}ms total={total_ms:.1f}ms bytes={bytes_i32}"
+        )
+
+    return np.asarray(out[:n_runs, :n_rows, :cols], dtype=np.int32).copy()
 
 
 # ============================================================================

@@ -10,6 +10,7 @@ from .global_best import ga_init_global_best_kernel, ga_update_global_best_kerne
 from .islands import ga_find_island_elites_kernel
 from .migration import ga_island_migration_kernel, ga_island_migration_runs_kernel
 from .payload import (
+    ga_copy_runs_payload_to_download_staging_kernel,
     ga_init_runs_best_kernel,
     ga_pack_and_store_run_payload_kernel,
     ga_pack_and_store_run_payload_segmented_kernel,
@@ -47,6 +48,7 @@ __all__ = [
     "ga_init_runs_best_kernel",
     "ga_update_runs_best_kernel",
     "ga_store_runs_payload_snapshot_segmented_kernel",
+    "ga_copy_runs_payload_to_download_staging_kernel",
     "ga_find_island_elites_kernel",
     "ga_find_best_combo_warmstart_kernel",
     "ga_island_migration_kernel",

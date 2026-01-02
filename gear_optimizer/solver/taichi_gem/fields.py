@@ -134,6 +134,11 @@ ga_run_payload_packed: ti.Field = None  # (MAX_GENOMES+1, 17) i32 - [score, slot
 MAX_GA_RUNS = 128  # Stores up to this many GA runs before a flush/download.
 MAX_GA_RUN_GENOMES = 1024  # Must be >= GA_POPULATION_SIZE (250).
 ga_runs_payload_packed: ti.Field = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17) i32
+# Download staging buffers (smaller than `ga_runs_payload_packed` to reduce padded Vulkan `to_numpy()` transfers).
+GA_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES = 256  # Covers GA_POPULATION_SIZE (250) with slack.
+ga_runs_payload_download_staging_16: ti.Field = None  # (<=16, <=max_genomes+1, 17) i32
+ga_runs_payload_download_staging_64: ti.Field = None  # (<=64, <=max_genomes+1, 17) i32
+ga_runs_payload_download_staging_128: ti.Field = None  # (<=128, <=max_genomes+1, 17) i32
 
 # GPU-side island elitism (avoids per-generation score downloads)
 MAX_ISLANDS = 16  # Maximum number of islands
@@ -247,6 +252,7 @@ def reset_fields_state() -> None:
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results
     global ga_runs_payload_packed
     global ga_run_payload_packed
+    global ga_runs_payload_download_staging_16, ga_runs_payload_download_staging_64, ga_runs_payload_download_staging_128
     global island_boundaries, island_elite_indices, island_elite_count
 
     # Main refs
@@ -314,6 +320,9 @@ def reset_fields_state() -> None:
     ga_global_best_results = None
     ga_runs_payload_packed = None
     ga_run_payload_packed = None
+    ga_runs_payload_download_staging_16 = None
+    ga_runs_payload_download_staging_64 = None
+    ga_runs_payload_download_staging_128 = None
     song_flags = None
 
     # Results
@@ -422,6 +431,7 @@ def allocate_fields():
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results
     global ga_runs_payload_packed
     global ga_run_payload_packed
+    global ga_runs_payload_download_staging_16, ga_runs_payload_download_staging_64, ga_runs_payload_download_staging_128
     global island_boundaries, island_elite_indices, island_elite_count
 
     if _fields_allocated:
@@ -496,6 +506,22 @@ def allocate_fields():
     ga_global_best_results = ti.field(dtype=ti.i32, shape=7)  # [score, ft, ff, pp, cm, fm, ov]
     ga_run_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES + 1, 1 + MAX_SLOTS + 7))
     ga_runs_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GA_RUNS, MAX_GA_RUN_GENOMES + 1, 1 + MAX_SLOTS + 7))
+    # NOTE: these staging buffers are intentionally smaller than ga_runs_payload_packed so we can
+    # download only the populated slice for typical GA_POPULATION_SIZE workloads.
+    _staging_genomes = min(int(MAX_GA_RUN_GENOMES), int(GA_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES))
+    _payload_cols = 1 + MAX_SLOTS + 7
+    ga_runs_payload_download_staging_16 = ti.field(
+        dtype=ti.i32,
+        shape=(min(int(MAX_GA_RUNS), 16), _staging_genomes + 1, _payload_cols),
+    )
+    ga_runs_payload_download_staging_64 = ti.field(
+        dtype=ti.i32,
+        shape=(min(int(MAX_GA_RUNS), 64), _staging_genomes + 1, _payload_cols),
+    )
+    ga_runs_payload_download_staging_128 = ti.field(
+        dtype=ti.i32,
+        shape=(min(int(MAX_GA_RUNS), 128), _staging_genomes + 1, _payload_cols),
+    )
 
     # GPU-side island elitism (avoids per-generation score downloads)
     # Islands are contiguous ranges in the population

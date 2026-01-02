@@ -202,3 +202,27 @@ def ga_store_runs_payload_snapshot_segmented_kernel(
             res = kernels_helpers.genome_result_stats[g]
             for j in ti.static(range(7)):
                 kernels_helpers.ga_runs_payload_packed[run_idx, out_row, 1 + n_slots + j] = res[j]
+
+
+@ti.kernel
+def ga_copy_runs_payload_to_download_staging_kernel(
+    out_payload: ti.template(),
+    n_runs: ti.i32,
+    n_genomes: ti.i32,
+    n_slots: ti.i32,
+):
+    """
+    Copy the populated slice of `ga_runs_payload_packed` into a smaller staging field.
+
+    Vulkan `to_numpy()` transfers the full field shape, so downloading the padded
+    `(MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17)` buffer can dominate throughput when
+    `MAX_GA_RUN_GENOMES` is large (e.g., 1024) but the active population is small
+    (e.g., 250). This kernel enables a bounded staging download.
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    cols = 1 + n_slots + 7
+    rows = n_genomes + 1
+    for r, row in ti.ndrange(n_runs, rows):
+        for c in ti.static(range(17)):
+            if c < cols:
+                out_payload[r, row, c] = kernels_helpers.ga_runs_payload_packed[r, row, c]

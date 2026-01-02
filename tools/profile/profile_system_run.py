@@ -1049,6 +1049,16 @@ _PERF_GA_DECODE_RE = re.compile(
     r"selected=(?P<selected>\d+)\s*$"
 )
 
+_PERF_GA_DOWNLOAD_RUNS_PAYLOAD_RE = re.compile(
+    r"^\[PERF\]\[GADownloadRunsPayload\]\s+"
+    r"runs=(?P<runs>\d+)\s+"
+    r"pop=(?P<pop>\d+)\s+"
+    r"mode=(?P<mode>[A-Za-z0-9_]+)\s+"
+    r"copy=(?P<copy_ms>[\d.]+)ms\s+"
+    r"total=(?P<total_ms>[\d.]+)ms\s+"
+    r"bytes=(?P<bytes>\d+)\s*$"
+)
+
 _PERF_FG_GPU_ACC_RE = re.compile(
     r"^\[PERF\]\s+FG GPU \(ACCUMULATE\):\s+"
     r"upload=(?P<upload_ms>[\d.]+)ms\s+"
@@ -1071,6 +1081,7 @@ def _parse_perf_stdout_log(stdout_log: Path) -> dict[str, Any]:
         return {"ok": False, "error": "missing_stdout_log"}
 
     ga_decode_rows: list[dict[str, Any]] = []
+    ga_dl_rows: list[dict[str, Any]] = []
     fg_acc_rows: list[dict[str, Any]] = []
 
     try:
@@ -1093,6 +1104,21 @@ def _parse_perf_stdout_log(stdout_log: Path) -> dict[str, Any]:
                             "select_ms": float(g["select_ms"]),
                             "stats_ms": float(g["stats_ms"]),
                             "total_ms": float(g["total_ms"]),
+                        }
+                    )
+                    continue
+
+                m = _PERF_GA_DOWNLOAD_RUNS_PAYLOAD_RE.match(line)
+                if m is not None:
+                    g = m.groupdict()
+                    ga_dl_rows.append(
+                        {
+                            "runs": int(g["runs"]),
+                            "pop": int(g["pop"]),
+                            "mode": str(g["mode"]),
+                            "copy_ms": float(g["copy_ms"]),
+                            "total_ms": float(g["total_ms"]),
+                            "bytes": int(g["bytes"]),
                         }
                     )
                     continue
@@ -1133,6 +1159,26 @@ def _parse_perf_stdout_log(stdout_log: Path) -> dict[str, Any]:
         }
     else:
         out["ga_decode"] = {"count": 0}
+
+    if ga_dl_rows:
+        copy_ms = [r["copy_ms"] for r in ga_dl_rows]
+        total_ms = [r["total_ms"] for r in ga_dl_rows]
+        bytes_dl = [r["bytes"] for r in ga_dl_rows]
+        ga_dl_rows_sorted = sorted(ga_dl_rows, key=lambda r: r.get("total_ms", 0.0), reverse=True)
+        mode_counts: dict[str, int] = {}
+        for r in ga_dl_rows:
+            mode = str(r.get("mode", "unknown"))
+            mode_counts[mode] = int(mode_counts.get(mode, 0)) + 1
+        out["ga_download_runs_payload"] = {
+            "count": int(len(ga_dl_rows)),
+            "mode_counts": mode_counts,
+            "copy_ms": _series_stats(copy_ms),
+            "total_ms": _series_stats(total_ms),
+            "bytes": _series_stats(bytes_dl),
+            "top_slowest": ga_dl_rows_sorted[:10],
+        }
+    else:
+        out["ga_download_runs_payload"] = {"count": 0}
 
     if fg_acc_rows:
         up = [r["upload_ms"] for r in fg_acc_rows]
