@@ -543,75 +543,89 @@ def decode_gpu_native_ga_runs_payload(
     idx = np.arange(n_stub, dtype=np.int32)
     # metas_by_base
     _tmp = idx[np.argsort(-fg_proxy_vec, kind="stable")]
-    metas_by_base = _tmp[np.argsort(-stub_scores[_tmp], kind="stable")].tolist()
+    metas_by_base = _tmp[np.argsort(-stub_scores[_tmp], kind="stable")]
     # metas_by_fg
     _tmp2 = idx[np.argsort(-stub_scores, kind="stable")]
-    metas_by_fg = _tmp2[np.argsort(-fg_proxy_vec[_tmp2], kind="stable")].tolist()
+    metas_by_fg = _tmp2[np.argsort(-fg_proxy_vec[_tmp2], kind="stable")]
 
     if n_stub <= fg_candidate_limit:
         selected_stub_indices = idx[np.argsort(-stub_scores, kind="stable")].tolist()
+        select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
     else:
-        selected_stub_indices: list[int] = []
-        selected_set: set[int] = set()
-        seen_minis: set[tuple[int, ...]] = set()
-        center_keys = (stub_ft.astype(np.int64) << 32) | (stub_ff.astype(np.int64) & 0xFFFFFFFF)
-        seen_centers: set[int] = set()
+        # Fast path: when the FG funnel limit is at/below the per-song loadout cap,
+        # selection is simply "top base-score candidates (tie-break by FG proxy)".
+        # Avoid allocating O(n_stub) Python lists/sets (mini keys, centers) in this case.
+        if fg_candidate_limit <= LOADOUTS_PER_SONG_LIMIT:
+            selected_stub_indices = metas_by_base[: int(fg_candidate_limit)].tolist()
+            select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
+            if not selected_stub_indices:
+                return best_data, list(best_gear), list(best_minis), []
+        else:
+            selected_stub_indices: list[int] = []
+            selected_mask = np.zeros((n_stub,), dtype=np.bool_)
 
-        mini_keys = [
-            (int(stub_keys_mat[j, 6]), int(stub_keys_mat[j, 7]), int(stub_keys_mat[j, 8])) for j in range(n_stub)
-        ]
+            # Centers: (ft, ff) packed into i64 for fast uniqueness checks.
+            center_keys = (stub_ft.astype(np.int64) << 32) | (stub_ff.astype(np.int64) & 0xFFFFFFFF)
+            _, center_inv = np.unique(center_keys, return_inverse=True)
+            seen_centers = np.zeros((int(center_inv.max()) + 1,), dtype=np.bool_)
 
-        def _add(j: int) -> bool:
-            if j in selected_set:
-                return False
-            selected_set.add(j)
-            selected_stub_indices.append(j)
-            seen_minis.add(mini_keys[j])
-            seen_centers.add(int(center_keys[j]))
-            return True
+            # Minis: use the already-sorted mini IDs in stub_keys_mat and map to compact group IDs.
+            minis_keys = np.ascontiguousarray(stub_keys_mat[:, 6:9])
+            minis_void = minis_keys.view(np.dtype((np.void, minis_keys.dtype.itemsize * minis_keys.shape[1]))).reshape(-1)
+            _, minis_inv = np.unique(minis_void, return_inverse=True)
+            seen_minis = np.zeros((int(minis_inv.max()) + 1,), dtype=np.bool_)
 
-        top_base_keep = min(int(fg_candidate_limit), int(LOADOUTS_PER_SONG_LIMIT))
-        for j in metas_by_base:
-            if len(selected_stub_indices) >= top_base_keep:
-                break
-            _add(j)
+            def _add(j: int) -> bool:
+                j = int(j)
+                if selected_mask[j]:
+                    return False
+                selected_mask[j] = True
+                selected_stub_indices.append(j)
+                seen_minis[int(minis_inv[j])] = True
+                seen_centers[int(center_inv[j])] = True
+                return True
 
-        base_budget = min(int(fg_candidate_limit), max(top_base_keep, int(fg_candidate_limit * 0.55)))
-        fg_budget_end = min(int(fg_candidate_limit), base_budget + int(fg_candidate_limit * 0.30))
+            top_base_keep = min(int(fg_candidate_limit), int(LOADOUTS_PER_SONG_LIMIT))
+            for j in metas_by_base:
+                if len(selected_stub_indices) >= top_base_keep:
+                    break
+                _add(j)
 
-        for j in metas_by_base:
-            if len(selected_stub_indices) >= base_budget:
-                break
-            _add(j)
+            base_budget = min(int(fg_candidate_limit), max(top_base_keep, int(fg_candidate_limit * 0.55)))
+            fg_budget_end = min(int(fg_candidate_limit), base_budget + int(fg_candidate_limit * 0.30))
 
-        for j in metas_by_fg:
-            if len(selected_stub_indices) >= fg_budget_end:
-                break
-            if int(center_keys[j]) in seen_centers:
-                continue
-            _add(j)
-        for j in metas_by_fg:
-            if len(selected_stub_indices) >= fg_budget_end:
-                break
-            _add(j)
+            for j in metas_by_base:
+                if len(selected_stub_indices) >= base_budget:
+                    break
+                _add(j)
 
-        for j in metas_by_base:
-            if len(selected_stub_indices) >= int(fg_candidate_limit):
-                break
-            mini_key = mini_keys[j]
-            if mini_key in seen_minis:
-                continue
-            _add(j)
+            for j in metas_by_fg:
+                if len(selected_stub_indices) >= fg_budget_end:
+                    break
+                if seen_centers[int(center_inv[int(j)])]:
+                    continue
+                _add(j)
+            for j in metas_by_fg:
+                if len(selected_stub_indices) >= fg_budget_end:
+                    break
+                _add(j)
 
-        for j in metas_by_base:
-            if len(selected_stub_indices) >= int(fg_candidate_limit):
-                break
-            _add(j)
+            for j in metas_by_base:
+                if len(selected_stub_indices) >= int(fg_candidate_limit):
+                    break
+                if seen_minis[int(minis_inv[int(j)])]:
+                    continue
+                _add(j)
 
-    selected_stub_indices = selected_stub_indices[: int(fg_candidate_limit)]
-    select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
-    if not selected_stub_indices:
-        return best_data, list(best_gear), list(best_minis), []
+            for j in metas_by_base:
+                if len(selected_stub_indices) >= int(fg_candidate_limit):
+                    break
+                _add(j)
+
+            selected_stub_indices = selected_stub_indices[: int(fg_candidate_limit)]
+            select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
+            if not selected_stub_indices:
+                return best_data, list(best_gear), list(best_minis), []
 
     # Vectorized stats computation for selected candidates only.
     t_stats = time.perf_counter() if perf else 0.0
