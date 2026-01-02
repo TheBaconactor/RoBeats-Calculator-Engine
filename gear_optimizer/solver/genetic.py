@@ -1869,6 +1869,15 @@ def solve_coevolution_genetic(
         print("\n=== RUNNING GPU-NATIVE GENETIC ALGORITHM ===")
         print(f"  Population: {GA_POPULATION_SIZE}, Generations: {ga_depth}")
 
+        # --- MULTI-START LOOP ---
+        num_runs = ga_settings.multi_start
+
+        # IMPORTANT: Configure run buffer sizes BEFORE allocating any Taichi fields
+        # (first allocation happens inside `load_ref_arrays()`).
+        from .taichi_gem import fields as gpu_fields
+
+        gpu_fields.configure_ga_run_buffers(max_runs=num_runs, max_genomes=GA_POPULATION_SIZE)
+
         # CRITICAL: Upload GPU prerequisites for evaluation
         from .taichi_gem.api import load_ref_arrays, precompute_timeline_gpu
 
@@ -1926,8 +1935,6 @@ def solve_coevolution_genetic(
         # 6. Create initial population functions (created once)
         # We reuse the existing factories to robustly create valid random genomes
 
-        # --- MULTI-START LOOP ---
-        num_runs = ga_settings.multi_start
         # Match CPU logic: split total depth across runs (Micro-GA strategy)
         # or use full depth if multi-start is 1.
         gens_per_run = max(1, (ga_depth + num_runs - 1) // num_runs)
@@ -1948,8 +1955,6 @@ def solve_coevolution_genetic(
 
         # Buffer per-run snapshots on GPU and download once per song to avoid
         # per-run GPU->CPU sync (Vulkan `to_numpy()` is expensive).
-        from .taichi_gem import fields as gpu_fields
-
         n_slots = 9
         n_genomes = None
         payload_segments: list[np.ndarray] = []
