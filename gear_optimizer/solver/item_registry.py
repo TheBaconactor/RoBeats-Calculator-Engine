@@ -128,6 +128,9 @@ class ItemRegistry:
             self.slot_count[mini_slot] = mini_count
 
         self.n_items = next_id  # Total items including reserved ID 0
+        # Lazy caches for GPU upload and fast numpy decoding.
+        self._gpu_arrays_cache: Optional[dict[str, np.ndarray]] = None
+        self._item_stats_cache: Optional[np.ndarray] = None
 
     def encode_genome(self, genome: list[dict]) -> np.ndarray:
         """
@@ -167,14 +170,8 @@ class ItemRegistry:
         Returns:
             list[dict]: List of 9 item dicts
         """
-        genome = []
-        for item_id in ids[:9]:
-            item_id = int(item_id)
-            if item_id in self.id_to_item:
-                genome.append(self.id_to_item[item_id])
-            else:
-                genome.append({})
-        return genome
+        id_to_item = self.id_to_item
+        return [id_to_item.get(int(item_id), {}) for item_id in ids[:9]]
 
     def to_gpu_arrays(self) -> dict[str, np.ndarray]:
         """
@@ -186,23 +183,33 @@ class ItemRegistry:
                 - "slot_start": (9,) int32 - first ID per slot
                 - "slot_count": (9,) int32 - count per slot
         """
-        # Build item_stats array
+        cached = self._gpu_arrays_cache
+        if isinstance(cached, dict):
+            return cached
+
+        # Build item_stats array once; reuse across GPU uploads and CPU decode paths.
         item_stats = np.zeros((self.n_items, 10), dtype=np.int32)
+        name_to_idx = STAT_INDICES
 
         for item_id, item in self.id_to_item.items():
             if item_id == 0 or not item:
                 continue
+            # Prefer iterating actual keys to avoid scanning all STAT_INDICES for every item.
+            for k, v in item.items():
+                stat_idx = name_to_idx.get(k)
+                if stat_idx is None:
+                    continue
+                if v:
+                    item_stats[item_id, stat_idx] = int(v)
 
-            for stat_name, stat_idx in STAT_INDICES.items():
-                value = item.get(stat_name, 0)
-                if value:
-                    item_stats[item_id, stat_idx] = int(value)
-
-        return {
+        out = {
             "item_stats": item_stats,
             "slot_start": np.array(self.slot_start, dtype=np.int32),
             "slot_count": np.array(self.slot_count, dtype=np.int32),
         }
+        self._gpu_arrays_cache = out
+        self._item_stats_cache = item_stats
+        return out
 
     def encode_population(self, population: list[list[dict]]) -> np.ndarray:
         """
@@ -284,12 +291,7 @@ class ItemRegistry:
                 - item_stats_sum: (top_k, 10) int32 sum of item stats per genome
                 - gem_contributions: (top_k, 10) int32 gem stat contributions per genome
         """
-        # Get pre-computed item stats array
-        if not hasattr(self, "_item_stats_cache"):
-            gpu_arrays = self.to_gpu_arrays()
-            self._item_stats_cache = gpu_arrays["item_stats"]
-
-        item_stats = self._item_stats_cache  # (n_items, 10)
+        item_stats = self.to_gpu_arrays()["item_stats"]  # (n_items, 10)
 
         # Sort by score descending, get top K
         top_indices = np.argsort(scores)[::-1][:top_k]

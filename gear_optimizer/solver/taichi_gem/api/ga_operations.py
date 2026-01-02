@@ -51,7 +51,7 @@ def _compute_array_sig(*arrays: np.ndarray) -> bytes:
 
 
 # Cache state for item_stats + slot boundaries
-_ITEM_STATS_CACHE: dict = {"sig": None}
+_ITEM_STATS_CACHE: dict = {"sig": None, "n_items": None, "array_id": None, "slot_start_id": None, "slot_count_id": None}
 
 # Cache state for base_fixed_stats (simple tuple comparison)
 _BASE_FIXED_STATS_CACHE: tuple | None = None
@@ -62,7 +62,7 @@ _ISLAND_BOUNDARIES_CACHE: tuple | None = None
 def reset_ga_upload_caches() -> None:
     """Reset upload caches after ti.reset() or when switching songs."""
     global _ITEM_STATS_CACHE, _BASE_FIXED_STATS_CACHE, _ISLAND_BOUNDARIES_CACHE
-    _ITEM_STATS_CACHE = {"sig": None}
+    _ITEM_STATS_CACHE = {"sig": None, "n_items": None, "array_id": None, "slot_start_id": None, "slot_count_id": None}
     _BASE_FIXED_STATS_CACHE = None
     _ISLAND_BOUNDARIES_CACHE = None
 
@@ -229,6 +229,18 @@ def ga_upload_item_stats(
     if n_items > fields.MAX_ITEMS:
         raise ValueError(f"Too many items: {n_items} > {fields.MAX_ITEMS}")
 
+    # Fast-path: if the caller is reusing the *same* numpy array objects, avoid hashing.
+    try:
+        if (
+            _ITEM_STATS_CACHE.get("n_items") == n_items
+            and _ITEM_STATS_CACHE.get("array_id") == id(item_stats_np)
+            and _ITEM_STATS_CACHE.get("slot_start_id") == id(slot_start_np)
+            and _ITEM_STATS_CACHE.get("slot_count_id") == id(slot_count_np)
+        ):
+            return n_items
+    except Exception:
+        pass
+
     # Check cache - avoid redundant uploads (~2.6MB savings)
     sig = _compute_array_sig(
         np.asarray(item_stats_np[:n_items, : fields.ITEM_STAT_DIM], dtype=np.int32),
@@ -236,6 +248,11 @@ def ga_upload_item_stats(
         np.asarray(slot_count_np, dtype=np.int32),
     )
     if _ITEM_STATS_CACHE.get("sig") == sig:
+        # Also memoize identities so subsequent calls can hit the fast-path.
+        _ITEM_STATS_CACHE["n_items"] = n_items
+        _ITEM_STATS_CACHE["array_id"] = id(item_stats_np)
+        _ITEM_STATS_CACHE["slot_start_id"] = id(slot_start_np)
+        _ITEM_STATS_CACHE["slot_count_id"] = id(slot_count_np)
         return n_items  # Already uploaded
 
     # Upload only the active rows instead of a full MAX_ITEMS padded table.
@@ -253,6 +270,10 @@ def ga_upload_item_stats(
     kernels.ga_upload_item_stats_and_slots_kernel(stats_src, int(n_items), slot_start_arr, slot_count_arr)
 
     _ITEM_STATS_CACHE["sig"] = sig
+    _ITEM_STATS_CACHE["n_items"] = n_items
+    _ITEM_STATS_CACHE["array_id"] = id(item_stats_np)
+    _ITEM_STATS_CACHE["slot_start_id"] = id(slot_start_np)
+    _ITEM_STATS_CACHE["slot_count_id"] = id(slot_count_np)
     return n_items
 
 

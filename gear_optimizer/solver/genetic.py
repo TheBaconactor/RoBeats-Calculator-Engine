@@ -509,10 +509,7 @@ def decode_gpu_native_ga_runs_payload(
     stub_ft = np.asarray(stub_res[:, 1], dtype=np.int32)
     stub_ff = np.asarray(stub_res[:, 2], dtype=np.int32)
 
-    if not hasattr(registry, "_item_stats_cache"):
-        gpu_arrays = registry.to_gpu_arrays()
-        registry._item_stats_cache = gpu_arrays["item_stats"]
-    item_stats = registry._item_stats_cache  # (n_items, 10)
+    item_stats = registry.to_gpu_arrays()["item_stats"]  # (n_items, 10)
 
     stub_item_stats_sum = item_stats[stub_genome_ids].sum(axis=1)  # (n_stub, 10)
     stub_item_stats_sum64 = stub_item_stats_sum.astype(np.int64, copy=False)
