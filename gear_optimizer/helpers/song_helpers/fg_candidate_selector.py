@@ -87,6 +87,14 @@ class _CandMeta:
     fg_priority: int
 
 
+def _meta_base_key(meta: _CandMeta) -> tuple[int, int, tuple[str, ...]]:
+    return meta.base, meta.fg_proxy, meta.key
+
+
+def _meta_fg_key(meta: _CandMeta) -> tuple[int, int, tuple[str, ...]]:
+    return meta.fg_proxy, meta.base, meta.key
+
+
 def select_fg_candidates(
     candidates: list[dict],
     *,
@@ -225,9 +233,6 @@ def select_fg_candidates(
             center_bin = 1
 
         # Avoid full-list sorts when metas is large: we only need the top slice.
-        base_key = lambda m: (m.base, m.fg_proxy, m.key)
-        fg_key = lambda m: (m.fg_proxy, m.base, m.key)
-
         try:
             best_base = max((m.base for m in metas), default=0)
         except Exception:
@@ -241,9 +246,9 @@ def select_fg_candidates(
 
         # Prevent pathological sizes when GA returns a very wide funnel.
         if len(band) > max_pool:
-            band = heapq.nlargest(max_pool, band, key=base_key)
+            band = heapq.nlargest(max_pool, band, key=_meta_base_key)
 
-        band_by_fg = sorted(band, key=fg_key, reverse=True)
+        band_by_fg = sorted(band, key=_meta_fg_key, reverse=True)
 
         selected: list[dict] = []
         seen_keys: set[tuple[str, ...]] = set()
@@ -266,7 +271,7 @@ def select_fg_candidates(
 
         # Hard guarantee: keep at least the top-N by base score (DB stability).
         top_base_keep = min(limit, int(LOADOUTS_PER_SONG_LIMIT))
-        metas_by_base = heapq.nlargest(min(len(metas), max(limit, top_base_keep)), metas, key=base_key)
+        metas_by_base = heapq.nlargest(min(len(metas), max(limit, top_base_keep)), metas, key=_meta_base_key)
         for meta in metas_by_base:
             if len(selected) >= top_base_keep:
                 break
@@ -339,13 +344,10 @@ def select_fg_candidates(
             per_slot = 10
         per_slot = max(1, min(50, int(per_slot)))
 
-        base_key = lambda m: (m.base, m.fg_proxy, m.key)
-        fg_key = lambda m: (m.fg_proxy, m.base, m.key)
-
         # Only materialize top slices we can actually consume.
         base_pool_k = min(len(metas), max(limit, 20000))
-        metas_by_base = heapq.nlargest(base_pool_k, metas, key=base_key)
-        metas_by_fg = heapq.nlargest(base_pool_k, metas, key=fg_key)
+        metas_by_base = heapq.nlargest(base_pool_k, metas, key=_meta_base_key)
+        metas_by_fg = heapq.nlargest(base_pool_k, metas, key=_meta_fg_key)
 
         best_base = metas_by_base[0].base if metas_by_base else 0
         threshold = int(best_base * (1.0 - (band_pct / 100.0))) if best_base > 0 else 0
@@ -492,11 +494,9 @@ def select_fg_candidates(
 
     # Deterministic ordering helpers
     # Avoid full sorts for very large funnels; keep deterministic tie-breakers via `m.key`.
-    base_key = lambda m: (m.base, m.fg_proxy, m.key)
-    fg_key = lambda m: (m.fg_proxy, m.base, m.key)
     base_pool_k = min(len(metas), max(limit, 20000))
-    metas_by_base = heapq.nlargest(base_pool_k, metas, key=base_key)
-    metas_by_fg = heapq.nlargest(base_pool_k, metas, key=fg_key)
+    metas_by_base = heapq.nlargest(base_pool_k, metas, key=_meta_base_key)
+    metas_by_fg = heapq.nlargest(base_pool_k, metas, key=_meta_fg_key)
 
     selected: list[dict] = []
     seen_keys: set[tuple[str, ...]] = set()
