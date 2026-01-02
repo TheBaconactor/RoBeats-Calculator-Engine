@@ -776,6 +776,121 @@ def _series_stats(series: list[float] | list[int]) -> dict[str, Any]:
     }
 
 
+_PERF_GA_DECODE_RE = re.compile(
+    r"^\[PERF\]\[GADecode\]\s+"
+    r"runs=(?P<runs>\d+)\s+"
+    r"pop=(?P<pop>\d+)\s+"
+    r"uniq=(?P<uniq>\d+)\s+"
+    r"scan=(?P<scan_ms>[\d.]+)ms\s+"
+    r"select=(?P<select_ms>[\d.]+)ms\s+"
+    r"stats=(?P<stats_ms>[\d.]+)ms\s+"
+    r"total=(?P<total_ms>[\d.]+)ms\s+"
+    r"selected=(?P<selected>\d+)\s*$"
+)
+
+_PERF_FG_GPU_ACC_RE = re.compile(
+    r"^\[PERF\]\s+FG GPU \(ACCUMULATE\):\s+"
+    r"upload=(?P<upload_ms>[\d.]+)ms\s+"
+    r"kernel=(?P<kernel_ms>[\d.]+)ms\s+"
+    r"total=(?P<total_ms>[\d.]+)ms\s+"
+    r"\(genomes=(?P<genomes>\d+),\s+"
+    r"cfgs=(?P<cfgs>\d+),\s+"
+    r"ftff=(?P<ftff>\d+),\s+"
+    r"chunks=(?P<chunks>\d+)\)\s*$"
+)
+
+
+def _parse_perf_stdout_log(stdout_log: Path) -> dict[str, Any]:
+    """
+    Parse structured `[PERF]` lines from the child process stdout log.
+
+    This is best-effort and intentionally limited to stable, explicit formats.
+    """
+    if not stdout_log.exists():
+        return {"ok": False, "error": "missing_stdout_log"}
+
+    ga_decode_rows: list[dict[str, Any]] = []
+    fg_acc_rows: list[dict[str, Any]] = []
+
+    try:
+        with stdout_log.open("r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = (line or "").strip()
+                if not line:
+                    continue
+
+                m = _PERF_GA_DECODE_RE.match(line)
+                if m is not None:
+                    g = m.groupdict()
+                    ga_decode_rows.append(
+                        {
+                            "runs": int(g["runs"]),
+                            "pop": int(g["pop"]),
+                            "uniq": int(g["uniq"]),
+                            "selected": int(g["selected"]),
+                            "scan_ms": float(g["scan_ms"]),
+                            "select_ms": float(g["select_ms"]),
+                            "stats_ms": float(g["stats_ms"]),
+                            "total_ms": float(g["total_ms"]),
+                        }
+                    )
+                    continue
+
+                m = _PERF_FG_GPU_ACC_RE.match(line)
+                if m is not None:
+                    g = m.groupdict()
+                    fg_acc_rows.append(
+                        {
+                            "upload_ms": float(g["upload_ms"]),
+                            "kernel_ms": float(g["kernel_ms"]),
+                            "total_ms": float(g["total_ms"]),
+                            "genomes": int(g["genomes"]),
+                            "cfgs": int(g["cfgs"]),
+                            "ftff": int(g["ftff"]),
+                            "chunks": int(g["chunks"]),
+                        }
+                    )
+                    continue
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    out: dict[str, Any] = {"ok": True}
+
+    if ga_decode_rows:
+        scan = [r["scan_ms"] for r in ga_decode_rows]
+        sel = [r["select_ms"] for r in ga_decode_rows]
+        stats = [r["stats_ms"] for r in ga_decode_rows]
+        total = [r["total_ms"] for r in ga_decode_rows]
+        ga_decode_rows_sorted = sorted(ga_decode_rows, key=lambda r: r.get("total_ms", 0.0), reverse=True)
+        out["ga_decode"] = {
+            "count": int(len(ga_decode_rows)),
+            "scan_ms": _series_stats(scan),
+            "select_ms": _series_stats(sel),
+            "stats_ms": _series_stats(stats),
+            "total_ms": _series_stats(total),
+            "top_slowest": ga_decode_rows_sorted[:10],
+        }
+    else:
+        out["ga_decode"] = {"count": 0}
+
+    if fg_acc_rows:
+        up = [r["upload_ms"] for r in fg_acc_rows]
+        ker = [r["kernel_ms"] for r in fg_acc_rows]
+        tot = [r["total_ms"] for r in fg_acc_rows]
+        fg_acc_rows_sorted = sorted(fg_acc_rows, key=lambda r: r.get("total_ms", 0.0), reverse=True)
+        out["fg_gpu_accumulate"] = {
+            "count": int(len(fg_acc_rows)),
+            "upload_ms": _series_stats(up),
+            "kernel_ms": _series_stats(ker),
+            "total_ms": _series_stats(tot),
+            "top_slowest": fg_acc_rows_sorted[:10],
+        }
+    else:
+        out["fg_gpu_accumulate"] = {"count": 0}
+
+    return out
+
+
 def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
     if not trace_path.exists():
         return {"ok": False, "error": "missing_trace"}
@@ -1669,6 +1784,12 @@ def main(argv: list[str] | None = None) -> int:
             summary["gpu_request_type_summary"] = {"ok": False, "error": "missing_inputs"}
     except Exception as exc:
         summary["gpu_request_type_summary"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    # Optional: structured `[PERF]` timing lines from stdout.
+    try:
+        summary["perf_stdout_summary"] = _parse_perf_stdout_log(paths.stdout_log)
+    except Exception as exc:
+        summary["perf_stdout_summary"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     with paths.summary_json.open("w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, sort_keys=True)
