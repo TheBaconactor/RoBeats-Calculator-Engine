@@ -174,21 +174,6 @@ class _AsyncDbSaver:
                 if not isinstance(meta, dict):
                     meta = {}
 
-                # Optional: SwingDetector post-pass (CPU-only; does not touch GPU).
-                try:
-                    from gear_optimizer.core.utils import cfg_from_dict
-                    from gear_optimizer.solver.swing_detector import attach_swings_to_entries
-
-                    cfg_dict = meta.get("cfg_dict") or {}
-                    cfg = cfg_from_dict(cfg_dict) if isinstance(cfg_dict, dict) and cfg_dict else None
-                    attach_swings_to_entries(
-                        song_name=str(song_name),
-                        song_file_path=meta.get("file_path"),
-                        entries=entries,
-                        cfg=cfg,
-                    )
-                except Exception:
-                    pass
                 try:
                     save_loadouts_batch(song_name, entries)
                 except Exception as exc:

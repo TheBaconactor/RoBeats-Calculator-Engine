@@ -317,11 +317,11 @@ def merge_databases(
             insert_new_loadouts_sql = """
                 INSERT OR IGNORE INTO loadouts (
                     song_name, loadout_hash, score, fg_score,
-                    gear_json, minis_json, details_json, force_details_json, swing_json, timestamp
+                    gear_json, minis_json, details_json, force_details_json, timestamp
                 )
                 SELECT
                     song_name, loadout_hash, score, fg_score,
-                    gear_json, minis_json, details_json, force_details_json, swing_json, timestamp
+                    gear_json, minis_json, details_json, force_details_json, timestamp
                 FROM secondary.loadouts
             """
             conn.execute(insert_new_loadouts_sql)
@@ -380,32 +380,20 @@ def merge_databases(
                         WHERE secondary.loadouts.song_name = main.loadouts.song_name
                         AND secondary.loadouts.loadout_hash = main.loadouts.loadout_hash
                     ),
-                    force_details_json = (
-                        SELECT CASE
-                            WHEN secondary.loadouts.score > main.loadouts.score
-                            THEN secondary.loadouts.force_details_json
-                            ELSE main.loadouts.force_details_json
-                        END
-                        FROM secondary.loadouts
-                        WHERE secondary.loadouts.song_name = main.loadouts.song_name
-                        AND secondary.loadouts.loadout_hash = main.loadouts.loadout_hash
-                    ),
-                    swing_json = (
-                        SELECT CASE
-                            WHEN secondary.loadouts.score > main.loadouts.score
-                            THEN secondary.loadouts.swing_json
-                            WHEN main.loadouts.swing_json IS NULL AND secondary.loadouts.swing_json IS NOT NULL
-                            THEN secondary.loadouts.swing_json
-                            ELSE main.loadouts.swing_json
-                        END
-                        FROM secondary.loadouts
-                        WHERE secondary.loadouts.song_name = main.loadouts.song_name
-                        AND secondary.loadouts.loadout_hash = main.loadouts.loadout_hash
-                    ),
-                    timestamp = (
-                        SELECT MAX(main.loadouts.timestamp, secondary.loadouts.timestamp)
-                        FROM secondary.loadouts
-                        WHERE secondary.loadouts.song_name = main.loadouts.song_name
+                     force_details_json = (
+                         SELECT CASE
+                             WHEN secondary.loadouts.score > main.loadouts.score
+                             THEN secondary.loadouts.force_details_json
+                             ELSE main.loadouts.force_details_json
+                         END
+                         FROM secondary.loadouts
+                         WHERE secondary.loadouts.song_name = main.loadouts.song_name
+                         AND secondary.loadouts.loadout_hash = main.loadouts.loadout_hash
+                     ),
+                     timestamp = (
+                         SELECT MAX(main.loadouts.timestamp, secondary.loadouts.timestamp)
+                         FROM secondary.loadouts
+                         WHERE secondary.loadouts.song_name = main.loadouts.song_name
                         AND secondary.loadouts.loadout_hash = main.loadouts.loadout_hash
                     )
                 WHERE EXISTS (
@@ -430,7 +418,8 @@ def merge_databases(
 
             if secondary_has_fg_loadouts:
                 # Ensure destination table exists (older main DBs may predate fg_loadouts).
-                conn.execute("""
+                conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS fg_loadouts (
                         song_name TEXT,
                         loadout_hash TEXT,
@@ -440,12 +429,12 @@ def merge_databases(
                         minis_json TEXT,
                         details_json TEXT,
                         force_details_json TEXT,
-                        swing_json TEXT,
                         timestamp REAL,
                         PRIMARY KEY (song_name, loadout_hash),
                         FOREIGN KEY (song_name) REFERENCES songs(name)
                     );
-                """)
+                    """
+                )
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_fg_loadouts_score ON fg_loadouts (song_name, fg_score DESC);"
                 )
@@ -453,11 +442,11 @@ def merge_databases(
                 insert_new_fg_loadouts_sql = """
                     INSERT OR IGNORE INTO fg_loadouts (
                         song_name, loadout_hash, score, fg_score,
-                        gear_json, minis_json, details_json, force_details_json, swing_json, timestamp
+                        gear_json, minis_json, details_json, force_details_json, timestamp
                     )
                     SELECT
                         song_name, loadout_hash, score, fg_score,
-                        gear_json, minis_json, details_json, force_details_json, swing_json, timestamp
+                        gear_json, minis_json, details_json, force_details_json, timestamp
                     FROM secondary.fg_loadouts
                 """
                 conn.execute(insert_new_fg_loadouts_sql)
@@ -515,32 +504,20 @@ def merge_databases(
                             WHERE secondary.fg_loadouts.song_name = main.fg_loadouts.song_name
                             AND secondary.fg_loadouts.loadout_hash = main.fg_loadouts.loadout_hash
                         ),
-                        force_details_json = (
-                            SELECT CASE
-                                WHEN secondary.fg_loadouts.fg_score > main.fg_loadouts.fg_score
-                                THEN secondary.fg_loadouts.force_details_json
-                                ELSE main.fg_loadouts.force_details_json
-                            END
-                            FROM secondary.fg_loadouts
-                            WHERE secondary.fg_loadouts.song_name = main.fg_loadouts.song_name
-                            AND secondary.fg_loadouts.loadout_hash = main.fg_loadouts.loadout_hash
-                        ),
-                        swing_json = (
-                            SELECT CASE
-                                WHEN secondary.fg_loadouts.fg_score > main.fg_loadouts.fg_score
-                                THEN secondary.fg_loadouts.swing_json
-                                WHEN main.fg_loadouts.swing_json IS NULL AND secondary.fg_loadouts.swing_json IS NOT NULL
-                                THEN secondary.fg_loadouts.swing_json
-                                ELSE main.fg_loadouts.swing_json
-                            END
-                            FROM secondary.fg_loadouts
-                            WHERE secondary.fg_loadouts.song_name = main.fg_loadouts.song_name
-                            AND secondary.fg_loadouts.loadout_hash = main.fg_loadouts.loadout_hash
-                        ),
-                        timestamp = (
-                            SELECT MAX(main.fg_loadouts.timestamp, secondary.fg_loadouts.timestamp)
-                            FROM secondary.fg_loadouts
-                            WHERE secondary.fg_loadouts.song_name = main.fg_loadouts.song_name
+                     force_details_json = (
+                         SELECT CASE
+                             WHEN secondary.fg_loadouts.fg_score > main.fg_loadouts.fg_score
+                             THEN secondary.fg_loadouts.force_details_json
+                             ELSE main.fg_loadouts.force_details_json
+                         END
+                         FROM secondary.fg_loadouts
+                         WHERE secondary.fg_loadouts.song_name = main.fg_loadouts.song_name
+                         AND secondary.fg_loadouts.loadout_hash = main.fg_loadouts.loadout_hash
+                     ),
+                     timestamp = (
+                         SELECT MAX(main.fg_loadouts.timestamp, secondary.fg_loadouts.timestamp)
+                         FROM secondary.fg_loadouts
+                         WHERE secondary.fg_loadouts.song_name = main.fg_loadouts.song_name
                             AND secondary.fg_loadouts.loadout_hash = main.fg_loadouts.loadout_hash
                         )
                     WHERE EXISTS (

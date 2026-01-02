@@ -75,79 +75,41 @@ def _migration_2_add_pending_fg_jobs(conn: sqlite3.Connection) -> None:
     )
 
 
-def _migration_3_add_swing_json(conn: sqlite3.Connection) -> None:
+def _migration_3_noop(conn: sqlite3.Connection) -> None:
     """
-    Add SwingDetector storage columns.
+    No-op migration (schema version continuity).
 
-    `swing_json` is a compact JSON array of signed deltas (non-zero) that represent
-    score variance under HumanHitSim seeds.
+    Schema version 3 was used by an experimental feature that has since been removed.
     """
-
-    def _has_column(table: str, column: str) -> bool:
-        try:
-            rows = conn.execute(f"PRAGMA table_info({table});").fetchall()
-            return any(r[1] == column for r in rows)
-        except Exception:
-            return False
-
-    for table in ("loadouts", "fg_loadouts"):
-        if not _has_column(table, "swing_json"):
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN swing_json TEXT;")
+    return
 
 
-def _migration_4_add_pending_swing_jobs(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS pending_swing_jobs (
-            song_name TEXT PRIMARY KEY,
-            payload_json TEXT NOT NULL,
-            created_ts REAL,
-            updated_ts REAL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_pending_swing_jobs_updated
-            ON pending_swing_jobs (updated_ts DESC);
-        """
-    )
-
-
-def _migration_5_add_mock_swing_seed_columns(conn: sqlite3.Connection) -> None:
+def _migration_4_noop(conn: sqlite3.Connection) -> None:
     """
-    Replace the deprecated deferred SwingDetector job queue with song-level best-case metadata.
+    No-op migration (schema version continuity).
 
-    - Drops the unused `pending_swing_jobs` table (if present).
-    - Adds columns on `songs` to persist the best-case HumanHitSim seed selection derived from MockSwing.
+    Schema version 4 was used by an experimental feature that has since been removed.
     """
+    return
 
-    def _has_column(table: str, column: str) -> bool:
-        try:
-            rows = conn.execute(f"PRAGMA table_info({table});").fetchall()
-            return any(r[1] == column for r in rows)
-        except Exception:
-            return False
+
+def _migration_5_cleanup(conn: sqlite3.Connection) -> None:
+    """
+    Cleanup migration (schema version continuity).
+
+    Drops unused tables from older experimental schemas (best-effort).
+    """
 
     conn.execute("DROP TABLE IF EXISTS pending_swing_jobs;")
-
-    # Best-case seed selection (used to drive HumanHitSim for future runs).
-    columns = [
-        ("mock_swing_best_mode", "TEXT"),
-        ("mock_swing_best_seed", "INTEGER"),
-        ("mock_swing_best_delta", "INTEGER"),
-        ("mock_swing_best_ff_stat", "INTEGER"),
-        ("mock_swing_best_ft_stat", "INTEGER"),
-        ("mock_swing_best_updated", "REAL"),
-    ]
-    for col, typ in columns:
-        if not _has_column("songs", col):
-            conn.execute(f"ALTER TABLE songs ADD COLUMN {col} {typ};")
+    return
 
 
 _MIGRATIONS: Dict[int, Migration] = {
     1: _migration_1_init_schema,
     2: _migration_2_add_pending_fg_jobs,
-    3: _migration_3_add_swing_json,
-    4: _migration_4_add_pending_swing_jobs,
-    5: _migration_5_add_mock_swing_seed_columns,
+    3: _migration_3_noop,
+    4: _migration_4_noop,
+    5: _migration_5_cleanup,
 }
 
 
