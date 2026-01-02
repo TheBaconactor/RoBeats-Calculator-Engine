@@ -49,13 +49,6 @@ def memory_release_requested():
     return MEMORY_WATCHDOG_EVENT.is_set()
 
 
-def get_memory_release_message():
-    """Get the reason for memory release request."""
-    if MEMORY_WATCHDOG_REASON:
-        return MEMORY_WATCHDOG_REASON
-    return "[MemoryGuard] RSS soft limit reached; finishing current queue before exit."
-
-
 def log_memory_usage(label=""):
     """Log current memory usage for leak tracking."""
     if psutil is None:
