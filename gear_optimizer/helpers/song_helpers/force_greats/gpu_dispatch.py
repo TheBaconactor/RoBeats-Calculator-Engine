@@ -298,7 +298,6 @@ def process_force_greats_gpu_finder(
         if download_after:
             submit_kwargs["fg_download_after"] = True
 
-        _ensure_timeline_ready()
         fut = _submit_solve_force_greats_finder(
             genome_stats_arr,
             timestamps,
@@ -423,7 +422,6 @@ def process_force_greats_gpu_finder(
     pair_caps_grid = None
     pair_caps_from_timeline = False
     song_slot = 0
-    timeline_prefetch_future = None
 
     try:
         if isinstance(calc_song, dict):
@@ -446,8 +444,24 @@ def process_force_greats_gpu_finder(
     else:
         pair_caps_from_timeline = True
 
-    def _compute_cpu_pair_caps_grid():
-        # CPU fallback: build the cap grid and cache it on the song payload.
+    if pair_caps_from_timeline:
+        try:
+            if gpu_client is not None:
+                gpu_client.submit_precompute_timeline(
+                    calc_song=calc_song,
+                    ref_arrays=ref_arrays,
+                    song_slot=int(song_slot),
+                ).future.result()
+            else:
+                from ....solver.taichi_gem.api.timeline import precompute_timeline_gpu
+
+                precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
+        except Exception as e:
+            print(f"[FG] Timeline precompute for pair-caps FAILED: {type(e).__name__}: {e}")
+            pair_caps_from_timeline = False
+
+    if (not pair_caps_from_timeline) and pair_caps_grid is None and caps_mode not in {"none", "off", "0", "false", "no"}:
+        # CPU fallback (rare): build the cap grid and cache it on the song payload.
         try:
             from ....solver.fever_timeline import get_song_timeline_grid
             from ....helpers.fg_utils import vectorized_calculate_section_caps_grid
@@ -475,34 +489,10 @@ def process_force_greats_gpu_finder(
                     song_data_cache["fg_pair_caps_grid_max_per_section"] = 100
                 except Exception:
                     pass
-            return pair_caps_grid
         except Exception as e:
             print(f"[FG] CPU pair-caps precompute FAILED: {type(e).__name__}: {e}")
             # Fallback to permissive caps (50) to avoid 0-clamping on GPU.
-            return np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1, 16), 50, dtype=np.int32)
-
-    if pair_caps_from_timeline:
-        # Submit timeline precompute and overlap it with CPU-side FG prep. We'll only block
-        # right before the first GPU FG submission (to catch failures early and ensure
-        # the activations grid is ready).
-        try:
-            if gpu_client is not None:
-                timeline_prefetch_future = gpu_client.submit_precompute_timeline(
-                    calc_song=calc_song,
-                    ref_arrays=ref_arrays,
-                    song_slot=int(song_slot),
-                ).future
-            else:
-                from ....solver.taichi_gem.api.timeline import precompute_timeline_gpu
-
-                precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
-        except Exception as e:
-            print(f"[FG] Timeline precompute for pair-caps FAILED: {type(e).__name__}: {e}")
-            pair_caps_from_timeline = False
-            timeline_prefetch_future = None
-
-    if (not pair_caps_from_timeline) and pair_caps_grid is None and caps_mode not in {"none", "off", "0", "false", "no"}:
-        pair_caps_grid = _compute_cpu_pair_caps_grid()
+            pair_caps_grid = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1, 16), 50, dtype=np.int32)
 
     # Generate SMART configs using Analytic Breakpoint Pruning
     # This scans the grid to find only the counts that fundamentally change fever coverage.
@@ -512,20 +502,6 @@ def process_force_greats_gpu_finder(
     # all FG work first (helps keep the GPU queue full, especially across song boundaries).
     defer_group_apply = gpu_client is not None and per_pair_breakpoints
     deferred_gpu_applies: list[dict] = []
-
-    def _ensure_timeline_ready() -> None:
-        nonlocal pair_caps_from_timeline, pair_caps_grid, timeline_prefetch_future
-        if not pair_caps_from_timeline or timeline_prefetch_future is None:
-            return
-        try:
-            timeline_prefetch_future.result()
-        except Exception as e:
-            print(f"[FG] Timeline precompute for pair-caps FAILED: {type(e).__name__}: {e}")
-            pair_caps_from_timeline = False
-            if caps_mode not in {"none", "off", "0", "false", "no"} and pair_caps_grid is None:
-                pair_caps_grid = _compute_cpu_pair_caps_grid()
-        finally:
-            timeline_prefetch_future = None
 
     # Process each group in GPU batches
     for (sel_color, n_sections, max_per_section), sig_map in groups.items():
@@ -850,7 +826,6 @@ def process_force_greats_gpu_finder(
                                 if fut is not None:
                                     group_futures.append(fut)
                     else:
-                        _ensure_timeline_ready()
                         for ftff_chunk in _iter_ftff_chunks(group_pairs):
                             _submit_solve_force_greats_finder(
                                 genome_stats_arr,
@@ -992,7 +967,6 @@ def process_force_greats_gpu_finder(
                                 else:
                                     _flush_fg_tasks_batch()
                     else:
-                        _ensure_timeline_ready()
                         for ftff_chunk in _iter_ftff_chunks(ftff_pairs):
                             _submit_solve_force_greats_finder(
                                 genome_stats_arr,  # numpy array instead of list[dict]
@@ -1034,7 +1008,6 @@ def process_force_greats_gpu_finder(
                     if gpu_results is None:
                         gpu_results = _submit_fg_download_global_best(n_pending, blocking=True)
                 else:
-                    _ensure_timeline_ready()
                     gpu_results = _submit_solve_force_greats_finder(
                         genome_stats_arr,  # numpy array instead of list[dict]
                         timestamps,
