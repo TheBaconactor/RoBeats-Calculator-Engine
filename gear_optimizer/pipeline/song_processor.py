@@ -32,7 +32,7 @@ from ..core.constants import (
     FG_CANDIDATE_LIMIT,
 )
 
-from ..solver.genetic import solve_coevolution_genetic
+from ..solver.genetic import GA_POPULATION_SIZE, solve_coevolution_genetic
 from ..solver.scoring import (
     GEM_SOLVER_CACHE,
     FEVER_TIMELINE_CACHE,
@@ -450,6 +450,18 @@ def process_song_task(args):
             # Get GPU slot for timeline prefetch (prefetched or on-demand)
             _gpu_song_slot = 0
             if gpu_mode:
+                try:
+                    # Configure GPU-native GA run buffers BEFORE any Taichi field allocation
+                    # (prefetch triggers `precompute_timeline_gpu()` -> `ensure_ready()`).
+                    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+
+                    gpu_fields.configure_ga_run_buffers(
+                        max_runs=ga_settings.multi_start,
+                        max_genomes=GA_POPULATION_SIZE,
+                    )
+                except Exception:
+                    pass  # Prefetch should still run even if sizing fails.
+
                 try:
                     from gear_optimizer.solver.taichi_gem.api.gpu_prefetch import get_gpu_prefetch_manager
 
