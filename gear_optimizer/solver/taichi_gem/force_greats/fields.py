@@ -36,6 +36,11 @@ FG_MAX_FLAT_WORK_ITEMS = MAX_GENOMES * FG_MAX_FTFF  # 4096 * 256 = 1M work items
 song_timestamps: ti.Field | None = None  # (FG_MAX_SONG_NOTES,) f32
 song_timestamps_great_candidate: ti.Field | None = None  # (FG_MAX_SONG_NOTES,) f32
 
+# Precomputed fever-end indices for fast timeline simulation.
+# Shape: (note_idx, ft_idx) -> end_note_idx (binary search result in song_timestamps).
+fg_fever_end_idx_song: ti.Field | None = None  # (FG_MAX_SONG_NOTES, FG_MAX_STAT+1) i32
+fg_fever_end_idx_great_candidate: ti.Field | None = None  # (FG_MAX_SONG_NOTES, FG_MAX_STAT+1) i32
+
 # FG finder inputs (GPU-resident)
 # Stores fill-penalty targets (fp) per section (not raw forced counts).
 fg_forced_counts: ti.Field | None = None  # (FG_MAX_CONFIGS, FG_MAX_SECTIONS) i32
@@ -115,6 +120,7 @@ def reset_fields_state() -> None:
     """Reset module-level allocation state after `ti.reset()`."""
     global _fields_allocated
     global song_timestamps, song_timestamps_great_candidate
+    global fg_fever_end_idx_song, fg_fever_end_idx_great_candidate
     global fg_forced_counts, fg_pair_caps, fg_ft_list, fg_ff_list
     global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx
     global fg_best_ft, fg_best_ff, fg_best_g_pp, fg_best_g_cm, fg_best_g_fm, fg_best_g_ov
@@ -127,6 +133,8 @@ def reset_fields_state() -> None:
 
     song_timestamps = None
     song_timestamps_great_candidate = None
+    fg_fever_end_idx_song = None
+    fg_fever_end_idx_great_candidate = None
     fg_forced_counts = None
     fg_pair_caps = None
     fg_ft_list = None
@@ -191,6 +199,8 @@ def bind_fields(kernels_module) -> None:
     """
     kernels_module.song_timestamps = song_timestamps
     kernels_module.song_timestamps_great_candidate = song_timestamps_great_candidate
+    kernels_module.fg_fever_end_idx_song = fg_fever_end_idx_song
+    kernels_module.fg_fever_end_idx_great_candidate = fg_fever_end_idx_great_candidate
     kernels_module.fg_forced_counts = fg_forced_counts
     kernels_module.fg_pair_caps = fg_pair_caps
     kernels_module.fg_ft_list = fg_ft_list
@@ -243,6 +253,7 @@ def bind_fields(kernels_module) -> None:
 def allocate_fields() -> None:
     """Allocate ForceGreats GPU fields. Must be called after ti.init()."""
     global song_timestamps, song_timestamps_great_candidate
+    global fg_fever_end_idx_song, fg_fever_end_idx_great_candidate
     global fg_forced_counts, fg_pair_caps, fg_ft_list, fg_ff_list
     global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx, fg_best_ft, fg_best_ff
     global fg_best_g_pp, fg_best_g_cm, fg_best_g_fm, fg_best_g_ov
@@ -259,6 +270,8 @@ def allocate_fields() -> None:
 
     song_timestamps = ti.field(dtype=ti.f32, shape=FG_MAX_SONG_NOTES)
     song_timestamps_great_candidate = ti.field(dtype=ti.f32, shape=FG_MAX_SONG_NOTES)
+    fg_fever_end_idx_song = ti.field(dtype=ti.i32, shape=(FG_MAX_SONG_NOTES, FG_MAX_STAT + 1))
+    fg_fever_end_idx_great_candidate = ti.field(dtype=ti.i32, shape=(FG_MAX_SONG_NOTES, FG_MAX_STAT + 1))
 
     fg_forced_counts = ti.field(dtype=ti.i32, shape=(FG_MAX_CONFIGS, FG_MAX_SECTIONS))
     fg_pair_caps = ti.field(dtype=ti.i32, shape=(FG_MAX_STAT + 1, FG_MAX_STAT + 1, FG_MAX_SECTIONS))
@@ -382,6 +395,9 @@ def warmup_kernels() -> None:
 
     # Warmup stage1 init kernel
     fg_kernels.fg_stage1_init_kernel(n_genomes, n_ftff)
+
+    # Warmup precomputed fever-end tables (used by Stage 1 kernels)
+    fg_kernels.fg_precompute_fever_end_idx_tables_kernel(total_notes, float(last_note_time))
 
     # Warmup Stage 1 (the heavy one).
     # Note: kernels read forced-count targets from `fg_forced_counts` (a GPU field). We don't need

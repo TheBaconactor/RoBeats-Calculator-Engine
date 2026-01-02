@@ -171,6 +171,7 @@ except Exception:
 # pointer plus a few sampled timestamps to keep this check O(1) and robust.
 _fg_last_song_key = None  # (ptr, n, first, last, mid, q1, q3)
 _fg_last_great_key = None  # (ptr, n, first, last, mid, q1, q3)
+_fg_last_fever_end_tables_key = None  # (song_key, great_key, last_note_time)
 _fg_song_upload_buf: np.ndarray | None = None
 _fg_great_upload_buf: np.ndarray | None = None
 _fg_forced_upload_buf: np.ndarray | None = None
@@ -256,6 +257,7 @@ def _forced_configs_sig(fg_configs: list, n_sections: int) -> tuple:
 def reset_force_greats_api_state() -> None:
     """Reset module-level upload caches after `ti.reset()`."""
     global _fg_last_song_key, _fg_last_great_key
+    global _fg_last_fever_end_tables_key
     global _fg_song_upload_buf, _fg_great_upload_buf, _fg_forced_upload_buf, _fg_ftff_upload_buf
     global _fg_forced_counts_staging_tiers, _fg_forced_counts_staging_pool
     global _fg_genome_stats_buf, _fg_flat_work_buf
@@ -268,6 +270,7 @@ def reset_force_greats_api_state() -> None:
     _fg_last_song_key = None
     _fg_song_upload_buf = None
     _fg_last_great_key = None
+    _fg_last_fever_end_tables_key = None
     _fg_great_upload_buf = None
     _fg_forced_upload_buf = None
     _fg_ftff_upload_buf = None
@@ -593,6 +596,21 @@ def _fg_use_great_candidate_field() -> None:
     fg_kernels.song_timestamps_great_candidate = fg_fields.song_timestamps_great_candidate
 
 
+def _ensure_fever_end_tables(total_notes: int, last_note_time: float) -> None:
+    """
+    Ensure fever-end lookup tables are computed for the currently uploaded song buffers.
+
+    Stage 1 kernels use these tables to avoid per-section binary searches, which is a major
+    throughput win for large config sweeps.
+    """
+    global _fg_last_fever_end_tables_key
+    key = (_fg_last_song_key, _fg_last_great_key, float(last_note_time))
+    if _fg_last_fever_end_tables_key == key:
+        return
+    fg_kernels.fg_precompute_fever_end_idx_tables_kernel(int(total_notes), float(last_note_time))
+    _fg_last_fever_end_tables_key = key
+
+
 def _fg_upload_great_candidate_timestamps(candidate_np: np.ndarray, n: int) -> None:
     """Upload great-candidate timestamps to GPU (cached by (len, first, last))."""
     global _fg_last_great_key, _fg_great_upload_buf
@@ -729,6 +747,8 @@ def _solve_force_greats_finder_gpu_impl(
             _fg_upload_great_candidate_timestamps(great_candidate_timestamps_np, total_notes)
     if total_notes <= 0:
         return []
+
+    _ensure_fever_end_tables(total_notes, float(last_note_time))
 
     # Timing instrumentation (when PERF_TIMING=1)
     _perf = _PERF_TIMING

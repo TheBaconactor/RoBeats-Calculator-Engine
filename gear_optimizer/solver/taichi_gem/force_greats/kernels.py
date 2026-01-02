@@ -11,7 +11,7 @@ Fields are bound at runtime via `force_greats.fields.bind_fields()`.
 import taichi as ti
 
 from ..kernels import kernels_helpers
-from .fields import FG_MAX_SECTIONS
+from .fields import FG_MAX_SECTIONS, FG_MAX_STAT
 
 
 # ============================================================================
@@ -20,6 +20,8 @@ from .fields import FG_MAX_SECTIONS
 
 song_timestamps = None
 song_timestamps_great_candidate = None
+fg_fever_end_idx_song = None
+fg_fever_end_idx_great_candidate = None
 fg_forced_counts = None
 fg_pair_caps = None
 fg_ft_list = None
@@ -75,6 +77,84 @@ fg_genome_hint_allocation = None
 # Stage 1 flat kernel cfg tiling (reduces atomic contention per (genome, ftff)).
 # A larger tile reduces 64-bit atomic updates while keeping full search work identical.
 FG_STAGE1_CFG_TILE = 8
+
+
+# ============================================================================
+
+@ti.func
+def _binary_search_left_song_timestamps(n: ti.i32, x: ti.f32) -> ti.i32:
+    """
+    Leftmost index `i` in `song_timestamps[:n]` such that song_timestamps[i] >= x.
+
+    Assumes `song_timestamps` is sorted ascending (typical chart timestamps).
+    """
+    lo: ti.i32 = 0
+    hi: ti.i32 = n
+    while lo < hi:
+        mid: ti.i32 = (lo + hi) // 2
+        if song_timestamps[mid] < x:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
+@ti.func
+def _fg_fever_end_idx_from_tables(
+    current_idx: ti.i32,
+    carry_time: ti.f32,
+    carry_idx: ti.i32,
+    ft_idx: ti.i32,
+    total_notes: ti.i32,
+) -> ti.i32:
+    """
+    Get fever end index using precomputed tables.
+
+    - If `carry_time` extends beyond the next note timestamp, fever starts at the great-candidate time
+      from `carry_idx` (exactly mirrors `start_time = max(song_timestamps[current_idx], carry_time)`).
+    - Otherwise fever starts at `song_timestamps[current_idx]`.
+    """
+    start_song: ti.f32 = song_timestamps[current_idx]
+    use_carry = carry_time > start_song
+    start_idx: ti.i32 = ti.select(use_carry, carry_idx, current_idx)
+    end_idx: ti.i32 = ti.select(
+        use_carry,
+        fg_fever_end_idx_great_candidate[start_idx, ft_idx],
+        fg_fever_end_idx_song[start_idx, ft_idx],
+    )
+    return ti.min(end_idx, total_notes)
+
+
+@ti.kernel
+def fg_precompute_fever_end_idx_tables_kernel(total_notes: ti.i32, last_note_time: ti.f32):
+    """
+    Precompute fever end indices for fast Stage 1 timeline simulation.
+
+    Writes:
+      - fg_fever_end_idx_song[note_idx, ft_idx]
+      - fg_fever_end_idx_great_candidate[note_idx, ft_idx]
+
+    Both tables binary-search into `song_timestamps` (the chart timeline). The second table
+    uses start times from `song_timestamps_great_candidate` to correctly handle `carry_time`.
+    """
+    n_stat: ti.i32 = FG_MAX_STAT + 1
+    n: ti.i32 = ti.max(total_notes, 0)
+    fever_time_cas: ti.f32 = last_note_time * 0.15 + 0.15
+
+    for flat in range(n * n_stat):
+        note_idx: ti.i32 = flat // n_stat
+        ft_idx: ti.i32 = flat - (note_idx * n_stat)
+
+        ft_factor: ti.f32 = kernels_helpers.lookup_ref_ft(ft_idx)
+        fever_time: ti.f32 = fever_time_cas * ft_factor
+
+        start_song: ti.f32 = song_timestamps[note_idx]
+        end_song: ti.f32 = start_song + fever_time
+        fg_fever_end_idx_song[note_idx, ft_idx] = _binary_search_left_song_timestamps(n, end_song)
+
+        start_gc: ti.f32 = song_timestamps_great_candidate[note_idx]
+        end_gc: ti.f32 = start_gc + fever_time
+        fg_fever_end_idx_great_candidate[note_idx, ft_idx] = _binary_search_left_song_timestamps(n, end_gc)
 
 
 # ============================================================================
@@ -735,7 +815,6 @@ def fg_stage1_kernel(
     head_len: ti.i32 = ti.min(total_notes, 100)
 
     non_fever_cas: ti.f32 = ti.max(0.0, (ti.cast(total_notes - long_notes, ti.f32) * 0.333))
-    fever_time_cas: ti.f32 = last_note_time * 0.15 + 0.15
 
     for g, ftff_idx in ti.ndrange(n_genomes, n_ftff):
         ft_gems: ti.i32 = fg_ft_list[ftff_idx]
@@ -760,12 +839,10 @@ def fg_stage1_kernel(
         ff_stat_val: ti.i32 = base_ff_stat + (ff_gems * gem_scale_fever)
         ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
         ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
-        ft_factor: ti.f32 = kernels_helpers.lookup_ref_ft(ft_idx)
         ff_factor: ti.f32 = kernels_helpers.lookup_ref_ff(ff_idx)
 
         non_fever_base_f: ti.f32 = non_fever_cas * ff_factor
         non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_base_f), ti.i32)
-        real_fever_time: ti.f32 = fever_time_cas * ft_factor
 
         # Accumulate across cfg-chunks: seed from existing stage1 result
         best_final: ti.i32 = fg_stage1_final_score[g, ftff_idx]
@@ -803,6 +880,7 @@ def fg_stage1_kernel(
             current_idx: ti.i32 = 0
             sec: ti.i32 = 0
             carry_time: ti.f32 = 0.0
+            carry_idx: ti.i32 = 0
             while current_idx < total_notes:
                 base_notes_s: ti.i32 = non_fever_base - 1 if sec == 0 else non_fever_base
                 if base_notes_s < 0:
@@ -839,7 +917,10 @@ def fg_stage1_kernel(
                     forced_end: ti.i32 = forced_start + forced_app - 1
                     forced_end = ti.min(forced_end, end_normal - 1)
                     if forced_end >= forced_start and forced_end < total_notes:
-                        carry_time = ti.max(carry_time, song_timestamps_great_candidate[forced_end])
+                        forced_t: ti.f32 = song_timestamps_great_candidate[forced_end]
+                        if forced_t > carry_time:
+                            carry_time = forced_t
+                            carry_idx = forced_end
 
                 if sec < n_sections and sec < FG_MAX_SECTIONS:
                     start_idx[sec] = section_start
@@ -851,11 +932,7 @@ def fg_stage1_kernel(
                     break
 
                 # Fever section
-                start_time: ti.f32 = ti.max(song_timestamps[current_idx], carry_time)
-                end_time: ti.f32 = start_time + real_fever_time
-                fever_end_idx: ti.i32 = kernels_helpers.binary_search_left_from(
-                    song_timestamps, total_notes, end_time, current_idx
-                )
+                fever_end_idx: ti.i32 = _fg_fever_end_idx_from_tables(current_idx, carry_time, carry_idx, ft_idx, total_notes)
                 if fever_end_idx <= current_idx:
                     fever_end_idx = ti.min(total_notes, current_idx + 1)
 
@@ -1214,7 +1291,6 @@ def fg_stage1_flat_kernel_small3(
 
     head_len: ti.i32 = ti.min(total_notes, 100)
     non_fever_cas: ti.f32 = ti.max(0.0, (ti.cast(total_notes - long_notes, ti.f32) * 0.333))
-    fever_time_cas: ti.f32 = last_note_time * 0.15 + 0.15
 
     sentinel_packed: ti.i64 = ti.cast(-1, ti.i64) << 32
     cfg_tiles: ti.i32 = (n_cfg + FG_STAGE1_CFG_TILE - 1) // FG_STAGE1_CFG_TILE
@@ -1245,12 +1321,10 @@ def fg_stage1_flat_kernel_small3(
         ff_stat_val: ti.i32 = base_ff_stat + (ff_gems * gem_scale_fever)
         ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
         ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
-        ft_factor: ti.f32 = kernels_helpers.lookup_ref_ft(ft_idx)
         ff_factor: ti.f32 = kernels_helpers.lookup_ref_ff(ff_idx)
 
         non_fever_base_f: ti.f32 = non_fever_cas * ff_factor
         non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_base_f), ti.i32)
-        real_fever_time: ti.f32 = fever_time_cas * ft_factor
 
         budget: ti.i32 = total_budget - ft_gems - ff_gems
         if budget < 0:
@@ -1291,6 +1365,7 @@ def fg_stage1_flat_kernel_small3(
             current_idx: ti.i32 = 0
             sec: ti.i32 = 0
             carry_time: ti.f32 = 0.0
+            carry_idx: ti.i32 = 0
             while current_idx < total_notes:
                 base_notes_s: ti.i32 = non_fever_base - 1 if sec == 0 else non_fever_base
                 if base_notes_s < 0:
@@ -1325,7 +1400,10 @@ def fg_stage1_flat_kernel_small3(
                     forced_end: ti.i32 = forced_start + forced_app - 1
                     forced_end = ti.min(forced_end, end_normal - 1)
                     if forced_end >= forced_start and forced_end < total_notes:
-                        carry_time = ti.max(carry_time, song_timestamps_great_candidate[forced_end])
+                        forced_t: ti.f32 = song_timestamps_great_candidate[forced_end]
+                        if forced_t > carry_time:
+                            carry_time = forced_t
+                            carry_idx = forced_end
 
                 if sec < n_sections and sec < 3:
                     start_idx_vec[sec] = section_start
@@ -1336,11 +1414,7 @@ def fg_stage1_flat_kernel_small3(
                 if current_idx >= total_notes:
                     break
 
-                start_time: ti.f32 = ti.max(song_timestamps[current_idx], carry_time)
-                end_time: ti.f32 = start_time + real_fever_time
-                fever_end_idx: ti.i32 = kernels_helpers.binary_search_left_from(
-                    song_timestamps, total_notes, end_time, current_idx
-                )
+                fever_end_idx: ti.i32 = _fg_fever_end_idx_from_tables(current_idx, carry_time, carry_idx, ft_idx, total_notes)
                 if fever_end_idx <= current_idx:
                     fever_end_idx = ti.min(total_notes, current_idx + 1)
 
@@ -1512,7 +1586,6 @@ def fg_stage1_flat_kernel(
 
     head_len: ti.i32 = ti.min(total_notes, 100)
     non_fever_cas: ti.f32 = ti.max(0.0, (ti.cast(total_notes - long_notes, ti.f32) * 0.333))
-    fever_time_cas: ti.f32 = last_note_time * 0.15 + 0.15
 
     sentinel_packed: ti.i64 = ti.cast(-1, ti.i64) << 32
     cfg_tiles: ti.i32 = (n_cfg + FG_STAGE1_CFG_TILE - 1) // FG_STAGE1_CFG_TILE
@@ -1547,12 +1620,10 @@ def fg_stage1_flat_kernel(
         ff_stat_val: ti.i32 = base_ff_stat + (ff_gems * gem_scale_fever)
         ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
         ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
-        ft_factor: ti.f32 = kernels_helpers.lookup_ref_ft(ft_idx)
         ff_factor: ti.f32 = kernels_helpers.lookup_ref_ff(ff_idx)
 
         non_fever_base_f: ti.f32 = non_fever_cas * ff_factor
         non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_base_f), ti.i32)
-        real_fever_time: ti.f32 = fever_time_cas * ft_factor
 
         budget: ti.i32 = total_budget - ft_gems - ff_gems
         if budget < 0:
@@ -1594,6 +1665,7 @@ def fg_stage1_flat_kernel(
             current_idx: ti.i32 = 0
             sec: ti.i32 = 0
             carry_time: ti.f32 = 0.0
+            carry_idx: ti.i32 = 0
             while current_idx < total_notes:
                 base_notes_s: ti.i32 = non_fever_base - 1 if sec == 0 else non_fever_base
                 if base_notes_s < 0:
@@ -1630,7 +1702,10 @@ def fg_stage1_flat_kernel(
                     forced_end: ti.i32 = forced_start + forced_app - 1
                     forced_end = ti.min(forced_end, end_normal - 1)
                     if forced_end >= forced_start and forced_end < total_notes:
-                        carry_time = ti.max(carry_time, song_timestamps_great_candidate[forced_end])
+                        forced_t: ti.f32 = song_timestamps_great_candidate[forced_end]
+                        if forced_t > carry_time:
+                            carry_time = forced_t
+                            carry_idx = forced_end
 
                 if sec < n_sections and sec < FG_MAX_SECTIONS:
                     start_idx_vec[sec] = section_start
@@ -1642,11 +1717,7 @@ def fg_stage1_flat_kernel(
                     break
 
                 # Fever section
-                start_time: ti.f32 = ti.max(song_timestamps[current_idx], carry_time)
-                end_time: ti.f32 = start_time + real_fever_time
-                fever_end_idx: ti.i32 = kernels_helpers.binary_search_left_from(
-                    song_timestamps, total_notes, end_time, current_idx
-                )
+                fever_end_idx: ti.i32 = _fg_fever_end_idx_from_tables(current_idx, carry_time, carry_idx, ft_idx, total_notes)
                 if fever_end_idx <= current_idx:
                     fever_end_idx = ti.min(total_notes, current_idx + 1)
 
