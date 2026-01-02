@@ -79,12 +79,13 @@ fg_genome_hint_allocation = None
 # Stage 1 flat kernel cfg tiling (reduces atomic contention per (genome, ftff)).
 # A larger tile reduces 64-bit atomic updates while keeping full search work identical.
 #
-# On Vulkan/AMD, 64-bit atomics are a major throughput limiter for FG Stage 1. A larger
-# tile substantially reduces atomic pressure while keeping occupancy high.
+# On Vulkan/AMD, 64-bit atomics can be a throughput limiter for FG Stage 1, but too-large
+# tiles can also reduce occupancy by increasing per-thread register pressure. Default to a
+# conservative tile (historically best across workloads) and allow opt-in tuning.
 try:
-    FG_STAGE1_CFG_TILE = int(os.environ.get("FG_STAGE1_CFG_TILE", "32") or "32")
+    FG_STAGE1_CFG_TILE = int(os.environ.get("FG_STAGE1_CFG_TILE", "8") or "8")
 except Exception:
-    FG_STAGE1_CFG_TILE = 32
+    FG_STAGE1_CFG_TILE = 8
 FG_STAGE1_CFG_TILE = max(1, min(int(FG_STAGE1_CFG_TILE), 128))
 
 
