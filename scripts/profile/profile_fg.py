@@ -27,8 +27,6 @@ def profile_fg_processing():
     from gear_optimizer.solver.fever_timeline import SongTimelineGrid
     from gear_optimizer.solver.taichi_gem import api as gem_api
     from gear_optimizer.solver.taichi_gem.force_greats import api as fg_api
-    from gear_optimizer.solver.taichi_gem.force_greats import fields as fg_fields
-    from gear_optimizer.solver.taichi_gem.force_greats import kernels as fg_kernels
     from gear_optimizer.solver.taichi_gem import fields as gem_fields
     import taichi as ti
 

@@ -6,10 +6,6 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
-from gear_optimizer.core.song_loader import load_song
-
-
 def verify_timestamps():
     # Load a known song (e.g. one with holds)
     # Using 'The 1' or any generic song if available, otherwise just checking the loader output

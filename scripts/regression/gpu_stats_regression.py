@@ -23,10 +23,6 @@ if str(REPO_ROOT) not in sys.path:
 from gear_optimizer.solver.scoring import batch_evaluate_genomes, solve_best_fever_combination
 from gear_optimizer.core.constants import (
     TOTAL_ROWS,
-    GEM_SCALE_NORMAL,
-    GEM_SCALE_FEVER,
-    GEM_STAT_TO_ELEMENT_SCALE,
-    ELEMENTAL_GEM_SCALE,
 )
 
 

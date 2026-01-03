@@ -9,7 +9,6 @@ This runs the gear optimizer with detailed timing for:
 
 import os
 import sys
-import tempfile
 import configparser
 from pathlib import Path
 

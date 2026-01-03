@@ -19,7 +19,7 @@ os.environ["PERF_TIMING"] = "1"
 
 def worker_process_fn(worker_id, req_q, resp_q, song_name, num_notes):
     """Worker process that submits GPU request."""
-    from gear_optimizer.solver.gpu_executor import set_gpu_worker_mode, submit_gpu_solve_genomes, clear_gpu_worker_mode
+    from gear_optimizer.solver.gpu_executor import set_gpu_worker_mode, submit_gpu_solve_genomes
     import numpy as np
 
     set_gpu_worker_mode(worker_id, req_q, resp_q)
@@ -101,7 +101,6 @@ def worker_process_fn(worker_id, req_q, resp_q, song_name, num_notes):
 def test_with_processes():
     """Test using actual spawn processes like the real app."""
     from gear_optimizer.solver.gpu_executor import GpuExecutor
-    import concurrent.futures
 
     print("=" * 60)
     print("TEST: GPU Executor with SPAWN Processes (like real app)")

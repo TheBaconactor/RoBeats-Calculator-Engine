@@ -33,7 +33,6 @@ def profile_solve_genomes():
     """Profile the core GPU solver path."""
     from gear_optimizer.solver.taichi_gem.api import (
         solve_genomes_parallel,
-        load_ref_arrays,
     )
     from gear_optimizer.solver.fever_timeline import SongTimelineGrid
     from gear_optimizer.solver.gpu_profiler import get_gpu_profiler

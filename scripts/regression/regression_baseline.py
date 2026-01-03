@@ -46,7 +46,6 @@ def patch_ga_seed():
 
 def run_single_song_test():
     """Run GA on a single song and return results."""
-    from gear_optimizer.core.config import config_get
     from gear_optimizer.app import GearOptimizerApp
 
     # Force single song mode
