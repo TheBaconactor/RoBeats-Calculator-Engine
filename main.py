@@ -26,6 +26,7 @@ def _apply_throughput_mode_env() -> None:
     ):
         os.environ.pop(k, None)
 
+
 if __name__ == "__main__":
     multiprocessing.freeze_support()
     try:

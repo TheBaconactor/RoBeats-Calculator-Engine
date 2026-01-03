@@ -271,9 +271,7 @@ def _windows_dxgi_adapter_luid_name_map() -> dict[str, str]:
         return g
 
     # IID_IDXGIFactory1 = {770aae78-f26f-4dba-a829-253c83d1b387}
-    iid_factory1 = _guid_from_hex(
-        0x770AAE78, 0xF26F, 0x4DBA, bytes([0xA8, 0x29, 0x25, 0x3C, 0x83, 0xD1, 0xB3, 0x87])
-    )
+    iid_factory1 = _guid_from_hex(0x770AAE78, 0xF26F, 0x4DBA, bytes([0xA8, 0x29, 0x25, 0x3C, 0x83, 0xD1, 0xB3, 0x87]))
 
     class _LUID(ctypes.Structure):
         _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
@@ -340,7 +338,9 @@ def _windows_dxgi_adapter_luid_name_map() -> dict[str, str]:
         enum_ptr = v[12]
         if not enum_ptr:
             return {}
-        enum_adapters1 = ctypes.WINFUNCTYPE(HRESULT, ctypes.c_void_p, wintypes.UINT, ctypes.POINTER(ctypes.c_void_p))(enum_ptr)
+        enum_adapters1 = ctypes.WINFUNCTYPE(HRESULT, ctypes.c_void_p, wintypes.UINT, ctypes.POINTER(ctypes.c_void_p))(
+            enum_ptr
+        )
         idx = 0
         while True:
             adapter = ctypes.c_void_p()
@@ -684,8 +684,12 @@ def _parse_typeperf_csv(
             util_pid_by_type_series: dict[str, list[float]] = {k: [] for k in pid_util_cols_by_type}
             util_global_by_luid_series: dict[str, list[float]] = {k: [] for k in util_cols_by_luid}
             util_pid_by_luid_series: dict[str, list[float]] = {k: [] for k in pid_util_cols_by_luid}
-            util_global_by_luid_type_series: dict[tuple[str, str], list[float]] = {k: [] for k in util_cols_by_luid_type}
-            util_pid_by_luid_type_series: dict[tuple[str, str], list[float]] = {k: [] for k in pid_util_cols_by_luid_type}
+            util_global_by_luid_type_series: dict[tuple[str, str], list[float]] = {
+                k: [] for k in util_cols_by_luid_type
+            }
+            util_pid_by_luid_type_series: dict[tuple[str, str], list[float]] = {
+                k: [] for k in pid_util_cols_by_luid_type
+            }
             mem_ded_by_luid_series: dict[str, list[float]] = {k: [] for k in ded_cols_by_luid}
             mem_shr_by_luid_series: dict[str, list[float]] = {k: [] for k in shr_cols_by_luid}
 
@@ -1049,6 +1053,26 @@ _PERF_GA_DECODE_RE = re.compile(
     r"selected=(?P<selected>\d+)\s*$"
 )
 
+_PERF_GA_DECODE_DETAILS_RE = re.compile(
+    r"^\[PERF\]\[GADecodeDetails\]\s+"
+    r"runs=(?P<runs>\d+)\s+"
+    r"pop=(?P<pop>\d+)\s+"
+    r"uniq=(?P<uniq>\d+)\s+"
+    r"arrays=(?P<arrays_ms>[\d.]+)ms\s+"
+    r"proxy=(?P<proxy_ms>[\d.]+)ms\s*$"
+)
+
+_PERF_GA_DECODE_SELECT_DETAILS_RE = re.compile(
+    r"^\[PERF\]\[GADecodeSelectDetails\]\s+"
+    r"runs=(?P<runs>\d+)\s+"
+    r"pop=(?P<pop>\d+)\s+"
+    r"uniq=(?P<uniq>\d+)\s+"
+    r"proxy_vec=(?P<proxy_vec_ms>[\d.]+)ms\s+"
+    r"order=(?P<order_ms>[\d.]+)ms\s+"
+    r"uniq=(?P<uniq_ms>[\d.]+)ms\s+"
+    r"fill=(?P<fill_ms>[\d.]+)ms\s*$"
+)
+
 _PERF_GA_DOWNLOAD_RUNS_PAYLOAD_RE = re.compile(
     r"^\[PERF\]\[GADownloadRunsPayload\]\s+"
     r"runs=(?P<runs>\d+)\s+"
@@ -1081,6 +1105,8 @@ def _parse_perf_stdout_log(stdout_log: Path) -> dict[str, Any]:
         return {"ok": False, "error": "missing_stdout_log"}
 
     ga_decode_rows: list[dict[str, Any]] = []
+    ga_decode_detail_rows: list[dict[str, Any]] = []
+    ga_decode_select_rows: list[dict[str, Any]] = []
     ga_dl_rows: list[dict[str, Any]] = []
     fg_acc_rows: list[dict[str, Any]] = []
 
@@ -1104,6 +1130,36 @@ def _parse_perf_stdout_log(stdout_log: Path) -> dict[str, Any]:
                             "select_ms": float(g["select_ms"]),
                             "stats_ms": float(g["stats_ms"]),
                             "total_ms": float(g["total_ms"]),
+                        }
+                    )
+                    continue
+
+                m = _PERF_GA_DECODE_DETAILS_RE.match(line)
+                if m is not None:
+                    g = m.groupdict()
+                    ga_decode_detail_rows.append(
+                        {
+                            "runs": int(g["runs"]),
+                            "pop": int(g["pop"]),
+                            "uniq": int(g["uniq"]),
+                            "arrays_ms": float(g["arrays_ms"]),
+                            "proxy_ms": float(g["proxy_ms"]),
+                        }
+                    )
+                    continue
+
+                m = _PERF_GA_DECODE_SELECT_DETAILS_RE.match(line)
+                if m is not None:
+                    g = m.groupdict()
+                    ga_decode_select_rows.append(
+                        {
+                            "runs": int(g["runs"]),
+                            "pop": int(g["pop"]),
+                            "uniq": int(g["uniq"]),
+                            "proxy_vec_ms": float(g["proxy_vec_ms"]),
+                            "order_ms": float(g["order_ms"]),
+                            "uniq_ms": float(g["uniq_ms"]),
+                            "fill_ms": float(g["fill_ms"]),
                         }
                     )
                     continue
@@ -1179,6 +1235,47 @@ def _parse_perf_stdout_log(stdout_log: Path) -> dict[str, Any]:
         }
     else:
         out["ga_download_runs_payload"] = {"count": 0}
+
+    if ga_decode_detail_rows:
+        arrays_ms = [r["arrays_ms"] for r in ga_decode_detail_rows]
+        proxy_ms = [r["proxy_ms"] for r in ga_decode_detail_rows]
+        total_ms = [r["arrays_ms"] + r["proxy_ms"] for r in ga_decode_detail_rows]
+        rows_sorted = sorted(ga_decode_detail_rows, key=lambda r: (r.get("arrays_ms", 0.0) + r.get("proxy_ms", 0.0)))
+        rows_sorted.reverse()
+        out["ga_decode_details"] = {
+            "count": int(len(ga_decode_detail_rows)),
+            "arrays_ms": _series_stats(arrays_ms),
+            "proxy_ms": _series_stats(proxy_ms),
+            "total_ms": _series_stats(total_ms),
+            "top_slowest": rows_sorted[:10],
+        }
+    else:
+        out["ga_decode_details"] = {"count": 0}
+
+    if ga_decode_select_rows:
+        proxy_vec_ms = [r["proxy_vec_ms"] for r in ga_decode_select_rows]
+        order_ms = [r["order_ms"] for r in ga_decode_select_rows]
+        uniq_ms = [r["uniq_ms"] for r in ga_decode_select_rows]
+        fill_ms = [r["fill_ms"] for r in ga_decode_select_rows]
+        total_ms = [r["proxy_vec_ms"] + r["order_ms"] + r["uniq_ms"] + r["fill_ms"] for r in ga_decode_select_rows]
+        rows_sorted = sorted(
+            ga_decode_select_rows,
+            key=lambda r: (
+                r.get("proxy_vec_ms", 0.0) + r.get("order_ms", 0.0) + r.get("uniq_ms", 0.0) + r.get("fill_ms", 0.0)
+            ),
+            reverse=True,
+        )
+        out["ga_decode_select_details"] = {
+            "count": int(len(ga_decode_select_rows)),
+            "proxy_vec_ms": _series_stats(proxy_vec_ms),
+            "order_ms": _series_stats(order_ms),
+            "uniq_ms": _series_stats(uniq_ms),
+            "fill_ms": _series_stats(fill_ms),
+            "total_ms": _series_stats(total_ms),
+            "top_slowest": rows_sorted[:10],
+        }
+    else:
+        out["ga_decode_select_details"] = {"count": 0}
 
     if fg_acc_rows:
         up = [r["upload_ms"] for r in fg_acc_rows]
@@ -1304,7 +1401,9 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
     # - We split by category:
     #   - no_work: batch_size==0 (no requests available)
     #   - coalesce: batch_size>0 (had work but waited to batch more)
-    def _merge_wait_windows(rows: list[dict[str, Any]], *, want_no_work: bool) -> list[tuple[float, float, dict[str, Any]]]:
+    def _merge_wait_windows(
+        rows: list[dict[str, Any]], *, want_no_work: bool
+    ) -> list[tuple[float, float, dict[str, Any]]]:
         windows: list[tuple[float, float, dict[str, Any]]] = []
         for r in rows:
             try:
@@ -1796,6 +1895,7 @@ def _gpu_util_over_intervals_ts(
         "weighted_mean": float(weighted_mean) if weighted_mean is not None else None,
     }
 
+
 def _parse_cpu_jsonl(cpu_path: Path) -> dict[str, Any]:
     if not cpu_path.exists():
         return {"ok": False, "error": "missing_cpu_jsonl"}
@@ -2001,7 +2101,9 @@ def main(argv: list[str] | None = None) -> int:
             target_pid=int(proc.pid),
             luid_name_map=display_adapters,
         ),
-        "gpu_executor_trace_summary": _parse_gpu_executor_trace(trace_path) if trace_path is not None else {"ok": False},
+        "gpu_executor_trace_summary": _parse_gpu_executor_trace(trace_path)
+        if trace_path is not None
+        else {"ok": False},
         "host": {
             "platform": platform.platform(),
             "python": sys.version,

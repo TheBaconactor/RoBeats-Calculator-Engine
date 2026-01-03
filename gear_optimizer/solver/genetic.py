@@ -501,6 +501,7 @@ def decode_gpu_native_ga_runs_payload(
     # Fast path: do FG-aware selection in ID-space (no dict genome decode) and only
     # decode full genomes for the final bounded funnel.
     t_stub = time.perf_counter() if perf else 0.0
+    t_stub_arrays = time.perf_counter() if perf else 0.0
     n_stub = int(stub_scores.shape[0])
 
     stub_rows = 1 + stub_pop_idx
@@ -519,6 +520,7 @@ def decode_gpu_native_ga_runs_payload(
     stub_ff = np.asarray(stub_res[:, 2], dtype=np.int32)
 
     item_stats = registry.to_gpu_arrays()["item_stats"]  # (n_items, 10)
+    arrays_ms = (time.perf_counter() - t_stub_arrays) * 1000.0 if perf else 0.0
 
     # Deterministic ordering helpers (stable for ties, matches select_fg_candidates behavior).
     #
@@ -536,21 +538,26 @@ def decode_gpu_native_ga_runs_payload(
     p_idx = color_to_idx.get(p_color, -1)
     s_idx = color_to_idx.get(s_color, -1)
 
-    # FG proxy is a linear function of item stats, so we can precompute a weighted proxy per item
-    # and sum over the 9 IDs. This avoids building (n_stub, 9, 10) stats blocks just to rank.
-    item_proxy = item_stats[:, 0].astype(np.int64, copy=False)
-    item_proxy += item_stats[:, 1].astype(np.int64, copy=False) * 2
-    item_proxy += item_stats[:, 2].astype(np.int64, copy=False) * 4
-    item_proxy += item_stats[:, 3].astype(np.int64, copy=False) * 3
-    item_proxy += item_stats[:, 4].astype(np.int64, copy=False) * 4
+    # Preweight per-item proxy once per decode to avoid repeated multi-column gathers.
+    item_stats_i64 = item_stats.astype(np.int64, copy=False)
+    item_proxy = (
+        item_stats_i64[:, 0]
+        + (item_stats_i64[:, 1] * 2)
+        + (item_stats_i64[:, 2] * 4)
+        + (item_stats_i64[:, 3] * 3)
+        + (item_stats_i64[:, 4] * 4)
+    )
     if 5 <= p_idx <= 9:
-        item_proxy += item_stats[:, p_idx].astype(np.int64, copy=False) * 2
+        item_proxy = item_proxy + (item_stats_i64[:, p_idx] * 2)
     if 5 <= s_idx <= 9 and s_idx != p_idx:
-        item_proxy += item_stats[:, s_idx].astype(np.int64, copy=False)
+        item_proxy = item_proxy + item_stats_i64[:, s_idx]
 
     def _fg_proxy_from_ids(ids_mat: np.ndarray) -> np.ndarray:
-        return item_proxy[ids_mat].sum(axis=1).astype(np.int64, copy=False)
+        ids = np.asarray(ids_mat, dtype=np.int32)
+        proxy = item_proxy[ids].sum(axis=1, dtype=np.int64)
+        return np.asarray(proxy, dtype=np.int64)
 
+    t_stub_proxy = time.perf_counter() if perf else 0.0
     if n_stub <= fg_candidate_limit:
         base_order = idx[np.argsort(-stub_scores, kind="stable")]
         selected_idx_arr = base_order[: int(fg_candidate_limit)]
@@ -605,30 +612,28 @@ def decode_gpu_native_ga_runs_payload(
                 return best_data, list(best_gear), list(best_minis), []
         else:
             # Full funnel path: compute FG proxy for all stubs (limit > LOADOUTS_PER_SONG_LIMIT).
+            t_sel_proxy = time.perf_counter() if perf else 0.0
             fg_proxy_vec = _fg_proxy_from_ids(stub_genome_ids)
+            proxy_vec_ms = (time.perf_counter() - t_sel_proxy) * 1000.0 if perf else 0.0
 
             # metas_by_base
+            t_sel_order = time.perf_counter() if perf else 0.0
             _tmp = idx[np.argsort(-fg_proxy_vec, kind="stable")]
             metas_by_base = _tmp[np.argsort(-stub_scores[_tmp], kind="stable")]
             # metas_by_fg
             _tmp2 = idx[np.argsort(-stub_scores, kind="stable")]
             metas_by_fg = _tmp2[np.argsort(-fg_proxy_vec[_tmp2], kind="stable")]
+            order_ms = (time.perf_counter() - t_sel_order) * 1000.0 if perf else 0.0
 
             selected_stub_indices: list[int] = []
             selected_mask = np.zeros((n_stub,), dtype=np.bool_)
 
-            # Centers: (ft, ff) packed into i64 for fast uniqueness checks.
-            center_keys = (stub_ft.astype(np.int64) << 32) | (stub_ff.astype(np.int64) & 0xFFFFFFFF)
-            _, center_inv = np.unique(center_keys, return_inverse=True)
-            seen_centers = np.zeros((int(center_inv.max()) + 1,), dtype=np.bool_)
-
-            # Minis: use the already-sorted mini IDs in stub_keys_mat and map to compact group IDs.
-            minis_keys = np.ascontiguousarray(stub_keys_mat[:, 6:9])
-            minis_void = minis_keys.view(np.dtype((np.void, minis_keys.dtype.itemsize * minis_keys.shape[1]))).reshape(
-                -1
-            )
-            _, minis_inv = np.unique(minis_void, return_inverse=True)
-            seen_minis = np.zeros((int(minis_inv.max()) + 1,), dtype=np.bool_)
+            t_sel_uniq = time.perf_counter() if perf else 0.0
+            # Avoid `np.unique` on void views here: on some Windows builds this can
+            # produce multi-hundred-ms spikes for small inputs, stalling GPU submits.
+            seen_centers: set[int] = set()
+            seen_minis: set[tuple[int, int, int]] = set()
+            uniq_ms = (time.perf_counter() - t_sel_uniq) * 1000.0 if perf else 0.0
 
             def _add(j: int) -> bool:
                 j = int(j)
@@ -636,8 +641,17 @@ def decode_gpu_native_ga_runs_payload(
                     return False
                 selected_mask[j] = True
                 selected_stub_indices.append(j)
-                seen_minis[int(minis_inv[j])] = True
-                seen_centers[int(center_inv[j])] = True
+                try:
+                    center_key = (int(stub_ft[j]) << 32) | (int(stub_ff[j]) & 0xFFFFFFFF)
+                except Exception:
+                    center_key = 0
+                try:
+                    m = stub_keys_mat[j, 6:9]
+                    mini_key = (int(m[0]), int(m[1]), int(m[2]))
+                except Exception:
+                    mini_key = (0, 0, 0)
+                seen_centers.add(int(center_key))
+                seen_minis.add(mini_key)
                 return True
 
             top_base_keep = min(int(fg_candidate_limit), int(LOADOUTS_PER_SONG_LIMIT))
@@ -657,7 +671,11 @@ def decode_gpu_native_ga_runs_payload(
             for j in metas_by_fg:
                 if len(selected_stub_indices) >= fg_budget_end:
                     break
-                if seen_centers[int(center_inv[int(j)])]:
+                try:
+                    ck = (int(stub_ft[int(j)]) << 32) | (int(stub_ff[int(j)]) & 0xFFFFFFFF)
+                except Exception:
+                    ck = 0
+                if int(ck) in seen_centers:
                     continue
                 _add(j)
             for j in metas_by_fg:
@@ -668,7 +686,12 @@ def decode_gpu_native_ga_runs_payload(
             for j in metas_by_base:
                 if len(selected_stub_indices) >= int(fg_candidate_limit):
                     break
-                if seen_minis[int(minis_inv[int(j)])]:
+                try:
+                    m = stub_keys_mat[int(j), 6:9]
+                    mk = (int(m[0]), int(m[1]), int(m[2]))
+                except Exception:
+                    mk = (0, 0, 0)
+                if mk in seen_minis:
                     continue
                 _add(j)
 
@@ -678,9 +701,18 @@ def decode_gpu_native_ga_runs_payload(
                 _add(j)
 
             selected_stub_indices = selected_stub_indices[: int(fg_candidate_limit)]
+            fill_ms = (time.perf_counter() - t_sel_uniq) * 1000.0 - uniq_ms if perf else 0.0
             select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
             if not selected_stub_indices:
                 return best_data, list(best_gear), list(best_minis), []
+            if perf:
+                print(
+                    "[PERF][GADecodeSelectDetails] "
+                    f"runs={n_runs} pop={n_genomes} uniq={n_stub} "
+                    f"proxy_vec={proxy_vec_ms:.1f}ms order={order_ms:.1f}ms uniq={uniq_ms:.1f}ms fill={fill_ms:.1f}ms"
+                )
+
+    proxy_ms = (time.perf_counter() - t_stub_proxy) * 1000.0 if perf else 0.0
 
     # Vectorized stats computation for selected candidates only.
     t_stats = time.perf_counter() if perf else 0.0
@@ -828,6 +860,10 @@ def decode_gpu_native_ga_runs_payload(
             f"runs={n_runs} pop={n_genomes} uniq={n_stub} "
             f"scan={scan_ms:.1f}ms select={select_ms:.1f}ms stats={stats_ms:.1f}ms total={total_ms:.1f}ms "
             f"selected={len(unique_evaluated)}"
+        )
+        print(
+            "[PERF][GADecodeDetails] "
+            f"runs={n_runs} pop={n_genomes} uniq={n_stub} arrays={arrays_ms:.1f}ms proxy={proxy_ms:.1f}ms"
         )
 
     return best_data, list(best_gear), list(best_minis), unique_evaluated
