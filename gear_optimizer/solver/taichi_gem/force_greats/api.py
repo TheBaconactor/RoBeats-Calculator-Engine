@@ -101,7 +101,9 @@ def _get_gpu_profiler():
 
     Enabled when either PERF_TIMING or GPU_PROFILER is on.
     """
-    if not (_PERF_TIMING or str(os.environ.get("GPU_PROFILER", "0") or "").strip().lower() in {"1", "true", "yes", "on"}):
+    if not (
+        _PERF_TIMING or str(os.environ.get("GPU_PROFILER", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    ):
         return None
     try:
         from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
@@ -153,6 +155,7 @@ def _record_kernel_wall(name: str, dt_sec: float, *, genome_count: int = 0) -> N
         p._record(f"fg_kernel::{name}", float(dt_sec))  # type: ignore[attr-defined]
     except Exception:
         return
+
 
 # Recovery: Taichi/Vulkan backend can occasionally fault on Windows (driver reset,
 # device lost, or internal assertion failures). Retry with a hard Taichi reset.
@@ -417,7 +420,7 @@ def fg_download_global_best(n_genomes: int) -> dict[str, np.ndarray]:
     if _FG_TRANSFER_TRACE:
         try:
             print(
-                f"[FG][XFER] global_best: sync={_sync_sec*1000:.2f}ms download={_dl_sec*1000:.2f}ms bytes={int(getattr(packed,'nbytes',0) or 0)}"
+                f"[FG][XFER] global_best: sync={_sync_sec * 1000:.2f}ms download={_dl_sec * 1000:.2f}ms bytes={int(getattr(packed, 'nbytes', 0) or 0)}"
             )
         except Exception:
             pass
@@ -962,19 +965,27 @@ def _solve_force_greats_finder_gpu_impl(
 
     # Pre-fetch buffer reference
     buf = _fg_forced_upload_buf
+
     # Optional fast path: pre-pack the full config list once if it's rectangular.
-    # This avoids repeated `np.array(chunk)` conversions inside the hot cfg loop,
-    # which can otherwise burn CPU and stall the GPU between dispatches.
+    # Important: this can be expensive for large `fg_configs`, so only compute it
+    # on-demand when we actually need to pack/upload configs this call.
     packed_configs = None
     packed_cols = 0
-    try:
-        arr_full = np.asarray(fg_configs, dtype=np.int32)
-        if arr_full.ndim == 2 and int(arr_full.shape[0]) == int(n_cfg_total):
-            packed_configs = arr_full
-            packed_cols = int(arr_full.shape[1])
-    except Exception:
-        packed_configs = None
-        packed_cols = 0
+    _packed_ready = False
+
+    def _maybe_pack_configs() -> None:
+        nonlocal packed_configs, packed_cols, _packed_ready
+        if _packed_ready:
+            return
+        _packed_ready = True
+        try:
+            arr_full = np.asarray(fg_configs, dtype=np.int32)
+            if arr_full.ndim == 2 and int(arr_full.shape[0]) == int(n_cfg_total):
+                packed_configs = arr_full
+                packed_cols = int(arr_full.shape[1])
+        except Exception:
+            packed_configs = None
+            packed_cols = 0
 
     # ------------------------------------------------------------------
     # Config upload strategy (max throughput):
@@ -982,7 +993,12 @@ def _solve_force_greats_finder_gpu_impl(
     # share the same config list (common across FT/FF chunking) don't pay
     # repeated host packing + host->device uploads.
     # ------------------------------------------------------------------
-    resident_enabled = str(os.environ.get("FG_RESIDENT_FORCED_CONFIGS", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
+    resident_enabled = str(os.environ.get("FG_RESIDENT_FORCED_CONFIGS", "1") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     global _fg_forced_resident_key, _fg_forced_resident_n_cfg_total
 
     cfg_sig = None
@@ -999,6 +1015,7 @@ def _solve_force_greats_finder_gpu_impl(
     )
 
     if resident_enabled and (not resident_ok) and cfg_sig is not None:
+        _maybe_pack_configs()
         # Upload the FULL config list into the device-resident buffer once.
         # Subsequent calls can skip uploads and just change cfg_read_offset.
         upload_rows = int(_FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)
@@ -1051,6 +1068,9 @@ def _solve_force_greats_finder_gpu_impl(
         _fg_forced_configs_upload_key = cfg_sig  # type: ignore[assignment]
     else:
         _fg_forced_configs_upload_key = None
+
+    if not resident_ok:
+        _maybe_pack_configs()
 
     _t_stage1_wall0 = time.perf_counter()
     for cfg_offset in range(0, n_cfg_total, cfg_chunk):
@@ -1189,7 +1209,7 @@ def _solve_force_greats_finder_gpu_impl(
     if _FG_TRANSFER_TRACE:
         try:
             print(
-                f"[FG][KERNEL] stage1_sync_wall={_stage1_wall*1000:.2f}ms (genomes={int(n_genomes)}, cfgs={int(n_cfg_total)}, ftff={int(n_ftff)}, chunks={int(n_chunks)})"
+                f"[FG][KERNEL] stage1_sync_wall={_stage1_wall * 1000:.2f}ms (genomes={int(n_genomes)}, cfgs={int(n_cfg_total)}, ftff={int(n_ftff)}, chunks={int(n_chunks)})"
             )
         except Exception:
             pass
@@ -1233,7 +1253,9 @@ def _solve_force_greats_finder_gpu_impl(
     _record_download("best_packed", _dt, int(getattr(packed_results, "nbytes", 0) or 0))
     if _FG_TRANSFER_TRACE:
         try:
-            print(f"[FG][XFER] best_packed: download={_dt*1000:.2f}ms bytes={int(getattr(packed_results,'nbytes',0) or 0)}")
+            print(
+                f"[FG][XFER] best_packed: download={_dt * 1000:.2f}ms bytes={int(getattr(packed_results, 'nbytes', 0) or 0)}"
+            )
         except Exception:
             pass
 
@@ -1530,9 +1552,8 @@ def solve_force_greats_finder_gpu_tasks(
         key = (id(fg_configs), int(task_offset))
         if merged_tasks:
             prev = merged_tasks[-1]
-            if (
-                prev.get("_merge_key") == key
-                and int(len(prev.get("ftff_pairs") or ())) + int(len(pairs_list)) <= int(max_ftff)
+            if prev.get("_merge_key") == key and int(len(prev.get("ftff_pairs") or ())) + int(len(pairs_list)) <= int(
+                max_ftff
             ):
                 prev_pairs = prev.get("ftff_pairs")
                 if isinstance(prev_pairs, list):

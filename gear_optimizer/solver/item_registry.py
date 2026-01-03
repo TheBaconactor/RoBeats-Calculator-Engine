@@ -131,6 +131,30 @@ class ItemRegistry:
         # Lazy caches for GPU upload and fast numpy decoding.
         self._gpu_arrays_cache: Optional[dict[str, np.ndarray]] = None
         self._item_stats_cache: Optional[np.ndarray] = None
+        # Optional fast decode helpers. These are built lazily and only for small registries
+        # to avoid adding O(n_items) work to every song.
+        self._id_to_item_list: Optional[list[dict]] = None
+        self._id_to_name_list: Optional[list] = None
+
+    def _maybe_build_decode_lists(self) -> None:
+        if self._id_to_item_list is not None and self._id_to_name_list is not None:
+            return
+        n_items = int(self.n_items)
+        # Building O(n_items) Python lists can be more expensive than a few dict.get()
+        # calls when registries are large. Keep this conservative.
+        if n_items > 12000:
+            return
+        id_to_item = self.id_to_item
+        items: list[dict] = [{}] * n_items
+        for item_id, item in id_to_item.items():
+            try:
+                idx = int(item_id)
+            except Exception:
+                continue
+            if 0 <= idx < n_items:
+                items[idx] = item or {}
+        self._id_to_item_list = items
+        self._id_to_name_list = [d.get("Name", "None") if d else "None" for d in items]
 
     def encode_genome(self, genome: list[dict]) -> np.ndarray:
         """
@@ -170,8 +194,55 @@ class ItemRegistry:
         Returns:
             list[dict]: List of 9 item dicts
         """
+        self._maybe_build_decode_lists()
+        id_list = self._id_to_item_list
+        if id_list is not None:
+            n = len(id_list)
+            out: list[dict] = []
+            out_append = out.append
+            for item_id in ids[:9]:
+                try:
+                    idx = int(item_id)
+                except Exception:
+                    out_append({})
+                    continue
+                if 0 <= idx < n:
+                    out_append(id_list[idx])
+                else:
+                    out_append({})
+            return out
         id_to_item = self.id_to_item
         return [id_to_item.get(int(item_id), {}) for item_id in ids[:9]]
+
+    def decode_names(self, ids: np.ndarray) -> list[str]:
+        """
+        Decode item IDs to "Name" strings with the same semantics used elsewhere:
+        missing/empty -> "None".
+        """
+        self._maybe_build_decode_lists()
+        name_list = self._id_to_name_list
+        if name_list is not None:
+            n = len(name_list)
+            out: list[str] = []
+            out_append = out.append
+            for item_id in ids[:9]:
+                try:
+                    idx = int(item_id)
+                except Exception:
+                    out_append("None")
+                    continue
+                if 0 <= idx < n:
+                    out_append(name_list[idx])
+                else:
+                    out_append("None")
+            return out
+        # Fallback to dict lookups; this preserves exact semantics but may be slower.
+        id_to_item = self.id_to_item
+        out2: list[str] = []
+        for item_id in ids[:9]:
+            item = id_to_item.get(int(item_id), {})
+            out2.append(item.get("Name", "None") if item else "None")
+        return out2
 
     def to_gpu_arrays(self) -> dict[str, np.ndarray]:
         """

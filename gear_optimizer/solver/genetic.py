@@ -504,8 +504,17 @@ def decode_gpu_native_ga_runs_payload(
     n_stub = int(stub_scores.shape[0])
 
     stub_rows = 1 + stub_pop_idx
-    stub_genome_ids = runs_payload[stub_run_idx, stub_rows, 1 : 1 + n_slots]
-    stub_res = runs_payload[stub_run_idx, stub_rows, 1 + n_slots : 1 + n_slots + 7]
+    # Avoid multi-dim advanced indexing here: it can be surprisingly slow/alloc-heavy.
+    # Flatten (run,row) to a single index, then slice columns.
+    try:
+        row_stride = int(runs_payload.shape[1])
+        flat = runs_payload.reshape(-1, int(runs_payload.shape[2]))
+        flat_idx = (stub_run_idx.astype(np.int64, copy=False) * row_stride) + stub_rows.astype(np.int64, copy=False)
+        stub_genome_ids = flat[flat_idx, 1 : 1 + n_slots]
+        stub_res = flat[flat_idx, 1 + n_slots : 1 + n_slots + 7]
+    except Exception:
+        stub_genome_ids = runs_payload[stub_run_idx, stub_rows, 1 : 1 + n_slots]
+        stub_res = runs_payload[stub_run_idx, stub_rows, 1 + n_slots : 1 + n_slots + 7]
     stub_ft = np.asarray(stub_res[:, 1], dtype=np.int32)
     stub_ff = np.asarray(stub_res[:, 2], dtype=np.int32)
 
@@ -527,19 +536,20 @@ def decode_gpu_native_ga_runs_payload(
     p_idx = color_to_idx.get(p_color, -1)
     s_idx = color_to_idx.get(s_color, -1)
 
-    def _fg_proxy_from_item_stats_sum(item_stats_sum64: np.ndarray) -> np.ndarray:
-        proxy = (
-            (item_stats_sum64[:, 2] * 4)  # Fever Multiplier
-            + (item_stats_sum64[:, 4] * 4)  # Fever Fill Rate
-            + (item_stats_sum64[:, 3] * 3)  # Fever Time
-            + (item_stats_sum64[:, 1] * 2)  # Combo Multiplier
-            + item_stats_sum64[:, 0]  # Perfect Points
-        )
-        if 5 <= p_idx <= 9:
-            proxy = proxy + (item_stats_sum64[:, p_idx] * 2)
-        if 5 <= s_idx <= 9 and s_idx != p_idx:
-            proxy = proxy + item_stats_sum64[:, s_idx]
-        return np.asarray(proxy, dtype=np.int64)
+    # FG proxy is a linear function of item stats, so we can precompute a weighted proxy per item
+    # and sum over the 9 IDs. This avoids building (n_stub, 9, 10) stats blocks just to rank.
+    item_proxy = item_stats[:, 0].astype(np.int64, copy=False)
+    item_proxy += item_stats[:, 1].astype(np.int64, copy=False) * 2
+    item_proxy += item_stats[:, 2].astype(np.int64, copy=False) * 4
+    item_proxy += item_stats[:, 3].astype(np.int64, copy=False) * 3
+    item_proxy += item_stats[:, 4].astype(np.int64, copy=False) * 4
+    if 5 <= p_idx <= 9:
+        item_proxy += item_stats[:, p_idx].astype(np.int64, copy=False) * 2
+    if 5 <= s_idx <= 9 and s_idx != p_idx:
+        item_proxy += item_stats[:, s_idx].astype(np.int64, copy=False)
+
+    def _fg_proxy_from_ids(ids_mat: np.ndarray) -> np.ndarray:
+        return item_proxy[ids_mat].sum(axis=1).astype(np.int64, copy=False)
 
     if n_stub <= fg_candidate_limit:
         base_order = idx[np.argsort(-stub_scores, kind="stable")]
@@ -578,15 +588,13 @@ def decode_gpu_native_ga_runs_payload(
                         tied = base_order[block_start:block_end]
                         needed = max(0, limit - int(prefix.shape[0]))
                         if needed and tied.size:
-                            tied_item_sum = item_stats[stub_genome_ids[tied]].sum(axis=1).astype(np.int64, copy=False)
-                            tied_proxy = _fg_proxy_from_item_stats_sum(tied_item_sum)
+                            tied_proxy = _fg_proxy_from_ids(stub_genome_ids[tied])
                             tied_pick = tied[np.argsort(-tied_proxy, kind="stable")][:needed]
                             selected_idx_arr = np.concatenate([prefix, tied_pick], axis=0)
 
             # Final deterministic ordering for the selected set:
             # sort by (score desc, fg_proxy desc) like `metas_by_base`, but only over ~200 rows.
-            sel_item_stats_sum64 = item_stats[stub_genome_ids[selected_idx_arr]].sum(axis=1).astype(np.int64, copy=False)
-            sel_proxy = _fg_proxy_from_item_stats_sum(sel_item_stats_sum64)
+            sel_proxy = _fg_proxy_from_ids(stub_genome_ids[selected_idx_arr])
             _tmp = selected_idx_arr[np.argsort(-sel_proxy, kind="stable")]
             selected_idx_arr = _tmp[np.argsort(-stub_scores[_tmp], kind="stable")]
             selected_stub_indices = selected_idx_arr.tolist()
@@ -597,8 +605,7 @@ def decode_gpu_native_ga_runs_payload(
                 return best_data, list(best_gear), list(best_minis), []
         else:
             # Full funnel path: compute FG proxy for all stubs (limit > LOADOUTS_PER_SONG_LIMIT).
-            stub_item_stats_sum64 = item_stats[stub_genome_ids].sum(axis=1).astype(np.int64, copy=False)
-            fg_proxy_vec = _fg_proxy_from_item_stats_sum(stub_item_stats_sum64)
+            fg_proxy_vec = _fg_proxy_from_ids(stub_genome_ids)
 
             # metas_by_base
             _tmp = idx[np.argsort(-fg_proxy_vec, kind="stable")]
@@ -617,7 +624,9 @@ def decode_gpu_native_ga_runs_payload(
 
             # Minis: use the already-sorted mini IDs in stub_keys_mat and map to compact group IDs.
             minis_keys = np.ascontiguousarray(stub_keys_mat[:, 6:9])
-            minis_void = minis_keys.view(np.dtype((np.void, minis_keys.dtype.itemsize * minis_keys.shape[1]))).reshape(-1)
+            minis_void = minis_keys.view(np.dtype((np.void, minis_keys.dtype.itemsize * minis_keys.shape[1]))).reshape(
+                -1
+            )
             _, minis_inv = np.unique(minis_void, return_inverse=True)
             seen_minis = np.zeros((int(minis_inv.max()) + 1,), dtype=np.bool_)
 
@@ -696,7 +705,7 @@ def decode_gpu_native_ga_runs_payload(
     )
 
     # Stat names for dict construction.
-    stat_names = [
+    stat_names = (
         "Perfect Points",
         "Combo Multiplier",
         "Fever Multiplier",
@@ -707,7 +716,7 @@ def decode_gpu_native_ga_runs_payload(
         "Rush",
         "Flow",
         "Chill",
-    ]
+    )
 
     n_cand = len(selected_stub_indices)
     genome_ids_mat = stub_genome_ids[selected_stub_indices]
@@ -715,7 +724,15 @@ def decode_gpu_native_ga_runs_payload(
     scores_vec = stub_scores[selected_stub_indices].astype(np.int32, copy=False)
     sel_run_idx = stub_run_idx[selected_stub_indices]
     sel_rows = 1 + stub_pop_idx[selected_stub_indices]
-    results_mat = runs_payload[sel_run_idx, sel_rows, 1 + n_slots : 1 + n_slots + 7]
+    # Avoid advanced indexing across multiple dimensions (can be surprisingly slow/alloc-heavy).
+    # Flatten (run,row) to a single index, then slice columns.
+    try:
+        row_stride = int(runs_payload.shape[1])
+        flat = runs_payload.reshape(-1, int(runs_payload.shape[2]))
+        flat_idx = (sel_run_idx.astype(np.int64, copy=False) * row_stride) + sel_rows.astype(np.int64, copy=False)
+        results_mat = flat[flat_idx, 1 + n_slots : 1 + n_slots + 7]
+    except Exception:
+        results_mat = runs_payload[sel_run_idx, sel_rows, 1 + n_slots : 1 + n_slots + 7]
 
     # Gem contributions: (n_cand, 10)
     gem_contributions = np.zeros((n_cand, 10), dtype=np.int32)
@@ -744,12 +761,22 @@ def decode_gpu_native_ga_runs_payload(
     final_stats_mat = base_stats_arr + item_stats_sum + gem_contributions
 
     unique_evaluated: list[dict] = []
+    decode_names = getattr(registry, "decode_names", None)
     for i in range(n_cand):
         score_val = int(scores_vec[i])
-        genome = registry.decode_genome(genome_ids_mat[i])
+        ids_row = genome_ids_mat[i]
+        genome = registry.decode_genome(ids_row)
+        if callable(decode_names):
+            names = decode_names(ids_row)
+            gear_names = names[:6]
+            mini_names = names[6:9]
+        else:
+            gear_names = [g.get("Name", "None") for g in genome[:6]]
+            mini_names = [m.get("Name", "None") for m in genome[6:9]]
 
         # Build stats dict from numpy array (fast).
-        current_stats = {stat_names[j]: int(final_stats_mat[i, j]) for j in range(10)}
+        row_stats = final_stats_mat[i]
+        current_stats = {stat_names[j]: int(row_stats[j]) for j in range(10)}
 
         g_ft_i = int(g_ft[i])
         g_ff_i = int(g_ff[i])
@@ -779,8 +806,8 @@ def decode_gpu_native_ga_runs_payload(
             "Genome": genome,
             "Gear": genome[:6],
             "Minis": genome[6:9],
-            "GearNames": [g.get("Name", "None") for g in genome[:6]],
-            "MiniNames": [m.get("Name", "None") for m in genome[6:9]],
+            "GearNames": gear_names,
+            "MiniNames": mini_names,
             "Data": data_obj,
             "Details": {
                 "FeverGems": g_ft_i,

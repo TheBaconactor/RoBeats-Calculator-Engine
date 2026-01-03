@@ -479,7 +479,11 @@ def process_force_greats_gpu_finder(
             print(f"[FG] Timeline precompute for pair-caps FAILED: {type(e).__name__}: {e}")
             pair_caps_from_timeline = False
 
-    if (not pair_caps_from_timeline) and pair_caps_grid is None and caps_mode not in {"none", "off", "0", "false", "no"}:
+    if (
+        (not pair_caps_from_timeline)
+        and pair_caps_grid is None
+        and caps_mode not in {"none", "off", "0", "false", "no"}
+    ):
         # CPU fallback (rare): build the cap grid and cache it on the song payload.
         try:
             from ....solver.fever_timeline import get_song_timeline_grid
@@ -495,7 +499,11 @@ def process_force_greats_gpu_finder(
                 cached_pair_caps = None
                 cached_max_per_section = 0
 
-            if isinstance(cached_pair_caps, np.ndarray) and cached_pair_caps.ndim == 3 and cached_max_per_section >= 100:
+            if (
+                isinstance(cached_pair_caps, np.ndarray)
+                and cached_pair_caps.ndim == 3
+                and cached_max_per_section >= 100
+            ):
                 pair_caps_grid = cached_pair_caps
             else:
                 grid = get_song_timeline_grid(calc_song, ref_arrays)
@@ -647,10 +655,28 @@ def process_force_greats_gpu_finder(
                 min_batch = 32 if in_process else 16
                 max_genomes_per_batch = max(min_batch, min(int(max_genomes_per_batch), int(max_by_threads)))
 
+        # Avoid tiny tail batches (e.g. 32+3) which tend to underutilize the GPU.
+        # Rebalance the final two chunks so the last chunk is at least ~half of the
+        # minimum batch size (behavior-preserving: each signature is still processed once).
+        min_tail = 16 if in_process else 8
+
         idx0 = 0
-        while idx0 < len(sig_list):
-            chunk_sigs = sig_list[idx0 : idx0 + max_genomes_per_batch]
-            idx0 += max_genomes_per_batch
+        n_sig = len(sig_list)
+        while idx0 < n_sig:
+            remaining = n_sig - idx0
+            if remaining <= max_genomes_per_batch:
+                chunk_size = remaining
+            elif remaining < (max_genomes_per_batch + min_tail):
+                # Leave `min_tail` for the final chunk.
+                chunk_size = remaining - min_tail
+                # Guard against pathological cases when max_genomes_per_batch is already tiny.
+                if chunk_size <= 0:
+                    chunk_size = max_genomes_per_batch
+            else:
+                chunk_size = max_genomes_per_batch
+
+            chunk_sigs = sig_list[idx0 : idx0 + chunk_size]
+            idx0 += chunk_size
 
             # Check in-memory FG_CACHE first
             _t_cache0 = time.perf_counter() if perf else 0.0
@@ -953,15 +979,9 @@ def process_force_greats_gpu_finder(
                 result_score_penalty = global_results["score_penalty"]
                 result_fill_penalty = global_results["fill_penalty"]
 
-                # Build result_cfg_counts from master list using global cfg indices
-                result_cfg_counts = []
-                master_len = len(master_configs)
-                for idx in range(n_pending):
-                    cfg_idx = int(global_results["cfg_idx"][idx])
-                    if 0 <= cfg_idx < master_len:
-                        result_cfg_counts.append(master_configs[cfg_idx])
-                    else:
-                        result_cfg_counts.append(None)
+                # Use the global cfg_idx to index into the master config list during apply
+                # (avoid reconstructing a per-genome Python list here).
+                result_cfg_idx = global_results.get("cfg_idx")
             else:
                 _t_gpu0 = time.perf_counter() if perf else 0.0
                 # Use return_raw=True for numpy results (skip dict building in API)
@@ -1081,12 +1101,12 @@ def process_force_greats_gpu_finder(
                 sel_color=str(sel_color),
                 n_sections=int(n_sections),
                 max_per_section=int(max_per_section),
-                counts_list=counts_list,
+                counts_list=master_configs,
                 fg_scorer=fg_scorer if "fg_scorer" in locals() else None,
                 result_final=result_final,
                 result_base=result_base,
                 result_cfg_idx=result_cfg_idx,
-                result_cfg_counts=result_cfg_counts,
+                result_cfg_counts=None,
                 result_ft=result_ft,
                 result_ff=result_ff,
                 result_g_pp=result_g_pp,
@@ -1118,18 +1138,7 @@ def process_force_greats_gpu_finder(
                 continue
 
             master_configs = ctx.get("master_configs") or []
-            master_len = len(master_configs)
             cfg_idx_arr = gpu_results.get("cfg_idx")
-            result_cfg_counts = []
-            for i in range(n_pending):
-                try:
-                    cfg_idx = int(cfg_idx_arr[i]) if cfg_idx_arr is not None else -1
-                except Exception:
-                    cfg_idx = -1
-                if 0 <= cfg_idx < master_len:
-                    result_cfg_counts.append(master_configs[cfg_idx])
-                else:
-                    result_cfg_counts.append(None)
 
             _apply_gpu_results_to_entries(
                 pending_sigs=ctx.get("pending_sigs") or [],
@@ -1138,12 +1147,12 @@ def process_force_greats_gpu_finder(
                 sel_color=str(ctx.get("sel_color") or ""),
                 n_sections=int(ctx.get("n_sections") or 0),
                 max_per_section=int(ctx.get("max_per_section") or 0),
-                counts_list=None,
+                counts_list=master_configs,
                 fg_scorer=ctx.get("fg_scorer"),
                 result_final=gpu_results["final_score"],
                 result_base=gpu_results["base_score"],
-                result_cfg_idx=None,
-                result_cfg_counts=result_cfg_counts,
+                result_cfg_idx=cfg_idx_arr,
+                result_cfg_counts=None,
                 result_ft=gpu_results["FT"],
                 result_ff=gpu_results["FF"],
                 result_g_pp=gpu_results["g_pp"],
