@@ -316,15 +316,7 @@ def find_most_common_loadout(
         rep_groups = _groups_from_variant_key(rep_minis or ())
         minis_json = rep_groups
         mini_names = [min(g) for g in rep_groups if g]
-        mini_variants = []
-        for variant, count in sorted(variants_counter.items(), key=lambda item: (-item[1], item[0])):
-            groups = _groups_from_variant_key(variant or ())
-            mini_variants.append(
-                {
-                    "minis_json": groups,
-                    "count_as_top1": int(count),
-                }
-            )
+        # Keep only the representative minis_json for the merged effective mini signature.
 
         total_score_sum = 0
         total_songs_with_set_count = 0
@@ -404,8 +396,6 @@ def find_most_common_loadout(
                 "rank": rank,
                 "gear_names": gear_names,
                 "minis_json": minis_json,
-                "mini_variants": mini_variants,
-                "mini_effective_elements": list(relevant_elements),
                 "avg_gems": avg_gems,
                 "avg_score": avg_score,
                 "songs_with_set": total_songs_with_set_count,
@@ -711,8 +701,6 @@ def run_general_meta(cfg, paths: dict) -> dict:
                     "rank": loadout_data["rank"],
                     "gear": gear_names,
                     "minis_json": minis_groups,
-                    "mini_variants": loadout_data.get("mini_variants", []),
-                    "mini_effective_elements": loadout_data.get("mini_effective_elements", []),
                     "songs_with_set": loadout_data["songs_with_set"],
                     "win_frequency": loadout_data["win_frequency"],
                     "stats": full_stats,
@@ -819,8 +807,6 @@ def run_general_meta(cfg, paths: dict) -> dict:
                     "rank": loadout_data["rank"],
                     "gear": gear_names,
                     "minis_json": minis_groups,
-                    "mini_variants": loadout_data.get("mini_variants", []),
-                    "mini_effective_elements": loadout_data.get("mini_effective_elements", []),
                     "songs_with_set": loadout_data["songs_with_set"],
                     "win_frequency": loadout_data["win_frequency"],
                     "stats": full_stats,
