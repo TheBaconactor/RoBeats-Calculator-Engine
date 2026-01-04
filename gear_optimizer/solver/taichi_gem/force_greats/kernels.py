@@ -1049,9 +1049,11 @@ def fg_stage1_kernel(
             base_value: ti.f32 = ti.cast((final_p_val * 2) + final_s_val, ti.f32) + pp_factor
             combo_value: ti.i32 = ti.cast(ti.floor(base_value * combo_mul), ti.i32)
 
-            # Match the game's floor-sensitive split for Great color bonus on 2-color charts:
-            # floor((4/3)*primary) + floor((2/3)*secondary) + 150
-            great_penalty_base: ti.i32 = (
+            # Great scoring:
+            # - For ramped notes (<100), we use an integer base derived from per-term floors.
+            # - For full-combo (>=100), we compute the floor *after* applying the combo multiplier to the
+            #   underlying float expression to match in-game flooring behavior at max combo.
+            great_penalty_base_head: ti.i32 = (
                 ti.cast(
                     ti.floor(ti.cast(final_p_val * 2, ti.f32) * (2.0 / 3.0)),
                     ti.i32,
@@ -1062,9 +1064,12 @@ def fg_stage1_kernel(
                 )
                 + 150
             )
-            great_combo_value: ti.i32 = ti.cast(ti.floor(ti.cast(great_penalty_base, ti.f32) * combo_mul), ti.i32)
+            great_penalty_base_raw: ti.f32 = (
+                (ti.cast(final_p_val * 2, ti.f32) * (2.0 / 3.0)) + (ti.cast(final_s_val, ti.f32) * (2.0 / 3.0)) + 150.0
+            )
+            great_combo_value: ti.i32 = ti.cast(ti.floor(great_penalty_base_raw * combo_mul), ti.i32)
             body_penalty: ti.i32 = ti.max(0, combo_value - great_combo_value)
-            great_penalty_base_f: ti.f32 = ti.cast(great_penalty_base, ti.f32)
+            great_penalty_base_f: ti.f32 = ti.cast(great_penalty_base_head, ti.f32)
 
             score_penalty_total: ti.i32 = 0
             fill_penalty_total: ti.i32 = 0
@@ -1091,11 +1096,14 @@ def fg_stage1_kernel(
 
                     for k in range(head_n):
                         note_idx = start + k  # guaranteed < 100
-                        scaling: ti.f32 = 1.0 + combo_span_scaled * ti.cast(note_idx + 1, ti.f32)
-                        perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
-                        great_val: ti.i32 = ti.cast(ti.floor(great_penalty_base_f * scaling), ti.i32)
-                        pen: ti.i32 = ti.max(0, perfect_val - great_val)
-                        score_penalty_total += pen
+                        if note_idx == 99:
+                            score_penalty_total += body_penalty
+                        else:
+                            scaling: ti.f32 = 1.0 + combo_span_scaled * ti.cast(note_idx + 1, ti.f32)
+                            perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
+                            great_val: ti.i32 = ti.cast(ti.floor(great_penalty_base_f * scaling), ti.i32)
+                            pen: ti.i32 = ti.max(0, perfect_val - great_val)
+                            score_penalty_total += pen
 
             final_score: ti.i32 = base_score - score_penalty_total
             if final_score < 0:
@@ -1531,14 +1539,17 @@ def fg_stage1_flat_kernel_small3(
             base_value: ti.f32 = ti.cast((final_p_val * 2) + final_s_val, ti.f32) + pp_factor
             combo_value: ti.i32 = ti.cast(ti.floor(base_value * combo_mul), ti.i32)
 
-            great_penalty_base: ti.i32 = (
+            great_penalty_base_head: ti.i32 = (
                 ti.cast(ti.floor(ti.cast(final_p_val * 2, ti.f32) * (2.0 / 3.0)), ti.i32)
                 + ti.cast(ti.floor(ti.cast(final_s_val, ti.f32) * (2.0 / 3.0)), ti.i32)
                 + 150
             )
-            great_combo_value: ti.i32 = ti.cast(ti.floor(ti.cast(great_penalty_base, ti.f32) * combo_mul), ti.i32)
+            great_penalty_base_raw: ti.f32 = (
+                (ti.cast(final_p_val * 2, ti.f32) * (2.0 / 3.0)) + (ti.cast(final_s_val, ti.f32) * (2.0 / 3.0)) + 150.0
+            )
+            great_combo_value: ti.i32 = ti.cast(ti.floor(great_penalty_base_raw * combo_mul), ti.i32)
             body_penalty: ti.i32 = ti.max(0, combo_value - great_combo_value)
-            great_penalty_base_f: ti.f32 = ti.cast(great_penalty_base, ti.f32)
+            great_penalty_base_f: ti.f32 = ti.cast(great_penalty_base_head, ti.f32)
 
             score_penalty_total: ti.i32 = 0
             fill_penalty_total: ti.i32 = 0
@@ -1563,10 +1574,13 @@ def fg_stage1_flat_kernel_small3(
 
                     for k in range(head_n):
                         note_idx = start + k  # guaranteed < 100
-                        scaling: ti.f32 = 1.0 + combo_span_scaled * ti.cast(note_idx + 1, ti.f32)
-                        perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
-                        great_val: ti.i32 = ti.cast(ti.floor(great_penalty_base_f * scaling), ti.i32)
-                        score_penalty_total += ti.max(0, perfect_val - great_val)
+                        if note_idx == 99:
+                            score_penalty_total += body_penalty
+                        else:
+                            scaling: ti.f32 = 1.0 + combo_span_scaled * ti.cast(note_idx + 1, ti.f32)
+                            perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
+                            great_val: ti.i32 = ti.cast(ti.floor(great_penalty_base_f * scaling), ti.i32)
+                            score_penalty_total += ti.max(0, perfect_val - great_val)
 
             final_score: ti.i32 = base_score - score_penalty_total
             if final_score < 0:
@@ -1853,7 +1867,7 @@ def fg_stage1_flat_kernel(
             base_value: ti.f32 = ti.cast((final_p_val * 2) + final_s_val, ti.f32) + pp_factor
             combo_value: ti.i32 = ti.cast(ti.floor(base_value * combo_mul), ti.i32)
 
-            great_penalty_base: ti.i32 = (
+            great_penalty_base_head: ti.i32 = (
                 ti.cast(
                     ti.floor(ti.cast(final_p_val * 2, ti.f32) * (2.0 / 3.0)),
                     ti.i32,
@@ -1864,9 +1878,12 @@ def fg_stage1_flat_kernel(
                 )
                 + 150
             )
-            great_combo_value: ti.i32 = ti.cast(ti.floor(ti.cast(great_penalty_base, ti.f32) * combo_mul), ti.i32)
+            great_penalty_base_raw: ti.f32 = (
+                (ti.cast(final_p_val * 2, ti.f32) * (2.0 / 3.0)) + (ti.cast(final_s_val, ti.f32) * (2.0 / 3.0)) + 150.0
+            )
+            great_combo_value: ti.i32 = ti.cast(ti.floor(great_penalty_base_raw * combo_mul), ti.i32)
             body_penalty: ti.i32 = ti.max(0, combo_value - great_combo_value)
-            great_penalty_base_f: ti.f32 = ti.cast(great_penalty_base, ti.f32)
+            great_penalty_base_f: ti.f32 = ti.cast(great_penalty_base_head, ti.f32)
 
             score_penalty_total: ti.i32 = 0
             fill_penalty_total: ti.i32 = 0
@@ -1892,11 +1909,14 @@ def fg_stage1_flat_kernel(
 
                     for k in range(head_n):
                         note_idx = start + k  # guaranteed < 100
-                        scaling: ti.f32 = 1.0 + combo_span_scaled * ti.cast(note_idx + 1, ti.f32)
-                        perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
-                        great_val: ti.i32 = ti.cast(ti.floor(great_penalty_base_f * scaling), ti.i32)
-                        pen: ti.i32 = ti.max(0, perfect_val - great_val)
-                        score_penalty_total += pen
+                        if note_idx == 99:
+                            score_penalty_total += body_penalty
+                        else:
+                            scaling: ti.f32 = 1.0 + combo_span_scaled * ti.cast(note_idx + 1, ti.f32)
+                            perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
+                            great_val: ti.i32 = ti.cast(ti.floor(great_penalty_base_f * scaling), ti.i32)
+                            pen: ti.i32 = ti.max(0, perfect_val - great_val)
+                            score_penalty_total += pen
 
             final_score: ti.i32 = base_score - score_penalty_total
             if final_score < 0:
