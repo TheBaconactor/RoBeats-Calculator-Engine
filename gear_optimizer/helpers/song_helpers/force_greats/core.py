@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import threading
+import logging
 from typing import TYPE_CHECKING, Optional
 
 from . import cache_validation
@@ -247,7 +248,12 @@ def process_force_greats(
                 names_list_fn=_names_list,
             )
         except Exception as e:
-            print(f"[ForceGreats][GPU] Batch FG finder failed; falling back to CPU per-loadout: {e}")
+            msg = f"[ForceGreats][GPU] Batch FG finder failed; falling back to CPU per-loadout: {type(e).__name__}: {e}"
+            print(msg)
+            try:
+                logging.exception(msg)
+            except Exception:
+                pass
             if gpu_client is not None:
                 try:
                     return gpu_client.submit_process_force_greats(
