@@ -13,6 +13,7 @@ This pipeline is designed to keep the GPU continuously busy in GPU_Native_GA mod
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import queue
 import secrets
@@ -79,6 +80,104 @@ def _lru_put(cache: OrderedDict, key: tuple, value: Any, *, maxsize: int) -> Non
             cache.popitem(last=False)
     except Exception:
         pass
+
+
+class _InFlightStageProfiler:
+    def __init__(self, *, enabled: bool, out_path: str | None = None) -> None:
+        self.enabled = bool(enabled)
+        self.out_path = out_path
+        self._t0 = time.perf_counter()
+        self._stage: dict[str, dict[str, Any]] = {}
+        self._song: dict[str, dict[str, float]] = {}
+
+    def record(self, stage: str, seconds: float, *, song: str | None = None) -> None:
+        if not self.enabled:
+            return
+        try:
+            seconds = float(seconds)
+        except Exception:
+            return
+        if seconds < 0:
+            return
+
+        entry = self._stage.get(stage)
+        if entry is None:
+            entry = {"count": 0, "total_s": 0.0, "max_s": 0.0, "samples_s": []}
+            self._stage[stage] = entry
+        entry["count"] = int(entry["count"]) + 1
+        entry["total_s"] = float(entry["total_s"]) + seconds
+        entry["max_s"] = max(float(entry["max_s"]), seconds)
+        try:
+            entry["samples_s"].append(seconds)
+        except Exception:
+            pass
+
+        if song:
+            per_song = self._song.get(song)
+            if per_song is None:
+                per_song = {}
+                self._song[song] = per_song
+            per_song[stage] = float(per_song.get(stage, 0.0)) + seconds
+
+    @staticmethod
+    def _quantile(samples: list[float], p: float) -> float:
+        if not samples:
+            return 0.0
+        xs = sorted(float(x) for x in samples)
+        n = len(xs)
+        if n == 1:
+            return xs[0]
+        idx = int(round(float(p) * (n - 1)))
+        idx = max(0, min(n - 1, idx))
+        return xs[idx]
+
+    def summary(self) -> dict[str, Any]:
+        if not self.enabled:
+            return {}
+        total_wall = time.perf_counter() - self._t0
+        stages: dict[str, Any] = {}
+        for name, entry in self._stage.items():
+            samples = entry.get("samples_s") or []
+            stages[name] = {
+                "count": int(entry.get("count", 0) or 0),
+                "total_s": float(entry.get("total_s", 0.0) or 0.0),
+                "max_s": float(entry.get("max_s", 0.0) or 0.0),
+                "p50_s": self._quantile(samples, 0.50),
+                "p95_s": self._quantile(samples, 0.95),
+            }
+        return {"total_wall_s": float(total_wall), "stages": stages, "songs": self._song}
+
+    def emit(self) -> None:
+        if not self.enabled:
+            return
+        summary = self.summary()
+        stages = summary.get("stages") or {}
+        ranked = sorted(stages.items(), key=lambda kv: float(kv[1].get("total_s", 0.0) or 0.0), reverse=True)
+        print(f"[InFlight][StageProfile] total_wall_s={float(summary.get('total_wall_s', 0.0) or 0.0):.3f}")
+        for name, info in ranked[:10]:
+            print(
+                "[InFlight][StageProfile] {:<12} total={:>8.3f}s p50={:>6.3f}s p95={:>6.3f}s max={:>6.3f}s n={}".format(
+                    name,
+                    float(info.get("total_s", 0.0) or 0.0),
+                    float(info.get("p50_s", 0.0) or 0.0),
+                    float(info.get("p95_s", 0.0) or 0.0),
+                    float(info.get("max_s", 0.0) or 0.0),
+                    int(info.get("count", 0) or 0),
+                )
+            )
+
+        out_path = str(self.out_path or "").strip()
+        if not out_path:
+            return
+        try:
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        except Exception:
+            pass
+        try:
+            with open(out_path, "w", encoding="utf-8") as fh:
+                json.dump(summary, fh, indent=2, sort_keys=True)
+        except Exception:
+            pass
 
 
 def _warmup_fg_jit(calc_song: dict, ref_arrays: dict) -> None:
@@ -833,6 +932,17 @@ def run_native_inflight_song_pipeline(
     gpu_client = GpuServiceClient(gpu_executor)
     gpu_client.start(start_executor=False)
 
+    stage_profile_enabled = _truthy(os.environ.get("INFLIGHT_STAGE_PROFILE", "0"))
+    stage_profile_path = os.environ.get("INFLIGHT_STAGE_PROFILE_PATH")
+    if stage_profile_enabled and not stage_profile_path:
+        try:
+            from gear_optimizer.core.constants import PATHS
+
+            stage_profile_path = PATHS.bin_path("inflight_stage_profile.json")
+        except Exception:
+            stage_profile_path = None
+    stage_profiler = _InFlightStageProfiler(enabled=stage_profile_enabled, out_path=stage_profile_path)
+
     post_sender = _PostSender(post_queue) if post_queue is not None else None
 
     def _post(item: dict) -> None:
@@ -868,7 +978,7 @@ def run_native_inflight_song_pipeline(
             prep_workers = max(1, min(inflight_limit, os.cpu_count() or 1))
 
     prep_executor = concurrent.futures.ThreadPoolExecutor(max_workers=prep_workers, thread_name_prefix="SongPrep")
-    prep_inflight: deque[tuple[tuple, concurrent.futures.Future]] = deque()
+    prep_inflight: deque[tuple[tuple, concurrent.futures.Future, float]] = deque()
 
     decode_workers = 0
     if cfg0 is not None:
@@ -897,7 +1007,7 @@ def run_native_inflight_song_pipeline(
     fg_workers = max(1, min(int(fg_workers), inflight_limit))
 
     fg_executor = concurrent.futures.ThreadPoolExecutor(max_workers=fg_workers, thread_name_prefix="FG")
-    fg_futures: deque[concurrent.futures.Future] = deque()
+    fg_futures: deque[tuple[_NativeSong, concurrent.futures.Future, float]] = deque()
     ga_completed_since_last_fg = 0
 
     fg_prep_workers = 0
@@ -941,7 +1051,9 @@ def run_native_inflight_song_pipeline(
         if song_name in completed_songs:
             continue
         try:
+            t0 = time.perf_counter()
             prepared.append(_prepare_song(first))
+            stage_profiler.record("prep", time.perf_counter() - t0, song=song_name)
         except Exception as exc:
             _post(
                 {
@@ -998,15 +1110,16 @@ def run_native_inflight_song_pipeline(
             did_work = False
 
             # Move completed song preps into the staging queue.
-            for task, fut in list(prep_inflight):
+            for task, fut, t_submit in list(prep_inflight):
                 if not fut.done():
                     continue
-                prep_inflight.remove((task, fut))
+                prep_inflight.remove((task, fut, t_submit))
                 did_work = True
                 song_name = task[1]
                 if song_name in completed_songs:
                     continue
                 try:
+                    stage_profiler.record("prep", time.perf_counter() - float(t_submit), song=song_name)
                     prepared.append(fut.result())
                     if prepared and not fg_jit_warmup_submitted:
                         try:
@@ -1041,6 +1154,10 @@ def run_native_inflight_song_pipeline(
                 fg_prep_inflight.remove(song)
                 did_work = True
                 try:
+                    t_submit = getattr(song, "_fg_prep_submit_t0", None)
+                    if t_submit is not None:
+                        stage_profiler.record("fg_prep", time.perf_counter() - float(t_submit), song=song.song_name)
+                        setattr(song, "_fg_prep_submit_t0", None)
                     song.fg_prep_future.result()
                 except Exception as exc:
                     _post(
@@ -1066,6 +1183,7 @@ def run_native_inflight_song_pipeline(
                 # that keeps the GPU fed while CPU decode/FG prep runs.
                 if prepared and len(ga_inflight) < ga_queue_limit:
                     song = prepared.popleft()
+                    setattr(song, "_ga_submit_t0", time.perf_counter())
                     payload = {
                         "calc_song": song.calc_song,
                         "ref_arrays": song.ref_arrays,
@@ -1136,7 +1254,7 @@ def run_native_inflight_song_pipeline(
                         did_work = True
                         continue
                     try:
-                        prep_inflight.append((nxt, prep_executor.submit(_prepare_song, nxt)))
+                        prep_inflight.append((nxt, prep_executor.submit(_prepare_song, nxt), time.perf_counter()))
                     except Exception as exc:
                         _post(
                             {
@@ -1180,7 +1298,13 @@ def run_native_inflight_song_pipeline(
                         memory_resume_tracker.mark_completed(song.song_name)
                     continue
 
+                t_submit = getattr(song, "_ga_submit_t0", None)
+                if t_submit is not None:
+                    stage_profiler.record("ga_gpu", time.perf_counter() - float(t_submit), song=song.song_name)
+                    setattr(song, "_ga_submit_t0", None)
+
                 song.ga_future = None
+                setattr(song, "_decode_submit_t0", time.perf_counter())
                 song.decode_future = decode_executor.submit(_decode_ga_payload_sync, song, runs_payload)
                 decode_inflight.append(song)
                 ga_completed_since_last_fg += 1
@@ -1210,6 +1334,11 @@ def run_native_inflight_song_pipeline(
                 finally:
                     song.decode_future = None
 
+                t_decode = getattr(song, "_decode_submit_t0", None)
+                if t_decode is not None:
+                    stage_profiler.record("decode", time.perf_counter() - float(t_decode), song=song.song_name)
+                    setattr(song, "_decode_submit_t0", None)
+
                 song.best_data = best_data
                 song.best_gear = best_gear
                 song.best_minis = best_minis
@@ -1219,6 +1348,7 @@ def run_native_inflight_song_pipeline(
                     pending_fg.append(song)
                     if song.fg_prep_future is None:
                         try:
+                            setattr(song, "_fg_prep_submit_t0", time.perf_counter())
                             song.fg_prep_future = fg_prep_executor.submit(_prepare_fg_job_sync, song)
                             fg_prep_inflight.append(song)
                         except Exception:
@@ -1275,8 +1405,8 @@ def run_native_inflight_song_pipeline(
 
             # Reap completed FG workers (capture errors).
             if fg_futures:
-                still_pending: deque[concurrent.futures.Future] = deque()
-                for fut in list(fg_futures):
+                still_pending: deque[tuple[_NativeSong, concurrent.futures.Future, float]] = deque()
+                for fg_song, fut, t_submit in list(fg_futures):
                     try:
                         done = fut.done()
                     except Exception:
@@ -1287,8 +1417,9 @@ def run_native_inflight_song_pipeline(
                             fut.result()
                         except Exception:
                             pass
+                        stage_profiler.record("fg_run", time.perf_counter() - float(t_submit), song=fg_song.song_name)
                     else:
-                        still_pending.append(fut)
+                        still_pending.append((fg_song, fut, t_submit))
                 fg_futures = still_pending
 
             should_start_fg = bool(pending_fg) and (
@@ -1314,12 +1445,17 @@ def run_native_inflight_song_pipeline(
                         fg_song = _pop_next_ready_fg()
                         if fg_song is None:
                             break
+                        t_submit = time.perf_counter()
                         fg_futures.append(
-                            fg_executor.submit(
-                                _run_fg_job_sync,
+                            (
                                 fg_song,
-                                gpu_client=gpu_client,
-                                post_sender=post_sender,
+                                fg_executor.submit(
+                                    _run_fg_job_sync,
+                                    fg_song,
+                                    gpu_client=gpu_client,
+                                    post_sender=post_sender,
+                                ),
+                                t_submit,
                             )
                         )
                         ga_completed_since_last_fg = 0
@@ -1370,7 +1506,7 @@ def run_native_inflight_song_pipeline(
                 ):
                     last_stall_report = time.monotonic()
                     try:
-                        fg_done = sum(1 for f in fg_futures if f.done())
+                        fg_done = sum(1 for _song, fut, _t0 in fg_futures if fut.done())
                         fg_inflight = len(fg_futures)
                     except Exception:
                         fg_done = None
@@ -1387,7 +1523,7 @@ def run_native_inflight_song_pipeline(
                 for song in ga_inflight:
                     if song.ga_future is not None:
                         wait_futures.append(song.ga_future)
-                for _task, fut in prep_inflight:
+                for _task, fut, _t0 in prep_inflight:
                     if fut is not None:
                         wait_futures.append(fut)
                 for song in decode_inflight:
@@ -1396,18 +1532,26 @@ def run_native_inflight_song_pipeline(
                 for song in fg_prep_inflight:
                     if song.fg_prep_future is not None:
                         wait_futures.append(song.fg_prep_future)
-                for fut in fg_futures:
+                for _song, fut, _t0 in fg_futures:
                     wait_futures.append(fut)
                 if wait_futures:
+                    t_wait = time.perf_counter()
                     concurrent.futures.wait(
                         wait_futures,
                         timeout=0.02,
                         return_when=concurrent.futures.FIRST_COMPLETED,
                     )
+                    stage_profiler.record("main_wait", time.perf_counter() - t_wait)
                 else:
+                    t_sleep = time.perf_counter()
                     time.sleep(0.001)
+                    stage_profiler.record("main_sleep", time.perf_counter() - t_sleep)
 
     finally:
+        try:
+            stage_profiler.emit()
+        except Exception:
+            pass
         shutdown_debug = _truthy(os.environ.get("INFLIGHT_SHUTDOWN_DEBUG", "0"))
         try:
             if shutdown_debug:

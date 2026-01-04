@@ -364,6 +364,23 @@ class MemoryGuardResumeTracker:
         self.lock = threading.Lock()
         self.pending = []
         self.context = {}
+        self._since_write = 0
+        self._last_write_t = time.monotonic()
+        self._write_every_n = 1
+        self._write_every_sec = 0.0
+
+        # Optional performance tuning: reduce how often we rewrite the resume file.
+        #
+        # Defaults preserve existing behavior (write after every completed song).
+        # If configured, a crash may re-run up to N-1 songs since the last write.
+        try:
+            self._write_every_n = max(1, int(os.environ.get("MEMORY_GUARD_WRITE_EVERY_N", "1") or "1"))
+        except Exception:
+            self._write_every_n = 1
+        try:
+            self._write_every_sec = float(os.environ.get("MEMORY_GUARD_WRITE_EVERY_SEC", "0") or "0")
+        except Exception:
+            self._write_every_sec = 0.0
 
     def prime(self, queue, context):
         """Initialize tracker with full queue and context."""
@@ -378,6 +395,8 @@ class MemoryGuardResumeTracker:
                 for item in queue
             ]
             self._write_locked()
+            self._since_write = 0
+            self._last_write_t = time.monotonic()
 
     def mark_completed(self, song_name):
         """Remove completed song from pending queue."""
@@ -390,7 +409,20 @@ class MemoryGuardResumeTracker:
             for idx, entry in enumerate(self.pending):
                 if entry.get("song", "").strip().lower() == norm:
                     self.pending.pop(idx)
-                    self._write_locked()
+                    self._since_write += 1
+                    should_write = self._write_every_n <= 1 and self._write_every_sec <= 0.0
+                    if not should_write:
+                        if self._since_write >= int(self._write_every_n):
+                            should_write = True
+                        elif self._write_every_sec > 0.0 and (time.monotonic() - self._last_write_t) >= float(
+                            self._write_every_sec
+                        ):
+                            should_write = True
+
+                    if should_write:
+                        self._write_locked()
+                        self._since_write = 0
+                        self._last_write_t = time.monotonic()
                     break
 
     def _write_locked(self):
@@ -433,6 +465,8 @@ class MemoryGuardResumeTracker:
                 self.pending = []
                 self.context = {}
                 self._write_locked()
+            self._since_write = 0
+            self._last_write_t = time.monotonic()
 
 
 def restart_process_for_memory_guard():

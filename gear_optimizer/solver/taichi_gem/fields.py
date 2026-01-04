@@ -252,7 +252,10 @@ def reset_fields_state() -> None:
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results
     global ga_runs_payload_packed
     global ga_run_payload_packed
-    global ga_runs_payload_download_staging_16, ga_runs_payload_download_staging_64, ga_runs_payload_download_staging_128
+    global \
+        ga_runs_payload_download_staging_16, \
+        ga_runs_payload_download_staging_64, \
+        ga_runs_payload_download_staging_128
     global island_boundaries, island_elite_indices, island_elite_count
 
     # Main refs
@@ -401,6 +404,40 @@ def configure_ga_run_buffers(*, max_runs: int | None = None, max_genomes: int | 
         MAX_GA_RUN_GENOMES = _clamp_ga_genomes(int(max_genomes))
 
 
+def _maybe_configure_ga_run_buffers_from_env() -> None:
+    """
+    Best-effort GA buffer sizing before the first field allocation.
+
+    This is primarily to avoid large padded Vulkan `to_numpy()` transfers for
+    GPU-native GA multi-run payloads when Taichi fields are allocated early
+    (e.g., by the GPU executor) before the GA code can call `configure_ga_run_buffers()`.
+    """
+    if _fields_allocated:
+        return
+
+    raw_runs = str(os.environ.get("GPU_NATIVE_GA_MAX_RUNS", "") or "").strip()
+    raw_genomes = str(os.environ.get("GPU_NATIVE_GA_MAX_GENOMES", "") or "").strip()
+    if not raw_runs and not raw_genomes:
+        return
+
+    max_runs = None
+    max_genomes = None
+    if raw_runs:
+        try:
+            max_runs = int(raw_runs)
+        except Exception:
+            max_runs = None
+    if raw_genomes:
+        try:
+            max_genomes = int(raw_genomes)
+        except Exception:
+            max_genomes = None
+
+    if max_runs is None and max_genomes is None:
+        return
+    configure_ga_run_buffers(max_runs=max_runs, max_genomes=max_genomes)
+
+
 def allocate_fields():
     """
     Allocate GPU fields. Must be called after ti.init().
@@ -431,7 +468,10 @@ def allocate_fields():
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results
     global ga_runs_payload_packed
     global ga_run_payload_packed
-    global ga_runs_payload_download_staging_16, ga_runs_payload_download_staging_64, ga_runs_payload_download_staging_128
+    global \
+        ga_runs_payload_download_staging_16, \
+        ga_runs_payload_download_staging_64, \
+        ga_runs_payload_download_staging_128
     global island_boundaries, island_elite_indices, island_elite_count
 
     if _fields_allocated:
@@ -692,6 +732,7 @@ def ensure_fields_allocated():
         init_taichi_vulkan()
 
     if not _fields_allocated:
+        _maybe_configure_ga_run_buffers_from_env()
         allocate_fields()
 
         # Some kernels/tests rely on `song_timestamps` without needing the full

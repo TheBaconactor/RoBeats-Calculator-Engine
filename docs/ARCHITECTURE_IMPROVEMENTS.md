@@ -546,7 +546,7 @@ gear_optimizer/
 | File | LOC | Purpose |
 |------|-----|---------|
 | `main.py` | 21 | Main application entry point - initializes `GearOptimizerApp`, handles multiprocessing and exceptions |
-| `general_meta_main.py` | 67 | Universal loadout finder - cross-song gem allocation optimizer, exports to `general_meta_results.json` |
+| `general_meta_main.py` | 67 | Universal loadout finder - cross-song gem allocation optimizer, exports to `artifacts/general_meta_results.json` |
 
 ---
 

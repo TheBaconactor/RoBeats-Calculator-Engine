@@ -21,6 +21,57 @@ if TYPE_CHECKING:
 
 
 _FG_GPU_SEQUENCE_LOCK = threading.Lock()
+_FG_INPROCESS_GPU_CLIENT_LOCK = threading.Lock()
+_FG_INPROCESS_GPU_CLIENT = None
+_FG_INPROCESS_GPU_CLIENT_DISABLED = False
+
+
+def _truthy_env(name: str, default: str = "0") -> bool:
+    return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_inprocess_gpu_client():
+    global _FG_INPROCESS_GPU_CLIENT, _FG_INPROCESS_GPU_CLIENT_DISABLED
+    if _FG_INPROCESS_GPU_CLIENT_DISABLED:
+        return None
+    if _FG_INPROCESS_GPU_CLIENT is not None:
+        return _FG_INPROCESS_GPU_CLIENT
+
+    with _FG_INPROCESS_GPU_CLIENT_LOCK:
+        if _FG_INPROCESS_GPU_CLIENT_DISABLED:
+            return None
+        if _FG_INPROCESS_GPU_CLIENT is not None:
+            return _FG_INPROCESS_GPU_CLIENT
+
+        try:
+            from ....solver.gpu_executor import get_gpu_executor, is_gpu_worker_mode
+        except Exception:
+            _FG_INPROCESS_GPU_CLIENT_DISABLED = True
+            return None
+
+        try:
+            if is_gpu_worker_mode():
+                _FG_INPROCESS_GPU_CLIENT_DISABLED = True
+                return None
+        except Exception:
+            _FG_INPROCESS_GPU_CLIENT_DISABLED = True
+            return None
+
+        try:
+            from ....solver.gpu_service import GpuServiceClient
+
+            gpu_executor = get_gpu_executor()
+            if not gpu_executor.is_running:
+                gpu_executor.start(in_process=True)
+            gpu_client = GpuServiceClient(gpu_executor)
+            gpu_client.start(start_executor=False)
+            _FG_INPROCESS_GPU_CLIENT = gpu_client
+            print("[ForceGreats][GPU] In-process GPU executor enabled for FG.")
+            return _FG_INPROCESS_GPU_CLIENT
+        except Exception as exc:
+            _FG_INPROCESS_GPU_CLIENT_DISABLED = True
+            print(f"[ForceGreats][GPU] In-process GPU executor unavailable: {type(exc).__name__}: {exc}")
+            return None
 
 
 def _names_list(items):
@@ -148,6 +199,10 @@ def process_force_greats(
     perf_timing: bool = False,
     gpu_client: Optional["GpuServiceClient"] = None,
 ):
+    if gpu_client is None and bool(use_gpu) and bool(force_greats_finder):
+        if _truthy_env("FG_INPROCESS_EXECUTOR", "1"):
+            gpu_client = _get_inprocess_gpu_client()
+
     if (
         gpu_client is not None
         and bool(use_gpu)
@@ -227,4 +282,3 @@ def process_force_greats(
         use_gpu=use_gpu,
         gpu_client=gpu_client,
     )
-

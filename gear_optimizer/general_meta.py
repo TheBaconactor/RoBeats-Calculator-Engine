@@ -568,20 +568,47 @@ def run_general_meta(cfg, paths: dict) -> dict:
     print(f"  Found {len(all_loadouts)} loadout records")
 
     # Process each elemental combo
-    # Process each elemental combo
-    results = {}
-    # TOP_N = None  # Show ALL dynamic Top 1 winners
+    results: Dict[str, Any] = {}
 
-    for combo, songs in songs_by_combo.items():
-        primary, secondary = combo
+    canonical_combos: list[tuple[str, str]] = [(p, s) for p in _ELEMENT_ORDER for s in _ELEMENT_ORDER]
+    canonical_combo_set = set(canonical_combos)
+    extra_combos = [c for c in songs_by_combo.keys() if c not in canonical_combo_set]
+    combos_to_process = canonical_combos + sorted(extra_combos, key=lambda c: (str(c[0]), str(c[1])))
+
+    for primary, secondary in combos_to_process:
+        songs = songs_by_combo.get((primary, secondary), [])
         combo_key = f"{primary}/{secondary}"
         print(f"\n--- Processing {combo_key} ({len(songs)} songs) ---")
+
+        if not songs:
+            print("  No songs found for this category")
+            relevant = []
+            for el in (primary, secondary):
+                if el and el not in relevant:
+                    relevant.append(el)
+            results[combo_key] = {
+                "songs_count": 0,
+                "selected_element": primary,
+                "primary_element": primary,
+                "secondary_element": secondary,
+                "relevant_elements": relevant,
+                "top_loadouts": [],
+            }
+            continue
 
         # Find all unique #1 loadouts (top_n=None)
         top_loadouts = find_most_common_loadout(songs, all_loadouts, minis_by_name, top_n=None)
 
         if not top_loadouts:
             print("  No loadouts found for this category")
+            results[combo_key] = {
+                "songs_count": len(songs),
+                "selected_element": primary,
+                "primary_element": primary,
+                "secondary_element": secondary,
+                "relevant_elements": list(_relevant_elements_for_category(songs)),
+                "top_loadouts": [],
+            }
             continue
 
         # Build loadout entries with stats
@@ -637,6 +664,9 @@ def run_general_meta(cfg, paths: dict) -> dict:
         results[combo_key] = {
             "songs_count": len(songs),
             "selected_element": primary,
+            "primary_element": primary,
+            "secondary_element": secondary,
+            "relevant_elements": list(_relevant_elements_for_category(songs)),
             "top_loadouts": loadout_entries,
         }
 
@@ -653,15 +683,39 @@ def run_general_meta(cfg, paths: dict) -> dict:
             songs_by_primary[primary] = []
         songs_by_primary[primary].extend(songs)
 
-    for primary, songs in songs_by_primary.items():
+    element_set = set(_ELEMENT_ORDER)
+    primary_order = list(_ELEMENT_ORDER) + sorted([p for p in songs_by_primary.keys() if p not in element_set])
+
+    for primary in primary_order:
+        songs = songs_by_primary.get(primary, [])
         combo_key = f"{primary}/All"
         print(f"\n--- Processing {combo_key} ({len(songs)} songs) ---")
+
+        if not songs:
+            print("  No songs found for this category")
+            results[combo_key] = {
+                "songs_count": 0,
+                "selected_element": primary,
+                "primary_element": primary,
+                "secondary_element": "All",
+                "relevant_elements": [primary] if primary else [],
+                "top_loadouts": [],
+            }
+            continue
 
         # Find all unique #1 loadouts (top_n=None)
         top_loadouts = find_most_common_loadout(songs, all_loadouts, minis_by_name, top_n=None)
 
         if not top_loadouts:
             print("  No loadouts found for this category")
+            results[combo_key] = {
+                "songs_count": len(songs),
+                "selected_element": primary,
+                "primary_element": primary,
+                "secondary_element": "All",
+                "relevant_elements": list(_relevant_elements_for_category(songs)),
+                "top_loadouts": [],
+            }
             continue
 
         # Build loadout entries with stats
@@ -717,6 +771,9 @@ def run_general_meta(cfg, paths: dict) -> dict:
         results[combo_key] = {
             "songs_count": len(songs),
             "selected_element": primary,
+            "primary_element": primary,
+            "secondary_element": "All",
+            "relevant_elements": list(_relevant_elements_for_category(songs)),
             "top_loadouts": loadout_entries,
         }
 
@@ -733,7 +790,7 @@ def export_general_meta_json(results: dict, output_path: str = None) -> str:
     Export GeneralMeta results to JSON file.
     """
     if output_path is None:
-        output_path = PATHS.bin_path("general_meta_results.json")
+        output_path = os.path.join(PATHS.script_dir, "artifacts", "general_meta_results.json")
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
     with open(output_path, "w", encoding="utf-8") as f:

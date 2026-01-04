@@ -53,6 +53,7 @@ class RunPaths:
     stdout_log: Path
     cpu_jsonl: Path
     typeperf_csv: Path
+    getcounter_csv: Path
     summary_json: Path
 
 
@@ -98,6 +99,163 @@ def _start_typeperf(csv_path: Path, interval_sec: float) -> subprocess.Popen | N
         )
     except Exception:
         return None
+
+
+def _getcounter_available() -> bool:
+    if platform.system() != "Windows":
+        return False
+    try:
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command", "Get-Command Get-Counter | Out-Null"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _start_getcounter(csv_path: Path, *, interval_sec: float, target_pid: int) -> subprocess.Popen | None:
+    """
+    GPU engine utilization sampler using PowerShell Get-Counter.
+
+    Note: On many Windows builds, `Get-Counter -SampleInterval` is limited to whole seconds
+    (minimum 1). This makes it similar to `typeperf` but still useful when you want
+    PID-filtered instances in a simple CSV.
+    We record only instances matching `pid_<target_pid>_` to keep the output size manageable.
+    """
+    if not _getcounter_available():
+        return None
+
+    try:
+        csv_path = csv_path.resolve()
+    except Exception:
+        pass
+
+    try:
+        interval = float(interval_sec)
+    except Exception:
+        interval = 1.0
+    # Many systems reject sub-second intervals; clamp to >= 1s to avoid hard failure.
+    interval = max(1.0, float(interval))
+
+    try:
+        target_pid = int(target_pid)
+    except Exception:
+        target_pid = 0
+
+    ps = rf"""
+$ErrorActionPreference = 'SilentlyContinue'
+$out = '{str(csv_path).replace("'", "''")}'
+$dir = Split-Path -Parent $out
+if ($dir) {{ New-Item -ItemType Directory -Force -Path $dir | Out-Null }}
+$pid = {target_pid}
+$pattern = '*pid_' + $pid + '_*'
+$sw = New-Object System.IO.StreamWriter($out, $false, [System.Text.Encoding]::UTF8)
+$sw.WriteLine('wall_ts,instance,util_pct')
+try {{
+  Get-Counter -Counter '\GPU Engine(*)\Utilization Percentage' -SampleInterval {interval} -Continuous | ForEach-Object {{
+    foreach ($s in $_.CounterSamples) {{
+      if ($pid -gt 0) {{
+        if ($s.Path -notlike $pattern) {{ continue }}
+      }}
+      $ts = [DateTimeOffset]$s.Timestamp
+      $wall = $ts.ToUnixTimeMilliseconds() / 1000.0
+      $inst = ($s.Path -replace ',', ';')
+      $val = [double]$s.CookedValue
+      $sw.WriteLine(('{0},{1},{2}' -f $wall, $inst, $val))
+    }}
+    $sw.Flush()
+  }}
+}} finally {{
+  $sw.Close()
+}}
+"""
+
+    try:
+        creationflags = 0
+        if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+        return subprocess.Popen(
+            ["powershell", "-NoProfile", "-Command", ps],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+    except Exception:
+        return None
+
+
+def _getcounter_csv_has_data(csv_path: Path) -> bool:
+    try:
+        with csv_path.open("r", encoding="utf-8", errors="replace") as f:
+            # Header + at least one sample line.
+            _hdr = f.readline()
+            line = f.readline()
+            return bool(line and line.strip())
+    except Exception:
+        return False
+
+
+def _start_getcounter_with_pid_retry(
+    csv_path: Path,
+    *,
+    interval_sec: float,
+    target_pid: int,
+    proc: subprocess.Popen | None,
+    max_attempts: int = 12,
+    data_wait_sec: float = 2.0,
+    retry_delay_sec: float = 0.5,
+) -> subprocess.Popen | None:
+    """
+    Start Get-Counter sampling and retry until the capture file contains at least one sample line.
+
+    On some Windows builds, GPU Engine instances for a PID may not exist until after the process
+    has actually submitted GPU work. If sampling starts too early, the PID-filtered capture can
+    remain empty; retrying solves this.
+    """
+    if not _getcounter_available():
+        return None
+
+    max_attempts = max(1, int(max_attempts))
+    for attempt in range(max_attempts):
+        if proc is not None:
+            try:
+                if proc.poll() is not None:
+                    return None
+            except Exception:
+                pass
+
+        try:
+            csv_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        getcounter_proc = _start_getcounter(csv_path, interval_sec=float(interval_sec), target_pid=int(target_pid))
+        if getcounter_proc is None:
+            return None
+
+        deadline = time.perf_counter() + max(0.1, float(data_wait_sec))
+        ok = False
+        while time.perf_counter() < deadline:
+            try:
+                if proc is not None and proc.poll() is not None:
+                    break
+            except Exception:
+                break
+            if _getcounter_csv_has_data(csv_path):
+                ok = True
+                break
+            time.sleep(0.10)
+
+        if ok or (attempt >= max_attempts - 1):
+            return getcounter_proc if ok else getcounter_proc
+
+        _stop_getcounter(getcounter_proc, timeout_sec=1.0)
+        time.sleep(max(0.0, float(retry_delay_sec)))
+
+    return None
 
 
 def _typeperf_target_token(pid: int) -> str:
@@ -425,6 +583,33 @@ def _stop_typeperf(proc: subprocess.Popen | None, timeout_sec: float = 5.0) -> N
         return
 
     # Best-effort graceful stop (CTRL_BREAK for Windows console apps).
+    try:
+        if platform.system() == "Windows":
+            proc.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
+            proc.wait(timeout=max(0.0, float(timeout_sec)))
+            return
+    except Exception:
+        pass
+
+    try:
+        proc.terminate()
+        proc.wait(timeout=max(0.0, float(timeout_sec)))
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _stop_getcounter(proc: subprocess.Popen | None, timeout_sec: float = 3.0) -> None:
+    if proc is None:
+        return
+    try:
+        if proc.poll() is not None:
+            return
+    except Exception:
+        return
+
     try:
         if platform.system() == "Windows":
             proc.send_signal(signal.CTRL_BREAK_EVENT)  # type: ignore[attr-defined]
@@ -1094,6 +1279,28 @@ _PERF_FG_GPU_ACC_RE = re.compile(
     r"chunks=(?P<chunks>\d+)\)\s*$"
 )
 
+_PERF_FG_TASK_START_RE = re.compile(
+    r"^\[PERF\]\[FGTask\]\s+"
+    r"call=(?P<call>\d+)\s+"
+    r"idx=(?P<idx>\d+)\s+"
+    r"kind=start\s+"
+    r"wall_ts=(?P<wall_ts>[\d.]+)\s+"
+    r"cfgs=(?P<cfgs>\d+)\s+"
+    r"ftff=(?P<ftff>\d+)\s+"
+    r"base_cfg_offset=(?P<base_cfg_offset>\d+)\s+"
+    r"upload_genome_stats=(?P<upload_genome_stats>\d+)\s+"
+    r"gap_since_prev_end_ms=(?P<gap_ms>[\d.]+)\s*$"
+)
+
+_PERF_FG_TASK_END_RE = re.compile(
+    r"^\[PERF\]\[FGTask\]\s+"
+    r"call=(?P<call>\d+)\s+"
+    r"idx=(?P<idx>\d+)\s+"
+    r"kind=end\s+"
+    r"wall_ts=(?P<wall_ts>[\d.]+)\s+"
+    r"duration_ms=(?P<duration_ms>[\d.]+)\s*$"
+)
+
 
 def _parse_perf_stdout_log(stdout_log: Path) -> dict[str, Any]:
     """
@@ -1109,6 +1316,8 @@ def _parse_perf_stdout_log(stdout_log: Path) -> dict[str, Any]:
     ga_decode_select_rows: list[dict[str, Any]] = []
     ga_dl_rows: list[dict[str, Any]] = []
     fg_acc_rows: list[dict[str, Any]] = []
+    fg_task_start_rows: list[dict[str, Any]] = []
+    fg_task_end_rows: list[dict[str, Any]] = []
 
     try:
         with stdout_log.open("r", encoding="utf-8", errors="replace") as f:
@@ -1191,6 +1400,36 @@ def _parse_perf_stdout_log(stdout_log: Path) -> dict[str, Any]:
                             "cfgs": int(g["cfgs"]),
                             "ftff": int(g["ftff"]),
                             "chunks": int(g["chunks"]),
+                        }
+                    )
+                    continue
+
+                m = _PERF_FG_TASK_START_RE.match(line)
+                if m is not None:
+                    g = m.groupdict()
+                    fg_task_start_rows.append(
+                        {
+                            "call": int(g["call"]),
+                            "idx": int(g["idx"]),
+                            "wall_ts": float(g["wall_ts"]),
+                            "cfgs": int(g["cfgs"]),
+                            "ftff": int(g["ftff"]),
+                            "base_cfg_offset": int(g["base_cfg_offset"]),
+                            "upload_genome_stats": int(g["upload_genome_stats"]),
+                            "gap_since_prev_end_ms": float(g["gap_ms"]),
+                        }
+                    )
+                    continue
+
+                m = _PERF_FG_TASK_END_RE.match(line)
+                if m is not None:
+                    g = m.groupdict()
+                    fg_task_end_rows.append(
+                        {
+                            "call": int(g["call"]),
+                            "idx": int(g["idx"]),
+                            "wall_ts": float(g["wall_ts"]),
+                            "duration_ms": float(g["duration_ms"]),
                         }
                     )
                     continue
@@ -1291,6 +1530,57 @@ def _parse_perf_stdout_log(stdout_log: Path) -> dict[str, Any]:
         }
     else:
         out["fg_gpu_accumulate"] = {"count": 0}
+
+    if fg_task_start_rows or fg_task_end_rows:
+        # Index by task idx to build start/end pairs.
+        starts = {(int(r["call"]), int(r["idx"])): r for r in fg_task_start_rows}
+        ends = {(int(r["call"]), int(r["idx"])): r for r in fg_task_end_rows}
+
+        paired: list[dict[str, Any]] = []
+        gaps_ms: list[float] = []
+        durations_ms: list[float] = []
+        wall_durations_ms: list[float] = []
+
+        for call_idx in sorted(set(starts.keys()) | set(ends.keys())):
+            call, idx = int(call_idx[0]), int(call_idx[1])
+            st = starts.get((call, idx))
+            en = ends.get((call, idx))
+            row: dict[str, Any] = {"call": int(call), "idx": int(idx)}
+            if st:
+                row.update(
+                    {
+                        "start_wall_ts": float(st["wall_ts"]),
+                        "cfgs": int(st["cfgs"]),
+                        "ftff": int(st["ftff"]),
+                        "base_cfg_offset": int(st["base_cfg_offset"]),
+                        "upload_genome_stats": int(st["upload_genome_stats"]),
+                        "gap_since_prev_end_ms": float(st["gap_since_prev_end_ms"]),
+                    }
+                )
+                gaps_ms.append(float(st["gap_since_prev_end_ms"]))
+            if en:
+                row.update(
+                    {
+                        "end_wall_ts": float(en["wall_ts"]),
+                        "duration_ms": float(en["duration_ms"]),
+                    }
+                )
+                durations_ms.append(float(en["duration_ms"]))
+            if st and en:
+                wall_durations_ms.append(max(0.0, (float(en["wall_ts"]) - float(st["wall_ts"])) * 1000.0))
+            paired.append(row)
+
+        out["fg_task_trace"] = {
+            "count_start": int(len(fg_task_start_rows)),
+            "count_end": int(len(fg_task_end_rows)),
+            "count_paired": int(sum(1 for r in paired if "start_wall_ts" in r and "end_wall_ts" in r)),
+            "gap_since_prev_end_ms": _series_stats(gaps_ms) if gaps_ms else {"count": 0},
+            "duration_ms": _series_stats(durations_ms) if durations_ms else {"count": 0},
+            "wall_duration_ms": _series_stats(wall_durations_ms) if wall_durations_ms else {"count": 0},
+            "rows": paired[:2000],
+        }
+    else:
+        out["fg_task_trace"] = {"count_start": 0, "count_end": 0, "count_paired": 0}
 
     return out
 
@@ -1941,6 +2231,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval", type=float, default=0.5, help="Sampling interval (seconds)")
     parser.add_argument("--typeperf-interval", type=float, default=1.0, help="GPU sampling interval for typeperf")
     parser.add_argument(
+        "--enable-getcounter",
+        action="store_true",
+        help="Also sample GPU engine utilization via PowerShell Get-Counter (supports sub-second intervals).",
+    )
+    parser.add_argument(
+        "--getcounter-interval",
+        type=float,
+        default=0.10,
+        help="Get-Counter GPU sampling interval (seconds). Ignored unless --enable-getcounter is set.",
+    )
+    parser.add_argument(
         "--typeperf-start-delay",
         type=float,
         default=3.0,
@@ -1982,6 +2283,7 @@ def main(argv: list[str] | None = None) -> int:
         stdout_log=out_dir / "stdout.log",
         cpu_jsonl=out_dir / "cpu.jsonl",
         typeperf_csv=out_dir / "gpu_typeperf.csv",
+        getcounter_csv=out_dir / "gpu_getcounter.csv",
         summary_json=out_dir / "summary.json",
     )
 
@@ -1994,6 +2296,7 @@ def main(argv: list[str] | None = None) -> int:
     if ns.enable_perf_defaults:
         child_env.setdefault("PERF_TIMING", "1")
         child_env.setdefault("GPU_EXECUTOR_PROFILE", "1")
+        child_env.setdefault("FG_TASK_TRACE", "1")
 
     # If requested (or implied by perf defaults), capture a per-request trace from the GPU executor.
     trace_path: Path | None = None
@@ -2029,6 +2332,7 @@ def main(argv: list[str] | None = None) -> int:
         typeperf_proc = None
         typeperf_started_at = None
         typeperf_target_pid_in_header = False
+        getcounter_proc = None
         try:
             delay = max(0.0, float(ns.typeperf_start_delay))
         except Exception:
@@ -2054,6 +2358,16 @@ def main(argv: list[str] | None = None) -> int:
             typeperf_proc = None
             typeperf_started_at = None
             typeperf_target_pid_in_header = False
+        try:
+            if ns.enable_getcounter and proc.poll() is None:
+                getcounter_proc = _start_getcounter_with_pid_retry(
+                    paths.getcounter_csv,
+                    interval_sec=float(ns.getcounter_interval),
+                    target_pid=int(proc.pid),
+                    proc=proc,
+                )
+        except Exception:
+            getcounter_proc = None
 
         exit_code = None
         try:
@@ -2071,6 +2385,7 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             sampler.stop(timeout_sec=5.0)
             _stop_typeperf(typeperf_proc, timeout_sec=5.0)
+            _stop_getcounter(getcounter_proc, timeout_sec=3.0)
 
         t_wall1 = time.time()
 
@@ -2093,6 +2408,7 @@ def main(argv: list[str] | None = None) -> int:
             "stdout_log": str(paths.stdout_log),
             "cpu_jsonl": str(paths.cpu_jsonl),
             "gpu_typeperf_csv": str(paths.typeperf_csv),
+            "gpu_getcounter_csv": str(paths.getcounter_csv),
             "gpu_executor_trace_csv": str(trace_path) if trace_path is not None else "",
         },
         "cpu_summary": _parse_cpu_jsonl(paths.cpu_jsonl),

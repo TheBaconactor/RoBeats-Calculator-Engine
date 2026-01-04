@@ -17,6 +17,7 @@ os.environ["PERF_TIMING"] = "1"
 os.environ["GPU_PROFILER"] = "1"
 os.environ["GPU_SYNC_FOR_TIMING"] = "1"  # Accurate GPU timing
 os.environ["GPU_FORCE_SYNC"] = "1"  # Force sync after kernels
+os.environ.setdefault("INFLIGHT_STAGE_PROFILE", "1")
 os.environ.setdefault("PYTHONUTF8", "1")
 os.environ.setdefault("FG_VULKAN_RETRIES", "1")
 
@@ -34,12 +35,21 @@ def _write_profile_config(project_root_dir: str) -> str:
     cfg = configparser.ConfigParser()
     cfg.read(src, encoding="utf-8-sig")
 
+    if not cfg.has_section("CalculateSong"):
+        cfg.add_section("CalculateSong")
+
     if not cfg.has_section("IterationEngine"):
         cfg.add_section("IterationEngine")
+
+    # Ensure the queue is not accidentally filtered down to a single song.
+    # We want a bounded but representative sample.
+    cfg.set("CalculateSong", "Song_Name", "")
+    cfg.set("CalculateSong", "Difficulty", cfg.get("CalculateSong", "Difficulty", fallback="All"))
 
     # Bound runtime: user config can be extremely heavy (e.g., depth=500, multistart=75).
     cfg.set("IterationEngine", "GA_SearchDepth", "50")
     cfg.set("IterationEngine", "GA_MultiStart", "5")
+    cfg.set("IterationEngine", "SongQueueLimit", "32")
     cfg.set("IterationEngine", "LoopForever", "false")
     cfg.set("IterationEngine", "GPU_Mode", "true")
     cfg.set("IterationEngine", "GPU_Native_GA", cfg.get("IterationEngine", "GPU_Native_GA", fallback="true"))

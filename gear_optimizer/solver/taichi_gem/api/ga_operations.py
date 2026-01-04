@@ -1109,20 +1109,30 @@ def ga_download_runs_payload(*, n_runs: int, n_genomes: int, n_slots: int = 9) -
     if out is None:
         out = fields.ga_runs_payload_packed.to_numpy()
 
+    view = out[:n_runs, :n_rows, :cols]
     total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
     if perf:
         try:
-            shape = getattr(out, "shape", None)
+            shape = getattr(view, "shape", None)
             elems = int(shape[0]) * int(shape[1]) * int(shape[2]) if shape is not None else 0
-            bytes_i32 = elems * 4
+            view_bytes_i32 = elems * 4
         except Exception:
-            bytes_i32 = 0
+            view_bytes_i32 = 0
+        try:
+            out_shape = getattr(out, "shape", None)
+            out_elems = int(out_shape[0]) * int(out_shape[1]) * int(out_shape[2]) if out_shape is not None else 0
+            transfer_bytes_i32 = out_elems * 4
+        except Exception:
+            transfer_bytes_i32 = 0
         print(
             "[PERF][GADownloadRunsPayload] "
-            f"runs={n_runs} pop={n_genomes} mode={mode} copy={copy_ms:.1f}ms total={total_ms:.1f}ms bytes={bytes_i32}"
+            f"runs={n_runs} pop={n_genomes} mode={mode} copy={copy_ms:.1f}ms total={total_ms:.1f}ms "
+            f"view_bytes={view_bytes_i32} transfer_bytes={transfer_bytes_i32}"
         )
 
-    return np.asarray(out[:n_runs, :n_rows, :cols], dtype=np.int32).copy()
+    if view.dtype == np.int32 and view.flags["C_CONTIGUOUS"]:
+        return view
+    return np.ascontiguousarray(view, dtype=np.int32)
 
 
 # ============================================================================

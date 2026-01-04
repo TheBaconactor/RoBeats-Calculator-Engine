@@ -95,6 +95,7 @@ def profile_real_song():
         20,  # ga_depth (reduced)
         None,  # status_queue
         1,  # parallel_workers
+        False,  # fg_debug
     )
 
     # Profile

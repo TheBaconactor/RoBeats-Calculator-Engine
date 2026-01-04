@@ -22,7 +22,7 @@ except ImportError:
 
 
 # Import from refactored modules
-from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS
+from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS, GA_POPULATION_SIZE
 from gear_optimizer.core.config import (
     compute_memory_guard_limit,
     load_paths_cache,
@@ -305,6 +305,27 @@ class GearOptimizerApp:
             loop_forever = cfg.getboolean("IterationEngine", "LoopForever", fallback=False)
             eval_cpu_limit = safe_int(cfg.get("IterationEngine", "EvalCPUCores", fallback=0))
             self._apply_inflight_overrides(cfg)
+
+            # If the GPU executor initializes Taichi before the GA code runs, Taichi fields can be allocated with
+            # default (padded) GA run buffers, making GPU-native GA payload downloads significantly slower.
+            # Publish a conservative sizing hint early so any first-use allocation can pick tighter shapes.
+            try:
+                gpu_mode = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False)
+                gpu_native_ga = cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=False)
+            except Exception:
+                gpu_mode = False
+                gpu_native_ga = False
+            if gpu_mode and gpu_native_ga:
+                ga_multistart = safe_int(cfg.get("IterationEngine", "GA_MultiStart", fallback=1), 1)
+                ga_multistart = max(1, int(ga_multistart))
+                os.environ.setdefault("GPU_NATIVE_GA_MAX_RUNS", str(ga_multistart))
+                os.environ.setdefault("GPU_NATIVE_GA_MAX_GENOMES", str(int(GA_POPULATION_SIZE)))
+                try:
+                    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+
+                    gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
+                except Exception:
+                    pass
 
             stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
 

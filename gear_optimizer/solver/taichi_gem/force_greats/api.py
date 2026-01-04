@@ -93,6 +93,8 @@ def _maybe_sync(*, for_timing: bool = False) -> None:
 # Enable detailed FG GPU timing output
 _PERF_TIMING = os.environ.get("PERF_TIMING", "0") == "1"
 _FG_TRANSFER_TRACE = str(os.environ.get("FG_TRANSFER_TRACE", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+_FG_TASK_TRACE = str(os.environ.get("FG_TASK_TRACE", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+_FG_TASK_CALL_SEQ = 0
 
 
 def _get_gpu_profiler():
@@ -1574,7 +1576,16 @@ def solve_force_greats_finder_gpu_tasks(
     for t in merged_tasks:
         t.pop("_merge_key", None)
 
+    global _FG_TASK_CALL_SEQ
+    try:
+        _FG_TASK_CALL_SEQ = int(_FG_TASK_CALL_SEQ) + 1
+    except Exception:
+        _FG_TASK_CALL_SEQ = 1
+    call_seq = int(_FG_TASK_CALL_SEQ)
+
     uploaded = False
+    prev_task_end_wall_ts: float | None = None
+    task_idx = 0
     for task in merged_tasks:
         if not isinstance(task, dict):
             continue
@@ -1582,6 +1593,25 @@ def solve_force_greats_finder_gpu_tasks(
         ftff_pairs = task.get("ftff_pairs")
         if not fg_configs or not ftff_pairs:
             continue
+
+        if _PERF_TIMING and _FG_TASK_TRACE:
+            try:
+                wall_ts = time.time()
+                gap_ms = 0.0
+                if prev_task_end_wall_ts is not None:
+                    gap_ms = max(0.0, (float(wall_ts) - float(prev_task_end_wall_ts)) * 1000.0)
+                print(
+                    "[PERF][FGTask] "
+                    f"call={int(call_seq)} idx={int(task_idx)} kind=start wall_ts={wall_ts:.6f} "
+                    f"cfgs={int(len(fg_configs))} ftff={int(len(ftff_pairs))} "
+                    f"base_cfg_offset={int(task.get('base_cfg_offset', base_cfg_offset) or 0)} "
+                    f"upload_genome_stats={int(0 if uploaded else 1)} gap_since_prev_end_ms={gap_ms:.3f}"
+                )
+            except Exception:
+                pass
+            _t_task0 = time.perf_counter()
+        else:
+            _t_task0 = 0.0
 
         task_offset = int(base_cfg_offset)
         if "base_cfg_offset" in task:
@@ -1624,3 +1654,15 @@ def solve_force_greats_finder_gpu_tasks(
             upload_genome_stats=(not uploaded),
         )
         uploaded = True
+        if _PERF_TIMING and _FG_TASK_TRACE:
+            try:
+                wall_ts = time.time()
+                dt_ms = (time.perf_counter() - float(_t_task0)) * 1000.0 if _t_task0 else 0.0
+                print(
+                    f"[PERF][FGTask] call={int(call_seq)} idx={int(task_idx)} kind=end wall_ts={wall_ts:.6f} "
+                    f"duration_ms={dt_ms:.3f}"
+                )
+                prev_task_end_wall_ts = float(wall_ts)
+            except Exception:
+                pass
+        task_idx += 1
