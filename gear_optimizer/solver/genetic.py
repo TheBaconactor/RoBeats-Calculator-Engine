@@ -51,7 +51,6 @@ from ..helpers.ga_helpers import (
 )
 from ..helpers.song_helpers.fg_candidate_selector import select_fg_candidates
 from ..helpers.song_helpers.fg_combo_booster import (
-    build_fg_beam_booster_candidates,
     build_fg_combo_booster_candidates,
     hydrate_fg_candidate_stats,
 )
@@ -365,7 +364,6 @@ def decode_gpu_native_ga_runs_payload(
     stub_scores = np.empty((0,), dtype=np.int32)
     stub_run_idx = np.empty((0,), dtype=np.int32)
     stub_pop_idx = np.empty((0,), dtype=np.int32)
-    stub_keys_mat = np.empty((0, n_slots), dtype=np.int32)
 
     try:
         scores_snapshot_all = runs_payload[:, 1 : n_genomes + 1, 0]
@@ -411,12 +409,10 @@ def decode_gpu_native_ga_runs_payload(
             stub_scores = flat_scores[best_pos].astype(np.int32, copy=False)
             stub_run_idx = flat_run_idx[best_pos].astype(np.int32, copy=False)
             stub_pop_idx = flat_pop_idx[best_pos].astype(np.int32, copy=False)
-            stub_keys_mat = keys_contig[best_pos]
     except Exception:
         stub_scores = np.empty((0,), dtype=np.int32)
         stub_run_idx = np.empty((0,), dtype=np.int32)
         stub_pop_idx = np.empty((0,), dtype=np.int32)
-        stub_keys_mat = np.empty((0, n_slots), dtype=np.int32)
 
     scan_ms = (time.perf_counter() - t_scan) * 1000.0 if perf else 0.0
 
@@ -498,8 +494,8 @@ def decode_gpu_native_ga_runs_payload(
     if stub_scores.size == 0:
         return best_data, list(best_gear), list(best_minis), []
 
-    # Fast path: do FG-aware selection in ID-space (no dict genome decode) and only
-    # decode full genomes for the final bounded funnel.
+    # Fast path: select top base-score candidates in ID-space (no dict genome decode)
+    # and only decode full genomes for the final bounded funnel.
     t_stub = time.perf_counter() if perf else 0.0
     t_stub_arrays = time.perf_counter() if perf else 0.0
     n_stub = int(stub_scores.shape[0])
@@ -512,12 +508,8 @@ def decode_gpu_native_ga_runs_payload(
         flat = runs_payload.reshape(-1, int(runs_payload.shape[2]))
         flat_idx = (stub_run_idx.astype(np.int64, copy=False) * row_stride) + stub_rows.astype(np.int64, copy=False)
         stub_genome_ids = flat[flat_idx, 1 : 1 + n_slots]
-        stub_res = flat[flat_idx, 1 + n_slots : 1 + n_slots + 7]
     except Exception:
         stub_genome_ids = runs_payload[stub_run_idx, stub_rows, 1 : 1 + n_slots]
-        stub_res = runs_payload[stub_run_idx, stub_rows, 1 + n_slots : 1 + n_slots + 7]
-    stub_ft = np.asarray(stub_res[:, 1], dtype=np.int32)
-    stub_ff = np.asarray(stub_res[:, 2], dtype=np.int32)
 
     item_stats = registry.to_gpu_arrays()["item_stats"]  # (n_items, 10)
     arrays_ms = (time.perf_counter() - t_stub_arrays) * 1000.0 if perf else 0.0
@@ -527,192 +519,13 @@ def decode_gpu_native_ga_runs_payload(
     # Avoid Python `sorted(..., key=lambda ...)` here: `n_stub` can be large and this code
     # runs on the CPU between GPU jobs (a common throughput bottleneck).
     #
-    # We use stable NumPy argsorts so the result matches Python's stable sort semantics:
-    # - metas_by_base: primary=stub_scores desc, secondary=fg_proxy desc
-    # - metas_by_fg: primary=fg_proxy desc, secondary=stub_scores desc
+    # We use stable NumPy argsorts so the result matches Python's stable sort semantics.
     idx = np.arange(n_stub, dtype=np.int32)
-
-    p_color = str(cfg_data.get("primary_color", "") or "")
-    s_color = str(cfg_data.get("secondary_color", "") or "")
-    color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
-    p_idx = color_to_idx.get(p_color, -1)
-    s_idx = color_to_idx.get(s_color, -1)
-
-    # Preweight per-item proxy once per decode to avoid repeated multi-column gathers.
-    item_stats_i64 = item_stats.astype(np.int64, copy=False)
-    item_proxy = (
-        item_stats_i64[:, 0]
-        + (item_stats_i64[:, 1] * 2)
-        + (item_stats_i64[:, 2] * 4)
-        + (item_stats_i64[:, 3] * 3)
-        + (item_stats_i64[:, 4] * 4)
-    )
-    if 5 <= p_idx <= 9:
-        item_proxy = item_proxy + (item_stats_i64[:, p_idx] * 2)
-    if 5 <= s_idx <= 9 and s_idx != p_idx:
-        item_proxy = item_proxy + item_stats_i64[:, s_idx]
-
-    def _fg_proxy_from_ids(ids_mat: np.ndarray) -> np.ndarray:
-        ids = np.asarray(ids_mat, dtype=np.int32)
-        proxy = item_proxy[ids].sum(axis=1, dtype=np.int64)
-        return np.asarray(proxy, dtype=np.int64)
-
-    t_stub_proxy = time.perf_counter() if perf else 0.0
-    if n_stub <= fg_candidate_limit:
-        base_order = idx[np.argsort(-stub_scores, kind="stable")]
-        selected_idx_arr = base_order[: int(fg_candidate_limit)]
-        selected_stub_indices = selected_idx_arr.tolist()
-        select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
-    else:
-        # Fast path: when the FG funnel limit is at/below the per-song loadout cap,
-        # selection is simply "top base-score candidates (tie-break by FG proxy)".
-        # Avoid allocating O(n_stub) sums/sets in this case.
-        if fg_candidate_limit <= LOADOUTS_PER_SONG_LIMIT:
-            base_order = idx[np.argsort(-stub_scores, kind="stable")]
-            limit = int(fg_candidate_limit)
-            if base_order.shape[0] <= limit:
-                selected_idx_arr = base_order
-            else:
-                selected_idx_arr = base_order[:limit]
-
-                # If the score at the boundary is tied, pick the highest-FG-proxy members
-                # of the tied score group (matches `metas_by_base` behavior) without
-                # computing proxy for all stubs.
-                try:
-                    boundary_score = int(stub_scores[base_order[limit - 1]])
-                    next_score = int(stub_scores[base_order[limit]])
-                except Exception:
-                    boundary_score = None
-                    next_score = None
-
-                if boundary_score is not None and next_score is not None and next_score == boundary_score:
-                    ordered_scores = stub_scores[base_order]
-                    tie_pos = np.flatnonzero(ordered_scores == boundary_score)
-                    if tie_pos.size:
-                        block_start = int(tie_pos[0])
-                        block_end = int(tie_pos[-1] + 1)
-                        prefix = base_order[:block_start]
-                        tied = base_order[block_start:block_end]
-                        needed = max(0, limit - int(prefix.shape[0]))
-                        if needed and tied.size:
-                            tied_proxy = _fg_proxy_from_ids(stub_genome_ids[tied])
-                            tied_pick = tied[np.argsort(-tied_proxy, kind="stable")][:needed]
-                            selected_idx_arr = np.concatenate([prefix, tied_pick], axis=0)
-
-            # Final deterministic ordering for the selected set:
-            # sort by (score desc, fg_proxy desc) like `metas_by_base`, but only over ~200 rows.
-            sel_proxy = _fg_proxy_from_ids(stub_genome_ids[selected_idx_arr])
-            _tmp = selected_idx_arr[np.argsort(-sel_proxy, kind="stable")]
-            selected_idx_arr = _tmp[np.argsort(-stub_scores[_tmp], kind="stable")]
-            selected_stub_indices = selected_idx_arr.tolist()
-
-            # Keep this timing comparable to the old code path (includes proxy/ordering work).
-            select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
-            if not selected_stub_indices:
-                return best_data, list(best_gear), list(best_minis), []
-        else:
-            # Full funnel path: compute FG proxy for all stubs (limit > LOADOUTS_PER_SONG_LIMIT).
-            t_sel_proxy = time.perf_counter() if perf else 0.0
-            fg_proxy_vec = _fg_proxy_from_ids(stub_genome_ids)
-            proxy_vec_ms = (time.perf_counter() - t_sel_proxy) * 1000.0 if perf else 0.0
-
-            # metas_by_base
-            t_sel_order = time.perf_counter() if perf else 0.0
-            _tmp = idx[np.argsort(-fg_proxy_vec, kind="stable")]
-            metas_by_base = _tmp[np.argsort(-stub_scores[_tmp], kind="stable")]
-            # metas_by_fg
-            _tmp2 = idx[np.argsort(-stub_scores, kind="stable")]
-            metas_by_fg = _tmp2[np.argsort(-fg_proxy_vec[_tmp2], kind="stable")]
-            order_ms = (time.perf_counter() - t_sel_order) * 1000.0 if perf else 0.0
-
-            selected_stub_indices: list[int] = []
-            selected_mask = np.zeros((n_stub,), dtype=np.bool_)
-
-            t_sel_uniq = time.perf_counter() if perf else 0.0
-            # Avoid `np.unique` on void views here: on some Windows builds this can
-            # produce multi-hundred-ms spikes for small inputs, stalling GPU submits.
-            seen_centers: set[int] = set()
-            seen_minis: set[tuple[int, int, int]] = set()
-            uniq_ms = (time.perf_counter() - t_sel_uniq) * 1000.0 if perf else 0.0
-
-            def _add(j: int) -> bool:
-                j = int(j)
-                if selected_mask[j]:
-                    return False
-                selected_mask[j] = True
-                selected_stub_indices.append(j)
-                try:
-                    center_key = (int(stub_ft[j]) << 32) | (int(stub_ff[j]) & 0xFFFFFFFF)
-                except Exception:
-                    center_key = 0
-                try:
-                    m = stub_keys_mat[j, 6:9]
-                    mini_key = (int(m[0]), int(m[1]), int(m[2]))
-                except Exception:
-                    mini_key = (0, 0, 0)
-                seen_centers.add(int(center_key))
-                seen_minis.add(mini_key)
-                return True
-
-            top_base_keep = min(int(fg_candidate_limit), int(LOADOUTS_PER_SONG_LIMIT))
-            for j in metas_by_base:
-                if len(selected_stub_indices) >= top_base_keep:
-                    break
-                _add(j)
-
-            base_budget = min(int(fg_candidate_limit), max(top_base_keep, int(fg_candidate_limit * 0.55)))
-            fg_budget_end = min(int(fg_candidate_limit), base_budget + int(fg_candidate_limit * 0.30))
-
-            for j in metas_by_base:
-                if len(selected_stub_indices) >= base_budget:
-                    break
-                _add(j)
-
-            for j in metas_by_fg:
-                if len(selected_stub_indices) >= fg_budget_end:
-                    break
-                try:
-                    ck = (int(stub_ft[int(j)]) << 32) | (int(stub_ff[int(j)]) & 0xFFFFFFFF)
-                except Exception:
-                    ck = 0
-                if int(ck) in seen_centers:
-                    continue
-                _add(j)
-            for j in metas_by_fg:
-                if len(selected_stub_indices) >= fg_budget_end:
-                    break
-                _add(j)
-
-            for j in metas_by_base:
-                if len(selected_stub_indices) >= int(fg_candidate_limit):
-                    break
-                try:
-                    m = stub_keys_mat[int(j), 6:9]
-                    mk = (int(m[0]), int(m[1]), int(m[2]))
-                except Exception:
-                    mk = (0, 0, 0)
-                if mk in seen_minis:
-                    continue
-                _add(j)
-
-            for j in metas_by_base:
-                if len(selected_stub_indices) >= int(fg_candidate_limit):
-                    break
-                _add(j)
-
-            selected_stub_indices = selected_stub_indices[: int(fg_candidate_limit)]
-            fill_ms = (time.perf_counter() - t_sel_uniq) * 1000.0 - uniq_ms if perf else 0.0
-            select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
-            if not selected_stub_indices:
-                return best_data, list(best_gear), list(best_minis), []
-            if perf:
-                print(
-                    "[PERF][GADecodeSelectDetails] "
-                    f"runs={n_runs} pop={n_genomes} uniq={n_stub} "
-                    f"proxy_vec={proxy_vec_ms:.1f}ms order={order_ms:.1f}ms uniq={uniq_ms:.1f}ms fill={fill_ms:.1f}ms"
-                )
-
-    proxy_ms = (time.perf_counter() - t_stub_proxy) * 1000.0 if perf else 0.0
+    base_order = idx[np.argsort(-stub_scores, kind="stable")]
+    selected_idx_arr = base_order[: min(int(fg_candidate_limit), int(base_order.shape[0]))]
+    selected_stub_indices = selected_idx_arr.tolist()
+    select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
+    proxy_ms = 0.0
 
     # Vectorized stats computation for selected candidates only.
     t_stats = time.perf_counter() if perf else 0.0
@@ -900,6 +713,7 @@ def _neighbor_sweep_fg_candidates(
     Goal: include FG-relevant loadouts that may be far from the base-score optimum,
     without relying on DB seeds (cold start).
     """
+    return []
     if cfg is None or not hasattr(cfg, "getboolean"):
         return []
     if not existing_candidates:
@@ -2421,7 +2235,7 @@ def solve_coevolution_genetic(
                 seen_hashes.add(cand_hash)
                 unique_evaluated.append(cand)
 
-        # Select an FG-aware funnel (mix base-score strength + fever-stat potential + diversity).
+        # Cap candidate funnel for downstream FG evaluation.
         unique_evaluated = select_fg_candidates(
             unique_evaluated,
             limit=max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit),
@@ -2429,74 +2243,10 @@ def solve_coevolution_genetic(
             secondary_color=str(s_color or ""),
         )
 
-        # Optional: FG neighbor sweep (cold-start reliability)
-        try:
-            if cfg.getboolean("IterationEngine", "ForceGreatsFinder", fallback=False):
-                neighbors = _neighbor_sweep_fg_candidates(
-                    cfg=cfg,
-                    existing_candidates=unique_evaluated,
-                    registry=registry,
-                    gear_pool=gear_pool,
-                    mini_pool=mini_pool,
-                    slots=slots,
-                    cfg_data=cfg_data,
-                    base_stats_fixed=base_stats_fixed,
-                    calc_song=calc_song,
-                    ref_arrays=ref_arrays,
-                )
-                if neighbors:
-                    merged = []
-                    seen = set()
-
-                    def _key(cand: dict) -> tuple:
-                        genome = cand.get("Genome") or []
-                        gear_names = tuple((it or {}).get("Name", "") for it in genome[:6])
-                        mini_names = tuple(sorted(((it or {}).get("Name", "") for it in genome[6:9])))
-                        return gear_names + mini_names
-
-                    for cand in unique_evaluated:
-                        k = _key(cand)
-                        if k in seen:
-                            continue
-                        seen.add(k)
-                        merged.append(cand)
-
-                    for cand in neighbors:
-                        k = _key(cand)
-                        if k in seen:
-                            continue
-                        seen.add(k)
-                        merged.append(cand)
-
-                    # Keep a wider candidate funnel here; the downstream FG stage is
-                    # explicitly capped by `FG_CandidateLimit` and should decide which
-                    # candidates to evaluate. Do not truncate purely by base score
-                    # (regression risk); if we must cap, use the FG-aware selector.
-                    max_keep = max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit)
-                    max_keep = max(max_keep, min(5000, max_keep * 10))
-                    if len(merged) > max_keep:
-                        unique_evaluated = select_fg_candidates(
-                            merged,
-                            limit=max_keep,
-                            primary_color=str(p_color or ""),
-                            secondary_color=str(s_color or ""),
-                        )
-                    else:
-                        unique_evaluated = merged
-        except Exception:
-            # Never allow candidate augmentation to crash the GA solver.
-            pass
-
         # FG booster(s): optional candidate augmentation to improve ForceGreatsFinder coverage
         # without inflating the downstream candidate limit (we re-select to the same funnel size).
         try:
             force_greats_enabled = cfg.getboolean("IterationEngine", "ForceGreatsFinder", fallback=False)
-            beam_enabled = str(os.environ.get("FG_BEAM_BOOSTER_ENABLED", "0") or "").strip().lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
             combo_enabled = str(os.environ.get("FG_COMBO_BOOSTER_ENABLED", "1") or "").strip().lower() in {
                 "1",
                 "true",
@@ -2505,19 +2255,7 @@ def solve_coevolution_genetic(
             }
 
             boosted = None
-            if force_greats_enabled and beam_enabled:
-                boosted = build_fg_beam_booster_candidates(
-                    existing_candidates=list(unique_evaluated or []),
-                    registry=registry,
-                    base_stats_fixed=base_stats_fixed,
-                    cfg_data=cfg_data,
-                    calc_song=calc_song,
-                    ref_arrays=ref_arrays,
-                    primary_color=str(p_color or ""),
-                    secondary_color=str(s_color or ""),
-                    song_slot=int(song_slot),
-                )
-            elif force_greats_enabled and combo_enabled:
+            if force_greats_enabled and combo_enabled:
                 boosted = build_fg_combo_booster_candidates(
                     existing_candidates=list(unique_evaluated or []),
                     registry=registry,

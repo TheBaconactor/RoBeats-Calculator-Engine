@@ -25,14 +25,6 @@ FG_COMBO_BOOSTER_POSITIONS_PER_SEED = 2
 # Users can override via `FG_COMBO_BOOSTER_GPU_EVALS` if they explicitly want speed.
 FG_COMBO_BOOSTER_DEFAULT_GPU_EVALS = FG_COMBO_BOOSTER_MAX_EVALS
 
-
-# Experimental: adaptive "beam" booster.
-# Unlike the combo booster (which enumerates 1-2-slot combos around many seeds),
-# the beam booster does a small number of sequential expansion rounds and keeps a
-# bounded "beam" of the most FG-promising genomes for deeper expansion.
-#
-# This can discover high-FG-potential loadouts that are >2 swaps away from the GA
-# basin without evaluating a full Cartesian product.
 FG_BEAM_BOOSTER_MAX_EVALS = 4096
 FG_BEAM_BOOSTER_TOP_K = 10
 FG_BEAM_BOOSTER_DEFAULT_GPU_EVALS = FG_BEAM_BOOSTER_MAX_EVALS
@@ -480,7 +472,8 @@ def _axis_slots(items_by_slot: dict[int, list[dict]], *, primary_color: str, sec
         base_span = 0
         try:
             vals = [
-                _base_item_score(it, primary_color=primary_color, secondary_color=secondary_color) for it in (items or [])
+                _base_item_score(it, primary_color=primary_color, secondary_color=secondary_color)
+                for it in (items or [])
             ]
             base_span = int(max(vals) - min(vals)) if vals else 0
         except Exception:
@@ -1553,7 +1546,10 @@ def _pad_genome(genome: list[dict]) -> list[dict]:
 def _fg_proxy_genome(genome: list[dict], *, primary_color: str, secondary_color: str) -> int:
     try:
         return int(
-            sum(_fg_item_score(it, primary_color=primary_color, secondary_color=secondary_color) for it in (genome or [])[:9])
+            sum(
+                _fg_item_score(it, primary_color=primary_color, secondary_color=secondary_color)
+                for it in (genome or [])[:9]
+            )
         )
     except Exception:
         return 0
@@ -1730,8 +1726,8 @@ def build_fg_beam_booster_candidates(
     primary_color: str,
     secondary_color: str,
     song_slot: int = 0,
-    max_extra_evals: int = FG_BEAM_BOOSTER_MAX_EVALS,
-    top_k: int = FG_BEAM_BOOSTER_TOP_K,
+    max_extra_evals: int = 0,
+    top_k: int = 0,
     gpu_client: Optional[object] = None,
 ) -> list[dict]:
     """
@@ -1742,8 +1738,8 @@ def build_fg_beam_booster_candidates(
     intended to improve FG coverage with fewer wasted evals than a full Cartesian
     combo enumeration.
     """
-    if not existing_candidates or registry is None:
-        return []
+    # Beam booster disabled/removed; kept only as a stub for backwards compatibility.
+    return []
 
     # Never do this in CPU-only mode; it defeats the purpose of "cheap FG coverage".
     if not bool(cfg_data.get("use_gpu", False)):
@@ -1857,7 +1853,9 @@ def build_fg_beam_booster_candidates(
             for pos in positions:
                 if len(genomes) >= budget:
                     break
-                replacements = _beam_replacements_for_position(genome, pos, items_by_slot=items_by_slot, max_replacements=branch)
+                replacements = _beam_replacements_for_position(
+                    genome, pos, items_by_slot=items_by_slot, max_replacements=branch
+                )
                 for it in replacements:
                     if len(genomes) >= budget:
                         break
