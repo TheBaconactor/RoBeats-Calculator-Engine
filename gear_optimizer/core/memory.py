@@ -432,29 +432,51 @@ class MemoryGuardResumeTracker:
                 os.remove(self.path)
             except FileNotFoundError:
                 pass
+            except Exception as exc:
+                logging.warning(f"[MemoryGuard] Failed to remove resume queue: {exc}")
             return
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+
+        payload = {"pending": self.pending, "context": self.context}
+        try:
+            os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        except Exception as exc:
+            logging.warning(f"[MemoryGuard] Failed to create resume queue directory: {exc}")
+            return
+
         tmp_path = self.path + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as fh:
-            json.dump({"pending": self.pending, "context": self.context}, fh)
-        # Windows can intermittently raise PermissionError on atomic replace if an external
-        # process (e.g., AV/scanner/indexer) briefly holds the target file open. Retry with
-        # a short backoff to avoid disabling the in-flight pipeline due to a transient lock.
-        last_exc = None
-        for attempt in range(8):
-            try:
-                os.replace(tmp_path, self.path)
-                last_exc = None
-                break
-            except PermissionError as exc:
-                last_exc = exc
-                time.sleep(0.01 * (attempt + 1))
-        if last_exc is not None:
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+        except Exception as exc:
+            logging.warning(f"[MemoryGuard] Failed to write resume queue tmp file: {exc}")
             try:
                 os.remove(tmp_path)
             except Exception:
                 pass
-            raise last_exc
+            return
+
+        # Windows can intermittently raise PermissionError on atomic replace if an external
+        # process (e.g., AV/scanner/indexer) briefly holds either file open.
+        #
+        # This state file is best-effort; never raise here (it can disable the in-flight
+        # pipeline and abort long runs). We'll retry briefly, then log and continue.
+        last_exc = None
+        for attempt in range(12):
+            try:
+                os.replace(tmp_path, self.path)
+                last_exc = None
+                break
+            except (PermissionError, FileNotFoundError, OSError) as exc:
+                last_exc = exc
+                time.sleep(0.01 * (attempt + 1))
+
+        if last_exc is not None:
+            logging.warning(f"[MemoryGuard] Failed to persist resume queue (continuing): {last_exc}")
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
+            return
 
     def finalize(self, preserve_pending):
         """Finalize tracker, optionally preserving pending queue."""
