@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections import Counter
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from ..core.constants import PATHS
-from .csv_parser import load_csv_db, resolve_stats_csv
+from .csv_parser import load_csv_db
 
 
 _MINIS_BY_NAME_CACHE: Optional[Dict[str, dict]] = None
@@ -37,7 +38,8 @@ def get_minis_by_name_cached() -> Dict[str, dict]:
 
     minis: Dict[str, dict] = {}
     try:
-        minis = load_csv_db(resolve_stats_csv(PATHS, "Minis.csv"), "mini") or {}
+        minis_path = os.path.join(PATHS.data_dir, "Gear", "Minis.csv")
+        minis = load_csv_db(minis_path, "mini") or {}
     except Exception:
         minis = {}
     _MINIS_BY_NAME_CACHE = minis
