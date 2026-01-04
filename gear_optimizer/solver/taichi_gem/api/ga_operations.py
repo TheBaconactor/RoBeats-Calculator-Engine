@@ -430,6 +430,11 @@ def ga_evaluate_population(
     # Warm-start logic: Default to cold start (0) unless specified
     use_hints_i = int(use_hints)
 
+    prune_plateaus_i = 1
+    raw_prune = str(os.environ.get("GPU_NATIVE_GA_PLATEAU_PRUNE", "1") or "").strip().lower()
+    if raw_prune in {"0", "false", "no", "off"}:
+        prune_plateaus_i = 0
+
     # Precompute FT/FF combo tables once per budget (tiny upload, reused across generations).
     n_combos = _ensure_ftff_combo_tables(total_budget_i)
     combo_chunk = n_combos
@@ -459,6 +464,7 @@ def ga_evaluate_population(
             int(is_s_ov),
             song_slot_i,
             use_hints_i,
+            int(prune_plateaus_i),
         )
 
     # NOTE: Result materialization (re-evaluating the winning combo to get correct

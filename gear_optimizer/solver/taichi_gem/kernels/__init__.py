@@ -147,6 +147,7 @@ from .ga_eval import (
 # Import timeline kernel
 from .kernels_timeline import (
     compute_timeline_grid_kernel,
+    compute_timeline_grid_signatures_kernel,
 )
 
 # Export all public names for backward compatibility
@@ -264,4 +265,5 @@ __all__ = [
     "binary_search_left_from",
     "binary_search_left",
     "compute_timeline_grid_kernel",
+    "compute_timeline_grid_signatures_kernel",
 ]

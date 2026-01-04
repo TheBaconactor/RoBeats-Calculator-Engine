@@ -39,6 +39,8 @@ grid_count_body_normal = None
 grid_head_len = None
 grid_fever_masks = None
 grid_fever_masks_bits = None
+grid_sig0 = None  # (MAX_SONG_SLOTS, 161, 161) u64 - timeline signature (mask-derived)
+grid_sig1 = None  # (MAX_SONG_SLOTS, 161, 161) u64 - timeline signature (counts-derived)
 grid_gap = None  # (MAX_SONG_SLOTS, 161, 161) i16 - gap to song end per (FT, FF)
 grid_fever_activations = None  # (MAX_SONG_SLOTS, 161, 161) i8 - fever activations per (FT, FF)
 

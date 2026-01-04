@@ -16,6 +16,15 @@ from ..kernels_scoring import local_search_from_hint, optimize_core_device
 IS_METAL = sys.platform == "darwin"
 
 
+@ti.func
+def _same_grid_sig(song_slot: ti.i32, sig0: ti.u64, sig1: ti.u64, ft_i: ti.i32, ff_i: ti.i32) -> ti.i32:
+    return ti.cast(
+        (kernels_helpers.grid_sig0[song_slot, ft_i, ff_i] == sig0)
+        & (kernels_helpers.grid_sig1[song_slot, ft_i, ff_i] == sig1),
+        ti.i32,
+    )
+
+
 @ti.kernel
 def ga_find_best_combo_warmstart_kernel(
     n_genomes: ti.i32,
@@ -38,6 +47,7 @@ def ga_find_best_combo_warmstart_kernel(
     is_s_ov: ti.i32,
     song_slot: ti.i32,
     use_hints: ti.template(),  # 0 = cold start (full greedy), 1 = warm start (local search from hint)
+    prune_plateaus: ti.template(),  # 0 = disabled, 1 = prune timeline plateaus via dominated representatives
 ):
     """
     GPU-parallel evaluation with optional warm-start from hints.
@@ -62,6 +72,11 @@ def ga_find_best_combo_warmstart_kernel(
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
     MAX_STAT: ti.i32 = 160
+
+    # FT/FF elemental contribution weights in base_value space (2*p + s).
+    # Each FT/FF gem adds GEM_STAT_TO_ELEMENT to the corresponding color stat.
+    w_ft: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ft << 1) + is_s_ft)
+    w_ff: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ff << 1) + is_s_ff)
 
     for genome_idx, local_c in ti.ndrange(n_genomes, combo_count):
         combo_idx: ti.i32 = combo_offset + local_c
@@ -105,6 +120,78 @@ def ga_find_best_combo_warmstart_kernel(
         ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
         ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
         ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
+
+        # GPU-only plateau pruning:
+        # - Bucket by "same timeline outcome" (grid_sig0/grid_sig1 equality).
+        # - Within a bucket, drop combos dominated by an adjacent combo with:
+        #     * same budget (ft+ff constant) but strictly higher FT/FF element weight, OR
+        #     * strictly higher budget when the corresponding FT/FF weight is zero.
+        # This avoids calling optimize_core_device/local_search for redundant plateau interiors.
+        if ti.static(prune_plateaus):
+            sig0 = kernels_helpers.grid_sig0[song_slot, ft_idx, ff_idx]
+            sig1 = kernels_helpers.grid_sig1[song_slot, ft_idx, ff_idx]
+
+            pruned: ti.i32 = 0
+
+            # If FT doesn't contribute to base_value, any extra FT within the same timeline is pure waste.
+            if pruned == 0 and w_ft == 0 and ft > 0:
+                ft2 = ft - 1
+                ff2 = ff
+                if ff2 <= ti.min(total_budget - ft2, max_ff_gems):
+                    ft2_val = ft_stat_val - gem_scale_fever
+                    ft2_idx = ti.min(MAX_STAT, ti.max(0, ft2_val))
+                    if _same_grid_sig(song_slot, sig0, sig1, ft2_idx, ff_idx) != 0:
+                        pruned = 1
+
+            # If FF doesn't contribute to base_value, any extra FF within the same timeline is pure waste.
+            if pruned == 0 and w_ff == 0 and ff > 0:
+                ft2 = ft
+                ff2 = ff - 1
+                if ff2 <= ti.min(total_budget - ft2, max_ff_gems):
+                    ff2_val = ff_stat_val - gem_scale_fever
+                    ff2_idx = ti.min(MAX_STAT, ti.max(0, ff2_val))
+                    if _same_grid_sig(song_slot, sig0, sig1, ft_idx, ff2_idx) != 0:
+                        pruned = 1
+
+            # For fixed cost (ft+ff), prefer the distribution that maximizes FT/FF element contribution.
+            # We only prune when the neighbor is valid AND shares the same timeline signature.
+            if pruned == 0 and w_ft > w_ff and ff > 0 and (ft + 1) <= max_ft_gems:
+                ft2 = ft + 1
+                ff2 = ff - 1
+                if ff2 <= ti.min(total_budget - ft2, max_ff_gems):
+                    ft2_val = ft_stat_val + gem_scale_fever
+                    ff2_val = ff_stat_val - gem_scale_fever
+                    ft2_idx = ti.min(MAX_STAT, ti.max(0, ft2_val))
+                    ff2_idx = ti.min(MAX_STAT, ti.max(0, ff2_val))
+                    if _same_grid_sig(song_slot, sig0, sig1, ft2_idx, ff2_idx) != 0:
+                        pruned = 1
+
+            if pruned == 0 and w_ff > w_ft and ft > 0 and (ff + 1) <= max_ff_gems:
+                ft2 = ft - 1
+                ff2 = ff + 1
+                if ff2 <= ti.min(total_budget - ft2, max_ff_gems):
+                    ft2_val = ft_stat_val - gem_scale_fever
+                    ff2_val = ff_stat_val + gem_scale_fever
+                    ft2_idx = ti.min(MAX_STAT, ti.max(0, ft2_val))
+                    ff2_idx = ti.min(MAX_STAT, ti.max(0, ff2_val))
+                    if _same_grid_sig(song_slot, sig0, sig1, ft2_idx, ff2_idx) != 0:
+                        pruned = 1
+
+            # If both weights are equal, all same-cost distributions are base_value-equivalent.
+            # Canonicalize toward smaller FT to remove redundant equal-value plateau interiors.
+            if pruned == 0 and w_ff == w_ft and w_ft != 0 and ft > 0 and (ff + 1) <= max_ff_gems:
+                ft2 = ft - 1
+                ff2 = ff + 1
+                if ff2 <= ti.min(total_budget - ft2, max_ff_gems):
+                    ft2_val = ft_stat_val - gem_scale_fever
+                    ff2_val = ff_stat_val + gem_scale_fever
+                    ft2_idx = ti.min(MAX_STAT, ti.max(0, ft2_val))
+                    ff2_idx = ti.min(MAX_STAT, ti.max(0, ff2_val))
+                    if _same_grid_sig(song_slot, sig0, sig1, ft2_idx, ff2_idx) != 0:
+                        pruned = 1
+
+            if pruned != 0:
+                continue
 
         # O(1) lookup from timeline grid
         count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]

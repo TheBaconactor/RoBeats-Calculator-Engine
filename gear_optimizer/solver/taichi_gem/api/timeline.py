@@ -285,6 +285,18 @@ def _upload_timeline_grid(timeline_grid):
         fields.grid_fever_masks_bits.from_numpy(masks_bits_np)
         fields.grid_gap.from_numpy(gap_np)
         fields.grid_fever_activations.from_numpy(fevact_np)
+        # Keep signature generation GPU-only: build grid_sig* from the uploaded fields.
+        try:
+            kernels.compute_timeline_grid_signatures_kernel(int(song_slot))
+        except Exception:
+            pass
+
+    # Kernel-upload path also needs signatures (slot 0).
+    if kernel_upload:
+        try:
+            kernels.compute_timeline_grid_signatures_kernel(0)
+        except Exception:
+            pass
     try:
         upload_bytes = int(
             cbf_np.nbytes

@@ -24,6 +24,45 @@ from .kernels_helpers import (
 from . import kernels_helpers
 
 
+@ti.func
+def _mix_u64(x: ti.u64) -> ti.u64:
+    """
+    64-bit mix function for building robust timeline signatures.
+
+    We use a strong integer mixer (MurmurHash3 finalizer) to reduce collision risk
+    when bucketing "same timeline outcome" regions.
+    """
+    x ^= x >> ti.u64(33)
+    x *= ti.u64(0xFF51AFD7ED558CCD)
+    x ^= x >> ti.u64(33)
+    x *= ti.u64(0xC4CEB9FE1A85EC53)
+    x ^= x >> ti.u64(33)
+    return x
+
+
+@ti.func
+def _pack_mask_sig(m0: ti.u32, m1: ti.u32, m2: ti.u32, m3: ti.u32) -> ti.u64:
+    lo = ti.cast(m0, ti.u64) | (ti.cast(m1, ti.u64) << ti.u64(32))
+    hi = ti.cast(m2, ti.u64) | (ti.cast(m3, ti.u64) << ti.u64(32))
+    return _mix_u64(lo) ^ _mix_u64(hi + ti.u64(0x9E3779B97F4A7C15))
+
+
+@ti.func
+def _pack_counts_sig(
+    body_fever: ti.i32,
+    body_normal: ti.i32,
+    head_len: ti.i32,
+    fever_activations: ti.i32,
+    gap: ti.i32,
+) -> ti.u64:
+    bf = ti.cast(body_fever & 0xFFFF, ti.u64)
+    bn = ti.cast(body_normal & 0xFFFF, ti.u64) << ti.u64(16)
+    hl = ti.cast(head_len & 0xFF, ti.u64) << ti.u64(32)
+    fa = ti.cast(fever_activations & 0xFF, ti.u64) << ti.u64(40)
+    gp = ti.cast(gap & 0xFFFF, ti.u64) << ti.u64(48)
+    return bf | bn | hl | fa | gp
+
+
 @ti.kernel
 def compute_timeline_grid_kernel(
     total_notes: ti.i32,
@@ -183,8 +222,19 @@ def compute_timeline_grid_kernel(
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1] = m1
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2] = m2
         kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3] = m3
-        kernels_helpers.grid_gap[song_slot, ft_idx, ff_idx] = ti.cast(total_notes - last_fever_end_idx, ti.i16)
+        gap = ti.cast(total_notes - last_fever_end_idx, ti.i32)
+        kernels_helpers.grid_gap[song_slot, ft_idx, ff_idx] = ti.cast(gap, ti.i16)
         kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx] = ti.cast(fever_activations, ti.i8)
+
+        # Store compact signatures used for GA plateau bucketing / pruning.
+        kernels_helpers.grid_sig0[song_slot, ft_idx, ff_idx] = _pack_mask_sig(m0, m1, m2, m3)
+        kernels_helpers.grid_sig1[song_slot, ft_idx, ff_idx] = _pack_counts_sig(
+            body_fever,
+            body_normal,
+            head_len,
+            fever_activations,
+            gap,
+        )
 
         # Also write unpacked mask for compatibility
         for i in range(MAX_HEAD):
@@ -198,3 +248,31 @@ def compute_timeline_grid_kernel(
             else:
                 is_fever = ti.cast((m3 >> ti.u32(i - 96)) & 1, ti.i8)
             kernels_helpers.grid_fever_masks[song_slot, ft_idx, ff_idx, i] = is_fever
+
+
+@ti.kernel
+def compute_timeline_grid_signatures_kernel(song_slot: ti.i32):
+    """
+    Compute grid signature fields from existing grid outputs.
+
+    Used after CPU upload paths that populate grid_* fields without running
+    compute_timeline_grid_kernel(). Keeps signature generation GPU-only.
+    """
+    GRID_DIM: ti.i32 = 161
+    for idx in range(GRID_DIM * GRID_DIM):
+        ft_idx = idx // GRID_DIM
+        ff_idx = idx % GRID_DIM
+
+        m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
+        m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
+        m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
+        m3 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
+
+        bf = ti.cast(kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx], ti.i32)
+        bn = ti.cast(kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx], ti.i32)
+        hl = ti.cast(kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx], ti.i32)
+        fa = ti.cast(kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx], ti.i32)
+        gap = ti.cast(kernels_helpers.grid_gap[song_slot, ft_idx, ff_idx], ti.i32)
+
+        kernels_helpers.grid_sig0[song_slot, ft_idx, ff_idx] = _pack_mask_sig(m0, m1, m2, m3)
+        kernels_helpers.grid_sig1[song_slot, ft_idx, ff_idx] = _pack_counts_sig(bf, bn, hl, fa, gap)

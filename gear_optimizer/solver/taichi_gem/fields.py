@@ -76,6 +76,8 @@ grid_count_body_normal: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32
 grid_head_len: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32
 grid_fever_masks: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161, 100) i8 - head masks
 grid_fever_masks_bits: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161, 4) u32 - bitpacked head masks
+grid_sig0: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) u64 - timeline signature (mask-derived)
+grid_sig1: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) u64 - timeline signature (counts-derived)
 grid_gap: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i16 - gap to song end per (FT, FF)
 grid_fever_activations: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i8 - fever activations per (FT, FF)
 
@@ -231,6 +233,7 @@ def reset_fields_state() -> None:
 
     global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
     global grid_count_body_fever, grid_count_body_normal, grid_head_len, grid_fever_masks, grid_fever_masks_bits
+    global grid_sig0, grid_sig1
     global grid_gap, grid_fever_activations
     global song_timestamps
     global fever_masks, work_budgets, work_count_fever, work_count_normal
@@ -271,6 +274,8 @@ def reset_fields_state() -> None:
     grid_head_len = None
     grid_fever_masks = None
     grid_fever_masks_bits = None
+    grid_sig0 = None
+    grid_sig1 = None
     grid_gap = None
     grid_fever_activations = None
 
@@ -584,6 +589,7 @@ def allocate_grid_fields():
     Each song slot can hold a different song's grid for parallel processing.
     """
     global grid_count_body_fever, grid_count_body_normal, grid_head_len, grid_fever_masks, grid_fever_masks_bits
+    global grid_sig0, grid_sig1
     global grid_gap, grid_fever_activations
     global song_timestamps
     global _grid_fields_allocated
@@ -598,6 +604,8 @@ def allocate_grid_fields():
     grid_head_len = ti.field(dtype=ti.i8, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_fever_masks = ti.field(dtype=ti.i8, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES))
     grid_fever_masks_bits = ti.field(dtype=ti.u32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, 4))
+    grid_sig0 = ti.field(dtype=ti.u64, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
+    grid_sig1 = ti.field(dtype=ti.u64, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     # Gap to song end: total_notes - last_fever_end_idx (positive = opportunity, negative = overshoot)
     grid_gap = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     # Fever activations count per (FT, FF) - sections beyond this have no fever
@@ -652,6 +660,8 @@ def bind_fields(kernels_module):
     target.grid_head_len = grid_head_len
     target.grid_fever_masks = grid_fever_masks
     target.grid_fever_masks_bits = grid_fever_masks_bits
+    target.grid_sig0 = grid_sig0
+    target.grid_sig1 = grid_sig1
     target.grid_gap = grid_gap
     target.grid_fever_activations = grid_fever_activations
 
@@ -787,6 +797,8 @@ def ensure_grid_fields_allocated():
             kernels_metal.grid_count_body_normal = grid_count_body_normal
             kernels_metal.grid_head_len = grid_head_len
             kernels_metal.grid_fever_masks_bits = grid_fever_masks_bits
+            kernels_metal.grid_sig0 = grid_sig0
+            kernels_metal.grid_sig1 = grid_sig1
             kernels_metal.grid_gap = grid_gap
             kernels_metal.grid_fever_activations = grid_fever_activations
 
