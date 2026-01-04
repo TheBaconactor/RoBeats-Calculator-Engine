@@ -24,6 +24,11 @@ No additional setup required! The optimizer automatically discovers your Data fo
 python main.py
 ```
 
+To stop safely:
+- Press `Ctrl+C` once to request a graceful stop (finishes current work, flushes DB, then exits)
+- Press `Ctrl+C` again to force-exit
+- Or create a stop file at `bin/STOP` (override path via `METAFINDER_STOP_FILE`)
+
 The optimizer will:
 - Load all songs from Data folders (Easy/Normal/Hard)
 - Run genetic algorithm optimization for each song

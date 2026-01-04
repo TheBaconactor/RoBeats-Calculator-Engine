@@ -9,6 +9,7 @@ Finds the "universal best" loadout per elemental category by:
 
 import json
 import os
+import sqlite3
 from collections import Counter
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -78,7 +79,13 @@ def get_all_loadouts_from_db() -> List[dict]:
     Query all loadouts from the database with their scores and gear/mini info.
 
     Returns:
-        List of loadout dicts with song_name, score, gear_json, minis_json, details_json
+        List of loadout dicts with song_name, score, fg_score, gear_json, minis_json, details_json.
+
+        Notes:
+        - GeneralMeta treats the "peak" per song as the best achievable score for a loadout:
+          `max(score, fg_score)` (i.e., either base or ForceGreats).
+        - Some historical DBs may only have improved ForceGreats rows present in `fg_loadouts`,
+          so we include rows from both `loadouts` and `fg_loadouts`.
     """
     db_path = get_evolution_db_path()
     if not os.path.exists(db_path):
@@ -86,29 +93,51 @@ def get_all_loadouts_from_db() -> List[dict]:
 
     conn = get_db_connection(db_path)
     try:
-        cursor = conn.execute("""
-            SELECT song_name, score, gear_json, minis_json, details_json
-            FROM loadouts
-            ORDER BY song_name, score DESC
-        """)
+        results: list[dict] = []
 
-        results = []
-        for row in cursor:
-            results.append(
-                {
-                    "song_name": row["song_name"],
-                    "score": row["score"],
-                    "gear_json": row["gear_json"],
-                    "minis_json": row["minis_json"],
-                    "details_json": row["details_json"],
-                }
-            )
+        def _select_all_from(table: str) -> None:
+            try:
+                cursor = conn.execute(
+                    f"""
+                    SELECT song_name, score, fg_score, gear_json, minis_json, details_json
+                    FROM {table}
+                    """
+                )
+            except sqlite3.Error:
+                return
+            for row in cursor:
+                results.append(
+                    {
+                        "song_name": row["song_name"],
+                        "score": row["score"],
+                        "fg_score": row["fg_score"],
+                        "gear_json": row["gear_json"],
+                        "minis_json": row["minis_json"],
+                        "details_json": row["details_json"],
+                    }
+                )
+
+        _select_all_from("loadouts")
+        _select_all_from("fg_loadouts")
         return results
     finally:
         conn.close()
 
 
 _ELEMENT_ORDER = ("Chill", "Flow", "Rush", "Beat", "Vibe")
+
+
+def _effective_score(loadout: dict) -> int:
+    """
+    Return the score GeneralMeta should use for ranking.
+
+    When ForceGreats is enabled, `fg_score` can exceed the base `score` for the
+    same gear+mini set. GeneralMeta should treat the best achievable score as
+    the max of these fields.
+    """
+    score = int(loadout.get("score") or 0)
+    fg_score = int(loadout.get("fg_score") or 0)
+    return max(score, fg_score)
 
 
 def _relevant_elements_for_category(songs: List[dict]) -> Tuple[str, ...]:
@@ -226,9 +255,9 @@ def find_most_common_loadout(
     for song_name, loadouts in loadouts_by_song.items():
         if not loadouts:
             continue
-        # Assuming loadouts are from DB query `ORDER BY score DESC`, the first one is best.
-        # We re-sort just to be absolutely safe and independent of DB query order.
-        best_loadout = max(loadouts, key=lambda x: x["score"])
+        # We re-select best defensively (independent of DB query ordering) and use
+        # the best achievable (FG-aware) score when available.
+        best_loadout = max(loadouts, key=_effective_score)
         best_loadouts_per_song[song_name] = best_loadout
 
     # Count frequency of being #1
@@ -295,15 +324,16 @@ def find_most_common_loadout(
                     mini_sig = _mini_set_effect_signature(minis, minis_by_name, relevant_elements)
                     if mini_sig == target_mini_sig:
                         song_has_set = True
-                        if loadout["score"] > best_entry_score:
-                            best_entry_score = loadout["score"]
+                        score = _effective_score(loadout)
+                        if score > best_entry_score:
+                            best_entry_score = score
                             best_entry_for_song = loadout
                 except json.JSONDecodeError:
                     continue
 
             if song_has_set and best_entry_for_song:
                 total_songs_with_set_count += 1
-                total_score_sum += best_entry_for_song["score"]
+                total_score_sum += best_entry_score
 
                 # Accumulate gems from the representative entry
                 if best_entry_for_song["details_json"]:

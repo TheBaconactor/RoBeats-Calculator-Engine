@@ -485,7 +485,9 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
                     fg_score = MAX(fg_score, excluded.fg_score),
                     gear_json = excluded.gear_json,
                     minis_json = excluded.minis_json,
-                    details_json = CASE WHEN excluded.score > score THEN excluded.details_json ELSE details_json END,
+                    -- Update details on ties so attempt counters (and other run metadata) can advance
+                    -- without requiring a new best score.
+                    details_json = CASE WHEN excluded.score >= score THEN excluded.details_json ELSE details_json END,
                     force_details_json = CASE
                         WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
                         ELSE force_details_json
@@ -508,7 +510,8 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
                     fg_score = MAX(fg_score, excluded.fg_score),
                     gear_json = excluded.gear_json,
                     minis_json = excluded.minis_json,
-                    details_json = CASE WHEN excluded.fg_score > fg_score THEN excluded.details_json ELSE details_json END,
+                    -- Same reasoning as `loadouts`: allow metadata (e.g., attempt counters) to advance on ties.
+                    details_json = CASE WHEN excluded.fg_score >= fg_score THEN excluded.details_json ELSE details_json END,
                     force_details_json = CASE WHEN excluded.fg_score > fg_score THEN excluded.force_details_json ELSE force_details_json END,
                     timestamp = strftime('%s', 'now')
             """,
@@ -900,4 +903,3 @@ def list_pending_fg_jobs(limit: int = 0) -> List[Dict[str, Any]]:
         return []
     finally:
         conn.close()
-

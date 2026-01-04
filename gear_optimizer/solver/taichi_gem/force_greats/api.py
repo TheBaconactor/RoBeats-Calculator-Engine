@@ -1515,13 +1515,18 @@ def solve_force_greats_finder_gpu_tasks(
     if not fg_tasks:
         return
 
-    # Merge adjacent tasks that share the same forced-config list + cfg offset by concatenating
-    # their FT/FF pairs. This increases `n_ftff` (more parallel work per kernel launch) without
-    # changing correctness: it is equivalent to running the tasks sequentially and accumulating
-    # global best across the union of FT/FF pairs.
-    #
-    # This is especially important for tiny `n_ftff` tasks (often 1) which severely under-saturate
-    # the GPU on high-end cards.
+    # Packed mega-job mode:
+    # - Upload all config windows into the global config table once (at their base_cfg_offset)
+    # - Batch FT/FF pairs across all tasks into a single Stage-1/Stage-2 sequence per FG_MAX_FTFF chunk
+    # - Keep Stage 1 buffers alive across cfg bands (cfg_chunk) to avoid TDR while preserving correctness
+
+    if "Fever Time" not in ref_arrays or "Fever Fill Rate" not in ref_arrays:
+        raise KeyError("FG finder GPU requires ref_arrays to include 'Fever Time' and 'Fever Fill Rate'")
+
+    # Ensure shared Taichi runtime + base fields + reference arrays are ready.
+    gem_api.ensure_ready(ref_arrays)
+    fg_fields.ensure_ready_with_warmup()
+
     try:
         max_ftff = int(getattr(fg_fields, "FG_MAX_FTFF", 0) or 0)
     except Exception:
@@ -1529,7 +1534,83 @@ def solve_force_greats_finder_gpu_tasks(
     if max_ftff <= 0:
         max_ftff = 1024
 
-    merged_tasks: list[dict[str, Any]] = []
+    n_sections = int(n_sections) if int(n_sections) > 0 else 1
+    if n_sections > fg_fields.FG_MAX_SECTIONS:
+        raise ValueError(f"Too many FG sections: {n_sections} > {fg_fields.FG_MAX_SECTIONS}")
+
+    # Upload song buffers (cached) and ensure fever-end tables exist.
+    timestamps_np = np.asarray(timestamps_np, dtype=np.float32)
+    total_notes = _fg_upload_song_timestamps(timestamps_np)
+
+    if great_candidate_timestamps_np is None:
+        _fg_last_great_key = _fg_last_song_key
+        _fg_use_great_candidate_alias()
+    else:
+        great_candidate_timestamps_np = np.asarray(great_candidate_timestamps_np, dtype=np.float32)
+        try:
+            same_buf = np.shares_memory(great_candidate_timestamps_np, timestamps_np)
+        except Exception:
+            same_buf = False
+        if same_buf:
+            _fg_last_great_key = _fg_last_song_key
+            _fg_use_great_candidate_alias()
+        else:
+            _fg_upload_great_candidate_timestamps(great_candidate_timestamps_np, total_notes)
+    if total_notes <= 0:
+        return
+
+    _ensure_fever_end_tables(total_notes, float(last_note_time))
+
+    # Pair caps (once per call). The flat kernel always clamps by fg_pair_caps.
+    pair_caps_from_timeline = bool(pair_caps_from_timeline) and (pair_caps_grid is None)
+    song_slot = int(song_slot)
+    if not pair_caps_from_timeline:
+        _ensure_pair_caps_uploaded(pair_caps_grid)
+
+    # Upload per-genome base stats once.
+    n_genomes = int(len(genome_stats_list))
+    if n_genomes <= 0:
+        return
+    if n_genomes > gem_fields.MAX_GENOMES:
+        raise ValueError(f"Too many genomes for FG finder: {n_genomes} > {gem_fields.MAX_GENOMES}")
+
+    global _fg_genome_stats_upload_key
+    stats_buf = _get_genome_stats_buf()
+    if isinstance(genome_stats_list, np.ndarray):
+        stats_buf[:n_genomes, :7] = genome_stats_list[:n_genomes, :7]
+    else:
+        for i, st in enumerate(genome_stats_list):
+            stats_buf[i, 0] = int(st.get("base_pp", 0))
+            stats_buf[i, 1] = int(st.get("base_cm", 0))
+            stats_buf[i, 2] = int(st.get("base_fm", 0))
+            stats_buf[i, 3] = int(st.get("base_p_val", 0))
+            stats_buf[i, 4] = int(st.get("base_s_val", 0))
+            stats_buf[i, 5] = int(st.get("base_ft_stat", 0))
+            stats_buf[i, 6] = int(st.get("base_ff_stat", 0))
+    gem_fields.genome_base_stats.from_numpy(stats_buf)
+    try:
+        if isinstance(genome_stats_list, np.ndarray):
+            ptr = int(genome_stats_list.__array_interface__["data"][0])
+        else:
+            ptr = int(id(genome_stats_list))
+    except Exception:
+        ptr = int(id(genome_stats_list))
+    _fg_genome_stats_upload_key = (int(n_genomes), int(ptr))
+
+    # Pack tasks: upload config windows into the global cfg table and produce a flat list of ftff entries.
+    # Each entry is (ft_gems, ff_gems, cfg_base, cfg_len) where cfg_base is a row offset into fg_forced_counts.
+    uploaded_cfg_keys: set[tuple[int, int]] = set()
+    ftff_entries: list[tuple[int, int, int, int]] = []
+    max_cfg_len = 0
+    p = _get_gpu_profiler()
+    t_cfg_upload0 = time.perf_counter() if (_PERF_TIMING or p is not None) else 0.0
+
+    global _fg_forced_upload_buf
+    max_staging_rows = int(_get_forced_counts_staging_tiers()[-1])
+    if _fg_forced_upload_buf is None or int(_fg_forced_upload_buf.shape[0]) < int(max_staging_rows):
+        _fg_forced_upload_buf = np.zeros((int(max_staging_rows), fg_fields.FG_MAX_SECTIONS), dtype=np.int32)
+    buf = _fg_forced_upload_buf
+
     for task in fg_tasks:
         if not isinstance(task, dict):
             continue
@@ -1537,132 +1618,275 @@ def solve_force_greats_finder_gpu_tasks(
         ftff_pairs = task.get("ftff_pairs")
         if not fg_configs or not ftff_pairs:
             continue
-
         try:
-            task_offset = int(task.get("base_cfg_offset", base_cfg_offset) or base_cfg_offset)
+            cfg_base = int(task.get("base_cfg_offset", base_cfg_offset) or base_cfg_offset)
         except Exception:
-            task_offset = int(base_cfg_offset)
+            cfg_base = int(base_cfg_offset)
+        cfg_len = int(len(fg_configs))
+        if cfg_len <= 0:
+            continue
+        if cfg_len > max_cfg_len:
+            max_cfg_len = cfg_len
 
-        # Normalize pairs to a list of (ft, ff) tuples.
+        key = (int(id(fg_configs)), int(cfg_base))
+        if key not in uploaded_cfg_keys:
+            uploaded_cfg_keys.add(key)
+            if cfg_base < 0:
+                raise ValueError("base_cfg_offset must be >= 0 for packed FG tasks")
+            if int(cfg_base) + int(cfg_len) > int(fg_fields.FG_MAX_CONFIGS):
+                raise ValueError("Packed FG tasks exceed FG_MAX_CONFIGS")
+
+            # Pack into staging buffer (shape stability) and upload to the global table at cfg_base.
+            buf[:cfg_len, :] = 0
+            try:
+                arr_cfg = np.asarray(fg_configs, dtype=np.int32)
+                if arr_cfg.ndim == 2 and int(arr_cfg.shape[0]) == int(cfg_len):
+                    cols = min(int(arr_cfg.shape[1]), int(n_sections), int(fg_fields.FG_MAX_SECTIONS))
+                    buf[:cfg_len, :cols] = arr_cfg[:cfg_len, :cols]
+                else:
+                    for i, cfg in enumerate(fg_configs):
+                        limit = min(int(n_sections), int(len(cfg)), int(fg_fields.FG_MAX_SECTIONS))
+                        buf[i, :limit] = cfg[:limit]
+            except Exception:
+                for i, cfg in enumerate(fg_configs):
+                    limit = min(int(n_sections), int(len(cfg)), int(fg_fields.FG_MAX_SECTIONS))
+                    buf[i, :limit] = cfg[:limit]
+
+            staging_rows = _pick_forced_counts_staging_rows(int(cfg_len))
+            staging = _get_forced_counts_staging(int(staging_rows))
+            _t_up0 = time.perf_counter() if (_PERF_TIMING or p is not None) else 0.0
+            staging.from_numpy(buf[: int(staging_rows), :])
+            if _t_up0:
+                _record_upload("forced_counts_staging(packed_tasks)", time.perf_counter() - _t_up0, buf[: int(staging_rows), :].nbytes)
+            fg_kernels.fg_upload_forced_counts_kernel(int(cfg_len), int(cfg_base), staging)
+
+        for ftg, ffg in ftff_pairs:
+            ftff_entries.append((int(ftg), int(ffg), int(cfg_base), int(cfg_len)))
+
+    if not ftff_entries:
+        return
+    if t_cfg_upload0 and _PERF_TIMING:
         try:
-            pairs_list = list(ftff_pairs)
+            dt = time.perf_counter() - float(t_cfg_upload0)
+            print(
+                f"[PERF] FG packed tasks: cfg_upload_total={dt * 1000:.1f}ms unique_cfg_windows={len(uploaded_cfg_keys)}"
+            )
         except Exception:
-            pairs_list = []
-        if not pairs_list:
+            pass
+
+    # Build flat work items ON GPU (cached by (n_genomes, n_ftff)).
+    global _fg_flat_work_key
+
+    # Upload buffers for FT/FF pairs and cfg-window metadata.
+    global _fg_ftff_upload_buf
+    if _fg_ftff_upload_buf is None:
+        _fg_ftff_upload_buf = {
+            "ft": np.zeros((fg_fields.FG_MAX_FTFF,), dtype=np.int32),
+            "ff": np.zeros((fg_fields.FG_MAX_FTFF,), dtype=np.int32),
+        }
+    global _fg_flat_work_buf
+    # Reuse a dict slot in the existing buf cache for cfg ranges.
+    if _fg_flat_work_buf is None:
+        _fg_flat_work_buf = {}
+    if "cfg_start" not in _fg_flat_work_buf:
+        _fg_flat_work_buf["cfg_start"] = np.zeros((fg_fields.FG_MAX_FTFF,), dtype=np.int32)
+    if "cfg_len" not in _fg_flat_work_buf:
+        _fg_flat_work_buf["cfg_len"] = np.zeros((fg_fields.FG_MAX_FTFF,), dtype=np.int32)
+
+    ft_buf = _fg_ftff_upload_buf["ft"]
+    ff_buf = _fg_ftff_upload_buf["ff"]
+    cfg_start_buf = _fg_flat_work_buf["cfg_start"]
+    cfg_len_buf = _fg_flat_work_buf["cfg_len"]
+
+    # Adaptive cfg band size (similar to the single-task path, but applied to per-ftff cfg windows).
+    # Use a worst-case work-item estimate to pick a stable band size; per-chunk work-item counts are
+    # computed below for the actual kernel calls.
+    n_work_items_est = int(n_genomes) * int(min(max_ftff, len(ftff_entries)))
+    if n_work_items_est <= 0:
+        return
+    target_threads = _get_target_threads_per_kernel(int(n_work_items_est))
+    try:
+        stage1_cfg_tile = int(getattr(fg_kernels, "FG_STAGE1_CFG_TILE", 1))
+    except Exception:
+        stage1_cfg_tile = 1
+    if stage1_cfg_tile <= 0:
+        stage1_cfg_tile = 1
+    if cfg_chunk is None or int(cfg_chunk) <= 0:
+        target_tiles = max(1, int(target_threads) // max(1, n_work_items_est))
+        cfg_chunk = max(256, int(target_tiles * stage1_cfg_tile))
+    cfg_chunk = int(cfg_chunk)
+    cfg_chunk = max(1, min(int(cfg_chunk), int(max_cfg_len)))
+
+    # Process FT/FF entries in FG_MAX_FTFF-sized chunks (field shape stability).
+    entry_idx = 0
+    while entry_idx < len(ftff_entries):
+        chunk = ftff_entries[entry_idx : entry_idx + int(max_ftff)]
+        entry_idx += len(chunk)
+        n_ftff = int(len(chunk))
+        if n_ftff <= 0:
             continue
 
-        key = (id(fg_configs), int(task_offset))
-        if merged_tasks:
-            prev = merged_tasks[-1]
-            if prev.get("_merge_key") == key and int(len(prev.get("ftff_pairs") or ())) + int(len(pairs_list)) <= int(
-                max_ftff
-            ):
-                prev_pairs = prev.get("ftff_pairs")
-                if isinstance(prev_pairs, list):
-                    prev_pairs.extend(pairs_list)
-                else:
-                    prev["ftff_pairs"] = list(prev_pairs or []) + pairs_list
+        n_work_items = int(n_genomes) * int(n_ftff)
+        if n_work_items <= 0:
+            continue
+
+        t_chunk0 = time.perf_counter() if _PERF_TIMING else 0.0
+        for i, (ftg, ffg, cfgb, cfgl) in enumerate(chunk):
+            ft_buf[i] = int(ftg)
+            ff_buf[i] = int(ffg)
+            cfg_start_buf[i] = int(cfgb)
+            cfg_len_buf[i] = int(cfgl)
+
+        fg_fields.fg_ft_list.from_numpy(ft_buf)
+        fg_fields.fg_ff_list.from_numpy(ff_buf)
+
+        # Reset per-call outputs and init stage1.
+        fg_kernels.fg_reset_best_kernel(int(n_genomes))
+        if gem_fields.IS_METAL:
+            fg_kernels.fg_stage1_init_kernel(int(n_genomes), int(n_ftff))
+        else:
+            fg_kernels.fg_stage1_init_packed_kernel(int(n_genomes), int(n_ftff))
+
+        # Ensure flat work is built for this (n_genomes, n_ftff).
+        flat_key = (int(n_genomes), int(n_ftff))
+        if _fg_flat_work_key != flat_key:
+            fg_kernels.fg_build_flat_work_kernel(int(n_genomes), int(n_ftff))
+            _fg_flat_work_key = flat_key
+
+        # Stage 1: run in cfg bands to avoid long-running kernels on Windows.
+        max_cfg_len_chunk = 0
+        for _ftg, _ffg, _cfgb, _cfgl in chunk:
+            if int(_cfgl) > int(max_cfg_len_chunk):
+                max_cfg_len_chunk = int(_cfgl)
+        n_bands = (int(max_cfg_len_chunk) + int(cfg_chunk) - 1) // int(cfg_chunk)
+        t_stage1_wall0 = time.perf_counter() if (_PERF_TIMING or p is not None) else 0.0
+        for band_idx in range(n_bands):
+            band_start = int(band_idx) * int(cfg_chunk)
+            band_len = min(int(cfg_chunk), int(max_cfg_len_chunk) - int(band_start))
+            if band_len <= 0:
                 continue
 
-        merged_tasks.append(
-            {
-                "counts_list": fg_configs,
-                "ftff_pairs": pairs_list,
-                "base_cfg_offset": int(task_offset),
-                "_merge_key": key,
-            }
-        )
+            for i, (_ftg, _ffg, cfgb, cfgl) in enumerate(chunk):
+                cfg_start_buf[i] = int(cfgb) + int(band_start)
+                remaining = int(cfgl) - int(band_start)
+                if remaining <= 0:
+                    cfg_len_buf[i] = 0
+                else:
+                    cfg_len_buf[i] = min(int(remaining), int(band_len))
 
-    for t in merged_tasks:
-        t.pop("_merge_key", None)
+            fg_kernels.fg_upload_cfg_ranges_kernel(int(n_ftff), cfg_start_buf, cfg_len_buf)
 
-    global _FG_TASK_CALL_SEQ
-    try:
-        _FG_TASK_CALL_SEQ = int(_FG_TASK_CALL_SEQ) + 1
-    except Exception:
-        _FG_TASK_CALL_SEQ = 1
-    call_seq = int(_FG_TASK_CALL_SEQ)
-
-    uploaded = False
-    prev_task_end_wall_ts: float | None = None
-    task_idx = 0
-    for task in merged_tasks:
-        if not isinstance(task, dict):
-            continue
-        fg_configs = task.get("counts_list")
-        ftff_pairs = task.get("ftff_pairs")
-        if not fg_configs or not ftff_pairs:
-            continue
-
-        if _PERF_TIMING and _FG_TASK_TRACE:
-            try:
-                wall_ts = time.time()
-                gap_ms = 0.0
-                if prev_task_end_wall_ts is not None:
-                    gap_ms = max(0.0, (float(wall_ts) - float(prev_task_end_wall_ts)) * 1000.0)
-                print(
-                    "[PERF][FGTask] "
-                    f"call={int(call_seq)} idx={int(task_idx)} kind=start wall_ts={wall_ts:.6f} "
-                    f"cfgs={int(len(fg_configs))} ftff={int(len(ftff_pairs))} "
-                    f"base_cfg_offset={int(task.get('base_cfg_offset', base_cfg_offset) or 0)} "
-                    f"upload_genome_stats={int(0 if uploaded else 1)} gap_since_prev_end_ms={gap_ms:.3f}"
+            # Use cfg_offset/cfg_read_offset = -1 to enable per-ftff cfg windows in the kernel.
+            if gem_fields.IS_METAL:
+                fg_kernels.fg_stage1_kernel(
+                    int(n_genomes),
+                    int(band_len),
+                    int(-1),
+                    int(-1),
+                    int(total_notes),
+                    int(long_notes),
+                    float(last_note_time),
+                    int(total_budget),
+                    int(gem_scale_fever),
+                    int(n_sections),
+                    int(is_p_ft),
+                    int(is_s_ft),
+                    int(is_p_ff),
+                    int(is_s_ff),
+                    int(is_p_pp),
+                    int(is_s_pp),
+                    int(is_p_cm),
+                    int(is_s_cm),
+                    int(is_p_fm),
+                    int(is_s_fm),
+                    int(is_p_ov),
+                    int(is_s_ov),
+                    int(song_slot),
+                    int(1 if pair_caps_from_timeline else 0),
                 )
+            else:
+                if int(n_sections) <= 3:
+                    fg_kernels.fg_stage1_flat_kernel_small3(
+                        int(n_work_items),
+                        int(band_len),
+                        int(-1),
+                        int(-1),
+                        int(total_notes),
+                        int(long_notes),
+                        float(last_note_time),
+                        int(total_budget),
+                        int(gem_scale_fever),
+                        int(n_sections),
+                        int(is_p_ft),
+                        int(is_s_ft),
+                        int(is_p_ff),
+                        int(is_s_ff),
+                        int(is_p_pp),
+                        int(is_s_pp),
+                        int(is_p_cm),
+                        int(is_s_cm),
+                        int(is_p_fm),
+                        int(is_s_fm),
+                        int(is_p_ov),
+                        int(is_s_ov),
+                        int(song_slot),
+                        int(1 if pair_caps_from_timeline else 0),
+                    )
+                else:
+                    fg_kernels.fg_stage1_flat_kernel(
+                        int(n_work_items),
+                        int(band_len),
+                        int(-1),
+                        int(-1),
+                        int(total_notes),
+                        int(long_notes),
+                        float(last_note_time),
+                        int(total_budget),
+                        int(gem_scale_fever),
+                        int(n_sections),
+                        int(is_p_ft),
+                        int(is_s_ft),
+                        int(is_p_ff),
+                        int(is_s_ff),
+                        int(is_p_pp),
+                        int(is_s_pp),
+                        int(is_p_cm),
+                        int(is_s_cm),
+                        int(is_p_fm),
+                        int(is_s_fm),
+                        int(is_p_ov),
+                        int(is_s_ov),
+                        int(song_slot),
+                        int(1 if pair_caps_from_timeline else 0),
+                    )
+
+        # Single sync after all cfg bands, then Stage 2.
+        ti.sync()
+        if t_stage1_wall0:
+            stage1_wall = time.perf_counter() - float(t_stage1_wall0)
+            _record_kernel_wall("packed_tasks_stage1_sync_wall", stage1_wall, genome_count=n_genomes)
+            if _PERF_TIMING:
+                try:
+                    print(
+                        f"[PERF] FG packed tasks: stage1_sync_wall={stage1_wall * 1000:.1f}ms "
+                        f"(genomes={n_genomes} ftff={n_ftff} cfg_max={max_cfg_len_chunk} bands={n_bands})"
+                    )
+                except Exception:
+                    pass
+        t_stage2_wall0 = time.perf_counter() if (_PERF_TIMING or _FORCE_SYNC or _SYNC_FOR_TIMING) else 0.0
+        fg_kernels.fg_stage2_and_update_global_best_kernel(int(n_genomes), int(n_ftff))
+        _maybe_sync(for_timing=True)
+        if (_FORCE_SYNC or _SYNC_FOR_TIMING) and t_stage2_wall0:
+            stage2_wall = time.perf_counter() - float(t_stage2_wall0)
+            _record_kernel_wall("packed_tasks_stage2_sync_wall", stage2_wall, genome_count=n_genomes)
+            if _PERF_TIMING:
+                try:
+                    print(f"[PERF] FG packed tasks: stage2_sync_wall={stage2_wall * 1000:.1f}ms (ftff={n_ftff})")
+                except Exception:
+                    pass
+        if t_chunk0 and _PERF_TIMING:
+            try:
+                dt = time.perf_counter() - float(t_chunk0)
+                print(f"[PERF] FG packed tasks: chunk_total={dt * 1000:.1f}ms (ftff={n_ftff})")
             except Exception:
                 pass
-            _t_task0 = time.perf_counter()
-        else:
-            _t_task0 = 0.0
-
-        task_offset = int(base_cfg_offset)
-        if "base_cfg_offset" in task:
-            try:
-                task_offset = int(task.get("base_cfg_offset", task_offset) or task_offset)
-            except Exception:
-                task_offset = int(base_cfg_offset)
-
-        _solve_force_greats_finder_gpu_impl(
-            genome_stats_list,
-            timestamps_np,
-            great_candidate_timestamps_np,
-            int(long_notes),
-            float(last_note_time),
-            fg_configs,
-            ftff_pairs,
-            n_sections=int(n_sections),
-            is_p_ft=int(is_p_ft),
-            is_s_ft=int(is_s_ft),
-            is_p_ff=int(is_p_ff),
-            is_s_ff=int(is_s_ff),
-            is_p_pp=int(is_p_pp),
-            is_s_pp=int(is_s_pp),
-            is_p_cm=int(is_p_cm),
-            is_s_cm=int(is_s_cm),
-            is_p_fm=int(is_p_fm),
-            is_s_fm=int(is_s_fm),
-            is_p_ov=int(is_p_ov),
-            is_s_ov=int(is_s_ov),
-            ref_arrays=ref_arrays,
-            total_budget=int(total_budget),
-            gem_scale_fever=int(gem_scale_fever),
-            pair_caps_grid=pair_caps_grid,
-            pair_caps_from_timeline=bool(pair_caps_from_timeline),
-            song_slot=int(song_slot),
-            cfg_chunk=cfg_chunk,
-            return_raw=True,
-            accumulate_global=True,
-            base_cfg_offset=int(task_offset),
-            upload_genome_stats=(not uploaded),
-        )
-        uploaded = True
-        if _PERF_TIMING and _FG_TASK_TRACE:
-            try:
-                wall_ts = time.time()
-                dt_ms = (time.perf_counter() - float(_t_task0)) * 1000.0 if _t_task0 else 0.0
-                print(
-                    f"[PERF][FGTask] call={int(call_seq)} idx={int(task_idx)} kind=end wall_ts={wall_ts:.6f} "
-                    f"duration_ms={dt_ms:.3f}"
-                )
-                prev_task_end_wall_ts = float(wall_ts)
-            except Exception:
-                pass
-        task_idx += 1

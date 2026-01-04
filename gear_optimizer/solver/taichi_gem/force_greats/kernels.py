@@ -28,6 +28,8 @@ fg_forced_counts = None
 fg_pair_caps = None
 fg_ft_list = None
 fg_ff_list = None
+fg_cfg_start_list = None
+fg_cfg_len_list = None
 
 fg_best_final_score = None
 fg_best_base_score = None
@@ -741,6 +743,17 @@ def fg_upload_forced_counts_kernel(n_cfg: ti.i32, cfg_dst_offset: ti.i32, data: 
 
 
 @ti.kernel
+def fg_upload_cfg_ranges_kernel(
+    n_ftff: ti.i32,
+    cfg_start: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    cfg_len: ti.types.ndarray(dtype=ti.i32, ndim=1),
+):
+    for i in range(n_ftff):
+        fg_cfg_start_list[i] = cfg_start[i]
+        fg_cfg_len_list[i] = cfg_len[i]
+
+
+@ti.kernel
 def fg_build_flat_work_kernel(n_genomes: ti.i32, n_ftff: ti.i32):
     """
     Build the flat work-item arrays on GPU.
@@ -847,6 +860,16 @@ def fg_stage1_kernel(
         if ft_gems + ff_gems > total_budget:
             continue
 
+        # Packed-tasks mode: when cfg_offset/cfg_read_offset are negative, each FT/FF pair
+        # can reference a different config window in the global cfg table.
+        cfg_global_base: ti.i32 = cfg_offset
+        cfg_read_base: ti.i32 = cfg_read_offset
+        cfg_len: ti.i32 = n_cfg
+        if cfg_offset < 0 and cfg_read_offset < 0:
+            cfg_global_base = fg_cfg_start_list[ftff_idx]
+            cfg_read_base = cfg_global_base
+            cfg_len = fg_cfg_len_list[ftff_idx]
+
         # Load genome base stats (hoisted out of cfg loop)
         # Load genome base stats (hoisted out of cfg loop)
         # [pp, cm, fm, p_val, s_val, ft, ff]
@@ -897,6 +920,8 @@ def fg_stage1_kernel(
 
         # Sequential loop over configs (no atomics needed!)
         for cfg_idx in range(n_cfg):
+            if cfg_idx >= cfg_len:
+                continue
             # Timeline simulation -> head mask bits + body fever count
             m0 = ti.cast(0, ti.u32)
             m1 = ti.cast(0, ti.u32)
@@ -919,7 +944,7 @@ def fg_stage1_kernel(
 
                 fp_target: ti.i32 = 0
                 if sec < n_sections:
-                    fp_target = fg_forced_counts[cfg_read_offset + cfg_idx, sec]
+                    fp_target = fg_forced_counts[cfg_read_base + cfg_idx, sec]
                     if fp_target < 0:
                         fp_target = 0
                     if sec < FG_MAX_SECTIONS:
@@ -1112,7 +1137,7 @@ def fg_stage1_kernel(
             if final_score > best_final:
                 best_final = final_score
                 best_base = base_score
-                best_cfg = cfg_offset + cfg_idx
+                best_cfg = cfg_global_base + cfg_idx
                 best_pp = gems_pp
                 best_cm = gems_cm
                 best_fm = gems_fm
@@ -1351,6 +1376,18 @@ def fg_stage1_flat_kernel_small3(
         g: ti.i32 = fg_flat_work_genome[work_idx]
         ftff_idx: ti.i32 = fg_flat_work_ftff[work_idx]
 
+        # Packed-tasks mode: when cfg_offset/cfg_read_offset are negative, each FT/FF pair
+        # can reference a different config window in the global cfg table.
+        cfg_global_base: ti.i32 = cfg_offset
+        cfg_read_base: ti.i32 = cfg_read_offset
+        cfg_len: ti.i32 = n_cfg
+        if cfg_offset < 0 and cfg_read_offset < 0:
+            cfg_global_base = fg_cfg_start_list[ftff_idx]
+            cfg_read_base = cfg_global_base
+            cfg_len = fg_cfg_len_list[ftff_idx]
+            if cfg_start >= cfg_len:
+                continue
+
         ft_gems: ti.i32 = fg_ft_list[ftff_idx]
         ff_gems: ti.i32 = fg_ff_list[ftff_idx]
         if ft_gems + ff_gems > total_budget:
@@ -1403,7 +1440,7 @@ def fg_stage1_flat_kernel_small3(
 
         for cfg_local in range(FG_STAGE1_CFG_TILE):
             cfg_idx: ti.i32 = cfg_start + cfg_local
-            if cfg_idx >= n_cfg:
+            if cfg_idx >= cfg_len:
                 continue
 
             m0 = ti.cast(0, ti.u32)
@@ -1427,7 +1464,7 @@ def fg_stage1_flat_kernel_small3(
 
                 fp_target: ti.i32 = 0
                 if sec < n_sections:
-                    fp_target = fg_forced_counts[cfg_read_offset + cfg_idx, sec]
+                    fp_target = fg_forced_counts[cfg_read_base + cfg_idx, sec]
                     if fp_target < 0:
                         fp_target = 0
 
@@ -1586,7 +1623,7 @@ def fg_stage1_flat_kernel_small3(
             if final_score < 0:
                 final_score = 0
 
-            global_cfg_idx: ti.i32 = cfg_offset + cfg_idx
+            global_cfg_idx: ti.i32 = cfg_global_base + cfg_idx
             inverted_idx: ti.i32 = 0x7FFFFFFF - global_cfg_idx
             packed_val: ti.i64 = (ti.cast(final_score, ti.i64) << 32) | ti.cast(inverted_idx, ti.i64)
 
@@ -1669,6 +1706,18 @@ def fg_stage1_flat_kernel(
         g: ti.i32 = fg_flat_work_genome[work_idx]
         ftff_idx: ti.i32 = fg_flat_work_ftff[work_idx]
 
+        # Packed-tasks mode: when cfg_offset/cfg_read_offset are negative, each FT/FF pair
+        # can reference a different config window in the global cfg table.
+        cfg_global_base: ti.i32 = cfg_offset
+        cfg_read_base: ti.i32 = cfg_read_offset
+        cfg_len: ti.i32 = n_cfg
+        if cfg_offset < 0 and cfg_read_offset < 0:
+            cfg_global_base = fg_cfg_start_list[ftff_idx]
+            cfg_read_base = cfg_global_base
+            cfg_len = fg_cfg_len_list[ftff_idx]
+            if cfg_start >= cfg_len:
+                continue
+
         ft_gems: ti.i32 = fg_ft_list[ftff_idx]
         ff_gems: ti.i32 = fg_ff_list[ftff_idx]
         if ft_gems + ff_gems > total_budget:
@@ -1723,7 +1772,7 @@ def fg_stage1_flat_kernel(
 
         for cfg_local in range(FG_STAGE1_CFG_TILE):
             cfg_idx: ti.i32 = cfg_start + cfg_local
-            if cfg_idx >= n_cfg:
+            if cfg_idx >= cfg_len:
                 continue
 
             # Timeline simulation for this ONE config
@@ -1748,7 +1797,7 @@ def fg_stage1_flat_kernel(
 
                 fp_target: ti.i32 = 0
                 if sec < n_sections:
-                    fp_target = fg_forced_counts[cfg_read_offset + cfg_idx, sec]
+                    fp_target = fg_forced_counts[cfg_read_base + cfg_idx, sec]
                     if fp_target < 0:
                         fp_target = 0
 
@@ -1924,7 +1973,7 @@ def fg_stage1_flat_kernel(
 
             # Pack score and cfg_idx into a single 64-bit value for atomic update
             # Format: (score << 32) | inverted_cfg_idx
-            global_cfg_idx: ti.i32 = cfg_offset + cfg_idx
+            global_cfg_idx: ti.i32 = cfg_global_base + cfg_idx
             inverted_idx: ti.i32 = 0x7FFFFFFF - global_cfg_idx
             packed_val: ti.i64 = (ti.cast(final_score, ti.i64) << 32) | ti.cast(inverted_idx, ti.i64)
 

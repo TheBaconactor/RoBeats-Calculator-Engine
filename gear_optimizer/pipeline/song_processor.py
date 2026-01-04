@@ -427,8 +427,14 @@ def process_song_task(args):
         attempt_lifetime_prev = 0
         prev_attempts_first = 0
         if prev_record and "details" in prev_record:
-            attempt_lifetime_prev = prev_record["details"].get("attempt_lifetime", 0)
-            prev_attempts_first = prev_record["details"].get("attempts_first", 0)
+            try:
+                attempt_lifetime_prev = int(prev_record["details"].get("attempt_lifetime", 0) or 0)
+            except Exception:
+                attempt_lifetime_prev = 0
+            try:
+                prev_attempts_first = int(prev_record["details"].get("attempts_first", 0) or 0)
+            except Exception:
+                prev_attempts_first = 0
 
         attempt_lifetime = attempt_lifetime_prev + 1
 

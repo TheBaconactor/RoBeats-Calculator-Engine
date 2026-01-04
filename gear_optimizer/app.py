@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import queue as queue_module
 import re
+import signal
 import sys
 import threading
 import time
@@ -203,6 +204,10 @@ class GearOptimizerApp:
         self.setup_logging()
         self.discord_reporter = self.setup_discord()
         self._async_db_saver = _AsyncDbSaver(self.discord_reporter)
+        self._stop_requested = threading.Event()
+        self._force_exit_requested = threading.Event()
+        self._signal_handlers_installed = False
+        self._signal_prev_handlers: dict[int, object] = {}
 
     def setup_logging(self):
         os.makedirs(BIN_DIR, exist_ok=True)
@@ -229,8 +234,80 @@ class GearOptimizerApp:
             stats_batch_size=500,
         )
 
+    def request_stop(self, reason: str, *, force: bool = False) -> None:
+        """
+        Request a graceful stop (finish current work, flush DB, then exit).
+
+        - First request sets a stop flag checked between songs / futures.
+        - Second request (force=True) escalates to KeyboardInterrupt.
+        """
+        if force:
+            self._force_exit_requested.set()
+
+        if not self._stop_requested.is_set():
+            self._stop_requested.set()
+            msg = f"[Shutdown] Stop requested ({reason}). Finishing current work then exiting. Press Ctrl+C again to force."
+            try:
+                print(msg, flush=True)
+            except Exception:
+                pass
+            try:
+                self.discord_reporter.send_log(msg)
+            except Exception:
+                pass
+
+        if force:
+            raise KeyboardInterrupt
+
+    def _stop_file_path(self) -> str:
+        p = str(os.environ.get("METAFINDER_STOP_FILE", "") or "").strip()
+        if p:
+            return p
+        return os.path.join(BIN_DIR, "STOP")
+
+    def _stop_requested_now(self) -> bool:
+        if self._stop_requested.is_set():
+            return True
+        try:
+            stop_file = self._stop_file_path()
+            if stop_file and os.path.exists(stop_file):
+                self.request_stop(f"stop file detected: {stop_file!r}")
+                return True
+        except Exception:
+            pass
+        return self._stop_requested.is_set()
+
+    def _install_signal_handlers(self) -> None:
+        if self._signal_handlers_installed:
+            return
+        if threading.current_thread() is not threading.main_thread():
+            return
+
+        def _handler(signum, _frame):
+            # First signal -> graceful stop, second -> force exit.
+            if self._stop_requested.is_set():
+                self.request_stop(f"signal {signum}", force=True)
+            else:
+                self.request_stop(f"signal {signum}", force=False)
+
+        for sig in (
+            getattr(signal, "SIGINT", None),
+            getattr(signal, "SIGTERM", None),
+            getattr(signal, "SIGBREAK", None),
+        ):
+            if sig is None:
+                continue
+            try:
+                self._signal_prev_handlers[int(sig)] = signal.getsignal(sig)
+                signal.signal(sig, _handler)
+            except Exception:
+                pass
+
+        self._signal_handlers_installed = True
+
     def run(self):
         multiprocessing.freeze_support()
+        self._install_signal_handlers()
         try:
             if hasattr(sys.stdout, "reconfigure"):
                 sys.stdout.reconfigure(line_buffering=True)
@@ -240,6 +317,8 @@ class GearOptimizerApp:
             pass
 
         while True:
+            if self._stop_requested_now():
+                break
             should_loop = self._run_single_iteration()
             if not should_loop:
                 break
@@ -249,6 +328,7 @@ class GearOptimizerApp:
         memory_resume_tracker = None
         start_time = time.time()
         loop_forever = False  # Default, updated from config
+        graceful_stop = False
 
         FEVER_TIMELINE_CACHE.clear()
         GEM_SOLVER_CACHE.clear()
@@ -259,6 +339,11 @@ class GearOptimizerApp:
         status_thread = None
 
         try:
+            if self._stop_requested_now():
+                graceful_stop = True
+                loop_forever = False
+                return False
+
             cfg = configparser.ConfigParser()
             cfg_path = os.environ.get("METAFINDER_CONFIG_PATH", "config.ini")
             cfg.read(cfg_path, encoding="utf-8-sig")
@@ -385,6 +470,17 @@ class GearOptimizerApp:
             if memory_release_requested() and loop_forever:
                 memory_guard_restart = True
 
+        except KeyboardInterrupt:
+            # First Ctrl+C is handled by the signal handler as a graceful stop request.
+            # This catches direct KeyboardInterrupt (or a forced second Ctrl+C).
+            graceful_stop = True
+            loop_forever = False
+            if self._force_exit_requested.is_set():
+                raise
+            try:
+                self.request_stop("KeyboardInterrupt")
+            except KeyboardInterrupt:
+                raise
         except Exception as e:
             logging.error(f"Error: {e}")
             print(f"Error: {e}")
@@ -398,6 +494,17 @@ class GearOptimizerApp:
             print(done_msg)
             self.discord_reporter.send_log(done_msg)
             gc.collect()
+
+        if graceful_stop or self._stop_requested.is_set():
+            try:
+                print("[Shutdown] Exiting by user request.")
+            except Exception:
+                pass
+            try:
+                self.discord_reporter.send_log("Exiting by user request.")
+            except Exception:
+                pass
+            return False
 
         if memory_guard_restart:
             restart_process_for_memory_guard()
@@ -737,6 +844,8 @@ class GearOptimizerApp:
         loop_forever,
     ):
         """Execute tasks with automatic parallelism."""
+        if self._stop_requested_now():
+            return
         inflight_songs = 0
         gpu_mode_cfg = False
         try:
@@ -796,6 +905,8 @@ class GearOptimizerApp:
         2. GPU prefetched (timeline kernel) for slots 1-5
         """
         completed_offset = len(completed_songs)
+        if self._stop_requested_now():
+            return
 
         # ------------------------------------------------------------------
         # In-flight multi-song pipeline (opt-in):
@@ -1103,6 +1214,8 @@ class GearOptimizerApp:
                     if memory_release_requested():
                         print("[MemoryGuard] Early stop in sequential pipeline loop")
                         break
+                    if self._stop_requested_now():
+                        break
 
             finally:
                 try:
@@ -1160,6 +1273,8 @@ class GearOptimizerApp:
             gpu_prefetched_set = set()
 
             for i, t in enumerate(task_list):
+                if self._stop_requested_now():
+                    break
                 if t[1] in completed_songs:
                     continue
 
@@ -1311,6 +1426,8 @@ class GearOptimizerApp:
             gpu_executor = None
 
         while remaining_tasks:
+            if self._stop_requested_now():
+                break
             completed_offset = len(completed_songs)
             effective_workers = max(1, min(len(remaining_tasks), current_worker_cap))
 
@@ -1340,12 +1457,13 @@ class GearOptimizerApp:
                     reg_counter = mp_ctx.Value("i", 0)
                     reg_lock = mp_ctx.Lock()
 
-                    with concurrent.futures.ProcessPoolExecutor(
+                    executor = concurrent.futures.ProcessPoolExecutor(
                         max_workers=effective_workers,
                         mp_context=mp_ctx,
                         initializer=_gpu_worker_initializer,
                         initargs=(req_q, registrations, reg_counter, reg_lock),
-                    ) as executor:
+                    )
+                    try:
                         future_map = {executor.submit(safe_process_song_task, t): t[1] for t in remaining_tasks}
                         self._consume_results(
                             concurrent.futures.as_completed(future_map),
@@ -1357,14 +1475,20 @@ class GearOptimizerApp:
                             total_tasks=len(tasks),
                         )
 
+                        if self._stop_requested_now():
+                            break
                         if memory_release_requested():
                             print("[MemoryGuard] Stopping parallel loop after soft limit.")
                             break
+                    finally:
+                        try:
+                            executor.shutdown(wait=True, cancel_futures=bool(self._stop_requested.is_set()))
+                        except Exception:
+                            pass
                 else:
                     # Fallback: no GPU executor, workers use direct GPU (may conflict)
-                    with concurrent.futures.ProcessPoolExecutor(
-                        max_workers=effective_workers, mp_context=mp_ctx
-                    ) as executor:
+                    executor = concurrent.futures.ProcessPoolExecutor(max_workers=effective_workers, mp_context=mp_ctx)
+                    try:
                         future_map = {executor.submit(safe_process_song_task, t): t[1] for t in remaining_tasks}
                         self._consume_results(
                             concurrent.futures.as_completed(future_map),
@@ -1376,9 +1500,16 @@ class GearOptimizerApp:
                             total_tasks=len(tasks),
                         )
 
+                        if self._stop_requested_now():
+                            break
                         if memory_release_requested():
                             print("[MemoryGuard] Stopping parallel loop after soft limit.")
                             break
+                    finally:
+                        try:
+                            executor.shutdown(wait=True, cancel_futures=bool(self._stop_requested.is_set()))
+                        except Exception:
+                            pass
 
             except BrokenProcessPool as bpp:
                 broken_pool_failures += 1
@@ -1435,6 +1566,16 @@ class GearOptimizerApp:
         total = total_tasks or 0  # approximate if unknown
 
         for item in results_iter:
+            if self._stop_requested_now():
+                # Best-effort: cancel pending futures so the pool can wind down after
+                # current in-flight work (running tasks cannot be canceled).
+                if isinstance(future_map, dict):
+                    for f in list(future_map.keys()):
+                        try:
+                            f.cancel()
+                        except Exception:
+                            pass
+                break
             completed += 1
             if future_map:
                 future = item

@@ -29,7 +29,7 @@ def _ref_arrays(rows: int) -> dict:
     }
 
 
-def test_db_roundtrip_base_score_is_self_consistent():
+def test_db_roundtrip_base_score_is_self_consistent(tmp_path, monkeypatch):
     """
     End-to-end invariant:
     - Solve best gems => (Score, Stats, GemCounts, FT/FF)
@@ -39,9 +39,13 @@ def test_db_roundtrip_base_score_is_self_consistent():
     This catches "score computed from different stats than persisted" drift bugs.
     """
     from gear_optimizer.core.constants import TOTAL_ROWS
-    from gear_optimizer.data.database import get_db_connection, save_loadouts_batch
+    from gear_optimizer.data.database import get_db_connection, init_db, save_loadouts_batch
     from gear_optimizer.solver.scoring import solve_best_fever_combination
     from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
+
+    db_path = tmp_path / "test_roundtrip.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    init_db()
 
     song_name = "pytest_db_roundtrip_base"
     calc_song = _mock_song(name=song_name, n_notes=80)
@@ -102,11 +106,14 @@ def test_db_roundtrip_base_score_is_self_consistent():
         ],
     )
 
-    with get_db_connection() as conn:
+    conn = get_db_connection(str(db_path))
+    try:
         row = conn.execute(
             "SELECT score, details_json FROM loadouts WHERE song_name = ? ORDER BY score DESC LIMIT 1",
             (song_name,),
         ).fetchone()
+    finally:
+        conn.close()
 
     assert row is not None
     assert int(row["score"]) == score

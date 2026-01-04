@@ -197,3 +197,43 @@ def test_concurrent_save_loadouts_batch_no_corruption(db_path):
         assert count == len(scores)
     finally:
         conn.close()
+
+
+def test_details_json_updates_on_tied_score_for_attempt_counters(db_path):
+    song = "Attempt Counters Tie Update Song"
+
+    save_loadouts_batch(
+        song,
+        [
+            {
+                "score": 1000,
+                "fg_score": 0,
+                "gear": ["G1"],
+                "minis": ["M1"],
+                "details": {"attempt_lifetime": 1, "attempts_first": 1},
+                "force": None,
+            }
+        ],
+    )
+
+    save_loadouts_batch(
+        song,
+        [
+            {
+                "score": 1000,  # tie
+                "fg_score": 0,
+                "gear": ["G1"],
+                "minis": ["M1"],
+                "details": {"attempt_lifetime": 2, "attempts_first": 2},
+                "force": None,
+            }
+        ],
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        row = conn.execute("SELECT details_json FROM loadouts WHERE song_name=?", (song,)).fetchone()
+        assert json.loads(row["details_json"])["attempt_lifetime"] == 2
+        assert json.loads(row["details_json"])["attempts_first"] == 2
+    finally:
+        conn.close()
