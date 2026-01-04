@@ -21,6 +21,7 @@ from .data.csv_parser import (
     load_all_minis_list,
     read_table,
 )
+from .data.loadout_equivalence import decode_minis_json, representative_mini_names
 from .core.stats_calculator import compute_full_stats
 from .pipeline.song_processor import scan_song_header, read_song_file
 
@@ -195,7 +196,7 @@ def _mini_set_effect_signature(
     return ("stats", pp, cm, fm, ft, ff, *elem_totals)
 
 
-def _pick_representative_variant(variants: Counter) -> Tuple[str, ...]:
+def _pick_representative_variant(variants: Counter) -> Tuple[Any, ...]:
     """
     Pick a deterministic representative from a Counter of name-tuples.
 
@@ -207,6 +208,23 @@ def _pick_representative_variant(variants: Counter) -> Tuple[str, ...]:
     max_count = max(variants.values())
     tied = [variant for variant, count in variants.items() if count == max_count]
     return min(tied)
+
+
+def _decode_db_minis(minis_json_blob: Optional[str]) -> tuple[tuple[str, ...], tuple[tuple[str, ...], ...]]:
+    """
+    Decode DB minis_json into:
+    - representative mini names (sorted; multiplicity preserved)
+    - a canonical "variant key" that preserves per-mini variant groups
+
+    Supports both:
+    - legacy `["MiniA","MiniB"]`
+    - new `[[\"MiniA\",\"MiniA2\"],[\"MiniB\"]]`
+    """
+    groups = decode_minis_json(minis_json_blob)
+    reps = representative_mini_names(groups)
+    rep_key = tuple(sorted([n for n in reps if n]))
+    variant_key = tuple(sorted(tuple(g) for g in groups))
+    return rep_key, variant_key
 
 
 def find_most_common_loadout(
@@ -266,11 +284,11 @@ def find_most_common_loadout(
     for loadout in best_loadouts_per_song.values():
         try:
             gear = tuple(sorted(json.loads(loadout["gear_json"]))) if loadout["gear_json"] else ()
-            minis = tuple(sorted(json.loads(loadout["minis_json"]))) if loadout["minis_json"] else ()
-            mini_sig = _mini_set_effect_signature(minis, minis_by_name, relevant_elements)
+            minis_rep, minis_variant = _decode_db_minis(loadout.get("minis_json"))
+            mini_sig = _mini_set_effect_signature(minis_rep, minis_by_name, relevant_elements)
             set_key = (gear, mini_sig)
             candidates_counter[set_key] += 1
-            variants_by_key.setdefault(set_key, Counter())[minis] += 1
+            variants_by_key.setdefault(set_key, Counter())[minis_variant] += 1
         except json.JSONDecodeError:
             continue
 
@@ -291,11 +309,18 @@ def find_most_common_loadout(
         gear_names = list(target_gear)
         variants_counter = variants_by_key.get(set_key, Counter())
         rep_minis = _pick_representative_variant(variants_counter)
-        mini_names = list(rep_minis)
-        mini_variants = [
-            {"mini_names": list(variant), "count_as_top1": int(count)}
-            for variant, count in sorted(variants_counter.items(), key=lambda item: (-item[1], item[0]))
-        ]
+        rep_groups = [list(g) for g in (rep_minis or ())]
+        mini_names = [min(g) for g in rep_groups if g]
+        mini_variants = []
+        for variant, count in sorted(variants_counter.items(), key=lambda item: (-item[1], item[0])):
+            groups = [list(g) for g in (variant or ())]
+            mini_variants.append(
+                {
+                    "mini_groups": groups,
+                    "mini_names": [min(g) for g in groups if g],
+                    "count_as_top1": int(count),
+                }
+            )
 
         total_score_sum = 0
         total_songs_with_set_count = 0
@@ -317,11 +342,11 @@ def find_most_common_loadout(
             for loadout in loadouts:
                 try:
                     gear = tuple(sorted(json.loads(loadout["gear_json"]))) if loadout["gear_json"] else ()
-                    minis = tuple(sorted(json.loads(loadout["minis_json"]))) if loadout["minis_json"] else ()
                     if gear != target_gear:
                         continue
 
-                    mini_sig = _mini_set_effect_signature(minis, minis_by_name, relevant_elements)
+                    minis_rep, _minis_variant = _decode_db_minis(loadout.get("minis_json"))
+                    mini_sig = _mini_set_effect_signature(minis_rep, minis_by_name, relevant_elements)
                     if mini_sig == target_mini_sig:
                         song_has_set = True
                         score = _effective_score(loadout)
@@ -375,6 +400,7 @@ def find_most_common_loadout(
                 "rank": rank,
                 "gear_names": gear_names,
                 "mini_names": mini_names,
+                "mini_groups": rep_groups,
                 "mini_variants": mini_variants,
                 "mini_effective_elements": list(relevant_elements),
                 "avg_gems": avg_gems,

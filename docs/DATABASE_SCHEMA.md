@@ -28,11 +28,11 @@ Stores the primary leaderboard for normal gameplay. Contains **ALL** loadouts fo
 ```sql
 CREATE TABLE loadouts (
     song_name TEXT,
-    loadout_hash TEXT,              -- Unique hash of (Gear + Minis)
+    loadout_hash TEXT,              -- Unique hash of (Gear + Minis effective signature for this song)
     score INTEGER,                  -- Base Score (PRIMARY RANKING METRIC)
     fg_score INTEGER DEFAULT 0,     -- Force Greats Score (Contextual)
     gear_json TEXT,                 -- JSON array of gear names
-    minis_json TEXT,                -- JSON array of mini names
+    minis_json TEXT,                -- JSON array of mini-variant groups (see notes below)
     details_json TEXT,              -- JSON details (GemCounts, etc.)
     force_details_json TEXT,        -- JSON Force Greats config (May be NULL/Empty)
     timestamp REAL,
@@ -123,4 +123,13 @@ cursor.execute("""
 ### Maintenance
 
 *   **Migration**: If you have old data, use `scripts/migrate_fg_data.py` (if available) or simply re-run the optimizer. The system auto-populates `fg_loadouts` for new valid entries.
-*   **Deduplication**: Both tables use `loadout_hash` as part of the composite primary key to prevent duplicate entries for the same gear/mini combination.
+*   **Deduplication**: Both tables use `loadout_hash` as part of the composite primary key to prevent duplicate entries for the same *effective* gear+mini loadout (song-context mini equivalence).
+
+### `minis_json` format (mini variants)
+
+`minis_json` is stored as a JSON array where each element represents one equipped mini as a **variant group**:
+
+- New format: `[[\"MiniA\",\"MiniA2\"],[\"MiniB\"],[\"MiniC\"]]`
+- Legacy format (still readable): `[\"MiniA\",\"MiniB\",\"MiniC\"]`
+
+Within a group, all names are considered equivalent for this song context (only stats that can affect scoring for the song are considered).

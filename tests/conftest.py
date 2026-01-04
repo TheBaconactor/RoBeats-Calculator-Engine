@@ -1,6 +1,7 @@
 import atexit
 import os
 import shutil
+import sqlite3
 import sys
 import tempfile
 from pathlib import Path
@@ -26,7 +27,36 @@ def _configure_test_db_path() -> None:
         shutil.copy2(source_db, tmp_db)
 
     os.environ["EVOLUTION_DB_PATH"] = str(tmp_db)
-    init_db()
+
+    # If the repo's evolution.db is corrupted/malformed, fall back to a clean DB for tests.
+    def _is_db_healthy(path: Path) -> bool:
+        if not path.exists():
+            return True
+        try:
+            conn = sqlite3.connect(str(path))
+            try:
+                row = conn.execute("PRAGMA quick_check;").fetchone()
+                return bool(row and str(row[0]).strip().lower() == "ok")
+            finally:
+                conn.close()
+        except Exception:
+            return False
+
+    if not _is_db_healthy(tmp_db):
+        try:
+            tmp_db.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    try:
+        init_db()
+    except sqlite3.DatabaseError:
+        # Retry once with a clean DB.
+        try:
+            tmp_db.unlink(missing_ok=True)
+        except Exception:
+            pass
+        init_db()
 
 
 _configure_test_db_path()

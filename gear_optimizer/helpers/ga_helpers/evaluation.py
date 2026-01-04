@@ -8,7 +8,7 @@ This module provides evaluation functions with caching:
 
 import os
 
-from ...data.database import get_loadout_hash
+from ...data.loadout_equivalence import effective_loadout_hash_from_names, effective_mini_signature_for_item
 from ...solver.scoring import worker_coevolution_evaluate, batch_evaluate_genomes
 
 
@@ -163,7 +163,23 @@ def create_evaluation_functions(
         if known_loadouts:
             gear_part = genome[:6]
             mini_part = genome[6:]
-            h = get_loadout_hash(gear_part, mini_part)
+
+            selected_color = str(cfg_data.get("selected_color", "") or "")
+            if not selected_color:
+                selected_color = str(p_color or "")
+
+            gear_names = []
+            for item in gear_part:
+                if isinstance(item, dict):
+                    gear_names.append(item.get("Name", "") or "")
+                else:
+                    gear_names.append(str(item) if item else "")
+
+            mini_sigs = [
+                effective_mini_signature_for_item(m, None, str(p_color or ""), str(s_color or ""), selected_color)
+                for m in (mini_part or [])
+            ]
+            h = effective_loadout_hash_from_names(gear_names, mini_sigs)
             if h in known_loadouts:
                 entry = known_loadouts[h]
 

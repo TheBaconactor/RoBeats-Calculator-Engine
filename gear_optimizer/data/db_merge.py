@@ -263,6 +263,11 @@ def merge_databases(
         conn = get_db_connection(main_db_path)
         conn.execute("PRAGMA foreign_keys = OFF")  # Temporarily disable for merge
 
+        # Preserve mini-variant unions when two equivalent loadouts collide (same PK).
+        from .loadout_equivalence import merge_minis_json_strings
+
+        conn.create_function("merge_minis_json", 4, merge_minis_json_strings)
+
         try:
             # Attach secondary database
             conn.execute("ATTACH DATABASE ? AS secondary", (secondary_db_path,))
@@ -361,11 +366,12 @@ def merge_databases(
                         AND secondary.loadouts.loadout_hash = main.loadouts.loadout_hash
                     ),
                     minis_json = (
-                        SELECT CASE
-                            WHEN secondary.loadouts.score > main.loadouts.score
-                            THEN secondary.loadouts.minis_json
-                            ELSE main.loadouts.minis_json
-                        END
+                        SELECT merge_minis_json(
+                            main.loadouts.minis_json,
+                            secondary.loadouts.minis_json,
+                            main.loadouts.details_json,
+                            secondary.loadouts.details_json
+                        )
                         FROM secondary.loadouts
                         WHERE secondary.loadouts.song_name = main.loadouts.song_name
                         AND secondary.loadouts.loadout_hash = main.loadouts.loadout_hash
@@ -485,11 +491,12 @@ def merge_databases(
                             AND secondary.fg_loadouts.loadout_hash = main.fg_loadouts.loadout_hash
                         ),
                         minis_json = (
-                            SELECT CASE
-                                WHEN secondary.fg_loadouts.fg_score > main.fg_loadouts.fg_score
-                                THEN secondary.fg_loadouts.minis_json
-                                ELSE main.fg_loadouts.minis_json
-                            END
+                            SELECT merge_minis_json(
+                                main.fg_loadouts.minis_json,
+                                secondary.fg_loadouts.minis_json,
+                                main.fg_loadouts.details_json,
+                                secondary.fg_loadouts.details_json
+                            )
                             FROM secondary.fg_loadouts
                             WHERE secondary.fg_loadouts.song_name = main.fg_loadouts.song_name
                             AND secondary.fg_loadouts.loadout_hash = main.fg_loadouts.loadout_hash

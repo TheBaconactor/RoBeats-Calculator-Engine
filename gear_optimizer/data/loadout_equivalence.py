@@ -1,0 +1,339 @@
+"""
+Loadout equivalence + mini variant grouping.
+
+This module centralizes logic for:
+- Parsing minis_json (legacy list[str] vs new list[list[str]])
+- Computing a song-context "effective" mini signature (ignores irrelevant element stats)
+- Computing a song-context loadout hash from gear names + effective mini signatures
+- Merging minis_json across equivalent loadouts (union variant names per effective mini)
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections import Counter
+from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from ..core.constants import PATHS
+from .csv_parser import load_csv_db, resolve_stats_csv
+
+
+_MINIS_BY_NAME_CACHE: Optional[Dict[str, dict]] = None
+
+
+def get_minis_by_name_cached() -> Dict[str, dict]:
+    """
+    Lazily load Minis.csv into a name->stats dict (cached for process lifetime).
+
+    Notes:
+    - On failure (missing Data/ or parse issues), returns {}.
+    - Callers should treat missing minis as "name-only" (no equivalence merging).
+    """
+    global _MINIS_BY_NAME_CACHE
+    if _MINIS_BY_NAME_CACHE is not None:
+        return _MINIS_BY_NAME_CACHE
+
+    minis: Dict[str, dict] = {}
+    try:
+        minis = load_csv_db(resolve_stats_csv(PATHS, "Minis.csv"), "mini") or {}
+    except Exception:
+        minis = {}
+    _MINIS_BY_NAME_CACHE = minis
+    return minis
+
+
+def extract_song_colors(details: Any) -> tuple[str, str, str]:
+    """
+    Extract (primary_color, secondary_color, selected_color) from a details dict.
+
+    Supports multiple historical key spellings.
+    Returns empty strings when missing.
+    """
+    if not isinstance(details, dict):
+        return ("", "", "")
+
+    primary = str(details.get("PrimaryColor") or details.get("Primary Color") or "")
+    secondary = str(details.get("SecondaryColor") or details.get("Secondary Color") or "")
+    selected = str(details.get("SelectedElement") or details.get("Selected Element") or "")
+    if not selected:
+        selected = primary
+    return (primary, secondary, selected)
+
+
+def decode_minis_json(minis_json: Optional[str]) -> list[list[str]]:
+    """
+    Decode minis_json into canonical list[list[str]] form.
+
+    - Legacy: ["MiniA","MiniB"] -> [["MiniA"],["MiniB"]]
+    - New: [["MiniA","MiniA2"],["MiniB"]] -> same
+    """
+    if not minis_json:
+        return []
+
+    try:
+        decoded = json.loads(minis_json)
+    except Exception:
+        return []
+
+    if not isinstance(decoded, list):
+        return []
+
+    groups: list[list[str]] = []
+    for item in decoded:
+        if isinstance(item, str):
+            name = item.strip()
+            groups.append([name] if name else [])
+        elif isinstance(item, (list, tuple)):
+            names = [str(x).strip() for x in item if x is not None]
+            names = [n for n in names if n]
+            groups.append(names)
+        else:
+            # Unknown shape; best-effort stringify and keep it as a singleton.
+            s = str(item).strip()
+            groups.append([s] if s else [])
+
+    # Drop empties, sort+dedupe per group deterministically.
+    out: list[list[str]] = []
+    for g in groups:
+        if not g:
+            continue
+        out.append(sorted(set(g)))
+    return out
+
+
+def encode_minis_groups(groups: Iterable[Iterable[str]]) -> str:
+    """
+    Encode canonical minis groups to minis_json.
+    """
+    normalized: list[list[str]] = []
+    for g in groups or []:
+        if not g:
+            continue
+        names = [str(x).strip() for x in g if x is not None]
+        names = [n for n in names if n]
+        if not names:
+            continue
+        normalized.append(sorted(set(names)))
+    return json.dumps(normalized, separators=(",", ":"))
+
+
+def representative_mini_names(groups: list[list[str]]) -> list[str]:
+    """
+    Pick a deterministic representative name per group (min lexicographically).
+    """
+    reps: list[str] = []
+    for g in groups or []:
+        if not g:
+            continue
+        reps.append(min(g))
+    return reps
+
+
+def _stat_int(stats: Any, key: str) -> int:
+    try:
+        if isinstance(stats, dict):
+            return int(stats.get(key, 0) or 0)
+    except Exception:
+        pass
+    return 0
+
+
+def _elem_val(stats: Any, elem: str) -> int:
+    if not elem:
+        return 0
+    return _stat_int(stats, elem)
+
+
+def effective_mini_signature(
+    mini_stats: dict,
+    primary_color: str,
+    secondary_color: str,
+    selected_color: str,
+) -> tuple[Any, ...]:
+    """
+    Song-context effective signature for a single mini.
+
+    Includes:
+    - Core scoring stats: PP/CM/FM/FT/FF
+    - Only elemental stats that can matter for this song context:
+      primary, secondary, selected (duplicates allowed; caller may canonicalize)
+    """
+    pp = _stat_int(mini_stats, "Perfect Points")
+    cm = _stat_int(mini_stats, "Combo Multiplier")
+    fm = _stat_int(mini_stats, "Fever Multiplier")
+    ft = _stat_int(mini_stats, "Fever Time")
+    ff = _stat_int(mini_stats, "Fever Fill Rate")
+
+    p_val = _elem_val(mini_stats, primary_color)
+    s_val = _elem_val(mini_stats, secondary_color)
+    sel_val = _elem_val(mini_stats, selected_color)
+
+    return (pp, cm, fm, ft, ff, p_val, s_val, sel_val)
+
+
+def effective_mini_signature_for_name(
+    mini_name: str,
+    minis_by_name: Dict[str, dict],
+    primary_color: str,
+    secondary_color: str,
+    selected_color: str,
+) -> tuple[Any, ...]:
+    if not mini_name:
+        return ("name", "")
+    stats = minis_by_name.get(mini_name)
+    if not isinstance(stats, dict):
+        # Unknown mini: do not over-merge.
+        return ("name", mini_name)
+    return effective_mini_signature(stats, primary_color, secondary_color, selected_color)
+
+
+def effective_mini_signature_for_item(
+    mini_item: Any,
+    minis_by_name: Optional[Dict[str, dict]],
+    primary_color: str,
+    secondary_color: str,
+    selected_color: str,
+) -> tuple[Any, ...]:
+    if isinstance(mini_item, dict):
+        # Prefer stats on the dict directly (hot path for GA genomes).
+        return effective_mini_signature(mini_item, primary_color, secondary_color, selected_color)
+    name = str(mini_item) if mini_item else ""
+    return effective_mini_signature_for_name(
+        name, minis_by_name or {}, primary_color, secondary_color, selected_color
+    )
+
+
+def effective_loadout_hash_from_names(
+    gear_names: List[str],
+    mini_sigs: List[tuple[Any, ...]],
+) -> str:
+    """
+    Stable hash for DB identity:
+    - Gear: order-invariant (names sorted)
+    - Minis: order-invariant multiset of effective signatures (duplicates preserved)
+    """
+    g = sorted([n for n in (gear_names or []) if n])
+    m = sorted("|".join(str(x) for x in sig) for sig in (mini_sigs or []))
+    payload = f"GEAR:{'|'.join(g)}::MINIS:{'|'.join(m)}"
+    return hashlib.md5(payload.encode("utf-8")).hexdigest()
+
+
+def merge_minis_groups_for_entry(
+    existing_groups: list[list[str]],
+    new_mini_names: List[str],
+    minis_by_name: Dict[str, dict],
+    primary_color: str,
+    secondary_color: str,
+    selected_color: str,
+) -> list[list[str]]:
+    """
+    Union variant names per effective-mini signature, preserving multiplicity.
+
+    The resulting structure is deterministic:
+    - Groups sorted by signature (string key)
+    - Each group sorted lexicographically with unique names
+    - Duplicate signatures result in duplicate groups (count preserved)
+    """
+    sig_to_names: Dict[tuple[Any, ...], set[str]] = {}
+    sig_counts: Counter = Counter()
+
+    # New names -> sig map
+    for name in new_mini_names or []:
+        n = str(name).strip()
+        if not n:
+            continue
+        sig = effective_mini_signature_for_name(n, minis_by_name, primary_color, secondary_color, selected_color)
+        sig_counts[sig] += 1
+        sig_to_names.setdefault(sig, set()).add(n)
+
+    # Existing groups -> sig map
+    for group in existing_groups or []:
+        if not group:
+            continue
+        rep = min(group)
+        sig = effective_mini_signature_for_name(rep, minis_by_name, primary_color, secondary_color, selected_color)
+        sig_counts[sig] = max(sig_counts.get(sig, 0), 1)  # count is fixed by hash; be defensive
+        sig_to_names.setdefault(sig, set()).update(group)
+
+    # If we couldn't resolve signatures at all, fall back to per-name singletons.
+    if not sig_counts:
+        return [[n] for n in sorted(set([n for n in (new_mini_names or []) if n]))]
+
+    def _sig_sort_key(sig: tuple[Any, ...]) -> str:
+        return "|".join(str(x) for x in sig)
+
+    merged: list[list[str]] = []
+    for sig in sorted(sig_counts.keys(), key=_sig_sort_key):
+        names = sorted(sig_to_names.get(sig, set()))
+        for _ in range(int(sig_counts[sig] or 0)):
+            merged.append(names)
+    return merged
+
+
+def merge_minis_json_strings(
+    minis_json_a: Optional[str],
+    minis_json_b: Optional[str],
+    details_json_a: Optional[str],
+    details_json_b: Optional[str],
+) -> Optional[str]:
+    """
+    Merge two minis_json blobs from equivalent loadouts, returning merged minis_json.
+
+    Used by db_merge via sqlite UDF. Best-effort:
+    - If minis can't be resolved (no Data/Minis.csv), it falls back to a name-only union.
+    """
+    groups_a = decode_minis_json(minis_json_a)
+    groups_b = decode_minis_json(minis_json_b)
+
+    # Fast path: empty + empty
+    if not groups_a and not groups_b:
+        return None
+
+    details_a = None
+    details_b = None
+    try:
+        details_a = json.loads(details_json_a) if details_json_a else None
+    except Exception:
+        details_a = None
+    try:
+        details_b = json.loads(details_json_b) if details_json_b else None
+    except Exception:
+        details_b = None
+
+    primary, secondary, selected = extract_song_colors(details_a or details_b or {})
+    minis_by_name = get_minis_by_name_cached()
+
+    # If we can't compute signatures (no colors OR no minis stats), do a conservative union:
+    if (not primary and not secondary) or not minis_by_name:
+        flat = []
+        for g in groups_a + groups_b:
+            flat.extend(g)
+        # Preserve multiplicity poorly, but keep deterministic singletons.
+        return encode_minis_groups([[n] for n in sorted(set([n for n in flat if n]))])
+
+    # Merge by signature+count (derive multiplicity from group counts in A and B).
+    merged_map: Dict[tuple[Any, ...], tuple[int, set[str]]] = {}
+
+    def _ingest(groups: list[list[str]]) -> None:
+        for g in groups:
+            if not g:
+                continue
+            rep = min(g)
+            sig = effective_mini_signature_for_name(rep, minis_by_name, primary, secondary, selected)
+            count, names = merged_map.get(sig, (0, set()))
+            merged_map[sig] = (count + 1, names | set(g))
+
+    _ingest(groups_a)
+    _ingest(groups_b)
+
+    def _sig_sort_key(sig: tuple[Any, ...]) -> str:
+        return "|".join(str(x) for x in sig)
+
+    out_groups: list[list[str]] = []
+    for sig, (count, names) in sorted(merged_map.items(), key=lambda kv: _sig_sort_key(kv[0])):
+        lst = sorted([n for n in names if n])
+        for _ in range(int(count or 0)):
+            out_groups.append(lst)
+    return encode_minis_groups(out_groups)
+

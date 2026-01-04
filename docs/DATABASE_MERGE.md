@@ -32,7 +32,7 @@ The merge strategy ensures data integrity:
 - Updates last_updated timestamp
 
 **Loadouts Table:**
-- If loadout exists (same song_name + loadout_hash): **Keep higher score**
+- If loadout exists (same song_name + loadout_hash): **Keep higher score** and **union mini variants** in `minis_json` (when present).
 - Updates gear/minis/details only if new score is better
 - Preserves force greats data
 - Maintains timestamp for tracking

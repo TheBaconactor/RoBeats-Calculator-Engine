@@ -12,6 +12,16 @@ from collections.abc import Iterable
 from typing import Dict, List, Optional, Any
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
 from .migrations import ensure_schema
+from .loadout_equivalence import (
+    decode_minis_json,
+    effective_loadout_hash_from_names,
+    effective_mini_signature_for_name,
+    encode_minis_groups,
+    extract_song_colors,
+    get_minis_by_name_cached,
+    merge_minis_groups_for_entry,
+    representative_mini_names,
+)
 
 
 def get_evolution_db_path() -> str:
@@ -56,9 +66,9 @@ def init_db():
     """
     Initialize the SQLite database schema if it doesn't exist.
 
-    Storage optimization: gear_json and minis_json store only names (not full stats)
-    as a JSON array of strings, e.g. ["Gear1", "Gear2", ...]. Full stats are looked
-    up from Gears.csv/Minis.csv when loading. This reduces storage by ~90%.
+    Storage optimization: gear_json stores only names (not full stats) as a JSON array of strings.
+    minis_json stores mini variant groups as a JSON array of arrays, e.g. [["MiniA","MiniA2"], ["MiniB"], ...].
+    Full stats are looked up from Gears.csv/Minis.csv when loading.
     """
 
     db_path = get_evolution_db_path()
@@ -226,7 +236,9 @@ def _deduplicate_entries(entries):
         score = entry.get("score", 0)
         gear = entry.get("gear", [])
         minis = entry.get("minis", [])
+
         # Avoid double name extraction: we already have compact helpers.
+        # NOTE: this is legacy name-based hashing; `save_loadouts_batch` may override with song-context hashing.
         loadout_hash = _loadout_hash_from_names(_compact_gear_for_db(gear), _compact_minis_for_db(minis))
         key = (score, loadout_hash)
 
@@ -396,9 +408,53 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
 
     _t0 = time.perf_counter()
 
-    # Deduplicate entries before DB insertion
+    minis_by_name = get_minis_by_name_cached()
+
+    def _effective_hash_for_entry(entry: Dict[str, Any]) -> Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]:
+        gear_names_local = _compact_gear_for_db(entry.get("gear", []))
+        mini_names_local = _compact_minis_for_db(entry.get("minis", []))
+        details_local = entry.get("details", {})
+        p_color, s_color, sel_color = extract_song_colors(details_local)
+        if not p_color and not s_color:
+            return None
+        mini_sigs_local = [
+            effective_mini_signature_for_name(n, minis_by_name, p_color, s_color, sel_color) for n in mini_names_local
+        ]
+        return (
+            effective_loadout_hash_from_names(gear_names_local, mini_sigs_local),
+            mini_sigs_local,
+            p_color,
+            s_color,
+            sel_color,
+        )
+
+    # Deduplicate entries before DB insertion (use effective hash when we have song colors).
     _t_dedup0 = time.perf_counter()
-    deduplicated_entries = _deduplicate_entries(entries)
+    dedup_groups: Dict[tuple[int, str], list[Dict[str, Any]]] = {}
+    entry_effective: Dict[int, Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]] = {}
+
+    for idx, entry in enumerate(entries):
+        eff = _effective_hash_for_entry(entry)
+        entry_effective[idx] = eff
+        if eff is None:
+            # Legacy key: score + name-hash
+            h = _loadout_hash_from_names(_compact_gear_for_db(entry.get("gear", [])), _compact_minis_for_db(entry.get("minis", [])))
+        else:
+            h = eff[0]
+        key = (int(entry.get("score", 0) or 0), str(h))
+        dedup_groups.setdefault(key, []).append(entry)
+
+    deduplicated_entries: list[Dict[str, Any]] = []
+    for (_score, _h), group in dedup_groups.items():
+        if len(group) == 1:
+            deduplicated_entries.append(group[0])
+            continue
+        try:
+            best_entry = max(group, key=lambda e: (_get_overflow_from_details(e.get("details", {})), e.get("fg_score", 0)))
+            deduplicated_entries.append(best_entry)
+        except Exception:
+            deduplicated_entries.append(group[0])
+
     _log_timing("dedup_entries", time.perf_counter() - _t_dedup0)
 
     db_path = get_evolution_db_path()
@@ -418,7 +474,43 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
         loadouts_params = []
         fg_loadouts_params = []
 
-        for entry in deduplicated_entries:
+        # Prefetch existing minis_json for any effective-hash rows so we can union variants (same PK).
+        _t_prefetch0 = time.perf_counter()
+        effective_hashes: list[str] = []
+        entry_to_effective: Dict[int, Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]] = {}
+        for i, entry in enumerate(deduplicated_entries):
+            eff = _effective_hash_for_entry(entry)
+            entry_to_effective[i] = eff
+            if eff is not None:
+                effective_hashes.append(eff[0])
+
+        existing_minis_by_hash: Dict[str, str] = {}
+        if effective_hashes:
+            existing_minis_by_hash = {}
+            batch_size = 900
+            for offset in range(0, len(effective_hashes), batch_size):
+                batch = list(dict.fromkeys(effective_hashes[offset : offset + batch_size]))
+                placeholders = ",".join("?" for _ in batch)
+                try:
+                    rows = conn.execute(
+                        f"""
+                        SELECT loadout_hash, minis_json
+                        FROM loadouts
+                        WHERE song_name = ? AND loadout_hash IN ({placeholders})
+                        """,
+                        (song_name, *batch),
+                    ).fetchall()
+                    for r in rows or []:
+                        try:
+                            existing_minis_by_hash[str(r["loadout_hash"])] = str(r["minis_json"] or "")
+                        except Exception:
+                            continue
+                except Exception:
+                    continue
+
+        _log_timing("prefetch_existing_minis", time.perf_counter() - _t_prefetch0)
+
+        for i, entry in enumerate(deduplicated_entries):
             score = entry.get("score", 0)
             fg_score = entry.get("fg_score", 0)
             gear = entry.get("gear", [])
@@ -428,10 +520,27 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
 
             gear_names = _compact_gear_for_db(gear)
             mini_names = _compact_minis_for_db(minis)
-            loadout_hash = _loadout_hash_from_names(gear_names, mini_names)
+
+            eff = entry_to_effective.get(i)
+            if eff is not None:
+                (loadout_hash, _mini_sigs, p_color, s_color, sel_color) = eff
+                existing_groups = decode_minis_json(existing_minis_by_hash.get(loadout_hash))
+                merged_groups = merge_minis_groups_for_entry(
+                    existing_groups,
+                    mini_names,
+                    minis_by_name,
+                    p_color,
+                    s_color,
+                    sel_color,
+                )
+                minis_json = encode_minis_groups(merged_groups)
+                # Store representatives in-memory for any downstream name-based utilities.
+                mini_names = representative_mini_names(merged_groups)
+            else:
+                loadout_hash = _loadout_hash_from_names(gear_names, mini_names)
+                minis_json = json.dumps([[n] for n in mini_names], separators=(",", ":"))
 
             gear_json = json.dumps(gear_names, separators=(",", ":"))
-            minis_json = json.dumps(mini_names, separators=(",", ":"))
             details_json = json.dumps(details, separators=(",", ":")) if details else None
             force_json = json.dumps(force_data, separators=(",", ":")) if force_data else None
 
@@ -632,8 +741,10 @@ def get_best_loadouts(
     """
     Retrieve the top N loadouts for a song to seed the GA.
 
-    Storage format: gear_json and minis_json are JSON arrays of name strings.
-    If gears_by_name/minis_by_name are provided, expands names to full stat dicts.
+    Storage format:
+    - gear_json: JSON array of name strings
+    - minis_json: JSON array of name strings (legacy) OR JSON array of arrays (variant groups)
+    If gears_by_name/minis_by_name are provided, expands representative names to full stat dicts.
 
     Args:
         song_name: Name of the song
@@ -670,7 +781,8 @@ def get_best_loadouts(
                 return
 
             gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
-            mini_names = json.loads(row["minis_json"]) if row["minis_json"] else []
+            mini_groups = decode_minis_json(row["minis_json"])
+            mini_names = representative_mini_names(mini_groups)
             force_block = json.loads(row["force_details_json"]) if row["force_details_json"] else None
 
             # Expand names to full dicts if lookup provided
@@ -690,6 +802,7 @@ def get_best_loadouts(
                     "fg_score": row["fg_score"],
                     "gear": gear_data,
                     "minis": minis_data,
+                    "mini_groups": mini_groups,
                     "details": json.loads(row["details_json"]) if row["details_json"] else {},
                     "force": force_block if isinstance(force_block, dict) else None,
                 }
