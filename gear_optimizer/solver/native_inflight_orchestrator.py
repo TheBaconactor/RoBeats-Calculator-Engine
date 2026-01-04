@@ -205,8 +205,9 @@ def _warmup_fg_jit(calc_song: dict, ref_arrays: dict) -> None:
 
 
 class _PostSender:
-    def __init__(self, post_queue) -> None:
+    def __init__(self, post_queue, *, stop_requested=None) -> None:
         self._post_queue = post_queue
+        self._stop_requested = stop_requested
         backlog = 256
         try:
             backlog = int(os.environ.get("POST_LOCAL_BACKLOG", backlog))
@@ -250,7 +251,14 @@ class _PostSender:
                 return
             try:
                 t0 = time.perf_counter()
-                self._post_queue.put(item)
+                while True:
+                    if self._stop_requested is not None and callable(self._stop_requested) and self._stop_requested():
+                        return
+                    try:
+                        self._post_queue.put(item, block=True, timeout=0.5)
+                        break
+                    except Exception:
+                        continue
                 if timing:
                     ms = (time.perf_counter() - t0) * 1000.0
                     if ms >= threshold_ms:
@@ -846,6 +854,7 @@ def run_native_inflight_song_pipeline(
     memory_resume_tracker=None,
     post_queue=None,
     total_tasks: int | None = None,
+    stop_requested=None,
 ) -> None:
     if not tasks:
         return
@@ -943,7 +952,7 @@ def run_native_inflight_song_pipeline(
             stage_profile_path = None
     stage_profiler = _InFlightStageProfiler(enabled=stage_profile_enabled, out_path=stage_profile_path)
 
-    post_sender = _PostSender(post_queue) if post_queue is not None else None
+    post_sender = _PostSender(post_queue, stop_requested=stop_requested) if post_queue is not None else None
 
     def _post(item: dict) -> None:
         if post_sender is not None:
@@ -1094,6 +1103,7 @@ def run_native_inflight_song_pipeline(
     try:
         last_progress = time.monotonic()
         last_stall_report = last_progress
+        stopping = False
         while (
             pending_tasks
             or prepared
@@ -1106,6 +1116,41 @@ def run_native_inflight_song_pipeline(
         ):
             if memory_release_requested():
                 break
+            if stop_requested is not None and callable(stop_requested) and stop_requested():
+                if not stopping:
+                    stopping = True
+                    try:
+                        pending_tasks.clear()
+                    except Exception:
+                        pass
+                    try:
+                        prepared.clear()
+                    except Exception:
+                        pass
+                    try:
+                        pending_fg.clear()
+                    except Exception:
+                        pass
+                    # Best-effort cancel of queued prep/decode work.
+                    try:
+                        for _task, fut, _t0 in list(prep_inflight):
+                            try:
+                                fut.cancel()
+                            except Exception:
+                                pass
+                        prep_inflight.clear()
+                    except Exception:
+                        pass
+                    try:
+                        for song in list(decode_inflight):
+                            try:
+                                if song.decode_future is not None:
+                                    song.decode_future.cancel()
+                            except Exception:
+                                pass
+                        # Keep entries so we can still drain the deque safely.
+                    except Exception:
+                        pass
 
             did_work = False
 
@@ -1181,6 +1226,8 @@ def run_native_inflight_song_pipeline(
                 # Submit GA jobs whenever we have prepared work and GPU queue capacity.
                 # We allow `ga_inflight` to exceed `inflight_limit` to create a backlog
                 # that keeps the GPU fed while CPU decode/FG prep runs.
+                if stopping:
+                    break
                 if prepared and len(ga_inflight) < ga_queue_limit:
                     song = prepared.popleft()
                     setattr(song, "_ga_submit_t0", time.perf_counter())
@@ -1248,6 +1295,8 @@ def run_native_inflight_song_pipeline(
 
                 # CPU prep: keep a staging buffer of prepared jobs so the GPU queue
                 # doesn't starve if CPU prep briefly falls behind GPU throughput.
+                if stopping:
+                    break
                 if pending_tasks and (len(prepared) + len(prep_inflight) < prep_limit):
                     nxt = pending_tasks.popleft()
                     if nxt[1] in completed_songs:

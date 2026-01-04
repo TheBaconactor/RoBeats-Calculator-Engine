@@ -198,6 +198,11 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     while True:
         try:
             item = result_queue.get()
+        except KeyboardInterrupt:
+            # Ctrl+C can land on this process while blocked in `Queue.get()` on Windows.
+            # Ignore it so the parent can drive shutdown via the sentinel `None` and
+            # we don't leave the producer blocked on a full queue.
+            continue
         except (EOFError, BrokenPipeError, OSError):
             break
 

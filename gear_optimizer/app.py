@@ -986,6 +986,7 @@ class GearOptimizerApp:
                         memory_resume_tracker=memory_resume_tracker,
                         post_queue=post_queue,
                         total_tasks=len(tasks),
+                        stop_requested=self._stop_requested_now,
                     )
                 else:
                     from gear_optimizer.solver.inflight_orchestrator import run_inflight_song_pipeline
@@ -997,6 +998,7 @@ class GearOptimizerApp:
                         memory_resume_tracker=memory_resume_tracker,
                         post_queue=post_queue,
                         total_tasks=len(tasks),
+                        stop_requested=self._stop_requested_now,
                     )
                 inflight_ok = True
             except Exception as inflight_err:
@@ -1004,7 +1006,7 @@ class GearOptimizerApp:
             finally:
                 try:
                     if post_queue is not None:
-                        post_queue.put(None)
+                        post_queue.put(None, block=True, timeout=1.0)
                 except Exception:
                     pass
                 try:
@@ -1080,6 +1082,7 @@ class GearOptimizerApp:
         if pipeline_enabled:
             post_queue = None
             post_proc = None
+            pipeline_ok = False
             try:
                 from gear_optimizer.pipeline.post_processor import run_post_processor
 
@@ -1125,6 +1128,8 @@ class GearOptimizerApp:
                 gpu_prefetched_set = set()
 
                 for i, t in enumerate(tasks):
+                    if self._stop_requested_now():
+                        break
                     if t[1] in completed_songs:
                         continue
 
@@ -1200,11 +1205,24 @@ class GearOptimizerApp:
                                 )
 
                     # Enqueue for post-processing (non-blocking relative to GPU compute).
+                    enqueued = True
                     if post_queue is not None:
-                        post_queue.put(res)
+                        enqueued = False
+                        while True:
+                            if self._stop_requested_now():
+                                break
+                            if post_proc is not None and not post_proc.is_alive():
+                                self.request_stop("post-processor died")
+                                break
+                            try:
+                                post_queue.put(res, block=True, timeout=0.5)
+                                enqueued = True
+                                break
+                            except Exception:
+                                continue
 
                     # Track completion for resume queue (only for successful compute payloads).
-                    if isinstance(res, dict) and "_error" not in res:
+                    if enqueued and isinstance(res, dict) and "_error" not in res:
                         done_name = res.get("song") or song_name
                         if done_name:
                             completed_songs.add(done_name)
@@ -1216,11 +1234,12 @@ class GearOptimizerApp:
                         break
                     if self._stop_requested_now():
                         break
+                pipeline_ok = True
 
             finally:
                 try:
                     if post_queue is not None:
-                        post_queue.put(None)
+                        post_queue.put(None, block=True, timeout=1.0)
                 except Exception:
                     pass
                 try:
@@ -1235,11 +1254,12 @@ class GearOptimizerApp:
                 except Exception:
                     pass
                 try:
-                    if use_gpu_preload and preloader is not None:
+                    if pipeline_ok and use_gpu_preload and preloader is not None:
                         preloader.stop()
                 except Exception:
                     pass
-            return
+            if pipeline_ok:
+                return
 
         def _safe_sequential_gen(task_list):
             preload_idx = 5  # Start preloading from index 5

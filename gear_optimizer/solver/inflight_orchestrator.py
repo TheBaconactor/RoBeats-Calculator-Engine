@@ -13,6 +13,7 @@ runner in `gear_optimizer/app.py`.
 from __future__ import annotations
 
 import concurrent.futures
+import queue
 import secrets
 import time
 from collections import deque
@@ -264,6 +265,7 @@ def run_inflight_song_pipeline(
     memory_resume_tracker=None,
     post_queue=None,
     total_tasks: int | None = None,
+    stop_requested=None,
 ) -> None:
     """
     Run an in-flight multi-song pipeline.
@@ -656,13 +658,35 @@ def run_inflight_song_pipeline(
             finished.append(song)
         return finished
 
+    def _try_post(item: Any, *, timeout_s: float = 0.5) -> bool:
+        if post_queue is None:
+            return True
+        while True:
+            if stop_requested is not None and callable(stop_requested) and stop_requested():
+                return False
+            try:
+                post_queue.put(item, block=True, timeout=float(timeout_s))
+                return True
+            except queue.Full:
+                continue
+            except Exception:
+                return False
+
+    stopping = False
     try:
         while pending_tasks or active:
             if memory_release_requested():
                 break
+            if stop_requested is not None and callable(stop_requested) and stop_requested():
+                if not stopping:
+                    stopping = True
+                    try:
+                        pending_tasks.clear()
+                    except Exception:
+                        pass
 
             # Admit up to inflight_limit.
-            while pending_tasks and len(active) < inflight_limit:
+            while (not stopping) and pending_tasks and len(active) < inflight_limit:
                 nxt = pending_tasks.popleft()
                 if nxt[1] in completed_songs:
                     continue
@@ -670,15 +694,14 @@ def run_inflight_song_pipeline(
                     song = _admit_one(nxt)
                 except Exception as exc:
                     # Fallback: produce an error payload compatible with post_processor.
-                    if post_queue is not None:
-                        post_queue.put(
-                            {
-                                "_error": str(exc),
-                                "_error_type": type(exc).__name__,
-                                "_song_name": nxt[1],
-                                "song": nxt[1],
-                            }
-                        )
+                    _try_post(
+                        {
+                            "_error": str(exc),
+                            "_error_type": type(exc).__name__,
+                            "_song_name": nxt[1],
+                            "song": nxt[1],
+                        }
+                    )
                     completed_songs.add(nxt[1])
                     if memory_resume_tracker:
                         memory_resume_tracker.mark_completed(nxt[1])
@@ -777,12 +800,14 @@ def run_inflight_song_pipeline(
                     "log": "",
                 }
 
-                if post_queue is not None:
-                    post_queue.put(payload)
+                enqueued = _try_post(payload)
 
-                completed_songs.add(found_song_name)
-                if memory_resume_tracker:
-                    memory_resume_tracker.mark_completed(found_song_name)
+                if enqueued:
+                    completed_songs.add(found_song_name)
+                    if memory_resume_tracker:
+                        memory_resume_tracker.mark_completed(found_song_name)
+                else:
+                    stopping = True
 
                 try:
                     slot_pool.release(song.song_slot)
