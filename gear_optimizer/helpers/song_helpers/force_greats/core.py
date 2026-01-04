@@ -254,6 +254,8 @@ def process_force_greats(
                 logging.exception(msg)
             except Exception:
                 pass
+            if _truthy_env("FG_FAIL_ON_GPU_FALLBACK", "0"):
+                raise
             if gpu_client is not None:
                 try:
                     return gpu_client.submit_process_force_greats(
