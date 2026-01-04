@@ -227,6 +227,10 @@ def _decode_db_minis(minis_json_blob: Optional[str]) -> tuple[tuple[str, ...], t
     return rep_key, variant_key
 
 
+def _groups_from_variant_key(variant_key: tuple[tuple[str, ...], ...]) -> list[list[str]]:
+    return [list(g) for g in (variant_key or ())]
+
+
 def find_most_common_loadout(
     songs: List[dict],
     all_loadouts: List[dict],
@@ -309,15 +313,15 @@ def find_most_common_loadout(
         gear_names = list(target_gear)
         variants_counter = variants_by_key.get(set_key, Counter())
         rep_minis = _pick_representative_variant(variants_counter)
-        rep_groups = [list(g) for g in (rep_minis or ())]
+        rep_groups = _groups_from_variant_key(rep_minis or ())
+        minis_json = rep_groups
         mini_names = [min(g) for g in rep_groups if g]
         mini_variants = []
         for variant, count in sorted(variants_counter.items(), key=lambda item: (-item[1], item[0])):
-            groups = [list(g) for g in (variant or ())]
+            groups = _groups_from_variant_key(variant or ())
             mini_variants.append(
                 {
-                    "mini_groups": groups,
-                    "mini_names": [min(g) for g in groups if g],
+                    "minis_json": groups,
                     "count_as_top1": int(count),
                 }
             )
@@ -399,8 +403,7 @@ def find_most_common_loadout(
             {
                 "rank": rank,
                 "gear_names": gear_names,
-                "mini_names": mini_names,
-                "mini_groups": rep_groups,
+                "minis_json": minis_json,
                 "mini_variants": mini_variants,
                 "mini_effective_elements": list(relevant_elements),
                 "avg_gems": avg_gems,
@@ -671,7 +674,8 @@ def run_general_meta(cfg, paths: dict) -> dict:
         loadout_entries = []
         for loadout_data in top_loadouts:
             gear_names = sort_gears_by_slot(loadout_data["gear_names"], gears_by_name)
-            mini_names = sorted(loadout_data["mini_names"])
+            minis_groups = loadout_data.get("minis_json") or []
+            mini_names = sorted([min(g) for g in minis_groups if g])
             avg_gems = loadout_data["avg_gems"]
 
             print(
@@ -706,7 +710,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
                 {
                     "rank": loadout_data["rank"],
                     "gear": gear_names,
-                    "minis": mini_names,
+                    "minis_json": minis_groups,
                     "mini_variants": loadout_data.get("mini_variants", []),
                     "mini_effective_elements": loadout_data.get("mini_effective_elements", []),
                     "songs_with_set": loadout_data["songs_with_set"],
@@ -778,7 +782,8 @@ def run_general_meta(cfg, paths: dict) -> dict:
         loadout_entries = []
         for loadout_data in top_loadouts:
             gear_names = sort_gears_by_slot(loadout_data["gear_names"], gears_by_name)
-            mini_names = sorted(loadout_data["mini_names"])
+            minis_groups = loadout_data.get("minis_json") or []
+            mini_names = sorted([min(g) for g in minis_groups if g])
             avg_gems = loadout_data["avg_gems"]
 
             print(
@@ -813,7 +818,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
                 {
                     "rank": loadout_data["rank"],
                     "gear": gear_names,
-                    "minis": mini_names,
+                    "minis_json": minis_groups,
                     "mini_variants": loadout_data.get("mini_variants", []),
                     "mini_effective_elements": loadout_data.get("mini_effective_elements", []),
                     "songs_with_set": loadout_data["songs_with_set"],

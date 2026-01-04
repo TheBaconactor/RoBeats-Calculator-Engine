@@ -55,7 +55,6 @@ def test_general_meta_counts_top1_by_effective_fg_score():
     assert results
     top = results[0]
     assert top["gear_names"] == sorted(target_gears)
-    assert top["mini_names"] == sorted(target_minis)
+    assert sorted([min(g) for g in (top["minis_json"] or []) if g]) == sorted(target_minis)
     assert top["win_frequency"] == 2
     assert top["songs_with_set"] == 2
-

@@ -62,8 +62,8 @@ def test_general_meta_merges_mini_variants_when_irrelevant_to_category():
     assert result["songs_with_set"] == 2
     assert result["mini_effective_elements"] == ["Vibe"]
 
-    variants = {tuple(v["mini_names"]): v["count_as_top1"] for v in result["mini_variants"]}
-    assert variants == {("MiniA",): 1, ("MiniB",): 1}
+    variants = {tuple(tuple(g) for g in v["minis_json"]): v["count_as_top1"] for v in result["mini_variants"]}
+    assert variants == {(("MiniA",),): 1, (("MiniB",),): 1}
 
 
 def test_general_meta_does_not_merge_mini_variants_when_secondary_varies():
