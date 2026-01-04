@@ -19,7 +19,7 @@ from .loadout_equivalence import (
     encode_minis_groups,
     extract_song_colors,
     get_minis_by_name_cached,
-    merge_minis_groups_for_entry,
+    canonical_minis_groups_from_names,
     representative_mini_names,
 )
 
@@ -438,7 +438,9 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
         entry_effective[idx] = eff
         if eff is None:
             # Legacy key: score + name-hash
-            h = _loadout_hash_from_names(_compact_gear_for_db(entry.get("gear", [])), _compact_minis_for_db(entry.get("minis", [])))
+            h = _loadout_hash_from_names(
+                _compact_gear_for_db(entry.get("gear", [])), _compact_minis_for_db(entry.get("minis", []))
+            )
         else:
             h = eff[0]
         key = (int(entry.get("score", 0) or 0), str(h))
@@ -450,7 +452,9 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
             deduplicated_entries.append(group[0])
             continue
         try:
-            best_entry = max(group, key=lambda e: (_get_overflow_from_details(e.get("details", {})), e.get("fg_score", 0)))
+            best_entry = max(
+                group, key=lambda e: (_get_overflow_from_details(e.get("details", {})), e.get("fg_score", 0))
+            )
             deduplicated_entries.append(best_entry)
         except Exception:
             deduplicated_entries.append(group[0])
@@ -474,41 +478,10 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
         loadouts_params = []
         fg_loadouts_params = []
 
-        # Prefetch existing minis_json for any effective-hash rows so we can union variants (same PK).
-        _t_prefetch0 = time.perf_counter()
-        effective_hashes: list[str] = []
         entry_to_effective: Dict[int, Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]] = {}
         for i, entry in enumerate(deduplicated_entries):
             eff = _effective_hash_for_entry(entry)
             entry_to_effective[i] = eff
-            if eff is not None:
-                effective_hashes.append(eff[0])
-
-        existing_minis_by_hash: Dict[str, str] = {}
-        if effective_hashes:
-            existing_minis_by_hash = {}
-            batch_size = 900
-            for offset in range(0, len(effective_hashes), batch_size):
-                batch = list(dict.fromkeys(effective_hashes[offset : offset + batch_size]))
-                placeholders = ",".join("?" for _ in batch)
-                try:
-                    rows = conn.execute(
-                        f"""
-                        SELECT loadout_hash, minis_json
-                        FROM loadouts
-                        WHERE song_name = ? AND loadout_hash IN ({placeholders})
-                        """,
-                        (song_name, *batch),
-                    ).fetchall()
-                    for r in rows or []:
-                        try:
-                            existing_minis_by_hash[str(r["loadout_hash"])] = str(r["minis_json"] or "")
-                        except Exception:
-                            continue
-                except Exception:
-                    continue
-
-        _log_timing("prefetch_existing_minis", time.perf_counter() - _t_prefetch0)
 
         for i, entry in enumerate(deduplicated_entries):
             score = entry.get("score", 0)
@@ -524,18 +497,19 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
             eff = entry_to_effective.get(i)
             if eff is not None:
                 (loadout_hash, _mini_sigs, p_color, s_color, sel_color) = eff
-                existing_groups = decode_minis_json(existing_minis_by_hash.get(loadout_hash))
-                merged_groups = merge_minis_groups_for_entry(
-                    existing_groups,
+                # Deterministically expand mini variant groups from Minis.csv equivalence.
+                # This avoids relying on the GA to have explored both names and removes
+                # the need for cross-row union/merging.
+                groups = canonical_minis_groups_from_names(
                     mini_names,
                     minis_by_name,
                     p_color,
                     s_color,
                     sel_color,
                 )
-                minis_json = encode_minis_groups(merged_groups)
+                minis_json = encode_minis_groups(groups)
                 # Store representatives in-memory for any downstream name-based utilities.
-                mini_names = representative_mini_names(merged_groups)
+                mini_names = representative_mini_names(groups)
             else:
                 loadout_hash = _loadout_hash_from_names(gear_names, mini_names)
                 minis_json = json.dumps([[n] for n in mini_names], separators=(",", ":"))

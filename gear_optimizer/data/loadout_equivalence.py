@@ -20,6 +20,7 @@ from .csv_parser import load_csv_db, resolve_stats_csv
 
 
 _MINIS_BY_NAME_CACHE: Optional[Dict[str, dict]] = None
+_MINI_SIG_TO_NAMES_CACHE: dict[tuple[int, str, str, str], dict[tuple[Any, ...], list[str]]] = {}
 
 
 def get_minis_by_name_cached() -> Dict[str, dict]:
@@ -199,9 +200,94 @@ def effective_mini_signature_for_item(
         # Prefer stats on the dict directly (hot path for GA genomes).
         return effective_mini_signature(mini_item, primary_color, secondary_color, selected_color)
     name = str(mini_item) if mini_item else ""
-    return effective_mini_signature_for_name(
-        name, minis_by_name or {}, primary_color, secondary_color, selected_color
-    )
+    return effective_mini_signature_for_name(name, minis_by_name or {}, primary_color, secondary_color, selected_color)
+
+
+def minis_signature_to_names_map(
+    minis_by_name: Dict[str, dict],
+    primary_color: str,
+    secondary_color: str,
+    selected_color: str,
+) -> dict[tuple[Any, ...], list[str]]:
+    """
+    Build (and cache) a signature->all-names map for a given song-context.
+
+    This lets persistence populate mini variant groups deterministically from Minis.csv
+    (instead of relying on the GA to have explored both names).
+    """
+    key = (int(id(minis_by_name)), str(primary_color), str(secondary_color), str(selected_color))
+    cached = _MINI_SIG_TO_NAMES_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    sig_to_names: dict[tuple[Any, ...], list[str]] = {}
+    if not minis_by_name:
+        _MINI_SIG_TO_NAMES_CACHE[key] = sig_to_names
+        return sig_to_names
+
+    for name, stats in minis_by_name.items():
+        n = str(name).strip()
+        if not n or not isinstance(stats, dict):
+            continue
+        sig = effective_mini_signature(stats, primary_color, secondary_color, selected_color)
+        sig_to_names.setdefault(sig, []).append(n)
+
+    for sig, names in list(sig_to_names.items()):
+        sig_to_names[sig] = sorted(set(names))
+
+    _MINI_SIG_TO_NAMES_CACHE[key] = sig_to_names
+    return sig_to_names
+
+
+def canonical_minis_groups_from_names(
+    mini_names: List[str],
+    minis_by_name: Dict[str, dict],
+    primary_color: str,
+    secondary_color: str,
+    selected_color: str,
+) -> list[list[str]]:
+    """
+    Deterministically expand minis into variant groups based on Minis.csv equivalence.
+
+    For each selected mini name, we compute its effective signature under the song context,
+    then expand it to all minis that share that signature in the provided Minis.csv map.
+
+    Multiplicity is preserved (e.g., if duplicates ever appear).
+    """
+    sig_counts: Counter = Counter()
+    sig_rep: dict[tuple[Any, ...], str] = {}
+
+    for name in mini_names or []:
+        n = str(name).strip()
+        if not n:
+            continue
+        sig = effective_mini_signature_for_name(n, minis_by_name, primary_color, secondary_color, selected_color)
+        sig_counts[sig] += 1
+        sig_rep.setdefault(sig, n)
+
+    if not sig_counts:
+        return []
+
+    sig_to_all = minis_signature_to_names_map(minis_by_name, primary_color, secondary_color, selected_color)
+
+    def _sig_sort_key(sig: tuple[Any, ...]) -> str:
+        return "|".join(str(x) for x in sig)
+
+    out: list[list[str]] = []
+    for sig in sorted(sig_counts.keys(), key=_sig_sort_key):
+        # Unknown mini names use a signature tagged with ("name", <name>); don't over-expand.
+        if len(sig) >= 2 and sig[0] == "name":
+            group = [str(sig[1])]
+        else:
+            group = sig_to_all.get(sig)
+            if not group:
+                group = [sig_rep.get(sig, "")]
+        group = [n for n in group if n]
+        if not group:
+            continue
+        for _ in range(int(sig_counts[sig] or 0)):
+            out.append(group)
+    return out
 
 
 def effective_loadout_hash_from_names(
@@ -336,4 +422,3 @@ def merge_minis_json_strings(
         for _ in range(int(count or 0)):
             out_groups.append(lst)
     return encode_minis_groups(out_groups)
-

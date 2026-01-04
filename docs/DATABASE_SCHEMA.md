@@ -127,9 +127,12 @@ cursor.execute("""
 
 ### `minis_json` format (mini variants)
 
-`minis_json` is stored as a JSON array where each element represents one equipped mini as a **variant group**:
+`minis_json` is stored as a JSON array where each element represents one equipped mini as a **variant group**.
+
+Variant groups are populated *deterministically* from `Data/Gear/Minis.csv` using the song context
+(primary/secondary/selected element), not based on which mini-name variants happened to appear during GA exploration.
 
 - New format: `[[\"MiniA\",\"MiniA2\"],[\"MiniB\"],[\"MiniC\"]]`
 - Legacy format (still readable): `[\"MiniA\",\"MiniB\",\"MiniC\"]`
 
-Within a group, all names are considered equivalent for this song context (only stats that can affect scoring for the song are considered).
+Within a group, all names are considered equivalent for this song context (core stats + only the relevant element stats).
