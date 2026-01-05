@@ -1003,6 +1003,27 @@ class GearOptimizerApp:
                 inflight_ok = True
             except Exception as inflight_err:
                 print(f"[InFlight] Disabled: {type(inflight_err).__name__}: {inflight_err}")
+                try:
+                    import traceback
+
+                    tb = traceback.format_exc()
+                    try:
+                        logging.error("[InFlight] Traceback:\\n" + tb)
+                    except Exception:
+                        pass
+                    try:
+                        trace_path = os.path.join(BIN_DIR, "inflight_disabled_traceback.log")
+                        with open(trace_path, "w", encoding="utf-8") as fh:
+                            fh.write(tb)
+                    except Exception:
+                        pass
+                    if self._truthy(os.environ.get("INFLIGHT_PRINT_TRACE", "0")):
+                        try:
+                            print(tb)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
             finally:
                 try:
                     if post_queue is not None:
