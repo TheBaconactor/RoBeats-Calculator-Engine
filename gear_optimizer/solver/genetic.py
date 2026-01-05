@@ -514,15 +514,58 @@ def decode_gpu_native_ga_runs_payload(
     item_stats = registry.to_gpu_arrays()["item_stats"]  # (n_items, 10)
     arrays_ms = (time.perf_counter() - t_stub_arrays) * 1000.0 if perf else 0.0
 
-    # Deterministic ordering helpers (stable for ties, matches select_fg_candidates behavior).
+    # Deterministic ordering for FG funnel selection (matches select_fg_candidates):
+    # - keep a fixed top slice by base score (DB/leaderboard stability)
+    # - fill the remaining budget by a fever-focused score
     #
-    # Avoid Python `sorted(..., key=lambda ...)` here: `n_stub` can be large and this code
-    # runs on the CPU between GPU jobs (a common throughput bottleneck).
-    #
-    # We use stable NumPy argsorts so the result matches Python's stable sort semantics.
+    # Important: keep this fully vectorized; this runs on the CPU between GPU jobs.
     idx = np.arange(n_stub, dtype=np.int32)
-    base_order = idx[np.argsort(-stub_scores, kind="stable")]
-    selected_idx_arr = base_order[: min(int(fg_candidate_limit), int(base_order.shape[0]))]
+    scores_i64 = stub_scores.astype(np.int64, copy=False)
+
+    minis_sorted = np.sort(stub_genome_ids[:, 6:9], axis=1)
+    canon_ids_mat = np.concatenate([stub_genome_ids[:, :6], minis_sorted], axis=1).astype(np.int32, copy=False)
+
+    # Compute fever-focused score from gear-only stats + (FT,FF) result row (matches fg_candidate_selector).
+    try:
+        row_stride = int(runs_payload.shape[1])
+        flat = runs_payload.reshape(-1, int(runs_payload.shape[2]))
+        flat_idx = (stub_run_idx.astype(np.int64, copy=False) * row_stride) + stub_rows.astype(np.int64, copy=False)
+        stub_results = flat[flat_idx, 1 + n_slots : 1 + n_slots + 7]
+    except Exception:
+        stub_results = runs_payload[stub_run_idx, stub_rows, 1 + n_slots : 1 + n_slots + 7]
+
+    gear_ids = stub_genome_ids[:, :6].astype(np.int32, copy=False)
+    gear_stats_sum = item_stats[gear_ids].sum(axis=1)  # (n_stub, 10)
+    fever_scores_i64 = (
+        gear_stats_sum[:, 0:5].sum(axis=1).astype(np.int64, copy=False)
+        + stub_results[:, 1].astype(np.int64, copy=False)
+        + stub_results[:, 2].astype(np.int64, copy=False)
+    )
+
+    # Lexsort tie-breakers need the key in reverse order (element0 has highest priority).
+    key_cols_desc = [-(canon_ids_mat[:, i].astype(np.int64, copy=False)) for i in range(8, -1, -1)]
+
+    base_keep = min(int(LOADOUTS_PER_SONG_LIMIT), int(fg_candidate_limit))
+    base_order = np.lexsort(tuple(key_cols_desc + [-scores_i64]))
+    base_slice = base_order[: min(int(base_keep), int(base_order.shape[0]))]
+
+    if base_slice.shape[0] >= int(fg_candidate_limit):
+        selected_idx_arr = base_slice[: int(fg_candidate_limit)]
+    else:
+        chosen = np.zeros((n_stub,), dtype=bool)
+        chosen[base_slice] = True
+        remaining_idx = idx[~chosen]
+        if remaining_idx.size:
+            rem_scores = scores_i64[remaining_idx]
+            rem_fever = fever_scores_i64[remaining_idx]
+            rem_keys = canon_ids_mat[remaining_idx]
+            rem_key_cols_desc = [-(rem_keys[:, i].astype(np.int64, copy=False)) for i in range(8, -1, -1)]
+            rem_order = np.lexsort(tuple(rem_key_cols_desc + [-rem_scores, -rem_fever]))
+            need = int(fg_candidate_limit) - int(base_slice.shape[0])
+            selected_idx_arr = np.concatenate([base_slice, remaining_idx[rem_order[:need]]])
+        else:
+            selected_idx_arr = base_slice
+
     selected_stub_indices = selected_idx_arr.tolist()
     select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
     proxy_ms = 0.0
@@ -691,361 +734,6 @@ def _parse_cfg_csv_list(raw: str) -> list[str]:
         if val:
             parts.append(val)
     return parts
-
-
-def _neighbor_sweep_fg_candidates(
-    *,
-    cfg,
-    existing_candidates: list[dict],
-    registry: "ItemRegistry",
-    gear_pool: dict,
-    mini_pool: list,
-    slots: list[str],
-    cfg_data: dict,
-    base_stats_fixed: dict,
-    calc_song: dict,
-    ref_arrays: dict,
-) -> list[dict]:
-    """
-    Evaluate a small set of "neighbor" loadouts (single-slot swaps) and return
-    them as fully-evaluated GA-style candidates for ForceGreatsFinder.
-
-    Goal: include FG-relevant loadouts that may be far from the base-score optimum,
-    without relying on DB seeds (cold start).
-    """
-    return []
-    if cfg is None or not hasattr(cfg, "getboolean"):
-        return []
-    if not existing_candidates:
-        return []
-
-    enabled = cfg.getboolean("IterationEngine", "FG_NeighborSweep", fallback=False)
-    if not enabled:
-        return []
-
-    try:
-        if cfg.getboolean("IterationEngine", "ForceGreatsDebug", fallback=False):
-            print("[FG Sweep] NeighborSweep enabled")
-    except Exception:
-        pass
-
-    try:
-        from .scoring import batch_evaluate_genomes
-    except Exception:
-        return []
-
-    seed_top_k = safe_int(cfg.get("IterationEngine", "FG_NeighborSweepSeeds", fallback=12), 12)
-    max_new = safe_int(cfg.get("IterationEngine", "FG_NeighborSweepMaxEvals", fallback=200), 200)
-    top_per_stat = safe_int(cfg.get("IterationEngine", "FG_NeighborSweepTopPerStat", fallback=2), 2)
-    top_by_heuristic = safe_int(cfg.get("IterationEngine", "FG_NeighborSweepTopByHeuristic", fallback=12), 12)
-    sweep_slots_raw = cfg.get("IterationEngine", "FG_NeighborSweepSlots", fallback="Back")
-
-    if max_new <= 0 or seed_top_k <= 0:
-        return []
-
-    slot_name_to_idx = {name: idx for idx, name in enumerate(slots)}
-    sweep_slots: list[int] = []
-    sweep_minis = False
-    mini_tokens = {"mini", "minis", "miniteam", "mini-team", "mini_teams", "miniteams"}
-    for token in _parse_cfg_csv_list(sweep_slots_raw):
-        raw = token.strip()
-        if not raw:
-            continue
-        normalized = raw.lower().replace(" ", "").replace("_", "-")
-        if normalized in mini_tokens:
-            sweep_minis = True
-            continue
-        idx = slot_name_to_idx.get(raw.title())
-        if idx is not None:
-            sweep_slots.append(idx)
-
-    if not sweep_slots and not sweep_minis:
-        return []
-
-    meta = calc_song.get("metadata", {}) or {}
-    p_color = str(meta.get("Primary Color", "") or "")
-    s_color = str(meta.get("Secondary Color", "") or "")
-    color_stats = ("Rush", "Flow", "Chill", "Beat", "Vibe")
-
-    base_stat_keys = [
-        "Perfect Points",
-        "Combo Multiplier",
-        "Fever Multiplier",
-        "Fever Time",
-        "Fever Fill Rate",
-    ]
-    # Always include elemental stats so "specialist" items (e.g., Flow-heavy backs)
-    # can enter the FG funnel even if they're not top-K by base-score heuristics.
-    base_stat_keys.extend(color_stats)
-
-    def _heuristic_item_score(item: dict) -> int:
-        if not item:
-            return 0
-        pp = int(item.get("Perfect Points", 0) or 0)
-        cm = int(item.get("Combo Multiplier", 0) or 0)
-        fm = int(item.get("Fever Multiplier", 0) or 0)
-        ft = int(item.get("Fever Time", 0) or 0)
-        ff = int(item.get("Fever Fill Rate", 0) or 0)
-        primary_val = int(item.get(p_color, 0) or 0) if p_color else 0
-        secondary_val = int(item.get(s_color, 0) or 0) if (s_color and s_color != p_color) else 0
-        modern_base = (pp * 3) + (cm * 3) + (fm * 3) + (ft * 2) + (ff * 2)
-        modern_elemental_bonus = (primary_val * 2) + (secondary_val * 1)
-        return int(modern_base + (modern_elemental_bonus // 2))
-
-    def _candidate_key_from_genome(genome: list[dict]) -> tuple:
-        gear_names = tuple((it or {}).get("Name", "") for it in genome[:6])
-        mini_names = tuple(sorted(((it or {}).get("Name", "") for it in genome[6:9])))
-        return gear_names + mini_names
-
-    def _build_interesting_items(pool: list[dict]) -> list[dict]:
-        if not pool:
-            return []
-        interesting: dict[str, dict] = {}
-        if top_by_heuristic > 0:
-            ranked = sorted(pool, key=_heuristic_item_score, reverse=True)
-            for it in ranked[: max(1, top_by_heuristic)]:
-                if not it:
-                    continue
-                name = it.get("Name")
-                if name and name not in interesting:
-                    interesting[name] = it
-
-        for key in base_stat_keys:
-            ranked = sorted(pool, key=lambda it: int((it or {}).get(key, 0) or 0), reverse=True)
-            for it in ranked[: max(1, top_per_stat)]:
-                if not it:
-                    continue
-                name = it.get("Name")
-                if name and name not in interesting:
-                    interesting[name] = it
-
-        return list(interesting.values())
-
-    gear_candidates_by_slot: dict[int, list[dict]] = {}
-    for slot_idx in sweep_slots:
-        slot_name = slots[slot_idx]
-        pool = gear_pool.get(slot_name) or []
-        gear_candidates_by_slot[slot_idx] = _build_interesting_items(pool)
-
-    mini_candidates: list[dict] = _build_interesting_items(mini_pool) if sweep_minis else []
-
-    # Seed selection: prefer mini-team diversity so we don't miss FG-relevant
-    # loadouts that are lower-ranked by base score but have different minis.
-    existing_candidate_keys = set()
-    seen_mini_sets = set()
-    seen_seed_keys = set()
-    seeds: list[list[dict]] = []
-    for cand in existing_candidates:
-        genome = cand.get("Genome")
-        if not genome:
-            continue
-        full_key = _candidate_key_from_genome(genome)
-        existing_candidate_keys.add(full_key)
-
-        mini_key = tuple(sorted(((it or {}).get("Name", "") for it in genome[6:9])))
-        if mini_key in seen_mini_sets:
-            continue
-        seen_mini_sets.add(mini_key)
-        if full_key in seen_seed_keys:
-            continue
-        seen_seed_keys.add(full_key)
-        seeds.append(genome)
-        if len(seeds) >= seed_top_k:
-            break
-
-    # If the mini-diverse pass didn't fill the seed budget (common on converged runs),
-    # fill with the next best unique genomes so we still explore multiple gear variants.
-    if len(seeds) < seed_top_k:
-        for cand in existing_candidates:
-            genome = cand.get("Genome")
-            if not genome:
-                continue
-            full_key = _candidate_key_from_genome(genome)
-            if full_key in seen_seed_keys:
-                continue
-            seen_seed_keys.add(full_key)
-            seeds.append(genome)
-            if len(seeds) >= seed_top_k:
-                break
-
-    if not seeds:
-        return []
-
-    neighbor_genomes: list[list[dict]] = []
-    neighbor_keys = set(existing_candidate_keys)
-
-    def _try_add(genome: list[dict]) -> bool:
-        mini_names = [m.get("Name", "") for m in genome[6:9] if m]
-        if len(mini_names) != len(set(mini_names)):
-            return False
-        key = _candidate_key_from_genome(genome)
-        if key in neighbor_keys:
-            return False
-        neighbor_keys.add(key)
-        neighbor_genomes.append(genome)
-        return True
-
-    mini_positions = (6, 7, 8)
-    gear_pairs: list[tuple[int, int]] = []
-    if len(sweep_slots) >= 2:
-        for i, a in enumerate(sweep_slots):
-            for b in sweep_slots[i + 1 :]:
-                gear_pairs.append((a, b))
-
-    pair_top = max(1, min(8, top_by_heuristic))
-    mini_combo_top = max(1, min(8, top_by_heuristic))
-
-    for seed in seeds:
-        seed_minis = [m for m in seed[6:9] if m]
-        seed_mini_names = {m.get("Name", "") for m in seed_minis}
-
-        # Pairwise gear sweep (2-slot combos) + optional mini swap on the weakest mini.
-        if gear_pairs:
-            weakest_pos = 6
-            weakest_score = None
-            for pos in mini_positions:
-                it = seed[pos] or {}
-                score = _heuristic_item_score(it)
-                if weakest_score is None or score < weakest_score:
-                    weakest_score = score
-                    weakest_pos = pos
-
-            for a, b in gear_pairs:
-                items_a = (gear_candidates_by_slot.get(a) or [])[:pair_top]
-                items_b = (gear_candidates_by_slot.get(b) or [])[:pair_top]
-                if not items_a or not items_b:
-                    continue
-
-                curr_a = (seed[a] or {}).get("Name", "")
-                curr_b = (seed[b] or {}).get("Name", "")
-
-                for it_a in items_a:
-                    name_a = (it_a or {}).get("Name", "")
-                    for it_b in items_b:
-                        name_b = (it_b or {}).get("Name", "")
-                        if name_a == curr_a and name_b == curr_b:
-                            continue
-
-                        genome_pair = list(seed)
-                        if name_a and name_a != curr_a:
-                            genome_pair[a] = it_a
-                        if name_b and name_b != curr_b:
-                            genome_pair[b] = it_b
-
-                        _try_add(genome_pair)
-                        if len(neighbor_genomes) >= max_new:
-                            break
-
-                        if sweep_minis and mini_candidates:
-                            for mini in mini_candidates[:mini_combo_top]:
-                                mini_name = mini.get("Name", "")
-                                if not mini_name or mini_name in seed_mini_names:
-                                    continue
-                                genome_combo = list(genome_pair)
-                                genome_combo[weakest_pos] = mini
-                                _try_add(genome_combo)
-                                if len(neighbor_genomes) >= max_new:
-                                    break
-                        if len(neighbor_genomes) >= max_new:
-                            break
-                    if len(neighbor_genomes) >= max_new:
-                        break
-                if len(neighbor_genomes) >= max_new:
-                    break
-            if len(neighbor_genomes) >= max_new:
-                break
-
-        # Gear sweep (optionally combined with mini swaps when "Minis" is included).
-        for slot_idx in sweep_slots:
-            pool_items = gear_candidates_by_slot.get(slot_idx) or []
-            if not pool_items:
-                continue
-
-            current_item = seed[slot_idx] or {}
-            current_name = current_item.get("Name", "")
-
-            for it in pool_items:
-                if (it or {}).get("Name", "") == current_name:
-                    continue
-
-                genome_gear = list(seed)
-                genome_gear[slot_idx] = it
-                _try_add(genome_gear)
-                if len(neighbor_genomes) >= max_new:
-                    break
-
-                if sweep_minis and mini_candidates:
-                    for mini in mini_candidates:
-                        mini_name = mini.get("Name", "")
-                        if not mini_name or mini_name in seed_mini_names:
-                            continue
-
-                        for pos in mini_positions:
-                            genome_combo = list(genome_gear)
-                            genome_combo[pos] = mini
-                            _try_add(genome_combo)
-                            if len(neighbor_genomes) >= max_new:
-                                break
-                        if len(neighbor_genomes) >= max_new:
-                            break
-
-                if len(neighbor_genomes) >= max_new:
-                    break
-            if len(neighbor_genomes) >= max_new:
-                break
-        if len(neighbor_genomes) >= max_new:
-            break
-
-        # Mini-only sweep (useful when minis are the missing axis, or when no gear slots are enabled).
-        if sweep_minis and mini_candidates and len(neighbor_genomes) < max_new:
-            for mini in mini_candidates:
-                mini_name = mini.get("Name", "")
-                if not mini_name or mini_name in seed_mini_names:
-                    continue
-                for pos in mini_positions:
-                    genome_mini = list(seed)
-                    genome_mini[pos] = mini
-                    _try_add(genome_mini)
-                    if len(neighbor_genomes) >= max_new:
-                        break
-                if len(neighbor_genomes) >= max_new:
-                    break
-        if len(neighbor_genomes) >= max_new:
-            break
-
-    if not neighbor_genomes:
-        try:
-            if cfg.getboolean("IterationEngine", "ForceGreatsDebug", fallback=False):
-                print("[FG Sweep] NeighborSweep generated 0 swaps")
-        except Exception:
-            pass
-        return []
-
-    try:
-        if cfg.getboolean("IterationEngine", "ForceGreatsDebug", fallback=False):
-            print(
-                f"[FG Sweep] NeighborSweep: seeds={len(seeds)}, swaps={len(neighbor_genomes)}, slots={sweep_slots_raw}"
-            )
-    except Exception:
-        pass
-
-    evaluated = batch_evaluate_genomes(
-        neighbor_genomes,
-        base_stats_fixed,
-        cfg_data,
-        calc_song,
-        ref_arrays,
-        registry=registry,
-    )
-    out = []
-    for e in evaluated:
-        if not e:
-            continue
-        # Mark as high-priority for FG funnel retention (these can have lower base scores).
-        e["_fg_priority"] = 1
-        e["_fg_source"] = "neighbor_sweep"
-        out.append(e)
-    return out
 
 
 def _run_gpu_native_ga(

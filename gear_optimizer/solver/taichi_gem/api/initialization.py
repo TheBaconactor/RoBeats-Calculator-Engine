@@ -210,8 +210,9 @@ _FORCE_SYNC = ENV.gpu_force_sync
 
 def _maybe_sync(*, for_timing: bool = False) -> None:
     """Sync only when explicitly requested (timing/debug)."""
-    if _FORCE_SYNC or (for_timing and _SYNC_FOR_TIMING):
-        ti.sync()
+    from .sync_policy import maybe_sync
+
+    maybe_sync(sync_fn=ti.sync, force_sync=_FORCE_SYNC, sync_for_timing=_SYNC_FOR_TIMING, for_timing=for_timing)
 
 
 def _ensure_batch_staging():

@@ -271,12 +271,3 @@ def get_gpu_prefetch_manager(num_slots: int = DEFAULT_NUM_SLOTS, *, keep_slots: 
         _prefetch_manager = GPUPrefetchManager(num_slots=num_slots, keep_slots=keep_slots)
 
     return _prefetch_manager
-
-
-def reset_gpu_prefetch_manager() -> None:
-    """Reset the global GPU prefetch manager."""
-    global _prefetch_manager
-
-    if _prefetch_manager is not None:
-        _prefetch_manager.reset()
-        _prefetch_manager = None

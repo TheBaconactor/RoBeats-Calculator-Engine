@@ -14,7 +14,7 @@ import hashlib
 import json
 import os
 from collections import Counter
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional
 
 from ..core.constants import PATHS
 from .csv_parser import load_csv_db

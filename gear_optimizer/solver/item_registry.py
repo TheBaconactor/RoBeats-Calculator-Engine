@@ -27,7 +27,6 @@ STAT_INDICES = {
 
 # Slot configuration (6 gear + 3 mini = 9 total)
 NUM_GEAR_SLOTS = 6
-NUM_MINI_SLOTS = 3
 MINI_SLOT_INDICES = [6, 7, 8]  # Minis occupy slots 6, 7, 8
 
 
@@ -130,7 +129,6 @@ class ItemRegistry:
         self.n_items = next_id  # Total items including reserved ID 0
         # Lazy caches for GPU upload and fast numpy decoding.
         self._gpu_arrays_cache: Optional[dict[str, np.ndarray]] = None
-        self._item_stats_cache: Optional[np.ndarray] = None
         # Optional fast decode helpers. These are built lazily and only for small registries
         # to avoid adding O(n_items) work to every song.
         self._id_to_item_list: Optional[list[dict]] = None
@@ -279,7 +277,6 @@ class ItemRegistry:
             "slot_count": np.array(self.slot_count, dtype=np.int32),
         }
         self._gpu_arrays_cache = out
-        self._item_stats_cache = item_stats
         return out
 
     def encode_population(self, population: list[list[dict]]) -> np.ndarray:
@@ -299,31 +296,6 @@ class ItemRegistry:
             ids[i] = self.encode_genome(genome)
 
         return ids
-
-    def decode_population(self, ids: np.ndarray) -> list[list[dict]]:
-        """
-        Decode an entire population of ID arrays to genomes.
-
-        Args:
-            ids: (n_genomes, 9) array of item IDs
-
-        Returns:
-            List of genomes (each genome is list of 9 item dicts)
-        """
-        return [self.decode_genome(row) for row in ids]
-
-    def get_stats_summary(self) -> str:
-        """Return a summary string for debugging."""
-        lines = [f"ItemRegistry: {self.n_items} items total"]
-        for slot_idx in range(9):
-            if slot_idx < len(self.slots):
-                slot_name = self.slots[slot_idx]
-            else:
-                slot_name = f"Mini{slot_idx - NUM_GEAR_SLOTS + 1}"
-            lines.append(
-                f"  Slot {slot_idx} ({slot_name}): start={self.slot_start[slot_idx]}, count={self.slot_count[slot_idx]}"
-            )
-        return "\n".join(lines)
 
     def batch_decode_stats_numpy(
         self,

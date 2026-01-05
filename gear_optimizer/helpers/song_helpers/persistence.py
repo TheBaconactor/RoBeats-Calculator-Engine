@@ -197,16 +197,6 @@ def build_db_payload(
 
     candidates = sorted(candidates, key=lambda c: c.get("score", -1), reverse=True)
 
-    def _sig(cand):
-        gear_key = tuple(cand.get("gear") or [])
-        minis_key = tuple(cand.get("minis") or [])
-        details = cand.get("details") or {}
-        try:
-            details_key = json.dumps(details, sort_keys=True)
-        except Exception:
-            details_key = str(details)
-        return (gear_key, minis_key, details_key)
-
     top1 = candidates[0] if candidates else None
 
     updated_payload = {}

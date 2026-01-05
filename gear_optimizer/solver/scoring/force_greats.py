@@ -32,11 +32,11 @@ from ...core.utils import safe_int, safe_float, stats_signature
 
 from ..fever_timeline import (
     calculate_force_greats_timeline_indices,
-    lookup_reference_py,
 )
 
 from ..scoring_core import (
     fast_calculate_score,
+    lookup_reference_py,
     optimize_core_jit,
 )
 

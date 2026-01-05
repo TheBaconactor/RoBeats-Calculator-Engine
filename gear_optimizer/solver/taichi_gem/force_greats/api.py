@@ -17,6 +17,7 @@ import numpy as np
 import taichi as ti
 
 from .. import api as gem_api
+from ..api.sync_policy import maybe_sync
 from .. import fields as gem_fields
 from . import fields as fg_fields
 from . import kernels as fg_kernels
@@ -83,11 +84,6 @@ def _get_target_threads_per_kernel(n_work_items: int) -> int:
     if n_work_items <= 250_000:
         return 3_000_000
     return 2_000_000
-
-
-def _maybe_sync(*, for_timing: bool = False) -> None:
-    if _FORCE_SYNC or (for_timing and _SYNC_FOR_TIMING):
-        ti.sync()
 
 
 # Enable detailed FG GPU timing output
@@ -380,19 +376,6 @@ def fg_reset_global_best(n_genomes: int) -> None:
     """
     fg_fields.ensure_ready_with_warmup()
     fg_kernels.fg_reset_global_best_kernel(int(n_genomes))
-
-
-def fg_accumulate_global_best(n_genomes: int) -> None:
-    """
-    Update global best with current call's results (GPU-side comparison).
-
-    Call this after each solve_force_greats_finder_gpu() call (with accumulate_global=True)
-    to track the best results across all groups without downloading to CPU.
-
-    Args:
-        n_genomes: Number of genomes to compare
-    """
-    fg_kernels.fg_update_global_best_kernel(int(n_genomes))
 
 
 def fg_download_global_best(n_genomes: int) -> dict[str, np.ndarray]:
@@ -872,7 +855,7 @@ def _solve_force_greats_finder_gpu_impl(
         fg_kernels.fg_stage1_init_kernel(n_genomes, n_ftff)
     else:
         fg_kernels.fg_stage1_init_packed_kernel(n_genomes, n_ftff)
-    _maybe_sync(for_timing=True)
+    maybe_sync(sync_fn=ti.sync, force_sync=_FORCE_SYNC, sync_for_timing=_SYNC_FOR_TIMING, for_timing=True)
 
     # Mark end of upload phase
     if _perf:
@@ -1222,7 +1205,7 @@ def _solve_force_greats_finder_gpu_impl(
         fg_kernels.fg_stage2_and_update_global_best_kernel(n_genomes, n_ftff)
     else:
         fg_kernels.fg_stage2_kernel(n_genomes, n_ftff)
-    _maybe_sync(for_timing=True)
+    maybe_sync(sync_fn=ti.sync, force_sync=_FORCE_SYNC, sync_for_timing=_SYNC_FOR_TIMING, for_timing=True)
     if _FORCE_SYNC or _SYNC_FOR_TIMING:
         _stage2_wall = time.perf_counter() - _t_stage2_wall0
         _record_kernel_wall("stage2_sync_wall", _stage2_wall, genome_count=n_genomes)
@@ -1904,7 +1887,7 @@ def solve_force_greats_finder_gpu_tasks(
                     pass
         t_stage2_wall0 = time.perf_counter() if (_PERF_TIMING or _FORCE_SYNC or _SYNC_FOR_TIMING) else 0.0
         fg_kernels.fg_stage2_and_update_global_best_kernel(int(n_genomes), int(n_ftff))
-        _maybe_sync(for_timing=True)
+        maybe_sync(sync_fn=ti.sync, force_sync=_FORCE_SYNC, sync_for_timing=_SYNC_FOR_TIMING, for_timing=True)
         if (_FORCE_SYNC or _SYNC_FOR_TIMING) and t_stage2_wall0:
             stage2_wall = time.perf_counter() - float(t_stage2_wall0)
             _record_kernel_wall("packed_tasks_stage2_sync_wall", stage2_wall, genome_count=n_genomes)

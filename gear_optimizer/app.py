@@ -1002,7 +1002,7 @@ class GearOptimizerApp:
                     )
                 inflight_ok = True
             except Exception as inflight_err:
-                print(f"[InFlight] Disabled: {type(inflight_err).__name__}: {inflight_err}")
+                print(f"[InFlight] Disabled: {type(inflight_err).__name__}: {inflight_err}", flush=True)
                 try:
                     import traceback
 
@@ -1013,7 +1013,9 @@ class GearOptimizerApp:
                         pass
                     try:
                         trace_path = os.path.join(BIN_DIR, "inflight_disabled_traceback.log")
-                        with open(trace_path, "w", encoding="utf-8") as fh:
+                        ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                        with open(trace_path, "a", encoding="utf-8") as fh:
+                            fh.write(f"\n[{ts}] {type(inflight_err).__name__}: {inflight_err}\n")
                             fh.write(tb)
                     except Exception:
                         pass

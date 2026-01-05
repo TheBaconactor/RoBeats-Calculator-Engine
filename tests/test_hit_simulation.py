@@ -1,7 +1,6 @@
 import numpy as np
 
 from gear_optimizer.solver.hit_simulation import (
-    simulate_perfect_hit_timestamps,
     simulate_perfect_hit_timestamps_with_great_candidates,
 )
 
@@ -11,8 +10,8 @@ def test_simulate_perfect_hit_timestamps_is_deterministic_and_monotonic():
     timestamps = np.array([0.000, 0.050, 0.100, 0.100, 0.120], dtype=np.float64)
     note_types = np.array([1, 1, 1, 1, 3], dtype=np.int16)
 
-    out1, dbg1 = simulate_perfect_hit_timestamps(timestamps, note_types, seed=123)
-    out2, dbg2 = simulate_perfect_hit_timestamps(timestamps, note_types, seed=123)
+    out1, _, dbg1 = simulate_perfect_hit_timestamps_with_great_candidates(timestamps, note_types, seed=123)
+    out2, _, dbg2 = simulate_perfect_hit_timestamps_with_great_candidates(timestamps, note_types, seed=123)
 
     assert np.array_equal(out1, out2)
     assert dbg1 == dbg2
@@ -29,7 +28,7 @@ def test_simulate_perfect_hit_timestamps_respects_head_and_tail_windows():
     timestamps = np.array([1.000, 1.050, 1.100], dtype=np.float64)
     note_types = np.array([1, 3, 1], dtype=np.int16)  # middle note is held tail
 
-    out, dbg = simulate_perfect_hit_timestamps(timestamps, note_types, seed=999)
+    out, _, dbg = simulate_perfect_hit_timestamps_with_great_candidates(timestamps, note_types, seed=999)
     assert dbg["forced_monotonic"] == 0
 
     base_ms = np.floor(timestamps * 1000.0 + 1e-6).astype(np.int64)

@@ -1,12 +1,7 @@
 from __future__ import annotations
 
 from ...core.constants import LOADOUTS_PER_SONG_LIMIT
-
-
-def _item_name(item) -> str:
-    if isinstance(item, dict):
-        return str(item.get("Name", "") or "")
-    return str(item) if item else ""
+from .item_utils import _item_name
 
 
 def _split_gear_minis(candidate: dict) -> tuple[list[dict], list[dict]]:
@@ -35,6 +30,26 @@ def _base_score(candidate: dict) -> int:
         return int(v or 0)
     except Exception:
         return 0
+
+
+def _fever_focus_score(candidate: dict) -> int:
+    gear, _minis = _split_gear_minis(candidate)
+    total = 0
+    for it in gear:
+        if not isinstance(it, dict) or not it:
+            continue
+        total += int(it.get("Fever Multiplier", 0) or 0)
+        total += int(it.get("Fever Time", 0) or 0)
+        total += int(it.get("Fever Fill Rate", 0) or 0)
+        total += int(it.get("Combo Multiplier", 0) or 0)
+        total += int(it.get("Perfect Points", 0) or 0)
+
+    data = candidate.get("Data") or {}
+    if isinstance(data, dict):
+        total += int(data.get("FT", 0) or 0)
+        total += int(data.get("FF", 0) or 0)
+
+    return int(total)
 
 
 def select_fg_candidates(
@@ -99,5 +114,15 @@ def select_fg_candidates(
     if not uniq:
         return []
 
+    base_keep = min(int(LOADOUTS_PER_SONG_LIMIT), limit)
     uniq.sort(key=lambda t: (t[0], t[1]), reverse=True)
-    return [cand for _score, _key, cand in uniq[: max(int(LOADOUTS_PER_SONG_LIMIT), limit)]][:limit]
+    base_slice = uniq[:base_keep]
+    if base_keep >= limit:
+        return [cand for _score, _key, cand in base_slice][:limit]
+
+    remainder = uniq[base_keep:]
+    remainder_scored = [(_fever_focus_score(cand), score, key, cand) for score, key, cand in remainder]
+    remainder_scored.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
+
+    out = base_slice + [(score, key, cand) for _fever, score, key, cand in remainder_scored]
+    return [cand for _score, _key, cand in out[:limit]]

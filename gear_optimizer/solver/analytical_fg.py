@@ -242,25 +242,6 @@ class AnalyticalFGScorer:
 
         return breakpoints
 
-    def get_all_section_breakpoints(
-        self,
-        ft_stat: int,
-        ff_stat: int,
-        section_caps: List[int],
-    ) -> List[List[int]]:
-        """
-        Get breakpoints for multiple sections with per-section caps.
-
-        Args:
-            ft_stat: Fever Time stat
-            ff_stat: Fever Fill Rate stat
-            section_caps: Max forced greats per section, e.g. [50, 30, 15, 10]
-
-        Returns:
-            List of breakpoint lists, one per section
-        """
-        return [self.get_breakpoints(ft_stat, ff_stat, cap) for cap in section_caps]
-
     def compute_timeline_with_forced(
         self,
         ft_stat: int,

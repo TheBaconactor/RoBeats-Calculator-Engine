@@ -106,6 +106,7 @@ def _fg_section_forced_cap(sec: ti.i32) -> ti.i32:
 
 # ============================================================================
 
+
 @ti.func
 def _binary_search_left_song_timestamps(n: ti.i32, x: ti.f32) -> ti.i32:
     """
@@ -427,304 +428,6 @@ def _or_head_mask_range(m0: ti.u32, m1: ti.u32, m2: ti.u32, m3: ti.u32, start: t
     return ti.Vector([m0, m1, m2, m3])
 
 
-@ti.func
-def _get_fill_penalty_analytical(
-    forced_count: ti.i32,
-    raw_fever_fill: ti.f32,
-    is_section_1: ti.i32,
-) -> ti.i32:
-    """
-    Calculate fill penalty in notes using analytical formula.
-
-    EXACTLY matches CPU analytical_fg.get_fill_penalty().
-    Direct formula: fill_penalty = ceil(raw_base + forced*0.5) - ceil(raw_base)
-
-    This function provides CPU/GPU parity and fixes off-by-one errors
-    in section 1 that occur with the inverse _forced_from_fp_target() approach.
-
-    Args:
-        forced_count: Number of forced greats in this section
-        raw_fever_fill: Raw fever fill value (non_fever_cas * ff_factor)
-        is_section_1: 1 if section 1, 0 otherwise (applies -1 offset)
-
-    Returns:
-        Fill penalty in notes (extra notes needed to reach fever)
-    """
-    if forced_count <= 0:
-        return 0
-
-    # Calculate raw penalty and total notes needed
-    penalty_raw: ti.f32 = ti.cast(forced_count, ti.f32) * 0.5
-    notes_with_penalty: ti.f32 = raw_fever_fill + penalty_raw
-
-    # Apply ceiling to both values
-    ceiled_with_penalty: ti.i32 = ti.cast(ti.ceil(notes_with_penalty), ti.i32)
-    ceiled_base: ti.i32 = ti.cast(ti.ceil(raw_fever_fill), ti.i32)
-
-    # Section 1 adjustment (indexing offset)
-    # This handles the "first section uses base-1" rule
-    if is_section_1 == 1:
-        ceiled_with_penalty -= 1
-        ceiled_base -= 1
-
-    # Fill penalty is the delta between adjusted values
-    fill_penalty: ti.i32 = ti.max(0, ceiled_with_penalty - ceiled_base)
-    return fill_penalty
-
-
-@ti.func
-def _local_search_bits_from_hint(
-    hint_pp: ti.i32,
-    hint_cm: ti.i32,
-    hint_fm: ti.i32,
-    hint_ov: ti.i32,
-    budget: ti.i32,
-    cur_pp: ti.i32,
-    cur_cm: ti.i32,
-    cur_fm: ti.i32,
-    cur_p_val: ti.i32,
-    cur_s_val: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
-    m0: ti.u32,
-    m1: ti.u32,
-    m2: ti.u32,
-    m3: ti.u32,
-    head_len: ti.i32,
-    count_fever: ti.i32,
-    count_normal: ti.i32,
-) -> ti.types.vector(10, ti.i32):
-    """
-    Local search gem allocation from warm-start hint.
-
-    Instead of 90 iterations of greedy allocation, starts from hint and
-    tries ±1 gem swaps until no improvement found (typically <20 iterations).
-
-    Returns same vector as _optimize_core_bits:
-      [score, pp, cm, fm, p_val, s_val, g_pp, g_cm, g_fm, g_ov]
-    """
-    GEM_SCALE_NORMAL: ti.i32 = 2
-    GEM_SCALE_FEVER: ti.i32 = 3
-    ELEMENTAL_GEM_SCALE: ti.i32 = 6
-    GEM_STAT_TO_ELEMENT: ti.i32 = 3
-    MAX_STAT: ti.i32 = 160
-    MAX_ITER: ti.i32 = 20
-
-    # Clamp hints to valid ranges
-    gems_pp: ti.i32 = ti.max(0, hint_pp)
-    gems_cm: ti.i32 = ti.max(0, hint_cm)
-    gems_fm: ti.i32 = ti.max(0, hint_fm)
-    gems_ov: ti.i32 = ti.max(0, hint_ov)
-
-    # Clamp total to budget
-    total: ti.i32 = gems_pp + gems_cm + gems_fm + gems_ov
-    if total > budget:
-        # Scale down proportionally
-        scale: ti.f32 = ti.cast(budget, ti.f32) / ti.cast(total, ti.f32)
-        gems_pp = ti.cast(ti.floor(ti.cast(gems_pp, ti.f32) * scale), ti.i32)
-        gems_cm = ti.cast(ti.floor(ti.cast(gems_cm, ti.f32) * scale), ti.i32)
-        gems_fm = ti.cast(ti.floor(ti.cast(gems_fm, ti.f32) * scale), ti.i32)
-        gems_ov = budget - gems_pp - gems_cm - gems_fm
-        if gems_ov < 0:
-            gems_ov = 0
-            if gems_fm > 0:
-                gems_fm = ti.max(0, gems_fm + (budget - gems_pp - gems_cm - gems_fm))
-            elif gems_cm > 0:
-                gems_cm = ti.max(0, budget - gems_pp)
-                gems_fm = 0
-            else:
-                gems_pp = budget
-                gems_cm = 0
-                gems_fm = 0
-    elif total < budget:
-        # Fill remainder with overflow gems
-        gems_ov += budget - total
-
-    # Clamp stats to MAX_STAT
-    max_pp_gems: ti.i32 = (MAX_STAT - cur_pp) // GEM_SCALE_NORMAL
-    max_cm_gems: ti.i32 = (MAX_STAT - cur_cm) // GEM_SCALE_NORMAL
-    max_fm_gems: ti.i32 = (MAX_STAT - cur_fm) // GEM_SCALE_FEVER
-    if gems_pp > max_pp_gems:
-        excess: ti.i32 = gems_pp - max_pp_gems
-        gems_pp = max_pp_gems
-        gems_ov += excess
-    if gems_cm > max_cm_gems:
-        excess = gems_cm - max_cm_gems
-        gems_cm = max_cm_gems
-        gems_ov += excess
-    if gems_fm > max_fm_gems:
-        excess = gems_fm - max_fm_gems
-        gems_fm = max_fm_gems
-        gems_ov += excess
-
-    # Compute initial stats from allocation
-    pp: ti.i32 = cur_pp + gems_pp * GEM_SCALE_NORMAL
-    cm: ti.i32 = cur_cm + gems_cm * GEM_SCALE_NORMAL
-    fm: ti.i32 = cur_fm + gems_fm * GEM_SCALE_FEVER
-    p_val: ti.i32 = (
-        cur_p_val
-        + (gems_pp * GEM_STAT_TO_ELEMENT * is_p_pp)
-        + (gems_cm * GEM_STAT_TO_ELEMENT * is_p_cm)
-        + (gems_fm * GEM_STAT_TO_ELEMENT * is_p_fm)
-        + (gems_ov * ELEMENTAL_GEM_SCALE * is_p_ov)
-    )
-    s_val: ti.i32 = (
-        cur_s_val
-        + (gems_pp * GEM_STAT_TO_ELEMENT * is_s_pp)
-        + (gems_cm * GEM_STAT_TO_ELEMENT * is_s_cm)
-        + (gems_fm * GEM_STAT_TO_ELEMENT * is_s_fm)
-        + (gems_ov * ELEMENTAL_GEM_SCALE * is_s_ov)
-    )
-
-    # Calculate initial score
-    c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm)
-    f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm)
-    pp_factor: ti.f32 = kernels_helpers.lookup_ref_pp(pp)
-    base: ti.f32 = ti.cast((p_val * 2) + s_val, ti.f32) + pp_factor
-    best_score: ti.i32 = kernels_helpers.calc_score_with_grid_bits(
-        base, c_mul, f_mul, m0, m1, m2, m3, head_len, count_fever, count_normal
-    )
-
-    # Local search: try swapping gems
-    improved: ti.i32 = 1
-    iteration: ti.i32 = 0
-
-    while improved != 0 and iteration < MAX_ITER:
-        improved = 0
-        iteration += 1
-
-        # Try all 12 swap combinations (4 remove × 3 add)
-        for remove_type in range(4):
-            for add_type in range(4):
-                if remove_type == add_type:
-                    continue
-
-                # Check if swap is valid
-                can_remove: ti.i32 = 0
-                can_add: ti.i32 = 0
-
-                if remove_type == 0 and gems_pp > 0:
-                    can_remove = 1
-                elif remove_type == 1 and gems_cm > 0:
-                    can_remove = 1
-                elif remove_type == 2 and gems_fm > 0:
-                    can_remove = 1
-                elif remove_type == 3 and gems_ov > 0:
-                    can_remove = 1
-
-                if add_type == 0 and pp + GEM_SCALE_NORMAL <= MAX_STAT:
-                    can_add = 1
-                elif add_type == 1 and cm + GEM_SCALE_NORMAL <= MAX_STAT:
-                    can_add = 1
-                elif add_type == 2 and fm + GEM_SCALE_FEVER <= MAX_STAT:
-                    can_add = 1
-                elif add_type == 3:
-                    can_add = 1  # OV has no cap
-
-                if can_remove == 0 or can_add == 0:
-                    continue
-
-                # Calculate new stats
-                new_pp: ti.i32 = pp
-                new_cm: ti.i32 = cm
-                new_fm: ti.i32 = fm
-                new_p: ti.i32 = p_val
-                new_s: ti.i32 = s_val
-
-                # Remove gem
-                if remove_type == 0:
-                    new_pp -= GEM_SCALE_NORMAL
-                    new_p -= GEM_STAT_TO_ELEMENT * is_p_pp
-                    new_s -= GEM_STAT_TO_ELEMENT * is_s_pp
-                elif remove_type == 1:
-                    new_cm -= GEM_SCALE_NORMAL
-                    new_p -= GEM_STAT_TO_ELEMENT * is_p_cm
-                    new_s -= GEM_STAT_TO_ELEMENT * is_s_cm
-                elif remove_type == 2:
-                    new_fm -= GEM_SCALE_FEVER
-                    new_p -= GEM_STAT_TO_ELEMENT * is_p_fm
-                    new_s -= GEM_STAT_TO_ELEMENT * is_s_fm
-                else:
-                    new_p -= ELEMENTAL_GEM_SCALE * is_p_ov
-                    new_s -= ELEMENTAL_GEM_SCALE * is_s_ov
-
-                # Add gem
-                if add_type == 0:
-                    new_pp += GEM_SCALE_NORMAL
-                    new_p += GEM_STAT_TO_ELEMENT * is_p_pp
-                    new_s += GEM_STAT_TO_ELEMENT * is_s_pp
-                elif add_type == 1:
-                    new_cm += GEM_SCALE_NORMAL
-                    new_p += GEM_STAT_TO_ELEMENT * is_p_cm
-                    new_s += GEM_STAT_TO_ELEMENT * is_s_cm
-                elif add_type == 2:
-                    new_fm += GEM_SCALE_FEVER
-                    new_p += GEM_STAT_TO_ELEMENT * is_p_fm
-                    new_s += GEM_STAT_TO_ELEMENT * is_s_fm
-                else:
-                    new_p += ELEMENTAL_GEM_SCALE * is_p_ov
-                    new_s += ELEMENTAL_GEM_SCALE * is_s_ov
-
-                # Calculate new score
-                new_c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(new_cm)
-                new_f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(new_fm)
-                new_pp_factor: ti.f32 = kernels_helpers.lookup_ref_pp(new_pp)
-                new_base: ti.f32 = ti.cast((new_p * 2) + new_s, ti.f32) + new_pp_factor
-                new_score: ti.i32 = kernels_helpers.calc_score_with_grid_bits(
-                    new_base, new_c_mul, new_f_mul, m0, m1, m2, m3, head_len, count_fever, count_normal
-                )
-
-                if new_score > best_score:
-                    best_score = new_score
-                    pp = new_pp
-                    cm = new_cm
-                    fm = new_fm
-                    p_val = new_p
-                    s_val = new_s
-
-                    # Update gem counts
-                    if remove_type == 0:
-                        gems_pp -= 1
-                    elif remove_type == 1:
-                        gems_cm -= 1
-                    elif remove_type == 2:
-                        gems_fm -= 1
-                    else:
-                        gems_ov -= 1
-
-                    if add_type == 0:
-                        gems_pp += 1
-                    elif add_type == 1:
-                        gems_cm += 1
-                    elif add_type == 2:
-                        gems_fm += 1
-                    else:
-                        gems_ov += 1
-
-                    improved = 1
-
-    return ti.Vector(
-        [
-            best_score,
-            pp,
-            cm,
-            fm,
-            p_val,
-            s_val,
-            gems_pp,
-            gems_cm,
-            gems_fm,
-            gems_ov,
-        ]
-    )
-
-
 # ============================================================================
 # KERNELS
 # ============================================================================
@@ -995,7 +698,9 @@ def fg_stage1_kernel(
                     break
 
                 # Fever section
-                fever_end_idx: ti.i32 = _fg_fever_end_idx_from_tables(current_idx, carry_time, carry_idx, ft_idx, total_notes)
+                fever_end_idx: ti.i32 = _fg_fever_end_idx_from_tables(
+                    current_idx, carry_time, carry_idx, ft_idx, total_notes
+                )
                 if fever_end_idx <= current_idx:
                     fever_end_idx = ti.min(total_notes, current_idx + 1)
 
@@ -1512,7 +1217,9 @@ def fg_stage1_flat_kernel_small3(
                 if current_idx >= total_notes:
                     break
 
-                fever_end_idx: ti.i32 = _fg_fever_end_idx_from_tables(current_idx, carry_time, carry_idx, ft_idx, total_notes)
+                fever_end_idx: ti.i32 = _fg_fever_end_idx_from_tables(
+                    current_idx, carry_time, carry_idx, ft_idx, total_notes
+                )
                 if fever_end_idx <= current_idx:
                     fever_end_idx = ti.min(total_notes, current_idx + 1)
 
@@ -1848,7 +1555,9 @@ def fg_stage1_flat_kernel(
                     break
 
                 # Fever section
-                fever_end_idx: ti.i32 = _fg_fever_end_idx_from_tables(current_idx, carry_time, carry_idx, ft_idx, total_notes)
+                fever_end_idx: ti.i32 = _fg_fever_end_idx_from_tables(
+                    current_idx, carry_time, carry_idx, ft_idx, total_notes
+                )
                 if fever_end_idx <= current_idx:
                     fever_end_idx = ti.min(total_notes, current_idx + 1)
 

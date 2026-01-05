@@ -16,16 +16,12 @@ Usage:
     profiler = get_gpu_profiler()
     profiler.start_song("Song Name")
 
-    with profiler.measure("kernel_name"):
-        # GPU kernel call
-
     profiler.end_song()
     profiler.report()
 """
 
 import time
 import threading
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -151,20 +147,6 @@ class GpuProfiler:
 
             self._current_song = None
             return song
-
-    @contextmanager
-    def measure(self, name: str):
-        """Measure a named operation."""
-        if not self._enabled:
-            yield
-            return
-
-        start = time.perf_counter()
-        try:
-            yield
-        finally:
-            duration = time.perf_counter() - start
-            self._record(name, duration)
 
     def _record(self, name: str, duration: float):
         """Record a timing measurement."""
@@ -321,8 +303,3 @@ def get_gpu_profiler() -> GpuProfiler:
     if _profiler is None:
         _profiler = GpuProfiler()
     return _profiler
-
-
-def is_profiling_enabled() -> bool:
-    """Check if GPU profiling is enabled."""
-    return GPU_PROFILER_ENABLED

@@ -17,10 +17,9 @@ from ...core.utils import safe_int, safe_float
 from ..fever_timeline import (
     calculate_fever_timeline_indices,
     calculate_non_fever_sections,
-    lookup_reference_py,
 )
 
-from ..scoring_core import fast_calculate_score
+from ..scoring_core import fast_calculate_score, lookup_reference_py
 
 
 _FG_BASELINE_CACHE: dict[tuple, tuple[int, int]] = {}

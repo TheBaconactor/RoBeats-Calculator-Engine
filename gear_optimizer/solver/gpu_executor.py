@@ -1689,63 +1689,6 @@ def submit_gpu_load_ref_arrays(ref_arrays: dict, timeout: float = 30.0) -> None:
         raise RuntimeError(f"GPU executor error: {response.error}")
 
 
-def submit_gpu_precompute_timeline(
-    calc_song: dict,
-    ref_arrays: dict,
-    *,
-    song_slot: int = 0,
-    timeout: float = 60.0,
-) -> None:
-    """
-    Submit precompute_timeline_gpu request via IPC (for worker processes).
-
-    This is primarily used to warm timeline slots ahead of evaluation.
-    """
-    global _REQUEST_COUNTER
-
-    if not _WORKER_MODE:
-        raise RuntimeError("submit_gpu_precompute_timeline called but not in worker mode")
-
-    _REQUEST_COUNTER += 1
-    request_id = _REQUEST_COUNTER
-
-    request = GpuRequest(
-        request_type=GpuRequestType.PRECOMPUTE_TIMELINE,
-        request_id=request_id,
-        worker_id=_WORKER_ID,
-        payload={
-            "calc_song": calc_song,
-            "ref_arrays": ref_arrays,
-            "song_slot": int(song_slot),
-        },
-    )
-
-    _REQUEST_QUEUE.put(request)
-
-    start = time.monotonic()
-    while True:
-        if request_id in _PENDING_RESPONSES:
-            response = _PENDING_RESPONSES.pop(request_id)
-            break
-
-        remaining = timeout - (time.monotonic() - start)
-        if remaining <= 0:
-            raise RuntimeError(f"GPU executor timeout after {timeout}s")
-
-        try:
-            response: GpuResponse = _RESPONSE_QUEUE.get(timeout=remaining)
-        except queue.Empty:
-            raise RuntimeError(f"GPU executor timeout after {timeout}s")
-
-        if response.request_id != request_id:
-            _PENDING_RESPONSES[response.request_id] = response
-            continue
-        break
-
-    if not response.success:
-        raise RuntimeError(f"GPU executor error: {response.error}")
-
-
 def submit_gpu_solve_force_greats_finder(
     *args,
     timeout: float = 180.0,

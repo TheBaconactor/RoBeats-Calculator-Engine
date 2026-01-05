@@ -212,58 +212,6 @@ def _get_overflow_from_details(details):
     return gem_counts.get("Element", 0)
 
 
-def _deduplicate_entries(entries):
-    """
-    Deduplicate entries before database insertion.
-
-    Rules:
-    1. Exact same loadout hash + score → keep first
-    2. Same score + same loadout → keep first
-    3. Same score + different gem allocation → keep one with higher overflow
-
-    Args:
-        entries: List of entry dicts
-
-    Returns:
-        list: Deduplicated entries
-    """
-    if not entries:
-        return []
-
-    # Group by (score, loadout_hash)
-    score_hash_groups = {}
-    for entry in entries:
-        score = entry.get("score", 0)
-        gear = entry.get("gear", [])
-        minis = entry.get("minis", [])
-
-        # Avoid double name extraction: we already have compact helpers.
-        # NOTE: this is legacy name-based hashing; `save_loadouts_batch` may override with song-context hashing.
-        loadout_hash = _loadout_hash_from_names(_compact_gear_for_db(gear), _compact_minis_for_db(minis))
-        key = (score, loadout_hash)
-
-        if key not in score_hash_groups:
-            score_hash_groups[key] = []
-        score_hash_groups[key].append(entry)
-
-    deduplicated = []
-    for (score, loadout_hash), group in score_hash_groups.items():
-        if len(group) == 1:
-            deduplicated.append(group[0])
-        else:
-            # Multiple entries with same score and loadout - keep one with highest overflow AND FG score
-            try:
-                best_entry = max(
-                    group, key=lambda e: (_get_overflow_from_details(e.get("details", {})), e.get("fg_score", 0))
-                )
-                deduplicated.append(best_entry)
-            except (ValueError, KeyError):
-                # If comparison fails, just keep first entry
-                deduplicated.append(group[0])
-
-    return deduplicated
-
-
 def _deduplicate_db_loadouts(conn, song_name, table_name="loadouts"):
     """
     Remove duplicate loadouts from database for a specific song and table.

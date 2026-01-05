@@ -11,6 +11,7 @@ import numpy as np
 from math import ceil
 
 from ..core.jit_setup import jit
+from .scoring_core import lookup_reference_py
 from ..core.constants import (
     TOTAL_ROWS,
     FEVER_FILL_BASE_RATE,
@@ -21,15 +22,6 @@ from ..core.constants import (
 
 # Global cache for SongTimelineGrid instances (one per song)
 SONG_TIMELINE_GRIDS = {}
-
-
-def lookup_reference_py(value, ref_array, total_rows=TOTAL_ROWS):
-    """
-    Python implementation of reference lookup.
-    Clamps value to valid range and returns corresponding reference value.
-    """
-    clamped = max(0, min(total_rows, int(value)))
-    return ref_array[clamped]
 
 
 @jit(nopython=True, cache=True)
