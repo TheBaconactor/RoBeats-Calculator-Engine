@@ -24,6 +24,68 @@ from ..core.constants import (
 SONG_TIMELINE_GRIDS = {}
 
 
+def _safe_int(val: object, default: int = 0) -> int:
+    try:
+        return int(val)  # type: ignore[arg-type]
+    except Exception:
+        return int(default)
+
+
+def _safe_float(val: object, default: float = 0.0) -> float:
+    try:
+        return float(val)  # type: ignore[arg-type]
+    except Exception:
+        return float(default)
+
+
+def _song_first_last_ms(timestamps: object) -> tuple[int, int]:
+    try:
+        if hasattr(timestamps, "__len__") and len(timestamps):  # type: ignore[arg-type]
+            first_ms = int(float(timestamps[0]) * 1000.0)  # type: ignore[index]
+            last_ms = int(float(timestamps[len(timestamps) - 1]) * 1000.0)  # type: ignore[index]
+            return first_ms, last_ms
+    except Exception:
+        pass
+    return 0, 0
+
+
+def _timeline_grid_cache_key(calc_song: dict) -> tuple:
+    """
+    Build a stable cache key for per-song timeline grids.
+
+    IMPORTANT: This must include HumanHitSim parameters when ApplyTo=ALL because
+    they change the underlying timestamps and therefore fever boundaries.
+    """
+    meta = calc_song.get("metadata", {}) or {}
+    song_data = calc_song.get("song_data", {}) or {}
+    timestamps = song_data.get("timestamps", ())
+
+    try:
+        n = int(len(timestamps))
+    except Exception:
+        n = 0
+
+    first_ms, last_ms = _song_first_last_ms(timestamps)
+
+    human_seed = _safe_int(meta.get("HumanHitSimSeed") or 0, 0)
+    human_apply_to = str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper()
+    human_dist = str(meta.get("HumanHitSimDistribution", "") or "").strip().lower()
+    human_great_mode = str(meta.get("HumanHitSimGreatMode", "") or "").strip().lower()
+
+    return (
+        str(meta.get("Song Name", "") or ""),
+        n,
+        _safe_float(meta.get("Last Note Time", 0) or 0.0, 0.0),
+        _safe_int(meta.get("Long Notes", 0) or 0, 0),
+        _safe_int(first_ms, 0),
+        _safe_int(last_ms, 0),
+        _safe_int(human_seed, 0),
+        human_apply_to,
+        human_dist,
+        human_great_mode,
+    )
+
+
 @jit(nopython=True, cache=True)
 def calculate_fever_timeline_indices(
     song_timestamps,
@@ -376,14 +438,10 @@ class SongTimelineGrid:
         self.ref_arrays = ref_arrays
 
         # Stable identifier for cross-process caching (IPC pickling creates new object IDs).
-        meta = calc_song.get("metadata", {}) or {}
-        timestamps = calc_song.get("song_data", {}).get("timestamps", ())
-        self.cache_key = (
-            str(meta.get("Song Name", "")),
-            int(len(timestamps)),
-            float(meta.get("Last Note Time", 0) or 0),
-            int(meta.get("Long Notes", 0) or 0),
-        )
+        #
+        # This must include HumanHitSim parameters when ApplyTo=ALL because they
+        # change the underlying timestamp stream and therefore the grid contents.
+        self.cache_key = _timeline_grid_cache_key(calc_song)
 
         # Extract song data
         song_data = calc_song["song_data"]
@@ -738,11 +796,7 @@ def get_song_timeline_grid(calc_song, ref_arrays):
     Returns:
         SongTimelineGrid: Cached or newly created grid
     """
-    # Use song name + note count as cache key
-    song_key = (
-        calc_song["metadata"].get("Song Name", ""),
-        len(calc_song["song_data"]["timestamps"]),
-    )
+    song_key = _timeline_grid_cache_key(calc_song)
 
     if song_key not in SONG_TIMELINE_GRIDS:
         SONG_TIMELINE_GRIDS[song_key] = SongTimelineGrid(calc_song, ref_arrays)
