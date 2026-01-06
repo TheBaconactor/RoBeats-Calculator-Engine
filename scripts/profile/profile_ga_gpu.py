@@ -172,7 +172,6 @@ def profile_ga_with_gpu():
         memetic_top_minis=12,
         multi_start=6,  # Match production
         deep_mining_enabled=False,
-        heuristic_mode="modern",
         allow_3_swap=True,
         gear_rank_max=40,
         mini_rank_max=40,

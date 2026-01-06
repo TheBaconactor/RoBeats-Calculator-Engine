@@ -133,7 +133,6 @@ def solve_coevolution_genetic_inflight(
         ref_arrays,
         known_loadouts,
         cache_hits_tracker,
-        getattr(ga_settings, "heuristic_mode", "modern"),
     )
 
     # Rank caches for genome factory.

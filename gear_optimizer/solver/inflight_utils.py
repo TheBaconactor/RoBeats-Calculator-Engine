@@ -7,7 +7,6 @@ between `inflight_orchestrator.py` and `native_inflight_orchestrator.py`.
 
 from __future__ import annotations
 
-import secrets
 from typing import Any, Optional
 
 import numpy as np
@@ -17,7 +16,7 @@ def _truthy(v: Any) -> bool:
     return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg) -> dict:
+def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg, cfg_dict: Optional[dict] = None) -> dict:
     from gear_optimizer.pipeline.song_processor import read_song_file
 
     song_data = read_song_file(fp)
@@ -37,57 +36,15 @@ def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg) -> dict:
 
     # Optional: HumanHitSim (match song_processor.py semantics).
     try:
-        sim_enabled = cfg.getboolean("HumanHitSim", "Enabled", fallback=False)
+        if cfg_dict is None:
+            from gear_optimizer.core.utils import cfg_to_dict
+
+            cfg_dict = cfg_to_dict(cfg)
+        from gear_optimizer.solver.hit_simulation import apply_human_hit_sim
+
+        apply_human_hit_sim(calc_song, cfg_dict=cfg_dict or {})
     except Exception:
-        sim_enabled = False
-    if sim_enabled and calc_song.get("song_data", {}).get("timestamps") is not None:
-        from gear_optimizer.solver.hit_simulation import (
-            simulate_perfect_hit_timestamps_with_great_candidates,
-        )
-
-        apply_to = cfg.get("HumanHitSim", "ApplyTo", fallback="FG").strip().upper()
-        if apply_to not in {"FG", "ALL"}:
-            apply_to = "FG"
-
-        try:
-            seed_in = int(cfg.get("HumanHitSim", "Seed", fallback="0") or "0")
-        except Exception:
-            seed_in = 0
-
-        dist = cfg.get("HumanHitSim", "Distribution", fallback="uniform").strip().lower()
-        great_mode = cfg.get("HumanHitSim", "GreatMode", fallback="late").strip().lower()
-
-        if sim_enabled and seed_in == 0:
-            seed_in = secrets.randbits(32)
-
-        # NOTE: do not use `or` with NumPy arrays (truthiness is ambiguous).
-        chart_ts = calc_song["song_data"].get("chart_timestamps")
-        if chart_ts is None:
-            chart_ts = calc_song["song_data"].get("timestamps", ())
-        base_ts = np.asarray(chart_ts, dtype=np.float64)
-        base_types = np.asarray(calc_song["song_data"].get("note_types", ()), dtype=np.int16)
-        if base_types.shape[0] != base_ts.shape[0]:
-            base_types = np.ones(base_ts.shape[0], dtype=np.int16)
-
-        if sim_enabled:
-            sim_ts, sim_great_candidates, sim_dbg = simulate_perfect_hit_timestamps_with_great_candidates(
-                base_ts,
-                base_types,
-                seed=seed_in,
-                distribution=dist,
-                great_mode=great_mode,
-            )
-
-            calc_song["song_data"]["fg_timestamps"] = np.asarray(sim_ts, dtype=np.float64)
-            calc_song["song_data"]["fg_great_candidate_timestamps"] = np.asarray(sim_great_candidates, dtype=np.float64)
-            calc_song["metadata"]["HumanHitSimSeed"] = int(seed_in)
-            calc_song["metadata"]["HumanHitSimApplyTo"] = apply_to
-            calc_song["metadata"]["HumanHitSimDistribution"] = dist
-            calc_song["metadata"]["HumanHitSimGreatMode"] = great_mode
-            calc_song["metadata"]["HumanHitSimDebug"] = sim_dbg
-            calc_song["metadata"]["HumanHitSimApplied"] = True
-            if apply_to == "ALL":
-                calc_song["song_data"]["timestamps"] = np.asarray(sim_ts, dtype=np.float64)
+        pass
 
     return calc_song
 
@@ -122,3 +79,19 @@ def _compact_prev_record(record: Optional[dict]) -> Optional[dict]:
         out["force"] = force_copy
     return out
 
+
+def _summarize_db_context(prev_record: Optional[dict], known_loadouts: Optional[dict]) -> tuple[int, int, int]:
+    db_best_fg_score = 0
+    if known_loadouts:
+        try:
+            db_best_fg_score = max(v[1] for v in known_loadouts.values() if v[1])
+        except Exception:
+            db_best_fg_score = 0
+
+    attempt_lifetime_prev = 0
+    prev_attempts_first = 0
+    if prev_record and "details" in prev_record:
+        attempt_lifetime_prev = prev_record["details"].get("attempt_lifetime", 0) or 0
+        prev_attempts_first = prev_record["details"].get("attempts_first", 0) or 0
+    attempt_lifetime = int(attempt_lifetime_prev) + 1
+    return int(db_best_fg_score or 0), int(attempt_lifetime or 0), int(prev_attempts_first or 0)

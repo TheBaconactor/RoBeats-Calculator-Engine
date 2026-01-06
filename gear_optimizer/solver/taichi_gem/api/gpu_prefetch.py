@@ -16,11 +16,10 @@ Usage in main loop:
     for i, song in enumerate(songs):
         # Prefetch next songs (main thread, but async on GPU)
         for j in range(i + 1, min(i + 5, len(songs))):
-            if not prefetch_mgr.is_prefetched(songs[j].song_name):
-                slot = prefetch_mgr.prefetch(songs[j])
+            prefetch_mgr.prefetch(songs[j].calc_song, songs[j].ref_arrays)
 
         # Get slot for current song (prefetched or compute now)
-        slot = prefetch_mgr.get_or_compute(song)
+        slot = prefetch_mgr.get_slot(song.calc_song, song.ref_arrays)
 
         # Process with this slot
         run_ga(song, song_slot=slot)
@@ -34,19 +33,9 @@ from __future__ import annotations
 import time
 from typing import Optional
 from collections import deque
-from dataclasses import dataclass
 
 # Use 5 slots by default (slots 1-5, leaving slot 0 as fallback)
 DEFAULT_NUM_SLOTS = 5
-
-
-@dataclass
-class PrefetchedSlot:
-    """Tracking info for a prefetched song slot."""
-
-    slot_id: int
-    song_key: str  # Unique song identifier (name + difficulty)
-    prefetch_time_ms: float
 
 
 class GPUPrefetchManager:
@@ -71,8 +60,8 @@ class GPUPrefetchManager:
         # Ring buffer of slot IDs (1 to num_slots)
         self._free_slots: deque[int] = deque(range(1, num_slots + 1))
 
-        # Map song_key -> PrefetchedSlot for cached slots
-        self._prefetched: dict[str, PrefetchedSlot] = {}
+        # Map song_key -> slot_id for cached slots
+        self._prefetched: dict[str, int] = {}
 
         # Track slot -> song_key for release
         self._slot_to_key: dict[int, str] = {}
@@ -119,11 +108,6 @@ class GPUPrefetchManager:
             f"{human_seed}|{human_apply_to}|{human_dist}|{human_great_mode}"
         )
 
-    def is_prefetched(self, calc_song: dict) -> bool:
-        """Check if a song is already prefetched."""
-        key = self._make_song_key(calc_song)
-        return key in self._prefetched
-
     def prefetch(self, calc_song: dict, ref_arrays: dict) -> Optional[int]:
         """
         Prefetch timeline grid for a song.
@@ -142,7 +126,7 @@ class GPUPrefetchManager:
 
         # Already prefetched?
         if key in self._prefetched:
-            return self._prefetched[key].slot_id
+            return self._prefetched[key]
 
         # Get a free slot
         if not self._free_slots:
@@ -165,11 +149,7 @@ class GPUPrefetchManager:
         elapsed_ms = (time.perf_counter() - t0) * 1000
 
         # Track the prefetch
-        self._prefetched[key] = PrefetchedSlot(
-            slot_id=slot_id,
-            song_key=key,
-            prefetch_time_ms=elapsed_ms,
-        )
+        self._prefetched[key] = slot_id
         self._slot_to_key[slot_id] = key
         self._prefetch_count += 1
         self._total_prefetch_ms += elapsed_ms
@@ -192,7 +172,7 @@ class GPUPrefetchManager:
         # Check if already prefetched
         if key in self._prefetched:
             self._cache_hits += 1
-            return self._prefetched[key].slot_id
+            return self._prefetched[key]
 
         # Try to prefetch now
         slot = self.prefetch(calc_song, ref_arrays)

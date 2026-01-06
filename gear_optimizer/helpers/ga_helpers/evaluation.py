@@ -20,7 +20,6 @@ def create_evaluation_functions(
     ref_arrays,
     known_loadouts,
     cache_hits_tracker,
-    heuristic_mode="modern",
 ):
     """
     Create evaluation and caching functions.
@@ -48,10 +47,6 @@ def create_evaluation_functions(
 
     # Color stats for mini primary/secondary determination
     color_stats = ["Rush", "Flow", "Chill", "Beat", "Vibe"]
-    song_colors = {p_color} if p_color else set()
-    if s_color:
-        song_colors.add(s_color)
-
     # Cache item primary/secondary colors by name to avoid repeated sorting in `score_candidate`.
     # IMPORTANT: do NOT mutate item dicts (would affect stat aggregation unless SKIP_ITEM_KEYS is updated).
     _item_color_cache: dict[str, tuple[str | None, str | None]] = {}
@@ -78,10 +73,6 @@ def create_evaluation_functions(
     def score_candidate(x):
         """
         Heuristic scoring used to rank candidate gear/minis before GA search.
-        Supports multiple modes via GASettings:
-        - modern: base-stats dominant (default)
-        - legacy: color-heavy (closer to legacy script behavior)
-        - hybrid: take the max(modern, legacy) to keep both benefits
 
         Minis whose primary/secondary matches the song's primary/secondary
         get a ranking boost to ensure they're included in the heuristic pool.
@@ -98,23 +89,9 @@ def create_evaluation_functions(
         primary_val = x.get(p_color, 0) if p_color else 0
         secondary_val = x.get(s_color, 0) if (s_color and s_color != p_color) else 0
 
-        # --- Modern heuristic (base-stats dominant) ---
         modern_base = (pp * 3) + (cm * 3) + (fm * 3) + (ft * 2) + (ff * 2)
         modern_elemental_bonus = (primary_val * 2) + (secondary_val * 1)
-        modern_score = modern_base + (modern_elemental_bonus // 2)
-
-        # --- Legacy-like heuristic (color-heavy) ---
-        # Mirrors the legacy idea: prioritize primary-color stat strongly while
-        # still valuing PP/CM/FM (but not FT/FF).
-        legacy_score = (primary_val * 3) + ((pp + cm + fm) * 2) + (secondary_val * 1)
-
-        mode = (heuristic_mode or "modern").strip().lower()
-        if mode == "legacy":
-            base_score = legacy_score
-        elif mode == "hybrid":
-            base_score = max(modern_score, legacy_score)
-        else:
-            base_score = modern_score
+        base_score = modern_base + (modern_elemental_bonus // 2)
 
         # Boost minis whose primary/secondary matches song's primary/secondary
         # Heavily favor mini primary matching song primary > mini primary matching song secondary

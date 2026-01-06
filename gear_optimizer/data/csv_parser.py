@@ -5,14 +5,9 @@ Handles both modern and legacy CSV formats.
 
 import csv
 import os
-from ..core.constants import (
-    GEM_SCALE_NORMAL,
-    GEM_SCALE_FEVER,
-    ELEMENTAL_GEM_SCALE,
-    GEM_STAT_TO_ELEMENT_SCALE,
-    SCRIPT_DIR,
-)
-from ..core.utils import safe_int, empty_stats
+from ..core.constants import SCRIPT_DIR
+from ..core.stats_calculator import build_base_stats_from_config
+from ..core.utils import cfg_to_dict, safe_int, empty_stats
 from .models import WarnOnce
 
 # Global warning instance
@@ -312,52 +307,7 @@ def get_fixed_stats(cfg):
     Returns:
         dict: Stats dictionary with gem and team buff contributions
     """
-    total_stats = empty_stats()
-
-    # Gem stats
-    gem_perfect = safe_int(cfg.get("UserInputStatsGems", "perfect_points", fallback=0))
-    gem_combo = safe_int(cfg.get("UserInputStatsGems", "combo_multiplier", fallback=0))
-    gem_f_mult = safe_int(cfg.get("UserInputStatsGems", "fever_multiplier", fallback=0))
-    gem_f_fill = safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0))
-    gem_f_time = safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0))
-
-    total_stats["Perfect Points"] += gem_perfect * GEM_SCALE_NORMAL
-    total_stats["Combo Multiplier"] += gem_combo * GEM_SCALE_NORMAL
-    total_stats["Fever Multiplier"] += gem_f_mult * GEM_SCALE_FEVER
-    total_stats["Fever Fill Rate"] += gem_f_fill * GEM_SCALE_FEVER
-    total_stats["Fever Time"] += gem_f_time * GEM_SCALE_FEVER
-
-    total_stats["Chill"] += gem_perfect * GEM_STAT_TO_ELEMENT_SCALE
-    total_stats["Flow"] += gem_combo * GEM_STAT_TO_ELEMENT_SCALE
-    total_stats["Rush"] += gem_f_mult * GEM_STAT_TO_ELEMENT_SCALE
-    total_stats["Beat"] += gem_f_time * GEM_STAT_TO_ELEMENT_SCALE
-    total_stats["Vibe"] += gem_f_fill * GEM_STAT_TO_ELEMENT_SCALE
-
-    # Elemental gems
-    elements = ["Chill", "Flow", "Rush", "Beat", "Vibe"]
-    for el in elements:
-        gem_val = safe_int(cfg.get("ElementalGems", el, fallback="0"))
-        if gem_val > 0:
-            total_stats[el] += gem_val * ELEMENTAL_GEM_SCALE
-
-    # Team buff
-    team_buff = cfg.get("TeamContributionBuffConstant", "TeamBuff", fallback="").strip().upper()
-    team_color = cfg.get("TeamContributionBuffConstant", "TeamColor", fallback="").strip()
-    buff_tiers = {
-        "T1": {"PP": 25, "Elem": 35},
-        "T5": {"PP": 25, "Elem": 30},
-        "T10": {"PP": 20, "Elem": 25},
-        "T15": {"PP": 15, "Elem": 20},
-    }
-    if team_buff in buff_tiers:
-        buff_data = buff_tiers[team_buff]
-        total_stats["Perfect Points"] += buff_data["PP"]
-        valid_color_key = next((k for k in elements if k.lower() == team_color.lower()), None)
-        if valid_color_key:
-            total_stats[valid_color_key] += buff_data["Elem"]
-        elif team_color:
-            total_stats["Perfect Points"] += buff_data["PP"]
-    return total_stats
+    return build_base_stats_from_config(cfg_to_dict(cfg))
 
 
 def get_config_gear_stats(cfg, paths, gears_db=None):

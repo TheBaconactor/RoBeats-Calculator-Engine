@@ -110,6 +110,40 @@ def _get_fg_timeline_buffers(total_notes: int):
     return fever_mask, section_start, section_forced, section_fill_penalty, section_skip_wasted
 
 
+def _normalize_ft_ff_search_ranges(search_ranges):
+    if search_ranges:
+        start_ft, end_ft, start_ff, end_ff = search_ranges
+        start_ft = max(0, int(start_ft))
+        end_ft = min(MAX_FT_FF_GEMS, int(end_ft))
+        start_ff = max(0, int(start_ff))
+        end_ff = min(MAX_FT_FF_GEMS, int(end_ff))
+    else:
+        start_ft, end_ft = 0, MAX_FT_FF_GEMS
+        start_ff, end_ff = 0, MAX_FT_FF_GEMS
+
+    return start_ft, end_ft, start_ff, end_ff
+
+
+def _iter_ft_ff_budget_pairs(start_ft, end_ft, start_ff, end_ff, total_budget):
+    total_budget = int(total_budget)
+    start_ft = int(start_ft)
+    end_ft = int(end_ft)
+    start_ff = int(start_ff)
+    end_ff = int(end_ff)
+
+    for ft_gems in range(start_ft, end_ft + 1):
+        remaining_after_ft = total_budget - ft_gems
+        if remaining_after_ft < 0:
+            break
+
+        ff_end = min(end_ff, remaining_after_ft)
+        for ff_gems in range(start_ff, ff_end + 1):
+            current_budget = remaining_after_ft - ff_gems
+            if current_budget < 0:
+                break
+            yield ft_gems, ff_gems, current_budget
+
+
 def _compute_force_greats_timeline(
     timestamps,
     great_candidate_timestamps,
@@ -421,31 +455,19 @@ def evaluate_fg_with_gem_iteration(
     force_counts = list(forced_counts or [])
     song_key = _song_cache_key(calc_song)
 
-    # Determine iteration ranges
-    if search_ranges:
-        start_ft, end_ft, start_ff, end_ff = search_ranges
-        start_ft = max(0, int(start_ft))
-        end_ft = min(MAX_FT_FF_GEMS, int(end_ft))
-        start_ff = max(0, int(start_ff))
-        end_ff = min(MAX_FT_FF_GEMS, int(end_ff))
-    else:
-        start_ft, end_ft = 0, MAX_FT_FF_GEMS
-        start_ff, end_ff = 0, MAX_FT_FF_GEMS
+    start_ft, end_ft, start_ff, end_ff = _normalize_ft_ff_search_ranges(search_ranges)
 
     # Collect candidates first (so we can do a single GPU batch call when enabled)
     candidates = []  # preserves (ft, ff) iteration order
     batch_input = []
 
-    for ft_gems in range(start_ft, end_ft + 1):
-        remaining_after_ft = TOTAL_GEM_BUDGET - ft_gems
-        if remaining_after_ft < 0:
-            break
-
-        ff_end = min(end_ff, remaining_after_ft)
-        for ff_gems in range(start_ff, ff_end + 1):
-            current_budget = remaining_after_ft - ff_gems
-            if current_budget < 0:
-                break
+    for ft_gems, ff_gems, current_budget in _iter_ft_ff_budget_pairs(
+        start_ft,
+        end_ft,
+        start_ff,
+        end_ff,
+        TOTAL_GEM_BUDGET,
+    ):
 
             # Look up fever parameters with FT/FF gems applied
             cur_ft_stat = base_ft_stat + ft_gems * GEM_SCALE_FEVER
@@ -777,7 +799,6 @@ def run_force_greats_hill_climb(
         )
 
     # Build FG config list in deterministic order (matches the legacy nested loops)
-    # Build FG config list in deterministic order (matches the legacy nested loops)
     counts_list = []
 
     # Per-section caps requested by user
@@ -844,25 +865,17 @@ def run_force_greats_hill_climb(
             is_s_ov = 1 if selected_color == s_color else 0
 
             # FT/FF window list (no budgets here; GPU computes budget=total_budget-ft-ff)
-            if search_ranges:
-                start_ft, end_ft, start_ff, end_ff = search_ranges
-                start_ft = max(0, int(start_ft))
-                end_ft = min(MAX_FT_FF_GEMS, int(end_ft))
-                start_ff = max(0, int(start_ff))
-                end_ff = min(MAX_FT_FF_GEMS, int(end_ff))
-            else:
-                start_ft, end_ft = 0, MAX_FT_FF_GEMS
-                start_ff, end_ff = 0, MAX_FT_FF_GEMS
-
-            ftff_pairs = []
-            for ft in range(start_ft, end_ft + 1):
-                remaining_after_ft = TOTAL_GEM_BUDGET - ft
-                if remaining_after_ft < 0:
-                    break
-                ff_end = min(end_ff, remaining_after_ft)
-                for ff in range(start_ff, ff_end + 1):
-                    if ft + ff <= TOTAL_GEM_BUDGET:
-                        ftff_pairs.append((ft, ff))
+            start_ft, end_ft, start_ff, end_ff = _normalize_ft_ff_search_ranges(search_ranges)
+            ftff_pairs = [
+                (ft, ff)
+                for ft, ff, _ in _iter_ft_ff_budget_pairs(
+                    start_ft,
+                    end_ft,
+                    start_ff,
+                    end_ff,
+                    TOTAL_GEM_BUDGET,
+                )
+            ]
 
             # Single-genome input (base stats; GPU allocates gems)
             genome_stats_list = [

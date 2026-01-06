@@ -956,27 +956,22 @@ class GpuExecutor:
                     self._fg_tasks_max = task_count
                 self._fg_tasks_batch_hist[task_count] += 1
 
-            # Normalize positional args (support both legacy and current calling conventions).
-            if len(args) == 6:
-                # Legacy: no great-candidate array positional.
-                genome_stats_list, timestamps_np, long_notes, last_note_time, _fg_configs, _ftff_pairs = args
-                great_candidate_timestamps_np = None
-            elif len(args) == 7:
-                (
-                    genome_stats_list,
-                    timestamps_np,
-                    great_candidate_timestamps_np,
-                    long_notes,
-                    last_note_time,
-                    _fg_configs,
-                    _ftff_pairs,
-                ) = args
-            else:
+            if len(args) != 7:
                 return GpuResponse(
                     request_id=request.request_id,
                     success=False,
-                    error="Invalid payload for SOLVE_FORCE_GREATS_FINDER (expected 6 or 7 positional args)",
+                    error="Invalid payload for SOLVE_FORCE_GREATS_FINDER (expected 7 positional args)",
                 )
+
+            (
+                genome_stats_list,
+                timestamps_np,
+                great_candidate_timestamps_np,
+                long_notes,
+                last_note_time,
+                _fg_configs,
+                _ftff_pairs,
+            ) = args
 
             try:
                 n_genomes = int(len(genome_stats_list))

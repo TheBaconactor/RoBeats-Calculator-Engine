@@ -75,7 +75,6 @@ class GASettings:
     memetic_top_minis: int
     multi_start: int
     deep_mining_enabled: bool
-    heuristic_mode: str  # modern | legacy | hybrid
     allow_3_swap: bool = True  # Enable expensive 3-swap polish (~15s extra)
     gear_rank_max: int = 40  # Max gear items per slot in rank cache
     mini_rank_max: int = 40  # Max minis in rank cache
@@ -97,7 +96,6 @@ class GASettings:
                 12,
                 GA_MULTI_RUNS_DEFAULT,
                 True,
-                "modern",
                 True,  # allow_3_swap default
                 40,  # gear_rank_max default
                 40,  # mini_rank_max default
@@ -138,7 +136,6 @@ class GASettings:
             memetic_top_minis,
             multi_start,
             deep_mining,
-            "modern",  # HeuristicMode always modern now
             allow_3_swap,
             gear_rank_max,
             mini_rank_max,

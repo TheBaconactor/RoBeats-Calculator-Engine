@@ -13,6 +13,7 @@ the game code (GearStats.note_hit_mode_get_time_multiplier).
 
 from __future__ import annotations
 
+import secrets
 import numpy as np
 
 def _floor_to_int_ms(timestamps_sec: np.ndarray) -> np.ndarray:
@@ -36,6 +37,98 @@ def _build_per_note_perfect_window_ms(
     lower = (int(perfect_lower_ms) * mult).astype(np.int16)
     upper = (int(perfect_upper_ms) * mult).astype(np.int16)
     return lower, upper
+
+
+def _truthy(val: object) -> bool:
+    return str(val or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _get_cfg_section(cfg_dict: dict, name: str) -> dict:
+    if not isinstance(cfg_dict, dict):
+        return {}
+    if name in cfg_dict:
+        section = cfg_dict.get(name)
+        return section if isinstance(section, dict) else {}
+    lower = str(name).lower()
+    for key, section in cfg_dict.items():
+        if str(key).lower() == lower and isinstance(section, dict):
+            return section
+    return {}
+
+
+def apply_human_hit_sim(calc_song: dict, *, cfg_dict: dict) -> dict | None:
+    """
+    Apply HumanHitSim to calc_song in-place if enabled.
+
+    Returns a summary dict when applied, or None if disabled/invalid.
+    """
+    if not isinstance(calc_song, dict):
+        return None
+    meta = calc_song.get("metadata", {}) or {}
+    if meta.get("HumanHitSimApplied"):
+        return None
+
+    human_cfg = _get_cfg_section(cfg_dict, "HumanHitSim")
+    if not _truthy(human_cfg.get("enabled", "0")):
+        return None
+
+    song_data = calc_song.get("song_data", {}) or {}
+    if song_data.get("timestamps") is None:
+        return None
+
+    apply_to = str(human_cfg.get("applyto", "FG")).strip().upper()
+    if apply_to not in {"FG", "ALL"}:
+        apply_to = "FG"
+
+    try:
+        seed_in = int(str(human_cfg.get("seed", "0") or "0"))
+    except Exception:
+        seed_in = 0
+
+    dist = str(human_cfg.get("distribution", "uniform")).strip().lower()
+    great_mode = str(human_cfg.get("greatmode", "late")).strip().lower()
+
+    if seed_in == 0:
+        seed_in = secrets.randbits(32)
+
+    chart_ts = song_data.get("chart_timestamps")
+    if chart_ts is None:
+        chart_ts = song_data.get("timestamps", ())
+        song_data["chart_timestamps"] = np.asarray(chart_ts, dtype=np.float64)
+    base_ts = np.asarray(chart_ts, dtype=np.float64)
+    base_types = np.asarray(song_data.get("note_types", ()), dtype=np.int16)
+    if base_types.shape[0] != base_ts.shape[0]:
+        base_types = np.ones(base_ts.shape[0], dtype=np.int16)
+
+    sim_ts, sim_great_candidates, sim_dbg = simulate_perfect_hit_timestamps_with_great_candidates(
+        base_ts,
+        base_types,
+        seed=seed_in,
+        distribution=dist,
+        great_mode=great_mode,
+    )
+
+    song_data["fg_timestamps"] = np.asarray(sim_ts, dtype=np.float64)
+    song_data["fg_great_candidate_timestamps"] = np.asarray(sim_great_candidates, dtype=np.float64)
+    meta["HumanHitSimSeed"] = int(seed_in)
+    meta["HumanHitSimApplyTo"] = apply_to
+    meta["HumanHitSimDistribution"] = dist
+    meta["HumanHitSimGreatMode"] = great_mode
+    meta["HumanHitSimDebug"] = sim_dbg
+    meta["HumanHitSimApplied"] = True
+    calc_song["metadata"] = meta
+    calc_song["song_data"] = song_data
+
+    if apply_to == "ALL":
+        song_data["timestamps"] = np.asarray(sim_ts, dtype=np.float64)
+
+    return {
+        "apply_to": apply_to,
+        "distribution": dist,
+        "seed": int(seed_in),
+        "great_mode": great_mode,
+        "debug": sim_dbg,
+    }
 
 
 def simulate_perfect_hit_timestamps_with_great_candidates(

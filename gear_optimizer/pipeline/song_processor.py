@@ -18,7 +18,6 @@ import gc
 import logging
 import multiprocessing
 import os
-import secrets
 import sys
 import time
 import traceback
@@ -317,69 +316,23 @@ def process_song_task(args):
         # Stores an alternative timestamp sequence for ForceGreats modeling.
         # ------------------------------------------------------------------
         try:
-            sim_enabled = cfg.getboolean("HumanHitSim", "Enabled", fallback=False)
-        except Exception:
-            sim_enabled = False
-
-        sim_already_applied = bool(calc_song.get("metadata", {}).get("HumanHitSimApplied"))
-        if sim_enabled and (not sim_already_applied) and calc_song.get("song_data", {}).get("timestamps") is not None:
-            from ..solver.hit_simulation import (
-                simulate_perfect_hit_timestamps_with_great_candidates,
-            )
-
-            apply_to = cfg.get("HumanHitSim", "ApplyTo", fallback="FG").strip().upper()
-            if apply_to not in {"FG", "ALL"}:
-                apply_to = "FG"
-
-            try:
-                seed_in = int(cfg.get("HumanHitSim", "Seed", fallback="0") or "0")
-            except Exception:
-                seed_in = 0
-
-            dist = cfg.get("HumanHitSim", "Distribution", fallback="uniform").strip().lower()
-            great_mode = cfg.get("HumanHitSim", "GreatMode", fallback="late").strip().lower()
-
-            if sim_enabled and seed_in == 0:
-                seed_in = secrets.randbits(32)
-
-            # NOTE: do not use `or` with NumPy arrays (truthiness is ambiguous).
-            song_data = calc_song.get("song_data", {}) or {}
-            chart_ts = song_data.get("chart_timestamps")
-            if chart_ts is None:
-                chart_ts = song_data.get("timestamps", ())
-            base_ts = np.asarray(chart_ts, dtype=np.float64)
-            base_types = np.asarray(calc_song["song_data"].get("note_types", ()), dtype=np.int16)
-            if base_types.shape[0] != base_ts.shape[0]:
-                base_types = np.ones(base_ts.shape[0], dtype=np.int16)
+            from ..solver.hit_simulation import apply_human_hit_sim
 
             _t_sim0 = time.perf_counter()
-            sim_ts, sim_great_candidates, sim_dbg = simulate_perfect_hit_timestamps_with_great_candidates(
-                base_ts,
-                base_types,
-                seed=seed_in,
-                distribution=dist,
-                great_mode=great_mode,
-            )
-            stage_timing["cpu_human_hit_sim_sec"] = time.perf_counter() - _t_sim0
-
-            # Store for downstream FG scorers; only override full timestamps when requested.
-            calc_song["song_data"]["fg_timestamps"] = np.asarray(sim_ts, dtype=np.float64)
-            calc_song["song_data"]["fg_great_candidate_timestamps"] = np.asarray(sim_great_candidates, dtype=np.float64)
-            calc_song["metadata"]["HumanHitSimSeed"] = int(seed_in)
-            calc_song["metadata"]["HumanHitSimApplyTo"] = apply_to
-            calc_song["metadata"]["HumanHitSimDistribution"] = dist
-            calc_song["metadata"]["HumanHitSimGreatMode"] = great_mode
-            calc_song["metadata"]["HumanHitSimDebug"] = sim_dbg
-            calc_song["metadata"]["HumanHitSimApplied"] = True
-            try:
-                print(
-                    f"[HumanHitSim] Enabled (ApplyTo={apply_to}, dist={dist}, seed={seed_in}, "
-                    f"groups={sim_dbg.get('groups')}, forced_monotonic={sim_dbg.get('forced_monotonic')})"
-                )
-            except Exception:
-                pass
-            if apply_to == "ALL":
-                calc_song["song_data"]["timestamps"] = np.asarray(sim_ts, dtype=np.float64)
+            sim_info = apply_human_hit_sim(calc_song, cfg_dict=cfg_dict)
+            if sim_info is not None:
+                stage_timing["cpu_human_hit_sim_sec"] = time.perf_counter() - _t_sim0
+                try:
+                    sim_dbg = sim_info.get("debug") or {}
+                    print(
+                        f"[HumanHitSim] Enabled (ApplyTo={sim_info.get('apply_to')}, dist={sim_info.get('distribution')}, "
+                        f"seed={sim_info.get('seed')}, groups={sim_dbg.get('groups')}, "
+                        f"forced_monotonic={sim_dbg.get('forced_monotonic')})"
+                    )
+                except Exception:
+                    pass
+        except Exception:
+            pass
         meta_primary_color = calc_song["metadata"].get("Primary Color", "")
         meta_secondary_color = calc_song["metadata"].get("Secondary Color", "")
 

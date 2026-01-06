@@ -32,7 +32,6 @@ def test_compute_dynamic_mutation_respects_deep_mining_flag():
         memetic_top_minis=1,
         multi_start=1,
         deep_mining_enabled=True,
-        heuristic_mode="modern",
     )
     settings_off = GASettings(
         db_seed_prob=0.5,
@@ -43,7 +42,6 @@ def test_compute_dynamic_mutation_respects_deep_mining_flag():
         memetic_top_minis=1,
         multi_start=1,
         deep_mining_enabled=False,
-        heuristic_mode="modern",
     )
 
     mut_on, gens_on = compute_dynamic_mutation(

@@ -31,7 +31,6 @@ from .constants import MEMORY_WATCHDOG_INTERVAL_SEC, PATHS
 MEMORY_WATCHDOG_LIMIT_BYTES = 0
 MEMORY_WATCHDOG_THREAD = None
 MEMORY_WATCHDOG_EVENT = threading.Event()
-MEMORY_WATCHDOG_REASON = ""
 MEMORY_WATCHDOG_ANNOUNCED_LIMIT = None
 MEMORY_WATCHDOG_TOTAL_RAM_BYTES = None
 MEMORY_WATCHDOG_TOTAL_RAM_LOGGED = False
@@ -69,10 +68,8 @@ def trigger_memory_release(reason):
     Args:
         reason: Reason for triggering memory release
     """
-    global MEMORY_WATCHDOG_REASON
     if MEMORY_WATCHDOG_EVENT.is_set():
         return
-    MEMORY_WATCHDOG_REASON = reason
     logging.warning(reason)
     print(reason)
     reporter = globals().get("discord_reporter")

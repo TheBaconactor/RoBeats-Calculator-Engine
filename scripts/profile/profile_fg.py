@@ -93,6 +93,7 @@ def profile_fg_processing():
         _ = fg_api.solve_force_greats_finder_gpu(
             genome_stats[: min(5, n_genomes)],
             timestamps,
+            None,
             long_notes,
             last_note_time,
             fg_configs[:100],
@@ -130,6 +131,7 @@ def profile_fg_processing():
                 _ = fg_api.solve_force_greats_finder_gpu(
                     genome_stats,
                     timestamps,
+                    None,
                     long_notes,
                     last_note_time,
                     fg_configs,

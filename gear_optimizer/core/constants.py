@@ -39,7 +39,6 @@ FEVER_TIME_OFFSET = 0.15
 # - More multi_runs = more fresh starts (escape local optima)
 # - Elitism = exploitation (preserving best solutions)
 GA_POPULATION_SIZE = 250  # Balance: keep moderate for diversity + speed
-GA_GENERATIONS = 75  # Enough iterations per run
 GA_MUTATION_RATE = 0.35  # INCREASED: 0.275 → 0.35 (more exploration)
 GA_ELITISM = 1  # Keep 1 elite (exploitation anchor)
 GA_MULTI_RUNS_DEFAULT = 5  # INCREASED: 3 → 5 (more fresh starts)
@@ -47,7 +46,6 @@ GA_MUTATION_RATE_MAX = 0.55  # INCREASED: 0.45 → 0.55 (allow more aggressive m
 
 # Local search constants
 PP_TIE_LOOKAHEAD_MAX = 8  # Max lookahead iterations for PP tie-breaking in gem optimization
-LOCAL_SEARCH_MAX_ITERATIONS = 20  # Max iterations for local search refinement
 
 # --- GPU GA ISLAND MODEL ---
 GPU_GA_NUM_ISLANDS = 5  # Number of sub-populations (islands)
@@ -58,12 +56,6 @@ GPU_GA_MIGRATE_COUNT = 2  # Elites to migrate per island (ring topology)
 DB_FILE = "evolution.db"
 LOADOUTS_PER_SONG_LIMIT = 51  # Top 51 by score + Top 51 by FG score
 FG_CANDIDATE_LIMIT = 100  # Number of candidates to evaluate for Force Greats (funnel size)
-
-# --- CACHE LIMITS ---
-# Memory leak fix: Use LRU with global limits instead of unbounded dicts
-MAX_TIMELINE_CACHE_GLOBAL = 10000  # ~10MB max (was 500K per song)
-MAX_GEM_SOLVER_CACHE = 5000  # ~10MB max
-MAX_FG_CACHE = 2000  # ~6MB max
 
 # --- FORCE GREATS OPTIMIZATION ---
 # FT/FF search radius around loadout centers (default ±5)

@@ -934,17 +934,7 @@ class GearOptimizerApp:
         if not (inflight_songs and inflight_songs > 1 and len(tasks) > 1):
             if use_gpu_preload:
                 try:
-                    from .helpers.song_preloader import get_song_preloader
-
-                    preloader = get_song_preloader()
-                    preloader.start()
-
-                    # Queue first 5 songs for preloading
-                    for i, t in enumerate(tasks[:5]):
-                        if t[1] not in completed_songs:
-                            self._queue_song_for_preload(preloader, t)
-
-                    print("[Song Preloader] Async preloading enabled")
+                    preloader = self._start_song_preloader(tasks, completed_songs)
                 except Exception as e:
                     print(f"[Song Preloader] Not available: {e}")
                     use_gpu_preload = False
@@ -1055,17 +1045,7 @@ class GearOptimizerApp:
             # sequential pipeline. Ensure the preloader is running for that path.
             if use_gpu_preload and preloader is None:
                 try:
-                    from .helpers.song_preloader import get_song_preloader
-
-                    preloader = get_song_preloader()
-                    preloader.start()
-
-                    # Queue first 5 songs for preloading
-                    for i, t in enumerate(tasks[:5]):
-                        if t[1] not in completed_songs:
-                            self._queue_song_for_preload(preloader, t)
-
-                    print("[Song Preloader] Async preloading enabled")
+                    preloader = self._start_song_preloader(tasks, completed_songs)
                 except Exception as e:
                     print(f"[Song Preloader] Not available: {e}")
                     use_gpu_preload = False
@@ -1080,9 +1060,6 @@ class GearOptimizerApp:
             cfg_dict0 = tasks[0][3] if tasks else {}
             ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
 
-            def _truthy(v):
-                return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
-
             def _get_ci(d: dict, key: str, default=None):
                 if not isinstance(d, dict):
                     return default
@@ -1096,9 +1073,9 @@ class GearOptimizerApp:
             raw = _get_ci(ie, "ContinuousPipeline", None)
             if raw is None:
                 # Default: enable for single-worker GPU runs where post-processing stalls are noticeable.
-                pipeline_enabled = _truthy(_get_ci(ie, "GPU_Mode", "0")) and len(tasks) > 1
+                pipeline_enabled = self._truthy(_get_ci(ie, "GPU_Mode", "0")) and len(tasks) > 1
             else:
-                pipeline_enabled = _truthy(raw)
+                pipeline_enabled = self._truthy(raw)
         except Exception:
             pipeline_enabled = False
 
@@ -1123,30 +1100,7 @@ class GearOptimizerApp:
                 preloaded_by_name = {}
 
                 # GPU prefetch manager for ahead-of-time timeline computation
-                _gpu_prefetch_mgr = None
-                gpu_prefetch_enabled = False
-                if use_gpu_preload:
-                    try:
-                        from gear_optimizer.solver.taichi_gem.api.gpu_prefetch import (
-                            get_gpu_prefetch_manager,
-                        )
-
-                        prefetch_slots = safe_int(os.environ.get("GPU_PREFETCH_SLOTS", 0))
-                        if prefetch_slots <= 0:
-                            prefetch_slots = 5  # default
-                        keep_slots = str(os.environ.get("GPU_PREFETCH_KEEP_SLOTS", "0")).strip().lower() in {
-                            "1",
-                            "true",
-                            "yes",
-                            "on",
-                        }
-                        _gpu_prefetch_mgr = get_gpu_prefetch_manager(
-                            num_slots=prefetch_slots,
-                            keep_slots=keep_slots,
-                        )
-                        gpu_prefetch_enabled = True
-                    except Exception:
-                        pass
+                _gpu_prefetch_mgr, gpu_prefetch_enabled = self._init_gpu_prefetch_manager(use_gpu_preload)
 
                 gpu_prefetched_set = set()
 
@@ -1289,28 +1243,7 @@ class GearOptimizerApp:
             preloaded_by_name = {}
 
             # GPU prefetch manager for ahead-of-time timeline computation
-            _gpu_prefetch_mgr = None
-            gpu_prefetch_enabled = False
-            if use_gpu_preload:
-                try:
-                    from gear_optimizer.solver.taichi_gem.api.gpu_prefetch import get_gpu_prefetch_manager
-
-                    prefetch_slots = safe_int(os.environ.get("GPU_PREFETCH_SLOTS", 0))
-                    if prefetch_slots <= 0:
-                        prefetch_slots = 5  # default
-                    keep_slots = str(os.environ.get("GPU_PREFETCH_KEEP_SLOTS", "0")).strip().lower() in {
-                        "1",
-                        "true",
-                        "yes",
-                        "on",
-                    }
-                    _gpu_prefetch_mgr = get_gpu_prefetch_manager(
-                        num_slots=prefetch_slots,
-                        keep_slots=keep_slots,
-                    )
-                    gpu_prefetch_enabled = True
-                except Exception:
-                    pass
+            _gpu_prefetch_mgr, gpu_prefetch_enabled = self._init_gpu_prefetch_manager(use_gpu_preload)
 
             # Track which songs we've GPU-prefetched
             gpu_prefetched_set = set()
@@ -1447,6 +1380,40 @@ class GearOptimizerApp:
             preloader.queue_song(request)
         except Exception:
             pass  # Preloading failure is non-fatal
+
+    def _start_song_preloader(self, tasks, completed_songs):
+        from .helpers.song_preloader import get_song_preloader
+
+        preloader = get_song_preloader()
+        preloader.start()
+
+        # Queue first 5 songs for preloading
+        for t in tasks[:5]:
+            if t[1] not in completed_songs:
+                self._queue_song_for_preload(preloader, t)
+
+        print("[Song Preloader] Async preloading enabled")
+        return preloader
+
+    def _init_gpu_prefetch_manager(self, use_gpu_preload: bool):
+        if not use_gpu_preload:
+            return None, False
+        try:
+            from gear_optimizer.solver.taichi_gem.api.gpu_prefetch import get_gpu_prefetch_manager
+
+            prefetch_slots = safe_int(os.environ.get("GPU_PREFETCH_SLOTS", 0))
+            if prefetch_slots <= 0:
+                prefetch_slots = 5  # default
+            keep_slots = self._truthy(os.environ.get("GPU_PREFETCH_KEEP_SLOTS", "0"))
+            return (
+                get_gpu_prefetch_manager(
+                    num_slots=prefetch_slots,
+                    keep_slots=keep_slots,
+                ),
+                True,
+            )
+        except Exception:
+            return None, False
 
     def _run_parallel(
         self, tasks, max_workers, completed_songs, memory_resume_tracker, manager, status_queue, status_thread

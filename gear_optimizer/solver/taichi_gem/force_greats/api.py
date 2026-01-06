@@ -1356,30 +1356,25 @@ def solve_force_greats_finder_gpu(*args, **kwargs) -> list[dict[str, Any]] | dic
     """
     Wrapper with recovery for transient Taichi/Vulkan backend failures.
 
-    Also accepts an older positional calling convention used by some scripts:
-      - v1: (genome_stats_list, timestamps_np, long_notes, last_note_time, fg_configs, ftff_pairs, *, ...)
-      - v2: (genome_stats_list, timestamps_np, great_candidate_timestamps_np, long_notes, last_note_time, fg_configs, ftff_pairs, *, ...)
+    Expected positional calling convention:
+      - (genome_stats_list, timestamps_np, great_candidate_timestamps_np, long_notes, last_note_time, fg_configs, ftff_pairs, *, ...)
     """
-    # Normalize positional args across legacy and current call patterns.
-    if len(args) == 6:
-        # Legacy: no great-candidate array positional.
-        genome_stats_list, timestamps_np, long_notes, last_note_time, fg_configs, ftff_pairs = args
-        great_candidate_timestamps_np = None
-    elif len(args) == 7:
-        (
-            genome_stats_list,
-            timestamps_np,
-            great_candidate_timestamps_np,
-            long_notes,
-            last_note_time,
-            fg_configs,
-            ftff_pairs,
-        ) = args
-    else:
+    # Normalize positional args.
+    if len(args) != 7:
         raise TypeError(
-            "solve_force_greats_finder_gpu expected 6 or 7 positional args: "
-            "(genomes, timestamps, [great_candidates], long_notes, last_note_time, fg_configs, ftff_pairs)"
+            "solve_force_greats_finder_gpu expected 7 positional args: "
+            "(genomes, timestamps, great_candidates, long_notes, last_note_time, fg_configs, ftff_pairs)"
         )
+
+    (
+        genome_stats_list,
+        timestamps_np,
+        great_candidate_timestamps_np,
+        long_notes,
+        last_note_time,
+        fg_configs,
+        ftff_pairs,
+    ) = args
 
     # Required keyword-only args (kept explicit to avoid silently wrong dispatch).
     required = (

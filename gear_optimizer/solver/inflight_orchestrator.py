@@ -34,6 +34,7 @@ from gear_optimizer.solver.inflight_utils import (
     _build_calc_song_from_file,
     _compact_items,
     _compact_prev_record,
+    _summarize_db_context,
     _truthy,
 )
 
@@ -214,7 +215,12 @@ def run_inflight_song_pipeline(
         ) = task
 
         cfg = cfg_from_dict(cfg_dict)
-        calc_song = _build_calc_song_from_file(fp=fp, found_song_name=found_song_name, cfg=cfg)
+        calc_song = _build_calc_song_from_file(
+            fp=fp,
+            found_song_name=found_song_name,
+            cfg=cfg,
+            cfg_dict=cfg_dict,
+        )
 
         meta_primary_color = calc_song.get("metadata", {}).get("Primary Color", "") or ""
         meta_secondary_color = calc_song.get("metadata", {}).get("Secondary Color", "") or ""
@@ -240,19 +246,7 @@ def run_inflight_song_pipeline(
             found_song_name, bool(use_evo_db), gears_by_name, minis_by_name
         )
 
-        db_best_fg_score = 0
-        if known_loadouts:
-            try:
-                db_best_fg_score = max(v[1] for v in known_loadouts.values() if v[1])
-            except Exception:
-                db_best_fg_score = 0
-
-        attempt_lifetime_prev = 0
-        prev_attempts_first = 0
-        if prev_record and "details" in prev_record:
-            attempt_lifetime_prev = prev_record["details"].get("attempt_lifetime", 0) or 0
-            prev_attempts_first = prev_record["details"].get("attempts_first", 0) or 0
-        attempt_lifetime = int(attempt_lifetime_prev) + 1
+        db_best_fg_score, attempt_lifetime, prev_attempts_first = _summarize_db_context(prev_record, known_loadouts)
 
         # ForceGreatsFinder currently requires the full (Taichi-heavy) helper to run on the GPU owner thread.
         # We can still run MetaFinder-only in-flight when FG is disabled.
@@ -316,9 +310,9 @@ def run_inflight_song_pipeline(
             force_greats_config=force_greats_config or [],
             prev_record=prev_record,
             known_loadouts=known_loadouts,
-            db_best_fg_score=int(db_best_fg_score or 0),
-            attempt_lifetime=int(attempt_lifetime or 0),
-            prev_attempts_first=int(prev_attempts_first or 0),
+            db_best_fg_score=int(db_best_fg_score),
+            attempt_lifetime=int(attempt_lifetime),
+            prev_attempts_first=int(prev_attempts_first),
             meta_primary_color=str(meta_primary_color),
             meta_secondary_color=str(meta_secondary_color),
             ga_gen=ga_gen,

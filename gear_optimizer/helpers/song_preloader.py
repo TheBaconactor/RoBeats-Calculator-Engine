@@ -13,7 +13,6 @@ Architecture:
 
 import threading
 import queue
-import secrets
 from typing import Optional
 from dataclasses import dataclass
 import time
@@ -227,45 +226,12 @@ class SongPreloader:
 
             # Optional: HumanHitSim (same semantics as song_processor.py) so GPU prefetch
             # and the main song run see identical timestamps.
-            human_cfg = req.cfg_dict.get("HumanHitSim", {}) or {}
-            sim_enabled = str(human_cfg.get("enabled", "0")).strip().lower() in {"1", "true", "yes", "on"}
-            if sim_enabled and timestamps_np.size:
-                apply_to = str(human_cfg.get("applyto", "FG")).strip().upper()
-                if apply_to not in {"FG", "ALL"}:
-                    apply_to = "FG"
+            try:
+                from ..solver.hit_simulation import apply_human_hit_sim
 
-                try:
-                    seed_in = int(str(human_cfg.get("seed", "0") or "0"))
-                except Exception:
-                    seed_in = 0
-
-                dist = str(human_cfg.get("distribution", "uniform")).strip().lower()
-                great_mode = str(human_cfg.get("greatmode", "late")).strip().lower()
-
-                if sim_enabled and seed_in == 0:
-                    seed_in = secrets.randbits(32)
-
-                if sim_enabled:
-                    sim_ts, sim_great_candidates, sim_dbg = simulate_perfect_hit_timestamps_with_great_candidates(
-                        timestamps_np,
-                        note_types_np,
-                        seed=seed_in,
-                        distribution=dist,
-                        great_mode=great_mode,
-                    )
-
-                    calc_song["song_data"]["fg_timestamps"] = np.asarray(sim_ts, dtype=np.float64)
-                    calc_song["song_data"]["fg_great_candidate_timestamps"] = np.asarray(
-                        sim_great_candidates, dtype=np.float64
-                    )
-                    calc_song["metadata"]["HumanHitSimSeed"] = int(seed_in)
-                    calc_song["metadata"]["HumanHitSimApplyTo"] = apply_to
-                    calc_song["metadata"]["HumanHitSimDistribution"] = dist
-                    calc_song["metadata"]["HumanHitSimGreatMode"] = great_mode
-                    calc_song["metadata"]["HumanHitSimDebug"] = sim_dbg
-                    calc_song["metadata"]["HumanHitSimApplied"] = True
-                    if apply_to == "ALL":
-                        calc_song["song_data"]["timestamps"] = np.asarray(sim_ts, dtype=np.float64)
+                apply_human_hit_sim(calc_song, cfg_dict=req.cfg_dict)
+            except Exception:
+                pass
 
             # Build base stats from config
             base_stats_fixed = build_base_stats_from_config(req.cfg_dict)

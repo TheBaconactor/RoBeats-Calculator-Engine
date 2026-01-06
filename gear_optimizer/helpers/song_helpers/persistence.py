@@ -34,6 +34,16 @@ def _has_valid_fg_config(fg_container):
         return False
 
 
+def _names_list(items):
+    names = []
+    for it in items or []:
+        if isinstance(it, dict):
+            names.append(it.get("Name", ""))
+        else:
+            names.append(str(it) if it else "")
+    return names
+
+
 def build_db_payload(
     best_data,
     best_gear,
@@ -73,11 +83,6 @@ def build_db_payload(
     def extract_names(record):
         """Extract names from record, handling both dict and string formats."""
 
-        def get_name(item):
-            if isinstance(item, dict):
-                return item.get("Name", "")
-            return str(item) if item else ""
-
         gear_items = record.get("gear") if record else []
         minis_items = record.get("minis") if record else []
         loadout = record.get("loadout") if record else None
@@ -85,22 +90,10 @@ def build_db_payload(
             gear_items = loadout[:6]
             minis_items = loadout[6:9]
 
-        gear_names = [get_name(g) for g in (gear_items or [])]
-        minis_names = [get_name(m) for m in (minis_items or [])]
-        return gear_names, minis_names
+        return _names_list(gear_items), _names_list(minis_items)
 
-    def _names(items):
-        out = []
-        for it in items or []:
-            if isinstance(it, dict):
-                name = it.get("Name", "")
-            else:
-                name = str(it) if it else ""
-            out.append(name)
-        return out
-
-    best_gear_names = _names(best_gear)
-    best_mini_names = _names(best_minis)
+    best_gear_names = _names_list(best_gear)
+    best_mini_names = _names_list(best_minis)
     best_details = build_details_fn(best_data)
 
     attempts_first = 1 if is_first or is_better else (prev_attempts_first + 1 if prev_attempts_first else 1)
@@ -123,8 +116,8 @@ def build_db_payload(
         fg_gear = fg_entry.get("gear", [])
         fg_minis = fg_entry.get("minis", [])
         fg_data = fg_entry.get("data", {})
-        fg_gear_names = _names(fg_gear)
-        fg_mini_names = _names(fg_minis)
+        fg_gear_names = _names_list(fg_gear)
+        fg_mini_names = _names_list(fg_minis)
         # Preserve the *base* score context for this FG entry so we can persist
         # the loadout with correct base+fg pairing (score != fg_score).
         base_score = fg_entry.get("base_score")
@@ -309,15 +302,6 @@ def build_persistence_entries(
         except Exception:
             # Fallback: best-effort stable-ish signature
             return str((tuple(gear_items or []), tuple(mini_items or [])))
-
-    def _names_list(items):
-        names = []
-        for it in items or []:
-            if isinstance(it, dict):
-                names.append(it.get("Name", ""))
-            else:
-                names.append(str(it) if it else "")
-        return names
 
     def _append_entry(score_val, gear_items, mini_items, details_obj, fg_score_val=0, force_obj=None):
         # Avoid emitting duplicates (we may include top1/best_fg + retained union entries).

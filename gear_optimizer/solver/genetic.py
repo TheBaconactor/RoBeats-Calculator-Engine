@@ -1989,7 +1989,6 @@ def solve_coevolution_genetic(
         ref_arrays,
         known_loadouts,
         cache_hits_tracker,
-        getattr(ga_settings, "heuristic_mode", "modern"),
     )
 
     # Build ranked candidate caches

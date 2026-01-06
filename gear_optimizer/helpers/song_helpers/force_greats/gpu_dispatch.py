@@ -207,8 +207,6 @@ def process_force_greats_gpu_finder(
         result_g_cm,
         result_g_fm,
         result_g_ov,
-        result_score_penalty,
-        result_fill_penalty,
     ) -> None:
         nonlocal t_result_apply_sec
 
@@ -231,8 +229,6 @@ def process_force_greats_gpu_finder(
             result_g_cm=result_g_cm,
             result_g_fm=result_g_fm,
             result_g_ov=result_g_ov,
-            result_score_penalty=result_score_penalty,
-            result_fill_penalty=result_fill_penalty,
             fg_variants=fg_variants if materialize_all_force else None,
             build_details_fn=build_details_fn if materialize_all_force else None,
             names_list_fn=names_list_fn,
@@ -767,8 +763,6 @@ def process_force_greats_gpu_finder(
             result_g_cm = None
             result_g_fm = None
             result_g_ov = None
-            result_score_penalty = None
-            result_fill_penalty = None
             result_cfg_counts = None
 
             if per_pair_breakpoints:
@@ -976,8 +970,6 @@ def process_force_greats_gpu_finder(
                 result_g_cm = global_results["g_cm"]
                 result_g_fm = global_results["g_fm"]
                 result_g_ov = global_results["g_ov"]
-                result_score_penalty = global_results["score_penalty"]
-                result_fill_penalty = global_results["fill_penalty"]
 
                 # Use the global cfg_idx to index into the master config list during apply
                 # (avoid reconstructing a per-genome Python list here).
@@ -1091,8 +1083,6 @@ def process_force_greats_gpu_finder(
                 result_g_cm = gpu_results["g_cm"]
                 result_g_fm = gpu_results["g_fm"]
                 result_g_ov = gpu_results["g_ov"]
-                result_score_penalty = gpu_results["score_penalty"]
-                result_fill_penalty = gpu_results["fill_penalty"]
 
             _apply_gpu_results_to_entries(
                 pending_sigs=pending_sigs,
@@ -1113,8 +1103,6 @@ def process_force_greats_gpu_finder(
                 result_g_cm=result_g_cm,
                 result_g_fm=result_g_fm,
                 result_g_ov=result_g_ov,
-                result_score_penalty=result_score_penalty,
-                result_fill_penalty=result_fill_penalty,
             )
 
     if deferred_gpu_applies:
@@ -1159,8 +1147,6 @@ def process_force_greats_gpu_finder(
                 result_g_cm=gpu_results["g_cm"],
                 result_g_fm=gpu_results["g_fm"],
                 result_g_ov=gpu_results["g_ov"],
-                result_score_penalty=gpu_results["score_penalty"],
-                result_fill_penalty=gpu_results["fill_penalty"],
             )
 
     # ------------------------------------------------------------------

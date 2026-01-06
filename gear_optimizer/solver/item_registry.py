@@ -25,8 +25,6 @@ STAT_INDICES = {
     "Chill": 9,
 }
 
-# Slot configuration (6 gear + 3 mini = 9 total)
-NUM_GEAR_SLOTS = 6
 MINI_SLOT_INDICES = [6, 7, 8]  # Minis occupy slots 6, 7, 8
 
 

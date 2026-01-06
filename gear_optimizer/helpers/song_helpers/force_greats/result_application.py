@@ -96,8 +96,6 @@ def apply_gpu_results_to_entries(
     result_g_cm: Any,
     result_g_fm: Any,
     result_g_ov: Any,
-    result_score_penalty: Any,
-    result_fill_penalty: Any,
     fg_variants: list[dict[str, Any]] | None,
     build_details_fn: Callable[[dict[str, Any]], dict[str, Any]] | None,
     names_list_fn: Callable[[Any], list[str]],
@@ -119,9 +117,6 @@ def apply_gpu_results_to_entries(
         g_cm = int(result_g_cm[idx])
         g_fm = int(result_g_fm[idx])
         g_ov = int(result_g_ov[idx])
-        score_penalty = int(result_score_penalty[idx])
-        fill_penalty = int(result_fill_penalty[idx])
-        _ = score_penalty, fill_penalty
 
         if result_cfg_counts is not None:
             cfg_counts = list(result_cfg_counts[idx]) if result_cfg_counts[idx] else []
@@ -234,4 +229,3 @@ def apply_gpu_results_to_entries(
             FG_CACHE[(sig, str(sel_color), c_ft, c_ff, int(n_sections), int(max_per_section))] = fg_variant
 
     return (time.perf_counter() - t0) if perf else 0.0
-

@@ -44,6 +44,7 @@ from gear_optimizer.solver.inflight_utils import (
     _build_calc_song_from_file,
     _compact_items,
     _compact_prev_record,
+    _summarize_db_context,
     _truthy,
 )
 from gear_optimizer.solver.item_registry import ItemRegistry
@@ -390,7 +391,12 @@ def _prepare_song(task: tuple) -> _NativeSong:
     if not gpu_native:
         raise RuntimeError("GPU-native in-flight requires IterationEngine.GPU_Native_GA=true")
 
-    calc_song = _build_calc_song_from_file(fp=fp, found_song_name=found_song_name, cfg=cfg)
+    calc_song = _build_calc_song_from_file(
+        fp=fp,
+        found_song_name=found_song_name,
+        cfg=cfg,
+        cfg_dict=cfg_dict,
+    )
     meta_primary_color = str(calc_song.get("metadata", {}).get("Primary Color", "") or "")
     meta_secondary_color = str(calc_song.get("metadata", {}).get("Secondary Color", "") or "")
 
@@ -415,20 +421,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
         raise RuntimeError("GPU-native in-flight currently requires MetaFinder (enable gear or minis).")
 
     prev_record, known_loadouts = load_database_context(found_song_name, bool(use_evo_db), gears_by_name, minis_by_name)
-
-    db_best_fg_score = 0
-    if known_loadouts:
-        try:
-            db_best_fg_score = max(v[1] for v in known_loadouts.values() if v[1])
-        except Exception:
-            db_best_fg_score = 0
-
-    attempt_lifetime_prev = 0
-    prev_attempts_first = 0
-    if prev_record and "details" in prev_record:
-        attempt_lifetime_prev = prev_record["details"].get("attempt_lifetime", 0) or 0
-        prev_attempts_first = prev_record["details"].get("attempts_first", 0) or 0
-    attempt_lifetime = int(attempt_lifetime_prev) + 1
+    db_best_fg_score, attempt_lifetime, prev_attempts_first = _summarize_db_context(prev_record, known_loadouts)
 
     p_color = calc_song.get("metadata", {}).get("Primary Color", "Rush")
     s_color = calc_song.get("metadata", {}).get("Secondary Color", "")
