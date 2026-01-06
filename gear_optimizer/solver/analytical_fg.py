@@ -204,44 +204,6 @@ class AnalyticalFGScorer:
                 hi = mid
         return lo
 
-    def get_breakpoints(
-        self,
-        ft_stat: int,
-        ff_stat: int,
-        max_fg: int | None = None,
-    ) -> List[int]:
-        """
-        Get forced great counts that actually change the timeline (breakpoints).
-
-        This is pure math - no simulation needed! Breakpoints occur when
-        fill_penalty increases when ceil(raw_fill + forced * 0.5) changes.
-
-        Args:
-            ft_stat: Fever Time stat (0-160)
-            ff_stat: Fever Fill Rate stat (0-160)
-            max_fg: Maximum forced greats to consider. If None, uses non_fever_base
-                    (the natural limit - you can't force more greats than notes in section)
-
-        Returns:
-            List of forced counts that are breakpoints (including 0)
-        """
-        raw_fever_fill = self.non_fever_cas * self._lookup(self.ref_ff, ff_stat)
-
-        # Default to non_fever_base (natural limit - can't force more greats than exist)
-        if max_fg is None:
-            max_fg = ceil(raw_fever_fill)
-
-        breakpoints = [0]  # Always include 0
-        prev_penalty = 0
-
-        for fc in range(1, max_fg + 1):
-            penalty = self.get_fill_penalty(fc, raw_fever_fill, False)  # Use section 2+ as proxy for delta changes
-            if penalty != prev_penalty:
-                breakpoints.append(fc)
-                prev_penalty = penalty
-
-        return breakpoints
-
     def compute_timeline_with_forced(
         self,
         ft_stat: int,

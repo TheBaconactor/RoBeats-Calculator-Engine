@@ -13,23 +13,7 @@ the game code (GearStats.note_hit_mode_get_time_multiplier).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
-
-
-@dataclass(frozen=True)
-class HumanHitSimConfig:
-    enabled: bool
-    apply_to: str  # "FG" | "ALL"
-    seed: int  # 0 => random each time HumanHitSim is applied
-    distribution: str  # "uniform"
-    perfect_lower_ms: int
-    perfect_upper_ms: int
-    held_tail_type: int
-    held_tail_time_multiplier: int
-    quantize_ms: bool
-
 
 def _floor_to_int_ms(timestamps_sec: np.ndarray) -> np.ndarray:
     ts = np.asarray(timestamps_sec, dtype=np.float64)

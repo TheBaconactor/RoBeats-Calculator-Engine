@@ -37,8 +37,6 @@ class PreloadedSong:
     gears_by_name: dict
     minis_by_name: dict
     cfg_data: dict
-    preload_time_ms: float = 0.0
-    gpu_slot: int = 0  # GPU slot for timeline prefetch (0 = not prefetched)
     error: Optional[Exception] = None
 
 
@@ -83,8 +81,8 @@ class SongPreloader:
         for song_args in song_queue:
             preloader.queue_song(song_args)
 
-        # Get next preloaded song (blocks until ready)
-        song = preloader.get_next()
+        # Get preloaded song if available
+        song = preloader.get_if_ready()
 
         preloader.stop()
     """
@@ -155,21 +153,6 @@ class SongPreloader:
 
         self._request_queue.put((request.priority, request))
 
-    def get_next(self, timeout: float = 30.0) -> Optional[PreloadedSong]:
-        """
-        Get the next preloaded song, blocking until ready.
-
-        Args:
-            timeout: Max seconds to wait
-
-        Returns:
-            PreloadedSong or None if timeout
-        """
-        try:
-            return self._ready_queue.get(timeout=timeout)
-        except queue.Empty:
-            return None
-
     def get_if_ready(self) -> Optional[PreloadedSong]:
         """Get next preloaded song if available, non-blocking."""
         try:
@@ -191,7 +174,6 @@ class SongPreloader:
                 preloaded = self._load_song(request)
                 elapsed_ms = (time.perf_counter() - start) * 1000
 
-                preloaded.preload_time_ms = elapsed_ms
                 self._songs_preloaded += 1
                 self._total_preload_time_ms += elapsed_ms
 

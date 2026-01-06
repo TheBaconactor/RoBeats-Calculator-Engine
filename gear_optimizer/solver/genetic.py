@@ -725,17 +725,6 @@ def decode_gpu_native_ga_runs_payload(
     return best_data, list(best_gear), list(best_minis), unique_evaluated
 
 
-def _parse_cfg_csv_list(raw: str) -> list[str]:
-    if not raw:
-        return []
-    parts = []
-    for chunk in str(raw).replace(";", ",").replace("|", ",").split(","):
-        val = chunk.strip()
-        if val:
-            parts.append(val)
-    return parts
-
-
 def _run_gpu_native_ga(
     population: list | None,
     n_generations: int,

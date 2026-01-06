@@ -280,7 +280,7 @@ def create_local_search_function(
         local_gear_rank = {s: gear_rank_cache.get(s, [])[:top_k_gear] for s in slots}
         local_mini_rank = mini_rank_cache[:top_k_minis]
 
-        for step in range(max_steps):
+        for _ in range(max_steps):
             all_candidates = []
             candidate_map = []  # (seed_idx, start_idx, end_idx)
 

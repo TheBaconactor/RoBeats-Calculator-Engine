@@ -556,7 +556,7 @@ class SongTimelineGrid:
         # We can reuse self._fever_mask_buffer if this is single-threaded CPU.
         # Yes, standard python thread.
 
-        mask_result, cbf, cbn, base, sec_cnt = calculate_force_greats_timeline_indices(
+        mask_result, cbf, cbn, _base, _sec_cnt = calculate_force_greats_timeline_indices(
             self.fg_timestamps,
             self.fg_great_candidate_timestamps,
             self.total_notes,
