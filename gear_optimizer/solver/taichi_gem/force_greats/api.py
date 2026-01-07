@@ -1463,6 +1463,7 @@ def solve_force_greats_finder_gpu_tasks(
     base_cfg_offset: int = 0,
     accumulate_global: bool = True,
     return_raw: bool = True,
+    upload_genome_stats: bool = True,
 ) -> None:
     """
     Execute multiple FG finder tasks as one logical GPU job.
@@ -1538,7 +1539,7 @@ def solve_force_greats_finder_gpu_tasks(
     if not pair_caps_from_timeline:
         _ensure_pair_caps_uploaded(pair_caps_grid)
 
-    # Upload per-genome base stats once.
+    # Upload per-genome base stats once (or reuse the existing GPU-resident buffer).
     n_genomes = int(len(genome_stats_list))
     if n_genomes <= 0:
         return
@@ -1546,27 +1547,47 @@ def solve_force_greats_finder_gpu_tasks(
         raise ValueError(f"Too many genomes for FG finder: {n_genomes} > {gem_fields.MAX_GENOMES}")
 
     global _fg_genome_stats_upload_key
-    stats_buf = _get_genome_stats_buf()
-    if isinstance(genome_stats_list, np.ndarray):
-        stats_buf[:n_genomes, :7] = genome_stats_list[:n_genomes, :7]
-    else:
-        for i, st in enumerate(genome_stats_list):
-            stats_buf[i, 0] = int(st.get("base_pp", 0))
-            stats_buf[i, 1] = int(st.get("base_cm", 0))
-            stats_buf[i, 2] = int(st.get("base_fm", 0))
-            stats_buf[i, 3] = int(st.get("base_p_val", 0))
-            stats_buf[i, 4] = int(st.get("base_s_val", 0))
-            stats_buf[i, 5] = int(st.get("base_ft_stat", 0))
-            stats_buf[i, 6] = int(st.get("base_ff_stat", 0))
-    gem_fields.genome_base_stats.from_numpy(stats_buf)
-    try:
+    if upload_genome_stats:
+        stats_buf = _get_genome_stats_buf()
         if isinstance(genome_stats_list, np.ndarray):
-            ptr = int(genome_stats_list.__array_interface__["data"][0])
+            stats_buf[:n_genomes, :7] = genome_stats_list[:n_genomes, :7]
         else:
+            for i, st in enumerate(genome_stats_list):
+                stats_buf[i, 0] = int(st.get("base_pp", 0))
+                stats_buf[i, 1] = int(st.get("base_cm", 0))
+                stats_buf[i, 2] = int(st.get("base_fm", 0))
+                stats_buf[i, 3] = int(st.get("base_p_val", 0))
+                stats_buf[i, 4] = int(st.get("base_s_val", 0))
+                stats_buf[i, 5] = int(st.get("base_ft_stat", 0))
+                stats_buf[i, 6] = int(st.get("base_ff_stat", 0))
+        gem_fields.genome_base_stats.from_numpy(stats_buf)
+        try:
+            if isinstance(genome_stats_list, np.ndarray):
+                ptr = int(genome_stats_list.__array_interface__["data"][0])
+            else:
+                ptr = int(id(genome_stats_list))
+        except Exception:
             ptr = int(id(genome_stats_list))
-    except Exception:
-        ptr = int(id(genome_stats_list))
-    _fg_genome_stats_upload_key = (int(n_genomes), int(ptr))
+        _fg_genome_stats_upload_key = (int(n_genomes), int(ptr))
+    else:
+        # Reuse previously uploaded genome_base_stats (avoid host->device transfer).
+        prev = _fg_genome_stats_upload_key
+        ok = False
+        try:
+            ok = prev is not None and int(prev[0]) == int(n_genomes)
+        except Exception:
+            ok = False
+        if isinstance(genome_stats_list, np.ndarray) and prev is not None:
+            try:
+                ptr = int(genome_stats_list.__array_interface__["data"][0])
+                ok = ok and int(prev[1]) == int(ptr)
+            except Exception:
+                ok = False
+        if not ok:
+            raise RuntimeError(
+                "Skipping genome stats upload without a compatible prior upload; "
+                "this indicates a misuse of upload_genome_stats=False."
+            )
 
     # Pack tasks: upload config windows into the global cfg table and produce a flat list of ftff entries.
     # Each entry is (ft_gems, ff_gems, cfg_base, cfg_len) where cfg_base is a row offset into fg_forced_counts.

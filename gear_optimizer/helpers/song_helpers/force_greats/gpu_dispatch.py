@@ -186,6 +186,7 @@ def process_force_greats_gpu_finder(
         )
     fg_async_futures = []
     fg_tasks_batch = []
+    genome_stats_uploaded = False
 
     def _apply_gpu_results_to_entries(
         *,
@@ -261,7 +262,7 @@ def process_force_greats_gpu_finder(
     timeline_precompute_queued = False
 
     def _flush_fg_tasks_batch(*, batch: list[dict] | None = None, download_after: bool = False):
-        nonlocal fg_tasks_batch, need_reset
+        nonlocal fg_tasks_batch, need_reset, genome_stats_uploaded
         if gpu_client is None:
             return None
 
@@ -306,6 +307,9 @@ def process_force_greats_gpu_finder(
             accumulate_global=True,
             fg_tasks=batch,
         )
+        # Avoid re-uploading genome stats for subsequent requests while the
+        # `genome_base_stats` field remains valid (in-process GPU owner thread).
+        submit_kwargs["upload_genome_stats"] = bool(not genome_stats_uploaded)
         if "base_cfg_offset" in first:
             try:
                 submit_kwargs["base_cfg_offset"] = int(first.get("base_cfg_offset", 0) or 0)
@@ -329,6 +333,7 @@ def process_force_greats_gpu_finder(
             blocking=False,
             **submit_kwargs,
         )
+        genome_stats_uploaded = True
         fg_async_futures.append(fut)
         if len(fg_async_futures) >= fg_async_max_inflight:
             fg_async_futures.pop(0).result()
@@ -696,7 +701,14 @@ def process_force_greats_gpu_finder(
             # FAST PATH: Build numpy array directly instead of list[dict]
             # Column order: pp, cm, fm, p_val, s_val, ft_stat, ff_stat
             n_pending = len(pending)
-            genome_stats_arr = np.zeros((n_pending, 7), dtype=np.int32)
+            # Reuse a persistent buffer to keep the data pointer stable (enables upload caching).
+            if not hasattr(process_force_greats_gpu_finder, "_genome_stats_buf"):
+                process_force_greats_gpu_finder._genome_stats_buf = np.zeros((1024, 7), dtype=np.int32)
+            genome_stats_buf = process_force_greats_gpu_finder._genome_stats_buf
+            if genome_stats_buf.shape[0] < n_pending:
+                process_force_greats_gpu_finder._genome_stats_buf = np.zeros((max(1024, n_pending), 7), dtype=np.int32)
+                genome_stats_buf = process_force_greats_gpu_finder._genome_stats_buf
+            genome_stats_arr = genome_stats_buf[:n_pending, :]
             for i, bs in enumerate(pending):
                 genome_stats_arr[i, 0] = int(bs.get("Perfect Points", 0))
                 genome_stats_arr[i, 1] = int(bs.get("Combo Multiplier", 0))
@@ -705,6 +717,9 @@ def process_force_greats_gpu_finder(
                 genome_stats_arr[i, 4] = int(bs.get(s_color, 0))  # s_val
                 genome_stats_arr[i, 5] = int(bs.get("Fever Time", 0))  # ft_stat
                 genome_stats_arr[i, 6] = int(bs.get("Fever Fill Rate", 0))  # ff_stat
+
+            # New genome batch => require a fresh upload on the first request.
+            genome_stats_uploaded = False
 
             song_data = calc_song.get("song_data", {}) or {}
             # IMPORTANT: Taichi FG API uses float32 timestamps. If we pass float64 arrays here,

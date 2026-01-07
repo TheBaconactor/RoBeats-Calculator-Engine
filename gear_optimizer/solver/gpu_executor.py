@@ -984,6 +984,9 @@ class GpuExecutor:
             kwargs_local = dict(kwargs)
             kwargs_local["accumulate_global"] = True
             kwargs_local["return_raw"] = True
+            # Allow callers to keep genome stats GPU-resident across multiple requests.
+            # Default remains True for safety.
+            kwargs_local["upload_genome_stats"] = bool(kwargs_local.get("upload_genome_stats", True))
 
             if reset_before:
                 fg_reset_global_best(int(n_genomes))
