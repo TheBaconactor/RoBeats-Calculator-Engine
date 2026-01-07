@@ -75,6 +75,16 @@ def process_force_greats_gpu_finder(
     _materialize_all_env = str(os.environ.get("FG_MATERIALIZE_ALL_FORCE_DETAILS", "0") or "").strip().lower()
     materialize_all_force = _materialize_all_env in {"1", "true", "yes", "on"}
 
+    # Optional: reduce global_best downloads by selecting only a small subset on GPU.
+    # Disabled when materializing all force details (needs full results).
+    _topk_env = str(os.environ.get("FG_DOWNLOAD_TOPK", "0") or "").strip().lower()
+    download_topk_enabled = (not materialize_all_force) and (_topk_env in {"1", "true", "yes", "on"})
+    try:
+        download_topk_k = int(os.environ.get("FG_DOWNLOAD_TOPK_K", str(LOADOUTS_PER_SONG_LIMIT)))
+    except Exception:
+        download_topk_k = int(LOADOUTS_PER_SONG_LIMIT)
+    download_topk_k = max(0, int(download_topk_k))
+
     def _submit_fg_reset_global_best(n_genomes: int, *, blocking: bool = True):
         if gpu_client is not None:
             fut = gpu_client.submit(
@@ -88,13 +98,27 @@ def process_force_greats_gpu_finder(
         fg_reset_global_best(int(n_genomes))
         return None
 
-    def _submit_fg_download_global_best(n_genomes: int, *, blocking: bool = True):
+    def _submit_fg_download_global_best(
+        n_genomes: int,
+        *,
+        blocking: bool = True,
+        topk: int | None = None,
+        base_scores=None,
+        keep_mask=None,
+    ):
         if gpu_client is not None:
+            payload = {"n_genomes": int(n_genomes)}
+            if topk is not None and base_scores is not None:
+                payload["topk"] = int(topk)
+                payload["base_scores"] = base_scores
+                payload["keep_mask"] = keep_mask
             fut = gpu_client.submit(
                 GpuRequestType.FG_DOWNLOAD_GLOBAL_BEST,
-                {"n_genomes": int(n_genomes)},
+                payload,
             ).future
             return fut.result() if blocking else fut
+        if topk is not None and base_scores is not None:
+            return fg_download_global_best(int(n_genomes), topk=int(topk), base_scores=base_scores, keep_mask=keep_mask)
         return fg_download_global_best(int(n_genomes))
 
     def _submit_solve_force_greats_finder(*args, blocking: bool = True, **kwargs):
@@ -261,7 +285,14 @@ def process_force_greats_gpu_finder(
     need_reset = False
     timeline_precompute_queued = False
 
-    def _flush_fg_tasks_batch(*, batch: list[dict] | None = None, download_after: bool = False):
+    def _flush_fg_tasks_batch(
+        *,
+        batch: list[dict] | None = None,
+        download_after: bool = False,
+        download_topk: int | None = None,
+        download_base_scores=None,
+        download_keep_mask=None,
+    ):
         nonlocal fg_tasks_batch, need_reset, genome_stats_uploaded
         if gpu_client is None:
             return None
@@ -321,6 +352,10 @@ def process_force_greats_gpu_finder(
             need_reset = False
         if download_after:
             submit_kwargs["fg_download_after"] = True
+            if download_topk is not None and download_base_scores is not None:
+                submit_kwargs["fg_download_topk"] = int(download_topk)
+                submit_kwargs["fg_download_base_scores"] = download_base_scores
+                submit_kwargs["fg_download_keep_mask"] = download_keep_mask
 
         fut = _submit_solve_force_greats_finder(
             genome_stats_arr,
@@ -342,6 +377,8 @@ def process_force_greats_gpu_finder(
     # Group work by (selected_element, n_sections, max_per_section)
     groups = {}
     group_centers = {}  # key -> set of (center_ft, center_ff)
+    # entry_obj_id -> stats signature (used for top-K download keep-mask)
+    entry_sig: dict[int, str] = {}
 
     # PERF counters (opt-in; enabled via caller)
     t_collect_sec = 0.0
@@ -433,6 +470,10 @@ def process_force_greats_gpu_finder(
 
         key = (str(sel_color), int(n_sections), int(max_per_section))
         sig = stats_signature(base_stats, calc_song, sel_color)
+        try:
+            entry_sig[int(id(entry))] = str(sig)
+        except Exception:
+            pass
 
         groups.setdefault(key, {}).setdefault(sig, []).append((entry, eval_data, base_stats))
         group_centers.setdefault(key, set()).add((int(center_ft), int(center_ff)))
@@ -440,6 +481,30 @@ def process_force_greats_gpu_finder(
 
     if perf:
         t_collect_sec = time.perf_counter() - _t_collect0
+
+    # Keep-mask for top-K downloads: always include top-base signatures so we can
+    # materialize FG details for retained (base) entries without downloading everything.
+    keep_sigs: set[str] = set()
+    if download_topk_enabled:
+        try:
+            items0 = list(loadout_entries.items()) if isinstance(loadout_entries, dict) else []
+        except Exception:
+            items0 = []
+
+        def _base_score0(e: dict) -> int:
+            try:
+                return int(e.get("base_score") or e.get("score", 0) or 0)
+            except Exception:
+                return 0
+
+        top_base0 = sorted(items0, key=lambda kv: _base_score0(kv[1]), reverse=True)[: int(LOADOUTS_PER_SONG_LIMIT)]
+        for _h0, e0 in top_base0:
+            try:
+                sig0 = entry_sig.get(int(id(e0)))
+            except Exception:
+                sig0 = None
+            if sig0:
+                keep_sigs.add(str(sig0))
 
     # Pair-caps (161x161x16):
     # Prefer a GPU-resident derivation from the already-computed timeline grid to avoid
@@ -701,6 +766,31 @@ def process_force_greats_gpu_finder(
             # FAST PATH: Build numpy array directly instead of list[dict]
             # Column order: pp, cm, fm, p_val, s_val, ft_stat, ff_stat
             n_pending = len(pending)
+            # Optional download selection inputs (per pending signature).
+            download_base_scores = None
+            download_keep_mask = None
+            if download_topk_enabled:
+                try:
+                    base_buf = np.zeros((int(n_pending),), dtype=np.int32)
+                    keep_buf = np.zeros((int(n_pending),), dtype=np.int32)
+                    for i_sig, sig0 in enumerate(pending_sigs):
+                        # Conservative: use the MIN base score across entries in this signature group.
+                        base_i = 0
+                        try:
+                            entries0 = sig_map.get(sig0) or []
+                            if entries0:
+                                base_i = min(
+                                    int((e0.get("base_score") or e0.get("score", 0) or 0)) for (e0, _ed0, _bs0) in entries0
+                                )
+                        except Exception:
+                            base_i = 0
+                        base_buf[int(i_sig)] = int(base_i)
+                        keep_buf[int(i_sig)] = 1 if str(sig0) in keep_sigs else 0
+                    download_base_scores = base_buf
+                    download_keep_mask = keep_buf
+                except Exception:
+                    download_base_scores = None
+                    download_keep_mask = None
             # Reuse a persistent buffer to keep the data pointer stable (enables upload caching).
             if not hasattr(process_force_greats_gpu_finder, "_genome_stats_buf"):
                 process_force_greats_gpu_finder._genome_stats_buf = np.zeros((1024, 7), dtype=np.int32)
@@ -779,6 +869,8 @@ def process_force_greats_gpu_finder(
             result_g_fm = None
             result_g_ov = None
             result_cfg_counts = None
+            selected_indices = None
+            cfg_counts_arr = None
 
             if per_pair_breakpoints:
                 _t_cfg1 = time.perf_counter() if perf else 0.0
@@ -1142,7 +1234,12 @@ def process_force_greats_gpu_finder(
 
                 # Single download at end - this is the key optimization!
                 _t_download0 = time.perf_counter() if perf else 0.0
-                download_future = _flush_fg_tasks_batch(download_after=True)
+                download_future = _flush_fg_tasks_batch(
+                    download_after=True,
+                    download_topk=int(download_topk_k) if download_topk_enabled else None,
+                    download_base_scores=download_base_scores,
+                    download_keep_mask=download_keep_mask,
+                )
                 fg_async_futures.clear()
 
                 if download_future is not None:
@@ -1160,6 +1257,7 @@ def process_force_greats_gpu_finder(
                             "max_per_section": int(max_per_section),
                             "n_pending": int(n_pending),
                             "master_configs": master_configs,
+                            "cfg_windows": cfg_windows,
                             "fg_scorer": fg_scorer if "fg_scorer" in locals() else None,
                             "download_future": download_future,
                             "futures": group_futures,
@@ -1172,7 +1270,13 @@ def process_force_greats_gpu_finder(
 
                 global_results = download_future.result() if hasattr(download_future, "result") else None
                 if global_results is None:
-                    global_results = _submit_fg_download_global_best(n_pending, blocking=True)
+                    global_results = _submit_fg_download_global_best(
+                        n_pending,
+                        blocking=True,
+                        topk=int(download_topk_k) if download_topk_enabled else None,
+                        base_scores=download_base_scores,
+                        keep_mask=download_keep_mask,
+                    )
                 if perf:
                     t_download_sec = time.perf_counter() - _t_download0
                     print(f"[PERF] FG GPU global download: {t_download_sec * 1000:.1f}ms")
@@ -1186,6 +1290,7 @@ def process_force_greats_gpu_finder(
                 result_g_cm = global_results["g_cm"]
                 result_g_fm = global_results["g_fm"]
                 result_g_ov = global_results["g_ov"]
+                selected_indices = global_results.get("selected_indices")
 
                 # Decode cfg_idx -> per-section FP targets for apply/persistence.
                 result_cfg_idx = global_results.get("cfg_idx")
@@ -1195,7 +1300,8 @@ def process_force_greats_gpu_finder(
 
                     cfg_idx_arr = _np.asarray(result_cfg_idx, dtype=_np.int32) if result_cfg_idx is not None else None
                     if cfg_idx_arr is not None and cfg_windows:
-                        cfg_counts_arr = _np.zeros((int(n_pending), int(n_sections)), dtype=_np.int32)
+                        n_out = int(cfg_idx_arr.shape[0])
+                        cfg_counts_arr = _np.zeros((int(n_out), int(n_sections)), dtype=_np.int32)
                         # Build cumulative ends for fast window lookup.
                         bases = [int(w.get("base", 0)) for w in cfg_windows]
                         lens = [int(w.get("len", 0)) for w in cfg_windows]
@@ -1208,7 +1314,7 @@ def process_force_greats_gpu_finder(
                                     return wi
                             return -1
 
-                        for gi in range(int(n_pending)):
+                        for gi in range(int(n_out)):
                             x = int(cfg_idx_arr[gi])
                             wi = _find_window(x)
                             if wi < 0:
@@ -1294,14 +1400,25 @@ def process_force_greats_gpu_finder(
                                 accumulate_global=True,
                             )
 
-                    download_future = _flush_fg_tasks_batch(download_after=True)
+                    download_future = _flush_fg_tasks_batch(
+                        download_after=True,
+                        download_topk=int(download_topk_k) if download_topk_enabled else None,
+                        download_base_scores=download_base_scores,
+                        download_keep_mask=download_keep_mask,
+                    )
                     for fut in fg_async_futures:
                         fut.result()
                     fg_async_futures.clear()
 
                     gpu_results = download_future.result() if hasattr(download_future, "result") else None
                     if gpu_results is None:
-                        gpu_results = _submit_fg_download_global_best(n_pending, blocking=True)
+                        gpu_results = _submit_fg_download_global_best(
+                            n_pending,
+                            blocking=True,
+                            topk=int(download_topk_k) if download_topk_enabled else None,
+                            base_scores=download_base_scores,
+                            keep_mask=download_keep_mask,
+                        )
                 else:
                     gpu_results = _submit_solve_force_greats_finder(
                         genome_stats_arr,  # numpy array instead of list[dict]
@@ -1347,10 +1464,50 @@ def process_force_greats_gpu_finder(
                 result_g_cm = gpu_results["g_cm"]
                 result_g_fm = gpu_results["g_fm"]
                 result_g_ov = gpu_results["g_ov"]
+                selected_indices = gpu_results.get("selected_indices")
+
+                # Decode cfg_idx -> per-section FP targets for apply/persistence (counts_list mode).
+                cfg_counts_arr = None
+                try:
+                    import numpy as _np
+
+                    cfg_idx_np = _np.asarray(result_cfg_idx, dtype=_np.int32) if result_cfg_idx is not None else None
+                    if cfg_idx_np is not None and counts_list:
+                        n_out = int(cfg_idx_np.shape[0])
+                        cfg_counts_arr = _np.zeros((int(n_out), int(n_sections)), dtype=_np.int32)
+                        for gi in range(int(n_out)):
+                            ci = int(cfg_idx_np[gi])
+                            if ci < 0 or ci >= int(len(counts_list)):
+                                continue
+                            try:
+                                row = counts_list[ci]
+                                for s in range(int(n_sections)):
+                                    cfg_counts_arr[gi, s] = int(row[s]) if s < len(row) else 0
+                            except Exception:
+                                continue
+                except Exception:
+                    cfg_counts_arr = None
+
+            # Reduced-download path: apply only to selected signature indices.
+            apply_sigs = pending_sigs
+            apply_pending = pending
+            if selected_indices is not None:
+                try:
+                    import numpy as _np
+
+                    idx_arr = _np.asarray(selected_indices, dtype=_np.int32)
+                    n_res = int(getattr(result_final, "shape", (0,))[0] or 0) if result_final is not None else 0
+                    if int(idx_arr.shape[0]) == int(n_res):
+                        idx_list = [int(x) for x in idx_arr.tolist()]
+                        apply_sigs = [pending_sigs[i] for i in idx_list]
+                        apply_pending = [pending[i] for i in idx_list]
+                except Exception:
+                    apply_sigs = pending_sigs
+                    apply_pending = pending
 
             _apply_gpu_results_to_entries(
-                pending_sigs=pending_sigs,
-                pending=pending,
+                pending_sigs=apply_sigs,
+                pending=apply_pending,
                 sig_map=sig_map,
                 sel_color=str(sel_color),
                 n_sections=int(n_sections),
@@ -1391,10 +1548,80 @@ def process_force_greats_gpu_finder(
 
             master_configs = ctx.get("master_configs") or []
             cfg_idx_arr = gpu_results.get("cfg_idx")
+            selected_indices = gpu_results.get("selected_indices")
+
+            # Decode cfg_idx -> per-section FP targets for apply/persistence (supports max_fp windows).
+            cfg_counts_arr = None
+            try:
+                import numpy as _np
+
+                cfg_windows = ctx.get("cfg_windows") or []
+                cfg_idx_np = _np.asarray(cfg_idx_arr, dtype=_np.int32) if cfg_idx_arr is not None else None
+                if cfg_idx_np is not None and cfg_windows:
+                    n_out = int(cfg_idx_np.shape[0])
+                    n_sections0 = int(ctx.get("n_sections") or 0)
+                    cfg_counts_arr = _np.zeros((int(n_out), int(n_sections0)), dtype=_np.int32)
+                    bases = [int(w.get("base", 0)) for w in cfg_windows]
+                    lens = [int(w.get("len", 0)) for w in cfg_windows]
+                    ends = [b + l for b, l in zip(bases, lens)]
+
+                    def _find_window(x: int) -> int:
+                        for wi, (b, e) in enumerate(zip(bases, ends)):
+                            if int(x) >= int(b) and int(x) < int(e):
+                                return wi
+                        return -1
+
+                    for gi in range(int(n_out)):
+                        x = int(cfg_idx_np[gi])
+                        wi = _find_window(x)
+                        if wi < 0:
+                            continue
+                        w = cfg_windows[wi]
+                        base = int(w.get("base", 0))
+                        local = int(x - base)
+                        if w.get("kind") == "list":
+                            lst = w.get("counts_list") or []
+                            if 0 <= local < len(lst):
+                                try:
+                                    row = lst[local]
+                                    for s in range(int(n_sections0)):
+                                        cfg_counts_arr[gi, s] = int(row[s]) if s < len(row) else 0
+                                except Exception:
+                                    pass
+                        else:
+                            max_fp_vec = list(w.get("max_fp") or [])
+                            rem = int(local)
+                            for s in range(int(n_sections0) - 1, -1, -1):
+                                basev = int(max(0, int(max_fp_vec[s] if s < len(max_fp_vec) else 0))) + 1
+                                if basev <= 0:
+                                    basev = 1
+                                val = rem % basev
+                                rem //= basev
+                                cfg_counts_arr[gi, s] = int(val)
+            except Exception:
+                cfg_counts_arr = None
+
+            # Reduced-download path: apply only to selected signature indices.
+            apply_sigs = ctx.get("pending_sigs") or []
+            apply_pending = ctx.get("pending") or []
+            if selected_indices is not None:
+                try:
+                    import numpy as _np
+
+                    idx_arr = _np.asarray(selected_indices, dtype=_np.int32)
+                    if int(idx_arr.shape[0]) == int(getattr(gpu_results.get("final_score"), "shape", (0,))[0] or 0):
+                        idx_list = [int(x) for x in idx_arr.tolist()]
+                        base_sigs = ctx.get("pending_sigs") or []
+                        base_pending = ctx.get("pending") or []
+                        apply_sigs = [base_sigs[i] for i in idx_list]
+                        apply_pending = [base_pending[i] for i in idx_list]
+                except Exception:
+                    apply_sigs = ctx.get("pending_sigs") or []
+                    apply_pending = ctx.get("pending") or []
 
             _apply_gpu_results_to_entries(
-                pending_sigs=ctx.get("pending_sigs") or [],
-                pending=ctx.get("pending") or [],
+                pending_sigs=apply_sigs,
+                pending=apply_pending,
                 sig_map=ctx.get("sig_map") or {},
                 sel_color=str(ctx.get("sel_color") or ""),
                 n_sections=int(ctx.get("n_sections") or 0),
@@ -1404,7 +1631,7 @@ def process_force_greats_gpu_finder(
                 result_final=gpu_results["final_score"],
                 result_base=gpu_results["base_score"],
                 result_cfg_idx=cfg_idx_arr,
-                result_cfg_counts=None,
+                result_cfg_counts=cfg_counts_arr,
                 result_ft=gpu_results["FT"],
                 result_ff=gpu_results["FF"],
                 result_g_pp=gpu_results["g_pp"],

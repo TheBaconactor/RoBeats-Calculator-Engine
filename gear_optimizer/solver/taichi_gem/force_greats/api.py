@@ -197,6 +197,10 @@ _fg_forced_counts_staging_pool: dict[int, Any] | None = None
 _fg_genome_stats_buf: np.ndarray | None = None
 _fg_flat_work_buf: dict[str, np.ndarray] | None = None
 
+# Cached padded buffers for global_best top-K selection uploads.
+_fg_download_topk_base_buf: np.ndarray | None = None
+_fg_download_topk_keep_buf: np.ndarray | None = None
+
 # Upload/build caches (avoid huge repeated host->device transfers)
 _fg_genome_stats_upload_key: tuple[int, int] | None = None  # (n_genomes, hash)
 _fg_flat_work_key: tuple[int, int] | None = None  # (n_genomes, n_ftff)
@@ -262,6 +266,7 @@ def reset_force_greats_api_state() -> None:
     global _fg_song_upload_buf, _fg_great_upload_buf, _fg_forced_upload_buf, _fg_ftff_upload_buf
     global _fg_forced_counts_staging_tiers, _fg_forced_counts_staging_pool
     global _fg_genome_stats_buf, _fg_flat_work_buf
+    global _fg_download_topk_base_buf, _fg_download_topk_keep_buf
     global _fg_genome_stats_upload_key, _fg_flat_work_key
     global _fg_forced_configs_upload_key
     global _fg_forced_resident_key, _fg_forced_resident_n_cfg_total
@@ -280,6 +285,8 @@ def reset_force_greats_api_state() -> None:
     _fg_forced_counts_staging_pool = None
     _fg_genome_stats_buf = None
     _fg_flat_work_buf = None
+    _fg_download_topk_base_buf = None
+    _fg_download_topk_keep_buf = None
     _fg_genome_stats_upload_key = None
     _fg_flat_work_key = None
     _fg_forced_configs_upload_key = None
@@ -378,7 +385,13 @@ def fg_reset_global_best(n_genomes: int) -> None:
     fg_kernels.fg_reset_global_best_kernel(int(n_genomes))
 
 
-def fg_download_global_best(n_genomes: int) -> dict[str, np.ndarray]:
+def fg_download_global_best(
+    n_genomes: int,
+    *,
+    topk: int | None = None,
+    base_scores: np.ndarray | None = None,
+    keep_mask: np.ndarray | None = None,
+) -> dict[str, np.ndarray]:
     """
     Download final global best results after all groups processed.
 
@@ -387,8 +400,15 @@ def fg_download_global_best(n_genomes: int) -> dict[str, np.ndarray]:
     Args:
         n_genomes: Number of genomes to download
 
+    Args:
+        topk: Optional top-K selection for reduced download. When provided with `base_scores`,
+              returns only `keep_mask` rows plus up to `topk` high-score candidate rows.
+        base_scores: Per-genome base score used for the candidate eligibility filter (final_score > base_score).
+        keep_mask: Optional per-genome mask (1=force include). Useful for ensuring top-base entries are always downloaded.
+
     Returns:
-        Dict with numpy arrays for all result fields (same format as return_raw=True)
+        Dict with numpy arrays for all result fields (same format as return_raw=True).
+        When `topk` is enabled, also includes `selected_indices` (genome indices into the global_best buffers).
     """
     # Ensure all GPU work is complete (sync cost is often the "wall time" people see
     # as a utilization drop between bursts).
@@ -396,6 +416,99 @@ def fg_download_global_best(n_genomes: int) -> dict[str, np.ndarray]:
     ti.sync()
     _sync_sec = time.perf_counter() - _t0
     n = int(n_genomes)
+
+    # Optional reduced download path: select/pack only a small subset.
+    if topk is not None and base_scores is not None:
+        k = int(topk)
+        base_np = np.asarray(base_scores, dtype=np.int32)
+        if int(base_np.shape[0]) != n:
+            raise ValueError(f"base_scores length mismatch: {int(base_np.shape[0])} != {n}")
+        if not base_np.flags["C_CONTIGUOUS"]:
+            base_np = np.ascontiguousarray(base_np, dtype=np.int32)
+
+        if keep_mask is None:
+            keep_np = np.zeros((n,), dtype=np.int32)
+        else:
+            keep_np = np.asarray(keep_mask, dtype=np.int32)
+            if int(keep_np.shape[0]) != n:
+                raise ValueError(f"keep_mask length mismatch: {int(keep_np.shape[0])} != {n}")
+            if not keep_np.flags["C_CONTIGUOUS"]:
+                keep_np = np.ascontiguousarray(keep_np, dtype=np.int32)
+
+        # Upload selection inputs.
+        #
+        # Note: Taichi field shapes must match exactly for from_numpy(). We allocate the
+        # fields at MAX_GENOMES, so we upload into a persistent padded buffer and only
+        # the first `n` entries are read by the selection kernel.
+        global _fg_download_topk_base_buf, _fg_download_topk_keep_buf
+        try:
+            max_g = int(getattr(fg_fields, "MAX_GENOMES", 0) or 0)
+        except Exception:
+            max_g = 0
+        if max_g <= 0:
+            max_g = int(n)
+        if _fg_download_topk_base_buf is None or int(_fg_download_topk_base_buf.shape[0]) != int(max_g):
+            _fg_download_topk_base_buf = np.zeros((int(max_g),), dtype=np.int32)
+        if _fg_download_topk_keep_buf is None or int(_fg_download_topk_keep_buf.shape[0]) != int(max_g):
+            _fg_download_topk_keep_buf = np.zeros((int(max_g),), dtype=np.int32)
+
+        _fg_download_topk_base_buf[:n] = base_np[:n]
+        _fg_download_topk_keep_buf[:n] = keep_np[:n]
+
+        fg_fields.fg_input_base_score.from_numpy(_fg_download_topk_base_buf)
+        fg_fields.fg_keep_mask.from_numpy(_fg_download_topk_keep_buf)
+
+        fg_kernels.fg_select_global_best_topk_kernel(n, int(k))
+        try:
+            n_pack = int(getattr(fg_fields, "FG_DOWNLOAD_TOPK_MAX", 0) or 0)
+        except Exception:
+            n_pack = 0
+        if n_pack <= 0:
+            n_pack = 256
+
+        # Pack a fixed number of rows to avoid extra sync/scalar reads.
+        fg_kernels.fg_pack_selected_global_best_kernel(int(n_pack))
+        _t1 = time.perf_counter()
+        sel_packed_all = fg_fields.fg_selected_packed.to_numpy()
+        _dl_sec = time.perf_counter() - _t1
+        _record_kernel_wall("global_best_sync", _sync_sec, genome_count=n)
+        _bytes_sel = int(getattr(sel_packed_all, "nbytes", 0) or 0)
+        _record_download("global_best_topk_packed", _dl_sec, _bytes_sel)
+        if _FG_TRANSFER_TRACE:
+            try:
+                print(
+                    f"[FG][XFER] global_best_topk: sync={_sync_sec * 1000:.2f}ms "
+                    f"download={_dl_sec * 1000:.2f}ms rows={int(n_pack)} bytes={int(_bytes_sel)}"
+                )
+            except Exception:
+                pass
+
+        # Derive actual selected length from the packed idx column (-1 sentinel).
+        idx_all = sel_packed_all[:, 0]
+        try:
+            neg = np.nonzero(np.asarray(idx_all) < 0)[0]
+            n_sel = int(neg[0]) if int(getattr(neg, "shape", (0,))[0] or 0) > 0 else int(n_pack)
+        except Exception:
+            n_sel = int(n_pack)
+
+        sel_packed = sel_packed_all[: int(n_sel), :]
+        sel_idx = sel_packed[:, 0]
+        return {
+            "selected_indices": sel_idx,
+            "final_score": sel_packed[:, 1],
+            "base_score": sel_packed[:, 2],
+            "cfg_idx": sel_packed[:, 3],
+            "FT": sel_packed[:, 4],
+            "FF": sel_packed[:, 5],
+            "g_pp": sel_packed[:, 6],
+            "g_cm": sel_packed[:, 7],
+            "g_fm": sel_packed[:, 8],
+            "g_ov": sel_packed[:, 9],
+            "score_penalty": sel_packed[:, 10],
+            "fill_penalty": sel_packed[:, 11],
+        }
+
+    # Default: download all rows
     fg_kernels.fg_pack_global_best_kernel(n)
     _t1 = time.perf_counter()
     packed = fg_fields.fg_global_best_packed.to_numpy()[:n, :]

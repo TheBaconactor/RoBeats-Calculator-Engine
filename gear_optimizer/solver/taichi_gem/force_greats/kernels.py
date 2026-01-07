@@ -13,7 +13,7 @@ import os
 import taichi as ti
 
 from ..kernels import kernels_helpers
-from .fields import FG_MAX_SECTIONS, FG_MAX_STAT
+from .fields import FG_DOWNLOAD_TOPK_MAX, FG_MAX_SECTIONS, FG_MAX_STAT
 
 
 # ============================================================================
@@ -77,6 +77,12 @@ fg_global_best_g_ov = None
 fg_global_best_score_penalty = None
 fg_global_best_fill_penalty = None
 fg_global_best_packed = None
+
+fg_input_base_score = None
+fg_keep_mask = None
+fg_selected_count = None
+fg_selected_indices = None
+fg_selected_packed = None
 
 # Warm-start hint allocation (bound from fields.py)
 fg_genome_hint_allocation = None
@@ -1150,6 +1156,124 @@ def fg_pack_global_best_kernel(n_genomes: ti.i32):
         fg_global_best_packed[g, 8] = fg_global_best_g_ov[g]
         fg_global_best_packed[g, 9] = fg_global_best_score_penalty[g]
         fg_global_best_packed[g, 10] = fg_global_best_fill_penalty[g]
+
+
+@ti.kernel
+def fg_select_global_best_topk_kernel(n_genomes: ti.i32, topk: ti.i32):
+    """
+    Build a compact list of genome indices worth downloading from global_best.
+
+    Output order:
+    - keep items first (in ascending genome index)
+    - then top-k candidates by final_score (descending), tie-breaking by lower genome index (stable)
+
+    Eligibility filter for candidates:
+    - final_score > fg_input_base_score
+    - fg_global_best_fill_penalty > 0 (implies at least one forced section; matches CPU "valid config" intent)
+    """
+    k: ti.i32 = topk
+    if k < 0:
+        k = 0
+    if k > ti.i32(FG_DOWNLOAD_TOPK_MAX):
+        k = ti.i32(FG_DOWNLOAD_TOPK_MAX)
+
+    # Clear output
+    fg_selected_count[None] = 0
+    ti.loop_config(serialize=True)
+    for j in range(FG_DOWNLOAD_TOPK_MAX):
+        fg_selected_indices[j] = -1
+
+    # Keep set: include these indices unconditionally
+    keep_count: ti.i32 = 0
+    ti.loop_config(serialize=True)
+    for i in range(n_genomes):
+        if fg_keep_mask[i] != 0:
+            if keep_count < ti.i32(FG_DOWNLOAD_TOPK_MAX):
+                fg_selected_indices[keep_count] = i
+                keep_count += 1
+
+    start: ti.i32 = keep_count
+    max_k: ti.i32 = k
+    if start + max_k > ti.i32(FG_DOWNLOAD_TOPK_MAX):
+        max_k = ti.i32(FG_DOWNLOAD_TOPK_MAX) - start
+    if max_k < 0:
+        max_k = 0
+
+    # Initialize candidate slots
+    ti.loop_config(serialize=True)
+    for j in range(max_k):
+        fg_selected_indices[start + j] = -1
+
+    # Insert-sort top-k candidates by packed key
+    ti.loop_config(serialize=True)
+    for i in range(n_genomes):
+        if fg_keep_mask[i] != 0:
+            continue
+        score: ti.i32 = fg_global_best_final_score[i]
+        if score <= fg_input_base_score[i]:
+            continue
+        if fg_global_best_fill_penalty[i] <= 0:
+            continue
+
+        key: ti.i64 = (ti.cast(score, ti.i64) << 32) | ti.cast(0x7FFFFFFF - i, ti.i64)
+        pos: ti.i32 = max_k
+
+        # Find insertion point
+        for j in range(max_k):
+            idx_j: ti.i32 = fg_selected_indices[start + j]
+            if idx_j < 0:
+                pos = j
+                break
+            score_j: ti.i32 = fg_global_best_final_score[idx_j]
+            key_j: ti.i64 = (ti.cast(score_j, ti.i64) << 32) | ti.cast(0x7FFFFFFF - idx_j, ti.i64)
+            if key > key_j:
+                pos = j
+                break
+
+        if pos < max_k:
+            # Shift down to make room
+            for off in range(max_k - 1):
+                s: ti.i32 = (max_k - 1) - off
+                if s > pos:
+                    fg_selected_indices[start + s] = fg_selected_indices[start + s - 1]
+            fg_selected_indices[start + pos] = i
+
+    # Compute final count (keep + filled candidates)
+    count: ti.i32 = keep_count
+    ti.loop_config(serialize=True)
+    for j in range(max_k):
+        if fg_selected_indices[start + j] >= 0:
+            count += 1
+        else:
+            break
+    fg_selected_count[None] = count
+
+
+@ti.kernel
+def fg_pack_selected_global_best_kernel(n_selected: ti.i32):
+    """Pack selected rows from global_best into fg_selected_packed for fast CPU download.
+
+    Column order (12):
+      [genome_idx, final_score, base_score, cfg_idx, ft, ff, g_pp, g_cm, g_fm, g_ov, score_penalty, fill_penalty]
+    """
+    for j in range(n_selected):
+        idx: ti.i32 = fg_selected_indices[j]
+        fg_selected_packed[j, 0] = idx
+        if idx < 0:
+            for c in range(1, 12):
+                fg_selected_packed[j, c] = 0
+            continue
+        fg_selected_packed[j, 1] = fg_global_best_final_score[idx]
+        fg_selected_packed[j, 2] = fg_global_best_base_score[idx]
+        fg_selected_packed[j, 3] = fg_global_best_cfg_idx[idx]
+        fg_selected_packed[j, 4] = fg_global_best_ft[idx]
+        fg_selected_packed[j, 5] = fg_global_best_ff[idx]
+        fg_selected_packed[j, 6] = fg_global_best_g_pp[idx]
+        fg_selected_packed[j, 7] = fg_global_best_g_cm[idx]
+        fg_selected_packed[j, 8] = fg_global_best_g_fm[idx]
+        fg_selected_packed[j, 9] = fg_global_best_g_ov[idx]
+        fg_selected_packed[j, 10] = fg_global_best_score_penalty[idx]
+        fg_selected_packed[j, 11] = fg_global_best_fill_penalty[idx]
 
 
 @ti.kernel

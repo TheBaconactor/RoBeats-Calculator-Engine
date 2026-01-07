@@ -982,6 +982,11 @@ class GpuExecutor:
                 n_genomes = 0
 
             kwargs_local = dict(kwargs)
+            # Optional reduced-download knobs (consumed only at download_after time).
+            # Pop these so they are NOT forwarded into solve_force_greats_finder_gpu_tasks.
+            download_topk = kwargs_local.pop("fg_download_topk", None)
+            download_base_scores = kwargs_local.pop("fg_download_base_scores", None)
+            download_keep_mask = kwargs_local.pop("fg_download_keep_mask", None)
             kwargs_local["accumulate_global"] = True
             kwargs_local["return_raw"] = True
             # Allow callers to keep genome stats GPU-resident across multiple requests.
@@ -1004,7 +1009,19 @@ class GpuExecutor:
 
             result = None
             if download_after:
-                result = fg_download_global_best(int(n_genomes))
+                try:
+                    if download_topk is not None and download_base_scores is not None:
+                        result = fg_download_global_best(
+                            int(n_genomes),
+                            topk=int(download_topk),
+                            base_scores=download_base_scores,
+                            keep_mask=download_keep_mask,
+                        )
+                    else:
+                        result = fg_download_global_best(int(n_genomes))
+                except Exception:
+                    # Fall back to full download for robustness.
+                    result = fg_download_global_best(int(n_genomes))
 
             return GpuResponse(request_id=request.request_id, success=True, result=result)
 
@@ -1211,7 +1228,18 @@ class GpuExecutor:
 
         from .taichi_gem.force_greats.api import fg_download_global_best
 
-        result = fg_download_global_best(int(n_genomes))
+        download_topk = payload.get("topk")
+        download_base_scores = payload.get("base_scores")
+        download_keep_mask = payload.get("keep_mask")
+        if download_topk is not None and download_base_scores is not None:
+            result = fg_download_global_best(
+                int(n_genomes),
+                topk=int(download_topk),
+                base_scores=download_base_scores,
+                keep_mask=download_keep_mask,
+            )
+        else:
+            result = fg_download_global_best(int(n_genomes))
         return GpuResponse(
             request_id=request.request_id,
             success=True,

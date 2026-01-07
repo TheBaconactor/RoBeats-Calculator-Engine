@@ -22,6 +22,7 @@ FG_MAX_STAT = 160  # Maximum FT/FF stat index
 FG_MAX_CONFIGS = 1048576
 FG_MAX_FTFF = 1024
 FG_MAX_SONG_NOTES = 200000  # safety cap for timestamps uploaded to GPU
+FG_DOWNLOAD_TOPK_MAX = 256  # Max selected rows for reduced global_best download (keep + candidates)
 
 # Flattened parallelization: MAX_GENOMES * FG_MAX_FTFF threads
 # Each thread processes ONE config at a time (chunked)
@@ -110,6 +111,13 @@ fg_global_best_score_penalty: ti.Field | None = None  # (MAX_GENOMES,) i32
 fg_global_best_fill_penalty: ti.Field | None = None  # (MAX_GENOMES,) i32
 fg_global_best_packed: ti.Field | None = None  # (MAX_GENOMES, 11) i32
 
+# Optional: reduce host downloads by selecting/packing only a small subset of global_best rows.
+fg_input_base_score: ti.Field | None = None  # (MAX_GENOMES,) i32 (base score per genome for eligibility filter)
+fg_keep_mask: ti.Field | None = None  # (MAX_GENOMES,) i32 (1=force include this genome in selected list)
+fg_selected_count: ti.Field | None = None  # () i32 (number of selected rows)
+fg_selected_indices: ti.Field | None = None  # (FG_DOWNLOAD_TOPK_MAX,) i32 (genome indices into global_best arrays)
+fg_selected_packed: ti.Field | None = None  # (FG_DOWNLOAD_TOPK_MAX, 12) i32 (idx + packed row)
+
 # Warm-start hints for FG gem allocation (local search optimization)
 # Stores: [pp_gems, cm_gems, fm_gems, ov_gems] from previous best allocation
 fg_genome_hint_allocation: ti.Field | None = None  # (MAX_GENOMES, 4) i32
@@ -188,6 +196,7 @@ def reset_fields_state() -> None:
     global fg_global_best_ft, fg_global_best_ff
     global fg_global_best_g_pp, fg_global_best_g_cm, fg_global_best_g_fm, fg_global_best_g_ov
     global fg_global_best_score_penalty, fg_global_best_fill_penalty, fg_global_best_packed
+    global fg_input_base_score, fg_keep_mask, fg_selected_count, fg_selected_indices, fg_selected_packed
     global fg_genome_hint_allocation
     fg_global_best_final_score = None
     fg_global_best_base_score = None
@@ -201,6 +210,12 @@ def reset_fields_state() -> None:
     fg_global_best_score_penalty = None
     fg_global_best_fill_penalty = None
     fg_global_best_packed = None
+
+    fg_input_base_score = None
+    fg_keep_mask = None
+    fg_selected_count = None
+    fg_selected_indices = None
+    fg_selected_packed = None
     fg_genome_hint_allocation = None
 
     _fields_allocated = False
@@ -268,6 +283,12 @@ def bind_fields(kernels_module) -> None:
     kernels_module.fg_global_best_score_penalty = fg_global_best_score_penalty
     kernels_module.fg_global_best_fill_penalty = fg_global_best_fill_penalty
     kernels_module.fg_global_best_packed = fg_global_best_packed
+
+    kernels_module.fg_input_base_score = fg_input_base_score
+    kernels_module.fg_keep_mask = fg_keep_mask
+    kernels_module.fg_selected_count = fg_selected_count
+    kernels_module.fg_selected_indices = fg_selected_indices
+    kernels_module.fg_selected_packed = fg_selected_packed
     kernels_module.fg_genome_hint_allocation = fg_genome_hint_allocation
 
 
@@ -340,6 +361,7 @@ def allocate_fields() -> None:
     global fg_global_best_ft, fg_global_best_ff
     global fg_global_best_g_pp, fg_global_best_g_cm, fg_global_best_g_fm, fg_global_best_g_ov
     global fg_global_best_score_penalty, fg_global_best_fill_penalty, fg_global_best_packed
+    global fg_input_base_score, fg_keep_mask, fg_selected_count, fg_selected_indices, fg_selected_packed
     fg_global_best_final_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_global_best_base_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_global_best_cfg_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
@@ -352,6 +374,12 @@ def allocate_fields() -> None:
     fg_global_best_score_penalty = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_global_best_fill_penalty = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_global_best_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, 11))
+
+    fg_input_base_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    fg_keep_mask = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    fg_selected_count = ti.field(dtype=ti.i32, shape=())
+    fg_selected_indices = ti.field(dtype=ti.i32, shape=FG_DOWNLOAD_TOPK_MAX)
+    fg_selected_packed = ti.field(dtype=ti.i32, shape=(FG_DOWNLOAD_TOPK_MAX, 12))
 
     # Warm-start hints for FG gem allocation
     global fg_genome_hint_allocation
@@ -498,6 +526,8 @@ def warmup_kernels() -> None:
     # Warmup packing kernels (avoid first-download JIT hiccup)
     fg_kernels.fg_pack_results_kernel(n_genomes)
     fg_kernels.fg_pack_global_best_kernel(n_genomes)
+    fg_kernels.fg_select_global_best_topk_kernel(n_genomes, 1)
+    fg_kernels.fg_pack_selected_global_best_kernel(1)
 
     # Sync to ensure JIT is complete
     ti.sync()

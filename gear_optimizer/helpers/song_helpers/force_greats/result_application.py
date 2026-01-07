@@ -119,7 +119,15 @@ def apply_gpu_results_to_entries(
         g_ov = int(result_g_ov[idx])
 
         if result_cfg_counts is not None:
-            cfg_counts = list(result_cfg_counts[idx]) if result_cfg_counts[idx] else []
+            # `result_cfg_counts` can be a numpy array; avoid ambiguous truthiness on ndarray rows.
+            row = result_cfg_counts[idx]
+            if row is None:
+                cfg_counts = []
+            else:
+                try:
+                    cfg_counts = list(row)
+                except Exception:
+                    cfg_counts = []
         else:
             cfg_idx = int(result_cfg_idx[idx]) if result_cfg_idx is not None else -1
             cfg_counts = list(counts_list[cfg_idx]) if 0 <= cfg_idx < len(counts_list) else []
