@@ -1488,6 +1488,10 @@ def process_force_greats_gpu_finder(
                 except Exception:
                     cfg_counts_arr = None
 
+            # Defensive: older revisions had paths where `cfg_counts_arr` was never assigned.
+            # Keep behavior stable by falling back to cfg_idx->counts_list decode when None.
+            cfg_counts_arr = cfg_counts_arr if "cfg_counts_arr" in locals() else None
+
             # Reduced-download path: apply only to selected signature indices.
             apply_sigs = pending_sigs
             apply_pending = pending
@@ -1512,7 +1516,9 @@ def process_force_greats_gpu_finder(
                 sel_color=str(sel_color),
                 n_sections=int(n_sections),
                 max_per_section=int(max_per_section),
-                counts_list=None,
+                # Safe: when result_cfg_counts is provided, counts_list is ignored.
+                # When result_cfg_counts is None, we need counts_list to decode cfg_idx.
+                counts_list=counts_list,
                 fg_scorer=fg_scorer if "fg_scorer" in locals() else None,
                 result_final=result_final,
                 result_base=result_base,
