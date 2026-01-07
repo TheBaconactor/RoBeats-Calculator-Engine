@@ -1480,7 +1480,9 @@ def solve_force_greats_finder_gpu_tasks(
     expensive `genome_base_stats` upload across many small breakpoint groups.
 
     Each task must be a dict containing:
-      - counts_list: list of forced-count configs
+      - counts_list: list of FP-target configs (legacy)
+        OR
+      - counts_max_fp: list[int] of per-section max FP (GPU-generated rectangular configs)
       - ftff_pairs: list of (ft_gems, ff_gems)
       - optional base_cfg_offset: global cfg index offset
     """
@@ -1593,20 +1595,39 @@ def solve_force_greats_finder_gpu_tasks(
         if not isinstance(task, dict):
             continue
         fg_configs = task.get("counts_list")
+        counts_max_fp = task.get("counts_max_fp")
         ftff_pairs = task.get("ftff_pairs")
-        if not fg_configs or not ftff_pairs:
+        if (not fg_configs and not counts_max_fp) or not ftff_pairs:
             continue
         try:
             cfg_base = int(task.get("base_cfg_offset", base_cfg_offset) or base_cfg_offset)
         except Exception:
             cfg_base = int(base_cfg_offset)
-        cfg_len = int(len(fg_configs))
+        if counts_max_fp:
+            try:
+                max_fp_list = [max(0, int(x or 0)) for x in list(counts_max_fp)[: int(n_sections)]]
+            except Exception:
+                max_fp_list = []
+            if not max_fp_list:
+                cfg_len = 1
+            else:
+                cfg_len = 1
+                for v in max_fp_list:
+                    cfg_len *= int(v) + 1
+        else:
+            cfg_len = int(len(fg_configs))
         if cfg_len <= 0:
             continue
         if cfg_len > max_cfg_len:
             max_cfg_len = cfg_len
 
-        key = (int(id(fg_configs)), int(cfg_base))
+        if counts_max_fp:
+            try:
+                key = (tuple(max_fp_list), int(cfg_base))
+            except Exception:
+                key = (int(id(counts_max_fp)), int(cfg_base))
+        else:
+            key = (int(id(fg_configs)), int(cfg_base))
         if key not in uploaded_cfg_keys:
             uploaded_cfg_keys.add(key)
             if cfg_base < 0:
@@ -1614,58 +1635,79 @@ def solve_force_greats_finder_gpu_tasks(
             if int(cfg_base) + int(cfg_len) > int(fg_fields.FG_MAX_CONFIGS):
                 raise ValueError("Packed FG tasks exceed FG_MAX_CONFIGS")
 
-            # Pack into staging buffer (shape stability) and upload to the global table at cfg_base.
-            #
-            # IMPORTANT: the staging buffer is capped (default 4096 rows). Some songs/configurations can produce
-            # >4096 distinct configs (e.g., 3+ useful sections with wide breakpoint ranges). Chunk uploads to
-            # avoid IndexError and keep correctness (kernel reads only the first `n_cfg` rows per upload).
-            max_rows = int(getattr(buf, "shape", (0,))[0] or 0)
-            if max_rows <= 0:
-                raise RuntimeError("Forced-count staging buffer was not allocated")
+            if counts_max_fp:
+                # GPU-native rectangular config generation (no host materialization).
+                max_fp_arr = np.zeros((int(fg_fields.FG_MAX_SECTIONS),), dtype=np.int32)
+                for i, v in enumerate(max_fp_list[: int(fg_fields.FG_MAX_SECTIONS)]):
+                    max_fp_arr[i] = int(v)
+                # Chunk generation to keep kernels bounded (mirrors staging chunking).
+                gen_chunk = int(min(int(cfg_len), int(_FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)))
+                if gen_chunk <= 0:
+                    gen_chunk = int(min(int(cfg_len), 4096))
+                for cfg_off in range(0, int(cfg_len), int(gen_chunk)):
+                    n_cfg = min(int(gen_chunk), int(cfg_len) - int(cfg_off))
+                    if n_cfg <= 0:
+                        continue
+                    fg_kernels.fg_generate_fp_targets_cartesian_kernel(
+                        int(n_cfg),
+                        int(cfg_base) + int(cfg_off),
+                        int(cfg_off),
+                        int(n_sections),
+                        max_fp_arr,
+                    )
+            else:
+                # Pack into staging buffer (shape stability) and upload to the global table at cfg_base.
+                #
+                # IMPORTANT: the staging buffer is capped (default 4096 rows). Some songs/configurations can produce
+                # >4096 distinct configs (e.g., 3+ useful sections with wide breakpoint ranges). Chunk uploads to
+                # avoid IndexError and keep correctness (kernel reads only the first `n_cfg` rows per upload).
+                max_rows = int(getattr(buf, "shape", (0,))[0] or 0)
+                if max_rows <= 0:
+                    raise RuntimeError("Forced-count staging buffer was not allocated")
 
-            # Attempt a packed numpy view for fast slicing when possible.
-            arr_cfg = None
-            try:
-                arr_cfg = np.asarray(fg_configs, dtype=np.int32)
-            except Exception:
+                # Attempt a packed numpy view for fast slicing when possible.
                 arr_cfg = None
-            arr_cfg_is_packed = bool(
-                arr_cfg is not None and getattr(arr_cfg, "ndim", 0) == 2 and int(arr_cfg.shape[0]) == int(cfg_len)
-            )
-            packed_cols = int(arr_cfg.shape[1]) if arr_cfg_is_packed else 0
-            cols = min(int(packed_cols), int(n_sections), int(fg_fields.FG_MAX_SECTIONS)) if packed_cols > 0 else 0
-
-            for cfg_off in range(0, int(cfg_len), int(max_rows)):
-                n_cfg = min(int(max_rows), int(cfg_len) - int(cfg_off))
-                if n_cfg <= 0:
-                    continue
-
-                buf[:n_cfg, :] = 0
                 try:
-                    if arr_cfg_is_packed and cols > 0:
-                        buf[:n_cfg, :cols] = arr_cfg[int(cfg_off) : int(cfg_off) + int(n_cfg), :cols]
-                    else:
+                    arr_cfg = np.asarray(fg_configs, dtype=np.int32)
+                except Exception:
+                    arr_cfg = None
+                arr_cfg_is_packed = bool(
+                    arr_cfg is not None and getattr(arr_cfg, "ndim", 0) == 2 and int(arr_cfg.shape[0]) == int(cfg_len)
+                )
+                packed_cols = int(arr_cfg.shape[1]) if arr_cfg_is_packed else 0
+                cols = min(int(packed_cols), int(n_sections), int(fg_fields.FG_MAX_SECTIONS)) if packed_cols > 0 else 0
+
+                for cfg_off in range(0, int(cfg_len), int(max_rows)):
+                    n_cfg = min(int(max_rows), int(cfg_len) - int(cfg_off))
+                    if n_cfg <= 0:
+                        continue
+
+                    buf[:n_cfg, :] = 0
+                    try:
+                        if arr_cfg_is_packed and cols > 0:
+                            buf[:n_cfg, :cols] = arr_cfg[int(cfg_off) : int(cfg_off) + int(n_cfg), :cols]
+                        else:
+                            chunk = fg_configs[int(cfg_off) : int(cfg_off) + int(n_cfg)]
+                            for i, cfg in enumerate(chunk):
+                                limit = min(int(n_sections), int(len(cfg)), int(fg_fields.FG_MAX_SECTIONS))
+                                buf[i, :limit] = cfg[:limit]
+                    except Exception:
                         chunk = fg_configs[int(cfg_off) : int(cfg_off) + int(n_cfg)]
                         for i, cfg in enumerate(chunk):
                             limit = min(int(n_sections), int(len(cfg)), int(fg_fields.FG_MAX_SECTIONS))
                             buf[i, :limit] = cfg[:limit]
-                except Exception:
-                    chunk = fg_configs[int(cfg_off) : int(cfg_off) + int(n_cfg)]
-                    for i, cfg in enumerate(chunk):
-                        limit = min(int(n_sections), int(len(cfg)), int(fg_fields.FG_MAX_SECTIONS))
-                        buf[i, :limit] = cfg[:limit]
 
-                staging_rows = _pick_forced_counts_staging_rows(int(n_cfg))
-                staging = _get_forced_counts_staging(int(staging_rows))
-                _t_up0 = time.perf_counter() if (_PERF_TIMING or p is not None) else 0.0
-                staging.from_numpy(buf[: int(staging_rows), :])
-                if _t_up0:
-                    _record_upload(
-                        "forced_counts_staging(packed_tasks)",
-                        time.perf_counter() - _t_up0,
-                        buf[: int(staging_rows), :].nbytes,
-                    )
-                fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), int(cfg_base) + int(cfg_off), staging)
+                    staging_rows = _pick_forced_counts_staging_rows(int(n_cfg))
+                    staging = _get_forced_counts_staging(int(staging_rows))
+                    _t_up0 = time.perf_counter() if (_PERF_TIMING or p is not None) else 0.0
+                    staging.from_numpy(buf[: int(staging_rows), :])
+                    if _t_up0:
+                        _record_upload(
+                            "forced_counts_staging(packed_tasks)",
+                            time.perf_counter() - _t_up0,
+                            buf[: int(staging_rows), :].nbytes,
+                        )
+                    fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), int(cfg_base) + int(cfg_off), staging)
 
         for ftg, ffg in ftff_pairs:
             ftff_entries.append((int(ftg), int(ffg), int(cfg_base), int(cfg_len)))

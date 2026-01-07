@@ -446,6 +446,60 @@ def fg_upload_forced_counts_kernel(n_cfg: ti.i32, cfg_dst_offset: ti.i32, data: 
 
 
 @ti.kernel
+def fg_generate_fp_targets_cartesian_kernel(
+    n_cfg: ti.i32,
+    cfg_dst_offset: ti.i32,
+    cfg_src_offset: ti.i32,
+    n_sections: ti.i32,
+    max_fp_by_section: ti.types.ndarray(dtype=ti.i32, ndim=1),
+):
+    """
+    Generate rectangular FP-target configs directly on GPU.
+
+    This replaces CPU `itertools.product(*ranges)` materialization for the common
+    breakpoint-mode case where each section is simply `range(0, max_fp+1)`.
+
+    Ordering matches Python's `itertools.product`:
+      - last dimension (section n-1) varies fastest
+      - first dimension (section 0) varies slowest
+    """
+    for i in range(n_cfg):
+        idx = ti.i32(cfg_src_offset + i)
+        # Decode idx in mixed radix bases=(max_fp+1) from last section to first.
+        # We store per-section FP targets into `fg_forced_counts`.
+        # Unused sections are zeroed for safety.
+        for sec in range(FG_MAX_SECTIONS):
+            if sec < n_sections:
+                fg_forced_counts[cfg_dst_offset + i, sec] = 0
+            else:
+                fg_forced_counts[cfg_dst_offset + i, sec] = 0
+
+        for k in range(n_sections):
+            sec = (n_sections - 1) - k
+            base = ti.i32(0)
+            if sec < FG_MAX_SECTIONS:
+                base = ti.max(1, ti.i32(max_fp_by_section[sec]) + 1)
+                val = idx % base
+                idx = idx // base
+                fg_forced_counts[cfg_dst_offset + i, sec] = val
+
+
+@ti.kernel
+def fg_read_forced_counts_kernel(
+    n_cfg: ti.i32,
+    cfg_src_offset: ti.i32,
+    n_sections: ti.i32,
+    out: ti.types.ndarray(dtype=ti.i32, ndim=2),
+):
+    """Read back forced-count/FP-target rows into a small host array for tests/bench."""
+    for i, s in ti.ndrange(n_cfg, n_sections):
+        if s < FG_MAX_SECTIONS:
+            out[i, s] = ti.cast(fg_forced_counts[cfg_src_offset + i, s], ti.i32)
+        else:
+            out[i, s] = 0
+
+
+@ti.kernel
 def fg_upload_cfg_ranges_kernel(
     n_ftff: ti.i32,
     cfg_start: ti.types.ndarray(dtype=ti.i32, ndim=1),

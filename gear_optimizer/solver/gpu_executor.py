@@ -51,6 +51,7 @@ class GpuRequestType(Enum):
     GPU_NATIVE_GA_RUN = "gpu_native_ga_run"
     FG_RESET_GLOBAL_BEST = "fg_reset_global_best"
     FG_DOWNLOAD_GLOBAL_BEST = "fg_download_global_best"
+    FG_COMPUTE_BREAKPOINTS = "fg_compute_breakpoints"
     SHUTDOWN = "shutdown"
 
 
@@ -795,6 +796,8 @@ class GpuExecutor:
                 return self._execute_fg_reset_global_best(request)
             elif request.request_type == GpuRequestType.FG_DOWNLOAD_GLOBAL_BEST:
                 return self._execute_fg_download_global_best(request)
+            elif request.request_type == GpuRequestType.FG_COMPUTE_BREAKPOINTS:
+                return self._execute_fg_compute_breakpoints(request)
             else:
                 return GpuResponse(
                     request_id=request.request_id,
@@ -1211,6 +1214,125 @@ class GpuExecutor:
             success=True,
             result=result,
         )
+
+    def _execute_fg_compute_breakpoints(self, request: GpuRequest) -> GpuResponse:
+        """
+        Compute per-FT/FF breakpoint ranges for ForceGreatsFinder on the GPU-owner thread.
+
+        Returns an (n_pairs, n_sections) int16 array of max fill-penalty caps (FP caps).
+        Callers can convert this to `section_breakpoints` by using `range(0, fp + 1)` per section.
+        """
+        import numpy as np
+
+        payload = request.payload or {}
+
+        ftff_pairs = payload.get("ftff_pairs") or []
+        base_stats_pairs = payload.get("base_stats_pairs") or []
+        n_sections = int(payload.get("n_sections", 0) or 0)
+        song_slot = int(payload.get("song_slot", 0) or 0)
+        gem_scale_fever = int(payload.get("gem_scale_fever", 3) or 3)
+
+        # Optional precomputed tables (recommended; avoids repeated ceil math).
+        non_fever_base_by_ff = payload.get("non_fever_base_by_ff")
+        fp_cap_table = payload.get("fp_cap_table")
+
+        if n_sections <= 0:
+            return GpuResponse(request_id=request.request_id, success=True, result=np.zeros((0, 0), dtype=np.int16))
+
+        try:
+            pairs_list = list(ftff_pairs)
+        except Exception:
+            pairs_list = []
+        try:
+            base_list = list(base_stats_pairs)
+        except Exception:
+            base_list = []
+
+        if not pairs_list:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=True,
+                result=np.zeros((0, int(n_sections)), dtype=np.int16),
+            )
+        if not base_list:
+            # No base FT/FF stats to consider -> max FP is 0 everywhere.
+            return GpuResponse(
+                request_id=request.request_id,
+                success=True,
+                result=np.zeros((len(pairs_list), int(n_sections)), dtype=np.int16),
+            )
+
+        # Build pair arrays.
+        try:
+            pair_ft = np.asarray([int(p[0]) for p in pairs_list], dtype=np.int32)
+            pair_ff = np.asarray([int(p[1]) for p in pairs_list], dtype=np.int32)
+        except Exception:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="FG_COMPUTE_BREAKPOINTS invalid ftff_pairs (expected list of (ft, ff))",
+            )
+
+        # Build base arrays.
+        try:
+            base_ft = np.asarray([int(p[0]) for p in base_list], dtype=np.int32)
+            base_ff = np.asarray([int(p[1]) for p in base_list], dtype=np.int32)
+        except Exception:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="FG_COMPUTE_BREAKPOINTS invalid base_stats_pairs (expected list of (ft_stat, ff_stat))",
+            )
+
+        # Validate tables.
+        if non_fever_base_by_ff is None or fp_cap_table is None:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="FG_COMPUTE_BREAKPOINTS missing non_fever_base_by_ff/fp_cap_table",
+            )
+
+        non_fever_base_by_ff = np.asarray(non_fever_base_by_ff, dtype=np.int16)
+        fp_cap_table = np.asarray(fp_cap_table, dtype=np.int16)
+        if non_fever_base_by_ff.ndim != 1 or int(non_fever_base_by_ff.shape[0]) < 161:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="FG_COMPUTE_BREAKPOINTS non_fever_base_by_ff must be shape (>=161,)",
+            )
+        if fp_cap_table.ndim != 2 or fp_cap_table.shape[0] < 161 or fp_cap_table.shape[1] < 51:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="FG_COMPUTE_BREAKPOINTS fp_cap_table must be shape (>=161, >=51)",
+            )
+
+        out = np.zeros((int(pair_ft.shape[0]), int(n_sections)), dtype=np.int16)
+        try:
+            from .taichi_gem.kernels import kernels_breakpoints
+
+            kernels_breakpoints.fg_compute_max_fp_by_pair_kernel(
+                int(pair_ft.shape[0]),
+                int(base_ft.shape[0]),
+                int(n_sections),
+                int(song_slot),
+                int(gem_scale_fever),
+                pair_ft,
+                pair_ff,
+                base_ft,
+                base_ff,
+                non_fever_base_by_ff,
+                fp_cap_table,
+                out,
+            )
+        except Exception as e:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error=f"FG_COMPUTE_BREAKPOINTS kernel failed: {type(e).__name__}: {e}",
+            )
+
+        return GpuResponse(request_id=request.request_id, success=True, result=out)
 
     def _execute_optimize_gems_batch(self, request: GpuRequest) -> GpuResponse:
         """Execute optimize_gems_batch_gpu on GPU."""

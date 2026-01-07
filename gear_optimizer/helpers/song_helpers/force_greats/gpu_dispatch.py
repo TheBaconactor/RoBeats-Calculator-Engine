@@ -792,17 +792,182 @@ def process_force_greats_gpu_finder(
 
                 # Use generator to build groups incrementally (Approach A)
                 # Generator includes integrated merge logic
-                group_gen = iter_analytical_breakpoint_groups(
-                    fg_scorer,
-                    n_sections,
-                    ftff_pairs,
-                    base_stats_pairs,
-                    gem_scale_fever=GEM_SCALE_FEVER,
-                    batch_size=breakpoint_batch_size,
-                    merge_threshold_cfgs=max_union_cfg,
-                    merge_threshold_threads=max_union_threads,
-                    n_genomes=n_pending,
-                )
+                use_gpu_breakpoints = str(os.environ.get("FG_BREAKPOINTS_GPU", "1") or "").strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+
+                def _build_fp_cap_tables():
+                    # (161,) and (161, 51) small int16 lookup tables, computed with float64 ceil to match CPU rules.
+                    import numpy as _np
+
+                    meta0 = (calc_song.get("metadata", {}) or {}) if isinstance(calc_song, dict) else {}
+                    song_data0 = (calc_song.get("song_data", {}) or {}) if isinstance(calc_song, dict) else {}
+                    try:
+                        total_notes0 = int(len(song_data0.get("timestamps") or ()))
+                    except Exception:
+                        total_notes0 = 0
+                    try:
+                        long_notes0 = int(meta0.get("Long Notes", 0) or 0)
+                    except Exception:
+                        long_notes0 = 0
+                    try:
+                        from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE
+
+                        non_fever_cas0 = max(0.0, float(total_notes0 - long_notes0) * float(FEVER_FILL_BASE_RATE))
+                    except Exception:
+                        non_fever_cas0 = max(0.0, float(total_notes0 - long_notes0) * 0.333)
+
+                    ref_ff0 = _np.asarray(ref_arrays.get("Fever Fill Rate"), dtype=_np.float64)
+                    if ref_ff0.shape[0] < 161:
+                        raise ValueError("ref_arrays['Fever Fill Rate'] must have length >= 161")
+                    ff_mult = ref_ff0[:161]
+                    raw_fill = non_fever_cas0 * ff_mult
+                    ceil_raw = _np.ceil(raw_fill)
+                    non_fever_base_by_ff0 = _np.clip(ceil_raw, 0, 32767).astype(_np.int16)
+
+                    fp_cap_table0 = _np.zeros((161, 51), dtype=_np.int16)
+                    for forced_cap in range(0, 51):
+                        fp = _np.ceil(raw_fill + (forced_cap * 0.5)) - ceil_raw
+                        fp_cap_table0[:, forced_cap] = _np.maximum(0, fp).astype(_np.int16)
+
+                    return non_fever_base_by_ff0, fp_cap_table0
+
+                non_fever_base_by_ff = None
+                fp_cap_table = None
+                if use_gpu_breakpoints:
+                    try:
+                        non_fever_base_by_ff, fp_cap_table = _build_fp_cap_tables()
+                    except Exception as _bp_tab_err:
+                        if perf:
+                            print(f"[FG] GPU breakpoints table build failed; falling back to CPU: {_bp_tab_err}")
+                        non_fever_base_by_ff = None
+                        fp_cap_table = None
+
+                def _submit_compute_breakpoints_max_fp(*, blocking: bool = True):
+                    # Returns (n_pairs, n_sections) int16 array.
+                    if non_fever_base_by_ff is None or fp_cap_table is None:
+                        return None
+
+                    base_pairs_list = sorted({(int(a), int(b)) for (a, b) in base_stats_pairs})
+                    if not base_pairs_list or not ftff_pairs:
+                        return None
+
+                    if gpu_client is not None:
+                        # Ensure the timeline grid for this song_slot is ready (grid_gap/grid_fever_activations).
+                        nonlocal timeline_precompute_queued
+                        if not timeline_precompute_queued:
+                            try:
+                                with gpu_client.submit_lock:
+                                    gpu_client.submit_precompute_timeline(
+                                        calc_song=calc_song,
+                                        ref_arrays=ref_arrays,
+                                        song_slot=int(song_slot),
+                                    ).future.result()
+                                    timeline_precompute_queued = True
+                            except Exception:
+                                timeline_precompute_queued = True
+                        fut = gpu_client.submit_fg_compute_breakpoints(
+                            ftff_pairs=list(ftff_pairs),
+                            base_stats_pairs=base_pairs_list,
+                            n_sections=int(n_sections),
+                            song_slot=int(song_slot),
+                            gem_scale_fever=int(GEM_SCALE_FEVER),
+                            non_fever_base_by_ff=non_fever_base_by_ff,
+                            fp_cap_table=fp_cap_table,
+                        ).future
+                        return fut.result() if blocking else fut
+
+                    # Direct (non-executor) GPU path: call the kernel in-process.
+                    try:
+                        import numpy as _np
+                        from gear_optimizer.solver.taichi_gem.kernels import kernels_breakpoints
+                        from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
+
+                        if not timeline_precompute_queued:
+                            try:
+                                precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
+                            except Exception:
+                                pass
+                            timeline_precompute_queued = True
+
+                        pair_ft = _np.asarray([int(p[0]) for p in ftff_pairs], dtype=_np.int32)
+                        pair_ff = _np.asarray([int(p[1]) for p in ftff_pairs], dtype=_np.int32)
+                        base_ft = _np.asarray([int(p[0]) for p in base_pairs_list], dtype=_np.int32)
+                        base_ff = _np.asarray([int(p[1]) for p in base_pairs_list], dtype=_np.int32)
+                        out0 = _np.zeros((int(pair_ft.shape[0]), int(n_sections)), dtype=_np.int16)
+                        kernels_breakpoints.fg_compute_max_fp_by_pair_kernel(
+                            int(pair_ft.shape[0]),
+                            int(base_ft.shape[0]),
+                            int(n_sections),
+                            int(song_slot),
+                            int(GEM_SCALE_FEVER),
+                            pair_ft,
+                            pair_ff,
+                            base_ft,
+                            base_ff,
+                            _np.asarray(non_fever_base_by_ff, dtype=_np.int16),
+                            _np.asarray(fp_cap_table, dtype=_np.int16),
+                            out0,
+                        )
+                        return out0
+                    except Exception:
+                        return None
+
+                max_fp_matrix = None
+                if use_gpu_breakpoints:
+                    try:
+                        max_fp_matrix = _submit_compute_breakpoints_max_fp(blocking=True)
+                    except Exception as _bp_gpu_err:
+                        if perf:
+                            print(f"[FG] GPU breakpoint compute failed; falling back to CPU: {_bp_gpu_err}")
+                        max_fp_matrix = None
+
+                if max_fp_matrix is None:
+                    group_gen = iter_analytical_breakpoint_groups(
+                        fg_scorer,
+                        n_sections,
+                        ftff_pairs,
+                        base_stats_pairs,
+                        gem_scale_fever=GEM_SCALE_FEVER,
+                        batch_size=breakpoint_batch_size,
+                        merge_threshold_cfgs=max_union_cfg,
+                        merge_threshold_threads=max_union_threads,
+                        n_genomes=n_pending,
+                    )
+                else:
+                    import itertools as _it
+                    import numpy as _np
+
+                    max_fp_matrix = _np.asarray(max_fp_matrix, dtype=_np.int16)
+
+                    def _iter_groups_from_max_fp():
+                        # Group by identical per-section FP ranges.
+                        all_groups = {}
+
+                        for i_pair, (ft_g, ff_g) in enumerate(ftff_pairs):
+                            row = max_fp_matrix[i_pair]
+                            section_breakpoints = tuple(
+                                tuple(range(0, int(row[sec]) + 1)) for sec in range(int(n_sections))
+                            )
+                            grp = all_groups.get(section_breakpoints)
+                            if grp is None:
+                                grp = {
+                                    "ftff_pairs": [],
+                                    # GPU-native rectangular configs: section-wise max FP.
+                                    "counts_max_fp": [int(row[sec]) for sec in range(int(n_sections))],
+                                    "section_breakpoints": section_breakpoints,
+                                }
+                                all_groups[section_breakpoints] = grp
+                            grp["ftff_pairs"].append((int(ft_g), int(ff_g)))
+
+                        for g in all_groups.values():
+                            if g.get("ftff_pairs"):
+                                yield g
+
+                    group_gen = _iter_groups_from_max_fp()
 
                 # Logging (count groups as we go)
                 logged_first = False
@@ -813,7 +978,10 @@ def process_force_greats_gpu_finder(
 
                 # GPU-Resident Accumulation: Build master config list for global indexing
                 # This allows us to look up cfg_counts after a single download at the end
-                master_configs = []  # Will be extended by each group
+                # Instead of materializing configs on CPU, we track config windows and
+                # later decode cfg_idx -> per-section FP targets for application/persistence.
+                cfg_windows: list[dict] = []
+                cfg_next_base = 0
                 group_futures = []
 
                 if gpu_client is not None:
@@ -826,13 +994,45 @@ def process_force_greats_gpu_finder(
                 for group in group_gen:
                     group_count += 1
                     counts_list = group.get("counts_list") or []
+                    counts_max_fp = group.get("counts_max_fp") or []
                     group_pairs = group.get("ftff_pairs") or []
-                    if not counts_list or not group_pairs:
+                    if (not counts_list and not counts_max_fp) or not group_pairs:
                         continue
 
-                    # Track where this group's configs start in master list
-                    group_cfg_offset = len(master_configs)
-                    master_configs.extend(counts_list)
+                    # Track where this group's configs start in the global cfg index space.
+                    group_cfg_offset = int(cfg_next_base)
+                    if counts_list:
+                        cfg_len0 = int(len(counts_list))
+                        cfg_windows.append(
+                            {
+                                "base": int(group_cfg_offset),
+                                "len": int(cfg_len0),
+                                "kind": "list",
+                                "counts_list": counts_list,
+                            }
+                        )
+                    else:
+                        cfg_len0 = 1
+                        max_fp_norm = []
+                        for v in list(counts_max_fp)[: int(n_sections)]:
+                            try:
+                                max_fp_norm.append(max(0, int(v or 0)))
+                            except Exception:
+                                max_fp_norm.append(0)
+                        if not max_fp_norm:
+                            max_fp_norm = [0] * int(n_sections)
+                        for v in max_fp_norm[: int(n_sections)]:
+                            cfg_len0 *= int(v) + 1
+                        cfg_windows.append(
+                            {
+                                "base": int(group_cfg_offset),
+                                "len": int(cfg_len0),
+                                "kind": "max_fp",
+                                "max_fp": list(max_fp_norm),
+                                "n_sections": int(n_sections),
+                            }
+                        )
+                    cfg_next_base = int(group_cfg_offset) + int(cfg_len0)
 
                     # Log first group info (always show breakpoints)
                     if not logged_first:
@@ -849,7 +1049,8 @@ def process_force_greats_gpu_finder(
                         for ftff_chunk in _iter_ftff_chunks(group_pairs):
                             fg_tasks_batch.append(
                                 {
-                                    "counts_list": counts_list,
+                                    "counts_list": counts_list if counts_list else None,
+                                    "counts_max_fp": counts_max_fp if counts_max_fp else None,
                                     "ftff_pairs": ftff_chunk,
                                     "base_cfg_offset": int(group_cfg_offset),
                                 }
@@ -872,7 +1073,7 @@ def process_force_greats_gpu_finder(
                                 great_candidates,
                                 long_notes,
                                 last_note_time,
-                                counts_list,
+                                counts_list if counts_list else [tuple([0] * int(n_sections))],
                                 ftff_chunk,
                                 n_sections=n_sections,
                                 is_p_ft=is_p_ft,
@@ -971,9 +1172,57 @@ def process_force_greats_gpu_finder(
                 result_g_fm = global_results["g_fm"]
                 result_g_ov = global_results["g_ov"]
 
-                # Use the global cfg_idx to index into the master config list during apply
-                # (avoid reconstructing a per-genome Python list here).
+                # Decode cfg_idx -> per-section FP targets for apply/persistence.
                 result_cfg_idx = global_results.get("cfg_idx")
+                cfg_counts_arr = None
+                try:
+                    import numpy as _np
+
+                    cfg_idx_arr = _np.asarray(result_cfg_idx, dtype=_np.int32) if result_cfg_idx is not None else None
+                    if cfg_idx_arr is not None and cfg_windows:
+                        cfg_counts_arr = _np.zeros((int(n_pending), int(n_sections)), dtype=_np.int32)
+                        # Build cumulative ends for fast window lookup.
+                        bases = [int(w.get("base", 0)) for w in cfg_windows]
+                        lens = [int(w.get("len", 0)) for w in cfg_windows]
+                        ends = [b + l for b, l in zip(bases, lens)]
+
+                        def _find_window(x: int) -> int:
+                            # linear scan is fine (window count is typically small), but keep it safe.
+                            for wi, (b, e) in enumerate(zip(bases, ends)):
+                                if int(x) >= int(b) and int(x) < int(e):
+                                    return wi
+                            return -1
+
+                        for gi in range(int(n_pending)):
+                            x = int(cfg_idx_arr[gi])
+                            wi = _find_window(x)
+                            if wi < 0:
+                                continue
+                            w = cfg_windows[wi]
+                            base = int(w.get("base", 0))
+                            local = int(x - base)
+                            if w.get("kind") == "list":
+                                lst = w.get("counts_list") or []
+                                if 0 <= local < len(lst):
+                                    try:
+                                        row = lst[local]
+                                        for s in range(int(n_sections)):
+                                            cfg_counts_arr[gi, s] = int(row[s]) if s < len(row) else 0
+                                    except Exception:
+                                        pass
+                            else:
+                                max_fp_vec = list(w.get("max_fp") or [])
+                                # Mixed-radix decode matching `itertools.product` (last section fastest).
+                                rem = int(local)
+                                for s in range(int(n_sections) - 1, -1, -1):
+                                    basev = int(max(0, int(max_fp_vec[s] if s < len(max_fp_vec) else 0))) + 1
+                                    if basev <= 0:
+                                        basev = 1
+                                    val = rem % basev
+                                    rem //= basev
+                                    cfg_counts_arr[gi, s] = int(val)
+                except Exception:
+                    cfg_counts_arr = None
             else:
                 _t_gpu0 = time.perf_counter() if perf else 0.0
                 # Use return_raw=True for numpy results (skip dict building in API)
@@ -1091,12 +1340,12 @@ def process_force_greats_gpu_finder(
                 sel_color=str(sel_color),
                 n_sections=int(n_sections),
                 max_per_section=int(max_per_section),
-                counts_list=master_configs,
+                counts_list=None,
                 fg_scorer=fg_scorer if "fg_scorer" in locals() else None,
                 result_final=result_final,
                 result_base=result_base,
                 result_cfg_idx=result_cfg_idx,
-                result_cfg_counts=None,
+                result_cfg_counts=cfg_counts_arr,
                 result_ft=result_ft,
                 result_ff=result_ff,
                 result_g_pp=result_g_pp,

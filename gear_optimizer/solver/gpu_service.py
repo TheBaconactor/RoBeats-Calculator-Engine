@@ -192,6 +192,30 @@ class GpuServiceClient:
             {"args": args, "kwargs": kwargs},
         )
 
+    def submit_fg_compute_breakpoints(
+        self,
+        *,
+        ftff_pairs: list[tuple[int, int]],
+        base_stats_pairs: list[tuple[int, int]],
+        n_sections: int,
+        song_slot: int = 0,
+        gem_scale_fever: int = 3,
+        non_fever_base_by_ff=None,
+        fp_cap_table=None,
+    ) -> GpuJobHandle:
+        return self.submit(
+            GpuRequestType.FG_COMPUTE_BREAKPOINTS,
+            {
+                "ftff_pairs": list(ftff_pairs or []),
+                "base_stats_pairs": list(base_stats_pairs or []),
+                "n_sections": int(n_sections),
+                "song_slot": int(song_slot),
+                "gem_scale_fever": int(gem_scale_fever),
+                "non_fever_base_by_ff": non_fever_base_by_ff,
+                "fp_cap_table": fp_cap_table,
+            },
+        )
+
     def submit_process_force_greats(self, *args: Any, **kwargs: Any) -> GpuJobHandle:
         return self.submit(
             GpuRequestType.PROCESS_FORCE_GREATS,
