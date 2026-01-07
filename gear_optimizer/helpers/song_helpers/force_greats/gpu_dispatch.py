@@ -1090,6 +1090,10 @@ def process_force_greats_gpu_finder(
                 cfg_windows: list[dict] = []
                 cfg_next_base = 0
                 group_futures = []
+                # NOTE: we intentionally do NOT materialize a full "master_configs" list here.
+                # We track config windows for cfg_idx decoding instead (cfg_windows) to keep
+                # CPU overhead low. Keep a placeholder list only for legacy/log compatibility.
+                master_configs: list = []
 
                 if gpu_client is not None:
                     need_reset = True
@@ -1213,24 +1217,14 @@ def process_force_greats_gpu_finder(
 
                 # Log merged status if we got a single batch (always log)
                 if group_count == 1:
-                    # Get the master config count for merged batch info
-                    n_configs = len(master_configs) if master_configs else 0
+                    # For the packed GPU-accumulation path, the "master config list" lives as windows
+                    # (cfg_windows). The total config count is the final cfg_next_base.
+                    n_configs = int(cfg_next_base)
                     print(
                         f"[FG] Merged breakpoint groups -> 1 batch "
                         f"(pairs={len(ftff_pairs)}, configs={n_configs}, GPU accumulation)"
                     )
-                    # Show config breakdown if available
-                    if master_configs and len(master_configs) > 0:
-                        n_sections_show = len(master_configs[0]) if master_configs[0] else 0
-                        if n_sections_show > 0:
-                            # Find max value per section
-                            max_per_sec = [0] * n_sections_show
-                            for cfg in master_configs:
-                                for i, v in enumerate(cfg):
-                                    if v > max_per_sec[i]:
-                                        max_per_sec[i] = v
-                            for sec_idx, max_val in enumerate(max_per_sec):
-                                print(f"     Section {sec_idx + 1}: [0..{max_val}]")
+                    # Breakdown is intentionally omitted here because we do not materialize master configs.
 
                 # Single download at end - this is the key optimization!
                 _t_download0 = time.perf_counter() if perf else 0.0
