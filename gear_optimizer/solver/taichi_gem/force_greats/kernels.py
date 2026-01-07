@@ -30,6 +30,9 @@ fg_ft_list = None
 fg_ff_list = None
 fg_cfg_start_list = None
 fg_cfg_len_list = None
+fg_cfg_base_list = None
+fg_cfg_mode_list = None
+fg_cfg_max_fp = None
 
 fg_best_final_score = None
 fg_best_base_score = None
@@ -105,6 +108,42 @@ def _fg_section_forced_cap(sec: ti.i32) -> ti.i32:
 
 
 # ============================================================================
+
+
+@ti.func
+def _fg_decode_fp_targets_vec(local_cfg_idx: ti.i32, ftff_idx: ti.i32, n_sections: ti.i32):
+    """
+    Decode a rectangular config index into per-section FP targets (last section fastest).
+
+    Matches `itertools.product` ordering (rightmost / last section is the fastest-changing).
+    """
+    out = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+    rem: ti.i32 = local_cfg_idx
+    for rev in ti.static(range(FG_MAX_SECTIONS)):
+        s: ti.i32 = ti.i32(FG_MAX_SECTIONS - 1 - rev)
+        if s < n_sections:
+            base: ti.i32 = fg_cfg_max_fp[ftff_idx, s] + 1
+            if base <= 0:
+                base = 1
+            out[s] = rem % base
+            rem = rem // base
+    return out
+
+
+@ti.func
+def _fg_decode_fp_targets_vec3(local_cfg_idx: ti.i32, ftff_idx: ti.i32, n_sections: ti.i32):
+    """Decode helper for the n_sections<=3 fast path."""
+    out = ti.Vector.zero(ti.i32, 3)
+    rem: ti.i32 = local_cfg_idx
+    for rev in ti.static(range(3)):
+        s: ti.i32 = ti.i32(2 - rev)
+        if s < n_sections:
+            base: ti.i32 = fg_cfg_max_fp[ftff_idx, s] + 1
+            if base <= 0:
+                base = 1
+            out[s] = rem % base
+            rem = rem // base
+    return out
 
 
 @ti.func
@@ -636,10 +675,14 @@ def fg_stage1_kernel(
         cfg_global_base: ti.i32 = cfg_offset
         cfg_read_base: ti.i32 = cfg_read_offset
         cfg_len: ti.i32 = n_cfg
+        cfg_mode: ti.i32 = 0
+        cfg_base: ti.i32 = 0
         if cfg_offset < 0 and cfg_read_offset < 0:
             cfg_global_base = fg_cfg_start_list[ftff_idx]
             cfg_read_base = cfg_global_base
             cfg_len = fg_cfg_len_list[ftff_idx]
+            cfg_mode = fg_cfg_mode_list[ftff_idx]
+            cfg_base = fg_cfg_base_list[ftff_idx]
 
         # Load genome base stats (hoisted out of cfg loop)
         # Load genome base stats (hoisted out of cfg loop)
@@ -693,6 +736,13 @@ def fg_stage1_kernel(
         for cfg_idx in range(n_cfg):
             if cfg_idx >= cfg_len:
                 continue
+            global_cfg_idx: ti.i32 = cfg_global_base + cfg_idx
+            fp_targets_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+            if cfg_mode != 0:
+                local_cfg_idx: ti.i32 = global_cfg_idx - cfg_base
+                if local_cfg_idx < 0:
+                    local_cfg_idx = 0
+                fp_targets_vec = _fg_decode_fp_targets_vec(local_cfg_idx, ftff_idx, n_sections)
             # Timeline simulation -> head mask bits + body fever count
             m0 = ti.cast(0, ti.u32)
             m1 = ti.cast(0, ti.u32)
@@ -715,7 +765,10 @@ def fg_stage1_kernel(
 
                 fp_target: ti.i32 = 0
                 if sec < n_sections:
-                    fp_target = fg_forced_counts[cfg_read_base + cfg_idx, sec]
+                    if cfg_mode != 0:
+                        fp_target = fp_targets_vec[sec]
+                    else:
+                        fp_target = fg_forced_counts[cfg_read_base + cfg_idx, sec]
                     if fp_target < 0:
                         fp_target = 0
                     if sec < FG_MAX_SECTIONS:
@@ -1154,10 +1207,14 @@ def fg_stage1_flat_kernel_small3(
         cfg_global_base: ti.i32 = cfg_offset
         cfg_read_base: ti.i32 = cfg_read_offset
         cfg_len: ti.i32 = n_cfg
+        cfg_mode: ti.i32 = 0
+        cfg_base: ti.i32 = 0
         if cfg_offset < 0 and cfg_read_offset < 0:
             cfg_global_base = fg_cfg_start_list[ftff_idx]
             cfg_read_base = cfg_global_base
             cfg_len = fg_cfg_len_list[ftff_idx]
+            cfg_mode = fg_cfg_mode_list[ftff_idx]
+            cfg_base = fg_cfg_base_list[ftff_idx]
             if cfg_start >= cfg_len:
                 continue
 
@@ -1216,6 +1273,14 @@ def fg_stage1_flat_kernel_small3(
             if cfg_idx >= cfg_len:
                 continue
 
+            global_cfg_idx: ti.i32 = cfg_global_base + cfg_idx
+            fp_targets_vec = ti.Vector.zero(ti.i32, 3)
+            if cfg_mode != 0:
+                local_cfg_idx: ti.i32 = global_cfg_idx - cfg_base
+                if local_cfg_idx < 0:
+                    local_cfg_idx = 0
+                fp_targets_vec = _fg_decode_fp_targets_vec3(local_cfg_idx, ftff_idx, n_sections)
+
             m0 = ti.cast(0, ti.u32)
             m1 = ti.cast(0, ti.u32)
             m2 = ti.cast(0, ti.u32)
@@ -1237,7 +1302,10 @@ def fg_stage1_flat_kernel_small3(
 
                 fp_target: ti.i32 = 0
                 if sec < n_sections:
-                    fp_target = fg_forced_counts[cfg_read_base + cfg_idx, sec]
+                    if cfg_mode != 0:
+                        fp_target = fp_targets_vec[sec]
+                    else:
+                        fp_target = fg_forced_counts[cfg_read_base + cfg_idx, sec]
                     if fp_target < 0:
                         fp_target = 0
 
@@ -1398,7 +1466,6 @@ def fg_stage1_flat_kernel_small3(
             if final_score < 0:
                 final_score = 0
 
-            global_cfg_idx: ti.i32 = cfg_global_base + cfg_idx
             inverted_idx: ti.i32 = 0x7FFFFFFF - global_cfg_idx
             packed_val: ti.i64 = (ti.cast(final_score, ti.i64) << 32) | ti.cast(inverted_idx, ti.i64)
 
@@ -1486,10 +1553,14 @@ def fg_stage1_flat_kernel(
         cfg_global_base: ti.i32 = cfg_offset
         cfg_read_base: ti.i32 = cfg_read_offset
         cfg_len: ti.i32 = n_cfg
+        cfg_mode: ti.i32 = 0
+        cfg_base: ti.i32 = 0
         if cfg_offset < 0 and cfg_read_offset < 0:
             cfg_global_base = fg_cfg_start_list[ftff_idx]
             cfg_read_base = cfg_global_base
             cfg_len = fg_cfg_len_list[ftff_idx]
+            cfg_mode = fg_cfg_mode_list[ftff_idx]
+            cfg_base = fg_cfg_base_list[ftff_idx]
             if cfg_start >= cfg_len:
                 continue
 
@@ -1550,6 +1621,15 @@ def fg_stage1_flat_kernel(
             if cfg_idx >= cfg_len:
                 continue
 
+            # Global cfg index is used both for deterministic tie-breaking and (optional) implicit FP-target decode.
+            global_cfg_idx: ti.i32 = cfg_global_base + cfg_idx
+            fp_targets_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+            if cfg_mode != 0:
+                local_cfg_idx: ti.i32 = global_cfg_idx - cfg_base
+                if local_cfg_idx < 0:
+                    local_cfg_idx = 0
+                fp_targets_vec = _fg_decode_fp_targets_vec(local_cfg_idx, ftff_idx, n_sections)
+
             # Timeline simulation for this ONE config
             m0 = ti.cast(0, ti.u32)
             m1 = ti.cast(0, ti.u32)
@@ -1572,7 +1652,10 @@ def fg_stage1_flat_kernel(
 
                 fp_target: ti.i32 = 0
                 if sec < n_sections:
-                    fp_target = fg_forced_counts[cfg_read_base + cfg_idx, sec]
+                    if cfg_mode != 0:
+                        fp_target = fp_targets_vec[sec]
+                    else:
+                        fp_target = fg_forced_counts[cfg_read_base + cfg_idx, sec]
                     if fp_target < 0:
                         fp_target = 0
 
@@ -1750,7 +1833,6 @@ def fg_stage1_flat_kernel(
 
             # Pack score and cfg_idx into a single 64-bit value for atomic update
             # Format: (score << 32) | inverted_cfg_idx
-            global_cfg_idx: ti.i32 = cfg_global_base + cfg_idx
             inverted_idx: ti.i32 = 0x7FFFFFFF - global_cfg_idx
             packed_val: ti.i64 = (ti.cast(final_score, ti.i64) << 32) | ti.cast(inverted_idx, ti.i64)
 

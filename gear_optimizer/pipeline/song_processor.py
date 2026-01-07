@@ -270,6 +270,10 @@ def process_song_task(args):
     db_payload_time_sec = 0.0
     persist_build_time_sec = 0.0
     report_time_sec = 0.0
+    # GPU timeline slot reuse (GA -> FG). Keep these in outer scope for cleanup.
+    _gpu_song_slot = 0
+    _prefetch_mgr = None
+    gpu_mode = False
 
     try:
         best_data = None
@@ -407,7 +411,6 @@ def process_song_task(args):
 
         if enable_gear or enable_mini:
             # Get GPU slot for timeline prefetch (prefetched or on-demand)
-            _gpu_song_slot = 0
             if gpu_mode:
                 try:
                     # Configure GPU-native GA run buffers BEFORE any Taichi field allocation
@@ -430,6 +433,11 @@ def process_song_task(args):
                     stage_timing["gpu_timeline_precompute_sec"] = time.perf_counter() - _t_timeline0
                 except Exception as _pfx_err:
                     pass  # Fallback to slot 0
+                # Propagate song_slot into calc_song so downstream FG can reuse the same GPU timeline slot.
+                try:
+                    calc_song["_gpu_song_slot"] = int(_gpu_song_slot)
+                except Exception:
+                    pass
 
             # Run Genetic Algorithm (now memetic-enhanced)
             ga_start = time.perf_counter()
@@ -464,13 +472,6 @@ def process_song_task(args):
                 song_slot=_gpu_song_slot,  # Use prefetched GPU slot
             )
             ga_time_sec = time.perf_counter() - ga_start
-
-            # Release GPU slot for reuse
-            if gpu_mode and _gpu_song_slot > 0:
-                try:
-                    _prefetch_mgr.release(_gpu_song_slot)
-                except Exception:
-                    pass
 
             if PERF_TIMING_ENABLED:
                 print(f"[PERF] GA: {ga_time_sec:.2f}s")
@@ -882,6 +883,13 @@ def process_song_task(args):
         log_memory_usage(f"After cleanup: {found_song_name}")
 
         redirect_ctx.__exit__(None, None, None)
+
+        # Release GPU timeline slot after GA + FG (and any deferred-post early returns).
+        if gpu_mode and int(_gpu_song_slot) > 0 and _prefetch_mgr is not None:
+            try:
+                _prefetch_mgr.release(int(_gpu_song_slot))
+            except Exception:
+                pass
 
 
 def safe_process_song_task(args):

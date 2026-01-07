@@ -260,6 +260,11 @@ def run_inflight_song_pipeline(
             return None
 
         song_slot = slot_pool.acquire()
+        # Propagate the reserved timeline slot to downstream FG helpers (which read from calc_song).
+        try:
+            calc_song["_gpu_song_slot"] = int(song_slot)
+        except Exception:
+            pass
 
         if status_queue:
             _emit(status_queue, found_song_name, f"InFlight slot={song_slot}")

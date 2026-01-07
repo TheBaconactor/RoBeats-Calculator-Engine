@@ -326,6 +326,7 @@ class _NativeSong:
     tournament_k: int
 
     # Runtime state
+    song_slot: int = 0
     ga_future: Optional[concurrent.futures.Future] = None
     decode_future: Optional[concurrent.futures.Future] = None
     ga_candidates: Optional[list[dict]] = None
@@ -755,6 +756,22 @@ def run_native_inflight_song_pipeline(
     inflight_limit = max(1, int(in_flight_songs))
     inflight_limit = min(inflight_limit, len(tasks))
 
+    # Limit concurrent in-flight songs by available GPU timeline slots.
+    # Slot 0 is shared/fallback; we reserve 1..MAX_SONG_SLOTS-1 for deterministic reuse.
+    try:
+        from gear_optimizer.solver.taichi_gem.fields import MAX_SONG_SLOTS
+
+        max_song_slots = int(MAX_SONG_SLOTS)
+    except Exception:
+        max_song_slots = 8
+    song_slot_limit = max(1, int(max_song_slots) - 1)
+    inflight_limit = min(int(inflight_limit), int(song_slot_limit))
+
+    # Reuse the slot pool implementation from the non-native in-flight pipeline.
+    from gear_optimizer.solver.inflight_orchestrator import SongSlotPool
+
+    slot_pool = SongSlotPool(max_song_slots=int(max_song_slots))
+
     # How deep we allow the GPU-native GA queue to get (number of submitted GA jobs).
     # A deeper backlog reduces GPU idle gaps when CPU-side decode / FG prep briefly stalls.
     ga_queue_mult = 0
@@ -771,6 +788,7 @@ def run_native_inflight_song_pipeline(
         ga_queue_mult = 2
     ga_queue_mult = max(1, min(int(ga_queue_mult), 8))
     ga_queue_limit = max(1, int(inflight_limit) * int(ga_queue_mult))
+    ga_queue_limit = min(int(ga_queue_limit), int(song_slot_limit))
 
     # CPU prep staging buffer size (prepared songs + in-flight preps).
     # Larger buffers avoid starvation on fast GPUs at the cost of RAM.
@@ -1140,11 +1158,24 @@ def run_native_inflight_song_pipeline(
                     break
                 if prepared and len(ga_inflight) < ga_queue_limit:
                     song = prepared.popleft()
+                    # Reserve a per-song GPU timeline slot so GA -> FG can reuse the resident grid
+                    # even while other songs are in-flight (avoids clobbering slot 0).
+                    if int(getattr(song, "song_slot", 0) or 0) <= 0:
+                        try:
+                            song.song_slot = int(slot_pool.acquire())
+                        except Exception:
+                            # No free slots: defer GA submission until FG drains.
+                            prepared.appendleft(song)
+                            break
+                        try:
+                            song.calc_song["_gpu_song_slot"] = int(song.song_slot)
+                        except Exception:
+                            pass
                     setattr(song, "_ga_submit_t0", time.perf_counter())
                     payload = {
                         "calc_song": song.calc_song,
                         "ref_arrays": song.ref_arrays,
-                        "song_slot": 0,
+                        "song_slot": int(song.song_slot),
                         "item_stats": song.item_stats,
                         "slot_start": song.slot_start,
                         "slot_count": song.slot_count,
@@ -1161,6 +1192,12 @@ def run_native_inflight_song_pipeline(
                     try:
                         handle = gpu_client.submit_gpu_native_ga_run(payload)
                     except Exception as exc:
+                        # Ensure we don't leak the reserved slot on submission failure.
+                        try:
+                            slot_pool.release(int(song.song_slot))
+                            song.song_slot = 0
+                        except Exception:
+                            pass
                         _post(
                             {
                                 "_error": str(exc),
@@ -1252,6 +1289,12 @@ def run_native_inflight_song_pipeline(
                             "song": song.song_name,
                         }
                     )
+                    # GA failed: release the reserved timeline slot for this song.
+                    try:
+                        slot_pool.release(int(getattr(song, "song_slot", 0) or 0))
+                        song.song_slot = 0
+                    except Exception:
+                        pass
                     completed_songs.add(song.song_name)
                     if memory_resume_tracker:
                         memory_resume_tracker.mark_completed(song.song_name)
@@ -1286,6 +1329,12 @@ def run_native_inflight_song_pipeline(
                             "song": song.song_name,
                         }
                     )
+                    # Decode failed: release the reserved timeline slot for this song.
+                    try:
+                        slot_pool.release(int(getattr(song, "song_slot", 0) or 0))
+                        song.song_slot = 0
+                    except Exception:
+                        pass
                     completed_songs.add(song.song_name)
                     if memory_resume_tracker:
                         memory_resume_tracker.mark_completed(song.song_name)
@@ -1312,6 +1361,13 @@ def run_native_inflight_song_pipeline(
                             fg_prep_inflight.append(song)
                         except Exception:
                             song.fg_prep_future = None
+                else:
+                    # No FG stage for this song: release its reserved timeline slot immediately.
+                    try:
+                        slot_pool.release(int(getattr(song, "song_slot", 0) or 0))
+                        song.song_slot = 0
+                    except Exception:
+                        pass
 
                 _post(
                     {
@@ -1374,6 +1430,12 @@ def run_native_inflight_song_pipeline(
                         did_work = True
                         try:
                             fut.result()
+                        except Exception:
+                            pass
+                        # Release this song's reserved timeline slot now that FG is complete.
+                        try:
+                            slot_pool.release(int(getattr(fg_song, "song_slot", 0) or 0))
+                            fg_song.song_slot = 0
                         except Exception:
                             pass
                         stage_profiler.record("fg_run", time.perf_counter() - float(t_submit), song=fg_song.song_name)
@@ -1444,6 +1506,17 @@ def run_native_inflight_song_pipeline(
                         f"(FG_InterleaveEvery={fg_every}, FG_DrainAtEnd=false). "
                         "Candidates were persisted to DB for later processing."
                     )
+                except Exception:
+                    pass
+                # We are intentionally skipping FG; release reserved timeline slots.
+                try:
+                    for s in list(pending_fg):
+                        try:
+                            slot_pool.release(int(getattr(s, "song_slot", 0) or 0))
+                            s.song_slot = 0
+                        except Exception:
+                            continue
+                    pending_fg.clear()
                 except Exception:
                     pass
                 break
@@ -1733,7 +1806,7 @@ def _run_fg_job_sync(
                 ref_arrays=song.ref_arrays,
                 primary_color=str(song.meta_primary_color or ""),
                 secondary_color=str(song.meta_secondary_color or ""),
-                song_slot=0,
+                song_slot=int(song.song_slot or 0),
                 gpu_client=gpu_client,
             )
 

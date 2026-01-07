@@ -50,6 +50,13 @@ fg_ff_list: ti.Field | None = None  # (FG_MAX_FTFF,) i32
 # Packed-task support: per-(ftff) config window (global cfg table slice).
 fg_cfg_start_list: ti.Field | None = None  # (FG_MAX_FTFF,) i32
 fg_cfg_len_list: ti.Field | None = None  # (FG_MAX_FTFF,) i32
+# Packed-task support: implicit config decode metadata.
+# - cfg_base_list: base_cfg_offset for the full config window (global cfg index space)
+# - cfg_mode_list: 0=read fg_forced_counts table, 1=implicit mixed-radix decode (counts_max_fp)
+# - cfg_max_fp: per-(ftff, section) max FP value (for mixed-radix decode); only used when mode=1
+fg_cfg_base_list: ti.Field | None = None  # (FG_MAX_FTFF,) i32
+fg_cfg_mode_list: ti.Field | None = None  # (FG_MAX_FTFF,) i32
+fg_cfg_max_fp: ti.Field | None = None  # (FG_MAX_FTFF, FG_MAX_SECTIONS) i32
 
 # FG finder outputs (per genome)
 fg_best_final_score: ti.Field | None = None  # (MAX_GENOMES,) i32
@@ -125,6 +132,7 @@ def reset_fields_state() -> None:
     global song_timestamps, song_timestamps_great_candidate
     global fg_fever_end_idx_song, fg_fever_end_idx_great_candidate
     global fg_forced_counts, fg_pair_caps, fg_ft_list, fg_ff_list, fg_cfg_start_list, fg_cfg_len_list
+    global fg_cfg_base_list, fg_cfg_mode_list, fg_cfg_max_fp
     global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx
     global fg_best_ft, fg_best_ff, fg_best_g_pp, fg_best_g_cm, fg_best_g_fm, fg_best_g_ov
     global fg_best_score_penalty, fg_best_fill_penalty, fg_best_packed
@@ -144,6 +152,9 @@ def reset_fields_state() -> None:
     fg_ff_list = None
     fg_cfg_start_list = None
     fg_cfg_len_list = None
+    fg_cfg_base_list = None
+    fg_cfg_mode_list = None
+    fg_cfg_max_fp = None
 
     fg_best_final_score = None
     fg_best_base_score = None
@@ -212,6 +223,9 @@ def bind_fields(kernels_module) -> None:
     kernels_module.fg_ff_list = fg_ff_list
     kernels_module.fg_cfg_start_list = fg_cfg_start_list
     kernels_module.fg_cfg_len_list = fg_cfg_len_list
+    kernels_module.fg_cfg_base_list = fg_cfg_base_list
+    kernels_module.fg_cfg_mode_list = fg_cfg_mode_list
+    kernels_module.fg_cfg_max_fp = fg_cfg_max_fp
 
     kernels_module.fg_best_final_score = fg_best_final_score
     kernels_module.fg_best_base_score = fg_best_base_score
@@ -262,6 +276,7 @@ def allocate_fields() -> None:
     global song_timestamps, song_timestamps_great_candidate
     global fg_fever_end_idx_song, fg_fever_end_idx_great_candidate
     global fg_forced_counts, fg_pair_caps, fg_ft_list, fg_ff_list, fg_cfg_start_list, fg_cfg_len_list
+    global fg_cfg_base_list, fg_cfg_mode_list, fg_cfg_max_fp
     global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx, fg_best_ft, fg_best_ff
     global fg_best_g_pp, fg_best_g_cm, fg_best_g_fm, fg_best_g_ov
     global fg_best_score_penalty, fg_best_fill_penalty, fg_best_packed
@@ -286,6 +301,9 @@ def allocate_fields() -> None:
     fg_ff_list = ti.field(dtype=ti.i32, shape=FG_MAX_FTFF)
     fg_cfg_start_list = ti.field(dtype=ti.i32, shape=FG_MAX_FTFF)
     fg_cfg_len_list = ti.field(dtype=ti.i32, shape=FG_MAX_FTFF)
+    fg_cfg_base_list = ti.field(dtype=ti.i32, shape=FG_MAX_FTFF)
+    fg_cfg_mode_list = ti.field(dtype=ti.i32, shape=FG_MAX_FTFF)
+    fg_cfg_max_fp = ti.field(dtype=ti.i32, shape=(FG_MAX_FTFF, FG_MAX_SECTIONS))
 
     fg_best_final_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_best_base_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
