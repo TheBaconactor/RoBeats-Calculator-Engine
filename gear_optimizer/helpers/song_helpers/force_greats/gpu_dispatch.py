@@ -311,7 +311,12 @@ def process_force_greats_gpu_finder(
 
         placeholder_counts = first.get("counts_list")
         placeholder_pairs = first.get("ftff_pairs")
-        if placeholder_counts is None or placeholder_pairs is None:
+        # When using task batching (`fg_tasks=`), the executor ignores the positional
+        # (counts_list, ftff_pairs) arguments and reads per-task windows instead.
+        # Still, we must pass non-None placeholders to satisfy the API signature.
+        if placeholder_counts is None:
+            placeholder_counts = [tuple([0] * int(n_sections))]
+        if placeholder_pairs is None:
             return None
 
         submit_kwargs = dict(
