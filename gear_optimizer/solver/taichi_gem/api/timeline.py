@@ -28,6 +28,17 @@ _profiler = get_gpu_profiler()
 # Get appropriate kernels for current platform (Metal-safe on macOS)
 kernels = get_kernels()
 
+@ti.kernel
+def _upload_song_timestamps_kernel(n: ti.i32, timestamps: ti.types.ndarray(dtype=ti.f32, ndim=1)):
+    """
+    Upload song timestamps without padding to MAX_SONG_NOTES.
+
+    This reduces CPU->GPU transfer volume vs `field.from_numpy(padded)` while
+    preserving behavior (kernels only read indices < total_notes).
+    """
+    for i in range(n):
+        fields.song_timestamps[i] = timestamps[i]
+
 
 # ============================================================================
 # GPU TIMELINE PRECOMPUTATION (eliminates Numba typeof overhead)
@@ -113,15 +124,13 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     if total_notes > fields.MAX_SONG_NOTES:
         raise ValueError(f"Song has {total_notes} notes, max is {fields.MAX_SONG_NOTES}")
 
-    # Create padded array
-    ts_padded = np.zeros(fields.MAX_SONG_NOTES, dtype=np.float32)
-    ts_padded[:total_notes] = timestamps
+    # Upload only the used prefix (avoid padding to MAX_SONG_NOTES).
     if _profiler.enabled:
         _t_ts = time.perf_counter()
-        fields.song_timestamps.from_numpy(ts_padded)
-        _profiler.record_upload(time.perf_counter() - _t_ts, bytes_count=int(ts_padded.nbytes))
+        _upload_song_timestamps_kernel(int(total_notes), timestamps)
+        _profiler.record_upload(time.perf_counter() - _t_ts, bytes_count=int(timestamps.nbytes))
     else:
-        fields.song_timestamps.from_numpy(ts_padded)
+        _upload_song_timestamps_kernel(int(total_notes), timestamps)
 
     # Extract song metadata
     long_notes = int(calc_song["metadata"].get("Long Notes", 0))

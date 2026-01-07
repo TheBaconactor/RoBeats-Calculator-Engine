@@ -550,19 +550,14 @@ def _fg_upload_song_timestamps(timestamps_np: np.ndarray) -> int:
     if _fg_last_song_key == key:
         return n
 
-    if _fg_song_upload_buf is None:
-        _fg_song_upload_buf = np.zeros((fg_fields.FG_MAX_SONG_NOTES,), dtype=np.float32)
-
-    buf = _fg_song_upload_buf
-    buf[:n] = np.asarray(timestamps_np, dtype=np.float32)
-    if n < fg_fields.FG_MAX_SONG_NOTES:
-        buf[n:] = 0.0
+    ts = np.asarray(timestamps_np, dtype=np.float32)
+    if not ts.flags["C_CONTIGUOUS"]:
+        ts = np.ascontiguousarray(ts, dtype=np.float32)
 
     _t0 = time.perf_counter()
-    fg_fields.song_timestamps.from_numpy(buf)
+    fg_kernels.fg_upload_song_timestamps_prefix_kernel(int(n), ts)
     _dt = time.perf_counter() - _t0
-    # Fixed-size upload buffer (shape stability); bytes reflect full buffer size.
-    _record_upload("song_timestamps", _dt, _bytes_of_array(buf))
+    _record_upload("song_timestamps", _dt, _bytes_of_array(ts))
     _fg_last_song_key = key
     return n
 
@@ -622,18 +617,14 @@ def _fg_upload_great_candidate_timestamps(candidate_np: np.ndarray, n: int) -> N
         _fg_use_great_candidate_field()
         return
 
-    if _fg_great_upload_buf is None:
-        _fg_great_upload_buf = np.zeros((fg_fields.FG_MAX_SONG_NOTES,), dtype=np.float32)
-
-    buf = _fg_great_upload_buf
-    buf[:n] = np.asarray(candidate_np, dtype=np.float32)
-    if n < fg_fields.FG_MAX_SONG_NOTES:
-        buf[n:] = 0.0
+    ts = np.asarray(candidate_np, dtype=np.float32)
+    if not ts.flags["C_CONTIGUOUS"]:
+        ts = np.ascontiguousarray(ts, dtype=np.float32)
 
     _t0 = time.perf_counter()
-    fg_fields.song_timestamps_great_candidate.from_numpy(buf)
+    fg_kernels.fg_upload_great_candidate_timestamps_prefix_kernel(int(n), ts)
     _dt = time.perf_counter() - _t0
-    _record_upload("great_candidate_timestamps", _dt, _bytes_of_array(buf))
+    _record_upload("great_candidate_timestamps", _dt, _bytes_of_array(ts))
     _fg_last_great_key = key
     _fg_use_great_candidate_field()
 

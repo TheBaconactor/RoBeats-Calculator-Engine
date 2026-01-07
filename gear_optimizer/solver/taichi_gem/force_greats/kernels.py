@@ -446,6 +446,20 @@ def fg_upload_forced_counts_kernel(n_cfg: ti.i32, cfg_dst_offset: ti.i32, data: 
 
 
 @ti.kernel
+def fg_upload_song_timestamps_prefix_kernel(n: ti.i32, timestamps: ti.types.ndarray(dtype=ti.f32, ndim=1)):
+    """Upload song timestamps without padding to FG_MAX_SONG_NOTES."""
+    for i in range(n):
+        song_timestamps[i] = timestamps[i]
+
+
+@ti.kernel
+def fg_upload_great_candidate_timestamps_prefix_kernel(n: ti.i32, timestamps: ti.types.ndarray(dtype=ti.f32, ndim=1)):
+    """Upload great-candidate timestamps without padding to FG_MAX_SONG_NOTES."""
+    for i in range(n):
+        song_timestamps_great_candidate[i] = timestamps[i]
+
+
+@ti.kernel
 def fg_generate_fp_targets_cartesian_kernel(
     n_cfg: ti.i32,
     cfg_dst_offset: ti.i32,
