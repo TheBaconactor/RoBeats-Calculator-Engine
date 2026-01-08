@@ -11,6 +11,110 @@ if TYPE_CHECKING:
     from gear_optimizer.solver.gpu_service import GpuServiceClient
 
 
+_FTFF_VALID_MASK_CACHE: dict[int, "object"] = {}
+_FTFF_FULL_PAIRS_CACHE: dict[int, list[tuple[int, int]]] = {}
+
+
+def _collect_ftff_pairs_from_centers(
+    centers: "object",
+    *,
+    search_radius: int,
+    total_budget: int,
+    use_fast: bool = True,
+) -> list[tuple[int, int]]:
+    """
+    Deterministically collect unique (ft_gems, ff_gems) pairs for a group's window.
+
+    Behavior matches the legacy set-based implementation:
+    - Full window when search_radius < 0 or search_radius >= total_budget
+    - Otherwise, union of all (ft,ff) within +-radius of each center, clamped to budget.
+
+    Ordering is always lexicographic (ft asc, ff asc) to keep cfg/task indexing stable.
+    """
+    try:
+        total_budget = int(total_budget)
+    except Exception:
+        total_budget = 0
+    if total_budget < 0:
+        return []
+
+    try:
+        search_radius = int(search_radius)
+    except Exception:
+        search_radius = -1
+
+    # Full window: independent of centers.
+    if search_radius < 0 or search_radius >= total_budget:
+        cached = _FTFF_FULL_PAIRS_CACHE.get(total_budget)
+        if cached is not None:
+            return list(cached)
+        out = [(ft, ff) for ft in range(0, total_budget + 1) for ff in range(0, total_budget - ft + 1)]
+        _FTFF_FULL_PAIRS_CACHE[total_budget] = out
+        return list(out)
+
+    # Empty centers => empty window.
+    try:
+        if not centers:
+            return []
+    except Exception:
+        pass
+
+    if not use_fast:
+        needed_pairs_set: set[tuple[int, int]] = set()
+        for center_ft, center_ff in centers:
+            cft = int(center_ft)
+            cff = int(center_ff)
+            for ft_offset in range(-search_radius, search_radius + 1):
+                ft = cft + ft_offset
+                if ft < 0 or ft > total_budget:
+                    continue
+                for ff_offset in range(-search_radius, search_radius + 1):
+                    ff = cff + ff_offset
+                    if ff < 0 or ft + ff > total_budget:
+                        continue
+                    needed_pairs_set.add((ft, ff))
+        return sorted(needed_pairs_set)
+
+    # Fast path: boolean mask union (avoids Python per-pair set ops).
+    import numpy as np
+
+    b = int(total_budget)
+    r = int(search_radius)
+
+    # Valid triangular region: ft+ff <= budget
+    valid = _FTFF_VALID_MASK_CACHE.get(b)
+    if valid is None:
+        ft_idx = np.arange(b + 1, dtype=np.int16)[:, None]
+        ff_idx = np.arange(b + 1, dtype=np.int16)[None, :]
+        valid = (ft_idx + ff_idx) <= b
+        _FTFF_VALID_MASK_CACHE[b] = valid
+
+    mask = np.zeros((b + 1, b + 1), dtype=np.bool_)
+    for center_ft, center_ff in centers:
+        try:
+            cft = int(center_ft)
+            cff = int(center_ff)
+        except Exception:
+            continue
+        if cft < 0:
+            cft = 0
+        if cft > b:
+            cft = b
+        if cff < 0:
+            cff = 0
+        if cff > b:
+            cff = b
+        ft_lo = max(0, cft - r)
+        ft_hi = min(b, cft + r)
+        ff_lo = max(0, cff - r)
+        ff_hi = min(b, cff + r)
+        mask[ft_lo : ft_hi + 1, ff_lo : ff_hi + 1] = True
+
+    mask &= valid
+    pairs = np.argwhere(mask)
+    return [(int(ft), int(ff)) for ft, ff in pairs]
+
+
 def process_force_greats_gpu_finder(
     loadout_entries,
     force_greats_finder,
@@ -614,34 +718,19 @@ def process_force_greats_gpu_finder(
         except Exception:
             search_radius = int(FG_SEARCH_RADIUS)
 
-        # Collect all centers from this group
+        # Collect all centers from this group.
         centers = group_centers.get((sel_color, n_sections, max_per_section), set())
-        needed_pairs_set = set()
-
         # Clamp to gem budget; any radius >= TOTAL_GEM_BUDGET implies full window.
         if search_radius >= TOTAL_GEM_BUDGET:
             search_radius = TOTAL_GEM_BUDGET
 
-        if search_radius < 0 or search_radius >= TOTAL_GEM_BUDGET:
-            # Full window: all valid (ft, ff) pairs within the FT/FF gem budget.
-            for ft in range(0, TOTAL_GEM_BUDGET + 1):
-                max_ff = TOTAL_GEM_BUDGET - ft
-                for ff in range(0, max_ff + 1):
-                    needed_pairs_set.add((ft, ff))
-        else:
-            # For each center, add all pairs within +-search_radius window
-            for center_ft, center_ff in centers:
-                for ft_offset in range(-search_radius, search_radius + 1):
-                    ft = center_ft + ft_offset
-                    if ft < 0 or ft > TOTAL_GEM_BUDGET:
-                        continue
-                    for ff_offset in range(-search_radius, search_radius + 1):
-                        ff = center_ff + ff_offset
-                        if ff < 0 or ft + ff > TOTAL_GEM_BUDGET:
-                            continue
-                        needed_pairs_set.add((ft, ff))
-
-        ftff_pairs = sorted(needed_pairs_set)
+        fast_pairs = str(os.environ.get("FG_FTFF_PAIRS_FAST", "1") or "").strip().lower() in {"1", "true", "yes", "on", ""}
+        ftff_pairs = _collect_ftff_pairs_from_centers(
+            centers,
+            search_radius=int(search_radius),
+            total_budget=int(TOTAL_GEM_BUDGET),
+            use_fast=bool(fast_pairs),
+        )
 
         # Per-Group Analytic Config Collection using PURE MATH (100x faster)
         # Create analytical scorer once per song (cached implicitly by calc_song)
