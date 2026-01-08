@@ -15,6 +15,74 @@ _FTFF_VALID_MASK_CACHE: dict[int, "object"] = {}
 _FTFF_FULL_PAIRS_CACHE: dict[int, list[tuple[int, int]]] = {}
 
 
+def _group_ftff_pairs_by_max_fp_matrix(
+    ftff_pairs: "object",
+    max_fp_matrix: "object",
+    *,
+    n_sections: int,
+) -> list[dict]:
+    """
+    Group FT/FF pairs by identical per-section max-FP caps.
+
+    Ordering matches the legacy dict-insertion behavior:
+    - Groups are yielded in order of first appearance in `ftff_pairs`.
+    - Pairs within each group preserve their original order.
+    """
+    import numpy as np
+
+    try:
+        n_sections_i = max(0, int(n_sections))
+    except Exception:
+        n_sections_i = 0
+    if n_sections_i <= 0:
+        return []
+
+    try:
+        pairs_arr = np.asarray(ftff_pairs, dtype=np.int32)
+    except Exception:
+        pairs_arr = np.asarray(list(ftff_pairs), dtype=np.int32)
+    if pairs_arr.ndim != 2 or int(pairs_arr.shape[1]) < 2:
+        return []
+    n_pairs = int(pairs_arr.shape[0])
+    if n_pairs <= 0:
+        return []
+
+    m = np.asarray(max_fp_matrix, dtype=np.int16)
+    if m.ndim != 2 or int(m.shape[0]) < n_pairs:
+        return []
+    if int(m.shape[1]) < n_sections_i:
+        n_sections_i = int(m.shape[1])
+    if n_sections_i <= 0:
+        return []
+
+    # Clamp negatives (GPU can return -1 sentinel on error paths; treat as 0 cap).
+    m0 = np.maximum(m[:n_pairs, :n_sections_i], 0)
+    m0 = np.ascontiguousarray(m0, dtype=np.int16)
+
+    # Key each row by its raw bytes for fast unique/inverse mapping.
+    row_dtype = np.dtype((np.void, int(m0.dtype.itemsize) * int(n_sections_i)))
+    keys = m0.view(row_dtype).reshape(-1)
+    uniq, first, inv = np.unique(keys, return_index=True, return_inverse=True)
+    if int(getattr(uniq, "size", 0) or 0) <= 0:
+        return []
+
+    # Preserve insertion order (first appearance in ftff_pairs) for stable tie-breaking.
+    order = np.argsort(first)
+    out: list[dict] = []
+    for u in order:
+        idxs = np.nonzero(inv == int(u))[0]
+        if idxs.size <= 0:
+            continue
+        max_fp_row = m0[int(first[int(u)])]
+        out.append(
+            {
+                "ftff_pairs": pairs_arr[idxs, :2],
+                "counts_max_fp": [int(x) for x in max_fp_row[:n_sections_i]],
+            }
+        )
+    return out
+
+
 def _collect_ftff_pairs_from_centers(
     centers: "object",
     *,
@@ -1154,24 +1222,31 @@ def process_force_greats_gpu_finder(
                         # allocate millions of Python ints and dominate cfg_build
                         # time. The max-FP representation is sufficient because
                         # breakpoints are always `range(0, max_fp + 1)` per section.
-                        all_groups = {}
-
-                        for i_pair, (ft_g, ff_g) in enumerate(ftff_pairs):
-                            row = max_fp_matrix[i_pair]
-                            max_fp_key = tuple(max(0, int(row[sec])) for sec in range(int(n_sections)))
-                            grp = all_groups.get(max_fp_key)
-                            if grp is None:
-                                grp = {
-                                    "ftff_pairs": [],
-                                    # GPU-native rectangular configs: section-wise max FP.
-                                    "counts_max_fp": list(max_fp_key),
-                                }
-                                all_groups[max_fp_key] = grp
-                            grp["ftff_pairs"].append((int(ft_g), int(ff_g)))
-
-                        for g in all_groups.values():
-                            if g.get("ftff_pairs"):
-                                yield g
+                        try:
+                            for g in _group_ftff_pairs_by_max_fp_matrix(
+                                ftff_pairs,
+                                max_fp_matrix,
+                                n_sections=int(n_sections),
+                            ):
+                                if g and g.get("ftff_pairs") is not None:
+                                    yield g
+                        except Exception:
+                            all_groups = {}
+                            for i_pair, (ft_g, ff_g) in enumerate(ftff_pairs):
+                                row = max_fp_matrix[i_pair]
+                                max_fp_key = tuple(max(0, int(row[sec])) for sec in range(int(n_sections)))
+                                grp = all_groups.get(max_fp_key)
+                                if grp is None:
+                                    grp = {
+                                        "ftff_pairs": [],
+                                        # GPU-native rectangular configs: section-wise max FP.
+                                        "counts_max_fp": list(max_fp_key),
+                                    }
+                                    all_groups[max_fp_key] = grp
+                                grp["ftff_pairs"].append((int(ft_g), int(ff_g)))
+                            for g in all_groups.values():
+                                if g.get("ftff_pairs"):
+                                    yield g
 
                     group_gen = _iter_groups_from_max_fp()
 
