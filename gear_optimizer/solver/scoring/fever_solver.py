@@ -339,43 +339,52 @@ def solve_best_fever_combination(
 
             # SINGLE GPU kernel launch for ALL timelines - GPU-resident!
             # Direct call with lock for minimal overhead (scheduler queue was too slow)
-            with _GPU_LOCK:
-                batch_results = batch_solver(
-                    batch_input,
-                    cur_pp,
-                    cur_cm,
-                    cur_fm,
-                    base_p_val=base_p_val,
-                    base_s_val=base_s_val,
-                    is_p_ft=is_p_ft,
-                    is_s_ft=is_s_ft,
-                    is_p_ff=is_p_ff,
-                    is_s_ff=is_s_ff,
-                    is_p_pp=is_p_pp,
-                    is_s_pp=is_s_pp,
-                    is_p_cm=is_p_cm,
-                    is_s_cm=is_s_cm,
-                    is_p_fm=is_p_fm,
-                    is_s_fm=is_s_fm,
-                    is_p_ov=is_p_ov,
-                    is_s_ov=is_s_ov,
-                    ref_arrays=ref_arrays,
-                )
+            batch_results = None
+            try:
+                with _GPU_LOCK:
+                    batch_results = batch_solver(
+                        batch_input,
+                        cur_pp,
+                        cur_cm,
+                        cur_fm,
+                        base_p_val=base_p_val,
+                        base_s_val=base_s_val,
+                        is_p_ft=is_p_ft,
+                        is_s_ft=is_s_ft,
+                        is_p_ff=is_p_ff,
+                        is_s_ff=is_s_ff,
+                        is_p_pp=is_p_pp,
+                        is_s_pp=is_s_pp,
+                        is_p_cm=is_p_cm,
+                        is_s_cm=is_s_cm,
+                        is_p_fm=is_p_fm,
+                        is_s_fm=is_s_fm,
+                        is_p_ov=is_p_ov,
+                        is_s_ov=is_s_ov,
+                        ref_arrays=ref_arrays,
+                    )
+            except Exception as exc:
+                if not silent:
+                    print(f"[GPU] Batch solver failed, falling back to CPU: {type(exc).__name__}: {exc}")
+                use_gpu = False
+                best_score = -1
+                best_tuple = None
 
             # Find best result (only CPU work: simple max)
-            for i, (t_data, result) in enumerate(zip(timelines, batch_results)):
-                ft = t_data["ft_gems"]
-                ff = t_data["ff_gems"]
-                # Result: (score, pp, cm, fm, p_val, s_val, gems_pp, gems_cm, gems_fm, gems_ov)
-                total_score = result[0]
-                g_pp = result[6]
-                g_cm = result[7]
-                g_fm = result[8]
-                g_ov = result[9]
+            if use_gpu and batch_results is not None:
+                for i, (t_data, result) in enumerate(zip(timelines, batch_results)):
+                    ft = t_data["ft_gems"]
+                    ff = t_data["ff_gems"]
+                    # Result: (score, pp, cm, fm, p_val, s_val, gems_pp, gems_cm, gems_fm, gems_ov)
+                    total_score = result[0]
+                    g_pp = result[6]
+                    g_cm = result[7]
+                    g_fm = result[8]
+                    g_ov = result[9]
 
-                if total_score > best_score:
-                    best_score = total_score
-                    best_tuple = (total_score, ft, ff, g_pp, g_cm, g_fm, g_ov)
+                    if total_score > best_score:
+                        best_score = total_score
+                        best_tuple = (total_score, ft, ff, g_pp, g_cm, g_fm, g_ov)
         else:
             # Fallback to CPU if GPU failed
             use_gpu = False
