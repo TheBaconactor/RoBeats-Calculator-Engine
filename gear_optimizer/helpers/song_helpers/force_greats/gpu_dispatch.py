@@ -1057,23 +1057,27 @@ def process_force_greats_gpu_finder(
                     max_fp_matrix = _np.asarray(max_fp_matrix, dtype=_np.int16)
 
                     def _iter_groups_from_max_fp():
-                        # Group by identical per-section FP ranges.
+                        # Group by identical per-section FP caps.
+                        #
+                        # IMPORTANT: Avoid materializing `section_breakpoints` as
+                        # tuple(tuple(range(...))) for every pair. In worst cases
+                        # (many sections × large caps × many pairs) this can
+                        # allocate millions of Python ints and dominate cfg_build
+                        # time. The max-FP representation is sufficient because
+                        # breakpoints are always `range(0, max_fp + 1)` per section.
                         all_groups = {}
 
                         for i_pair, (ft_g, ff_g) in enumerate(ftff_pairs):
                             row = max_fp_matrix[i_pair]
-                            section_breakpoints = tuple(
-                                tuple(range(0, int(row[sec]) + 1)) for sec in range(int(n_sections))
-                            )
-                            grp = all_groups.get(section_breakpoints)
+                            max_fp_key = tuple(max(0, int(row[sec])) for sec in range(int(n_sections)))
+                            grp = all_groups.get(max_fp_key)
                             if grp is None:
                                 grp = {
                                     "ftff_pairs": [],
                                     # GPU-native rectangular configs: section-wise max FP.
-                                    "counts_max_fp": [int(row[sec]) for sec in range(int(n_sections))],
-                                    "section_breakpoints": section_breakpoints,
+                                    "counts_max_fp": list(max_fp_key),
                                 }
-                                all_groups[section_breakpoints] = grp
+                                all_groups[max_fp_key] = grp
                             grp["ftff_pairs"].append((int(ft_g), int(ff_g)))
 
                         for g in all_groups.values():
@@ -1151,10 +1155,17 @@ def process_force_greats_gpu_finder(
                         )
                     cfg_next_base = int(group_cfg_offset) + int(cfg_len0)
 
-                    # Log first group info (always show breakpoints)
-                    if not logged_first:
-                        logged_first = True
+                     # Log first group info (always show breakpoints)
+                     if not logged_first:
+                         logged_first = True
                         bps = group.get("section_breakpoints") or ()
+                        if not bps:
+                            try:
+                                max_fp0 = list(group.get("counts_max_fp") or [])
+                                if max_fp0:
+                                    bps = [range(0, int(v) + 1) for v in max_fp0]
+                            except Exception:
+                                bps = ()
                         if bps:
                             print(f"[FG] Per-FT/FF Breakpoints (GPU accumulation): {len(ftff_pairs)} FT/FF pairs")
                             for sec_idx, bp in enumerate(bps):
