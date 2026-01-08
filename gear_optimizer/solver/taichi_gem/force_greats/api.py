@@ -1600,6 +1600,8 @@ def solve_force_greats_finder_gpu_tasks(
     if not fg_tasks:
         return
 
+    use_gpu_cfg_ranges = str(os.environ.get("FG_GPU_CFG_RANGES", "1") or "").strip().lower() in {"1", "true", "yes", "on", ""}
+
     # Packed mega-job mode:
     # - Upload all config windows into the global config table once (at their base_cfg_offset)
     # - Batch FT/FF pairs across all tasks into a single Stage-1/Stage-2 sequence per FG_MAX_FTFF chunk
@@ -1954,6 +1956,7 @@ def solve_force_greats_finder_gpu_tasks(
         fg_fields.fg_cfg_base_list.from_numpy(cfg_base_buf)
         fg_fields.fg_cfg_mode_list.from_numpy(cfg_mode_buf)
         fg_fields.fg_cfg_max_fp.from_numpy(cfg_max_fp_buf)
+        fg_fields.fg_cfg_total_len_list.from_numpy(cfg_total_len_buf)
 
         # Reset per-call outputs and init stage1.
         fg_kernels.fg_reset_best_kernel(int(n_genomes))
@@ -1981,13 +1984,14 @@ def solve_force_greats_finder_gpu_tasks(
             if band_len <= 0:
                 continue
 
-            # Vectorized cfg window fill for this band.
-            cfg_start_buf[: int(n_ftff)] = cfg_base_buf[: int(n_ftff)] + int(band_start)
-            remaining = cfg_total_len_buf[: int(n_ftff)] - int(band_start)
-            # Clamp to [0, band_len].
-            cfg_len_buf[: int(n_ftff)] = np.minimum(np.maximum(remaining, 0), int(band_len))
-
-            fg_kernels.fg_upload_cfg_ranges_kernel(int(n_ftff), cfg_start_buf, cfg_len_buf)
+            if use_gpu_cfg_ranges:
+                fg_kernels.fg_compute_cfg_ranges_kernel(int(n_ftff), int(band_start), int(band_len))
+            else:
+                # Host fallback: compute and upload cfg windows for this band.
+                cfg_start_buf[: int(n_ftff)] = cfg_base_buf[: int(n_ftff)] + int(band_start)
+                remaining = cfg_total_len_buf[: int(n_ftff)] - int(band_start)
+                cfg_len_buf[: int(n_ftff)] = np.minimum(np.maximum(remaining, 0), int(band_len))
+                fg_kernels.fg_upload_cfg_ranges_kernel(int(n_ftff), cfg_start_buf, cfg_len_buf)
 
             # Use cfg_offset/cfg_read_offset = -1 to enable per-ftff cfg windows in the kernel.
             if gem_fields.IS_METAL:

@@ -30,6 +30,7 @@ fg_ft_list = None
 fg_ff_list = None
 fg_cfg_start_list = None
 fg_cfg_len_list = None
+fg_cfg_total_len_list = None
 fg_cfg_base_list = None
 fg_cfg_mode_list = None
 fg_cfg_max_fp = None
@@ -567,6 +568,26 @@ def fg_upload_cfg_ranges_kernel(
     for i in range(n_ftff):
         fg_cfg_start_list[i] = cfg_start[i]
         fg_cfg_len_list[i] = cfg_len[i]
+
+
+@ti.kernel
+def fg_compute_cfg_ranges_kernel(n_ftff: ti.i32, band_start: ti.i32, band_len: ti.i32):
+    """
+    Build per-ftff cfg windows for the current band entirely on GPU.
+
+    This avoids host-side loops and host->device transfers for cfg_start/cfg_len.
+    """
+    for i in range(n_ftff):
+        base = ti.cast(fg_cfg_base_list[i], ti.i32)
+        total_len = ti.cast(fg_cfg_total_len_list[i], ti.i32)
+        start = base + ti.cast(band_start, ti.i32)
+        remaining = total_len - ti.cast(band_start, ti.i32)
+        if remaining <= 0:
+            fg_cfg_start_list[i] = start
+            fg_cfg_len_list[i] = 0
+        else:
+            fg_cfg_start_list[i] = start
+            fg_cfg_len_list[i] = ti.min(remaining, ti.cast(band_len, ti.i32))
 
 
 @ti.kernel
