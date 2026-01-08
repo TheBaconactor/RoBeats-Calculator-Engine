@@ -8,13 +8,15 @@ This module provides functions for evaluating fixed stats without gem optimizati
 - Helper functions for song caching and config conversion
 """
 
+import os
 import numpy as np
 from math import floor
 
-from ...core.constants import TOTAL_ROWS
+from ...core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TIME_SCALE, TOTAL_ROWS
 from ...core.utils import safe_int, safe_float
 
 from ..fever_timeline import (
+    calculate_fever_activations_grid,
     calculate_fever_timeline_indices,
     calculate_non_fever_sections,
 )
@@ -24,6 +26,71 @@ from ..scoring_core import fast_calculate_score, lookup_reference_py
 
 _FG_BASELINE_CACHE: dict[tuple, tuple[int, int]] = {}
 _FG_BASELINE_CACHE_MAX = 8192
+_FG_BASELINE_GRID_CACHE: dict[tuple, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+_FG_BASELINE_GRID_CACHE_MAX = 64
+
+
+def _get_fg_baseline_grids(
+    *,
+    song_key: tuple,
+    timestamps: np.ndarray,
+    total_notes: int,
+    long_notes: int,
+    last_note_time: float,
+    ref_arrays: dict,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Build or fetch per-song baseline grids for fast ForceGreatsFinder batching.
+
+    Returns:
+        (fever_activations_grid, gap_grid, non_fever_base_by_ff)
+    """
+    cached = _FG_BASELINE_GRID_CACHE.get(song_key)
+    if cached is not None:
+        return cached
+
+    # Normalize timestamps for Numba kernels (keep dtype to preserve parity).
+    ts = np.asarray(timestamps)
+    if ts.ndim != 1:
+        raise ValueError("timestamps must be 1D")
+    if not ts.flags["C_CONTIGUOUS"]:
+        ts = np.ascontiguousarray(ts)
+
+    grid_size = int(TOTAL_ROWS) + 1
+    ref_ft = np.asarray(ref_arrays["Fever Time"], dtype=np.float64)
+    ref_ff = np.asarray(ref_arrays["Fever Fill Rate"], dtype=np.float64)
+    if int(ref_ft.shape[0]) < grid_size or int(ref_ff.shape[0]) < grid_size:
+        raise ValueError("ref_arrays['Fever Time'/'Fever Fill Rate'] must have length >= TOTAL_ROWS+1")
+    ft_factors = np.ascontiguousarray(ref_ft[:grid_size], dtype=np.float64)
+    ff_factors = np.ascontiguousarray(ref_ff[:grid_size], dtype=np.float64)
+
+    non_fever_cas = float(int(total_notes) - int(long_notes)) * float(FEVER_FILL_BASE_RATE)
+    if non_fever_cas < 0.0:
+        non_fever_cas = 0.0
+    fever_time_cas = float(last_note_time) * float(FEVER_TIME_SCALE) + float(FEVER_TIME_OFFSET)
+
+    acts = np.zeros((grid_size, grid_size), dtype=np.int32)
+    last_end = np.zeros((grid_size, grid_size), dtype=np.int32)
+    calculate_fever_activations_grid(
+        ts,
+        int(total_notes),
+        float(fever_time_cas),
+        float(non_fever_cas),
+        ft_factors,
+        ff_factors,
+        acts,
+        last_end,
+    )
+
+    gap = np.empty((grid_size, grid_size), dtype=np.int32)
+    gap[:, :] = int(total_notes) - last_end
+
+    non_fever_base_by_ff = np.ceil(float(non_fever_cas) * ff_factors).astype(np.int32)
+
+    if len(_FG_BASELINE_GRID_CACHE) >= _FG_BASELINE_GRID_CACHE_MAX:
+        _FG_BASELINE_GRID_CACHE.clear()
+    _FG_BASELINE_GRID_CACHE[song_key] = (acts, gap, non_fever_base_by_ff)
+    return _FG_BASELINE_GRID_CACHE[song_key]
 
 
 def evaluate_stats_score(
@@ -132,7 +199,10 @@ def fg_baseline_params(stats, calc_song, ref_arrays):
         return 0, 0
 
     # Cache by song + FT/FF stats. This is called many times during FG candidate
-    # collection; caching avoids repeated Python timeline stepping.
+    # collection; caching avoids repeated baseline work.
+    song_key = None
+    ft_stat_raw = 0
+    ff_stat_raw = 0
     try:
         song_key = _song_cache_key(calc_song)
         ft_stat_raw = int(safe_int(stats.get("Fever Time", 0), 0))
@@ -156,6 +226,40 @@ def fg_baseline_params(stats, calc_song, ref_arrays):
     base_ts = song_data.get("timestamps", timestamps)
     default_last_note = base_ts[-1] if total_notes else 0.0
     last_note_time = safe_float(metadata.get("Last Note Time"), default_last_note)
+
+    # Fast path: use per-song fever_activations/gap grids to avoid per-(FT,FF) timeline stepping.
+    use_grid = str(os.environ.get("FG_BASELINE_GRID", "1") or "").strip().lower() in {"1", "true", "yes", "on", ""}
+    if use_grid:
+        try:
+            if song_key is None:
+                song_key = _song_cache_key(calc_song)
+            if not isinstance(timestamps, np.ndarray):
+                timestamps = np.asarray(timestamps)
+            acts_grid, gap_grid, non_fever_base_by_ff = _get_fg_baseline_grids(
+                song_key=song_key,
+                timestamps=timestamps,
+                total_notes=int(total_notes),
+                long_notes=int(long_notes),
+                last_note_time=float(last_note_time),
+                ref_arrays=ref_arrays,
+            )
+            ft_idx = max(0, min(TOTAL_ROWS, int(ft_stat_raw)))
+            ff_idx = max(0, min(TOTAL_ROWS, int(ff_stat_raw)))
+            fever_acts = int(acts_grid[ft_idx, ff_idx])
+            gap0 = int(gap_grid[ft_idx, ff_idx])
+            if gap0 < 0:
+                gap0 = 0
+            non_fever_base = int(non_fever_base_by_ff[ff_idx]) if non_fever_base_by_ff is not None else 0
+            non_fever_section = int(fever_acts) + (1 if gap0 > 0 else 0)
+            result = (int(non_fever_section), int(non_fever_base))
+            if cache_key is not None:
+                if len(_FG_BASELINE_CACHE) >= _FG_BASELINE_CACHE_MAX:
+                    _FG_BASELINE_CACHE.clear()
+                _FG_BASELINE_CACHE[cache_key] = result
+            return result
+        except Exception:
+            # Fall back to the legacy per-point baseline computation.
+            pass
 
     ref_ff = ref_arrays["Fever Fill Rate"]
     ref_ft = ref_arrays["Fever Time"]
