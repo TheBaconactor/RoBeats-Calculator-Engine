@@ -29,7 +29,7 @@ import os
 import traceback
 import time
 from pathlib import Path
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from time import perf_counter
 from dataclasses import dataclass
 from typing import Any, Optional, Dict
@@ -81,7 +81,40 @@ _WORKER_ID: Optional[int] = None
 _REQUEST_QUEUE: Optional[multiprocessing.Queue] = None
 _RESPONSE_QUEUE: Optional[multiprocessing.Queue] = None
 _REQUEST_COUNTER = 0
-_PENDING_RESPONSES: Dict[int, "GpuResponse"] = {}
+_PENDING_RESPONSES: OrderedDict[int, tuple["GpuResponse", float]] = OrderedDict()
+try:
+    _PENDING_TTL_SEC = float(os.environ.get("GPU_EXECUTOR_PENDING_TTL_SEC", "300"))
+except Exception:
+    _PENDING_TTL_SEC = 300.0
+_PENDING_TTL_SEC = max(0.0, float(_PENDING_TTL_SEC))
+try:
+    _PENDING_MAX = int(os.environ.get("GPU_EXECUTOR_PENDING_MAX", "2048"))
+except Exception:
+    _PENDING_MAX = 2048
+_PENDING_MAX = max(0, int(_PENDING_MAX))
+
+
+def _prune_pending_responses(now: float | None = None) -> None:
+    if not _PENDING_RESPONSES:
+        return
+    if now is None:
+        now = time.monotonic()
+    if _PENDING_TTL_SEC > 0.0:
+        while _PENDING_RESPONSES:
+            _response, ts = next(iter(_PENDING_RESPONSES.values()))
+            if (now - ts) <= _PENDING_TTL_SEC:
+                break
+            _PENDING_RESPONSES.popitem(last=False)
+    if _PENDING_MAX > 0:
+        while len(_PENDING_RESPONSES) > _PENDING_MAX:
+            _PENDING_RESPONSES.popitem(last=False)
+
+
+def _store_pending_response(response: "GpuResponse") -> None:
+    now = time.monotonic()
+    _PENDING_RESPONSES[response.request_id] = (response, now)
+    _PENDING_RESPONSES.move_to_end(response.request_id)
+    _prune_pending_responses(now)
 
 
 def set_gpu_worker_mode(worker_id: int, request_queue, response_queue):
@@ -110,7 +143,7 @@ def clear_gpu_worker_mode():
     _WORKER_ID = None
     _REQUEST_QUEUE = None
     _RESPONSE_QUEUE = None
-    _PENDING_RESPONSES = {}
+    _PENDING_RESPONSES = OrderedDict()
 
 
 class GpuExecutor:
@@ -1589,8 +1622,9 @@ def submit_gpu_solve_genomes(
     # Wait for response
     start = time.monotonic()
     while True:
+        _prune_pending_responses()
         if request_id in _PENDING_RESPONSES:
-            response = _PENDING_RESPONSES.pop(request_id)
+            response, _ts = _PENDING_RESPONSES.pop(request_id)
             break
 
         remaining = timeout - (time.monotonic() - start)
@@ -1604,7 +1638,7 @@ def submit_gpu_solve_genomes(
 
         if response.request_id != request_id:
             # Can happen if an earlier request timed out and its response arrived late.
-            _PENDING_RESPONSES[response.request_id] = response
+            _store_pending_response(response)
             continue
         break
 
@@ -1690,8 +1724,9 @@ def submit_gpu_solve_genomes_from_registry(
 
     start = time.monotonic()
     while True:
+        _prune_pending_responses()
         if request_id in _PENDING_RESPONSES:
-            response = _PENDING_RESPONSES.pop(request_id)
+            response, _ts = _PENDING_RESPONSES.pop(request_id)
             break
 
         remaining = timeout - (time.monotonic() - start)
@@ -1704,7 +1739,7 @@ def submit_gpu_solve_genomes_from_registry(
             raise RuntimeError(f"GPU executor timeout after {timeout}s")
 
         if response.request_id != request_id:
-            _PENDING_RESPONSES[response.request_id] = response
+            _store_pending_response(response)
             continue
         break
 
@@ -1787,8 +1822,9 @@ def submit_gpu_optimize_gems_batch(
 
     start = time.monotonic()
     while True:
+        _prune_pending_responses()
         if request_id in _PENDING_RESPONSES:
-            response = _PENDING_RESPONSES.pop(request_id)
+            response, _ts = _PENDING_RESPONSES.pop(request_id)
             break
 
         remaining = timeout - (time.monotonic() - start)
@@ -1801,7 +1837,7 @@ def submit_gpu_optimize_gems_batch(
             raise RuntimeError(f"GPU executor timeout after {timeout}s")
 
         if response.request_id != request_id:
-            _PENDING_RESPONSES[response.request_id] = response
+            _store_pending_response(response)
             continue
         break
 
@@ -1835,8 +1871,9 @@ def submit_gpu_load_ref_arrays(ref_arrays: dict, timeout: float = 30.0) -> None:
 
     start = time.monotonic()
     while True:
+        _prune_pending_responses()
         if request_id in _PENDING_RESPONSES:
-            response = _PENDING_RESPONSES.pop(request_id)
+            response, _ts = _PENDING_RESPONSES.pop(request_id)
             break
 
         remaining = timeout - (time.monotonic() - start)
@@ -1849,7 +1886,7 @@ def submit_gpu_load_ref_arrays(ref_arrays: dict, timeout: float = 30.0) -> None:
             raise RuntimeError(f"GPU executor timeout after {timeout}s")
 
         if response.request_id != request_id:
-            _PENDING_RESPONSES[response.request_id] = response
+            _store_pending_response(response)
             continue
         break
 
@@ -1890,8 +1927,9 @@ def submit_gpu_solve_force_greats_finder(
 
     start = time.monotonic()
     while True:
+        _prune_pending_responses()
         if request_id in _PENDING_RESPONSES:
-            response = _PENDING_RESPONSES.pop(request_id)
+            response, _ts = _PENDING_RESPONSES.pop(request_id)
             break
 
         remaining = timeout - (time.monotonic() - start)
@@ -1904,7 +1942,7 @@ def submit_gpu_solve_force_greats_finder(
             raise RuntimeError(f"GPU executor timeout after {timeout}s")
 
         if response.request_id != request_id:
-            _PENDING_RESPONSES[response.request_id] = response
+            _store_pending_response(response)
             continue
         break
 
