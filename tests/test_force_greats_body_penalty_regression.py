@@ -57,4 +57,3 @@ def test_force_greats_body_penalty_matches_full_combo_flooring_regression() -> N
 
     # Expected body penalty for this setup: 2 points lower per forced great than the buggy computation.
     assert res["penalty_analysis"]["NonFever2"]["score_penalty"] == 19 * 2319
-

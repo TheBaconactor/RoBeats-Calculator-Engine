@@ -14,21 +14,12 @@ import time
 
 import numpy as np
 
-try:
-    from dotenv import load_dotenv
-except ImportError:
-
-    def load_dotenv(_path=None):
-        return False
-
-
 # Import from refactored modules
 from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS, GA_POPULATION_SIZE
 from gear_optimizer.core.config import (
     compute_memory_guard_limit,
     load_paths_cache,
-    load_force_greats_config,
-    load_force_greats_inline,
+    read_iteration_engine_settings,
 )
 from gear_optimizer.data.database import (
     init_db,
@@ -45,7 +36,7 @@ from gear_optimizer.core.memory import (
     restart_process_for_memory_guard,
     MEMORY_GUARD_RESUME_FILE,
 )
-from gear_optimizer.data.discord_reporter import DiscordReporter, build_stats_summary
+from gear_optimizer.data.discord_reporter import DiscordReporter, build_stats_summary, setup_discord_reporter
 from gear_optimizer.pipeline.song_processor import safe_process_song_task, scan_song_header
 from gear_optimizer.data.csv_parser import (
     load_all_gears_list,
@@ -217,22 +208,7 @@ class GearOptimizerApp:
         )
 
     def setup_discord(self):
-        env_path = PATHS.discord_env
-        if os.path.exists(env_path):
-            load_dotenv(env_path)
-        else:
-            load_dotenv()
-
-        token = os.getenv("DISCORD_TOKEN")
-        logging_channel_id = safe_int(os.getenv("LOGGINGCHANNEL"), 0) or None
-        stats_channel_id = safe_int(os.getenv("STATSCHANNEL"), 0) or None
-
-        return DiscordReporter(
-            token,
-            log_channel_id=logging_channel_id,
-            stats_channel_id=stats_channel_id,
-            stats_batch_size=500,
-        )
+        return setup_discord_reporter(stats_batch_size=500)
 
     def request_stop(self, reason: str, *, force: bool = False) -> None:
         """
@@ -356,30 +332,17 @@ class GearOptimizerApp:
             self._auto_merge_databases()
 
             # Config reading
-            meta_finder = cfg.getboolean("IterationEngine", "MetaFinder", fallback=False)
+            ie = read_iteration_engine_settings(cfg)
+            meta_finder = bool(ie.meta_finder)
             enable_auto = bool(meta_finder)
-            force_greats_mode = cfg.getboolean("IterationEngine", "ForceGreatsMode", fallback=False)
-            force_greats_finder = cfg.getboolean("IterationEngine", "ForceGreatsFinder", fallback=False)
-            fg_debug = cfg.getboolean("IterationEngine", "ForceGreatsDebug", fallback=False)
-            auto_buff = cfg.getboolean("IterationEngine", "AutoSelectBuffAndColor", fallback=False)
+            auto_buff = bool(ie.auto_select_buff_and_color)
+            fg_debug = bool(ie.force_greats_debug)
 
-            if force_greats_mode:
-                force_greats_config = load_force_greats_config(cfg)
-                if not force_greats_config:
-                    inline_cfg = load_force_greats_inline(cfg, key="ForceGreatsManual")
-                    if inline_cfg:
-                        force_greats_config = inline_cfg
-
-                manual_force_greats = bool(force_greats_config) and any(force_greats_config)
-                if manual_force_greats:
-                    # Manual config is a deliberate override; the per-song config loader enforces
-                    # this too, but we want the startup banner to match actual behavior.
-                    force_greats_finder = False
-
-                if force_greats_finder:
+            if ie.force_greats_mode:
+                if ie.force_greats_finder:
                     fg_status = "ForceGreatsFinder"
-                elif manual_force_greats:
-                    fg_status = f"Manual Config {force_greats_config}"
+                elif ie.manual_force_greats:
+                    fg_status = f"Manual Config {list(ie.force_greats_config or [])}"
                 else:
                     fg_status = "Enabled but inactive (no manual config; ForceGreatsFinder=false)"
 

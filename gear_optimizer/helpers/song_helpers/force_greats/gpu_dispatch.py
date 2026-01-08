@@ -785,7 +785,8 @@ def process_force_greats_gpu_finder(
                             entries0 = sig_map.get(sig0) or []
                             if entries0:
                                 base_i = min(
-                                    int((e0.get("base_score") or e0.get("score", 0) or 0)) for (e0, _ed0, _bs0) in entries0
+                                    int((e0.get("base_score") or e0.get("score", 0) or 0))
+                                    for (e0, _ed0, _bs0) in entries0
                                 )
                         except Exception:
                             base_i = 0
@@ -1304,7 +1305,7 @@ def process_force_greats_gpu_finder(
                         # Build cumulative ends for fast window lookup.
                         bases = [int(w.get("base", 0)) for w in cfg_windows]
                         lens = [int(w.get("len", 0)) for w in cfg_windows]
-                        ends = [b + l for b, l in zip(bases, lens)]
+                        ends = [base + length for base, length in zip(bases, lens)]
 
                         def _find_window(x: int) -> int:
                             # linear scan is fine (window count is typically small), but keep it safe.
@@ -1568,7 +1569,7 @@ def process_force_greats_gpu_finder(
                     cfg_counts_arr = _np.zeros((int(n_out), int(n_sections0)), dtype=_np.int32)
                     bases = [int(w.get("base", 0)) for w in cfg_windows]
                     lens = [int(w.get("len", 0)) for w in cfg_windows]
-                    ends = [b + l for b, l in zip(bases, lens)]
+                    ends = [base + length for base, length in zip(bases, lens)]
 
                     def _find_window(x: int) -> int:
                         for wi, (b, e) in enumerate(zip(bases, ends)):

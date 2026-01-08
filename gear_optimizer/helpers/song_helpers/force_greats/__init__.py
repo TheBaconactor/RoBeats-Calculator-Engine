@@ -8,4 +8,3 @@ This package hosts the Force Greats helper logic. The public entrypoint is:
 from .core import process_force_greats
 
 __all__ = ["process_force_greats"]
-

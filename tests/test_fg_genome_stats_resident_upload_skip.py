@@ -106,4 +106,3 @@ def test_fg_tasks_can_skip_genome_stats_upload_when_resident():
 
     assert int(r1["final_score"][0]) == int(r2["final_score"][0])
     assert int(r1["cfg_idx"][0]) == int(r2["cfg_idx"][0])
-

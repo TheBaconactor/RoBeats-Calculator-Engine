@@ -53,4 +53,3 @@ def is_cached_force_valid(cached_force_obj, expected_selected_element) -> bool:
     if expected_selected_element and cached_sel and cached_sel != expected_selected_element:
         return False
     return True
-

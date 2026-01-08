@@ -28,6 +28,7 @@ _profiler = get_gpu_profiler()
 # Get appropriate kernels for current platform (Metal-safe on macOS)
 kernels = get_kernels()
 
+
 @ti.kernel
 def _upload_song_timestamps_kernel(n: ti.i32, timestamps: ti.types.ndarray(dtype=ti.f32, ndim=1)):
     """

@@ -276,8 +276,11 @@ def _migration_6_effective_loadout_hash_and_mini_variants(conn: sqlite3.Connecti
             prev["timestamp"] = max(prev_ts, cur_ts)
 
         # Ensure songs exist for any migrated loadouts (older DBs may have inconsistencies).
-        for (song_name, _h) in aggregated.keys():
-            conn.execute("INSERT OR IGNORE INTO songs (name, best_score, best_fg_score, last_updated) VALUES (?, 0, 0, 0)", (song_name,))
+        for song_name, _h in aggregated.keys():
+            conn.execute(
+                "INSERT OR IGNORE INTO songs (name, best_score, best_fg_score, last_updated) VALUES (?, 0, 0, 0)",
+                (song_name,),
+            )
 
         # Insert into new table.
         for rec in aggregated.values():

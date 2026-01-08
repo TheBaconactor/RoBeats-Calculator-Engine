@@ -125,7 +125,7 @@ def main() -> int:
     for c in cases:
         dt, up = _run_case(c, songs=songs, ref_arrays=ref_arrays, iters=iters)
         results.append((c.name, dt, up))
-        print(f"[bench] {c.name}: wall={dt*1000:.1f}ms upload_bytes={up}")
+        print(f"[bench] {c.name}: wall={dt * 1000:.1f}ms upload_bytes={up}")
 
     if len(results) == 2:
         a = results[0]
@@ -143,4 +143,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

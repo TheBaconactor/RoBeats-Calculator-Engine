@@ -67,4 +67,3 @@ def test_fg_gpu_config_generation_matches_itertools_product(max_fp):
     )
 
     assert np.array_equal(out, cpu), f"gpu={out.tolist()} cpu={cpu.tolist()}"
-

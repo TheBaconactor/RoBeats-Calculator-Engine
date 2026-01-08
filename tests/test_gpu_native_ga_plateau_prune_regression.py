@@ -226,5 +226,6 @@ def test_gpu_native_ga_plateau_prune_score_regression_off_vs_on() -> None:
                 if not np.array_equal(off_scores, on_scores):
                     mismatched += 1
 
-            assert mismatched == 0, f"{calc_song['metadata']['Song Name']}: mismatched score trials={mismatched}/{trials}"
-
+            assert mismatched == 0, (
+                f"{calc_song['metadata']['Song Name']}: mismatched score trials={mismatched}/{trials}"
+            )

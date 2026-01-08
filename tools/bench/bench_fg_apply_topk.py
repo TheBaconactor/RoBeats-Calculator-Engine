@@ -107,8 +107,8 @@ def main() -> int:
     speedup = (t_full / t_topk) if t_topk > 0 else float("inf")
 
     print(f"[bench] FG apply (lean/raw) n_sections={n_sections} iters={iters}")
-    print(f"[bench] full  n={n_full} min={t_full*1000:.2f}ms")
-    print(f"[bench] topk  n={n_topk} min={t_topk*1000:.2f}ms")
+    print(f"[bench] full  n={n_full} min={t_full * 1000:.2f}ms")
+    print(f"[bench] topk  n={n_topk} min={t_topk * 1000:.2f}ms")
     print(f"[bench] speedup={speedup:.2f}x (apply-only)")
 
     return 0
@@ -116,4 +116,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

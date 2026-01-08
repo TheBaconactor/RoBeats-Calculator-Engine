@@ -127,4 +127,3 @@ def test_fg_breakpoints_max_fp_kernel_parity_small():
 
     # Strict equality expected for this synthetic exact-timestamp setup.
     assert np.array_equal(cpu_max_fp, gpu_max_fp), f"cpu_max_fp={cpu_max_fp} gpu_max_fp={gpu_max_fp}"
-

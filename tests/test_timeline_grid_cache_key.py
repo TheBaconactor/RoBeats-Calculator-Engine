@@ -45,4 +45,3 @@ def test_song_timeline_grid_cache_key_includes_human_hit_sim_seed():
     assert grid1 is grid1_again
     assert grid1 is not grid2
     assert getattr(grid1, "cache_key", None) != getattr(grid2, "cache_key", None)
-

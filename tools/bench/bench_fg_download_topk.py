@@ -148,8 +148,8 @@ def main() -> int:
     reduction = (b_full / b_topk) if b_topk > 0 else float("inf")
 
     print(f"[bench] FG global_best download (genomes={n_genomes}, iters={iters})")
-    print(f"[bench] full   min={t_full*1000:.2f}ms download_bytes={b_full}")
-    print(f"[bench] topk   min={t_topk*1000:.2f}ms download_bytes={b_topk} (keep=51 topk=51)")
+    print(f"[bench] full   min={t_full * 1000:.2f}ms download_bytes={b_full}")
+    print(f"[bench] topk   min={t_topk * 1000:.2f}ms download_bytes={b_topk} (keep=51 topk=51)")
     print(f"[bench] speedup={speedup:.2f}x download_reduction={reduction:.2f}x")
 
     return 0
@@ -157,4 +157,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

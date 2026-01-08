@@ -21,11 +21,13 @@ from typing import Any, Optional
 
 import numpy as np
 
+from gear_optimizer.core.config import read_fg_candidate_limit, read_fg_search_radius
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.utils import cfg_from_dict, safe_int
 from gear_optimizer.helpers.song_helpers.database_context import load_database_context
 from gear_optimizer.helpers.song_helpers.loadout_builder import build_loadout_entries
+from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 from gear_optimizer.helpers.song_helpers.song_config import setup_song_config
 from gear_optimizer.solver.gpu_executor import get_gpu_executor
 from gear_optimizer.solver.gpu_service import GpuServiceClient
@@ -37,6 +39,7 @@ from gear_optimizer.solver.inflight_utils import (
     _summarize_db_context,
     _truthy,
 )
+
 
 def _compact_fg_variants(variants: list[dict]) -> list[dict]:
     out = []
@@ -446,37 +449,15 @@ def run_inflight_song_pipeline(
         except Exception:
             gpu_mode = False
 
-        # Candidate funnel size (reuse existing config key).
-        fg_candidate_limit = safe_int(cfg.get("IterationEngine", "FG_CandidateLimit", fallback=200), 200)
-        fg_candidate_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(fg_candidate_limit)))
-
-        fg_search_radius = None
-        try:
-            raw_fg_radius = str(cfg.get("IterationEngine", "FG_SearchRadius", fallback="") or "").strip()
-        except Exception:
-            raw_fg_radius = ""
-        if raw_fg_radius:
-            fg_search_radius = safe_int(raw_fg_radius, -1)
+        fg_candidate_limit = read_fg_candidate_limit(cfg, default=200, min_limit=LOADOUTS_PER_SONG_LIMIT)
+        fg_search_radius = read_fg_search_radius(cfg)
 
         ga_candidates = list(song.ga_candidates or [])
         ga_candidates.sort(key=lambda x: x.get("Score", 0), reverse=True)
         if ga_candidates and len(ga_candidates) > fg_candidate_limit:
             ga_candidates = ga_candidates[:fg_candidate_limit]
 
-        def build_details(data_dict: dict) -> dict:
-            if not data_dict:
-                return {}
-            return {
-                "FT": data_dict.get("FT", 0),
-                "FF": data_dict.get("FF", 0),
-                "GemCounts": data_dict.get("GemCounts", {}),
-                "Stats": data_dict.get("Stats", {}),
-                "SelectedElement": data_dict.get("Selected Element", ""),
-                "PrimaryColor": song.meta_primary_color,
-                "SecondaryColor": song.meta_secondary_color,
-                "Difficulty": effective_difficulty,
-                "ForceGreats": data_dict.get("ForceGreats", {}),
-            }
+        build_details = make_build_details_fn(song.meta_primary_color, song.meta_secondary_color, effective_difficulty)
 
         if not (song.manual_force_greats or song.force_greats_finder):
             song.fg_variants = []

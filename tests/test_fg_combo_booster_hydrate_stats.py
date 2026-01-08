@@ -91,7 +91,9 @@ def test_fg_combo_booster_light_finalize_hydration_matches_full_finalize() -> No
         assert len(light) == len(full) == len(population)
         assert all(isinstance(c, dict) and "Data" not in c for c in light)
 
-        hydrate_fg_candidate_stats(light, base_stats_fixed=base_stats_fixed, selected_color=str(cfg_data["selected_color"]))
+        hydrate_fg_candidate_stats(
+            light, base_stats_fixed=base_stats_fixed, selected_color=str(cfg_data["selected_color"])
+        )
 
         for i in range(len(population)):
             assert light[i]["Score"] == full[i]["Score"]
@@ -104,4 +106,3 @@ def test_fg_combo_booster_light_finalize_hydration_matches_full_finalize() -> No
     finally:
         GEM_SOLVER_CACHE.clear()
         GEM_SOLVER_CACHE.update(saved_cache)
-

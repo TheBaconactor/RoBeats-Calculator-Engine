@@ -93,4 +93,3 @@ def test_generate_fg_combo_booster_multi_axis_respects_cap() -> None:
         top_k=8,
     )
     assert len(out) <= 3
-

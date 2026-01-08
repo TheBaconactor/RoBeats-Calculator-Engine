@@ -177,8 +177,8 @@ def _compute_force_greats_timeline(
     """
     forced_arr = np.asarray(force_counts, dtype=np.int32) if force_counts else np.zeros(0, dtype=np.int32)
 
-    fever_mask_buffer, section_start, section_forced, section_fill_penalty, section_skip_wasted = _get_fg_timeline_buffers(
-        int(total_notes)
+    fever_mask_buffer, section_start, section_forced, section_fill_penalty, section_skip_wasted = (
+        _get_fg_timeline_buffers(int(total_notes))
     )
 
     (
@@ -468,81 +468,76 @@ def evaluate_fg_with_gem_iteration(
         end_ff,
         TOTAL_GEM_BUDGET,
     ):
+        # Look up fever parameters with FT/FF gems applied
+        cur_ft_stat = base_ft_stat + ft_gems * GEM_SCALE_FEVER
+        cur_ff_stat = base_ff_stat + ff_gems * GEM_SCALE_FEVER
+        fever_fill_rate = lookup_reference_py(cur_ff_stat, ref_ff, TOTAL_ROWS)
+        fever_time_stat = lookup_reference_py(cur_ft_stat, ref_ft, TOTAL_ROWS)
+        non_fever_base = ceil(non_fever_cas * fever_fill_rate)
 
-            # Look up fever parameters with FT/FF gems applied
-            cur_ft_stat = base_ft_stat + ft_gems * GEM_SCALE_FEVER
-            cur_ff_stat = base_ff_stat + ff_gems * GEM_SCALE_FEVER
-            fever_fill_rate = lookup_reference_py(cur_ff_stat, ref_ff, TOTAL_ROWS)
-            fever_time_stat = lookup_reference_py(cur_ft_stat, ref_ft, TOTAL_ROWS)
-            non_fever_base = ceil(non_fever_cas * fever_fill_rate)
+        # Timeline cache includes FT, FF, forced_counts, and song identity.
+        # We also cache section_details because FG penalties need start indices.
+        fg_cache_key = (ft_gems, ff_gems, tuple(force_counts), song_key)
+        cached = FG_TIMELINE_CACHE.get(fg_cache_key)
 
-            # Timeline cache includes FT, FF, forced_counts, and song identity.
-            # We also cache section_details because FG penalties need start indices.
-            fg_cache_key = (ft_gems, ff_gems, tuple(force_counts), song_key)
-            cached = FG_TIMELINE_CACHE.get(fg_cache_key)
-
-            if cached is None:
-                (
-                    fever_mask_head,
-                    count_body_fever,
-                    count_body_normal,
-                    _nf_base_from_jit,
-                    section_details,
-                ) = _compute_force_greats_timeline(
-                    timestamps,
-                    great_candidates,
-                    total_notes,
-                    fever_fill_rate,
-                    fever_time_stat,
-                    long_notes,
-                    last_note_time,
-                    force_counts,
-                    clamp_base_notes_nonnegative=False,
-                    clamp_forced_to_section_notes=False,
-                    use_forced_great_timing=use_forced_great_timing,
-                )
-
-                cached = (fever_mask_head, count_body_fever, count_body_normal, section_details)
-                FG_TIMELINE_CACHE[fg_cache_key] = cached
-
-            fever_mask_head, count_body_fever, count_body_normal, section_details = cached
-
-            # CPU optimizer expects p/s values with FT/FF elemental contributions already applied.
-            cur_beat = base_beat + ft_gems * GEM_STAT_TO_ELEMENT_SCALE
-            cur_vibe = base_vibe + ff_gems * GEM_STAT_TO_ELEMENT_SCALE
-            cur_p_val = (
-                cur_beat if p_color == "Beat" else (cur_vibe if p_color == "Vibe" else base_stats.get(p_color, 0))
-            )
-            cur_s_val = (
-                cur_beat if s_color == "Beat" else (cur_vibe if s_color == "Vibe" else base_stats.get(s_color, 0))
+        if cached is None:
+            (
+                fever_mask_head,
+                count_body_fever,
+                count_body_normal,
+                _nf_base_from_jit,
+                section_details,
+            ) = _compute_force_greats_timeline(
+                timestamps,
+                great_candidates,
+                total_notes,
+                fever_fill_rate,
+                fever_time_stat,
+                long_notes,
+                last_note_time,
+                force_counts,
+                clamp_base_notes_nonnegative=False,
+                clamp_forced_to_section_notes=False,
+                use_forced_great_timing=use_forced_great_timing,
             )
 
-            candidates.append(
-                (
-                    ft_gems,
-                    ff_gems,
-                    current_budget,
-                    non_fever_base,
-                    fever_mask_head,
-                    count_body_fever,
-                    count_body_normal,
-                    section_details,
-                    cur_p_val,
-                    cur_s_val,
-                )
-            )
+            cached = (fever_mask_head, count_body_fever, count_body_normal, section_details)
+            FG_TIMELINE_CACHE[fg_cache_key] = cached
 
-            if use_gpu:
-                batch_input.append(
-                    {
-                        "budget": current_budget,
-                        "fever_mask_head": fever_mask_head,
-                        "count_body_fever": count_body_fever,
-                        "count_body_normal": count_body_normal,
-                        "ft_gems": ft_gems,
-                        "ff_gems": ff_gems,
-                    }
-                )
+        fever_mask_head, count_body_fever, count_body_normal, section_details = cached
+
+        # CPU optimizer expects p/s values with FT/FF elemental contributions already applied.
+        cur_beat = base_beat + ft_gems * GEM_STAT_TO_ELEMENT_SCALE
+        cur_vibe = base_vibe + ff_gems * GEM_STAT_TO_ELEMENT_SCALE
+        cur_p_val = cur_beat if p_color == "Beat" else (cur_vibe if p_color == "Vibe" else base_stats.get(p_color, 0))
+        cur_s_val = cur_beat if s_color == "Beat" else (cur_vibe if s_color == "Vibe" else base_stats.get(s_color, 0))
+
+        candidates.append(
+            (
+                ft_gems,
+                ff_gems,
+                current_budget,
+                non_fever_base,
+                fever_mask_head,
+                count_body_fever,
+                count_body_normal,
+                section_details,
+                cur_p_val,
+                cur_s_val,
+            )
+        )
+
+        if use_gpu:
+            batch_input.append(
+                {
+                    "budget": current_budget,
+                    "fever_mask_head": fever_mask_head,
+                    "count_body_fever": count_body_fever,
+                    "count_body_normal": count_body_normal,
+                    "ft_gems": ft_gems,
+                    "ff_gems": ff_gems,
+                }
+            )
 
     # Optional GPU batch optimization (falls back to CPU if Taichi/GPU isn't available)
     gpu_results = None

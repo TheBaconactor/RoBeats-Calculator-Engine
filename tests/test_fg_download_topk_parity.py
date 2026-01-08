@@ -128,8 +128,19 @@ def test_fg_global_best_topk_selection_matches_cpu_sort(monkeypatch: pytest.Monk
     assert sel_idx.tolist() == expected
 
     # Packed fields must match the full download at selected indices.
-    for k in ("final_score", "base_score", "cfg_idx", "FT", "FF", "g_pp", "g_cm", "g_fm", "g_ov", "score_penalty", "fill_penalty"):
+    for k in (
+        "final_score",
+        "base_score",
+        "cfg_idx",
+        "FT",
+        "FF",
+        "g_pp",
+        "g_cm",
+        "g_fm",
+        "g_ov",
+        "score_penalty",
+        "fill_penalty",
+    ):
         got = np.asarray(selected[k])
         exp = np.asarray(full[k])[sel_idx]
         assert np.array_equal(got, exp), f"Mismatch for key={k}"
-

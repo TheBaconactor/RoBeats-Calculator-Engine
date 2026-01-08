@@ -96,4 +96,3 @@ def test_fg_gpu_tasks_batching_allows_counts_max_fp_without_counts_list(monkeypa
     assert isinstance(out, dict)
     assert "final_score" in out
     assert np.asarray(out["final_score"]).shape == (n_genomes,)
-

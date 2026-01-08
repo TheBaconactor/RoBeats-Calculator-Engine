@@ -7,63 +7,15 @@ import traceback
 import time
 import sys
 
-from gear_optimizer.core.utils import cfg_from_dict, safe_int
+from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.data.database import init_db, save_loadouts_batch
-from gear_optimizer.data.discord_reporter import DiscordReporter, build_stats_summary
+from gear_optimizer.data.discord_reporter import build_stats_summary, setup_discord_reporter
 from gear_optimizer.helpers.song_helpers.persistence import (
     build_db_payload,
     build_persistence_entries,
+    make_build_details_fn,
 )
 from gear_optimizer.helpers.song_helpers.results_printer import print_results
-
-
-def _setup_discord_reporter() -> DiscordReporter:
-    try:
-        from dotenv import load_dotenv
-    except Exception:
-        load_dotenv = None
-
-    # Mirror GearOptimizerApp.setup_discord()
-    try:
-        from gear_optimizer.core.constants import PATHS
-
-        env_path = PATHS.discord_env
-        if load_dotenv is not None:
-            if os.path.exists(env_path):
-                load_dotenv(env_path)
-            else:
-                load_dotenv()
-    except Exception:
-        pass
-
-    token = os.getenv("DISCORD_TOKEN")
-    logging_channel_id = safe_int(os.getenv("LOGGINGCHANNEL"), 0) or None
-    stats_channel_id = safe_int(os.getenv("STATSCHANNEL"), 0) or None
-    return DiscordReporter(
-        token,
-        log_channel_id=logging_channel_id,
-        stats_channel_id=stats_channel_id,
-        stats_batch_size=500,
-    )
-
-
-def _build_details_fn(primary_color: str, secondary_color: str, effective_difficulty: str):
-    def build_details(data_dict: dict) -> dict:
-        if not data_dict:
-            return {}
-        return {
-            "FT": data_dict.get("FT", 0),
-            "FF": data_dict.get("FF", 0),
-            "GemCounts": data_dict.get("GemCounts", {}),
-            "Stats": data_dict.get("Stats", {}),
-            "SelectedElement": data_dict.get("Selected Element", ""),
-            "PrimaryColor": primary_color,
-            "SecondaryColor": secondary_color,
-            "Difficulty": effective_difficulty,
-            "ForceGreats": data_dict.get("ForceGreats", {}),
-        }
-
-    return build_details
 
 
 def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
@@ -92,7 +44,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     except Exception:
         pass
 
-    reporter = _setup_discord_reporter()
+    reporter = setup_discord_reporter(stats_batch_size=500)
 
     completed = 0
     failed = 0
@@ -318,7 +270,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 primary = str(item.get("meta_primary_color") or "")
                 secondary = str(item.get("meta_secondary_color") or "")
                 difficulty = str(item.get("difficulty") or "Unknown")
-                build_details = _build_details_fn(primary, secondary, difficulty)
+                build_details = make_build_details_fn(primary, secondary, difficulty)
 
                 best_data = item.get("best_data") or {}
                 best_gear = item.get("best_gear") or []

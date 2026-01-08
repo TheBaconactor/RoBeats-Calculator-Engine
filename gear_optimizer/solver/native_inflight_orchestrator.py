@@ -25,6 +25,7 @@ from typing import Any, Optional
 
 import numpy as np
 
+from gear_optimizer.core.config import read_fg_candidate_limit, read_fg_search_radius
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.utils import cfg_from_dict, safe_float, safe_int
@@ -36,6 +37,7 @@ from gear_optimizer.helpers.song_helpers.fg_combo_booster import (
 )
 from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
 from gear_optimizer.helpers.song_helpers.loadout_builder import build_loadout_entries
+from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 from gear_optimizer.helpers.song_helpers.song_config import setup_song_config
 from gear_optimizer.solver.genetic import GA_POPULATION_SIZE, _build_base_stats_array, decode_gpu_native_ga_runs_payload
 from gear_optimizer.solver.gpu_executor import get_gpu_executor
@@ -457,15 +459,10 @@ def _prepare_song(task: tuple) -> _NativeSong:
     else:
         registry, gpu_data = cached_registry
 
-    fg_candidate_limit = max(
-        LOADOUTS_PER_SONG_LIMIT,
-        min(
-            5000,
-            safe_int(
-                cfg.get("IterationEngine", "FG_CandidateLimit", fallback=FG_CANDIDATE_LIMIT),
-                FG_CANDIDATE_LIMIT,
-            ),
-        ),
+    fg_candidate_limit = read_fg_candidate_limit(
+        cfg,
+        default=FG_CANDIDATE_LIMIT,
+        min_limit=LOADOUTS_PER_SONG_LIMIT,
     )
 
     cfg_data = {
@@ -1668,21 +1665,14 @@ def _prepare_fg_job_sync(song: _NativeSong) -> None:
     perf = _truthy(os.environ.get("PERF_TIMING", "0"))
     t0 = time.perf_counter() if perf else 0.0
 
-    fg_candidate_limit = safe_int(
-        cfg.get("IterationEngine", "FG_CandidateLimit", fallback=FG_CANDIDATE_LIMIT),
-        FG_CANDIDATE_LIMIT,
+    fg_candidate_limit = read_fg_candidate_limit(
+        cfg,
+        default=FG_CANDIDATE_LIMIT,
+        min_limit=LOADOUTS_PER_SONG_LIMIT,
     )
-    fg_candidate_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(fg_candidate_limit)))
     song.fg_candidate_limit = int(fg_candidate_limit)
 
-    fg_search_radius = None
-    try:
-        raw_fg_radius = str(cfg.get("IterationEngine", "FG_SearchRadius", fallback="") or "").strip()
-    except Exception:
-        raw_fg_radius = ""
-    if raw_fg_radius:
-        fg_search_radius = safe_int(raw_fg_radius, -1)
-    song.fg_search_radius = fg_search_radius
+    song.fg_search_radius = read_fg_search_radius(cfg)
 
     ga_candidates = list(song.ga_candidates or [])
     ga_candidates = select_fg_candidates(
@@ -1705,20 +1695,7 @@ def _prepare_fg_job_sync(song: _NativeSong) -> None:
             song.db_loadouts_future = None
     t_db = time.perf_counter() if perf else 0.0
 
-    def build_details(data_dict: dict) -> dict:
-        if not data_dict:
-            return {}
-        return {
-            "FT": data_dict.get("FT", 0),
-            "FF": data_dict.get("FF", 0),
-            "GemCounts": data_dict.get("GemCounts", {}),
-            "Stats": data_dict.get("Stats", {}),
-            "SelectedElement": data_dict.get("Selected Element", ""),
-            "PrimaryColor": song.meta_primary_color,
-            "SecondaryColor": song.meta_secondary_color,
-            "Difficulty": song.effective_difficulty,
-            "ForceGreats": data_dict.get("ForceGreats", {}),
-        }
+    build_details = make_build_details_fn(song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty)
 
     song.loadout_entries = build_loadout_entries(
         song.song_name,
@@ -1775,20 +1752,7 @@ def _run_fg_job_sync(
     if song.loadout_entries is None:
         _prepare_fg_job_sync(song)
 
-    def build_details(data_dict: dict) -> dict:
-        if not data_dict:
-            return {}
-        return {
-            "FT": data_dict.get("FT", 0),
-            "FF": data_dict.get("FF", 0),
-            "GemCounts": data_dict.get("GemCounts", {}),
-            "Stats": data_dict.get("Stats", {}),
-            "SelectedElement": data_dict.get("Selected Element", ""),
-            "PrimaryColor": song.meta_primary_color,
-            "SecondaryColor": song.meta_secondary_color,
-            "Difficulty": song.effective_difficulty,
-            "ForceGreats": data_dict.get("ForceGreats", {}),
-        }
+    build_details = make_build_details_fn(song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty)
 
     # Always-on (ForceGreatsFinder): evaluate a capped set of 1–2-position combos around
     # GA seeds to improve FG coverage when deeper GA runs crowd out fever-heavy variants.

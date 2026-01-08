@@ -12,4 +12,3 @@ def maybe_sync(
 ) -> None:
     if force_sync or (for_timing and sync_for_timing):
         sync_fn()
-

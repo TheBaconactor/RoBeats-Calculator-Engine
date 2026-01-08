@@ -69,5 +69,3 @@ def test_timeline_bucketing_matches_unbucketed(mode: str) -> None:
             os.environ.pop("TIMELINE_BUCKET_MODE", None)
         else:
             os.environ["TIMELINE_BUCKET_MODE"] = env_prev
-
-

@@ -7,6 +7,7 @@ This module provides persistence operations:
 """
 
 import json
+from collections.abc import Callable
 
 
 def _has_valid_fg_config(fg_container):
@@ -42,6 +43,34 @@ def _names_list(items):
         else:
             names.append(str(it) if it else "")
     return names
+
+
+def make_build_details_fn(
+    primary_color: str, secondary_color: str, effective_difficulty: str
+) -> Callable[[dict], dict]:
+    """
+    Build a `build_details(data_dict) -> dict` function for persistence/loadout helpers.
+
+    This is duplicated across multiple pipeline/orchestrator entrypoints; centralizing it
+    keeps the persisted schema consistent.
+    """
+
+    def build_details(data_dict: dict) -> dict:
+        if not isinstance(data_dict, dict) or not data_dict:
+            return {}
+        return {
+            "FT": data_dict.get("FT", 0),
+            "FF": data_dict.get("FF", 0),
+            "GemCounts": data_dict.get("GemCounts", {}),
+            "Stats": data_dict.get("Stats", {}),
+            "SelectedElement": data_dict.get("Selected Element", ""),
+            "PrimaryColor": primary_color,
+            "SecondaryColor": secondary_color,
+            "Difficulty": effective_difficulty,
+            "ForceGreats": data_dict.get("ForceGreats", {}),
+        }
+
+    return build_details
 
 
 def build_db_payload(

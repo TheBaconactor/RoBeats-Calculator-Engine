@@ -1512,4 +1512,3 @@ def build_fg_combo_booster_candidates(
             f"gen={dt_gen * 1000:.1f}ms eval={dt_eval * 1000:.1f}ms total={dt_total * 1000:.1f}ms"
         )
     return out
-

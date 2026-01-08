@@ -306,7 +306,9 @@ def _compute_success_counts(runs: list[dict]) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--base-config", default=str(Path("configs") / "profile" / "config_profile_inflight_queue24_fast.ini"))
+    ap.add_argument(
+        "--base-config", default=str(Path("configs") / "profile" / "config_profile_inflight_queue24_fast.ini")
+    )
     ap.add_argument("--runs", type=int, default=10)
     ap.add_argument("--seed-base", type=int, default=1000)
     ap.add_argument(

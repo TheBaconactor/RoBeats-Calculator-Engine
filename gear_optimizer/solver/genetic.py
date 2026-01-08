@@ -35,6 +35,7 @@ from ..core.constants import (
     GPU_GA_GENS_PER_MIGRATION,
     GPU_GA_MIGRATE_COUNT,
 )
+from ..core.config import read_fg_candidate_limit
 from ..core.utils import safe_int, safe_float
 from .scoring import worker_coevolution_evaluate, GEM_SOLVER_CACHE, FG_CACHE, FEVER_TIMELINE_CACHE
 from ..data.models import GASettings
@@ -1460,14 +1461,10 @@ def solve_coevolution_genetic(
         "secondary_color": str(s_color or ""),
         "use_gpu": use_gpu_mode,
         "use_gpu_native": use_gpu_native,
-        "fg_candidate_limit": max(
-            LOADOUTS_PER_SONG_LIMIT,
-            min(
-                5000,
-                safe_int(
-                    cfg.get("IterationEngine", "FG_CandidateLimit", fallback=FG_CANDIDATE_LIMIT), FG_CANDIDATE_LIMIT
-                ),
-            ),
+        "fg_candidate_limit": read_fg_candidate_limit(
+            cfg,
+            default=FG_CANDIDATE_LIMIT,
+            min_limit=LOADOUTS_PER_SONG_LIMIT,
         ),
         "user_ft": safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0)),
         "user_ff": safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0)),
@@ -1923,7 +1920,12 @@ def solve_coevolution_genetic(
         # FG booster(s): optional candidate augmentation to improve ForceGreatsFinder coverage
         # without inflating the downstream candidate limit (we re-select to the same funnel size).
         try:
-            force_greats_enabled = cfg.getboolean("IterationEngine", "ForceGreatsFinder", fallback=False)
+            try:
+                from ..core.config import read_iteration_engine_settings
+
+                force_greats_enabled = bool(read_iteration_engine_settings(cfg).force_greats_finder)
+            except Exception:
+                force_greats_enabled = False
             combo_enabled = str(os.environ.get("FG_COMBO_BOOSTER_ENABLED", "1") or "").strip().lower() in {
                 "1",
                 "true",

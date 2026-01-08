@@ -33,9 +33,14 @@ def _make_ref_arrays() -> dict:
     }
 
 
-def _run_once(*, implicit: bool, task: dict, genome_stats_arr: np.ndarray, timestamps: np.ndarray, ref_arrays: dict) -> float:
+def _run_once(
+    *, implicit: bool, task: dict, genome_stats_arr: np.ndarray, timestamps: np.ndarray, ref_arrays: dict
+) -> float:
     import taichi as ti
-    from gear_optimizer.solver.taichi_gem.force_greats.api import fg_reset_global_best, solve_force_greats_finder_gpu_tasks
+    from gear_optimizer.solver.taichi_gem.force_greats.api import (
+        fg_reset_global_best,
+        solve_force_greats_finder_gpu_tasks,
+    )
 
     os.environ["FG_IMPLICIT_CONFIGS"] = "1" if implicit else "0"
 
@@ -161,8 +166,8 @@ def main() -> int:
                 case["name"], case["n_sections"], n_genomes, len(ftff_pairs)
             )
         )
-        print(f"[bench] explicit(table)  min={t0*1000:.1f}ms samples={[round(x*1000,1) for x in times_explicit]}")
-        print(f"[bench] implicit(decode) min={t1*1000:.1f}ms samples={[round(x*1000,1) for x in times_implicit]}")
+        print(f"[bench] explicit(table)  min={t0 * 1000:.1f}ms samples={[round(x * 1000, 1) for x in times_explicit]}")
+        print(f"[bench] implicit(decode) min={t1 * 1000:.1f}ms samples={[round(x * 1000, 1) for x in times_implicit]}")
         print(f"[bench] speedup={speedup:.2f}x (min)")
 
     return 0
@@ -170,4 +175,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

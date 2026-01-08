@@ -31,6 +31,7 @@ from ..core.constants import (
     FG_CANDIDATE_LIMIT,
 )
 
+from ..core.config import read_fg_candidate_limit, read_fg_search_radius
 from ..solver.genetic import GA_POPULATION_SIZE, solve_coevolution_genetic
 from ..solver.scoring import (
     GEM_SOLVER_CACHE,
@@ -52,6 +53,7 @@ from ..helpers.song_helpers import (
     build_persistence_entries,
     print_results,
 )
+from ..helpers.song_helpers.persistence import make_build_details_fn
 from ..helpers.song_helpers.fg_candidate_selector import select_fg_candidates
 
 # Global warn-once instance
@@ -535,21 +537,13 @@ def process_song_task(args):
                     "Data": best_data,
                 }
             )
-        # Configurable FG funnel size (default FG_CANDIDATE_LIMIT).
-        fg_candidate_limit = safe_int(
-            cfg.get("IterationEngine", "FG_CandidateLimit", fallback=FG_CANDIDATE_LIMIT),
-            FG_CANDIDATE_LIMIT,
+        fg_candidate_limit = read_fg_candidate_limit(
+            cfg,
+            default=FG_CANDIDATE_LIMIT,
+            min_limit=LOADOUTS_PER_SONG_LIMIT,
         )
-        # Clamp to avoid extreme values causing huge DB reads or GPU batches.
-        fg_candidate_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, fg_candidate_limit))
 
-        fg_search_radius = None
-        try:
-            raw_fg_radius = str(cfg.get("IterationEngine", "FG_SearchRadius", fallback="") or "").strip()
-        except Exception:
-            raw_fg_radius = ""
-        if raw_fg_radius:
-            fg_search_radius = safe_int(raw_fg_radius, -1)
+        fg_search_radius = read_fg_search_radius(cfg)
         # `FG_SearchRadius` semantics:
         # - unset/empty => use default radius (FG_SEARCH_RADIUS / env default 5)
         # - -1 => full window over all FT/FF gem allocations within TOTAL_GEM_BUDGET
@@ -562,20 +556,7 @@ def process_song_task(args):
                 secondary_color=str(meta_secondary_color or ""),
             )
 
-        def build_details(data_dict):
-            if not data_dict:
-                return {}
-            return {
-                "FT": data_dict.get("FT", 0),
-                "FF": data_dict.get("FF", 0),
-                "GemCounts": data_dict.get("GemCounts", {}),
-                "Stats": data_dict.get("Stats", {}),
-                "SelectedElement": data_dict.get("Selected Element", ""),
-                "PrimaryColor": meta_primary_color,
-                "SecondaryColor": meta_secondary_color,
-                "Difficulty": effective_difficulty,  # Use the effective difficulty
-                "ForceGreats": data_dict.get("ForceGreats", {}),
-            }
+        build_details = make_build_details_fn(meta_primary_color, meta_secondary_color, effective_difficulty)
 
         # --- APPLY FORCE GREATS TO ALL EVALUATED LOADOUTS ---
         fg_variants = []

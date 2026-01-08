@@ -19,6 +19,7 @@ except ImportError:
     requests = None
 
 from ..core.constants import SCRIPT_DIR, BIN_DIR, PATHS
+from ..core.utils import safe_int
 
 
 class DiscordReporter:
@@ -266,6 +267,42 @@ def build_stats_summary(res, completed, total):
     lines.append(f"Gear: {', '.join(gear_names) if gear_names else 'N/A'}")
     lines.append(f"Minis: {', '.join(mini_names) if mini_names else 'N/A'}")
     return "\n".join(lines)
+
+
+def setup_discord_reporter(*, stats_batch_size: int = 500) -> DiscordReporter:
+    """
+    Create a DiscordReporter instance configured from `Discord.env`/environment variables.
+
+    This is intentionally tolerant (missing `python-dotenv`, missing env file, etc.)
+    and shared by both the main app and the post-processor to avoid logic drift.
+    """
+    load_dotenv = None
+    try:
+        from dotenv import load_dotenv as _load_dotenv
+
+        load_dotenv = _load_dotenv
+    except Exception:
+        load_dotenv = None
+
+    try:
+        env_path = PATHS.discord_env
+        if load_dotenv is not None:
+            if env_path and os.path.exists(env_path):
+                load_dotenv(env_path)
+            else:
+                load_dotenv()
+    except Exception:
+        pass
+
+    token = os.getenv("DISCORD_TOKEN")
+    logging_channel_id = safe_int(os.getenv("LOGGINGCHANNEL"), 0) or None
+    stats_channel_id = safe_int(os.getenv("STATSCHANNEL"), 0) or None
+    return DiscordReporter(
+        token,
+        log_channel_id=logging_channel_id,
+        stats_channel_id=stats_channel_id,
+        stats_batch_size=int(stats_batch_size),
+    )
 
 
 def sanitize_public_message(content):

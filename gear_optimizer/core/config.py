@@ -8,6 +8,8 @@ import logging
 import os
 import re
 import sys
+from dataclasses import dataclass
+from typing import Any
 from .constants import (
     DEFAULT_MEMORY_GUARD_PERCENT,
     STRICT_PLATFORM_MEMORY_GUARD_PERCENT,
@@ -162,6 +164,148 @@ def load_force_greats_inline(cfg, *, key: str = "ForceGreatsManual"):
     while values and values[-1] == 0:
         values.pop()
     return values
+
+
+@dataclass(frozen=True)
+class IterationEngineSettings:
+    """
+    Parsed, normalized settings from the `[IterationEngine]` section.
+
+    Centralizing this avoids logic drift across the app, workers, and solver code.
+    """
+
+    meta_finder: bool
+    enable_fever: bool
+    enable_mini: bool
+    enable_gear: bool
+    auto_select_buff_and_color: bool
+    force_greats_mode: bool
+    force_greats_finder: bool
+    force_greats_debug: bool
+    force_greats_config: list[int]
+    manual_force_greats: bool
+
+
+def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
+    """
+    Read and normalize `[IterationEngine]` behavior flags.
+
+    Important semantics:
+    - `MetaFinder` gates the optimizer family (fever/mini/gear).
+    - `ForceGreatsFinder` is only active when `ForceGreatsMode` is enabled.
+    - A non-empty manual FG config disables `ForceGreatsFinder` (deliberate override).
+    """
+    if cfg is None:
+        return IterationEngineSettings(
+            meta_finder=False,
+            enable_fever=False,
+            enable_mini=False,
+            enable_gear=False,
+            auto_select_buff_and_color=False,
+            force_greats_mode=False,
+            force_greats_finder=False,
+            force_greats_debug=False,
+            force_greats_config=[],
+            manual_force_greats=False,
+        )
+
+    try:
+        meta_finder = cfg.getboolean("IterationEngine", "MetaFinder", fallback=False)
+    except Exception:
+        meta_finder = False
+
+    enable_fever = enable_mini = enable_gear = bool(meta_finder)
+
+    try:
+        auto_select_buff_and_color = cfg.getboolean("IterationEngine", "AutoSelectBuffAndColor", fallback=False)
+    except Exception:
+        auto_select_buff_and_color = False
+
+    try:
+        force_greats_mode = cfg.getboolean("IterationEngine", "ForceGreatsMode", fallback=False)
+    except Exception:
+        force_greats_mode = False
+
+    try:
+        force_greats_finder = cfg.getboolean("IterationEngine", "ForceGreatsFinder", fallback=False)
+    except Exception:
+        force_greats_finder = False
+
+    try:
+        force_greats_debug = cfg.getboolean("IterationEngine", "ForceGreatsDebug", fallback=False)
+    except Exception:
+        force_greats_debug = False
+
+    # ForceGreatsMode must be enabled for ForceGreatsFinder to work.
+    if not force_greats_mode:
+        force_greats_finder = False
+
+    # Prefer explicit [ForceGreats] section; fall back to inline config if section is absent/empty.
+    force_greats_config = load_force_greats_config(cfg)
+    if not force_greats_config:
+        inline_cfg = load_force_greats_inline(cfg, key="ForceGreatsManual")
+        if inline_cfg:
+            force_greats_config = inline_cfg
+
+    manual_force_greats = bool(force_greats_mode) and any(force_greats_config)
+    if manual_force_greats:
+        # Manual config is a deliberate override; allow it to work regardless of
+        # ForceGreatsFinder setting by disabling finder when manual values are provided.
+        force_greats_finder = False
+
+    return IterationEngineSettings(
+        meta_finder=bool(meta_finder),
+        enable_fever=bool(enable_fever),
+        enable_mini=bool(enable_mini),
+        enable_gear=bool(enable_gear),
+        auto_select_buff_and_color=bool(auto_select_buff_and_color),
+        force_greats_mode=bool(force_greats_mode),
+        force_greats_finder=bool(force_greats_finder),
+        force_greats_debug=bool(force_greats_debug),
+        force_greats_config=list(force_greats_config or []),
+        manual_force_greats=bool(manual_force_greats),
+    )
+
+
+def read_fg_candidate_limit(
+    cfg: Any,
+    *,
+    default: int,
+    min_limit: int,
+    max_limit: int = 5000,
+) -> int:
+    """
+    Read and clamp `[IterationEngine].FG_CandidateLimit`.
+
+    This is used across multiple CPU/GPU pipelines; centralizing it prevents drift in
+    clamping semantics and limits "accidental" extreme values that could cause huge
+    DB reads or GPU batches.
+    """
+    try:
+        raw = cfg.get("IterationEngine", "FG_CandidateLimit", fallback=default)
+    except Exception:
+        raw = default
+    limit = safe_int(raw, default)
+    limit = max(int(min_limit), min(int(max_limit), int(limit)))
+    return limit
+
+
+def read_fg_search_radius(cfg: Any) -> int | None:
+    """
+    Read `[IterationEngine].FG_SearchRadius`.
+
+    Semantics:
+    - unset/empty => return None (use default radius elsewhere)
+    - -1 => full window over all FT/FF allocations within TOTAL_GEM_BUDGET
+    - >=0 => radius in gem-space around each loadout's (FT, FF) center
+    """
+    try:
+        raw = str(cfg.get("IterationEngine", "FG_SearchRadius", fallback="") or "").strip()
+    except Exception:
+        raw = ""
+    if not raw:
+        return None
+    return safe_int(raw, -1)
 
 
 def find_and_cache_paths():

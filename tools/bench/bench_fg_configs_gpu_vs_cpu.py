@@ -154,7 +154,7 @@ def main() -> None:
 
         speedup = (cpu_sec / gpu_sec) if gpu_sec > 0 else float("inf")
         print(
-            f"- {name}: n_cfg={n_cfg:,}  CPU={cpu_sec*1000:.2f}ms  GPU-gen={gpu_sec*1000:.2f}ms  speedup={speedup:.2f}x"
+            f"- {name}: n_cfg={n_cfg:,}  CPU={cpu_sec * 1000:.2f}ms  GPU-gen={gpu_sec * 1000:.2f}ms  speedup={speedup:.2f}x"
         )
 
 
@@ -162,4 +162,3 @@ if __name__ == "__main__":
     if not _has_taichi():
         raise SystemExit("Taichi not available")
     main()
-

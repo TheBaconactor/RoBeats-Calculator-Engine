@@ -7,6 +7,7 @@ This module provides configuration operations:
 
 from ...data.models import GASettings
 from ...data.csv_parser import get_fixed_stats, get_config_gear_stats, get_config_mini_stats
+from ...core.config import read_iteration_engine_settings
 
 
 def setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_name):
@@ -29,32 +30,16 @@ def setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_
     """
     ga_settings = GASettings.from_cfg(cfg)
 
-    # MetaFinder controls all optimizers collectively.
-    meta_finder = cfg.getboolean("IterationEngine", "MetaFinder", fallback=False)
-    enable_fever = enable_mini = enable_gear = bool(meta_finder)
+    ie = read_iteration_engine_settings(cfg)
+    meta_finder = bool(ie.meta_finder)
+    enable_fever = bool(ie.enable_fever)
+    enable_mini = bool(ie.enable_mini)
+    enable_gear = bool(ie.enable_gear)
 
-    force_greats_mode = cfg.getboolean("IterationEngine", "ForceGreatsMode", fallback=False)
-    force_greats_finder = cfg.getboolean("IterationEngine", "ForceGreatsFinder", fallback=False)
-    # ForceGreatsMode must be enabled for ForceGreatsFinder to work
-    if not force_greats_mode:
-        force_greats_finder = False
-
-    # Import here to avoid circular dependency
-    from ...core.config import load_force_greats_config, load_force_greats_inline
-
-    force_greats_config = load_force_greats_config(cfg)
-
-    # Prefer explicit [ForceGreats] section; fall back to inline config if section is absent/empty.
-    if not force_greats_config:
-        inline_cfg = load_force_greats_inline(cfg, key="ForceGreatsManual")
-        if inline_cfg:
-            force_greats_config = inline_cfg
-
-    manual_force_greats = force_greats_mode and any(force_greats_config)
-    if manual_force_greats:
-        # Manual config is a deliberate override for testing; allow it to work regardless of
-        # ForceGreatsFinder setting by disabling finder when manual values are provided.
-        force_greats_finder = False
+    force_greats_mode = bool(ie.force_greats_mode)
+    force_greats_finder = bool(ie.force_greats_finder)
+    force_greats_config = list(ie.force_greats_config or [])
+    manual_force_greats = bool(ie.manual_force_greats)
 
     # --- Auto Select Buff & Color Logic ---
     if auto_buff:

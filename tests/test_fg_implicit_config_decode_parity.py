@@ -26,7 +26,9 @@ def _has_taichi() -> bool:
         (4, (1, 1, 1, 1)),  # hits the general kernel path
     ],
 )
-def test_fg_counts_max_fp_implicit_toggle_invariant(monkeypatch: pytest.MonkeyPatch, n_sections: int, max_fp: tuple[int, ...]):
+def test_fg_counts_max_fp_implicit_toggle_invariant(
+    monkeypatch: pytest.MonkeyPatch, n_sections: int, max_fp: tuple[int, ...]
+):
     """
     Strong parity: counts_max_fp tasks must produce identical results with and without implicit config decode.
 
@@ -240,4 +242,3 @@ def test_fg_counts_max_fp_implicit_matches_explicit_counts_list(
         assert isinstance(b, np.ndarray)
         assert a.shape == b.shape
         assert np.array_equal(a, b), f"Mismatch for key={k}"
-
