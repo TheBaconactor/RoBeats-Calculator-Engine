@@ -220,7 +220,7 @@ class GpuExecutor:
 
         # Ref-array upload caching: avoid redundant `load_ref_arrays()` calls when inputs are identical.
         # This saves host work and can avoid implicit syncs inside Taichi APIs.
-        self._last_ref_arrays_sig: tuple | None = None
+        self._last_ref_arrays_sig: bytes | None = None
 
     def start(self, *, in_process: bool = False):
         """Start the GPU executor thread in the main process."""
@@ -1458,46 +1458,18 @@ class GpuExecutor:
         )
 
     @staticmethod
-    def _ref_arrays_sig(ref_arrays) -> tuple | None:
+    def _ref_arrays_sig(ref_arrays) -> bytes | None:
         """
-        Cheap fingerprint for `ref_arrays` dict to avoid redundant uploads.
-
-        We sample a few positions from each array to be robust-ish without hashing full contents.
-        This runs on the GPU-owner thread, so keep it very small.
+        Stable content signature for `ref_arrays` dict to avoid redundant uploads.
         """
         try:
-            if not isinstance(ref_arrays, dict):
-                return None
+            from .taichi_gem.api.initialization import _ref_arrays_sig as _taichi_ref_arrays_sig
         except Exception:
             return None
-
-        parts: list[tuple] = []
         try:
-            items = sorted(ref_arrays.items(), key=lambda kv: str(kv[0]))
+            return _taichi_ref_arrays_sig(ref_arrays)
         except Exception:
-            items = list(ref_arrays.items())
-
-        for k, v in items:
-            key = str(k)
-            try:
-                import numpy as _np
-
-                arr = _np.asarray(v)
-                n = int(arr.shape[0]) if arr.ndim >= 1 else 0
-                if n <= 0:
-                    parts.append((key, 0, str(arr.dtype)))
-                    continue
-                first = float(arr[0])
-                last = float(arr[n - 1])
-                mid = float(arr[n // 2]) if n > 1 else first
-                q1 = float(arr[n // 4]) if n > 3 else mid
-                q3 = float(arr[(3 * n) // 4]) if n > 3 else mid
-                parts.append((key, n, str(arr.dtype), first, mid, last, q1, q3))
-            except Exception:
-                # Unknown/invalid ref array; don't cache.
-                return None
-
-        return tuple(parts)
+            return None
 
     @property
     def is_running(self) -> bool:
