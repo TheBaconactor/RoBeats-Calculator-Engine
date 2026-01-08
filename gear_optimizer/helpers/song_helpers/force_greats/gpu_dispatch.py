@@ -1155,9 +1155,9 @@ def process_force_greats_gpu_finder(
                         )
                     cfg_next_base = int(group_cfg_offset) + int(cfg_len0)
 
-                     # Log first group info (always show breakpoints)
-                     if not logged_first:
-                         logged_first = True
+                    # Log first group info (always show breakpoints)
+                    if not logged_first:
+                        logged_first = True
                         bps = group.get("section_breakpoints") or ()
                         if not bps:
                             try:
