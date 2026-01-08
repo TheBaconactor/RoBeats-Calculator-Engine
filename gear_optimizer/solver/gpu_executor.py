@@ -144,6 +144,8 @@ class GpuExecutor:
         self._next_worker_id = 0
         self._initialized = True
         self._taichi_ready = False
+        self._ready_event = threading.Event()
+        self._last_init_error: Optional[str] = None
         self._in_process_queues = False
 
         # Stats
@@ -224,6 +226,9 @@ class GpuExecutor:
         self._fg_tasks_batch_hist = defaultdict(int)
         self._response_queues = {}
         self._next_worker_id = 0
+        self._taichi_ready = False
+        self._last_init_error = None
+        self._ready_event.clear()
 
         # Optional: emit per-interval utilization and/or write a CSV trace.
         self._live_enabled = str(os.environ.get("GPU_EXECUTOR_LIVE", "0")).strip().lower() in {"1", "true", "yes", "on"}
@@ -442,8 +447,13 @@ class GpuExecutor:
 
             init_taichi_vulkan()
             self._taichi_ready = True
+            self._ready_event.set()
             print("[GpuExecutor] Taichi initialized")
         except Exception as e:
+            self._taichi_ready = False
+            self._last_init_error = f"{type(e).__name__}: {e}"
+            self._running = False
+            self._ready_event.set()
             print(f"[GpuExecutor] Taichi init failed: {e}")
             return
         # Warm up FG kernels up-front to avoid the first ForceGreatsFinder call
@@ -1459,6 +1469,16 @@ class GpuExecutor:
     @property
     def is_running(self) -> bool:
         return self._running
+
+    @property
+    def last_init_error(self) -> Optional[str]:
+        return self._last_init_error
+
+    def wait_until_ready(self, timeout: float | None = None) -> bool:
+        if not self._running:
+            return False
+        self._ready_event.wait(timeout=timeout)
+        return bool(self._taichi_ready)
 
     @property
     def stats(self) -> dict:

@@ -1430,7 +1430,23 @@ class GearOptimizerApp:
 
             gpu_executor = get_gpu_executor()
             gpu_executor.start()
-            print("[GPU Executor] Started for parallel song processing")
+            try:
+                init_timeout = float(os.environ.get("GPU_EXECUTOR_INIT_TIMEOUT_SEC", "30"))
+            except Exception:
+                init_timeout = 30.0
+            if not gpu_executor.wait_until_ready(timeout=init_timeout):
+                err = getattr(gpu_executor, "last_init_error", None)
+                msg = "[GPU Executor] Taichi init failed or timed out; falling back to direct GPU"
+                if err:
+                    msg = f"{msg} ({err})"
+                print(msg)
+                try:
+                    gpu_executor.stop()
+                except Exception:
+                    pass
+                gpu_executor = None
+            if gpu_executor is not None and gpu_executor.is_running:
+                print("[GPU Executor] Started for parallel song processing")
         except Exception as e:
             print(f"[GPU Executor] Failed to start: {e} - workers will use direct GPU")
             gpu_executor = None
