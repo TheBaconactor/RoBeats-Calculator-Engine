@@ -26,6 +26,7 @@ import multiprocessing
 import threading
 import queue
 import os
+import atexit
 import traceback
 import time
 from pathlib import Path
@@ -1513,6 +1514,23 @@ def get_gpu_executor() -> GpuExecutor:
     if _executor is None:
         _executor = GpuExecutor()
     return _executor
+
+
+def _auto_stop_gpu_executor_at_exit() -> None:
+    if str(os.environ.get("GPU_EXECUTOR_AUTO_STOP", "") or "").strip().lower() not in {"1", "true", "yes", "on"}:
+        return
+    global _executor
+    ex = _executor
+    if ex is None:
+        return
+    try:
+        if ex.is_running:
+            ex.stop()
+    except Exception:
+        pass
+
+
+atexit.register(_auto_stop_gpu_executor_at_exit)
 
 
 def submit_gpu_solve_genomes(

@@ -13,8 +13,27 @@ the game code (GearStats.note_hit_mode_get_time_multiplier).
 
 from __future__ import annotations
 
+import os
 import secrets
 import numpy as np
+
+
+def _env_debug_fixed_seeds_enabled() -> bool:
+    return str(os.environ.get("METAFINDER_DEBUG_FIXED_SEEDS", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_debug_human_hit_sim_seed() -> int | None:
+    raw = str(os.environ.get("METAFINDER_DEBUG_HUMAN_HIT_SIM_SEED", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        seed = int(raw)
+    except Exception:
+        return None
+    if seed <= 0:
+        return None
+    return seed
+
 
 def _floor_to_int_ms(timestamps_sec: np.ndarray) -> np.ndarray:
     ts = np.asarray(timestamps_sec, dtype=np.float64)
@@ -89,7 +108,11 @@ def apply_human_hit_sim(calc_song: dict, *, cfg_dict: dict) -> dict | None:
     great_mode = str(human_cfg.get("greatmode", "late")).strip().lower()
 
     if seed_in == 0:
-        seed_in = secrets.randbits(32)
+        if _env_debug_fixed_seeds_enabled():
+            env_seed = _env_debug_human_hit_sim_seed()
+            seed_in = int(env_seed) if env_seed is not None else 1337
+        else:
+            seed_in = secrets.randbits(32)
 
     chart_ts = song_data.get("chart_timestamps")
     if chart_ts is None:
