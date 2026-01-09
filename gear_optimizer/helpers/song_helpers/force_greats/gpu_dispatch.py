@@ -15,6 +15,33 @@ if TYPE_CHECKING:
     from gear_optimizer.solver.gpu_service import GpuServiceClient
 
 
+def _is_empty_pairs(pairs) -> bool:
+    if pairs is None:
+        return True
+    try:
+        import numpy as _np
+
+        if isinstance(pairs, _np.ndarray):
+            return int(getattr(pairs, "size", 0) or 0) <= 0
+    except Exception:
+        pass
+    try:
+        return len(pairs) == 0
+    except Exception:
+        return False
+
+
+def _extract_group_payload(group: dict):
+    counts_list = group.get("counts_list")
+    if counts_list is None:
+        counts_list = []
+    counts_max_fp = group.get("counts_max_fp")
+    if counts_max_fp is None:
+        counts_max_fp = []
+    group_pairs = group.get("ftff_pairs")
+    return counts_list, counts_max_fp, group_pairs
+
+
 def _decode_cfg_counts_from_windows(cfg_idx, cfg_windows: list[dict], n_sections: int):
     """
     Decode packed `cfg_idx` values into per-section FP targets using window metadata.
@@ -22,7 +49,7 @@ def _decode_cfg_counts_from_windows(cfg_idx, cfg_windows: list[dict], n_sections
     Returns a numpy int32 array of shape (n_out, n_sections), or None if decoding
     is not possible.
     """
-    if cfg_idx is None or not cfg_windows:
+    if cfg_idx is None or cfg_windows is None or len(cfg_windows) == 0:
         return None
 
     try:
@@ -1061,7 +1088,7 @@ def process_force_greats_gpu_finder(
                         return None
 
                     base_pairs_list = sorted({(int(a), int(b)) for (a, b) in base_stats_pairs})
-                    if not base_pairs_list or not ftff_pairs:
+                    if (not base_pairs_list) or _is_empty_pairs(ftff_pairs):
                         return None
 
                     if gpu_client is not None:
@@ -1217,10 +1244,8 @@ def process_force_greats_gpu_finder(
                 # Process groups and accumulate best on GPU (no per-group downloads)
                 for group in group_gen:
                     group_count += 1
-                    counts_list = group.get("counts_list") or []
-                    counts_max_fp = group.get("counts_max_fp") or []
-                    group_pairs = group.get("ftff_pairs") or []
-                    if (not counts_list and not counts_max_fp) or not group_pairs:
+                    counts_list, counts_max_fp, group_pairs = _extract_group_payload(group)
+                    if (not counts_list and not counts_max_fp) or _is_empty_pairs(group_pairs):
                         continue
 
                     # Track where this group's configs start in the global cfg index space.
