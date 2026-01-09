@@ -62,6 +62,45 @@ _REGISTRY_GPU_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...]], tuple[ItemRe
 _FG_JIT_WARMED = False
 
 
+def _extract_repeat_ctx(task: tuple) -> dict | None:
+    if not isinstance(task, (tuple, list)) or len(task) <= 16:
+        return None
+    for extra in task[16:]:
+        if not isinstance(extra, dict):
+            continue
+        if "repeat_index" in extra and "repeat_total" in extra and "ga_seed" in extra:
+            return extra
+    return None
+
+
+def _task_key(task: tuple) -> str:
+    if not isinstance(task, (tuple, list)) or len(task) < 2:
+        return "Unknown"
+    base = str(task[1])
+    repeat_ctx = _extract_repeat_ctx(task)
+    if repeat_ctx:
+        try:
+            idx = int(repeat_ctx.get("repeat_index") or 0)
+            total = int(repeat_ctx.get("repeat_total") or 0)
+        except Exception:
+            idx = 0
+            total = 0
+        if idx > 0 and total > 1:
+            return f"{base} (Run {idx}/{total})"
+    return base
+
+
+def _task_ga_seed(task: tuple) -> int | None:
+    repeat_ctx = _extract_repeat_ctx(task)
+    if not repeat_ctx:
+        return None
+    try:
+        seed = repeat_ctx.get("ga_seed")
+        return int(seed) if seed is not None else None
+    except Exception:
+        return None
+
+
 def _lru_get(cache: OrderedDict, key: tuple) -> Any:
     try:
         value = cache.get(key)
@@ -283,6 +322,8 @@ class _PostSender:
 class _NativeSong:
     fp: str
     song_name: str
+    task_key: str
+    ga_seed: int | None
     db_key: str
     effective_difficulty: str
     cfg_dict: dict
@@ -362,6 +403,9 @@ def _prepare_song(task: tuple) -> _NativeSong:
     from gear_optimizer.core.constants import GA_POPULATION_SIZE
     from gear_optimizer.helpers.ga_helpers import build_initial_population, create_genome_functions, initialize_pools
 
+    task_key = _task_key(task)
+    ga_seed = _task_ga_seed(task)
+
     (
         fp,
         found_song_name,
@@ -379,7 +423,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
         _status_queue,
         _parallel_workers,
         fg_debug,
-    ) = task
+    ) = task[:16]
 
     cfg = cfg_from_dict(cfg_dict)
 
@@ -568,13 +612,14 @@ def _prepare_song(task: tuple) -> _NativeSong:
         heuristic_block = np.stack(heuristic_ids, axis=0).astype(np.int32, copy=False) if heuristic_ids else None
         heuristic_len = int(heuristic_block.shape[0]) if heuristic_block is not None else 0
 
-        seed_base = None
-        ga_seed_env = str(os.environ.get("GA_SEED") or "").strip()
-        if ga_seed_env:
-            try:
-                seed_base = int(ga_seed_env)
-            except Exception:
-                seed_base = None
+        seed_base = ga_seed
+        if seed_base is None:
+            ga_seed_env = str(os.environ.get("GA_SEED") or "").strip()
+            if ga_seed_env:
+                try:
+                    seed_base = int(ga_seed_env)
+                except Exception:
+                    seed_base = None
 
         if seed_base is not None:
             digest = hashlib.md5(str(found_song_name).encode("utf-8")).digest()
@@ -691,6 +736,8 @@ def _prepare_song(task: tuple) -> _NativeSong:
     return _NativeSong(
         fp=str(fp),
         song_name=str(found_song_name),
+        task_key=str(task_key),
+        ga_seed=int(ga_seed) if ga_seed is not None else None,
         db_key=str(db_key),
         effective_difficulty=str(effective_difficulty),
         cfg_dict=cfg_dict,
@@ -865,7 +912,7 @@ def run_native_inflight_song_pipeline(
         if post_sender is not None:
             post_sender.send(item)
 
-    pending_tasks = deque(t for t in tasks if t[1] not in completed_songs)
+    pending_tasks = deque(t for t in tasks if _task_key(t) not in completed_songs)
     # If the queue is shorter than the configured FG cadence, cap the effective cadence
     # so small runs still execute at least one FG job (instead of deferring forever).
     fg_every = max(1, min(int(fg_every), len(pending_tasks)))
@@ -987,12 +1034,13 @@ def run_native_inflight_song_pipeline(
     for _ in range(int(prime_target)):
         first = pending_tasks.popleft()
         song_name = first[1]
-        if song_name in completed_songs:
+        task_key = _task_key(first)
+        if task_key in completed_songs:
             continue
         try:
             t0 = time.perf_counter()
             prepared.append(_prepare_song(first))
-            stage_profiler.record("prep", time.perf_counter() - t0, song=song_name)
+            stage_profiler.record("prep", time.perf_counter() - t0, song=task_key)
         except Exception as exc:
             _post(
                 {
@@ -1000,9 +1048,11 @@ def run_native_inflight_song_pipeline(
                     "_error_type": type(exc).__name__,
                     "_song_name": song_name,
                     "song": song_name,
+                    "_queue_key": task_key,
+                    "_queue_label": task_key,
                 }
             )
-            completed_songs.add(song_name)
+            completed_songs.add(task_key)
             if memory_resume_tracker:
                 memory_resume_tracker.mark_completed(song_name)
 
@@ -1091,10 +1141,11 @@ def run_native_inflight_song_pipeline(
                 prep_inflight.remove((task, fut, t_submit))
                 did_work = True
                 song_name = task[1]
-                if song_name in completed_songs:
+                task_key = _task_key(task)
+                if task_key in completed_songs:
                     continue
                 try:
-                    stage_profiler.record("prep", time.perf_counter() - float(t_submit), song=song_name)
+                    stage_profiler.record("prep", time.perf_counter() - float(t_submit), song=task_key)
                     prepared.append(fut.result())
                     if prepared and not fg_jit_warmup_submitted:
                         try:
@@ -1109,9 +1160,11 @@ def run_native_inflight_song_pipeline(
                             "_error_type": type(exc).__name__,
                             "_song_name": song_name,
                             "song": song_name,
+                            "_queue_key": task_key,
+                            "_queue_label": task_key,
                         }
                     )
-                    completed_songs.add(song_name)
+                    completed_songs.add(task_key)
                     if memory_resume_tracker:
                         memory_resume_tracker.mark_completed(song_name)
 
@@ -1141,6 +1194,8 @@ def run_native_inflight_song_pipeline(
                             "_error_type": type(exc).__name__,
                             "_song_name": song.song_name,
                             "song": song.song_name,
+                            "_queue_key": song.task_key,
+                            "_queue_label": song.task_key,
                         }
                     )
                 finally:
@@ -1190,6 +1245,7 @@ def run_native_inflight_song_pipeline(
                         "tournament_k": int(song.tournament_k),
                         "color_flags": dict(song.color_flags),
                         "cfg_data": dict(song.cfg_data),
+                        "ga_seed": song.ga_seed,
                     }
                     try:
                         handle = gpu_client.submit_gpu_native_ga_run(payload)
@@ -1206,9 +1262,11 @@ def run_native_inflight_song_pipeline(
                                 "_error_type": type(exc).__name__,
                                 "_song_name": song.song_name,
                                 "song": song.song_name,
+                                "_queue_key": song.task_key,
+                                "_queue_label": song.task_key,
                             }
                         )
-                        completed_songs.add(song.song_name)
+                        completed_songs.add(song.task_key)
                         if memory_resume_tracker:
                             memory_resume_tracker.mark_completed(song.song_name)
                         did_work = True
@@ -1248,7 +1306,8 @@ def run_native_inflight_song_pipeline(
                     break
                 if pending_tasks and (len(prepared) + len(prep_inflight) < prep_limit):
                     nxt = pending_tasks.popleft()
-                    if nxt[1] in completed_songs:
+                    nxt_key = _task_key(nxt)
+                    if nxt_key in completed_songs:
                         did_work = True
                         continue
                     try:
@@ -1260,9 +1319,11 @@ def run_native_inflight_song_pipeline(
                                 "_error_type": type(exc).__name__,
                                 "_song_name": nxt[1],
                                 "song": nxt[1],
+                                "_queue_key": nxt_key,
+                                "_queue_label": nxt_key,
                             }
                         )
-                        completed_songs.add(nxt[1])
+                        completed_songs.add(nxt_key)
                         if memory_resume_tracker:
                             memory_resume_tracker.mark_completed(nxt[1])
                         did_work = True
@@ -1289,6 +1350,8 @@ def run_native_inflight_song_pipeline(
                             "_error_type": type(exc).__name__,
                             "_song_name": song.song_name,
                             "song": song.song_name,
+                            "_queue_key": song.task_key,
+                            "_queue_label": song.task_key,
                         }
                     )
                     # GA failed: release the reserved timeline slot for this song.
@@ -1297,14 +1360,14 @@ def run_native_inflight_song_pipeline(
                         song.song_slot = 0
                     except Exception:
                         pass
-                    completed_songs.add(song.song_name)
+                    completed_songs.add(song.task_key)
                     if memory_resume_tracker:
                         memory_resume_tracker.mark_completed(song.song_name)
                     continue
 
                 t_submit = getattr(song, "_ga_submit_t0", None)
                 if t_submit is not None:
-                    stage_profiler.record("ga_gpu", time.perf_counter() - float(t_submit), song=song.song_name)
+                    stage_profiler.record("ga_gpu", time.perf_counter() - float(t_submit), song=song.task_key)
                     setattr(song, "_ga_submit_t0", None)
 
                 song.ga_future = None
@@ -1337,7 +1400,7 @@ def run_native_inflight_song_pipeline(
                         song.song_slot = 0
                     except Exception:
                         pass
-                    completed_songs.add(song.song_name)
+                    completed_songs.add(song.task_key)
                     if memory_resume_tracker:
                         memory_resume_tracker.mark_completed(song.song_name)
                     continue
@@ -1346,7 +1409,7 @@ def run_native_inflight_song_pipeline(
 
                 t_decode = getattr(song, "_decode_submit_t0", None)
                 if t_decode is not None:
-                    stage_profiler.record("decode", time.perf_counter() - float(t_decode), song=song.song_name)
+                    stage_profiler.record("decode", time.perf_counter() - float(t_decode), song=song.task_key)
                     setattr(song, "_decode_submit_t0", None)
 
                 song.best_data = best_data
@@ -1376,6 +1439,9 @@ def run_native_inflight_song_pipeline(
                         "_deferred_post": True,
                         "_pending_fg_job": bool(song.manual_force_greats or song.force_greats_finder),
                         "song": song.song_name,
+                        "_queue_key": song.task_key,
+                        "_queue_label": song.task_key,
+                        "_ga_seed": song.ga_seed,
                         "db_key": song.db_key,
                         "file_path": song.fp,
                         "difficulty": song.effective_difficulty,
@@ -1416,7 +1482,7 @@ def run_native_inflight_song_pipeline(
                     }
                 )
 
-                completed_songs.add(song.song_name)
+                completed_songs.add(song.task_key)
                 if memory_resume_tracker:
                     memory_resume_tracker.mark_completed(song.song_name)
 
@@ -1440,7 +1506,7 @@ def run_native_inflight_song_pipeline(
                             fg_song.song_slot = 0
                         except Exception:
                             pass
-                        stage_profiler.record("fg_run", time.perf_counter() - float(t_submit), song=fg_song.song_name)
+                        stage_profiler.record("fg_run", time.perf_counter() - float(t_submit), song=fg_song.task_key)
                     else:
                         still_pending.append((fg_song, fut, t_submit))
                 fg_futures = still_pending

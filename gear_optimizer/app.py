@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import queue as queue_module
 import re
+import secrets
 import signal
 import sys
 import threading
@@ -723,29 +724,123 @@ class GearOptimizerApp:
         cfg_dict = cfg_to_dict(cfg)
         tasks = []
         parallel_workers = 1
+
+        song_repeats = 1
+        try:
+            song_repeats = safe_int(cfg.get("IterationEngine", "SongRepeats", fallback="1"), 1)
+        except Exception:
+            song_repeats = 1
+        try:
+            song_repeats_env = safe_int(os.environ.get("SONG_REPEATS", 0), 0)
+            if song_repeats_env > 0:
+                song_repeats = song_repeats_env
+        except Exception:
+            pass
+        song_repeats = max(1, min(int(song_repeats), 100))
+        used_ga_seeds: set[int] = set()
+
         for fp, found_song_name, task_diff in song_queue:
-            print(f"[QUEUE] {found_song_name}")
-            tasks.append(
-                (
-                    fp,
-                    found_song_name,
-                    task_diff,
-                    cfg_dict,
-                    paths,
-                    ref_arrays,
-                    all_gears,
-                    all_minis,
-                    gears_by_name,
-                    minis_by_name,
-                    use_evo_db,
-                    auto_buff,
-                    ga_depth,
-                    status_queue,
-                    parallel_workers,
-                    fg_debug,
+            if song_repeats <= 1:
+                print(f"[QUEUE] {found_song_name}")
+                tasks.append(
+                    (
+                        fp,
+                        found_song_name,
+                        task_diff,
+                        cfg_dict,
+                        paths,
+                        ref_arrays,
+                        all_gears,
+                        all_minis,
+                        gears_by_name,
+                        minis_by_name,
+                        use_evo_db,
+                        auto_buff,
+                        ga_depth,
+                        status_queue,
+                        parallel_workers,
+                        fg_debug,
+                    )
                 )
-            )
+                continue
+
+            for repeat_index in range(1, song_repeats + 1):
+                ga_seed = int(secrets.randbits(32) or 1)
+                while ga_seed in used_ga_seeds:
+                    ga_seed = int(secrets.randbits(32) or 1)
+                used_ga_seeds.add(ga_seed)
+
+                repeat_ctx = {
+                    "repeat_index": int(repeat_index),
+                    "repeat_total": int(song_repeats),
+                    "ga_seed": int(ga_seed),
+                }
+
+                print(f"[QUEUE] {found_song_name} (Run {repeat_index}/{song_repeats})")
+                tasks.append(
+                    (
+                        fp,
+                        found_song_name,
+                        task_diff,
+                        cfg_dict,
+                        paths,
+                        ref_arrays,
+                        all_gears,
+                        all_minis,
+                        gears_by_name,
+                        minis_by_name,
+                        use_evo_db,
+                        auto_buff,
+                        ga_depth,
+                        status_queue,
+                        parallel_workers,
+                        fg_debug,
+                        repeat_ctx,
+                    )
+                )
         return tasks
+
+    @staticmethod
+    def _extract_repeat_ctx(task) -> dict | None:
+        if not isinstance(task, (tuple, list)) or len(task) <= 16:
+            return None
+        for extra in task[16:]:
+            if not isinstance(extra, dict):
+                continue
+            if "repeat_index" in extra and "repeat_total" in extra and "ga_seed" in extra:
+                return extra
+        return None
+
+    def _task_queue_label(self, task) -> str:
+        if not isinstance(task, (tuple, list)) or len(task) < 2:
+            return "Unknown"
+        base = str(task[1])
+        repeat_ctx = self._extract_repeat_ctx(task)
+        if repeat_ctx:
+            try:
+                idx = int(repeat_ctx.get("repeat_index") or 0)
+                total = int(repeat_ctx.get("repeat_total") or 0)
+            except Exception:
+                idx = 0
+                total = 0
+            if idx > 0 and total > 1:
+                return f"{base} (Run {idx}/{total})"
+        return base
+
+    @staticmethod
+    def _clone_calc_song_for_run(calc_song: dict) -> dict:
+        if not isinstance(calc_song, dict):
+            return calc_song
+        out = dict(calc_song)
+        try:
+            out["metadata"] = dict(out.get("metadata") or {})
+        except Exception:
+            pass
+        try:
+            out["song_data"] = dict(out.get("song_data") or {})
+        except Exception:
+            pass
+        return out
 
     @staticmethod
     def _truthy(v) -> bool:
@@ -1060,7 +1155,7 @@ class GearOptimizerApp:
                 post_proc.start()
 
                 preload_idx = 5  # Start preloading from index 5
-                preloaded_by_name = {}
+                preloaded_by_path = {}
 
                 # GPU prefetch manager for ahead-of-time timeline computation
                 _gpu_prefetch_mgr, gpu_prefetch_enabled = self._init_gpu_prefetch_manager(use_gpu_preload)
@@ -1070,10 +1165,12 @@ class GearOptimizerApp:
                 for i, t in enumerate(tasks):
                     if self._stop_requested_now():
                         break
-                    if t[1] in completed_songs:
+                    task_key = self._task_queue_label(t)
+                    if task_key in completed_songs:
                         continue
 
                     song_name = t[1]
+                    song_path_key = os.path.abspath(str(t[0]))
 
                     # Drain any newly preloaded songs into a local map for reuse.
                     if use_gpu_preload and preloader is not None:
@@ -1082,22 +1179,23 @@ class GearOptimizerApp:
                                 preloaded = preloader.get_if_ready()
                                 if preloaded is None:
                                     break
-                                preloaded_by_name[preloaded.song_name] = preloaded
+                                preloaded_by_path[os.path.abspath(str(preloaded.file_path))] = preloaded
                         except Exception:
                             pass
 
                     # Prefer preloaded calc_song for this song (skips disk I/O + parsing).
                     task_args = t
-                    preloaded_current = preloaded_by_name.pop(song_name, None)
+                    preloaded_current = preloaded_by_path.get(song_path_key)
                     if preloaded_current is not None and preloaded_current.calc_song and not preloaded_current.error:
-                        task_args = t + (preloaded_current.calc_song, True)
+                        cloned = self._clone_calc_song_for_run(preloaded_current.calc_song)
+                        task_args = t + (cloned, True)
                     else:
                         task_args = t + (True,)
 
                     # Queue next song for CPU preloading
                     if use_gpu_preload and preload_idx < len(tasks):
                         next_task = tasks[preload_idx]
-                        if next_task[1] not in completed_songs:
+                        if self._task_queue_label(next_task) not in completed_songs:
                             self._queue_song_for_preload(preloader, next_task)
                         preload_idx += 1
 
@@ -1117,21 +1215,22 @@ class GearOptimizerApp:
                         try:
                             pick = None
                             if i + 1 < len(tasks):
-                                next_name = tasks[i + 1][1]
-                                cand = preloaded_by_name.get(next_name)
+                                next_path_key = os.path.abspath(str(tasks[i + 1][0]))
+                                cand = preloaded_by_path.get(next_path_key)
                                 if cand is not None and cand.calc_song and not cand.error:
                                     pick = cand
 
                             if pick is None:
-                                for cand in preloaded_by_name.values():
+                                for cand in preloaded_by_path.values():
                                     if cand is not None and cand.calc_song and not cand.error:
                                         pick = cand
                                         break
 
-                            if pick is not None and pick.song_name not in gpu_prefetched_set:
+                            pick_key = os.path.abspath(str(getattr(pick, "file_path", ""))) if pick is not None else ""
+                            if pick is not None and pick_key and pick_key not in gpu_prefetched_set:
                                 slot = _gpu_prefetch_mgr.prefetch(pick.calc_song, pick.ref_arrays)
                                 if slot is not None:
-                                    gpu_prefetched_set.add(pick.song_name)
+                                    gpu_prefetched_set.add(pick_key)
                         except Exception:
                             pass
 
@@ -1164,10 +1263,11 @@ class GearOptimizerApp:
                     # Track completion for resume queue (only for successful compute payloads).
                     if enqueued and isinstance(res, dict) and "_error" not in res:
                         done_name = res.get("song") or song_name
-                        if done_name:
-                            completed_songs.add(done_name)
-                            if memory_resume_tracker:
-                                memory_resume_tracker.mark_completed(done_name)
+                        done_key = res.get("_queue_key") or res.get("_queue_label") or task_key
+                        if done_key:
+                            completed_songs.add(done_key)
+                        if memory_resume_tracker and done_name:
+                            memory_resume_tracker.mark_completed(done_name)
 
                     if memory_release_requested():
                         print("[MemoryGuard] Early stop in sequential pipeline loop")
@@ -1203,7 +1303,7 @@ class GearOptimizerApp:
 
         def _safe_sequential_gen(task_list):
             preload_idx = 5  # Start preloading from index 5
-            preloaded_by_name = {}
+            preloaded_by_path = {}
 
             # GPU prefetch manager for ahead-of-time timeline computation
             _gpu_prefetch_mgr, gpu_prefetch_enabled = self._init_gpu_prefetch_manager(use_gpu_preload)
@@ -1214,10 +1314,12 @@ class GearOptimizerApp:
             for i, t in enumerate(task_list):
                 if self._stop_requested_now():
                     break
-                if t[1] in completed_songs:
+                task_key = self._task_queue_label(t)
+                if task_key in completed_songs:
                     continue
 
                 song_name = t[1]
+                song_path_key = os.path.abspath(str(t[0]))
 
                 # Drain any newly preloaded songs into a local map for reuse.
                 if use_gpu_preload and preloader is not None:
@@ -1226,20 +1328,21 @@ class GearOptimizerApp:
                             preloaded = preloader.get_if_ready()
                             if preloaded is None:
                                 break
-                            preloaded_by_name[preloaded.song_name] = preloaded
+                            preloaded_by_path[os.path.abspath(str(preloaded.file_path))] = preloaded
                     except Exception:
                         pass
 
                 # Prefer preloaded calc_song for this song (skips disk I/O + parsing).
                 task_args = t
-                preloaded_current = preloaded_by_name.pop(song_name, None)
+                preloaded_current = preloaded_by_path.get(song_path_key)
                 if preloaded_current is not None and preloaded_current.calc_song and not preloaded_current.error:
-                    task_args = t + (preloaded_current.calc_song,)
+                    cloned = self._clone_calc_song_for_run(preloaded_current.calc_song)
+                    task_args = t + (cloned,)
 
                 # Queue next song for CPU preloading
                 if use_gpu_preload and preload_idx < len(task_list):
                     next_task = task_list[preload_idx]
-                    if next_task[1] not in completed_songs:
+                    if self._task_queue_label(next_task) not in completed_songs:
                         self._queue_song_for_preload(preloader, next_task)
                     preload_idx += 1
 
@@ -1255,21 +1358,22 @@ class GearOptimizerApp:
                         # Pick the immediate next song if it has been preloaded; else pick any ready one.
                         pick = None
                         if i + 1 < len(task_list):
-                            next_name = task_list[i + 1][1]
-                            cand = preloaded_by_name.get(next_name)
+                            next_path_key = os.path.abspath(str(task_list[i + 1][0]))
+                            cand = preloaded_by_path.get(next_path_key)
                             if cand is not None and cand.calc_song and not cand.error:
                                 pick = cand
 
                         if pick is None:
-                            for cand in preloaded_by_name.values():
+                            for cand in preloaded_by_path.values():
                                 if cand is not None and cand.calc_song and not cand.error:
                                     pick = cand
                                     break
 
-                        if pick is not None and pick.song_name not in gpu_prefetched_set:
+                        pick_key = os.path.abspath(str(getattr(pick, "file_path", ""))) if pick is not None else ""
+                        if pick is not None and pick_key and pick_key not in gpu_prefetched_set:
                             slot = _gpu_prefetch_mgr.prefetch(pick.calc_song, pick.ref_arrays)
                             if slot is not None:
-                                gpu_prefetched_set.add(pick.song_name)
+                                gpu_prefetched_set.add(pick_key)
                     except Exception:
                         pass
 
@@ -1286,7 +1390,7 @@ class GearOptimizerApp:
                 yield res
 
                 # After processing, release the slot for this song to free it for reuse
-                if gpu_prefetch_enabled and _gpu_prefetch_mgr is not None and song_name in gpu_prefetched_set:
+                if gpu_prefetch_enabled and _gpu_prefetch_mgr is not None and song_path_key in gpu_prefetched_set:
                     try:
                         # Find and release the slot for this song
                         # The manager keeps track of song_key -> slot mapping internally
@@ -1324,7 +1428,7 @@ class GearOptimizerApp:
                 status_queue,
                 parallel_workers,
                 fg_debug,
-            ) = task
+            ) = task[:16]
 
             request = SongLoadRequest(
                 song_name=song_name,
@@ -1352,7 +1456,7 @@ class GearOptimizerApp:
 
         # Queue first 5 songs for preloading
         for t in tasks[:5]:
-            if t[1] not in completed_songs:
+            if self._task_queue_label(t) not in completed_songs:
                 self._queue_song_for_preload(preloader, t)
 
         print("[Song Preloader] Async preloading enabled")
@@ -1453,7 +1557,10 @@ class GearOptimizerApp:
                         initargs=(req_q, registrations, reg_counter, reg_lock),
                     )
                     try:
-                        future_map = {executor.submit(safe_process_song_task, t): t[1] for t in remaining_tasks}
+                        future_map = {
+                            executor.submit(safe_process_song_task, t): self._task_queue_label(t)
+                            for t in remaining_tasks
+                        }
                         self._consume_results(
                             concurrent.futures.as_completed(future_map),
                             future_map=future_map,
@@ -1478,7 +1585,10 @@ class GearOptimizerApp:
                     # Fallback: no GPU executor, workers use direct GPU (may conflict)
                     executor = concurrent.futures.ProcessPoolExecutor(max_workers=effective_workers, mp_context=mp_ctx)
                     try:
-                        future_map = {executor.submit(safe_process_song_task, t): t[1] for t in remaining_tasks}
+                        future_map = {
+                            executor.submit(safe_process_song_task, t): self._task_queue_label(t)
+                            for t in remaining_tasks
+                        }
                         self._consume_results(
                             concurrent.futures.as_completed(future_map),
                             future_map=future_map,
@@ -1515,7 +1625,7 @@ class GearOptimizerApp:
                 status_thread.start()
 
                 # Rebuild remaining tasks
-                remaining_songs = [t for t in tasks if t[1] not in completed_songs]
+                remaining_songs = [t for t in tasks if self._task_queue_label(t) not in completed_songs]
                 remaining_tasks = []
                 for t in remaining_songs:
                     # Recreate tuple with new status queue
@@ -1596,7 +1706,7 @@ class GearOptimizerApp:
                 res = item
                 if isinstance(res, dict) and "_error" in res:
                     failed += 1
-                    err_name = res.get("_song_name") or res.get("song")
+                    err_name = res.get("_queue_label") or res.get("_song_name") or res.get("song")
                     err_type = res.get("_error_type") or type(res.get("_error")).__name__
                     err_msg = f"[{completed}/{total}] FAILED: {err_name} - {err_type}: {res.get('_error')}"
                     print(err_msg)
@@ -1607,18 +1717,20 @@ class GearOptimizerApp:
                     continue
 
             song_name = res.get("song", "Unknown")
-            if completed_songs is not None and song_name:
-                completed_songs.add(song_name)
-            if memory_resume_tracker:
+            task_label = res.get("_queue_label") or res.get("_queue_key") or song_name
+            task_key = res.get("_queue_key") or task_label or song_name
+            if completed_songs is not None and task_key:
+                completed_songs.add(task_key)
+            if memory_resume_tracker and song_name:
                 memory_resume_tracker.mark_completed(song_name)
 
             if memory_release_requested():
                 print("[MemoryGuard] Early stop in consume_results")
                 break
 
-            print(f"[{completed}/{total}] Completed: {res['song']}")
+            print(f"[{completed}/{total}] Completed: {task_label}")
             print("=" * 60)
-            print(f"PROCESSING SONG: {res['song']}")
+            print(f"PROCESSING SONG: {task_label}")
             print("=" * 60)
             self.discord_reporter.send_stats(build_stats_summary(res, completed, total))
 

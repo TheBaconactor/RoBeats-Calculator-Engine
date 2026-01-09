@@ -117,6 +117,7 @@ class SongSlotPool:
 @dataclass
 class _InflightSong:
     task: tuple
+    task_key: str
     song_slot: int
     cfg: Any
     calc_song: dict
@@ -135,6 +136,7 @@ class _InflightSong:
     prev_attempts_first: int
     meta_primary_color: str
     meta_secondary_color: str
+    ga_seed: int | None = None
 
     ga_gen: Any
     pending_eval: Optional[concurrent.futures.Future] = None
@@ -169,6 +171,42 @@ def run_inflight_song_pipeline(
     if not tasks:
         return
 
+    def _extract_repeat_ctx(task: tuple) -> dict | None:
+        if not isinstance(task, (tuple, list)) or len(task) <= 16:
+            return None
+        for extra in task[16:]:
+            if not isinstance(extra, dict):
+                continue
+            if "repeat_index" in extra and "repeat_total" in extra and "ga_seed" in extra:
+                return extra
+        return None
+
+    def _task_key(task: tuple) -> str:
+        if not isinstance(task, (tuple, list)) or len(task) < 2:
+            return "Unknown"
+        base = str(task[1])
+        repeat_ctx = _extract_repeat_ctx(task)
+        if repeat_ctx:
+            try:
+                idx = int(repeat_ctx.get("repeat_index") or 0)
+                total = int(repeat_ctx.get("repeat_total") or 0)
+            except Exception:
+                idx = 0
+                total = 0
+            if idx > 0 and total > 1:
+                return f"{base} (Run {idx}/{total})"
+        return base
+
+    def _task_ga_seed(task: tuple) -> int | None:
+        repeat_ctx = _extract_repeat_ctx(task)
+        if not repeat_ctx:
+            return None
+        try:
+            seed = repeat_ctx.get("ga_seed")
+            return int(seed) if seed is not None else None
+        except Exception:
+            return None
+
     try:
         from gear_optimizer.solver.taichi_gem.fields import MAX_SONG_SLOTS
 
@@ -186,7 +224,7 @@ def run_inflight_song_pipeline(
     gpu_client = GpuServiceClient(gpu_executor)
     gpu_client.start(start_executor=False)
 
-    pending_tasks = deque(t for t in tasks if t[1] not in completed_songs)
+    pending_tasks = deque(t for t in tasks if _task_key(t) not in completed_songs)
     active: list[_InflightSong] = []
 
     def _emit(status_queue, song_name: str, msg: str) -> None:
@@ -198,6 +236,8 @@ def run_inflight_song_pipeline(
             pass
 
     def _admit_one(task: tuple) -> Optional[_InflightSong]:
+        task_key = _task_key(task)
+        ga_seed = _task_ga_seed(task)
         (
             fp,
             found_song_name,
@@ -215,7 +255,7 @@ def run_inflight_song_pipeline(
             status_queue,
             _parallel_workers,
             fg_debug,
-        ) = task
+        ) = task[:16]
 
         cfg = cfg_from_dict(cfg_dict)
         calc_song = _build_calc_song_from_file(
@@ -282,7 +322,7 @@ def run_inflight_song_pipeline(
             pass
 
         if status_queue:
-            _emit(status_queue, found_song_name, f"InFlight slot={song_slot}")
+            _emit(status_queue, task_key, f"InFlight slot={song_slot}")
 
         # Warm up the per-song-slot timeline on the GPU as early as possible so the first
         # population solve doesn't pay the initial grid compute cost.
@@ -312,11 +352,13 @@ def run_inflight_song_pipeline(
             known_loadouts=known_loadouts,
             db_seed=prev_record if prev_record else None,
             song_slot=int(song_slot),
-            status_cb=(lambda m, _sq=status_queue: _emit(_sq, found_song_name, str(m))),
+            status_cb=(lambda m, _sq=status_queue: _emit(_sq, task_key, str(m))),
+            ga_seed=ga_seed,
         )
 
         song = _InflightSong(
             task=task,
+            task_key=task_key,
             song_slot=song_slot,
             cfg=cfg,
             calc_song=calc_song,
@@ -335,6 +377,7 @@ def run_inflight_song_pipeline(
             prev_attempts_first=int(prev_attempts_first),
             meta_primary_color=str(meta_primary_color),
             meta_secondary_color=str(meta_secondary_color),
+            ga_seed=ga_seed,
             ga_gen=ga_gen,
         )
         return song
@@ -453,7 +496,7 @@ def run_inflight_song_pipeline(
             _status_queue,
             _parallel_workers,
             _fg_debug,
-        ) = song.task
+        ) = song.task[:16]
 
         cfg = song.cfg
         try:
@@ -570,21 +613,24 @@ def run_inflight_song_pipeline(
             # Admit up to inflight_limit.
             while (not stopping) and pending_tasks and len(active) < inflight_limit:
                 nxt = pending_tasks.popleft()
-                if nxt[1] in completed_songs:
+                if _task_key(nxt) in completed_songs:
                     continue
                 try:
                     song = _admit_one(nxt)
                 except Exception as exc:
                     # Fallback: produce an error payload compatible with post_processor.
+                    task_key = _task_key(nxt)
                     _try_post(
                         {
                             "_error": str(exc),
                             "_error_type": type(exc).__name__,
                             "_song_name": nxt[1],
                             "song": nxt[1],
+                            "_queue_key": task_key,
+                            "_queue_label": task_key,
                         }
                     )
-                    completed_songs.add(nxt[1])
+                    completed_songs.add(task_key)
                     if memory_resume_tracker:
                         memory_resume_tracker.mark_completed(nxt[1])
                     continue
@@ -637,7 +683,7 @@ def run_inflight_song_pipeline(
                     _status_queue,
                     _parallel_workers,
                     fg_debug,
-                ) = song.task
+                ) = song.task[:16]
 
                 # Build deferred compute payload for post_processor.
                 best_cand = None
@@ -656,6 +702,9 @@ def run_inflight_song_pipeline(
                 payload = {
                     "_deferred_post": True,
                     "song": found_song_name,
+                    "_queue_key": song.task_key,
+                    "_queue_label": song.task_key,
+                    "_ga_seed": song.ga_seed,
                     "db_key": db_key,
                     "file_path": fp,
                     "difficulty": effective_difficulty,
@@ -686,7 +735,7 @@ def run_inflight_song_pipeline(
                 enqueued = _try_post(payload)
 
                 if enqueued:
-                    completed_songs.add(found_song_name)
+                    completed_songs.add(song.task_key)
                     if memory_resume_tracker:
                         memory_resume_tracker.mark_completed(found_song_name)
                 else:

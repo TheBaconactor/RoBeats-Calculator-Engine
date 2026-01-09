@@ -1190,6 +1190,7 @@ class GpuExecutor:
         tournament_k = int(payload.get("tournament_k", 3) or 3)
         color_flags = payload.get("color_flags") or {}
         cfg_data = payload.get("cfg_data") or {}
+        ga_seed = payload.get("ga_seed")
 
         if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
             return GpuResponse(
@@ -1217,6 +1218,7 @@ class GpuExecutor:
                 tournament_k=tournament_k,
                 color_flags=dict(color_flags),
                 cfg_data=dict(cfg_data),
+                ga_seed=int(ga_seed) if ga_seed is not None else None,
             )
         except Exception as e:
             return GpuResponse(

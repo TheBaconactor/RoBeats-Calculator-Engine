@@ -229,14 +229,36 @@ def process_song_task(args):
     # - preloaded calc_song dict to avoid repeated disk I/O + parsing
     # - defer_post: if True, skip persistence/reporting and return raw compute payload
     preloaded_calc_song = None
+    repeat_ctx = None
     defer_post = False
     extras = args_list[16:] if len(args_list) > 16 else []
     if extras:
-        if isinstance(extras[0], dict) and extras[0].get("song_data") is not None:
-            preloaded_calc_song = extras[0]
-            extras = extras[1:]
-        if extras:
-            defer_post = bool(extras[0])
+        for extra in extras:
+            if isinstance(extra, dict):
+                if extra.get("song_data") is not None:
+                    preloaded_calc_song = extra
+                    continue
+                if "repeat_index" in extra and "repeat_total" in extra and "ga_seed" in extra:
+                    repeat_ctx = extra
+                    continue
+            if isinstance(extra, bool) and not defer_post:
+                defer_post = bool(extra)
+
+    queue_label = found_song_name
+    ga_seed = None
+    if isinstance(repeat_ctx, dict):
+        try:
+            idx = int(repeat_ctx.get("repeat_index") or 0)
+            total = int(repeat_ctx.get("repeat_total") or 0)
+        except Exception:
+            idx = 0
+            total = 0
+        try:
+            ga_seed = int(repeat_ctx.get("ga_seed")) if repeat_ctx.get("ga_seed") is not None else None
+        except Exception:
+            ga_seed = None
+        if idx > 0 and total > 1:
+            queue_label = f"{found_song_name} (Run {idx}/{total})"
 
     # Initialize variables at function start to avoid 'in locals()' pattern issues
     local_executor = None
@@ -487,6 +509,7 @@ def process_song_task(args):
                 executor=local_executor,
                 known_loadouts=known_loadouts,
                 song_slot=_gpu_song_slot,  # Use prefetched GPU slot
+                ga_seed=ga_seed,
             )
             ga_time_sec = time.perf_counter() - ga_start
 
@@ -698,6 +721,11 @@ def process_song_task(args):
             result_payload = {
                 "_deferred_post": True,
                 "song": found_song_name,
+                "_queue_key": queue_label,
+                "_queue_label": queue_label,
+                "_repeat_index": int(repeat_ctx.get("repeat_index") or 0) if isinstance(repeat_ctx, dict) else 0,
+                "_repeat_total": int(repeat_ctx.get("repeat_total") or 0) if isinstance(repeat_ctx, dict) else 0,
+                "_ga_seed": int(ga_seed) if ga_seed is not None else None,
                 "db_key": db_key,
                 "file_path": fp,
                 "difficulty": effective_difficulty,
@@ -797,6 +825,11 @@ def process_song_task(args):
 
         result_payload = {
             "song": found_song_name,
+            "_queue_key": queue_label,
+            "_queue_label": queue_label,
+            "_repeat_index": int(repeat_ctx.get("repeat_index") or 0) if isinstance(repeat_ctx, dict) else 0,
+            "_repeat_total": int(repeat_ctx.get("repeat_total") or 0) if isinstance(repeat_ctx, dict) else 0,
+            "_ga_seed": int(ga_seed) if ga_seed is not None else None,
             "db_key": db_key,
             "file_path": fp,
             "difficulty": effective_difficulty,
@@ -895,9 +928,24 @@ def safe_process_song_task(args):
         dict: Result dict or error dict with _error and _trace keys
     """
     song_name = "Unknown"
+    queue_label = None
     try:
         if isinstance(args, (list, tuple)) and len(args) > 1:
             song_name = args[1]
+            queue_label = str(song_name)
+            try:
+                if len(args) > 16:
+                    for extra in args[16:]:
+                        if not isinstance(extra, dict):
+                            continue
+                        if "repeat_index" in extra and "repeat_total" in extra:
+                            idx = int(extra.get("repeat_index") or 0)
+                            total = int(extra.get("repeat_total") or 0)
+                            if idx > 0 and total > 1:
+                                queue_label = f"{song_name} (Run {idx}/{total})"
+                            break
+            except Exception:
+                queue_label = str(song_name)
         return process_song_task(args)
     except Exception as exc:
         tb = traceback.format_exc()
@@ -910,6 +958,8 @@ def safe_process_song_task(args):
         return {
             "song": song_name,
             "_song_name": song_name,
+            "_queue_key": queue_label or song_name,
+            "_queue_label": queue_label or song_name,
             "_error": str(exc),
             "_error_type": type(exc).__name__,
             "_trace": tb,

@@ -9,6 +9,7 @@ orchestrator that can interleave many songs while the GPU executor stays busy.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import random
 from typing import Generator, Optional, Any
 
 from gear_optimizer.core.constants import (
@@ -62,11 +63,17 @@ def solve_coevolution_genetic_inflight(
     db_seed: Optional[dict],
     song_slot: int,
     status_cb=None,
+    ga_seed: int | None = None,
 ) -> Generator[SolveGenomesJob, Optional[list], InflightGAResult]:
     """
     Generator-based GA solver that yields GPU solve jobs and resumes with their results.
     """
     ga_settings = GASettings.from_cfg(cfg) if cfg is not None else GASettings.from_cfg(None)
+    if ga_seed is not None:
+        try:
+            random.seed(int(ga_seed) & 0xFFFFFFFF)
+        except Exception:
+            pass
 
     # Import helper functions lazily to avoid import-time costs in orchestration loops.
     from gear_optimizer.helpers.ga_helpers import (

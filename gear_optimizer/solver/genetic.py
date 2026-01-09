@@ -502,7 +502,9 @@ def decode_gpu_native_ga_runs_payload(
     centers_ff = stub_results[:, 2].astype(np.int32, copy=False)
 
     # FG proxy matches `select_fg_candidates()` weights (on summed item stats).
-    stats_sum = item_stats[stub_genome_ids.astype(np.int32, copy=False)].sum(axis=1).astype(np.int64, copy=False)  # (n,10)
+    stats_sum = (
+        item_stats[stub_genome_ids.astype(np.int32, copy=False)].sum(axis=1).astype(np.int64, copy=False)
+    )  # (n,10)
     pp = stats_sum[:, 0]
     cm = stats_sum[:, 1]
     fm = stats_sum[:, 2]
@@ -764,6 +766,8 @@ def _run_gpu_native_ga(
     store_payload_only: bool = False,
     n_genomes_override: int | None = None,
     population_preloaded: bool = False,
+    ga_seed: int | None = None,
+    ga_seed_offset: int = 0,
 ) -> tuple:
     """
     Run GPU-native GA loop (internal function).
@@ -850,7 +854,13 @@ def _run_gpu_native_ga(
             raise ValueError("population is required unless population_preloaded is True")
         pop_ids = registry.encode_population(population)
         gpu_api.ga_upload_population_indices(pop_ids, n_slots=n_slots)
-    gpu_api.ga_seed_rng(n_genomes, seed=42)
+    seed = 42
+    if ga_seed is not None:
+        try:
+            seed = (int(ga_seed) + int(ga_seed_offset)) & 0xFFFFFFFF
+        except Exception:
+            seed = 42
+    gpu_api.ga_seed_rng(n_genomes, seed=int(seed))
 
     # CPU-side best tracking (faster than GPU-side for this use case)
     best_score = -1
@@ -1019,6 +1029,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     tournament_k: int = 3,
     color_flags: dict | None = None,
     cfg_data: dict | None = None,
+    ga_seed: int | None = None,
 ) -> "np.ndarray":
     """
     Run the GPU-native GA for multiple runs using *prebuilt* initial populations.
@@ -1034,6 +1045,13 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     cfg_data = dict(cfg_data or {})
     color_flags = dict(color_flags or {})
+
+    seed_base = 42
+    if ga_seed is not None:
+        try:
+            seed_base = int(ga_seed) & 0xFFFFFFFF
+        except Exception:
+            seed_base = 42
 
     try:
         from .taichi_gem.api import load_ref_arrays, precompute_timeline_gpu
@@ -1223,7 +1241,11 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                         n_genomes_per_run=int(n_genomes),
                         n_slots=int(n_slots),
                     )
-                    gpu_api.ga_seed_rng_runs(n_runs=int(batch_len), n_genomes_per_run=int(n_genomes), seed=42)
+                    gpu_api.ga_seed_rng_runs(
+                        n_runs=int(batch_len),
+                        n_genomes_per_run=int(n_genomes),
+                        seed=int((int(seed_base) + int(global_run_idx)) & 0xFFFFFFFF),
+                    )
 
                     gen_use_hints = 0  # Force cold start on Gen 0
                     n_total = int(batch_len) * int(n_genomes)
@@ -1378,6 +1400,7 @@ def solve_coevolution_genetic(
     executor=None,
     known_loadouts=None,
     song_slot: int = 0,  # GPU slot for prefetched timeline (0 = compute on-demand)
+    ga_seed: int | None = None,
 ):
     """
     Main genetic algorithm solver for gear and mini co-evolution.
@@ -1417,6 +1440,12 @@ def solve_coevolution_genetic(
     GEM_SOLVER_CACHE.clear()
     FG_CACHE.clear()
     FEVER_TIMELINE_CACHE.clear()
+
+    if ga_seed is not None:
+        try:
+            random.seed(int(ga_seed) & 0xFFFFFFFF)
+        except Exception:
+            pass
 
     print("\n=== STARTING GENETIC ALGORITHM SOLVER ===")
     print(f"Configuration: GearOptimization={optimize_gear}, MiniOptimization={optimize_minis}")
@@ -1728,6 +1757,8 @@ def solve_coevolution_genetic(
                         store_payload_only=True,
                         n_genomes_override=n_genomes,
                         population_preloaded=True,
+                        ga_seed=ga_seed,
+                        ga_seed_offset=int(run_idx),
                     )
                     last_exc = None
                     break
