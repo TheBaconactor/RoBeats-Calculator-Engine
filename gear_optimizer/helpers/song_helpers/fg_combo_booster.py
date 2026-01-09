@@ -14,8 +14,11 @@ from ...core.constants import (
     SKIP_ITEM_KEYS,
     TOTAL_GEM_BUDGET,
 )
+from ...core.utils import get_selected_element
 from ...solver.gpu_executor import is_gpu_worker_mode, submit_gpu_solve_genomes
 from ...solver.scoring.genome_evaluation import prepare_gpu_batch_eval_plan, finalize_gpu_batch_eval_plan
+from ...solver.base_stats import build_base_fixed_stats_list
+from ...solver.scoring.stats_ops import apply_gems_to_base_stats
 from .item_utils import _item_name
 
 
@@ -1094,32 +1097,7 @@ def evaluate_fg_combo_booster_genomes(
                     pop_indices = registry.encode_population(rep_genomes)  # (n_unique, 9)
                     gpu_arrays = registry.to_gpu_arrays()
 
-                    # Match the CPU path: subtract user-fixed gems and static overflow gems from base_fixed_stats.
-                    user_ft = _int(cfg_data.get("user_ft", 0), 0)
-                    user_ff = _int(cfg_data.get("user_ff", 0), 0)
-                    user_pp = _int(cfg_data.get("user_pp", 0), 0)
-                    user_cm = _int(cfg_data.get("user_cm", 0), 0)
-                    user_fm = _int(cfg_data.get("user_fm", 0), 0)
-                    static_elem_input = _int(cfg_data.get("static_elem_input", 0), 0)
-                    sel_color = str(cfg_data.get("selected_color", "") or "")
-
-                    base_fixed_stats_np = [
-                        _int(base_stats_fixed.get("Perfect Points", 0), 0) - user_pp * GEM_SCALE_NORMAL,
-                        _int(base_stats_fixed.get("Combo Multiplier", 0), 0) - user_cm * GEM_SCALE_NORMAL,
-                        _int(base_stats_fixed.get("Fever Multiplier", 0), 0) - user_fm * GEM_SCALE_FEVER,
-                        _int(base_stats_fixed.get("Fever Time", 0), 0) - user_ft * GEM_SCALE_FEVER,
-                        _int(base_stats_fixed.get("Fever Fill Rate", 0), 0) - user_ff * GEM_SCALE_FEVER,
-                        _int(base_stats_fixed.get("Beat", 0), 0) - user_ft * GEM_STAT_TO_ELEMENT_SCALE,
-                        _int(base_stats_fixed.get("Vibe", 0), 0) - user_ff * GEM_STAT_TO_ELEMENT_SCALE,
-                        _int(base_stats_fixed.get("Rush", 0), 0) - user_fm * GEM_STAT_TO_ELEMENT_SCALE,
-                        _int(base_stats_fixed.get("Flow", 0), 0) - user_cm * GEM_STAT_TO_ELEMENT_SCALE,
-                        _int(base_stats_fixed.get("Chill", 0), 0) - user_pp * GEM_STAT_TO_ELEMENT_SCALE,
-                    ]
-                    if static_elem_input and sel_color:
-                        color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
-                        idx = color_to_idx.get(sel_color)
-                        if idx is not None:
-                            base_fixed_stats_np[idx] -= static_elem_input * ELEMENTAL_GEM_SCALE
+                    base_fixed_stats_np, _ = build_base_fixed_stats_list(base_stats_fixed, cfg_data)
                     if gpu_client is not None:
                         payload = {
                             "population_indices": pop_indices,
@@ -1369,13 +1347,7 @@ def hydrate_fg_candidate_stats(
         g_fm = _int(gem_counts.get("Fever Multiplier", 0), 0)
         g_ov = _int(gem_counts.get("Element", gem_counts.get("Element Overflow", 0)), 0)
 
-        sel = str(
-            data.get("Selected Element")
-            or cand.get("Selected Element")
-            or data.get("SelectedElement")
-            or selected_color
-            or ""
-        )
+        sel = get_selected_element(data, "") or get_selected_element(cand, "") or str(selected_color or "")
 
         genome = cand.get("Genome")
         if not isinstance(genome, list) or not genome:
@@ -1394,20 +1366,17 @@ def hydrate_fg_candidate_stats(
                 except Exception:
                     continue
 
-        # Apply gem allocations (matches `finalize_gpu_batch_eval_plan` / fever solver).
-        stats["Fever Time"] = stats.get("Fever Time", 0) + ft * GEM_SCALE_FEVER
-        stats["Fever Fill Rate"] = stats.get("Fever Fill Rate", 0) + ff * GEM_SCALE_FEVER
-        stats["Perfect Points"] = stats.get("Perfect Points", 0) + g_pp * GEM_SCALE_NORMAL
-        stats["Combo Multiplier"] = stats.get("Combo Multiplier", 0) + g_cm * GEM_SCALE_NORMAL
-        stats["Fever Multiplier"] = stats.get("Fever Multiplier", 0) + g_fm * GEM_SCALE_FEVER
-
-        stats["Chill"] = stats.get("Chill", 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
-        stats["Flow"] = stats.get("Flow", 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
-        stats["Rush"] = stats.get("Rush", 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
-        stats["Beat"] = stats.get("Beat", 0) + ft * GEM_STAT_TO_ELEMENT_SCALE
-        stats["Vibe"] = stats.get("Vibe", 0) + ff * GEM_STAT_TO_ELEMENT_SCALE
-        if sel and sel in stats:
-            stats[sel] = stats.get(sel, 0) + g_ov * ELEMENTAL_GEM_SCALE
+        stats = apply_gems_to_base_stats(
+            stats,
+            str(sel),
+            int(ft),
+            int(ff),
+            int(g_pp),
+            int(g_cm),
+            int(g_fm),
+            int(g_ov),
+            add_missing_element_key=False,
+        )
 
         base_score = _base_score(cand)
         data["Score"] = int(base_score)

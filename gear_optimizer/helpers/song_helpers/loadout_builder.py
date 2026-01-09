@@ -9,6 +9,7 @@ from ...data.database import (
     get_best_loadouts,
     get_loadout_hash,
 )
+from ...core.utils import get_selected_element
 
 
 def build_loadout_entries(
@@ -99,7 +100,7 @@ def build_loadout_entries(
         eval_details = {} if lean_ga_candidates else (build_details_fn(eval_data) if eval_data else {})
         selected_element = None
         if lean_ga_candidates and isinstance(eval_data, dict):
-            selected_element = eval_data.get("Selected Element") or eval_data.get("SelectedElement")
+            selected_element = get_selected_element(eval_data, "")
         _add_entry(
             gear_items,
             mini_items,
@@ -109,7 +110,7 @@ def build_loadout_entries(
             None,
             eval_data,
         )
-        if selected_element is not None:
+        if selected_element:
             try:
                 loadout_entries[get_loadout_hash(gear_items, mini_items)]["selected_element"] = selected_element
             except Exception:

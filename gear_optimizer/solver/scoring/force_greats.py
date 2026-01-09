@@ -28,6 +28,7 @@ from ...core.constants import (
     ELEMENTAL_GEM_SCALE,
     FG_SEARCH_RADIUS,
 )
+from ...core.color_flags import build_color_flags
 from ...core.utils import safe_int, safe_float, stats_signature
 
 from ..fever_timeline import (
@@ -42,6 +43,7 @@ from ..scoring_core import (
 
 from .gpu_solver import _get_gpu_solver, _GPU_LOCK, FORCE_GREATS_ALGO_VERSION, FG_CACHE
 from .stats_scoring import build_great_penalty_table, _force_greats_counts_to_dict, _song_cache_key
+from .stats_ops import apply_gems_to_base_stats
 
 
 # Constants
@@ -424,19 +426,19 @@ def evaluate_fg_with_gem_iteration(
     ref_ff = ref_arrays["Fever Fill Rate"]
     ref_ft = ref_arrays["Fever Time"]
 
-    # Color contribution flags
-    is_p_pp = 1 if "Chill" == p_color else 0
-    is_s_pp = 1 if "Chill" == s_color else 0
-    is_p_cm = 1 if "Flow" == p_color else 0
-    is_s_cm = 1 if "Flow" == s_color else 0
-    is_p_fm = 1 if "Rush" == p_color else 0
-    is_s_fm = 1 if "Rush" == s_color else 0
-    is_p_ft = 1 if "Beat" == p_color else 0
-    is_s_ft = 1 if "Beat" == s_color else 0
-    is_p_ff = 1 if "Vibe" == p_color else 0
-    is_s_ff = 1 if "Vibe" == s_color else 0
-    is_p_ov = 1 if selected_color == p_color else 0
-    is_s_ov = 1 if selected_color == s_color else 0
+    flags = build_color_flags(p_color, s_color, selected_color)
+    is_p_pp = flags["is_p_pp"]
+    is_s_pp = flags["is_s_pp"]
+    is_p_cm = flags["is_p_cm"]
+    is_s_cm = flags["is_s_cm"]
+    is_p_fm = flags["is_p_fm"]
+    is_s_fm = flags["is_s_fm"]
+    is_p_ft = flags["is_p_ft"]
+    is_s_ft = flags["is_s_ft"]
+    is_p_ff = flags["is_p_ff"]
+    is_s_ff = flags["is_s_ff"]
+    is_p_ov = flags["is_p_ov"]
+    is_s_ov = flags["is_s_ov"]
 
     # Base stats (pre-gem)
     base_pp = base_stats.get("Perfect Points", 0)
@@ -845,19 +847,19 @@ def run_force_greats_hill_climb(
             p_color = meta.get("Primary Color", "")
             s_color = meta.get("Secondary Color", "")
 
-            # Color contribution flags
-            is_p_pp = 1 if "Chill" == p_color else 0
-            is_s_pp = 1 if "Chill" == s_color else 0
-            is_p_cm = 1 if "Flow" == p_color else 0
-            is_s_cm = 1 if "Flow" == s_color else 0
-            is_p_fm = 1 if "Rush" == p_color else 0
-            is_s_fm = 1 if "Rush" == s_color else 0
-            is_p_ft = 1 if "Beat" == p_color else 0
-            is_s_ft = 1 if "Beat" == s_color else 0
-            is_p_ff = 1 if "Vibe" == p_color else 0
-            is_s_ff = 1 if "Vibe" == s_color else 0
-            is_p_ov = 1 if selected_color == p_color else 0
-            is_s_ov = 1 if selected_color == s_color else 0
+            flags = build_color_flags(p_color, s_color, selected_color)
+            is_p_pp = flags["is_p_pp"]
+            is_s_pp = flags["is_s_pp"]
+            is_p_cm = flags["is_p_cm"]
+            is_s_cm = flags["is_s_cm"]
+            is_p_fm = flags["is_p_fm"]
+            is_s_fm = flags["is_s_fm"]
+            is_p_ft = flags["is_p_ft"]
+            is_s_ft = flags["is_s_ft"]
+            is_p_ff = flags["is_p_ff"]
+            is_s_ff = flags["is_s_ff"]
+            is_p_ov = flags["is_p_ov"]
+            is_s_ov = flags["is_s_ov"]
 
             # FT/FF window list (no budgets here; GPU computes budget=total_budget-ft-ff)
             start_ft, end_ft, start_ff, end_ff = _normalize_ft_ff_search_ranges(search_ranges)
@@ -1162,21 +1164,17 @@ def apply_force_greats_to_result(
             g_fm = int(fg_gem_counts.get("Fever Multiplier", 0) or 0)
             g_ov = int(fg_gem_counts.get("Element", 0) or 0)
 
-            final_stats = base_stats.copy()
-            final_stats["Perfect Points"] = final_stats.get("Perfect Points", 0) + g_pp * GEM_SCALE_NORMAL
-            final_stats["Combo Multiplier"] = final_stats.get("Combo Multiplier", 0) + g_cm * GEM_SCALE_NORMAL
-            final_stats["Fever Multiplier"] = final_stats.get("Fever Multiplier", 0) + g_fm * GEM_SCALE_FEVER
-            final_stats["Fever Time"] = final_stats.get("Fever Time", 0) + fg_ft * GEM_SCALE_FEVER
-            final_stats["Fever Fill Rate"] = final_stats.get("Fever Fill Rate", 0) + fg_ff * GEM_SCALE_FEVER
-
-            final_stats["Chill"] = final_stats.get("Chill", 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
-            final_stats["Flow"] = final_stats.get("Flow", 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
-            final_stats["Rush"] = final_stats.get("Rush", 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
-            final_stats["Beat"] = final_stats.get("Beat", 0) + fg_ft * GEM_STAT_TO_ELEMENT_SCALE
-            final_stats["Vibe"] = final_stats.get("Vibe", 0) + fg_ff * GEM_STAT_TO_ELEMENT_SCALE
-
-            if selected_color:
-                final_stats[selected_color] = final_stats.get(selected_color, 0) + g_ov * ELEMENTAL_GEM_SCALE
+            final_stats = apply_gems_to_base_stats(
+                base_stats,
+                selected_color,
+                fg_ft,
+                fg_ff,
+                g_pp,
+                g_cm,
+                g_fm,
+                g_ov,
+                add_missing_element_key=True,
+            )
 
             fg_variant["FT"] = fg_ft
             fg_variant["FF"] = fg_ff

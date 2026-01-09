@@ -36,7 +36,9 @@ from ..core.constants import (
     GPU_GA_MIGRATE_COUNT,
 )
 from ..core.config import read_fg_candidate_limit
+from ..core.color_flags import build_color_flags
 from ..core.utils import safe_int, safe_float
+from .base_stats import build_base_fixed_stats_array
 from .scoring import worker_coevolution_evaluate, GEM_SOLVER_CACHE, FG_CACHE, FEVER_TIMELINE_CACHE
 from ..data.models import GASettings
 from ..helpers.ga_helpers import (
@@ -82,50 +84,7 @@ def _build_base_stats_array(base_stats_fixed: dict, cfg_data: dict) -> tuple:
     Returns:
         tuple: (base_stats_arr, selected_color) where base_stats_arr is np.int32[10]
     """
-    base_stats_arr = np.array(
-        [
-            base_stats_fixed.get("Perfect Points", 0),
-            base_stats_fixed.get("Combo Multiplier", 0),
-            base_stats_fixed.get("Fever Multiplier", 0),
-            base_stats_fixed.get("Fever Time", 0),
-            base_stats_fixed.get("Fever Fill Rate", 0),
-            base_stats_fixed.get("Beat", 0),
-            base_stats_fixed.get("Vibe", 0),
-            base_stats_fixed.get("Rush", 0),
-            base_stats_fixed.get("Flow", 0),
-            base_stats_fixed.get("Chill", 0),
-        ],
-        dtype=np.int32,
-    )
-
-    user_pp = int(cfg_data.get("user_pp", 0))
-    user_cm = int(cfg_data.get("user_cm", 0))
-    user_fm = int(cfg_data.get("user_fm", 0))
-    user_ft = int(cfg_data.get("user_ft", 0))
-    user_ff = int(cfg_data.get("user_ff", 0))
-    static_elem_input = int(cfg_data.get("static_elem_input", 0))
-    selected_color = str(cfg_data.get("selected_color", ""))
-
-    if user_pp or user_cm or user_fm or user_ft or user_ff:
-        base_stats_arr[0] -= user_pp * GEM_SCALE_NORMAL
-        base_stats_arr[1] -= user_cm * GEM_SCALE_NORMAL
-        base_stats_arr[2] -= user_fm * GEM_SCALE_FEVER
-        base_stats_arr[3] -= user_ft * GEM_SCALE_FEVER
-        base_stats_arr[4] -= user_ff * GEM_SCALE_FEVER
-
-        base_stats_arr[9] -= user_pp * GEM_STAT_TO_ELEMENT_SCALE  # Chill
-        base_stats_arr[8] -= user_cm * GEM_STAT_TO_ELEMENT_SCALE  # Flow
-        base_stats_arr[7] -= user_fm * GEM_STAT_TO_ELEMENT_SCALE  # Rush
-        base_stats_arr[5] -= user_ft * GEM_STAT_TO_ELEMENT_SCALE  # Beat
-        base_stats_arr[6] -= user_ff * GEM_STAT_TO_ELEMENT_SCALE  # Vibe
-
-    if static_elem_input and selected_color:
-        color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
-        idx = color_to_idx.get(selected_color)
-        if idx is not None:
-            base_stats_arr[idx] -= static_elem_input * ELEMENTAL_GEM_SCALE
-
-    return base_stats_arr, selected_color
+    return build_base_fixed_stats_array(base_stats_fixed, cfg_data)
 
 
 def _extract_fg_candidates_from_ga_snapshot(
@@ -1703,20 +1662,7 @@ def solve_coevolution_genetic(
                         immigrant_rate=gpu_immigrant_rate,
                         tournament_k=gpu_tournament_k,
                         # Use color flags for correct p_val/s_val calculation
-                        color_flags={
-                            "is_p_ft": 1 if p_color == "Beat" else 0,
-                            "is_s_ft": 1 if s_color == "Beat" else 0,
-                            "is_p_ff": 1 if p_color == "Vibe" else 0,
-                            "is_s_ff": 1 if s_color == "Vibe" else 0,
-                            "is_p_pp": 1 if p_color == "Chill" else 0,
-                            "is_s_pp": 1 if s_color == "Chill" else 0,
-                            "is_p_cm": 1 if p_color == "Flow" else 0,
-                            "is_s_cm": 1 if s_color == "Flow" else 0,
-                            "is_p_fm": 1 if p_color == "Rush" else 0,
-                            "is_s_fm": 1 if s_color == "Rush" else 0,
-                            "is_p_ov": 1 if selected_color == p_color else 0,
-                            "is_s_ov": 1 if selected_color == s_color else 0,
-                        },
+                        color_flags=build_color_flags(p_color, s_color, selected_color),
                         status_cb=status_cb,
                         song_slot=song_slot,  # Use prefetched GPU slot
                         store_payload_idx=segment_runs,

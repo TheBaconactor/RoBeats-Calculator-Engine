@@ -23,6 +23,7 @@ from ...core.constants import (
     GEM_STAT_TO_ELEMENT_SCALE,
     ELEMENTAL_GEM_SCALE,
 )
+from ...core.color_flags import build_color_flags
 from ...core.utils import safe_int
 
 from ..fever_timeline import (
@@ -37,6 +38,7 @@ from ..scoring_core import (
 
 from .gpu_solver import _get_gpu_solver, _GPU_LOCK
 from .stats_scoring import evaluate_stats_score
+from .stats_ops import apply_gems_to_base_stats
 
 
 def precompute_fever_timelines(
@@ -262,14 +264,15 @@ def solve_best_fever_combination(
     best_score = -1
     best_tuple = None
 
-    is_p_pp = 1 if "Chill" == p_color else 0
-    is_s_pp = 1 if "Chill" == s_color else 0
-    is_p_cm = 1 if "Flow" == p_color else 0
-    is_s_cm = 1 if "Flow" == s_color else 0
-    is_p_fm = 1 if "Rush" == p_color else 0
-    is_s_fm = 1 if "Rush" == s_color else 0
-    is_p_ov = 1 if selected_color == p_color else 0
-    is_s_ov = 1 if selected_color == s_color else 0
+    flags = build_color_flags(p_color, s_color, selected_color)
+    is_p_pp = flags["is_p_pp"]
+    is_s_pp = flags["is_s_pp"]
+    is_p_cm = flags["is_p_cm"]
+    is_s_cm = flags["is_s_cm"]
+    is_p_fm = flags["is_p_fm"]
+    is_s_fm = flags["is_s_fm"]
+    is_p_ov = flags["is_p_ov"]
+    is_s_ov = flags["is_s_ov"]
 
     base_beat = base_stats.get("Beat", 0)
     base_vibe = base_stats.get("Vibe", 0)
@@ -306,10 +309,10 @@ def solve_best_fever_combination(
         if batch_solver is not None:
             # Compute color contribution flags for FT/FF gems
             # FT gems add Beat, FF gems add Vibe
-            is_p_ft = 1 if "Beat" == p_color else 0
-            is_s_ft = 1 if "Beat" == s_color else 0
-            is_p_ff = 1 if "Vibe" == p_color else 0
-            is_s_ff = 1 if "Vibe" == s_color else 0
+            is_p_ft = flags["is_p_ft"]
+            is_s_ft = flags["is_s_ft"]
+            is_p_ff = flags["is_p_ff"]
+            is_s_ff = flags["is_s_ff"]
 
             # Base color values (before FT/FF gems)
             base_p_val = base_stats.get(p_color, 0)
@@ -465,24 +468,17 @@ def solve_best_fever_combination(
 
     if best_tuple:
         (score, ft, ff, g_pp, g_cm, g_fm, g_ov) = best_tuple
-        final_stats = base_stats.copy()
-        # Apply gem contributions to the *primary stats* as well as their elemental
-        # mappings. These are required for correct persistence/UI rendering and for
-        # downstream logic that reverses gem effects (e.g. ForceGreats base extraction).
-        final_stats["Perfect Points"] += g_pp * GEM_SCALE_NORMAL
-        final_stats["Combo Multiplier"] += g_cm * GEM_SCALE_NORMAL
-        final_stats["Fever Multiplier"] += g_fm * GEM_SCALE_FEVER
-        final_stats["Fever Time"] += ft * GEM_SCALE_FEVER
-        final_stats["Fever Fill Rate"] += ff * GEM_SCALE_FEVER
-
-        final_stats["Chill"] += g_pp * GEM_STAT_TO_ELEMENT_SCALE
-        final_stats["Flow"] += g_cm * GEM_STAT_TO_ELEMENT_SCALE
-        final_stats["Rush"] += g_fm * GEM_STAT_TO_ELEMENT_SCALE
-        final_stats["Beat"] = base_stats.get("Beat", 0) + (ft * GEM_STAT_TO_ELEMENT_SCALE)
-        final_stats["Vibe"] = base_stats.get("Vibe", 0) + (ff * GEM_STAT_TO_ELEMENT_SCALE)
-
-        if selected_color in final_stats:
-            final_stats[selected_color] += g_ov * ELEMENTAL_GEM_SCALE
+        final_stats = apply_gems_to_base_stats(
+            base_stats,
+            selected_color,
+            ft,
+            ff,
+            g_pp,
+            g_cm,
+            g_fm,
+            g_ov,
+            add_missing_element_key=False,
+        )
 
         gem_counts = {
             "Perfect Points": g_pp,

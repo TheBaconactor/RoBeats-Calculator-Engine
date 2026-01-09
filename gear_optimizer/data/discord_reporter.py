@@ -19,7 +19,7 @@ except ImportError:
     requests = None
 
 from ..core.constants import SCRIPT_DIR, BIN_DIR, PATHS
-from ..core.utils import safe_int
+from ..core.utils import get_selected_element, safe_int
 
 
 class DiscordReporter:
@@ -245,7 +245,7 @@ def build_stats_summary(res, completed, total):
     score_txt = "N/A" if score is None else f"{int(score):,}" if isinstance(score, (int, float)) else str(score)
     gear_names = payload.get("gear") or []
     mini_names = payload.get("minis") or []
-    element = details.get("SelectedElement") or details.get("Selected Element", "")
+    element = get_selected_element(details, "")
     ft = details.get("FT")
     ff = details.get("FF")
 

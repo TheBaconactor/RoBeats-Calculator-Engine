@@ -9,6 +9,10 @@ This module provides persistence operations:
 import json
 from collections.abc import Callable
 
+from ...core.utils import get_selected_element
+from .item_utils import names_list
+from .retention import select_retained_hashes
+
 
 def _has_valid_fg_config(fg_container):
     """
@@ -35,16 +39,6 @@ def _has_valid_fg_config(fg_container):
         return False
 
 
-def _names_list(items):
-    names = []
-    for it in items or []:
-        if isinstance(it, dict):
-            names.append(it.get("Name", ""))
-        else:
-            names.append(str(it) if it else "")
-    return names
-
-
 def make_build_details_fn(
     primary_color: str, secondary_color: str, effective_difficulty: str
 ) -> Callable[[dict], dict]:
@@ -63,7 +57,7 @@ def make_build_details_fn(
             "FF": data_dict.get("FF", 0),
             "GemCounts": data_dict.get("GemCounts", {}),
             "Stats": data_dict.get("Stats", {}),
-            "SelectedElement": data_dict.get("Selected Element", ""),
+            "SelectedElement": get_selected_element(data_dict, ""),
             "PrimaryColor": primary_color,
             "SecondaryColor": secondary_color,
             "Difficulty": effective_difficulty,
@@ -119,10 +113,10 @@ def build_db_payload(
             gear_items = loadout[:6]
             minis_items = loadout[6:9]
 
-        return _names_list(gear_items), _names_list(minis_items)
+        return names_list(gear_items), names_list(minis_items)
 
-    best_gear_names = _names_list(best_gear)
-    best_mini_names = _names_list(best_minis)
+    best_gear_names = names_list(best_gear)
+    best_mini_names = names_list(best_minis)
     best_details = build_details_fn(best_data)
 
     attempts_first = 1 if is_first or is_better else (prev_attempts_first + 1 if prev_attempts_first else 1)
@@ -145,8 +139,8 @@ def build_db_payload(
         fg_gear = fg_entry.get("gear", [])
         fg_minis = fg_entry.get("minis", [])
         fg_data = fg_entry.get("data", {})
-        fg_gear_names = _names_list(fg_gear)
-        fg_mini_names = _names_list(fg_minis)
+        fg_gear_names = names_list(fg_gear)
+        fg_mini_names = names_list(fg_minis)
         # Preserve the *base* score context for this FG entry so we can persist
         # the loadout with correct base+fg pairing (score != fg_score).
         base_score = fg_entry.get("base_score")
@@ -352,8 +346,8 @@ def build_persistence_entries(
             {
                 "score": score_val or 0,
                 "fg_score": fg_score_val or 0,
-                "gear": _names_list(gear_items),
-                "minis": _names_list(mini_items),
+                "gear": names_list(gear_items),
+                "minis": names_list(mini_items),
                 "details": details_with_meta,
                 "force": force_obj,
             }
@@ -472,25 +466,17 @@ def build_persistence_entries(
             except Exception:
                 return 0
 
-        # Top base (retain by base score only).
-        top_base = sorted(items, key=lambda kv: _base_score(kv[1]), reverse=True)[: int(LOADOUTS_PER_SONG_LIMIT)]
+        def _fg_valid(entry: dict) -> bool:
+            force_obj = entry.get("force")
+            return force_obj is not None and _has_valid_fg_config(force_obj)
 
-        # Top FG (retain by fg_score, but only when valid FG details exist and FG beats base).
-        fg_candidates = []
-        for h, e in items:
-            try:
-                base_s = _base_score(e)
-                fg_s = _fg_score(e)
-                force_obj = e.get("force")
-                if fg_s > base_s and force_obj is not None and _has_valid_fg_config(force_obj):
-                    fg_candidates.append((h, e))
-            except Exception:
-                continue
-        top_fg = sorted(fg_candidates, key=lambda kv: _fg_score(kv[1]), reverse=True)[: int(LOADOUTS_PER_SONG_LIMIT)]
-
-        selected_hashes = set()
-        for h, _e in list(top_base) + list(top_fg):
-            selected_hashes.add(str(h))
+        selected_hashes = select_retained_hashes(
+            items,
+            limit=int(LOADOUTS_PER_SONG_LIMIT),
+            base_score_fn=_base_score,
+            fg_score_fn=_fg_score,
+            fg_valid_fn=_fg_valid,
+        )
 
         for h, entry in items:
             if str(h) not in selected_hashes:

@@ -55,6 +55,7 @@ from ..helpers.song_helpers import (
 )
 from ..helpers.song_helpers.persistence import make_build_details_fn
 from ..helpers.song_helpers.fg_candidate_selector import select_fg_candidates
+from ..helpers.song_helpers.item_utils import names_list
 
 # Global warn-once instance
 WARN_ONCE = WarnOnce()
@@ -177,7 +178,8 @@ def process_song_task(args):
     """
     Run a single song end-to-end optimization.
 
-    REFACTORED: Reduced from 767 lines to ~130 lines using helper functions.
+    REFACTORED: Extracted helper functions where practical; this entrypoint remains
+    orchestration-heavy because it owns per-song setup, solver routing, and persistence.
 
     Main steps:
     1. Parse arguments and setup
@@ -605,13 +607,8 @@ def process_song_task(args):
         # --- REPORTING & DB UPDATE (payload only; saved by coordinator) ---
         if defer_post and best_data:
 
-            def _item_name(item):
-                if isinstance(item, dict):
-                    return item.get("Name", "")
-                return str(item) if item else ""
-
             def _compact_items(items):
-                return [_item_name(it) for it in (items or [])]
+                return names_list(items)
 
             def _compact_fg_variants(variants):
                 out = []

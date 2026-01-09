@@ -26,9 +26,10 @@ from typing import Any, Optional
 import numpy as np
 
 from gear_optimizer.core.config import read_fg_candidate_limit, read_fg_search_radius
+from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.memory import memory_release_requested
-from gear_optimizer.core.utils import cfg_from_dict, safe_float, safe_int
+from gear_optimizer.core.utils import cfg_from_dict, get_selected_element, safe_float, safe_int
 from gear_optimizer.helpers.song_helpers.database_context import load_database_context
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_fg_candidates
 from gear_optimizer.helpers.song_helpers.fg_combo_booster import (
@@ -39,7 +40,8 @@ from gear_optimizer.helpers.song_helpers.force_greats import process_force_great
 from gear_optimizer.helpers.song_helpers.loadout_builder import build_loadout_entries
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 from gear_optimizer.helpers.song_helpers.song_config import setup_song_config
-from gear_optimizer.solver.genetic import GA_POPULATION_SIZE, _build_base_stats_array, decode_gpu_native_ga_runs_payload
+from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
+from gear_optimizer.solver.genetic import GA_POPULATION_SIZE, decode_gpu_native_ga_runs_payload
 from gear_optimizer.solver.gpu_executor import get_gpu_executor
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.inflight_utils import (
@@ -480,7 +482,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
         "static_elem_input": safe_int(cfg.get("ElementalGems", selected_color, fallback=0), 0),
     }
 
-    base_fixed_stats_arr, _ = _build_base_stats_array(fixed_stats, cfg_data)
+    base_fixed_stats_arr, _ = build_base_fixed_stats_array(fixed_stats, cfg_data)
 
     tournament_k = safe_int(cfg.get("IterationEngine", "GPU_GA_TournamentK", fallback=3), 3)
     tournament_k = max(1, min(8, int(tournament_k)))
@@ -666,20 +668,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
 
         initial_populations = np.stack(pops_encoded, axis=0).astype(np.int32, copy=False)
 
-    color_flags = {
-        "is_p_ft": 1 if p_color == "Beat" else 0,
-        "is_s_ft": 1 if s_color == "Beat" else 0,
-        "is_p_ff": 1 if p_color == "Vibe" else 0,
-        "is_s_ff": 1 if s_color == "Vibe" else 0,
-        "is_p_pp": 1 if p_color == "Chill" else 0,
-        "is_s_pp": 1 if s_color == "Chill" else 0,
-        "is_p_cm": 1 if p_color == "Flow" else 0,
-        "is_s_cm": 1 if s_color == "Flow" else 0,
-        "is_p_fm": 1 if p_color == "Rush" else 0,
-        "is_s_fm": 1 if s_color == "Rush" else 0,
-        "is_p_ov": 1 if selected_color == p_color else 0,
-        "is_s_ov": 1 if selected_color == s_color else 0,
-    }
+    color_flags = build_color_flags(p_color, s_color, selected_color)
 
     elite_count = safe_int(cfg.get("IterationEngine", "GPU_GA_EliteCount", fallback=GA_ELITISM), GA_ELITISM)
     elite_count = max(0, int(elite_count))
@@ -1845,7 +1834,7 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
             "FF": data.get("FF", 0),
             "GemCounts": data.get("GemCounts", {}),
             "Stats": data.get("Stats", {}),
-            "SelectedElement": data.get("Selected Element", ""),
+            "SelectedElement": get_selected_element(data, ""),
             "PrimaryColor": song.meta_primary_color,
             "SecondaryColor": song.meta_secondary_color,
             "Difficulty": song.effective_difficulty,

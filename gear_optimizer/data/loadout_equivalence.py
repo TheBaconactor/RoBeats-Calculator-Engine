@@ -17,6 +17,7 @@ from collections import Counter
 from typing import Any, Dict, Iterable, List, Optional
 
 from ..core.constants import PATHS
+from ..core.utils import get_selected_element
 from .csv_parser import load_csv_db
 
 
@@ -58,7 +59,7 @@ def extract_song_colors(details: Any) -> tuple[str, str, str]:
 
     primary = str(details.get("PrimaryColor") or details.get("Primary Color") or "")
     secondary = str(details.get("SecondaryColor") or details.get("Secondary Color") or "")
-    selected = str(details.get("SelectedElement") or details.get("Selected Element") or "")
+    selected = get_selected_element(details, "")
     if not selected:
         selected = primary
     return (primary, secondary, selected)

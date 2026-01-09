@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING, Optional
 
 from . import cache_validation
 from .gpu_dispatch import process_force_greats_gpu_finder
-from ....core.utils import stats_signature
+from ..item_utils import names_list
+from ....core.utils import get_selected_element, stats_signature
 from ....solver.scoring import apply_force_greats_to_result
 
 if TYPE_CHECKING:
@@ -75,16 +76,6 @@ def _get_inprocess_gpu_client():
             return None
 
 
-def _names_list(items):
-    names = []
-    for it in items or []:
-        if isinstance(it, dict):
-            names.append(it.get("Name", ""))
-        else:
-            names.append(str(it) if it else "")
-    return names
-
-
 def _process_force_greats_cpu(
     *,
     loadout_entries,
@@ -108,7 +99,7 @@ def _process_force_greats_cpu(
             expected_sel = entry.get("selected_element")
             if not expected_sel:
                 det0 = entry.get("details") or {}
-                expected_sel = det0.get("SelectedElement") or det0.get("Selected Element") or meta_primary_color
+                expected_sel = get_selected_element(det0, meta_primary_color)
         except Exception:
             expected_sel = meta_primary_color
 
@@ -138,7 +129,7 @@ def _process_force_greats_cpu(
                 continue
             eval_data = {
                 "Stats": stats,
-                "Selected Element": det.get("SelectedElement") or det.get("Selected Element") or meta_primary_color,
+                "Selected Element": get_selected_element(det, meta_primary_color),
                 "FT": det.get("FT", 0),
                 "FF": det.get("FF", 0),
                 "GemCounts": det.get("GemCounts", {}),
@@ -172,8 +163,8 @@ def _process_force_greats_cpu(
             )
             entry["force"] = {
                 "score": fg_score,
-                "gear": _names_list(entry.get("gear", [])),
-                "minis": _names_list(entry.get("minis", [])),
+                "gear": names_list(entry.get("gear", [])),
+                "minis": names_list(entry.get("minis", [])),
                 "details": build_details_fn(fg_variant),
             }
             entry["fg_score"] = fg_score
@@ -245,7 +236,7 @@ def process_force_greats(
                 fg_search_radius=fg_search_radius,
                 perf_timing=perf_timing,
                 gpu_client=gpu_client,
-                names_list_fn=_names_list,
+                names_list_fn=names_list,
             )
         except Exception as e:
             msg = f"[ForceGreats][GPU] Batch FG finder failed; falling back to CPU per-loadout: {type(e).__name__}: {e}"

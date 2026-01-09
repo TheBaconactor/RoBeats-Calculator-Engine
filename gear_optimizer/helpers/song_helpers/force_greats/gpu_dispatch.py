@@ -5,182 +5,133 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 from . import cache_validation, result_application
-from ....core.utils import stats_signature
+from ....core.color_flags import build_color_flags
+from ....core.utils import get_selected_element, stats_signature
+from ..item_utils import names_list
+from ..retention import select_retained_hashes
+from .ftff_pairs import _collect_ftff_pairs_from_centers, _group_ftff_pairs_by_max_fp_matrix
 
 if TYPE_CHECKING:
     from gear_optimizer.solver.gpu_service import GpuServiceClient
 
 
-_FTFF_VALID_MASK_CACHE: dict[int, "object"] = {}
-_FTFF_FULL_PAIRS_CACHE: dict[int, list[tuple[int, int]]] = {}
-
-
-def _group_ftff_pairs_by_max_fp_matrix(
-    ftff_pairs: "object",
-    max_fp_matrix: "object",
-    *,
-    n_sections: int,
-) -> list[dict]:
+def _decode_cfg_counts_from_windows(cfg_idx, cfg_windows: list[dict], n_sections: int):
     """
-    Group FT/FF pairs by identical per-section max-FP caps.
+    Decode packed `cfg_idx` values into per-section FP targets using window metadata.
 
-    Ordering matches the legacy dict-insertion behavior:
-    - Groups are yielded in order of first appearance in `ftff_pairs`.
-    - Pairs within each group preserve their original order.
+    Returns a numpy int32 array of shape (n_out, n_sections), or None if decoding
+    is not possible.
     """
-    import numpy as np
+    if cfg_idx is None or not cfg_windows:
+        return None
 
     try:
-        n_sections_i = max(0, int(n_sections))
+        n_sections_i = int(n_sections)
     except Exception:
-        n_sections_i = 0
+        return None
     if n_sections_i <= 0:
-        return []
+        return None
 
     try:
-        pairs_arr = np.asarray(ftff_pairs, dtype=np.int32)
+        import numpy as np
+
+        cfg_idx_np = np.asarray(cfg_idx, dtype=np.int32)
     except Exception:
-        pairs_arr = np.asarray(list(ftff_pairs), dtype=np.int32)
-    if pairs_arr.ndim != 2 or int(pairs_arr.shape[1]) < 2:
-        return []
-    n_pairs = int(pairs_arr.shape[0])
-    if n_pairs <= 0:
-        return []
+        return None
 
-    m = np.asarray(max_fp_matrix, dtype=np.int16)
-    if m.ndim != 2 or int(m.shape[0]) < n_pairs:
-        return []
-    if int(m.shape[1]) < n_sections_i:
-        n_sections_i = int(m.shape[1])
-    if n_sections_i <= 0:
-        return []
-
-    # Clamp negatives (GPU can return -1 sentinel on error paths; treat as 0 cap).
-    m0 = np.maximum(m[:n_pairs, :n_sections_i], 0)
-    m0 = np.ascontiguousarray(m0, dtype=np.int16)
-
-    # Key each row by its raw bytes for fast unique/inverse mapping.
-    row_dtype = np.dtype((np.void, int(m0.dtype.itemsize) * int(n_sections_i)))
-    keys = m0.view(row_dtype).reshape(-1)
-    uniq, first, inv = np.unique(keys, return_index=True, return_inverse=True)
-    if int(getattr(uniq, "size", 0) or 0) <= 0:
-        return []
-
-    # Preserve insertion order (first appearance in ftff_pairs) for stable tie-breaking.
-    order = np.argsort(first)
-    out: list[dict] = []
-    for u in order:
-        idxs = np.nonzero(inv == int(u))[0]
-        if idxs.size <= 0:
-            continue
-        max_fp_row = m0[int(first[int(u)])]
-        out.append(
-            {
-                "ftff_pairs": pairs_arr[idxs, :2],
-                "counts_max_fp": [int(x) for x in max_fp_row[:n_sections_i]],
-            }
-        )
-    return out
-
-
-def _collect_ftff_pairs_from_centers(
-    centers: "object",
-    *,
-    search_radius: int,
-    total_budget: int,
-    use_fast: bool = True,
-) -> list[tuple[int, int]]:
-    """
-    Deterministically collect unique (ft_gems, ff_gems) pairs for a group's window.
-
-    Behavior matches the legacy set-based implementation:
-    - Full window when search_radius < 0 or search_radius >= total_budget
-    - Otherwise, union of all (ft,ff) within +-radius of each center, clamped to budget.
-
-    Ordering is always lexicographic (ft asc, ff asc) to keep cfg/task indexing stable.
-    """
     try:
-        total_budget = int(total_budget)
+        n_out = int(cfg_idx_np.shape[0])
     except Exception:
-        total_budget = 0
-    if total_budget < 0:
-        return []
+        return None
+    if n_out <= 0:
+        return None
 
     try:
-        search_radius = int(search_radius)
+        cfg_counts = np.zeros((n_out, n_sections_i), dtype=np.int32)
+        bases = [int(w.get("base", 0)) for w in cfg_windows]
+        lens = [int(w.get("len", 0)) for w in cfg_windows]
+        ends = [base + length for base, length in zip(bases, lens)]
+
+        for gi in range(n_out):
+            x = int(cfg_idx_np[gi])
+            window_index = -1
+            for wi, (b, e) in enumerate(zip(bases, ends)):
+                if int(b) <= x < int(e):
+                    window_index = wi
+                    break
+            if window_index < 0:
+                continue
+
+            w = cfg_windows[window_index]
+            base = int(w.get("base", 0))
+            local = int(x - base)
+            if w.get("kind") == "list":
+                lst = w.get("counts_list") or []
+                if 0 <= local < len(lst):
+                    row = lst[local]
+                    for s in range(n_sections_i):
+                        cfg_counts[gi, s] = int(row[s]) if s < len(row) else 0
+                continue
+
+            max_fp_vec = list(w.get("max_fp") or [])
+            rem = int(local)
+            for s in range(n_sections_i - 1, -1, -1):
+                basev = int(max(0, int(max_fp_vec[s] if s < len(max_fp_vec) else 0))) + 1
+                if basev <= 0:
+                    basev = 1
+                val = rem % basev
+                rem //= basev
+                cfg_counts[gi, s] = int(val)
+
+        return cfg_counts
     except Exception:
-        search_radius = -1
+        return None
 
-    # Full window: independent of centers.
-    if search_radius < 0 or search_radius >= total_budget:
-        cached = _FTFF_FULL_PAIRS_CACHE.get(total_budget)
-        if cached is not None:
-            return list(cached)
-        out = [(ft, ff) for ft in range(0, total_budget + 1) for ff in range(0, total_budget - ft + 1)]
-        _FTFF_FULL_PAIRS_CACHE[total_budget] = out
-        return list(out)
 
-    # Empty centers => empty window.
+def _entry_base_score(entry: dict) -> int:
     try:
-        if not centers:
-            return []
+        return int(entry.get("base_score") or entry.get("score", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _entry_fg_score(entry: dict) -> int:
+    try:
+        return int(entry.get("fg_score", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _entry_fg_config_dict(entry: dict) -> dict:
+    try:
+        force_obj = entry.get("force") or {}
+        det = (force_obj.get("details") or {}) if isinstance(force_obj, dict) else {}
+        fg0 = det.get("ForceGreats") or {}
+        cfg0 = fg0.get("config") or {}
+        if isinstance(cfg0, dict):
+            return cfg0
     except Exception:
         pass
+    try:
+        raw = entry.get("_fg_raw") or {}
+        fg1 = raw.get("ForceGreats") or {}
+        cfg1 = fg1.get("config") or {}
+        if isinstance(cfg1, dict):
+            return cfg1
+    except Exception:
+        pass
+    return {}
 
-    if not use_fast:
-        needed_pairs_set: set[tuple[int, int]] = set()
-        for center_ft, center_ff in centers:
-            cft = int(center_ft)
-            cff = int(center_ff)
-            for ft_offset in range(-search_radius, search_radius + 1):
-                ft = cft + ft_offset
-                if ft < 0 or ft > total_budget:
-                    continue
-                for ff_offset in range(-search_radius, search_radius + 1):
-                    ff = cff + ff_offset
-                    if ff < 0 or ft + ff > total_budget:
-                        continue
-                    needed_pairs_set.add((ft, ff))
-        return sorted(needed_pairs_set)
 
-    # Fast path: boolean mask union (avoids Python per-pair set ops).
-    import numpy as np
+def _is_valid_fg_config(cfg: dict) -> bool:
+    try:
+        return bool(cfg and sum(int(v or 0) for v in cfg.values()) > 0)
+    except Exception:
+        return False
 
-    b = int(total_budget)
-    r = int(search_radius)
 
-    # Valid triangular region: ft+ff <= budget
-    valid = _FTFF_VALID_MASK_CACHE.get(b)
-    if valid is None:
-        ft_idx = np.arange(b + 1, dtype=np.int16)[:, None]
-        ff_idx = np.arange(b + 1, dtype=np.int16)[None, :]
-        valid = (ft_idx + ff_idx) <= b
-        _FTFF_VALID_MASK_CACHE[b] = valid
-
-    mask = np.zeros((b + 1, b + 1), dtype=np.bool_)
-    for center_ft, center_ff in centers:
-        try:
-            cft = int(center_ft)
-            cff = int(center_ff)
-        except Exception:
-            continue
-        if cft < 0:
-            cft = 0
-        if cft > b:
-            cft = b
-        if cff < 0:
-            cff = 0
-        if cff > b:
-            cff = b
-        ft_lo = max(0, cft - r)
-        ft_hi = min(b, cft + r)
-        ff_lo = max(0, cff - r)
-        ff_hi = min(b, cff + r)
-        mask[ft_lo : ft_hi + 1, ff_lo : ff_hi + 1] = True
-
-    mask &= valid
-    pairs = np.argwhere(mask)
-    return [(int(ft), int(ff)) for ft, ff in pairs]
+def _entry_has_valid_fg_config(entry: dict) -> bool:
+    return _is_valid_fg_config(_entry_fg_config_dict(entry))
 
 
 def process_force_greats_gpu_finder(
@@ -202,15 +153,7 @@ def process_force_greats_gpu_finder(
     computed = 0
 
     if names_list_fn is None:
-
-        def names_list_fn(items):
-            names = []
-            for it in items or []:
-                if isinstance(it, dict):
-                    names.append(it.get("Name", ""))
-                else:
-                    names.append(str(it) if it else "")
-            return names
+        names_list_fn = names_list
 
     from ....core.constants import (
         GEM_SCALE_FEVER,
@@ -435,14 +378,6 @@ def process_force_greats_gpu_finder(
             store_raw=bool(not materialize_all_force),
         )
 
-    def _is_cached_force_valid_for_finder(cached_force_obj, expected_selected_element, center_ft, center_ff):
-        return cache_validation.is_cached_force_valid_for_finder(
-            cached_force_obj,
-            expected_selected_element,
-            center_ft,
-            center_ff,
-        )
-
     def _iter_ftff_chunks(pairs):
         chunk_size = int(fg_fields.FG_MAX_FTFF)
         if chunk_size <= 0:
@@ -582,7 +517,7 @@ def process_force_greats_gpu_finder(
             expected_sel = entry.get("selected_element")
             if not expected_sel:
                 det0 = entry.get("details") or {}
-                expected_sel = det0.get("SelectedElement") or det0.get("Selected Element") or meta_primary_color
+                expected_sel = get_selected_element(det0, meta_primary_color)
         except Exception:
             expected_sel = meta_primary_color
 
@@ -612,19 +547,21 @@ def process_force_greats_gpu_finder(
                 continue
             eval_data = {
                 "Stats": stats,
-                "Selected Element": det.get("SelectedElement") or det.get("Selected Element") or meta_primary_color,
+                "Selected Element": get_selected_element(det, meta_primary_color),
                 "FT": det.get("FT", 0),
                 "FF": det.get("FF", 0),
                 "GemCounts": det.get("GemCounts", {}),
             }
 
         stats = eval_data.get("Stats", {}) or {}
-        sel_color = eval_data.get("Selected Element", meta_primary_color)
+        sel_color = get_selected_element(eval_data, meta_primary_color)
         center_ft = int(eval_data.get("FT", 0) or 0)
         center_ff = int(eval_data.get("FF", 0) or 0)
 
         # Reuse DB cached FG finder results when compatible (major compute savings)
-        if cached_force and _is_cached_force_valid_for_finder(cached_force, expected_sel, center_ft, center_ff):
+        if cached_force and cache_validation.is_cached_force_valid_for_finder(
+            cached_force, expected_sel, center_ft, center_ff
+        ):
             db_cached_reuse += 1
             # Preserve base score when reusing cached FG. Avoid building per-loadout variants here;
             # we will materialize the retained set at the end (GPU-resident pipeline).
@@ -668,13 +605,9 @@ def process_force_greats_gpu_finder(
         except Exception:
             items0 = []
 
-        def _base_score0(e: dict) -> int:
-            try:
-                return int(e.get("base_score") or e.get("score", 0) or 0)
-            except Exception:
-                return 0
-
-        top_base0 = sorted(items0, key=lambda kv: _base_score0(kv[1]), reverse=True)[: int(LOADOUTS_PER_SONG_LIMIT)]
+        top_base0 = sorted(items0, key=lambda kv: _entry_base_score(kv[1]), reverse=True)[
+            : int(LOADOUTS_PER_SONG_LIMIT)
+        ]
         for _h0, e0 in top_base0:
             try:
                 sig0 = entry_sig.get(int(id(e0)))
@@ -792,7 +725,13 @@ def process_force_greats_gpu_finder(
         if search_radius >= TOTAL_GEM_BUDGET:
             search_radius = TOTAL_GEM_BUDGET
 
-        fast_pairs = str(os.environ.get("FG_FTFF_PAIRS_FAST", "1") or "").strip().lower() in {"1", "true", "yes", "on", ""}
+        fast_pairs = str(os.environ.get("FG_FTFF_PAIRS_FAST", "1") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+            "",
+        }
         ftff_pairs = _collect_ftff_pairs_from_centers(
             centers,
             search_radius=int(search_radius),
@@ -824,19 +763,19 @@ def process_force_greats_gpu_finder(
             if perf:
                 t_cfg_build_sec += time.perf_counter() - _t_cfg0
 
-        # Color flags for GPU
-        is_p_pp = 1 if "Chill" == p_color else 0
-        is_s_pp = 1 if "Chill" == s_color else 0
-        is_p_cm = 1 if "Flow" == p_color else 0
-        is_s_cm = 1 if "Flow" == s_color else 0
-        is_p_fm = 1 if "Rush" == p_color else 0
-        is_s_fm = 1 if "Rush" == s_color else 0
-        is_p_ft = 1 if "Beat" == p_color else 0
-        is_s_ft = 1 if "Beat" == s_color else 0
-        is_p_ff = 1 if "Vibe" == p_color else 0
-        is_s_ff = 1 if "Vibe" == s_color else 0
-        is_p_ov = 1 if str(sel_color) == p_color else 0
-        is_s_ov = 1 if str(sel_color) == s_color else 0
+        flags = build_color_flags(p_color, s_color, sel_color)
+        is_p_pp = flags["is_p_pp"]
+        is_s_pp = flags["is_s_pp"]
+        is_p_cm = flags["is_p_cm"]
+        is_s_cm = flags["is_s_cm"]
+        is_p_fm = flags["is_p_fm"]
+        is_s_fm = flags["is_s_fm"]
+        is_p_ft = flags["is_p_ft"]
+        is_s_ft = flags["is_s_ft"]
+        is_p_ff = flags["is_p_ff"]
+        is_s_ff = flags["is_s_ff"]
+        is_p_ov = flags["is_p_ov"]
+        is_s_ov = flags["is_s_ov"]
 
         sig_list = list(sig_map.keys())
 
@@ -1468,57 +1407,8 @@ def process_force_greats_gpu_finder(
                 selected_indices = global_results.get("selected_indices")
 
                 # Decode cfg_idx -> per-section FP targets for apply/persistence.
-                result_cfg_idx = global_results.get("cfg_idx")
-                cfg_counts_arr = None
-                try:
-                    import numpy as _np
-
-                    cfg_idx_arr = _np.asarray(result_cfg_idx, dtype=_np.int32) if result_cfg_idx is not None else None
-                    if cfg_idx_arr is not None and cfg_windows:
-                        n_out = int(cfg_idx_arr.shape[0])
-                        cfg_counts_arr = _np.zeros((int(n_out), int(n_sections)), dtype=_np.int32)
-                        # Build cumulative ends for fast window lookup.
-                        bases = [int(w.get("base", 0)) for w in cfg_windows]
-                        lens = [int(w.get("len", 0)) for w in cfg_windows]
-                        ends = [base + length for base, length in zip(bases, lens)]
-
-                        def _find_window(x: int) -> int:
-                            # linear scan is fine (window count is typically small), but keep it safe.
-                            for wi, (b, e) in enumerate(zip(bases, ends)):
-                                if int(x) >= int(b) and int(x) < int(e):
-                                    return wi
-                            return -1
-
-                        for gi in range(int(n_out)):
-                            x = int(cfg_idx_arr[gi])
-                            wi = _find_window(x)
-                            if wi < 0:
-                                continue
-                            w = cfg_windows[wi]
-                            base = int(w.get("base", 0))
-                            local = int(x - base)
-                            if w.get("kind") == "list":
-                                lst = w.get("counts_list") or []
-                                if 0 <= local < len(lst):
-                                    try:
-                                        row = lst[local]
-                                        for s in range(int(n_sections)):
-                                            cfg_counts_arr[gi, s] = int(row[s]) if s < len(row) else 0
-                                    except Exception:
-                                        pass
-                            else:
-                                max_fp_vec = list(w.get("max_fp") or [])
-                                # Mixed-radix decode matching `itertools.product` (last section fastest).
-                                rem = int(local)
-                                for s in range(int(n_sections) - 1, -1, -1):
-                                    basev = int(max(0, int(max_fp_vec[s] if s < len(max_fp_vec) else 0))) + 1
-                                    if basev <= 0:
-                                        basev = 1
-                                    val = rem % basev
-                                    rem //= basev
-                                    cfg_counts_arr[gi, s] = int(val)
-                except Exception:
-                    cfg_counts_arr = None
+                cfg_idx_arr = global_results.get("cfg_idx")
+                cfg_counts_arr = _decode_cfg_counts_from_windows(cfg_idx_arr, cfg_windows, n_sections)
             else:
                 _t_gpu0 = time.perf_counter() if perf else 0.0
                 # Use return_raw=True for numpy results (skip dict building in API)
@@ -1732,55 +1622,8 @@ def process_force_greats_gpu_finder(
             selected_indices = gpu_results.get("selected_indices")
 
             # Decode cfg_idx -> per-section FP targets for apply/persistence (supports max_fp windows).
-            cfg_counts_arr = None
-            try:
-                import numpy as _np
-
-                cfg_windows = ctx.get("cfg_windows") or []
-                cfg_idx_np = _np.asarray(cfg_idx_arr, dtype=_np.int32) if cfg_idx_arr is not None else None
-                if cfg_idx_np is not None and cfg_windows:
-                    n_out = int(cfg_idx_np.shape[0])
-                    n_sections0 = int(ctx.get("n_sections") or 0)
-                    cfg_counts_arr = _np.zeros((int(n_out), int(n_sections0)), dtype=_np.int32)
-                    bases = [int(w.get("base", 0)) for w in cfg_windows]
-                    lens = [int(w.get("len", 0)) for w in cfg_windows]
-                    ends = [base + length for base, length in zip(bases, lens)]
-
-                    def _find_window(x: int) -> int:
-                        for wi, (b, e) in enumerate(zip(bases, ends)):
-                            if int(x) >= int(b) and int(x) < int(e):
-                                return wi
-                        return -1
-
-                    for gi in range(int(n_out)):
-                        x = int(cfg_idx_np[gi])
-                        wi = _find_window(x)
-                        if wi < 0:
-                            continue
-                        w = cfg_windows[wi]
-                        base = int(w.get("base", 0))
-                        local = int(x - base)
-                        if w.get("kind") == "list":
-                            lst = w.get("counts_list") or []
-                            if 0 <= local < len(lst):
-                                try:
-                                    row = lst[local]
-                                    for s in range(int(n_sections0)):
-                                        cfg_counts_arr[gi, s] = int(row[s]) if s < len(row) else 0
-                                except Exception:
-                                    pass
-                        else:
-                            max_fp_vec = list(w.get("max_fp") or [])
-                            rem = int(local)
-                            for s in range(int(n_sections0) - 1, -1, -1):
-                                basev = int(max(0, int(max_fp_vec[s] if s < len(max_fp_vec) else 0))) + 1
-                                if basev <= 0:
-                                    basev = 1
-                                val = rem % basev
-                                rem //= basev
-                                cfg_counts_arr[gi, s] = int(val)
-            except Exception:
-                cfg_counts_arr = None
+            cfg_windows = ctx.get("cfg_windows") or []
+            cfg_counts_arr = _decode_cfg_counts_from_windows(cfg_idx_arr, cfg_windows, int(ctx.get("n_sections") or 0))
 
             # Reduced-download path: apply only to selected signature indices.
             apply_sigs = ctx.get("pending_sigs") or []
@@ -1831,65 +1674,13 @@ def process_force_greats_gpu_finder(
         except Exception:
             items = []
 
-        def _base_score(e: dict) -> int:
-            try:
-                return int(e.get("base_score") or e.get("score", 0) or 0)
-            except Exception:
-                return 0
-
-        def _fg_score(e: dict) -> int:
-            try:
-                return int(e.get("fg_score", 0) or 0)
-            except Exception:
-                return 0
-
-        def _fg_config_dict(e: dict) -> dict:
-            # Prefer cached/persisted force details.
-            try:
-                force_obj = e.get("force") or {}
-                det = (force_obj.get("details") or {}) if isinstance(force_obj, dict) else {}
-                fg0 = det.get("ForceGreats") or {}
-                cfg0 = fg0.get("config") or {}
-                if isinstance(cfg0, dict):
-                    return cfg0
-            except Exception:
-                pass
-            # Fall back to raw payload (batch FG path).
-            try:
-                raw = e.get("_fg_raw") or {}
-                fg1 = raw.get("ForceGreats") or {}
-                cfg1 = fg1.get("config") or {}
-                if isinstance(cfg1, dict):
-                    return cfg1
-            except Exception:
-                pass
-            return {}
-
-        def _is_valid_cfg(cfg: dict) -> bool:
-            try:
-                return bool(cfg and sum(int(v or 0) for v in cfg.values()) > 0)
-            except Exception:
-                return False
-
-        # Select the retention set: top-N by base score + top-N by FG score (FG must beat base and be valid).
-        top_base = sorted(items, key=lambda kv: _base_score(kv[1]), reverse=True)[: int(LOADOUTS_PER_SONG_LIMIT)]
-
-        fg_candidates = []
-        for h, e in items:
-            base_s = _base_score(e)
-            fg_s = _fg_score(e)
-            if fg_s <= base_s:
-                continue
-            cfg = _fg_config_dict(e)
-            if not _is_valid_cfg(cfg):
-                continue
-            fg_candidates.append((h, e))
-
-        top_fg = sorted(fg_candidates, key=lambda kv: _fg_score(kv[1]), reverse=True)[: int(LOADOUTS_PER_SONG_LIMIT)]
-
-        retained_hashes = set()
-        for h, _e in list(top_base) + list(top_fg):
-            retained_hashes.add(str(h))
+        retained_hashes = select_retained_hashes(
+            items,
+            limit=int(LOADOUTS_PER_SONG_LIMIT),
+            base_score_fn=_entry_base_score,
+            fg_score_fn=_entry_fg_score,
+            fg_valid_fn=_entry_has_valid_fg_config,
+        )
 
         # Materialize force details for retained entries and build fg_variants for UI/debug.
         fg_variants.clear()
@@ -1897,14 +1688,14 @@ def process_force_greats_gpu_finder(
             if str(h) not in retained_hashes:
                 continue
 
-            base_score = _base_score(entry)
-            fg_score = _fg_score(entry)
+            base_score = _entry_base_score(entry)
+            fg_score = _entry_fg_score(entry)
 
             # If this entry already has a valid cached force payload, reuse it.
             force_obj = entry.get("force") if isinstance(entry, dict) else None
             if isinstance(force_obj, dict) and force_obj.get("details"):
-                cfg = _fg_config_dict(entry)
-                if _is_valid_cfg(cfg):
+                cfg = _entry_fg_config_dict(entry)
+                if _is_valid_fg_config(cfg):
                     fg_variants.append(
                         {
                             "data": force_obj.get("details") or {},

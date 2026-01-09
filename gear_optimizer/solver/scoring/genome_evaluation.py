@@ -17,6 +17,7 @@ from typing import Optional, Callable
 
 import numpy as np
 
+from ..base_stats import build_base_fixed_stats_array
 from ...core.constants import (
     TOTAL_GEM_BUDGET,
     GEM_SCALE_NORMAL,
@@ -24,6 +25,7 @@ from ...core.constants import (
     GEM_STAT_TO_ELEMENT_SCALE,
     ELEMENTAL_GEM_SCALE,
 )
+from ...core.color_flags import build_color_flags
 from ...core.constants import SKIP_ITEM_KEYS
 from ...core.utils import stats_signature
 
@@ -235,20 +237,7 @@ def prepare_gpu_batch_eval_plan(
             }
         )
 
-    flags = {
-        "is_p_pp": 1 if "Chill" == p_color else 0,
-        "is_s_pp": 1 if "Chill" == s_color else 0,
-        "is_p_cm": 1 if "Flow" == p_color else 0,
-        "is_s_cm": 1 if "Flow" == s_color else 0,
-        "is_p_fm": 1 if "Rush" == p_color else 0,
-        "is_s_fm": 1 if "Rush" == s_color else 0,
-        "is_p_ov": 1 if sel_color == p_color else 0,
-        "is_s_ov": 1 if sel_color == s_color else 0,
-        "is_p_ft": 1 if "Beat" == p_color else 0,
-        "is_s_ft": 1 if "Beat" == s_color else 0,
-        "is_p_ff": 1 if "Vibe" == p_color else 0,
-        "is_s_ff": 1 if "Vibe" == s_color else 0,
-    }
+    flags = build_color_flags(p_color, s_color, sel_color)
 
     plan = GpuBatchEvalPlan(
         population=population,
@@ -580,34 +569,11 @@ def batch_evaluate_genomes(
                         gpu_arrays["slot_count"],
                     )
 
-                    user_ft = plan.cfg_data["user_ft"]
-                    user_ff = plan.cfg_data["user_ff"]
-                    user_pp = plan.cfg_data["user_pp"]
-                    user_cm = plan.cfg_data["user_cm"]
-                    user_fm = plan.cfg_data["user_fm"]
-                    static_elem_input = plan.cfg_data["static_elem_input"]
-
-                    base_stats_arr = np.array(
-                        [
-                            plan.base_stats_fixed.get("Perfect Points", 0) - user_pp * GEM_SCALE_NORMAL,
-                            plan.base_stats_fixed.get("Combo Multiplier", 0) - user_cm * GEM_SCALE_NORMAL,
-                            plan.base_stats_fixed.get("Fever Multiplier", 0) - user_fm * GEM_SCALE_FEVER,
-                            plan.base_stats_fixed.get("Fever Time", 0) - user_ft * GEM_SCALE_FEVER,
-                            plan.base_stats_fixed.get("Fever Fill Rate", 0) - user_ff * GEM_SCALE_FEVER,
-                            plan.base_stats_fixed.get("Beat", 0) - user_ft * GEM_STAT_TO_ELEMENT_SCALE,
-                            plan.base_stats_fixed.get("Vibe", 0) - user_ff * GEM_STAT_TO_ELEMENT_SCALE,
-                            plan.base_stats_fixed.get("Rush", 0) - user_fm * GEM_STAT_TO_ELEMENT_SCALE,
-                            plan.base_stats_fixed.get("Flow", 0) - user_cm * GEM_STAT_TO_ELEMENT_SCALE,
-                            plan.base_stats_fixed.get("Chill", 0) - user_pp * GEM_STAT_TO_ELEMENT_SCALE,
-                        ],
-                        dtype=np.int32,
+                    base_stats_arr, _ = build_base_fixed_stats_array(
+                        plan.base_stats_fixed,
+                        plan.cfg_data,
+                        fallback_selected_color=plan.sel_color,
                     )
-
-                    if static_elem_input and plan.sel_color:
-                        color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
-                        idx = color_to_idx.get(plan.sel_color)
-                        if idx is not None:
-                            base_stats_arr[idx] -= static_elem_input * ELEMENTAL_GEM_SCALE
 
                     ga_upload_base_fixed_stats(base_stats_arr)
 

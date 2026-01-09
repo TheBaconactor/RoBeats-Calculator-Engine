@@ -4,14 +4,10 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from ....core.constants import (
-    ELEMENTAL_GEM_SCALE,
-    GEM_SCALE_FEVER,
-    GEM_SCALE_NORMAL,
-    GEM_STAT_TO_ELEMENT_SCALE,
-)
+from ....core.constants import GEM_SCALE_FEVER
 from ....solver.scoring import FG_CACHE, _force_greats_counts_to_dict
 from ....solver.scoring.force_greats import FORCE_GREATS_ALGO_VERSION
+from ....solver.scoring.stats_ops import apply_gems_to_base_stats
 
 
 def apply_gems_to_base_fast(
@@ -24,20 +20,17 @@ def apply_gems_to_base_fast(
     g_fm: int,
     g_ov: int,
 ) -> dict[str, Any]:
-    out = dict(base or {})
-    out["Perfect Points"] = out.get("Perfect Points", 0) + g_pp * GEM_SCALE_NORMAL
-    out["Combo Multiplier"] = out.get("Combo Multiplier", 0) + g_cm * GEM_SCALE_NORMAL
-    out["Fever Multiplier"] = out.get("Fever Multiplier", 0) + g_fm * GEM_SCALE_FEVER
-    out["Fever Time"] = out.get("Fever Time", 0) + ft * GEM_SCALE_FEVER
-    out["Fever Fill Rate"] = out.get("Fever Fill Rate", 0) + ff * GEM_SCALE_FEVER
-    out["Chill"] = out.get("Chill", 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
-    out["Flow"] = out.get("Flow", 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
-    out["Rush"] = out.get("Rush", 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
-    out["Beat"] = out.get("Beat", 0) + ft * GEM_STAT_TO_ELEMENT_SCALE
-    out["Vibe"] = out.get("Vibe", 0) + ff * GEM_STAT_TO_ELEMENT_SCALE
-    if sel_color:
-        out[sel_color] = out.get(sel_color, 0) + g_ov * ELEMENTAL_GEM_SCALE
-    return out
+    return apply_gems_to_base_stats(
+        base,
+        str(sel_color),
+        int(ft),
+        int(ff),
+        int(g_pp),
+        int(g_cm),
+        int(g_fm),
+        int(g_ov),
+        add_missing_element_key=True,
+    )
 
 
 def fp_targets_to_forced_counts(

@@ -32,3 +32,7 @@
 - `scripts/`: ad-hoc utilities, organized by category (`scripts/profile/`, `scripts/db/`, `scripts/fg/`, `scripts/query/`, `scripts/data/`, `scripts/debug/`, `scripts/regression/`)
 - `tools/`: heavier utilities/benchmarks, organized by category (`tools/bench/`, `tools/profile/`, `tools/db/`, `tools/verify/`, `tools/data/`, `tools/meta/`, `tools/dev/`)
 - GeneralMeta: `python general_meta_main.py`
+
+## Refactoring Notes
+
+- Duplication reduction map: `docs/DUPLICATION_REDUCTION.md`

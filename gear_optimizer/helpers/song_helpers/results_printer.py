@@ -196,7 +196,7 @@ def _print_gem_allocation(data):
         return
 
     gem_counts = data["GemCounts"]
-    sel_el = data.get("Selected Element", "Rush")
+    sel_el = get_selected_element(data, "Rush")
     print(f"\nGem Allocation -> Fever Time: {data.get('FT', 0)}")
     print(f"Gem Allocation -> Fever Fill: {data.get('FF', 0)}")
     print(f"Gem Allocation -> Fever Multiplier: {gem_counts.get('Fever Multiplier', 0)}")
@@ -226,3 +226,6 @@ def _print_detailed_debug(found_song_name, entry, ref_arrays, calc_song, cfg):
             final_score_int = 0
 
     print(f"\nTotal Score: {final_score_int}")
+
+
+from ...core.utils import get_selected_element

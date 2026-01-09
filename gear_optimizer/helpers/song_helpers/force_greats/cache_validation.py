@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 
 from ....solver.scoring.force_greats import FORCE_GREATS_ALGO_VERSION
+from ....core.utils import get_selected_element
 
 
 def is_cached_force_valid_for_finder(cached_force_obj, expected_selected_element, center_ft, center_ff) -> bool:
@@ -27,7 +28,7 @@ def is_cached_force_valid_for_finder(cached_force_obj, expected_selected_element
             return False
     except Exception:
         return False
-    cached_sel = details.get("SelectedElement") or details.get("Selected Element") or ""
+    cached_sel = get_selected_element(details, "")
     if expected_selected_element and cached_sel and cached_sel != expected_selected_element:
         return False
     return True
@@ -49,7 +50,7 @@ def is_cached_force_valid(cached_force_obj, expected_selected_element) -> bool:
         return False
     if not fg_meta.get("config"):
         return False
-    cached_sel = details.get("SelectedElement") or details.get("Selected Element") or ""
+    cached_sel = get_selected_element(details, "")
     if expected_selected_element and cached_sel and cached_sel != expected_selected_element:
         return False
     return True
