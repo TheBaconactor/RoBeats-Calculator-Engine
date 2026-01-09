@@ -146,11 +146,25 @@ def build_db_payload(
         base_score = fg_entry.get("base_score")
         if base_score is None:
             base_score = fg_entry.get("score", 0)
+        try:
+            base_score_i = int(base_score or 0)
+        except Exception:
+            base_score_i = 0
+        try:
+            fg_score_i = int(fg_entry.get("fg_score", 0) or 0)
+        except Exception:
+            fg_score_i = 0
+
+        # ForceGreats is only a "useful" variant when it actually improves the score
+        # for the same loadout. Persisting worse-than-base configs is confusing to users
+        # (it looks like FG "regressed" compared to Base) and creates noisy FG records.
+        if fg_score_i <= base_score_i:
+            continue
         current_run_fg_candidates.append(
             {
                 # "score" is intentionally the FG score in this list (historical naming).
-                "score": fg_entry.get("fg_score", 0),
-                "base_score": base_score or 0,
+                "score": fg_score_i,
+                "base_score": base_score_i,
                 "gear": fg_gear_names,
                 "minis": fg_mini_names,
                 "details": build_details_fn(fg_data),
