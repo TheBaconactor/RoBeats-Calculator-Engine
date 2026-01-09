@@ -840,6 +840,38 @@ class GearOptimizerApp:
             out["song_data"] = dict(out.get("song_data") or {})
         except Exception:
             pass
+
+        # If a song was preloaded, it may have already had HumanHitSim applied. For repeated runs
+        # (and generally when reusing preloaded calc_song), we must clear this state so each run
+        # can (re)apply HumanHitSim and, when Seed=0, generate a unique random seed per run.
+        try:
+            meta = out.get("metadata") or {}
+            song_data = out.get("song_data") or {}
+            if isinstance(meta, dict):
+                for k in (
+                    "HumanHitSimSeed",
+                    "HumanHitSimApplyTo",
+                    "HumanHitSimDistribution",
+                    "HumanHitSimGreatMode",
+                    "HumanHitSimSeedIsRandom",
+                    "HumanHitSimDebug",
+                    "HumanHitSimApplied",
+                ):
+                    meta.pop(k, None)
+                out["metadata"] = meta
+            if isinstance(song_data, dict):
+                # Restore base chart timestamps (HumanHitSim ApplyTo=ALL can override timestamps).
+                if song_data.get("chart_timestamps") is not None:
+                    try:
+                        song_data["timestamps"] = np.asarray(song_data.get("chart_timestamps"), dtype=np.float64)
+                    except Exception:
+                        song_data["timestamps"] = song_data.get("chart_timestamps")
+                song_data.pop("fg_timestamps", None)
+                song_data.pop("fg_great_candidate_timestamps", None)
+                out["song_data"] = song_data
+        except Exception:
+            pass
+
         return out
 
     @staticmethod
