@@ -102,7 +102,7 @@ class AnalyticalFGScorer:
                 'fever_activations': Number of fever windows that fully activate
                 'gap': Notes between last fever end and song end
                 'useful_sections': Max meaningful section index
-                'section_caps': Recommended cap per section based on gap
+                'section_caps': Recommended cap per section
         """
         # Fast path: return cached result if available
         cache_key = (int(ft_stat), int(ff_stat))
@@ -149,7 +149,7 @@ class AnalyticalFGScorer:
         section_caps = []
         for sec in range(useful_sections):
             # Later sections have less impact, so lower caps
-            base_cap = min(non_fever_base, gap)
+            base_cap = non_fever_base
             if sec == 0:
                 cap = base_cap
             elif sec == 1:

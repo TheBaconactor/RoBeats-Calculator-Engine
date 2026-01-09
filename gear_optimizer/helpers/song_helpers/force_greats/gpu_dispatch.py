@@ -1042,7 +1042,10 @@ def process_force_greats_gpu_finder(
                     meta0 = (calc_song.get("metadata", {}) or {}) if isinstance(calc_song, dict) else {}
                     song_data0 = (calc_song.get("song_data", {}) or {}) if isinstance(calc_song, dict) else {}
                     try:
-                        total_notes0 = int(len(song_data0.get("timestamps") or ()))
+                        ts0 = song_data0.get("timestamps")
+                        if ts0 is None:
+                            ts0 = song_data0.get("fg_timestamps")
+                        total_notes0 = int(len(ts0)) if ts0 is not None else 0
                     except Exception:
                         total_notes0 = 0
                     try:
