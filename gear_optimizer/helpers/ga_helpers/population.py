@@ -62,7 +62,13 @@ def build_initial_population(
                 print(f" >> [Evolution] Injecting previous best (Score: {db_seed.get('score', 0)})")
             seed_genome = reconstruct_genome_from_db_list(seed_list)
             population.append(seed_genome[:])
-            population.append(mutate_genome_once(seed_genome))
+            try:
+                n_mut = int(getattr(ga_settings, "db_seed_mutations", 1) or 0)
+            except Exception:
+                n_mut = 1
+            n_mut = max(0, int(n_mut))
+            for _ in range(n_mut):
+                population.append(mutate_genome_once(seed_genome))
         except Exception as e:
             print(f" >> [Evolution] Failed to inject seed: {e}")
     elif seed_list:

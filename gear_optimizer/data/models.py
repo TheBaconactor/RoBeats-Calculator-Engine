@@ -78,6 +78,7 @@ class GASettings:
     allow_3_swap: bool = True  # Enable expensive 3-swap polish (~15s extra)
     gear_rank_max: int = 40  # Max gear items per slot in rank cache
     mini_rank_max: int = 40  # Max minis in rank cache
+    db_seed_mutations: int = 1  # Number of mutated copies to inject alongside the DB seed (diversity control)
 
     @classmethod
     def from_cfg(cls, cfg):
@@ -88,17 +89,18 @@ class GASettings:
         section = "IterationEngine"
         if not cfg:
             return cls(
-                0.5,
-                2,
-                4,
-                2,
-                4,
-                12,
-                GA_MULTI_RUNS_DEFAULT,
-                True,
-                True,  # allow_3_swap default
-                40,  # gear_rank_max default
-                40,  # mini_rank_max default
+                db_seed_prob=0.5,
+                fixed_seed_copies=2,
+                memetic_elites=4,
+                memetic_steps=2,
+                memetic_top_gear=4,
+                memetic_top_minis=12,
+                multi_start=GA_MULTI_RUNS_DEFAULT,
+                deep_mining_enabled=True,
+                allow_3_swap=True,
+                gear_rank_max=40,
+                mini_rank_max=40,
+                db_seed_mutations=1,
             )
 
         def get_option(option, fallback):
@@ -109,6 +111,7 @@ class GASettings:
 
         db_seed_prob = safe_float(get_option("GA_DBSeedProbability", "0.5"), default=0.5)
         fixed_seed_copies = max(0, safe_int(get_option("GA_FixedSeedCopies", "2"), 2))
+        db_seed_mutations = max(0, safe_int(get_option("GA_DBSeedMutations", "1"), 1))
         memetic_elites = max(0, safe_int(get_option("GA_MemeticElites", "4"), 4))
         memetic_steps = max(0, safe_int(get_option("GA_MemeticSteps", "2"), 2))
         memetic_top_gear = max(1, safe_int(get_option("GA_MemeticTopGear", "4"), 4))
@@ -128,15 +131,16 @@ class GASettings:
         mini_rank_max = max(10, safe_int(get_option("MiniRankMax", "40"), 40))
 
         return cls(
-            min(1.0, max(0.0, db_seed_prob)),
-            fixed_seed_copies,
-            memetic_elites,
-            memetic_steps,
-            memetic_top_gear,
-            memetic_top_minis,
-            multi_start,
-            deep_mining,
-            allow_3_swap,
-            gear_rank_max,
-            mini_rank_max,
+            db_seed_prob=min(1.0, max(0.0, db_seed_prob)),
+            fixed_seed_copies=fixed_seed_copies,
+            memetic_elites=memetic_elites,
+            memetic_steps=memetic_steps,
+            memetic_top_gear=memetic_top_gear,
+            memetic_top_minis=memetic_top_minis,
+            multi_start=multi_start,
+            deep_mining_enabled=deep_mining,
+            allow_3_swap=allow_3_swap,
+            gear_rank_max=gear_rank_max,
+            mini_rank_max=mini_rank_max,
+            db_seed_mutations=db_seed_mutations,
         )

@@ -474,18 +474,22 @@ def decode_gpu_native_ga_runs_payload(
     item_stats = registry.to_gpu_arrays()["item_stats"]  # (n_items, 10)
     arrays_ms = (time.perf_counter() - t_stub_arrays) * 1000.0 if perf else 0.0
 
-    # Deterministic ordering for FG funnel selection (matches select_fg_candidates):
-    # - keep a fixed top slice by base score (DB/leaderboard stability)
-    # - fill the remaining budget by a fever-focused score
+    # Deterministic FG candidate funnel selection.
     #
-    # Important: keep this fully vectorized; this runs on the CPU between GPU jobs.
-    idx = np.arange(n_stub, dtype=np.int32)
+    # Keep this GPU-free: we operate in ID-space and only decode full genomes for the
+    # final bounded funnel. The selection logic mirrors `select_fg_candidates()`:
+    # - hard-keep top-N by base score (DB/leaderboard stability)
+    # - fill by base score (exploitation)
+    # - then by an FG-proxy score with FT/FF center diversity
+    # - then mini-team diversity
+    t_stub = time.perf_counter() if perf else 0.0
+
     scores_i64 = stub_scores.astype(np.int64, copy=False)
 
     minis_sorted = np.sort(stub_genome_ids[:, 6:9], axis=1)
     canon_ids_mat = np.concatenate([stub_genome_ids[:, :6], minis_sorted], axis=1).astype(np.int32, copy=False)
 
-    # Compute fever-focused score from gear-only stats + (FT,FF) result row (matches fg_candidate_selector).
+    # Reuse the (score, ft, ff, pp, cm, fm, ov) result row for centers (FT/FF).
     try:
         row_stride = int(runs_payload.shape[1])
         flat = runs_payload.reshape(-1, int(runs_payload.shape[2]))
@@ -494,39 +498,94 @@ def decode_gpu_native_ga_runs_payload(
     except Exception:
         stub_results = runs_payload[stub_run_idx, stub_rows, 1 + n_slots : 1 + n_slots + 7]
 
-    gear_ids = stub_genome_ids[:, :6].astype(np.int32, copy=False)
-    gear_stats_sum = item_stats[gear_ids].sum(axis=1)  # (n_stub, 10)
-    fever_scores_i64 = (
-        gear_stats_sum[:, 0:5].sum(axis=1).astype(np.int64, copy=False)
-        + stub_results[:, 1].astype(np.int64, copy=False)
-        + stub_results[:, 2].astype(np.int64, copy=False)
-    )
+    centers_ft = stub_results[:, 1].astype(np.int32, copy=False)
+    centers_ff = stub_results[:, 2].astype(np.int32, copy=False)
+
+    # FG proxy matches `select_fg_candidates()` weights (on summed item stats).
+    stats_sum = item_stats[stub_genome_ids.astype(np.int32, copy=False)].sum(axis=1).astype(np.int64, copy=False)  # (n,10)
+    pp = stats_sum[:, 0]
+    cm = stats_sum[:, 1]
+    fm = stats_sum[:, 2]
+    ft_stat = stats_sum[:, 3]
+    ff_stat = stats_sum[:, 4]
+
+    primary_color = str(cfg_data.get("primary_color", "") or "")
+    secondary_color = str(cfg_data.get("secondary_color", "") or "")
+    color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
+    p_idx = color_to_idx.get(primary_color, -1)
+    s_idx = color_to_idx.get(secondary_color, -1) if secondary_color and secondary_color != primary_color else -1
+    p_val = stats_sum[:, p_idx] if p_idx >= 0 else 0
+    s_val = stats_sum[:, s_idx] if s_idx >= 0 else 0
+
+    fg_proxy_i64 = fm * 4 + ff_stat * 4 + ft_stat * 3 + cm * 2 + pp + p_val * 2 + s_val
 
     # Lexsort tie-breakers need the key in reverse order (element0 has highest priority).
     key_cols_desc = [-(canon_ids_mat[:, i].astype(np.int64, copy=False)) for i in range(8, -1, -1)]
 
-    base_keep = min(int(LOADOUTS_PER_SONG_LIMIT), int(fg_candidate_limit))
-    base_order = np.lexsort(tuple(key_cols_desc + [-scores_i64]))
-    base_slice = base_order[: min(int(base_keep), int(base_order.shape[0]))]
+    base_order = np.lexsort(tuple(key_cols_desc + [-fg_proxy_i64, -scores_i64]))
+    fg_order = np.lexsort(tuple(key_cols_desc + [-scores_i64, -fg_proxy_i64]))
 
-    if base_slice.shape[0] >= int(fg_candidate_limit):
-        selected_idx_arr = base_slice[: int(fg_candidate_limit)]
-    else:
-        chosen = np.zeros((n_stub,), dtype=bool)
-        chosen[base_slice] = True
-        remaining_idx = idx[~chosen]
-        if remaining_idx.size:
-            rem_scores = scores_i64[remaining_idx]
-            rem_fever = fever_scores_i64[remaining_idx]
-            rem_keys = canon_ids_mat[remaining_idx]
-            rem_key_cols_desc = [-(rem_keys[:, i].astype(np.int64, copy=False)) for i in range(8, -1, -1)]
-            rem_order = np.lexsort(tuple(rem_key_cols_desc + [-rem_scores, -rem_fever]))
-            need = int(fg_candidate_limit) - int(base_slice.shape[0])
-            selected_idx_arr = np.concatenate([base_slice, remaining_idx[rem_order[:need]]])
-        else:
-            selected_idx_arr = base_slice
+    limit = int(fg_candidate_limit)
+    top_base_keep = min(limit, int(LOADOUTS_PER_SONG_LIMIT))
+    base_budget = min(limit, max(top_base_keep, int(limit * 0.55)))
+    fg_budget_end = min(limit, base_budget + int(limit * 0.30))
 
-    selected_stub_indices = selected_idx_arr.tolist()
+    selected_stub_indices: list[int] = []
+    selected_mask = np.zeros((n_stub,), dtype=bool)
+    seen_centers: set[tuple[int, int]] = set()
+    seen_minis: set[tuple[int, int, int]] = set()
+
+    def _add(i: int) -> bool:
+        if selected_mask[int(i)]:
+            return False
+        selected_mask[int(i)] = True
+        selected_stub_indices.append(int(i))
+        seen_centers.add((int(centers_ft[int(i)]), int(centers_ff[int(i)])))
+        mi = canon_ids_mat[int(i), 6:9]
+        seen_minis.add((int(mi[0]), int(mi[1]), int(mi[2])))
+        return True
+
+    # 1) Hard keep top-N by base score.
+    for i in base_order:
+        if len(selected_stub_indices) >= top_base_keep:
+            break
+        _add(int(i))
+
+    # 2) Base-score fill (exploitation).
+    for i in base_order:
+        if len(selected_stub_indices) >= base_budget:
+            break
+        _add(int(i))
+
+    # 3) FG-proxy fill; prefer new FT/FF centers first.
+    for i in fg_order:
+        if len(selected_stub_indices) >= fg_budget_end:
+            break
+        c = (int(centers_ft[int(i)]), int(centers_ff[int(i)]))
+        if c in seen_centers:
+            continue
+        _add(int(i))
+    for i in fg_order:
+        if len(selected_stub_indices) >= fg_budget_end:
+            break
+        _add(int(i))
+
+    # 4) Mini-team diversity fill.
+    for i in base_order:
+        if len(selected_stub_indices) >= limit:
+            break
+        mi = canon_ids_mat[int(i), 6:9]
+        mk = (int(mi[0]), int(mi[1]), int(mi[2]))
+        if mk in seen_minis:
+            continue
+        _add(int(i))
+
+    # 5) Final fill by base score.
+    for i in base_order:
+        if len(selected_stub_indices) >= limit:
+            break
+        _add(int(i))
+
     select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
     proxy_ms = 0.0
 
