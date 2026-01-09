@@ -283,6 +283,7 @@ class _PostSender:
 class _NativeSong:
     fp: str
     song_name: str
+    db_key: str
     effective_difficulty: str
     cfg_dict: dict
     cfg: Any
@@ -425,7 +426,21 @@ def _prepare_song(task: tuple) -> _NativeSong:
     if not (enable_gear or enable_mini):
         raise RuntimeError("GPU-native in-flight currently requires MetaFinder (enable gear or minis).")
 
-    prev_record, known_loadouts = load_database_context(found_song_name, bool(use_evo_db), gears_by_name, minis_by_name)
+    from gear_optimizer.helpers.song_helpers.database_context import build_db_key
+
+    db_key = build_db_key(found_song_name, calc_song)
+    if use_evo_db:
+        try:
+            meta0 = calc_song.get("metadata", {}) or {}
+            if meta0.get("HumanHitSimSeedIsRandom"):
+                print(
+                    "[DB][WARN] HumanHitSim seed is random; DB key includes it (no cross-run reuse). "
+                    "Set [HumanHitSim].Seed to a fixed value to accumulate comparable results."
+                )
+        except Exception:
+            pass
+
+    prev_record, known_loadouts = load_database_context(db_key, bool(use_evo_db), gears_by_name, minis_by_name)
     db_best_fg_score, attempt_lifetime, prev_attempts_first = _summarize_db_context(prev_record, known_loadouts)
 
     p_color = calc_song.get("metadata", {}).get("Primary Color", "Rush")
@@ -676,6 +691,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
     return _NativeSong(
         fp=str(fp),
         song_name=str(found_song_name),
+        db_key=str(db_key),
         effective_difficulty=str(effective_difficulty),
         cfg_dict=cfg_dict,
         cfg=cfg,
@@ -1217,7 +1233,7 @@ def run_native_inflight_song_pipeline(
                             )
                             song.db_loadouts_future = fg_prep_executor.submit(
                                 _prefetch_db_loadouts_sync,
-                                song.song_name,
+                                song.db_key,
                                 limit=int(prefetch_limit),
                                 gears_by_name=song.gears_by_name,
                                 minis_by_name=song.minis_by_name,
@@ -1360,7 +1376,7 @@ def run_native_inflight_song_pipeline(
                         "_deferred_post": True,
                         "_pending_fg_job": bool(song.manual_force_greats or song.force_greats_finder),
                         "song": song.song_name,
-                        "db_key": song.song_name,
+                        "db_key": song.db_key,
                         "file_path": song.fp,
                         "difficulty": song.effective_difficulty,
                         "use_evo_db": bool(song.use_evo_db),
@@ -1687,7 +1703,7 @@ def _prepare_fg_job_sync(song: _NativeSong) -> None:
     build_details = make_build_details_fn(song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty)
 
     song.loadout_entries = build_loadout_entries(
-        song.song_name,
+        song.db_key,
         bool(song.use_evo_db),
         ga_candidates,
         fg_candidate_limit,
@@ -1776,7 +1792,7 @@ def _run_fg_job_sync(
                     selected_color=str(song.cfg_data.get("selected_color", "") or ""),
                 )
                 song.loadout_entries = build_loadout_entries(
-                    song.song_name,
+                    song.db_key,
                     bool(song.use_evo_db),
                     song.ga_candidates,
                     int(song.fg_candidate_limit or 0),
@@ -1812,7 +1828,7 @@ def _run_fg_job_sync(
             {
                 "_fg_update": True,
                 "song": song.song_name,
-                "db_key": song.song_name,
+                "db_key": song.db_key,
                 "use_evo_db": bool(song.use_evo_db),
                 "persist_entries": _build_fg_persist_entries(song),
             }

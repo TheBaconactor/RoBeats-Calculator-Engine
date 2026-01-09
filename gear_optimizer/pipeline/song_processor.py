@@ -365,13 +365,26 @@ def process_song_task(args):
         stage_timing["cpu_setup_sec"] = time.perf_counter() - _t_setup0
 
         # --- DB KEY MODIFICATION ---
-        # The song name from the file header already includes difficulty suffix like "(Hard)" or "(Easy)"
-        # Normal difficulty songs have no suffix. Use song name directly as DB key.
-        db_key = found_song_name
+        # Use a DB key that matches the *score context*. HumanHitSim can change scoring
+        # between runs (different seed/mode), so it must be part of the key to avoid
+        # mixing incompatible records.
+        from gear_optimizer.helpers.song_helpers.database_context import build_db_key
+
+        db_key = build_db_key(found_song_name, calc_song)
+        if use_evo_db:
+            try:
+                meta0 = calc_song.get("metadata", {}) or {}
+                if meta0.get("HumanHitSimSeedIsRandom"):
+                    print(
+                        "[DB][WARN] HumanHitSim seed is random; DB key includes it (no cross-run reuse). "
+                        "Set [HumanHitSim].Seed to a fixed value to accumulate comparable results."
+                    )
+            except Exception:
+                pass
 
         # Load database context (prev_record, known_loadouts)
         _t_db0 = time.perf_counter()
-        prev_record, known_loadouts = load_database_context(found_song_name, use_evo_db, gears_by_name, minis_by_name)
+        prev_record, known_loadouts = load_database_context(db_key, use_evo_db, gears_by_name, minis_by_name)
         stage_timing["cpu_db_load_sec"] = time.perf_counter() - _t_db0
 
         db_seed = prev_record if prev_record else None

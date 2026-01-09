@@ -107,12 +107,14 @@ def apply_human_hit_sim(calc_song: dict, *, cfg_dict: dict) -> dict | None:
     dist = str(human_cfg.get("distribution", "uniform")).strip().lower()
     great_mode = str(human_cfg.get("greatmode", "late")).strip().lower()
 
+    seed_is_random = False
     if seed_in == 0:
         if _env_debug_fixed_seeds_enabled():
             env_seed = _env_debug_human_hit_sim_seed()
             seed_in = int(env_seed) if env_seed is not None else 1337
         else:
             seed_in = secrets.randbits(32)
+            seed_is_random = True
 
     chart_ts = song_data.get("chart_timestamps")
     if chart_ts is None:
@@ -137,6 +139,7 @@ def apply_human_hit_sim(calc_song: dict, *, cfg_dict: dict) -> dict | None:
     meta["HumanHitSimApplyTo"] = apply_to
     meta["HumanHitSimDistribution"] = dist
     meta["HumanHitSimGreatMode"] = great_mode
+    meta["HumanHitSimSeedIsRandom"] = bool(seed_is_random)
     meta["HumanHitSimDebug"] = sim_dbg
     meta["HumanHitSimApplied"] = True
     calc_song["metadata"] = meta

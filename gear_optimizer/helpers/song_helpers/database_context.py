@@ -26,6 +26,41 @@ _WAL_MAINT_LOCK = threading.Lock()
 _LAST_WAL_MAINT_TS = 0.0
 
 
+def build_db_key(found_song_name: str, calc_song: dict | None = None) -> str:
+    """
+    Build a DB lookup key that includes scoring-relevant context when needed.
+
+    Today the big source of "regression-looking" behavior is HumanHitSim:
+    if the HumanHitSim seed/mode changes between runs but the DB key stays the
+    same, we mix incompatible score contexts (bad seeding + misleading records).
+    """
+    if not isinstance(found_song_name, str) or not found_song_name:
+        found_song_name = str(found_song_name)
+
+    if not isinstance(calc_song, dict):
+        return found_song_name
+    meta = calc_song.get("metadata", {}) or {}
+
+    if not meta.get("HumanHitSimApplied"):
+        return found_song_name
+
+    seed = meta.get("HumanHitSimSeed")
+    apply_to = meta.get("HumanHitSimApplyTo")
+    dist = meta.get("HumanHitSimDistribution")
+    great_mode = meta.get("HumanHitSimGreatMode")
+    if seed is None and apply_to is None and dist is None and great_mode is None:
+        return found_song_name
+
+    try:
+        seed_s = "?" if seed is None else str(int(seed))
+    except Exception:
+        seed_s = "?"
+    apply_s = str(apply_to or "?").strip()
+    dist_s = str(dist or "?").strip()
+    gm_s = str(great_mode or "?").strip()
+    return f"{found_song_name} | HumanHitSim(apply={apply_s},dist={dist_s},mode={gm_s},seed={seed_s})"
+
+
 def _maybe_wal_maintenance(conn) -> None:
     """
     Opportunistic WAL maintenance for long-running sessions.

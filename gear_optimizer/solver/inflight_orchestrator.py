@@ -245,9 +245,21 @@ def run_inflight_song_pipeline(
             manual_force_greats,
         ) = setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_name)
 
-        prev_record, known_loadouts = load_database_context(
-            found_song_name, bool(use_evo_db), gears_by_name, minis_by_name
-        )
+        from gear_optimizer.helpers.song_helpers.database_context import build_db_key
+
+        db_key = build_db_key(found_song_name, calc_song)
+        if use_evo_db:
+            try:
+                meta0 = calc_song.get("metadata", {}) or {}
+                if meta0.get("HumanHitSimSeedIsRandom"):
+                    print(
+                        "[DB][WARN] HumanHitSim seed is random; DB key includes it (no cross-run reuse). "
+                        "Set [HumanHitSim].Seed to a fixed value to accumulate comparable results."
+                    )
+            except Exception:
+                pass
+
+        prev_record, known_loadouts = load_database_context(db_key, bool(use_evo_db), gears_by_name, minis_by_name)
 
         db_best_fg_score, attempt_lifetime, prev_attempts_first = _summarize_db_context(prev_record, known_loadouts)
 
@@ -639,7 +651,8 @@ def run_inflight_song_pipeline(
                 best_gear = (best_cand or {}).get("Gear") or []
                 best_minis = (best_cand or {}).get("Minis") or []
 
-                db_key = found_song_name
+                # Use context-aware DB key (see build_db_key).
+                db_key = build_db_key(found_song_name, song.calc_song)
                 payload = {
                     "_deferred_post": True,
                     "song": found_song_name,
