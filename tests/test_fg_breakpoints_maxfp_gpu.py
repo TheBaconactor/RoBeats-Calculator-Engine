@@ -18,13 +18,14 @@ def test_fg_breakpoints_max_fp_kernel_parity_small():
     Parity test for the new FG breakpoint-range kernel used by ForceGreatsFinder batching.
 
     We compare GPU-computed per-(pair, section) max FP caps against a direct CPU reference
-    implementing the same logic as `helpers.fg_utils.iter_analytical_breakpoint_groups`.
+    implementing the same cap rules as the GPU kernel.
     """
     from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
     from gear_optimizer.solver.taichi_gem.kernels import kernels_breakpoints
     from gear_optimizer.helpers.fg_utils import _fp_cap_from_forced, MAX_SECTION_CAPS
     from gear_optimizer.solver.analytical_fg import create_scorer_from_calc_song
     from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE
+    from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
 
     # Use exactly representable timestamps (step=0.125) to avoid f32 boundary drift.
     n_notes = 512
@@ -65,27 +66,45 @@ def test_fg_breakpoints_max_fp_kernel_parity_small():
     n_sections = 4
     gem_scale_fever = 3
 
-    # CPU reference: compute max_fp_by_sec for each pair.
+    # CPU reference: compute max_fp_by_sec for each pair (mirror kernel logic).
     cpu_max_fp = np.zeros((len(ftff_pairs), n_sections), dtype=np.int16)
+    fever_mask_buffer = np.zeros(int(n_notes), dtype=np.bool_)
     for i_pair, (ft_g, ff_g) in enumerate(ftff_pairs):
         max_fp_by_sec = [0 for _ in range(n_sections)]
         for base_ft, base_ff in base_stats_pairs:
             ft_stat = int(base_ft) + int(ft_g) * int(gem_scale_fever)
             ff_stat = int(base_ff) + int(ff_g) * int(gem_scale_fever)
-            analysis = scorer.get_section_analysis(ft_stat, ff_stat)
-            useful = min(n_sections, int(analysis.get("useful_sections", 0) or 0))
-            if useful <= 0:
-                continue
+            ft_stat = max(0, min(160, int(ft_stat)))
+            ff_stat = max(0, min(160, int(ff_stat)))
 
-            analyzed_caps = analysis.get("section_caps") or []
-            for sec in range(useful):
-                if sec < len(analyzed_caps) and analyzed_caps[sec] > 0:
-                    cap = min(int(analyzed_caps[sec]), int(MAX_SECTION_CAPS[sec] if sec < len(MAX_SECTION_CAPS) else 4))
-                else:
-                    cap = int(MAX_SECTION_CAPS[sec] if sec < len(MAX_SECTION_CAPS) else 4)
+            non_fever_base, _, _, _ = scorer.get_fever_params(ft_stat, ff_stat)
+            fever_fill_rate = float(scorer._lookup(scorer.ref_ff, ff_stat))
+            fever_time_stat = float(scorer._lookup(scorer.ref_ft, ft_stat))
+
+            _, _, _, fever_activations, _ = calculate_fever_timeline_indices(
+                timestamps,
+                int(n_notes),
+                float(fever_fill_rate),
+                float(fever_time_stat),
+                0,  # long_notes_count
+                float(last_note_time),
+                fever_mask_buffer,
+            )
+
+            for sec in range(n_sections):
+                if sec >= int(fever_activations):
+                    continue
+                hard_cap = int(MAX_SECTION_CAPS[sec] if sec < len(MAX_SECTION_CAPS) else 4)
+                cap = int(non_fever_base)
+                if sec == 1:
+                    cap = (cap * 3) // 5
+                elif sec >= 2:
+                    cap = (cap * 3) // 10
+                cap = min(cap, hard_cap)
+                cap = max(0, min(50, int(cap)))
                 if cap <= 0:
                     continue
-                fp_cap = _fp_cap_from_forced(scorer, ft_stat, ff_stat, int(cap))
+                fp_cap = int(_fp_cap_from_forced(scorer, ft_stat, ff_stat, int(cap)))
                 if fp_cap > max_fp_by_sec[sec]:
                     max_fp_by_sec[sec] = int(fp_cap)
 

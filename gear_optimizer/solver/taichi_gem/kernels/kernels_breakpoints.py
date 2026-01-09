@@ -97,7 +97,13 @@ def fg_compute_max_fp_by_pair_kernel(
                 gap = 0
 
             base_notes = ti.cast(non_fever_base_by_ff[ff_idx], ti.i32)
-            base_cap = ti.min(base_notes, gap)
+            # NOTE: Do not cap by `gap` here.
+            #
+            # Using `gap = total_notes - last_fever_end_idx` as a hard cap is overly strict when
+            # fever overflows to song end (gap=0) and can incorrectly collapse breakpoint ranges
+            # to [0] for most/all FT/FF pairs. The breakpoint "cap" is used to bound search, not
+            # to enforce correctness; correctness is handled by the full FG evaluation.
+            base_cap = base_notes
 
             cap = base_cap
             if sec == 1:
