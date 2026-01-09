@@ -73,9 +73,11 @@ def test_fg_gpu_tasks_batching_allows_counts_max_fp_without_counts_list(monkeypa
     )
 
     ftff_pairs = [(0, 0), (1, 0)]
+    ftff_pairs_np = np.asarray(ftff_pairs, dtype=np.int32)
 
     # Intentionally omit counts_list; this used to break batching submit logic.
-    task = {"counts_max_fp": [0, 0, 0], "ftff_pairs": ftff_pairs, "base_cfg_offset": 0}
+    task_list = {"counts_max_fp": [0, 0, 0], "ftff_pairs": ftff_pairs, "base_cfg_offset": 0}
+    task_np = {"counts_max_fp": [0, 0, 0], "ftff_pairs": ftff_pairs_np, "base_cfg_offset": 0}
 
     fg_reset_global_best(n_genomes)
     solve_force_greats_finder_gpu_tasks(
@@ -84,7 +86,7 @@ def test_fg_gpu_tasks_batching_allows_counts_max_fp_without_counts_list(monkeypa
         None,
         long_notes,
         last_note_time,
-        fg_tasks=[task],
+        fg_tasks=[task_list, task_np],
         n_sections=3,
         ref_arrays=ref_arrays,
         return_raw=True,

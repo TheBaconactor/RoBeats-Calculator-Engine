@@ -1726,7 +1726,13 @@ def solve_force_greats_finder_gpu_tasks(
         fg_configs = task.get("counts_list")
         counts_max_fp = task.get("counts_max_fp")
         ftff_pairs = task.get("ftff_pairs")
-        if (not fg_configs and not counts_max_fp) or not ftff_pairs:
+        if ftff_pairs is None:
+            continue
+        if isinstance(ftff_pairs, np.ndarray):
+            ftff_empty = int(getattr(ftff_pairs, "size", 0) or 0) <= 0
+        else:
+            ftff_empty = not ftff_pairs
+        if (not fg_configs and not counts_max_fp) or ftff_empty:
             continue
         try:
             cfg_base = int(task.get("base_cfg_offset", base_cfg_offset) or base_cfg_offset)
@@ -2110,7 +2116,13 @@ def solve_force_greats_finder_gpu_tasks(
 
     for task in prepared_tasks:
         ftff_pairs = task.get("ftff_pairs")
-        if not ftff_pairs:
+        # `ftff_pairs` may be either a Python sequence or a numpy array; numpy arrays have ambiguous truthiness.
+        if ftff_pairs is None:
+            continue
+        if isinstance(ftff_pairs, np.ndarray):
+            if int(getattr(ftff_pairs, "size", 0) or 0) <= 0:
+                continue
+        elif not ftff_pairs:
             continue
         try:
             cfg_base = int(task.get("cfg_base", 0) or 0)
