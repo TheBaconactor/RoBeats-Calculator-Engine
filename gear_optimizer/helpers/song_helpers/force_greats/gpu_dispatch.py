@@ -939,6 +939,11 @@ def process_force_greats_gpu_finder(
 
             # New genome batch => require a fresh upload on the first request.
             genome_stats_uploaded = False
+            if defer_group_apply and in_process and gpu_client is not None:
+                # In in-process GPU executor mode, `genome_stats_arr` is passed by reference into async
+                # requests. When deferring apply across multiple groups, we reuse the backing buffer for
+                # subsequent groups while earlier GPU work is still in-flight, corrupting results.
+                genome_stats_arr = genome_stats_arr.copy()
 
             song_data = calc_song.get("song_data", {}) or {}
             # IMPORTANT: Taichi FG API uses float32 timestamps. If we pass float64 arrays here,
@@ -1245,6 +1250,7 @@ def process_force_greats_gpu_finder(
 
                 # Pipelined processing with GPU accumulation:
                 # Process groups and accumulate best on GPU (no per-group downloads)
+                max_fp_counts_cache: dict[tuple[int, ...], list[tuple[int, ...]]] = {}
                 for group in group_gen:
                     group_count += 1
                     counts_list, counts_max_fp, group_pairs = _extract_group_payload(group)
@@ -1325,6 +1331,31 @@ def process_force_greats_gpu_finder(
                                 if fut is not None:
                                     group_futures.append(fut)
                     else:
+                        counts_for_solve = counts_list
+                        if (not counts_for_solve) and counts_max_fp:
+                            # Direct (non-client) mode calls the single-call FG solver, which expects an explicit
+                            # config list. Expand counts_max_fp to itertools.product ordering (last section varies
+                            # fastest), matching the decode logic used for cfg_windows.
+                            try:
+                                import itertools as _it
+
+                                max_fp_key = tuple(
+                                    max(0, int(v or 0)) for v in list(counts_max_fp)[: int(n_sections)]
+                                ) or tuple([0] * int(n_sections))
+                            except Exception:
+                                max_fp_key = None
+                            if max_fp_key is not None:
+                                cached = max_fp_counts_cache.get(max_fp_key)
+                                if cached is not None:
+                                    counts_for_solve = cached
+                                else:
+                                    ranges = [range(0, int(v) + 1) for v in max_fp_key]
+                                    counts_for_solve = list(_it.product(*ranges))
+                                    max_fp_counts_cache[max_fp_key] = counts_for_solve
+
+                        if not counts_for_solve:
+                            counts_for_solve = [tuple([0] * int(n_sections))]
+
                         for ftff_chunk in _iter_ftff_chunks(group_pairs):
                             _submit_solve_force_greats_finder(
                                 genome_stats_arr,
@@ -1332,7 +1363,7 @@ def process_force_greats_gpu_finder(
                                 great_candidates,
                                 long_notes,
                                 last_note_time,
-                                counts_list if counts_list else [tuple([0] * int(n_sections))],
+                                counts_for_solve,
                                 ftff_chunk,
                                 n_sections=n_sections,
                                 is_p_ft=is_p_ft,
