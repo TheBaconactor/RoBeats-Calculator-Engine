@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import configparser
+import json
 import logging
 import os
 import traceback
@@ -16,6 +17,61 @@ from gear_optimizer.helpers.song_helpers.persistence import (
     make_build_details_fn,
 )
 from gear_optimizer.helpers.song_helpers.results_printer import print_results
+
+
+class _PostCpuProfiler:
+    def __init__(self, *, enabled: bool, out_path: str | None) -> None:
+        self.enabled = bool(enabled)
+        out_path = str(out_path or "").strip()
+        self.out_path = out_path or None
+        self._t0_wall = time.perf_counter()
+        self._t0_cpu = time.process_time()
+        self._stages: dict[str, dict[str, float | int]] = {}
+
+    def record(self, stage: str, cpu_s: float) -> None:
+        if not self.enabled:
+            return
+        try:
+            cpu_s = float(cpu_s)
+        except Exception:
+            return
+        if cpu_s <= 0.0:
+            return
+        entry = self._stages.get(stage)
+        if entry is None:
+            entry = {"count": 0, "cpu_total_s": 0.0, "cpu_max_s": 0.0}
+            self._stages[stage] = entry
+        entry["count"] = int(entry.get("count", 0) or 0) + 1
+        entry["cpu_total_s"] = float(entry.get("cpu_total_s", 0.0) or 0.0) + cpu_s
+        entry["cpu_max_s"] = max(float(entry.get("cpu_max_s", 0.0) or 0.0), cpu_s)
+
+    def emit(self) -> None:
+        if not self.enabled:
+            return
+        total_cpu = max(0.0, time.process_time() - float(self._t0_cpu))
+        total_wall = max(0.0, time.perf_counter() - float(self._t0_wall))
+        ranked = sorted(self._stages.items(), key=lambda kv: float(kv[1].get("cpu_total_s", 0.0) or 0.0), reverse=True)
+        print(f"[POST][CpuProfile] total_cpu_s={total_cpu:.3f} total_wall_s={total_wall:.3f}")
+        for name, info in ranked[:10]:
+            print(
+                "[POST][CpuProfile] {:<22} cpu_total={:>8.3f}s max={:>6.3f}s n={}".format(
+                    name,
+                    float(info.get("cpu_total_s", 0.0) or 0.0),
+                    float(info.get("cpu_max_s", 0.0) or 0.0),
+                    int(info.get("count", 0) or 0),
+                )
+            )
+        if self.out_path:
+            try:
+                os.makedirs(os.path.dirname(self.out_path), exist_ok=True)
+            except Exception:
+                pass
+            try:
+                payload = {"total_cpu_s": total_cpu, "total_wall_s": total_wall, "stages": self._stages}
+                with open(self.out_path, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh, indent=2, sort_keys=True)
+            except Exception:
+                pass
 
 
 def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
@@ -56,6 +112,10 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
         timing_threshold_ms = float(os.environ.get("POST_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))
     except Exception:
         timing_threshold_ms = 50.0
+
+    cpu_profile = str(os.environ.get("POST_CPU_PROFILE", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    cpu_profile_path = str(os.environ.get("POST_CPU_PROFILE_PATH", "") or "").strip() or None
+    profiler = _PostCpuProfiler(enabled=cpu_profile, out_path=cpu_profile_path)
 
     def _log_timing(label: str, dt_sec: float, *, song: str | None = None) -> None:
         if not timing:
@@ -120,6 +180,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             best_fg = 0
 
         try:
+            cpu_t0 = time.process_time()
             _t_print0 = time.perf_counter()
             print_results(
                 payload.get("song", song),
@@ -138,6 +199,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 cfg=payload.get("cfg"),
             )
             _log_timing("print_results", time.perf_counter() - _t_print0, song=song)
+            profiler.record("print_results_pending_final", time.process_time() - cpu_t0)
         except Exception:
             pass
 
@@ -179,9 +241,11 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     if valid_entries:
                         if timing:
                             print(f"[POST][FG] Saving {len(valid_entries)} FG variant(s) for {song_name}...")
+                        cpu_t0 = time.process_time()
                         _t_db0 = time.perf_counter()
                         save_loadouts_batch(db_key, valid_entries)
                         _log_timing("fg_save_loadouts_batch", time.perf_counter() - _t_db0, song=song_name)
+                        profiler.record("fg_save_loadouts_batch", time.process_time() - cpu_t0)
                     else:
                         if persisted:
                             print(f"[DB] Skipped FG update for {song_name}: no valid entries")
@@ -190,8 +254,10 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         from gear_optimizer.data.database import delete_pending_fg_job
 
                         _t_del0 = time.perf_counter()
+                        cpu_t0 = time.process_time()
                         delete_pending_fg_job(db_key)
                         _log_timing("fg_delete_pending_job", time.perf_counter() - _t_del0, song=song_name)
+                        profiler.record("fg_delete_pending_job", time.process_time() - cpu_t0)
                     except Exception:
                         pass
 
@@ -261,6 +327,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
 
         try:
             _t_item0 = time.perf_counter()
+            cpu_item_t0 = time.process_time()
             res = item
             if isinstance(item, dict) and item.get("_deferred_post"):
                 _t_build0 = time.perf_counter()
@@ -284,6 +351,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 _log_timing("deferred_payload_unpack", time.perf_counter() - _t_build0, song=item.get("song"))
 
                 _t_dbpayload0 = time.perf_counter()
+                cpu_t0 = time.process_time()
                 db_payload = build_db_payload(
                     best_data,
                     best_gear,
@@ -296,8 +364,10 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     db_best_fg_score=db_best_fg_score,
                 )
                 _log_timing("build_db_payload", time.perf_counter() - _t_dbpayload0, song=item.get("song"))
+                profiler.record("build_db_payload", time.process_time() - cpu_t0)
 
                 _t_persist0 = time.perf_counter()
+                cpu_t0 = time.process_time()
                 persist_entries = build_persistence_entries(
                     db_payload,
                     item.get("ga_candidates") or [],
@@ -305,6 +375,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     build_details,
                 )
                 _log_timing("build_persistence_entries", time.perf_counter() - _t_persist0, song=item.get("song"))
+                profiler.record("build_persistence_entries", time.process_time() - cpu_t0)
 
                 # Crash-safe deferred FG: store GA candidates so FG can run later without rerunning GA.
                 if item.get("_pending_fg_job") and item.get("use_evo_db", True):
@@ -346,6 +417,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         _print_pending_final(song_name_for_print)
                 else:
                     try:
+                        cpu_t0 = time.process_time()
                         _t_print0 = time.perf_counter()
                         print_results(
                             item.get("song", "Unknown"),
@@ -364,6 +436,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             cfg=cfg,
                         )
                         _log_timing("print_results", time.perf_counter() - _t_print0, song=item.get("song"))
+                        profiler.record("print_results", time.process_time() - cpu_t0)
                     except Exception:
                         pass
 
@@ -386,9 +459,11 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         e for e in persisted if e.get("score", 0) > 0 and (e.get("gear") or e.get("minis"))
                     ]
                     if valid_entries:
+                        cpu_t0 = time.process_time()
                         _t_db0 = time.perf_counter()
                         save_loadouts_batch(db_key, valid_entries)
                         _log_timing("save_loadouts_batch", time.perf_counter() - _t_db0, song=song_name)
+                        profiler.record("save_loadouts_batch", time.process_time() - cpu_t0)
                     else:
                         print(f"[DB] Skipped save for {song_name}: no valid entries")
 
@@ -410,6 +485,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 except Exception:
                     pass
             _log_timing("post_item_total", time.perf_counter() - _t_item0, song=song_name)
+            profiler.record("post_item_total", time.process_time() - cpu_item_t0)
 
         except Exception as exc:
             failed += 1
@@ -435,6 +511,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
         pass
 
     try:
+        profiler.emit()
         reporter.shutdown(timeout=10.0)
     except Exception:
         pass

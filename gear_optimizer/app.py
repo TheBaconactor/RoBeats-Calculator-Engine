@@ -196,6 +196,7 @@ class GearOptimizerApp:
         self.setup_logging()
         self.discord_reporter = self.setup_discord()
         self._async_db_saver = _AsyncDbSaver(self.discord_reporter)
+        self._run_start_monotonic = time.monotonic()
         self._stop_requested = threading.Event()
         self._force_exit_requested = threading.Event()
         self._signal_handlers_installed = False
@@ -245,6 +246,14 @@ class GearOptimizerApp:
     def _stop_requested_now(self) -> bool:
         if self._stop_requested.is_set():
             return True
+        try:
+            started = getattr(self, "_run_start_monotonic", None)
+            stop_after = float(os.environ.get("METAFINDER_STOP_AFTER_SEC", "0") or "0")
+            if started is not None and stop_after > 0.0 and (time.monotonic() - float(started)) >= stop_after:
+                self.request_stop(f"stop-after timer reached: {stop_after:.0f}s")
+                return True
+        except Exception:
+            pass
         try:
             stop_file = self._stop_file_path()
             if stop_file and os.path.exists(stop_file):

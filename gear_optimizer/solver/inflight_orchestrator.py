@@ -136,9 +136,8 @@ class _InflightSong:
     prev_attempts_first: int
     meta_primary_color: str
     meta_secondary_color: str
-    ga_seed: int | None = None
-
     ga_gen: Any
+    ga_seed: int | None = None
     pending_eval: Optional[concurrent.futures.Future] = None
     pending_job: Optional[SolveGenomesJob] = None
 
