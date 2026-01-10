@@ -514,9 +514,7 @@ def process_song_task(args):
             except Exception:
                 seed_is_random = False
 
-            if skip_when_random and hitsim_enabled and (
-                seed_is_random or (song_repeats > 1 and int(cfg_seed) == 0)
-            ):
+            if skip_when_random and hitsim_enabled and (seed_is_random or (song_repeats > 1 and int(cfg_seed) == 0)):
                 skip_db_lookup = True
 
         if skip_db_lookup:
