@@ -215,7 +215,14 @@ def fg_baseline_params(stats, calc_song, ref_arrays):
         cache_key = None
 
     song_data = calc_song.get("song_data", {}) or {}
-    timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
+    meta0 = calc_song.get("metadata", {}) or {}
+    apply_to = str(meta0.get("HumanHitSimApplyTo", "") or "").strip().upper() if meta0.get("HumanHitSimApplied") else ""
+    if apply_to == "ALL":
+        timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
+    else:
+        # For ApplyTo=FG, baseline section counting is chart-structure driven and can
+        # be shared across repeats even when the per-run hit-sim seed is random.
+        timestamps = song_data.get("timestamps", song_data.get("fg_timestamps"))
     total_notes = len(timestamps)
     if total_notes <= 0:
         return 0, 0
@@ -287,11 +294,15 @@ def _song_cache_key(calc_song):
     """Generate cache key for song."""
     meta = calc_song.get("metadata", {}) or {}
     song_data = calc_song.get("song_data", {}) or {}
-    timestamps = song_data.get("fg_timestamps", song_data.get("timestamps", ()))
+    apply_to = str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper() if meta.get("HumanHitSimApplied") else ""
+    if apply_to == "ALL":
+        timestamps = song_data.get("fg_timestamps", song_data.get("timestamps", ()))
+    else:
+        timestamps = song_data.get("timestamps", song_data.get("fg_timestamps", ()))
     n = int(len(timestamps))
     first_ts = float(timestamps[0]) if n else 0.0
     last_ts = float(timestamps[-1]) if n else 0.0
-    sim_seed = int(meta.get("HumanHitSimSeed", 0) or 0)
+    sim_seed = int(meta.get("HumanHitSimSeed", 0) or 0) if apply_to == "ALL" else 0
     return (
         str(meta.get("Song Name", "")),
         n,
@@ -299,5 +310,6 @@ def _song_cache_key(calc_song):
         last_ts,
         float(meta.get("Last Note Time", 0) or 0),
         int(meta.get("Long Notes", 0) or 0),
+        apply_to,
         sim_seed,
     )

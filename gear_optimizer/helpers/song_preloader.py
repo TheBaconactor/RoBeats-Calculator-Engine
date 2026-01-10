@@ -18,7 +18,6 @@ from dataclasses import dataclass
 import time
 
 from ..core.stats_calculator import build_base_stats_from_config
-import numpy as np
 
 
 @dataclass
@@ -192,37 +191,16 @@ class SongPreloader:
         preparing data structures for the GA.
         """
         try:
-            from ..pipeline.song_processor import read_song_file
-            from ..solver.hit_simulation import (
-                simulate_perfect_hit_timestamps_with_great_candidates,
-            )
+            from ..pipeline.song_processor import get_base_calc_song, clone_calc_song
 
-            song_data = read_song_file(req.file_path)
-            if not song_data:
-                raise ValueError(f"Failed to read song file: {req.file_path}")
+            base_calc_song = get_base_calc_song(req.file_path, req.cfg_dict)
+            if not isinstance(base_calc_song, dict) or not base_calc_song.get("song_data"):
+                raise ValueError(f"Failed to load cached base calc_song: {req.file_path}")
 
-            timestamps = song_data.get("timestamps") or []
-            if not timestamps:
+            calc_song = clone_calc_song(base_calc_song)
+            timestamps_np = (calc_song.get("song_data", {}) or {}).get("timestamps")
+            if timestamps_np is None or int(getattr(timestamps_np, "shape", (0,))[0]) <= 0:
                 raise ValueError(f"Song has no timestamps: {req.song_name}")
-
-            timestamps_np = np.asarray(timestamps, dtype=np.float64)
-            note_types = song_data.get("note_types") or []
-            note_types_np = (
-                np.asarray(note_types, dtype=np.int16)
-                if note_types
-                else np.ones(timestamps_np.shape[0], dtype=np.int16)
-            )
-            if note_types_np.shape[0] != timestamps_np.shape[0]:
-                note_types_np = np.ones(timestamps_np.shape[0], dtype=np.int16)
-
-            calc_song = {
-                "metadata": song_data.get("song_details", {}) or {},
-                "song_data": {
-                    "timestamps": timestamps_np,
-                    "chart_timestamps": timestamps_np,
-                    "note_types": note_types_np,
-                },
-            }
 
             # Optional: HumanHitSim (same semantics as song_processor.py) so GPU prefetch
             # and the main song run see identical timestamps.

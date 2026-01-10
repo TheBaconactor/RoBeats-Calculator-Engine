@@ -373,3 +373,27 @@ def create_scorer_from_calc_song(calc_song: dict, ref_arrays: dict) -> Analytica
         ref_ft=np.array(ref_arrays["Fever Time"]),
         ref_ff=np.array(ref_arrays["Fever Fill Rate"]),
     )
+
+
+def create_chart_scorer_from_calc_song(calc_song: dict, ref_arrays: dict) -> AnalyticalFGScorer:
+    """
+    Create an AnalyticalFGScorer based on the *chart* timestamps.
+
+    This is useful when HumanHitSim.ApplyTo=FG: breakpoint prep is largely
+    chart-structure dependent and can be cached across repeats, while per-run
+    hit-sim arrays are applied later during evaluation.
+    """
+    song_data = calc_song["song_data"]
+    metadata = calc_song.get("metadata", {})
+
+    timestamps = np.array(song_data.get("timestamps", ()), dtype=np.float64)
+
+    return AnalyticalFGScorer(
+        timestamps=timestamps,
+        great_candidate_timestamps=None,
+        total_notes=len(song_data.get("timestamps", ())),
+        long_notes=int(metadata.get("Long Notes", 0)),
+        last_note_time=float(metadata.get("Last Note Time", timestamps[-1] if len(timestamps) else 0.0)),
+        ref_ft=np.array(ref_arrays["Fever Time"]),
+        ref_ff=np.array(ref_arrays["Fever Fill Rate"]),
+    )
