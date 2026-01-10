@@ -15,15 +15,19 @@ REFACTORED: Helper functions extracted to .helpers.song_helpers for maintainabil
 import concurrent.futures
 import contextlib
 import gc
+import hashlib
+import json
 import logging
 import multiprocessing
 import os
 import sys
+import threading
 import time
 import traceback
 from io import StringIO
 
 import numpy as np
+from cachetools import LRUCache
 
 from ..data.models import Tee, WarnOnce
 from ..core.constants import (
@@ -68,6 +72,95 @@ PERF_TIMING_ENABLED = os.environ.get("PERF_TIMING", "0") == "1"
 
 # GPU profiler for songs/hour tracking
 _gpu_profiler = get_gpu_profiler()
+
+
+# ---------------------------------------------------------------------------
+# Base calc_song cache (pre-HumanHitSim), keyed by file path + config hash.
+#
+# Motivation:
+# - When the same song is processed multiple times (SongRepeats / repeated queue),
+#   we were fully parsing the file + building arrays on every run.
+# - HumanHitSim.Seed=0 requires re-applying the sim each repeat (unique seed),
+#   so we cache the *base* calc_song and clone it per run before applying HitSim.
+# ---------------------------------------------------------------------------
+def _stable_cfg_hash(cfg_dict: dict | None) -> str:
+    if not isinstance(cfg_dict, dict) or not cfg_dict:
+        return "cfg0"
+    try:
+        payload = json.dumps(cfg_dict, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    except Exception:
+        payload = repr(sorted(cfg_dict.items(), key=lambda kv: str(kv[0])))
+    h = hashlib.sha1(payload.encode("utf-8", errors="replace")).hexdigest()
+    return h[:16]
+
+
+_BASE_CALC_SONG_CACHE_MAX = max(1, int(os.environ.get("BASE_CALC_SONG_CACHE_MAX", "64") or "64"))
+_BASE_CALC_SONG_CACHE: LRUCache = LRUCache(maxsize=_BASE_CALC_SONG_CACHE_MAX)
+_BASE_CALC_SONG_CACHE_LOCK = threading.Lock()
+
+
+def clone_calc_song(calc_song: dict) -> dict:
+    """
+    Clone a calc_song dict for per-run mutation.
+
+    Arrays are shared by reference (read-only); dicts are copied.
+    """
+    if not isinstance(calc_song, dict):
+        return {}
+    meta = calc_song.get("metadata", {}) or {}
+    song_data = calc_song.get("song_data", {}) or {}
+    return {"metadata": dict(meta), "song_data": dict(song_data)}
+
+
+def _build_base_calc_song_from_file(fp: str) -> dict:
+    song_data = read_song_file(fp)
+
+    song_timestamps_np = np.asarray(song_data.get("timestamps") or [], dtype=np.float64)
+    song_note_types_np = np.asarray(song_data.get("note_types") or [], dtype=np.int16)
+    if song_note_types_np.shape[0] != song_timestamps_np.shape[0]:
+        song_note_types_np = np.ones(song_timestamps_np.shape[0], dtype=np.int16)
+
+    return {
+        "metadata": song_data.get("song_details", {}) or {},
+        "song_data": {
+            "timestamps": song_timestamps_np,
+            "chart_timestamps": song_timestamps_np,
+            "note_types": song_note_types_np,
+        },
+    }
+
+
+def get_base_calc_song(fp: str, cfg_dict: dict | None = None) -> dict:
+    """
+    Get cached base calc_song for this file/config pair.
+
+    The returned object is shared; callers must clone via clone_calc_song()
+    before applying HumanHitSim or any other per-run mutation.
+    """
+    if not fp:
+        return {}
+
+    abs_fp = os.path.abspath(fp)
+    cfg_h = _stable_cfg_hash(cfg_dict)
+    key = (abs_fp, cfg_h)
+
+    try:
+        st = os.stat(abs_fp)
+        mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
+    except Exception:
+        mtime_ns = -1
+
+    with _BASE_CALC_SONG_CACHE_LOCK:
+        entry = _BASE_CALC_SONG_CACHE.get(key)
+        if entry is not None:
+            cached_mtime_ns, cached_calc_song = entry
+            if int(cached_mtime_ns) == int(mtime_ns) and isinstance(cached_calc_song, dict):
+                return cached_calc_song
+
+    base = _build_base_calc_song_from_file(abs_fp)
+    with _BASE_CALC_SONG_CACHE_LOCK:
+        _BASE_CALC_SONG_CACHE[key] = (int(mtime_ns), base)
+    return base
 
 
 def scan_song_header(fp):
@@ -311,27 +404,12 @@ def process_song_task(args):
         gpu_mode = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False)
 
         if isinstance(preloaded_calc_song, dict) and preloaded_calc_song.get("song_data"):
-            calc_song = preloaded_calc_song
+            calc_song = clone_calc_song(preloaded_calc_song)
             stage_timing["cpu_read_sec"] = 0.0
         else:
             _t_read0 = time.perf_counter()
-            song_data = read_song_file(fp)
-
-            # OPTIMIZATION: store timestamps as NumPy array once per song
-            song_timestamps_np = np.array(song_data["timestamps"], dtype=np.float64)
-            song_note_types_np = np.array(song_data.get("note_types") or [], dtype=np.int16)
-            if song_note_types_np.shape[0] != song_timestamps_np.shape[0]:
-                # Older song dumps may not include note types; default to "normal note".
-                song_note_types_np = np.ones(song_timestamps_np.shape[0], dtype=np.int16)
-
-            calc_song = {
-                "metadata": song_data["song_details"],
-                "song_data": {
-                    "timestamps": song_timestamps_np,
-                    "chart_timestamps": song_timestamps_np,
-                    "note_types": song_note_types_np,
-                },
-            }
+            base_calc_song = get_base_calc_song(fp, cfg_dict)
+            calc_song = clone_calc_song(base_calc_song)
             stage_timing["cpu_read_sec"] = time.perf_counter() - _t_read0
         try:
             # Ensure chart_timestamps is always available for "HumanHitSim OFF" comparisons.
@@ -405,9 +483,53 @@ def process_song_task(args):
                 pass
 
         # Load database context (prev_record, known_loadouts)
-        _t_db0 = time.perf_counter()
-        prev_record, known_loadouts = load_database_context(db_key, use_evo_db, gears_by_name, minis_by_name)
-        stage_timing["cpu_db_load_sec"] = time.perf_counter() - _t_db0
+        #
+        # Fast-path: when HumanHitSim.Seed=0 (randomized), each run gets a unique DB key
+        # and lookup always misses. Avoid the read overhead for SongRepeats runs.
+        skip_db_lookup = False
+        if use_evo_db:
+            try:
+                hitsim_enabled = cfg.getboolean("HumanHitSim", "Enabled", fallback=False)
+            except Exception:
+                hitsim_enabled = False
+
+            try:
+                cfg_seed = int(str(cfg.get("HumanHitSim", "Seed", fallback="0") or "0"))
+            except Exception:
+                cfg_seed = 0
+
+            try:
+                song_repeats = int(str(cfg.get("IterationEngine", "SongRepeats", fallback="1") or "1"))
+            except Exception:
+                song_repeats = 1
+
+            try:
+                skip_when_random = cfg.getboolean("HumanHitSim", "SkipDBLookupWhenSeedIsRandom", fallback=True)
+            except Exception:
+                skip_when_random = True
+
+            try:
+                meta0 = calc_song.get("metadata", {}) or {}
+                seed_is_random = bool(meta0.get("HumanHitSimSeedIsRandom"))
+            except Exception:
+                seed_is_random = False
+
+            if skip_when_random and hitsim_enabled and (
+                seed_is_random or (song_repeats > 1 and int(cfg_seed) == 0)
+            ):
+                skip_db_lookup = True
+
+        if skip_db_lookup:
+            prev_record, known_loadouts = None, {}
+            stage_timing["cpu_db_load_sec"] = 0.0
+            try:
+                print("[DB] Skipping DB seed/known-loadout lookup (HumanHitSim random seed).")
+            except Exception:
+                pass
+        else:
+            _t_db0 = time.perf_counter()
+            prev_record, known_loadouts = load_database_context(db_key, use_evo_db, gears_by_name, minis_by_name)
+            stage_timing["cpu_db_load_sec"] = time.perf_counter() - _t_db0
 
         db_seed = prev_record if prev_record else None
 

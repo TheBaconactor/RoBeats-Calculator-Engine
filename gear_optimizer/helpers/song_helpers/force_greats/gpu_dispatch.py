@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from typing import TYPE_CHECKING, Optional
+
+from cachetools import LRUCache
 
 from . import cache_validation, result_application
 from ....core.color_flags import build_color_flags
@@ -13,6 +16,102 @@ from .ftff_pairs import _collect_ftff_pairs_from_centers, _group_ftff_pairs_by_m
 
 if TYPE_CHECKING:
     from gear_optimizer.solver.gpu_service import GpuServiceClient
+
+
+_FG_CHART_SCORER_CACHE_MAX = max(1, int(os.environ.get("FG_CHART_SCORER_CACHE_MAX", "64") or "64"))
+_FG_CHART_SCORER_CACHE: LRUCache = LRUCache(maxsize=_FG_CHART_SCORER_CACHE_MAX)
+_FG_CHART_SCORER_LOCK = threading.Lock()
+
+_FG_ANALYTICAL_BREAKPOINTS_CACHE_MAX = max(1, int(os.environ.get("FG_ANALYTICAL_BREAKPOINTS_CACHE_MAX", "64") or "64"))
+_FG_ANALYTICAL_BREAKPOINTS_CACHE: LRUCache = LRUCache(maxsize=_FG_ANALYTICAL_BREAKPOINTS_CACHE_MAX)
+_FG_ANALYTICAL_BREAKPOINTS_LOCK = threading.Lock()
+
+
+def _chart_signature_key(calc_song: dict) -> tuple:
+    meta = calc_song.get("metadata", {}) or {}
+    song_data = calc_song.get("song_data", {}) or {}
+    ts = song_data.get("timestamps", ())
+    n = int(len(ts)) if ts is not None else 0
+    if n > 0:
+        try:
+            first_ms = int(float(ts[0]) * 1000.0)
+        except Exception:
+            first_ms = 0
+        try:
+            last_ms = int(float(ts[-1]) * 1000.0)
+        except Exception:
+            last_ms = 0
+    else:
+        first_ms = 0
+        last_ms = 0
+
+    try:
+        lnt = float(meta.get("Last Note Time", 0) or 0)
+    except Exception:
+        lnt = 0.0
+    if lnt <= 0.0 and n > 0:
+        try:
+            lnt = float(ts[-1])
+        except Exception:
+            lnt = 0.0
+    last_note_ms = int(lnt * 1000.0) if lnt > 0 else 0
+
+    try:
+        long_notes = int(meta.get("Long Notes", 0) or 0)
+    except Exception:
+        long_notes = 0
+
+    return (
+        str(meta.get("Song Name", "")),
+        str(meta.get("Difficulty", "")),
+        n,
+        first_ms,
+        last_ms,
+        last_note_ms,
+        long_notes,
+    )
+
+
+def _hitsim_apply_to(calc_song: dict) -> str:
+    try:
+        meta = calc_song.get("metadata", {}) or {}
+        if not meta.get("HumanHitSimApplied"):
+            return ""
+        return str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper()
+    except Exception:
+        return ""
+
+
+def _get_cached_chart_scorer(calc_song: dict, ref_arrays: dict, create_chart_scorer_fn):
+    key = _chart_signature_key(calc_song)
+    with _FG_CHART_SCORER_LOCK:
+        scorer = _FG_CHART_SCORER_CACHE.get(key)
+        if scorer is not None:
+            return scorer, True
+
+    scorer = create_chart_scorer_fn(calc_song, ref_arrays)
+    with _FG_CHART_SCORER_LOCK:
+        _FG_CHART_SCORER_CACHE[key] = scorer
+    return scorer, False
+
+
+def _get_cached_analytical_breakpoints(
+    *,
+    chart_key: tuple,
+    num_sections: int,
+    compute_fn,
+):
+    key = (chart_key, int(num_sections))
+    with _FG_ANALYTICAL_BREAKPOINTS_LOCK:
+        cached = _FG_ANALYTICAL_BREAKPOINTS_CACHE.get(key)
+        if cached is not None:
+            return list(cached)
+
+    computed = compute_fn()
+    frozen = tuple(tuple(x) for x in (computed or []))
+    with _FG_ANALYTICAL_BREAKPOINTS_LOCK:
+        _FG_ANALYTICAL_BREAKPOINTS_CACHE[key] = frozen
+    return list(frozen)
 
 
 def _is_empty_pairs(pairs) -> bool:
@@ -203,7 +302,7 @@ def process_force_greats_gpu_finder(
         collect_analytical_breakpoints,
         iter_analytical_breakpoint_groups,
     )
-    from ....solver.analytical_fg import create_scorer_from_calc_song
+    from ....solver.analytical_fg import create_scorer_from_calc_song, create_chart_scorer_from_calc_song
     from ....solver.taichi_gem.force_greats import fields as fg_fields
     from ....solver.taichi_gem.force_greats.api import (
         fg_reset_global_best,
@@ -643,6 +742,24 @@ def process_force_greats_gpu_finder(
             if sig0:
                 keep_sigs.add(str(sig0))
 
+    hitsim_apply_to = _hitsim_apply_to(calc_song)
+    chart_key = _chart_signature_key(calc_song)
+    if hitsim_apply_to == "FG":
+        fg_scorer, fg_scorer_cache_hit = _get_cached_chart_scorer(
+            calc_song, ref_arrays, create_chart_scorer_from_calc_song
+        )
+    else:
+        fg_scorer = create_scorer_from_calc_song(calc_song, ref_arrays)
+        fg_scorer_cache_hit = False
+    if (not fg_scorer_cache_hit) and hitsim_apply_to == "FG":
+        try:
+            print(
+                f"[FG] Cached chart AnalyticalFGScorer: {getattr(fg_scorer, 'total_notes', '?')} notes, "
+                f"head_len={getattr(fg_scorer, 'head_len', '?')}"
+            )
+        except Exception:
+            pass
+
     # Pair-caps (161x161x16):
     # Prefer a GPU-resident derivation from the already-computed timeline grid to avoid
     # CPU-side cap-grid construction and the host->device upload (major GPU-queue starvation source).
@@ -766,16 +883,17 @@ def process_force_greats_gpu_finder(
             use_fast=bool(fast_pairs),
         )
 
-        # Per-Group Analytic Config Collection using PURE MATH (100x faster)
-        # Create analytical scorer once per song (cached implicitly by calc_song)
-        if "fg_scorer" not in locals():
-            fg_scorer = create_scorer_from_calc_song(calc_song, ref_arrays)
-            print(f"[FG] Created AnalyticalFGScorer: {fg_scorer.total_notes} notes, head_len={fg_scorer.head_len}")
-
         counts_list = None
         if not per_pair_breakpoints:
             # Get breakpoints using pure math (no simulation needed)
-            group_counts_list = collect_analytical_breakpoints(fg_scorer, n_sections)
+            if hitsim_apply_to == "FG":
+                group_counts_list = _get_cached_analytical_breakpoints(
+                    chart_key=chart_key,
+                    num_sections=int(n_sections),
+                    compute_fn=lambda: collect_analytical_breakpoints(fg_scorer, n_sections),
+                )
+            else:
+                group_counts_list = collect_analytical_breakpoints(fg_scorer, n_sections)
 
             if not group_counts_list:
                 group_counts_list = [tuple([0] * int(n_sections))]
@@ -1431,7 +1549,7 @@ def process_force_greats_gpu_finder(
                             "n_pending": int(n_pending),
                             "master_configs": master_configs,
                             "cfg_windows": cfg_windows,
-                            "fg_scorer": fg_scorer if "fg_scorer" in locals() else None,
+                            "fg_scorer": fg_scorer,
                             "download_future": download_future,
                             "futures": group_futures,
                         }
@@ -1643,7 +1761,7 @@ def process_force_greats_gpu_finder(
                 # Safe: when result_cfg_counts is provided, counts_list is ignored.
                 # When result_cfg_counts is None, we need counts_list to decode cfg_idx.
                 counts_list=counts_list,
-                fg_scorer=fg_scorer if "fg_scorer" in locals() else None,
+                fg_scorer=fg_scorer,
                 result_final=result_final,
                 result_base=result_base,
                 result_cfg_idx=result_cfg_idx,

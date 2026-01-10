@@ -484,7 +484,49 @@ def _prepare_song(task: tuple) -> _NativeSong:
         except Exception:
             pass
 
-    prev_record, known_loadouts = load_database_context(db_key, bool(use_evo_db), gears_by_name, minis_by_name)
+    # Load database context (prev_record, known_loadouts)
+    #
+    # Fast-path: when HumanHitSim.Seed=0 (randomized), each run gets a unique DB key
+    # and lookup always misses. Avoid the read overhead for SongRepeats runs.
+    skip_db_lookup = False
+    if use_evo_db:
+        try:
+            hitsim_enabled = cfg.getboolean("HumanHitSim", "Enabled", fallback=False)
+        except Exception:
+            hitsim_enabled = False
+
+        try:
+            cfg_seed = int(str(cfg.get("HumanHitSim", "Seed", fallback="0") or "0"))
+        except Exception:
+            cfg_seed = 0
+
+        try:
+            song_repeats = int(str(cfg.get("IterationEngine", "SongRepeats", fallback="1") or "1"))
+        except Exception:
+            song_repeats = 1
+
+        try:
+            skip_when_random = cfg.getboolean("HumanHitSim", "SkipDBLookupWhenSeedIsRandom", fallback=True)
+        except Exception:
+            skip_when_random = True
+
+        try:
+            meta0 = calc_song.get("metadata", {}) or {}
+            seed_is_random = bool(meta0.get("HumanHitSimSeedIsRandom"))
+        except Exception:
+            seed_is_random = False
+
+        if skip_when_random and hitsim_enabled and (seed_is_random or (song_repeats > 1 and int(cfg_seed) == 0)):
+            skip_db_lookup = True
+
+    if skip_db_lookup:
+        prev_record, known_loadouts = None, {}
+        try:
+            print("[DB] Skipping DB seed/known-loadout lookup (HumanHitSim random seed).")
+        except Exception:
+            pass
+    else:
+        prev_record, known_loadouts = load_database_context(db_key, bool(use_evo_db), gears_by_name, minis_by_name)
     db_best_fg_score, attempt_lifetime, prev_attempts_first = _summarize_db_context(prev_record, known_loadouts)
 
     p_color = calc_song.get("metadata", {}).get("Primary Color", "Rush")
