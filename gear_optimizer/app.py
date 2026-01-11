@@ -671,6 +671,11 @@ class GearOptimizerApp:
             print("Error: No matching songs found.")
             return []
 
+        try:
+            print(f"[Queue] Discovered {len(song_queue)} song(s) (Difficulty={diff})")
+        except Exception:
+            pass
+
         if use_evo_db:
             try:
                 song_queue = prioritize_song_queue_missing_db(song_queue)

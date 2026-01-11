@@ -940,6 +940,17 @@ def run_native_inflight_song_pipeline(
         max_song_slots = 8
     song_slot_limit = max(1, int(max_song_slots) - 1)
     inflight_limit = min(int(inflight_limit), int(song_slot_limit))
+    if int(in_flight_songs) > 1:
+        try:
+            msg = (
+                f"[InFlight] enabled: requested={int(in_flight_songs)} effective={int(inflight_limit)} "
+                f"(GPU_SONG_SLOTS={int(max_song_slots)}, usable_slots={int(song_slot_limit)})"
+            )
+            if int(inflight_limit) < int(in_flight_songs):
+                msg += " [capped by song slots; set GPU_SONG_SLOTS >= InFlightSongs + 1]"
+            print(msg)
+        except Exception:
+            pass
 
     # Reuse the slot pool implementation from the non-native in-flight pipeline.
     from gear_optimizer.solver.inflight_orchestrator import SongSlotPool
