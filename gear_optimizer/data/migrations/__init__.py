@@ -11,7 +11,10 @@ from typing import Callable, Dict, Optional
 
 Migration = Callable[[sqlite3.Connection], None]
 
-LATEST_SCHEMA_VERSION = 6
+# NOTE: `evolution.db` in the wild may already have `PRAGMA user_version=8` even though
+# the physical schema matches v6 (v6 is a data-level migration only). Keep v7/v8 as
+# no-ops so older DBs can advance and newer DBs won't be rejected.
+LATEST_SCHEMA_VERSION = 8
 
 
 def _migration_1_init_schema(conn: sqlite3.Connection) -> None:
@@ -330,6 +333,24 @@ def _migration_6_effective_loadout_hash_and_mini_variants(conn: sqlite3.Connecti
         pass
 
 
+def _migration_7_noop(conn: sqlite3.Connection) -> None:
+    """
+    No-op migration (schema version continuity).
+
+    Schema version 7 did not introduce any physical schema changes in this repo.
+    """
+    return
+
+
+def _migration_8_noop(conn: sqlite3.Connection) -> None:
+    """
+    No-op migration (schema version continuity).
+
+    Schema version 8 did not introduce any physical schema changes in this repo.
+    """
+    return
+
+
 _MIGRATIONS: Dict[int, Migration] = {
     1: _migration_1_init_schema,
     2: _migration_2_add_pending_fg_jobs,
@@ -337,6 +358,8 @@ _MIGRATIONS: Dict[int, Migration] = {
     4: _migration_4_noop,
     5: _migration_5_cleanup,
     6: _migration_6_effective_loadout_hash_and_mini_variants,
+    7: _migration_7_noop,
+    8: _migration_8_noop,
 }
 
 
