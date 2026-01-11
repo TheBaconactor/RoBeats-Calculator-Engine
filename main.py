@@ -51,10 +51,11 @@ def _apply_gpu_song_slots_default() -> None:
     except Exception:
         inflight = 0
 
-    # Default Taichi song slots is 8; match in-flight concurrency when higher,
-    # but cap to avoid runaway VRAM usage on aggressive configs.
-    target = max(8, inflight)
-    target = min(16, target)
+    # Default Taichi song slots is 8. For high-throughput runs we prefer a larger
+    # slot pool to reduce churn/timeline reuploads as songs rotate through slots.
+    #
+    # Users can override this explicitly via `GPU_SONG_SLOTS`.
+    target = max(24, 8, inflight)
     os.environ.setdefault("GPU_SONG_SLOTS", str(int(target)))
 
 
