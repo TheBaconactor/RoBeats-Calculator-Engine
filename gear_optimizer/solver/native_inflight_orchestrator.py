@@ -551,8 +551,9 @@ def _prepare_song(task: tuple) -> _NativeSong:
 
     # Load database context (prev_record, known_loadouts)
     #
-    # Fast-path: when HumanHitSim.Seed=0 (randomized), each run gets a unique DB key
-    # and lookup always misses. Avoid the read overhead for SongRepeats runs.
+    # When HumanHitSim uses randomized seeds, some users prefer not to seed GA/known-loadout
+    # caches from the DB (comparability concerns). However we still want to fetch the
+    # previous best record so we don't spam "NEW RECORD" on songs that already exist.
     skip_db_lookup = False
     if use_evo_db:
         try:
@@ -584,12 +585,22 @@ def _prepare_song(task: tuple) -> _NativeSong:
         if skip_when_random and hitsim_enabled and (seed_is_random or (song_repeats > 1 and int(cfg_seed) == 0)):
             skip_db_lookup = True
 
+    allow_db_seed = True
     if skip_db_lookup:
-        prev_record, known_loadouts = None, {}
+        allow_db_seed = False
         try:
-            print("[DB] Skipping DB seed/known-loadout lookup (HumanHitSim random seed).")
+            print("[DB] Skipping DB seed/known-loadout reuse (HumanHitSim random seed).")
         except Exception:
             pass
+        # Still load the previous-best record for correct record comparison/messaging.
+        prev_record, _known = load_database_context(
+            db_key,
+            bool(use_evo_db),
+            gears_by_name,
+            minis_by_name,
+            load_known_loadouts=False,
+        )
+        known_loadouts = {}
     else:
         prev_record, known_loadouts = load_database_context(db_key, bool(use_evo_db), gears_by_name, minis_by_name)
     db_best_fg_score, attempt_lifetime, prev_attempts_first = _summarize_db_context(prev_record, known_loadouts)
@@ -683,7 +694,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
         current_mini_list,
     )
 
-    db_seed = prev_record if prev_record else None
+    db_seed = prev_record if (allow_db_seed and prev_record) else None
     num_runs = int(getattr(ga_settings, "multi_start", 1) or 1)
     if num_runs <= 0:
         num_runs = 1

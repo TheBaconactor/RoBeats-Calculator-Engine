@@ -28,37 +28,15 @@ _LAST_WAL_MAINT_TS = 0.0
 
 def build_db_key(found_song_name: str, calc_song: dict | None = None) -> str:
     """
-    Build a DB lookup key that includes scoring-relevant context when needed.
+    Build a stable DB lookup key for a song.
 
-    Today the big source of "regression-looking" behavior is HumanHitSim:
-    if the HumanHitSim seed/mode changes between runs but the DB key stays the
-    same, we mix incompatible score contexts (bad seeding + misleading records).
+    This project intentionally uses a *global* per-song DB key (the song name only).
+    HumanHitSim may change per run (including randomized seeds), but we still want
+    runs to accumulate into a single song record rather than forking DB namespaces.
     """
     if not isinstance(found_song_name, str) or not found_song_name:
         found_song_name = str(found_song_name)
-
-    if not isinstance(calc_song, dict):
-        return found_song_name
-    meta = calc_song.get("metadata", {}) or {}
-
-    if not meta.get("HumanHitSimApplied"):
-        return found_song_name
-
-    seed = meta.get("HumanHitSimSeed")
-    apply_to = meta.get("HumanHitSimApplyTo")
-    dist = meta.get("HumanHitSimDistribution")
-    great_mode = meta.get("HumanHitSimGreatMode")
-    if seed is None and apply_to is None and dist is None and great_mode is None:
-        return found_song_name
-
-    try:
-        seed_s = "?" if seed is None else str(int(seed))
-    except Exception:
-        seed_s = "?"
-    apply_s = str(apply_to or "?").strip()
-    dist_s = str(dist or "?").strip()
-    gm_s = str(great_mode or "?").strip()
-    return f"{found_song_name} | HumanHitSim(apply={apply_s},dist={dist_s},mode={gm_s},seed={seed_s})"
+    return found_song_name.strip()
 
 
 def _maybe_wal_maintenance(conn) -> None:
@@ -96,7 +74,7 @@ def _maybe_wal_maintenance(conn) -> None:
         logging.debug("[DB] PRAGMA optimize failed", exc_info=True)
 
 
-def load_database_context(found_song_name, use_evo_db, gears_by_name, minis_by_name):
+def load_database_context(found_song_name, use_evo_db, gears_by_name, minis_by_name, *, load_known_loadouts: bool = True):
     """
     Load database seeds and known loadouts.
 
@@ -134,9 +112,15 @@ def load_database_context(found_song_name, use_evo_db, gears_by_name, minis_by_n
             # This catches cases where the song key differs by suffix/spacing.
             try:
                 conn = get_db_connection()
+                base_key = str(found_song_name or "").strip()
+                if "|" in base_key:
+                    base_key = base_key.split("|", 1)[0].strip()
+                base_key = base_key.split("(", 1)[0].strip()
+                if not base_key:
+                    base_key = str(found_song_name or "").strip()
                 rows = conn.execute(
                     "SELECT DISTINCT song_name FROM loadouts WHERE song_name LIKE ? LIMIT 8",
-                    (f"%{found_song_name.split('(')[0].strip()}%",),
+                    (f"%{base_key}%",),
                 ).fetchall()
                 conn.close()
                 if rows:
@@ -147,52 +131,53 @@ def load_database_context(found_song_name, use_evo_db, gears_by_name, minis_by_n
             except Exception:
                 pass
 
-        # Fetch known loadouts for persistent caching
-        try:
-            conn = get_db_connection()
-            cursor = conn.execute(
-                """SELECT loadout_hash, score, fg_score, force_details_json, details_json
-                   FROM loadouts
-                   WHERE song_name = ?
-                   ORDER BY score DESC
-                   LIMIT ?""",
-                (found_song_name, LOADOUTS_PER_SONG_LIMIT),
-            )
-            for row in cursor:
-                force_blob = row["force_details_json"]
-                force_data = None
-                if force_blob:
-                    try:
-                        force_data = json.loads(force_blob)
-                    except Exception as exc:
-                        WARN_ONCE.warn(
-                            "force-loadout-json",
-                            f"Invalid force JSON for {row.get('loadout_hash')}: {exc}",
-                        )
-                        force_data = None
-
-                details_blob = row["details_json"]
-                details_data = None
-                if details_blob:
-                    try:
-                        details_data = json.loads(details_blob)
-                    except Exception as exc:
-                        WARN_ONCE.warn(
-                            "details-loadout-json",
-                            f"Invalid details JSON for {row.get('loadout_hash')}: {exc}",
-                        )
-                        details_data = None
-
-                known_loadouts[row["loadout_hash"]] = (
-                    row["score"],
-                    row["fg_score"],
-                    force_data,
-                    details_data,
+        if load_known_loadouts:
+            # Fetch known loadouts for persistent caching
+            try:
+                conn = get_db_connection()
+                cursor = conn.execute(
+                    """SELECT loadout_hash, score, fg_score, force_details_json, details_json
+                       FROM loadouts
+                       WHERE song_name = ?
+                       ORDER BY score DESC
+                       LIMIT ?""",
+                    (found_song_name, LOADOUTS_PER_SONG_LIMIT),
                 )
+                for row in cursor:
+                    force_blob = row["force_details_json"]
+                    force_data = None
+                    if force_blob:
+                        try:
+                            force_data = json.loads(force_blob)
+                        except Exception as exc:
+                            WARN_ONCE.warn(
+                                "force-loadout-json",
+                                f"Invalid force JSON for {row.get('loadout_hash')}: {exc}",
+                            )
+                            force_data = None
 
-            _maybe_wal_maintenance(conn)
-            conn.close()
-        except Exception as e:
-            print(f"[DB] Error fetching known loadouts: {e}")
+                    details_blob = row["details_json"]
+                    details_data = None
+                    if details_blob:
+                        try:
+                            details_data = json.loads(details_blob)
+                        except Exception as exc:
+                            WARN_ONCE.warn(
+                                "details-loadout-json",
+                                f"Invalid details JSON for {row.get('loadout_hash')}: {exc}",
+                            )
+                            details_data = None
+
+                    known_loadouts[row["loadout_hash"]] = (
+                        row["score"],
+                        row["fg_score"],
+                        force_data,
+                        details_data,
+                    )
+
+                _maybe_wal_maintenance(conn)
+                conn.close()
+            except Exception as e:
+                print(f"[DB] Error fetching known loadouts: {e}")
 
     return prev_record, known_loadouts
