@@ -572,9 +572,11 @@ def _prepare_song(task: tuple) -> _NativeSong:
             song_repeats = 1
 
         try:
-            skip_when_random = cfg.getboolean("HumanHitSim", "SkipDBLookupWhenSeedIsRandom", fallback=True)
+            # Default to reusing DB seeds/known loadouts even when HumanHitSim.Seed=0 (randomized).
+            # Users can still opt out via SkipDBLookupWhenSeedIsRandom=true.
+            skip_when_random = cfg.getboolean("HumanHitSim", "SkipDBLookupWhenSeedIsRandom", fallback=False)
         except Exception:
-            skip_when_random = True
+            skip_when_random = False
 
         try:
             meta0 = calc_song.get("metadata", {}) or {}
