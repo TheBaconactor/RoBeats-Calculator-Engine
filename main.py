@@ -8,28 +8,60 @@ Refactored to use GearOptimizerApp.
 import os
 import multiprocessing
 import sys
+import configparser
+
+
+def _truthy_env(name: str, default: str = "0") -> bool:
+    return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _apply_throughput_mode_env() -> None:
-    throughput = str(os.environ.get("METAFINDER_THROUGHPUT", "") or "").strip().lower() in {"1", "true", "yes", "on"}
-    throughput = throughput or (str(os.environ.get("THROUGHPUT_MODE", "") or "").strip().lower() in {"1", "true"})
-    if not throughput:
+    throughput = _truthy_env("METAFINDER_THROUGHPUT", "0") or _truthy_env("THROUGHPUT_MODE", "0")
+    allow_profiling = _truthy_env("METAFINDER_ALLOW_PROFILING", "0")
+    if not throughput and allow_profiling:
         return
 
     # Disable sync-heavy profiling/instrumentation for real throughput runs.
-    for k in (
-        "PERF_TIMING",
-        "GPU_SYNC_FOR_TIMING",
-        "GPU_FORCE_SYNC",
-        "TAICHI_KERNEL_PROFILER",
-        "TAICHI_KERNEL_PROFILER_PRINT",
-    ):
-        os.environ.pop(k, None)
+    if throughput or not allow_profiling:
+        for k in (
+            "PERF_TIMING",
+            "GPU_SYNC_FOR_TIMING",
+            "GPU_FORCE_SYNC",
+            "TAICHI_KERNEL_PROFILER",
+            "TAICHI_KERNEL_PROFILER_PRINT",
+        ):
+            os.environ.pop(k, None)
+
+
+def _apply_gpu_song_slots_default() -> None:
+    """
+    Set a sensible default for `GPU_SONG_SLOTS` before Taichi initializes.
+
+    This reduces slot contention/timeline reuploads when running in-flight with
+    `InFlightSongs > 1`. Users can always override via the environment.
+    """
+    if "GPU_SONG_SLOTS" in os.environ:
+        return
+
+    cfg_path = str(os.environ.get("METAFINDER_CONFIG_PATH", "config.ini") or "config.ini")
+    try:
+        cfg = configparser.ConfigParser()
+        cfg.read(cfg_path, encoding="utf-8-sig")
+        inflight = int(str(cfg.get("IterationEngine", "InFlightSongs", fallback="0") or "0"))
+    except Exception:
+        inflight = 0
+
+    # Default Taichi song slots is 8; match in-flight concurrency when higher,
+    # but cap to avoid runaway VRAM usage on aggressive configs.
+    target = max(8, inflight)
+    target = min(16, target)
+    os.environ.setdefault("GPU_SONG_SLOTS", str(int(target)))
 
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
     try:
+        _apply_gpu_song_slots_default()
         _apply_throughput_mode_env()
         from gear_optimizer.app import GearOptimizerApp
 
