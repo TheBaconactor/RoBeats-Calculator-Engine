@@ -34,7 +34,9 @@ from gear_optimizer.helpers.song_helpers.database_context import load_database_c
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_fg_candidates
 from gear_optimizer.helpers.song_helpers.fg_combo_booster import (
     build_fg_combo_booster_candidates,
+    finalize_fg_combo_booster_candidates_job,
     hydrate_fg_candidate_stats,
+    prepare_fg_combo_booster_candidates_job,
 )
 from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
 from gear_optimizer.helpers.song_helpers.loadout_builder import build_loadout_entries
@@ -1562,7 +1564,7 @@ def run_native_inflight_song_pipeline(
                     if song.fg_prep_future is None:
                         try:
                             setattr(song, "_fg_prep_submit_t0", time.perf_counter())
-                            song.fg_prep_future = fg_prep_executor.submit(_prepare_fg_job_sync, song)
+                            song.fg_prep_future = fg_prep_executor.submit(_prepare_fg_job_sync, song, gpu_client=gpu_client)
                             fg_prep_inflight.append(song)
                         except Exception:
                             song.fg_prep_future = None
@@ -1914,7 +1916,7 @@ def _prefetch_db_loadouts_sync(
         return []
 
 
-def _prepare_fg_job_sync(song: _NativeSong) -> None:
+def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClient] = None) -> None:
     cpu_t0 = _thread_cpu_time_s()
     cfg = song.cfg
 
@@ -1968,6 +1970,30 @@ def _prepare_fg_job_sync(song: _NativeSong) -> None:
 
     song.fg_db_loadouts_full_count = 0
 
+    # Native in-flight optimization: submit the combo-booster GPU eval early (during FG prep)
+    # so `_run_fg_job_sync()` doesn't block on a `solve_genomes_from_registry` call right
+    # before starting the heavy FG kernels.
+    try:
+        combo_enabled = _truthy(os.environ.get("FG_COMBO_BOOSTER_ENABLED", "1"))
+        existing_job = getattr(song, "fg_combo_job", None)
+        if combo_enabled and gpu_client is not None and song.force_greats_finder and song.ga_candidates and not existing_job:
+            job = prepare_fg_combo_booster_candidates_job(
+                existing_candidates=list(song.ga_candidates or []),
+                registry=song.registry,
+                base_stats_fixed=song.fixed_stats,
+                cfg_data=song.cfg_data,
+                calc_song=song.calc_song,
+                ref_arrays=song.ref_arrays,
+                primary_color=str(song.meta_primary_color or ""),
+                secondary_color=str(song.meta_secondary_color or ""),
+                song_slot=int(song.song_slot or 0),
+                gpu_client=gpu_client,
+            )
+            if job:
+                song.fg_combo_job = job
+    except Exception:
+        pass
+
     if perf:
         select_ms = (t_select - t0) * 1000.0
         db_wait_ms = (t_db - t_select) * 1000.0
@@ -2012,7 +2038,7 @@ def _run_fg_job_sync(
             song.fg_prep_future = None
 
     if song.loadout_entries is None:
-        _prepare_fg_job_sync(song)
+        _prepare_fg_job_sync(song, gpu_client=gpu_client)
 
     build_details = make_build_details_fn(song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty)
 
@@ -2023,18 +2049,23 @@ def _run_fg_job_sync(
 
         boosted = None
         if song.force_greats_finder and song.ga_candidates and combo_enabled:
-            boosted = build_fg_combo_booster_candidates(
-                existing_candidates=list(song.ga_candidates or []),
-                registry=song.registry,
-                base_stats_fixed=song.fixed_stats,
-                cfg_data=song.cfg_data,
-                calc_song=song.calc_song,
-                ref_arrays=song.ref_arrays,
-                primary_color=str(song.meta_primary_color or ""),
-                secondary_color=str(song.meta_secondary_color or ""),
-                song_slot=int(song.song_slot or 0),
-                gpu_client=gpu_client,
-            )
+            job = getattr(song, "fg_combo_job", None)
+            if isinstance(job, dict):
+                boosted = finalize_fg_combo_booster_candidates_job(job)
+                song.fg_combo_job = None
+            if not boosted:
+                boosted = build_fg_combo_booster_candidates(
+                    existing_candidates=list(song.ga_candidates or []),
+                    registry=song.registry,
+                    base_stats_fixed=song.fixed_stats,
+                    cfg_data=song.cfg_data,
+                    calc_song=song.calc_song,
+                    ref_arrays=song.ref_arrays,
+                    primary_color=str(song.meta_primary_color or ""),
+                    secondary_color=str(song.meta_secondary_color or ""),
+                    song_slot=int(song.song_slot or 0),
+                    gpu_client=gpu_client,
+                )
 
             if boosted:
                 song.ga_candidates = select_fg_candidates(

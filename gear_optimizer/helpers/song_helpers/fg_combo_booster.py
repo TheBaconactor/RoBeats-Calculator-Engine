@@ -1481,3 +1481,180 @@ def build_fg_combo_booster_candidates(
             f"gen={dt_gen * 1000:.1f}ms eval={dt_eval * 1000:.1f}ms total={dt_total * 1000:.1f}ms"
         )
     return out
+
+
+def prepare_fg_combo_booster_candidates_job(
+    *,
+    existing_candidates: list[dict],
+    registry,
+    base_stats_fixed: dict,
+    cfg_data: dict,
+    calc_song: dict,
+    ref_arrays: dict,
+    primary_color: str,
+    secondary_color: str,
+    song_slot: int = 0,
+    max_extra_evals: int = FG_COMBO_BOOSTER_MAX_EVALS,
+    top_k: int = FG_COMBO_BOOSTER_TOP_K,
+    positions_per_seed: int = FG_COMBO_BOOSTER_POSITIONS_PER_SEED,
+    gpu_client: Optional[object] = None,
+) -> dict | None:
+    """
+    Prepare an async combo-booster job.
+
+    This splits the combo booster into two phases:
+    - prepare + GPU submission (this function)
+    - finalize (see `finalize_fg_combo_booster_candidates_job`)
+
+    The goal is to let native in-flight schedule the GPU work earlier so the
+    executor queue stays non-empty across GA↔FG boundaries.
+    """
+    if not existing_candidates:
+        return None
+
+    if gpu_client is None:
+        return None
+
+    # Never do this in CPU-only mode; it defeats the purpose of "cheap FG coverage".
+    if not bool(cfg_data.get("use_gpu", False)):
+        return None
+
+    booster_mode = str(os.environ.get("FG_COMBO_BOOSTER_MODE", "multi_axis") or "").strip().lower()
+    if booster_mode in {"multi_axis", "multi-axis", "v2", "diverse"}:
+        genomes = generate_fg_combo_booster_genomes_multi_axis(
+            existing_candidates=existing_candidates,
+            registry=registry,
+            primary_color=primary_color,
+            secondary_color=secondary_color,
+            max_new=int(max_extra_evals),
+            top_k=int(top_k),
+        )
+    else:
+        genomes = generate_fg_combo_booster_genomes(
+            existing_candidates=existing_candidates,
+            registry=registry,
+            primary_color=primary_color,
+            secondary_color=secondary_color,
+            max_new=int(max_extra_evals),
+            top_k=int(top_k),
+            positions_per_seed=int(positions_per_seed),
+        )
+    if not genomes:
+        return None
+
+    gpu_eval_cap = _env_int("FG_COMBO_BOOSTER_GPU_EVALS", FG_COMBO_BOOSTER_DEFAULT_GPU_EVALS)
+    if gpu_eval_cap <= 0:
+        gpu_eval_cap = int(max_extra_evals)
+    gpu_eval_cap = max(1, min(int(max_extra_evals), int(gpu_eval_cap)))
+
+    genomes_for_eval = select_fg_combo_booster_genomes_for_eval(
+        genomes,
+        primary_color=str(primary_color or ""),
+        secondary_color=str(secondary_color or ""),
+        max_evals=int(gpu_eval_cap),
+    )
+    if not genomes_for_eval:
+        return None
+
+    plan, results = prepare_gpu_batch_eval_plan(
+        genomes_for_eval,
+        base_stats_fixed,
+        cfg_data,
+        calc_song,
+        ref_arrays,
+    )
+    if plan is None:
+        evaluated = list(results or [])
+        for cand in evaluated:
+            if isinstance(cand, dict):
+                cand["_fg_priority"] = 1
+                cand["_fg_source"] = "combo_booster"
+        return {"evaluated": evaluated}
+
+    flags = dict(getattr(plan, "flags", None) or {})
+    solver_mode = str(os.environ.get("FG_COMBO_BOOSTER_GPU_SOLVER", "auto") or "").strip().lower()
+    prefer_registry = solver_mode in {"auto", "registry", "from_registry"}
+    use_registry = bool(
+        prefer_registry and registry is not None and hasattr(registry, "encode_population") and hasattr(registry, "to_gpu_arrays")
+    )
+    if not use_registry:
+        return None
+
+    rep_genomes: list[list[dict]] = []
+    for members in getattr(plan, "unique_members", None) or []:
+        if not members:
+            continue
+        idx0 = int(members[0])
+        if 0 <= idx0 < len(plan.uncached_genomes):
+            rep_genomes.append(plan.uncached_genomes[idx0])
+    if not rep_genomes:
+        return None
+
+    pop_indices = registry.encode_population(rep_genomes)  # (n_unique, 9)
+    gpu_arrays = registry.to_gpu_arrays()
+    base_fixed_stats_np, _ = build_base_fixed_stats_list(base_stats_fixed, cfg_data)
+
+    payload = {
+        "population_indices": pop_indices,
+        "item_stats": gpu_arrays.get("item_stats"),
+        "slot_start": gpu_arrays.get("slot_start"),
+        "slot_count": gpu_arrays.get("slot_count"),
+        "base_fixed_stats": base_fixed_stats_np,
+        "timeline_grid": calc_song,
+        "is_p_ft": int(flags.get("is_p_ft", 0)),
+        "is_s_ft": int(flags.get("is_s_ft", 0)),
+        "is_p_ff": int(flags.get("is_p_ff", 0)),
+        "is_s_ff": int(flags.get("is_s_ff", 0)),
+        "is_p_pp": int(flags.get("is_p_pp", 0)),
+        "is_s_pp": int(flags.get("is_s_pp", 0)),
+        "is_p_cm": int(flags.get("is_p_cm", 0)),
+        "is_s_cm": int(flags.get("is_s_cm", 0)),
+        "is_p_fm": int(flags.get("is_p_fm", 0)),
+        "is_s_fm": int(flags.get("is_s_fm", 0)),
+        "is_p_ov": int(flags.get("is_p_ov", 0)),
+        "is_s_ov": int(flags.get("is_s_ov", 0)),
+        "ref_arrays": ref_arrays,
+        "total_budget": int(TOTAL_GEM_BUDGET),
+        "gem_scale_fever": int(GEM_SCALE_FEVER),
+        "song_slot": int(song_slot),
+    }
+
+    handle = gpu_client.submit_solve_genomes_from_registry(payload)
+    return {
+        "plan": plan,
+        "future": handle.future,
+    }
+
+
+def finalize_fg_combo_booster_candidates_job(job: dict | None) -> list[dict]:
+    if not isinstance(job, dict) or not job:
+        return []
+
+    evaluated = job.get("evaluated")
+    if isinstance(evaluated, list):
+        return [c for c in evaluated if isinstance(c, dict)]
+
+    plan = job.get("plan")
+    fut = job.get("future")
+    if plan is None or fut is None:
+        return []
+
+    try:
+        gpu_results = fut.result()
+    except Exception:
+        return []
+
+    finalize_mode = str(os.environ.get("FG_COMBO_BOOSTER_FINALIZE_MODE", "light") or "").strip().lower()
+    if finalize_mode in {"full", "stats", "heavy"}:
+        evaluated = finalize_gpu_batch_eval_plan(plan, gpu_results)
+    else:
+        evaluated = _finalize_gpu_batch_eval_plan_light(plan, gpu_results)
+
+    out: list[dict] = []
+    for cand in evaluated or []:
+        if not isinstance(cand, dict):
+            continue
+        cand["_fg_priority"] = 1
+        cand["_fg_source"] = "combo_booster"
+        out.append(cand)
+    return out

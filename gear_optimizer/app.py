@@ -618,8 +618,14 @@ class GearOptimizerApp:
         for d in dirs_to_search:
             if not os.path.exists(d):
                 continue
+            if self._stop_requested_now():
+                break
             for root, _, files in os.walk(d):
+                if self._stop_requested_now():
+                    break
                 for f in files:
+                    if self._stop_requested_now():
+                        break
                     if f.lower().endswith(".txt"):
                         fp = os.path.join(root, f)
                         abs_fp = os.path.abspath(fp)

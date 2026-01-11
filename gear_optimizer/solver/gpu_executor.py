@@ -1689,8 +1689,14 @@ class GpuExecutor:
 
         payload = request.payload or {}
 
-        ftff_pairs = payload.get("ftff_pairs") or []
-        base_stats_pairs = payload.get("base_stats_pairs") or []
+        # NOTE: `ftff_pairs`/`base_stats_pairs` may be numpy arrays; never use `or []` which
+        # triggers `ValueError: The truth value of an array with more than one element...`.
+        ftff_pairs = payload.get("ftff_pairs", None)
+        if ftff_pairs is None:
+            ftff_pairs = []
+        base_stats_pairs = payload.get("base_stats_pairs", None)
+        if base_stats_pairs is None:
+            base_stats_pairs = []
         n_sections = int(payload.get("n_sections", 0) or 0)
         song_slot = int(payload.get("song_slot", 0) or 0)
         gem_scale_fever = int(payload.get("gem_scale_fever", 3) or 3)
