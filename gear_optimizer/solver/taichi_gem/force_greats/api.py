@@ -1600,7 +1600,13 @@ def solve_force_greats_finder_gpu_tasks(
     if not fg_tasks:
         return
 
-    use_gpu_cfg_ranges = str(os.environ.get("FG_GPU_CFG_RANGES", "1") or "").strip().lower() in {"1", "true", "yes", "on", ""}
+    use_gpu_cfg_ranges = str(os.environ.get("FG_GPU_CFG_RANGES", "1") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "",
+    }
 
     # Packed mega-job mode:
     # - Upload all config windows into the global config table once (at their base_cfg_offset)
@@ -1990,28 +1996,33 @@ def solve_force_greats_finder_gpu_tasks(
             if band_len <= 0:
                 continue
 
-            if use_gpu_cfg_ranges:
-                fg_kernels.fg_compute_cfg_ranges_kernel(int(n_ftff), int(band_start), int(band_len))
-            else:
-                # Host fallback: compute and upload cfg windows for this band.
+            # Packed-tasks cfg ranges:
+            # - Fast path: compute per-ftff cfg windows on-the-fly inside the Stage-1 kernel by passing
+            #   cfg_offset<0 and cfg_read_offset=band_start.
+            # - Fallback: precompute/upload fg_cfg_start_list/fg_cfg_len_list for this band and use the
+            #   legacy cfg_offset/cfg_read_offset<0 sentinel.
+            cfg_offset_i = int(-1)
+            cfg_read_offset_i = int(band_start) if use_gpu_cfg_ranges else int(-1)
+            if not use_gpu_cfg_ranges:
                 cfg_start_buf[: int(n_ftff)] = cfg_base_buf[: int(n_ftff)] + int(band_start)
                 remaining = cfg_total_len_buf[: int(n_ftff)] - int(band_start)
                 cfg_len_buf[: int(n_ftff)] = np.minimum(np.maximum(remaining, 0), int(band_len))
                 fg_kernels.fg_upload_cfg_ranges_kernel(int(n_ftff), cfg_start_buf, cfg_len_buf)
 
-            # Use cfg_offset/cfg_read_offset = -1 to enable per-ftff cfg windows in the kernel.
+            # Use cfg_offset<0 to enable per-ftff cfg windows in the kernel.
             if gem_fields.IS_METAL:
                 fg_kernels.fg_stage1_kernel(
                     int(n_genomes),
-                    int(band_len),
-                    int(-1),
-                    int(-1),
                     int(total_notes),
                     int(long_notes),
                     float(last_note_time),
                     int(total_budget),
                     int(gem_scale_fever),
+                    int(band_len),
                     int(n_sections),
+                    int(n_ftff),
+                    int(cfg_offset_i),
+                    int(cfg_read_offset_i),
                     int(is_p_ft),
                     int(is_s_ft),
                     int(is_p_ff),
@@ -2032,8 +2043,8 @@ def solve_force_greats_finder_gpu_tasks(
                     fg_kernels.fg_stage1_flat_kernel_small3(
                         int(n_work_items),
                         int(band_len),
-                        int(-1),
-                        int(-1),
+                        int(cfg_offset_i),
+                        int(cfg_read_offset_i),
                         int(total_notes),
                         int(long_notes),
                         float(last_note_time),
@@ -2059,8 +2070,8 @@ def solve_force_greats_finder_gpu_tasks(
                     fg_kernels.fg_stage1_flat_kernel(
                         int(n_work_items),
                         int(band_len),
-                        int(-1),
-                        int(-1),
+                        int(cfg_offset_i),
+                        int(cfg_read_offset_i),
                         int(total_notes),
                         int(long_notes),
                         float(last_note_time),
@@ -2165,7 +2176,10 @@ def solve_force_greats_finder_gpu_tasks(
             cfg_total_len_buf[sl] = int(cfg_len)
             cfg_mode_buf[sl] = int(cfg_mode)
             if int(cfg_mode) != 0 and max_fp_arr is not None:
-                cfg_max_fp_buf[sl, : int(n_sections)] = np.asarray(max_fp_arr, dtype=np.int32)[: int(n_sections)]
+                try:
+                    cfg_max_fp_buf[sl, : int(n_sections)] = max_fp_arr[: int(n_sections)]
+                except Exception:
+                    cfg_max_fp_buf[sl, : int(n_sections)] = np.asarray(max_fp_arr, dtype=np.int32)[: int(n_sections)]
 
             chunk_n += int(take)
             idx += int(take)

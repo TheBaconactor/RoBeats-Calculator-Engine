@@ -195,19 +195,20 @@ class GpuServiceClient:
     def submit_fg_compute_breakpoints(
         self,
         *,
-        ftff_pairs: list[tuple[int, int]],
-        base_stats_pairs: list[tuple[int, int]],
+        ftff_pairs,
+        base_stats_pairs,
         n_sections: int,
         song_slot: int = 0,
         gem_scale_fever: int = 3,
         non_fever_base_by_ff=None,
         fp_cap_table=None,
     ) -> GpuJobHandle:
+        # Accept either Python sequences or pre-packed numpy arrays to avoid per-item tuple packing in hot paths.
         return self.submit(
             GpuRequestType.FG_COMPUTE_BREAKPOINTS,
             {
-                "ftff_pairs": list(ftff_pairs or []),
-                "base_stats_pairs": list(base_stats_pairs or []),
+                "ftff_pairs": ftff_pairs,
+                "base_stats_pairs": base_stats_pairs,
                 "n_sections": int(n_sections),
                 "song_slot": int(song_slot),
                 "gem_scale_fever": int(gem_scale_fever),

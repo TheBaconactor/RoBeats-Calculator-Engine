@@ -636,8 +636,70 @@ class GpuExecutor:
                         self._live_type_counts[req.request_type] += 1
                         self._maybe_live_report()
 
-                # Process other request types individually
-                for req in other_requests:
+                # Coalesce FG task-only requests (amortize Python packing + dispatch overhead).
+                fg_requests = [r for r in other_requests if r.request_type == GpuRequestType.SOLVE_FORCE_GREATS_FINDER]
+                rest_requests = [
+                    r for r in other_requests if r.request_type != GpuRequestType.SOLVE_FORCE_GREATS_FINDER
+                ]
+
+                if fg_requests:
+                    t_exec0 = perf_counter()
+                    responses = self._coalesce_fg_task_requests(fg_requests)
+                    dt_exec = perf_counter() - t_exec0
+                    self._exec_sec += dt_exec
+                    per_req = dt_exec / max(1, len(fg_requests))
+                    for _ in fg_requests:
+                        self._req_type_counts[GpuRequestType.SOLVE_FORCE_GREATS_FINDER] += 1
+                        self._req_type_exec_sec[GpuRequestType.SOLVE_FORCE_GREATS_FINDER] += per_req
+                        self._last_work_req_type = GpuRequestType.SOLVE_FORCE_GREATS_FINDER
+
+                    for req, resp in zip(fg_requests, responses):
+                        if req.worker_id in self._response_queues:
+                            self._response_queues[req.worker_id].put(resp)
+                        self._requests_processed += 1
+                    self._trace_event(
+                        event="exec",
+                        exec_sec=float(dt_exec),
+                        batch_size=len(fg_requests),
+                        types=f"{GpuRequestType.SOLVE_FORCE_GREATS_FINDER.value}:{len(fg_requests)}",
+                    )
+                    self._live_exec_sec += float(dt_exec)
+                    self._live_type_counts[GpuRequestType.SOLVE_FORCE_GREATS_FINDER] += len(fg_requests)
+                    self._maybe_live_report()
+
+                # Coalesce solve_genomes_from_registry requests (concatenate small populations).
+                reg_requests = [
+                    r for r in rest_requests if r.request_type == GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY
+                ]
+                remaining = [r for r in rest_requests if r.request_type != GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY]
+
+                if reg_requests:
+                    t_exec0 = perf_counter()
+                    responses = self._coalesce_solve_genomes_from_registry(reg_requests)
+                    dt_exec = perf_counter() - t_exec0
+                    self._exec_sec += dt_exec
+                    per_req = dt_exec / max(1, len(reg_requests))
+                    for _ in reg_requests:
+                        self._req_type_counts[GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY] += 1
+                        self._req_type_exec_sec[GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY] += per_req
+                        self._last_work_req_type = GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY
+
+                    for req, resp in zip(reg_requests, responses):
+                        if req.worker_id in self._response_queues:
+                            self._response_queues[req.worker_id].put(resp)
+                        self._requests_processed += 1
+                    self._trace_event(
+                        event="exec",
+                        exec_sec=float(dt_exec),
+                        batch_size=len(reg_requests),
+                        types=f"{GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY.value}:{len(reg_requests)}",
+                    )
+                    self._live_exec_sec += float(dt_exec)
+                    self._live_type_counts[GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY] += len(reg_requests)
+                    self._maybe_live_report()
+
+                # Process remaining request types individually
+                for req in remaining:
                     t_exec0 = perf_counter()
                     response = self._execute_request(req)
                     dt_exec = perf_counter() - t_exec0
@@ -679,6 +741,22 @@ class GpuExecutor:
         """
         batch = []
         deadline = perf_counter() + (max_wait_ms / 1000.0)
+        coalescable_types = {
+            GpuRequestType.SOLVE_GENOMES_PARALLEL,
+            GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
+            GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+        }
+        inproc_coalesce_enabled = str(os.environ.get("GPU_EXECUTOR_INPROC_COALESCE", "0") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        try:
+            inproc_after_first_ms = int(os.environ.get("GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS", "0"))
+        except Exception:
+            inproc_after_first_ms = 0
+        inproc_after_first_ms = max(0, int(inproc_after_first_ms))
 
         while len(batch) < max_batch_size:
             remaining = deadline - perf_counter()
@@ -686,14 +764,25 @@ class GpuExecutor:
                 break  # Deadline passed, return what we have
 
             try:
-                # In in-process (thread-queue) mode, avoid waiting to coalesce more work
-                # once we already have at least one request: the producer is local and
-                # we prefer low-latency dispatch to keep the GPU saturated.
                 if self._in_process_queues:
-                    # When running with in-process queues, keep latency low:
-                    # - If we already have at least one request, don't wait to coalesce.
-                    # - If the batch is empty, still respect the batch deadline (avoid a fixed 100ms stall).
-                    timeout = 0.0 if len(batch) > 0 else max(0.001, remaining)
+                    # In in-process mode, we generally prefer low latency because the producer is local.
+                    # However, some request types are very cheap to enqueue but expensive to dispatch/pack
+                    # repeatedly (FG tasks, registry solves, and multi-solve batches). For those, allow a
+                    # short coalescing window so we can meaningfully batch/coalesce work.
+                    if len(batch) == 0:
+                        timeout = max(0.001, remaining)
+                    else:
+                        if not inproc_coalesce_enabled:
+                            timeout = 0.0
+                        else:
+                            allow_coalesce = True
+                            for r in batch:
+                                if r.request_type == GpuRequestType.SHUTDOWN:
+                                    continue
+                                if r.request_type not in coalescable_types:
+                                    allow_coalesce = False
+                                    break
+                            timeout = max(0.001, remaining) if allow_coalesce else 0.0
                 else:
                     timeout = max(0.001, remaining) if len(batch) > 0 else 0.1
                 request = self._request_queue.get(timeout=timeout)
@@ -702,11 +791,308 @@ class GpuExecutor:
                 # If shutdown, return immediately
                 if request.request_type == GpuRequestType.SHUTDOWN:
                     return batch
+                # In in-process mode, a lot of batching opportunity exists *after* the first coalescable
+                # request arrives (producer is local and can enqueue multiple items quickly). If we spent
+                # most of `max_wait_ms` waiting for the first item, refresh the deadline so we still have
+                # a small window to grab additional coalescable work.
+                if (
+                    self._in_process_queues
+                    and inproc_coalesce_enabled
+                    and len(batch) == 1
+                    and inproc_after_first_ms > 0
+                    and request.request_type in coalescable_types
+                ):
+                    deadline = max(deadline, perf_counter() + (float(inproc_after_first_ms) / 1000.0))
 
             except queue.Empty:
                 break  # No more pending requests
 
         return batch
+
+    @staticmethod
+    def _payload_dict(req: "GpuRequest") -> dict[str, Any]:
+        payload = getattr(req, "payload", None)
+        return payload if isinstance(payload, dict) else {}
+
+    def _coalesce_fg_task_requests(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
+        """
+        Coalesce multiple SOLVE_FORCE_GREATS_FINDER requests into a single GPU call when they are task-only.
+
+        This targets the common pattern where callers enqueue many small `fg_tasks` batches, each of which:
+          - provides `kwargs['fg_tasks']`
+          - does NOT request reset/download in the same call
+          - shares the same song/genome inputs and scalar knobs
+        """
+        from .taichi_gem.force_greats.api import solve_force_greats_finder_gpu_tasks
+
+        def _extract_task_only(
+            req: "GpuRequest",
+        ) -> tuple[tuple[Any, ...], dict[str, Any], list[dict[str, Any]]] | None:
+            payload = self._payload_dict(req)
+            args = payload.get("args", ())
+            kwargs = payload.get("kwargs", {})
+            if not isinstance(args, (list, tuple)) or len(args) != 7 or not isinstance(kwargs, dict):
+                return None
+            fg_tasks = kwargs.get("fg_tasks")
+            if not isinstance(fg_tasks, (list, tuple)) or not fg_tasks:
+                return None
+            if bool(kwargs.get("fg_reset_before", False)) or bool(kwargs.get("fg_download_after", False)):
+                return None
+            return tuple(args), dict(kwargs), list(fg_tasks)
+
+        groups: dict[
+            tuple[Any, ...],
+            list[tuple["GpuRequest", tuple[Any, ...], dict[str, Any], list[dict[str, Any]]]],
+        ] = {}
+        fallback: list[GpuResponse] = []
+
+        for req in requests:
+            extracted = _extract_task_only(req)
+            if extracted is None:
+                fallback.append(self._execute_request(req))
+                continue
+            args, kwargs, fg_tasks = extracted
+            try:
+                genome_stats_list, timestamps_np, great_candidate_timestamps_np, long_notes, last_note_time, _, _ = args
+            except Exception:
+                fallback.append(self._execute_request(req))
+                continue
+
+            key = (
+                id(genome_stats_list),
+                id(timestamps_np),
+                id(great_candidate_timestamps_np),
+                int(kwargs.get("n_sections", 0) or 0),
+                int(kwargs.get("song_slot", 0) or 0),
+                int(kwargs.get("total_budget", 90) or 90),
+                int(kwargs.get("gem_scale_fever", 3) or 3),
+                bool(kwargs.get("pair_caps_from_timeline", False)),
+                id(kwargs.get("pair_caps_grid")),
+                id(kwargs.get("ref_arrays")),
+                int(kwargs.get("is_p_ft", 0) or 0),
+                int(kwargs.get("is_s_ft", 0) or 0),
+                int(kwargs.get("is_p_ff", 0) or 0),
+                int(kwargs.get("is_s_ff", 0) or 0),
+                int(kwargs.get("is_p_pp", 0) or 0),
+                int(kwargs.get("is_s_pp", 0) or 0),
+                int(kwargs.get("is_p_cm", 0) or 0),
+                int(kwargs.get("is_s_cm", 0) or 0),
+                int(kwargs.get("is_p_fm", 0) or 0),
+                int(kwargs.get("is_s_fm", 0) or 0),
+                int(kwargs.get("is_p_ov", 0) or 0),
+                int(kwargs.get("is_s_ov", 0) or 0),
+                int(kwargs.get("base_cfg_offset", 0) or 0),
+                kwargs.get("cfg_chunk"),
+                int(long_notes or 0),
+                float(last_note_time or 0.0),
+            )
+            groups.setdefault(key, []).append((req, args, kwargs, fg_tasks))
+
+        out: list[GpuResponse] = []
+        out.extend(fallback)
+
+        for _key, items in groups.items():
+            if not items:
+                continue
+            if len(items) == 1:
+                out.append(self._execute_request(items[0][0]))
+                continue
+
+            req0, args0, kwargs0, _tasks0 = items[0]
+            genome_stats_list, timestamps_np, great_candidate_timestamps_np, long_notes, last_note_time, _, _ = args0
+
+            merged_tasks: list[dict[str, Any]] = []
+            upload_any = False
+            for _req, _args, _kwargs, _fg_tasks in items:
+                merged_tasks.extend(list(_fg_tasks))
+                upload_any = upload_any or bool(_kwargs.get("upload_genome_stats", True))
+
+            kwargs_local = dict(kwargs0)
+            kwargs_local.pop("fg_tasks", None)
+            kwargs_local["accumulate_global"] = True
+            kwargs_local["return_raw"] = True
+            kwargs_local["upload_genome_stats"] = bool(upload_any)
+            kwargs_local.pop("fg_reset_before", None)
+            kwargs_local.pop("fg_download_after", None)
+            kwargs_local.pop("fg_download_topk", None)
+            kwargs_local.pop("fg_download_base_scores", None)
+            kwargs_local.pop("fg_download_keep_mask", None)
+
+            try:
+                solve_force_greats_finder_gpu_tasks(
+                    genome_stats_list,
+                    timestamps_np,
+                    great_candidate_timestamps_np,
+                    int(long_notes),
+                    float(last_note_time),
+                    fg_tasks=merged_tasks,
+                    **kwargs_local,
+                )
+                for req, *_rest in items:
+                    out.append(GpuResponse(request_id=req.request_id, success=True, result=None))
+            except Exception as e2:
+                err = f"{type(e2).__name__}: {e2}"
+                for req, *_rest in items:
+                    out.append(GpuResponse(request_id=req.request_id, success=False, error=err))
+
+        by_id = {r.request_id: r for r in out}
+        return [by_id.get(req.request_id) for req in requests]
+
+    def _coalesce_solve_genomes_from_registry(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
+        """
+        Coalesce multiple SOLVE_GENOMES_FROM_REGISTRY requests by concatenating small population batches.
+
+        This is conservative and only merges requests that share the same per-song inputs by object identity.
+        """
+        import numpy as np
+
+        from .taichi_gem.api import (
+            ga_upload_base_fixed_stats,
+            ga_upload_item_stats,
+            load_ref_arrays,
+            solve_genomes_from_registry,
+        )
+        from .taichi_gem import fields as gem_fields
+
+        def _key(req: "GpuRequest") -> tuple[Any, ...] | None:
+            p = self._payload_dict(req)
+            pop = p.get("population_indices")
+            if pop is None:
+                return None
+            try:
+                return (
+                    int(p.get("song_slot", 0) or 0),
+                    int(p.get("total_budget", 90) or 90),
+                    int(p.get("gem_scale_fever", 3) or 3),
+                    int(p.get("is_p_ft", 0) or 0),
+                    int(p.get("is_s_ft", 0) or 0),
+                    int(p.get("is_p_ff", 0) or 0),
+                    int(p.get("is_s_ff", 0) or 0),
+                    int(p.get("is_p_pp", 0) or 0),
+                    int(p.get("is_s_pp", 0) or 0),
+                    int(p.get("is_p_cm", 0) or 0),
+                    int(p.get("is_s_cm", 0) or 0),
+                    int(p.get("is_p_fm", 0) or 0),
+                    int(p.get("is_s_fm", 0) or 0),
+                    int(p.get("is_p_ov", 0) or 0),
+                    int(p.get("is_s_ov", 0) or 0),
+                    id(p.get("timeline_grid")),
+                    id(p.get("ref_arrays")),
+                    id(p.get("item_stats")),
+                    id(p.get("slot_start")),
+                    id(p.get("slot_count")),
+                    id(p.get("base_fixed_stats")),
+                )
+            except Exception:
+                return None
+
+        groups: dict[tuple[Any, ...], list[GpuRequest]] = {}
+        for req in requests:
+            k = _key(req)
+            groups.setdefault(k if k is not None else ("__solo__", req.request_id), []).append(req)
+
+        out: list[GpuResponse] = []
+        max_genomes = int(getattr(gem_fields, "MAX_GENOMES", 4096) or 4096)
+
+        for k, group in groups.items():
+            if not group:
+                continue
+            if len(group) == 1 or (isinstance(k, tuple) and k and k[0] == "__solo__"):
+                out.append(self._execute_request(group[0]))
+                continue
+
+            p0 = self._payload_dict(group[0])
+            song_slot = int(p0.get("song_slot", 0) or 0)
+            total_budget = int(p0.get("total_budget", 90) or 90)
+            gem_scale_fever = int(p0.get("gem_scale_fever", 3) or 3)
+
+            ref_arrays = p0.get("ref_arrays")
+            sig = self._ref_arrays_sig(ref_arrays) if isinstance(ref_arrays, dict) else None
+            if sig is None or sig != self._last_ref_arrays_sig:
+                if isinstance(ref_arrays, dict):
+                    load_ref_arrays(ref_arrays)
+                self._last_ref_arrays_sig = sig
+
+            if "item_stats" in p0 and "slot_start" in p0 and "slot_count" in p0:
+                ga_upload_item_stats(p0["item_stats"], p0["slot_start"], p0["slot_count"])
+            if "base_fixed_stats" in p0:
+                ga_upload_base_fixed_stats(p0["base_fixed_stats"])
+
+            i = 0
+            while i < len(group):
+                chunk: list[GpuRequest] = []
+                n_total = 0
+                while i < len(group):
+                    p = self._payload_dict(group[i])
+                    pop_arr = np.asarray(p.get("population_indices"), dtype=np.int32)
+                    if pop_arr.ndim != 2 or int(pop_arr.shape[1]) != 9:
+                        break
+                    n = int(pop_arr.shape[0])
+                    if n <= 0:
+                        break
+                    if n_total + n > max_genomes and chunk:
+                        break
+                    if n_total + n > max_genomes and not chunk:
+                        out.append(self._execute_request(group[i]))
+                        i += 1
+                        continue
+                    chunk.append(group[i])
+                    n_total += n
+                    i += 1
+
+                if not chunk:
+                    break
+
+                staging = np.empty((int(n_total), 9), dtype=np.int32)
+                spans: list[tuple[int, int]] = []
+                cur = 0
+                ok = True
+                for req in chunk:
+                    p = self._payload_dict(req)
+                    pop_arr = np.asarray(p.get("population_indices"), dtype=np.int32)
+                    n = int(pop_arr.shape[0])
+                    if pop_arr.ndim != 2 or int(pop_arr.shape[1]) != 9 or n <= 0:
+                        ok = False
+                        break
+                    staging[cur : cur + n, :] = pop_arr[:n, :]
+                    spans.append((cur, cur + n))
+                    cur += n
+
+                if not ok or cur <= 0:
+                    for req in chunk:
+                        out.append(self._execute_request(req))
+                    continue
+
+                try:
+                    merged = solve_genomes_from_registry(
+                        population_indices=staging,
+                        timeline_grid=p0["timeline_grid"],
+                        is_p_ft=p0["is_p_ft"],
+                        is_s_ft=p0["is_s_ft"],
+                        is_p_ff=p0["is_p_ff"],
+                        is_s_ff=p0["is_s_ff"],
+                        is_p_pp=p0["is_p_pp"],
+                        is_s_pp=p0["is_s_pp"],
+                        is_p_cm=p0["is_p_cm"],
+                        is_s_cm=p0["is_s_cm"],
+                        is_p_fm=p0["is_p_fm"],
+                        is_s_fm=p0["is_s_fm"],
+                        is_p_ov=p0["is_p_ov"],
+                        is_s_ov=p0["is_s_ov"],
+                        ref_arrays=p0["ref_arrays"],
+                        total_budget=total_budget,
+                        gem_scale_fever=gem_scale_fever,
+                        song_slot=song_slot,
+                    )
+                    for req, (a, b) in zip(chunk, spans):
+                        out.append(GpuResponse(request_id=req.request_id, success=True, result=merged[a:b]))
+                except Exception as e2:
+                    err = f"{type(e2).__name__}: {e2}"
+                    for req in chunk:
+                        out.append(GpuResponse(request_id=req.request_id, success=False, error=err))
+
+        by_id = {r.request_id: r for r in out}
+        return [by_id.get(req.request_id) for req in requests]
 
     def _execute_solve_batch(self, requests: list) -> list:
         """
@@ -1316,50 +1702,103 @@ class GpuExecutor:
         if n_sections <= 0:
             return GpuResponse(request_id=request.request_id, success=True, result=np.zeros((0, 0), dtype=np.int16))
 
+        # Accept either Python sequences of (ft, ff) tuples or packed (n,2) int arrays.
+        pairs_arr = None
+        base_arr = None
         try:
-            pairs_list = list(ftff_pairs)
+            if isinstance(ftff_pairs, np.ndarray):
+                pairs_arr = np.asarray(ftff_pairs, dtype=np.int32)
+                if pairs_arr.ndim != 2 or int(pairs_arr.shape[1]) < 2:
+                    pairs_arr = None
+            if isinstance(base_stats_pairs, np.ndarray):
+                base_arr = np.asarray(base_stats_pairs, dtype=np.int32)
+                if base_arr.ndim != 2 or int(base_arr.shape[1]) < 2:
+                    base_arr = None
         except Exception:
-            pairs_list = []
-        try:
-            base_list = list(base_stats_pairs)
-        except Exception:
-            base_list = []
+            pairs_arr = None
+            base_arr = None
 
-        if not pairs_list:
+        if pairs_arr is not None and int(pairs_arr.shape[0]) <= 0:
             return GpuResponse(
                 request_id=request.request_id,
                 success=True,
                 result=np.zeros((0, int(n_sections)), dtype=np.int16),
             )
-        if not base_list:
+        if pairs_arr is not None and (base_arr is not None and int(base_arr.shape[0]) <= 0):
             # No base FT/FF stats to consider -> max FP is 0 everywhere.
             return GpuResponse(
                 request_id=request.request_id,
                 success=True,
-                result=np.zeros((len(pairs_list), int(n_sections)), dtype=np.int16),
+                result=np.zeros((int(pairs_arr.shape[0]), int(n_sections)), dtype=np.int16),
             )
+
+        if pairs_arr is None:
+            try:
+                pairs_list = list(ftff_pairs)
+            except Exception:
+                pairs_list = []
+            if not pairs_list:
+                return GpuResponse(
+                    request_id=request.request_id,
+                    success=True,
+                    result=np.zeros((0, int(n_sections)), dtype=np.int16),
+                )
+        else:
+            pairs_list = None
+
+        if base_arr is None:
+            try:
+                base_list = list(base_stats_pairs)
+            except Exception:
+                base_list = []
+            if not base_list:
+                # No base FT/FF stats to consider -> max FP is 0 everywhere.
+                n_pairs = int(pairs_arr.shape[0]) if pairs_arr is not None else int(len(pairs_list))
+                return GpuResponse(
+                    request_id=request.request_id,
+                    success=True,
+                    result=np.zeros((n_pairs, int(n_sections)), dtype=np.int16),
+                )
+        else:
+            base_list = None
 
         # Build pair arrays.
-        try:
-            pair_ft = np.asarray([int(p[0]) for p in pairs_list], dtype=np.int32)
-            pair_ff = np.asarray([int(p[1]) for p in pairs_list], dtype=np.int32)
-        except Exception:
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error="FG_COMPUTE_BREAKPOINTS invalid ftff_pairs (expected list of (ft, ff))",
-            )
+        if pairs_arr is not None:
+            try:
+                pair_ft = np.ascontiguousarray(pairs_arr[:, 0], dtype=np.int32)
+                pair_ff = np.ascontiguousarray(pairs_arr[:, 1], dtype=np.int32)
+            except Exception:
+                pair_ft = np.asarray([], dtype=np.int32)
+                pair_ff = np.asarray([], dtype=np.int32)
+        else:
+            try:
+                pair_ft = np.asarray([int(p[0]) for p in pairs_list], dtype=np.int32)
+                pair_ff = np.asarray([int(p[1]) for p in pairs_list], dtype=np.int32)
+            except Exception:
+                return GpuResponse(
+                    request_id=request.request_id,
+                    success=False,
+                    error="FG_COMPUTE_BREAKPOINTS invalid ftff_pairs (expected list of (ft, ff))",
+                )
 
         # Build base arrays.
-        try:
-            base_ft = np.asarray([int(p[0]) for p in base_list], dtype=np.int32)
-            base_ff = np.asarray([int(p[1]) for p in base_list], dtype=np.int32)
-        except Exception:
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error="FG_COMPUTE_BREAKPOINTS invalid base_stats_pairs (expected list of (ft_stat, ff_stat))",
-            )
+        if base_arr is not None:
+            try:
+                base_ft = np.ascontiguousarray(base_arr[:, 0], dtype=np.int32)
+                base_ff = np.ascontiguousarray(base_arr[:, 1], dtype=np.int32)
+            except Exception:
+                base_ft = np.asarray([], dtype=np.int32)
+                base_ff = np.asarray([], dtype=np.int32)
+        else:
+            try:
+                base_ft = np.asarray([int(p[0]) for p in base_list], dtype=np.int32)
+                base_ff = np.asarray([int(p[1]) for p in base_list], dtype=np.int32)
+            except Exception:
+                return GpuResponse(
+                    request_id=request.request_id,
+                    success=False,
+                    error="FG_COMPUTE_BREAKPOINTS invalid base_stats_pairs (expected list of (ft_stat, ff_stat))",
+                )
 
         # Validate tables.
         if non_fever_base_by_ff is None or fp_cap_table is None:

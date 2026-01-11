@@ -697,19 +697,32 @@ def fg_stage1_kernel(
         if ft_gems + ff_gems > total_budget:
             continue
 
-        # Packed-tasks mode: when cfg_offset/cfg_read_offset are negative, each FT/FF pair
-        # can reference a different config window in the global cfg table.
+        # Packed-tasks mode: when cfg_offset is negative, each FT/FF pair can reference a different
+        # config window in the global cfg table. Two sub-modes:
+        # - legacy: cfg_offset<0 and cfg_read_offset<0 -> read fg_cfg_start_list/fg_cfg_len_list (precomputed ranges)
+        # - fused:  cfg_offset<0 and cfg_read_offset>=0 -> compute ranges on-the-fly using (cfg_base,total_len,band_start)
         cfg_global_base: ti.i32 = cfg_offset
         cfg_read_base: ti.i32 = cfg_read_offset
         cfg_len: ti.i32 = n_cfg
         cfg_mode: ti.i32 = 0
         cfg_base: ti.i32 = 0
-        if cfg_offset < 0 and cfg_read_offset < 0:
-            cfg_global_base = fg_cfg_start_list[ftff_idx]
-            cfg_read_base = cfg_global_base
-            cfg_len = fg_cfg_len_list[ftff_idx]
+        if cfg_offset < 0:
             cfg_mode = fg_cfg_mode_list[ftff_idx]
             cfg_base = fg_cfg_base_list[ftff_idx]
+            if cfg_read_offset < 0:
+                cfg_global_base = fg_cfg_start_list[ftff_idx]
+                cfg_read_base = cfg_global_base
+                cfg_len = fg_cfg_len_list[ftff_idx]
+            else:
+                band_start: ti.i32 = cfg_read_offset
+                total_len: ti.i32 = ti.cast(fg_cfg_total_len_list[ftff_idx], ti.i32)
+                remaining: ti.i32 = total_len - band_start
+                if remaining <= 0:
+                    cfg_len = 0
+                else:
+                    cfg_len = ti.min(remaining, n_cfg)
+                cfg_global_base = cfg_base + band_start
+                cfg_read_base = cfg_global_base
 
         # Load genome base stats (hoisted out of cfg loop)
         # Load genome base stats (hoisted out of cfg loop)
@@ -1347,19 +1360,32 @@ def fg_stage1_flat_kernel_small3(
         g: ti.i32 = fg_flat_work_genome[work_idx]
         ftff_idx: ti.i32 = fg_flat_work_ftff[work_idx]
 
-        # Packed-tasks mode: when cfg_offset/cfg_read_offset are negative, each FT/FF pair
-        # can reference a different config window in the global cfg table.
+        # Packed-tasks mode: when cfg_offset is negative, each FT/FF pair can reference a different
+        # config window in the global cfg table. Two sub-modes:
+        # - legacy: cfg_offset<0 and cfg_read_offset<0 -> read fg_cfg_start_list/fg_cfg_len_list (precomputed ranges)
+        # - fused:  cfg_offset<0 and cfg_read_offset>=0 -> compute ranges on-the-fly using (cfg_base,total_len,band_start)
         cfg_global_base: ti.i32 = cfg_offset
         cfg_read_base: ti.i32 = cfg_read_offset
         cfg_len: ti.i32 = n_cfg
         cfg_mode: ti.i32 = 0
         cfg_base: ti.i32 = 0
-        if cfg_offset < 0 and cfg_read_offset < 0:
-            cfg_global_base = fg_cfg_start_list[ftff_idx]
-            cfg_read_base = cfg_global_base
-            cfg_len = fg_cfg_len_list[ftff_idx]
+        if cfg_offset < 0:
             cfg_mode = fg_cfg_mode_list[ftff_idx]
             cfg_base = fg_cfg_base_list[ftff_idx]
+            if cfg_read_offset < 0:
+                cfg_global_base = fg_cfg_start_list[ftff_idx]
+                cfg_read_base = cfg_global_base
+                cfg_len = fg_cfg_len_list[ftff_idx]
+            else:
+                band_start: ti.i32 = cfg_read_offset
+                total_len: ti.i32 = ti.cast(fg_cfg_total_len_list[ftff_idx], ti.i32)
+                remaining: ti.i32 = total_len - band_start
+                if remaining <= 0:
+                    cfg_len = 0
+                else:
+                    cfg_len = ti.min(remaining, n_cfg)
+                cfg_global_base = cfg_base + band_start
+                cfg_read_base = cfg_global_base
             if cfg_start >= cfg_len:
                 continue
 
@@ -1693,19 +1719,32 @@ def fg_stage1_flat_kernel(
         g: ti.i32 = fg_flat_work_genome[work_idx]
         ftff_idx: ti.i32 = fg_flat_work_ftff[work_idx]
 
-        # Packed-tasks mode: when cfg_offset/cfg_read_offset are negative, each FT/FF pair
-        # can reference a different config window in the global cfg table.
+        # Packed-tasks mode: when cfg_offset is negative, each FT/FF pair can reference a different
+        # config window in the global cfg table. Two sub-modes:
+        # - legacy: cfg_offset<0 and cfg_read_offset<0 -> read fg_cfg_start_list/fg_cfg_len_list (precomputed ranges)
+        # - fused:  cfg_offset<0 and cfg_read_offset>=0 -> compute ranges on-the-fly using (cfg_base,total_len,band_start)
         cfg_global_base: ti.i32 = cfg_offset
         cfg_read_base: ti.i32 = cfg_read_offset
         cfg_len: ti.i32 = n_cfg
         cfg_mode: ti.i32 = 0
         cfg_base: ti.i32 = 0
-        if cfg_offset < 0 and cfg_read_offset < 0:
-            cfg_global_base = fg_cfg_start_list[ftff_idx]
-            cfg_read_base = cfg_global_base
-            cfg_len = fg_cfg_len_list[ftff_idx]
+        if cfg_offset < 0:
             cfg_mode = fg_cfg_mode_list[ftff_idx]
             cfg_base = fg_cfg_base_list[ftff_idx]
+            if cfg_read_offset < 0:
+                cfg_global_base = fg_cfg_start_list[ftff_idx]
+                cfg_read_base = cfg_global_base
+                cfg_len = fg_cfg_len_list[ftff_idx]
+            else:
+                band_start: ti.i32 = cfg_read_offset
+                total_len: ti.i32 = ti.cast(fg_cfg_total_len_list[ftff_idx], ti.i32)
+                remaining: ti.i32 = total_len - band_start
+                if remaining <= 0:
+                    cfg_len = 0
+                else:
+                    cfg_len = ti.min(remaining, n_cfg)
+                cfg_global_base = cfg_base + band_start
+                cfg_read_base = cfg_global_base
             if cfg_start >= cfg_len:
                 continue
 

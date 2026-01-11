@@ -1183,6 +1183,36 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     payload_segments: list[np.ndarray] = []
 
+    perf = str(os.environ.get("PERF_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    phase_timing = perf and str(os.environ.get("GPU_NATIVE_GA_PHASE_TIMING", "0") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if phase_timing:
+        import taichi as ti
+
+        def _sync() -> None:
+            ti.sync()
+
+    else:
+
+        def _sync() -> None:
+            return
+
+    def _log_phase(*, phase: str, ms: float, runs: int, pop: int, gen: int, use_hints: int, combos: int) -> None:
+        if not phase_timing:
+            return
+        try:
+            print(
+                "[PERF][GAGPUPhase] "
+                f"phase={phase} runs={int(runs)} pop={int(pop)} gen={int(gen)} "
+                f"use_hints={int(use_hints)} combos={int(combos)} ms={float(ms):.3f}"
+            )
+        except Exception:
+            return
+
     run_start_global = 0
     while run_start_global < num_runs:
         seg_len = min(int(gpu_fields.MAX_GA_RUNS), num_runs - run_start_global)
@@ -1251,6 +1281,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                     n_total = int(batch_len) * int(n_genomes)
 
                     for gen in range(int(n_generations)):
+                        t0 = time.perf_counter() if phase_timing else 0.0
                         gpu_api.ga_evaluate_population(
                             n_genomes=n_total,
                             n_slots=int(n_slots),
@@ -1271,8 +1302,20 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             is_s_ov=is_s_ov,
                             use_hints=gen_use_hints,
                         )
+                        _sync()
+                        if t0:
+                            _log_phase(
+                                phase="evaluate",
+                                ms=(time.perf_counter() - t0) * 1000.0,
+                                runs=int(batch_len),
+                                pop=int(n_genomes),
+                                gen=int(gen),
+                                use_hints=int(gen_use_hints),
+                                combos=int(n_combos),
+                            )
 
                         # Materialize best + store hints (no global-best update; we track per-run best in payload row 0).
+                        t0 = time.perf_counter() if phase_timing else 0.0
                         gpu_api.ga_write_best_and_store_hints(
                             n_total,
                             total_budget,
@@ -1291,14 +1334,37 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             is_s_ov=is_s_ov,
                             song_slot=int(song_slot),
                         )
+                        _sync()
+                        if t0:
+                            _log_phase(
+                                phase="write_best_hints",
+                                ms=(time.perf_counter() - t0) * 1000.0,
+                                runs=int(batch_len),
+                                pop=int(n_genomes),
+                                gen=int(gen),
+                                use_hints=int(gen_use_hints),
+                                combos=int(n_combos),
+                            )
 
                         # Track best per run across generations.
+                        t0 = time.perf_counter() if phase_timing else 0.0
                         gpu_api.ga_update_runs_best(
                             run_idx_start=int(local_run_idx),
                             n_runs=int(batch_len),
                             n_genomes_per_run=int(n_genomes),
                             n_slots=int(n_slots),
                         )
+                        _sync()
+                        if t0:
+                            _log_phase(
+                                phase="update_runs_best",
+                                ms=(time.perf_counter() - t0) * 1000.0,
+                                runs=int(batch_len),
+                                pop=int(n_genomes),
+                                gen=int(gen),
+                                use_hints=int(gen_use_hints),
+                                combos=int(n_combos),
+                            )
 
                         # Migration only if another generation will be evaluated (avoid corrupting final snapshots).
                         is_migration_gen = (
@@ -1307,6 +1373,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             and gen < (int(n_generations) - 1)
                         )
                         if is_migration_gen:
+                            t0 = time.perf_counter() if phase_timing else 0.0
                             gpu_api.ga_island_migration_runs(
                                 n_runs=int(batch_len),
                                 n_genomes_per_run=int(n_genomes),
@@ -1314,11 +1381,23 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 migrate_count=int(GPU_GA_MIGRATE_COUNT),
                                 n_slots=int(n_slots),
                             )
+                            _sync()
+                            if t0:
+                                _log_phase(
+                                    phase="migration",
+                                    ms=(time.perf_counter() - t0) * 1000.0,
+                                    runs=int(batch_len),
+                                    pop=int(n_genomes),
+                                    gen=int(gen),
+                                    use_hints=int(gen_use_hints),
+                                    combos=int(n_combos),
+                                )
                             gen_use_hints = 0
                         else:
                             gen_use_hints = 1
 
                         if gen < int(n_generations) - 1:
+                            t0 = time.perf_counter() if phase_timing else 0.0
                             gpu_api.ga_next_generation_fused_runs(
                                 n_runs=int(batch_len),
                                 n_genomes_per_run=int(n_genomes),
@@ -1329,14 +1408,37 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 n_islands=int(num_islands),
                                 elites_per_island=int(elite_count),
                             )
+                            _sync()
+                            if t0:
+                                _log_phase(
+                                    phase="next_generation",
+                                    ms=(time.perf_counter() - t0) * 1000.0,
+                                    runs=int(batch_len),
+                                    pop=int(n_genomes),
+                                    gen=int(gen),
+                                    use_hints=int(gen_use_hints),
+                                    combos=int(n_combos),
+                                )
 
                     # Store final per-genome snapshot rows (row 0 already contains best across all generations).
+                    t0 = time.perf_counter() if phase_timing else 0.0
                     gpu_api.ga_store_runs_payload_snapshot_segmented(
                         run_idx_start=int(local_run_idx),
                         n_runs=int(batch_len),
                         n_genomes_per_run=int(n_genomes),
                         n_slots=int(n_slots),
                     )
+                    _sync()
+                    if t0:
+                        _log_phase(
+                            phase="store_snapshot",
+                            ms=(time.perf_counter() - t0) * 1000.0,
+                            runs=int(batch_len),
+                            pop=int(n_genomes),
+                            gen=int(n_generations),
+                            use_hints=0,
+                            combos=int(n_combos),
+                        )
 
                     last_exc = None
                     break

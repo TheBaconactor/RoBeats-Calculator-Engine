@@ -440,7 +440,26 @@ def ga_evaluate_population(
     combo_chunk = n_combos
     # Chunk very large workloads to reduce kernel wall time (helps avoid Windows TDR on Vulkan).
     if n_genomes * n_combos > MAX_WORK_ITEMS:
-        combo_chunk = 1024
+        # Pick the largest chunk that keeps the 2D kernel's total work items bounded.
+        # This reduces per-generation dispatch overhead without creating a single very long-running kernel.
+        #
+        # NOTE: MAX_WORK_ITEMS is also used by other Taichi GEM staging buffers and reflects practical
+        # Vulkan stability limits on Windows; keep this conservative.
+        try:
+            target = int(MAX_WORK_ITEMS) // max(1, int(n_genomes))
+        except Exception:
+            target = 1024
+        try:
+            min_chunk = int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MIN", "1024") or 1024)
+        except Exception:
+            min_chunk = 1024
+        try:
+            max_chunk = int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MAX", "4096") or 4096)
+        except Exception:
+            max_chunk = 4096
+        min_chunk = max(64, int(min_chunk))
+        max_chunk = max(min_chunk, int(max_chunk))
+        combo_chunk = int(min(int(n_combos), max_chunk, max(int(min_chunk), max(1, int(target)))))
 
     for offset in range(0, n_combos, combo_chunk):
         kernels.ga_find_best_combo_warmstart_kernel(

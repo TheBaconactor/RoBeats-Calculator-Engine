@@ -1231,9 +1231,25 @@ def process_force_greats_gpu_finder(
                                     timeline_precompute_queued = True
                             except Exception:
                                 timeline_precompute_queued = True
+                        # Packing hotspot: avoid converting large pair lists to Python tuples.
+                        # Prefer contiguous (n,2) int32 arrays so the GPU-owner thread can slice quickly.
+                        try:
+                            import numpy as _np
+
+                            ftff_pairs_packed = _np.asarray(ftff_pairs, dtype=_np.int32)
+                            if ftff_pairs_packed.ndim != 2 or int(ftff_pairs_packed.shape[1]) < 2:
+                                ftff_pairs_packed = ftff_pairs
+
+                            base_pairs_packed = _np.asarray(base_pairs_list, dtype=_np.int32)
+                            if base_pairs_packed.ndim != 2 or int(base_pairs_packed.shape[1]) < 2:
+                                base_pairs_packed = base_pairs_list
+                        except Exception:
+                            ftff_pairs_packed = ftff_pairs
+                            base_pairs_packed = base_pairs_list
+
                         fut = gpu_client.submit_fg_compute_breakpoints(
-                            ftff_pairs=list(ftff_pairs),
-                            base_stats_pairs=base_pairs_list,
+                            ftff_pairs=ftff_pairs_packed,
+                            base_stats_pairs=base_pairs_packed,
                             n_sections=int(n_sections),
                             song_slot=int(song_slot),
                             gem_scale_fever=int(GEM_SCALE_FEVER),
@@ -1429,10 +1445,28 @@ def process_force_greats_gpu_finder(
                     _t_gpu0 = time.perf_counter() if perf else 0.0
                     # Use accumulate_global=True to skip download, with base_cfg_offset for global indexing
                     if gpu_client is not None:
-                        for ftff_chunk in _iter_ftff_chunks(group_pairs):
+                        # Standardize hot-path inputs: pre-pack configs/pairs as contiguous numpy arrays so the
+                        # GPU-owner thread avoids per-item list/tuple work.
+                        counts_list_packed = counts_list
+                        if counts_list:
+                            try:
+                                arr_cfg = _np.asarray(counts_list, dtype=_np.int32)
+                                if getattr(arr_cfg, "ndim", 0) == 2 and int(arr_cfg.shape[0]) == int(len(counts_list)):
+                                    counts_list_packed = arr_cfg
+                            except Exception:
+                                counts_list_packed = counts_list
+
+                        pairs_packed = group_pairs
+                        try:
+                            if group_pairs is not None and not isinstance(group_pairs, _np.ndarray):
+                                pairs_packed = _np.asarray(group_pairs, dtype=_np.int32)
+                        except Exception:
+                            pairs_packed = group_pairs
+
+                        for ftff_chunk in _iter_ftff_chunks(pairs_packed):
                             fg_tasks_batch.append(
                                 {
-                                    "counts_list": counts_list if counts_list else None,
+                                    "counts_list": counts_list_packed if counts_list_packed is not None else None,
                                     "counts_max_fp": counts_max_fp if counts_max_fp else None,
                                     "ftff_pairs": ftff_chunk,
                                     "base_cfg_offset": int(group_cfg_offset),
@@ -1594,11 +1628,28 @@ def process_force_greats_gpu_finder(
                         need_reset = True
                     else:
                         _submit_fg_reset_global_best(n_pending, blocking=True)
+
                     if gpu_client is not None:
-                        for ftff_chunk in _iter_ftff_chunks(ftff_pairs):
+                        counts_list_packed = counts_list
+                        if counts_list:
+                            try:
+                                arr_cfg = _np.asarray(counts_list, dtype=_np.int32)
+                                if getattr(arr_cfg, "ndim", 0) == 2 and int(arr_cfg.shape[0]) == int(len(counts_list)):
+                                    counts_list_packed = arr_cfg
+                            except Exception:
+                                counts_list_packed = counts_list
+
+                        pairs_packed = ftff_pairs
+                        try:
+                            if ftff_pairs is not None and not isinstance(ftff_pairs, _np.ndarray):
+                                pairs_packed = _np.asarray(ftff_pairs, dtype=_np.int32)
+                        except Exception:
+                            pairs_packed = ftff_pairs
+
+                        for ftff_chunk in _iter_ftff_chunks(pairs_packed):
                             fg_tasks_batch.append(
                                 {
-                                    "counts_list": counts_list,
+                                    "counts_list": counts_list_packed,
                                     "ftff_pairs": ftff_chunk,
                                 }
                             )

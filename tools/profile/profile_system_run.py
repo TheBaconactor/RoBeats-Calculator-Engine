@@ -1268,6 +1268,17 @@ _PERF_GA_DOWNLOAD_RUNS_PAYLOAD_RE = re.compile(
     r"bytes=(?P<bytes>\d+)\s*$"
 )
 
+_PERF_GA_GPU_PHASE_RE = re.compile(
+    r"^\[PERF\]\[GAGPUPhase\]\s+"
+    r"phase=(?P<phase>[A-Za-z0-9_]+)\s+"
+    r"runs=(?P<runs>\d+)\s+"
+    r"pop=(?P<pop>\d+)\s+"
+    r"gen=(?P<gen>-?\d+)\s+"
+    r"use_hints=(?P<use_hints>-?\d+)\s+"
+    r"combos=(?P<combos>\d+)\s+"
+    r"ms=(?P<ms>[\d.]+)\s*$"
+)
+
 _PERF_FG_GPU_ACC_RE = re.compile(
     r"^\[PERF\]\s+FG GPU \(ACCUMULATE\):\s+"
     r"upload=(?P<upload_ms>[\d.]+)ms\s+"
@@ -1315,6 +1326,7 @@ def _parse_perf_stdout_log(stdout_log: Path) -> dict[str, Any]:
     ga_decode_detail_rows: list[dict[str, Any]] = []
     ga_decode_select_rows: list[dict[str, Any]] = []
     ga_dl_rows: list[dict[str, Any]] = []
+    ga_gpu_phase_rows: list[dict[str, Any]] = []
     fg_acc_rows: list[dict[str, Any]] = []
     fg_task_start_rows: list[dict[str, Any]] = []
     fg_task_end_rows: list[dict[str, Any]] = []
@@ -1388,6 +1400,22 @@ def _parse_perf_stdout_log(stdout_log: Path) -> dict[str, Any]:
                     )
                     continue
 
+                m = _PERF_GA_GPU_PHASE_RE.match(line)
+                if m is not None:
+                    g = m.groupdict()
+                    ga_gpu_phase_rows.append(
+                        {
+                            "phase": str(g["phase"]),
+                            "runs": int(g["runs"]),
+                            "pop": int(g["pop"]),
+                            "gen": int(g["gen"]),
+                            "use_hints": int(g["use_hints"]),
+                            "combos": int(g["combos"]),
+                            "ms": float(g["ms"]),
+                        }
+                    )
+                    continue
+
                 m = _PERF_FG_GPU_ACC_RE.match(line)
                 if m is not None:
                     g = m.groupdict()
@@ -1437,6 +1465,18 @@ def _parse_perf_stdout_log(stdout_log: Path) -> dict[str, Any]:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
     out: dict[str, Any] = {"ok": True}
+
+    if ga_gpu_phase_rows:
+        phases: dict[str, list[float]] = {}
+        for r in ga_gpu_phase_rows:
+            phases.setdefault(str(r.get("phase", "unknown")), []).append(float(r.get("ms", 0.0)))
+        out["ga_gpu_phases"] = {
+            "count": int(len(ga_gpu_phase_rows)),
+            "by_phase_ms": {k: _series_stats(v) for k, v in sorted(phases.items(), key=lambda kv: kv[0])},
+            "top_slowest": sorted(ga_gpu_phase_rows, key=lambda r: float(r.get("ms", 0.0)), reverse=True)[:20],
+        }
+    else:
+        out["ga_gpu_phases"] = {"count": 0}
 
     if ga_decode_rows:
         scan = [r["scan_ms"] for r in ga_decode_rows]
