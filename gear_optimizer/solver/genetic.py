@@ -686,6 +686,10 @@ def decode_gpu_native_ga_runs_payload(
         # Build stats dict from numpy array (fast).
         row_stats = final_stats_mat[i]
         current_stats = {stat_names[j]: int(row_stats[j]) for j in range(10)}
+        # Pre-gem base stats (before FT/FF/PP/CM/FM/OV allocation). This is useful for downstream
+        # ForceGreatsFinder batching to avoid re-deriving base stats from post-gem Stats + GemCounts.
+        base_row_stats = base_stats_arr + item_stats_sum[i]
+        base_stats = {stat_names[j]: int(base_row_stats[j]) for j in range(10)}
 
         g_ft_i = int(g_ft[i])
         g_ff_i = int(g_ff[i])
@@ -705,6 +709,7 @@ def decode_gpu_native_ga_runs_payload(
                 "Element": g_ov_i,
             },
             "Stats": current_stats,
+            "BaseStats": base_stats,
             "Selected Element": sel_color,
             "BaseScore": score_val,
         }

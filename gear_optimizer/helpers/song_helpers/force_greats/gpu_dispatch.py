@@ -318,14 +318,22 @@ def process_force_greats_gpu_finder(
     from ....solver.gpu_executor import GpuRequestType
     from ....core.constants import LOADOUTS_PER_SONG_LIMIT
 
-    # Default to a "GPU-resident" pipeline: do NOT build per-loadout dict payloads (force.details/Stats)
-    # during the hot FG apply loop. We'll materialize only the retained set for DB/UI later.
+    # Default to a "GPU-resident" pipeline:
+    # - Do NOT build per-loadout force.details / full Stats during the hot FG apply loop.
+    # - Keep the GPU busy and keep Python overhead low.
+    # - Materialize only the retained set (DB/UI retention) at the end.
     _materialize_all_env = str(os.environ.get("FG_MATERIALIZE_ALL_FORCE_DETAILS", "0") or "").strip().lower()
     materialize_all_force = _materialize_all_env in {"1", "true", "yes", "on"}
 
-    # Optional: reduce global_best downloads by selecting only a small subset on GPU.
-    # Disabled when materializing all force details (needs full results).
-    _topk_env = str(os.environ.get("FG_DOWNLOAD_TOPK", "0") or "").strip().lower()
+    # Optional: reduce GPU→CPU transfers by downloading only a small subset of FG results.
+    #
+    # IMPORTANT UX NOTE:
+    # - When FG_DOWNLOAD_TOPK=1, the solver still evaluates FG for all candidates on the GPU, BUT it only
+    #   downloads/materializes details for a limited subset (top-K + keep-mask). That means you will NOT
+    #   see a full "all candidates ranked by FG" list in logs/UI; you'll see the top-K subset (default 51).
+    # - Set FG_DOWNLOAD_TOPK=0 to restore full downloads (slower; more CPU apply work).
+    # - Increase FG_DOWNLOAD_TOPK_K if you want to see more than the default top 51.
+    _topk_env = str(os.environ.get("FG_DOWNLOAD_TOPK", "1") or "").strip().lower()
     download_topk_enabled = (not materialize_all_force) and (_topk_env in {"1", "true", "yes", "on"})
     try:
         download_topk_k = int(os.environ.get("FG_DOWNLOAD_TOPK_K", str(LOADOUTS_PER_SONG_LIMIT)))
@@ -706,8 +714,11 @@ def process_force_greats_gpu_finder(
             continue
         gem_counts_existing = eval_data.get("GemCounts", {}) or {}
 
-        # Extract base stats (pre-gem) so the GPU solver can allocate gems correctly
-        base_stats = _extract_base_stats(stats, gem_counts_existing, sel_color, center_ft, center_ff)
+        # Prefer pre-gem base stats when available (GPU-native GA can provide this directly).
+        # This avoids an extra "reverse gem contributions" pass during FG candidate batching.
+        base_stats = eval_data.get("BaseStats") if isinstance(eval_data.get("BaseStats"), dict) else None
+        if not base_stats:
+            base_stats = _extract_base_stats(stats, gem_counts_existing, sel_color, center_ft, center_ff)
 
         # Determine how many non-fever sections exist and the notes-to-fill baseline
         n_sections, non_fever_base = fg_baseline_params(base_stats, calc_song, ref_arrays)
