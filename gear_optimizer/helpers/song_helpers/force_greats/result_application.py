@@ -191,7 +191,14 @@ def apply_gpu_results_to_entries(
                 "forced_counts": list(forced_counts) if forced_counts else [],
             }
 
-        for entry, eval_data, _ in sig_map.get(sig, []):
+        for item in sig_map.get(sig, []):
+            # Backward-compatible: older callers used (entry, eval_data, base_stats) tuples.
+            # Newer GPU-resident paths store only (entry, eval_data) to reduce Python overhead.
+            try:
+                entry = item[0]
+                eval_data = item[1]
+            except Exception:
+                continue
             if "base_score" not in entry:
                 entry["base_score"] = entry.get("score")
 

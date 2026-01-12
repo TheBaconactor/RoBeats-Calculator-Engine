@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Optional
 from cachetools import LRUCache
 
 from . import cache_validation, result_application
+from .entry_utils import eval_data_from_entry, expected_selected_element
 from ....core.color_flags import build_color_flags
 from ....core.utils import get_selected_element, stats_signature
 from ..item_utils import names_list
@@ -629,6 +630,8 @@ def process_force_greats_gpu_finder(
 
     # Group work by (selected_element, n_sections, max_per_section)
     groups = {}
+    group_reps = {}  # key -> sig -> representative base_stats dict
+    group_base_scores = {}  # key -> sig -> base score for this signature
     group_centers = {}  # key -> set of (center_ft, center_ff)
     # entry_obj_id -> stats signature (used for top-K download keep-mask)
     entry_sig: dict[int, str] = {}
@@ -653,14 +656,7 @@ def process_force_greats_gpu_finder(
     _t_collect0 = time.perf_counter() if perf else 0.0
     for entry in loadout_entries.values():
         cached_force = entry.get("force")
-        expected_sel = None
-        try:
-            expected_sel = entry.get("selected_element")
-            if not expected_sel:
-                det0 = entry.get("details") or {}
-                expected_sel = get_selected_element(det0, meta_primary_color)
-        except Exception:
-            expected_sel = meta_primary_color
+        expected_sel = expected_selected_element(entry, meta_primary_color)
 
         # Keep legacy cache reuse behavior for non-finder only. Finder recomputes for correctness.
         if cached_force and (cached_force.get("score") or entry.get("fg_score")) and (not force_greats_finder):
@@ -679,20 +675,10 @@ def process_force_greats_gpu_finder(
             )
             continue
 
-        eval_data = entry.get("eval_data")
+        eval_data = eval_data_from_entry(entry, meta_primary_color)
         if not eval_data:
-            det = entry.get("details") or {}
-            stats = det.get("Stats") or {}
-            if not stats:
-                no_eval_skips += 1
-                continue
-            eval_data = {
-                "Stats": stats,
-                "Selected Element": get_selected_element(det, meta_primary_color),
-                "FT": det.get("FT", 0),
-                "FF": det.get("FF", 0),
-                "GemCounts": det.get("GemCounts", {}),
-            }
+            no_eval_skips += 1
+            continue
 
         stats = eval_data.get("Stats", {}) or {}
         sel_color = get_selected_element(eval_data, meta_primary_color)
@@ -733,8 +719,17 @@ def process_force_greats_gpu_finder(
         except Exception:
             pass
 
-        groups.setdefault(key, {}).setdefault(sig, []).append((entry, eval_data, base_stats))
+        groups.setdefault(key, {}).setdefault(sig, []).append((entry, eval_data))
         group_centers.setdefault(key, set()).add((int(center_ft), int(center_ff)))
+        group_reps.setdefault(key, {}).setdefault(sig, base_stats)
+        try:
+            base_score_i = int(entry.get("base_score") or entry.get("score", 0) or 0)
+        except Exception:
+            base_score_i = 0
+        # For a given (song, selected_element, base stats) signature, the base score should be stable.
+        # Track one representative base score per signature so top-K downloads can use it without
+        # re-scanning the signature's member list.
+        group_base_scores.setdefault(key, {}).setdefault(sig, int(base_score_i))
         computed += 1
 
     if perf:
@@ -871,6 +866,8 @@ def process_force_greats_gpu_finder(
     # Process each group in GPU batches
     for (sel_color, n_sections, max_per_section), sig_map in groups.items():
         _t_cfg0 = time.perf_counter() if perf else 0.0
+        rep_map = group_reps.get((sel_color, n_sections, max_per_section), {}) or {}
+        base_score_map = group_base_scores.get((sel_color, n_sections, max_per_section), {}) or {}
 
         # Use configurable window around loadout centers for FT/FF search.
         # - fg_search_radius < 0: full search over all FT/FF gem allocations (within TOTAL_GEM_BUDGET).
@@ -1015,7 +1012,9 @@ def process_force_greats_gpu_finder(
             for sig in chunk_sigs:
                 # Skip cache check in batch mode since center varies per-entry within signature groups.
                 # GPU computation is fast enough for uncached entries.
-                rep = sig_map[sig][0][2]
+                rep = rep_map.get(sig)
+                if rep is None:
+                    continue
                 pending.append(rep)
                 pending_sigs.append(sig)
 
@@ -1039,16 +1038,7 @@ def process_force_greats_gpu_finder(
                     keep_buf = np.zeros((int(n_pending),), dtype=np.int32)
                     for i_sig, sig0 in enumerate(pending_sigs):
                         # Conservative: use the MIN base score across entries in this signature group.
-                        base_i = 0
-                        try:
-                            entries0 = sig_map.get(sig0) or []
-                            if entries0:
-                                base_i = min(
-                                    int((e0.get("base_score") or e0.get("score", 0) or 0))
-                                    for (e0, _ed0, _bs0) in entries0
-                                )
-                        except Exception:
-                            base_i = 0
+                        base_i = int(base_score_map.get(sig0, 0) or 0)
                         base_buf[int(i_sig)] = int(base_i)
                         keep_buf[int(i_sig)] = 1 if str(sig0) in keep_sigs else 0
                     download_base_scores = base_buf

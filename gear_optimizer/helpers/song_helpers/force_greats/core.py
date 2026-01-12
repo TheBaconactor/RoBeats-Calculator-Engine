@@ -13,6 +13,7 @@ import logging
 from typing import TYPE_CHECKING, Optional
 
 from . import cache_validation
+from .entry_utils import eval_data_from_entry, expected_selected_element
 from .gpu_dispatch import process_force_greats_gpu_finder
 from ..item_utils import names_list
 from ....core.utils import get_selected_element, stats_signature
@@ -94,14 +95,7 @@ def _process_force_greats_cpu(
 
     for entry in loadout_entries.values():
         cached_force = entry.get("force")
-        expected_sel = None
-        try:
-            expected_sel = entry.get("selected_element")
-            if not expected_sel:
-                det0 = entry.get("details") or {}
-                expected_sel = get_selected_element(det0, meta_primary_color)
-        except Exception:
-            expected_sel = meta_primary_color
+        expected_sel = expected_selected_element(entry, meta_primary_color)
 
         if (
             cached_force
@@ -121,19 +115,9 @@ def _process_force_greats_cpu(
             )
             continue
 
-        eval_data = entry.get("eval_data")
+        eval_data = eval_data_from_entry(entry, meta_primary_color)
         if not eval_data:
-            det = entry.get("details") or {}
-            stats = det.get("Stats") or {}
-            if not stats:
-                continue
-            eval_data = {
-                "Stats": stats,
-                "Selected Element": get_selected_element(det, meta_primary_color),
-                "FT": det.get("FT", 0),
-                "FF": det.get("FF", 0),
-                "GemCounts": det.get("GemCounts", {}),
-            }
+            continue
 
         stats = eval_data.get("Stats", {})
         sel_color = eval_data.get("Selected Element", meta_primary_color)
