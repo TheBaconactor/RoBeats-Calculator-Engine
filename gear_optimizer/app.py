@@ -373,6 +373,15 @@ class GearOptimizerApp:
             except Exception:
                 gpu_mode = False
                 gpu_native_ga = False
+            strict_gpu = False
+            try:
+                from gear_optimizer.core.env_config import ENV
+
+                strict_gpu = bool(getattr(ENV, "gpu_strict", False))
+            except Exception:
+                strict_gpu = False
+            if strict_gpu and not gpu_mode:
+                raise RuntimeError("GPU_STRICT=1 requires IterationEngine.GPU_Mode=true")
             if gpu_mode and gpu_native_ga:
                 ga_multistart = safe_int(cfg.get("IterationEngine", "GA_MultiStart", fallback=1), 1)
                 ga_multistart = max(1, int(ga_multistart))

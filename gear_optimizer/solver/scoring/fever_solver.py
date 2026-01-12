@@ -24,6 +24,7 @@ from ...core.constants import (
     ELEMENTAL_GEM_SCALE,
 )
 from ...core.color_flags import build_color_flags
+from ...core.env_config import ENV
 from ...core.utils import safe_int
 
 from ..fever_timeline import (
@@ -367,11 +368,20 @@ def solve_best_fever_combination(
                         ref_arrays=ref_arrays,
                     )
             except Exception as exc:
+                if ENV.gpu_strict:
+                    raise RuntimeError(
+                        f"GPU batch solver failed (strict mode): {type(exc).__name__}: {exc}"
+                    ) from exc
                 if not silent:
                     print(f"[GPU] Batch solver failed, falling back to CPU: {type(exc).__name__}: {exc}")
                 use_gpu = False
                 best_score = -1
                 best_tuple = None
+
+            if use_gpu and batch_results is None:
+                if ENV.gpu_strict:
+                    raise RuntimeError("GPU batch solver returned no results (strict mode).")
+                use_gpu = False
 
             # Find best result (only CPU work: simple max)
             if use_gpu and batch_results is not None:
@@ -390,6 +400,8 @@ def solve_best_fever_combination(
                         best_tuple = (total_score, ft, ff, g_pp, g_cm, g_fm, g_ov)
         else:
             # Fallback to CPU if GPU failed
+            if ENV.gpu_strict:
+                raise RuntimeError("GPU batch solver unavailable (strict mode).")
             use_gpu = False
 
     if not use_gpu:

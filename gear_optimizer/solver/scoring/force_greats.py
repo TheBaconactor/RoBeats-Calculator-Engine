@@ -29,6 +29,7 @@ from ...core.constants import (
     FG_SEARCH_RADIUS,
 )
 from ...core.color_flags import build_color_flags
+from ...core.env_config import ENV
 from ...core.utils import safe_int, safe_float, stats_signature
 
 from ..fever_timeline import (
@@ -570,6 +571,8 @@ def evaluate_fg_with_gem_iteration(
                         ref_arrays=ref_arrays,
                     )
             except Exception as e:
+                if ENV.gpu_strict:
+                    raise RuntimeError(f"FG GPU batch solver failed (strict mode): {type(e).__name__}: {e}") from e
                 print(f"[GPU] FG batch solver failed; falling back to CPU: {e}")
                 gpu_results = None
 
@@ -942,6 +945,8 @@ def run_force_greats_hill_climb(
             }
             return result
         except Exception as e:
+            if ENV.gpu_strict:
+                raise RuntimeError(f"FG full finder failed (strict mode): {type(e).__name__}: {e}") from e
             print(f"[GPU] FG full finder failed; falling back to CPU: {e}")
 
     # --------------------------------------------------------------------

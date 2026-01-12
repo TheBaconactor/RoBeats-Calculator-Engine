@@ -27,6 +27,13 @@ _FG_ANALYTICAL_BREAKPOINTS_CACHE: LRUCache = LRUCache(maxsize=_FG_ANALYTICAL_BRE
 _FG_ANALYTICAL_BREAKPOINTS_LOCK = threading.Lock()
 
 
+def _truthy_env(name: str, default: str = "0") -> bool:
+    return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+_GPU_STRICT = _truthy_env("GPU_STRICT", "1")
+
+
 def _chart_signature_key(calc_song: dict) -> tuple:
     meta = calc_song.get("metadata", {}) or {}
     song_data = calc_song.get("song_data", {}) or {}
@@ -1205,6 +1212,8 @@ def process_force_greats_gpu_finder(
                     except Exception as _bp_tab_err:
                         if perf:
                             print(f"[FG] GPU breakpoints table build failed; falling back to CPU: {_bp_tab_err}")
+                        if _GPU_STRICT:
+                            raise
                         non_fever_base_by_ff = None
                         fp_cap_table = None
 
@@ -1301,6 +1310,8 @@ def process_force_greats_gpu_finder(
                     except Exception as _bp_gpu_err:
                         if perf:
                             print(f"[FG] GPU breakpoint compute failed; falling back to CPU: {_bp_gpu_err}")
+                        if _GPU_STRICT:
+                            raise
                         max_fp_matrix = None
 
                 if max_fp_matrix is None:

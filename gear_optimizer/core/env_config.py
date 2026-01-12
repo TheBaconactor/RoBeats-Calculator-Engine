@@ -68,6 +68,8 @@ class EnvConfig:
     gpu_batch_log: bool  # GPU_BATCH_LOG: Log GPU batch operations
     gpu_service_profile: bool  # GPU_SERVICE_PROFILE: Track GpuServiceClient request latencies
     gpu_service_profile_print: bool  # GPU_SERVICE_PROFILE_PRINT: Print latency summary on close
+    gpu_timeline_only: bool  # GPU_TIMELINE_ONLY: Force GPU timeline (avoid CPU precompute_all)
+    gpu_strict: bool  # GPU_STRICT: Fail fast on any CPU fallback
 
     # General Performance
     perf_timing: bool  # PERF_TIMING: Enable performance timing globally
@@ -93,6 +95,8 @@ class EnvConfig:
             gpu_batch_log=_env_bool("GPU_BATCH_LOG"),
             gpu_service_profile=_env_bool("GPU_SERVICE_PROFILE"),
             gpu_service_profile_print=_env_bool("GPU_SERVICE_PROFILE_PRINT"),
+            gpu_timeline_only=_env_bool("GPU_TIMELINE_ONLY", "1"),
+            gpu_strict=_env_bool("GPU_STRICT", "1"),
             # General Performance
             perf_timing=_env_bool("PERF_TIMING"),
             # Genetic Algorithm

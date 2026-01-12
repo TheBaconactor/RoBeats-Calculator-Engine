@@ -27,6 +27,7 @@ from ...core.constants import (
 )
 from ...core.color_flags import build_color_flags
 from ...core.constants import SKIP_ITEM_KEYS
+from ...core.env_config import ENV
 from ...core.utils import stats_signature
 
 from .gpu_solver import _GPU_LOCK, GEM_SOLVER_CACHE
@@ -279,10 +280,19 @@ def finalize_gpu_batch_eval_plan(plan: GpuBatchEvalPlan, gpu_results: Optional[l
     calc_song = plan.calc_song
     ref_arrays = plan.ref_arrays
     sel_color = plan.sel_color
+    use_gpu_requested = bool((cfg_data or {}).get("use_gpu", False))
 
     sig_to_result = dict(plan.sig_to_result or {})
 
     if plan.unique_stats:
+        if ENV.gpu_strict and use_gpu_requested:
+            if gpu_results is None:
+                raise RuntimeError("GPU batch evaluation produced no results (strict mode).")
+            if len(gpu_results) < len(plan.unique_stats):
+                raise RuntimeError(
+                    f"GPU returned {len(gpu_results)}/{len(plan.unique_stats)} results (strict mode)."
+                )
+
         if gpu_results is not None and len(gpu_results) < len(plan.unique_stats):
             print(
                 f"[gpu_batch_eval] GPU returned {len(gpu_results)}/{len(plan.unique_stats)} results; "
@@ -291,6 +301,8 @@ def finalize_gpu_batch_eval_plan(plan: GpuBatchEvalPlan, gpu_results: Optional[l
 
         for unique_idx, (sig, rep_stats) in enumerate(plan.unique_stats):
             if gpu_results is None or unique_idx >= len(gpu_results):
+                if ENV.gpu_strict and use_gpu_requested:
+                    raise RuntimeError(f"Missing GPU result for unique_idx={unique_idx} (strict mode): sig={sig!r}")
                 # CPU fallback (or GPU returned incomplete results): force CPU-only evaluation.
                 # This avoids accidental Taichi calls on non-owner threads (e.g. in-flight mode).
                 override_cfg = dict(cfg_data or {})
@@ -365,6 +377,8 @@ def finalize_gpu_batch_eval_plan(plan: GpuBatchEvalPlan, gpu_results: Optional[l
             sig = base_sig + plan.config_sig
             res = GEM_SOLVER_CACHE.get(sig)
             if res is None:
+                if ENV.gpu_strict and use_gpu_requested:
+                    raise RuntimeError(f"Missing GEM_SOLVER_CACHE entry for sig={sig!r} (strict mode).")
                 # Safety-net: force CPU-only evaluation for missing signature entries.
                 override_cfg = dict(cfg_data or {})
                 override_cfg["use_gpu"] = False
@@ -544,9 +558,19 @@ def batch_evaluate_genomes(
                     gem_scale_fever=GEM_SCALE_FEVER,
                 )
             else:
-                # In-process path: reuse the cached per-song timeline grid.
-                grid = get_song_timeline_grid(plan.calc_song, plan.ref_arrays)
-                grid.precompute_all()
+                # In-process path:
+                # - Default: reuse cached per-song CPU timeline grid (then upload to GPU).
+                # - GPU_TIMELINE_ONLY=1: always use GPU timeline precompute path by passing calc_song dict.
+                prefer_gpu_timeline = bool(ENV.gpu_timeline_only)
+                song_slot = 0
+                if prefer_gpu_timeline:
+                    try:
+                        song_slot = int((plan.calc_song or {}).get("_gpu_song_slot", 0) or 0)
+                    except Exception:
+                        song_slot = 0
+                if not prefer_gpu_timeline:
+                    grid = get_song_timeline_grid(plan.calc_song, plan.ref_arrays)
+                    grid.precompute_all()
 
                 if registry is not None:
                     # GPU-resident aggregation path: encode representative genomes and aggregate stats on GPU.
@@ -580,7 +604,7 @@ def batch_evaluate_genomes(
                     with _GPU_LOCK:
                         gpu_results = solve_genomes_from_registry(
                             population_indices,
-                            grid,
+                            plan.calc_song if prefer_gpu_timeline else grid,
                             int(flags.get("is_p_ft", 0)),
                             int(flags.get("is_s_ft", 0)),
                             int(flags.get("is_p_ff", 0)),
@@ -596,12 +620,13 @@ def batch_evaluate_genomes(
                             plan.ref_arrays,
                             total_budget=TOTAL_GEM_BUDGET,
                             gem_scale_fever=GEM_SCALE_FEVER,
+                            song_slot=int(song_slot),
                         )
                 else:
                     with _GPU_LOCK:
                         gpu_results = solve_genomes_parallel(
                             plan.genome_stats_list,
-                            grid,
+                            plan.calc_song if prefer_gpu_timeline else grid,
                             int(flags.get("is_p_ft", 0)),
                             int(flags.get("is_s_ft", 0)),
                             int(flags.get("is_p_ff", 0)),
@@ -617,8 +642,11 @@ def batch_evaluate_genomes(
                             plan.ref_arrays,
                             total_budget=TOTAL_GEM_BUDGET,
                             gem_scale_fever=GEM_SCALE_FEVER,
+                            song_slot=int(song_slot),
                         )
         except Exception as e:
+            if ENV.gpu_strict:
+                raise RuntimeError(f"GPU path failed (strict mode): {type(e).__name__}: {e}") from e
             print(f"[batch_evaluate_genomes] GPU path failed, falling back to CPU: {type(e).__name__}: {e}")
             gpu_results = None
 

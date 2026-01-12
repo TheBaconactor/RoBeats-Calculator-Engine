@@ -21,6 +21,11 @@ if "--no-kernel-profiler" in sys.argv:
 else:
     os.environ.setdefault("TAICHI_KERNEL_PROFILER", "1")
 
+# Enable lightweight GPU transfer/throughput accounting for profiling runs.
+# (Kernel timing requires an explicit sync point; disable in production runs.)
+os.environ.setdefault("GPU_PROFILER", "1")
+os.environ.setdefault("GPU_SYNC_FOR_TIMING", "1")
+
 if "--block-dim" in sys.argv:
     try:
         idx = sys.argv.index("--block-dim")
@@ -179,7 +184,9 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
 
     from gear_optimizer.solver.scoring import GEM_SOLVER_CACHE
     from gear_optimizer.solver.fever_timeline import get_song_timeline_grid, SONG_TIMELINE_GRIDS
-    from gear_optimizer.core.utils import stats_signature, SKIP_ITEM_KEYS
+    from gear_optimizer.core.utils import stats_signature
+    from gear_optimizer.core.constants import SKIP_ITEM_KEYS
+    from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
     from gear_optimizer.core.constants import (
         TOTAL_GEM_BUDGET,
         GEM_SCALE_NORMAL,
@@ -228,11 +235,16 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
     phase2_time = time.perf_counter() - t0
     print(f"Phase 2 (Signature dedup):      {phase2_time:.4f}s")
 
-    # Phase 3: Timeline grid init + precompute + upload (done inside solve_genomes_parallel once/song)
+    # Phase 3: Timeline grid init + precompute (CPU)
     t0 = time.perf_counter()
     grid = get_song_timeline_grid(calc_song, ref_arrays)
     phase3a_time = time.perf_counter() - t0
     print(f"Phase 3a (Timeline grid init):  {phase3a_time:.4f}s")
+
+    t0 = time.perf_counter()
+    grid.precompute_all()
+    phase3b_time = time.perf_counter() - t0
+    print(f"Phase 3b (Timeline precompute_all): {phase3b_time:.4f}s")
 
     # Build genome_stats_list (same shape as scoring.py GPU V2/V3 path expects)
     t0 = time.perf_counter()
@@ -276,14 +288,10 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
                 "base_ff_stat": int(base_ff_stat),
             }
         )
-    phase3b_time = time.perf_counter() - t0
-    print(f"Phase 3b (Build genome_stats_list): {phase3b_time:.4f}s")
+    phase3c_time = time.perf_counter() - t0
+    print(f"Phase 3c (Build genome_stats_list): {phase3c_time:.4f}s")
 
     # Phase 4: GPU Kernel (solve_genomes_parallel V3) + internal breakdown
-    # Enable Taichi kernel profiler automatically for this profiling run
-    # (Must be set before first Taichi init; safe here if Taichi wasn't inited yet.)
-    os.environ.setdefault("TAICHI_KERNEL_PROFILER", "1")
-
     is_p_pp = 1 if "Chill" == p_color else 0
     is_s_pp = 1 if "Chill" == s_color else 0
     is_p_cm = 1 if "Flow" == p_color else 0
@@ -297,7 +305,11 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
     is_p_ff = 1 if "Vibe" == p_color else 0
     is_s_ff = 1 if "Vibe" == s_color else 0
 
-    profile = {}
+    gpu_prof = get_gpu_profiler()
+    gpu_prof.reset()
+    gpu_prof.enable()
+    gpu_prof.start_song("profile_gpu_batch")
+
     t0 = time.perf_counter()
     _ = solve_genomes_parallel(
         genome_stats_list,
@@ -317,26 +329,12 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
         ref_arrays,
         total_budget=TOTAL_GEM_BUDGET,
         gem_scale_fever=GEM_SCALE_FEVER,
-        profile=profile,
     )
     phase4_time = time.perf_counter() - t0
     print(f"Phase 4 (solve_genomes_parallel total): {phase4_time:.4f}s")
-    if profile:
-        print("  Internal breakdown:")
-        for k in [
-            "grid_upload_s",
-            "genome_upload_s",
-            "combo_upload_s",
-            "reset_best_s",
-            "kernel_combo_s",
-            "kernel_finalize_s",
-            "download_s",
-            "total_s",
-        ]:
-            if k in profile:
-                print(f"    {k:18s}: {profile[k]:.6f}s")
-        if "combo_count" in profile:
-            print(f"    {'combo_count':18s}: {profile['combo_count']}")
+
+    gpu_prof.end_song()
+    gpu_prof.report(verbose=True)
 
     # Print Taichi kernel profiler results (if enabled)
     try:
@@ -348,10 +346,10 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
     print()
     print("CONCLUSION:")
     print("-" * 40)
-    estimated_total = phase1_time + phase2_time + phase3a_time + phase3b_time + phase4_time
+    estimated_total = phase1_time + phase2_time + phase3a_time + phase3b_time + phase3c_time + phase4_time
     print(f"Estimated total for {population_size} genomes: {estimated_total:.3f}s")
 
-    cpu_total = phase1_time + phase2_time + phase3a_time + phase3b_time
+    cpu_total = phase1_time + phase2_time + phase3a_time + phase3b_time + phase3c_time
     if cpu_total > phase4_time:
         print("BOTTLENECK: CPU-side prep (stats/signatures/grid/stats_list)")
     else:
