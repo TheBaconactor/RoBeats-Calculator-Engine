@@ -61,6 +61,7 @@ def solve_genomes_with_ftff(
     ref_arrays: dict,
     total_budget: int = 90,
     gem_scale_fever: int = 3,
+    song_slot: int = 0,
 ) -> list:
     """
     Solve gem allocation for multiple genomes with GPU-resident FT/FF iteration.
@@ -83,13 +84,15 @@ def solve_genomes_with_ftff(
     """
     ensure_ready(ref_arrays)
     if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
-        precompute_timeline_gpu(timeline_grid, ref_arrays, song_slot=0)
+        precompute_timeline_gpu(timeline_grid, ref_arrays, song_slot=int(song_slot))
     else:
+        if int(song_slot) != 0:
+            raise ValueError("SongTimelineGrid upload supports song_slot=0 only; use calc_song dict for multi-slot")
         _upload_timeline_grid(timeline_grid)
 
     _upload_song_flags(
         {
-            0: (
+            int(song_slot): (
                 int(is_p_ft),
                 int(is_s_ft),
                 int(is_p_ff),
@@ -126,7 +129,15 @@ def solve_genomes_with_ftff(
         stats_buf[i, 5] = stats["base_ft_stat"]
         stats_buf[i, 6] = stats["base_ff_stat"]
 
-    fields.genome_base_stats.from_numpy(stats_buf)
+    if _profiler.enabled:
+        _t_upload = time.perf_counter()
+        fields.genome_base_stats.from_numpy(stats_buf)
+        _profiler.record_upload(time.perf_counter() - _t_upload, bytes_count=int(getattr(stats_buf, "nbytes", 0) or 0))
+        _maybe_sync(for_timing=True)
+        _t_kernel = time.perf_counter()
+    else:
+        fields.genome_base_stats.from_numpy(stats_buf)
+        _t_kernel = None
 
     # Launch kernel
     kernels.solve_genomes_with_ftff_kernel(
@@ -145,14 +156,24 @@ def solve_genomes_with_ftff(
         is_s_fm,
         is_p_ov,
         is_s_ov,
-        0,  # song_slot=0 for single-song mode
+        int(song_slot),
     )
 
-    # NOTE: ti.sync() removed - to_numpy() internally syncs
+    if _profiler.enabled and _SYNC_FOR_TIMING and _t_kernel is not None:
+        _maybe_sync(for_timing=True)
+        _profiler.record_kernel(time.perf_counter() - float(_t_kernel), genome_count=int(n_genomes))
 
     # Download results
     # [score, ft, ff, pp, cm, fm, ov]
+    _maybe_sync(for_timing=False)
+    _t_download = time.perf_counter()
     results_np = fields.genome_result_stats.to_numpy()[:n_genomes]
+    if _profiler.enabled:
+        try:
+            download_bytes = int(results_np.nbytes)
+        except Exception:
+            download_bytes = 0
+        _profiler.record_download(time.perf_counter() - _t_download, bytes_count=download_bytes)
 
     results = []
     for i in range(n_genomes):

@@ -530,7 +530,7 @@ def batch_evaluate_genomes(
     if plan.unique_stats and bool(plan.cfg_data.get("use_gpu", False)):
         from ..gpu_executor import is_gpu_worker_mode, submit_gpu_solve_genomes
         from ..fever_timeline import get_song_timeline_grid
-        from ..taichi_gem_solver import solve_genomes_parallel
+        from ..taichi_gem_solver import solve_genomes_parallel, solve_genomes_with_ftff
 
         flags = plan.flags
 
@@ -562,6 +562,7 @@ def batch_evaluate_genomes(
                 # - Default: reuse cached per-song CPU timeline grid (then upload to GPU).
                 # - GPU_TIMELINE_ONLY=1: always use GPU timeline precompute path by passing calc_song dict.
                 prefer_gpu_timeline = bool(ENV.gpu_timeline_only)
+                prefer_ftff_solver = bool(ENV.gpu_use_ftff_solver)
                 song_slot = 0
                 if prefer_gpu_timeline:
                     try:
@@ -624,7 +625,8 @@ def batch_evaluate_genomes(
                         )
                 else:
                     with _GPU_LOCK:
-                        gpu_results = solve_genomes_parallel(
+                        solve_fn = solve_genomes_with_ftff if prefer_ftff_solver else solve_genomes_parallel
+                        gpu_results = solve_fn(
                             plan.genome_stats_list,
                             plan.calc_song if prefer_gpu_timeline else grid,
                             int(flags.get("is_p_ft", 0)),
