@@ -94,6 +94,9 @@ try:
         ga_store_runs_payload_snapshot_segmented,
         ga_store_run_payload_segmented,
         ga_download_runs_payload,
+        ga_pack_fg_candidates_table_segmented,
+        ga_download_fg_candidates_table,
+        ga_stage_genome_base_stats_from_fg_candidates_table,
         # GPU-side global best tracking
         ga_init_global_best,
         ga_update_global_best,
@@ -167,6 +170,9 @@ __all__ = [
     "ga_store_runs_payload_snapshot_segmented",
     "ga_store_run_payload_segmented",
     "ga_download_runs_payload",
+    "ga_pack_fg_candidates_table_segmented",
+    "ga_download_fg_candidates_table",
+    "ga_stage_genome_base_stats_from_fg_candidates_table",
     # GPU-side global best tracking
     "ga_init_global_best",
     "ga_update_global_best",

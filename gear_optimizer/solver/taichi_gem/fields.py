@@ -57,6 +57,19 @@ MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 w
 MAX_BP_PAIRS = 256  # Breakpoint kernel scan pairs
 CHUNK_BEST_KEY_TILES = 8  # Reduce atomic contention in GA warm-start reduction
 
+# GPU-native GA -> ForceGreats candidate table (compact GPU-resident buffer).
+#
+# Avoids downloading full `(runs, pop, payload_cols)` GA run payloads back to CPU just to
+# seed ForceGreats candidate selection. GA packs a small per-run candidate table on GPU.
+#
+# Layout per row (int32):
+#   [score, slot_ids(9), result_row(7), base_stats7(7)]
+# Where base_stats7 is `[pp, cm, fm, p_val, s_val, ft_stat, ff_stat]` (same column order
+# used by ForceGreatsFinder GPU kernels via `genome_base_stats`).
+GA_FG_CANDIDATES_PER_RUN = _env_int("GPU_GA_FG_CANDIDATES_PER_RUN", 64)
+GA_FG_CANDIDATES_PER_RUN = max(1, min(128, int(GA_FG_CANDIDATES_PER_RUN)))
+GA_FG_CANDIDATE_COLS = 1 + MAX_SLOTS + 7 + 7
+
 
 # ============================================================================
 # GPU FIELDS (Device-resident data)
@@ -141,6 +154,14 @@ GA_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES = 256  # Covers GA_POPULATION_SIZE 
 ga_runs_payload_download_staging_16: ti.Field = None  # (<=16, <=max_genomes+1, 17) i32
 ga_runs_payload_download_staging_64: ti.Field = None  # (<=64, <=max_genomes+1, 17) i32
 ga_runs_payload_download_staging_128: ti.Field = None  # (<=128, <=max_genomes+1, 17) i32
+
+# Compact GA -> FG candidate table (GPU-resident), plus a single-slot download staging field.
+ga_fg_candidates_packed: ti.Field = (
+    None  # (MAX_SONG_SLOTS, MAX_GA_RUNS, GA_FG_CANDIDATES_PER_RUN+1, GA_FG_CANDIDATE_COLS) i32
+)
+ga_fg_candidates_download_staging: ti.Field = (
+    None  # (MAX_GA_RUNS, GA_FG_CANDIDATES_PER_RUN+1, GA_FG_CANDIDATE_COLS) i32
+)
 
 # GPU-side island elitism (avoids per-generation score downloads)
 MAX_ISLANDS = 16  # Maximum number of islands
@@ -259,6 +280,7 @@ def reset_fields_state() -> None:
         ga_runs_payload_download_staging_16, \
         ga_runs_payload_download_staging_64, \
         ga_runs_payload_download_staging_128
+    global ga_fg_candidates_packed, ga_fg_candidates_download_staging
     global island_boundaries, island_elite_indices, island_elite_count
 
     # Main refs
@@ -331,6 +353,8 @@ def reset_fields_state() -> None:
     ga_runs_payload_download_staging_16 = None
     ga_runs_payload_download_staging_64 = None
     ga_runs_payload_download_staging_128 = None
+    ga_fg_candidates_packed = None
+    ga_fg_candidates_download_staging = None
     song_flags = None
 
     # Results
@@ -477,6 +501,7 @@ def allocate_fields():
         ga_runs_payload_download_staging_16, \
         ga_runs_payload_download_staging_64, \
         ga_runs_payload_download_staging_128
+    global ga_fg_candidates_packed, ga_fg_candidates_download_staging
     global island_boundaries, island_elite_indices, island_elite_count
 
     if _fields_allocated:
@@ -566,6 +591,16 @@ def allocate_fields():
     ga_runs_payload_download_staging_128 = ti.field(
         dtype=ti.i32,
         shape=(min(int(MAX_GA_RUNS), 128), _staging_genomes + 1, _payload_cols),
+    )
+
+    # Compact GA -> FG candidate table (one per song slot) + single-slot download staging.
+    ga_fg_candidates_packed = ti.field(
+        dtype=ti.i32,
+        shape=(MAX_SONG_SLOTS, MAX_GA_RUNS, int(GA_FG_CANDIDATES_PER_RUN) + 1, int(GA_FG_CANDIDATE_COLS)),
+    )
+    ga_fg_candidates_download_staging = ti.field(
+        dtype=ti.i32,
+        shape=(MAX_GA_RUNS, int(GA_FG_CANDIDATES_PER_RUN) + 1, int(GA_FG_CANDIDATE_COLS)),
     )
 
     # GPU-side island elitism (avoids per-generation score downloads)
@@ -713,6 +748,8 @@ def bind_fields(kernels_module):
     target.ga_global_best_results = ga_global_best_results
     target.ga_runs_payload_packed = ga_runs_payload_packed
     target.ga_run_payload_packed = ga_run_payload_packed
+    target.ga_fg_candidates_packed = ga_fg_candidates_packed
+    target.ga_fg_candidates_download_staging = ga_fg_candidates_download_staging
 
     # GPU-side island elitism
     target.island_boundaries = island_boundaries

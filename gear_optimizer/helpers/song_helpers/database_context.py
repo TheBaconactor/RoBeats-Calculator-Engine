@@ -30,13 +30,40 @@ def build_db_key(found_song_name: str, calc_song: dict | None = None) -> str:
     """
     Build a stable DB lookup key for a song.
 
-    This project intentionally uses a *global* per-song DB key (the song name only).
-    HumanHitSim may change per run (including randomized seeds), but we still want
-    runs to accumulate into a single song record rather than forking DB namespaces.
+    When HumanHitSim is enabled, include its parameters so results from different
+    distributions/seeds do not collide in the same DB namespace.
     """
     if not isinstance(found_song_name, str) or not found_song_name:
         found_song_name = str(found_song_name)
-    return found_song_name.strip()
+    base = found_song_name.strip()
+
+    meta = (calc_song or {}).get("metadata") if isinstance(calc_song, dict) else None
+    if not isinstance(meta, dict) or not meta.get("HumanHitSimApplied"):
+        return base
+
+    try:
+        seed = int(meta.get("HumanHitSimSeed")) if meta.get("HumanHitSimSeed") is not None else None
+    except Exception:
+        seed = None
+
+    apply_to = str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper()
+    distribution = str(meta.get("HumanHitSimDistribution", "") or "").strip().lower()
+    great_mode = str(meta.get("HumanHitSimGreatMode", "") or "").strip().lower()
+
+    parts: list[str] = []
+    if seed is not None:
+        parts.append(f"seed={seed}")
+    if apply_to:
+        parts.append(f"apply={apply_to}")
+    if distribution:
+        parts.append(f"dist={distribution}")
+    if great_mode:
+        parts.append(f"great={great_mode}")
+
+    if not parts:
+        return base
+
+    return f"{base} | hitsim {' '.join(parts)}"
 
 
 def _maybe_wal_maintenance(conn) -> None:
@@ -74,7 +101,9 @@ def _maybe_wal_maintenance(conn) -> None:
         logging.debug("[DB] PRAGMA optimize failed", exc_info=True)
 
 
-def load_database_context(found_song_name, use_evo_db, gears_by_name, minis_by_name, *, load_known_loadouts: bool = True):
+def load_database_context(
+    found_song_name, use_evo_db, gears_by_name, minis_by_name, *, load_known_loadouts: bool = True
+):
     """
     Load database seeds and known loadouts.
 

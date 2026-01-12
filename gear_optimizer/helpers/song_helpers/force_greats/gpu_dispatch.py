@@ -33,6 +33,7 @@ def _truthy_env(name: str, default: str = "0") -> bool:
 
 
 _GPU_STRICT = _truthy_env("GPU_STRICT", "1")
+_FG_GA_CANDIDATE_TABLE_ENABLED = _truthy_env("FG_GA_CANDIDATE_TABLE_ENABLED", "1")
 
 
 def _chart_signature_key(calc_song: dict) -> tuple:
@@ -380,27 +381,42 @@ def process_force_greats_gpu_finder(
 
     def _submit_solve_force_greats_finder(*args, blocking: bool = True, **kwargs):
         nonlocal timeline_precompute_queued
+        ga_stage_coords = kwargs.pop("ga_stage_coords", None)
+        ga_stage_table_slot = kwargs.pop("ga_stage_table_slot", None)
         if gpu_client is not None:
             # Ensure the timeline grid for this song_slot is computed before the first FG solve
             # when using GPU-resident pair caps. Serialize submit ordering to prevent cross-thread
             # interleaving between the precompute and FG solve requests.
-            if kwargs.get("pair_caps_from_timeline") and not timeline_precompute_queued:
+            need_timeline_precompute = bool(kwargs.get("pair_caps_from_timeline")) and (not timeline_precompute_queued)
+            need_ga_stage = ga_stage_coords is not None
+
+            if need_timeline_precompute or need_ga_stage:
                 try:
                     raw_slot = kwargs.get("song_slot", song_slot)
                     slot = int(raw_slot) if raw_slot is not None else int(song_slot)
                 except Exception:
                     slot = int(song_slot)
-                try:
-                    with gpu_client.submit_lock:
-                        gpu_client.submit_precompute_timeline(
-                            calc_song=calc_song,
-                            ref_arrays=ref_arrays,
-                            song_slot=int(slot),
+                if ga_stage_table_slot is not None:
+                    try:
+                        slot = int(ga_stage_table_slot)
+                    except Exception:
+                        pass
+
+                with gpu_client.submit_lock:
+                    if need_timeline_precompute:
+                        try:
+                            gpu_client.submit_precompute_timeline(
+                                calc_song=calc_song,
+                                ref_arrays=ref_arrays,
+                                song_slot=int(slot),
+                            )
+                        finally:
+                            timeline_precompute_queued = True
+                    if need_ga_stage:
+                        gpu_client.submit_ga_stage_fg_genome_base_stats(
+                            table_slot=int(slot),
+                            coords=ga_stage_coords,
                         )
-                        timeline_precompute_queued = True
-                        fut = gpu_client.submit_solve_force_greats_finder(*args, **kwargs).future
-                except Exception:
-                    timeline_precompute_queued = True
                     fut = gpu_client.submit_solve_force_greats_finder(*args, **kwargs).future
             else:
                 fut = gpu_client.submit_solve_force_greats_finder(*args, **kwargs).future
@@ -533,6 +549,11 @@ def process_force_greats_gpu_finder(
 
     need_reset = False
     timeline_precompute_queued = False
+    genome_stats_arr = None
+    genome_stats_n_genomes = 0
+    genome_stats_preuploaded = False
+    ga_stage_coords_pending = None
+    ga_stage_table_slot_pending = None
 
     def _flush_fg_tasks_batch(
         *,
@@ -543,6 +564,8 @@ def process_force_greats_gpu_finder(
         download_keep_mask=None,
     ):
         nonlocal fg_tasks_batch, need_reset, genome_stats_uploaded
+        nonlocal genome_stats_n_genomes, genome_stats_preuploaded
+        nonlocal ga_stage_coords_pending, ga_stage_table_slot_pending
         if gpu_client is None:
             return None
 
@@ -592,9 +615,20 @@ def process_force_greats_gpu_finder(
             accumulate_global=True,
             fg_tasks=batch,
         )
-        # Avoid re-uploading genome stats for subsequent requests while the
-        # `genome_base_stats` field remains valid (in-process GPU owner thread).
-        submit_kwargs["upload_genome_stats"] = bool(not genome_stats_uploaded)
+        if genome_stats_preuploaded:
+            submit_kwargs["upload_genome_stats"] = False
+            submit_kwargs["genome_stats_preuploaded"] = True
+            submit_kwargs["n_genomes_override"] = int(genome_stats_n_genomes)
+            if ga_stage_coords_pending is not None:
+                submit_kwargs["ga_stage_coords"] = ga_stage_coords_pending
+                try:
+                    submit_kwargs["ga_stage_table_slot"] = int(ga_stage_table_slot_pending or song_slot)
+                except Exception:
+                    submit_kwargs["ga_stage_table_slot"] = int(song_slot)
+        else:
+            # Avoid re-uploading genome stats for subsequent requests while the
+            # `genome_base_stats` field remains valid (in-process GPU owner thread).
+            submit_kwargs["upload_genome_stats"] = bool(not genome_stats_uploaded)
         if "base_cfg_offset" in first:
             try:
                 submit_kwargs["base_cfg_offset"] = int(first.get("base_cfg_offset", 0) or 0)
@@ -622,6 +656,8 @@ def process_force_greats_gpu_finder(
             blocking=False,
             **submit_kwargs,
         )
+        ga_stage_coords_pending = None
+        ga_stage_table_slot_pending = None
         genome_stats_uploaded = True
         fg_async_futures.append(fut)
         if len(fg_async_futures) >= fg_async_max_inflight:
@@ -633,6 +669,7 @@ def process_force_greats_gpu_finder(
     group_reps = {}  # key -> sig -> representative base_stats dict
     group_base_scores = {}  # key -> sig -> base score for this signature
     group_centers = {}  # key -> set of (center_ft, center_ff)
+    group_ga_coords = {}  # key -> sig -> (ga_run_idx, ga_row_idx)
     # entry_obj_id -> stats signature (used for top-K download keep-mask)
     entry_sig: dict[int, str] = {}
 
@@ -722,6 +759,13 @@ def process_force_greats_gpu_finder(
         groups.setdefault(key, {}).setdefault(sig, []).append((entry, eval_data))
         group_centers.setdefault(key, set()).add((int(center_ft), int(center_ff)))
         group_reps.setdefault(key, {}).setdefault(sig, base_stats)
+        try:
+            ga_run_idx = eval_data.get("_ga_gpu_run_idx")
+            ga_row_idx = eval_data.get("_ga_gpu_row_idx")
+            if ga_run_idx is not None and ga_row_idx is not None:
+                group_ga_coords.setdefault(key, {}).setdefault(sig, (int(ga_run_idx), int(ga_row_idx)))
+        except Exception:
+            pass
         try:
             base_score_i = int(entry.get("base_score") or entry.get("score", 0) or 0)
         except Exception:
@@ -868,6 +912,7 @@ def process_force_greats_gpu_finder(
         _t_cfg0 = time.perf_counter() if perf else 0.0
         rep_map = group_reps.get((sel_color, n_sections, max_per_section), {}) or {}
         base_score_map = group_base_scores.get((sel_color, n_sections, max_per_section), {}) or {}
+        ga_coords_map = group_ga_coords.get((sel_color, n_sections, max_per_section), {}) or {}
 
         # Use configurable window around loadout centers for FT/FF search.
         # - fg_search_radius < 0: full search over all FT/FF gem allocations (within TOTAL_GEM_BUDGET).
@@ -1026,9 +1071,28 @@ def process_force_greats_gpu_finder(
 
             _t_genome0 = time.perf_counter() if perf else 0.0
 
-            # FAST PATH: Build numpy array directly instead of list[dict]
-            # Column order: pp, cm, fm, p_val, s_val, ft_stat, ff_stat
             n_pending = len(pending)
+            genome_stats_n_genomes = int(n_pending)
+            genome_stats_preuploaded = False
+            ga_stage_coords_pending = None
+            ga_stage_table_slot_pending = None
+
+            coords_arr = None
+            if _FG_GA_CANDIDATE_TABLE_ENABLED and bool(use_gpu) and ga_coords_map:
+                try:
+                    coords_list = [ga_coords_map.get(sig0) for sig0 in pending_sigs]
+                    if coords_list and all(c is not None and len(c) >= 2 for c in coords_list):
+                        coords_arr = np.asarray(coords_list, dtype=np.int32)
+                        if (
+                            coords_arr.ndim == 2
+                            and int(coords_arr.shape[0]) == int(n_pending)
+                            and int(coords_arr.shape[1]) >= 2
+                        ):
+                            genome_stats_preuploaded = True
+                except Exception:
+                    coords_arr = None
+                    genome_stats_preuploaded = False
+
             # Optional download selection inputs (per pending signature).
             download_base_scores = None
             download_keep_mask = None
@@ -1046,30 +1110,58 @@ def process_force_greats_gpu_finder(
                 except Exception:
                     download_base_scores = None
                     download_keep_mask = None
-            # Reuse a persistent buffer to keep the data pointer stable (enables upload caching).
-            if not hasattr(process_force_greats_gpu_finder, "_genome_stats_buf"):
-                process_force_greats_gpu_finder._genome_stats_buf = np.zeros((1024, 7), dtype=np.int32)
-            genome_stats_buf = process_force_greats_gpu_finder._genome_stats_buf
-            if genome_stats_buf.shape[0] < n_pending:
-                process_force_greats_gpu_finder._genome_stats_buf = np.zeros((max(1024, n_pending), 7), dtype=np.int32)
-                genome_stats_buf = process_force_greats_gpu_finder._genome_stats_buf
-            genome_stats_arr = genome_stats_buf[:n_pending, :]
-            for i, bs in enumerate(pending):
-                genome_stats_arr[i, 0] = int(bs.get("Perfect Points", 0))
-                genome_stats_arr[i, 1] = int(bs.get("Combo Multiplier", 0))
-                genome_stats_arr[i, 2] = int(bs.get("Fever Multiplier", 0))
-                genome_stats_arr[i, 3] = int(bs.get(p_color, 0))  # p_val
-                genome_stats_arr[i, 4] = int(bs.get(s_color, 0))  # s_val
-                genome_stats_arr[i, 5] = int(bs.get("Fever Time", 0))  # ft_stat
-                genome_stats_arr[i, 6] = int(bs.get("Fever Fill Rate", 0))  # ff_stat
 
-            # New genome batch => require a fresh upload on the first request.
-            genome_stats_uploaded = False
-            if defer_group_apply and in_process and gpu_client is not None:
-                # In in-process GPU executor mode, `genome_stats_arr` is passed by reference into async
-                # requests. When deferring apply across multiple groups, we reuse the backing buffer for
-                # subsequent groups while earlier GPU work is still in-flight, corrupting results.
-                genome_stats_arr = genome_stats_arr.copy()
+            if genome_stats_preuploaded:
+                genome_stats_arr = None
+                genome_stats_uploaded = True
+                if gpu_client is not None:
+                    ga_stage_coords_pending = coords_arr
+                    ga_stage_table_slot_pending = int(song_slot)
+                else:
+                    try:
+                        from ....solver.taichi_gem import api as _taichi_api
+
+                        _taichi_api.ga_stage_genome_base_stats_from_fg_candidates_table(
+                            int(song_slot),
+                            np.asarray(coords_arr, dtype=np.int32),
+                            n_slots=9,
+                        )
+                    except Exception as e:
+                        if perf:
+                            print(f"[FG] GA->FG genome stats staging failed; falling back to host upload: {e}")
+                        genome_stats_preuploaded = False
+                        genome_stats_arr = None
+                        genome_stats_uploaded = False
+
+            if not genome_stats_preuploaded:
+                # FAST PATH: Build numpy array directly instead of list[dict]
+                # Column order: pp, cm, fm, p_val, s_val, ft_stat, ff_stat
+                # Reuse a persistent buffer to keep the data pointer stable (enables upload caching).
+                if not hasattr(process_force_greats_gpu_finder, "_genome_stats_buf"):
+                    process_force_greats_gpu_finder._genome_stats_buf = np.zeros((1024, 7), dtype=np.int32)
+                genome_stats_buf = process_force_greats_gpu_finder._genome_stats_buf
+                if genome_stats_buf.shape[0] < n_pending:
+                    process_force_greats_gpu_finder._genome_stats_buf = np.zeros(
+                        (max(1024, n_pending), 7), dtype=np.int32
+                    )
+                    genome_stats_buf = process_force_greats_gpu_finder._genome_stats_buf
+                genome_stats_arr = genome_stats_buf[:n_pending, :]
+                for i, bs in enumerate(pending):
+                    genome_stats_arr[i, 0] = int(bs.get("Perfect Points", 0))
+                    genome_stats_arr[i, 1] = int(bs.get("Combo Multiplier", 0))
+                    genome_stats_arr[i, 2] = int(bs.get("Fever Multiplier", 0))
+                    genome_stats_arr[i, 3] = int(bs.get(p_color, 0))  # p_val
+                    genome_stats_arr[i, 4] = int(bs.get(s_color, 0))  # s_val
+                    genome_stats_arr[i, 5] = int(bs.get("Fever Time", 0))  # ft_stat
+                    genome_stats_arr[i, 6] = int(bs.get("Fever Fill Rate", 0))  # ff_stat
+
+                # New genome batch => require a fresh upload on the first request.
+                genome_stats_uploaded = False
+                if defer_group_apply and in_process and gpu_client is not None:
+                    # In in-process GPU executor mode, `genome_stats_arr` is passed by reference into async
+                    # requests. When deferring apply across multiple groups, we reuse the backing buffer for
+                    # subsequent groups while earlier GPU work is still in-flight, corrupting results.
+                    genome_stats_arr = genome_stats_arr.copy()
 
             song_data = calc_song.get("song_data", {}) or {}
             # IMPORTANT: Taichi FG API uses float32 timestamps. If we pass float64 arrays here,
@@ -1551,6 +1643,9 @@ def process_force_greats_gpu_finder(
                                 return_raw=True,
                                 accumulate_global=True,
                                 base_cfg_offset=group_cfg_offset,
+                                upload_genome_stats=bool(not genome_stats_preuploaded),
+                                genome_stats_preuploaded=bool(genome_stats_preuploaded),
+                                n_genomes_override=int(n_pending) if genome_stats_preuploaded else None,
                             )
                     if perf:
                         t_gpu_calls_sec += time.perf_counter() - _t_gpu0
@@ -1703,6 +1798,9 @@ def process_force_greats_gpu_finder(
                                 song_slot=int(song_slot),
                                 return_raw=True,  # Return numpy arrays, not list[dict]
                                 accumulate_global=True,
+                                upload_genome_stats=bool(not genome_stats_preuploaded),
+                                genome_stats_preuploaded=bool(genome_stats_preuploaded),
+                                n_genomes_override=int(n_pending) if genome_stats_preuploaded else None,
                             )
 
                     download_future = _flush_fg_tasks_batch(
@@ -1753,6 +1851,9 @@ def process_force_greats_gpu_finder(
                         pair_caps_from_timeline=bool(pair_caps_from_timeline),
                         song_slot=int(song_slot),
                         return_raw=True,  # Return numpy arrays, not list[dict]
+                        upload_genome_stats=bool(not genome_stats_preuploaded),
+                        genome_stats_preuploaded=bool(genome_stats_preuploaded),
+                        n_genomes_override=int(n_pending) if genome_stats_preuploaded else None,
                     )
                 if perf:
                     t_gpu_calls_sec += time.perf_counter() - _t_gpu0

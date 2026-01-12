@@ -186,6 +186,12 @@ class GpuServiceClient:
     def submit_gpu_native_ga_run(self, payload: dict[str, Any]) -> GpuJobHandle:
         return self.submit(GpuRequestType.GPU_NATIVE_GA_RUN, dict(payload or {}))
 
+    def submit_ga_stage_fg_genome_base_stats(self, *, table_slot: int, coords, n_slots: int = 9) -> GpuJobHandle:
+        return self.submit(
+            GpuRequestType.GA_STAGE_FG_GENOME_BASE_STATS,
+            {"table_slot": int(table_slot), "coords": coords, "n_slots": int(n_slots)},
+        )
+
     def submit_solve_force_greats_finder(self, *args: Any, **kwargs: Any) -> GpuJobHandle:
         return self.submit(
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,

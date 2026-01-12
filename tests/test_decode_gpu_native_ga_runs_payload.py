@@ -57,7 +57,7 @@ def test_decode_gpu_native_ga_runs_payload_matches_fg_candidate_selector():
     n_runs = 3
     n_genomes = 50
     n_slots = 9
-    width = 1 + n_slots + 7
+    width = 1 + n_slots + 7 + 7
     runs_payload = np.zeros((n_runs, n_genomes + 1, width), dtype=np.int32)
 
     slot_start = np.asarray(registry.slot_start, dtype=np.int32)
@@ -99,6 +99,7 @@ def test_decode_gpu_native_ga_runs_payload_matches_fg_candidate_selector():
             runs_payload[r, row, 0] = score
             runs_payload[r, row, 1 : 1 + n_slots] = genome_ids
             runs_payload[r, row, 1 + n_slots : 1 + n_slots + 7] = res
+            runs_payload[r, row, 1 + n_slots + 7 : 1 + n_slots + 7 + 7] = 0
 
             if score > best_score:
                 best_score = score
@@ -110,6 +111,7 @@ def test_decode_gpu_native_ga_runs_payload_matches_fg_candidate_selector():
         runs_payload[r, 0, 0] = int(best_score)
         runs_payload[r, 0, 1 : 1 + n_slots] = best_ids
         runs_payload[r, 0, 1 + n_slots : 1 + n_slots + 7] = best_res
+        runs_payload[r, 0, 1 + n_slots + 7 : 1 + n_slots + 7 + 7] = 0
 
     # decode_gpu_native_ga_runs_payload clamps candidate limits to at least
     # LOADOUTS_PER_SONG_LIMIT for DB/leaderboard stability.

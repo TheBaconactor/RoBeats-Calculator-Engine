@@ -1160,6 +1160,151 @@ def ga_download_runs_payload(*, n_runs: int, n_genomes: int, n_slots: int = 9) -
     return np.ascontiguousarray(view, dtype=np.int32)
 
 
+def ga_pack_fg_candidates_table_segmented(
+    *,
+    table_slot: int,
+    run_idx_start: int,
+    n_runs: int,
+    n_genomes_per_run: int,
+    n_slots: int = 9,
+    is_p_ft: int = 0,
+    is_s_ft: int = 0,
+    is_p_ff: int = 0,
+    is_s_ff: int = 0,
+    is_p_pp: int = 0,
+    is_s_pp: int = 0,
+    is_p_cm: int = 0,
+    is_s_cm: int = 0,
+    is_p_fm: int = 0,
+    is_s_fm: int = 0,
+    is_p_ov: int = 0,
+    is_s_ov: int = 0,
+) -> None:
+    """
+    Pack a compact GA->FG candidate table for packed multi-run execution.
+
+    This is intended to replace large `ga_download_runs_payload()` transfers.
+    """
+    ensure_ready()
+    table_slot = int(table_slot)
+    run_idx_start = int(run_idx_start)
+    n_runs = int(n_runs)
+    n_genomes_per_run = int(n_genomes_per_run)
+    n_slots = int(n_slots)
+    if n_runs <= 0 or n_genomes_per_run <= 0:
+        return
+    if table_slot < 0 or table_slot >= int(fields.MAX_SONG_SLOTS):
+        raise ValueError(f"table_slot out of range: {table_slot} (MAX_SONG_SLOTS={fields.MAX_SONG_SLOTS})")
+    if run_idx_start < 0 or run_idx_start >= int(fields.MAX_GA_RUNS):
+        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
+    if run_idx_start + n_runs > int(fields.MAX_GA_RUNS):
+        raise ValueError(
+            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})"
+        )
+    if n_slots != 9:
+        raise ValueError(f"GPU-native GA expects n_slots=9 for FG candidate packing, got {n_slots}")
+
+    kernels.ga_pack_fg_candidates_table_segmented_kernel(
+        int(table_slot),
+        int(run_idx_start),
+        int(n_runs),
+        int(n_genomes_per_run),
+        int(n_slots),
+        int(is_p_ft),
+        int(is_s_ft),
+        int(is_p_ff),
+        int(is_s_ff),
+        int(is_p_pp),
+        int(is_s_pp),
+        int(is_p_cm),
+        int(is_s_cm),
+        int(is_p_fm),
+        int(is_s_fm),
+        int(is_p_ov),
+        int(is_s_ov),
+    )
+
+
+def ga_download_fg_candidates_table(*, table_slot: int, n_runs: int) -> np.ndarray:
+    """
+    Download the compact GA->FG candidate table for one song/table slot.
+
+    Returns:
+        np.ndarray[int32] with shape (n_runs, K+1, 24)
+    """
+    ensure_ready()
+    table_slot = int(table_slot)
+    n_runs = int(n_runs)
+    if n_runs < 0 or n_runs > int(fields.MAX_GA_RUNS):
+        raise ValueError(f"n_runs out of range: {n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
+    if table_slot < 0 or table_slot >= int(fields.MAX_SONG_SLOTS):
+        raise ValueError(f"table_slot out of range: {table_slot} (MAX_SONG_SLOTS={fields.MAX_SONG_SLOTS})")
+
+    perf = str(os.environ.get("PERF_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    t_total = time.perf_counter() if perf else 0.0
+
+    kernels.ga_copy_fg_candidates_table_to_download_staging_kernel(int(table_slot), int(n_runs))
+    out = fields.ga_fg_candidates_download_staging.to_numpy()
+    view = out[:n_runs, :, :]
+
+    total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
+    if perf:
+        try:
+            view_bytes = int(getattr(view, "nbytes", 0) or 0)
+            out_bytes = int(getattr(out, "nbytes", 0) or 0)
+        except Exception:
+            view_bytes = 0
+            out_bytes = 0
+        print(
+            "[PERF][GADownloadGaFgCandidates] "
+            f"slot={table_slot} runs={n_runs} total={total_ms:.1f}ms view_bytes={view_bytes} transfer_bytes={out_bytes}"
+        )
+
+    if view.dtype == np.int32 and view.flags["C_CONTIGUOUS"]:
+        return view
+    return np.ascontiguousarray(view, dtype=np.int32)
+
+
+def ga_stage_genome_base_stats_from_fg_candidates_table(
+    *,
+    table_slot: int,
+    coords: np.ndarray,
+    n_slots: int = 9,
+) -> int:
+    """
+    Stage `fields.genome_base_stats[0:n]` from the GA->FG candidate table (GPU->GPU copy).
+
+    Args:
+        table_slot: Candidate table slot (usually song_slot).
+        coords: (n, 2) int32 array of (run_idx, row_idx) into the candidate table.
+        n_slots: Expected 9.
+
+    Returns:
+        n (number of staged genomes)
+    """
+    ensure_ready()
+    table_slot = int(table_slot)
+    n_slots = int(n_slots)
+    if n_slots != 9:
+        raise ValueError(f"Expected n_slots=9, got {n_slots}")
+    if table_slot < 0 or table_slot >= int(fields.MAX_SONG_SLOTS):
+        raise ValueError(f"table_slot out of range: {table_slot} (MAX_SONG_SLOTS={fields.MAX_SONG_SLOTS})")
+
+    coords = np.asarray(coords, dtype=np.int32)
+    if coords.ndim != 2 or int(coords.shape[1]) < 2:
+        raise ValueError(f"coords must have shape (n,2), got shape={getattr(coords, 'shape', None)}")
+    if not coords.flags["C_CONTIGUOUS"]:
+        coords = np.ascontiguousarray(coords, dtype=np.int32)
+    n = int(coords.shape[0])
+    if n <= 0:
+        return 0
+    if n > int(fields.MAX_GENOMES):
+        raise ValueError(f"Too many genomes to stage: {n} > {fields.MAX_GENOMES}")
+
+    kernels.ga_stage_genome_base_stats_from_fg_candidates_table_kernel(int(table_slot), int(n), int(n_slots), coords)
+    return int(n)
+
+
 # ============================================================================
 # GPU-SIDE GLOBAL BEST TRACKING
 # ============================================================================

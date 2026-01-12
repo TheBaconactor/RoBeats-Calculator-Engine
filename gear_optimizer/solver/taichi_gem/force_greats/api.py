@@ -743,7 +743,7 @@ def _fg_upload_great_candidate_timestamps(candidate_np: np.ndarray, n: int) -> N
 
 
 def _solve_force_greats_finder_gpu_impl(
-    genome_stats_list: list[dict[str, Any]] | np.ndarray,
+    genome_stats_list: list[dict[str, Any]] | np.ndarray | None,
     timestamps_np: np.ndarray,
     great_candidate_timestamps_np: np.ndarray | None,
     long_notes: int,
@@ -775,6 +775,8 @@ def _solve_force_greats_finder_gpu_impl(
     accumulate_global: bool = False,
     base_cfg_offset: int = 0,
     upload_genome_stats: bool = True,
+    genome_stats_preuploaded: bool = False,
+    n_genomes_override: int | None = None,
 ) -> list[dict[str, Any]] | dict[str, np.ndarray] | None:
     """
     Full GPU ForceGreatsFinder (tolerant mode).
@@ -800,12 +802,16 @@ def _solve_force_greats_finder_gpu_impl(
     if cfg_chunk is None:
         cfg_chunk = fg_fields.FG_MAX_CONFIGS
 
-    # Handle both list and numpy array (numpy arrays have ambiguous truth value)
-    if isinstance(genome_stats_list, np.ndarray):
-        if genome_stats_list.shape[0] == 0:
+    genome_stats_preuploaded = bool(genome_stats_preuploaded)
+
+    # Handle both list and numpy array (numpy arrays have ambiguous truth value).
+    # When genome_stats_preuploaded=True, callers may pass genome_stats_list=None and provide n_genomes_override.
+    if not genome_stats_preuploaded:
+        if isinstance(genome_stats_list, np.ndarray):
+            if genome_stats_list.shape[0] == 0:
+                return [] if not return_raw else {}
+        elif not genome_stats_list:
             return [] if not return_raw else {}
-    elif not genome_stats_list:
-        return [] if not return_raw else {}
 
     if "Fever Time" not in ref_arrays or "Fever Fill Rate" not in ref_arrays:
         raise KeyError("FG finder GPU requires ref_arrays to include 'Fever Time' and 'Fever Fill Rate'")
@@ -816,7 +822,15 @@ def _solve_force_greats_finder_gpu_impl(
     # Ensure FG-specific fields are allocated, bound, AND kernels pre-warmed.
     fg_fields.ensure_ready_with_warmup()
 
-    n_genomes = int(len(genome_stats_list))
+    if genome_stats_preuploaded:
+        if n_genomes_override is None:
+            raise ValueError("genome_stats_preuploaded=True requires n_genomes_override")
+        n_genomes = int(n_genomes_override)
+    else:
+        if genome_stats_list is None:
+            n_genomes = 0
+        else:
+            n_genomes = int(len(genome_stats_list))
     if n_genomes > gem_fields.MAX_GENOMES:
         raise ValueError(f"Too many genomes for FG finder: {n_genomes} > {gem_fields.MAX_GENOMES}")
 
@@ -894,15 +908,20 @@ def _solve_force_greats_finder_gpu_impl(
             ptr = int(id(genome_stats_list))
         _fg_genome_stats_upload_key = (int(n_genomes), int(ptr))
     else:
-        try:
-            ok = _fg_genome_stats_upload_key is not None and int(_fg_genome_stats_upload_key[0]) == int(n_genomes)
-        except Exception:
-            ok = False
-        if not ok:
-            raise RuntimeError(
-                "Skipping genome stats upload without a compatible prior upload; "
-                "this indicates a misuse of upload_genome_stats=False."
-            )
+        if genome_stats_preuploaded:
+            # Callers explicitly staged `genome_base_stats` via another GPU entrypoint and
+            # guarantee no intervening entrypoint overwrote it.
+            pass
+        else:
+            try:
+                ok = _fg_genome_stats_upload_key is not None and int(_fg_genome_stats_upload_key[0]) == int(n_genomes)
+            except Exception:
+                ok = False
+            if not ok:
+                raise RuntimeError(
+                    "Skipping genome stats upload without a compatible prior upload; "
+                    "this indicates a misuse of upload_genome_stats=False."
+                )
 
     # Upload FT/FF list
     n_ftff = int(len(ftff_pairs))
@@ -1534,6 +1553,9 @@ def solve_force_greats_finder_gpu(*args, **kwargs) -> list[dict[str, Any]] | dic
                 return_raw=bool(kwargs.get("return_raw", False)),
                 accumulate_global=bool(kwargs.get("accumulate_global", False)),
                 base_cfg_offset=int(kwargs.get("base_cfg_offset", 0)),
+                upload_genome_stats=bool(kwargs.get("upload_genome_stats", True)),
+                genome_stats_preuploaded=bool(kwargs.get("genome_stats_preuploaded", False)),
+                n_genomes_override=kwargs.get("n_genomes_override"),
             )
         except Exception as e:
             if attempt >= max(0, _FG_VULKAN_RETRIES) or not _is_vulkan_backend_failure(e):
@@ -1546,7 +1568,7 @@ def solve_force_greats_finder_gpu(*args, **kwargs) -> list[dict[str, Any]] | dic
 
 
 def solve_force_greats_finder_gpu_tasks(
-    genome_stats_list: list[dict[str, Any]] | np.ndarray,
+    genome_stats_list: list[dict[str, Any]] | np.ndarray | None,
     timestamps_np: np.ndarray,
     great_candidate_timestamps_np: np.ndarray | None,
     long_notes: int,
@@ -1577,6 +1599,8 @@ def solve_force_greats_finder_gpu_tasks(
     accumulate_global: bool = True,
     return_raw: bool = True,
     upload_genome_stats: bool = True,
+    genome_stats_preuploaded: bool = False,
+    n_genomes_override: int | None = None,
 ) -> None:
     """
     Execute multiple FG finder tasks as one logical GPU job.
@@ -1661,8 +1685,18 @@ def solve_force_greats_finder_gpu_tasks(
     if not pair_caps_from_timeline:
         _ensure_pair_caps_uploaded(pair_caps_grid)
 
+    genome_stats_preuploaded = bool(genome_stats_preuploaded)
+
     # Upload per-genome base stats once (or reuse the existing GPU-resident buffer).
-    n_genomes = int(len(genome_stats_list))
+    if genome_stats_preuploaded:
+        if n_genomes_override is None:
+            raise ValueError("genome_stats_preuploaded=True requires n_genomes_override")
+        n_genomes = int(n_genomes_override)
+    else:
+        if genome_stats_list is None:
+            n_genomes = 0
+        else:
+            n_genomes = int(len(genome_stats_list))
     if n_genomes <= 0:
         return
     if n_genomes > gem_fields.MAX_GENOMES:
@@ -1692,24 +1726,29 @@ def solve_force_greats_finder_gpu_tasks(
             ptr = int(id(genome_stats_list))
         _fg_genome_stats_upload_key = (int(n_genomes), int(ptr))
     else:
-        # Reuse previously uploaded genome_base_stats (avoid host->device transfer).
-        prev = _fg_genome_stats_upload_key
-        ok = False
-        try:
-            ok = prev is not None and int(prev[0]) == int(n_genomes)
-        except Exception:
+        if genome_stats_preuploaded:
+            # Callers explicitly staged `genome_base_stats` via another GPU entrypoint and
+            # guarantee no intervening entrypoint overwrote it.
+            pass
+        else:
+            # Reuse previously uploaded genome_base_stats (avoid host->device transfer).
+            prev = _fg_genome_stats_upload_key
             ok = False
-        if isinstance(genome_stats_list, np.ndarray) and prev is not None:
             try:
-                ptr = int(genome_stats_list.__array_interface__["data"][0])
-                ok = ok and int(prev[1]) == int(ptr)
+                ok = prev is not None and int(prev[0]) == int(n_genomes)
             except Exception:
                 ok = False
-        if not ok:
-            raise RuntimeError(
-                "Skipping genome stats upload without a compatible prior upload; "
-                "this indicates a misuse of upload_genome_stats=False."
-            )
+            if isinstance(genome_stats_list, np.ndarray) and prev is not None:
+                try:
+                    ptr = int(genome_stats_list.__array_interface__["data"][0])
+                    ok = ok and int(prev[1]) == int(ptr)
+                except Exception:
+                    ok = False
+            if not ok:
+                raise RuntimeError(
+                    "Skipping genome stats upload without a compatible prior upload; "
+                    "this indicates a misuse of upload_genome_stats=False."
+                )
 
     # Pack tasks: upload config windows into the global cfg table (legacy) and prepare streaming
     # FT/FF chunks using fixed-size numpy buffers (avoid per-pair Python tuple materialization).
@@ -1719,6 +1758,7 @@ def solve_force_greats_finder_gpu_tasks(
     max_cfg_len = 0
     p = _get_gpu_profiler()
     t_cfg_upload0 = time.perf_counter() if (_PERF_TIMING or p is not None) else 0.0
+    cfg_upload_kernels = 0
 
     global _fg_forced_upload_buf
     max_staging_rows = int(_get_forced_counts_staging_tiers()[-1])
@@ -1738,7 +1778,21 @@ def solve_force_greats_finder_gpu_tasks(
             ftff_empty = int(getattr(ftff_pairs, "size", 0) or 0) <= 0
         else:
             ftff_empty = not ftff_pairs
-        if (not fg_configs and not counts_max_fp) or ftff_empty:
+        if fg_configs is None:
+            cfg_empty = True
+        elif isinstance(fg_configs, np.ndarray):
+            cfg_empty = int(getattr(fg_configs, "size", 0) or 0) <= 0
+        else:
+            cfg_empty = not fg_configs
+
+        if counts_max_fp is None:
+            max_fp_empty = True
+        elif isinstance(counts_max_fp, np.ndarray):
+            max_fp_empty = int(getattr(counts_max_fp, "size", 0) or 0) <= 0
+        else:
+            max_fp_empty = not counts_max_fp
+
+        if (cfg_empty and max_fp_empty) or ftff_empty:
             continue
         try:
             cfg_base = int(task.get("base_cfg_offset", base_cfg_offset) or base_cfg_offset)
@@ -1807,6 +1861,7 @@ def solve_force_greats_finder_gpu_tasks(
                             int(n_sections),
                             max_fp_arr,
                         )
+                        cfg_upload_kernels += 1
             else:
                 # Pack into staging buffer (shape stability) and upload to the global table at cfg_base.
                 #
@@ -1860,6 +1915,7 @@ def solve_force_greats_finder_gpu_tasks(
                             buf[: int(staging_rows), :].nbytes,
                         )
                     fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), int(cfg_base) + int(cfg_off), staging)
+                    cfg_upload_kernels += 1
 
         cfg_mode = 1 if use_implicit else 0
         max_fp_arr = None
@@ -1883,6 +1939,11 @@ def solve_force_greats_finder_gpu_tasks(
 
     if not prepared_tasks or int(total_pairs) <= 0:
         return
+    # Taichi Vulkan can schedule host->device transfers and kernels asynchronously. The packed-task
+    # solver relies on forced-count tables being fully uploaded before Stage 1 reads them; ensure
+    # the upload kernel sequence is complete before proceeding.
+    if int(cfg_upload_kernels) > 1:
+        ti.sync()
     if t_cfg_upload0 and _PERF_TIMING:
         try:
             dt = time.perf_counter() - float(t_cfg_upload0)
@@ -2108,7 +2169,30 @@ def solve_force_greats_finder_gpu_tasks(
                 except Exception:
                     pass
         t_stage2_wall0 = time.perf_counter() if (_PERF_TIMING or _FORCE_SYNC or _SYNC_FOR_TIMING) else 0.0
-        fg_kernels.fg_stage2_and_update_global_best_kernel(int(n_genomes), int(n_ftff))
+        fg_kernels.fg_stage2_recompute_and_update_global_best_kernel(
+            int(n_genomes),
+            int(n_ftff),
+            int(total_notes),
+            int(long_notes),
+            float(last_note_time),
+            int(total_budget),
+            int(gem_scale_fever),
+            int(n_sections),
+            int(is_p_ft),
+            int(is_s_ft),
+            int(is_p_ff),
+            int(is_s_ff),
+            int(is_p_pp),
+            int(is_s_pp),
+            int(is_p_cm),
+            int(is_s_cm),
+            int(is_p_fm),
+            int(is_s_fm),
+            int(is_p_ov),
+            int(is_s_ov),
+            int(song_slot),
+            int(1 if pair_caps_from_timeline else 0),
+        )
         maybe_sync(sync_fn=ti.sync, force_sync=_FORCE_SYNC, sync_for_timing=_SYNC_FOR_TIMING, for_timing=True)
         if (_FORCE_SYNC or _SYNC_FOR_TIMING) and t_stage2_wall0:
             stage2_wall = time.perf_counter() - float(t_stage2_wall0)

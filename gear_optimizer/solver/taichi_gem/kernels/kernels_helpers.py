@@ -97,6 +97,8 @@ ga_global_best_genome = None  # (MAX_SLOTS,) i32 - item IDs of best genome
 ga_global_best_results = None  # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for best genome
 ga_runs_payload_packed = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17) i32 - packed snapshots per run
 ga_run_payload_packed = None  # (MAX_GENOMES+1, 17) i32 - packed snapshot payload for one-shot downloads
+ga_fg_candidates_packed = None  # (MAX_SONG_SLOTS, MAX_GA_RUNS, K+1, 24) i32 - compact GA->FG candidate table
+ga_fg_candidates_download_staging = None  # (MAX_GA_RUNS, K+1, 24) i32 - single-slot download staging
 
 # GPU-side island elitism (avoids per-generation score downloads)
 island_boundaries = None  # (MAX_ISLANDS+1,) i32 - island start/end indices

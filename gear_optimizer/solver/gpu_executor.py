@@ -50,6 +50,7 @@ class GpuRequestType(Enum):
     SOLVE_FORCE_GREATS_FINDER = "solve_force_greats_finder_gpu"
     PROCESS_FORCE_GREATS = "process_force_greats"
     GPU_NATIVE_GA_RUN = "gpu_native_ga_run"
+    GA_STAGE_FG_GENOME_BASE_STATS = "ga_stage_fg_genome_base_stats"
     FG_RESET_GLOBAL_BEST = "fg_reset_global_best"
     FG_DOWNLOAD_GLOBAL_BEST = "fg_download_global_best"
     FG_COMPUTE_BREAKPOINTS = "fg_compute_breakpoints"
@@ -1227,6 +1228,8 @@ class GpuExecutor:
                 return self._execute_process_force_greats(request)
             elif request.request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
                 return self._execute_gpu_native_ga_run(request)
+            elif request.request_type == GpuRequestType.GA_STAGE_FG_GENOME_BASE_STATS:
+                return self._execute_ga_stage_fg_genome_base_stats(request)
             elif request.request_type == GpuRequestType.FG_RESET_GLOBAL_BEST:
                 return self._execute_fg_reset_global_best(request)
             elif request.request_type == GpuRequestType.FG_DOWNLOAD_GLOBAL_BEST:
@@ -1413,9 +1416,18 @@ class GpuExecutor:
             ) = args
 
             try:
-                n_genomes = int(len(genome_stats_list))
+                if genome_stats_list is None:
+                    n_genomes = int(kwargs.get("n_genomes_override", 0) or 0)
+                else:
+                    n_genomes = int(len(genome_stats_list))
             except Exception:
                 n_genomes = 0
+            if n_genomes <= 0:
+                return GpuResponse(
+                    request_id=request.request_id,
+                    success=False,
+                    error="Invalid payload for SOLVE_FORCE_GREATS_FINDER (n_genomes <= 0)",
+                )
 
             kwargs_local = dict(kwargs)
             # Optional reduced-download knobs (consumed only at download_after time).
@@ -1623,6 +1635,47 @@ class GpuExecutor:
             request_id=request.request_id,
             success=True,
             result=runs_payload,
+        )
+
+    def _execute_ga_stage_fg_genome_base_stats(self, request: GpuRequest) -> GpuResponse:
+        """
+        Stage shared `genome_base_stats` from the GPU-native GA -> FG candidate table.
+
+        This enables a GPU-resident GA→FG pipeline: GA packs the candidate table on GPU,
+        callers select candidates on CPU, then send only small (run,row) coordinates to
+        stage the per-genome base stats for FG without host->device uploads.
+        """
+        if not self._in_process_queues:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="GA_STAGE_FG_GENOME_BASE_STATS requires in-process queues (avoid IPC pickling)",
+            )
+
+        payload = request.payload or {}
+        table_slot = int(payload.get("table_slot", 0) or 0)
+        n_slots = int(payload.get("n_slots", 9) or 9)
+        coords = payload.get("coords")
+
+        try:
+            from .taichi_gem.api import ga_stage_genome_base_stats_from_fg_candidates_table
+
+            n = ga_stage_genome_base_stats_from_fg_candidates_table(
+                table_slot=int(table_slot),
+                coords=coords,
+                n_slots=int(n_slots),
+            )
+        except Exception as e:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error=f"{type(e).__name__}: {e}",
+            )
+
+        return GpuResponse(
+            request_id=request.request_id,
+            success=True,
+            result=int(n),
         )
 
     def _execute_fg_reset_global_best(self, request: GpuRequest) -> GpuResponse:

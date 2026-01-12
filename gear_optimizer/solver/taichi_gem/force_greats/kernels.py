@@ -1147,6 +1147,340 @@ def fg_stage2_and_update_global_best_kernel(n_genomes: ti.i32, n_ftff: ti.i32):
 
 
 @ti.kernel
+def fg_stage2_recompute_and_update_global_best_kernel(
+    n_genomes: ti.i32,
+    n_ftff: ti.i32,
+    total_notes: ti.i32,
+    long_notes: ti.i32,
+    last_note_time: ti.f32,
+    total_budget: ti.i32,
+    gem_scale_fever: ti.i32,
+    n_sections: ti.i32,
+    is_p_ft: ti.i32,
+    is_s_ft: ti.i32,
+    is_p_ff: ti.i32,
+    is_s_ff: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+    song_slot: ti.i32,
+    pair_caps_from_timeline: ti.i32,
+):
+    """
+    Packed-task Stage 2: select best (ftff, cfg) from fg_stage1_packed, then recompute auxiliary
+    outputs (base score, gems, penalties) for that selection.
+
+    This avoids a race where multiple Stage-1 cfg tiles can update `fg_stage1_packed` and then
+    write auxiliary fields non-atomically, causing penalties/fill data to become inconsistent with
+    the final packed winner.
+    """
+    GEM_STAT_TO_ELEMENT: ti.i32 = 3
+    MAX_STAT: ti.i32 = 160
+
+    head_len: ti.i32 = ti.min(total_notes, 100)
+    non_fever_cas: ti.f32 = ti.max(0.0, (ti.cast(total_notes - long_notes, ti.f32) * 0.333))
+
+    for gid in range(n_genomes):
+        best_packed: ti.i64 = ti.cast(-1, ti.i64) << 32
+        best_ftff: ti.i32 = 0
+
+        for f in range(n_ftff):
+            packed = fg_stage1_packed[gid, f]
+            if packed > best_packed:
+                best_packed = packed
+                best_ftff = f
+
+        best_final: ti.i32 = ti.cast(best_packed >> 32, ti.i32)
+        if best_final < 0:
+            continue
+
+        inverted_cfg: ti.i32 = ti.cast(best_packed & 0x7FFFFFFF, ti.i32)
+        best_cfg: ti.i32 = 0x7FFFFFFF - inverted_cfg
+
+        ft_gems: ti.i32 = fg_ft_list[best_ftff]
+        ff_gems: ti.i32 = fg_ff_list[best_ftff]
+        if ft_gems + ff_gems > total_budget:
+            continue
+
+        # Load genome base stats: [pp, cm, fm, p_val, s_val, ft, ff]
+        base_stats = kernels_helpers.genome_base_stats[gid]
+        base_pp: ti.i32 = base_stats[0]
+        base_cm: ti.i32 = base_stats[1]
+        base_fm: ti.i32 = base_stats[2]
+        base_p_val: ti.i32 = base_stats[3]
+        base_s_val: ti.i32 = base_stats[4]
+        base_ft_stat: ti.i32 = base_stats[5]
+        base_ff_stat: ti.i32 = base_stats[6]
+
+        ft_stat_val: ti.i32 = base_ft_stat + (ft_gems * gem_scale_fever)
+        ff_stat_val: ti.i32 = base_ff_stat + (ff_gems * gem_scale_fever)
+        ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
+        ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
+        ff_factor: ti.f32 = kernels_helpers.lookup_ref_ff(ff_idx)
+
+        fever_acts: ti.i32 = 0
+        if pair_caps_from_timeline != 0:
+            fever_acts = ti.cast(kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx], ti.i32)
+            if fever_acts < 0:
+                fever_acts = 0
+
+        non_fever_base_f: ti.f32 = non_fever_cas * ff_factor
+        non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_base_f), ti.i32)
+
+        cfg_mode: ti.i32 = fg_cfg_mode_list[best_ftff]
+        cfg_base: ti.i32 = fg_cfg_base_list[best_ftff]
+        fp_targets_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+        if cfg_mode != 0:
+            local_cfg_idx: ti.i32 = best_cfg - cfg_base
+            if local_cfg_idx < 0:
+                local_cfg_idx = 0
+            fp_targets_vec = _fg_decode_fp_targets_vec(local_cfg_idx, best_ftff, n_sections)
+
+        m0 = ti.cast(0, ti.u32)
+        m1 = ti.cast(0, ti.u32)
+        m2 = ti.cast(0, ti.u32)
+        m3 = ti.cast(0, ti.u32)
+        body_fever: ti.i32 = 0
+
+        start_idx_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+        forced_applied = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+        fill_notes = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+
+        budget: ti.i32 = total_budget - ft_gems - ff_gems
+        if budget < 0:
+            continue
+
+        p_val: ti.i32 = (
+            base_p_val + (ft_gems * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff_gems * GEM_STAT_TO_ELEMENT * is_p_ff)
+        )
+        s_val: ti.i32 = (
+            base_s_val + (ft_gems * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff_gems * GEM_STAT_TO_ELEMENT * is_s_ff)
+        )
+
+        current_idx: ti.i32 = 0
+        sec: ti.i32 = 0
+        carry_time: ti.f32 = 0.0
+        carry_idx: ti.i32 = 0
+        while current_idx < total_notes:
+            base_notes_s: ti.i32 = non_fever_base - 1 if sec == 0 else non_fever_base
+            if base_notes_s < 0:
+                base_notes_s = 0
+
+            fp_target: ti.i32 = 0
+            if sec < n_sections:
+                if cfg_mode != 0:
+                    fp_target = fp_targets_vec[sec]
+                else:
+                    fp_target = fg_forced_counts[best_cfg, sec]
+                if fp_target < 0:
+                    fp_target = 0
+
+                # Clamp by per-pair dynamic cap (stored as forced-count caps)
+                if sec < FG_MAX_SECTIONS:
+                    pair_cap_forced: ti.i32 = 0
+                    if pair_caps_from_timeline != 0:
+                        if sec < fever_acts:
+                            pair_cap_forced = _fg_section_forced_cap(sec)
+                        else:
+                            pair_cap_forced = 0
+                    else:
+                        pair_cap_forced = fg_pair_caps[ft_idx, ff_idx, sec]
+                    if pair_cap_forced < 0:
+                        pair_cap_forced = 0
+                    notes_with_cap = ti.ceil(non_fever_base_f + ti.cast(pair_cap_forced, ti.f32) * 0.5)
+                    fp_cap: ti.i32 = ti.cast(notes_with_cap, ti.i32) - non_fever_base
+                    fp_target = ti.min(fp_target, fp_cap)
+
+            forced_val: ti.i32 = _forced_from_fp_target(non_fever_base_f, non_fever_base, fp_target, non_fever_base)
+            fp_calc: ti.i32 = fp_target
+
+            notes_to_fill: ti.i32 = base_notes_s + fp_calc
+            section_start: ti.i32 = current_idx
+            end_normal: ti.i32 = ti.min(total_notes, section_start + notes_to_fill)
+            actual_notes: ti.i32 = ti.max(0, end_normal - section_start)
+            forced_app: ti.i32 = ti.min(forced_val, actual_notes)
+
+            if forced_app > 0:
+                forced_start: ti.i32 = section_start + (1 - ti.cast(sec == 0, ti.i32))
+                forced_end: ti.i32 = forced_start + forced_app - 1
+                forced_end = ti.min(forced_end, end_normal - 1)
+                if forced_end >= forced_start and forced_end < total_notes:
+                    forced_t: ti.f32 = song_timestamps_great_candidate[forced_end]
+                    if forced_t > carry_time:
+                        carry_time = forced_t
+                        carry_idx = forced_end
+
+            if sec < n_sections and sec < FG_MAX_SECTIONS:
+                start_idx_vec[sec] = section_start
+                forced_applied[sec] = forced_app
+                fill_notes[sec] = fp_calc
+
+            current_idx = end_normal
+            if current_idx >= total_notes:
+                break
+
+            fever_end_idx: ti.i32 = _fg_fever_end_idx_from_tables(
+                current_idx, carry_time, carry_idx, ft_idx, total_notes
+            )
+            if fever_end_idx <= current_idx:
+                fever_end_idx = ti.min(total_notes, current_idx + 1)
+
+            if current_idx < head_len:
+                head_end = ti.min(head_len, fever_end_idx)
+                masks = _or_head_mask_range(m0, m1, m2, m3, current_idx, head_end)
+                m0 = masks[0]
+                m1 = masks[1]
+                m2 = masks[2]
+                m3 = masks[3]
+
+            if fever_end_idx > head_len:
+                body_start = head_len if current_idx < head_len else current_idx
+                if fever_end_idx > body_start:
+                    body_fever += fever_end_idx - body_start
+
+            current_idx = fever_end_idx
+            sec += 1
+
+        body_len = ti.max(total_notes - head_len, 0)
+        body_normal: ti.i32 = ti.max(body_len - body_fever, 0)
+
+        opt = _optimize_core_bits(
+            budget,
+            base_pp,
+            base_cm,
+            base_fm,
+            p_val,
+            s_val,
+            is_p_pp,
+            is_s_pp,
+            is_p_cm,
+            is_s_cm,
+            is_p_fm,
+            is_s_fm,
+            is_p_ov,
+            is_s_ov,
+            m0,
+            m1,
+            m2,
+            m3,
+            head_len,
+            body_fever,
+            body_normal,
+        )
+
+        base_score: ti.i32 = opt[0]
+        final_pp: ti.i32 = opt[1]
+        final_cm: ti.i32 = opt[2]
+        final_p_val: ti.i32 = opt[4]
+        final_s_val: ti.i32 = opt[5]
+        gems_pp: ti.i32 = opt[6]
+        gems_cm: ti.i32 = opt[7]
+        gems_fm: ti.i32 = opt[8]
+        gems_ov: ti.i32 = opt[9]
+
+        pp_factor: ti.f32 = kernels_helpers.lookup_ref_pp(final_pp)
+        combo_mul: ti.f32 = kernels_helpers.lookup_ref_cm(final_cm)
+        combo_span_scaled: ti.f32 = (combo_mul - 1.0) * 0.01
+
+        base_value: ti.f32 = ti.cast((final_p_val * 2) + final_s_val, ti.f32) + pp_factor
+        combo_value: ti.i32 = ti.cast(ti.floor(base_value * combo_mul), ti.i32)
+
+        great_penalty_base_head: ti.i32 = (
+            ti.cast(ti.floor(ti.cast(final_p_val * 2, ti.f32) * (2.0 / 3.0)), ti.i32)
+            + ti.cast(ti.floor(ti.cast(final_s_val, ti.f32) * (2.0 / 3.0)), ti.i32)
+            + 150
+        )
+        great_penalty_base_raw: ti.f32 = (
+            (ti.cast(final_p_val * 2, ti.f32) * (2.0 / 3.0)) + (ti.cast(final_s_val, ti.f32) * (2.0 / 3.0)) + 150.0
+        )
+        great_combo_value: ti.i32 = ti.cast(ti.floor(great_penalty_base_raw * combo_mul), ti.i32)
+        body_penalty: ti.i32 = ti.max(0, combo_value - great_combo_value)
+        great_penalty_base_f: ti.f32 = ti.cast(great_penalty_base_head, ti.f32)
+
+        score_penalty_total: ti.i32 = 0
+        fill_penalty_total: ti.i32 = 0
+
+        for s in ti.static(range(FG_MAX_SECTIONS)):
+            if s < n_sections:
+                fp_notes: ti.i32 = fill_notes[s]
+                fill_penalty_total += fp_notes * combo_value
+
+                forced_n: ti.i32 = forced_applied[s]
+                if forced_n > 0:
+                    start = start_idx_vec[s] + (1 if s > 0 else 0)
+                    head_cap: ti.i32 = 100 - start
+                    if head_cap < 0:
+                        head_cap = 0
+                    head_n: ti.i32 = forced_n
+                    if head_n > head_cap:
+                        head_n = head_cap
+                    body_n: ti.i32 = forced_n - head_n
+
+                    score_penalty_total += body_n * body_penalty
+
+                    for k in range(head_n):
+                        note_idx = start + k
+                        if note_idx == 99:
+                            score_penalty_total += body_penalty
+                        else:
+                            scaling: ti.f32 = 1.0 + combo_span_scaled * ti.cast(note_idx + 1, ti.f32)
+                            perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
+                            great_val: ti.i32 = ti.cast(ti.floor(great_penalty_base_f * scaling), ti.i32)
+                            score_penalty_total += ti.max(0, perfect_val - great_val)
+
+        # Write per-call best (consistent with best_packed)
+        fg_best_final_score[gid] = best_final
+        fg_best_base_score[gid] = base_score
+        fg_best_cfg_idx[gid] = best_cfg
+        fg_best_ft[gid] = ft_gems
+        fg_best_ff[gid] = ff_gems
+        fg_best_g_pp[gid] = gems_pp
+        fg_best_g_cm[gid] = gems_cm
+        fg_best_g_fm[gid] = gems_fm
+        fg_best_g_ov[gid] = gems_ov
+        fg_best_score_penalty[gid] = score_penalty_total
+        fg_best_fill_penalty[gid] = fill_penalty_total
+
+        # Update global best (same tie-break as fg_stage2_and_update_global_best_kernel)
+        old_score = fg_global_best_final_score[gid]
+        old_cfg = fg_global_best_cfg_idx[gid]
+        old_ft = fg_global_best_ft[gid]
+        old_ff = fg_global_best_ff[gid]
+
+        better = False
+        if best_final > old_score:
+            better = True
+        elif best_final == old_score:
+            if old_cfg < 0 and best_cfg >= 0:
+                better = True
+            elif best_cfg >= 0 and best_cfg < old_cfg:
+                better = True
+            elif best_cfg == old_cfg:
+                if ft_gems < old_ft:
+                    better = True
+                elif ft_gems == old_ft and ff_gems < old_ff:
+                    better = True
+
+        if better:
+            fg_global_best_final_score[gid] = best_final
+            fg_global_best_base_score[gid] = base_score
+            fg_global_best_cfg_idx[gid] = best_cfg
+            fg_global_best_ft[gid] = ft_gems
+            fg_global_best_ff[gid] = ff_gems
+            fg_global_best_g_pp[gid] = gems_pp
+            fg_global_best_g_cm[gid] = gems_cm
+            fg_global_best_g_fm[gid] = gems_fm
+            fg_global_best_g_ov[gid] = gems_ov
+            fg_global_best_score_penalty[gid] = score_penalty_total
+            fg_global_best_fill_penalty[gid] = fill_penalty_total
+
+
+@ti.kernel
 def fg_pack_results_kernel(n_genomes: ti.i32):
     """
     Pack all 11 best result fields into a single contiguous array for efficient CPU download.

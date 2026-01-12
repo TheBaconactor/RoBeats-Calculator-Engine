@@ -712,6 +712,10 @@ def decode_gpu_native_ga_runs_payload(
             "BaseStats": base_stats,
             "Selected Element": sel_color,
             "BaseScore": score_val,
+            # GPU-native GA candidate table coordinates (when available). This enables
+            # a GPU-resident GA->FG pipeline (stage base stats on GPU without host upload).
+            "_ga_gpu_run_idx": int(sel_run_idx[i]),
+            "_ga_gpu_row_idx": int(sel_rows[i]),
         }
 
         cand_data = {
@@ -980,6 +984,27 @@ def _run_gpu_native_ga(
     # Optionally store run payload to the multi-run GPU buffer (no CPU readback).
     if store_payload_idx is not None:
         gpu_api.ga_store_run_payload(run_idx=store_payload_idx, n_genomes=n_genomes, n_slots=n_slots)
+        # Also pack the compact GA->FG candidate table for this run (stored in the per-song slot).
+        # This enables callers to download only a small candidate buffer instead of the full run payload.
+        gpu_api.ga_pack_fg_candidates_table_segmented(
+            table_slot=int(song_slot),
+            run_idx_start=int(store_payload_idx),
+            n_runs=1,
+            n_genomes_per_run=int(n_genomes),
+            n_slots=int(n_slots),
+            is_p_ft=is_p_ft,
+            is_s_ft=is_s_ft,
+            is_p_ff=is_p_ff,
+            is_s_ff=is_s_ff,
+            is_p_pp=is_p_pp,
+            is_s_pp=is_s_pp,
+            is_p_cm=is_p_cm,
+            is_s_cm=is_s_cm,
+            is_p_fm=is_p_fm,
+            is_s_fm=is_s_fm,
+            is_p_ov=is_p_ov,
+            is_s_ov=is_s_ov,
+        )
         if store_payload_only:
             return None, None, None, None
 
@@ -1425,18 +1450,33 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                     combos=int(n_combos),
                                 )
 
-                    # Store final per-genome snapshot rows (row 0 already contains best across all generations).
+                    # Pack a compact GA->FG candidate table for this batch, avoiding large
+                    # `(runs, pop, payload_cols)` downloads. Row 0 is per-run best (tracked
+                    # across generations), rows 1..K are top-score entries from the final population.
                     t0 = time.perf_counter() if phase_timing else 0.0
-                    gpu_api.ga_store_runs_payload_snapshot_segmented(
+                    gpu_api.ga_pack_fg_candidates_table_segmented(
+                        table_slot=int(song_slot),
                         run_idx_start=int(local_run_idx),
                         n_runs=int(batch_len),
                         n_genomes_per_run=int(n_genomes),
                         n_slots=int(n_slots),
+                        is_p_ft=is_p_ft,
+                        is_s_ft=is_s_ft,
+                        is_p_ff=is_p_ff,
+                        is_s_ff=is_s_ff,
+                        is_p_pp=is_p_pp,
+                        is_s_pp=is_s_pp,
+                        is_p_cm=is_p_cm,
+                        is_s_cm=is_s_cm,
+                        is_p_fm=is_p_fm,
+                        is_s_fm=is_s_fm,
+                        is_p_ov=is_p_ov,
+                        is_s_ov=is_s_ov,
                     )
                     _sync()
                     if t0:
                         _log_phase(
-                            phase="store_snapshot",
+                            phase="pack_fg_candidates",
                             ms=(time.perf_counter() - t0) * 1000.0,
                             runs=int(batch_len),
                             pop=int(n_genomes),
@@ -1472,9 +1512,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
             local_run_idx += int(batch_len)
 
-        payload_segments.append(
-            gpu_api.ga_download_runs_payload(n_runs=int(seg_len), n_genomes=int(n_genomes), n_slots=int(n_slots))
-        )
+        payload_segments.append(gpu_api.ga_download_fg_candidates_table(table_slot=int(song_slot), n_runs=int(seg_len)))
         run_start_global += seg_len
 
     if not payload_segments:
@@ -1732,7 +1770,7 @@ def solve_coevolution_genetic(
             if n_genomes is None:
                 raise RuntimeError("Internal error: n_genomes not set before GA payload flush")
             payload_segments.append(
-                gpu_api.ga_download_runs_payload(n_runs=segment_runs, n_genomes=n_genomes, n_slots=n_slots)
+                gpu_api.ga_download_fg_candidates_table(table_slot=int(song_slot), n_runs=segment_runs)
             )
             segment_runs = 0
 
