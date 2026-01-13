@@ -1120,11 +1120,38 @@ def run_native_inflight_song_pipeline(
         last_progress = time.monotonic()
         last_stall_report = last_progress
         last_heartbeat = last_progress
+        last_throughput = last_progress
+        last_stage_emit = last_progress
         heartbeat_sec = 0.0
         try:
             heartbeat_sec = float(os.environ.get("INFLIGHT_HEARTBEAT_SEC", "0") or "0")
         except Exception:
             heartbeat_sec = 0.0
+
+        throughput_sec = 0.0
+        try:
+            throughput_sec = float(os.environ.get("INFLIGHT_THROUGHPUT_SEC", "0") or "0")
+        except Exception:
+            throughput_sec = 0.0
+
+        stage_emit_sec = 0.0
+        try:
+            stage_emit_sec = float(os.environ.get("INFLIGHT_STAGE_PROFILE_EMIT_SEC", "0") or "0")
+        except Exception:
+            stage_emit_sec = 0.0
+
+        profile_max_songs = 0
+        try:
+            profile_max_songs = int(os.environ.get("INFLIGHT_PROFILE_MAX_SONGS", "0") or "0")
+        except Exception:
+            profile_max_songs = 0
+        profile_max_songs = max(0, int(profile_max_songs))
+        completed_baseline = 0
+        try:
+            completed_baseline = int(len(completed_songs))
+        except Exception:
+            completed_baseline = 0
+
         stopping = False
         while (
             pending_tasks
@@ -1138,6 +1165,28 @@ def run_native_inflight_song_pipeline(
         ):
             if memory_release_requested():
                 break
+
+            # Optional profiling cap: stop after N completed songs/tasks.
+            if (not stopping) and profile_max_songs > 0:
+                try:
+                    completed_now = int(len(completed_songs)) - int(completed_baseline)
+                except Exception:
+                    completed_now = 0
+                if completed_now >= int(profile_max_songs):
+                    stopping = True
+                    try:
+                        pending_tasks.clear()
+                    except Exception:
+                        pass
+                    try:
+                        prepared.clear()
+                    except Exception:
+                        pass
+                    try:
+                        pending_fg.clear()
+                    except Exception:
+                        pass
+
             if stop_requested is not None and callable(stop_requested) and stop_requested():
                 if not stopping:
                     stopping = True
@@ -1173,6 +1222,43 @@ def run_native_inflight_song_pipeline(
                         # Keep entries so we can still drain the deque safely.
                     except Exception:
                         pass
+
+            # Periodic throughput reporting (opt-in via env).
+            now = time.monotonic()
+            if throughput_sec > 0 and (now - last_throughput) >= float(throughput_sec):
+                last_throughput = now
+                try:
+                    completed_now = int(len(completed_songs)) - int(completed_baseline)
+                except Exception:
+                    completed_now = 0
+                if completed_now > 0:
+                    wall_s = max(1e-9, float(time.perf_counter() - float(stage_profiler._t0)))
+                    per_h = float(completed_now) * 3600.0 / wall_s
+                    try:
+                        pending_now = int(len(pending_tasks)) + int(len(prepared)) + int(len(pending_fg))
+                    except Exception:
+                        pending_now = 0
+                    try:
+                        avg_s = wall_s / float(completed_now)
+                        eta_s = float(pending_now) * avg_s if pending_now > 0 else 0.0
+                    except Exception:
+                        avg_s = 0.0
+                        eta_s = 0.0
+                    try:
+                        print(
+                            f"[InFlight][Throughput] done={completed_now} pending~{pending_now} "
+                            f"rate={per_h:.1f}/h avg={avg_s:.2f}s ETA={eta_s/60.0:.1f}m"
+                        )
+                    except Exception:
+                        pass
+
+            # Periodic stage profile emission (opt-in via env).
+            if stage_emit_sec > 0 and stage_profiler.enabled and (now - last_stage_emit) >= float(stage_emit_sec):
+                last_stage_emit = now
+                try:
+                    stage_profiler.emit()
+                except Exception:
+                    pass
 
             did_work = False
             blocked_on_slot_acquire = False

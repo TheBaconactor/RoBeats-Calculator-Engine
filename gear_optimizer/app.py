@@ -490,11 +490,23 @@ class GearOptimizerApp:
                 elapsed_h = 0.0
             if elapsed_h > 0:
                 try:
-                    songs_per_h = float(queued_songs) / elapsed_h
-                    tasks_per_h = float(queued_tasks) / elapsed_h
+                    completed_tasks = getattr(self, "_last_completed_tasks", None)
+                    if completed_tasks is None:
+                        completed_tasks = int(queued_tasks)
+                    completed_tasks = max(0, int(completed_tasks))
+                    total_tasks = getattr(self, "_last_total_tasks", None)
+                    if total_tasks is None:
+                        total_tasks = int(queued_tasks)
+                    total_tasks = max(0, int(total_tasks))
+
+                    # "songs" is approximate when SongRepeats>1; tasks/hour is the reliable metric.
+                    completed_songs_est = min(int(queued_songs), int(completed_tasks))
+
+                    songs_per_h = float(completed_songs_est) / elapsed_h if completed_songs_est > 0 else 0.0
+                    tasks_per_h = float(completed_tasks) / elapsed_h if completed_tasks > 0 else 0.0
                     print(
-                        f"[Throughput] Queue={queued_songs} song(s), {queued_tasks} task(s) -> "
-                        f"{songs_per_h:.1f} songs/hour, {tasks_per_h:.1f} tasks/hour"
+                        f"[Throughput] Completed {completed_tasks}/{total_tasks} task(s) "
+                        f"(queue={queued_songs} song(s)) -> {songs_per_h:.1f} songs/hour, {tasks_per_h:.1f} tasks/hour"
                     )
                 except Exception:
                     pass
@@ -610,6 +622,25 @@ class GearOptimizerApp:
 
         resume_context = build_memory_guard_resume_context(diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols)
 
+        def _read_song_queue_limit() -> int:
+            limit = 0
+            try:
+                limit = safe_int(cfg.get("IterationEngine", "SongQueueLimit", fallback="0"), 0)
+            except Exception:
+                limit = 0
+            for env_key in ("SONG_QUEUE_LIMIT", "METAFINDER_SONG_QUEUE_LIMIT"):
+                raw = os.environ.get(env_key)
+                if raw is None:
+                    continue
+                try:
+                    env_val = safe_int(raw, 0)
+                except Exception:
+                    env_val = 0
+                if env_val and env_val > 0:
+                    limit = int(env_val)
+                    break
+            return int(limit)
+
         ignore_resume = False
         try:
             ignore_resume = cfg.getboolean("IterationEngine", "IgnoreResumeQueue", fallback=False)
@@ -623,11 +654,7 @@ class GearOptimizerApp:
             if resume_seed_queue:
                 print(f"[MemoryGuard] Resuming {len(resume_seed_queue)} song(s) from previous interrupted run.")
                 # Optional deterministic limit (useful for benchmarks / iteration), even in resume mode.
-                song_queue_limit = 0
-                try:
-                    song_queue_limit = safe_int(cfg.get("IterationEngine", "SongQueueLimit", fallback="0"), 0)
-                except Exception:
-                    song_queue_limit = 0
+                song_queue_limit = _read_song_queue_limit()
                 if song_queue_limit and song_queue_limit > 0 and len(resume_seed_queue) > song_queue_limit:
                     resume_seed_queue = resume_seed_queue[: int(song_queue_limit)]
                     print(
@@ -715,11 +742,7 @@ class GearOptimizerApp:
                 logging.warning(f"[DB] Failed to prioritize song queue: {type(exc).__name__}: {exc}")
 
         # Optional deterministic limit (useful for benchmarks / iteration).
-        song_queue_limit = 0
-        try:
-            song_queue_limit = safe_int(cfg.get("IterationEngine", "SongQueueLimit", fallback="0"), 0)
-        except Exception:
-            song_queue_limit = 0
+        song_queue_limit = _read_song_queue_limit()
         if song_queue_limit and song_queue_limit > 0 and len(song_queue) > song_queue_limit:
             try:
                 song_queue = sorted(
@@ -1030,6 +1053,14 @@ class GearOptimizerApp:
             )
         else:
             self._run_sequential(tasks, completed_songs, memory_resume_tracker)
+
+        # Expose completion stats for end-of-iteration throughput reporting.
+        try:
+            self._last_completed_tasks = int(len(completed_songs))
+            self._last_total_tasks = int(len(tasks))
+        except Exception:
+            self._last_completed_tasks = None
+            self._last_total_tasks = None
 
         if memory_release_requested():
             print("[MemoryGuard] Soft limit reached; pending songs saved for resume.")
