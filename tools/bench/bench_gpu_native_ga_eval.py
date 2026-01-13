@@ -1,0 +1,277 @@
+"""
+Benchmark GPU-native GA evaluation (warmstart kernel path).
+
+Focus: measure wall time of `ga_evaluate_population()` which is dominated by
+FT/FF combo evaluation and any associated reductions/atomics.
+
+Usage (example):
+  python tools/bench/bench_gpu_native_ga_eval.py --genomes 512 --budget 90 --iters 10
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+
+import numpy as np
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from gear_optimizer.core.constants import GEM_SCALE_FEVER
+from gear_optimizer.solver.item_registry import ItemRegistry
+from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
+from gear_optimizer.solver.taichi_gem.api.ga_operations import (
+    ga_evaluate_population,
+    ga_upload_base_fixed_stats,
+    ga_upload_item_stats,
+    ga_upload_population_indices,
+)
+from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
+
+
+def _mk_item(name: str, **stats: int) -> dict:
+    out = {"Name": name}
+    out.update({k: int(v) for k, v in (stats or {}).items()})
+    return out
+
+
+def _make_calc_song(*, name: str, p_color: str, s_color: str, n: int = 1200) -> dict:
+    ts = np.linspace(0.0, 160.0, n, dtype=np.float32)
+    return {
+        "metadata": {
+            "Song Name": name,
+            "Primary Color": p_color,
+            "Secondary Color": s_color,
+            "Long Notes": 25,
+            "Last Note Time": float(ts[-1]),
+        },
+        "song_data": {"timestamps": ts},
+    }
+
+
+def _color_flags(*, p_color: str, s_color: str, selected_color: str) -> dict[str, int]:
+    return {
+        "is_p_pp": 1 if p_color == "Chill" else 0,
+        "is_s_pp": 1 if s_color == "Chill" else 0,
+        "is_p_cm": 1 if p_color == "Flow" else 0,
+        "is_s_cm": 1 if s_color == "Flow" else 0,
+        "is_p_fm": 1 if p_color == "Rush" else 0,
+        "is_s_fm": 1 if s_color == "Rush" else 0,
+        "is_p_ov": 1 if selected_color == p_color else 0,
+        "is_s_ov": 1 if selected_color == s_color else 0,
+        "is_p_ft": 1 if p_color == "Beat" else 0,
+        "is_s_ft": 1 if s_color == "Beat" else 0,
+        "is_p_ff": 1 if p_color == "Vibe" else 0,
+        "is_s_ff": 1 if s_color == "Vibe" else 0,
+    }
+
+
+def _build_registry(*, rng: np.random.Generator) -> tuple[ItemRegistry, dict, list[dict], dict, list[str]]:
+    slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
+
+    def make_item_pool(prefix: str, n: int) -> list[dict]:
+        items: list[dict] = []
+        for i in range(n):
+            items.append(
+                _mk_item(
+                    f"{prefix}{i}",
+                    **{
+                        "Perfect Points": int(rng.integers(0, 120)),
+                        "Combo Multiplier": int(rng.integers(0, 120)),
+                        "Fever Multiplier": int(rng.integers(0, 120)),
+                        # Keep FT/FF stats comfortably below 160 so FT/FF combo iteration
+                        # doesn't trivially prune almost everything via headroom checks.
+                        "Fever Time": int(rng.integers(0, 40)),
+                        "Fever Fill Rate": int(rng.integers(0, 40)),
+                        "Beat": int(rng.integers(0, 200)),
+                        "Vibe": int(rng.integers(0, 200)),
+                        "Rush": int(rng.integers(0, 200)),
+                        "Flow": int(rng.integers(0, 200)),
+                        "Chill": int(rng.integers(0, 200)),
+                    },
+                )
+            )
+        return items
+
+    gear_pool = {slot: make_item_pool(f"{slot}_", 14) for slot in slots}
+    mini_pool = make_item_pool("Mini_", 24)
+    registry = ItemRegistry(gear_pool, mini_pool, slots)
+    gpu_arrays = registry.to_gpu_arrays()
+    return registry, gear_pool, mini_pool, gpu_arrays, slots
+
+
+def _make_ref_arrays() -> dict[str, np.ndarray]:
+    return {
+        "Perfect Points": np.linspace(0.0, 1.0, 161, dtype=np.float64),
+        "Combo Multiplier": np.linspace(1.0, 2.0, 161, dtype=np.float64),
+        "Fever Multiplier": np.linspace(1.0, 3.0, 161, dtype=np.float64),
+        "Fever Fill Rate": np.linspace(1.0, 2.0, 161, dtype=np.float64),
+        "Fever Time": np.linspace(1.0, 2.0, 161, dtype=np.float64),
+    }
+
+
+def _make_base_fixed_stats(*, rng: np.random.Generator) -> np.ndarray:
+    base = {
+        "Perfect Points": int(rng.integers(100, 300)),
+        "Combo Multiplier": int(rng.integers(100, 300)),
+        "Fever Multiplier": int(rng.integers(100, 300)),
+        # Keep FT/FF comfortably below 160 so most FT/FF gem combos are viable.
+        "Fever Time": int(rng.integers(0, 40)),
+        "Fever Fill Rate": int(rng.integers(0, 40)),
+        "Beat": int(rng.integers(200, 400)),
+        "Vibe": int(rng.integers(200, 400)),
+        "Rush": int(rng.integers(200, 400)),
+        "Flow": int(rng.integers(200, 400)),
+        "Chill": int(rng.integers(200, 400)),
+    }
+    return np.array(
+        [
+            base["Perfect Points"],
+            base["Combo Multiplier"],
+            base["Fever Multiplier"],
+            base["Fever Time"],
+            base["Fever Fill Rate"],
+            base["Beat"],
+            base["Vibe"],
+            base["Rush"],
+            base["Flow"],
+            base["Chill"],
+        ],
+        dtype=np.int32,
+    )
+
+
+def _make_population(
+    *,
+    rng: np.random.Generator,
+    n_genomes: int,
+    slots: list[str],
+    gear_pool: dict[str, list[dict]],
+    mini_pool: list[dict],
+    registry: ItemRegistry,
+) -> np.ndarray:
+    genomes: list[list[dict]] = []
+    for _g in range(int(n_genomes)):
+        gear = [gear_pool[slot][int(rng.integers(0, len(gear_pool[slot])))] for slot in slots]
+        minis = [mini_pool[int(i)] for i in rng.choice(len(mini_pool), size=3, replace=False)]
+        genomes.append(gear + minis)
+    return registry.encode_population(genomes)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--genomes", type=int, default=int(os.environ.get("BENCH_GA_GENOMES", "512")))
+    ap.add_argument("--budget", type=int, default=int(os.environ.get("BENCH_GA_BUDGET", "90")))
+    ap.add_argument("--iters", type=int, default=int(os.environ.get("BENCH_GA_ITERS", "10")))
+    ap.add_argument("--warmup", type=int, default=int(os.environ.get("BENCH_GA_WARMUP", "2")))
+    ap.add_argument("--seed", type=int, default=int(os.environ.get("BENCH_GA_SEED", "1337")))
+    ap.add_argument("--use-hints", type=int, default=int(os.environ.get("BENCH_GA_USE_HINTS", "0")))
+    ap.add_argument("--prune-plateaus", type=int, default=int(os.environ.get("BENCH_GA_PRUNE", "1")))
+    args = ap.parse_args()
+
+    rng = np.random.default_rng(int(args.seed))
+    registry, gear_pool, mini_pool, gpu_arrays, slots = _build_registry(rng=rng)
+    ref_arrays = _make_ref_arrays()
+    base_fixed_stats_arr = _make_base_fixed_stats(rng=rng)
+
+    calc_song = _make_calc_song(name="BenchGAEval_BeatVibe", p_color="Beat", s_color="Vibe")
+    flags = _color_flags(p_color="Beat", s_color="Vibe", selected_color="Beat")
+
+    with _GPU_LOCK:
+        ga_upload_item_stats(gpu_arrays["item_stats"], gpu_arrays["slot_start"], gpu_arrays["slot_count"])
+        ga_upload_base_fixed_stats(base_fixed_stats_arr)
+        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=0)
+
+        pop_indices = _make_population(
+            rng=rng,
+            n_genomes=int(args.genomes),
+            slots=slots,
+            gear_pool=gear_pool,
+            mini_pool=mini_pool,
+            registry=registry,
+        )
+        ga_upload_population_indices(pop_indices, n_slots=9)
+
+        # Warmup (compilation + cache)
+        for _ in range(int(args.warmup)):
+            ga_evaluate_population(
+                n_genomes=int(args.genomes),
+                n_slots=9,
+                total_budget=int(args.budget),
+                gem_scale_fever=GEM_SCALE_FEVER,
+                song_slot=0,
+                use_hints=int(args.use_hints),
+                is_p_ft=flags["is_p_ft"],
+                is_s_ft=flags["is_s_ft"],
+                is_p_ff=flags["is_p_ff"],
+                is_s_ff=flags["is_s_ff"],
+                is_p_pp=flags["is_p_pp"],
+                is_s_pp=flags["is_s_pp"],
+                is_p_cm=flags["is_p_cm"],
+                is_s_cm=flags["is_s_cm"],
+                is_p_fm=flags["is_p_fm"],
+                is_s_fm=flags["is_s_fm"],
+                is_p_ov=flags["is_p_ov"],
+                is_s_ov=flags["is_s_ov"],
+            )
+            try:
+                import taichi as ti
+
+                ti.sync()
+            except Exception:
+                pass
+
+        old = os.environ.get("GPU_NATIVE_GA_PLATEAU_PRUNE")
+        os.environ["GPU_NATIVE_GA_PLATEAU_PRUNE"] = "1" if int(args.prune_plateaus) else "0"
+        try:
+            start = time.perf_counter()
+            for _ in range(int(args.iters)):
+                ga_evaluate_population(
+                    n_genomes=int(args.genomes),
+                    n_slots=9,
+                    total_budget=int(args.budget),
+                    gem_scale_fever=GEM_SCALE_FEVER,
+                    song_slot=0,
+                    use_hints=int(args.use_hints),
+                    is_p_ft=flags["is_p_ft"],
+                    is_s_ft=flags["is_s_ft"],
+                    is_p_ff=flags["is_p_ff"],
+                    is_s_ff=flags["is_s_ff"],
+                    is_p_pp=flags["is_p_pp"],
+                    is_s_pp=flags["is_s_pp"],
+                    is_p_cm=flags["is_p_cm"],
+                    is_s_cm=flags["is_s_cm"],
+                    is_p_fm=flags["is_p_fm"],
+                    is_s_fm=flags["is_s_fm"],
+                    is_p_ov=flags["is_p_ov"],
+                    is_s_ov=flags["is_s_ov"],
+                )
+            try:
+                import taichi as ti
+
+                ti.sync()
+            except Exception:
+                pass
+            elapsed = time.perf_counter() - start
+        finally:
+            if old is None:
+                os.environ.pop("GPU_NATIVE_GA_PLATEAU_PRUNE", None)
+            else:
+                os.environ["GPU_NATIVE_GA_PLATEAU_PRUNE"] = old
+
+    iters = max(1, int(args.iters))
+    per_iter = elapsed / iters
+    print(
+        f"ga_evaluate_population: genomes={int(args.genomes)} budget={int(args.budget)} "
+        f"iters={iters} warmup={int(args.warmup)} hints={int(args.use_hints)} prune={int(args.prune_plateaus)}"
+    )
+    print(f"total_sec={elapsed:.6f} per_iter_sec={per_iter:.6f} iters_per_sec={iters / elapsed:.3f}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
