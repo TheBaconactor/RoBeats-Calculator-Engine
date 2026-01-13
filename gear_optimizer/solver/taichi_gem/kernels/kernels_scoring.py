@@ -21,6 +21,228 @@ from . import kernels_helpers
 
 
 @ti.func
+def _calc_body_score_i32(
+    base_value: ti.f32,
+    combo_mul: ti.f32,
+    fever_mul: ti.f32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+) -> ti.i32:
+    # Match kernels_helpers._calc_body_score semantics exactly (integer truncation per term).
+    combo_val = ti.cast(base_value * combo_mul, ti.i32)
+    fever_val = ti.cast(base_value * combo_mul * fever_mul, ti.i32)
+    return (count_fever * fever_val) + (count_normal * combo_val)
+
+
+@ti.func
+def _calc_head_scores_3_bits(
+    head_len: ti.i32,
+    m0: ti.u32,
+    m1: ti.u32,
+    m2: ti.u32,
+    m3: ti.u32,
+    base_ov: ti.f32,
+    factor_ov: ti.f32,
+    fever_mul_ov: ti.f32,
+    base_cm: ti.f32,
+    factor_cm: ti.f32,
+    fever_mul_cm: ti.f32,
+    base_fm: ti.f32,
+    factor_fm: ti.f32,
+    fever_mul_fm: ti.f32,
+) -> ti.types.vector(3, ti.i32):
+    s_ov: ti.i32 = 0
+    s_cm: ti.i32 = 0
+    s_fm: ti.i32 = 0
+
+    n0 = ti.min(head_len, 32)
+    for i in range(n0):
+        t = ti.cast(i + 1, ti.f32)
+        is_fever_f = ti.cast((m0 >> ti.u32(i)) & ti.u32(1), ti.f32)
+
+        ramp_ov = base_ov + (t * factor_ov)
+        mul_ov = 1.0 + (fever_mul_ov - 1.0) * is_fever_f
+        s_ov += ti.cast(ramp_ov * mul_ov, ti.i32)
+
+        ramp_cm = base_cm + (t * factor_cm)
+        mul_cm = 1.0 + (fever_mul_cm - 1.0) * is_fever_f
+        s_cm += ti.cast(ramp_cm * mul_cm, ti.i32)
+
+        ramp_fm = base_fm + (t * factor_fm)
+        mul_fm = 1.0 + (fever_mul_fm - 1.0) * is_fever_f
+        s_fm += ti.cast(ramp_fm * mul_fm, ti.i32)
+
+    if head_len > 32:
+        n1 = ti.min(head_len, 64)
+        for i in range(32, n1):
+            t = ti.cast(i + 1, ti.f32)
+            is_fever_f = ti.cast((m1 >> ti.u32(i - 32)) & ti.u32(1), ti.f32)
+
+            ramp_ov = base_ov + (t * factor_ov)
+            mul_ov = 1.0 + (fever_mul_ov - 1.0) * is_fever_f
+            s_ov += ti.cast(ramp_ov * mul_ov, ti.i32)
+
+            ramp_cm = base_cm + (t * factor_cm)
+            mul_cm = 1.0 + (fever_mul_cm - 1.0) * is_fever_f
+            s_cm += ti.cast(ramp_cm * mul_cm, ti.i32)
+
+            ramp_fm = base_fm + (t * factor_fm)
+            mul_fm = 1.0 + (fever_mul_fm - 1.0) * is_fever_f
+            s_fm += ti.cast(ramp_fm * mul_fm, ti.i32)
+
+    if head_len > 64:
+        n2 = ti.min(head_len, 96)
+        for i in range(64, n2):
+            t = ti.cast(i + 1, ti.f32)
+            is_fever_f = ti.cast((m2 >> ti.u32(i - 64)) & ti.u32(1), ti.f32)
+
+            ramp_ov = base_ov + (t * factor_ov)
+            mul_ov = 1.0 + (fever_mul_ov - 1.0) * is_fever_f
+            s_ov += ti.cast(ramp_ov * mul_ov, ti.i32)
+
+            ramp_cm = base_cm + (t * factor_cm)
+            mul_cm = 1.0 + (fever_mul_cm - 1.0) * is_fever_f
+            s_cm += ti.cast(ramp_cm * mul_cm, ti.i32)
+
+            ramp_fm = base_fm + (t * factor_fm)
+            mul_fm = 1.0 + (fever_mul_fm - 1.0) * is_fever_f
+            s_fm += ti.cast(ramp_fm * mul_fm, ti.i32)
+
+    if head_len > 96:
+        for i in range(96, head_len):
+            t = ti.cast(i + 1, ti.f32)
+            is_fever_f = ti.cast((m3 >> ti.u32(i - 96)) & ti.u32(1), ti.f32)
+
+            ramp_ov = base_ov + (t * factor_ov)
+            mul_ov = 1.0 + (fever_mul_ov - 1.0) * is_fever_f
+            s_ov += ti.cast(ramp_ov * mul_ov, ti.i32)
+
+            ramp_cm = base_cm + (t * factor_cm)
+            mul_cm = 1.0 + (fever_mul_cm - 1.0) * is_fever_f
+            s_cm += ti.cast(ramp_cm * mul_cm, ti.i32)
+
+            ramp_fm = base_fm + (t * factor_fm)
+            mul_fm = 1.0 + (fever_mul_fm - 1.0) * is_fever_f
+            s_fm += ti.cast(ramp_fm * mul_fm, ti.i32)
+
+    return ti.Vector([s_ov, s_cm, s_fm])
+
+
+@ti.func
+def _calc_head_scores_4_bits(
+    head_len: ti.i32,
+    m0: ti.u32,
+    m1: ti.u32,
+    m2: ti.u32,
+    m3: ti.u32,
+    base_ov: ti.f32,
+    factor_ov: ti.f32,
+    fever_mul_ov: ti.f32,
+    base_pp: ti.f32,
+    factor_pp: ti.f32,
+    fever_mul_pp: ti.f32,
+    base_cm: ti.f32,
+    factor_cm: ti.f32,
+    fever_mul_cm: ti.f32,
+    base_fm: ti.f32,
+    factor_fm: ti.f32,
+    fever_mul_fm: ti.f32,
+) -> ti.types.vector(4, ti.i32):
+    s_ov: ti.i32 = 0
+    s_pp: ti.i32 = 0
+    s_cm: ti.i32 = 0
+    s_fm: ti.i32 = 0
+
+    n0 = ti.min(head_len, 32)
+    for i in range(n0):
+        t = ti.cast(i + 1, ti.f32)
+        is_fever_f = ti.cast((m0 >> ti.u32(i)) & ti.u32(1), ti.f32)
+
+        ramp_ov = base_ov + (t * factor_ov)
+        mul_ov = 1.0 + (fever_mul_ov - 1.0) * is_fever_f
+        s_ov += ti.cast(ramp_ov * mul_ov, ti.i32)
+
+        ramp_pp = base_pp + (t * factor_pp)
+        mul_pp = 1.0 + (fever_mul_pp - 1.0) * is_fever_f
+        s_pp += ti.cast(ramp_pp * mul_pp, ti.i32)
+
+        ramp_cm = base_cm + (t * factor_cm)
+        mul_cm = 1.0 + (fever_mul_cm - 1.0) * is_fever_f
+        s_cm += ti.cast(ramp_cm * mul_cm, ti.i32)
+
+        ramp_fm = base_fm + (t * factor_fm)
+        mul_fm = 1.0 + (fever_mul_fm - 1.0) * is_fever_f
+        s_fm += ti.cast(ramp_fm * mul_fm, ti.i32)
+
+    if head_len > 32:
+        n1 = ti.min(head_len, 64)
+        for i in range(32, n1):
+            t = ti.cast(i + 1, ti.f32)
+            is_fever_f = ti.cast((m1 >> ti.u32(i - 32)) & ti.u32(1), ti.f32)
+
+            ramp_ov = base_ov + (t * factor_ov)
+            mul_ov = 1.0 + (fever_mul_ov - 1.0) * is_fever_f
+            s_ov += ti.cast(ramp_ov * mul_ov, ti.i32)
+
+            ramp_pp = base_pp + (t * factor_pp)
+            mul_pp = 1.0 + (fever_mul_pp - 1.0) * is_fever_f
+            s_pp += ti.cast(ramp_pp * mul_pp, ti.i32)
+
+            ramp_cm = base_cm + (t * factor_cm)
+            mul_cm = 1.0 + (fever_mul_cm - 1.0) * is_fever_f
+            s_cm += ti.cast(ramp_cm * mul_cm, ti.i32)
+
+            ramp_fm = base_fm + (t * factor_fm)
+            mul_fm = 1.0 + (fever_mul_fm - 1.0) * is_fever_f
+            s_fm += ti.cast(ramp_fm * mul_fm, ti.i32)
+
+    if head_len > 64:
+        n2 = ti.min(head_len, 96)
+        for i in range(64, n2):
+            t = ti.cast(i + 1, ti.f32)
+            is_fever_f = ti.cast((m2 >> ti.u32(i - 64)) & ti.u32(1), ti.f32)
+
+            ramp_ov = base_ov + (t * factor_ov)
+            mul_ov = 1.0 + (fever_mul_ov - 1.0) * is_fever_f
+            s_ov += ti.cast(ramp_ov * mul_ov, ti.i32)
+
+            ramp_pp = base_pp + (t * factor_pp)
+            mul_pp = 1.0 + (fever_mul_pp - 1.0) * is_fever_f
+            s_pp += ti.cast(ramp_pp * mul_pp, ti.i32)
+
+            ramp_cm = base_cm + (t * factor_cm)
+            mul_cm = 1.0 + (fever_mul_cm - 1.0) * is_fever_f
+            s_cm += ti.cast(ramp_cm * mul_cm, ti.i32)
+
+            ramp_fm = base_fm + (t * factor_fm)
+            mul_fm = 1.0 + (fever_mul_fm - 1.0) * is_fever_f
+            s_fm += ti.cast(ramp_fm * mul_fm, ti.i32)
+
+    if head_len > 96:
+        for i in range(96, head_len):
+            t = ti.cast(i + 1, ti.f32)
+            is_fever_f = ti.cast((m3 >> ti.u32(i - 96)) & ti.u32(1), ti.f32)
+
+            ramp_ov = base_ov + (t * factor_ov)
+            mul_ov = 1.0 + (fever_mul_ov - 1.0) * is_fever_f
+            s_ov += ti.cast(ramp_ov * mul_ov, ti.i32)
+
+            ramp_pp = base_pp + (t * factor_pp)
+            mul_pp = 1.0 + (fever_mul_pp - 1.0) * is_fever_f
+            s_pp += ti.cast(ramp_pp * mul_pp, ti.i32)
+
+            ramp_cm = base_cm + (t * factor_cm)
+            mul_cm = 1.0 + (fever_mul_cm - 1.0) * is_fever_f
+            s_cm += ti.cast(ramp_cm * mul_cm, ti.i32)
+
+            ramp_fm = base_fm + (t * factor_fm)
+            mul_fm = 1.0 + (fever_mul_fm - 1.0) * is_fever_f
+            s_fm += ti.cast(ramp_fm * mul_fm, ti.i32)
+
+    return ti.Vector([s_ov, s_pp, s_cm, s_fm])
+
+
+@ti.func
 def _calc_head_score_masks(
     base_value: ti.f32,
     factor: ti.f32,
@@ -546,65 +768,199 @@ def optimize_core_device(
         base_p: ti.i32 = p_val + fill_p
         base_s: ti.i32 = s_val + fill_s
 
-        # Track "next" multipliers for the option we actually apply.
-        # Defaults: unchanged from current.
+        # Defaults: unchanged from current (used by Apply and PP lookahead).
         c_mul_next: ti.f32 = c_mul_cur
         f_mul_next: ti.f32 = f_mul_cur
         pp_factor_next: ti.f32 = pp_factor_cur
-
-        # Start with OV as default so OV wins exact ties.
-        t_p: ti.i32 = base_p + ov_p_delta
-        t_s: ti.i32 = base_s + ov_s_delta
-        base: ti.f32 = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_cur
-        best_score: ti.i32 = calc_score_cached_device(
-            mode, base, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
-        )
+        best_score: ti.i32 = 0
         best_opt: ti.i32 = 3
-
         pp_score: ti.i32 = -1
 
-        # Option 0: PP gem
-        # Optimization: Skip PP if Chill is not in Primary/Secondary
-        if allow_pp != 0 and pp < MAX_STAT:
-            t_p = base_p + pp_p_delta
-            t_s = base_s + pp_s_delta
-            pp_factor_pp: ti.f32 = kernels_helpers.lookup_ref_pp(pp + GEM_SCALE_NORMAL)
-            base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_pp
-            pp_score = calc_score_cached_device(
+        if mode == 0:
+            # Baseline implementation (work-item fever masks).
+            t_p: ti.i32 = base_p + ov_p_delta
+            t_s: ti.i32 = base_s + ov_s_delta
+            base: ti.f32 = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_cur
+            best_score = calc_score_cached_device(
                 mode, base, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
             )
-            if pp_score > best_score:
-                best_score = pp_score
-                best_opt = 0
-                pp_factor_next = pp_factor_pp
+            best_opt = 3
 
-        # Option 1: CM gem
-        if cm < MAX_STAT and (cm <= 50 or is_p_cm or is_s_cm):
-            t_p = base_p + cm_p_delta
-            t_s = base_s + cm_s_delta
-            base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_cur
-            c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm + GEM_SCALE_NORMAL)
-            score: ti.i32 = calc_score_cached_device(
-                mode, base, c_mul, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
-            )
-            if score > best_score:
-                best_score = score
-                best_opt = 1
-                c_mul_next = c_mul
+            if allow_pp != 0 and pp < MAX_STAT:
+                t_p = base_p + pp_p_delta
+                t_s = base_s + pp_s_delta
+                pp_factor_pp: ti.f32 = kernels_helpers.lookup_ref_pp(pp + GEM_SCALE_NORMAL)
+                base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_pp
+                pp_score = calc_score_cached_device(
+                    mode, base, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
+                )
+                if pp_score > best_score:
+                    best_score = pp_score
+                    best_opt = 0
+                    pp_factor_next = pp_factor_pp
 
-        # Option 2: FM gem
-        if fm < MAX_STAT:
-            t_p = base_p + fm_p_delta
-            t_s = base_s + fm_s_delta
-            base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_cur
-            f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm + GEM_SCALE_FEVER)
-            score = calc_score_cached_device(
-                mode, base, c_mul_cur, f_mul, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
-            )
-            if score > best_score:
-                best_score = score
-                best_opt = 2
-                f_mul_next = f_mul
+            if cm < MAX_STAT and (cm <= 50 or is_p_cm or is_s_cm):
+                t_p = base_p + cm_p_delta
+                t_s = base_s + cm_s_delta
+                base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_cur
+                c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm + GEM_SCALE_NORMAL)
+                score: ti.i32 = calc_score_cached_device(
+                    mode, base, c_mul, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
+                )
+                if score > best_score:
+                    best_score = score
+                    best_opt = 1
+                    c_mul_next = c_mul
+
+            if fm < MAX_STAT:
+                t_p = base_p + fm_p_delta
+                t_s = base_s + fm_s_delta
+                base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_cur
+                f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm + GEM_SCALE_FEVER)
+                score = calc_score_cached_device(
+                    mode, base, c_mul_cur, f_mul, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
+                )
+                if score > best_score:
+                    best_score = score
+                    best_opt = 2
+                    f_mul_next = f_mul
+        else:
+            # Optimized mode=1 path: fuse head loops when CM/FM are both viable.
+            do_pp: ti.i32 = 1 if (allow_pp != 0 and pp < MAX_STAT) else 0
+            do_cm: ti.i32 = 1 if (cm < MAX_STAT and (cm <= 50 or is_p_cm or is_s_cm)) else 0
+            do_fm: ti.i32 = 1 if (fm < MAX_STAT) else 0
+
+            # Fallback to baseline if CM or FM is not available (rare, but keeps code small).
+            if do_cm == 0 or do_fm == 0:
+                t_p = base_p + ov_p_delta
+                t_s = base_s + ov_s_delta
+                base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_cur
+                best_score = calc_score_cached_device(
+                    mode, base, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
+                )
+                best_opt = 3
+
+                if do_pp != 0:
+                    t_p = base_p + pp_p_delta
+                    t_s = base_s + pp_s_delta
+                    pp_factor_pp = kernels_helpers.lookup_ref_pp(pp + GEM_SCALE_NORMAL)
+                    base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_pp
+                    pp_score = calc_score_cached_device(
+                        mode, base, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
+                    )
+                    if pp_score > best_score:
+                        best_score = pp_score
+                        best_opt = 0
+                        pp_factor_next = pp_factor_pp
+
+                if do_cm != 0:
+                    t_p = base_p + cm_p_delta
+                    t_s = base_s + cm_s_delta
+                    base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_cur
+                    c_mul_cm: ti.f32 = kernels_helpers.lookup_ref_cm(cm + GEM_SCALE_NORMAL)
+                    score = calc_score_cached_device(
+                        mode, base, c_mul_cm, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
+                    )
+                    if score > best_score:
+                        best_score = score
+                        best_opt = 1
+                        c_mul_next = c_mul_cm
+
+                if do_fm != 0:
+                    t_p = base_p + fm_p_delta
+                    t_s = base_s + fm_s_delta
+                    base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_cur
+                    f_mul_fm: ti.f32 = kernels_helpers.lookup_ref_fm(fm + GEM_SCALE_FEVER)
+                    score = calc_score_cached_device(
+                        mode, base, c_mul_cur, f_mul_fm, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
+                    )
+                    if score > best_score:
+                        best_score = score
+                        best_opt = 2
+                        f_mul_next = f_mul_fm
+            else:
+                # Base values for OV/CM/FM (pick 1 now, fill remaining-1 with OV).
+                t_p_ov: ti.i32 = base_p + ov_p_delta
+                t_s_ov: ti.i32 = base_s + ov_s_delta
+                base_ov: ti.f32 = ti.cast((t_p_ov * 2) + t_s_ov, ti.f32) + pp_factor_cur
+
+                t_p_cm: ti.i32 = base_p + cm_p_delta
+                t_s_cm: ti.i32 = base_s + cm_s_delta
+                base_cm: ti.f32 = ti.cast((t_p_cm * 2) + t_s_cm, ti.f32) + pp_factor_cur
+                c_mul_cm = kernels_helpers.lookup_ref_cm(cm + GEM_SCALE_NORMAL)
+
+                t_p_fm: ti.i32 = base_p + fm_p_delta
+                t_s_fm: ti.i32 = base_s + fm_s_delta
+                base_fm: ti.f32 = ti.cast((t_p_fm * 2) + t_s_fm, ti.f32) + pp_factor_cur
+                f_mul_fm = kernels_helpers.lookup_ref_fm(fm + GEM_SCALE_FEVER)
+
+                factor_ov: ti.f32 = kernels_helpers._calc_head_factor(base_ov, c_mul_cur)
+                factor_cm: ti.f32 = kernels_helpers._calc_head_factor(base_cm, c_mul_cm)
+                factor_fm: ti.f32 = kernels_helpers._calc_head_factor(base_fm, c_mul_cur)
+
+                if do_pp == 0:
+                    head3 = _calc_head_scores_3_bits(
+                        head_len, m0, m1, m2, m3, base_ov, factor_ov, f_mul_cur, base_cm, factor_cm, f_mul_cur, base_fm, factor_fm, f_mul_fm
+                    )
+                    score_ov = _calc_body_score_i32(base_ov, c_mul_cur, f_mul_cur, count_fever, count_normal) + head3[0]
+                    score_cm = _calc_body_score_i32(base_cm, c_mul_cm, f_mul_cur, count_fever, count_normal) + head3[1]
+                    score_fm = _calc_body_score_i32(base_fm, c_mul_cur, f_mul_fm, count_fever, count_normal) + head3[2]
+
+                    best_score = score_ov
+                    best_opt = 3
+                    if score_cm > best_score:
+                        best_score = score_cm
+                        best_opt = 1
+                        c_mul_next = c_mul_cm
+                    if score_fm > best_score:
+                        best_score = score_fm
+                        best_opt = 2
+                        f_mul_next = f_mul_fm
+                else:
+                    t_p_pp: ti.i32 = base_p + pp_p_delta
+                    t_s_pp: ti.i32 = base_s + pp_s_delta
+                    pp_factor_pp: ti.f32 = kernels_helpers.lookup_ref_pp(pp + GEM_SCALE_NORMAL)
+                    base_pp: ti.f32 = ti.cast((t_p_pp * 2) + t_s_pp, ti.f32) + pp_factor_pp
+                    pp_factor_next = pp_factor_pp
+                    factor_pp: ti.f32 = kernels_helpers._calc_head_factor(base_pp, c_mul_cur)
+
+                    head4 = _calc_head_scores_4_bits(
+                        head_len,
+                        m0,
+                        m1,
+                        m2,
+                        m3,
+                        base_ov,
+                        factor_ov,
+                        f_mul_cur,
+                        base_pp,
+                        factor_pp,
+                        f_mul_cur,
+                        base_cm,
+                        factor_cm,
+                        f_mul_cur,
+                        base_fm,
+                        factor_fm,
+                        f_mul_fm,
+                    )
+                    score_ov = _calc_body_score_i32(base_ov, c_mul_cur, f_mul_cur, count_fever, count_normal) + head4[0]
+                    pp_score = _calc_body_score_i32(base_pp, c_mul_cur, f_mul_cur, count_fever, count_normal) + head4[1]
+                    score_cm = _calc_body_score_i32(base_cm, c_mul_cm, f_mul_cur, count_fever, count_normal) + head4[2]
+                    score_fm = _calc_body_score_i32(base_fm, c_mul_cur, f_mul_fm, count_fever, count_normal) + head4[3]
+
+                    best_score = score_ov
+                    best_opt = 3
+                    if pp_score > best_score:
+                        best_score = pp_score
+                        best_opt = 0
+                    if score_cm > best_score:
+                        best_score = score_cm
+                        best_opt = 1
+                        c_mul_next = c_mul_cm
+                    if score_fm > best_score:
+                        best_score = score_fm
+                        best_opt = 2
+                        f_mul_next = f_mul_fm
 
         # PP lookahead: if OV wins a tie now, but a few PP gems would become a real
         # improvement soon, start investing in PP.
