@@ -972,16 +972,16 @@ class GearOptimizerApp:
         if self._stop_requested_now():
             return
         inflight_songs = 0
-        gpu_mode_cfg = False
+        gpu_mode_cfg = True
         try:
             cfg_dict0 = tasks[0][3] if tasks else {}
             ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
             if isinstance(ie, dict):
                 inflight_songs = safe_int(ie.get("inflightsongs", 0), 0)
-                gpu_mode_cfg = self._truthy(ie.get("gpu_mode", "0"))
+                gpu_mode_cfg = True
         except Exception:
             inflight_songs = 0
-            gpu_mode_cfg = False
+            gpu_mode_cfg = True
 
         logical_cpus = os.cpu_count() or 1
         available_cpus = logical_cpus
@@ -1065,16 +1065,6 @@ class GearOptimizerApp:
                     use_gpu_preload = False
 
         if inflight_songs and inflight_songs > 1 and len(tasks) > 1:
-            # In-flight is a CPU GA driver (with GPU evaluation). It is incompatible with
-            # GPU_Native_GA unless we use the dedicated GPU-native in-flight orchestrator.
-            gpu_native_ga = False
-            try:
-                cfg_dict0 = tasks[0][3] if tasks else {}
-                cfg0 = cfg_from_dict(cfg_dict0) if cfg_dict0 else configparser.ConfigParser()
-                gpu_native_ga = cfg0.getboolean("IterationEngine", "GPU_Native_GA", fallback=False)
-            except Exception:
-                gpu_native_ga = False
-
             inflight_ok = False
             post_queue = None
             post_proc = None
@@ -1091,30 +1081,17 @@ class GearOptimizerApp:
                 )
                 post_proc.start()
 
-                if gpu_native_ga:
-                    from gear_optimizer.solver.native_inflight_orchestrator import run_native_inflight_song_pipeline
+                from gear_optimizer.solver.native_inflight_orchestrator import run_native_inflight_song_pipeline
 
-                    run_native_inflight_song_pipeline(
-                        tasks,
-                        in_flight_songs=int(inflight_songs),
-                        completed_songs=completed_songs,
-                        memory_resume_tracker=memory_resume_tracker,
-                        post_queue=post_queue,
-                        total_tasks=len(tasks),
-                        stop_requested=self._stop_requested_now,
-                    )
-                else:
-                    from gear_optimizer.solver.inflight_orchestrator import run_inflight_song_pipeline
-
-                    run_inflight_song_pipeline(
-                        tasks,
-                        in_flight_songs=int(inflight_songs),
-                        completed_songs=completed_songs,
-                        memory_resume_tracker=memory_resume_tracker,
-                        post_queue=post_queue,
-                        total_tasks=len(tasks),
-                        stop_requested=self._stop_requested_now,
-                    )
+                run_native_inflight_song_pipeline(
+                    tasks,
+                    in_flight_songs=int(inflight_songs),
+                    completed_songs=completed_songs,
+                    memory_resume_tracker=memory_resume_tracker,
+                    post_queue=post_queue,
+                    total_tasks=len(tasks),
+                    stop_requested=self._stop_requested_now,
+                )
                 inflight_ok = True
             except Exception as inflight_err:
                 print(f"[InFlight] Disabled: {type(inflight_err).__name__}: {inflight_err}", flush=True)

@@ -952,8 +952,7 @@ def run_native_inflight_song_pipeline(
         except Exception:
             pass
 
-    # Reuse the slot pool implementation from the non-native in-flight pipeline.
-    from gear_optimizer.solver.inflight_orchestrator import SongSlotPool
+    from gear_optimizer.solver.inflight_utils import SongSlotPool
 
     slot_pool = SongSlotPool(max_song_slots=int(max_song_slots))
 

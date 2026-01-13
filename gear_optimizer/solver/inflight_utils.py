@@ -2,11 +2,12 @@
 Shared helpers for the in-flight orchestrators.
 
 These functions are intentionally kept in one place to avoid copy/paste drift
-between `inflight_orchestrator.py` and `native_inflight_orchestrator.py`.
+between in-flight implementations.
 """
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Any, Optional
 
 import numpy as np
@@ -14,6 +15,25 @@ import numpy as np
 
 def _truthy(v: Any) -> bool:
     return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+class SongSlotPool:
+    def __init__(self, max_song_slots: int):
+        # Slot 0 is reserved; allocate 1..N-1.
+        n = max(2, int(max_song_slots))
+        self._free = deque(range(1, n))
+
+    def acquire(self) -> int:
+        if not self._free:
+            raise RuntimeError("No free GPU song slots")
+        return int(self._free.popleft())
+
+    def release(self, slot_id: int) -> None:
+        slot_id = int(slot_id)
+        if slot_id <= 0:
+            return
+        if slot_id not in self._free:
+            self._free.append(slot_id)
 
 
 def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg, cfg_dict: Optional[dict] = None) -> dict:
