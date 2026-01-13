@@ -859,10 +859,12 @@ def run_native_inflight_song_pipeline(
             ga_queue_mult = safe_int(cfg0.get("IterationEngine", "InFlight_GA_QueueMult", fallback="0"), 0)
         except Exception:
             ga_queue_mult = 0
-    try:
-        ga_queue_mult = int(os.environ.get("INFLIGHT_GA_QUEUE_MULT", "0") or "0")
-    except Exception:
-        ga_queue_mult = 0
+    raw = os.environ.get("INFLIGHT_GA_QUEUE_MULT")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            ga_queue_mult = int(raw)
+        except Exception:
+            pass
     if ga_queue_mult <= 0:
         ga_queue_mult = 2
     ga_queue_mult = max(1, min(int(ga_queue_mult), 8))
@@ -877,10 +879,12 @@ def run_native_inflight_song_pipeline(
             prep_buffer_mult = safe_int(cfg0.get("IterationEngine", "InFlight_PrepBufferMult", fallback="0"), 0)
         except Exception:
             prep_buffer_mult = 0
-    try:
-        prep_buffer_mult = int(os.environ.get("INFLIGHT_PREP_BUFFER_MULT", "0") or "0")
-    except Exception:
-        prep_buffer_mult = 0
+    raw = os.environ.get("INFLIGHT_PREP_BUFFER_MULT")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            prep_buffer_mult = int(raw)
+        except Exception:
+            pass
     if prep_buffer_mult <= 0:
         prep_buffer_mult = 4
     prep_buffer_mult = max(1, min(int(prep_buffer_mult), 16))
@@ -960,10 +964,12 @@ def run_native_inflight_song_pipeline(
             prep_workers = safe_int(cfg0.get("IterationEngine", "InFlight_PrepWorkers", fallback="0"), 0)
         except Exception:
             prep_workers = 0
-    try:
-        prep_workers = int(os.environ.get("INFLIGHT_PREP_WORKERS", "0") or "0")
-    except Exception:
-        prep_workers = 0
+    raw = os.environ.get("INFLIGHT_PREP_WORKERS")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            prep_workers = int(raw)
+        except Exception:
+            pass
     if prep_workers <= 0:
         if ga_seed:
             prep_workers = 1
@@ -979,10 +985,12 @@ def run_native_inflight_song_pipeline(
             decode_workers = safe_int(cfg0.get("IterationEngine", "InFlight_DecodeWorkers", fallback="0"), 0)
         except Exception:
             decode_workers = 0
-    try:
-        decode_workers = int(os.environ.get("INFLIGHT_DECODE_WORKERS", "0") or "0")
-    except Exception:
-        decode_workers = 0
+    raw = os.environ.get("INFLIGHT_DECODE_WORKERS")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            decode_workers = int(raw)
+        except Exception:
+            pass
     if decode_workers <= 0:
         decode_workers = max(1, min(inflight_limit, os.cpu_count() or 1))
     decode_executor = concurrent.futures.ThreadPoolExecutor(
@@ -993,10 +1001,12 @@ def run_native_inflight_song_pipeline(
 
     fg_workers_default = min(4, inflight_limit)
     fg_workers = fg_workers_default
-    try:
-        fg_workers = int(os.environ.get("INFLIGHT_FG_WORKERS", str(fg_workers_default)) or str(fg_workers_default))
-    except Exception:
-        fg_workers = fg_workers_default
+    raw = os.environ.get("INFLIGHT_FG_WORKERS")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            fg_workers = int(raw)
+        except Exception:
+            pass
     fg_workers = max(1, min(int(fg_workers), inflight_limit))
 
     fg_executor = concurrent.futures.ThreadPoolExecutor(max_workers=fg_workers, thread_name_prefix="FG")
@@ -1009,10 +1019,12 @@ def run_native_inflight_song_pipeline(
             fg_prep_workers = safe_int(cfg0.get("IterationEngine", "InFlight_FGPrepWorkers", fallback="0"), 0)
         except Exception:
             fg_prep_workers = 0
-    try:
-        fg_prep_workers = int(os.environ.get("INFLIGHT_FG_PREP_WORKERS", "0") or "0")
-    except Exception:
-        fg_prep_workers = 0
+    raw = os.environ.get("INFLIGHT_FG_PREP_WORKERS")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            fg_prep_workers = int(raw)
+        except Exception:
+            pass
     if fg_prep_workers <= 0:
         fg_prep_workers = max(1, min(inflight_limit, os.cpu_count() or 1))
     fg_prep_executor = concurrent.futures.ThreadPoolExecutor(max_workers=fg_prep_workers, thread_name_prefix="FGPrep")
@@ -1054,10 +1066,12 @@ def run_native_inflight_song_pipeline(
             prime_target = safe_int(cfg0.get("IterationEngine", "InFlight_PrimeTarget", fallback="0"), 0)
         except Exception:
             prime_target = 0
-    try:
-        prime_target = int(os.environ.get("INFLIGHT_PRIME_TARGET", "0") or "0")
-    except Exception:
-        prime_target = 0
+    raw = os.environ.get("INFLIGHT_PRIME_TARGET")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            prime_target = int(raw)
+        except Exception:
+            pass
     if prime_target <= 0:
         prime_target = inflight_limit
     prime_target = max(1, min(int(prime_target), inflight_limit, len(pending_tasks)))
