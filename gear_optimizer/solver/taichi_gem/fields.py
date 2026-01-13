@@ -70,6 +70,10 @@ GA_FG_CANDIDATES_PER_RUN = _env_int("GPU_GA_FG_CANDIDATES_PER_RUN", 64)
 GA_FG_CANDIDATES_PER_RUN = max(1, min(128, int(GA_FG_CANDIDATES_PER_RUN)))
 GA_FG_CANDIDATE_COLS = 1 + MAX_SLOTS + 7 + 7
 
+# GPU-side initial population generation (heuristic sampling)
+GA_INIT_HEURISTIC_K = _env_int("GPU_GA_INIT_HEURISTIC_K", 64)
+GA_INIT_HEURISTIC_K = max(0, min(256, int(GA_INIT_HEURISTIC_K)))
+
 
 # ============================================================================
 # GPU FIELDS (Device-resident data)
@@ -132,6 +136,7 @@ population_indices: ti.Field = None  # (MAX_GENOMES, MAX_SLOTS) item_id per (gen
 population_next_indices: ti.Field = None  # (MAX_GENOMES, MAX_SLOTS) next generation buffer
 # Initial populations staged on GPU for multi-start runs (uploaded once per segment, then copied run-by-run).
 ga_initial_populations: ti.Field = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES, MAX_SLOTS) item_id per (run,genome,slot)
+ga_init_heuristic_topk: ti.Field = None  # (MAX_SLOTS, GA_INIT_HEURISTIC_K) item_id per (slot,k)
 item_stats: ti.Field = None  # (MAX_ITEMS, ITEM_STAT_DIM) dense item stats table
 base_fixed_stats: ti.Field = None  # (ITEM_STAT_DIM,) fixed base stats (added to all genomes)
 ga_scores: ti.Field = None  # (MAX_GENOMES,) int32 fitness scores (from evaluation)
@@ -289,7 +294,8 @@ def reset_fields_state() -> None:
     global bp_pair_ft, bp_pair_ff, bp_result_mask
     global genome_base_pp, genome_base_cm, genome_base_fm, genome_base_p_val, genome_base_s_val
     global genome_base_ft, genome_base_ff, genome_base_stats
-    global population_indices, population_next_indices, ga_initial_populations, item_stats, base_fixed_stats
+    global population_indices, population_next_indices, ga_initial_populations, ga_init_heuristic_topk
+    global item_stats, base_fixed_stats
     global ga_scores, ga_rng_state, ga_parent_a, ga_parent_b
     global slot_start, slot_count
     global song_flags
@@ -531,7 +537,7 @@ def allocate_fields():
     global bp_pair_ft, bp_pair_ff, bp_result_mask
     global genome_base_pp, genome_base_cm, genome_base_fm, genome_base_p_val, genome_base_s_val
     global genome_base_ft, genome_base_ff, genome_base_stats
-    global population_indices, population_next_indices, ga_initial_populations, item_stats, base_fixed_stats
+    global population_indices, population_next_indices, ga_initial_populations, ga_init_heuristic_topk, item_stats, base_fixed_stats
     global ga_scores, ga_rng_state, ga_parent_a, ga_parent_b
     global slot_start, slot_count
     global song_flags
@@ -585,6 +591,10 @@ def allocate_fields():
     population_indices = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, MAX_SLOTS))
     population_next_indices = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, MAX_SLOTS))
     ga_initial_populations = ti.field(dtype=ti.i32, shape=(MAX_GA_RUNS, MAX_GA_RUN_GENOMES, MAX_SLOTS))
+    if GA_INIT_HEURISTIC_K > 0:
+        ga_init_heuristic_topk = ti.field(dtype=ti.i32, shape=(MAX_SLOTS, GA_INIT_HEURISTIC_K))
+    else:
+        ga_init_heuristic_topk = ti.field(dtype=ti.i32, shape=(MAX_SLOTS, 1))
     item_stats = ti.field(dtype=ti.i32, shape=(MAX_ITEMS, ITEM_STAT_DIM))
     base_fixed_stats = ti.field(dtype=ti.i32, shape=ITEM_STAT_DIM)
     ga_scores = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
@@ -798,6 +808,7 @@ def bind_fields(kernels_module):
     target.population_indices = population_indices
     target.population_next_indices = population_next_indices
     target.ga_initial_populations = ga_initial_populations
+    target.ga_init_heuristic_topk = ga_init_heuristic_topk
     target.item_stats = item_stats
     target.base_fixed_stats = base_fixed_stats
     target.ga_scores = ga_scores

@@ -43,8 +43,6 @@ from .scoring import worker_coevolution_evaluate, GEM_SOLVER_CACHE, FG_CACHE, FE
 from ..data.models import GASettings
 from ..helpers.ga_helpers import (
     initialize_pools,
-    create_genome_functions,
-    build_initial_population,
 )
 from ..helpers.song_helpers.fg_candidate_selector import select_fg_candidates
 from ..helpers.song_helpers.fg_combo_booster import (
@@ -79,6 +77,103 @@ def _build_base_stats_array(base_stats_fixed: dict, cfg_data: dict) -> tuple:
         tuple: (base_stats_arr, selected_color) where base_stats_arr is np.int32[10]
     """
     return build_base_fixed_stats_array(base_stats_fixed, cfg_data)
+
+
+if _GPU_NATIVE_AVAILABLE:
+
+    def build_ga_init_heuristic_topk(
+        *,
+        item_stats: "np.ndarray",
+        slot_start: "np.ndarray",
+        slot_count: "np.ndarray",
+        primary_color: str,
+        secondary_color: str,
+        heuristic_k: int,
+        n_slots: int = 9,
+    ) -> "np.ndarray | None":
+        heuristic_k = int(heuristic_k)
+        if heuristic_k <= 0:
+            return None
+
+        color_to_idx = {
+            "Perfect Points": 0,
+            "Combo Multiplier": 1,
+            "Fever Multiplier": 2,
+            "Beat": 5,
+            "Vibe": 6,
+            "Rush": 7,
+            "Flow": 8,
+            "Chill": 9,
+        }
+        p_idx = color_to_idx.get(str(primary_color or ""), -1)
+        s_idx = color_to_idx.get(str(secondary_color or ""), -1)
+        pp_idx = 0
+
+        n_slots = int(n_slots)
+        if n_slots <= 0:
+            return None
+
+        topk = np.zeros((n_slots, max(1, heuristic_k)), dtype=np.int32)
+        for slot_i in range(n_slots):
+            start_id = int(slot_start[slot_i])
+            count = int(slot_count[slot_i])
+            if count <= 0:
+                continue
+            ids = np.arange(start_id, start_id + count, dtype=np.int32)
+            sc = np.zeros((count,), dtype=np.int64)
+            if p_idx >= 0:
+                sc += item_stats[ids, p_idx].astype(np.int64) * 2
+            if s_idx >= 0:
+                sc += item_stats[ids, s_idx].astype(np.int64)
+            sc += item_stats[ids, pp_idx].astype(np.int64)
+            k_eff = min(int(heuristic_k), int(count))
+            if k_eff <= 0:
+                continue
+            order = np.lexsort((ids.astype(np.int64), -sc))
+            sel = ids[order[:k_eff]]
+            topk[slot_i, :k_eff] = sel
+            if k_eff < heuristic_k:
+                topk[slot_i, k_eff:heuristic_k] = sel[-1]
+        return topk
+
+    def extract_db_seed_ids(
+        *,
+        db_seed: dict | None,
+        registry: "ItemRegistry",
+        n_slots: int = 9,
+    ) -> "np.ndarray | None":
+        if not isinstance(db_seed, dict):
+            return None
+        try:
+            n_slots = int(n_slots)
+        except Exception:
+            n_slots = 9
+        if n_slots <= 0:
+            n_slots = 9
+
+        seed_ids = np.zeros((n_slots,), dtype=np.int32)
+        try:
+            gear_part = db_seed.get("gear") or db_seed.get("Gear") or []
+            minis_part = db_seed.get("minis") or db_seed.get("Minis") or []
+            for si in range(min(6, n_slots)):
+                name = ""
+                if si < len(gear_part):
+                    gi = gear_part[si]
+                    name = gi.get("Name", "") if isinstance(gi, dict) else str(gi or "")
+                if name:
+                    seed_ids[si] = int(registry.item_to_id.get((si, name), 0) or 0)
+            for j, si in enumerate(range(6, min(9, n_slots))):
+                name = ""
+                if j < len(minis_part):
+                    mi = minis_part[j]
+                    name = mi.get("Name", "") if isinstance(mi, dict) else str(mi or "")
+                if name:
+                    seed_ids[si] = int(registry.item_to_id.get((si, name), 0) or 0)
+        except Exception:
+            return None
+        if not bool(np.any(seed_ids[: min(9, n_slots)] != 0)):
+            return None
+        return seed_ids
 
 
 def _extract_fg_candidates_from_ga_snapshot(
@@ -440,18 +535,10 @@ def decode_gpu_native_ga_runs_payload(
         ]
 
         unique_evaluated: list[dict] = []
-        decode_names = getattr(registry, "decode_names", None)
         for i in range(n_cand):
             score_val = int(scores_vec[i])
             ids_row = genome_ids_mat[i]
             genome = registry.decode_genome(ids_row)
-            if callable(decode_names):
-                names = decode_names(ids_row)
-                gear_names = names[:6]
-                mini_names = names[6:9]
-            else:
-                gear_names = [g.get("Name", "None") for g in genome[:6]]
-                mini_names = [m.get("Name", "None") for m in genome[6:9]]
 
             row_stats = final_stats_mat[i]
             current_stats = {stat_names[j]: int(row_stats[j]) for j in range(10)}
@@ -486,20 +573,9 @@ def decode_gpu_native_ga_runs_payload(
             cand_data = {
                 "Score": score_val,
                 "BaseScore": score_val,
-                "Genome": genome,
                 "Gear": genome[:6],
                 "Minis": genome[6:9],
-                "GearNames": gear_names,
-                "MiniNames": mini_names,
                 "Data": data_obj,
-                "Details": {
-                    "FeverGems": g_ft_i,
-                    "FeverFillGems": g_ff_i,
-                    "PP": g_pp_i,
-                    "CM": g_cm_i,
-                    "FM": g_fm_i,
-                    "OV": g_ov_i,
-                },
             }
             unique_evaluated.append(cand_data)
 
@@ -1283,8 +1359,17 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     slot_start: "np.ndarray",
     slot_count: "np.ndarray",
     base_fixed_stats_arr: "np.ndarray",
-    initial_populations: "np.ndarray",
     n_generations: int,
+    initial_populations: "np.ndarray | None" = None,
+    num_runs: int | None = None,
+    n_genomes: int = GA_POPULATION_SIZE,
+    init_heuristic_topk: "np.ndarray | None" = None,
+    init_heuristic_k: int = 0,
+    init_heuristic_copies: int = 25,
+    db_seed_ids: "np.ndarray | None" = None,
+    db_seed_prob: float = 0.0,
+    db_seed_copies: int = 1,
+    db_seed_mutations: int = 1,
     elite_count: int = GA_ELITISM,
     mutation_rate: float = GA_MUTATION_RATE,
     immigrant_rate: float = 0.0,
@@ -1294,7 +1379,9 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     ga_seed: int | None = None,
 ) -> "np.ndarray":
     """
-    Run the GPU-native GA for multiple runs using *prebuilt* initial populations.
+    Run the GPU-native GA for multiple runs using either:
+    - prebuilt CPU populations (legacy), or
+    - GPU-generated initial populations (preferred).
 
     This entrypoint is designed for the GPU-native in-flight pipeline:
     - CPU prepares/encodes initial populations and item registry arrays
@@ -1341,16 +1428,22 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     immigrant_rate = float(immigrant_rate)
     immigrant_rate = max(0.0, min(1.0, immigrant_rate))
 
-    if not isinstance(initial_populations, np.ndarray):
-        initial_populations = np.asarray(initial_populations, dtype=np.int32)
-    if initial_populations.ndim != 3:
-        raise ValueError(
-            f"initial_populations must have shape (n_runs, n_genomes, n_slots); got ndim={initial_populations.ndim}"
-        )
-
-    num_runs = int(initial_populations.shape[0])
-    n_genomes = int(initial_populations.shape[1])
-    n_slots = int(initial_populations.shape[2])
+    if initial_populations is not None:
+        if not isinstance(initial_populations, np.ndarray):
+            initial_populations = np.asarray(initial_populations, dtype=np.int32)
+        if initial_populations.ndim != 3:
+            raise ValueError(
+                f"initial_populations must have shape (n_runs, n_genomes, n_slots); got ndim={initial_populations.ndim}"
+            )
+        num_runs = int(initial_populations.shape[0])
+        n_genomes = int(initial_populations.shape[1])
+        n_slots = int(initial_populations.shape[2])
+    else:
+        if num_runs is None:
+            raise ValueError("num_runs is required when initial_populations is None")
+        num_runs = int(num_runs)
+        n_genomes = int(n_genomes)
+        n_slots = 9
 
     if num_runs <= 0 or n_genomes <= 0 or n_slots <= 0:
         raise ValueError(
@@ -1389,6 +1482,15 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     # Upload static per-song GA data once (minimize CPU->GPU transfers)
     gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
     gpu_api.ga_upload_base_fixed_stats(base_fixed_stats_arr)
+
+    # Optional heuristic top-K table for GPU initial population generation.
+    init_heuristic_k = int(init_heuristic_k)
+    if init_heuristic_topk is not None and init_heuristic_k > 0:
+        gpu_api.ga_upload_init_heuristic_topk(
+            topk_ids=np.asarray(init_heuristic_topk, dtype=np.int32),
+            heuristic_k=int(init_heuristic_k),
+            n_slots=int(n_slots),
+        )
 
     is_p_ft = color_flags.get("is_p_ft", 0)
     is_s_ft = color_flags.get("is_s_ft", 0)
@@ -1486,14 +1588,31 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     run_start_global = 0
     while run_start_global < num_runs:
         seg_len = min(int(gpu_fields.MAX_GA_RUNS), num_runs - run_start_global)
-        segment_pop = np.asarray(initial_populations[run_start_global : run_start_global + seg_len], dtype=np.int32)
-
-        gpu_api.ga_upload_initial_populations(
-            segment_pop,
-            n_runs=int(seg_len),
-            n_genomes=int(n_genomes),
-            n_slots=int(n_slots),
-        )
+        if initial_populations is not None:
+            segment_pop = np.asarray(initial_populations[run_start_global : run_start_global + seg_len], dtype=np.int32)
+            gpu_api.ga_upload_initial_populations(
+                segment_pop,
+                n_runs=int(seg_len),
+                n_genomes=int(n_genomes),
+                n_slots=int(n_slots),
+            )
+        else:
+            # Generate initial populations on GPU for this segment (seeded per segment to avoid repeats).
+            seg_seed = int(seed_base) ^ (int(run_start_global) * 747796405)
+            gpu_api.ga_generate_initial_populations(
+                run_idx_start=0,
+                n_runs=int(seg_len),
+                n_genomes=int(n_genomes),
+                n_slots=int(n_slots),
+                seed=int(seg_seed),
+                heuristic_prob=0.0,
+                heuristic_k=int(init_heuristic_k),
+                seed_prob=float(db_seed_prob or 0.0),
+                seed_copies=int(db_seed_copies if db_seed_ids is not None else 0),
+                seed_mutations=int(db_seed_mutations if db_seed_ids is not None else 0),
+                heuristic_copies=int(init_heuristic_copies),
+                seed_ids=db_seed_ids,
+            )
 
         # Initialize per-run best rows for this segment (used by batched execution).
         gpu_api.ga_init_runs_best(run_idx_start=0, n_runs=int(seg_len), n_slots=int(n_slots))
@@ -1512,12 +1631,29 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                 precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
                 gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
                 gpu_api.ga_upload_base_fixed_stats(base_fixed_stats_arr)
-                gpu_api.ga_upload_initial_populations(
-                    segment_pop,
-                    n_runs=int(seg_len),
-                    n_genomes=int(n_genomes),
-                    n_slots=int(n_slots),
-                )
+                if initial_populations is not None:
+                    gpu_api.ga_upload_initial_populations(
+                        segment_pop,
+                        n_runs=int(seg_len),
+                        n_genomes=int(n_genomes),
+                        n_slots=int(n_slots),
+                    )
+                else:
+                    seg_seed = int(seed_base) ^ (int(run_start_global) * 747796405)
+                    gpu_api.ga_generate_initial_populations(
+                        run_idx_start=0,
+                        n_runs=int(seg_len),
+                        n_genomes=int(n_genomes),
+                        n_slots=int(n_slots),
+                        seed=int(seg_seed),
+                        heuristic_prob=0.0,
+                        heuristic_k=int(init_heuristic_k),
+                        seed_prob=float(db_seed_prob or 0.0),
+                        seed_copies=int(db_seed_copies if db_seed_ids is not None else 0),
+                        seed_mutations=int(db_seed_mutations if db_seed_ids is not None else 0),
+                        heuristic_copies=int(init_heuristic_copies),
+                        seed_ids=db_seed_ids,
+                    )
                 gpu_api.ga_init_runs_best(run_idx_start=0, n_runs=int(seg_len), n_slots=int(n_slots))
 
             batch_len = min(batch_runs, seg_len - local_run_idx)
@@ -1951,8 +2087,8 @@ def solve_coevolution_genetic(
         # 2. Precompute timeline grid (required by solve_genomes_with_ftff_kernel)
         precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
 
-        # 3. Create Registry
-        registry = ItemRegistry(gear_pool, mini_pool, slots)
+        # 3. Create Registry (restrict pools for fixed slots).
+        registry = ItemRegistry(gear_pool, mini_pool, slots, fixed_gear=fixed_gear, fixed_minis=fixed_minis)
 
         # Upload static per-song GA data once (item stats + base fixed stats)
         # Doing this once avoids large repeated from_numpy() calls which can
@@ -1969,35 +2105,23 @@ def solve_coevolution_genetic(
         base_stats_arr, _ = _build_base_stats_array(base_stats_fixed, cfg_data)
         gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
 
-        # 4. Create simple rank caches for genome factory (not needed for random genomes, but required by function signature)
-        # GPU-native GA uses random initialization, not heuristic, so these won't be used
-        gear_rank_cache = {s: gear_pool[s] for s in slots}  # Just use full pools
-        mini_rank_cache = mini_pool
-
-        # 5. Build explicit factories for initial population
-        # We reuse the existing factories to robustly create valid random genomes
-        (
-            create_random_genome,
-            create_heuristic_genome,
-            reconstruct_genome_from_db_list,
-            build_seed_list_from_record,
-            mutate_genome_once,
-        ) = create_genome_functions(
-            gear_pool,
-            mini_pool,
-            gear_rank_cache,
-            mini_rank_cache,
-            gears_by_name,
-            minis_by_name,
-            slots,
-            optimize_gear,
-            optimize_minis,
-            fixed_gear,
-            fixed_minis,
-        )
-
-        # 6. Create initial population functions (created once)
-        # We reuse the existing factories to robustly create valid random genomes
+        # 4. Upload GPU-side heuristic top-K table for initial population generation.
+        heuristic_k = int(getattr(gpu_fields, "GA_INIT_HEURISTIC_K", 0) or 0)
+        if heuristic_k > 0:
+            try:
+                topk = build_ga_init_heuristic_topk(
+                    item_stats=gpu_data["item_stats"],
+                    slot_start=gpu_data["slot_start"],
+                    slot_count=gpu_data["slot_count"],
+                    primary_color=str(p_color or ""),
+                    secondary_color=str(s_color or ""),
+                    heuristic_k=int(heuristic_k),
+                    n_slots=9,
+                )
+                if topk is not None:
+                    gpu_api.ga_upload_init_heuristic_topk(topk_ids=topk, heuristic_k=int(heuristic_k), n_slots=9)
+            except Exception as e:
+                print(f"[GPU GA] Warning: failed to build/upload init heuristic table: {e}")
 
         # Match CPU logic: split total depth across runs (Micro-GA strategy)
         # or use full depth if multi-start is 1.
@@ -2071,45 +2195,43 @@ def solve_coevolution_genetic(
         except Exception:
             max_retries = 1
 
-        # Segment state for batched initial population uploads.
+        # Seed genome IDs for GPU-side DB seed injection (optional).
+        seed_ids = extract_db_seed_ids(db_seed=db_seed, registry=registry, n_slots=n_slots)
+        have_seed = seed_ids is not None
+
+        # Segment state for GPU-generated initial populations.
         segment_start_global = 0
         segment_total_runs = 0
-        segment_pop_ids = None  # np.ndarray[int32] shape (segment_total_runs, n_genomes, n_slots)
-        segment_pop_uploaded = False
+        segment_pop_generated = False
 
         for run_idx in range(num_runs):
             # Start a new segment whenever we exhausted the staged buffer.
-            if segment_pop_ids is None or run_idx >= (segment_start_global + segment_total_runs):
+            if (not segment_pop_generated) or run_idx >= (segment_start_global + segment_total_runs):
                 segment_start_global = run_idx
                 segment_total_runs = min(gpu_fields.MAX_GA_RUNS, num_runs - run_idx)
-                segment_pop_uploaded = False
+                segment_pop_generated = False
 
-                if os.environ.get("GPU_NATIVE_GA_LOG_PROGRESS", "0").strip().lower() in {"1", "true", "yes", "on"}:
-                    print(f"  >> Prebuilding {segment_total_runs} initial populations (batched upload)...")
-                seg_buf = None
-                for j in range(segment_total_runs):
-                    pop = build_initial_population(
-                        create_random_genome,
-                        create_heuristic_genome,
-                        reconstruct_genome_from_db_list,
-                        build_seed_list_from_record,
-                        mutate_genome_once,
-                        db_seed,
-                        ga_settings,
-                        fixed_gear,
-                        fixed_minis,
-                        force_db_seed=False,
+                n_genomes = int(GA_POPULATION_SIZE)
+                if n_genomes > gpu_fields.MAX_GA_RUN_GENOMES:
+                    raise RuntimeError(
+                        f"GPU GA population too large for run buffer: {n_genomes} > {gpu_fields.MAX_GA_RUN_GENOMES}"
                     )
-                    if n_genomes is None:
-                        n_genomes = len(pop)
-                        if n_genomes > gpu_fields.MAX_GA_RUN_GENOMES:
-                            raise RuntimeError(
-                                f"GPU GA population too large for run buffer: {n_genomes} > {gpu_fields.MAX_GA_RUN_GENOMES}"
-                            )
-                    if seg_buf is None:
-                        seg_buf = np.zeros((segment_total_runs, n_genomes, n_slots), dtype=np.int32)
-                    seg_buf[j, :, :n_slots] = registry.encode_population(pop)
-                segment_pop_ids = seg_buf
+
+                gpu_api.ga_generate_initial_populations(
+                    run_idx_start=0,
+                    n_runs=int(segment_total_runs),
+                    n_genomes=int(n_genomes),
+                    n_slots=int(n_slots),
+                    seed=int(ga_seed if ga_seed is not None else 42),
+                    heuristic_prob=0.0,
+                    heuristic_k=int(heuristic_k),
+                    seed_prob=float(ga_settings.db_seed_prob if have_seed else 0.0),
+                    seed_copies=1 if have_seed else 0,
+                    seed_mutations=int(getattr(ga_settings, "db_seed_mutations", 1) or 0) if have_seed else 0,
+                    heuristic_copies=25,
+                    seed_ids=seed_ids if have_seed else None,
+                )
+                segment_pop_generated = True
 
             if os.environ.get("GPU_NATIVE_GA_LOG_PROGRESS", "0").strip().lower() in {"1", "true", "yes", "on"}:
                 print(f"  >> GPU GA Run {run_idx + 1}/{num_runs}...")
@@ -2127,19 +2249,26 @@ def solve_coevolution_genetic(
                         gpu_data["slot_count"],
                     )
                     gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
-                    segment_pop_uploaded = False
+                    segment_pop_generated = False
                 except Exception as e:
                     print(f"[GPU GA] Warning: periodic reset failed: {e}")
 
-            # Ensure the segment's initial populations are staged on GPU (re-upload after resets).
-            if not segment_pop_uploaded:
-                gpu_api.ga_upload_initial_populations(
-                    segment_pop_ids,
-                    n_runs=segment_total_runs,
-                    n_genomes=n_genomes,
-                    n_slots=n_slots,
+            if not segment_pop_generated:
+                gpu_api.ga_generate_initial_populations(
+                    run_idx_start=0,
+                    n_runs=int(segment_total_runs),
+                    n_genomes=int(n_genomes),
+                    n_slots=int(n_slots),
+                    seed=int(ga_seed if ga_seed is not None else 42),
+                    heuristic_prob=0.0,
+                    heuristic_k=int(heuristic_k),
+                    seed_prob=float(ga_settings.db_seed_prob if have_seed else 0.0),
+                    seed_copies=1 if have_seed else 0,
+                    seed_mutations=int(getattr(ga_settings, "db_seed_mutations", 1) or 0) if have_seed else 0,
+                    heuristic_copies=25,
+                    seed_ids=seed_ids if have_seed else None,
                 )
-                segment_pop_uploaded = True
+                segment_pop_generated = True
 
             # Load this run's initial population into active GA buffers (GPU->GPU copy).
             local_run_idx = run_idx - segment_start_global
@@ -2202,13 +2331,21 @@ def solve_coevolution_genetic(
                         )
                         gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
                         # Restore staged initial populations for the retry (reset clears GPU buffers).
-                        gpu_api.ga_upload_initial_populations(
-                            segment_pop_ids,
-                            n_runs=segment_total_runs,
-                            n_genomes=n_genomes,
-                            n_slots=n_slots,
+                        gpu_api.ga_generate_initial_populations(
+                            run_idx_start=0,
+                            n_runs=int(segment_total_runs),
+                            n_genomes=int(n_genomes),
+                            n_slots=int(n_slots),
+                            seed=int(ga_seed if ga_seed is not None else 42),
+                            heuristic_prob=0.0,
+                            heuristic_k=int(heuristic_k),
+                            seed_prob=float(ga_settings.db_seed_prob if have_seed else 0.0),
+                            seed_copies=1 if have_seed else 0,
+                            seed_mutations=int(getattr(ga_settings, "db_seed_mutations", 1) or 0) if have_seed else 0,
+                            heuristic_copies=25,
+                            seed_ids=seed_ids if have_seed else None,
                         )
-                        segment_pop_uploaded = True
+                        segment_pop_generated = True
                         gpu_api.ga_load_initial_population(run_idx=local_run_idx, n_genomes=n_genomes, n_slots=n_slots)
                     except Exception as reset_exc:
                         print(f"[GPU GA] Reset failed: {reset_exc}")

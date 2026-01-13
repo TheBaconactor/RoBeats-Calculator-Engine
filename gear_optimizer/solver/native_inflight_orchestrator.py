@@ -425,7 +425,15 @@ class _NativeSong:
     cfg_data: dict
     color_flags: dict
     gens_per_run: int
-    initial_populations: np.ndarray
+    num_runs: int
+    n_genomes: int
+    init_heuristic_topk: Optional[np.ndarray] = None
+    init_heuristic_k: int = 0
+    init_heuristic_copies: int = 25
+    db_seed_ids: Optional[np.ndarray] = None
+    db_seed_prob: float = 0.0
+    db_seed_copies: int = 1
+    db_seed_mutations: int = 1
     item_stats: np.ndarray
     slot_start: np.ndarray
     slot_count: np.ndarray
@@ -466,7 +474,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
     cpu_t0 = _thread_cpu_time_s()
     from gear_optimizer.core.constants import GA_ELITISM, GA_MUTATION_RATE
     from gear_optimizer.core.constants import GA_POPULATION_SIZE
-    from gear_optimizer.helpers.ga_helpers import build_initial_population, create_genome_functions, initialize_pools
+    from gear_optimizer.helpers.ga_helpers import initialize_pools
 
     task_key = _task_key(task)
     ga_seed = _task_ga_seed(task)
@@ -630,15 +638,22 @@ def _prepare_song(task: tuple) -> _NativeSong:
     else:
         gear_pool, mini_pool = cached_pools
 
-    with _PREP_CACHE_LOCK:
-        cached_registry = _lru_get(_REGISTRY_GPU_CACHE, pool_key)
-    if cached_registry is None:
-        registry = ItemRegistry(gear_pool, mini_pool, slots)
-        gpu_data = registry.to_gpu_arrays()
+    cacheable_registry = bool(enable_gear and enable_mini)
+    if cacheable_registry:
         with _PREP_CACHE_LOCK:
-            _lru_put(_REGISTRY_GPU_CACHE, pool_key, (registry, gpu_data), maxsize=_REGISTRY_CACHE_MAX)
+            cached_registry = _lru_get(_REGISTRY_GPU_CACHE, pool_key)
+        if cached_registry is None:
+            registry = ItemRegistry(gear_pool, mini_pool, slots)
+            gpu_data = registry.to_gpu_arrays()
+            with _PREP_CACHE_LOCK:
+                _lru_put(_REGISTRY_GPU_CACHE, pool_key, (registry, gpu_data), maxsize=_REGISTRY_CACHE_MAX)
+        else:
+            registry, gpu_data = cached_registry
     else:
-        registry, gpu_data = cached_registry
+        fixed_gear = list(current_gear_list or [])[:6] if not enable_gear else None
+        fixed_minis = list(current_mini_list or [])[:3] if not enable_mini else None
+        registry = ItemRegistry(gear_pool, mini_pool, slots, fixed_gear=fixed_gear, fixed_minis=fixed_minis)
+        gpu_data = registry.to_gpu_arrays()
 
     fg_candidate_limit = read_fg_candidate_limit(
         cfg,
@@ -674,28 +689,6 @@ def _prepare_song(task: tuple) -> _NativeSong:
     immigrant_rate = safe_float(cfg.get("IterationEngine", "GPU_GA_ImmigrantRate", fallback=0.0), 0.0)
     immigrant_rate = max(0.0, min(1.0, float(immigrant_rate)))
 
-    gear_rank_cache = {s: gear_pool[s] for s in slots}
-    mini_rank_cache = mini_pool
-    (
-        create_random_genome,
-        create_heuristic_genome,
-        reconstruct_genome_from_db_list,
-        build_seed_list_from_record,
-        mutate_genome_once,
-    ) = create_genome_functions(
-        gear_pool,
-        mini_pool,
-        gear_rank_cache,
-        mini_rank_cache,
-        gears_by_name,
-        minis_by_name,
-        slots,
-        bool(enable_gear),
-        bool(enable_mini),
-        current_gear_list,
-        current_mini_list,
-    )
-
     db_seed = prev_record if (allow_db_seed and prev_record) else None
     num_runs = int(getattr(ga_settings, "multi_start", 1) or 1)
     if num_runs <= 0:
@@ -705,148 +698,42 @@ def _prepare_song(task: tuple) -> _NativeSong:
     if ga_depth <= 0:
         ga_depth = 1
     gens_per_run = max(1, (ga_depth + num_runs - 1) // num_runs)
+    n_genomes = int(GA_POPULATION_SIZE)
 
-    fast_init = True
+    init_heuristic_topk: Optional[np.ndarray] = None
+    init_heuristic_k = 0
     try:
-        fast_init = cfg.getboolean("IterationEngine", "GPU_GA_FastInit", fallback=True)
+        init_heuristic_k = int(str(os.environ.get("GPU_GA_INIT_HEURISTIC_K", "64") or "64"))
     except Exception:
-        fast_init = True
+        init_heuristic_k = 64
+    init_heuristic_k = max(0, int(init_heuristic_k))
+    init_heuristic_copies = 25
 
-    if fast_init:
-        import hashlib
+    db_seed_ids: Optional[np.ndarray] = None
 
-        seed_list = build_seed_list_from_record(db_seed) if db_seed else []
+    try:
+        from gear_optimizer.solver.genetic import build_ga_init_heuristic_topk, extract_db_seed_ids
 
-        fixed_genome: list[dict] = []
-        fixed_genome.extend(list(current_gear_list or [])[:6])
-        while len(fixed_genome) < 6:
-            fixed_genome.append({})
-        fixed_genome.extend(list(current_mini_list or [])[:3])
-        while len(fixed_genome) < 9:
-            fixed_genome.append({})
-        fixed_ids = registry.encode_genome(fixed_genome)
-
-        heuristic_ids: list[np.ndarray] = []
-        for _ in range(25):
-            heuristic_ids.append(registry.encode_genome(create_heuristic_genome()))
-        heuristic_block = np.stack(heuristic_ids, axis=0).astype(np.int32, copy=False) if heuristic_ids else None
-        heuristic_len = int(heuristic_block.shape[0]) if heuristic_block is not None else 0
-
-        seed_base = ga_seed
-        if seed_base is None:
-            ga_seed_env = str(os.environ.get("GA_SEED") or "").strip()
-            if ga_seed_env:
-                try:
-                    seed_base = int(ga_seed_env)
-                except Exception:
-                    seed_base = None
-
-        if seed_base is not None:
-            digest = hashlib.md5(str(found_song_name).encode("utf-8")).digest()
-            song_seed = int.from_bytes(digest[:4], "little", signed=False)
-            rng = np.random.default_rng((int(seed_base) ^ song_seed) & 0xFFFFFFFF)
-        else:
-            rng = np.random.default_rng()
-
-        slot_start_arr = np.asarray(gpu_data["slot_start"], dtype=np.int32).reshape(-1)
-        slot_count_arr = np.asarray(gpu_data["slot_count"], dtype=np.int32).reshape(-1)
-        if slot_start_arr.shape[0] < 9 or slot_count_arr.shape[0] < 9:
-            raise RuntimeError("Invalid registry slot arrays for GPU-native GA (expected 9 slots).")
-
-        mini_start = int(slot_start_arr[6])
-        mini_count = int(slot_count_arr[6])
-
-        def _fill_random_rows(out: np.ndarray, start_row: int) -> None:
-            n_rows = int(out.shape[0] - start_row)
-            if n_rows <= 0:
-                return
-            for slot_idx in range(9):
-                if slot_idx < 6 and not enable_gear:
-                    out[start_row:, slot_idx] = int(fixed_ids[slot_idx])
-                    continue
-                if slot_idx >= 6 and not enable_mini:
-                    out[start_row:, slot_idx] = int(fixed_ids[slot_idx])
-                    continue
-                c = int(slot_count_arr[slot_idx])
-                if c <= 0:
-                    continue
-                out[start_row:, slot_idx] = int(slot_start_arr[slot_idx]) + rng.integers(
-                    0, c, size=n_rows, dtype=np.int32
-                )
-
-            if enable_mini and mini_count >= 3:
-                dup = (
-                    (out[start_row:, 6] == out[start_row:, 7])
-                    | (out[start_row:, 6] == out[start_row:, 8])
-                    | (out[start_row:, 7] == out[start_row:, 8])
-                )
-                if np.any(dup):
-                    idxs = np.nonzero(dup)[0]
-                    for j in idxs:
-                        picks = rng.choice(mini_count, size=3, replace=False)
-                        out[start_row + int(j), 6:9] = np.asarray(mini_start + picks, dtype=np.int32)
-
-        populations = np.zeros((int(num_runs), int(GA_POPULATION_SIZE), 9), dtype=np.int32)
-        for run_idx in range(int(num_runs)):
-            row = 0
-            # Optional DB seed injection (mirrors build_initial_population probability gate).
-            if seed_list:
-                try:
-                    should_inject = bool(rng.random() < float(getattr(ga_settings, "db_seed_prob", 0.0) or 0.0))
-                except Exception:
-                    should_inject = False
-                if should_inject:
-                    try:
-                        seed_genome = reconstruct_genome_from_db_list(seed_list)
-                        populations[run_idx, row] = registry.encode_genome(seed_genome)
-                        row += 1
-                        populations[run_idx, row] = registry.encode_genome(mutate_genome_once(seed_genome))
-                        row += 1
-                    except Exception:
-                        row = row
-
-            if heuristic_block is not None and heuristic_len > 0 and row < GA_POPULATION_SIZE:
-                take = min(int(heuristic_len), int(GA_POPULATION_SIZE - row))
-                populations[run_idx, row : row + take] = heuristic_block[:take]
-                row += take
-
-            _fill_random_rows(populations[run_idx], row)
-
-            # Enforce fixed slots for non-optimized dimensions (heuristics/seed may have picked different items).
-            if not enable_gear:
-                populations[run_idx, :, :6] = fixed_ids[:6]
-            if not enable_mini:
-                populations[run_idx, :, 6:9] = fixed_ids[6:9]
-
-            # Randomize row order for this run so seeded genomes don't always occupy
-            # the same indices (preserves multi-start diversity).
-            perm = rng.permutation(int(GA_POPULATION_SIZE))
-            populations[run_idx] = populations[run_idx][perm]
-
-        initial_populations = populations
-    else:
-        pops_encoded: list[np.ndarray] = []
-        n_genomes = None
-        for _ in range(num_runs):
-            pop = build_initial_population(
-                create_random_genome,
-                create_heuristic_genome,
-                reconstruct_genome_from_db_list,
-                build_seed_list_from_record,
-                mutate_genome_once,
-                db_seed,
-                ga_settings,
-                current_gear_list,
-                current_mini_list,
-                force_db_seed=False,
+        if init_heuristic_k > 0:
+            init_heuristic_topk = build_ga_init_heuristic_topk(
+                item_stats=np.asarray(gpu_data["item_stats"], dtype=np.int32),
+                slot_start=np.asarray(gpu_data["slot_start"], dtype=np.int32),
+                slot_count=np.asarray(gpu_data["slot_count"], dtype=np.int32),
+                primary_color=str(p_color or ""),
+                secondary_color=str(s_color or ""),
+                heuristic_k=int(init_heuristic_k),
+                n_slots=9,
             )
-            if n_genomes is None:
-                n_genomes = len(pop)
-            if len(pop) != int(n_genomes):
-                raise RuntimeError(f"Population size changed across runs: {len(pop)} != {n_genomes}")
-            pops_encoded.append(registry.encode_population(pop))
 
-        initial_populations = np.stack(pops_encoded, axis=0).astype(np.int32, copy=False)
+        db_seed_ids = extract_db_seed_ids(db_seed=db_seed, registry=registry, n_slots=9)
+    except Exception:
+        init_heuristic_topk = None
+        db_seed_ids = None
+
+    if init_heuristic_topk is None or init_heuristic_k <= 0:
+        init_heuristic_topk = None
+        init_heuristic_k = 0
+        init_heuristic_copies = 0
 
     color_flags = build_color_flags(p_color, s_color, selected_color)
 
@@ -891,7 +778,15 @@ def _prepare_song(task: tuple) -> _NativeSong:
         cfg_data=cfg_data,
         color_flags=color_flags,
         gens_per_run=int(gens_per_run),
-        initial_populations=initial_populations,
+        num_runs=int(num_runs),
+        n_genomes=int(n_genomes),
+        init_heuristic_topk=init_heuristic_topk,
+        init_heuristic_k=int(init_heuristic_k),
+        init_heuristic_copies=int(init_heuristic_copies),
+        db_seed_ids=db_seed_ids,
+        db_seed_prob=float(getattr(ga_settings, "db_seed_prob", 0.0) or 0.0) if db_seed_ids is not None else 0.0,
+        db_seed_copies=1 if db_seed_ids is not None else 0,
+        db_seed_mutations=int(getattr(ga_settings, "db_seed_mutations", 1) or 0) if db_seed_ids is not None else 0,
         item_stats=np.asarray(gpu_data["item_stats"], dtype=np.int32),
         slot_start=np.asarray(gpu_data["slot_start"], dtype=np.int32),
         slot_count=np.asarray(gpu_data["slot_count"], dtype=np.int32),
@@ -1397,7 +1292,16 @@ def run_native_inflight_song_pipeline(
                         "slot_start": song.slot_start,
                         "slot_count": song.slot_count,
                         "base_fixed_stats_arr": song.base_fixed_stats_arr,
-                        "initial_populations": song.initial_populations,
+                        "initial_populations": None,
+                        "num_runs": int(song.num_runs),
+                        "n_genomes": int(song.n_genomes),
+                        "init_heuristic_topk": song.init_heuristic_topk,
+                        "init_heuristic_k": int(song.init_heuristic_k),
+                        "init_heuristic_copies": int(song.init_heuristic_copies),
+                        "db_seed_ids": song.db_seed_ids,
+                        "db_seed_prob": float(song.db_seed_prob),
+                        "db_seed_copies": int(song.db_seed_copies),
+                        "db_seed_mutations": int(song.db_seed_mutations),
                         "n_generations": int(song.gens_per_run),
                         "elite_count": int(song.elite_count),
                         "mutation_rate": float(song.mutation_rate),

@@ -1586,6 +1586,15 @@ class GpuExecutor:
         slot_count = payload.get("slot_count")
         base_fixed_stats_arr = payload.get("base_fixed_stats_arr")
         initial_populations = payload.get("initial_populations")
+        num_runs = payload.get("num_runs")
+        n_genomes = payload.get("n_genomes")
+        init_heuristic_topk = payload.get("init_heuristic_topk")
+        init_heuristic_k = payload.get("init_heuristic_k", 0)
+        init_heuristic_copies = payload.get("init_heuristic_copies", 25)
+        db_seed_ids = payload.get("db_seed_ids")
+        db_seed_prob = payload.get("db_seed_prob", 0.0)
+        db_seed_copies = payload.get("db_seed_copies", 1)
+        db_seed_mutations = payload.get("db_seed_mutations", 1)
         song_slot = int(payload.get("song_slot", 0) or 0)
         n_generations = int(payload.get("n_generations", 1) or 1)
         elite_count = int(payload.get("elite_count", 2) or 2)
@@ -1606,7 +1615,7 @@ class GpuExecutor:
         try:
             from gear_optimizer.solver.genetic import run_gpu_native_ga_runs_payload_prebuilt
 
-            runs_payload = run_gpu_native_ga_runs_payload_prebuilt(
+            kwargs = dict(
                 calc_song=calc_song,
                 ref_arrays=ref_arrays,
                 song_slot=song_slot,
@@ -1614,8 +1623,16 @@ class GpuExecutor:
                 slot_start=slot_start,
                 slot_count=slot_count,
                 base_fixed_stats_arr=base_fixed_stats_arr,
-                initial_populations=initial_populations,
                 n_generations=n_generations,
+                initial_populations=initial_populations,
+                num_runs=int(num_runs) if num_runs is not None else None,
+                init_heuristic_topk=init_heuristic_topk,
+                init_heuristic_k=int(init_heuristic_k or 0),
+                init_heuristic_copies=int(init_heuristic_copies or 0),
+                db_seed_ids=db_seed_ids,
+                db_seed_prob=float(db_seed_prob or 0.0),
+                db_seed_copies=int(db_seed_copies or 0),
+                db_seed_mutations=int(db_seed_mutations or 0),
                 elite_count=elite_count,
                 mutation_rate=mutation_rate,
                 immigrant_rate=immigrant_rate,
@@ -1624,6 +1641,9 @@ class GpuExecutor:
                 cfg_data=dict(cfg_data),
                 ga_seed=int(ga_seed) if ga_seed is not None else None,
             )
+            if n_genomes is not None:
+                kwargs["n_genomes"] = int(n_genomes)
+            runs_payload = run_gpu_native_ga_runs_payload_prebuilt(**kwargs)
         except Exception as e:
             return GpuResponse(
                 request_id=request.request_id,

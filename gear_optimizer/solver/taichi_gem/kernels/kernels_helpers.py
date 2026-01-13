@@ -66,6 +66,7 @@ song_flags = None  # (MAX_SONG_SLOTS, 12) i32
 population_indices = None
 population_next_indices = None
 ga_initial_populations = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES, MAX_SLOTS) staged initial populations
+ga_init_heuristic_topk = None  # (MAX_SLOTS, K) per-slot heuristic sampling table (K may be 1 when disabled)
 item_stats = None
 base_fixed_stats = None
 ga_scores = None

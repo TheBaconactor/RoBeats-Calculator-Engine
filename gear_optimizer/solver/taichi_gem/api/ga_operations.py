@@ -182,6 +182,119 @@ def ga_load_initial_populations_batch(
     return n_total
 
 
+def ga_upload_init_heuristic_topk(*, topk_ids: np.ndarray, heuristic_k: int, n_slots: int = 9) -> None:
+    """
+    Upload per-slot heuristic sampling table used by GPU initial population generation.
+
+    `topk_ids` is shape (n_slots, heuristic_k) containing valid item IDs for each slot.
+    When heuristic_k <= 0, callers can skip this entirely.
+    """
+    ensure_ready()
+    heuristic_k = int(heuristic_k)
+    n_slots = int(n_slots)
+    if heuristic_k <= 0:
+        return
+
+    src = np.asarray(topk_ids, dtype=np.int32)
+    if src.ndim != 2:
+        raise ValueError(f"topk_ids must be 2D; got shape={getattr(src, 'shape', None)}")
+    if int(src.shape[0]) < n_slots:
+        raise ValueError(f"topk_ids has too few slots: {src.shape[0]} < {n_slots}")
+
+    # Field shape is (MAX_SLOTS, K) where K may be 1 when disabled.
+    k_field = int(getattr(fields, "GA_INIT_HEURISTIC_K", heuristic_k) or heuristic_k)
+    k_field = max(1, int(k_field))
+    buf = np.zeros((fields.MAX_SLOTS, k_field), dtype=np.int32)
+    buf[:n_slots, : min(k_field, heuristic_k)] = src[:n_slots, : min(heuristic_k, k_field)]
+    fields.ga_init_heuristic_topk.from_numpy(buf)
+
+
+def ga_generate_initial_populations(
+    *,
+    run_idx_start: int,
+    n_runs: int,
+    n_genomes: int,
+    n_slots: int = 9,
+    seed: int = 12345,
+    heuristic_prob: float = 0.0,
+    heuristic_k: int = 0,
+    seed_prob: float = 0.0,
+    seed_copies: int = 0,
+    seed_mutations: int = 0,
+    heuristic_copies: int = 0,
+    seed_ids: np.ndarray | None = None,
+) -> None:
+    """
+    Generate initial populations on the GPU into `fields.ga_initial_populations`.
+
+    This replaces the CPU-side build+encode+upload loop for multi-start runs.
+    """
+    ensure_ready()
+    run_idx_start = int(run_idx_start)
+    n_runs = int(n_runs)
+    n_genomes = int(n_genomes)
+    n_slots = int(n_slots)
+    if n_runs <= 0 or n_genomes <= 0:
+        return
+    if run_idx_start < 0 or run_idx_start >= fields.MAX_GA_RUNS:
+        raise ValueError(f"run_idx_start out of range: {run_idx_start} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
+    if run_idx_start + n_runs > fields.MAX_GA_RUNS:
+        raise ValueError(
+            f"batch runs out of range: start={run_idx_start}, n_runs={n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})"
+        )
+    if n_genomes < 0 or n_genomes > fields.MAX_GA_RUN_GENOMES:
+        raise ValueError(f"Too many genomes: {n_genomes} > {fields.MAX_GA_RUN_GENOMES}")
+    if n_slots > fields.MAX_SLOTS:
+        raise ValueError(f"Too many slots: {n_slots} > {fields.MAX_SLOTS}")
+
+    heuristic_prob = float(heuristic_prob)
+    heuristic_prob = max(0.0, min(1.0, heuristic_prob))
+    seed_prob = float(seed_prob)
+    seed_prob = max(0.0, min(1.0, seed_prob))
+
+    heuristic_prob_fp = np.uint32(int(heuristic_prob * 4294967295.0))
+    seed_prob_fp = np.uint32(int(seed_prob * 4294967295.0))
+
+    heuristic_k = int(heuristic_k)
+    if heuristic_k < 0:
+        heuristic_k = 0
+    # Clamp to actual allocated field K.
+    k_field = int(getattr(fields, "GA_INIT_HEURISTIC_K", heuristic_k) or 0)
+    if k_field <= 0:
+        heuristic_k = 0
+    else:
+        heuristic_k = min(int(heuristic_k), int(k_field))
+
+    seed_copies = int(seed_copies)
+    seed_copies = max(0, min(seed_copies, n_genomes))
+    seed_mutations = int(seed_mutations)
+    seed_mutations = max(0, min(seed_mutations, n_genomes))
+    heuristic_copies = int(heuristic_copies)
+    heuristic_copies = max(0, min(heuristic_copies, n_genomes))
+
+    if seed_ids is None:
+        seed_ids_arr = np.zeros((n_slots,), dtype=np.int32)
+    else:
+        seed_ids_arr = np.asarray(seed_ids, dtype=np.int32).reshape(-1)
+        if seed_ids_arr.shape[0] < n_slots:
+            raise ValueError(f"seed_ids has too few entries: {seed_ids_arr.shape[0]} < {n_slots}")
+        seed_ids_arr = seed_ids_arr[:n_slots]
+
+    kernels.ga_generate_initial_populations_kernel(
+        int(run_idx_start),
+        int(n_runs),
+        int(n_genomes),
+        int(n_slots),
+        np.uint32(int(seed) & 0xFFFFFFFF),
+        heuristic_prob_fp,
+        int(heuristic_k),
+        seed_prob_fp,
+        int(seed_copies),
+        int(seed_mutations),
+        int(heuristic_copies),
+        seed_ids_arr,
+    )
+
 def ga_seed_rng(n_genomes: int, seed: int = 12345) -> None:
     """Seed per-genome RNG state for GPU GA operators."""
     ensure_ready()

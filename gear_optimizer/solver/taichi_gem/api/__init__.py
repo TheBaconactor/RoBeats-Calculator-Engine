@@ -71,8 +71,10 @@ try:
     from .ga_operations import (
         ga_upload_population_indices,
         ga_upload_initial_populations,
+        ga_upload_init_heuristic_topk,
         ga_load_initial_population,
         ga_load_initial_populations_batch,
+        ga_generate_initial_populations,
         ga_seed_rng,
         ga_seed_rng_runs,
         ga_upload_item_stats,
@@ -147,8 +149,10 @@ __all__ = [
     # GA operations
     "ga_upload_population_indices",
     "ga_upload_initial_populations",
+    "ga_upload_init_heuristic_topk",
     "ga_load_initial_population",
     "ga_load_initial_populations_batch",
+    "ga_generate_initial_populations",
     "ga_seed_rng",
     "ga_seed_rng_runs",
     "ga_upload_item_stats",
