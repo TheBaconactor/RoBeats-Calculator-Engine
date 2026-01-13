@@ -542,44 +542,45 @@ def evaluate_fg_with_gem_iteration(
                 }
             )
 
-    # Optional GPU batch optimization (falls back to CPU if Taichi/GPU isn't available)
+    # Optional GPU batch optimization (CPU reference path still supported when use_gpu=False)
     gpu_results = None
     if use_gpu and batch_input:
         _, batch_solver = _get_gpu_solver()
-        if batch_solver is not None:
-            try:
-                with _GPU_LOCK:
-                    gpu_results = batch_solver(
-                        batch_input,
-                        base_pp,
-                        base_cm,
-                        base_fm,
-                        base_p_val=base_p_val_for_gpu,
-                        base_s_val=base_s_val_for_gpu,
-                        is_p_ft=is_p_ft,
-                        is_s_ft=is_s_ft,
-                        is_p_ff=is_p_ff,
-                        is_s_ff=is_s_ff,
-                        is_p_pp=is_p_pp,
-                        is_s_pp=is_s_pp,
-                        is_p_cm=is_p_cm,
-                        is_s_cm=is_s_cm,
-                        is_p_fm=is_p_fm,
-                        is_s_fm=is_s_fm,
-                        is_p_ov=is_p_ov,
-                        is_s_ov=is_s_ov,
-                        ref_arrays=ref_arrays,
-                    )
-            except Exception as e:
-                if ENV.gpu_strict:
-                    raise RuntimeError(f"FG GPU batch solver failed (strict mode): {type(e).__name__}: {e}") from e
-                print(f"[GPU] FG batch solver failed; falling back to CPU: {e}")
-                gpu_results = None
+        if batch_solver is None:
+            raise RuntimeError("FG GPU batch solver unavailable but GPU execution was requested.")
+        try:
+            with _GPU_LOCK:
+                gpu_results = batch_solver(
+                    batch_input,
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    base_p_val=base_p_val_for_gpu,
+                    base_s_val=base_s_val_for_gpu,
+                    is_p_ft=is_p_ft,
+                    is_s_ft=is_s_ft,
+                    is_p_ff=is_p_ff,
+                    is_s_ff=is_s_ff,
+                    is_p_pp=is_p_pp,
+                    is_s_pp=is_s_pp,
+                    is_p_cm=is_p_cm,
+                    is_s_cm=is_s_cm,
+                    is_p_fm=is_p_fm,
+                    is_s_fm=is_s_fm,
+                    is_p_ov=is_p_ov,
+                    is_s_ov=is_s_ov,
+                    ref_arrays=ref_arrays,
+                )
+        except Exception as e:
+            raise RuntimeError(f"FG GPU batch solver failed: {type(e).__name__}: {e}") from e
+
+        if gpu_results is None:
+            raise RuntimeError("FG GPU batch solver returned no results.")
 
     best_result = None
     best_score = -1
 
-    # Evaluate each candidate (CPU or GPU) in deterministic order.
+    # Evaluate each candidate (CPU reference or GPU) in deterministic order.
     for idx, cand in enumerate(candidates):
         (
             ft_gems,
@@ -945,12 +946,13 @@ def run_force_greats_hill_climb(
             }
             return result
         except Exception as e:
-            if ENV.gpu_strict:
-                raise RuntimeError(f"FG full finder failed (strict mode): {type(e).__name__}: {e}") from e
-            print(f"[GPU] FG full finder failed; falling back to CPU: {e}")
+            raise RuntimeError(f"FG full finder failed: {type(e).__name__}: {e}") from e
+
+    if use_gpu:
+        raise RuntimeError("FG full finder produced no result.")
 
     # --------------------------------------------------------------------
-    # CPU fallback: evaluate each FG config individually (CPU-only)
+    # CPU reference path: evaluate each FG config individually (CPU-only)
     # --------------------------------------------------------------------
     best_result = None
     best_score = -1

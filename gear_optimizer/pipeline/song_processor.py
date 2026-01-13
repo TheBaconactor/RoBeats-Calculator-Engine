@@ -401,7 +401,14 @@ def process_song_task(args):
         db_payload = None
 
         cfg = cfg_from_dict(cfg_dict)
-        gpu_mode = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False)
+        gpu_mode_requested = True
+        try:
+            gpu_mode_requested = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=True)
+        except Exception:
+            gpu_mode_requested = True
+        if not gpu_mode_requested:
+            print("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
+        gpu_mode = True
 
         if isinstance(preloaded_calc_song, dict) and preloaded_calc_song.get("song_data"):
             calc_song = clone_calc_song(preloaded_calc_song)

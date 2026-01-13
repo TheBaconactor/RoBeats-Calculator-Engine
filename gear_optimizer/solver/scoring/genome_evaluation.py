@@ -285,26 +285,17 @@ def finalize_gpu_batch_eval_plan(plan: GpuBatchEvalPlan, gpu_results: Optional[l
     sig_to_result = dict(plan.sig_to_result or {})
 
     if plan.unique_stats:
-        if ENV.gpu_strict and use_gpu_requested:
+        if use_gpu_requested:
             if gpu_results is None:
-                raise RuntimeError("GPU batch evaluation produced no results (strict mode).")
+                raise RuntimeError("GPU batch evaluation produced no results.")
             if len(gpu_results) < len(plan.unique_stats):
-                raise RuntimeError(
-                    f"GPU returned {len(gpu_results)}/{len(plan.unique_stats)} results (strict mode)."
-                )
-
-        if gpu_results is not None and len(gpu_results) < len(plan.unique_stats):
-            print(
-                f"[gpu_batch_eval] GPU returned {len(gpu_results)}/{len(plan.unique_stats)} results; "
-                "filling missing via CPU"
-            )
+                raise RuntimeError(f"GPU returned {len(gpu_results)}/{len(plan.unique_stats)} results.")
 
         for unique_idx, (sig, rep_stats) in enumerate(plan.unique_stats):
             if gpu_results is None or unique_idx >= len(gpu_results):
-                if ENV.gpu_strict and use_gpu_requested:
-                    raise RuntimeError(f"Missing GPU result for unique_idx={unique_idx} (strict mode): sig={sig!r}")
-                # CPU fallback (or GPU returned incomplete results): force CPU-only evaluation.
-                # This avoids accidental Taichi calls on non-owner threads (e.g. in-flight mode).
+                if use_gpu_requested:
+                    raise RuntimeError(f"Missing GPU result for unique_idx={unique_idx}: sig={sig!r}")
+                # CPU reference path: evaluate missing signatures on CPU.
                 override_cfg = dict(cfg_data or {})
                 override_cfg["use_gpu"] = False
                 res = solve_best_fever_combination(
@@ -647,9 +638,6 @@ def batch_evaluate_genomes(
                             song_slot=int(song_slot),
                         )
         except Exception as e:
-            if ENV.gpu_strict:
-                raise RuntimeError(f"GPU path failed (strict mode): {type(e).__name__}: {e}") from e
-            print(f"[batch_evaluate_genomes] GPU path failed, falling back to CPU: {type(e).__name__}: {e}")
-            gpu_results = None
+            raise RuntimeError(f"GPU path failed: {type(e).__name__}: {e}") from e
 
     return finalize_gpu_batch_eval_plan(plan, gpu_results)

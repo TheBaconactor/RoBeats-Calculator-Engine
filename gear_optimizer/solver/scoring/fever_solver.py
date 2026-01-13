@@ -307,102 +307,87 @@ def solve_best_fever_combination(
     if use_gpu:
         # GPU BATCH PATH: Process all timelines in parallel on GPU
         _, batch_solver = _get_gpu_solver()
-        if batch_solver is not None:
-            # Compute color contribution flags for FT/FF gems
-            # FT gems add Beat, FF gems add Vibe
-            is_p_ft = flags["is_p_ft"]
-            is_s_ft = flags["is_s_ft"]
-            is_p_ff = flags["is_p_ff"]
-            is_s_ff = flags["is_s_ff"]
+        if batch_solver is None:
+            raise RuntimeError("GPU batch solver unavailable but GPU execution was requested.")
 
-            # Base color values (before FT/FF gems)
-            base_p_val = base_stats.get(p_color, 0)
-            base_s_val = base_stats.get(s_color, 0)
+        # Compute color contribution flags for FT/FF gems
+        # FT gems add Beat, FF gems add Vibe
+        is_p_ft = flags["is_p_ft"]
+        is_s_ft = flags["is_s_ft"]
+        is_p_ff = flags["is_p_ff"]
+        is_s_ff = flags["is_s_ff"]
 
-            # Prepare batch input - each timeline becomes one batch element
-            batch_input = []
-            for t_data in timelines:
-                ft = t_data["ft_gems"]
-                ff = t_data["ff_gems"]
-                timeline = t_data["timeline"]
-                current_budget = t_data["remaining_budget"]
-                fever_mask_head = timeline[0]
-                count_body_fever = timeline[1]
-                count_body_normal = timeline[2]
+        # Base color values (before FT/FF gems)
+        base_p_val = base_stats.get(p_color, 0)
+        base_s_val = base_stats.get(s_color, 0)
 
-                batch_input.append(
-                    {
-                        "budget": current_budget,
-                        "fever_mask_head": fever_mask_head,
-                        "count_body_fever": count_body_fever,
-                        "count_body_normal": count_body_normal,
-                        "ft_gems": ft,
-                        "ff_gems": ff,
-                    }
+        # Prepare batch input - each timeline becomes one batch element
+        batch_input = []
+        for t_data in timelines:
+            ft = t_data["ft_gems"]
+            ff = t_data["ff_gems"]
+            timeline = t_data["timeline"]
+            current_budget = t_data["remaining_budget"]
+            fever_mask_head = timeline[0]
+            count_body_fever = timeline[1]
+            count_body_normal = timeline[2]
+
+            batch_input.append(
+                {
+                    "budget": current_budget,
+                    "fever_mask_head": fever_mask_head,
+                    "count_body_fever": count_body_fever,
+                    "count_body_normal": count_body_normal,
+                    "ft_gems": ft,
+                    "ff_gems": ff,
+                }
+            )
+
+        # SINGLE GPU kernel launch for ALL timelines - GPU-resident!
+        # Direct call with lock for minimal overhead (scheduler queue was too slow)
+        try:
+            with _GPU_LOCK:
+                batch_results = batch_solver(
+                    batch_input,
+                    cur_pp,
+                    cur_cm,
+                    cur_fm,
+                    base_p_val=base_p_val,
+                    base_s_val=base_s_val,
+                    is_p_ft=is_p_ft,
+                    is_s_ft=is_s_ft,
+                    is_p_ff=is_p_ff,
+                    is_s_ff=is_s_ff,
+                    is_p_pp=is_p_pp,
+                    is_s_pp=is_s_pp,
+                    is_p_cm=is_p_cm,
+                    is_s_cm=is_s_cm,
+                    is_p_fm=is_p_fm,
+                    is_s_fm=is_s_fm,
+                    is_p_ov=is_p_ov,
+                    is_s_ov=is_s_ov,
+                    ref_arrays=ref_arrays,
                 )
+        except Exception as exc:
+            raise RuntimeError(f"GPU batch solver failed: {type(exc).__name__}: {exc}") from exc
 
-            # SINGLE GPU kernel launch for ALL timelines - GPU-resident!
-            # Direct call with lock for minimal overhead (scheduler queue was too slow)
-            batch_results = None
-            try:
-                with _GPU_LOCK:
-                    batch_results = batch_solver(
-                        batch_input,
-                        cur_pp,
-                        cur_cm,
-                        cur_fm,
-                        base_p_val=base_p_val,
-                        base_s_val=base_s_val,
-                        is_p_ft=is_p_ft,
-                        is_s_ft=is_s_ft,
-                        is_p_ff=is_p_ff,
-                        is_s_ff=is_s_ff,
-                        is_p_pp=is_p_pp,
-                        is_s_pp=is_s_pp,
-                        is_p_cm=is_p_cm,
-                        is_s_cm=is_s_cm,
-                        is_p_fm=is_p_fm,
-                        is_s_fm=is_s_fm,
-                        is_p_ov=is_p_ov,
-                        is_s_ov=is_s_ov,
-                        ref_arrays=ref_arrays,
-                    )
-            except Exception as exc:
-                if ENV.gpu_strict:
-                    raise RuntimeError(
-                        f"GPU batch solver failed (strict mode): {type(exc).__name__}: {exc}"
-                    ) from exc
-                if not silent:
-                    print(f"[GPU] Batch solver failed, falling back to CPU: {type(exc).__name__}: {exc}")
-                use_gpu = False
-                best_score = -1
-                best_tuple = None
+        if batch_results is None:
+            raise RuntimeError("GPU batch solver returned no results.")
 
-            if use_gpu and batch_results is None:
-                if ENV.gpu_strict:
-                    raise RuntimeError("GPU batch solver returned no results (strict mode).")
-                use_gpu = False
+        # Find best result (only CPU work: simple max)
+        for t_data, result in zip(timelines, batch_results):
+            ft = t_data["ft_gems"]
+            ff = t_data["ff_gems"]
+            # Result: (score, pp, cm, fm, p_val, s_val, gems_pp, gems_cm, gems_fm, gems_ov)
+            total_score = result[0]
+            g_pp = result[6]
+            g_cm = result[7]
+            g_fm = result[8]
+            g_ov = result[9]
 
-            # Find best result (only CPU work: simple max)
-            if use_gpu and batch_results is not None:
-                for i, (t_data, result) in enumerate(zip(timelines, batch_results)):
-                    ft = t_data["ft_gems"]
-                    ff = t_data["ff_gems"]
-                    # Result: (score, pp, cm, fm, p_val, s_val, gems_pp, gems_cm, gems_fm, gems_ov)
-                    total_score = result[0]
-                    g_pp = result[6]
-                    g_cm = result[7]
-                    g_fm = result[8]
-                    g_ov = result[9]
-
-                    if total_score > best_score:
-                        best_score = total_score
-                        best_tuple = (total_score, ft, ff, g_pp, g_cm, g_fm, g_ov)
-        else:
-            # Fallback to CPU if GPU failed
-            if ENV.gpu_strict:
-                raise RuntimeError("GPU batch solver unavailable (strict mode).")
-            use_gpu = False
+            if total_score > best_score:
+                best_score = total_score
+                best_tuple = (total_score, ft, ff, g_pp, g_cm, g_fm, g_ov)
 
     if not use_gpu:
         # CPU PATH: Sequential processing

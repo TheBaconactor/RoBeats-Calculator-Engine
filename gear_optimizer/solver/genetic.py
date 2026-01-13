@@ -1877,10 +1877,15 @@ def solve_coevolution_genetic(
         print(f"[GA] Force-including {len(whitelisted_minis)} whitelisted minis in initialization.")
 
     # Build configuration data
-    # Read GPU mode setting from config
-    use_gpu_mode = (
-        cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False) if hasattr(cfg, "getboolean") else False
-    )
+    # GPU-only policy: ignore any attempt to disable GPU via config.
+    use_gpu_mode_requested = True
+    try:
+        use_gpu_mode_requested = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=True) if hasattr(cfg, "getboolean") else True
+    except Exception:
+        use_gpu_mode_requested = True
+    if not use_gpu_mode_requested:
+        print("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
+    use_gpu_mode = True
     use_gpu_native = (
         cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=True) if hasattr(cfg, "getboolean") else True
     )

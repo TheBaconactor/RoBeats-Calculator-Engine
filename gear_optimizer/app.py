@@ -367,22 +367,27 @@ class GearOptimizerApp:
             # If the GPU executor initializes Taichi before the GA code runs, Taichi fields can be allocated with
             # default (padded) GA run buffers, making GPU-native GA payload downloads significantly slower.
             # Publish a conservative sizing hint early so any first-use allocation can pick tighter shapes.
+            gpu_mode_requested = True
             try:
-                gpu_mode = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False)
-                gpu_native_ga = cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=False)
+                gpu_mode_requested = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=True)
             except Exception:
-                gpu_mode = False
-                gpu_native_ga = False
-            strict_gpu = False
-            try:
-                from gear_optimizer.core.env_config import ENV
+                gpu_mode_requested = True
+            if not gpu_mode_requested:
+                print("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
+                try:
+                    if not cfg.has_section("IterationEngine"):
+                        cfg.add_section("IterationEngine")
+                    cfg.set("IterationEngine", "GPU_Mode", "true")
+                except Exception:
+                    pass
 
-                strict_gpu = bool(getattr(ENV, "gpu_strict", False))
+            gpu_native_ga = True
+            try:
+                gpu_native_ga = cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=True)
             except Exception:
-                strict_gpu = False
-            if strict_gpu and not gpu_mode:
-                raise RuntimeError("GPU_STRICT=1 requires IterationEngine.GPU_Mode=true")
-            if gpu_mode and gpu_native_ga:
+                gpu_native_ga = True
+
+            if gpu_native_ga:
                 ga_multistart = safe_int(cfg.get("IterationEngine", "GA_MultiStart", fallback=1), 1)
                 ga_multistart = max(1, int(ga_multistart))
                 os.environ.setdefault("GPU_NATIVE_GA_MAX_RUNS", str(ga_multistart))
@@ -938,16 +943,17 @@ class GearOptimizerApp:
         if inflight_songs <= 1:
             return
 
-        gpu_mode = False
         try:
-            gpu_mode = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False)
+            gpu_mode_requested = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=True)
         except Exception:
-            gpu_mode = False
+            gpu_mode_requested = True
 
-        if not gpu_mode:
-            print("[InFlight] InFlightSongs>1 requires GPU_Mode=true; disabling in-flight pipeline.")
-            cfg.set("IterationEngine", "InFlightSongs", "0")
-            return
+        if not gpu_mode_requested:
+            print("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); enabling GPU_Mode for in-flight.")
+            try:
+                cfg.set("IterationEngine", "GPU_Mode", "true")
+            except Exception:
+                pass
 
         # GPU_Native_GA is supported by a dedicated GPU-native in-flight orchestrator.
 
@@ -1192,7 +1198,7 @@ class GearOptimizerApp:
             raw = _get_ci(ie, "ContinuousPipeline", None)
             if raw is None:
                 # Default: enable for single-worker GPU runs where post-processing stalls are noticeable.
-                pipeline_enabled = self._truthy(_get_ci(ie, "GPU_Mode", "0")) and len(tasks) > 1
+                pipeline_enabled = len(tasks) > 1
             else:
                 pipeline_enabled = self._truthy(raw)
         except Exception:
