@@ -108,9 +108,10 @@ def _get_cached_analytical_breakpoints(
     *,
     chart_key: tuple,
     num_sections: int,
+    variant_key: tuple | None = None,
     compute_fn,
 ):
-    key = (chart_key, int(num_sections))
+    key = (chart_key, int(num_sections), tuple(variant_key or ()))
     with _FG_ANALYTICAL_BREAKPOINTS_LOCK:
         cached = _FG_ANALYTICAL_BREAKPOINTS_CACHE.get(key)
         if cached is not None:
@@ -946,14 +947,32 @@ def process_force_greats_gpu_finder(
         counts_list = None
         if not per_pair_breakpoints:
             # Get breakpoints using pure math (no simulation needed)
+            rep_pairs = None
+            try:
+                reps = rep_map.values() if isinstance(rep_map, dict) else []
+                rep_pairs = {
+                    (int(bs.get("Fever Time", 0) or 0), int(bs.get("Fever Fill Rate", 0) or 0))
+                    for bs in reps
+                    if isinstance(bs, dict)
+                }
+            except Exception:
+                rep_pairs = None
+
             if hitsim_apply_to == "FG":
+                variant_key = ()
+                if rep_pairs:
+                    try:
+                        variant_key = tuple(sorted({(int(a), int(b)) for (a, b) in rep_pairs}))[:32]
+                    except Exception:
+                        variant_key = ()
                 group_counts_list = _get_cached_analytical_breakpoints(
                     chart_key=chart_key,
                     num_sections=int(n_sections),
-                    compute_fn=lambda: collect_analytical_breakpoints(fg_scorer, n_sections),
+                    variant_key=variant_key,
+                    compute_fn=lambda: collect_analytical_breakpoints(fg_scorer, n_sections, analysis_pairs=rep_pairs),
                 )
             else:
-                group_counts_list = collect_analytical_breakpoints(fg_scorer, n_sections)
+                group_counts_list = collect_analytical_breakpoints(fg_scorer, n_sections, analysis_pairs=rep_pairs)
 
             if not group_counts_list:
                 group_counts_list = [tuple([0] * int(n_sections))]

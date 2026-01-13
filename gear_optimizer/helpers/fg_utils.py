@@ -140,7 +140,26 @@ def generate_dynamic_fg_configs(num_sections, non_fever_base, budget=None, gap=N
     return list(itertools.product(*ranges))
 
 
-def collect_analytical_breakpoints(scorer, num_sections, section_caps=None):
+def _clamp_stat_idx(x: object) -> int:
+    try:
+        v = int(x)
+    except Exception:
+        v = 0
+    return max(0, min(160, v))
+
+
+def _sample_stat_pairs(pairs: set[tuple[int, int]], *, max_pairs: int = 16) -> list[tuple[int, int]]:
+    xs = sorted({(int(a), int(b)) for a, b in (pairs or set())})
+    if not xs:
+        return []
+    if len(xs) <= max_pairs:
+        return xs
+    # Deterministic subsample: evenly spaced across the sorted list.
+    idxs = {int(round(i * (len(xs) - 1) / float(max_pairs - 1))) for i in range(max_pairs)}
+    return [xs[i] for i in sorted(idxs)]
+
+
+def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, *, analysis_pairs=None):
     """
     Collect minimal FG configs using pure math breakpoint detection.
 
@@ -167,11 +186,56 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None):
     if num_sections <= 0:
         return [()]
 
-    # Use section analysis to get actual useful sections (applying 3 FG rules)
-    analysis = scorer.get_section_analysis(80, 80)  # Representative point
-    useful_sections = analysis["useful_sections"]
-    analyzed_caps = analysis["section_caps"]
-    gap = analysis["gap"]
+    # Use section analysis to get actual useful sections (applying 3 FG rules).
+    #
+    # IMPORTANT: Don't assume a fixed FT/FF (e.g. 80/80). Many real base stats
+    # can't reach that point under the current loadout/gem budget. Instead, if
+    # the caller provides representative FT/FF stat pairs, analyze across those
+    # and take the maximum "useful section" envelope so we don't under-prune.
+    pairs_in: set[tuple[int, int]] = set()
+    if analysis_pairs:
+        try:
+            for ft, ff in analysis_pairs:
+                pairs_in.add((_clamp_stat_idx(ft), _clamp_stat_idx(ff)))
+        except Exception:
+            pairs_in = set()
+    sampled_pairs = _sample_stat_pairs(pairs_in, max_pairs=16)
+    if not sampled_pairs:
+        sampled_pairs = [(80, 80)]
+
+    analyses = []
+    for ft_stat, ff_stat in sampled_pairs:
+        try:
+            analyses.append(scorer.get_section_analysis(int(ft_stat), int(ff_stat)))
+        except Exception:
+            continue
+    if not analyses:
+        analyses = [scorer.get_section_analysis(80, 80)]
+
+    useful_sections = 0
+    for a in analyses:
+        try:
+            useful_sections = max(int(useful_sections), int(a.get("useful_sections", 0) or 0))
+        except Exception:
+            continue
+
+    analyzed_caps: list[int] = []
+    for sec in range(int(useful_sections)):
+        best = 0
+        for a in analyses:
+            try:
+                caps0 = a.get("section_caps") or []
+                if sec < len(caps0):
+                    best = max(int(best), int(caps0[sec] or 0))
+            except Exception:
+                continue
+        analyzed_caps.append(int(best))
+
+    gap = 0
+    try:
+        gap = max(int(a.get("gap", 0) or 0) for a in analyses)
+    except Exception:
+        gap = 0
 
     # Limit to useful sections (sections beyond fever_activations have no benefit)
     actual_sections = min(num_sections, useful_sections)
@@ -198,7 +262,7 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None):
     if not valid_section_indices:
         return [()]
 
-    # Calculate breakpoints across ALL FF values (0-160)
+    # Calculate breakpoints across FF values (0-160).
     # This ensures complete coverage for any gem allocation the GPU might evaluate.
     # Since it's pure math (not simulation), this is still fast.
     ff_samples = range(0, 161, 10)  # Sample every 10th FF value (covers edge cases)

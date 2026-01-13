@@ -905,6 +905,36 @@ def run_native_inflight_song_pipeline(
     except Exception:
         fg_drain_at_end = True
 
+    inflight_fg_idle_fill = True
+    try:
+        if cfg0 is not None:
+            inflight_fg_idle_fill = cfg0.getboolean("IterationEngine", "InFlight_FGIdleFill", fallback=True)
+    except Exception:
+        inflight_fg_idle_fill = True
+    raw = os.environ.get("INFLIGHT_FG_IDLE_FILL")
+    if raw is not None and str(raw).strip() != "":
+        inflight_fg_idle_fill = _truthy(raw)
+
+    inflight_fg_blocked_slots = True
+    try:
+        if cfg0 is not None:
+            inflight_fg_blocked_slots = cfg0.getboolean("IterationEngine", "InFlight_FGBlockedSlots", fallback=True)
+    except Exception:
+        inflight_fg_blocked_slots = True
+    raw = os.environ.get("INFLIGHT_FG_BLOCKED_SLOTS")
+    if raw is not None and str(raw).strip() != "":
+        inflight_fg_blocked_slots = _truthy(raw)
+
+    inflight_fg_hold_slots = True
+    try:
+        if cfg0 is not None:
+            inflight_fg_hold_slots = cfg0.getboolean("IterationEngine", "InFlight_FGHoldSlots", fallback=True)
+    except Exception:
+        inflight_fg_hold_slots = True
+    raw = os.environ.get("INFLIGHT_FG_HOLD_SLOTS")
+    if raw is not None and str(raw).strip() != "":
+        inflight_fg_hold_slots = _truthy(raw)
+
     # Configure GPU-native GA run buffers BEFORE the GPU executor initializes Taichi fields.
     # The executor warms FG kernels on startup which triggers taichi_gem field allocation; if
     # we don't size buffers up front, GA payload downloads become padded and require staging.
@@ -941,6 +971,8 @@ def run_native_inflight_song_pipeline(
     stage_profiler = _InFlightStageProfiler(enabled=stage_profile_enabled, out_path=stage_profile_path)
 
     post_sender = _PostSender(post_queue, stop_requested=stop_requested) if post_queue is not None else None
+    fg_decision_debug = _truthy(os.environ.get("INFLIGHT_FG_DECISION_DEBUG", "0"))
+    fg_submit_debug = _truthy(os.environ.get("INFLIGHT_FG_SUBMIT_DEBUG", "0"))
 
     def _post(item: dict) -> None:
         if post_sender is not None:
@@ -1535,6 +1567,24 @@ def run_native_inflight_song_pipeline(
                     setattr(song, "_ga_submit_t0", None)
 
                 song.ga_future = None
+
+                if not inflight_fg_hold_slots:
+                    # In "FG batch" mode, release the song slot immediately after GA completes
+                    # so GA can continue across the whole queue without FG backpressure.
+                    try:
+                        slot_pool.release(int(getattr(song, "song_slot", 0) or 0))
+                    except Exception:
+                        pass
+                    try:
+                        song.song_slot = 0
+                    except Exception:
+                        pass
+                    try:
+                        if isinstance(song.calc_song, dict):
+                            song.calc_song.pop("_gpu_song_slot", None)
+                    except Exception:
+                        pass
+
                 setattr(song, "_decode_submit_t0", time.perf_counter())
                 song.decode_future = decode_executor.submit(_decode_ga_payload_sync, song, runs_payload)
                 decode_inflight.append(song)
@@ -1693,15 +1743,40 @@ def run_native_inflight_song_pipeline(
                 # If GA can't currently feed the GPU (no in-flight GA and no prepared
                 # work), run FG to avoid GPU idle gaps even if the configured cadence
                 # hasn't been met yet.
-                or (not ga_inflight and not prepared)
+                or (inflight_fg_idle_fill and (not ga_inflight and not prepared))
                 # Avoid a deadlock-like state where all GPU timeline slots are reserved by
                 # songs awaiting FG, while `prepared` is non-empty and GA submission keeps
                 # failing due to "no free slots". In that case, starting FG is the only
                 # way to release slots and resume GA progress.
-                or blocked_on_slot_acquire
+                or (inflight_fg_blocked_slots and blocked_on_slot_acquire)
             )
 
             if should_start_fg:
+                if fg_decision_debug:
+                    try:
+                        reasons: list[str] = []
+                        if ga_completed_since_last_fg >= fg_every:
+                            reasons.append("cadence")
+                        if fg_drain_at_end and (not pending_tasks and not prepared and not prep_inflight) and (not ga_inflight):
+                            reasons.append("drain_end")
+                        if (not ga_inflight and not prepared):
+                            reasons.append("idle_fill")
+                        if blocked_on_slot_acquire:
+                            reasons.append("blocked_slots")
+
+                        # Highlight "early FG" starts (i.e., not cadence-driven).
+                        if ("cadence" not in reasons) and ("drain_end" not in reasons):
+                            print(
+                                "[InFlight][FGDecision] early_start "
+                                f"reasons={','.join(reasons) or 'unknown'} "
+                                f"ga_since={int(ga_completed_since_last_fg)}/{int(fg_every)} "
+                                f"pending={len(pending_tasks)} prepared={len(prepared)} prep_inflight={len(prep_inflight)} "
+                                f"ga_inflight={len(ga_inflight)} decode_inflight={len(decode_inflight)} "
+                                f"pending_fg={len(pending_fg)} fg_prep={len(fg_prep_inflight)} fg_inflight={len(fg_futures)}"
+                            )
+                    except Exception:
+                        pass
+
                 drain_mode = bool(
                     fg_drain_at_end and (not pending_tasks and not prepared and not prep_inflight) and (not ga_inflight)
                 )
@@ -1713,6 +1788,27 @@ def run_native_inflight_song_pipeline(
                         fg_song = _pop_next_ready_fg()
                         if fg_song is None:
                             break
+                        if (not inflight_fg_hold_slots) and int(getattr(fg_song, "song_slot", 0) or 0) <= 0:
+                            try:
+                                fg_song.song_slot = int(slot_pool.acquire())
+                            except Exception:
+                                # No free slots: defer FG submission until GA releases slots.
+                                break
+                            try:
+                                if isinstance(fg_song.calc_song, dict):
+                                    fg_song.calc_song["_gpu_song_slot"] = int(fg_song.song_slot)
+                            except Exception:
+                                pass
+                        if fg_submit_debug:
+                            try:
+                                print(
+                                    "[InFlight][FGSubmit] "
+                                    f"song={fg_song.task_key} "
+                                    f"ga_since={int(ga_completed_since_last_fg)}/{int(fg_every)} "
+                                    f"pending_fg={len(pending_fg)} fg_inflight={len(fg_futures)} drain={int(drain_mode)}"
+                                )
+                            except Exception:
+                                pass
                         t_submit = time.perf_counter()
                         fg_futures.append(
                             (
