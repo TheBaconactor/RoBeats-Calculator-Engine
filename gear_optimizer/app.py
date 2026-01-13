@@ -315,6 +315,8 @@ class GearOptimizerApp:
         start_time = time.time()
         loop_forever = False  # Default, updated from config
         graceful_stop = False
+        queued_songs = 0
+        queued_tasks = 0
 
         FEVER_TIMELINE_CACHE.clear()
         GEM_SOLVER_CACHE.clear()
@@ -412,6 +414,7 @@ class GearOptimizerApp:
             minis_by_name = {m["Name"]: m for m in all_minis}
 
             song_queue = self._build_song_queue(cfg, paths, use_evo_db)
+            queued_songs = len(song_queue)
 
             self.discord_reporter.send_log(f"Queued {len(song_queue)} song(s) for processing.")
 
@@ -439,6 +442,7 @@ class GearOptimizerApp:
                 status_queue,
                 fg_debug,
             )
+            queued_tasks = len(tasks)
 
             parallel_workers = 1
 
@@ -480,6 +484,20 @@ class GearOptimizerApp:
             done_msg = f"Run completed in {elapsed:.2f}s"
             print(done_msg)
             self.discord_reporter.send_log(done_msg)
+            try:
+                elapsed_h = float(elapsed) / 3600.0 if elapsed and elapsed > 0 else 0.0
+            except Exception:
+                elapsed_h = 0.0
+            if elapsed_h > 0:
+                try:
+                    songs_per_h = float(queued_songs) / elapsed_h
+                    tasks_per_h = float(queued_tasks) / elapsed_h
+                    print(
+                        f"[Throughput] Queue={queued_songs} song(s), {queued_tasks} task(s) -> "
+                        f"{songs_per_h:.1f} songs/hour, {tasks_per_h:.1f} tasks/hour"
+                    )
+                except Exception:
+                    pass
             gc.collect()
 
         if graceful_stop or self._stop_requested.is_set():
@@ -1448,6 +1466,7 @@ class GearOptimizerApp:
             completed_offset=completed_offset,
             memory_resume_tracker=memory_resume_tracker,
             total_tasks=len(tasks),
+            throughput_t0=time.perf_counter(),
         )
 
     def _queue_song_for_preload(self, preloader, task):
@@ -1562,6 +1581,7 @@ class GearOptimizerApp:
             print(f"[GPU Executor] Failed to start: {e} - workers will use direct GPU")
             gpu_executor = None
 
+        throughput_t0 = time.perf_counter()
         while remaining_tasks:
             if self._stop_requested_now():
                 break
@@ -1613,6 +1633,7 @@ class GearOptimizerApp:
                             completed_offset=completed_offset,
                             memory_resume_tracker=memory_resume_tracker,
                             total_tasks=len(tasks),
+                            throughput_t0=throughput_t0,
                         )
 
                         if self._stop_requested_now():
@@ -1641,6 +1662,7 @@ class GearOptimizerApp:
                             completed_offset=completed_offset,
                             memory_resume_tracker=memory_resume_tracker,
                             total_tasks=len(tasks),
+                            throughput_t0=throughput_t0,
                         )
 
                         if self._stop_requested_now():
@@ -1703,10 +1725,12 @@ class GearOptimizerApp:
         completed_offset=0,
         memory_resume_tracker=None,
         total_tasks=0,
+        throughput_t0: float | None = None,
     ):
         completed = completed_offset
         failed = 0
         total = total_tasks or 0  # approximate if unknown
+        t0 = float(throughput_t0) if throughput_t0 is not None else time.perf_counter()
 
         for item in results_iter:
             if self._stop_requested_now():
@@ -1773,6 +1797,20 @@ class GearOptimizerApp:
                 break
 
             print(f"[{completed}/{total}] Completed: {task_label}")
+            processed = int(completed - completed_offset)
+            if processed > 0:
+                try:
+                    elapsed_s = max(1e-9, float(time.perf_counter() - t0))
+                    per_h = float(processed) * 3600.0 / float(elapsed_s)
+                    avg_s = float(elapsed_s) / float(processed)
+                    rem = max(0, int(total) - int(completed)) if total > 0 else 0
+                    eta_s = float(rem) * avg_s if rem > 0 else 0.0
+                    if rem > 0:
+                        print(f"[Throughput] {per_h:.1f} tasks/hour (avg {avg_s:.2f}s/task, ETA {eta_s/60.0:.1f}m)")
+                    else:
+                        print(f"[Throughput] {per_h:.1f} tasks/hour (avg {avg_s:.2f}s/task)")
+                except Exception:
+                    pass
             print("=" * 60)
             print(f"PROCESSING SONG: {task_label}")
             print("=" * 60)
