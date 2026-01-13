@@ -163,6 +163,33 @@ ga_fg_candidates_download_staging: ti.Field = (
     None  # (MAX_GA_RUNS, GA_FG_CANDIDATES_PER_RUN+1, GA_FG_CANDIDATE_COLS) i32
 )
 
+# GPU-side GA->FG candidate selection outputs (avoid downloading full candidate tables).
+#
+# Selected payload row layout (int32), used for bounded CPU downloads:
+# - Header row 0: [selected_count, best_score, best_ids(9), best_results(7), best_run_idx, ...]
+# - Rows 1..N:    [run_idx, row_idx, score, slot_ids(9), result_row(7), base_stats7(7)]
+GA_FG_SELECTED_PAYLOAD_COLS = 2 + (1 + MAX_SLOTS + 7 + 7)  # (run,row) + packed candidate row (24)
+GA_FG_SELECTED_MAX = 5000  # Must cover clamp in `read_fg_candidate_limit` (<=5000).
+GA_FG_SELECTED_HASH_SIZE = 65536  # Open-addressing table for dedupe (power of two).
+GA_FG_SELECTED_STUBS_MAX = 20000  # Upper bound on unique stubs we support in GPU selection.
+
+ga_fg_select_hash_used: ti.Field = None  # (HASH_SIZE,) i32 occupancy
+ga_fg_select_hash_keys: ti.Field = None  # (HASH_SIZE, 9) i32
+ga_fg_select_stub_count: ti.Field = None  # (1,) i32
+ga_fg_select_stub_run: ti.Field = None  # (STUBS_MAX,) i32
+ga_fg_select_stub_row: ti.Field = None  # (STUBS_MAX,) i32
+ga_fg_select_stub_score: ti.Field = None  # (STUBS_MAX,) i32
+ga_fg_select_stub_fg_proxy: ti.Field = None  # (STUBS_MAX,) i64
+ga_fg_select_stub_center_ft: ti.Field = None  # (STUBS_MAX,) i32
+ga_fg_select_stub_center_ff: ti.Field = None  # (STUBS_MAX,) i32
+ga_fg_select_stub_ids: ti.Field = None  # (STUBS_MAX, 9) i32
+ga_fg_select_selected_mask: ti.Field = None  # (STUBS_MAX,) i32
+ga_fg_selected_count: ti.Field = None  # (1,) i32
+ga_fg_selected_coords: ti.Field = None  # (GA_FG_SELECTED_MAX, 2) i32
+ga_fg_selected_payload_staging_256: ti.Field = None  # (257, GA_FG_SELECTED_PAYLOAD_COLS) i32
+ga_fg_selected_payload_staging_1024: ti.Field = None  # (1025, GA_FG_SELECTED_PAYLOAD_COLS) i32
+ga_fg_selected_payload_staging_5000: ti.Field = None  # (5001, GA_FG_SELECTED_PAYLOAD_COLS) i32
+
 # GPU-side island elitism (avoids per-generation score downloads)
 MAX_ISLANDS = 16  # Maximum number of islands
 island_boundaries: ti.Field = None  # (MAX_ISLANDS+1,) i32 - island start indices + end sentinel
@@ -281,6 +308,11 @@ def reset_fields_state() -> None:
         ga_runs_payload_download_staging_64, \
         ga_runs_payload_download_staging_128
     global ga_fg_candidates_packed, ga_fg_candidates_download_staging
+    global ga_fg_select_hash_used, ga_fg_select_hash_keys
+    global ga_fg_select_stub_count, ga_fg_select_stub_run, ga_fg_select_stub_row, ga_fg_select_stub_score
+    global ga_fg_select_stub_fg_proxy, ga_fg_select_stub_center_ft, ga_fg_select_stub_center_ff, ga_fg_select_stub_ids
+    global ga_fg_select_selected_mask, ga_fg_selected_count, ga_fg_selected_coords
+    global ga_fg_selected_payload_staging_256, ga_fg_selected_payload_staging_1024, ga_fg_selected_payload_staging_5000
     global island_boundaries, island_elite_indices, island_elite_count
 
     # Main refs
@@ -355,6 +387,22 @@ def reset_fields_state() -> None:
     ga_runs_payload_download_staging_128 = None
     ga_fg_candidates_packed = None
     ga_fg_candidates_download_staging = None
+    ga_fg_select_hash_used = None
+    ga_fg_select_hash_keys = None
+    ga_fg_select_stub_count = None
+    ga_fg_select_stub_run = None
+    ga_fg_select_stub_row = None
+    ga_fg_select_stub_score = None
+    ga_fg_select_stub_fg_proxy = None
+    ga_fg_select_stub_center_ft = None
+    ga_fg_select_stub_center_ff = None
+    ga_fg_select_stub_ids = None
+    ga_fg_select_selected_mask = None
+    ga_fg_selected_count = None
+    ga_fg_selected_coords = None
+    ga_fg_selected_payload_staging_256 = None
+    ga_fg_selected_payload_staging_1024 = None
+    ga_fg_selected_payload_staging_5000 = None
     song_flags = None
 
     # Results
@@ -502,6 +550,11 @@ def allocate_fields():
         ga_runs_payload_download_staging_64, \
         ga_runs_payload_download_staging_128
     global ga_fg_candidates_packed, ga_fg_candidates_download_staging
+    global ga_fg_select_hash_used, ga_fg_select_hash_keys
+    global ga_fg_select_stub_count, ga_fg_select_stub_run, ga_fg_select_stub_row, ga_fg_select_stub_score
+    global ga_fg_select_stub_fg_proxy, ga_fg_select_stub_center_ft, ga_fg_select_stub_center_ff, ga_fg_select_stub_ids
+    global ga_fg_select_selected_mask, ga_fg_selected_count, ga_fg_selected_coords
+    global ga_fg_selected_payload_staging_256, ga_fg_selected_payload_staging_1024, ga_fg_selected_payload_staging_5000
     global island_boundaries, island_elite_indices, island_elite_count
 
     if _fields_allocated:
@@ -601,6 +654,34 @@ def allocate_fields():
     ga_fg_candidates_download_staging = ti.field(
         dtype=ti.i32,
         shape=(MAX_GA_RUNS, int(GA_FG_CANDIDATES_PER_RUN) + 1, int(GA_FG_CANDIDATE_COLS)),
+    )
+
+    # GPU-side GA->FG candidate selection buffers (bounded CPU downloads).
+    ga_fg_select_hash_used = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_HASH_SIZE))
+    ga_fg_select_hash_keys = ti.field(dtype=ti.i32, shape=(int(GA_FG_SELECTED_HASH_SIZE), 9))
+    ga_fg_select_stub_count = ti.field(dtype=ti.i32, shape=1)
+    ga_fg_select_stub_run = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
+    ga_fg_select_stub_row = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
+    ga_fg_select_stub_score = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
+    ga_fg_select_stub_fg_proxy = ti.field(dtype=ti.i64, shape=int(GA_FG_SELECTED_STUBS_MAX))
+    ga_fg_select_stub_center_ft = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
+    ga_fg_select_stub_center_ff = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
+    ga_fg_select_stub_ids = ti.field(dtype=ti.i32, shape=(int(GA_FG_SELECTED_STUBS_MAX), 9))
+    ga_fg_select_selected_mask = ti.field(dtype=ti.i32, shape=int(GA_FG_SELECTED_STUBS_MAX))
+    ga_fg_selected_count = ti.field(dtype=ti.i32, shape=1)
+    ga_fg_selected_coords = ti.field(dtype=ti.i32, shape=(int(GA_FG_SELECTED_MAX), 2))
+
+    ga_fg_selected_payload_staging_256 = ti.field(
+        dtype=ti.i32,
+        shape=(257, int(GA_FG_SELECTED_PAYLOAD_COLS)),
+    )
+    ga_fg_selected_payload_staging_1024 = ti.field(
+        dtype=ti.i32,
+        shape=(1025, int(GA_FG_SELECTED_PAYLOAD_COLS)),
+    )
+    ga_fg_selected_payload_staging_5000 = ti.field(
+        dtype=ti.i32,
+        shape=(int(GA_FG_SELECTED_MAX) + 1, int(GA_FG_SELECTED_PAYLOAD_COLS)),
     )
 
     # GPU-side island elitism (avoids per-generation score downloads)
@@ -750,6 +831,22 @@ def bind_fields(kernels_module):
     target.ga_run_payload_packed = ga_run_payload_packed
     target.ga_fg_candidates_packed = ga_fg_candidates_packed
     target.ga_fg_candidates_download_staging = ga_fg_candidates_download_staging
+    target.ga_fg_select_hash_used = ga_fg_select_hash_used
+    target.ga_fg_select_hash_keys = ga_fg_select_hash_keys
+    target.ga_fg_select_stub_count = ga_fg_select_stub_count
+    target.ga_fg_select_stub_run = ga_fg_select_stub_run
+    target.ga_fg_select_stub_row = ga_fg_select_stub_row
+    target.ga_fg_select_stub_score = ga_fg_select_stub_score
+    target.ga_fg_select_stub_fg_proxy = ga_fg_select_stub_fg_proxy
+    target.ga_fg_select_stub_center_ft = ga_fg_select_stub_center_ft
+    target.ga_fg_select_stub_center_ff = ga_fg_select_stub_center_ff
+    target.ga_fg_select_stub_ids = ga_fg_select_stub_ids
+    target.ga_fg_select_selected_mask = ga_fg_select_selected_mask
+    target.ga_fg_selected_count = ga_fg_selected_count
+    target.ga_fg_selected_coords = ga_fg_selected_coords
+    target.ga_fg_selected_payload_staging_256 = ga_fg_selected_payload_staging_256
+    target.ga_fg_selected_payload_staging_1024 = ga_fg_selected_payload_staging_1024
+    target.ga_fg_selected_payload_staging_5000 = ga_fg_selected_payload_staging_5000
 
     # GPU-side island elitism
     target.island_boundaries = island_boundaries

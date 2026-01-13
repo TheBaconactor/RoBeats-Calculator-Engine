@@ -123,14 +123,6 @@ def test_decode_gpu_native_ga_runs_payload_matches_fg_candidate_selector():
         "fg_candidate_limit": fg_candidate_limit,
     }
 
-    _best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
-        runs_payload=runs_payload,
-        registry=registry,
-        cfg_data=cfg_data,
-        base_stats_fixed={},
-        fg_candidate_limit=fg_candidate_limit,
-    )
-
     # Reference path: construct full stub candidates and delegate selection to the
     # existing select_fg_candidates() implementation (the previous behavior).
     best_stub_by_key: dict[tuple[int, ...], tuple[int, int, int]] = {}
@@ -175,6 +167,35 @@ def test_decode_gpu_native_ga_runs_payload_matches_fg_candidate_selector():
         limit=int(fg_candidate_limit),
         primary_color=str(cfg_data.get("primary_color", "") or ""),
         secondary_color=str(cfg_data.get("secondary_color", "") or ""),
+    )
+
+    # Build the GPU-selected payload format expected by decode_gpu_native_ga_runs_payload.
+    best_run_idx = int(np.argmax(runs_payload[:, 0, 0]))
+    best_score = int(runs_payload[best_run_idx, 0, 0])
+    best_ids = np.asarray(runs_payload[best_run_idx, 0, 1 : 1 + n_slots], dtype=np.int32)
+    best_res = np.asarray(runs_payload[best_run_idx, 0, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32)
+
+    selected_payload = np.zeros((len(expected) + 1, 26), dtype=np.int32)
+    selected_payload[0, 0] = int(len(expected))
+    selected_payload[0, 1] = int(best_score)
+    selected_payload[0, 2 : 2 + n_slots] = best_ids
+    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = best_res
+    selected_payload[0, 2 + n_slots + 7] = int(best_run_idx)
+
+    for i, cand in enumerate(expected):
+        run_idx = int(cand.get("_run_idx", 0))
+        pop_idx = int(cand.get("_pop_idx", 0))
+        row = 1 + pop_idx
+        selected_payload[i + 1, 0] = run_idx
+        selected_payload[i + 1, 1] = row
+        selected_payload[i + 1, 2 : 2 + width] = runs_payload[run_idx, row, :width]
+
+    _best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
+        runs_payload=selected_payload,
+        registry=registry,
+        cfg_data=cfg_data,
+        base_stats_fixed={},
+        fg_candidate_limit=fg_candidate_limit,
     )
 
     assert [_key_by_name(c) for c in decoded] == [_key_by_name(c) for c in expected]

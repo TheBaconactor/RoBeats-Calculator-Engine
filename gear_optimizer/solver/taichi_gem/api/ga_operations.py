@@ -1224,28 +1224,76 @@ def ga_pack_fg_candidates_table_segmented(
         int(is_s_ov),
     )
 
-
-def ga_download_fg_candidates_table(*, table_slot: int, n_runs: int) -> np.ndarray:
+def ga_download_fg_selected_payload(
+    *,
+    table_slot: int,
+    n_runs: int,
+    limit: int,
+    top_base_keep: int,
+    base_budget: int,
+    fg_budget_end: int,
+) -> np.ndarray:
     """
-    Download the compact GA->FG candidate table for one song/table slot.
+    Download the GPU-selected GA->FG candidate payload for one song/table slot.
 
     Returns:
-        np.ndarray[int32] with shape (n_runs, K+1, 24)
+        np.ndarray[int32] with shape (N+1, 26):
+          - Row 0: header [selected_count, best_score, best_ids(9), best_results(7), best_run_idx, ...]
+          - Rows 1..N: candidates [run_idx, row_idx, packed_row(24)]
     """
     ensure_ready()
     table_slot = int(table_slot)
     n_runs = int(n_runs)
+    limit = int(limit)
+    top_base_keep = int(top_base_keep)
+    base_budget = int(base_budget)
+    fg_budget_end = int(fg_budget_end)
+
     if n_runs < 0 or n_runs > int(fields.MAX_GA_RUNS):
         raise ValueError(f"n_runs out of range: {n_runs} (MAX_GA_RUNS={fields.MAX_GA_RUNS})")
     if table_slot < 0 or table_slot >= int(fields.MAX_SONG_SLOTS):
         raise ValueError(f"table_slot out of range: {table_slot} (MAX_SONG_SLOTS={fields.MAX_SONG_SLOTS})")
 
+    if limit < 0:
+        limit = 0
+    if limit > int(fields.GA_FG_SELECTED_MAX):
+        limit = int(fields.GA_FG_SELECTED_MAX)
+
     perf = str(os.environ.get("PERF_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
     t_total = time.perf_counter() if perf else 0.0
 
-    kernels.ga_copy_fg_candidates_table_to_download_staging_kernel(int(table_slot), int(n_runs))
-    out = fields.ga_fg_candidates_download_staging.to_numpy()
-    view = out[:n_runs, :, :]
+    # Select coordinates on GPU, then copy only the selected candidates into a bounded staging field.
+    kernels.ga_select_fg_candidates_coords_kernel(
+        int(table_slot),
+        int(n_runs),
+        int(limit),
+        int(top_base_keep),
+        int(base_budget),
+        int(fg_budget_end),
+    )
+
+    if limit <= 256:
+        out_field = fields.ga_fg_selected_payload_staging_256
+    elif limit <= 1024:
+        out_field = fields.ga_fg_selected_payload_staging_1024
+    else:
+        out_field = fields.ga_fg_selected_payload_staging_5000
+
+    kernels.ga_copy_fg_selected_payload_to_download_staging_kernel(int(table_slot), int(n_runs), out_field)
+    out = out_field.to_numpy()
+
+    selected_n = 0
+    try:
+        selected_n = int(out[0, 0])
+    except Exception:
+        selected_n = 0
+    if selected_n < 0:
+        selected_n = 0
+    max_rows = int(out.shape[0]) - 1
+    if selected_n > max_rows:
+        selected_n = max_rows
+
+    view = out[: selected_n + 1, :]
 
     total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
     if perf:
@@ -1256,8 +1304,9 @@ def ga_download_fg_candidates_table(*, table_slot: int, n_runs: int) -> np.ndarr
             view_bytes = 0
             out_bytes = 0
         print(
-            "[PERF][GADownloadGaFgCandidates] "
-            f"slot={table_slot} runs={n_runs} total={total_ms:.1f}ms view_bytes={view_bytes} transfer_bytes={out_bytes}"
+            "[PERF][GADownloadGaFgSelected] "
+            f"slot={table_slot} runs={n_runs} limit={limit} total={total_ms:.1f}ms "
+            f"view_bytes={view_bytes} transfer_bytes={out_bytes}"
         )
 
     if view.dtype == np.int32 and view.flags["C_CONTIGUOUS"]:

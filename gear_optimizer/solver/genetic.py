@@ -280,6 +280,244 @@ def decode_gpu_native_ga_runs_payload(
         raise RuntimeError("GPU-native GA not available (missing dependencies)")
 
     runs_payload = np.asarray(runs_payload, dtype=np.int32)
+    if runs_payload.ndim == 2:
+        # GPU-selected payload format (preferred):
+        # - Row 0: [selected_count, best_score, best_ids(9), best_results(7), best_run_idx, ...]
+        # - Rows 1..N: [run_idx, row_idx, packed_row(24)]
+        n_slots = 9
+        header_cols_min = 2 + n_slots + 7 + 1
+        if int(runs_payload.shape[0]) < 1:
+            raise ValueError("runs_payload has no rows")
+        if int(runs_payload.shape[1]) < header_cols_min:
+            raise ValueError(f"runs_payload has too few columns: {runs_payload.shape[1]} < {header_cols_min}")
+
+        eff_limit = int(fg_candidate_limit)
+        if eff_limit <= 0:
+            eff_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT) or FG_CANDIDATE_LIMIT)
+        eff_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(eff_limit)))
+
+        perf = str(os.environ.get("PERF_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+        t_total = time.perf_counter() if perf else 0.0
+
+        try:
+            selected_n = int(runs_payload[0, 0])
+        except Exception:
+            selected_n = 0
+        if selected_n < 0:
+            selected_n = 0
+        if selected_n > int(eff_limit):
+            selected_n = int(eff_limit)
+        max_rows = int(runs_payload.shape[0]) - 1
+        if selected_n > max_rows:
+            selected_n = max_rows
+
+        best_global_score = int(runs_payload[0, 1])
+        best_ids = np.asarray(runs_payload[0, 2 : 2 + n_slots], dtype=np.int32)
+        best_global_res_arr = np.asarray(runs_payload[0, 2 + n_slots : 2 + n_slots + 7], dtype=np.int32).copy()
+        best_global_genome = registry.decode_genome(best_ids)
+
+        best_gear = best_global_genome[:6]
+        best_minis = best_global_genome[6:9]
+
+        # Compute full stats for best genome (like FG candidates).
+        best_stats = dict(base_stats_fixed or {})
+        for item in best_global_genome or []:
+            if not item:
+                continue
+            for k, v in item.items():
+                if k not in SKIP_ITEM_KEYS:
+                    best_stats[k] = best_stats.get(k, 0) + v
+
+        g_ft = int(best_global_res_arr[1])
+        g_ff = int(best_global_res_arr[2])
+        g_pp = int(best_global_res_arr[3])
+        g_cm = int(best_global_res_arr[4])
+        g_fm = int(best_global_res_arr[5])
+        g_ov = int(best_global_res_arr[6])
+
+        best_stats["Perfect Points"] = best_stats.get("Perfect Points", 0) + g_pp * GEM_SCALE_NORMAL
+        best_stats["Combo Multiplier"] = best_stats.get("Combo Multiplier", 0) + g_cm * GEM_SCALE_NORMAL
+        best_stats["Fever Multiplier"] = best_stats.get("Fever Multiplier", 0) + g_fm * GEM_SCALE_FEVER
+        best_stats["Fever Time"] = best_stats.get("Fever Time", 0) + g_ft * GEM_SCALE_FEVER
+        best_stats["Fever Fill Rate"] = best_stats.get("Fever Fill Rate", 0) + g_ff * GEM_SCALE_FEVER
+
+        best_stats["Chill"] = best_stats.get("Chill", 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
+        best_stats["Flow"] = best_stats.get("Flow", 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
+        best_stats["Rush"] = best_stats.get("Rush", 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
+        best_stats["Beat"] = best_stats.get("Beat", 0) + g_ft * GEM_STAT_TO_ELEMENT_SCALE
+        best_stats["Vibe"] = best_stats.get("Vibe", 0) + g_ff * GEM_STAT_TO_ELEMENT_SCALE
+
+        selected_color = str(cfg_data.get("selected_color", ""))
+        if selected_color:
+            best_stats[selected_color] = best_stats.get(selected_color, 0) + g_ov * ELEMENTAL_GEM_SCALE
+
+        best_data = {
+            "Score": int(best_global_score),
+            "BaseScore": int(best_global_score),
+            "Genome": best_global_genome,
+            "Gear": best_gear,
+            "Minis": best_minis,
+            "GearNames": [g.get("Name", "None") for g in best_gear],
+            "MiniNames": [m.get("Name", "None") for m in best_minis],
+            # FT/FF at root level for build_details() compatibility
+            "FT": g_ft,
+            "FF": g_ff,
+            "GemCounts": {
+                "Perfect Points": g_pp,
+                "Combo Multiplier": g_cm,
+                "Fever Multiplier": g_fm,
+                "Element": g_ov,
+            },
+            "Stats": best_stats,
+            "Selected Element": selected_color,
+            "Details": {
+                "FeverGems": g_ft,
+                "FeverFillGems": g_ff,
+                "PP": g_pp,
+                "CM": g_cm,
+                "FM": g_fm,
+                "OV": g_ov,
+            },
+        }
+
+        if selected_n <= 0:
+            return best_data, list(best_gear), list(best_minis), []
+
+        cand_rows = runs_payload[1 : 1 + selected_n]
+        packed_cols = 1 + n_slots + 7 + 7
+        if int(cand_rows.shape[1]) < 2 + packed_cols:
+            raise ValueError(f"runs_payload candidate rows have too few columns: {cand_rows.shape[1]} < {2 + packed_cols}")
+
+        sel_run_idx = np.asarray(cand_rows[:, 0], dtype=np.int32)
+        sel_rows = np.asarray(cand_rows[:, 1], dtype=np.int32)
+        packed = np.asarray(cand_rows[:, 2 : 2 + packed_cols], dtype=np.int32)
+
+        scores_vec = np.asarray(packed[:, 0], dtype=np.int32)
+        genome_ids_mat = np.asarray(packed[:, 1 : 1 + n_slots], dtype=np.int32)
+        results_mat = np.asarray(packed[:, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32)
+
+        base_stats_arr, sel_color = _build_base_stats_array(base_stats_fixed, cfg_data)
+        sel_color = str(sel_color or "")
+        color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
+        sel_color_idx = int(color_to_idx.get(sel_color, -1))
+
+        item_stats = registry.to_gpu_arrays()["item_stats"]  # (n_items, 10)
+        t_stats = time.perf_counter() if perf else 0.0
+        item_stats_sum = item_stats[genome_ids_mat].sum(axis=1)
+
+        # Gem contributions: (n_cand, 10)
+        n_cand = int(genome_ids_mat.shape[0])
+        gem_contributions = np.zeros((n_cand, 10), dtype=np.int32)
+        g_ft = results_mat[:, 1]
+        g_ff = results_mat[:, 2]
+        g_pp = results_mat[:, 3]
+        g_cm = results_mat[:, 4]
+        g_fm = results_mat[:, 5]
+        g_ov = results_mat[:, 6]
+
+        gem_contributions[:, 0] = g_pp * GEM_SCALE_NORMAL
+        gem_contributions[:, 1] = g_cm * GEM_SCALE_NORMAL
+        gem_contributions[:, 2] = g_fm * GEM_SCALE_FEVER
+        gem_contributions[:, 3] = g_ft * GEM_SCALE_FEVER
+        gem_contributions[:, 4] = g_ff * GEM_SCALE_FEVER
+
+        gem_contributions[:, 5] = g_ft * GEM_STAT_TO_ELEMENT_SCALE
+        gem_contributions[:, 6] = g_ff * GEM_STAT_TO_ELEMENT_SCALE
+        gem_contributions[:, 7] = g_fm * GEM_STAT_TO_ELEMENT_SCALE
+        gem_contributions[:, 8] = g_cm * GEM_STAT_TO_ELEMENT_SCALE
+        gem_contributions[:, 9] = g_pp * GEM_STAT_TO_ELEMENT_SCALE
+
+        if 5 <= sel_color_idx <= 9:
+            gem_contributions[:, sel_color_idx] += g_ov * ELEMENTAL_GEM_SCALE
+
+        final_stats_mat = base_stats_arr + item_stats_sum + gem_contributions
+
+        stat_names = [
+            "Perfect Points",
+            "Combo Multiplier",
+            "Fever Multiplier",
+            "Fever Time",
+            "Fever Fill Rate",
+            "Beat",
+            "Vibe",
+            "Rush",
+            "Flow",
+            "Chill",
+        ]
+
+        unique_evaluated: list[dict] = []
+        decode_names = getattr(registry, "decode_names", None)
+        for i in range(n_cand):
+            score_val = int(scores_vec[i])
+            ids_row = genome_ids_mat[i]
+            genome = registry.decode_genome(ids_row)
+            if callable(decode_names):
+                names = decode_names(ids_row)
+                gear_names = names[:6]
+                mini_names = names[6:9]
+            else:
+                gear_names = [g.get("Name", "None") for g in genome[:6]]
+                mini_names = [m.get("Name", "None") for m in genome[6:9]]
+
+            row_stats = final_stats_mat[i]
+            current_stats = {stat_names[j]: int(row_stats[j]) for j in range(10)}
+            base_row_stats = base_stats_arr + item_stats_sum[i]
+            base_stats = {stat_names[j]: int(base_row_stats[j]) for j in range(10)}
+
+            g_ft_i = int(g_ft[i])
+            g_ff_i = int(g_ff[i])
+            g_pp_i = int(g_pp[i])
+            g_cm_i = int(g_cm[i])
+            g_fm_i = int(g_fm[i])
+            g_ov_i = int(g_ov[i])
+
+            data_obj = {
+                "Score": score_val,
+                "FT": g_ft_i,
+                "FF": g_ff_i,
+                "GemCounts": {
+                    "Perfect Points": g_pp_i,
+                    "Combo Multiplier": g_cm_i,
+                    "Fever Multiplier": g_fm_i,
+                    "Element": g_ov_i,
+                },
+                "Stats": current_stats,
+                "BaseStats": base_stats,
+                "Selected Element": sel_color,
+                "BaseScore": score_val,
+                "_ga_gpu_run_idx": int(sel_run_idx[i]),
+                "_ga_gpu_row_idx": int(sel_rows[i]),
+            }
+
+            cand_data = {
+                "Score": score_val,
+                "BaseScore": score_val,
+                "Genome": genome,
+                "Gear": genome[:6],
+                "Minis": genome[6:9],
+                "GearNames": gear_names,
+                "MiniNames": mini_names,
+                "Data": data_obj,
+                "Details": {
+                    "FeverGems": g_ft_i,
+                    "FeverFillGems": g_ff_i,
+                    "PP": g_pp_i,
+                    "CM": g_cm_i,
+                    "FM": g_fm_i,
+                    "OV": g_ov_i,
+                },
+            }
+            unique_evaluated.append(cand_data)
+
+        if perf:
+            stats_ms = (time.perf_counter() - t_stats) * 1000.0 if perf else 0.0
+            total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
+            print(
+                "[PERF][GADecode] "
+                f"selected={int(selected_n)} stats={stats_ms:.1f}ms total={total_ms:.1f}ms candidates={len(unique_evaluated)}"
+            )
+
+        return best_data, list(best_gear), list(best_minis), unique_evaluated
     if runs_payload.ndim != 3:
         raise ValueError(f"runs_payload must be 3D, got ndim={runs_payload.ndim}")
 
@@ -1174,6 +1412,14 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     total_budget = int(cfg_data.get("TotalBudget", 90))
     gem_scale_fever = int(cfg_data.get("GemScaleFever", 3))
 
+    fg_candidate_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT) or FG_CANDIDATE_LIMIT)
+    if fg_candidate_limit <= 0:
+        fg_candidate_limit = FG_CANDIDATE_LIMIT
+    fg_candidate_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(fg_candidate_limit)))
+    top_base_keep = min(int(fg_candidate_limit), int(LOADOUTS_PER_SONG_LIMIT))
+    base_budget = min(int(fg_candidate_limit), max(int(top_base_keep), int(int(fg_candidate_limit) * 0.55)))
+    fg_budget_end = min(int(fg_candidate_limit), int(base_budget) + int(int(fg_candidate_limit) * 0.30))
+
     # Island model (mirrors _run_gpu_native_ga)
     num_islands = min(GPU_GA_NUM_ISLANDS, n_genomes // 10)  # At least 10 per island
     if num_islands < 1:
@@ -1512,16 +1758,26 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
             local_run_idx += int(batch_len)
 
-        payload_segments.append(gpu_api.ga_download_fg_candidates_table(table_slot=int(song_slot), n_runs=int(seg_len)))
+        payload_segments.append(
+            gpu_api.ga_download_fg_selected_payload(
+                table_slot=int(song_slot),
+                n_runs=int(seg_len),
+                limit=int(fg_candidate_limit),
+                top_base_keep=int(top_base_keep),
+                base_budget=int(base_budget),
+                fg_budget_end=int(fg_budget_end),
+            )
+        )
         run_start_global += seg_len
 
     if not payload_segments:
         raise RuntimeError("Internal error: no GA payload segments were produced")
 
-    runs_payload = payload_segments[0] if len(payload_segments) == 1 else np.concatenate(payload_segments, axis=0)
-    if runs_payload.shape[0] != num_runs:
-        runs_payload = runs_payload[:num_runs]
-    return runs_payload
+    if len(payload_segments) != 1:
+        raise RuntimeError(
+            f"Internal error: expected a single selected-payload segment, got {len(payload_segments)} segments"
+        )
+    return payload_segments[0]
 
 
 def solve_coevolution_genetic(
@@ -1769,8 +2025,22 @@ def solve_coevolution_genetic(
                 return
             if n_genomes is None:
                 raise RuntimeError("Internal error: n_genomes not set before GA payload flush")
+            fg_candidate_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT) or FG_CANDIDATE_LIMIT)
+            if fg_candidate_limit <= 0:
+                fg_candidate_limit = FG_CANDIDATE_LIMIT
+            fg_candidate_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(fg_candidate_limit)))
+            top_base_keep = min(int(fg_candidate_limit), int(LOADOUTS_PER_SONG_LIMIT))
+            base_budget = min(int(fg_candidate_limit), max(int(top_base_keep), int(int(fg_candidate_limit) * 0.55)))
+            fg_budget_end = min(int(fg_candidate_limit), int(base_budget) + int(int(fg_candidate_limit) * 0.30))
             payload_segments.append(
-                gpu_api.ga_download_fg_candidates_table(table_slot=int(song_slot), n_runs=segment_runs)
+                gpu_api.ga_download_fg_selected_payload(
+                    table_slot=int(song_slot),
+                    n_runs=int(segment_runs),
+                    limit=int(fg_candidate_limit),
+                    top_base_keep=int(top_base_keep),
+                    base_budget=int(base_budget),
+                    fg_budget_end=int(fg_budget_end),
+                )
             )
             segment_runs = 0
 
@@ -1948,155 +2218,48 @@ def solve_coevolution_genetic(
 
         _flush_ga_run_payload_segment()
 
-        # One-time download and CPU-side aggregation (preserves prior behavior/order).
+        # One-time download: GPU-selected candidate payload(s) (bounded CPU transfer).
         if not payload_segments:
             raise RuntimeError("Internal error: no GA run payloads were stored")
-        runs_payload = payload_segments[0] if len(payload_segments) == 1 else np.concatenate(payload_segments, axis=0)
-        if runs_payload.shape[0] != num_runs:
-            runs_payload = runs_payload[:num_runs]
-
-        best_global_score = -1
-        best_global_genome = None
-        best_global_res_arr = None
-        all_evaluated_global = []
 
         fg_candidate_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT))
         if fg_candidate_limit <= 0:
             fg_candidate_limit = FG_CANDIDATE_LIMIT
 
-        for r in range(num_runs):
-            run_pack = runs_payload[r]
-            run_best_score = int(run_pack[0, 0])
-            run_best_ids = np.asarray(run_pack[0, 1 : 1 + n_slots], dtype=np.int32)
-            run_best_res = np.asarray(run_pack[0, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32)
+        best_data = None
+        best_gear = None
+        best_minis = None
+        merged_candidates: list[dict] = []
 
-            if run_best_score > best_global_score:
-                best_global_score = run_best_score
-                best_global_genome = registry.decode_genome(run_best_ids)
-                best_global_res_arr = run_best_res.copy()
+        for seg_payload in payload_segments:
+            seg_best_data, seg_best_gear, seg_best_minis, seg_candidates = decode_gpu_native_ga_runs_payload(
+                runs_payload=seg_payload,
+                registry=registry,
+                cfg_data=cfg_data,
+                base_stats_fixed=base_stats_fixed,
+                fg_candidate_limit=fg_candidate_limit,
+            )
+            merged_candidates.extend(list(seg_candidates or []))
+            if best_data is None or int(seg_best_data.get("Score", 0)) > int(best_data.get("Score", 0)):
+                best_data = seg_best_data
+                best_gear = seg_best_gear
+                best_minis = seg_best_minis
 
-            pop_snapshot = run_pack[1 : n_genomes + 1, 1 : 1 + n_slots]
-            results_snapshot = run_pack[1 : n_genomes + 1, 1 + n_slots : 1 + n_slots + 7]
-            scores_snapshot = run_pack[1 : n_genomes + 1, 0]
-            all_evaluated_global.extend(
-                _extract_fg_candidates_from_ga_snapshot(
-                    registry=registry,
-                    cfg_data=cfg_data,
-                    base_stats_fixed=base_stats_fixed,
-                    pop_snapshot=pop_snapshot,
-                    results=results_snapshot,
-                    scores=scores_snapshot,
-                    n_genomes=n_genomes,
-                    candidate_limit=fg_candidate_limit,
-                )
+        if best_data is None or best_gear is None or best_minis is None:
+            raise RuntimeError("Internal error: failed to decode GPU-native GA payload")
+
+        unique_evaluated = merged_candidates
+        if len(payload_segments) > 1:
+            # Rare fallback: multiple flush segments (e.g., due to Vulkan reset). Re-select on CPU to
+            # preserve a bounded funnel size across segments.
+            unique_evaluated = select_fg_candidates(
+                unique_evaluated,
+                limit=max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit),
+                primary_color=str(p_color or ""),
+                secondary_color=str(s_color or ""),
             )
 
-        # 8. Format results to match expected return signature
-        # Use simple fallback if no valid genome found (shouldn't happen)
-        if best_global_genome is None:
-            # Should practically never happen unless 0 runs / all scores invalid.
-            try:
-                fallback_ids = np.asarray(runs_payload[0, 0, 1 : 1 + n_slots], dtype=np.int32)
-                best_global_genome = registry.decode_genome(fallback_ids)
-                best_global_score = int(runs_payload[0, 0, 0])
-                best_global_res_arr = np.asarray(
-                    runs_payload[0, 0, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32
-                ).copy()
-            except Exception:
-                best_global_genome = []
-                best_global_score = 0
-                best_global_res_arr = [0] * 7
-
-        best_gear = best_global_genome[:6]
-        best_minis = best_global_genome[6:9]
-
-        # Compute full stats for best genome (like FG candidates)
-        best_stats = base_stats_fixed.copy()
-        for item in best_global_genome:
-            for k, v in item.items():
-                if k not in SKIP_ITEM_KEYS:
-                    best_stats[k] = best_stats.get(k, 0) + v
-
-        # Add gem contributions
-        g_ft = int(best_global_res_arr[1])
-        g_ff = int(best_global_res_arr[2])
-        g_pp = int(best_global_res_arr[3])
-        g_cm = int(best_global_res_arr[4])
-        g_fm = int(best_global_res_arr[5])
-        g_ov = int(best_global_res_arr[6])
-
-        best_stats["Perfect Points"] = best_stats.get("Perfect Points", 0) + g_pp * GEM_SCALE_NORMAL
-        best_stats["Combo Multiplier"] = best_stats.get("Combo Multiplier", 0) + g_cm * GEM_SCALE_NORMAL
-        best_stats["Fever Multiplier"] = best_stats.get("Fever Multiplier", 0) + g_fm * GEM_SCALE_FEVER
-        best_stats["Fever Time"] = best_stats.get("Fever Time", 0) + g_ft * GEM_SCALE_FEVER
-        best_stats["Fever Fill Rate"] = best_stats.get("Fever Fill Rate", 0) + g_ff * GEM_SCALE_FEVER
-
-        best_stats["Chill"] = best_stats.get("Chill", 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
-        best_stats["Flow"] = best_stats.get("Flow", 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
-        best_stats["Rush"] = best_stats.get("Rush", 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
-        best_stats["Beat"] = best_stats.get("Beat", 0) + g_ft * GEM_STAT_TO_ELEMENT_SCALE
-        best_stats["Vibe"] = best_stats.get("Vibe", 0) + g_ff * GEM_STAT_TO_ELEMENT_SCALE
-
-        if selected_color:
-            best_stats[selected_color] = best_stats.get(selected_color, 0) + g_ov * ELEMENTAL_GEM_SCALE
-
-        best_data = {
-            "Score": best_global_score,
-            "BaseScore": best_global_score,
-            "Genome": best_global_genome,
-            "Gear": best_gear,
-            "Minis": best_minis,
-            "GearNames": [g.get("Name", "None") for g in best_gear],
-            "MiniNames": [m.get("Name", "None") for m in best_minis],
-            # FT/FF at root level for build_details() compatibility
-            "FT": g_ft,
-            "FF": g_ff,
-            "GemCounts": {
-                "Perfect Points": g_pp,
-                "Combo Multiplier": g_cm,
-                "Fever Multiplier": g_fm,
-                "Element": g_ov,
-            },
-            "Stats": best_stats,  # Full computed stats
-            "Selected Element": selected_color,  # For correct overflow gem labeling
-            # Reconstruct result details from kernel output
-            # [score, ft, ff, pp, cm, fm, ov]
-            "Details": {
-                "FeverGems": g_ft,
-                "FeverFillGems": g_ff,
-                "PP": g_pp,
-                "CM": g_cm,
-                "FM": g_fm,
-                "OV": g_ov,
-            },
-        }
-
-        print(f"=== GPU-NATIVE GA COMPLETE: Best Score {best_global_score} ===")
-
-        # Deduplicate all_evaluated to prevent duplicate loadouts from multiple runs
-        # Key by tuple of names (Gear + Minis)
-        unique_evaluated = []
-        seen_hashes = set()
-
-        for cand in all_evaluated_global:
-            # Create a stable hashable key from gear names and mini names
-            # Genome usually has 9 dicts.
-            key_parts = []
-            for item in cand.get("Genome", []):
-                key_parts.append(item.get("Name", ""))
-
-            cand_hash = tuple(key_parts)
-            if cand_hash not in seen_hashes:
-                seen_hashes.add(cand_hash)
-                unique_evaluated.append(cand)
-
-        # Cap candidate funnel for downstream FG evaluation.
-        unique_evaluated = select_fg_candidates(
-            unique_evaluated,
-            limit=max(LOADOUTS_PER_SONG_LIMIT, fg_candidate_limit),
-            primary_color=str(p_color or ""),
-            secondary_color=str(s_color or ""),
-        )
+        print(f"=== GPU-NATIVE GA COMPLETE: Best Score {int(best_data.get('Score', 0))} ===")
 
         # FG booster(s): optional candidate augmentation to improve ForceGreatsFinder coverage
         # without inflating the downstream candidate limit (we re-select to the same funnel size).

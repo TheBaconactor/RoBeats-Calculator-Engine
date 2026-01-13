@@ -100,6 +100,24 @@ ga_run_payload_packed = None  # (MAX_GENOMES+1, 17) i32 - packed snapshot payloa
 ga_fg_candidates_packed = None  # (MAX_SONG_SLOTS, MAX_GA_RUNS, K+1, 24) i32 - compact GA->FG candidate table
 ga_fg_candidates_download_staging = None  # (MAX_GA_RUNS, K+1, 24) i32 - single-slot download staging
 
+# GPU-side GA->FG candidate selection (avoid downloading full candidate tables)
+ga_fg_select_hash_used = None  # (HASH_SIZE,) i32 - open-addressing value (0=empty, else stub_index+1)
+ga_fg_select_hash_keys = None  # (HASH_SIZE, 9) i32 - canonical (gear+minis) key
+ga_fg_select_stub_count = None  # (1,) i32 - number of unique stubs
+ga_fg_select_stub_run = None  # (STUBS_MAX,) i32
+ga_fg_select_stub_row = None  # (STUBS_MAX,) i32
+ga_fg_select_stub_score = None  # (STUBS_MAX,) i32
+ga_fg_select_stub_fg_proxy = None  # (STUBS_MAX,) i64
+ga_fg_select_stub_center_ft = None  # (STUBS_MAX,) i32
+ga_fg_select_stub_center_ff = None  # (STUBS_MAX,) i32
+ga_fg_select_stub_ids = None  # (STUBS_MAX, 9) i32
+ga_fg_select_selected_mask = None  # (STUBS_MAX,) i32
+ga_fg_selected_count = None  # (1,) i32
+ga_fg_selected_coords = None  # (MAX_SELECTED, 2) i32
+ga_fg_selected_payload_staging_256 = None  # (257, 26) i32 - row0 header + up to 256 candidates
+ga_fg_selected_payload_staging_1024 = None  # (1025, 26) i32 - row0 header + up to 1024 candidates
+ga_fg_selected_payload_staging_5000 = None  # (5001, 26) i32 - row0 header + up to 5000 candidates
+
 # GPU-side island elitism (avoids per-generation score downloads)
 island_boundaries = None  # (MAX_ISLANDS+1,) i32 - island start/end indices
 island_elite_indices = None  # (MAX_GENOMES,) i32 - output: elite genome indices
