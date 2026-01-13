@@ -427,13 +427,6 @@ class _NativeSong:
     gens_per_run: int
     num_runs: int
     n_genomes: int
-    init_heuristic_topk: Optional[np.ndarray] = None
-    init_heuristic_k: int = 0
-    init_heuristic_copies: int = 25
-    db_seed_ids: Optional[np.ndarray] = None
-    db_seed_prob: float = 0.0
-    db_seed_copies: int = 1
-    db_seed_mutations: int = 1
     item_stats: np.ndarray
     slot_start: np.ndarray
     slot_count: np.ndarray
@@ -442,6 +435,13 @@ class _NativeSong:
     mutation_rate: float
     immigrant_rate: float
     tournament_k: int
+    init_heuristic_topk: Optional[np.ndarray] = None
+    init_heuristic_k: int = 0
+    init_heuristic_copies: int = 25
+    db_seed_ids: Optional[np.ndarray] = None
+    db_seed_prob: float = 0.0
+    db_seed_copies: int = 1
+    db_seed_mutations: int = 1
 
     # Runtime state
     song_slot: int = 0

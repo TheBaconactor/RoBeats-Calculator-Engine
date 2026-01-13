@@ -2087,8 +2087,10 @@ def solve_coevolution_genetic(
         # 2. Precompute timeline grid (required by solve_genomes_with_ftff_kernel)
         precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
 
-        # 3. Create Registry (restrict pools for fixed slots).
-        registry = ItemRegistry(gear_pool, mini_pool, slots, fixed_gear=fixed_gear, fixed_minis=fixed_minis)
+        # 3. Create Registry (restrict pools only for non-optimized slots).
+        registry_fixed_gear = fixed_gear if not bool(optimize_gear) else None
+        registry_fixed_minis = fixed_minis if not bool(optimize_minis) else None
+        registry = ItemRegistry(gear_pool, mini_pool, slots, fixed_gear=registry_fixed_gear, fixed_minis=registry_fixed_minis)
 
         # Upload static per-song GA data once (item stats + base fixed stats)
         # Doing this once avoids large repeated from_numpy() calls which can
