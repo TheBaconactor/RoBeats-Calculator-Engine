@@ -546,73 +546,10 @@ def _prepare_song(task: tuple) -> _NativeSong:
     from gear_optimizer.helpers.song_helpers.database_context import build_db_key
 
     db_key = build_db_key(found_song_name, calc_song)
-    if use_evo_db:
-        try:
-            meta0 = calc_song.get("metadata", {}) or {}
-            if meta0.get("HumanHitSimSeedIsRandom"):
-                print(
-                    "[DB][WARN] HumanHitSim seed is random; DB key includes it (no cross-run reuse). "
-                    "Set [HumanHitSim].Seed to a fixed value to accumulate comparable results."
-                )
-        except Exception:
-            pass
 
     # Load database context (prev_record, known_loadouts)
-    #
-    # When HumanHitSim uses randomized seeds, some users prefer not to seed GA/known-loadout
-    # caches from the DB (comparability concerns). However we still want to fetch the
-    # previous best record so we don't spam "NEW RECORD" on songs that already exist.
-    skip_db_lookup = False
-    if use_evo_db:
-        try:
-            hitsim_enabled = cfg.getboolean("HumanHitSim", "Enabled", fallback=False)
-        except Exception:
-            hitsim_enabled = False
-
-        try:
-            cfg_seed = int(str(cfg.get("HumanHitSim", "Seed", fallback="0") or "0"))
-        except Exception:
-            cfg_seed = 0
-
-        try:
-            song_repeats = int(str(cfg.get("IterationEngine", "SongRepeats", fallback="1") or "1"))
-        except Exception:
-            song_repeats = 1
-
-        try:
-            # Default to reusing DB seeds/known loadouts even when HumanHitSim.Seed=0 (randomized).
-            # Users can still opt out via SkipDBLookupWhenSeedIsRandom=true.
-            skip_when_random = cfg.getboolean("HumanHitSim", "SkipDBLookupWhenSeedIsRandom", fallback=False)
-        except Exception:
-            skip_when_random = False
-
-        try:
-            meta0 = calc_song.get("metadata", {}) or {}
-            seed_is_random = bool(meta0.get("HumanHitSimSeedIsRandom"))
-        except Exception:
-            seed_is_random = False
-
-        if skip_when_random and hitsim_enabled and (seed_is_random or (song_repeats > 1 and int(cfg_seed) == 0)):
-            skip_db_lookup = True
-
     allow_db_seed = True
-    if skip_db_lookup:
-        allow_db_seed = False
-        try:
-            print("[DB] Skipping DB seed/known-loadout reuse (HumanHitSim random seed).")
-        except Exception:
-            pass
-        # Still load the previous-best record for correct record comparison/messaging.
-        prev_record, _known = load_database_context(
-            db_key,
-            bool(use_evo_db),
-            gears_by_name,
-            minis_by_name,
-            load_known_loadouts=False,
-        )
-        known_loadouts = {}
-    else:
-        prev_record, known_loadouts = load_database_context(db_key, bool(use_evo_db), gears_by_name, minis_by_name)
+    prev_record, known_loadouts = load_database_context(db_key, bool(use_evo_db), gears_by_name, minis_by_name)
     db_best_fg_score, attempt_lifetime, prev_attempts_first = _summarize_db_context(prev_record, known_loadouts)
 
     p_color = calc_song.get("metadata", {}).get("Primary Color", "Rush")
@@ -1293,7 +1230,7 @@ def run_native_inflight_song_pipeline(
                     try:
                         print(
                             f"[InFlight][Throughput] done={completed_now} pending~{pending_now} "
-                            f"rate={per_h:.1f}/h avg={avg_s:.2f}s ETA={eta_s/60.0:.1f}m"
+                            f"rate={per_h:.1f}/h avg={avg_s:.2f}s ETA={eta_s / 60.0:.1f}m"
                         )
                     except Exception:
                         pass
@@ -1641,7 +1578,9 @@ def run_native_inflight_song_pipeline(
                     if song.fg_prep_future is None:
                         try:
                             setattr(song, "_fg_prep_submit_t0", time.perf_counter())
-                            song.fg_prep_future = fg_prep_executor.submit(_prepare_fg_job_sync, song, gpu_client=gpu_client)
+                            song.fg_prep_future = fg_prep_executor.submit(
+                                _prepare_fg_job_sync, song, gpu_client=gpu_client
+                            )
                             fg_prep_inflight.append(song)
                         except Exception:
                             song.fg_prep_future = None
@@ -1757,9 +1696,13 @@ def run_native_inflight_song_pipeline(
                         reasons: list[str] = []
                         if ga_completed_since_last_fg >= fg_every:
                             reasons.append("cadence")
-                        if fg_drain_at_end and (not pending_tasks and not prepared and not prep_inflight) and (not ga_inflight):
+                        if (
+                            fg_drain_at_end
+                            and (not pending_tasks and not prepared and not prep_inflight)
+                            and (not ga_inflight)
+                        ):
                             reasons.append("drain_end")
-                        if (not ga_inflight and not prepared):
+                        if not ga_inflight and not prepared:
                             reasons.append("idle_fill")
                         if blocked_on_slot_acquire:
                             reasons.append("blocked_slots")
@@ -2099,7 +2042,13 @@ def _prepare_fg_job_sync(song: _NativeSong, gpu_client: Optional[GpuServiceClien
     try:
         combo_enabled = _truthy(os.environ.get("FG_COMBO_BOOSTER_ENABLED", "1"))
         existing_job = getattr(song, "fg_combo_job", None)
-        if combo_enabled and gpu_client is not None and song.force_greats_finder and song.ga_candidates and not existing_job:
+        if (
+            combo_enabled
+            and gpu_client is not None
+            and song.force_greats_finder
+            and song.ga_candidates
+            and not existing_job
+        ):
             job = prepare_fg_combo_booster_candidates_job(
                 existing_candidates=list(song.ga_candidates or []),
                 registry=song.registry,

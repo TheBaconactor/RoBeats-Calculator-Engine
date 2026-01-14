@@ -681,18 +681,23 @@ def get_best_loadouts(
     if not os.path.exists(db_path):
         return []
 
+    song_name = str(song_name or "").strip()
+    variants_like = None if (" | hitsim" in song_name) else f"{song_name} | hitsim%"
+    where_clause = "song_name = ?" if variants_like is None else "(song_name = ? OR song_name LIKE ?)"
+    song_params = (song_name,) if variants_like is None else (song_name, variants_like)
+
     conn = get_db_connection(db_path)
     try:
         # 1. Fetch Top Base Score Loadouts
         cursor = conn.execute(
-            """
+            f"""
             SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
             FROM loadouts
-            WHERE song_name = ?
+            WHERE {where_clause}
             ORDER BY score DESC
             LIMIT ?
         """,
-            (song_name, limit),
+            (*song_params, limit),
         )
 
         results = []
@@ -736,14 +741,14 @@ def get_best_loadouts(
 
         # 2. Fetch Top Force Greats Loadouts
         cursor = conn.execute(
-            """
+            f"""
             SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
             FROM fg_loadouts
-            WHERE song_name = ?
+            WHERE {where_clause}
             ORDER BY fg_score DESC
             LIMIT ?
         """,
-            (song_name, limit),
+            (*song_params, limit),
         )
 
         for row in cursor:
@@ -777,6 +782,7 @@ def get_song_names_present_in_db(song_names: Iterable[str], db_path: Optional[st
         for offset in range(0, len(names), batch_size):
             batch = names[offset : offset + batch_size]
             placeholders = ",".join("?" for _ in batch)
+            hitsim_patterns = [f"{n} | hitsim%" for n in batch if n and (" | hitsim" not in n)]
 
             try:
                 rows = conn.execute(
@@ -786,6 +792,18 @@ def get_song_names_present_in_db(song_names: Iterable[str], db_path: Optional[st
                 present.update(row[0] for row in rows if row and row[0])
             except sqlite3.Error:
                 pass
+            if hitsim_patterns:
+                try:
+                    like_clause = " OR ".join("name LIKE ?" for _ in hitsim_patterns)
+                    rows = conn.execute(
+                        f"SELECT DISTINCT name FROM songs WHERE {like_clause}",
+                        hitsim_patterns,
+                    ).fetchall()
+                    for row in rows:
+                        if row and row[0]:
+                            present.add(str(row[0]).split(" | hitsim", 1)[0])
+                except sqlite3.Error:
+                    pass
 
             for table in ("loadouts", "fg_loadouts"):
                 try:
@@ -796,6 +814,18 @@ def get_song_names_present_in_db(song_names: Iterable[str], db_path: Optional[st
                     present.update(row[0] for row in rows if row and row[0])
                 except sqlite3.Error:
                     continue
+                if hitsim_patterns:
+                    try:
+                        like_clause = " OR ".join("song_name LIKE ?" for _ in hitsim_patterns)
+                        rows = conn.execute(
+                            f"SELECT DISTINCT song_name FROM {table} WHERE {like_clause}",
+                            hitsim_patterns,
+                        ).fetchall()
+                        for row in rows:
+                            if row and row[0]:
+                                present.add(str(row[0]).split(" | hitsim", 1)[0])
+                    except sqlite3.Error:
+                        continue
 
         return present
     finally:

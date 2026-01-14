@@ -471,70 +471,17 @@ def process_song_task(args):
         ) = setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_name)
         stage_timing["cpu_setup_sec"] = time.perf_counter() - _t_setup0
 
-        # --- DB KEY MODIFICATION ---
-        # Use a DB key that matches the *score context*. HumanHitSim can change scoring
-        # between runs (different seed/mode), so it must be part of the key to avoid
-        # mixing incompatible records.
+        # --- DB KEY ---
+        # HumanHitSim MUST NOT affect DB keying: HitSim is intended to explore/visualize
+        # alternate timelines while accumulating results under the same song key.
         from gear_optimizer.helpers.song_helpers.database_context import build_db_key
 
         db_key = build_db_key(found_song_name, calc_song)
-        if use_evo_db:
-            try:
-                meta0 = calc_song.get("metadata", {}) or {}
-                if meta0.get("HumanHitSimSeedIsRandom"):
-                    print(
-                        "[DB][WARN] HumanHitSim seed is random; DB key includes it (no cross-run reuse). "
-                        "Set [HumanHitSim].Seed to a fixed value to accumulate comparable results."
-                    )
-            except Exception:
-                pass
 
         # Load database context (prev_record, known_loadouts)
-        #
-        # Fast-path: when HumanHitSim.Seed=0 (randomized), each run gets a unique DB key
-        # and lookup always misses. Avoid the read overhead for SongRepeats runs.
-        skip_db_lookup = False
-        if use_evo_db:
-            try:
-                hitsim_enabled = cfg.getboolean("HumanHitSim", "Enabled", fallback=False)
-            except Exception:
-                hitsim_enabled = False
-
-            try:
-                cfg_seed = int(str(cfg.get("HumanHitSim", "Seed", fallback="0") or "0"))
-            except Exception:
-                cfg_seed = 0
-
-            try:
-                song_repeats = int(str(cfg.get("IterationEngine", "SongRepeats", fallback="1") or "1"))
-            except Exception:
-                song_repeats = 1
-
-            try:
-                skip_when_random = cfg.getboolean("HumanHitSim", "SkipDBLookupWhenSeedIsRandom", fallback=True)
-            except Exception:
-                skip_when_random = True
-
-            try:
-                meta0 = calc_song.get("metadata", {}) or {}
-                seed_is_random = bool(meta0.get("HumanHitSimSeedIsRandom"))
-            except Exception:
-                seed_is_random = False
-
-            if skip_when_random and hitsim_enabled and (seed_is_random or (song_repeats > 1 and int(cfg_seed) == 0)):
-                skip_db_lookup = True
-
-        if skip_db_lookup:
-            prev_record, known_loadouts = None, {}
-            stage_timing["cpu_db_load_sec"] = 0.0
-            try:
-                print("[DB] Skipping DB seed/known-loadout lookup (HumanHitSim random seed).")
-            except Exception:
-                pass
-        else:
-            _t_db0 = time.perf_counter()
-            prev_record, known_loadouts = load_database_context(db_key, use_evo_db, gears_by_name, minis_by_name)
-            stage_timing["cpu_db_load_sec"] = time.perf_counter() - _t_db0
+        _t_db0 = time.perf_counter()
+        prev_record, known_loadouts = load_database_context(db_key, use_evo_db, gears_by_name, minis_by_name)
+        stage_timing["cpu_db_load_sec"] = time.perf_counter() - _t_db0
 
         db_seed = prev_record if prev_record else None
 

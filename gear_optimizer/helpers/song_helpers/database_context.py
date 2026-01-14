@@ -30,40 +30,12 @@ def build_db_key(found_song_name: str, calc_song: dict | None = None) -> str:
     """
     Build a stable DB lookup key for a song.
 
-    When HumanHitSim is enabled, include its parameters so results from different
-    distributions/seeds do not collide in the same DB namespace.
+    HumanHitSim parameters MUST NOT affect the DB namespace: HitSim is intended to
+    explore/visualize timelines while accumulating scores under the same song key.
     """
-    if not isinstance(found_song_name, str) or not found_song_name:
-        found_song_name = str(found_song_name)
-    base = found_song_name.strip()
-
-    meta = (calc_song or {}).get("metadata") if isinstance(calc_song, dict) else None
-    if not isinstance(meta, dict) or not meta.get("HumanHitSimApplied"):
-        return base
-
-    try:
-        seed = int(meta.get("HumanHitSimSeed")) if meta.get("HumanHitSimSeed") is not None else None
-    except Exception:
-        seed = None
-
-    apply_to = str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper()
-    distribution = str(meta.get("HumanHitSimDistribution", "") or "").strip().lower()
-    great_mode = str(meta.get("HumanHitSimGreatMode", "") or "").strip().lower()
-
-    parts: list[str] = []
-    if seed is not None:
-        parts.append(f"seed={seed}")
-    if apply_to:
-        parts.append(f"apply={apply_to}")
-    if distribution:
-        parts.append(f"dist={distribution}")
-    if great_mode:
-        parts.append(f"great={great_mode}")
-
-    if not parts:
-        return base
-
-    return f"{base} | hitsim {' '.join(parts)}"
+    # Keep signature for call sites that pass calc_song, but ignore HitSim context by design.
+    _ = calc_song
+    return str(found_song_name or "").strip()
 
 
 def _maybe_wal_maintenance(conn) -> None:
@@ -164,13 +136,15 @@ def load_database_context(
             # Fetch known loadouts for persistent caching
             try:
                 conn = get_db_connection()
+                base_key = str(found_song_name or "").strip()
+                variants_like = None if (" | hitsim" in base_key) else f"{base_key} | hitsim%"
                 cursor = conn.execute(
                     """SELECT loadout_hash, score, fg_score, force_details_json, details_json
                        FROM loadouts
-                       WHERE song_name = ?
+                       WHERE song_name = ? OR (? IS NOT NULL AND song_name LIKE ?)
                        ORDER BY score DESC
                        LIMIT ?""",
-                    (found_song_name, LOADOUTS_PER_SONG_LIMIT),
+                    (base_key, variants_like, variants_like, LOADOUTS_PER_SONG_LIMIT),
                 )
                 for row in cursor:
                     force_blob = row["force_details_json"]

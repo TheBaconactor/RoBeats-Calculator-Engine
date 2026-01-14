@@ -9,7 +9,7 @@ def test_build_db_key_without_human_hit_sim_is_identity():
     )
 
 
-def test_build_db_key_includes_human_hit_sim_context():
+def test_build_db_key_ignores_human_hit_sim_context():
     base = "Skystrike (Hard) by Hinkik"
     calc_song = {
         "metadata": {
@@ -21,13 +21,10 @@ def test_build_db_key_includes_human_hit_sim_context():
         }
     }
     key = build_db_key(base, calc_song)
-    assert key != base
-    assert base in key
-    assert "seed=12345" in key
-    assert "apply=ALL" in key
+    assert key == base
 
 
-def test_build_db_key_changes_with_seed_and_mode():
+def test_build_db_key_does_not_change_with_seed_and_mode():
     base = "Skystrike (Hard) by Hinkik"
     a = {
         "metadata": {
@@ -56,6 +53,5 @@ def test_build_db_key_changes_with_seed_and_mode():
             "HumanHitSimGreatMode": "full",
         }
     }
-    assert build_db_key(base, a) != build_db_key(base, b)
-    assert build_db_key(base, a) != build_db_key(base, c)
-
+    assert build_db_key(base, a) == build_db_key(base, b)
+    assert build_db_key(base, a) == build_db_key(base, c)
