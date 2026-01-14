@@ -136,15 +136,13 @@ def load_database_context(
             # Fetch known loadouts for persistent caching
             try:
                 conn = get_db_connection()
-                base_key = str(found_song_name or "").strip()
-                variants_like = None if (" | hitsim" in base_key) else f"{base_key} | hitsim%"
                 cursor = conn.execute(
                     """SELECT loadout_hash, score, fg_score, force_details_json, details_json
                        FROM loadouts
-                       WHERE song_name = ? OR (? IS NOT NULL AND song_name LIKE ?)
+                       WHERE song_name = ?
                        ORDER BY score DESC
                        LIMIT ?""",
-                    (base_key, variants_like, variants_like, LOADOUTS_PER_SONG_LIMIT),
+                    (str(found_song_name or "").strip(), LOADOUTS_PER_SONG_LIMIT),
                 )
                 for row in cursor:
                     force_blob = row["force_details_json"]
