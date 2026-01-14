@@ -109,9 +109,56 @@ def _get_offline_cache_dir() -> str:
     Keeping this inside the repo `bin/` avoids writing into user profile
     locations and makes cache cleanup straightforward.
     """
+
+    def _read_git_head_short(repo_root: str) -> str:
+        """
+        Best-effort read of current git commit short hash.
+
+        We use this to avoid reusing stale/invalid offline caches across code changes
+        (Taichi offline cache can occasionally get into a bad state after kernel edits).
+        """
+        try:
+            head_path = os.path.join(repo_root, ".git", "HEAD")
+            if not os.path.isfile(head_path):
+                return "nogit"
+            head = (open(head_path, "r", encoding="utf-8", errors="replace").read() or "").strip()
+            if head.startswith("ref:"):
+                ref = head.split(":", 1)[1].strip()
+                ref_path = os.path.join(repo_root, ".git", *ref.split("/"))
+                if os.path.isfile(ref_path):
+                    sha = (open(ref_path, "r", encoding="utf-8", errors="replace").read() or "").strip()
+                else:
+                    packed = os.path.join(repo_root, ".git", "packed-refs")
+                    sha = ""
+                    if os.path.isfile(packed):
+                        for line in open(packed, "r", encoding="utf-8", errors="replace"):
+                            line = line.strip()
+                            if not line or line.startswith("#") or line.startswith("^"):
+                                continue
+                            parts = line.split()
+                            if len(parts) == 2 and parts[1] == ref:
+                                sha = parts[0]
+                                break
+                sha = sha.strip()
+            else:
+                sha = head.strip()
+            if len(sha) >= 7:
+                return sha[:7]
+        except Exception:
+            pass
+        return "nogit"
+
     try:
-        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
-        cache_dir = os.path.join(repo_root, "bin", "taichi_cache")
+        # `.../gear_optimizer/solver/taichi_gem/runtime.py` -> repo root is 3 levels up.
+        repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+        cache_schema = "v2"
+        raw_ver = getattr(ti, "__version__", "unknown") or "unknown"
+        if isinstance(raw_ver, tuple):
+            raw_ver = ".".join(str(x) for x in raw_ver)
+        ti_ver = str(raw_ver)
+        ti_ver = "".join((c if (c.isalnum() or c in "._-") else "_") for c in ti_ver).replace(".", "_")
+        head = _read_git_head_short(repo_root)
+        cache_dir = os.path.join(repo_root, "bin", "taichi_cache", cache_schema, f"ti_{ti_ver}", head)
         os.makedirs(cache_dir, exist_ok=True)
         return cache_dir
     except Exception:
