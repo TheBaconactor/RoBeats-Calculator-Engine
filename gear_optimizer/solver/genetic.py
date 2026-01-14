@@ -579,6 +579,29 @@ def decode_gpu_native_ga_runs_payload(
             }
             unique_evaluated.append(cand_data)
 
+        # Sanity: prefer the true max score across decoded candidates if it exceeds
+        # the header best score. This protects against rare GPU header reductions
+        # being out-of-sync with the selected candidate table.
+        try:
+            best_score_run = int(best_data.get("BaseScore") or best_data.get("Score") or 0)
+        except Exception:
+            best_score_run = 0
+        try:
+            cand_best = max(unique_evaluated, key=lambda c: int(c.get("BaseScore") or c.get("Score") or 0))
+        except Exception:
+            cand_best = None
+        if isinstance(cand_best, dict):
+            try:
+                cand_score = int(cand_best.get("BaseScore") or cand_best.get("Score") or 0)
+            except Exception:
+                cand_score = 0
+            if cand_score > best_score_run:
+                data_obj = cand_best.get("Data") or {}
+                if isinstance(data_obj, dict):
+                    best_data = data_obj
+                best_gear = list(cand_best.get("Gear") or best_gear)
+                best_minis = list(cand_best.get("Minis") or best_minis)
+
         if perf:
             stats_ms = (time.perf_counter() - t_stats) * 1000.0 if perf else 0.0
             total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
@@ -1059,6 +1082,28 @@ def decode_gpu_native_ga_runs_payload(
             "[PERF][GADecodeDetails] "
             f"runs={n_runs} pop={n_genomes} uniq={n_stub} arrays={arrays_ms:.1f}ms proxy={proxy_ms:.1f}ms"
         )
+
+    # Sanity: prefer the true max score across decoded candidates if it exceeds
+    # the per-run best scan result.
+    try:
+        best_score_run = int(best_data.get("BaseScore") or best_data.get("Score") or 0)
+    except Exception:
+        best_score_run = 0
+    try:
+        cand_best = max(unique_evaluated, key=lambda c: int(c.get("BaseScore") or c.get("Score") or 0))
+    except Exception:
+        cand_best = None
+    if isinstance(cand_best, dict):
+        try:
+            cand_score = int(cand_best.get("BaseScore") or cand_best.get("Score") or 0)
+        except Exception:
+            cand_score = 0
+        if cand_score > best_score_run:
+            data_obj = cand_best.get("Data") or {}
+            if isinstance(data_obj, dict):
+                best_data = data_obj
+            best_gear = list(cand_best.get("Gear") or best_gear)
+            best_minis = list(cand_best.get("Minis") or best_minis)
 
     return best_data, list(best_gear), list(best_minis), unique_evaluated
 

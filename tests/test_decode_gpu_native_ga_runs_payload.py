@@ -199,3 +199,62 @@ def test_decode_gpu_native_ga_runs_payload_matches_fg_candidate_selector():
     )
 
     assert [_key_by_name(c) for c in decoded] == [_key_by_name(c) for c in expected]
+
+
+def test_decode_gpu_native_ga_runs_payload_prefers_max_candidate_over_header():
+    """
+    Regression test:
+    If the GPU-selected payload header best score is out-of-sync with the candidate
+    rows, decoding must still return the true best score/loadout.
+    """
+    slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
+    gear_pool = {slot: [_item(f"{slot}{i}") for i in range(4)] for slot in slots}
+    mini_pool = [_item(f"M{i}") for i in range(6)]
+    registry = ItemRegistry(gear_pool, mini_pool, slots)
+
+    cfg_data = {
+        "selected_color": "Rush",
+        "primary_color": "Rush",
+        "secondary_color": "Flow",
+        "fg_candidate_limit": int(LOADOUTS_PER_SONG_LIMIT),
+    }
+
+    # Build a GPU-selected payload: 1 candidate row with a higher score than the header best.
+    n_slots = 9
+    width = 1 + n_slots + 7 + 7  # packed row width inside candidate rows (24)
+    selected_payload = np.zeros((2, 26), dtype=np.int32)
+
+    # Header row: selected_count=1, best_score=50 (intentionally wrong), best_ids, best_res, best_run_idx
+    selected_payload[0, 0] = 1
+    selected_payload[0, 1] = 50
+    # Use any valid genome ids for the header best.
+    header_ids = np.asarray([registry.slot_start[i] for i in range(9)], dtype=np.int32)
+    header_res = np.asarray([50, 1, 2, 0, 0, 0, 0], dtype=np.int32)
+    selected_payload[0, 2 : 2 + n_slots] = header_ids
+    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = header_res
+    selected_payload[0, 2 + n_slots + 7] = 0  # best_run_idx
+
+    # Candidate row: run_idx=0, row_idx=1, packed_row with score=100
+    cand_ids = np.asarray([registry.slot_start[i] + 1 for i in range(9)], dtype=np.int32)
+    cand_res = np.asarray([100, 3, 4, 1, 1, 1, 1], dtype=np.int32)
+    packed = np.zeros((width,), dtype=np.int32)
+    packed[0] = 100
+    packed[1 : 1 + n_slots] = cand_ids
+    packed[1 + n_slots : 1 + n_slots + 7] = cand_res
+    packed[1 + n_slots + 7 : 1 + n_slots + 7 + 7] = 0
+
+    selected_payload[1, 0] = 0  # run_idx
+    selected_payload[1, 1] = 1  # row_idx
+    selected_payload[1, 2 : 2 + width] = packed
+
+    best_data, best_gear, best_minis, decoded = decode_gpu_native_ga_runs_payload(
+        runs_payload=selected_payload,
+        registry=registry,
+        cfg_data=cfg_data,
+        base_stats_fixed={},
+        fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
+    )
+
+    assert int(best_data.get("Score", 0)) == 100
+    assert best_gear and best_minis
+    assert int(decoded[0].get("Score", 0)) == 100

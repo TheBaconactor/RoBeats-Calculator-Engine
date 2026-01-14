@@ -214,3 +214,42 @@ def test_results_printer_prefers_nonzero_fg_config_over_zero_config(capsys):
     assert "\nTotal Score: 90\n" in out
     assert "FG Config: {'NonFever1': 3, 'NonFever2': 0}" in out
     assert "FG Config: {'NonFever1': 0, 'NonFever2': 0}" not in out
+
+
+def test_results_printer_best_base_score_uses_persisted_winner(capsys):
+    """
+    Regression test:
+    The console "Best Base Score Found" must reflect the base score winner that will be
+    persisted (DB payload top1), not just the current-run GA winner.
+    """
+    from gear_optimizer.helpers.song_helpers.results_printer import print_results
+
+    found_song_name = "Test Song"
+    best_data = {"Score": 100, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"}
+
+    print_results(
+        found_song_name,
+        best_data=best_data,
+        best_gear=[{"Name": "G1", "type": "Hat"}],
+        best_minis=[{"Name": "M1"}],
+        current_gear_list=[],
+        current_mini_list=[],
+        enable_gear=True,
+        enable_mini=True,
+        fg_variants=[],
+        status_emit_fn=_noop_status_emit,
+        fg_debug=False,
+        ref_arrays=None,
+        calc_song=None,
+        cfg=None,
+        best_base_score_found=200,
+        db_best_fg_score=0,
+        best_base_variant={
+            "data": {"Score": 200, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"},
+            "gear": ["DB Gear"],
+            "minis": ["DB Mini"],
+        },
+    )
+
+    out = capsys.readouterr().out
+    assert "Best Base Score Found: 200" in out

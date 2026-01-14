@@ -111,6 +111,7 @@ def _process_force_greats_cpu(
                     "minis": entry.get("minis", []),
                     "score": base_score,
                     "fg_score": cached_fg_score,
+                    "_is_ga": str(entry.get("_source") or "") == "ga",
                 }
             )
             continue
@@ -143,6 +144,7 @@ def _process_force_greats_cpu(
                     "minis": entry.get("minis", []),
                     "score": base_score,
                     "fg_score": fg_score,
+                    "_is_ga": str(entry.get("_source") or "") == "ga",
                 }
             )
             entry["force"] = {

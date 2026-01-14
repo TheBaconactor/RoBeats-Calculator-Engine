@@ -158,6 +158,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     "minis": e.get("minis") or [],
                     "score": base_score,
                     "fg_score": fg_score,
+                    "_is_ga": bool(e.get("_is_ga")),
                 }
             )
         return variants
@@ -197,6 +198,9 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 ref_arrays=payload.get("ref_arrays"),
                 calc_song=payload.get("calc_song"),
                 cfg=payload.get("cfg"),
+                best_base_score_found=payload.get("best_base_score_found"),
+                db_best_fg_score=payload.get("db_best_fg_score"),
+                best_base_variant=payload.get("best_base_variant"),
             )
             _log_timing("print_results", time.perf_counter() - _t_print0, song=song)
             profiler.record("print_results_pending_final", time.process_time() - cpu_t0)
@@ -262,10 +266,28 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         pass
 
                 fg_state["saved_count"] = len(valid_entries)
-                try:
-                    fg_state["best_fg"] = max(int(e.get("fg_score", 0) or 0) for e in valid_entries)
-                except Exception:
-                    fg_state["best_fg"] = 0
+                # `fg_score` can equal `score` when the optimal FG config is "no forced greats"
+                # (config all zeros). For reporting, treat "best FG" as the best *improving* FG
+                # result that has a valid force payload, matching DB `best_fg_score` semantics.
+                best_fg_improving = 0
+                for e in valid_entries:
+                    if not isinstance(e, dict):
+                        continue
+                    try:
+                        score = int(e.get("score", 0) or 0)
+                    except Exception:
+                        score = 0
+                    try:
+                        fg_score = int(e.get("fg_score", 0) or 0)
+                    except Exception:
+                        fg_score = 0
+                    if fg_score <= score:
+                        continue
+                    if not e.get("force"):
+                        continue
+                    if fg_score > best_fg_improving:
+                        best_fg_improving = fg_score
+                fg_state["best_fg"] = int(best_fg_improving)
                 fg_state["fg_variants"] = _fg_variants_from_persist_entries(valid_entries)
                 pending_fg_summary[song_name] = fg_state
 
@@ -397,6 +419,15 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
 
                 if sync_output and item.get("_pending_fg_job"):
                     song_name_for_print = item.get("song", "Unknown")
+                    best_base_variant = None
+                    try:
+                        best_base_variant = {
+                            "data": dict(db_payload.get("details") or {}) | {"Score": int(db_payload.get("score", 0) or 0)},
+                            "gear": db_payload.get("gear") or [],
+                            "minis": db_payload.get("minis") or [],
+                        }
+                    except Exception:
+                        best_base_variant = None
                     pending_final_print[song_name_for_print] = {
                         "song": song_name_for_print,
                         "best_data": best_data,
@@ -411,6 +442,9 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         "calc_song": item.get("calc_song"),
                         "cfg": cfg,
                         "_emit": _emit,
+                        "best_base_score_found": db_payload.get("score"),
+                        "db_best_fg_score": item.get("db_best_fg_score"),
+                        "best_base_variant": best_base_variant,
                     }
                     # If the FG update arrived first (unlikely but possible), print immediately.
                     if pending_fg_summary.get(song_name_for_print, {}).get("saw_fg_update"):
@@ -419,6 +453,15 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     try:
                         cpu_t0 = time.process_time()
                         _t_print0 = time.perf_counter()
+                        best_base_variant = None
+                        try:
+                            best_base_variant = {
+                                "data": dict(db_payload.get("details") or {}) | {"Score": int(db_payload.get("score", 0) or 0)},
+                                "gear": db_payload.get("gear") or [],
+                                "minis": db_payload.get("minis") or [],
+                            }
+                        except Exception:
+                            best_base_variant = None
                         print_results(
                             item.get("song", "Unknown"),
                             best_data,
@@ -434,6 +477,9 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             ref_arrays=item.get("ref_arrays"),
                             calc_song=item.get("calc_song"),
                             cfg=cfg,
+                            best_base_score_found=db_payload.get("score"),
+                            db_best_fg_score=item.get("db_best_fg_score"),
+                            best_base_variant=best_base_variant,
                         )
                         _log_timing("print_results", time.perf_counter() - _t_print0, song=item.get("song"))
                         profiler.record("print_results", time.process_time() - cpu_t0)

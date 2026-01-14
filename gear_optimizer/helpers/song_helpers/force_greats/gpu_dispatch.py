@@ -709,6 +709,7 @@ def process_force_greats_gpu_finder(
                     "minis": entry.get("minis", []),
                     "score": base_score,  # Keep base score
                     "fg_score": cached_fg_score,  # Store FG score separately
+                    "_is_ga": str(entry.get("_source") or "") == "ga",
                 }
             )
             continue
@@ -2064,6 +2065,7 @@ def process_force_greats_gpu_finder(
                             "score": base_score,
                             "fg_score": fg_score,
                             "base_score": base_score,
+                            "_is_ga": str(entry.get("_source") or "") == "ga",
                         }
                     )
                     continue
@@ -2122,6 +2124,7 @@ def process_force_greats_gpu_finder(
                         "score": base_score,
                         "fg_score": fg_score,
                         "base_score": base_score,
+                        "_is_ga": str(entry.get("_source") or "") == "ga",
                     }
                 )
             except Exception:

@@ -2204,6 +2204,7 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
     for v in song.fg_variants or []:
         if not isinstance(v, dict):
             continue
+        is_ga = bool(v.get("_is_ga"))
         base_score = v.get("score", 0) or 0
         fg_score = v.get("fg_score", 0) or 0
         gear = v.get("gear") or []
@@ -2242,6 +2243,7 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
                 "minis": _compact_items(minis),
                 "details": details,
                 "force": force_obj,
+                "_is_ga": bool(is_ga),
             }
         )
     return entries

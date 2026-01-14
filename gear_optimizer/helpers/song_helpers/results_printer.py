@@ -13,23 +13,65 @@ def print_results(
     ref_arrays=None,
     calc_song=None,
     cfg=None,
+    best_base_score_found=None,
+    db_best_fg_score=None,
+    best_base_variant=None,
 ):
     """
     Print final results.
     """
-    score = best_data.get("Score", 0)
-    print("-" * 30)
-    print(f"FINAL CONFIGURATION FOR: {found_song_name}")
-    print(f"Total Score: {score}")
+    def _coerce_int_score(v) -> int:
+        try:
+            return int(v or 0)
+        except Exception:
+            try:
+                return int(float(v or 0))
+            except Exception:
+                return 0
 
-    status_emit_fn(f"DONE | Score={score}")
+    def _extract_final_score(entry: dict) -> int:
+        # Prefer wrapper-level `fg_score` for cached FG reuse entries; fall back to inner `data`.
+        try:
+            data = entry.get("data", {}) or {}
+        except Exception:
+            data = {}
 
-    # Create a "variant" for the base result for comparison/debugging
-    base_entry = {
-        "data": best_data,
-        "gear": best_gear if enable_gear else current_gear_list,
-        "minis": best_minis if enable_mini else current_mini_list,
-    }
+        score_val = None
+        try:
+            score_val = entry.get("fg_score")
+        except Exception:
+            score_val = None
+        if not score_val:
+            try:
+                score_val = data.get("fg_score") or data.get("Score")
+            except Exception:
+                score_val = None
+        if not score_val:
+            try:
+                score_val = entry.get("score")
+            except Exception:
+                score_val = None
+        if (not score_val) and isinstance(data.get("ForceGreats"), dict):
+            score_val = data.get("ForceGreats", {}).get("final_score")
+        return _coerce_int_score(score_val)
+
+    base_score_run = _coerce_int_score(best_data.get("BaseScore") or best_data.get("Score", 0))
+    base_score_best_found = base_score_run
+    if best_base_score_found is not None:
+        base_score_best_found = max(base_score_best_found, _coerce_int_score(best_base_score_found))
+    best_fg_score_found = 0
+    best_fg_entry = None
+
+    # Create a "variant" for the base result for comparison/debugging.
+    # If a caller passes `best_base_variant`, it is assumed to be the canonical
+    # base winner (e.g. DB-retained best) and will be used for printing.
+    base_entry = best_base_variant if isinstance(best_base_variant, dict) else None
+    if base_entry is None:
+        base_entry = {
+            "data": best_data,
+            "gear": best_gear if enable_gear else current_gear_list,
+            "minis": best_minis if enable_mini else current_mini_list,
+        }
 
     if fg_variants:
 
@@ -52,16 +94,35 @@ def print_results(
             except Exception:
                 return False
 
-        valid_fg_variants = [v for v in fg_variants if _has_nonzero_fg_config(v)]
-        best_fg_entry = max(
-            valid_fg_variants or fg_variants,
-            key=lambda p: p.get("fg_score", 0) or p.get("score", -1),
-        )
+        # "Best FG Score Found" is the best FG-scored result we saw this run:
+        # - non-zero FG config
+        # - GA-origin only when `_is_ga` is present (back-compat: assume True).
+        candidates: list[dict] = []
+        for v in fg_variants or []:
+            if not isinstance(v, dict):
+                continue
+            if not bool(v.get("_is_ga", True)):
+                continue
+            if not _has_nonzero_fg_config(v):
+                continue
+            candidates.append(v)
+        if candidates:
+            best_fg_entry = max(candidates, key=_extract_final_score)
+            best_fg_score_found = _extract_final_score(best_fg_entry)
+            is_same = _is_same_variant(base_entry, best_fg_entry)
 
-        is_same = _is_same_variant(base_entry, best_fg_entry)
+    if db_best_fg_score is not None:
+        best_fg_score_found = max(int(best_fg_score_found or 0), _coerce_int_score(db_best_fg_score))
 
+    print("-" * 30)
+    print(f"FINAL CONFIGURATION FOR: {found_song_name}")
+    print(f"Best Base Score Found: {base_score_best_found}")
+    print(f"Best FG Score Found: {int(best_fg_score_found or 0)}")
+    status_emit_fn(f"DONE | Base={base_score_best_found} | FG={int(best_fg_score_found or 0)}")
+
+    if fg_variants:
         if fg_debug and ref_arrays and calc_song:
-            if is_same:
+            if best_fg_entry is not None and _is_same_variant(base_entry, best_fg_entry):
                 print("\n" + "=" * 50)
                 print(" DEBUG: BASE & FORCE GREATS ARE IDENTICAL ".center(50, "="))
                 print("=" * 50)
@@ -75,14 +136,16 @@ def print_results(
                 print("\n" + "=" * 50)
                 print(" === FORCE GREATS OPTIMIZATION DEBUG === ".center(50, "="))
                 print("=" * 50)
-                _print_detailed_debug(found_song_name, best_fg_entry, ref_arrays, calc_song, cfg)
+                if best_fg_entry is not None:
+                    _print_detailed_debug(found_song_name, best_fg_entry, ref_arrays, calc_song, cfg)
 
         # Print Loadouts
-        if is_same:
+        if best_fg_entry is not None and _is_same_variant(base_entry, best_fg_entry):
             _print_loadout_section("Best Overall Loadout (Base & FG)", best_fg_entry)
         else:
             _print_loadout_section("Best Gear Loadout (Base)", base_entry)
-            _print_loadout_section("Best Gear Loadout (ForceGreats)", best_fg_entry)
+            if best_fg_entry is not None:
+                _print_loadout_section("Best Gear Loadout (ForceGreats)", best_fg_entry)
 
     else:
         # Standard output when FG is disabled
@@ -98,6 +161,11 @@ def _is_same_variant(v1, v2):
         return False
 
     d1, d2 = v1.get("data", {}), v2.get("data", {})
+
+    def _name(item):
+        if isinstance(item, dict):
+            return str(item.get("Name", "") or "")
+        return str(item) if item is not None else ""
 
     # helper to clean zero configs or empty ones
     def clean_cfg(c):
@@ -124,14 +192,14 @@ def _is_same_variant(v1, v2):
         return False
 
     # Compare Gear
-    g1 = sorted([g.get("Name") for g in v1.get("gear", []) if g])
-    g2 = sorted([g.get("Name") for g in v2.get("gear", []) if g])
+    g1 = sorted([_name(g) for g in (v1.get("gear", []) or []) if g])
+    g2 = sorted([_name(g) for g in (v2.get("gear", []) or []) if g])
     if g1 != g2:
         return False
 
     # Compare Minis
-    m1 = sorted([m.get("Name") for m in v1.get("minis", []) if m])
-    m2 = sorted([m.get("Name") for m in v2.get("minis", []) if m])
+    m1 = sorted([_name(m) for m in (v1.get("minis", []) or []) if m])
+    m2 = sorted([_name(m) for m in (v2.get("minis", []) or []) if m])
     if m1 != m2:
         return False
 

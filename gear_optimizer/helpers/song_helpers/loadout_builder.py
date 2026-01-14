@@ -59,6 +59,7 @@ def build_loadout_entries(
             "fg_score": fg_score_val or 0,
             "force": force_obj,
             "eval_data": eval_data,
+            "_source": "ga" if eval_data is not None else "db",
         }
 
     # DB loadouts (up to the configured limit) for this song
