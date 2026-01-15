@@ -1118,7 +1118,14 @@ class GpuExecutor:
         # If callers provide explicit `song_slot` allocations (in-flight pipeline),
         # don't merge: merged solver assigns slots 0..N-1 and would defeat slot-local
         # caching / VRAM residency.
-        if any(isinstance(r.payload, dict) and "song_slot" in r.payload for r in requests):
+        def _nonzero_slot(req: GpuRequest) -> bool:
+            try:
+                payload = req.payload or {}
+                return int(payload.get("song_slot", 0) or 0) != 0
+            except Exception:
+                return False
+
+        if any(_nonzero_slot(r) for r in requests):
             out: list[GpuResponse] = []
             for req in requests:
                 try:
@@ -1199,6 +1206,32 @@ class GpuExecutor:
         by_id = {r.request_id: r for r in out}
         return [by_id.get(req.request_id) for req in requests]
 
+    def _default_song_slot_for_worker(self, worker_id: int) -> int:
+        """
+        Pick a stable per-worker song_slot in [1, MAX_SONG_SLOTS-1].
+
+        Motivation: in spawn-based parallel processing, different workers submit interleaved
+        `calc_song` dict requests. If everything uses song_slot=0, the timeline cache in
+        `precompute_timeline_gpu()` thrashes (cache is keyed by (song_slot, song_key)),
+        forcing repeated recomputation and leaving the GPU underfed by avoidable work.
+        """
+        try:
+            from .taichi_gem.fields import MAX_SONG_SLOTS
+
+            max_slots = int(MAX_SONG_SLOTS)
+        except Exception:
+            max_slots = 8
+
+        if max_slots <= 1:
+            return 0
+
+        try:
+            wid = int(worker_id)
+        except Exception:
+            return 0
+
+        return 1 + (wid % (max_slots - 1))
+
     def _execute_request(self, request: GpuRequest) -> GpuResponse:
         """Execute a single GPU request."""
         try:
@@ -1270,6 +1303,15 @@ class GpuExecutor:
 
         # Run the solver with song_slot
         song_slot = int(payload.get("song_slot", song_slot) or 0)
+        # IPC optimization: choose a stable per-worker song_slot so timeline precompute caches
+        # don't thrash across interleaved songs (precompute_timeline_gpu caches per slot).
+        if (
+            song_slot == 0
+            and (not self._in_process_queues)
+            and request.worker_id is not None
+            and isinstance(payload.get("timeline_grid"), dict)
+        ):
+            song_slot = int(self._default_song_slot_for_worker(int(request.worker_id)))
         solve_fn = solve_genomes_with_ftff if ENV.gpu_use_ftff_solver else solve_genomes_parallel
         results = solve_fn(
             genome_stats_list=payload["genome_stats_list"],
@@ -1323,6 +1365,13 @@ class GpuExecutor:
             ga_upload_base_fixed_stats(payload["base_fixed_stats"])
 
         song_slot = int(payload.get("song_slot", song_slot) or 0)
+        if (
+            song_slot == 0
+            and (not self._in_process_queues)
+            and request.worker_id is not None
+            and isinstance(payload.get("timeline_grid"), dict)
+        ):
+            song_slot = int(self._default_song_slot_for_worker(int(request.worker_id)))
         results = solve_genomes_from_registry(
             population_indices=payload["population_indices"],
             timeline_grid=payload["timeline_grid"],

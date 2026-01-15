@@ -58,9 +58,11 @@ from gear_optimizer.solver.item_registry import ItemRegistry
 
 _POOL_CACHE_MAX = 32
 _REGISTRY_CACHE_MAX = 32
+_INIT_HEURISTIC_CACHE_MAX = 64
 _PREP_CACHE_LOCK = threading.Lock()
 _POOL_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...]], tuple[list, list]]" = OrderedDict()
 _REGISTRY_GPU_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...]], tuple[ItemRegistry, dict]]" = OrderedDict()
+_INIT_HEURISTIC_TOPK_CACHE: "OrderedDict[tuple[tuple[str, str, tuple[str, ...]], int], np.ndarray]" = OrderedDict()
 _FG_JIT_WARMED = False
 
 
@@ -652,15 +654,30 @@ def _prepare_song(task: tuple) -> _NativeSong:
         from gear_optimizer.solver.genetic import build_ga_init_heuristic_topk, extract_db_seed_ids
 
         if init_heuristic_k > 0:
-            init_heuristic_topk = build_ga_init_heuristic_topk(
-                item_stats=np.asarray(gpu_data["item_stats"], dtype=np.int32),
-                slot_start=np.asarray(gpu_data["slot_start"], dtype=np.int32),
-                slot_count=np.asarray(gpu_data["slot_count"], dtype=np.int32),
-                primary_color=str(p_color or ""),
-                secondary_color=str(s_color or ""),
-                heuristic_k=int(init_heuristic_k),
-                n_slots=9,
-            )
+            cache_key = None
+            if cacheable_registry:
+                cache_key = (pool_key, int(init_heuristic_k))
+                with _PREP_CACHE_LOCK:
+                    init_heuristic_topk = _lru_get(_INIT_HEURISTIC_TOPK_CACHE, cache_key)
+
+            if init_heuristic_topk is None:
+                init_heuristic_topk = build_ga_init_heuristic_topk(
+                    item_stats=gpu_data["item_stats"],
+                    slot_start=gpu_data["slot_start"],
+                    slot_count=gpu_data["slot_count"],
+                    primary_color=str(p_color or ""),
+                    secondary_color=str(s_color or ""),
+                    heuristic_k=int(init_heuristic_k),
+                    n_slots=9,
+                )
+                if cache_key is not None and init_heuristic_topk is not None:
+                    with _PREP_CACHE_LOCK:
+                        _lru_put(
+                            _INIT_HEURISTIC_TOPK_CACHE,
+                            cache_key,
+                            np.asarray(init_heuristic_topk, dtype=np.int32),
+                            maxsize=_INIT_HEURISTIC_CACHE_MAX,
+                        )
 
         db_seed_ids = extract_db_seed_ids(db_seed=db_seed, registry=registry, n_slots=9)
     except Exception:
@@ -724,9 +741,9 @@ def _prepare_song(task: tuple) -> _NativeSong:
         db_seed_prob=float(getattr(ga_settings, "db_seed_prob", 0.0) or 0.0) if db_seed_ids is not None else 0.0,
         db_seed_copies=1 if db_seed_ids is not None else 0,
         db_seed_mutations=int(getattr(ga_settings, "db_seed_mutations", 1) or 0) if db_seed_ids is not None else 0,
-        item_stats=np.asarray(gpu_data["item_stats"], dtype=np.int32),
-        slot_start=np.asarray(gpu_data["slot_start"], dtype=np.int32),
-        slot_count=np.asarray(gpu_data["slot_count"], dtype=np.int32),
+        item_stats=gpu_data["item_stats"],
+        slot_start=gpu_data["slot_start"],
+        slot_count=gpu_data["slot_count"],
         base_fixed_stats_arr=np.asarray(base_fixed_stats_arr, dtype=np.int32),
         elite_count=int(elite_count),
         mutation_rate=float(mutation_rate),

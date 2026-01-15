@@ -519,7 +519,11 @@ def batch_evaluate_genomes(
 
     gpu_results = None
     if plan.unique_stats and bool(plan.cfg_data.get("use_gpu", False)):
-        from ..gpu_executor import is_gpu_worker_mode, submit_gpu_solve_genomes
+        from ..gpu_executor import (
+            is_gpu_worker_mode,
+            submit_gpu_solve_genomes,
+            submit_gpu_solve_genomes_from_registry,
+        )
         from ..fever_timeline import get_song_timeline_grid
         from ..taichi_gem_solver import solve_genomes_parallel, solve_genomes_with_ftff
 
@@ -529,25 +533,63 @@ def batch_evaluate_genomes(
             if is_gpu_worker_mode():
                 # IPC route to GPU executor (parallel song processing).
                 # Pass lightweight `calc_song` dict to avoid pickling a full SongTimelineGrid.
-                gpu_results = submit_gpu_solve_genomes(
-                    plan.genome_stats_list,
-                    plan.calc_song,
-                    int(flags.get("is_p_ft", 0)),
-                    int(flags.get("is_s_ft", 0)),
-                    int(flags.get("is_p_ff", 0)),
-                    int(flags.get("is_s_ff", 0)),
-                    int(flags.get("is_p_pp", 0)),
-                    int(flags.get("is_s_pp", 0)),
-                    int(flags.get("is_p_cm", 0)),
-                    int(flags.get("is_s_cm", 0)),
-                    int(flags.get("is_p_fm", 0)),
-                    int(flags.get("is_s_fm", 0)),
-                    int(flags.get("is_p_ov", 0)),
-                    int(flags.get("is_s_ov", 0)),
-                    plan.ref_arrays,
-                    total_budget=TOTAL_GEM_BUDGET,
-                    gem_scale_fever=GEM_SCALE_FEVER,
-                )
+                if registry is not None:
+                    # Prefer the GPU-resident stat aggregation path (avoid CPU-side genome_stats uploads).
+                    representative_genomes = [
+                        plan.uncached_genomes[plan.unique_members[unique_idx][0]]
+                        for unique_idx in range(len(plan.unique_stats))
+                    ]
+                    population_indices = registry.encode_population(representative_genomes)
+                    gpu_arrays = registry.to_gpu_arrays()
+                    base_stats_arr, _ = build_base_fixed_stats_array(
+                        plan.base_stats_fixed,
+                        plan.cfg_data,
+                        fallback_selected_color=plan.sel_color,
+                    )
+
+                    gpu_results = submit_gpu_solve_genomes_from_registry(
+                        population_indices,
+                        gpu_arrays["item_stats"],
+                        gpu_arrays["slot_start"],
+                        gpu_arrays["slot_count"],
+                        base_stats_arr,
+                        plan.calc_song,
+                        int(flags.get("is_p_ft", 0)),
+                        int(flags.get("is_s_ft", 0)),
+                        int(flags.get("is_p_ff", 0)),
+                        int(flags.get("is_s_ff", 0)),
+                        int(flags.get("is_p_pp", 0)),
+                        int(flags.get("is_s_pp", 0)),
+                        int(flags.get("is_p_cm", 0)),
+                        int(flags.get("is_s_cm", 0)),
+                        int(flags.get("is_p_fm", 0)),
+                        int(flags.get("is_s_fm", 0)),
+                        int(flags.get("is_p_ov", 0)),
+                        int(flags.get("is_s_ov", 0)),
+                        plan.ref_arrays,
+                        total_budget=TOTAL_GEM_BUDGET,
+                        gem_scale_fever=GEM_SCALE_FEVER,
+                    )
+                else:
+                    gpu_results = submit_gpu_solve_genomes(
+                        plan.genome_stats_list,
+                        plan.calc_song,
+                        int(flags.get("is_p_ft", 0)),
+                        int(flags.get("is_s_ft", 0)),
+                        int(flags.get("is_p_ff", 0)),
+                        int(flags.get("is_s_ff", 0)),
+                        int(flags.get("is_p_pp", 0)),
+                        int(flags.get("is_s_pp", 0)),
+                        int(flags.get("is_p_cm", 0)),
+                        int(flags.get("is_s_cm", 0)),
+                        int(flags.get("is_p_fm", 0)),
+                        int(flags.get("is_s_fm", 0)),
+                        int(flags.get("is_p_ov", 0)),
+                        int(flags.get("is_s_ov", 0)),
+                        plan.ref_arrays,
+                        total_budget=TOTAL_GEM_BUDGET,
+                        gem_scale_fever=GEM_SCALE_FEVER,
+                    )
             else:
                 # In-process path:
                 # - Default: reuse cached per-song CPU timeline grid (then upload to GPU).
