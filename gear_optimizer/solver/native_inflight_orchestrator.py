@@ -872,6 +872,25 @@ def run_native_inflight_song_pipeline(
     if raw is not None and str(raw).strip() != "":
         inflight_fg_hold_slots = _truthy(raw)
 
+    # Slot pressure hint:
+    # `InFlight_FGHoldSlots=true` keeps timeline slots reserved after GA completes so FG can reuse resident grids.
+    # If `FG_InterleaveEvery` is larger than the available slack slots, the run may be forced to start FG early
+    # to free slots (visible as "blocked_slots" / early FG decisions in debug output).
+    try:
+        slack_slots = max(0, int(song_slot_limit) - int(inflight_limit))
+    except Exception:
+        slack_slots = 0
+    if inflight_fg_hold_slots and int(in_flight_songs) > 1 and int(fg_every) > int(slack_slots):
+        try:
+            if _truthy(os.environ.get("INFLIGHT_FG_DECISION_DEBUG", "0")):
+                print(
+                    "[InFlight][WARN] Slot pressure: InFlight_FGHoldSlots=true with "
+                    f"effective_inflight={int(inflight_limit)} usable_slots={int(song_slot_limit)} slack={int(slack_slots)} "
+                    f"FG_InterleaveEvery={int(fg_every)}; FG may start early to free slots."
+                )
+        except Exception:
+            pass
+
     # Configure GPU-native GA run buffers BEFORE the GPU executor initializes Taichi fields.
     # The executor warms FG kernels on startup which triggers taichi_gem field allocation; if
     # we don't size buffers up front, GA payload downloads become padded and require staging.
@@ -1082,10 +1101,24 @@ def run_native_inflight_song_pipeline(
     except Exception:
         pass
 
-    def _pop_next_ready_fg() -> Optional[_NativeSong]:
+    def _pop_next_fg(*, allow_not_ready: bool) -> Optional[_NativeSong]:
+        """
+        Pick a song for FG submission.
+
+        Normally, we only pop songs whose FG prep is complete (so the FG worker can immediately
+        start GPU work). However, when we're blocked on slot acquisition, waiting for prep
+        completion can stall GA submission and create prolonged GPU bubbles. In that case,
+        we allow popping a not-yet-ready FG song and let the FG worker block on the prep future.
+        """
         for candidate in list(pending_fg):
             fut = candidate.fg_prep_future
             if fut is None:
+                try:
+                    pending_fg.remove(candidate)
+                except Exception:
+                    pass
+                return candidate
+            if allow_not_ready:
                 try:
                     pending_fg.remove(candidate)
                 except Exception:
@@ -1346,6 +1379,7 @@ def run_native_inflight_song_pipeline(
                         except Exception:
                             # No free slots: defer GA submission until FG drains.
                             blocked_on_slot_acquire = True
+                            stage_profiler.record("slot_block", 0.0)
                             prepared.appendleft(song)
                             break
                         try:
@@ -1709,6 +1743,7 @@ def run_native_inflight_song_pipeline(
 
                         # Highlight "early FG" starts (i.e., not cadence-driven).
                         if ("cadence" not in reasons) and ("drain_end" not in reasons):
+                            stage_profiler.record("fg_early", 0.0)
                             print(
                                 "[InFlight][FGDecision] early_start "
                                 f"reasons={','.join(reasons) or 'unknown'} "
@@ -1728,7 +1763,7 @@ def run_native_inflight_song_pipeline(
                 elif len(fg_futures) < fg_workers:
                     submit_budget = fg_workers if drain_mode else 1
                     while submit_budget > 0 and len(fg_futures) < fg_workers and pending_fg:
-                        fg_song = _pop_next_ready_fg()
+                        fg_song = _pop_next_fg(allow_not_ready=bool(blocked_on_slot_acquire))
                         if fg_song is None:
                             break
                         if (not inflight_fg_hold_slots) and int(getattr(fg_song, "song_slot", 0) or 0) <= 0:
@@ -1882,12 +1917,17 @@ def run_native_inflight_song_pipeline(
                     wait_futures.append(fut)
                 if wait_futures:
                     t_wait = time.perf_counter()
+                    has_gpu = bool(ga_inflight) or bool(fg_futures)
+                    has_cpu = bool(prep_inflight) or bool(decode_inflight) or bool(fg_prep_inflight)
                     concurrent.futures.wait(
                         wait_futures,
                         timeout=0.02,
                         return_when=concurrent.futures.FIRST_COMPLETED,
                     )
-                    stage_profiler.record("main_wait", time.perf_counter() - t_wait)
+                    dt_wait = time.perf_counter() - t_wait
+                    stage_profiler.record("main_wait", dt_wait)
+                    if (not has_gpu) and has_cpu:
+                        stage_profiler.record("underfed_wait", dt_wait)
                 else:
                     t_sleep = time.perf_counter()
                     time.sleep(0.001)
