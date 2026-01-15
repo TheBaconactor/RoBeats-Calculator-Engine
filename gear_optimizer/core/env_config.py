@@ -59,6 +59,9 @@ class EnvConfig:
     easy to see all available environment variables in one place.
     """
 
+    # Master debug/profiling gate
+    debug_profile: bool  # DEBUG_PROFILE / METAFINDER_DEBUG_PROFILE: enable profiling/instrumentation knobs
+
     # GPU Performance & Timing
     gpu_sync_for_timing: bool  # GPU_SYNC_FOR_TIMING: Force GPU sync for accurate timing
     gpu_force_sync: bool  # GPU_FORCE_SYNC: Force GPU synchronization
@@ -86,21 +89,23 @@ class EnvConfig:
         Returns:
             EnvConfig instance with all environment variables loaded
         """
+        debug_profile = _env_bool("DEBUG_PROFILE") or _env_bool("METAFINDER_DEBUG_PROFILE")
         return cls(
+            debug_profile=debug_profile,
             # GPU Performance & Timing
-            gpu_sync_for_timing=_env_bool("GPU_SYNC_FOR_TIMING"),
-            gpu_force_sync=_env_bool("GPU_FORCE_SYNC"),
-            gpu_executor_profile=_env_bool("GPU_EXECUTOR_PROFILE"),
+            gpu_sync_for_timing=debug_profile and _env_bool("GPU_SYNC_FOR_TIMING"),
+            gpu_force_sync=debug_profile and _env_bool("GPU_FORCE_SYNC"),
+            gpu_executor_profile=debug_profile and _env_bool("GPU_EXECUTOR_PROFILE"),
             gpu_executor_warmup_fg=_env_bool("GPU_EXECUTOR_WARMUP_FG", "1"),
-            gpu_profiler=_env_bool("GPU_PROFILER"),
-            gpu_batch_log=_env_bool("GPU_BATCH_LOG"),
-            gpu_service_profile=_env_bool("GPU_SERVICE_PROFILE"),
-            gpu_service_profile_print=_env_bool("GPU_SERVICE_PROFILE_PRINT"),
+            gpu_profiler=debug_profile and _env_bool("GPU_PROFILER"),
+            gpu_batch_log=debug_profile and _env_bool("GPU_BATCH_LOG"),
+            gpu_service_profile=debug_profile and _env_bool("GPU_SERVICE_PROFILE"),
+            gpu_service_profile_print=debug_profile and _env_bool("GPU_SERVICE_PROFILE_PRINT"),
             gpu_timeline_only=_env_bool("GPU_TIMELINE_ONLY", "1"),
             gpu_strict=_env_bool("GPU_STRICT", "1"),
             gpu_use_ftff_solver=_env_bool("GPU_USE_FTFF_SOLVER", "1"),
             # General Performance
-            perf_timing=_env_bool("PERF_TIMING"),
+            perf_timing=debug_profile and _env_bool("PERF_TIMING"),
             # Genetic Algorithm
             ga_seed=_env_str("GA_SEED"),
         )
