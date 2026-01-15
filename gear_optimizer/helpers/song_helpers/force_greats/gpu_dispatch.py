@@ -1550,7 +1550,7 @@ def process_force_greats_gpu_finder(
                         )
                     cfg_next_base = int(group_cfg_offset) + int(cfg_len0)
 
-                    # Log first group info (always show breakpoints)
+                    # Log first group info (debug only).
                     if not logged_first:
                         logged_first = True
                         bps = group.get("section_breakpoints") or ()
@@ -1561,7 +1561,7 @@ def process_force_greats_gpu_finder(
                                     bps = [range(0, int(v) + 1) for v in max_fp0]
                             except Exception:
                                 bps = ()
-                        if bps:
+                        if bps and (_truthy_env("METAFINDER_DEBUG_PROFILE", "0") or _truthy_env("DEBUG_PROFILE", "0")):
                             print(f"[FG] Per-FT/FF Breakpoints (GPU accumulation): {len(ftff_pairs)} FT/FF pairs")
                             for sec_idx, bp in enumerate(bps):
                                 print(f"     Section {sec_idx + 1}: {list(bp)[:15]}{'...' if len(bp) > 15 else ''}")

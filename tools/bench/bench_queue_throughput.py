@@ -21,6 +21,11 @@ def _run_one(*, inflight: int, song_limit: int, config_path: Path, db_path: Path
     env["METAFINDER_THROUGHPUT"] = "1"
     env["SONG_QUEUE_LIMIT"] = str(int(song_limit))
     env["IN_FLIGHT_SONGS"] = str(int(inflight))
+    # If we request InFlightSongs > 1, the in-flight orchestrator will cap effective
+    # concurrency by usable GPU song slots (MAX_SONG_SLOTS-1). Ensure the slot pool
+    # is large enough so we're measuring the intended concurrency.
+    if int(inflight) > 1:
+        env.setdefault("GPU_SONG_SLOTS", str(max(24, int(inflight) + 1)))
     env["EVOLUTION_DB_PATH"] = str(db_path)
 
     # Safety: ensure profiling toggles don't sneak in during throughput runs.
@@ -126,4 +131,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
