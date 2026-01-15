@@ -229,7 +229,10 @@ def main() -> int:
     per_mode_results: list[dict] = []
     errors: list[dict] = []
 
-    def _checkpoint(*, in_progress: bool) -> None:
+    def _checkpoint(*, in_progress: bool, current_mode: dict | None = None) -> None:
+        modes_payload = list(per_mode_results)
+        if current_mode is not None:
+            modes_payload.append(current_mode)
         payload = {
             "song": str(args.song),
             "artist": str(args.artist),
@@ -239,7 +242,7 @@ def main() -> int:
             "base_ga_seed": base_ga_seed,
             "hitsim_seed_mode": "fixed" if int(args.fixed_hitsim_seed) > 0 else "random",
             "hitsim_seed_fixed": int(args.fixed_hitsim_seed) if int(args.fixed_hitsim_seed) > 0 else None,
-            "modes": per_mode_results,
+            "modes": modes_payload,
             "errors": errors,
             "_in_progress": bool(in_progress),
         }
@@ -277,6 +280,19 @@ def main() -> int:
         totals = {"macro_runs": 0, "micro_runs": 0}
 
         results_by_diff: dict[str, dict] = {}
+        mode_entry = {
+            "mode": mode_name,
+            "use_db": use_db,
+            "seed_prob": seed_prob,
+            "fresh_each": fresh_each,
+            "db_path": str(db_path) if db_path is not None else None,
+            "iters": iters,
+            "restarts": restarts,
+            "difficulties": list(difficulties),
+            "results": results_by_diff,
+            "totals": totals,
+            "_partial": True,
+        }
         for difficulty in difficulties:
             song_key = song_keys[difficulty]
             fp = _resolve_song_file(paths, difficulty, song_key)
@@ -335,7 +351,7 @@ def main() -> int:
                                 "error": repr(e),
                             }
                         )
-                        _checkpoint(in_progress=True)
+                        _checkpoint(in_progress=True, current_mode=mode_entry)
                         raise
                     totals["micro_runs"] += 1
 
@@ -368,26 +384,9 @@ def main() -> int:
                         "macro_wall_sum_s": float(stage_wall_sum),
                         "_progress": {"done": int(i + 1), "total": int(iters)},
                     }
-                    # Update last mode entry in place (or create a placeholder).
-                    if per_mode_results and per_mode_results[-1].get("mode") == mode_name:
-                        per_mode_results[-1]["results"] = dict(results_by_diff)
-                        per_mode_results[-1]["totals"] = dict(totals)
-                    else:
-                        per_mode_results.append(
-                            {
-                                "mode": mode_name,
-                                "use_db": use_db,
-                                "seed_prob": seed_prob,
-                                "fresh_each": fresh_each,
-                                "db_path": str(db_path) if db_path is not None else None,
-                                "iters": iters,
-                                "restarts": restarts,
-                                "results": dict(results_by_diff),
-                                "totals": dict(totals),
-                                "_partial": True,
-                            }
-                        )
-                    _checkpoint(in_progress=True)
+                    mode_entry["results"] = dict(results_by_diff)
+                    mode_entry["totals"] = dict(totals)
+                    _checkpoint(in_progress=True, current_mode=mode_entry)
 
             # Count hits to the observed max (for this difficulty, within this mode).
             base_hits = sum(1 for s in base_scores if s == best_base_overall)
@@ -408,30 +407,29 @@ def main() -> int:
         # "songs/hour" here is macro runs per hour (each macro run does N restarts).
         macro_tasks = iters * len(difficulties)
         micro_tasks = iters * len(difficulties) * restarts
-        per_mode_results.append(
-            {
-                "mode": mode_name,
-                "use_db": use_db,
-                "seed_prob": seed_prob,
-                "fresh_each": fresh_each,
-                "db_path": str(db_path) if db_path is not None else None,
-                "iters": iters,
-                "restarts": restarts,
-                "difficulties": list(difficulties),
-                "results": results_by_diff,
-                "totals": totals,
-                "total_wall_s": float(mode_wall),
-                "throughput": {
-                    "macro_tasks": int(macro_tasks),
-                    "micro_tasks": int(micro_tasks),
-                    "macro_tasks_per_hour": float(macro_tasks) / (mode_wall / 3600.0) if mode_wall > 0 else 0.0,
-                    "micro_tasks_per_hour": float(micro_tasks) / (mode_wall / 3600.0) if mode_wall > 0 else 0.0,
-                },
-            }
-        )
-        _checkpoint(in_progress=True)
+        mode_entry = {
+            "mode": mode_name,
+            "use_db": use_db,
+            "seed_prob": seed_prob,
+            "fresh_each": fresh_each,
+            "db_path": str(db_path) if db_path is not None else None,
+            "iters": iters,
+            "restarts": restarts,
+            "difficulties": list(difficulties),
+            "results": results_by_diff,
+            "totals": totals,
+            "total_wall_s": float(mode_wall),
+            "throughput": {
+                "macro_tasks": int(macro_tasks),
+                "micro_tasks": int(micro_tasks),
+                "macro_tasks_per_hour": float(macro_tasks) / (mode_wall / 3600.0) if mode_wall > 0 else 0.0,
+                "micro_tasks_per_hour": float(micro_tasks) / (mode_wall / 3600.0) if mode_wall > 0 else 0.0,
+            },
+        }
+        per_mode_results.append(mode_entry)
+        _checkpoint(in_progress=True, current_mode=None)
 
-    _checkpoint(in_progress=False)
+    _checkpoint(in_progress=False, current_mode=None)
     print(f"Wrote: {out_path}")
     return 0
 
