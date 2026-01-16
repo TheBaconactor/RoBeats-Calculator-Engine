@@ -226,6 +226,9 @@ class GpuServiceClient:
     def submit_fg_solve_with_breakpoints(self, payload: dict[str, Any]) -> GpuJobHandle:
         return self.submit(GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS, dict(payload or {}))
 
+    def submit_fg_solve_with_breakpoints_batch(self, payloads: list[dict[str, Any]]) -> GpuJobHandle:
+        return self.submit(GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH, {"payloads": list(payloads or [])})
+
     def submit_process_force_greats(self, *args: Any, **kwargs: Any) -> GpuJobHandle:
         return self.submit(
             GpuRequestType.PROCESS_FORCE_GREATS,

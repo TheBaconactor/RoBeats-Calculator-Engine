@@ -55,6 +55,7 @@ class GpuRequestType(Enum):
     FG_DOWNLOAD_GLOBAL_BEST = "fg_download_global_best"
     FG_COMPUTE_BREAKPOINTS = "fg_compute_breakpoints"
     FG_SOLVE_WITH_BREAKPOINTS = "fg_solve_with_breakpoints"
+    FG_SOLVE_WITH_BREAKPOINTS_BATCH = "fg_solve_with_breakpoints_batch"
     SHUTDOWN = "shutdown"
 
 
@@ -1272,6 +1273,8 @@ class GpuExecutor:
                 return self._execute_fg_compute_breakpoints(request)
             elif request.request_type == GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS:
                 return self._execute_fg_solve_with_breakpoints(request)
+            elif request.request_type == GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH:
+                return self._execute_fg_solve_with_breakpoints_batch(request)
             else:
                 return GpuResponse(
                     request_id=request.request_id,
@@ -2043,7 +2046,7 @@ class GpuExecutor:
         cfg_counts = np.zeros((int(n_out), int(n_sections)), dtype=np.int32)
         bases = [int(w.get("base", 0) or 0) for w in cfg_windows]
         lens = [int(w.get("len", 0) or 0) for w in cfg_windows]
-        ends = [b + l for b, l in zip(bases, lens)]
+        ends = [base + length for base, length in zip(bases, lens)]
 
         for gi in range(int(n_out)):
             x = int(cfg_idx_np[gi])
@@ -2100,13 +2103,62 @@ class GpuExecutor:
 
         import numpy as np
 
+        try:
+            result = self._run_fg_solve_with_breakpoints_payload(request.payload or {})
+            return GpuResponse(request_id=request.request_id, success=True, result=result)
+        except Exception as e:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error=f"FG_SOLVE_WITH_BREAKPOINTS: {type(e).__name__}: {e}",
+            )
+
+    def _execute_fg_solve_with_breakpoints_batch(self, request: GpuRequest) -> GpuResponse:
+        """
+        Batch multiple `FG_SOLVE_WITH_BREAKPOINTS` payloads into a single executor request.
+
+        This reduces request/lock overhead when the FG pipeline must split work into multiple
+        genome batches (signature chunks) for the same song/group.
+        """
+        if not self._in_process_queues:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="FG_SOLVE_WITH_BREAKPOINTS_BATCH requires in-process queues (avoid IPC pickling)",
+            )
+
         payload = request.payload or {}
+        payloads = payload.get("payloads")
+        if not isinstance(payloads, (list, tuple)):
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="FG_SOLVE_WITH_BREAKPOINTS_BATCH requires payloads: list[dict]",
+            )
+
+        results: list[Any] = []
+        try:
+            for p in payloads:
+                if not isinstance(p, dict):
+                    raise TypeError("FG_SOLVE_WITH_BREAKPOINTS_BATCH payload item must be dict")
+                results.append(self._run_fg_solve_with_breakpoints_payload(p))
+        except Exception as e:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error=f"FG_SOLVE_WITH_BREAKPOINTS_BATCH: {type(e).__name__}: {e}",
+            )
+        return GpuResponse(request_id=request.request_id, success=True, result=results)
+
+    def _run_fg_solve_with_breakpoints_payload(self, payload: dict[str, Any]) -> Any:
+        import numpy as np
+
         try:
             n_sections = int(payload.get("n_sections", 0) or 0)
         except Exception:
             n_sections = 0
         if n_sections <= 0:
-            return GpuResponse(request_id=request.request_id, success=True, result=None)
+            return None
 
         # Optional: precompute the timeline grid in this same executor request to avoid
         # an extra PRECOMPUTE_TIMELINE boundary between GA/FG.
@@ -2134,11 +2186,7 @@ class GpuExecutor:
         gem_scale_fever = int(payload.get("gem_scale_fever", 3) or 3)
 
         if ftff_pairs is None or base_stats_pairs is None or non_fever_base_by_ff is None or fp_cap_table is None:
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error="FG_SOLVE_WITH_BREAKPOINTS missing required breakpoint inputs",
-            )
+            raise ValueError("FG_SOLVE_WITH_BREAKPOINTS missing required breakpoint inputs")
 
         try:
             pairs_arr = np.asarray(ftff_pairs, dtype=np.int32)
@@ -2148,10 +2196,10 @@ class GpuExecutor:
             if base_arr.ndim != 2 or int(base_arr.shape[1]) < 2:
                 raise ValueError("base_stats_pairs must be shape (n,2)")
         except Exception as e:
-            return GpuResponse(request_id=request.request_id, success=False, error=f"FG_SOLVE_WITH_BREAKPOINTS: {e}")
+            raise ValueError(str(e)) from e
 
         if int(pairs_arr.shape[0]) <= 0:
-            return GpuResponse(request_id=request.request_id, success=True, result=None)
+            return None
 
         try:
             pairs_arr = np.ascontiguousarray(pairs_arr, dtype=np.int32)
@@ -2172,22 +2220,14 @@ class GpuExecutor:
                 fp_cap_table=fp_cap_table,
             )
         except Exception as e:
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error=f"FG_SOLVE_WITH_BREAKPOINTS breakpoint kernel failed: {type(e).__name__}: {e}",
-            )
+            raise RuntimeError(f"breakpoint kernel failed: {type(e).__name__}: {e}") from e
 
         # Group by identical per-section max-FP caps (avoid transferring the full matrix to callers).
         try:
             rows = np.ascontiguousarray(max_fp_matrix[:, : int(n_sections)], dtype=np.int16)
             uniq, inv = np.unique(rows, axis=0, return_inverse=True)
         except Exception as e:
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error=f"FG_SOLVE_WITH_BREAKPOINTS grouping failed: {type(e).__name__}: {e}",
-            )
+            raise RuntimeError(f"grouping failed: {type(e).__name__}: {e}") from e
 
         # Build packed FG tasks + config windows for decoding cfg_idx at the end.
         cfg_windows: list[dict] = []
@@ -2246,18 +2286,14 @@ class GpuExecutor:
                 )
 
         if not fg_tasks:
-            return GpuResponse(request_id=request.request_id, success=True, result=None)
+            return None
 
         # Solve + accumulate + download best.
         try:
             from .taichi_gem.force_greats.api import fg_download_global_best, fg_reset_global_best
             from .taichi_gem.force_greats.api import solve_force_greats_finder_gpu_tasks
         except Exception as e:
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error=f"FG_SOLVE_WITH_BREAKPOINTS missing FG APIs: {type(e).__name__}: {e}",
-            )
+            raise RuntimeError(f"missing FG APIs: {type(e).__name__}: {e}") from e
 
         genome_stats_list = payload.get("genome_stats_list")
         timestamps_np = payload.get("timestamps_np")
@@ -2277,11 +2313,7 @@ class GpuExecutor:
         except Exception:
             n_genomes = 0
         if n_genomes <= 0:
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error="FG_SOLVE_WITH_BREAKPOINTS n_genomes <= 0",
-            )
+            raise ValueError("FG_SOLVE_WITH_BREAKPOINTS n_genomes <= 0")
 
         # Optional GA->FG staging (run on the owner thread to avoid a separate request boundary).
         ga_stage_coords = payload.get("ga_stage_coords")
@@ -2306,7 +2338,9 @@ class GpuExecutor:
         solve_force_greats_finder_gpu_tasks(
             genome_stats_list,
             np.asarray(timestamps_np, dtype=np.float32),
-            None if great_candidate_timestamps_np is None else np.asarray(great_candidate_timestamps_np, dtype=np.float32),
+            None
+            if great_candidate_timestamps_np is None
+            else np.asarray(great_candidate_timestamps_np, dtype=np.float32),
             int(long_notes),
             float(last_note_time),
             fg_tasks=fg_tasks,
@@ -2331,7 +2365,7 @@ class GpuExecutor:
             if cfg_counts is not None:
                 result = dict(result)
                 result["cfg_counts"] = cfg_counts
-        return GpuResponse(request_id=request.request_id, success=True, result=result)
+        return result
 
     def _execute_optimize_gems_batch(self, request: GpuRequest) -> GpuResponse:
         """Execute optimize_gems_batch_gpu on GPU."""

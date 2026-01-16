@@ -826,6 +826,7 @@ def process_force_greats_gpu_finder(
     pair_caps_grid = None
     pair_caps_from_timeline = False
     song_slot = 0
+    song_data_cache = calc_song.get("song_data", {}) if isinstance(calc_song, dict) else {}
 
     try:
         if isinstance(calc_song, dict):
@@ -869,7 +870,6 @@ def process_force_greats_gpu_finder(
             from ....solver.fever_timeline import get_song_timeline_grid
             from ....helpers.fg_utils import vectorized_calculate_section_caps_grid
 
-            song_data_cache = calc_song.get("song_data", {}) if isinstance(calc_song, dict) else {}
             cached_pair_caps = None
             cached_max_per_section = 0
             try:
@@ -909,6 +909,37 @@ def process_force_greats_gpu_finder(
     # all FG work first (helps keep the GPU queue full, especially across song boundaries).
     defer_group_apply = gpu_client is not None and per_pair_breakpoints
     deferred_gpu_applies: list[dict] = []
+
+    fused_payloads_per_request = 1
+    fused_payload_batch: list[dict] = []
+    fused_ctx_batch: list[dict] = []
+
+    if gpu_client is not None and in_process and _FG_FUSE_BREAKPOINTS_SOLVE:
+        try:
+            fused_payloads_per_request = max(1, int(os.environ.get("FG_FUSED_PAYLOADS_PER_REQUEST", "64")))
+        except Exception:
+            fused_payloads_per_request = 64
+        fused_payloads_per_request = max(1, int(fused_payloads_per_request))
+
+    def _flush_fused_payload_batch() -> None:
+        nonlocal timeline_precompute_queued, n_gpu_calls
+
+        if not fused_payload_batch:
+            return
+        if gpu_client is None:
+            raise RuntimeError("fused payload batch requires gpu_client")
+
+        with gpu_client.submit_lock:
+            timeline_precompute_queued = True
+            fut = gpu_client.submit_fg_solve_with_breakpoints_batch(fused_payload_batch).future
+
+        for i, ctx in enumerate(fused_ctx_batch):
+            ctx["download_future"] = fut
+            ctx["download_index"] = int(i)
+
+        fused_payload_batch.clear()
+        fused_ctx_batch.clear()
+        n_gpu_calls += 1
 
     # Process each group in GPU batches
     for (sel_color, n_sections, max_per_section), sig_map in groups.items():
@@ -1005,6 +1036,70 @@ def process_force_greats_gpu_finder(
 
         sig_list = list(sig_map.keys())
 
+        use_gpu_breakpoints = str(os.environ.get("FG_BREAKPOINTS_GPU", "1") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        fg_breakpoints_non_fever_base_by_ff = None
+        fg_breakpoints_fp_cap_table = None
+        if per_pair_breakpoints and use_gpu_breakpoints:
+            try:
+                fg_breakpoints_non_fever_base_by_ff = song_data_cache.get("fg_breakpoints_non_fever_base_by_ff")
+                fg_breakpoints_fp_cap_table = song_data_cache.get("fg_breakpoints_fp_cap_table")
+            except Exception:
+                fg_breakpoints_non_fever_base_by_ff = None
+                fg_breakpoints_fp_cap_table = None
+            if fg_breakpoints_non_fever_base_by_ff is None or fg_breakpoints_fp_cap_table is None:
+                try:
+                    import numpy as _np
+
+                    meta0 = (calc_song.get("metadata", {}) or {}) if isinstance(calc_song, dict) else {}
+                    try:
+                        ts0 = song_data_cache.get("timestamps")
+                        if ts0 is None:
+                            ts0 = song_data_cache.get("fg_timestamps")
+                        total_notes0 = int(len(ts0)) if ts0 is not None else 0
+                    except Exception:
+                        total_notes0 = 0
+                    try:
+                        long_notes0 = int(meta0.get("Long Notes", 0) or 0)
+                    except Exception:
+                        long_notes0 = 0
+                    try:
+                        from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE
+
+                        non_fever_cas0 = max(0.0, float(total_notes0 - long_notes0) * float(FEVER_FILL_BASE_RATE))
+                    except Exception:
+                        non_fever_cas0 = max(0.0, float(total_notes0 - long_notes0) * 0.333)
+
+                    ref_ff0 = _np.asarray(ref_arrays.get("Fever Fill Rate"), dtype=_np.float64)
+                    if ref_ff0.shape[0] < 161:
+                        raise ValueError("ref_arrays['Fever Fill Rate'] must have length >= 161")
+                    ff_mult = ref_ff0[:161]
+                    raw_fill = non_fever_cas0 * ff_mult
+                    ceil_raw = _np.ceil(raw_fill)
+                    fg_breakpoints_non_fever_base_by_ff = _np.clip(ceil_raw, 0, 32767).astype(_np.int16)
+
+                    fg_breakpoints_fp_cap_table = _np.zeros((161, 51), dtype=_np.int16)
+                    for forced_cap in range(0, 51):
+                        fp = _np.ceil(raw_fill + (forced_cap * 0.5)) - ceil_raw
+                        fg_breakpoints_fp_cap_table[:, forced_cap] = _np.maximum(0, fp).astype(_np.int16)
+
+                    try:
+                        song_data_cache["fg_breakpoints_non_fever_base_by_ff"] = fg_breakpoints_non_fever_base_by_ff
+                        song_data_cache["fg_breakpoints_fp_cap_table"] = fg_breakpoints_fp_cap_table
+                    except Exception:
+                        pass
+                except Exception as _bp_tab_err:
+                    if perf:
+                        print(f"[FG] GPU breakpoints table build failed; falling back to CPU: {_bp_tab_err}")
+                    if _GPU_STRICT:
+                        raise
+                    fg_breakpoints_non_fever_base_by_ff = None
+                    fg_breakpoints_fp_cap_table = None
+
         # Chunk unique genomes to fit GPU MAX_GENOMES (1024).
         #
         # When running per-FT/FF breakpoints, the total kernel work scales with:
@@ -1045,7 +1140,12 @@ def process_force_greats_gpu_finder(
                 # adaptive chunking split configs, rather than starving the GPU with 3-6 genomes.
                 #
                 # Keep the minimum slightly higher in-process where submit overhead is low.
-                min_batch = 32 if in_process else 16
+                fused_floor = (
+                    128
+                    if (in_process and gpu_client is not None and _FG_FUSE_BREAKPOINTS_SOLVE and use_gpu_breakpoints)
+                    else 0
+                )
+                min_batch = max(fused_floor, 32) if in_process else 16
                 max_genomes_per_batch = max(min_batch, min(int(max_genomes_per_batch), int(max_by_threads)))
 
         # Avoid tiny tail batches (e.g. 32+3) which tend to underutilize the GPU.
@@ -1272,64 +1372,8 @@ def process_force_greats_gpu_finder(
 
                 # Use generator to build groups incrementally (Approach A)
                 # Generator includes integrated merge logic
-                use_gpu_breakpoints = str(os.environ.get("FG_BREAKPOINTS_GPU", "1") or "").strip().lower() in {
-                    "1",
-                    "true",
-                    "yes",
-                    "on",
-                }
-
-                def _build_fp_cap_tables():
-                    # (161,) and (161, 51) small int16 lookup tables, computed with float64 ceil to match CPU rules.
-                    import numpy as _np
-
-                    meta0 = (calc_song.get("metadata", {}) or {}) if isinstance(calc_song, dict) else {}
-                    song_data0 = (calc_song.get("song_data", {}) or {}) if isinstance(calc_song, dict) else {}
-                    try:
-                        ts0 = song_data0.get("timestamps")
-                        if ts0 is None:
-                            ts0 = song_data0.get("fg_timestamps")
-                        total_notes0 = int(len(ts0)) if ts0 is not None else 0
-                    except Exception:
-                        total_notes0 = 0
-                    try:
-                        long_notes0 = int(meta0.get("Long Notes", 0) or 0)
-                    except Exception:
-                        long_notes0 = 0
-                    try:
-                        from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE
-
-                        non_fever_cas0 = max(0.0, float(total_notes0 - long_notes0) * float(FEVER_FILL_BASE_RATE))
-                    except Exception:
-                        non_fever_cas0 = max(0.0, float(total_notes0 - long_notes0) * 0.333)
-
-                    ref_ff0 = _np.asarray(ref_arrays.get("Fever Fill Rate"), dtype=_np.float64)
-                    if ref_ff0.shape[0] < 161:
-                        raise ValueError("ref_arrays['Fever Fill Rate'] must have length >= 161")
-                    ff_mult = ref_ff0[:161]
-                    raw_fill = non_fever_cas0 * ff_mult
-                    ceil_raw = _np.ceil(raw_fill)
-                    non_fever_base_by_ff0 = _np.clip(ceil_raw, 0, 32767).astype(_np.int16)
-
-                    fp_cap_table0 = _np.zeros((161, 51), dtype=_np.int16)
-                    for forced_cap in range(0, 51):
-                        fp = _np.ceil(raw_fill + (forced_cap * 0.5)) - ceil_raw
-                        fp_cap_table0[:, forced_cap] = _np.maximum(0, fp).astype(_np.int16)
-
-                    return non_fever_base_by_ff0, fp_cap_table0
-
-                non_fever_base_by_ff = None
-                fp_cap_table = None
-                if use_gpu_breakpoints:
-                    try:
-                        non_fever_base_by_ff, fp_cap_table = _build_fp_cap_tables()
-                    except Exception as _bp_tab_err:
-                        if perf:
-                            print(f"[FG] GPU breakpoints table build failed; falling back to CPU: {_bp_tab_err}")
-                        if _GPU_STRICT:
-                            raise
-                        non_fever_base_by_ff = None
-                        fp_cap_table = None
+                non_fever_base_by_ff = fg_breakpoints_non_fever_base_by_ff
+                fp_cap_table = fg_breakpoints_fp_cap_table
 
                 def _submit_compute_breakpoints_max_fp(*, blocking: bool = True):
                     # Returns (n_pairs, n_sections) int16 array.
@@ -1499,33 +1543,39 @@ def process_force_greats_gpu_finder(
                                 fused_payload["ga_stage_coords"] = coords_arr
                                 fused_payload["ga_stage_table_slot"] = int(song_slot)
 
+                            if defer_group_apply:
+                                ctx = {
+                                    "mode": "breakpoints_fused",
+                                    "pending_sigs": pending_sigs,
+                                    "pending": pending,
+                                    "sig_map": sig_map,
+                                    "sel_color": sel_color,
+                                    "n_sections": int(n_sections),
+                                    "max_per_section": int(max_per_section),
+                                    "n_pending": int(n_pending),
+                                    "fg_scorer": fg_scorer,
+                                    "download_future": None,
+                                    "download_index": None,
+                                    "futures": [],
+                                }
+                                deferred_gpu_applies.append(ctx)
+                                fused_payload_batch.append(fused_payload)
+                                fused_ctx_batch.append(ctx)
+
+                                if len(fused_payload_batch) >= int(fused_payloads_per_request):
+                                    _flush_fused_payload_batch()
+
+                                continue
+
                             # Prevent interleaving with other GPU submits; timeline precompute is handled inside the
                             # fused request (cached per song_slot).
                             with gpu_client.submit_lock:
                                 timeline_precompute_queued = True
                                 fused_future = gpu_client.submit_fg_solve_with_breakpoints(fused_payload).future
+                            n_gpu_calls += 1
 
                             # Mark uploaded (fused request always performs exactly one solve for this chunk).
                             genome_stats_uploaded = True
-                            n_gpu_calls += 1
-
-                            if defer_group_apply:
-                                deferred_gpu_applies.append(
-                                    {
-                                        "mode": "breakpoints_fused",
-                                        "pending_sigs": pending_sigs,
-                                        "pending": pending,
-                                        "sig_map": sig_map,
-                                        "sel_color": sel_color,
-                                        "n_sections": int(n_sections),
-                                        "max_per_section": int(max_per_section),
-                                        "n_pending": int(n_pending),
-                                        "fg_scorer": fg_scorer,
-                                        "download_future": fused_future,
-                                        "futures": [],
-                                    }
-                                )
-                                continue
 
                             # Non-deferred mode is not used in this path, but keep a correctness fallback.
                             gpu_results = fused_future.result()
@@ -2099,6 +2149,9 @@ def process_force_greats_gpu_finder(
                 result_g_ov=result_g_ov,
             )
 
+    if fused_payload_batch:
+        _flush_fused_payload_batch()
+
     if deferred_gpu_applies:
         for ctx in deferred_gpu_applies:
             futs = ctx.get("futures") or []
@@ -2112,7 +2165,17 @@ def process_force_greats_gpu_finder(
             download_future = ctx.get("download_future")
             gpu_results = None
             if download_future is not None and hasattr(download_future, "result"):
-                gpu_results = download_future.result()
+                gpu_results_raw = download_future.result()
+                if isinstance(gpu_results_raw, list):
+                    try:
+                        download_index = int(ctx.get("download_index") or 0)
+                    except Exception:
+                        download_index = 0
+                    if download_index < 0 or download_index >= int(len(gpu_results_raw)):
+                        raise RuntimeError("Deferred FG download index out of range")
+                    gpu_results = gpu_results_raw[int(download_index)]
+                else:
+                    gpu_results = gpu_results_raw
             if not isinstance(gpu_results, dict):
                 raise RuntimeError("Deferred FG download returned no result")
 
