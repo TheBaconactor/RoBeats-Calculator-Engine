@@ -1482,6 +1482,8 @@ def process_force_greats_gpu_finder(
                                 "gem_scale_fever": int(GEM_SCALE_FEVER),
                                 "non_fever_base_by_ff": non_fever_base_by_ff,
                                 "fp_cap_table": fp_cap_table,
+                                "calc_song": calc_song,
+                                "ensure_timeline_precompute": bool(pair_caps_from_timeline),
                                 "genome_stats_list": genome_stats_arr,
                                 "timestamps_np": timestamps,
                                 "great_candidate_timestamps_np": great_candidates,
@@ -1497,18 +1499,10 @@ def process_force_greats_gpu_finder(
                                 fused_payload["ga_stage_coords"] = coords_arr
                                 fused_payload["ga_stage_table_slot"] = int(song_slot)
 
-                            # Ensure the timeline grid for this song_slot is ready (grid_gap/grid_fever_activations)
-                            # before computing max-FP breakpoints, and prevent interleaving with other GPU submits.
+                            # Prevent interleaving with other GPU submits; timeline precompute is handled inside the
+                            # fused request (cached per song_slot).
                             with gpu_client.submit_lock:
-                                if not timeline_precompute_queued:
-                                    try:
-                                        gpu_client.submit_precompute_timeline(
-                                            calc_song=calc_song,
-                                            ref_arrays=ref_arrays,
-                                            song_slot=int(song_slot),
-                                        )
-                                    finally:
-                                        timeline_precompute_queued = True
+                                timeline_precompute_queued = True
                                 fused_future = gpu_client.submit_fg_solve_with_breakpoints(fused_payload).future
 
                             # Mark uploaded (fused request always performs exactly one solve for this chunk).

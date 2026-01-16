@@ -2100,6 +2100,24 @@ class GpuExecutor:
         if n_sections <= 0:
             return GpuResponse(request_id=request.request_id, success=True, result=None)
 
+        # Optional: precompute the timeline grid in this same executor request to avoid
+        # an extra PRECOMPUTE_TIMELINE boundary between GA/FG.
+        #
+        # This is safe: `precompute_timeline_gpu` is cached per (song_slot, song_key).
+        ensure_timeline = bool(payload.get("ensure_timeline_precompute", False))
+        if ensure_timeline:
+            try:
+                calc_song = payload.get("calc_song")
+                solve_kwargs0 = payload.get("solve_kwargs") or {}
+                ref_arrays0 = solve_kwargs0.get("ref_arrays")
+                if isinstance(calc_song, dict) and isinstance(ref_arrays0, dict):
+                    from .taichi_gem.api.timeline import precompute_timeline_gpu
+
+                    precompute_timeline_gpu(calc_song, ref_arrays0, song_slot=int(payload.get("song_slot", 0) or 0))
+            except Exception:
+                # Keep fused FG robust; caps can still come from an explicit grid upload.
+                pass
+
         ftff_pairs = payload.get("ftff_pairs")
         base_stats_pairs = payload.get("base_stats_pairs")
         non_fever_base_by_ff = payload.get("non_fever_base_by_ff")
