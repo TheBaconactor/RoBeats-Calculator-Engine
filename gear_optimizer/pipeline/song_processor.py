@@ -856,17 +856,6 @@ def process_song_task(args):
 
             # Print results
             _t_report0 = time.perf_counter()
-            best_base_variant = None
-            try:
-                # Align console output with what will actually be persisted as the best base winner.
-                # `db_payload['details']` is a details dict (FT/FF/GemCounts/Stats/etc), so we add Score.
-                best_base_variant = {
-                    "data": dict(db_payload.get("details") or {}) | {"Score": int(db_payload.get("score", 0) or 0)},
-                    "gear": db_payload.get("gear") or [],
-                    "minis": db_payload.get("minis") or [],
-                }
-            except Exception:
-                best_base_variant = None
             print_results(
                 found_song_name,
                 best_data,
@@ -882,9 +871,6 @@ def process_song_task(args):
                 ref_arrays=ref_arrays,
                 calc_song=calc_song,
                 cfg=cfg,
-                best_base_score_found=db_payload.get("score"),
-                db_best_fg_score=db_best_fg_score,
-                best_base_variant=best_base_variant,
             )
             report_time_sec = time.perf_counter() - _t_report0
 

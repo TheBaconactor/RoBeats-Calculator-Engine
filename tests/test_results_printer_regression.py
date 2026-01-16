@@ -216,11 +216,11 @@ def test_results_printer_prefers_nonzero_fg_config_over_zero_config(capsys):
     assert "FG Config: {'NonFever1': 0, 'NonFever2': 0}" not in out
 
 
-def test_results_printer_best_base_score_uses_persisted_winner(capsys):
+def test_results_printer_best_base_score_uses_current_run_only(capsys):
     """
     Regression test:
-    The console "Best Base Score Found" must reflect the base score winner that will be
-    persisted (DB payload top1), not just the current-run GA winner.
+    Console output must reflect the current-run winner only, and must not
+    "upgrade" to a DB/persisted best score/loadout for display.
     """
     from gear_optimizer.helpers.song_helpers.results_printer import print_results
 
@@ -252,4 +252,55 @@ def test_results_printer_best_base_score_uses_persisted_winner(capsys):
     )
 
     out = capsys.readouterr().out
-    assert "Best Base Score Found: 200" in out
+    assert "Best Base Score Found: 100" in out
+    assert "Item: DB Gear" not in out
+    assert "Hat: G1" in out
+
+
+def test_results_printer_best_fg_score_ignores_db_best_fg_score(capsys):
+    """
+    Regression test:
+    Console output must not pull FG scores from the DB/persisted best.
+    """
+    from gear_optimizer.helpers.song_helpers.results_printer import print_results
+
+    found_song_name = "Test Song"
+    best_data = {"Score": 100, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"}
+
+    fg_variant = {
+        "data": {
+            "Score": 90,
+            "FT": 0,
+            "FF": 0,
+            "GemCounts": {"Fever Multiplier": 0, "Combo Multiplier": 0, "Perfect Points": 0, "Element": 0},
+            "Selected Element": "Rush",
+            "ForceGreats": {"config": {"NonFever1": 3, "NonFever2": 0}, "final_score": 90},
+        },
+        "gear": [{"Name": "G2", "type": "Hat"}],
+        "minis": [{"Name": "M2"}],
+        "_is_ga": True,
+        "score": 100,
+        "fg_score": 90,
+    }
+
+    print_results(
+        found_song_name,
+        best_data=best_data,
+        best_gear=[{"Name": "G1", "type": "Hat"}],
+        best_minis=[{"Name": "M1"}],
+        current_gear_list=[],
+        current_mini_list=[],
+        enable_gear=True,
+        enable_mini=True,
+        fg_variants=[fg_variant],
+        status_emit_fn=_noop_status_emit,
+        fg_debug=False,
+        ref_arrays=None,
+        calc_song=None,
+        cfg=None,
+        db_best_fg_score=999,
+    )
+
+    out = capsys.readouterr().out
+    assert "Best Base Score Found: 100" in out
+    assert "Best FG Score Found: 90" in out

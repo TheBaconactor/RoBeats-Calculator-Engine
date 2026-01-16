@@ -18,7 +18,10 @@ def print_results(
     best_base_variant=None,
 ):
     """
-    Print final results.
+    Print final results (console).
+
+    Console output reports *current-run* results only. It intentionally does not
+    "upgrade" the displayed base/FG scores to match DB-persisted winners.
     """
     def _coerce_int_score(v) -> int:
         try:
@@ -56,22 +59,16 @@ def print_results(
         return _coerce_int_score(score_val)
 
     base_score_run = _coerce_int_score(best_data.get("BaseScore") or best_data.get("Score", 0))
-    base_score_best_found = base_score_run
-    if best_base_score_found is not None:
-        base_score_best_found = max(base_score_best_found, _coerce_int_score(best_base_score_found))
     best_fg_score_found = 0
     best_fg_entry = None
 
-    # Create a "variant" for the base result for comparison/debugging.
-    # If a caller passes `best_base_variant`, it is assumed to be the canonical
-    # base winner (e.g. DB-retained best) and will be used for printing.
-    base_entry = best_base_variant if isinstance(best_base_variant, dict) else None
-    if base_entry is None:
-        base_entry = {
-            "data": best_data,
-            "gear": best_gear if enable_gear else current_gear_list,
-            "minis": best_minis if enable_mini else current_mini_list,
-        }
+    # Create a "variant" for the base result for comparison/debugging/printing.
+    # NOTE: We intentionally ignore any DB-provided "persisted winner" variants here.
+    base_entry = {
+        "data": best_data,
+        "gear": best_gear if enable_gear else current_gear_list,
+        "minis": best_minis if enable_mini else current_mini_list,
+    }
 
     if fg_variants:
 
@@ -111,14 +108,11 @@ def print_results(
             best_fg_score_found = _extract_final_score(best_fg_entry)
             is_same = _is_same_variant(base_entry, best_fg_entry)
 
-    if db_best_fg_score is not None:
-        best_fg_score_found = max(int(best_fg_score_found or 0), _coerce_int_score(db_best_fg_score))
-
     print("-" * 30)
     print(f"FINAL CONFIGURATION FOR: {found_song_name}")
-    print(f"Best Base Score Found: {base_score_best_found}")
+    print(f"Best Base Score Found: {base_score_run}")
     print(f"Best FG Score Found: {int(best_fg_score_found or 0)}")
-    status_emit_fn(f"DONE | Base={base_score_best_found} | FG={int(best_fg_score_found or 0)}")
+    status_emit_fn(f"DONE | Base={base_score_run} | FG={int(best_fg_score_found or 0)}")
 
     if fg_variants:
         if fg_debug and ref_arrays and calc_song:
