@@ -908,6 +908,22 @@ def run_native_inflight_song_pipeline(
     except Exception:
         fg_enabled = False
 
+    # Reserve at least one song slot for FG so GA doesn't consume the entire slot pool.
+    # Without this, any interleaved FG job that needs a slot can force GA to stall on slot
+    # acquisition (and the scheduler may start FG early due to "blocked_slots").
+    #
+    # This has a surprisingly large impact on throughput stability when:
+    # - `GPU_SONG_SLOTS` is modest (default 24 => usable_slots=23)
+    # - `InFlight_GA_QueueMult` is >= 2 (queue limit would otherwise cap at usable_slots)
+    fg_slot_reserve = 0
+    try:
+        if fg_enabled and int(inflight_limit) > 1 and int(song_slot_limit) > 1:
+            fg_slot_reserve = 1
+    except Exception:
+        fg_slot_reserve = 0
+    if fg_slot_reserve:
+        ga_queue_limit = min(int(ga_queue_limit), max(1, int(song_slot_limit) - int(fg_slot_reserve)))
+
     ga_slack_slots = 0
     try:
         ga_slack_slots = max(0, int(song_slot_limit) - int(ga_queue_limit))
