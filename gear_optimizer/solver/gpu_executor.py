@@ -54,6 +54,7 @@ class GpuRequestType(Enum):
     FG_RESET_GLOBAL_BEST = "fg_reset_global_best"
     FG_DOWNLOAD_GLOBAL_BEST = "fg_download_global_best"
     FG_COMPUTE_BREAKPOINTS = "fg_compute_breakpoints"
+    FG_SOLVE_WITH_BREAKPOINTS = "fg_solve_with_breakpoints"
     SHUTDOWN = "shutdown"
 
 
@@ -1269,6 +1270,8 @@ class GpuExecutor:
                 return self._execute_fg_download_global_best(request)
             elif request.request_type == GpuRequestType.FG_COMPUTE_BREAKPOINTS:
                 return self._execute_fg_compute_breakpoints(request)
+            elif request.request_type == GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS:
+                return self._execute_fg_solve_with_breakpoints(request)
             else:
                 return GpuResponse(
                     request_id=request.request_id,
@@ -1957,23 +1960,17 @@ class GpuExecutor:
                 error="FG_COMPUTE_BREAKPOINTS fp_cap_table must be shape (>=161, >=51)",
             )
 
-        out = np.zeros((int(pair_ft.shape[0]), int(n_sections)), dtype=np.int16)
         try:
-            from .taichi_gem.kernels import kernels_breakpoints
-
-            kernels_breakpoints.fg_compute_max_fp_by_pair_kernel(
-                int(pair_ft.shape[0]),
-                int(base_ft.shape[0]),
-                int(n_sections),
-                int(song_slot),
-                int(gem_scale_fever),
-                pair_ft,
-                pair_ff,
-                base_ft,
-                base_ff,
-                non_fever_base_by_ff,
-                fp_cap_table,
-                out,
+            out = self._compute_fg_breakpoints_max_fp_matrix(
+                pair_ft=pair_ft,
+                pair_ff=pair_ff,
+                base_ft=base_ft,
+                base_ff=base_ff,
+                n_sections=int(n_sections),
+                song_slot=int(song_slot),
+                gem_scale_fever=int(gem_scale_fever),
+                non_fever_base_by_ff=non_fever_base_by_ff,
+                fp_cap_table=fp_cap_table,
             )
         except Exception as e:
             return GpuResponse(
@@ -1983,6 +1980,330 @@ class GpuExecutor:
             )
 
         return GpuResponse(request_id=request.request_id, success=True, result=out)
+
+    @staticmethod
+    def _compute_fg_breakpoints_max_fp_matrix(
+        *,
+        pair_ft,
+        pair_ff,
+        base_ft,
+        base_ff,
+        n_sections: int,
+        song_slot: int,
+        gem_scale_fever: int,
+        non_fever_base_by_ff,
+        fp_cap_table,
+    ):
+        import numpy as np
+
+        out = np.zeros((int(pair_ft.shape[0]), int(n_sections)), dtype=np.int16)
+        from .taichi_gem.kernels import kernels_breakpoints
+
+        kernels_breakpoints.fg_compute_max_fp_by_pair_kernel(
+            int(pair_ft.shape[0]),
+            int(base_ft.shape[0]),
+            int(n_sections),
+            int(song_slot),
+            int(gem_scale_fever),
+            pair_ft,
+            pair_ff,
+            base_ft,
+            base_ff,
+            np.asarray(non_fever_base_by_ff, dtype=np.int16),
+            np.asarray(fp_cap_table, dtype=np.int16),
+            out,
+        )
+        return out
+
+    @staticmethod
+    def _decode_cfg_counts_from_windows(cfg_idx, cfg_windows: list[dict], n_sections: int):
+        import numpy as np
+
+        if cfg_idx is None or not cfg_windows or int(n_sections) <= 0:
+            return None
+        try:
+            cfg_idx_np = np.asarray(cfg_idx, dtype=np.int32)
+        except Exception:
+            return None
+        try:
+            n_out = int(cfg_idx_np.shape[0])
+        except Exception:
+            return None
+        if n_out <= 0:
+            return None
+
+        cfg_counts = np.zeros((int(n_out), int(n_sections)), dtype=np.int32)
+        bases = [int(w.get("base", 0) or 0) for w in cfg_windows]
+        lens = [int(w.get("len", 0) or 0) for w in cfg_windows]
+        ends = [b + l for b, l in zip(bases, lens)]
+
+        for gi in range(int(n_out)):
+            x = int(cfg_idx_np[gi])
+            window_index = -1
+            for wi, (b, e) in enumerate(zip(bases, ends)):
+                if int(b) <= x < int(e):
+                    window_index = wi
+                    break
+            if window_index < 0:
+                continue
+
+            w = cfg_windows[window_index]
+            base = int(w.get("base", 0) or 0)
+            local = int(x - base)
+            if str(w.get("kind") or "") == "list":
+                lst = w.get("counts_list") or []
+                if 0 <= local < len(lst):
+                    row = lst[local]
+                    for s in range(int(n_sections)):
+                        cfg_counts[gi, s] = int(row[s]) if s < len(row) else 0
+                continue
+
+            max_fp_vec = list(w.get("max_fp") or [])
+            rem = int(local)
+            for s in range(int(n_sections) - 1, -1, -1):
+                try:
+                    basev = int(max(0, int(max_fp_vec[s] if s < len(max_fp_vec) else 0))) + 1
+                except Exception:
+                    basev = 1
+                if basev <= 0:
+                    basev = 1
+                val = rem % basev
+                rem //= basev
+                cfg_counts[gi, s] = int(val)
+        return cfg_counts
+
+    def _execute_fg_solve_with_breakpoints(self, request: GpuRequest) -> GpuResponse:
+        """
+        Fused FG path for in-process mode:
+          - compute max-FP breakpoint caps on-GPU (no host download)
+          - group FT/FF pairs by max-FP row on the executor thread
+          - run FG tasks with GPU accumulation
+          - download global best and return `cfg_counts` directly (avoid host-side cfg decoding)
+
+        This removes a whole request boundary (FG_COMPUTE_BREAKPOINTS + SOLVE_FORCE_GREATS_FINDER)
+        and keeps the intermediate max-FP matrix off the CPU.
+        """
+        if not self._in_process_queues:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="FG_SOLVE_WITH_BREAKPOINTS requires in-process queues (avoid IPC pickling)",
+            )
+
+        import numpy as np
+
+        payload = request.payload or {}
+        try:
+            n_sections = int(payload.get("n_sections", 0) or 0)
+        except Exception:
+            n_sections = 0
+        if n_sections <= 0:
+            return GpuResponse(request_id=request.request_id, success=True, result=None)
+
+        ftff_pairs = payload.get("ftff_pairs")
+        base_stats_pairs = payload.get("base_stats_pairs")
+        non_fever_base_by_ff = payload.get("non_fever_base_by_ff")
+        fp_cap_table = payload.get("fp_cap_table")
+        song_slot = int(payload.get("song_slot", 0) or 0)
+        gem_scale_fever = int(payload.get("gem_scale_fever", 3) or 3)
+
+        if ftff_pairs is None or base_stats_pairs is None or non_fever_base_by_ff is None or fp_cap_table is None:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="FG_SOLVE_WITH_BREAKPOINTS missing required breakpoint inputs",
+            )
+
+        try:
+            pairs_arr = np.asarray(ftff_pairs, dtype=np.int32)
+            base_arr = np.asarray(base_stats_pairs, dtype=np.int32)
+            if pairs_arr.ndim != 2 or int(pairs_arr.shape[1]) < 2:
+                raise ValueError("ftff_pairs must be shape (n,2)")
+            if base_arr.ndim != 2 or int(base_arr.shape[1]) < 2:
+                raise ValueError("base_stats_pairs must be shape (n,2)")
+        except Exception as e:
+            return GpuResponse(request_id=request.request_id, success=False, error=f"FG_SOLVE_WITH_BREAKPOINTS: {e}")
+
+        if int(pairs_arr.shape[0]) <= 0:
+            return GpuResponse(request_id=request.request_id, success=True, result=None)
+
+        try:
+            pair_ft = np.asarray(pairs_arr[:, 0], dtype=np.int32)
+            pair_ff = np.asarray(pairs_arr[:, 1], dtype=np.int32)
+            base_ft = np.asarray(base_arr[:, 0], dtype=np.int32)
+            base_ff = np.asarray(base_arr[:, 1], dtype=np.int32)
+            max_fp_matrix = self._compute_fg_breakpoints_max_fp_matrix(
+                pair_ft=pair_ft,
+                pair_ff=pair_ff,
+                base_ft=base_ft,
+                base_ff=base_ff,
+                n_sections=int(n_sections),
+                song_slot=int(song_slot),
+                gem_scale_fever=int(gem_scale_fever),
+                non_fever_base_by_ff=non_fever_base_by_ff,
+                fp_cap_table=fp_cap_table,
+            )
+        except Exception as e:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error=f"FG_SOLVE_WITH_BREAKPOINTS breakpoint kernel failed: {type(e).__name__}: {e}",
+            )
+
+        # Group by identical per-section max-FP caps (avoid transferring the full matrix to callers).
+        try:
+            rows = np.ascontiguousarray(max_fp_matrix[:, : int(n_sections)], dtype=np.int16)
+            uniq, inv = np.unique(rows, axis=0, return_inverse=True)
+        except Exception as e:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error=f"FG_SOLVE_WITH_BREAKPOINTS grouping failed: {type(e).__name__}: {e}",
+            )
+
+        # Build packed FG tasks + config windows for decoding cfg_idx at the end.
+        cfg_windows: list[dict] = []
+        fg_tasks: list[dict[str, Any]] = []
+        cfg_next_base = 0
+
+        try:
+            from .taichi_gem.force_greats import fg_fields
+
+            chunk_size = int(getattr(fg_fields, "FG_MAX_FTFF", 0) or 0)
+        except Exception:
+            chunk_size = 0
+        if chunk_size <= 0:
+            chunk_size = 1024
+
+        for i_group in range(int(uniq.shape[0])):
+            mask = inv == int(i_group)
+            if not np.any(mask):
+                continue
+            group_pairs = pairs_arr[mask]
+            try:
+                max_fp_norm = [max(0, int(v)) for v in uniq[int(i_group)].tolist()[: int(n_sections)]]
+            except Exception:
+                max_fp_norm = [0] * int(n_sections)
+            if not max_fp_norm:
+                max_fp_norm = [0] * int(n_sections)
+
+            cfg_len = 1
+            for v in max_fp_norm[: int(n_sections)]:
+                cfg_len *= int(v) + 1
+            cfg_len = max(1, int(cfg_len))
+
+            group_cfg_offset = int(cfg_next_base)
+            cfg_windows.append(
+                {
+                    "base": int(group_cfg_offset),
+                    "len": int(cfg_len),
+                    "kind": "max_fp",
+                    "max_fp": list(max_fp_norm),
+                    "n_sections": int(n_sections),
+                }
+            )
+            cfg_next_base = int(group_cfg_offset) + int(cfg_len)
+
+            for j in range(0, int(group_pairs.shape[0]), int(chunk_size)):
+                chunk = group_pairs[j : j + int(chunk_size)]
+                if int(chunk.shape[0]) <= 0:
+                    continue
+                fg_tasks.append(
+                    {
+                        "counts_list": None,
+                        "counts_max_fp": list(max_fp_norm),
+                        "ftff_pairs": np.asarray(chunk, dtype=np.int32),
+                        "base_cfg_offset": int(group_cfg_offset),
+                    }
+                )
+
+        if not fg_tasks:
+            return GpuResponse(request_id=request.request_id, success=True, result=None)
+
+        # Solve + accumulate + download best.
+        try:
+            from .taichi_gem.force_greats.api import fg_download_global_best, fg_reset_global_best
+            from .taichi_gem.force_greats.api import solve_force_greats_finder_gpu_tasks
+        except Exception as e:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error=f"FG_SOLVE_WITH_BREAKPOINTS missing FG APIs: {type(e).__name__}: {e}",
+            )
+
+        genome_stats_list = payload.get("genome_stats_list")
+        timestamps_np = payload.get("timestamps_np")
+        great_candidate_timestamps_np = payload.get("great_candidate_timestamps_np")
+        long_notes = int(payload.get("long_notes", 0) or 0)
+        last_note_time = float(payload.get("last_note_time", 0.0) or 0.0)
+
+        kwargs_local = dict(payload.get("solve_kwargs") or {})
+        kwargs_local["accumulate_global"] = True
+        kwargs_local["return_raw"] = True
+
+        try:
+            if genome_stats_list is None:
+                n_genomes = int(kwargs_local.get("n_genomes_override", 0) or 0)
+            else:
+                n_genomes = int(len(genome_stats_list))
+        except Exception:
+            n_genomes = 0
+        if n_genomes <= 0:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="FG_SOLVE_WITH_BREAKPOINTS n_genomes <= 0",
+            )
+
+        # Optional GA->FG staging (run on the owner thread to avoid a separate request boundary).
+        ga_stage_coords = payload.get("ga_stage_coords")
+        if ga_stage_coords is not None and bool(kwargs_local.get("genome_stats_preuploaded")):
+            try:
+                from .taichi_gem import api as _taichi_api
+
+                table_slot = int(payload.get("ga_stage_table_slot", song_slot) or song_slot)
+                _taichi_api.ga_stage_genome_base_stats_from_fg_candidates_table(
+                    int(table_slot),
+                    np.asarray(ga_stage_coords, dtype=np.int32),
+                    n_slots=9,
+                )
+            except Exception:
+                # Fallback to host upload path.
+                kwargs_local["genome_stats_preuploaded"] = False
+                kwargs_local["upload_genome_stats"] = True
+
+        if bool(payload.get("fg_reset_before", True)):
+            fg_reset_global_best(int(n_genomes))
+
+        solve_force_greats_finder_gpu_tasks(
+            genome_stats_list,
+            np.asarray(timestamps_np, dtype=np.float32),
+            None if great_candidate_timestamps_np is None else np.asarray(great_candidate_timestamps_np, dtype=np.float32),
+            int(long_notes),
+            float(last_note_time),
+            fg_tasks=fg_tasks,
+            **kwargs_local,
+        )
+
+        download_topk = payload.get("fg_download_topk", None)
+        download_base_scores = payload.get("fg_download_base_scores", None)
+        download_keep_mask = payload.get("fg_download_keep_mask", None)
+        if download_topk is not None and download_base_scores is not None:
+            result = fg_download_global_best(
+                int(n_genomes),
+                topk=int(download_topk),
+                base_scores=download_base_scores,
+                keep_mask=download_keep_mask,
+            )
+        else:
+            result = fg_download_global_best(int(n_genomes))
+
+        if isinstance(result, dict):
+            cfg_counts = self._decode_cfg_counts_from_windows(result.get("cfg_idx"), cfg_windows, int(n_sections))
+            if cfg_counts is not None:
+                result = dict(result)
+                result["cfg_counts"] = cfg_counts
+        return GpuResponse(request_id=request.request_id, success=True, result=result)
 
     def _execute_optimize_gems_batch(self, request: GpuRequest) -> GpuResponse:
         """Execute optimize_gems_batch_gpu on GPU."""

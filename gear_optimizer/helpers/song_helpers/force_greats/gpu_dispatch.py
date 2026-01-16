@@ -34,6 +34,7 @@ def _truthy_env(name: str, default: str = "0") -> bool:
 
 _GPU_STRICT = _truthy_env("GPU_STRICT", "1")
 _FG_GA_CANDIDATE_TABLE_ENABLED = _truthy_env("FG_GA_CANDIDATE_TABLE_ENABLED", "1")
+_FG_FUSE_BREAKPOINTS_SOLVE = _truthy_env("FG_FUSE_BREAKPOINTS_SOLVE", "1")
 
 
 def _chart_signature_key(calc_song: dict) -> tuple:
@@ -1417,7 +1418,153 @@ def process_force_greats_gpu_finder(
                         return None
 
                 max_fp_matrix = None
-                if use_gpu_breakpoints:
+                if (
+                    _FG_FUSE_BREAKPOINTS_SOLVE
+                    and gpu_client is not None
+                    and in_process
+                    and use_gpu_breakpoints
+                    and (non_fever_base_by_ff is not None)
+                    and (fp_cap_table is not None)
+                    and (not _is_empty_pairs(ftff_pairs))
+                ):
+                    # Fused path: keep max-FP matrix off the host and solve in one executor request.
+                    try:
+                        base_pairs_list = sorted({(int(a), int(b)) for (a, b) in base_stats_pairs})
+                    except Exception:
+                        base_pairs_list = []
+                    if base_pairs_list:
+                        try:
+                            import numpy as _np
+
+                            ftff_pairs_packed = _np.asarray(ftff_pairs, dtype=_np.int32)
+                            base_pairs_packed = _np.asarray(base_pairs_list, dtype=_np.int32)
+                            if ftff_pairs_packed.ndim != 2 or int(ftff_pairs_packed.shape[1]) < 2:
+                                ftff_pairs_packed = _np.asarray(list(ftff_pairs), dtype=_np.int32)
+                            if base_pairs_packed.ndim != 2 or int(base_pairs_packed.shape[1]) < 2:
+                                base_pairs_packed = _np.asarray(list(base_pairs_list), dtype=_np.int32)
+
+                            # Optional GA->FG staging happens inside the fused request to avoid a separate boundary.
+                            solve_kwargs = dict(
+                                n_sections=n_sections,
+                                is_p_ft=is_p_ft,
+                                is_s_ft=is_s_ft,
+                                is_p_ff=is_p_ff,
+                                is_s_ff=is_s_ff,
+                                is_p_pp=is_p_pp,
+                                is_s_pp=is_s_pp,
+                                is_p_cm=is_p_cm,
+                                is_s_cm=is_s_cm,
+                                is_p_fm=is_p_fm,
+                                is_s_fm=is_s_fm,
+                                is_p_ov=is_p_ov,
+                                is_s_ov=is_s_ov,
+                                ref_arrays=ref_arrays,
+                                total_budget=TOTAL_GEM_BUDGET,
+                                gem_scale_fever=GEM_SCALE_FEVER,
+                                pair_caps_grid=pair_caps_grid,
+                                pair_caps_from_timeline=bool(pair_caps_from_timeline),
+                                song_slot=int(song_slot),
+                                return_raw=True,
+                                accumulate_global=True,
+                            )
+                            if genome_stats_preuploaded and coords_arr is not None:
+                                solve_kwargs["upload_genome_stats"] = False
+                                solve_kwargs["genome_stats_preuploaded"] = True
+                                solve_kwargs["n_genomes_override"] = int(n_pending)
+                            else:
+                                solve_kwargs["upload_genome_stats"] = True
+
+                            fused_payload = {
+                                "ftff_pairs": ftff_pairs_packed,
+                                "base_stats_pairs": base_pairs_packed,
+                                "n_sections": int(n_sections),
+                                "song_slot": int(song_slot),
+                                "gem_scale_fever": int(GEM_SCALE_FEVER),
+                                "non_fever_base_by_ff": non_fever_base_by_ff,
+                                "fp_cap_table": fp_cap_table,
+                                "genome_stats_list": genome_stats_arr,
+                                "timestamps_np": timestamps,
+                                "great_candidate_timestamps_np": great_candidates,
+                                "long_notes": int(long_notes),
+                                "last_note_time": float(last_note_time),
+                                "solve_kwargs": solve_kwargs,
+                                "fg_reset_before": True,
+                                "fg_download_topk": int(download_topk_k) if download_topk_enabled else None,
+                                "fg_download_base_scores": download_base_scores,
+                                "fg_download_keep_mask": download_keep_mask,
+                            }
+                            if genome_stats_preuploaded and coords_arr is not None:
+                                fused_payload["ga_stage_coords"] = coords_arr
+                                fused_payload["ga_stage_table_slot"] = int(song_slot)
+
+                            # Ensure the timeline grid for this song_slot is ready (grid_gap/grid_fever_activations)
+                            # before computing max-FP breakpoints, and prevent interleaving with other GPU submits.
+                            with gpu_client.submit_lock:
+                                if not timeline_precompute_queued:
+                                    try:
+                                        gpu_client.submit_precompute_timeline(
+                                            calc_song=calc_song,
+                                            ref_arrays=ref_arrays,
+                                            song_slot=int(song_slot),
+                                        )
+                                    finally:
+                                        timeline_precompute_queued = True
+                                fused_future = gpu_client.submit_fg_solve_with_breakpoints(fused_payload).future
+
+                            # Mark uploaded (fused request always performs exactly one solve for this chunk).
+                            genome_stats_uploaded = True
+                            n_gpu_calls += 1
+
+                            if defer_group_apply:
+                                deferred_gpu_applies.append(
+                                    {
+                                        "mode": "breakpoints_fused",
+                                        "pending_sigs": pending_sigs,
+                                        "pending": pending,
+                                        "sig_map": sig_map,
+                                        "sel_color": sel_color,
+                                        "n_sections": int(n_sections),
+                                        "max_per_section": int(max_per_section),
+                                        "n_pending": int(n_pending),
+                                        "fg_scorer": fg_scorer,
+                                        "download_future": fused_future,
+                                        "futures": [],
+                                    }
+                                )
+                                continue
+
+                            # Non-deferred mode is not used in this path, but keep a correctness fallback.
+                            gpu_results = fused_future.result()
+                            if not isinstance(gpu_results, dict):
+                                raise RuntimeError("Fused FG request returned no result")
+                            result_final = gpu_results["final_score"]
+                            result_base = gpu_results["base_score"]
+                            result_cfg_idx = gpu_results["cfg_idx"]
+                            cfg_counts_arr = gpu_results.get("cfg_counts")
+                            result_ft = gpu_results["FT"]
+                            result_ff = gpu_results["FF"]
+                            result_g_pp = gpu_results["g_pp"]
+                            result_g_cm = gpu_results["g_cm"]
+                            result_g_fm = gpu_results["g_fm"]
+                            result_g_ov = gpu_results["g_ov"]
+                            selected_indices = gpu_results.get("selected_indices")
+                        except Exception as _fuse_err:
+                            if perf:
+                                print(f"[FG] Fused breakpoint+solve failed; falling back: {_fuse_err}")
+                            if _GPU_STRICT:
+                                raise
+                            max_fp_matrix = None
+                if max_fp_matrix is None and use_gpu_breakpoints and gpu_client is not None and in_process:
+                    # Fallback: separate FG_COMPUTE_BREAKPOINTS request.
+                    try:
+                        max_fp_matrix = _submit_compute_breakpoints_max_fp(blocking=True)
+                    except Exception as _bp_gpu_err:
+                        if perf:
+                            print(f"[FG] GPU breakpoint compute failed; falling back to CPU: {_bp_gpu_err}")
+                        if _GPU_STRICT:
+                            raise
+                        max_fp_matrix = None
+                elif max_fp_matrix is None and use_gpu_breakpoints:
                     try:
                         max_fp_matrix = _submit_compute_breakpoints_max_fp(blocking=True)
                     except Exception as _bp_gpu_err:
@@ -1975,16 +2122,21 @@ def process_force_greats_gpu_finder(
             if not isinstance(gpu_results, dict):
                 raise RuntimeError("Deferred FG download returned no result")
 
-            if ctx.get("mode") != "breakpoints":
+            mode = str(ctx.get("mode") or "")
+            if mode not in {"breakpoints", "breakpoints_fused"}:
                 continue
 
-            master_configs = ctx.get("master_configs") or []
             cfg_idx_arr = gpu_results.get("cfg_idx")
             selected_indices = gpu_results.get("selected_indices")
 
-            # Decode cfg_idx -> per-section FP targets for apply/persistence (supports max_fp windows).
-            cfg_windows = ctx.get("cfg_windows") or []
-            cfg_counts_arr = _decode_cfg_counts_from_windows(cfg_idx_arr, cfg_windows, int(ctx.get("n_sections") or 0))
+            if mode == "breakpoints_fused":
+                cfg_counts_arr = gpu_results.get("cfg_counts")
+            else:
+                # Decode cfg_idx -> per-section FP targets for apply/persistence (supports max_fp windows).
+                cfg_windows = ctx.get("cfg_windows") or []
+                cfg_counts_arr = _decode_cfg_counts_from_windows(
+                    cfg_idx_arr, cfg_windows, int(ctx.get("n_sections") or 0)
+                )
 
             # Reduced-download path: apply only to selected signature indices.
             apply_sigs = ctx.get("pending_sigs") or []
@@ -2011,7 +2163,7 @@ def process_force_greats_gpu_finder(
                 sel_color=str(ctx.get("sel_color") or ""),
                 n_sections=int(ctx.get("n_sections") or 0),
                 max_per_section=int(ctx.get("max_per_section") or 0),
-                counts_list=master_configs,
+                counts_list=[],
                 fg_scorer=ctx.get("fg_scorer"),
                 result_final=gpu_results["final_score"],
                 result_base=gpu_results["base_score"],

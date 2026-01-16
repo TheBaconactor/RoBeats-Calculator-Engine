@@ -66,15 +66,18 @@ def _read_typeperf_csv(path: Path, *, pid: int) -> dict[str, Any]:
     """
     Returns:
       {
-        "samples": [{"ts": epoch_sec, "max_util": float, "sum_util": float}],
+        "samples": [{"ts": epoch_sec, "max_util": float, "compute_max_util": float}],
         "counter_count": int,  # filtered to this pid
+        "counter_count_compute": int,  # filtered to this pid + compute engines
         "counter_count_total": int,
       }
     """
     samples: list[dict[str, Any]] = []
     counter_count = 0
+    counter_count_compute = 0
     counter_count_total = 0
     keep_idxs: list[int] | None = None
+    keep_compute_idxs: list[int] | None = None
     pid_tag = f"pid_{int(pid)}_"
 
     with path.open("r", encoding="utf-8", newline="") as fh:
@@ -86,30 +89,37 @@ def _read_typeperf_csv(path: Path, *, pid: int) -> dict[str, Any]:
             if header is None:
                 header = row
                 counter_count_total = max(0, len(header) - 1)
-                keep_idxs = [
-                    i for i, name in enumerate(header[1:], start=1) if pid_tag in str(name or "").lower()
-                ]  # 1-based CSV col idx
+                keep_idxs = [i for i, name in enumerate(header[1:], start=1) if pid_tag in str(name or "").lower()]
+                keep_compute_idxs = [
+                    i
+                    for i, name in enumerate(header[1:], start=1)
+                    if (pid_tag in str(name or "").lower())
+                    and ("engtype_compute" in str(name or "").lower() or "high priority compute" in str(name or "").lower())
+                ]
                 counter_count = int(len(keep_idxs))
+                counter_count_compute = int(len(keep_compute_idxs))
                 continue
             ts = _parse_typeperf_timestamp(row[0])
             if ts is None:
                 continue
-            if keep_idxs is None:
+            if keep_idxs is None or keep_compute_idxs is None:
                 continue
             vals = [_parse_float(row[i]) for i in keep_idxs if i < len(row)]
+            compute_vals = [_parse_float(row[i]) for i in keep_compute_idxs if i < len(row)]
             if not vals:
                 continue
             samples.append(
                 {
                     "ts": float(ts),
                     "max_util": float(max(vals)),
-                    "sum_util": float(sum(vals)),
+                    "compute_max_util": float(max(compute_vals) if compute_vals else 0.0),
                 }
             )
 
     return {
         "samples": samples,
         "counter_count": int(counter_count),
+        "counter_count_compute": int(counter_count_compute),
         "counter_count_total": int(counter_count_total),
     }
 
@@ -117,16 +127,18 @@ def _read_typeperf_csv(path: Path, *, pid: int) -> dict[str, Any]:
 def _summarize_series(values: list[float]) -> dict[str, Any]:
     if not values:
         return {"count": 0}
-    values_sorted = sorted(values)
+    # Windows GPU Engine counters can exceed 100% (multiple engines/adapters). Clamp for readability.
+    values_c = [min(100.0, max(0.0, float(v))) for v in values]
+    values_sorted = sorted(values_c)
     p50 = values_sorted[int(round(0.50 * (len(values_sorted) - 1)))]
     p95 = values_sorted[int(round(0.95 * (len(values_sorted) - 1)))]
     return {
         "count": int(len(values)),
-        "avg": float(sum(values) / len(values)),
-        "min": float(min(values)),
+        "avg": float(sum(values_sorted) / len(values_sorted)),
+        "min": float(min(values_sorted)),
         "p50": float(p50),
         "p95": float(p95),
-        "max": float(max(values)),
+        "max": float(max(values_sorted)),
     }
 
 
@@ -140,7 +152,8 @@ def _find_low_util_intervals(samples: list[dict[str, Any]], *, threshold: float,
     start_idx = 0
     min_util = 1e9
     for i, s in enumerate(samples):
-        util = float(s.get("max_util", 0.0) or 0.0)
+        util = float(s.get("compute_max_util", s.get("max_util", 0.0)) or 0.0)
+        util = min(100.0, max(0.0, util))
         low = util < float(threshold)
         if low and not in_run:
             in_run = True
@@ -412,14 +425,15 @@ def main() -> int:
         if gpu_csv.exists():
             tp = _read_typeperf_csv(gpu_csv, pid=int(pid))
             samples = list(tp.get("samples") or [])
-            max_series = [float(s["max_util"]) for s in samples]
-            sum_series = [float(s["sum_util"]) for s in samples]
+            max_series = [float(s.get("max_util", 0.0) or 0.0) for s in samples]
+            compute_max_series = [float(s.get("compute_max_util", 0.0) or 0.0) for s in samples]
             summary["typeperf"] = {
                 "counter_count": int(tp.get("counter_count") or 0),
+                "counter_count_compute": int(tp.get("counter_count_compute") or 0),
                 "counter_count_total": int(tp.get("counter_count_total") or 0),
                 "samples": int(len(samples)),
                 "max_util": _summarize_series(max_series),
-                "sum_util": _summarize_series(sum_series),
+                "compute_max_util": _summarize_series(compute_max_series),
             }
 
             low = _find_low_util_intervals(
@@ -457,7 +471,8 @@ def main() -> int:
 
         # Print a compact summary for the console.
         try:
-            tp_sum = summary.get("typeperf", {}).get("max_util", {}) if isinstance(summary.get("typeperf"), dict) else {}
+            tp0 = summary.get("typeperf", {}) if isinstance(summary.get("typeperf"), dict) else {}
+            tp_sum = tp0.get("compute_max_util", {}) or tp0.get("max_util", {})
             low_count = int((summary.get("low_util_intervals") or {}).get("count") or 0)
             print(
                 "[Profile120] "
