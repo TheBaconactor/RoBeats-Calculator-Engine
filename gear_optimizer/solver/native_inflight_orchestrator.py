@@ -924,6 +924,81 @@ def run_native_inflight_song_pipeline(
     if fg_slot_reserve:
         ga_queue_limit = min(int(ga_queue_limit), max(1, int(song_slot_limit) - int(fg_slot_reserve)))
 
+    ga_queue_limit_base = int(ga_queue_limit)
+
+    inflight_ga_dynamic_queue = False
+    try:
+        # Enable by default only when inflight + FG are both active, because dynamic queue
+        # sizing primarily exists to mitigate GA/FG song-slot pressure.
+        inflight_ga_dynamic_queue = bool(fg_enabled and int(in_flight_songs) > 1)
+    except Exception:
+        inflight_ga_dynamic_queue = False
+    try:
+        if cfg0 is not None:
+            inflight_ga_dynamic_queue = cfg0.getboolean(
+                "IterationEngine",
+                "InFlight_GA_DynamicQueue",
+                fallback=bool(inflight_ga_dynamic_queue),
+            )
+    except Exception:
+        pass
+    raw = os.environ.get("INFLIGHT_GA_DYNAMIC_QUEUE")
+    if raw is not None and str(raw).strip() != "":
+        inflight_ga_dynamic_queue = _truthy(raw)
+
+    # Optional: reserve extra free slots (beyond `fg_slot_reserve`) when FG backlog is large.
+    # Default is 0 because a large FG backlog is normal in interleaved mode (cadence-based FG).
+    ga_queue_extra_free_on_fg_backlog = 0
+    try:
+        if cfg0 is not None:
+            ga_queue_extra_free_on_fg_backlog = safe_int(
+                cfg0.get("IterationEngine", "InFlight_GA_ExtraFreeSlotsOnFGBacklog", fallback="0"),
+                0,
+            )
+    except Exception:
+        ga_queue_extra_free_on_fg_backlog = 0
+    raw = os.environ.get("INFLIGHT_GA_EXTRA_FREE_SLOTS_ON_FG_BACKLOG")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            ga_queue_extra_free_on_fg_backlog = int(raw)
+        except Exception:
+            pass
+    ga_queue_extra_free_on_fg_backlog = max(0, min(int(ga_queue_extra_free_on_fg_backlog), 8))
+
+    # Reserve extra free slots when we have recently hit GA slot-acquire stalls.
+    ga_queue_extra_free_on_slot_pressure = 1
+    try:
+        if cfg0 is not None:
+            ga_queue_extra_free_on_slot_pressure = safe_int(
+                cfg0.get("IterationEngine", "InFlight_GA_ExtraFreeSlotsOnSlotPressure", fallback="1"),
+                1,
+            )
+    except Exception:
+        ga_queue_extra_free_on_slot_pressure = 1
+    raw = os.environ.get("INFLIGHT_GA_EXTRA_FREE_SLOTS_ON_SLOT_PRESSURE")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            ga_queue_extra_free_on_slot_pressure = int(raw)
+        except Exception:
+            pass
+    ga_queue_extra_free_on_slot_pressure = max(0, min(int(ga_queue_extra_free_on_slot_pressure), 8))
+
+    ga_queue_pressure_window_s = 1.5
+    try:
+        if cfg0 is not None:
+            ga_queue_pressure_window_s = float(
+                cfg0.get("IterationEngine", "InFlight_GA_SlotPressureWindowSec", fallback="1.5")
+            )
+    except Exception:
+        ga_queue_pressure_window_s = 1.5
+    raw = os.environ.get("INFLIGHT_GA_SLOT_PRESSURE_WINDOW_SEC")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            ga_queue_pressure_window_s = float(raw)
+        except Exception:
+            pass
+    ga_queue_pressure_window_s = max(0.0, min(float(ga_queue_pressure_window_s), 60.0))
+
     ga_slack_slots = 0
     try:
         ga_slack_slots = max(0, int(song_slot_limit) - int(ga_queue_limit))
@@ -1107,6 +1182,35 @@ def run_native_inflight_song_pipeline(
     fg_prep_executor = concurrent.futures.ThreadPoolExecutor(max_workers=fg_prep_workers, thread_name_prefix="FGPrep")
     fg_prep_inflight: deque[_NativeSong] = deque()
     fg_jit_warmup_submitted = False
+
+    last_slot_block_t: float | None = None
+    ga_queue_debug = _truthy(os.environ.get("INFLIGHT_GA_QUEUE_DEBUG", "0"))
+    last_ga_queue_limit_effective: int | None = None
+
+    def _effective_ga_queue_limit() -> int:
+        if not inflight_ga_dynamic_queue:
+            return int(ga_queue_limit_base)
+
+        extra_free = 0
+        try:
+            fg_backlog = int(len(pending_fg) + len(fg_prep_inflight) + len(fg_futures))
+        except Exception:
+            fg_backlog = 0
+        if fg_backlog > 0:
+            extra_free = max(int(extra_free), int(ga_queue_extra_free_on_fg_backlog))
+
+        if last_slot_block_t is not None and ga_queue_pressure_window_s > 0.0:
+            try:
+                if (time.monotonic() - float(last_slot_block_t)) <= float(ga_queue_pressure_window_s):
+                    extra_free = max(int(extra_free), int(ga_queue_extra_free_on_slot_pressure))
+            except Exception:
+                pass
+
+        min_free = int(fg_slot_reserve) + int(extra_free)
+        # Keep at least 1 slot usable; (song_slot_limit - min_free) must be >= 1.
+        min_free = max(0, min(int(min_free), max(0, int(song_slot_limit) - 1)))
+        limit_from_free = max(1, int(song_slot_limit) - int(min_free))
+        return max(1, min(int(ga_queue_limit_base), int(limit_from_free)))
 
     def _log_abort(exc: Exception) -> None:
         try:
@@ -1458,7 +1562,21 @@ def run_native_inflight_song_pipeline(
                 # that keeps the GPU fed while CPU decode/FG prep runs.
                 if stopping:
                     break
-                if prepared and len(ga_inflight) < ga_queue_limit:
+                ga_queue_limit_effective = _effective_ga_queue_limit()
+                if ga_queue_debug and ga_queue_limit_effective != last_ga_queue_limit_effective:
+                    last_ga_queue_limit_effective = int(ga_queue_limit_effective)
+                    try:
+                        print(
+                            "[InFlight][GAQueue] "
+                            f"effective={int(ga_queue_limit_effective)} base={int(ga_queue_limit_base)} "
+                            f"ga_inflight={len(ga_inflight)} prepared={len(prepared)} pending_fg={len(pending_fg)} "
+                            f"fg_prep={len(fg_prep_inflight)} fg_inflight={len(fg_futures)} "
+                            f"slot_reserve={int(fg_slot_reserve)}"
+                        )
+                    except Exception:
+                        pass
+
+                if prepared and len(ga_inflight) < ga_queue_limit_effective:
                     song = prepared.popleft()
                     # Reserve a per-song GPU timeline slot so GA -> FG can reuse the resident grid
                     # even while other songs are in-flight (avoids clobbering slot 0).
@@ -1468,6 +1586,7 @@ def run_native_inflight_song_pipeline(
                         except Exception:
                             # No free slots: defer GA submission until FG drains.
                             blocked_on_slot_acquire = True
+                            last_slot_block_t = time.monotonic()
                             stage_profiler.record("slot_block", 0.0)
                             prepared.appendleft(song)
                             break
