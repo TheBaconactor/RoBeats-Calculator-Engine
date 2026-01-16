@@ -1996,6 +1996,14 @@ class GpuExecutor:
     ):
         import numpy as np
 
+        # Taichi ndarrays require contiguous host buffers.
+        pair_ft = np.ascontiguousarray(pair_ft, dtype=np.int32)
+        pair_ff = np.ascontiguousarray(pair_ff, dtype=np.int32)
+        base_ft = np.ascontiguousarray(base_ft, dtype=np.int32)
+        base_ff = np.ascontiguousarray(base_ff, dtype=np.int32)
+        non_fever_base_by_ff = np.ascontiguousarray(non_fever_base_by_ff, dtype=np.int16)
+        fp_cap_table = np.ascontiguousarray(fp_cap_table, dtype=np.int16)
+
         out = np.zeros((int(pair_ft.shape[0]), int(n_sections)), dtype=np.int16)
         from .taichi_gem.kernels import kernels_breakpoints
 
@@ -2009,8 +2017,8 @@ class GpuExecutor:
             pair_ff,
             base_ft,
             base_ff,
-            np.asarray(non_fever_base_by_ff, dtype=np.int16),
-            np.asarray(fp_cap_table, dtype=np.int16),
+            non_fever_base_by_ff,
+            fp_cap_table,
             out,
         )
         return out
@@ -2146,10 +2154,12 @@ class GpuExecutor:
             return GpuResponse(request_id=request.request_id, success=True, result=None)
 
         try:
-            pair_ft = np.asarray(pairs_arr[:, 0], dtype=np.int32)
-            pair_ff = np.asarray(pairs_arr[:, 1], dtype=np.int32)
-            base_ft = np.asarray(base_arr[:, 0], dtype=np.int32)
-            base_ff = np.asarray(base_arr[:, 1], dtype=np.int32)
+            pairs_arr = np.ascontiguousarray(pairs_arr, dtype=np.int32)
+            base_arr = np.ascontiguousarray(base_arr, dtype=np.int32)
+            pair_ft = np.ascontiguousarray(pairs_arr[:, 0], dtype=np.int32)
+            pair_ff = np.ascontiguousarray(pairs_arr[:, 1], dtype=np.int32)
+            base_ft = np.ascontiguousarray(base_arr[:, 0], dtype=np.int32)
+            base_ff = np.ascontiguousarray(base_arr[:, 1], dtype=np.int32)
             max_fp_matrix = self._compute_fg_breakpoints_max_fp_matrix(
                 pair_ft=pair_ft,
                 pair_ff=pair_ff,
