@@ -885,28 +885,84 @@ def run_native_inflight_song_pipeline(
             inflight_fg_hold_slots = cfg0.getboolean("IterationEngine", "InFlight_FGHoldSlots", fallback=True)
     except Exception:
         inflight_fg_hold_slots = True
+    hold_slots_explicit = False
+    try:
+        if cfg0 is not None:
+            hold_slots_explicit = bool(cfg0.has_option("IterationEngine", "InFlight_FGHoldSlots"))
+    except Exception:
+        hold_slots_explicit = False
     raw = os.environ.get("INFLIGHT_FG_HOLD_SLOTS")
     if raw is not None and str(raw).strip() != "":
+        hold_slots_explicit = True
         inflight_fg_hold_slots = _truthy(raw)
 
-    # Slot pressure hint:
+    # Slot pressure hint + safety:
     # `InFlight_FGHoldSlots=true` keeps timeline slots reserved after GA completes so FG can reuse resident grids.
-    # If `FG_InterleaveEvery` is larger than the available slack slots, the run may be forced to start FG early
-    # to free slots (visible as "blocked_slots" / early FG decisions in debug output).
+    # This only works when there is enough spare slot capacity beyond the GA queue depth; otherwise the run
+    # will inevitably hit slot-acquire stalls and start FG early (often looking like "GA -> FG per song").
     try:
-        slack_slots = max(0, int(song_slot_limit) - int(inflight_limit))
+        from gear_optimizer.core.config import read_iteration_engine_settings
+
+        ie = read_iteration_engine_settings(cfg0)
+        fg_enabled = bool(ie.force_greats_mode) and (bool(ie.force_greats_finder) or bool(ie.manual_force_greats))
     except Exception:
-        slack_slots = 0
-    if inflight_fg_hold_slots and int(in_flight_songs) > 1 and int(fg_every) > int(slack_slots):
-        try:
-            if _truthy(os.environ.get("INFLIGHT_FG_DECISION_DEBUG", "0")):
-                print(
+        fg_enabled = False
+
+    ga_slack_slots = 0
+    try:
+        ga_slack_slots = max(0, int(song_slot_limit) - int(ga_queue_limit))
+    except Exception:
+        ga_slack_slots = 0
+
+    fg_hold_budget = int(ga_slack_slots)
+
+    if inflight_fg_hold_slots and fg_enabled and int(in_flight_songs) > 1:
+        if int(fg_hold_budget) <= 0:
+            required_gpu_slots = None
+            try:
+                required_usable = int(inflight_limit) * int(ga_queue_mult) + int(fg_every)
+                required_gpu_slots = int(required_usable) + 1
+            except Exception:
+                required_gpu_slots = None
+            try:
+                msg = (
                     "[InFlight][WARN] Slot pressure: InFlight_FGHoldSlots=true with "
-                    f"effective_inflight={int(inflight_limit)} usable_slots={int(song_slot_limit)} slack={int(slack_slots)} "
-                    f"FG_InterleaveEvery={int(fg_every)}; FG may start early to free slots."
+                    f"usable_slots={int(song_slot_limit)} ga_queue_limit={int(ga_queue_limit)} slack={int(ga_slack_slots)}; "
+                    "FG slot reuse is impossible with the current GA queue depth."
                 )
-        except Exception:
-            pass
+                if required_gpu_slots is not None:
+                    msg += f" (For full slot reuse: set GPU_SONG_SLOTS>={int(required_gpu_slots)} or reduce InFlight_GA_QueueMult.)"
+                print(msg)
+            except Exception:
+                pass
+            # No slack beyond the GA queue depth: any attempt to hold FG slots will eventually starve GA.
+            # If the user didn't explicitly request hold-slots behavior, prefer throughput stability.
+            if not hold_slots_explicit:
+                inflight_fg_hold_slots = False
+                fg_hold_budget = 0
+                try:
+                    print("[InFlight][Auto] Disabling InFlight_FGHoldSlots (no slack song slots available).")
+                except Exception:
+                    pass
+        elif int(fg_every) > int(fg_hold_budget):
+            required_gpu_slots = None
+            try:
+                required_usable = int(inflight_limit) * int(ga_queue_mult) + int(fg_every)
+                required_gpu_slots = int(required_usable) + 1
+            except Exception:
+                required_gpu_slots = None
+            # We can keep some slots resident, but not enough to satisfy the full cadence without backpressure.
+            try:
+                msg = (
+                    "[InFlight][WARN] Limited FG slot reuse: "
+                    f"hold_budget={int(fg_hold_budget)} < FG_InterleaveEvery={int(fg_every)}; "
+                    "older FG candidates may drop their held slot to keep GA running."
+                )
+                if required_gpu_slots is not None:
+                    msg += f" (For full slot reuse: set GPU_SONG_SLOTS>={int(required_gpu_slots)} or reduce InFlight_GA_QueueMult.)"
+                print(msg)
+            except Exception:
+                pass
 
     # Configure GPU-native GA run buffers BEFORE the GPU executor initializes Taichi fields.
     # The executor warms FG kernels on startup which triggers taichi_gem field allocation; if
@@ -1556,9 +1612,40 @@ def run_native_inflight_song_pipeline(
 
                 song.ga_future = None
 
-                if not inflight_fg_hold_slots:
-                    # In "FG batch" mode, release the song slot immediately after GA completes
-                    # so GA can continue across the whole queue without FG backpressure.
+                needs_fg_stage = bool(song.manual_force_greats or song.force_greats_finder)
+                hold_budget = int(fg_hold_budget or 0)
+                keep_slot_for_fg = False
+                if inflight_fg_hold_slots and needs_fg_stage and hold_budget > 0:
+                    held_slots = 0
+                    try:
+                        for s in decode_inflight:
+                            if int(getattr(s, "song_slot", 0) or 0) <= 0:
+                                continue
+                            if bool(getattr(s, "manual_force_greats", False)) or bool(
+                                getattr(s, "force_greats_finder", False)
+                            ):
+                                held_slots += 1
+                    except Exception:
+                        pass
+                    try:
+                        for s in pending_fg:
+                            if int(getattr(s, "song_slot", 0) or 0) > 0:
+                                held_slots += 1
+                    except Exception:
+                        pass
+                    try:
+                        for fg_song, _fut, _t_submit in fg_futures:
+                            if int(getattr(fg_song, "song_slot", 0) or 0) > 0:
+                                held_slots += 1
+                    except Exception:
+                        pass
+                    keep_slot_for_fg = int(held_slots) < int(hold_budget)
+
+                if not keep_slot_for_fg:
+                    # Release the song slot immediately after GA completes unless we're keeping it
+                    # resident for FG reuse (bounded by `fg_hold_budget` so GA won't deadlock on slots).
+                    if inflight_fg_hold_slots and needs_fg_stage and hold_budget > 0:
+                        stage_profiler.record("fg_hold_drop", 0.0)
                     try:
                         slot_pool.release(int(getattr(song, "song_slot", 0) or 0))
                     except Exception:
@@ -1783,7 +1870,7 @@ def run_native_inflight_song_pipeline(
                         fg_song = _pop_next_fg(allow_not_ready=bool(blocked_on_slot_acquire))
                         if fg_song is None:
                             break
-                        if (not inflight_fg_hold_slots) and int(getattr(fg_song, "song_slot", 0) or 0) <= 0:
+                        if int(getattr(fg_song, "song_slot", 0) or 0) <= 0:
                             try:
                                 fg_song.song_slot = int(slot_pool.acquire())
                             except Exception:
