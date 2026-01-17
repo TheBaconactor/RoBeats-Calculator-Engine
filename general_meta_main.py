@@ -18,7 +18,7 @@ import sys
 REPO_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from gear_optimizer.general_meta import run_general_meta, export_general_meta_json
+from general_meta import export_general_meta_json, run_general_meta
 from gear_optimizer.core.config import load_paths_cache
 from gear_optimizer.data.database import init_db
 

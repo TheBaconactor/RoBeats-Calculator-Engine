@@ -2,7 +2,7 @@ import json
 import sqlite3
 
 from gear_optimizer.data.database import ensure_schema
-from gear_optimizer.general_meta import get_all_loadouts_from_db
+from general_meta.db import get_all_loadouts_from_db
 
 
 def test_get_all_loadouts_includes_fg_loadouts_rows(monkeypatch, tmp_path):

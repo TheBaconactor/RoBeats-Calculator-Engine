@@ -1,6 +1,6 @@
 import json
 
-from gear_optimizer.general_meta import find_most_common_loadout
+from general_meta.analysis import find_most_common_loadout
 
 
 def test_general_meta_counts_top1_by_effective_fg_score():
