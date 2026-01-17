@@ -261,6 +261,159 @@ def _destroy_random(
 
 
 @ti.kernel
+def _destroy_unique_weighted(
+    part_vids: ti.template(),
+    counts: ti.template(),
+    covered: ti.template(),
+    chosen: ti.template(),
+    inv_size: ti.template(),
+    cov_count: ti.template(),
+    removed_cnt: ti.template(),
+    remove_target: ti.i32,
+    seed_u: ti.u32,
+):
+    """
+    LNS destroy operator that preferentially removes songs that "own" many unique variants (counts==1),
+    because those removals reduce inventory size and open space for new partitions.
+    """
+    removed_cnt[None] = 0
+    for pass_idx in ti.static(range(5)):
+        base = ti.u32(24 + pass_idx * 24)  # 24..120
+        for s in covered:
+            if removed_cnt[None] >= remove_target:
+                continue
+            if covered[s] == 0:
+                continue
+            p_idx = chosen[s]
+            if p_idx < 0:
+                continue
+
+            uniq = ti.u32(0)
+            for j in ti.static(range(6)):
+                vid = part_vids[s, p_idx, j]
+                if counts[vid] == 1:
+                    uniq += 1
+            if uniq == 0:
+                continue
+
+            st = (
+                seed_u
+                ^ (ti.u32(s) * ti.u32(0x9E3779B9))
+                ^ (ti.u32(pass_idx) * ti.u32(0x85EBCA6B))
+                ^ (uniq * ti.u32(0x27D4EB2D))
+            )
+            st = _xorshift32(st)
+            thresh = ti.min(ti.u32(255), base * uniq)
+            if (st & ti.u32(0xFF)) < thresh:
+                idx = ti.atomic_add(removed_cnt[None], 1)
+                if idx < remove_target:
+                    for j in ti.static(range(6)):
+                        vid = part_vids[s, p_idx, j]
+                        prev = ti.atomic_add(counts[vid], -1)
+                        if prev == 1:
+                            ti.atomic_add(inv_size[None], -1)
+                    covered[s] = 0
+                    chosen[s] = -1
+                    ti.atomic_add(cov_count[None], -1)
+                else:
+                    ti.atomic_add(removed_cnt[None], -1)
+
+
+@ti.kernel
+def _evict_for_target(
+    part_vids: ti.template(),
+    counts: ti.template(),
+    covered: ti.template(),
+    chosen: ti.template(),
+    inv_size: ti.template(),
+    cov_count: ti.template(),
+    removed_cnt: ti.template(),
+    benefit_sum: ti.template(),
+    max_remove: ti.i32,
+    target_s: ti.i32,
+    target_p: ti.i32,
+    needed: ti.i32,
+    seed_u: ti.u32,
+):
+    removed_cnt[None] = 0
+    benefit_sum[None] = 0
+
+    t0 = part_vids[target_s, target_p, 0]
+    t1 = part_vids[target_s, target_p, 1]
+    t2 = part_vids[target_s, target_p, 2]
+    t3 = part_vids[target_s, target_p, 3]
+    t4 = part_vids[target_s, target_p, 4]
+    t5 = part_vids[target_s, target_p, 5]
+
+    for pass_idx in ti.static(range(6)):
+        base = ti.u32(24 + pass_idx * 20)  # 24..124
+        for s in covered:
+            if removed_cnt[None] >= max_remove:
+                continue
+            if benefit_sum[None] >= needed:
+                continue
+            if covered[s] == 0:
+                continue
+            if s == target_s:
+                continue
+            p_idx = chosen[s]
+            if p_idx < 0:
+                continue
+
+            freed = ti.i32(0)
+            lost = ti.i32(0)
+            for j in ti.static(range(6)):
+                vid = part_vids[s, p_idx, j]
+                if counts[vid] == 1:
+                    freed += 1
+                    if (vid == t0) or (vid == t1) or (vid == t2) or (vid == t3) or (vid == t4) or (vid == t5):
+                        lost += 1
+
+            benefit = freed - lost
+            if benefit <= 0:
+                continue
+
+            st = (
+                seed_u
+                ^ (ti.u32(s) * ti.u32(0x9E3779B9))
+                ^ (ti.u32(pass_idx) * ti.u32(0x85EBCA6B))
+                ^ (ti.u32(benefit) * ti.u32(0x27D4EB2D))
+            )
+            st = _xorshift32(st)
+            thresh = ti.min(ti.u32(255), base * ti.u32(benefit))
+            if (st & ti.u32(0xFF)) < thresh:
+                idx = ti.atomic_add(removed_cnt[None], 1)
+                if idx < max_remove:
+                    for j in ti.static(range(6)):
+                        vid = part_vids[s, p_idx, j]
+                        prev = ti.atomic_add(counts[vid], -1)
+                        if prev == 1:
+                            ti.atomic_add(inv_size[None], -1)
+                    covered[s] = 0
+                    chosen[s] = -1
+                    ti.atomic_add(cov_count[None], -1)
+                    ti.atomic_add(benefit_sum[None], benefit)
+                else:
+                    ti.atomic_add(removed_cnt[None], -1)
+
+
+@ti.kernel
+def _partition_cost(
+    part_vids: ti.template(),
+    counts: ti.template(),
+    out_cost: ti.template(),
+    s_idx: ti.i32,
+    p_idx: ti.i32,
+):
+    cost = ti.i32(0)
+    for j in ti.static(range(6)):
+        vid = part_vids[s_idx, p_idx, j]
+        if counts[vid] == 0:
+            cost += 1
+    out_cost[None] = cost
+
+
+@ti.kernel
 def _recompute_cov_count(covered: ti.template(), cov_count: ti.template()):
     cov_count[None] = 0
     for s in covered:
@@ -339,6 +492,8 @@ def solve_coverage_gpu_full(
     cov_count = ti.field(dtype=ti.i32, shape=())
     best_key = ti.field(dtype=ti.u64, shape=())
     removed_cnt = ti.field(dtype=ti.i32, shape=())
+    benefit_sum = ti.field(dtype=ti.i32, shape=())
+    tmp_cost = ti.field(dtype=ti.i32, shape=())
 
     counts_best = ti.field(dtype=ti.i32, shape=(v_count,))
     covered_best = ti.field(dtype=ti.i32, shape=(s_count,))
@@ -430,17 +585,50 @@ def solve_coverage_gpu_full(
             ti.sync()
 
             destroy_n = max(1, min(int(lns_destroy), int(cov_count[None])))
-            _destroy_random(
-                part_vids,
-                counts,
-                covered,
-                chosen,
-                inv_size,
-                cov_count,
-                removed_cnt,
-                destroy_n,
-                int((seed + attempts_done * 9973) & 0xFFFFFFFF),
-            )
+            # Pick a "closest" uncovered target (min missing variants), then evict covered songs that
+            # free unique variants without breaking target reuse.
+            _select_best_add(part_vids, freq, counts, covered, best_key, 6)
+            key = int(best_key[None])
+            if key != 0xFFFFFFFFFFFFFFFF:
+                cost = int((key >> 48) & 0xFFFF)
+                target_s = int((key >> 16) & 0xFFFF)
+                target_p = int(key & 0xFFFF)
+                remaining = int(inv_cap - int(inv_size[None]))
+                needed = max(0, int(cost) - int(remaining))
+                if needed > 0:
+                    _evict_for_target(
+                        part_vids,
+                        counts,
+                        covered,
+                        chosen,
+                        inv_size,
+                        cov_count,
+                        removed_cnt,
+                        benefit_sum,
+                        destroy_n,
+                        target_s,
+                        target_p,
+                        int(needed),
+                        int((seed + attempts_done * 9973) & 0xFFFFFFFF),
+                    )
+                    ti.sync()
+                    _partition_cost(part_vids, counts, tmp_cost, target_s, target_p)
+                    ti.sync()
+                    remaining = int(inv_cap - int(inv_size[None]))
+                    if int(tmp_cost[None]) <= remaining:
+                        _add_song(part_vids, counts, covered, chosen, inv_size, cov_count, target_s, target_p)
+            else:
+                _destroy_unique_weighted(
+                    part_vids,
+                    counts,
+                    covered,
+                    chosen,
+                    inv_size,
+                    cov_count,
+                    removed_cnt,
+                    destroy_n,
+                    int((seed + attempts_done * 9973) & 0xFFFFFFFF),
+                )
             stabilize()
             ti.sync()
             _recompute_cov_count(covered, cov_count)
