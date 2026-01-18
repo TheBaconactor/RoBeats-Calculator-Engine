@@ -92,6 +92,12 @@ def main() -> None:
         help="EDA: per-update bonus for OV==0 offsets (default: 0.03).",
     )
     parser.add_argument(
+        "--gpu-full-wildcard-freq-bonus",
+        type=int,
+        default=0,
+        help="GPU full: add to variant frequency for OV==0 offsets (default: 0).",
+    )
+    parser.add_argument(
         "--output", type=str, default="", help="Output JSON path (default: artifacts/inventory_meta_coverage.json)."
     )
     args = parser.parse_args()
@@ -128,6 +134,7 @@ def main() -> None:
             eda_elites=args.eda_elites,
             eda_alpha=args.eda_alpha,
             eda_wildcard_bonus=args.eda_wildcard_bonus,
+            gpu_full_wildcard_freq_bonus=args.gpu_full_wildcard_freq_bonus,
         )
         out = args.output or str(REPO_ROOT / "artifacts" / "inventory_meta_coverage.json")
         output_path = export_inventory_meta_json(results, out)

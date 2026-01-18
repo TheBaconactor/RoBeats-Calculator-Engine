@@ -383,6 +383,7 @@ def _run_gpu_full_solver_from_witness_pool(
     lns_attempts: int,
     gpu_lns_destroy: int,
     mem: _MemoryLogger,
+    wildcard_freq_bonus: int = 0,
 ):
     offsets_np, wp_stats = build_witness_offsets_gpu(
         gear_ids_np,
@@ -394,17 +395,101 @@ def _run_gpu_full_solver_from_witness_pool(
         profile=bool(mem.enabled),
     )
     mem.log("gpu_full_witness_pool_built")
+    return _run_gpu_full_solver_from_offsets(
+        gear_ids_np,
+        offsets_np,
+        inventory_cap=int(inventory_cap),
+        seed=int(seed),
+        gpu_repack_passes=int(gpu_repack_passes),
+        lns_time_sec=float(lns_time_sec),
+        lns_attempts=int(lns_attempts),
+        gpu_lns_destroy=int(gpu_lns_destroy),
+        mem=mem,
+        wp_stats=wp_stats,
+        wildcard_freq_bonus=int(wildcard_freq_bonus),
+    )
 
-    # Build part_vids in a dense (0..V-1) space for the GPU full solver.
+
+def _pad_v_count(v_count: int, *, bin_size: int = 4096) -> int:
+    if int(bin_size) <= 0:
+        return int(v_count)
+    return int(((int(v_count) + int(bin_size) - 1) // int(bin_size)) * int(bin_size))
+
+
+def _pack_part_vids_dense(
+    gear_ids_np: np.ndarray,
+    offsets_np: np.ndarray,
+    *,
+    dense_vid_universe: Optional[np.ndarray] = None,
+    v_pad_bin: int = 4096,
+    wildcard_freq_bonus: int = 0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    """
+    Convert (gear_ids, offsets) to:
+    - part_vids: dense IDs in [0..V-1] with shape (S, K, 6)
+    - variant_freq: (V,) frequency of each dense variant in the witness pool
+    - dense_vid_universe: sorted unique raw IDs (gear_id<<16 | offset) that define the dense mapping
+    - v_count: padded V passed to the GPU full solver (bin-padded for kernel caching stability)
+    """
     gear_ids_b = gear_ids_np[:, None, :].astype(np.int32, copy=False)
     vids = (gear_ids_b.astype(np.int32) << np.int32(16)) | offsets_np.astype(np.int32, copy=False)
     flat = vids.reshape(-1)
-    uniq, inv = np.unique(flat, return_inverse=True)
-    part_vids = inv.reshape(vids.shape).astype(np.int32, copy=False)
-    v_count = int(uniq.size)
-    variant_freq_np = np.bincount(part_vids.reshape(-1), minlength=v_count).astype(np.int32, copy=False)
 
-    mem.log(f"gpu_full_inputs_ready (songs={gear_ids_np.shape[0]}, k_total={int(k_total)}, v={int(v_count)})")
+    if dense_vid_universe is None:
+        dense_vid_universe = np.unique(flat).astype(np.int32, copy=False)
+    else:
+        dense_vid_universe = np.asarray(dense_vid_universe, dtype=np.int32)
+
+    inv = np.searchsorted(dense_vid_universe, flat).astype(np.int32, copy=False)
+    # `dense_vid_universe` is produced by `np.unique(...)` (sorted unique), so `searchsorted` mapping is safe.
+    # Avoid validating the full mapping here; it costs ~O(S*K*6) extra work per restart.
+
+    part_vids = inv.reshape(vids.shape).astype(np.int32, copy=False)
+    v_raw = int(dense_vid_universe.size)
+    v_count = _pad_v_count(v_raw, bin_size=int(v_pad_bin))
+    variant_freq = np.bincount(part_vids.reshape(-1), minlength=v_count).astype(np.int32, copy=False)
+    if int(wildcard_freq_bonus) != 0 and v_raw > 0:
+        # Encourage reuse by slightly preferring OV==0 (color=0) variants in tie-break scoring.
+        # `offset < OV0_VARIANTS` is equivalent to OV==0 by construction (see `variant_space.py`).
+        from .variant_space import OV0_VARIANTS
+
+        off = (dense_vid_universe & np.int32(0xFFFF)).astype(np.int32, copy=False)
+        is_wild = np.zeros((v_count,), dtype=bool)
+        is_wild[:v_raw] = off < np.int32(OV0_VARIANTS)
+        variant_freq = variant_freq.copy()
+        variant_freq[is_wild] = (variant_freq[is_wild] + np.int32(int(wildcard_freq_bonus))).astype(
+            np.int32, copy=False
+        )
+    return part_vids, variant_freq, dense_vid_universe, v_count
+
+
+def _run_gpu_full_solver_from_offsets(
+    gear_ids_np: np.ndarray,
+    offsets_np: np.ndarray,
+    *,
+    inventory_cap: int,
+    seed: int,
+    gpu_repack_passes: int,
+    lns_time_sec: float,
+    lns_attempts: int,
+    gpu_lns_destroy: int,
+    mem: _MemoryLogger,
+    wp_stats: Optional[dict] = None,
+    dense_vid_universe: Optional[np.ndarray] = None,
+    v_pad_bin: int = 4096,
+    wildcard_freq_bonus: int = 0,
+):
+    part_vids, variant_freq_np, dense_vid_universe, v_count = _pack_part_vids_dense(
+        gear_ids_np,
+        offsets_np,
+        dense_vid_universe=dense_vid_universe,
+        v_pad_bin=int(v_pad_bin),
+        wildcard_freq_bonus=int(wildcard_freq_bonus),
+    )
+
+    mem.log(
+        f"gpu_full_inputs_ready (songs={gear_ids_np.shape[0]}, k_total={int(offsets_np.shape[1])}, v={int(v_count)})"
+    )
     sol_full = solve_coverage_gpu_full(
         part_vids,
         variant_freq_np,
@@ -427,21 +512,114 @@ def _run_gpu_full_solver_from_witness_pool(
 
     covered = (chosen_part >= 0).astype(np.int32, copy=False)
 
-    # Wrap to match the materializer interface.
     from types import SimpleNamespace
 
     stats = {
         "witness_pool": wp_stats,
         "gpu_full": sol_full.stats,
-        "k_total": int(k_total),
+        "k_total": int(offsets_np.shape[1]),
         "v_count": int(v_count),
+        "v_unpadded": int(dense_vid_universe.size),
     }
     return SimpleNamespace(
         covered=covered,
         chosen_offsets=chosen_offsets,
         covered_count=int(covered.sum()),
         stats=stats,
+        dense_vid_universe=dense_vid_universe,
     )
+
+
+def _run_gpu_full_solver_multi_seed(
+    gear_ids_np: np.ndarray,
+    totals_np: np.ndarray,
+    elements_np: np.ndarray,
+    gear_freq_np: np.ndarray,
+    *,
+    inventory_cap: int,
+    seeds: List[int],
+    k_total: int,
+    gpu_repack_passes: int,
+    lns_time_sec: float,
+    lns_attempts: int,
+    gpu_lns_destroy: int,
+    mem: _MemoryLogger,
+    v_pad_bin: int = 4096,
+    wildcard_freq_bonus: int = 0,
+):
+    if not seeds:
+        raise ValueError("seeds must be non-empty.")
+
+    offsets_by_seed: Dict[int, np.ndarray] = {}
+    wp_stats_by_seed: Dict[int, dict] = {}
+    flats: List[np.ndarray] = []
+
+    gear_ids_b = gear_ids_np[:, None, :].astype(np.int32, copy=False)
+    for s in seeds:
+        offsets_np, wp_stats = build_witness_offsets_gpu(
+            gear_ids_np,
+            totals_np,
+            elements_np,
+            gear_freq_np,
+            k_total=int(k_total),
+            seed=int(s),
+            profile=bool(mem.enabled),
+        )
+        offsets_by_seed[int(s)] = offsets_np
+        wp_stats_by_seed[int(s)] = wp_stats
+        vids = (gear_ids_b.astype(np.int32) << np.int32(16)) | offsets_np.astype(np.int32, copy=False)
+        flats.append(vids.reshape(-1).astype(np.int32, copy=False))
+
+    mem.log(f"gpu_full_witness_pools_built (count={len(seeds)})")
+
+    dense_vid_universe = np.unique(np.concatenate(flats, axis=0)).astype(np.int32, copy=False)
+    v_raw = int(dense_vid_universe.size)
+    v_count = _pad_v_count(v_raw, bin_size=int(v_pad_bin))
+    mem.log(f"gpu_full_union_vids_ready (v_unpadded={v_raw}, v_padded={v_count})")
+
+    best_sol = None
+    best_cov = -1
+    best_used = 10**9
+    best_seed = int(seeds[0])
+    per_seed: List[dict] = []
+    for s in seeds:
+        sol = _run_gpu_full_solver_from_offsets(
+            gear_ids_np,
+            offsets_by_seed[int(s)],
+            inventory_cap=int(inventory_cap),
+            seed=int(s),
+            gpu_repack_passes=int(gpu_repack_passes),
+            lns_time_sec=float(lns_time_sec),
+            lns_attempts=int(lns_attempts),
+            gpu_lns_destroy=int(gpu_lns_destroy),
+            mem=mem,
+            wp_stats=wp_stats_by_seed[int(s)],
+            dense_vid_universe=dense_vid_universe,
+            v_pad_bin=int(v_pad_bin),
+            wildcard_freq_bonus=int(wildcard_freq_bonus),
+        )
+        covered_np = np.asarray(sol.covered, dtype=np.int32, copy=False)
+        chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32, copy=False)
+        used = _count_used_gear_variants(gear_ids_np, covered_np, chosen_offsets_np)
+        cov = int(sol.covered_count)
+        # Snapshot stats now; do not retain a reference to `sol.stats` because we mutate the best solution's stats
+        # with a multi-seed summary (would create a circular structure when serializing).
+        per_seed.append({"seed": int(s), "covered": int(cov), "used": int(used), "stats": dict(sol.stats)})
+        if (cov > best_cov) or (cov == best_cov and used < best_used):
+            best_cov = cov
+            best_used = used
+            best_sol = sol
+            best_seed = int(s)
+
+    assert best_sol is not None
+    best_sol.stats["multi_seed"] = {
+        "seeds": [int(s) for s in seeds],
+        "v_unpadded": int(v_raw),
+        "v_padded": int(v_count),
+        "per_seed": per_seed,
+        "best_seed": int(best_seed),
+    }
+    return best_sol, int(best_seed)
 
 
 def run_inventory_meta_coverage(
@@ -467,6 +645,7 @@ def run_inventory_meta_coverage(
     eda_elites: int = 8,
     eda_alpha: float = 0.25,
     eda_wildcard_bonus: float = 0.03,
+    gpu_full_wildcard_freq_bonus: int = 0,
 ) -> dict:
     """
     Inventory Meta coverage mode (GPU-only optimization loop):
@@ -557,100 +736,134 @@ def run_inventory_meta_coverage(
     best_sol = None
     best_cov = -1
     best_used = 10**9
-    for r in range(restarts):
-        run_seed = int(seed) + r if int(seed) != 0 else 0
-        if profile and restarts > 1:
-            mem.log(f"restart_{r + 1}_of_{restarts} (seed={run_seed})")
-        if solver == "gpu_dynamic":
-            sol = _run_gpu_dynamic_solver(
-                gear_ids_np,
-                totals_np,
-                elements_np,
-                gear_freq_np,
-                inventory_cap=inventory_cap,
-                seed=run_seed,
-                gpu_repack_passes=gpu_repack_passes,
-                gpu_lns_destroy=gpu_lns_destroy,
-                lns_time_sec=lns_time_sec,
-                lns_attempts=lns_attempts,
-                mem=mem,
-            )
-        elif solver == "gpu_eda":
-            # Seed the witness pool with a strong baseline (gpu_dynamic) so EDA doesn't start from noise.
-            baseline = _run_gpu_dynamic_solver(
-                gear_ids_np,
-                totals_np,
-                elements_np,
-                gear_freq_np,
-                inventory_cap=inventory_cap,
-                seed=run_seed,
-                gpu_repack_passes=gpu_repack_passes,
-                gpu_lns_destroy=gpu_lns_destroy,
-                lns_time_sec=0.0,
-                lns_attempts=lns_attempts,
-                mem=mem,
-            )
-            sol_eda = _run_gpu_eda_solver(
-                gear_ids_np,
-                totals_np,
-                elements_np,
-                gear_freq_np,
-                inventory_cap=inventory_cap,
-                seed=run_seed,
-                witnesses_per_song=int(eda_witnesses_per_song),
-                population=int(eda_population),
-                iterations=int(eda_iterations),
-                elites=int(eda_elites),
-                alpha=float(eda_alpha),
-                wildcard_bonus=float(eda_wildcard_bonus),
-                seed_witness_offsets=np.asarray(baseline.chosen_offsets, dtype=np.int32),
-                mem=mem,
-            )
-            # Never regress relative to the baseline dynamic solver for the same seed.
-            sol = sol_eda
-            if int(baseline.covered_count) > int(sol_eda.covered_count):
-                sol = baseline
-            elif int(baseline.covered_count) == int(sol_eda.covered_count):
-                b_used = _count_used_gear_variants(
-                    gear_ids_np,
-                    np.asarray(baseline.covered, dtype=np.int32, copy=False),
-                    np.asarray(baseline.chosen_offsets, dtype=np.int32, copy=False),
-                )
-                e_used = _count_used_gear_variants(
-                    gear_ids_np,
-                    np.asarray(sol_eda.covered, dtype=np.int32, copy=False),
-                    np.asarray(sol_eda.chosen_offsets, dtype=np.int32, copy=False),
-                )
-                if b_used <= e_used:
-                    sol = baseline
-        else:
-            # Full witness-pool + GPU full set-cover solver.
-            # K_total matches the old adaptive behavior: 32 + 3*16 => 80 by default.
-            k_total = int(partitions_per_song) + int(adaptive_rounds) * int(adaptive_keep_per_song)
-            k_total = max(int(partitions_per_song), int(k_total))
-            sol = _run_gpu_full_solver_from_witness_pool(
-                gear_ids_np,
-                totals_np,
-                elements_np,
-                gear_freq_np,
-                inventory_cap=int(inventory_cap),
-                seed=int(run_seed),
-                k_total=int(k_total),
-                gpu_repack_passes=int(gpu_repack_passes),
-                lns_time_sec=float(lns_time_sec),
-                lns_attempts=int(lns_attempts),
-                gpu_lns_destroy=int(gpu_lns_destroy),
-                mem=mem,
-            )
+    base_seed = int(seed)
+    if base_seed == 0:
+        base_seed = int(time.time_ns() & 0x7FFFFFFF) or 1
+
+    # Full solver multi-seed batching to avoid per-restart Taichi recompiles (V changes with seed).
+    if solver == "gpu_full" and restarts > 1:
+        k_total = int(partitions_per_song) + int(adaptive_rounds) * int(adaptive_keep_per_song)
+        k_total = max(int(partitions_per_song), int(k_total))
+        seeds = [int(base_seed) + i for i in range(int(restarts))]
+        if profile:
+            mem.log(f"gpu_full_multi_seed (seeds={len(seeds)})")
+        sol, chosen_seed = _run_gpu_full_solver_multi_seed(
+            gear_ids_np,
+            totals_np,
+            elements_np,
+            gear_freq_np,
+            inventory_cap=int(inventory_cap),
+            seeds=seeds,
+            k_total=int(k_total),
+            gpu_repack_passes=int(gpu_repack_passes),
+            lns_time_sec=float(lns_time_sec),
+            lns_attempts=int(lns_attempts),
+            gpu_lns_destroy=int(gpu_lns_destroy),
+            mem=mem,
+            wildcard_freq_bonus=int(gpu_full_wildcard_freq_bonus),
+        )
         covered_np = np.asarray(sol.covered, dtype=np.int32, copy=False)
         chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32, copy=False)
-        used = _count_used_gear_variants(gear_ids_np, covered_np, chosen_offsets_np)
-        cov = int(sol.covered_count)
-        if (cov > best_cov) or (cov == best_cov and used < best_used):
-            best_cov = cov
-            best_used = used
-            best_sol = sol
-            best_seed = run_seed
+        best_used = _count_used_gear_variants(gear_ids_np, covered_np, chosen_offsets_np)
+        best_cov = int(sol.covered_count)
+        best_sol = sol
+        best_seed = int(chosen_seed)
+    else:
+        for r in range(restarts):
+            run_seed = int(base_seed) + r
+            if profile and restarts > 1:
+                mem.log(f"restart_{r + 1}_of_{restarts} (seed={run_seed})")
+            if solver == "gpu_dynamic":
+                sol = _run_gpu_dynamic_solver(
+                    gear_ids_np,
+                    totals_np,
+                    elements_np,
+                    gear_freq_np,
+                    inventory_cap=inventory_cap,
+                    seed=run_seed,
+                    gpu_repack_passes=gpu_repack_passes,
+                    gpu_lns_destroy=gpu_lns_destroy,
+                    lns_time_sec=lns_time_sec,
+                    lns_attempts=lns_attempts,
+                    mem=mem,
+                )
+            elif solver == "gpu_eda":
+                # Seed the witness pool with a strong baseline (gpu_dynamic) so EDA doesn't start from noise.
+                baseline = _run_gpu_dynamic_solver(
+                    gear_ids_np,
+                    totals_np,
+                    elements_np,
+                    gear_freq_np,
+                    inventory_cap=inventory_cap,
+                    seed=run_seed,
+                    gpu_repack_passes=gpu_repack_passes,
+                    gpu_lns_destroy=gpu_lns_destroy,
+                    lns_time_sec=0.0,
+                    lns_attempts=lns_attempts,
+                    mem=mem,
+                )
+                sol_eda = _run_gpu_eda_solver(
+                    gear_ids_np,
+                    totals_np,
+                    elements_np,
+                    gear_freq_np,
+                    inventory_cap=inventory_cap,
+                    seed=run_seed,
+                    witnesses_per_song=int(eda_witnesses_per_song),
+                    population=int(eda_population),
+                    iterations=int(eda_iterations),
+                    elites=int(eda_elites),
+                    alpha=float(eda_alpha),
+                    wildcard_bonus=float(eda_wildcard_bonus),
+                    seed_witness_offsets=np.asarray(baseline.chosen_offsets, dtype=np.int32),
+                    mem=mem,
+                )
+                # Never regress relative to the baseline dynamic solver for the same seed.
+                sol = sol_eda
+                if int(baseline.covered_count) > int(sol_eda.covered_count):
+                    sol = baseline
+                elif int(baseline.covered_count) == int(sol_eda.covered_count):
+                    b_used = _count_used_gear_variants(
+                        gear_ids_np,
+                        np.asarray(baseline.covered, dtype=np.int32, copy=False),
+                        np.asarray(baseline.chosen_offsets, dtype=np.int32, copy=False),
+                    )
+                    e_used = _count_used_gear_variants(
+                        gear_ids_np,
+                        np.asarray(sol_eda.covered, dtype=np.int32, copy=False),
+                        np.asarray(sol_eda.chosen_offsets, dtype=np.int32, copy=False),
+                    )
+                    if b_used <= e_used:
+                        sol = baseline
+            else:
+                # Full witness-pool + GPU full set-cover solver.
+                # K_total matches the old adaptive behavior: 32 + 3*16 => 80 by default.
+                k_total = int(partitions_per_song) + int(adaptive_rounds) * int(adaptive_keep_per_song)
+                k_total = max(int(partitions_per_song), int(k_total))
+                sol = _run_gpu_full_solver_from_witness_pool(
+                    gear_ids_np,
+                    totals_np,
+                    elements_np,
+                    gear_freq_np,
+                    inventory_cap=int(inventory_cap),
+                    seed=int(run_seed),
+                    k_total=int(k_total),
+                    gpu_repack_passes=int(gpu_repack_passes),
+                    lns_time_sec=float(lns_time_sec),
+                    lns_attempts=int(lns_attempts),
+                    gpu_lns_destroy=int(gpu_lns_destroy),
+                    mem=mem,
+                    wildcard_freq_bonus=int(gpu_full_wildcard_freq_bonus),
+                )
+            covered_np = np.asarray(sol.covered, dtype=np.int32, copy=False)
+            chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32, copy=False)
+            used = _count_used_gear_variants(gear_ids_np, covered_np, chosen_offsets_np)
+            cov = int(sol.covered_count)
+            if (cov > best_cov) or (cov == best_cov and used < best_used):
+                best_cov = cov
+                best_used = used
+                best_sol = sol
+                best_seed = run_seed
 
     assert best_sol is not None
     if solver == "gpu_dynamic":
