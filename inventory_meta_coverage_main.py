@@ -27,8 +27,17 @@ def main() -> None:
     )
     parser.add_argument("--db-path", type=str, default="", help="Override SQLite path (sets EVOLUTION_DB_PATH).")
     parser.add_argument("--inventory-cap", type=int, default=100, help="Max number of gear variants (default: 100).")
-    parser.add_argument("--partitions-per-song", type=int, default=32, help="GPU partitions per song (default: 32).")
-    parser.add_argument("--seed", type=int, default=1, help="RNG seed for partition patterns (default: 1).")
+    parser.add_argument(
+        "--solver",
+        type=str,
+        default="gpu_dynamic",
+        choices=["gpu_dynamic", "gpu_eda", "gpu_full"],
+        help="Coverage solver backend (default: gpu_dynamic).",
+    )
+    parser.add_argument(
+        "--partitions-per-song", type=int, default=32, help="Legacy (ignored): patterns per song (default: 32)."
+    )
+    parser.add_argument("--seed", type=int, default=1, help="RNG seed (default: 1).")
     parser.add_argument("--restarts", type=int, default=1, help="Run multiple seeds and keep best (default: 1).")
     parser.add_argument(
         "--gpu-repack-passes", type=int, default=3, help="GPU repack passes per stabilize step (default: 3)."
@@ -36,24 +45,26 @@ def main() -> None:
     parser.add_argument(
         "--gpu-lns-destroy", type=int, default=6, help="GPU LNS destroy count per attempt (default: 6)."
     )
-    parser.add_argument("--adaptive-rounds", type=int, default=3, help="Adaptive partition rounds (default: 3).")
+    parser.add_argument(
+        "--adaptive-rounds", type=int, default=3, help="Legacy (ignored): adaptive rounds (default: 3)."
+    )
     parser.add_argument(
         "--adaptive-patterns-per-round",
         type=int,
         default=64,
-        help="New global GPU patterns per adaptive round (default: 64).",
+        help="Legacy (ignored): new patterns per adaptive round (default: 64).",
     )
     parser.add_argument(
         "--adaptive-keep-per-song",
         type=int,
         default=8,
-        help="How many new partitions to keep per song per round (default: 8).",
+        help="Legacy (ignored): partitions to keep per song per round (default: 8).",
     )
     parser.add_argument(
         "--adaptive-repack-songs",
         type=int,
         default=256,
-        help="Also generate partitions for this many high-unique covered songs (default: 256).",
+        help="Legacy (ignored): repack songs count (default: 256).",
     )
     parser.add_argument(
         "--lns-time-sec",
@@ -69,6 +80,17 @@ def main() -> None:
     )
     parser.add_argument("--song-limit", type=int, default=0, help="Limit number of songs processed (debug only).")
     parser.add_argument("--profile", action="store_true", help="Print memory logs during phases.")
+    parser.add_argument("--eda-witnesses-per-song", type=int, default=16, help="EDA: witnesses per song (default: 16).")
+    parser.add_argument("--eda-population", type=int, default=64, help="EDA: population size (default: 64).")
+    parser.add_argument("--eda-iterations", type=int, default=20, help="EDA: iterations (default: 20).")
+    parser.add_argument("--eda-elites", type=int, default=8, help="EDA: elite count (default: 8).")
+    parser.add_argument("--eda-alpha", type=float, default=0.25, help="EDA: update rate alpha (default: 0.25).")
+    parser.add_argument(
+        "--eda-wildcard-bonus",
+        type=float,
+        default=0.03,
+        help="EDA: per-update bonus for OV==0 offsets (default: 0.03).",
+    )
     parser.add_argument(
         "--output", type=str, default="", help="Output JSON path (default: artifacts/inventory_meta_coverage.json)."
     )
@@ -99,6 +121,13 @@ def main() -> None:
             lns_attempts=args.lns_attempts,
             song_limit=args.song_limit or None,
             profile=args.profile,
+            solver=args.solver,
+            eda_witnesses_per_song=args.eda_witnesses_per_song,
+            eda_population=args.eda_population,
+            eda_iterations=args.eda_iterations,
+            eda_elites=args.eda_elites,
+            eda_alpha=args.eda_alpha,
+            eda_wildcard_bonus=args.eda_wildcard_bonus,
         )
         out = args.output or str(REPO_ROOT / "artifacts" / "inventory_meta_coverage.json")
         output_path = export_inventory_meta_json(results, out)
