@@ -238,6 +238,202 @@ def fetch_peak_candidates_allow_missing(conn: sqlite3.Connection) -> Tuple[Dict[
     return candidates_by_song, missing
 
 
+def fetch_candidates_within_delta_allow_missing(
+    conn: sqlite3.Connection,
+    *,
+    score_delta: int,
+    limit_per_song: int,
+) -> Tuple[Dict[str, List[SongCandidate]], List[str]]:
+    """
+    Fetch up to N candidates per song within `score_delta` of the *max(base_peak, fg_peak)*.
+
+    Note: this relaxes "exact peak only" and is intended for approximate multi-candidate coverage experiments.
+    """
+    score_delta = int(score_delta)
+    if score_delta < 0:
+        raise ValueError("score_delta must be >= 0.")
+    limit_per_song = int(limit_per_song)
+    if limit_per_song <= 0:
+        raise ValueError("limit_per_song must be positive.")
+
+    candidates_by_song: Dict[str, List[SongCandidate]] = {}
+
+    peak_map: Dict[str, int] = {}
+    base_peak: Dict[str, int] = {}
+    fg_peak: Dict[str, int] = {}
+    for row in conn.execute(
+        """
+        WITH base AS (
+            SELECT song_name, MAX(score) AS base_peak
+            FROM loadouts
+            GROUP BY song_name
+        ),
+        fg AS (
+            SELECT song_name, MAX(fg_score) AS fg_peak
+            FROM fg_loadouts
+            GROUP BY song_name
+        ),
+        songs AS (
+            SELECT song_name FROM loadouts
+            UNION
+            SELECT song_name FROM fg_loadouts
+        )
+        SELECT
+            songs.song_name AS song_name,
+            COALESCE(base.base_peak, 0) AS base_peak,
+            COALESCE(fg.fg_peak, 0) AS fg_peak
+        FROM songs
+        LEFT JOIN base ON base.song_name = songs.song_name
+        LEFT JOIN fg ON fg.song_name = songs.song_name
+        """
+    ):
+        name = str(row["song_name"] or "")
+        bp = int(row["base_peak"] or 0)
+        fp = int(row["fg_peak"] or 0)
+        base_peak[name] = bp
+        fg_peak[name] = fp
+        peak_map[name] = max(bp, fp)
+
+    if not peak_map:
+        return {}, []
+
+    delta = int(score_delta)
+    n = int(limit_per_song)
+
+    try:
+        for row in conn.execute(
+            """
+            WITH peaks AS (
+                WITH base AS (
+                    SELECT song_name, MAX(score) AS base_peak
+                    FROM loadouts
+                    GROUP BY song_name
+                ),
+                fg AS (
+                    SELECT song_name, MAX(fg_score) AS fg_peak
+                    FROM fg_loadouts
+                    GROUP BY song_name
+                ),
+                songs AS (
+                    SELECT song_name FROM loadouts
+                    UNION
+                    SELECT song_name FROM fg_loadouts
+                )
+                SELECT
+                    songs.song_name AS song_name,
+                    CASE
+                        WHEN COALESCE(base.base_peak, 0) > COALESCE(fg.fg_peak, 0) THEN COALESCE(base.base_peak, 0)
+                        ELSE COALESCE(fg.fg_peak, 0)
+                    END AS peak
+                FROM songs
+                LEFT JOIN base ON base.song_name = songs.song_name
+                LEFT JOIN fg ON fg.song_name = songs.song_name
+            ),
+            ranked AS (
+                SELECT
+                    l.rowid AS rowid,
+                    l.song_name AS song_name,
+                    l.score AS score,
+                    l.fg_score AS fg_score,
+                    l.gear_json AS gear_json,
+                    l.minis_json AS minis_json,
+                    l.details_json AS details_json,
+                    l.force_details_json AS force_details_json,
+                    ROW_NUMBER() OVER (PARTITION BY l.song_name ORDER BY l.score DESC, l.rowid ASC) AS rn
+                FROM loadouts l
+                JOIN peaks p ON p.song_name = l.song_name
+                WHERE l.score >= (p.peak - ?)
+            )
+            SELECT rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
+            FROM ranked
+            WHERE rn <= ?
+            """,
+            (delta, n),
+        ):
+            song = str(row["song_name"] or "")
+            cand = parse_candidate_row(song, "loadouts", row)
+            if cand is None:
+                continue
+            candidates_by_song.setdefault(song, []).append(cand)
+    except sqlite3.Error:
+        pass
+
+    try:
+        for row in conn.execute(
+            """
+            WITH peaks AS (
+                WITH base AS (
+                    SELECT song_name, MAX(score) AS base_peak
+                    FROM loadouts
+                    GROUP BY song_name
+                ),
+                fg AS (
+                    SELECT song_name, MAX(fg_score) AS fg_peak
+                    FROM fg_loadouts
+                    GROUP BY song_name
+                ),
+                songs AS (
+                    SELECT song_name FROM loadouts
+                    UNION
+                    SELECT song_name FROM fg_loadouts
+                )
+                SELECT
+                    songs.song_name AS song_name,
+                    CASE
+                        WHEN COALESCE(base.base_peak, 0) > COALESCE(fg.fg_peak, 0) THEN COALESCE(base.base_peak, 0)
+                        ELSE COALESCE(fg.fg_peak, 0)
+                    END AS peak
+                FROM songs
+                LEFT JOIN base ON base.song_name = songs.song_name
+                LEFT JOIN fg ON fg.song_name = songs.song_name
+            ),
+            ranked AS (
+                SELECT
+                    f.rowid AS rowid,
+                    f.song_name AS song_name,
+                    f.score AS score,
+                    f.fg_score AS fg_score,
+                    f.gear_json AS gear_json,
+                    f.minis_json AS minis_json,
+                    f.details_json AS details_json,
+                    f.force_details_json AS force_details_json,
+                    ROW_NUMBER() OVER (PARTITION BY f.song_name ORDER BY f.fg_score DESC, f.rowid ASC) AS rn
+                FROM fg_loadouts f
+                JOIN peaks p ON p.song_name = f.song_name
+                WHERE f.fg_score >= (p.peak - ?)
+            )
+            SELECT rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
+            FROM ranked
+            WHERE rn <= ?
+            """,
+            (delta, n),
+        ):
+            song = str(row["song_name"] or "")
+            cand = parse_candidate_row(song, "fg_loadouts", row)
+            if cand is None:
+                continue
+            candidates_by_song.setdefault(song, []).append(cand)
+    except sqlite3.Error:
+        pass
+
+    missing = [name for name in sorted(peak_map.keys()) if name not in candidates_by_song]
+
+    for song_name, candidates in list(candidates_by_song.items()):
+        dedup: Dict[Tuple[Any, ...], SongCandidate] = {}
+        # Highest score first for selection diversity; stable within table by rowid.
+        def _metric(c: SongCandidate) -> int:
+            return int(c.fg_score) if c.source_table == "fg_loadouts" else int(c.score)
+
+        ordered = sorted(candidates, key=lambda c: (-_metric(c), 0 if c.source_table == "loadouts" else 1, c.rowid))
+        for cand in ordered:
+            key = (cand.gear_names, cand.mini_groups, cand.gem_totals, cand.selected_element, cand.source_table, _metric(cand))
+            if key not in dedup:
+                dedup[key] = cand
+        candidates_by_song[song_name] = list(dedup.values())
+
+    return candidates_by_song, missing
+
+
 def parse_candidate_row(song_name: str, source_table: str, row: sqlite3.Row) -> Optional[SongCandidate]:
     try:
         try:
@@ -348,6 +544,7 @@ def _extract_gem_totals(details: Dict[str, Any]) -> Tuple[int, ...]:
 
 __all__ = [
     "fetch_candidates_for_peak",
+    "fetch_candidates_within_delta_allow_missing",
     "fetch_peak_candidates_allow_missing",
     "fetch_song_names",
     "fetch_song_names_limited",

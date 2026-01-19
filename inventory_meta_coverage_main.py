@@ -134,6 +134,18 @@ def main() -> None:
         help="GPU full: top candidates per song to consider (default: 1).",
     )
     parser.add_argument(
+        "--gpu-full-candidate-score-delta",
+        type=int,
+        default=0,
+        help="GPU full: widen candidate pool to rows within this delta of peak (default: 0; exact peak only).",
+    )
+    parser.add_argument(
+        "--gpu-full-candidate-limit-per-song",
+        type=int,
+        default=0,
+        help="GPU full: max DB candidates per song when widening pool (0=auto; default: 0).",
+    )
+    parser.add_argument(
         "--gpu-full-repack-rarity-weighted",
         action="store_true",
         help="GPU full: make repack prefer swapping out rare variants (default: off).",
@@ -203,6 +215,8 @@ def main() -> None:
             gpu_full_witness_pattern_profile=int(args.gpu_full_witness_pattern_profile),
             gpu_full_counter_stripes=int(args.gpu_full_counter_stripes),
             gpu_full_top_candidates=int(args.gpu_full_top_candidates),
+            gpu_full_candidate_score_delta=int(args.gpu_full_candidate_score_delta),
+            gpu_full_candidate_limit_per_song=int(args.gpu_full_candidate_limit_per_song),
         )
         out = args.output or str(REPO_ROOT / "artifacts" / "inventory_meta_coverage.json")
         output_path = export_inventory_meta_json(results, out)

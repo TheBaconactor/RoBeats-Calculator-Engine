@@ -13,6 +13,7 @@ from gear_optimizer.data.database import get_db_connection, get_evolution_db_pat
 
 from .db import (
     fetch_candidates_for_peak,
+    fetch_candidates_within_delta_allow_missing,
     fetch_peak_candidates_allow_missing,
     fetch_song_names_limited,
     fetch_song_peak,
@@ -145,18 +146,31 @@ def _select_one_peak_candidate_per_song(song_specs: List[SongSpec]) -> List[_Cov
     return selected
 
 
-def _candidate_rank_key(cand: CandidateSpec, gear_freq: Dict[int, int]) -> Tuple[Any, ...]:
+def _candidate_rank_key(
+    cand: CandidateSpec,
+    gear_freq: Dict[int, int],
+    *,
+    song_peak: Optional[int] = None,
+) -> Tuple[Any, ...]:
     freq_sum = sum(gear_freq.get(g, 0) for g in cand.gear_ids)
     src_rank = 0 if cand.candidate.source_table == "loadouts" else 1
     ov_total = int(cand.candidate.gem_totals[OV_INDEX])
+    eff_score = int(cand.candidate.fg_score) if cand.candidate.source_table == "fg_loadouts" else int(cand.candidate.score)
+    score_gap = 0 if song_peak is None else max(0, int(song_peak) - int(eff_score))
     # Minimum number of OV-positive slots needed is ceil(OV_total / 15).
     req_ov_slots = 0 if ov_total <= 0 else (ov_total + 14) // 15
     # Primary objective for coverage is gear reuse: sharing gear IDs across songs reduces the number
     # of distinct variants needed. OV locking matters too, but treat it as a tie-breaker.
-    return (-freq_sum, req_ov_slots, ov_total, src_rank, cand.candidate.rowid)
+    # If provided, include closeness-to-peak as a primary objective (lower gap first).
+    return (score_gap, -freq_sum, req_ov_slots, ov_total, src_rank, cand.candidate.rowid)
 
 
-def _select_top_k_candidates_per_song(song_specs: List[SongSpec], *, k_candidates: int) -> List[SongSpec]:
+def _select_top_k_candidates_per_song(
+    song_specs: List[SongSpec],
+    *,
+    k_candidates: int,
+    song_peak_by_name: Optional[Dict[str, int]] = None,
+) -> List[SongSpec]:
     if int(k_candidates) <= 0:
         raise ValueError("k_candidates must be positive.")
 
@@ -169,6 +183,7 @@ def _select_top_k_candidates_per_song(song_specs: List[SongSpec], *, k_candidate
     selected: List[SongSpec] = []
     k_candidates = int(k_candidates)
     for song in song_specs:
+        song_peak = None if song_peak_by_name is None else song_peak_by_name.get(song.name)
         dedup: Dict[Tuple[Any, ...], CandidateSpec] = {}
         best_key_by_dedup: Dict[Tuple[Any, ...], Tuple[Any, ...]] = {}
         for cand in song.candidates:
@@ -177,12 +192,12 @@ def _select_top_k_candidates_per_song(song_specs: List[SongSpec], *, k_candidate
                 cand.candidate.gem_totals,
                 cand.element_id,
             )
-            key = _candidate_rank_key(cand, gear_freq)
+            key = _candidate_rank_key(cand, gear_freq, song_peak=song_peak)
             if dedup_key not in dedup or key < best_key_by_dedup[dedup_key]:
                 dedup[dedup_key] = cand
                 best_key_by_dedup[dedup_key] = key
 
-        ranked = sorted(dedup.values(), key=lambda c: _candidate_rank_key(c, gear_freq))
+        ranked = sorted(dedup.values(), key=lambda c: _candidate_rank_key(c, gear_freq, song_peak=song_peak))
         if not ranked:
             continue
         if len(ranked) > k_candidates:
@@ -638,7 +653,9 @@ def _build_multi_candidate_offsets(
     part_to_candidate = np.full((song_count, k_total), -1, dtype=np.int32)
     write_ptr = np.zeros((song_count,), dtype=np.int32)
 
-    groups: Dict[int, List[Tuple[int, int, CandidateSpec, int]]] = {}
+    # Build a flat list of candidate instances so we can run witness generation ONCE with fixed K_total,
+    # then slice per-candidate budgets (avoids multiple Taichi recompiles for varying K).
+    items: List[Tuple[int, int, CandidateSpec, int, int]] = []  # (song_idx, cand_idx, cand, start, k_budget)
     cand_counts: List[int] = []
     for s_idx, song in enumerate(songs):
         cand_count = int(len(song.candidates))
@@ -657,48 +674,39 @@ def _build_multi_candidate_offsets(
             end = start + int(k_budget)
             part_to_candidate[s_idx, start:end] = int(c_idx)
             write_ptr[s_idx] = int(end)
-            groups.setdefault(int(k_budget), []).append((int(s_idx), int(c_idx), cand, int(start)))
+            items.append((int(s_idx), int(c_idx), cand, int(start), int(k_budget)))
 
     if np.any(write_ptr != int(k_total)):
         raise RuntimeError("Multi-candidate witness layout mismatch (k_total allocation).")
 
-    group_stats: List[dict] = []
-    total_time = 0.0
-    for k_budget, items in groups.items():
-        gear_ids_np = np.zeros((len(items), 6), dtype=np.int32)
-        totals_np = np.zeros((len(items), 6), dtype=np.int32)
-        elements_np = np.zeros((len(items),), dtype=np.int32)
-        for idx, (_, _, cand, _) in enumerate(items):
-            gear_ids_np[idx, :] = np.asarray(cand.gear_ids, dtype=np.int32)
-            totals_np[idx, :] = np.asarray(cand.candidate.gem_totals, dtype=np.int32)
-            elements_np[idx] = int(cand.element_id)
+    if not items:
+        raise RuntimeError("No candidate instances to build witness pool.")
 
-        offsets_group, wp_stats = build_witness_offsets_gpu(
-            gear_ids_np,
-            totals_np,
-            elements_np,
-            gear_freq_np,
-            k_total=int(k_budget),
-            seed=int(seed),
-            anchor_patterns=int(witness_anchor_patterns),
-            seed_streams=int(witness_seed_streams),
-            pattern_profile=int(gpu_full_witness_pattern_profile),
-            profile=bool(mem.enabled),
-        )
-        total_time += float(wp_stats.get("time_sec") or 0.0)
-        group_stats.append(
-            {
-                "k_total": int(k_budget),
-                "candidates": int(len(items)),
-                "time_sec": float(wp_stats.get("time_sec") or 0.0),
-            }
-        )
+    gear_ids_np = np.zeros((len(items), 6), dtype=np.int32)
+    totals_np = np.zeros((len(items), 6), dtype=np.int32)
+    elements_np = np.zeros((len(items),), dtype=np.int32)
+    for idx, (_s_idx, _c_idx, cand, _start, _k_budget) in enumerate(items):
+        gear_ids_np[idx, :] = np.asarray(cand.gear_ids, dtype=np.int32)
+        totals_np[idx, :] = np.asarray(cand.candidate.gem_totals, dtype=np.int32)
+        elements_np[idx] = int(cand.element_id)
 
-        for idx, (s_idx, _c_idx, _cand, start) in enumerate(items):
-            end = int(start) + int(k_budget)
-            offsets_out[s_idx, start:end, :] = offsets_group[idx, :, :]
+    offsets_all, wp_stats = build_witness_offsets_gpu(
+        gear_ids_np,
+        totals_np,
+        elements_np,
+        gear_freq_np,
+        k_total=int(k_total),
+        seed=int(seed),
+        anchor_patterns=int(witness_anchor_patterns),
+        seed_streams=int(witness_seed_streams),
+        pattern_profile=int(gpu_full_witness_pattern_profile),
+        profile=bool(mem.enabled),
+    )
+    for idx, (s_idx, _c_idx, _cand, start, k_budget) in enumerate(items):
+        end = int(start) + int(k_budget)
+        offsets_out[s_idx, start:end, :] = offsets_all[idx, : int(k_budget), :]
 
-    mem.log(f"gpu_full_witness_pool_built (groups={len(groups)})")
+    mem.log(f"gpu_full_witness_pool_built (candidate_instances={len(items)})")
     cand_min = int(min(cand_counts)) if cand_counts else 0
     cand_max = int(max(cand_counts)) if cand_counts else 0
     cand_avg = float(sum(cand_counts) / len(cand_counts)) if cand_counts else 0.0
@@ -708,8 +716,8 @@ def _build_multi_candidate_offsets(
         "anchor_patterns": int(witness_anchor_patterns),
         "seed_streams": int(witness_seed_streams),
         "pattern_profile": int(gpu_full_witness_pattern_profile),
-        "time_sec": float(round(total_time, 6)),
-        "groups": group_stats,
+        "time_sec": float(wp_stats.get("time_sec") or 0.0),
+        "candidate_instances": int(len(items)),
         "candidates_per_song": {"min": cand_min, "max": cand_max, "avg": round(cand_avg, 3)},
     }
     return offsets_out, part_to_candidate, wp_summary
@@ -1153,12 +1161,16 @@ def run_inventory_meta_coverage(
     gpu_full_witness_pattern_profile: int = 0,
     gpu_full_counter_stripes: int = 1,
     gpu_full_top_candidates: int = 1,
+    gpu_full_candidate_score_delta: int = 0,
+    gpu_full_candidate_limit_per_song: int = 0,
 ) -> dict:
     """
     Inventory Meta coverage mode (GPU-only optimization loop):
     - Picks ONE peak row per song (top peak; tie broken deterministically).
     - For `gpu_full` with `gpu_full_top_candidates > 1`, it selects multiple top candidates per song
       and lets the GPU choose among them within a fixed per-song witness budget.
+    - If `gpu_full_candidate_score_delta > 0`, the candidate pool is widened to rows within that delta of peak
+      (approximate coverage experiment; no longer exact-peak-only).
     - Solves coverage without per-song pattern caps (dynamic per-slot gem partitioning on GPU).
     Minis are not constrained; duplicates are ignored.
 
@@ -1206,6 +1218,12 @@ def run_inventory_meta_coverage(
     gpu_full_top_candidates = int(gpu_full_top_candidates)
     if gpu_full_top_candidates <= 0:
         raise ValueError("gpu_full_top_candidates must be positive.")
+    gpu_full_candidate_score_delta = int(gpu_full_candidate_score_delta)
+    if gpu_full_candidate_score_delta < 0:
+        raise ValueError("gpu_full_candidate_score_delta must be >= 0.")
+    gpu_full_candidate_limit_per_song = int(gpu_full_candidate_limit_per_song)
+    if gpu_full_candidate_limit_per_song < 0:
+        raise ValueError("gpu_full_candidate_limit_per_song must be >= 0.")
 
     solver = str(solver or "gpu_dynamic").strip().lower()
     if solver not in {"gpu_dynamic", "gpu_eda", "gpu_full"}:
@@ -1221,19 +1239,33 @@ def run_inventory_meta_coverage(
     conn = get_db_connection(db_path)
     try:
         mem.log("db_connected")
+        song_peak_by_name: Optional[Dict[str, int]] = None
         if song_limit is not None:
             song_names = fetch_song_names_limited(conn, int(song_limit))
             candidates_by_song: Dict[str, List[SongCandidate]] = {}
             missing: List[str] = []
+            song_peak_by_name = {}
             for name in song_names:
                 peak, base_peak, fg_peak = fetch_song_peak(conn, name)
+                song_peak_by_name[str(name)] = int(peak)
                 cands = fetch_candidates_for_peak(conn, name, peak, base_peak, fg_peak)
                 if not cands:
                     missing.append(name)
                     continue
                 candidates_by_song[name] = cands
         else:
-            candidates_by_song, missing = fetch_peak_candidates_allow_missing(conn)
+            if solver == "gpu_full" and int(gpu_full_candidate_score_delta) > 0:
+                lim = int(gpu_full_candidate_limit_per_song)
+                if lim <= 0:
+                    lim = max(50, int(gpu_full_top_candidates) * 10)
+                candidates_by_song, missing = fetch_candidates_within_delta_allow_missing(
+                    conn,
+                    score_delta=int(gpu_full_candidate_score_delta),
+                    limit_per_song=int(lim),
+                )
+                song_peak_by_name = None  # will be re-derived lazily from selected candidates
+            else:
+                candidates_by_song, missing = fetch_peak_candidates_allow_missing(conn)
     finally:
         conn.close()
         mem.log("db_closed")
@@ -1260,7 +1292,11 @@ def run_inventory_meta_coverage(
         k_total = int(partitions_per_song) + int(adaptive_rounds) * int(adaptive_keep_per_song)
         k_total = max(int(partitions_per_song), int(k_total))
         max_candidates = min(int(gpu_full_top_candidates), int(k_total))
-        selected_multi_specs = _select_top_k_candidates_per_song(song_specs, k_candidates=max_candidates)
+        selected_multi_specs = _select_top_k_candidates_per_song(
+            song_specs,
+            k_candidates=max_candidates,
+            song_peak_by_name=song_peak_by_name,
+        )
         mem.log(f"selected_top_candidates_per_song (k={int(max_candidates)})")
         gear_freq_np = _build_candidate_gear_freq(selected_multi_specs, gear_count=len(gear_names))
     else:
@@ -1276,6 +1312,8 @@ def run_inventory_meta_coverage(
         "adaptive_keep_per_song": int(adaptive_keep_per_song),
         "adaptive_repack_songs": int(adaptive_repack_songs),
         "gpu_full_top_candidates": int(gpu_full_top_candidates),
+        "gpu_full_candidate_score_delta": int(gpu_full_candidate_score_delta),
+        "gpu_full_candidate_limit_per_song": int(gpu_full_candidate_limit_per_song),
     }
 
     best_seed: Optional[int] = None

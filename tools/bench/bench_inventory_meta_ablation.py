@@ -110,6 +110,12 @@ def main() -> None:
         help="Top candidates per song (default: 1).",
     )
     ap.add_argument(
+        "--gpu-full-candidate-score-delta",
+        type=int,
+        default=0,
+        help="Widen candidate pool to rows within this delta of peak (default: 0).",
+    )
+    ap.add_argument(
         "--gpu-full-v-pad-bin",
         type=int,
         default=4096,
@@ -142,6 +148,7 @@ def main() -> None:
         gpu_full_v_pad_bin=int(args.gpu_full_v_pad_bin),
         gpu_full_counter_stripes=int(args.gpu_full_counter_stripes),
         gpu_full_top_candidates=int(args.gpu_full_top_candidates),
+        gpu_full_candidate_score_delta=int(args.gpu_full_candidate_score_delta),
     )
 
     configs = [
