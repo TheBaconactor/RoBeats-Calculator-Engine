@@ -35,7 +35,10 @@ def main() -> None:
         help="Coverage solver backend (default: gpu_dynamic).",
     )
     parser.add_argument(
-        "--partitions-per-song", type=int, default=32, help="Legacy (ignored): patterns per song (default: 32)."
+        "--partitions-per-song",
+        type=int,
+        default=32,
+        help="GPU full: base witness patterns per song (K base). Legacy for other solvers (default: 32).",
     )
     parser.add_argument("--seed", type=int, default=1, help="RNG seed (default: 1).")
     parser.add_argument("--restarts", type=int, default=1, help="Run multiple seeds and keep best (default: 1).")
@@ -46,7 +49,10 @@ def main() -> None:
         "--gpu-lns-destroy", type=int, default=6, help="GPU LNS destroy count per attempt (default: 6)."
     )
     parser.add_argument(
-        "--adaptive-rounds", type=int, default=3, help="Legacy (ignored): adaptive rounds (default: 3)."
+        "--adaptive-rounds",
+        type=int,
+        default=3,
+        help="GPU full: contributes to witness pool size (K_total). Legacy for other solvers (default: 3).",
     )
     parser.add_argument(
         "--adaptive-patterns-per-round",
@@ -58,7 +64,7 @@ def main() -> None:
         "--adaptive-keep-per-song",
         type=int,
         default=8,
-        help="Legacy (ignored): partitions to keep per song per round (default: 8).",
+        help="GPU full: contributes to witness pool size (K_total). Legacy for other solvers (default: 8).",
     )
     parser.add_argument(
         "--adaptive-repack-songs",
@@ -98,6 +104,59 @@ def main() -> None:
         help="GPU full: add to variant frequency for OV==0 offsets (default: 0).",
     )
     parser.add_argument(
+        "--gpu-full-witness-anchor-patterns",
+        type=int,
+        default=24,
+        help="GPU full: deterministic witness patterns always included (default: 24).",
+    )
+    parser.add_argument(
+        "--gpu-full-witness-seed-streams",
+        type=int,
+        default=4,
+        help="GPU full: internal RNG streams for witness patterns (default: 4).",
+    )
+    parser.add_argument(
+        "--gpu-full-witness-pattern-profile",
+        type=int,
+        default=0,
+        help="GPU full: witness pattern profile (0=balanced, 1=reuse-biased; default: 0).",
+    )
+    parser.add_argument(
+        "--gpu-full-counter-stripes",
+        type=int,
+        default=1,
+        help="GPU full: number of counter stripes for counts updates (default: 1).",
+    )
+    parser.add_argument(
+        "--gpu-full-top-candidates",
+        type=int,
+        default=1,
+        help="GPU full: top candidates per song to consider (default: 1).",
+    )
+    parser.add_argument(
+        "--gpu-full-repack-rarity-weighted",
+        action="store_true",
+        help="GPU full: make repack prefer swapping out rare variants (default: off).",
+    )
+    parser.add_argument(
+        "--gpu-full-lns-freq-weighted",
+        action="store_true",
+        help="GPU full: weight LNS destroy/evict by witness frequency (default: off).",
+    )
+    parser.add_argument(
+        "--gpu-full-v-pad-bin",
+        type=int,
+        default=4096,
+        help="GPU full: pad V to a multiple of this bin size (kernel cache stability; default: 4096).",
+    )
+    parser.add_argument(
+        "--gpu-full-variant-freq-mode",
+        type=str,
+        default="occurrence",
+        choices=["occurrence", "song_support"],
+        help="GPU full: tie-break weight for variants (default: occurrence).",
+    )
+    parser.add_argument(
         "--output", type=str, default="", help="Output JSON path (default: artifacts/inventory_meta_coverage.json)."
     )
     args = parser.parse_args()
@@ -135,6 +194,15 @@ def main() -> None:
             eda_alpha=args.eda_alpha,
             eda_wildcard_bonus=args.eda_wildcard_bonus,
             gpu_full_wildcard_freq_bonus=args.gpu_full_wildcard_freq_bonus,
+            gpu_full_witness_anchor_patterns=args.gpu_full_witness_anchor_patterns,
+            gpu_full_witness_seed_streams=args.gpu_full_witness_seed_streams,
+            gpu_full_repack_rarity_weighted=bool(args.gpu_full_repack_rarity_weighted),
+            gpu_full_lns_freq_weighted=bool(args.gpu_full_lns_freq_weighted),
+            gpu_full_v_pad_bin=int(args.gpu_full_v_pad_bin),
+            gpu_full_variant_freq_mode=str(args.gpu_full_variant_freq_mode),
+            gpu_full_witness_pattern_profile=int(args.gpu_full_witness_pattern_profile),
+            gpu_full_counter_stripes=int(args.gpu_full_counter_stripes),
+            gpu_full_top_candidates=int(args.gpu_full_top_candidates),
         )
         out = args.output or str(REPO_ROOT / "artifacts" / "inventory_meta_coverage.json")
         output_path = export_inventory_meta_json(results, out)

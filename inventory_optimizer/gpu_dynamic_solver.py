@@ -897,10 +897,12 @@ def solve_coverage_gpu_dynamic(
 
     repack_passes = max(0, int(repack_passes))
     repack_used = 0
+    refill_added = 0
     t_repack = 0.0
+    t_refill = 0.0
     if repack_passes > 0:
-        t1 = time.perf_counter()
         for _ in range(repack_passes):
+            t1 = time.perf_counter()
             _repack_serial(
                 gear_ids,
                 totals,
@@ -918,8 +920,15 @@ def solve_coverage_gpu_dynamic(
                 inv_size,
             )
             repack_used += 1
-        t_repack = time.perf_counter() - t1
-        _assert_inventory_cap("after repack")
+            t_repack += time.perf_counter() - t1
+            _assert_inventory_cap(f"after repack pass {repack_used}")
+
+            # Refill any freed inventory capacity after repack. Repack can reduce `inv_size` without increasing
+            # coverage; a second greedy fill often finds additional songs under the same cap.
+            t2 = time.perf_counter()
+            refill_added += int(greedy_fill())
+            t_refill += time.perf_counter() - t2
+            _assert_inventory_cap(f"after refill pass {repack_used}")
 
     _copy_to_best(
         counts,
@@ -937,6 +946,9 @@ def solve_coverage_gpu_dynamic(
         inv_best,
         cov_best,
     )
+    # The LNS loop depends on the "best" snapshot being fully materialized before we start copying it back.
+    # Taichi kernel launches may be asynchronous; a sync here avoids races on large state copies.
+    ti.sync()
 
     lns_time_sec = float(lns_time_sec)
     lns_attempts = int(lns_attempts)
@@ -965,6 +977,7 @@ def solve_coverage_gpu_dynamic(
                 inv_best,
                 cov_best,
             )
+            ti.sync()
 
             _destroy_random_serial(
                 gear_ids,
@@ -1021,6 +1034,7 @@ def solve_coverage_gpu_dynamic(
                     inv_best,
                     cov_best,
                 )
+                ti.sync()
             lns_used += 1
 
         # Restore best at end
@@ -1040,16 +1054,20 @@ def solve_coverage_gpu_dynamic(
             inv_best,
             cov_best,
         )
+        ti.sync()
 
     stats = {
         "greedy": {
-            "added": int(greedy_added),
+            "added": int(greedy_added) + int(refill_added),
+            "added_initial": int(greedy_added),
+            "added_refill": int(refill_added),
             "time_sec": float(round(t_greedy, 6)),
         },
         "repack": {
             "passes_requested": int(repack_passes),
             "passes_used": int(repack_used),
             "time_sec": float(round(t_repack, 6)),
+            "refill_time_sec": float(round(t_refill, 6)),
         },
         "lns": {
             "enabled": bool(lns_time_sec > 0),

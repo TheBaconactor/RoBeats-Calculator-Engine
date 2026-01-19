@@ -120,8 +120,8 @@ def _select_one_peak_candidate_per_song(song_specs: List[SongSpec]) -> List[_Cov
 
     If a song has multiple DB rows tied for the top peak (e.g., base vs FG),
     choose a deterministic candidate that tends to improve inventory reuse:
-    - Prefer lower total OV (less element-locking).
     - Prefer gear used by many songs.
+    - Prefer lower total OV / fewer OV-positive slots (less element-locking).
     - Prefer `loadouts` over `fg_loadouts`, then lower rowid.
     """
     gear_freq: Dict[int, int] = {}
@@ -135,16 +135,59 @@ def _select_one_peak_candidate_per_song(song_specs: List[SongSpec]) -> List[_Cov
         best: Optional[CandidateSpec] = None
         best_key: Optional[Tuple[Any, ...]] = None
         for cand in song.candidates:
-            freq_sum = sum(gear_freq.get(g, 0) for g in cand.gear_ids)
-            src_rank = 0 if cand.candidate.source_table == "loadouts" else 1
-            ov_total = int(cand.candidate.gem_totals[OV_INDEX])
-            key = (ov_total, -freq_sum, src_rank, cand.candidate.rowid)
+            key = _candidate_rank_key(cand, gear_freq)
             if best is None or key < best_key:
                 best = cand
                 best_key = key
         if best is None:
             continue
         selected.append(_CoverageSong(song_name=song.name, candidate=best))
+    return selected
+
+
+def _candidate_rank_key(cand: CandidateSpec, gear_freq: Dict[int, int]) -> Tuple[Any, ...]:
+    freq_sum = sum(gear_freq.get(g, 0) for g in cand.gear_ids)
+    src_rank = 0 if cand.candidate.source_table == "loadouts" else 1
+    ov_total = int(cand.candidate.gem_totals[OV_INDEX])
+    # Minimum number of OV-positive slots needed is ceil(OV_total / 15).
+    req_ov_slots = 0 if ov_total <= 0 else (ov_total + 14) // 15
+    # Primary objective for coverage is gear reuse: sharing gear IDs across songs reduces the number
+    # of distinct variants needed. OV locking matters too, but treat it as a tie-breaker.
+    return (-freq_sum, req_ov_slots, ov_total, src_rank, cand.candidate.rowid)
+
+
+def _select_top_k_candidates_per_song(song_specs: List[SongSpec], *, k_candidates: int) -> List[SongSpec]:
+    if int(k_candidates) <= 0:
+        raise ValueError("k_candidates must be positive.")
+
+    gear_freq: Dict[int, int] = {}
+    for song in song_specs:
+        for cand in song.candidates:
+            for gid in cand.gear_ids:
+                gear_freq[gid] = gear_freq.get(gid, 0) + 1
+
+    selected: List[SongSpec] = []
+    k_candidates = int(k_candidates)
+    for song in song_specs:
+        dedup: Dict[Tuple[Any, ...], CandidateSpec] = {}
+        best_key_by_dedup: Dict[Tuple[Any, ...], Tuple[Any, ...]] = {}
+        for cand in song.candidates:
+            dedup_key = (
+                cand.gear_ids,
+                cand.candidate.gem_totals,
+                cand.element_id,
+            )
+            key = _candidate_rank_key(cand, gear_freq)
+            if dedup_key not in dedup or key < best_key_by_dedup[dedup_key]:
+                dedup[dedup_key] = cand
+                best_key_by_dedup[dedup_key] = key
+
+        ranked = sorted(dedup.values(), key=lambda c: _candidate_rank_key(c, gear_freq))
+        if not ranked:
+            continue
+        if len(ranked) > k_candidates:
+            ranked = ranked[:k_candidates]
+        selected.append(SongSpec(name=song.name, candidates=ranked))
     return selected
 
 
@@ -264,6 +307,125 @@ def _materialize_coverage_solution(
     return solution
 
 
+def _materialize_coverage_solution_multi(
+    songs: List[SongSpec],
+    *,
+    gear_names: List[str],
+    sol: Any,
+    chosen_candidate_idx: np.ndarray,
+    mode: str,
+    solver_status: str,
+    inventory_cap: int,
+    seed: int,
+    gpu_repack_passes: int,
+    gpu_lns_destroy: int,
+    lns_time_sec: float,
+    lns_attempts: int,
+    mem: _MemoryLogger,
+    legacy_args: Optional[dict] = None,
+) -> dict:
+    if not songs:
+        raise ValueError("No songs provided.")
+
+    num_songs = int(len(songs))
+    mem.log(f"gpu_full_materialize_multi (songs={num_songs})")
+
+    covered_np = np.asarray(sol.covered, dtype=np.int32)
+    chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32)
+    chosen_candidate_idx = np.asarray(chosen_candidate_idx, dtype=np.int32)
+
+    used_pairs_set: set[Tuple[int, int]] = set()
+    for s_idx, is_cov in enumerate(covered_np.tolist()):
+        if int(is_cov) <= 0:
+            continue
+        c_idx = int(chosen_candidate_idx[s_idx])
+        if c_idx < 0:
+            continue
+        cand = songs[s_idx].candidates[c_idx]
+        for j in range(6):
+            used_pairs_set.add((int(cand.gear_ids[j]), int(chosen_offsets_np[s_idx, j])))
+
+    used_pairs = sorted(used_pairs_set)
+    pair_to_id = {pair: idx for idx, pair in enumerate(used_pairs)}
+
+    offset_gems_np, offset_color_np = build_variant_offset_tables()
+
+    variants_out: List[dict] = []
+    for idx, (gid, off) in enumerate(used_pairs):
+        vec = offset_gems_np[off]
+        ov_color_id = int(offset_color_np[off])
+        variants_out.append(
+            {
+                "id": int(idx),
+                "gear_name": gear_names[gid - 1] if gid > 0 else "",
+                "gems": {STAT_KEYS[i]: int(vec[i]) for i in range(len(STAT_KEYS))},
+                "ov_color": ID_TO_ELEMENT.get(int(ov_color_id), "") if ov_color_id else "",
+            }
+        )
+
+    minis_used: set[str] = set()
+    assignments: Dict[str, dict] = {}
+    for s_idx, song in enumerate(songs):
+        if int(covered_np[s_idx]) <= 0:
+            continue
+        c_idx = int(chosen_candidate_idx[s_idx])
+        if c_idx < 0:
+            continue
+        cand = song.candidates[c_idx].candidate
+
+        minis: set[str] = set()
+        for group in cand.mini_groups:
+            minis.update(group)
+        minis_used.update(minis)
+
+        offs = chosen_offsets_np[s_idx]
+        gids = song.candidates[c_idx].gear_ids
+        variant_ids = [int(pair_to_id[(int(gids[j]), int(offs[j]))]) for j in range(6)]
+
+        assignments[song.name] = {
+            "source_table": cand.source_table,
+            "candidate_rowid": cand.rowid,
+            "score": cand.score,
+            "fg_score": cand.fg_score,
+            "gear": list(cand.gear_names),
+            "selected_element": cand.selected_element,
+            "gem_totals": {STAT_KEYS[i]: int(cand.gem_totals[i]) for i in range(len(STAT_KEYS))},
+            "variant_ids": variant_ids,
+            "minis": sorted(minis),
+            "force_details": None,
+        }
+
+    uncovered_songs = [songs[i].name for i in range(num_songs) if int(covered_np[i]) <= 0]
+    solver_stats: dict = {
+        "status": str(solver_status),
+        "seed": int(seed),
+        "gpu_repack_passes": int(gpu_repack_passes),
+        "gpu_lns_destroy": int(gpu_lns_destroy),
+        "lns": {
+            "enabled": bool(float(lns_time_sec) > 0),
+            "time_sec": float(lns_time_sec),
+            "attempts": int(lns_attempts),
+        },
+        "legacy": legacy_args or {},
+        "solver": sol.stats,
+    }
+
+    solution = {
+        "mode": str(mode),
+        "inventory": {"gear_variants": variants_out, "minis": sorted(minis_used)},
+        "assignments": assignments,
+        "uncovered_songs": uncovered_songs,
+        "stats": {
+            "songs_total": num_songs,
+            "songs_covered": int(sol.covered_count),
+            "gear_variants_used": len(variants_out),
+            "gear_variants_cap": int(inventory_cap),
+        },
+        "solver_stats": solver_stats,
+    }
+    return solution
+
+
 def _build_gpu_dynamic_inputs(
     songs: List[_CoverageSong], *, gear_names: List[str]
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -283,6 +445,15 @@ def _build_gpu_dynamic_inputs(
     gear_freq_np = np.zeros((gear_count + 1,), dtype=np.int32)
     np.add.at(gear_freq_np, gear_ids_np.reshape(-1), 1)
     return gear_ids_np, totals_np, elements_np, gear_freq_np
+
+
+def _build_candidate_gear_freq(songs: List[SongSpec], *, gear_count: int) -> np.ndarray:
+    gear_freq_np = np.zeros((int(gear_count) + 1,), dtype=np.int32)
+    for song in songs:
+        for cand in song.candidates:
+            for gid in cand.gear_ids:
+                gear_freq_np[int(gid)] += 1
+    return gear_freq_np
 
 
 def _run_gpu_dynamic_solver(
@@ -369,6 +540,25 @@ def _count_used_gear_variants(gear_ids_np: np.ndarray, covered_np: np.ndarray, c
     return len(used)
 
 
+def _count_used_gear_variants_multi(
+    songs: List[SongSpec],
+    covered_np: np.ndarray,
+    chosen_offsets_np: np.ndarray,
+    chosen_candidate_idx: np.ndarray,
+) -> int:
+    used: set[Tuple[int, int]] = set()
+    for s_idx, is_cov in enumerate(covered_np.tolist()):
+        if int(is_cov) <= 0:
+            continue
+        c_idx = int(chosen_candidate_idx[s_idx])
+        if c_idx < 0:
+            continue
+        cand = songs[s_idx].candidates[c_idx]
+        for j in range(6):
+            used.add((int(cand.gear_ids[j]), int(chosen_offsets_np[s_idx, j])))
+    return len(used)
+
+
 def _run_gpu_full_solver_from_witness_pool(
     gear_ids_np: np.ndarray,
     totals_np: np.ndarray,
@@ -379,9 +569,17 @@ def _run_gpu_full_solver_from_witness_pool(
     seed: int,
     k_total: int,
     gpu_repack_passes: int,
+    gpu_full_repack_rarity_weighted: bool = False,
     lns_time_sec: float,
     lns_attempts: int,
     gpu_lns_destroy: int,
+    gpu_full_lns_freq_weighted: bool,
+    gpu_full_variant_freq_mode: str,
+    gpu_full_counter_stripes: int,
+    gpu_full_witness_pattern_profile: int,
+    witness_anchor_patterns: int = 24,
+    witness_seed_streams: int = 4,
+    v_pad_bin: int = 4096,
     mem: _MemoryLogger,
     wildcard_freq_bonus: int = 0,
 ):
@@ -392,6 +590,9 @@ def _run_gpu_full_solver_from_witness_pool(
         gear_freq_np,
         k_total=int(k_total),
         seed=int(seed),
+        anchor_patterns=int(witness_anchor_patterns),
+        seed_streams=int(witness_seed_streams),
+        pattern_profile=int(gpu_full_witness_pattern_profile),
         profile=bool(mem.enabled),
     )
     mem.log("gpu_full_witness_pool_built")
@@ -401,13 +602,117 @@ def _run_gpu_full_solver_from_witness_pool(
         inventory_cap=int(inventory_cap),
         seed=int(seed),
         gpu_repack_passes=int(gpu_repack_passes),
+        gpu_full_repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
         lns_time_sec=float(lns_time_sec),
         lns_attempts=int(lns_attempts),
         gpu_lns_destroy=int(gpu_lns_destroy),
+        gpu_full_lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
+        gpu_full_variant_freq_mode=str(gpu_full_variant_freq_mode),
+        gpu_full_counter_stripes=int(gpu_full_counter_stripes),
         mem=mem,
         wp_stats=wp_stats,
+        v_pad_bin=int(v_pad_bin),
         wildcard_freq_bonus=int(wildcard_freq_bonus),
     )
+
+
+def _build_multi_candidate_offsets(
+    songs: List[SongSpec],
+    *,
+    k_total: int,
+    seed: int,
+    gear_freq_np: np.ndarray,
+    witness_anchor_patterns: int,
+    witness_seed_streams: int,
+    gpu_full_witness_pattern_profile: int,
+    mem: _MemoryLogger,
+) -> Tuple[np.ndarray, np.ndarray, dict]:
+    if not songs:
+        raise ValueError("songs must be non-empty.")
+    k_total = int(k_total)
+    if k_total <= 0:
+        raise ValueError("k_total must be positive.")
+
+    song_count = int(len(songs))
+    offsets_out = np.zeros((song_count, k_total, 6), dtype=np.int32)
+    part_to_candidate = np.full((song_count, k_total), -1, dtype=np.int32)
+    write_ptr = np.zeros((song_count,), dtype=np.int32)
+
+    groups: Dict[int, List[Tuple[int, int, CandidateSpec, int]]] = {}
+    cand_counts: List[int] = []
+    for s_idx, song in enumerate(songs):
+        cand_count = int(len(song.candidates))
+        if cand_count <= 0:
+            raise ValueError(f"No candidates for song: {song.name}")
+        if k_total < cand_count:
+            raise ValueError("k_total must be >= candidates per song for multi-candidate mode.")
+        base = k_total // cand_count
+        rem = k_total % cand_count
+        if base <= 0:
+            raise ValueError("k_total budget too small for candidate split.")
+        cand_counts.append(cand_count)
+        for c_idx, cand in enumerate(song.candidates):
+            k_budget = base + (1 if c_idx < rem else 0)
+            start = int(write_ptr[s_idx])
+            end = start + int(k_budget)
+            part_to_candidate[s_idx, start:end] = int(c_idx)
+            write_ptr[s_idx] = int(end)
+            groups.setdefault(int(k_budget), []).append((int(s_idx), int(c_idx), cand, int(start)))
+
+    if np.any(write_ptr != int(k_total)):
+        raise RuntimeError("Multi-candidate witness layout mismatch (k_total allocation).")
+
+    group_stats: List[dict] = []
+    total_time = 0.0
+    for k_budget, items in groups.items():
+        gear_ids_np = np.zeros((len(items), 6), dtype=np.int32)
+        totals_np = np.zeros((len(items), 6), dtype=np.int32)
+        elements_np = np.zeros((len(items),), dtype=np.int32)
+        for idx, (_, _, cand, _) in enumerate(items):
+            gear_ids_np[idx, :] = np.asarray(cand.gear_ids, dtype=np.int32)
+            totals_np[idx, :] = np.asarray(cand.candidate.gem_totals, dtype=np.int32)
+            elements_np[idx] = int(cand.element_id)
+
+        offsets_group, wp_stats = build_witness_offsets_gpu(
+            gear_ids_np,
+            totals_np,
+            elements_np,
+            gear_freq_np,
+            k_total=int(k_budget),
+            seed=int(seed),
+            anchor_patterns=int(witness_anchor_patterns),
+            seed_streams=int(witness_seed_streams),
+            pattern_profile=int(gpu_full_witness_pattern_profile),
+            profile=bool(mem.enabled),
+        )
+        total_time += float(wp_stats.get("time_sec") or 0.0)
+        group_stats.append(
+            {
+                "k_total": int(k_budget),
+                "candidates": int(len(items)),
+                "time_sec": float(wp_stats.get("time_sec") or 0.0),
+            }
+        )
+
+        for idx, (s_idx, _c_idx, _cand, start) in enumerate(items):
+            end = int(start) + int(k_budget)
+            offsets_out[s_idx, start:end, :] = offsets_group[idx, :, :]
+
+    mem.log(f"gpu_full_witness_pool_built (groups={len(groups)})")
+    cand_min = int(min(cand_counts)) if cand_counts else 0
+    cand_max = int(max(cand_counts)) if cand_counts else 0
+    cand_avg = float(sum(cand_counts) / len(cand_counts)) if cand_counts else 0.0
+    wp_summary = {
+        "songs": int(song_count),
+        "k_total": int(k_total),
+        "anchor_patterns": int(witness_anchor_patterns),
+        "seed_streams": int(witness_seed_streams),
+        "pattern_profile": int(gpu_full_witness_pattern_profile),
+        "time_sec": float(round(total_time, 6)),
+        "groups": group_stats,
+        "candidates_per_song": {"min": cand_min, "max": cand_max, "avg": round(cand_avg, 3)},
+    }
+    return offsets_out, part_to_candidate, wp_summary
 
 
 def _pad_v_count(v_count: int, *, bin_size: int = 4096) -> int:
@@ -422,6 +727,7 @@ def _pack_part_vids_dense(
     *,
     dense_vid_universe: Optional[np.ndarray] = None,
     v_pad_bin: int = 4096,
+    variant_freq_mode: str = "occurrence",
     wildcard_freq_bonus: int = 0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     """
@@ -447,7 +753,22 @@ def _pack_part_vids_dense(
     part_vids = inv.reshape(vids.shape).astype(np.int32, copy=False)
     v_raw = int(dense_vid_universe.size)
     v_count = _pad_v_count(v_raw, bin_size=int(v_pad_bin))
-    variant_freq = np.bincount(part_vids.reshape(-1), minlength=v_count).astype(np.int32, copy=False)
+
+    variant_freq_mode = str(variant_freq_mode).strip().lower()
+    if variant_freq_mode not in {"occurrence", "song_support"}:
+        raise ValueError("variant_freq_mode must be 'occurrence' or 'song_support'.")
+
+    if variant_freq_mode == "song_support":
+        # Weight variants by the number of songs that can use them (appears in any pattern for that song).
+        # This is often a better reuse proxy than raw occurrence count, which can be inflated by duplicate
+        # patterns within the same song.
+        variant_freq = np.zeros((v_count,), dtype=np.int32)
+        flat_by_song = part_vids.reshape(int(part_vids.shape[0]), -1)
+        for s_idx in range(int(flat_by_song.shape[0])):
+            u = np.unique(flat_by_song[s_idx])
+            variant_freq[u] += np.int32(1)
+    else:
+        variant_freq = np.bincount(part_vids.reshape(-1), minlength=v_count).astype(np.int32, copy=False)
     if int(wildcard_freq_bonus) != 0 and v_raw > 0:
         # Encourage reuse by slightly preferring OV==0 (color=0) variants in tie-break scoring.
         # `offset < OV0_VARIANTS` is equivalent to OV==0 by construction (see `variant_space.py`).
@@ -463,6 +784,52 @@ def _pack_part_vids_dense(
     return part_vids, variant_freq, dense_vid_universe, v_count
 
 
+def _pack_part_vids_dense_from_raw(
+    raw_vids: np.ndarray,
+    *,
+    v_pad_bin: int = 4096,
+    variant_freq_mode: str = "occurrence",
+    wildcard_freq_bonus: int = 0,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    raw_vids = np.asarray(raw_vids, dtype=np.int32)
+    if raw_vids.ndim != 3 or raw_vids.shape[2] != 6:
+        raise ValueError("raw_vids must have shape (S, K, 6).")
+
+    flat = raw_vids.reshape(-1)
+    dense_vid_universe = np.unique(flat).astype(np.int32, copy=False)
+    inv = np.searchsorted(dense_vid_universe, flat).astype(np.int32, copy=False)
+    part_vids = inv.reshape(raw_vids.shape).astype(np.int32, copy=False)
+
+    v_raw = int(dense_vid_universe.size)
+    v_count = _pad_v_count(v_raw, bin_size=int(v_pad_bin))
+
+    variant_freq_mode = str(variant_freq_mode).strip().lower()
+    if variant_freq_mode not in {"occurrence", "song_support"}:
+        raise ValueError("variant_freq_mode must be 'occurrence' or 'song_support'.")
+
+    if variant_freq_mode == "song_support":
+        variant_freq = np.zeros((v_count,), dtype=np.int32)
+        flat_by_song = part_vids.reshape(int(part_vids.shape[0]), -1)
+        for s_idx in range(int(flat_by_song.shape[0])):
+            u = np.unique(flat_by_song[s_idx])
+            variant_freq[u] += np.int32(1)
+    else:
+        variant_freq = np.bincount(part_vids.reshape(-1), minlength=v_count).astype(np.int32, copy=False)
+
+    if int(wildcard_freq_bonus) != 0 and v_raw > 0:
+        from .variant_space import OV0_VARIANTS
+
+        off = (dense_vid_universe & np.int32(0xFFFF)).astype(np.int32, copy=False)
+        is_wild = np.zeros((v_count,), dtype=bool)
+        is_wild[:v_raw] = off < np.int32(OV0_VARIANTS)
+        variant_freq = variant_freq.copy()
+        variant_freq[is_wild] = (variant_freq[is_wild] + np.int32(int(wildcard_freq_bonus))).astype(
+            np.int32, copy=False
+        )
+
+    return part_vids, variant_freq, dense_vid_universe, v_count
+
+
 def _run_gpu_full_solver_from_offsets(
     gear_ids_np: np.ndarray,
     offsets_np: np.ndarray,
@@ -470,9 +837,13 @@ def _run_gpu_full_solver_from_offsets(
     inventory_cap: int,
     seed: int,
     gpu_repack_passes: int,
+    gpu_full_repack_rarity_weighted: bool,
     lns_time_sec: float,
     lns_attempts: int,
     gpu_lns_destroy: int,
+    gpu_full_lns_freq_weighted: bool,
+    gpu_full_variant_freq_mode: str,
+    gpu_full_counter_stripes: int,
     mem: _MemoryLogger,
     wp_stats: Optional[dict] = None,
     dense_vid_universe: Optional[np.ndarray] = None,
@@ -484,6 +855,7 @@ def _run_gpu_full_solver_from_offsets(
         offsets_np,
         dense_vid_universe=dense_vid_universe,
         v_pad_bin=int(v_pad_bin),
+        variant_freq_mode=str(gpu_full_variant_freq_mode),
         wildcard_freq_bonus=int(wildcard_freq_bonus),
     )
 
@@ -496,9 +868,12 @@ def _run_gpu_full_solver_from_offsets(
         inventory_cap=int(inventory_cap),
         seed=int(seed),
         repack_passes=int(gpu_repack_passes),
+        repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
+        counter_stripes=int(gpu_full_counter_stripes),
         lns_time_sec=float(lns_time_sec),
         lns_attempts=int(lns_attempts),
         lns_destroy=int(gpu_lns_destroy),
+        lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
         profile=bool(mem.enabled),
     )
     mem.log("gpu_full_solved")
@@ -530,6 +905,115 @@ def _run_gpu_full_solver_from_offsets(
     )
 
 
+def _run_gpu_full_solver_from_candidates(
+    songs: List[SongSpec],
+    *,
+    k_total: int,
+    gear_freq_np: np.ndarray,
+    inventory_cap: int,
+    seed: int,
+    gpu_repack_passes: int,
+    gpu_full_repack_rarity_weighted: bool,
+    lns_time_sec: float,
+    lns_attempts: int,
+    gpu_lns_destroy: int,
+    gpu_full_lns_freq_weighted: bool,
+    gpu_full_variant_freq_mode: str,
+    gpu_full_counter_stripes: int,
+    gpu_full_witness_pattern_profile: int,
+    witness_anchor_patterns: int,
+    witness_seed_streams: int,
+    mem: _MemoryLogger,
+    v_pad_bin: int = 4096,
+    wildcard_freq_bonus: int = 0,
+):
+    offsets_np, part_to_candidate, wp_stats = _build_multi_candidate_offsets(
+        songs,
+        k_total=int(k_total),
+        seed=int(seed),
+        gear_freq_np=gear_freq_np,
+        witness_anchor_patterns=int(witness_anchor_patterns),
+        witness_seed_streams=int(witness_seed_streams),
+        gpu_full_witness_pattern_profile=int(gpu_full_witness_pattern_profile),
+        mem=mem,
+    )
+
+    raw_vids = np.zeros_like(offsets_np, dtype=np.int32)
+    for s_idx, song in enumerate(songs):
+        write_ptr = 0
+        for c_idx, cand in enumerate(song.candidates):
+            cand_mask = part_to_candidate[s_idx] == int(c_idx)
+            count = int(np.count_nonzero(cand_mask))
+            if count <= 0:
+                continue
+            start = int(write_ptr)
+            end = start + int(count)
+            write_ptr = int(end)
+            gids = (np.asarray(cand.gear_ids, dtype=np.int32) << np.int32(16)).reshape(1, 6)
+            raw_vids[s_idx, start:end, :] = gids | offsets_np[s_idx, start:end, :]
+        if write_ptr != int(k_total):
+            raise RuntimeError("Multi-candidate raw vids build mismatch.")
+
+    part_vids, variant_freq_np, dense_vid_universe, v_count = _pack_part_vids_dense_from_raw(
+        raw_vids,
+        v_pad_bin=int(v_pad_bin),
+        variant_freq_mode=str(gpu_full_variant_freq_mode),
+        wildcard_freq_bonus=int(wildcard_freq_bonus),
+    )
+
+    mem.log(
+        f"gpu_full_inputs_ready (songs={part_vids.shape[0]}, k_total={int(k_total)}, v={int(v_count)})"
+    )
+    sol_full = solve_coverage_gpu_full(
+        part_vids,
+        variant_freq_np,
+        inventory_cap=int(inventory_cap),
+        seed=int(seed),
+        repack_passes=int(gpu_repack_passes),
+        repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
+        counter_stripes=int(gpu_full_counter_stripes),
+        lns_time_sec=float(lns_time_sec),
+        lns_attempts=int(lns_attempts),
+        lns_destroy=int(gpu_lns_destroy),
+        lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
+        profile=bool(mem.enabled),
+    )
+    mem.log("gpu_full_solved")
+
+    chosen_part = np.asarray(sol_full.chosen_part, dtype=np.int32)
+    chosen_offsets = np.full((len(songs), 6), -1, dtype=np.int32)
+    chosen_candidate_idx = np.full((len(songs),), -1, dtype=np.int32)
+    for s_idx in range(int(len(songs))):
+        p = int(chosen_part[s_idx])
+        if p >= 0:
+            chosen_offsets[s_idx, :] = offsets_np[s_idx, p, :]
+            chosen_candidate_idx[s_idx] = int(part_to_candidate[s_idx, p])
+
+    covered = (chosen_part >= 0).astype(np.int32, copy=False)
+
+    from types import SimpleNamespace
+
+    stats = {
+        "witness_pool": wp_stats,
+        "gpu_full": sol_full.stats,
+        "k_total": int(k_total),
+        "v_count": int(v_count),
+        "v_unpadded": int(dense_vid_universe.size),
+        "multi_candidate": {
+            "enabled": True,
+            "candidates_per_song": wp_stats.get("candidates_per_song"),
+        },
+    }
+    return SimpleNamespace(
+        covered=covered,
+        chosen_offsets=chosen_offsets,
+        covered_count=int(covered.sum()),
+        stats=stats,
+        dense_vid_universe=dense_vid_universe,
+        chosen_candidate_idx=chosen_candidate_idx,
+    )
+
+
 def _run_gpu_full_solver_multi_seed(
     gear_ids_np: np.ndarray,
     totals_np: np.ndarray,
@@ -546,6 +1030,13 @@ def _run_gpu_full_solver_multi_seed(
     mem: _MemoryLogger,
     v_pad_bin: int = 4096,
     wildcard_freq_bonus: int = 0,
+    witness_anchor_patterns: int = 24,
+    witness_seed_streams: int = 4,
+    gpu_full_repack_rarity_weighted: bool = False,
+    gpu_full_lns_freq_weighted: bool = False,
+    gpu_full_variant_freq_mode: str = "occurrence",
+    gpu_full_witness_pattern_profile: int = 0,
+    gpu_full_counter_stripes: int = 1,
 ):
     if not seeds:
         raise ValueError("seeds must be non-empty.")
@@ -563,6 +1054,9 @@ def _run_gpu_full_solver_multi_seed(
             gear_freq_np,
             k_total=int(k_total),
             seed=int(s),
+            anchor_patterns=int(witness_anchor_patterns),
+            seed_streams=int(witness_seed_streams),
+            pattern_profile=int(gpu_full_witness_pattern_profile),
             profile=bool(mem.enabled),
         )
         offsets_by_seed[int(s)] = offsets_np
@@ -589,9 +1083,13 @@ def _run_gpu_full_solver_multi_seed(
             inventory_cap=int(inventory_cap),
             seed=int(s),
             gpu_repack_passes=int(gpu_repack_passes),
+            gpu_full_repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
             lns_time_sec=float(lns_time_sec),
             lns_attempts=int(lns_attempts),
             gpu_lns_destroy=int(gpu_lns_destroy),
+            gpu_full_lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
+            gpu_full_variant_freq_mode=str(gpu_full_variant_freq_mode),
+            gpu_full_counter_stripes=int(gpu_full_counter_stripes),
             mem=mem,
             wp_stats=wp_stats_by_seed[int(s)],
             dense_vid_universe=dense_vid_universe,
@@ -646,15 +1144,27 @@ def run_inventory_meta_coverage(
     eda_alpha: float = 0.25,
     eda_wildcard_bonus: float = 0.03,
     gpu_full_wildcard_freq_bonus: int = 0,
+    gpu_full_witness_anchor_patterns: int = 24,
+    gpu_full_witness_seed_streams: int = 4,
+    gpu_full_repack_rarity_weighted: bool = False,
+    gpu_full_lns_freq_weighted: bool = False,
+    gpu_full_v_pad_bin: int = 4096,
+    gpu_full_variant_freq_mode: str = "occurrence",
+    gpu_full_witness_pattern_profile: int = 0,
+    gpu_full_counter_stripes: int = 1,
+    gpu_full_top_candidates: int = 1,
 ) -> dict:
     """
     Inventory Meta coverage mode (GPU-only optimization loop):
     - Picks ONE peak row per song (top peak; tie broken deterministically).
+    - For `gpu_full` with `gpu_full_top_candidates > 1`, it selects multiple top candidates per song
+      and lets the GPU choose among them within a fixed per-song witness budget.
     - Solves coverage without per-song pattern caps (dynamic per-slot gem partitioning on GPU).
     Minis are not constrained; duplicates are ignored.
 
     Notes:
-    - `partitions_per_song` and `adaptive_*` are legacy arguments kept for CLI compatibility.
+    - For `solver='gpu_full'`, `K_total = partitions_per_song + adaptive_rounds * adaptive_keep_per_song`.
+    - For other solvers, `partitions_per_song` and `adaptive_*` are legacy arguments kept for CLI compatibility.
     """
     inventory_cap = int(inventory_cap)
     if inventory_cap <= 0:
@@ -674,6 +1184,28 @@ def run_inventory_meta_coverage(
     lns_attempts = int(lns_attempts)
     if lns_attempts <= 0:
         raise ValueError("lns_attempts must be positive.")
+    gpu_full_witness_anchor_patterns = int(gpu_full_witness_anchor_patterns)
+    if gpu_full_witness_anchor_patterns < 0:
+        raise ValueError("gpu_full_witness_anchor_patterns must be >= 0.")
+    gpu_full_witness_seed_streams = int(gpu_full_witness_seed_streams)
+    if gpu_full_witness_seed_streams <= 0:
+        raise ValueError("gpu_full_witness_seed_streams must be positive.")
+    gpu_full_v_pad_bin = int(gpu_full_v_pad_bin)
+    if gpu_full_v_pad_bin <= 0:
+        raise ValueError("gpu_full_v_pad_bin must be positive.")
+    gpu_full_variant_freq_mode = str(gpu_full_variant_freq_mode).strip().lower()
+    if gpu_full_variant_freq_mode not in {"occurrence", "song_support"}:
+        raise ValueError("gpu_full_variant_freq_mode must be 'occurrence' or 'song_support'.")
+    gpu_full_repack_rarity_weighted = bool(gpu_full_repack_rarity_weighted)
+    gpu_full_witness_pattern_profile = int(gpu_full_witness_pattern_profile)
+    if gpu_full_witness_pattern_profile < 0:
+        raise ValueError("gpu_full_witness_pattern_profile must be >= 0.")
+    gpu_full_counter_stripes = int(gpu_full_counter_stripes)
+    if gpu_full_counter_stripes <= 0:
+        raise ValueError("gpu_full_counter_stripes must be positive.")
+    gpu_full_top_candidates = int(gpu_full_top_candidates)
+    if gpu_full_top_candidates <= 0:
+        raise ValueError("gpu_full_top_candidates must be positive.")
 
     solver = str(solver or "gpu_dynamic").strip().lower()
     if solver not in {"gpu_dynamic", "gpu_eda", "gpu_full"}:
@@ -721,8 +1253,21 @@ def run_inventory_meta_coverage(
     selected_specs = _select_one_peak_candidate_per_song(song_specs)
     mem.log("selected_one_candidate_per_song")
 
-    gear_ids_np, totals_np, elements_np, gear_freq_np = _build_gpu_dynamic_inputs(selected_specs, gear_names=gear_names)
-    mem.log("gpu_dynamic_inputs_built")
+    use_multi_candidates = solver == "gpu_full" and gpu_full_top_candidates > 1
+    selected_multi_specs: Optional[List[SongSpec]] = None
+    gear_ids_np = totals_np = elements_np = gear_freq_np = None
+    if use_multi_candidates:
+        k_total = int(partitions_per_song) + int(adaptive_rounds) * int(adaptive_keep_per_song)
+        k_total = max(int(partitions_per_song), int(k_total))
+        max_candidates = min(int(gpu_full_top_candidates), int(k_total))
+        selected_multi_specs = _select_top_k_candidates_per_song(song_specs, k_candidates=max_candidates)
+        mem.log(f"selected_top_candidates_per_song (k={int(max_candidates)})")
+        gear_freq_np = _build_candidate_gear_freq(selected_multi_specs, gear_count=len(gear_names))
+    else:
+        gear_ids_np, totals_np, elements_np, gear_freq_np = _build_gpu_dynamic_inputs(
+            selected_specs, gear_names=gear_names
+        )
+        mem.log("gpu_dynamic_inputs_built")
 
     legacy_args = {
         "partitions_per_song": int(partitions_per_song),
@@ -730,24 +1275,27 @@ def run_inventory_meta_coverage(
         "adaptive_patterns_per_round": int(adaptive_patterns_per_round),
         "adaptive_keep_per_song": int(adaptive_keep_per_song),
         "adaptive_repack_songs": int(adaptive_repack_songs),
+        "gpu_full_top_candidates": int(gpu_full_top_candidates),
     }
 
     best_seed: Optional[int] = None
     best_sol = None
     best_cov = -1
     best_used = 10**9
+    best_chosen_candidate_idx: Optional[np.ndarray] = None
     base_seed = int(seed)
     if base_seed == 0:
         base_seed = int(time.time_ns() & 0x7FFFFFFF) or 1
 
-    # Full solver multi-seed batching to avoid per-restart Taichi recompiles (V changes with seed).
-    if solver == "gpu_full" and restarts > 1:
+    # `gpu_full` supports a multi-seed path that avoids repeated Taichi recompiles by using a
+    # single dense variant universe (`V`) across all restarts.
+    if solver == "gpu_full" and restarts > 1 and not use_multi_candidates:
+        seeds = [int(base_seed) + r for r in range(int(restarts))]
+        if profile:
+            mem.log(f"gpu_full_multi_seed (restarts={int(restarts)})")
         k_total = int(partitions_per_song) + int(adaptive_rounds) * int(adaptive_keep_per_song)
         k_total = max(int(partitions_per_song), int(k_total))
-        seeds = [int(base_seed) + i for i in range(int(restarts))]
-        if profile:
-            mem.log(f"gpu_full_multi_seed (seeds={len(seeds)})")
-        sol, chosen_seed = _run_gpu_full_solver_multi_seed(
+        best_sol, best_seed = _run_gpu_full_solver_multi_seed(
             gear_ids_np,
             totals_np,
             elements_np,
@@ -761,19 +1309,23 @@ def run_inventory_meta_coverage(
             gpu_lns_destroy=int(gpu_lns_destroy),
             mem=mem,
             wildcard_freq_bonus=int(gpu_full_wildcard_freq_bonus),
+            witness_anchor_patterns=int(gpu_full_witness_anchor_patterns),
+            witness_seed_streams=int(gpu_full_witness_seed_streams),
+            gpu_full_repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
+            gpu_full_lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
+            v_pad_bin=int(gpu_full_v_pad_bin),
+            gpu_full_variant_freq_mode=str(gpu_full_variant_freq_mode),
+            gpu_full_witness_pattern_profile=int(gpu_full_witness_pattern_profile),
+            gpu_full_counter_stripes=int(gpu_full_counter_stripes),
         )
-        covered_np = np.asarray(sol.covered, dtype=np.int32)
-        chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32)
-        best_used = _count_used_gear_variants(gear_ids_np, covered_np, chosen_offsets_np)
-        best_cov = int(sol.covered_count)
-        best_sol = sol
-        best_seed = int(chosen_seed)
     else:
         for r in range(restarts):
             run_seed = int(base_seed) + r
             if profile and restarts > 1:
                 mem.log(f"restart_{r + 1}_of_{restarts} (seed={run_seed})")
             if solver == "gpu_dynamic":
+                if gear_ids_np is None or totals_np is None or elements_np is None or gear_freq_np is None:
+                    raise RuntimeError("GPU dynamic inputs not initialized.")
                 sol = _run_gpu_dynamic_solver(
                     gear_ids_np,
                     totals_np,
@@ -787,7 +1339,12 @@ def run_inventory_meta_coverage(
                     lns_attempts=lns_attempts,
                     mem=mem,
                 )
+                covered_np = np.asarray(sol.covered, dtype=np.int32)
+                chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32)
+                used = _count_used_gear_variants(gear_ids_np, covered_np, chosen_offsets_np)
             elif solver == "gpu_eda":
+                if gear_ids_np is None or totals_np is None or elements_np is None or gear_freq_np is None:
+                    raise RuntimeError("GPU EDA inputs not initialized.")
                 # Seed the witness pool with a strong baseline (gpu_dynamic) so EDA doesn't start from noise.
                 baseline = _run_gpu_dynamic_solver(
                     gear_ids_np,
@@ -835,35 +1392,87 @@ def run_inventory_meta_coverage(
                     )
                     if b_used <= e_used:
                         sol = baseline
+                covered_np = np.asarray(sol.covered, dtype=np.int32)
+                chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32)
+                used = _count_used_gear_variants(gear_ids_np, covered_np, chosen_offsets_np)
             else:
-                # Full witness-pool + GPU full set-cover solver.
-                # K_total matches the old adaptive behavior: 32 + 3*16 => 80 by default.
                 k_total = int(partitions_per_song) + int(adaptive_rounds) * int(adaptive_keep_per_song)
                 k_total = max(int(partitions_per_song), int(k_total))
-                sol = _run_gpu_full_solver_from_witness_pool(
-                    gear_ids_np,
-                    totals_np,
-                    elements_np,
-                    gear_freq_np,
-                    inventory_cap=int(inventory_cap),
-                    seed=int(run_seed),
-                    k_total=int(k_total),
-                    gpu_repack_passes=int(gpu_repack_passes),
-                    lns_time_sec=float(lns_time_sec),
-                    lns_attempts=int(lns_attempts),
-                    gpu_lns_destroy=int(gpu_lns_destroy),
-                    mem=mem,
-                    wildcard_freq_bonus=int(gpu_full_wildcard_freq_bonus),
-                )
-            covered_np = np.asarray(sol.covered, dtype=np.int32)
-            chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32)
-            used = _count_used_gear_variants(gear_ids_np, covered_np, chosen_offsets_np)
+                if use_multi_candidates:
+                    if selected_multi_specs is None or gear_freq_np is None:
+                        raise RuntimeError("Multi-candidate inputs not initialized.")
+                    sol = _run_gpu_full_solver_from_candidates(
+                        selected_multi_specs,
+                        k_total=int(k_total),
+                        gear_freq_np=gear_freq_np,
+                        inventory_cap=int(inventory_cap),
+                        seed=int(run_seed),
+                        gpu_repack_passes=int(gpu_repack_passes),
+                        gpu_full_repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
+                        lns_time_sec=float(lns_time_sec),
+                        lns_attempts=int(lns_attempts),
+                        gpu_lns_destroy=int(gpu_lns_destroy),
+                        gpu_full_lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
+                        gpu_full_variant_freq_mode=str(gpu_full_variant_freq_mode),
+                        gpu_full_counter_stripes=int(gpu_full_counter_stripes),
+                        gpu_full_witness_pattern_profile=int(gpu_full_witness_pattern_profile),
+                        witness_anchor_patterns=int(gpu_full_witness_anchor_patterns),
+                        witness_seed_streams=int(gpu_full_witness_seed_streams),
+                        mem=mem,
+                        v_pad_bin=int(gpu_full_v_pad_bin),
+                        wildcard_freq_bonus=int(gpu_full_wildcard_freq_bonus),
+                    )
+                    covered_np = np.asarray(sol.covered, dtype=np.int32)
+                    chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32)
+                    chosen_candidate_idx = np.asarray(sol.chosen_candidate_idx, dtype=np.int32)
+                    used = _count_used_gear_variants_multi(
+                        selected_multi_specs, covered_np, chosen_offsets_np, chosen_candidate_idx
+                    )
+                else:
+                    if gear_ids_np is None or totals_np is None or elements_np is None or gear_freq_np is None:
+                        raise RuntimeError("GPU full inputs not initialized.")
+                    offsets_np, wp_stats = build_witness_offsets_gpu(
+                        gear_ids_np,
+                        totals_np,
+                        elements_np,
+                        gear_freq_np,
+                        k_total=int(k_total),
+                        seed=int(run_seed),
+                        anchor_patterns=int(gpu_full_witness_anchor_patterns),
+                        seed_streams=int(gpu_full_witness_seed_streams),
+                        pattern_profile=int(gpu_full_witness_pattern_profile),
+                        profile=bool(mem.enabled),
+                    )
+                    sol = _run_gpu_full_solver_from_offsets(
+                        gear_ids_np,
+                        offsets_np,
+                        inventory_cap=int(inventory_cap),
+                        seed=int(run_seed),
+                        gpu_repack_passes=int(gpu_repack_passes),
+                        gpu_full_repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
+                        lns_time_sec=float(lns_time_sec),
+                        lns_attempts=int(lns_attempts),
+                        gpu_lns_destroy=int(gpu_lns_destroy),
+                        gpu_full_lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
+                        gpu_full_variant_freq_mode=str(gpu_full_variant_freq_mode),
+                        gpu_full_counter_stripes=int(gpu_full_counter_stripes),
+                        mem=mem,
+                        wp_stats=wp_stats,
+                        v_pad_bin=int(gpu_full_v_pad_bin),
+                        wildcard_freq_bonus=int(gpu_full_wildcard_freq_bonus),
+                    )
+                    covered_np = np.asarray(sol.covered, dtype=np.int32)
+                    chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32)
+                    used = _count_used_gear_variants(gear_ids_np, covered_np, chosen_offsets_np)
+
             cov = int(sol.covered_count)
             if (cov > best_cov) or (cov == best_cov and used < best_used):
                 best_cov = cov
                 best_used = used
                 best_sol = sol
                 best_seed = run_seed
+                if use_multi_candidates:
+                    best_chosen_candidate_idx = np.asarray(sol.chosen_candidate_idx, dtype=np.int32)
 
     assert best_sol is not None
     if solver == "gpu_dynamic":
@@ -876,22 +1485,44 @@ def run_inventory_meta_coverage(
         mode = "coverage_gpu_full"
         status = "GPU_FULL_HEURISTIC"
 
-    result = _materialize_coverage_solution(
-        selected_specs,
-        gear_names=gear_names,
-        gear_ids_np=gear_ids_np,
-        sol=best_sol,
-        mode=mode,
-        solver_status=status,
-        inventory_cap=inventory_cap,
-        seed=int(best_seed or seed),
-        gpu_repack_passes=gpu_repack_passes,
-        gpu_lns_destroy=gpu_lns_destroy,
-        lns_time_sec=lns_time_sec,
-        lns_attempts=lns_attempts,
-        mem=mem,
-        legacy_args=legacy_args,
-    )
+    if use_multi_candidates:
+        if selected_multi_specs is None or best_chosen_candidate_idx is None:
+            raise RuntimeError("Multi-candidate materialization inputs missing.")
+        result = _materialize_coverage_solution_multi(
+            selected_multi_specs,
+            gear_names=gear_names,
+            sol=best_sol,
+            chosen_candidate_idx=best_chosen_candidate_idx,
+            mode=mode,
+            solver_status=status,
+            inventory_cap=inventory_cap,
+            seed=int(best_seed or seed),
+            gpu_repack_passes=gpu_repack_passes,
+            gpu_lns_destroy=gpu_lns_destroy,
+            lns_time_sec=lns_time_sec,
+            lns_attempts=lns_attempts,
+            mem=mem,
+            legacy_args=legacy_args,
+        )
+    else:
+        if gear_ids_np is None:
+            raise RuntimeError("Gear IDs not initialized for materialization.")
+        result = _materialize_coverage_solution(
+            selected_specs,
+            gear_names=gear_names,
+            gear_ids_np=gear_ids_np,
+            sol=best_sol,
+            mode=mode,
+            solver_status=status,
+            inventory_cap=inventory_cap,
+            seed=int(best_seed or seed),
+            gpu_repack_passes=gpu_repack_passes,
+            gpu_lns_destroy=gpu_lns_destroy,
+            lns_time_sec=lns_time_sec,
+            lns_attempts=lns_attempts,
+            mem=mem,
+            legacy_args=legacy_args,
+        )
 
     result.setdefault("solver_stats", {})["restarts"] = int(restarts)
     result.setdefault("solver_stats", {})["seed"] = int(seed)

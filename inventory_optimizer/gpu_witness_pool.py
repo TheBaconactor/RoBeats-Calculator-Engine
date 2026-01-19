@@ -98,6 +98,9 @@ def _build_offsets_kernel(
     ov_cum: ti.template(),
     out_offsets: ti.template(),  # (S,K,6) i32
     seed_u: ti.u32,
+    anchor_patterns: ti.i32,
+    seed_streams: ti.i32,
+    pattern_profile: ti.i32,
 ):
     S = out_offsets.shape[0]
     K = out_offsets.shape[1]
@@ -122,11 +125,50 @@ def _build_offsets_kernel(
                     order[j] = b
                     order[j + 1] = a
 
-        st = seed_u ^ (ti.u32(k) * ti.u32(0x9E3779B9))
+        pat_mode = ti.i32(k % 3)
+
+        # Use multiple internal seed streams (in contiguous blocks) to improve robustness vs unlucky seeds
+        # while keeping per-stream palettes coherent (encourages reuse).
+        # Also reserve a small deterministic anchor prefix to ensure core patterns are always present.
+        seed_k = seed_u
+        k_stream = ti.u32(k)
+        ap = ti.u32(ti.max(anchor_patterns, ti.i32(0)))
+        ss = ti.u32(ti.max(seed_streams, ti.i32(1)))
+        if k_stream < ap:
+            # Deterministic anchors: stable across runs; still combined with the main solver's randomness
+            # via additional non-anchor patterns.
+            seed_k = ti.u32(0xD1B54A35) ^ (k_stream * ti.u32(0x9E3779B9))
+        else:
+            rem = ti.u32(K) - ap
+            block = ti.u32(1)
+            if rem > 0:
+                block = (rem + ss - 1) // ss
+            sub = (k_stream - ap) // block
+            if sub >= ss:
+                sub = ti.max(ti.u32(1), ss) - 1
+            seed_k = seed_u ^ (sub * ti.u32(0xA24BAED5))
+
+        # Pattern profile knobs (applied only to non-anchor patterns):
+        # - profile 0: balanced (original behavior)
+        # - profile 1: reuse-biased (more OV-first patterns, less slot-order randomness)
+        prof = ti.i32(pattern_profile)
+        if (prof == 1) and (k_stream >= ap):
+            r = ti.i32(k % 6)
+            if r <= 3:
+                pat_mode = ti.i32(0)  # OV first (4/6)
+            elif r == 4:
+                pat_mode = ti.i32(2)  # shuffled (1/6)
+            else:
+                pat_mode = ti.i32(1)  # OV last (1/6)
+
+        st = seed_k ^ (ti.u32(k) * ti.u32(0x9E3779B9))
         for j in ti.static(range(5)):
             st = _xorshift32(st)
             # ~25% chance to swap adjacent positions; global across songs.
-            if (st & ti.u32(3)) == 0:
+            swap_mask = ti.u32(3)
+            if (prof == 1) and (k_stream >= ap):
+                swap_mask = ti.u32(7)  # ~12.5% swap probability
+            if (st & swap_mask) == 0:
                 a = order[j]
                 b = order[j + 1]
                 order[j] = b
@@ -136,13 +178,37 @@ def _build_offsets_kernel(
         # We always include OV somewhere, but vary whether it is early/late and the
         # relative order of PP/CM/FM/FT/FF.
         base = ti.Vector([ti.i32(0), ti.i32(1), ti.i32(2), ti.i32(3), ti.i32(4), ti.i32(OV_INDEX)])
-        st2 = seed_u ^ (ti.u32(k) * ti.u32(0x85EBCA6B))
+        st2 = seed_k ^ (ti.u32(k) * ti.u32(0x85EBCA6B))
         for j in ti.static(range(5, 0, -1)):
             st2 = _xorshift32(st2)
             swap_i = ti.i32(st2 % ti.u32(j + 1))
             tmp = base[j]
             base[j] = base[swap_i]
             base[swap_i] = tmp
+
+        # OV-locking control:
+        # - If OV is last (mode=1), always put rare gear last (iterate common->rare) so OV lands on rare gear.
+        # - If we use the shuffled base palette (mode=2) and OV ends up late in that palette, also reverse.
+        reverse = ti.i32(0)
+        if pat_mode == 1:
+            reverse = ti.i32(1)
+        elif pat_mode == 2:
+            ov_pos = ti.i32(0)
+            for j in ti.static(range(6)):
+                if base[j] == ti.i32(OV_INDEX):
+                    ov_pos = ti.i32(j)
+            if ov_pos >= ti.i32(3):
+                reverse = ti.i32(1)
+        if reverse != 0:
+            a0 = order[0]
+            a1 = order[1]
+            a2 = order[2]
+            order[0] = order[5]
+            order[1] = order[4]
+            order[2] = order[3]
+            order[3] = a2
+            order[4] = a1
+            order[5] = a0
 
         for ii in ti.static(range(6)):
             slot = order[ii]
@@ -151,7 +217,7 @@ def _build_offsets_kernel(
 
             # Decide OV placement mode per slot and pattern.
             # 0: OV first, 1: OV last, 2: use shuffled base.
-            mode = ti.i32(k % 3)
+            mode = pat_mode
             stat_order = base
             if mode == 0:
                 stat_order = ti.Vector([ti.i32(OV_INDEX), ti.i32(0), ti.i32(1), ti.i32(2), ti.i32(3), ti.i32(4)])
@@ -180,6 +246,9 @@ def build_witness_offsets_gpu(
     *,
     k_total: int,
     seed: int,
+    anchor_patterns: int = 24,
+    seed_streams: int = 4,
+    pattern_profile: int = 0,
     profile: bool = False,
 ) -> tuple[np.ndarray, dict]:
     """
@@ -256,6 +325,9 @@ def build_witness_offsets_gpu(
         ov_cum,
         out_offsets,
         int(seed) if int(seed) != 0 else 1,
+        int(anchor_patterns),
+        int(seed_streams),
+        int(pattern_profile),
     )
     ti.sync()
     dt = time.perf_counter() - t0
@@ -263,7 +335,14 @@ def build_witness_offsets_gpu(
     if profile:
         print(f"[InventoryWitnessPool] built offsets (S={S}, K={K}) time={dt:.3f}s", flush=True)
 
-    return out_offsets.to_numpy(), {"songs": int(S), "k_total": int(K), "time_sec": float(round(dt, 6))}
+    return out_offsets.to_numpy(), {
+        "songs": int(S),
+        "k_total": int(K),
+        "anchor_patterns": int(anchor_patterns),
+        "seed_streams": int(seed_streams),
+        "pattern_profile": int(pattern_profile),
+        "time_sec": float(round(dt, 6)),
+    }
 
 
 __all__ = ["build_witness_offsets_gpu"]

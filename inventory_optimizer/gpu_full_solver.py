@@ -4,14 +4,14 @@ from typing import Optional, Tuple
 
 import taichi as ti
 
-_LAST_SHAPE_SIG: Optional[Tuple[int, int, int]] = None
+_LAST_SHAPE_SIG: Optional[Tuple[int, int, int, int]] = None
 
 
 @dataclass(frozen=True)
 class GpuFullSolution:
     covered: "object"  # np.ndarray[int32] shape (S,)
     chosen_part: "object"  # np.ndarray[int32] shape (S,)
-    counts: "object"  # np.ndarray[int32] shape (V,)
+    counts: "object"  # np.ndarray[int32] shape (V, stripes)
     inventory_size: int
     covered_count: int
     stats: dict
@@ -25,17 +25,28 @@ def _xorshift32(x):
     return x
 
 
+@ti.func
+def _stripe_idx(counts: ti.template(), s_idx: ti.i32, slot: ti.i32) -> ti.i32:
+    stripe_count = ti.static(counts.shape[1])
+    # Hash by song+slot so add/remove are consistent and updates spread across stripes.
+    h = ti.u32(s_idx) * ti.u32(0x7F4A7C15) + ti.u32(slot) * ti.u32(0x9E3779B9)
+    return ti.i32(h % ti.u32(stripe_count))
+
+
 @ti.kernel
 def _reset_state(
     counts: ti.template(),
+    counts_total: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     propose: ti.template(),
     inv_size: ti.template(),
     cov_count: ti.template(),
 ):
-    for i in counts:
-        counts[i] = 0
+    for idx in ti.grouped(counts):
+        counts[idx] = 0
+    for i in counts_total:
+        counts_total[i] = 0
     for s in covered:
         covered[s] = 0
         chosen[s] = -1
@@ -47,18 +58,22 @@ def _reset_state(
 @ti.kernel
 def _copy_to_best(
     counts: ti.template(),
+    counts_total: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     inv_size: ti.template(),
     cov_count: ti.template(),
     counts_best: ti.template(),
+    counts_total_best: ti.template(),
     covered_best: ti.template(),
     chosen_best: ti.template(),
     inv_best: ti.template(),
     cov_best: ti.template(),
 ):
-    for i in counts:
-        counts_best[i] = counts[i]
+    for idx in ti.grouped(counts):
+        counts_best[idx] = counts[idx]
+    for i in counts_total:
+        counts_total_best[i] = counts_total[i]
     for s in covered:
         covered_best[s] = covered[s]
         chosen_best[s] = chosen[s]
@@ -69,18 +84,22 @@ def _copy_to_best(
 @ti.kernel
 def _copy_from_best(
     counts: ti.template(),
+    counts_total: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     inv_size: ti.template(),
     cov_count: ti.template(),
     counts_best: ti.template(),
+    counts_total_best: ti.template(),
     covered_best: ti.template(),
     chosen_best: ti.template(),
     inv_best: ti.template(),
     cov_best: ti.template(),
 ):
-    for i in counts:
-        counts[i] = counts_best[i]
+    for idx in ti.grouped(counts):
+        counts[idx] = counts_best[idx]
+    for i in counts_total:
+        counts_total[i] = counts_total_best[i]
     for s in covered:
         covered[s] = covered_best[s]
         chosen[s] = chosen_best[s]
@@ -93,6 +112,7 @@ def _select_best_add(
     part_vids: ti.template(),
     freq: ti.template(),
     counts: ti.template(),
+    counts_total: ti.template(),
     covered: ti.template(),
     best_key: ti.template(),
     remaining: ti.i32,
@@ -108,7 +128,7 @@ def _select_best_add(
             score = ti.i32(0)
             for j in ti.static(range(6)):
                 vid = part_vids[s, p, j]
-                if counts[vid] == 0:
+                if counts_total[vid] == 0:
                     cost += 1
                     score += freq[vid]
             if cost <= remaining:
@@ -123,6 +143,7 @@ def _select_best_add(
 def _add_song(
     part_vids: ti.template(),
     counts: ti.template(),
+    counts_total: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     inv_size: ti.template(),
@@ -133,9 +154,11 @@ def _add_song(
     if covered[s_idx] == 0:
         for j in ti.static(range(6)):
             vid = part_vids[s_idx, p_idx, j]
-            prev = ti.atomic_add(counts[vid], 1)
-            if prev == 0:
+            prev_total = ti.atomic_add(counts_total[vid], 1)
+            if prev_total == 0:
                 ti.atomic_add(inv_size[None], 1)
+            stripe = _stripe_idx(counts, s_idx, j)
+            ti.atomic_add(counts[vid, stripe], 1)
         covered[s_idx] = 1
         chosen[s_idx] = p_idx
         ti.atomic_add(cov_count[None], 1)
@@ -146,9 +169,11 @@ def _repack_serial(
     part_vids: ti.template(),
     freq: ti.template(),
     counts: ti.template(),
+    counts_total: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     inv_size: ti.template(),
+    rarity_weighted: ti.i32,
 ):
     ti.loop_config(serialize=True)
     k_count = part_vids.shape[1]
@@ -160,12 +185,15 @@ def _repack_serial(
             continue
         best_p = cur_p
         best_delta = ti.i32(0)
+        best_rarity_delta = ti.i32(0)
         best_score = ti.i32(0)
         for p in range(k_count):
             if p == cur_p:
                 continue
             removed_unique = ti.i32(0)
             added_new = ti.i32(0)
+            removed_rarity = ti.i32(0)
+            added_rarity = ti.i32(0)
             sc = ti.i32(0)
             for j in ti.static(range(6)):
                 sc += freq[part_vids[s, p, j]]
@@ -175,19 +203,36 @@ def _repack_serial(
                 for jj in ti.static(range(6)):
                     if part_vids[s, p, jj] == v_cur:
                         in_new = 1
-                if (in_new == 0) and (counts[v_cur] == 1):
+                if (in_new == 0) and (counts_total[v_cur] == 1):
                     removed_unique += 1
+                    if rarity_weighted != 0:
+                        f = ti.i32(freq[v_cur])
+                        f = ti.min(ti.i32(63), ti.max(ti.i32(0), f))
+                        removed_rarity += ti.i32(64) - f
             for j in ti.static(range(6)):
                 v_new = part_vids[s, p, j]
                 in_cur = 0
                 for jj in ti.static(range(6)):
                     if part_vids[s, cur_p, jj] == v_new:
                         in_cur = 1
-                if (in_cur == 0) and (counts[v_new] == 0):
+                if (in_cur == 0) and (counts_total[v_new] == 0):
                     added_new += 1
+                    if rarity_weighted != 0:
+                        f = ti.i32(freq[v_new])
+                        f = ti.min(ti.i32(63), ti.max(ti.i32(0), f))
+                        added_rarity += ti.i32(64) - f
             delta = added_new - removed_unique
-            if (delta < best_delta) or ((delta == best_delta) and (sc > best_score)):
+            rarity_delta = added_rarity - removed_rarity
+            if (delta < best_delta) or (
+                (delta == best_delta)
+                and (
+                    ((rarity_weighted != 0) and (rarity_delta < best_rarity_delta))
+                    or ((rarity_weighted != 0) and (rarity_delta == best_rarity_delta) and (sc > best_score))
+                    or ((rarity_weighted == 0) and (sc > best_score))
+                )
+            ):
                 best_delta = delta
+                best_rarity_delta = rarity_delta
                 best_score = sc
                 best_p = p
 
@@ -201,10 +246,12 @@ def _repack_serial(
                 if part_vids[s, best_p, jj] == v_cur:
                     in_new = 1
             if in_new == 0:
-                prev = counts[v_cur]
-                counts[v_cur] = prev - 1
-                if prev == 1:
+                prev_total = counts_total[v_cur]
+                counts_total[v_cur] = prev_total - 1
+                if prev_total == 1:
                     inv_size[None] -= 1
+                stripe = _stripe_idx(counts, s, j)
+                counts[v_cur, stripe] = counts[v_cur, stripe] - 1
 
         for j in ti.static(range(6)):
             v_new = part_vids[s, best_p, j]
@@ -213,10 +260,12 @@ def _repack_serial(
                 if part_vids[s, cur_p, jj] == v_new:
                     in_cur = 1
             if in_cur == 0:
-                prev = counts[v_new]
-                counts[v_new] = prev + 1
-                if prev == 0:
+                prev_total = counts_total[v_new]
+                counts_total[v_new] = prev_total + 1
+                if prev_total == 0:
                     inv_size[None] += 1
+                stripe = _stripe_idx(counts, s, j)
+                counts[v_new, stripe] = counts[v_new, stripe] + 1
 
         chosen[s] = best_p
 
@@ -225,6 +274,7 @@ def _repack_serial(
 def _destroy_random(
     part_vids: ti.template(),
     counts: ti.template(),
+    counts_total: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     inv_size: ti.template(),
@@ -250,9 +300,11 @@ def _destroy_random(
                     if p_idx >= 0:
                         for j in ti.static(range(6)):
                             vid = part_vids[s, p_idx, j]
-                            prev = ti.atomic_add(counts[vid], -1)
-                            if prev == 1:
+                            prev_total = ti.atomic_add(counts_total[vid], -1)
+                            if prev_total == 1:
                                 ti.atomic_add(inv_size[None], -1)
+                            stripe = _stripe_idx(counts, s, j)
+                            ti.atomic_add(counts[vid, stripe], -1)
                         covered[s] = 0
                         chosen[s] = -1
                         ti.atomic_add(cov_count[None], -1)
@@ -263,13 +315,16 @@ def _destroy_random(
 @ti.kernel
 def _destroy_unique_weighted(
     part_vids: ti.template(),
+    freq: ti.template(),
     counts: ti.template(),
+    counts_total: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     inv_size: ti.template(),
     cov_count: ti.template(),
     removed_cnt: ti.template(),
     remove_target: ti.i32,
+    freq_weighted: ti.i32,
     seed_u: ti.u32,
 ):
     """
@@ -288,30 +343,39 @@ def _destroy_unique_weighted(
             if p_idx < 0:
                 continue
 
-            uniq = ti.u32(0)
+            uniq_count = ti.u32(0)
+            uniq_score = ti.u32(0)
             for j in ti.static(range(6)):
                 vid = part_vids[s, p_idx, j]
-                if counts[vid] == 1:
-                    uniq += 1
-            if uniq == 0:
+                if counts_total[vid] == 1:
+                    uniq_count += 1
+                    if freq_weighted != 0:
+                        f = ti.i32(freq[vid])
+                        f = ti.min(ti.i32(63), ti.max(ti.i32(0), f))
+                        uniq_score += ti.u32(64 - f)
+                    else:
+                        uniq_score += 1
+            if uniq_count == 0:
                 continue
 
             st = (
                 seed_u
                 ^ (ti.u32(s) * ti.u32(0x9E3779B9))
                 ^ (ti.u32(pass_idx) * ti.u32(0x85EBCA6B))
-                ^ (uniq * ti.u32(0x27D4EB2D))
+                ^ (uniq_score * ti.u32(0x27D4EB2D))
             )
             st = _xorshift32(st)
-            thresh = ti.min(ti.u32(255), base * uniq)
+            thresh = ti.min(ti.u32(255), base * ti.max(ti.u32(1), uniq_score))
             if (st & ti.u32(0xFF)) < thresh:
                 idx = ti.atomic_add(removed_cnt[None], 1)
                 if idx < remove_target:
                     for j in ti.static(range(6)):
                         vid = part_vids[s, p_idx, j]
-                        prev = ti.atomic_add(counts[vid], -1)
-                        if prev == 1:
+                        prev_total = ti.atomic_add(counts_total[vid], -1)
+                        if prev_total == 1:
                             ti.atomic_add(inv_size[None], -1)
+                        stripe = _stripe_idx(counts, s, j)
+                        ti.atomic_add(counts[vid, stripe], -1)
                     covered[s] = 0
                     chosen[s] = -1
                     ti.atomic_add(cov_count[None], -1)
@@ -322,7 +386,9 @@ def _destroy_unique_weighted(
 @ti.kernel
 def _evict_for_target(
     part_vids: ti.template(),
+    freq: ti.template(),
     counts: ti.template(),
+    counts_total: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     inv_size: ti.template(),
@@ -333,6 +399,7 @@ def _evict_for_target(
     target_s: ti.i32,
     target_p: ti.i32,
     needed: ti.i32,
+    freq_weighted: ti.i32,
     seed_u: ti.u32,
 ):
     removed_cnt[None] = 0
@@ -362,14 +429,24 @@ def _evict_for_target(
 
             freed = ti.i32(0)
             lost = ti.i32(0)
+            freed_score = ti.i32(0)
+            lost_score = ti.i32(0)
             for j in ti.static(range(6)):
                 vid = part_vids[s, p_idx, j]
-                if counts[vid] == 1:
+                if counts_total[vid] == 1:
                     freed += 1
                     if (vid == t0) or (vid == t1) or (vid == t2) or (vid == t3) or (vid == t4) or (vid == t5):
                         lost += 1
+                    if freq_weighted != 0:
+                        f = ti.i32(freq[vid])
+                        f = ti.min(ti.i32(63), ti.max(ti.i32(0), f))
+                        w = ti.i32(64 - f)
+                        freed_score += w
+                        if (vid == t0) or (vid == t1) or (vid == t2) or (vid == t3) or (vid == t4) or (vid == t5):
+                            lost_score += w
 
             benefit = freed - lost
+            benefit_score = benefit if freq_weighted == 0 else (freed_score - lost_score)
             if benefit <= 0:
                 continue
 
@@ -377,18 +454,20 @@ def _evict_for_target(
                 seed_u
                 ^ (ti.u32(s) * ti.u32(0x9E3779B9))
                 ^ (ti.u32(pass_idx) * ti.u32(0x85EBCA6B))
-                ^ (ti.u32(benefit) * ti.u32(0x27D4EB2D))
+                ^ (ti.u32(ti.max(benefit_score, 1)) * ti.u32(0x27D4EB2D))
             )
             st = _xorshift32(st)
-            thresh = ti.min(ti.u32(255), base * ti.u32(benefit))
+            thresh = ti.min(ti.u32(255), base * ti.u32(ti.max(benefit_score, 1)))
             if (st & ti.u32(0xFF)) < thresh:
                 idx = ti.atomic_add(removed_cnt[None], 1)
                 if idx < max_remove:
                     for j in ti.static(range(6)):
                         vid = part_vids[s, p_idx, j]
-                        prev = ti.atomic_add(counts[vid], -1)
-                        if prev == 1:
+                        prev_total = ti.atomic_add(counts_total[vid], -1)
+                        if prev_total == 1:
                             ti.atomic_add(inv_size[None], -1)
+                        stripe = _stripe_idx(counts, s, j)
+                        ti.atomic_add(counts[vid, stripe], -1)
                     covered[s] = 0
                     chosen[s] = -1
                     ti.atomic_add(cov_count[None], -1)
@@ -401,6 +480,7 @@ def _evict_for_target(
 def _partition_cost(
     part_vids: ti.template(),
     counts: ti.template(),
+    counts_total: ti.template(),
     out_cost: ti.template(),
     s_idx: ti.i32,
     p_idx: ti.i32,
@@ -408,7 +488,7 @@ def _partition_cost(
     cost = ti.i32(0)
     for j in ti.static(range(6)):
         vid = part_vids[s_idx, p_idx, j]
-        if counts[vid] == 0:
+        if counts_total[vid] == 0:
             cost += 1
     out_cost[None] = cost
 
@@ -422,10 +502,10 @@ def _recompute_cov_count(covered: ti.template(), cov_count: ti.template()):
 
 
 @ti.kernel
-def _recompute_inv_size(counts: ti.template(), inv_size: ti.template()):
+def _recompute_inv_size(counts_total: ti.template(), inv_size: ti.template()):
     inv_size[None] = 0
-    for i in counts:
-        if counts[i] > 0:
+    for i in counts_total:
+        if counts_total[i] > 0:
             ti.atomic_add(inv_size[None], 1)
 
 
@@ -436,9 +516,12 @@ def solve_coverage_gpu_full(
     inventory_cap: int,
     seed: int,
     repack_passes: int = 3,
+    repack_rarity_weighted: bool = False,
+    counter_stripes: int = 1,
     lns_time_sec: float = 0.0,
     lns_attempts: int = 200,
     lns_destroy: int = 6,
+    lns_freq_weighted: bool = False,
     profile: bool = False,
 ) -> GpuFullSolution:
     import numpy as np
@@ -457,7 +540,11 @@ def solve_coverage_gpu_full(
     if v_count <= 0:
         raise ValueError("variant_freq_np must be non-empty.")
 
-    sig = (int(s_count), int(k_count), int(v_count))
+    counter_stripes = int(counter_stripes)
+    if counter_stripes <= 0:
+        raise ValueError("counter_stripes must be positive.")
+
+    sig = (int(s_count), int(k_count), int(v_count), int(counter_stripes))
     if _LAST_SHAPE_SIG != sig:
         # Taichi kernel caching can behave poorly across changing field shapes in a single process.
         try:
@@ -478,13 +565,17 @@ def solve_coverage_gpu_full(
         raise ValueError("inventory_cap must be positive.")
 
     repack_passes = max(0, int(repack_passes))
+    repack_rarity_weighted = bool(repack_rarity_weighted)
+    use_stripes = counter_stripes > 1
     lns_time_sec = float(lns_time_sec)
     lns_attempts = int(lns_attempts)
     lns_destroy = int(lns_destroy)
+    lns_freq_weighted = bool(lns_freq_weighted)
 
     part_vids = ti.field(dtype=ti.i32, shape=(s_count, k_count, 6))
     freq = ti.field(dtype=ti.i32, shape=(v_count,))
-    counts = ti.field(dtype=ti.i32, shape=(v_count,))
+    counts = ti.field(dtype=ti.i32, shape=(v_count, counter_stripes))
+    counts_total = ti.field(dtype=ti.i32, shape=(v_count,))
     covered = ti.field(dtype=ti.i32, shape=(s_count,))
     chosen = ti.field(dtype=ti.i32, shape=(s_count,))
     propose = ti.field(dtype=ti.i32, shape=(s_count,))
@@ -495,7 +586,8 @@ def solve_coverage_gpu_full(
     benefit_sum = ti.field(dtype=ti.i32, shape=())
     tmp_cost = ti.field(dtype=ti.i32, shape=())
 
-    counts_best = ti.field(dtype=ti.i32, shape=(v_count,))
+    counts_best = ti.field(dtype=ti.i32, shape=(v_count, counter_stripes))
+    counts_total_best = ti.field(dtype=ti.i32, shape=(v_count,))
     covered_best = ti.field(dtype=ti.i32, shape=(s_count,))
     chosen_best = ti.field(dtype=ti.i32, shape=(s_count,))
     inv_best = ti.field(dtype=ti.i32, shape=())
@@ -508,7 +600,7 @@ def solve_coverage_gpu_full(
         added = 0
         while True:
             remaining = int(inv_cap - int(inv_size[None]))
-            _select_best_add(part_vids, freq, counts, covered, best_key, remaining)
+            _select_best_add(part_vids, freq, counts, counts_total, covered, best_key, remaining)
             key = int(best_key[None])
             if key == 0xFFFFFFFFFFFFFFFF:
                 break
@@ -517,46 +609,100 @@ def solve_coverage_gpu_full(
                 break
             s_idx = int((key >> 16) & 0xFFFF)
             p_idx = int(key & 0xFFFF)
-            _add_song(part_vids, counts, covered, chosen, inv_size, cov_count, s_idx, p_idx)
+            _add_song(part_vids, counts, counts_total, covered, chosen, inv_size, cov_count, s_idx, p_idx)
             added += 1
         return added
 
     def stabilize(max_rounds: int = 4) -> None:
         last_cov = -1
+        last_inv = -1
         for _ in range(int(max_rounds)):
             greedy_fill()
             for _rp in range(repack_passes):
-                _repack_serial(part_vids, freq, counts, covered, chosen, inv_size)
+                _repack_serial(
+                    part_vids,
+                    freq,
+                    counts,
+                    counts_total,
+                    covered,
+                    chosen,
+                    inv_size,
+                    1 if repack_rarity_weighted else 0,
+                )
+            # Repack can reduce `inv_size` without changing coverage. Refill any freed capacity before we
+            # decide stabilization is complete.
+            greedy_fill()
             cur_cov = int(cov_count[None])
-            if cur_cov == last_cov:
+            cur_inv = int(inv_size[None])
+            if cur_cov == last_cov and cur_inv == last_inv:
                 break
             last_cov = cur_cov
+            last_inv = cur_inv
+
+    # Prewarm kernels that may otherwise compile on first LNS attempt (which would contaminate time budgets).
+    if lns_time_sec > 0:
+        _reset_state(counts, counts_total, covered, chosen, propose, inv_size, cov_count)
+        ti.sync()
+        _select_best_add(part_vids, freq, counts, counts_total, covered, best_key, 6)
+        ti.sync()
+        _partition_cost(part_vids, counts, counts_total, tmp_cost, 0, 0)
+        ti.sync()
+        _destroy_unique_weighted(
+            part_vids,
+            freq,
+            counts,
+            counts_total,
+            covered,
+            chosen,
+            inv_size,
+            cov_count,
+            removed_cnt,
+            1,
+            1 if lns_freq_weighted else 0,
+            0,
+        )
+        ti.sync()
+        _evict_for_target(
+            part_vids,
+            freq,
+            counts,
+            counts_total,
+            covered,
+            chosen,
+            inv_size,
+            cov_count,
+            removed_cnt,
+            benefit_sum,
+            1,
+            0,
+            0,
+            1,
+            1 if lns_freq_weighted else 0,
+            0,
+        )
+        ti.sync()
 
     t0 = time.perf_counter()
-    _reset_state(counts, covered, chosen, propose, inv_size, cov_count)
+    _reset_state(counts, counts_total, covered, chosen, propose, inv_size, cov_count)
     stabilize()
-    ti.sync()
-    _recompute_cov_count(covered, cov_count)
-    ti.sync()
-    _recompute_inv_size(counts, inv_size)
     ti.sync()
     base_cov = int(cov_count[None])
     base_inv = int(inv_size[None])
 
     _copy_to_best(
         counts,
+        counts_total,
         covered,
         chosen,
         inv_size,
         cov_count,
         counts_best,
+        counts_total_best,
         covered_best,
         chosen_best,
         inv_best,
         cov_best,
     )
-    ti.sync()
-    _recompute_cov_count(covered_best, cov_best)
     ti.sync()
     best_cov_val = int(cov_best[None])
 
@@ -564,30 +710,17 @@ def solve_coverage_gpu_full(
     attempts_done = 0
     if lns_time_sec > 0:
         t_end = time.perf_counter() + lns_time_sec
+        # "Walk" LNS: keep a mutable current state and checkpoint best occasionally.
+        stagnation = 0
+        restore_after = 12
+        restore_drop = 4
         while attempts_done < lns_attempts and time.perf_counter() < t_end:
             attempts_done += 1
-            _copy_from_best(
-                counts,
-                covered,
-                chosen,
-                inv_size,
-                cov_count,
-                counts_best,
-                covered_best,
-                chosen_best,
-                inv_best,
-                cov_best,
-            )
-            ti.sync()
-            _recompute_cov_count(covered, cov_count)
-            ti.sync()
-            _recompute_inv_size(counts, inv_size)
-            ti.sync()
 
             destroy_n = max(1, min(int(lns_destroy), int(cov_count[None])))
             # Pick a "closest" uncovered target (min missing variants), then evict covered songs that
             # free unique variants without breaking target reuse.
-            _select_best_add(part_vids, freq, counts, covered, best_key, 6)
+            _select_best_add(part_vids, freq, counts, counts_total, covered, best_key, 6)
             key = int(best_key[None])
             if key != 0xFFFFFFFFFFFFFFFF:
                 cost = int((key >> 48) & 0xFFFF)
@@ -598,7 +731,9 @@ def solve_coverage_gpu_full(
                 if needed > 0:
                     _evict_for_target(
                         part_vids,
+                        freq,
                         counts,
+                        counts_total,
                         covered,
                         chosen,
                         inv_size,
@@ -609,73 +744,109 @@ def solve_coverage_gpu_full(
                         target_s,
                         target_p,
                         int(needed),
+                        1 if lns_freq_weighted else 0,
                         int((seed + attempts_done * 9973) & 0xFFFFFFFF),
                     )
                     ti.sync()
-                    _partition_cost(part_vids, counts, tmp_cost, target_s, target_p)
+                    _partition_cost(part_vids, counts, counts_total, tmp_cost, target_s, target_p)
                     ti.sync()
                     remaining = int(inv_cap - int(inv_size[None]))
                     if int(tmp_cost[None]) <= remaining:
-                        _add_song(part_vids, counts, covered, chosen, inv_size, cov_count, target_s, target_p)
+                        _add_song(
+                            part_vids,
+                            counts,
+                            counts_total,
+                            covered,
+                            chosen,
+                            inv_size,
+                            cov_count,
+                            target_s,
+                            target_p,
+                        )
             else:
                 _destroy_unique_weighted(
                     part_vids,
+                    freq,
                     counts,
+                    counts_total,
                     covered,
                     chosen,
                     inv_size,
                     cov_count,
                     removed_cnt,
                     destroy_n,
+                    1 if lns_freq_weighted else 0,
                     int((seed + attempts_done * 9973) & 0xFFFFFFFF),
                 )
             stabilize()
-            ti.sync()
-            _recompute_cov_count(covered, cov_count)
-            ti.sync()
-            _recompute_inv_size(counts, inv_size)
             ti.sync()
 
             cur_cov = int(cov_count[None])
             if cur_cov > best_cov_val:
                 best_cov_val = cur_cov
                 improvements += 1
+                stagnation = 0
                 _copy_to_best(
                     counts,
+                    counts_total,
                     covered,
                     chosen,
                     inv_size,
                     cov_count,
                     counts_best,
+                    counts_total_best,
                     covered_best,
                     chosen_best,
                     inv_best,
                     cov_best,
                 )
                 ti.sync()
-                _recompute_cov_count(covered_best, cov_best)
-                ti.sync()
+            else:
+                stagnation += 1
+                if stagnation >= restore_after or cur_cov + restore_drop < best_cov_val:
+                    _copy_from_best(
+                        counts,
+                        counts_total,
+                        covered,
+                        chosen,
+                        inv_size,
+                        cov_count,
+                        counts_best,
+                        counts_total_best,
+                        covered_best,
+                        chosen_best,
+                        inv_best,
+                        cov_best,
+                    )
+                    ti.sync()
+                    stagnation = 0
 
     _copy_from_best(
         counts,
+        counts_total,
         covered,
         chosen,
         inv_size,
         cov_count,
         counts_best,
+        counts_total_best,
         covered_best,
         chosen_best,
         inv_best,
         cov_best,
     )
     ti.sync()
-    _recompute_cov_count(covered, cov_count)
+    _recompute_inv_size(counts_total, tmp_cost)
     ti.sync()
-    _recompute_inv_size(counts, inv_size)
-    ti.sync()
+    if int(tmp_cost[None]) != int(inv_size[None]):
+        raise RuntimeError(
+            f"GPU_FULL invariant violated: inv_size={int(inv_size[None])} but recomputed={int(tmp_cost[None])}"
+        )
     if int(inv_size[None]) > inv_cap:
         raise RuntimeError(f"GPU_FULL invariant violated: inventory_size={int(inv_size[None])} > cap={inv_cap}")
     dt = time.perf_counter() - t0
+    lns_actual = 0.0 if lns_time_sec <= 0 else min(float(dt), float(lns_time_sec))
+    attempts_per_sec = 0.0 if lns_actual <= 0 else float(attempts_done) / float(lns_actual)
 
     if profile:
         print(
@@ -695,7 +866,11 @@ def solve_coverage_gpu_full(
             "base_covered": base_cov,
             "base_inventory": base_inv,
             "attempts": attempts_done,
+            "attempts_per_sec": round(float(attempts_per_sec), 3),
             "improvements": improvements,
+            "counter_stripes": int(counter_stripes),
+            "repack_rarity_weighted": bool(repack_rarity_weighted),
+            "lns_freq_weighted": bool(lns_freq_weighted),
         },
     )
 
