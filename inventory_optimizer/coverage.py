@@ -22,6 +22,7 @@ from .export import export_inventory_meta_json, hydrate_force_details
 from .gpu_dynamic_solver import solve_coverage_gpu_dynamic
 from .gpu_eda_solver import solve_coverage_gpu_eda
 from .gpu_full_solver import solve_coverage_gpu_full
+from .gpu_inventory_repair import repair_uncovered_with_inventory_gpu
 from .gpu_witness_pool import build_witness_offsets_gpu
 from .keys import ELEMENT_TO_ID, ID_TO_ELEMENT, OV_INDEX, STAT_KEYS
 from .models import CandidateSpec, SongCandidate, SongSpec
@@ -320,6 +321,155 @@ def _materialize_coverage_solution(
         "solver_stats": solver_stats,
     }
     return solution
+
+
+def _try_inventory_repair(
+    *,
+    songs: List[_CoverageSong],
+    gear_ids_np: np.ndarray,
+    totals_np: np.ndarray,
+    elements_np: np.ndarray,
+    covered_np: np.ndarray,
+    chosen_offsets_np: np.ndarray,
+    inv_cap: int,
+    attempts: int,
+    seed: int,
+    max_cands_per_slot: int,
+    song_limit: int,
+    mem: _MemoryLogger,
+    profile: bool,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """
+    Try to cover additional songs using ONLY variants already in the current inventory.
+
+    This does not change inventory size and preserves "exact peak" constraints (we only change per-slot offsets).
+    """
+    if max_cands_per_slot <= 0:
+        raise ValueError("max_cands_per_slot must be positive.")
+    song_limit = int(song_limit)
+    if song_limit < 0:
+        raise ValueError("song_limit must be >= 0.")
+
+    # Build inventory variant list from currently covered songs.
+    used_pairs_set: set[Tuple[int, int]] = set()
+    for s_idx, is_cov in enumerate(covered_np.tolist()):
+        if int(is_cov) <= 0:
+            continue
+        for j in range(6):
+            used_pairs_set.add((int(gear_ids_np[s_idx, j]), int(chosen_offsets_np[s_idx, j])))
+
+    used_pairs = sorted(used_pairs_set)
+    if len(used_pairs) > int(inv_cap):
+        raise RuntimeError("Repair invariant violated: inventory exceeds cap.")
+    if not used_pairs:
+        return covered_np, chosen_offsets_np, {"enabled": True, "repaired": 0, "time_sec": 0.0, "attempts": int(attempts)}
+
+    offset_gems_np, offset_color_np = build_variant_offset_tables()
+
+    inv_gear_ids = np.asarray([p[0] for p in used_pairs], dtype=np.int32)
+    inv_offsets = np.asarray([p[1] for p in used_pairs], dtype=np.int32)
+    inv_gems = offset_gems_np[inv_offsets].astype(np.int32, copy=False)
+    inv_color = offset_color_np[inv_offsets].astype(np.int32, copy=False)
+
+    # Precompute per-song-slot candidate lists into inventory indices.
+    S = int(gear_ids_np.shape[0])
+    C = int(max_cands_per_slot)
+    cand_idx = np.full((S, 6, C), -1, dtype=np.int32)
+    cand_count = np.zeros((S, 6), dtype=np.int32)
+
+    # Group inventory indices by (gear_id, color_id) for faster fill.
+    by_key: Dict[Tuple[int, int], List[int]] = {}
+    for idx in range(int(inv_gear_ids.shape[0])):
+        gid = int(inv_gear_ids[idx])
+        col = int(inv_color[idx])
+        by_key.setdefault((gid, col), []).append(int(idx))
+
+    for s_idx in range(S):
+        if int(covered_np[s_idx]) != 0:
+            continue
+        elem = int(elements_np[s_idx])
+        for slot in range(6):
+            gid = int(gear_ids_np[s_idx, slot])
+            # Candidates can be OV==0 (color=0) or OV>0 matching element.
+            inds = by_key.get((gid, 0), []) + by_key.get((gid, elem), [])
+            if not inds:
+                cand_count[s_idx, slot] = 0
+                continue
+            # Truncate; prefer larger OV and overall fill to make exact matching more likely.
+            inds_sorted = sorted(
+                inds,
+                key=lambda i: (
+                    int(inv_gems[i, OV_INDEX]),
+                    int(inv_gems[i, 0] + inv_gems[i, 1] + inv_gems[i, 2] + inv_gems[i, 3] + inv_gems[i, 4]),
+                ),
+                reverse=True,
+            )
+            take = min(C, len(inds_sorted))
+            cand_idx[s_idx, slot, :take] = np.asarray(inds_sorted[:take], dtype=np.int32)
+            cand_count[s_idx, slot] = int(take)
+
+    eligible: List[int] = []
+    comb_scores: List[Tuple[int, int]] = []
+    for s_idx in range(S):
+        if int(covered_np[s_idx]) != 0:
+            continue
+        cc = cand_count[s_idx]
+        if int(cc.min()) <= 0:
+            continue
+        comb = 1
+        for j in range(6):
+            comb *= int(cc[j])
+            if comb > 10**9:
+                break
+        comb_scores.append((comb, int(s_idx)))
+    comb_scores.sort(key=lambda t: t[0])
+    if song_limit > 0:
+        comb_scores = comb_scores[: int(song_limit)]
+    eligible = [s for _comb, s in comb_scores]
+
+    if not eligible:
+        return covered_np, chosen_offsets_np, {
+            "enabled": True,
+            "attempts": int(attempts),
+            "repaired": 0,
+            "songs_considered": 0,
+            "time_sec": 0.0,
+        }
+
+    covered_sub = covered_np[np.asarray(eligible, dtype=np.int32)]
+    totals_sub = totals_np[np.asarray(eligible, dtype=np.int32)]
+    cand_idx_sub = cand_idx[np.asarray(eligible, dtype=np.int32)]
+    cand_count_sub = cand_count[np.asarray(eligible, dtype=np.int32)]
+
+    mem.log(f"gpu_full_repair_inputs_ready (songs={len(eligible)})")
+    res = repair_uncovered_with_inventory_gpu(
+        covered_np=covered_sub,
+        totals_np=totals_sub,
+        cand_idx_np=cand_idx_sub,
+        cand_count_np=cand_count_sub,
+        inv_offsets_np=inv_offsets,
+        inv_gems_np=inv_gems,
+        attempts=int(attempts),
+        seed=int(seed),
+        profile=bool(profile),
+    )
+    mem.log("gpu_full_repair_done")
+
+    repaired_mask = np.asarray(res.repaired_mask, dtype=np.int32)
+    repaired_offsets = np.asarray(res.repaired_offsets, dtype=np.int32)
+
+    new_covered = covered_np.copy()
+    new_chosen = chosen_offsets_np.copy()
+    for local_i, s_idx in enumerate(eligible):
+        if int(new_covered[s_idx]) != 0:
+            continue
+        if int(repaired_mask[local_i]) != 0:
+            new_covered[s_idx] = 1
+            new_chosen[s_idx, :] = repaired_offsets[local_i, :]
+
+    stats = dict(res.stats)
+    stats["songs_considered"] = int(len(eligible))
+    return new_covered, new_chosen, stats
 
 
 def _materialize_coverage_solution_multi(
@@ -1224,6 +1374,10 @@ def run_inventory_meta_coverage(
     gpu_full_candidate_limit_per_song: int = 0,
     gpu_full_k_scan_select: int = 0,
     gpu_full_k_scan_repack: int = 0,
+    gpu_full_repair_enabled: bool = False,
+    gpu_full_repair_attempts: int = 128,
+    gpu_full_repair_max_cands_per_slot: int = 8,
+    gpu_full_repair_song_limit: int = 512,
 ) -> dict:
     """
     Inventory Meta coverage mode (GPU-only optimization loop):
@@ -1294,6 +1448,16 @@ def run_inventory_meta_coverage(
     gpu_full_k_scan_repack = int(gpu_full_k_scan_repack)
     if gpu_full_k_scan_repack < 0:
         raise ValueError("gpu_full_k_scan_repack must be >= 0.")
+    gpu_full_repair_enabled = bool(gpu_full_repair_enabled)
+    gpu_full_repair_attempts = int(gpu_full_repair_attempts)
+    if gpu_full_repair_attempts <= 0:
+        raise ValueError("gpu_full_repair_attempts must be positive.")
+    gpu_full_repair_max_cands_per_slot = int(gpu_full_repair_max_cands_per_slot)
+    if gpu_full_repair_max_cands_per_slot <= 0:
+        raise ValueError("gpu_full_repair_max_cands_per_slot must be positive.")
+    gpu_full_repair_song_limit = int(gpu_full_repair_song_limit)
+    if gpu_full_repair_song_limit < 0:
+        raise ValueError("gpu_full_repair_song_limit must be >= 0.")
 
     solver = str(solver or "gpu_dynamic").strip().lower()
     if solver not in {"gpu_dynamic", "gpu_eda", "gpu_full"}:
@@ -1387,6 +1551,10 @@ def run_inventory_meta_coverage(
         "gpu_full_k_scan_select": int(gpu_full_k_scan_select),
         "gpu_full_k_scan_repack": int(gpu_full_k_scan_repack),
         "gpu_full_witness_palettes": int(gpu_full_witness_palettes),
+        "gpu_full_repair_enabled": bool(gpu_full_repair_enabled),
+        "gpu_full_repair_attempts": int(gpu_full_repair_attempts),
+        "gpu_full_repair_max_cands_per_slot": int(gpu_full_repair_max_cands_per_slot),
+        "gpu_full_repair_song_limit": int(gpu_full_repair_song_limit),
     }
 
     best_seed: Optional[int] = None
@@ -1618,6 +1786,40 @@ def run_inventory_meta_coverage(
     else:
         if gear_ids_np is None:
             raise RuntimeError("Gear IDs not initialized for materialization.")
+        # Optional inventory-aware repair (exact-peak-only): try to cover uncovered songs using ONLY variants
+        # already in the inventory. This does not change inventory size.
+        repair_stats = None
+        if solver == "gpu_full" and gpu_full_repair_enabled:
+            if totals_np is None or elements_np is None:
+                raise RuntimeError("Repair requires totals/elements inputs.")
+            old_sol = best_sol
+            covered_np = np.asarray(best_sol.covered, dtype=np.int32)
+            chosen_offsets_np = np.asarray(best_sol.chosen_offsets, dtype=np.int32)
+            repaired_cov, repaired_offsets, repair_stats = _try_inventory_repair(
+                songs=selected_specs,
+                gear_ids_np=gear_ids_np,
+                totals_np=totals_np,
+                elements_np=elements_np,
+                covered_np=covered_np,
+                chosen_offsets_np=chosen_offsets_np,
+                inv_cap=int(inventory_cap),
+                attempts=int(gpu_full_repair_attempts),
+                seed=int(best_seed or seed),
+                max_cands_per_slot=int(gpu_full_repair_max_cands_per_slot),
+                song_limit=int(gpu_full_repair_song_limit),
+                mem=mem,
+                profile=bool(profile),
+            )
+            from types import SimpleNamespace
+
+            best_sol = SimpleNamespace(
+                covered=repaired_cov,
+                chosen_offsets=repaired_offsets,
+                covered_count=int(repaired_cov.sum()),
+                stats=dict(getattr(old_sol, "stats", {})),
+            )
+            if isinstance(best_sol.stats, dict):
+                best_sol.stats.setdefault("repair", repair_stats)
         result = _materialize_coverage_solution(
             selected_specs,
             gear_names=gear_names,
@@ -1634,6 +1836,8 @@ def run_inventory_meta_coverage(
             mem=mem,
             legacy_args=legacy_args,
         )
+        if repair_stats is not None:
+            result.setdefault("solver_stats", {}).setdefault("solver", {}).setdefault("repair", repair_stats)
 
     result.setdefault("solver_stats", {})["restarts"] = int(restarts)
     result.setdefault("solver_stats", {})["seed"] = int(seed)

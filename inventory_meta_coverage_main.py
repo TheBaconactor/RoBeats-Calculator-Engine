@@ -122,6 +122,29 @@ def main() -> None:
         help="GPU full: number of independent witness palettes (default: 1).",
     )
     parser.add_argument(
+        "--gpu-full-repair",
+        action="store_true",
+        help="GPU full: attempt inventory-aware repair for uncovered songs (default: off).",
+    )
+    parser.add_argument(
+        "--gpu-full-repair-attempts",
+        type=int,
+        default=128,
+        help="GPU full repair: attempts per song (default: 128).",
+    )
+    parser.add_argument(
+        "--gpu-full-repair-max-cands-per-slot",
+        type=int,
+        default=8,
+        help="GPU full repair: max inventory variants considered per slot (default: 8).",
+    )
+    parser.add_argument(
+        "--gpu-full-repair-song-limit",
+        type=int,
+        default=512,
+        help="GPU full repair: max uncovered songs to attempt (0=all; default: 512).",
+    )
+    parser.add_argument(
         "--gpu-full-witness-pattern-profile",
         type=int,
         default=0,
@@ -238,6 +261,10 @@ def main() -> None:
             gpu_full_candidate_limit_per_song=int(args.gpu_full_candidate_limit_per_song),
             gpu_full_k_scan_select=int(args.gpu_full_k_scan_select),
             gpu_full_k_scan_repack=int(args.gpu_full_k_scan_repack),
+            gpu_full_repair_enabled=bool(args.gpu_full_repair),
+            gpu_full_repair_attempts=int(args.gpu_full_repair_attempts),
+            gpu_full_repair_max_cands_per_slot=int(args.gpu_full_repair_max_cands_per_slot),
+            gpu_full_repair_song_limit=int(args.gpu_full_repair_song_limit),
         )
         out = args.output or str(REPO_ROOT / "artifacts" / "inventory_meta_coverage.json")
         output_path = export_inventory_meta_json(results, out)
