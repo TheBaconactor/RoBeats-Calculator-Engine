@@ -171,8 +171,8 @@ def _materialize_coverage_solution(
     num_songs = int(len(songs))
     mem.log(f"gpu_dynamic_materialize (songs={num_songs})")
 
-    covered_np = np.asarray(sol.covered, dtype=np.int32, copy=False)
-    chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32, copy=False)
+    covered_np = np.asarray(sol.covered, dtype=np.int32)
+    chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32)
 
     # Identify used variants from per-song chosen offsets (avoids materializing big `(G, VARIANTS)` count arrays).
     used_pairs_set: set[Tuple[int, int]] = set()
@@ -503,7 +503,7 @@ def _run_gpu_full_solver_from_offsets(
     )
     mem.log("gpu_full_solved")
 
-    chosen_part = np.asarray(sol_full.chosen_part, dtype=np.int32, copy=False)
+    chosen_part = np.asarray(sol_full.chosen_part, dtype=np.int32)
     chosen_offsets = np.full((gear_ids_np.shape[0], 6), -1, dtype=np.int32)
     for s_idx in range(int(gear_ids_np.shape[0])):
         p = int(chosen_part[s_idx])
@@ -598,8 +598,8 @@ def _run_gpu_full_solver_multi_seed(
             v_pad_bin=int(v_pad_bin),
             wildcard_freq_bonus=int(wildcard_freq_bonus),
         )
-        covered_np = np.asarray(sol.covered, dtype=np.int32, copy=False)
-        chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32, copy=False)
+        covered_np = np.asarray(sol.covered, dtype=np.int32)
+        chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32)
         used = _count_used_gear_variants(gear_ids_np, covered_np, chosen_offsets_np)
         cov = int(sol.covered_count)
         # Snapshot stats now; do not retain a reference to `sol.stats` because we mutate the best solution's stats
@@ -762,8 +762,8 @@ def run_inventory_meta_coverage(
             mem=mem,
             wildcard_freq_bonus=int(gpu_full_wildcard_freq_bonus),
         )
-        covered_np = np.asarray(sol.covered, dtype=np.int32, copy=False)
-        chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32, copy=False)
+        covered_np = np.asarray(sol.covered, dtype=np.int32)
+        chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32)
         best_used = _count_used_gear_variants(gear_ids_np, covered_np, chosen_offsets_np)
         best_cov = int(sol.covered_count)
         best_sol = sol
@@ -825,13 +825,13 @@ def run_inventory_meta_coverage(
                 elif int(baseline.covered_count) == int(sol_eda.covered_count):
                     b_used = _count_used_gear_variants(
                         gear_ids_np,
-                        np.asarray(baseline.covered, dtype=np.int32, copy=False),
-                        np.asarray(baseline.chosen_offsets, dtype=np.int32, copy=False),
+                        np.asarray(baseline.covered, dtype=np.int32),
+                        np.asarray(baseline.chosen_offsets, dtype=np.int32),
                     )
                     e_used = _count_used_gear_variants(
                         gear_ids_np,
-                        np.asarray(sol_eda.covered, dtype=np.int32, copy=False),
-                        np.asarray(sol_eda.chosen_offsets, dtype=np.int32, copy=False),
+                        np.asarray(sol_eda.covered, dtype=np.int32),
+                        np.asarray(sol_eda.chosen_offsets, dtype=np.int32),
                     )
                     if b_used <= e_used:
                         sol = baseline
@@ -855,8 +855,8 @@ def run_inventory_meta_coverage(
                     mem=mem,
                     wildcard_freq_bonus=int(gpu_full_wildcard_freq_bonus),
                 )
-            covered_np = np.asarray(sol.covered, dtype=np.int32, copy=False)
-            chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32, copy=False)
+            covered_np = np.asarray(sol.covered, dtype=np.int32)
+            chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32)
             used = _count_used_gear_variants(gear_ids_np, covered_np, chosen_offsets_np)
             cov = int(sol.covered_count)
             if (cov > best_cov) or (cov == best_cov and used < best_used):
