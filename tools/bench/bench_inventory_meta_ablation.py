@@ -84,6 +84,7 @@ def main() -> None:
     ap.add_argument("--adaptive-keep-per-song", type=int, default=8, help="GPU full keep per round (default: 8).")
     ap.add_argument("--gpu-full-wildcard-freq-bonus", type=int, default=40, help="GPU full wildcard freq bonus.")
     ap.add_argument("--gpu-repack-passes", type=int, default=3, help="GPU repack passes (default: 3).")
+    ap.add_argument("--gpu-full-witness-palettes", type=int, default=1, help="Witness palettes (default: 1).")
     ap.add_argument(
         "--gpu-full-variant-freq-mode",
         type=str,
@@ -163,6 +164,7 @@ def main() -> None:
         gpu_full_candidate_score_delta=int(args.gpu_full_candidate_score_delta),
         gpu_full_k_scan_select=int(args.gpu_full_k_scan_select),
         gpu_full_k_scan_repack=int(args.gpu_full_k_scan_repack),
+        gpu_full_witness_palettes=int(args.gpu_full_witness_palettes),
     )
 
     configs = [

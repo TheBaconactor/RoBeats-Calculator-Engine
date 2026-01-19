@@ -594,24 +594,66 @@ def _run_gpu_full_solver_from_witness_pool(
     gpu_full_witness_pattern_profile: int,
     gpu_full_k_scan_select: int,
     gpu_full_k_scan_repack: int,
+    gpu_full_witness_palettes: int,
     witness_anchor_patterns: int = 24,
     witness_seed_streams: int = 4,
     v_pad_bin: int = 4096,
     mem: _MemoryLogger,
     wildcard_freq_bonus: int = 0,
 ):
-    offsets_np, wp_stats = build_witness_offsets_gpu(
-        gear_ids_np,
-        totals_np,
-        elements_np,
-        gear_freq_np,
-        k_total=int(k_total),
-        seed=int(seed),
-        anchor_patterns=int(witness_anchor_patterns),
-        seed_streams=int(witness_seed_streams),
-        pattern_profile=int(gpu_full_witness_pattern_profile),
-        profile=bool(mem.enabled),
-    )
+    palettes = int(gpu_full_witness_palettes)
+    if palettes <= 0:
+        raise ValueError("gpu_full_witness_palettes must be positive.")
+
+    if palettes == 1:
+        offsets_np, wp_stats = build_witness_offsets_gpu(
+            gear_ids_np,
+            totals_np,
+            elements_np,
+            gear_freq_np,
+            k_total=int(k_total),
+            seed=int(seed),
+            anchor_patterns=int(witness_anchor_patterns),
+            seed_streams=int(witness_seed_streams),
+            pattern_profile=int(gpu_full_witness_pattern_profile),
+            profile=bool(mem.enabled),
+        )
+    else:
+        # Build multiple independent witness palettes and concatenate them along K.
+        # This increases witness diversity while still allowing the solver to scan only a subset per step.
+        offsets_list: List[np.ndarray] = []
+        stats_list: List[dict] = []
+        per_k = int(k_total)
+        for p_idx in range(palettes):
+            # Keep anchors only for the first palette to avoid duplicate anchor blocks.
+            anchors = int(witness_anchor_patterns) if p_idx == 0 else 0
+            seed_p = int(seed) ^ int((p_idx + 1) * 0x9E3779B9)
+            off, st = build_witness_offsets_gpu(
+                gear_ids_np,
+                totals_np,
+                elements_np,
+                gear_freq_np,
+                k_total=int(per_k),
+                seed=int(seed_p),
+                anchor_patterns=int(anchors),
+                seed_streams=int(witness_seed_streams),
+                pattern_profile=int(gpu_full_witness_pattern_profile),
+                profile=bool(mem.enabled),
+            )
+            offsets_list.append(off)
+            stats_list.append(st)
+        offsets_np = np.concatenate(offsets_list, axis=1)
+        wp_stats = {
+            "songs": int(offsets_np.shape[0]),
+            "k_total": int(offsets_np.shape[1]),
+            "palettes": int(palettes),
+            "per_palette_k": int(per_k),
+            "anchor_patterns": int(witness_anchor_patterns),
+            "seed_streams": int(witness_seed_streams),
+            "pattern_profile": int(gpu_full_witness_pattern_profile),
+            "time_sec": float(round(sum(float(s.get("time_sec") or 0.0) for s in stats_list), 6)),
+            "palette_stats": stats_list,
+        }
     mem.log("gpu_full_witness_pool_built")
     return _run_gpu_full_solver_from_offsets(
         gear_ids_np,
@@ -1176,6 +1218,7 @@ def run_inventory_meta_coverage(
     gpu_full_variant_freq_mode: str = "occurrence",
     gpu_full_witness_pattern_profile: int = 0,
     gpu_full_counter_stripes: int = 1,
+    gpu_full_witness_palettes: int = 1,
     gpu_full_top_candidates: int = 1,
     gpu_full_candidate_score_delta: int = 0,
     gpu_full_candidate_limit_per_song: int = 0,
@@ -1233,6 +1276,9 @@ def run_inventory_meta_coverage(
     gpu_full_counter_stripes = int(gpu_full_counter_stripes)
     if gpu_full_counter_stripes <= 0:
         raise ValueError("gpu_full_counter_stripes must be positive.")
+    gpu_full_witness_palettes = int(gpu_full_witness_palettes)
+    if gpu_full_witness_palettes <= 0:
+        raise ValueError("gpu_full_witness_palettes must be positive.")
     gpu_full_top_candidates = int(gpu_full_top_candidates)
     if gpu_full_top_candidates <= 0:
         raise ValueError("gpu_full_top_candidates must be positive.")
@@ -1340,6 +1386,7 @@ def run_inventory_meta_coverage(
         "gpu_full_candidate_limit_per_song": int(gpu_full_candidate_limit_per_song),
         "gpu_full_k_scan_select": int(gpu_full_k_scan_select),
         "gpu_full_k_scan_repack": int(gpu_full_k_scan_repack),
+        "gpu_full_witness_palettes": int(gpu_full_witness_palettes),
     }
 
     best_seed: Optional[int] = None
@@ -1499,37 +1546,31 @@ def run_inventory_meta_coverage(
                 else:
                     if gear_ids_np is None or totals_np is None or elements_np is None or gear_freq_np is None:
                         raise RuntimeError("GPU full inputs not initialized.")
-                    offsets_np, wp_stats = build_witness_offsets_gpu(
+                    sol = _run_gpu_full_solver_from_witness_pool(
                         gear_ids_np,
                         totals_np,
                         elements_np,
                         gear_freq_np,
-                        k_total=int(k_total),
-                        seed=int(run_seed),
-                        anchor_patterns=int(gpu_full_witness_anchor_patterns),
-                        seed_streams=int(gpu_full_witness_seed_streams),
-                        pattern_profile=int(gpu_full_witness_pattern_profile),
-                        profile=bool(mem.enabled),
-                    )
-                    sol = _run_gpu_full_solver_from_offsets(
-                        gear_ids_np,
-                        offsets_np,
                         inventory_cap=int(inventory_cap),
                         seed=int(run_seed),
+                        k_total=int(k_total),
                         gpu_repack_passes=int(gpu_repack_passes),
                         gpu_full_repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
-                        gpu_full_k_scan_select=int(gpu_full_k_scan_select),
-                        gpu_full_k_scan_repack=int(gpu_full_k_scan_repack),
                         lns_time_sec=float(lns_time_sec),
                         lns_attempts=int(lns_attempts),
                         gpu_lns_destroy=int(gpu_lns_destroy),
                         gpu_full_lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
                         gpu_full_variant_freq_mode=str(gpu_full_variant_freq_mode),
                         gpu_full_counter_stripes=int(gpu_full_counter_stripes),
+                        gpu_full_witness_pattern_profile=int(gpu_full_witness_pattern_profile),
+                        gpu_full_k_scan_select=int(gpu_full_k_scan_select),
+                        gpu_full_k_scan_repack=int(gpu_full_k_scan_repack),
+                        gpu_full_witness_palettes=int(gpu_full_witness_palettes),
                         mem=mem,
-                        wp_stats=wp_stats,
                         v_pad_bin=int(gpu_full_v_pad_bin),
                         wildcard_freq_bonus=int(gpu_full_wildcard_freq_bonus),
+                        witness_anchor_patterns=int(gpu_full_witness_anchor_patterns),
+                        witness_seed_streams=int(gpu_full_witness_seed_streams),
                     )
                     covered_np = np.asarray(sol.covered, dtype=np.int32)
                     chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32)

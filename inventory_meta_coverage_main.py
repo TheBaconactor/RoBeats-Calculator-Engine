@@ -116,6 +116,12 @@ def main() -> None:
         help="GPU full: internal RNG streams for witness patterns (default: 4).",
     )
     parser.add_argument(
+        "--gpu-full-witness-palettes",
+        type=int,
+        default=1,
+        help="GPU full: number of independent witness palettes (default: 1).",
+    )
+    parser.add_argument(
         "--gpu-full-witness-pattern-profile",
         type=int,
         default=0,
@@ -220,6 +226,7 @@ def main() -> None:
             gpu_full_wildcard_freq_bonus=args.gpu_full_wildcard_freq_bonus,
             gpu_full_witness_anchor_patterns=args.gpu_full_witness_anchor_patterns,
             gpu_full_witness_seed_streams=args.gpu_full_witness_seed_streams,
+            gpu_full_witness_palettes=int(args.gpu_full_witness_palettes),
             gpu_full_repack_rarity_weighted=bool(args.gpu_full_repack_rarity_weighted),
             gpu_full_lns_freq_weighted=bool(args.gpu_full_lns_freq_weighted),
             gpu_full_v_pad_bin=int(args.gpu_full_v_pad_bin),
