@@ -219,8 +219,7 @@ def test_results_printer_prefers_nonzero_fg_config_over_zero_config(capsys):
 def test_results_printer_best_base_score_uses_current_run_only(capsys):
     """
     Regression test:
-    Console output must reflect the current-run winner only, and must not
-    "upgrade" to a DB/persisted best score/loadout for display.
+    Console output must reflect the current-run winner only.
     """
     from gear_optimizer.helpers.song_helpers.results_printer import print_results
 
@@ -242,13 +241,6 @@ def test_results_printer_best_base_score_uses_current_run_only(capsys):
         ref_arrays=None,
         calc_song=None,
         cfg=None,
-        best_base_score_found=200,
-        db_best_fg_score=0,
-        best_base_variant={
-            "data": {"Score": 200, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"},
-            "gear": ["DB Gear"],
-            "minis": ["DB Mini"],
-        },
     )
 
     out = capsys.readouterr().out
@@ -257,10 +249,10 @@ def test_results_printer_best_base_score_uses_current_run_only(capsys):
     assert "Hat: G1" in out
 
 
-def test_results_printer_best_fg_score_ignores_db_best_fg_score(capsys):
+def test_results_printer_best_fg_score_uses_variants_only(capsys):
     """
     Regression test:
-    Console output must not pull FG scores from the DB/persisted best.
+    Console output must reflect the FG variants passed for this run.
     """
     from gear_optimizer.helpers.song_helpers.results_printer import print_results
 
@@ -298,7 +290,6 @@ def test_results_printer_best_fg_score_ignores_db_best_fg_score(capsys):
         ref_arrays=None,
         calc_song=None,
         cfg=None,
-        db_best_fg_score=999,
     )
 
     out = capsys.readouterr().out

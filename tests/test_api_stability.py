@@ -21,7 +21,6 @@ def test_taichi_gem_solver_exports():
         "load_ref_arrays",
         "optimize_gems_gpu",
         "optimize_gems_batch_gpu",
-        "mega_batch_solve_population",
         "solve_genomes_with_ftff",
         "solve_genomes_parallel",
     ]
@@ -43,7 +42,6 @@ def test_all_list():
         "load_ref_arrays",
         "optimize_gems_gpu",
         "optimize_gems_batch_gpu",
-        "mega_batch_solve_population",
         "solve_genomes_with_ftff",
         "solve_genomes_parallel",
     }

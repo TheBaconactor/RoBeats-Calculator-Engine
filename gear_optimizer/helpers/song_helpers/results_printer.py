@@ -13,9 +13,6 @@ def print_results(
     ref_arrays=None,
     calc_song=None,
     cfg=None,
-    best_base_score_found=None,
-    db_best_fg_score=None,
-    best_base_variant=None,
 ):
     """
     Print final results (console).
@@ -23,6 +20,7 @@ def print_results(
     Console output reports *current-run* results only. It intentionally does not
     "upgrade" the displayed base/FG scores to match DB-persisted winners.
     """
+
     def _coerce_int_score(v) -> int:
         try:
             return int(v or 0)

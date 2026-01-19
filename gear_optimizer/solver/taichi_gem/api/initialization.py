@@ -63,7 +63,6 @@ def _ref_arrays_sig(ref_arrays: dict) -> bytes:
 # ============================================================================
 
 _BATCH_STAGING = None
-_MEGA_STAGING = None
 _PARALLEL_STAGING = None
 _SONG_FLAGS_HOST = None
 
@@ -227,20 +226,6 @@ def _ensure_batch_staging():
         "genome_base_stats": np.zeros((MAX_GENOMES, 7), dtype=np.int16),
     }
     return _BATCH_STAGING
-
-
-def _ensure_mega_staging():
-    global _MEGA_STAGING
-    if _MEGA_STAGING is not None:
-        return _MEGA_STAGING
-    _MEGA_STAGING = {
-        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id, song_slot]
-        "work_items": np.zeros((MAX_WORK_ITEMS, 8), dtype=np.int32),
-        "fever_masks": np.zeros((MAX_WORK_ITEMS, MAX_HEAD_NOTES), dtype=np.int8),
-        # [pp, cm, fm, p_val, s_val, ft, ff]
-        "genome_base_stats": np.zeros((MAX_GENOMES, 7), dtype=np.int16),
-    }
-    return _MEGA_STAGING
 
 
 def _ensure_parallel_staging():

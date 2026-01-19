@@ -145,16 +145,6 @@ def optimize_gems_batch_gpu(*args, **kwargs):
     return _impl(*args, **kwargs)
 
 
-def mega_batch_solve_population(*args, **kwargs):
-    from .gpu_executor import is_gpu_worker_mode
-
-    if is_gpu_worker_mode():
-        raise RuntimeError("mega_batch_solve_population is not supported in GPU worker mode")
-    from .taichi_gem.api import mega_batch_solve_population as _impl
-
-    return _impl(*args, **kwargs)
-
-
 def solve_genomes_with_ftff(*args, **kwargs):
     from .gpu_executor import is_gpu_worker_mode
 
@@ -197,7 +187,6 @@ __all__ = [
     "load_ref_arrays",
     "optimize_gems_gpu",
     "optimize_gems_batch_gpu",
-    "mega_batch_solve_population",
     "solve_genomes_with_ftff",
     "solve_genomes_parallel",
 ]
