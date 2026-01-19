@@ -116,6 +116,18 @@ def main() -> None:
         help="Widen candidate pool to rows within this delta of peak (default: 0).",
     )
     ap.add_argument(
+        "--gpu-full-k-scan-select",
+        type=int,
+        default=0,
+        help="Scan only this many patterns per song in selection (0=all; default: 0).",
+    )
+    ap.add_argument(
+        "--gpu-full-k-scan-repack",
+        type=int,
+        default=0,
+        help="Scan only this many patterns per song in repack (0=all; default: 0).",
+    )
+    ap.add_argument(
         "--gpu-full-v-pad-bin",
         type=int,
         default=4096,
@@ -149,6 +161,8 @@ def main() -> None:
         gpu_full_counter_stripes=int(args.gpu_full_counter_stripes),
         gpu_full_top_candidates=int(args.gpu_full_top_candidates),
         gpu_full_candidate_score_delta=int(args.gpu_full_candidate_score_delta),
+        gpu_full_k_scan_select=int(args.gpu_full_k_scan_select),
+        gpu_full_k_scan_repack=int(args.gpu_full_k_scan_repack),
     )
 
     configs = [

@@ -592,6 +592,8 @@ def _run_gpu_full_solver_from_witness_pool(
     gpu_full_variant_freq_mode: str,
     gpu_full_counter_stripes: int,
     gpu_full_witness_pattern_profile: int,
+    gpu_full_k_scan_select: int,
+    gpu_full_k_scan_repack: int,
     witness_anchor_patterns: int = 24,
     witness_seed_streams: int = 4,
     v_pad_bin: int = 4096,
@@ -618,6 +620,8 @@ def _run_gpu_full_solver_from_witness_pool(
         seed=int(seed),
         gpu_repack_passes=int(gpu_repack_passes),
         gpu_full_repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
+        gpu_full_k_scan_select=int(gpu_full_k_scan_select),
+        gpu_full_k_scan_repack=int(gpu_full_k_scan_repack),
         lns_time_sec=float(lns_time_sec),
         lns_attempts=int(lns_attempts),
         gpu_lns_destroy=int(gpu_lns_destroy),
@@ -846,6 +850,8 @@ def _run_gpu_full_solver_from_offsets(
     seed: int,
     gpu_repack_passes: int,
     gpu_full_repack_rarity_weighted: bool,
+    gpu_full_k_scan_select: int,
+    gpu_full_k_scan_repack: int,
     lns_time_sec: float,
     lns_attempts: int,
     gpu_lns_destroy: int,
@@ -878,6 +884,8 @@ def _run_gpu_full_solver_from_offsets(
         repack_passes=int(gpu_repack_passes),
         repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
         counter_stripes=int(gpu_full_counter_stripes),
+        k_scan_select=int(gpu_full_k_scan_select),
+        k_scan_repack=int(gpu_full_k_scan_repack),
         lns_time_sec=float(lns_time_sec),
         lns_attempts=int(lns_attempts),
         lns_destroy=int(gpu_lns_destroy),
@@ -929,6 +937,8 @@ def _run_gpu_full_solver_from_candidates(
     gpu_full_variant_freq_mode: str,
     gpu_full_counter_stripes: int,
     gpu_full_witness_pattern_profile: int,
+    gpu_full_k_scan_select: int,
+    gpu_full_k_scan_repack: int,
     witness_anchor_patterns: int,
     witness_seed_streams: int,
     mem: _MemoryLogger,
@@ -980,6 +990,8 @@ def _run_gpu_full_solver_from_candidates(
         repack_passes=int(gpu_repack_passes),
         repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
         counter_stripes=int(gpu_full_counter_stripes),
+        k_scan_select=int(gpu_full_k_scan_select),
+        k_scan_repack=int(gpu_full_k_scan_repack),
         lns_time_sec=float(lns_time_sec),
         lns_attempts=int(lns_attempts),
         lns_destroy=int(gpu_lns_destroy),
@@ -1045,6 +1057,8 @@ def _run_gpu_full_solver_multi_seed(
     gpu_full_variant_freq_mode: str = "occurrence",
     gpu_full_witness_pattern_profile: int = 0,
     gpu_full_counter_stripes: int = 1,
+    gpu_full_k_scan_select: int = 0,
+    gpu_full_k_scan_repack: int = 0,
 ):
     if not seeds:
         raise ValueError("seeds must be non-empty.")
@@ -1092,6 +1106,8 @@ def _run_gpu_full_solver_multi_seed(
             seed=int(s),
             gpu_repack_passes=int(gpu_repack_passes),
             gpu_full_repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
+            gpu_full_k_scan_select=int(gpu_full_k_scan_select),
+            gpu_full_k_scan_repack=int(gpu_full_k_scan_repack),
             lns_time_sec=float(lns_time_sec),
             lns_attempts=int(lns_attempts),
             gpu_lns_destroy=int(gpu_lns_destroy),
@@ -1163,6 +1179,8 @@ def run_inventory_meta_coverage(
     gpu_full_top_candidates: int = 1,
     gpu_full_candidate_score_delta: int = 0,
     gpu_full_candidate_limit_per_song: int = 0,
+    gpu_full_k_scan_select: int = 0,
+    gpu_full_k_scan_repack: int = 0,
 ) -> dict:
     """
     Inventory Meta coverage mode (GPU-only optimization loop):
@@ -1224,6 +1242,12 @@ def run_inventory_meta_coverage(
     gpu_full_candidate_limit_per_song = int(gpu_full_candidate_limit_per_song)
     if gpu_full_candidate_limit_per_song < 0:
         raise ValueError("gpu_full_candidate_limit_per_song must be >= 0.")
+    gpu_full_k_scan_select = int(gpu_full_k_scan_select)
+    if gpu_full_k_scan_select < 0:
+        raise ValueError("gpu_full_k_scan_select must be >= 0.")
+    gpu_full_k_scan_repack = int(gpu_full_k_scan_repack)
+    if gpu_full_k_scan_repack < 0:
+        raise ValueError("gpu_full_k_scan_repack must be >= 0.")
 
     solver = str(solver or "gpu_dynamic").strip().lower()
     if solver not in {"gpu_dynamic", "gpu_eda", "gpu_full"}:
@@ -1314,6 +1338,8 @@ def run_inventory_meta_coverage(
         "gpu_full_top_candidates": int(gpu_full_top_candidates),
         "gpu_full_candidate_score_delta": int(gpu_full_candidate_score_delta),
         "gpu_full_candidate_limit_per_song": int(gpu_full_candidate_limit_per_song),
+        "gpu_full_k_scan_select": int(gpu_full_k_scan_select),
+        "gpu_full_k_scan_repack": int(gpu_full_k_scan_repack),
     }
 
     best_seed: Optional[int] = None
@@ -1355,6 +1381,8 @@ def run_inventory_meta_coverage(
             gpu_full_variant_freq_mode=str(gpu_full_variant_freq_mode),
             gpu_full_witness_pattern_profile=int(gpu_full_witness_pattern_profile),
             gpu_full_counter_stripes=int(gpu_full_counter_stripes),
+            gpu_full_k_scan_select=int(gpu_full_k_scan_select),
+            gpu_full_k_scan_repack=int(gpu_full_k_scan_repack),
         )
     else:
         for r in range(restarts):
@@ -1447,6 +1475,8 @@ def run_inventory_meta_coverage(
                         seed=int(run_seed),
                         gpu_repack_passes=int(gpu_repack_passes),
                         gpu_full_repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
+                        gpu_full_k_scan_select=int(gpu_full_k_scan_select),
+                        gpu_full_k_scan_repack=int(gpu_full_k_scan_repack),
                         lns_time_sec=float(lns_time_sec),
                         lns_attempts=int(lns_attempts),
                         gpu_lns_destroy=int(gpu_lns_destroy),
@@ -1488,6 +1518,8 @@ def run_inventory_meta_coverage(
                         seed=int(run_seed),
                         gpu_repack_passes=int(gpu_repack_passes),
                         gpu_full_repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
+                        gpu_full_k_scan_select=int(gpu_full_k_scan_select),
+                        gpu_full_k_scan_repack=int(gpu_full_k_scan_repack),
                         lns_time_sec=float(lns_time_sec),
                         lns_attempts=int(lns_attempts),
                         gpu_lns_destroy=int(gpu_lns_destroy),

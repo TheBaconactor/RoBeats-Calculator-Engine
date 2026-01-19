@@ -169,6 +169,18 @@ def main() -> None:
         help="GPU full: tie-break weight for variants (default: occurrence).",
     )
     parser.add_argument(
+        "--gpu-full-k-scan-select",
+        type=int,
+        default=0,
+        help="GPU full: scan only this many patterns per song in selection (0=all; default: 0).",
+    )
+    parser.add_argument(
+        "--gpu-full-k-scan-repack",
+        type=int,
+        default=0,
+        help="GPU full: scan only this many patterns per song in repack (0=all; default: 0).",
+    )
+    parser.add_argument(
         "--output", type=str, default="", help="Output JSON path (default: artifacts/inventory_meta_coverage.json)."
     )
     args = parser.parse_args()
@@ -217,6 +229,8 @@ def main() -> None:
             gpu_full_top_candidates=int(args.gpu_full_top_candidates),
             gpu_full_candidate_score_delta=int(args.gpu_full_candidate_score_delta),
             gpu_full_candidate_limit_per_song=int(args.gpu_full_candidate_limit_per_song),
+            gpu_full_k_scan_select=int(args.gpu_full_k_scan_select),
+            gpu_full_k_scan_repack=int(args.gpu_full_k_scan_repack),
         )
         out = args.output or str(REPO_ROOT / "artifacts" / "inventory_meta_coverage.json")
         output_path = export_inventory_meta_json(results, out)

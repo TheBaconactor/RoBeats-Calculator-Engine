@@ -116,14 +116,22 @@ def _select_best_add(
     covered: ti.template(),
     best_key: ti.template(),
     remaining: ti.i32,
+    k_scan: ti.i32,
+    salt: ti.u32,
 ):
     best_key[None] = ti.u64(0xFFFFFFFFFFFFFFFF)
     k_count = part_vids.shape[1]
+    scan = k_count
+    if k_scan > 0 and k_scan < k_count:
+        scan = k_scan
     for s in covered:
         if covered[s] != 0:
             continue
         best_local = ti.u64(0xFFFFFFFFFFFFFFFF)
-        for p in range(k_count):
+        for pp in range(scan):
+            st = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9)) ^ (ti.u32(pp) * ti.u32(0x85EBCA6B))
+            st = _xorshift32(st)
+            p = ti.i32(st % ti.u32(k_count))
             cost = ti.i32(0)
             score = ti.i32(0)
             for j in ti.static(range(6)):
@@ -174,9 +182,14 @@ def _repack_serial(
     chosen: ti.template(),
     inv_size: ti.template(),
     rarity_weighted: ti.i32,
+    k_scan: ti.i32,
+    salt: ti.u32,
 ):
     ti.loop_config(serialize=True)
     k_count = part_vids.shape[1]
+    scan = k_count
+    if k_scan > 0 and k_scan < k_count:
+        scan = k_scan
     for s in range(part_vids.shape[0]):
         if covered[s] == 0:
             continue
@@ -187,7 +200,10 @@ def _repack_serial(
         best_delta = ti.i32(0)
         best_rarity_delta = ti.i32(0)
         best_score = ti.i32(0)
-        for p in range(k_count):
+        for pp in range(scan):
+            st = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9)) ^ (ti.u32(pp) * ti.u32(0xC2B2AE35))
+            st = _xorshift32(st)
+            p = ti.i32(st % ti.u32(k_count))
             if p == cur_p:
                 continue
             removed_unique = ti.i32(0)
@@ -518,6 +534,8 @@ def solve_coverage_gpu_full(
     repack_passes: int = 3,
     repack_rarity_weighted: bool = False,
     counter_stripes: int = 1,
+    k_scan_select: int = 0,
+    k_scan_repack: int = 0,
     lns_time_sec: float = 0.0,
     lns_attempts: int = 200,
     lns_destroy: int = 6,
@@ -567,6 +585,8 @@ def solve_coverage_gpu_full(
     repack_passes = max(0, int(repack_passes))
     repack_rarity_weighted = bool(repack_rarity_weighted)
     use_stripes = counter_stripes > 1
+    k_scan_select = int(k_scan_select)
+    k_scan_repack = int(k_scan_repack)
     lns_time_sec = float(lns_time_sec)
     lns_attempts = int(lns_attempts)
     lns_destroy = int(lns_destroy)
@@ -598,9 +618,20 @@ def solve_coverage_gpu_full(
 
     def greedy_fill() -> int:
         added = 0
+        step = 0
         while True:
             remaining = int(inv_cap - int(inv_size[None]))
-            _select_best_add(part_vids, freq, counts, counts_total, covered, best_key, remaining)
+            _select_best_add(
+                part_vids,
+                freq,
+                counts,
+                counts_total,
+                covered,
+                best_key,
+                remaining,
+                int(k_scan_select),
+                int((seed + step * 2654435761) & 0xFFFFFFFF),
+            )
             key = int(best_key[None])
             if key == 0xFFFFFFFFFFFFFFFF:
                 break
@@ -611,14 +642,18 @@ def solve_coverage_gpu_full(
             p_idx = int(key & 0xFFFF)
             _add_song(part_vids, counts, counts_total, covered, chosen, inv_size, cov_count, s_idx, p_idx)
             added += 1
+            step += 1
         return added
 
     def stabilize(max_rounds: int = 4) -> None:
         last_cov = -1
         last_inv = -1
-        for _ in range(int(max_rounds)):
+        for stabilize_round in range(int(max_rounds)):
             greedy_fill()
             for _rp in range(repack_passes):
+                repack_salt = int(
+                    (int(seed) + int(stabilize_round) * 0xA24BAED5 + int(_rp) * 0x9E3779B9) & 0xFFFFFFFF
+                )
                 _repack_serial(
                     part_vids,
                     freq,
@@ -628,6 +663,8 @@ def solve_coverage_gpu_full(
                     chosen,
                     inv_size,
                     1 if repack_rarity_weighted else 0,
+                    int(k_scan_repack),
+                    int(repack_salt),
                 )
             # Repack can reduce `inv_size` without changing coverage. Refill any freed capacity before we
             # decide stabilization is complete.
@@ -643,7 +680,7 @@ def solve_coverage_gpu_full(
     if lns_time_sec > 0:
         _reset_state(counts, counts_total, covered, chosen, propose, inv_size, cov_count)
         ti.sync()
-        _select_best_add(part_vids, freq, counts, counts_total, covered, best_key, 6)
+        _select_best_add(part_vids, freq, counts, counts_total, covered, best_key, 6, int(k_scan_select), 0)
         ti.sync()
         _partition_cost(part_vids, counts, counts_total, tmp_cost, 0, 0)
         ti.sync()
@@ -720,7 +757,17 @@ def solve_coverage_gpu_full(
             destroy_n = max(1, min(int(lns_destroy), int(cov_count[None])))
             # Pick a "closest" uncovered target (min missing variants), then evict covered songs that
             # free unique variants without breaking target reuse.
-            _select_best_add(part_vids, freq, counts, counts_total, covered, best_key, 6)
+            _select_best_add(
+                part_vids,
+                freq,
+                counts,
+                counts_total,
+                covered,
+                best_key,
+                6,
+                int(k_scan_select),
+                int((seed + attempts_done * 9973) & 0xFFFFFFFF),
+            )
             key = int(best_key[None])
             if key != 0xFFFFFFFFFFFFFFFF:
                 cost = int((key >> 48) & 0xFFFF)
@@ -869,6 +916,8 @@ def solve_coverage_gpu_full(
             "attempts_per_sec": round(float(attempts_per_sec), 3),
             "improvements": improvements,
             "counter_stripes": int(counter_stripes),
+            "k_scan_select": int(k_scan_select),
+            "k_scan_repack": int(k_scan_repack),
             "repack_rarity_weighted": bool(repack_rarity_weighted),
             "lns_freq_weighted": bool(lns_freq_weighted),
         },
