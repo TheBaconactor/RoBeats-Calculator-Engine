@@ -63,9 +63,9 @@ def _get_or_build_state(
         # Defensive: other modules in-process may `ti.reset()` / `reset_taichi()` and invalidate fields.
         # If we detect a shape mismatch, drop the cached state and rebuild.
         try:
-            if tuple(_LAST_STATE.part_vids.shape) == (int(s_count), int(k_count), 6) and tuple(
-                _LAST_STATE.freq.shape
-            ) == (int(v_count),):
+            if tuple(_LAST_STATE.part_vids.shape) == (int(s_count), int(k_count), 6) and tuple(_LAST_STATE.freq.shape) == (
+                int(v_count),
+            ):
                 return _LAST_STATE
         except Exception:
             pass
@@ -930,6 +930,20 @@ def _recompute_inv_size(counts_total: ti.template(), inv_size: ti.template()):
             ti.atomic_add(inv_size[None], 1)
 
 
+@ti.kernel
+def _seed_inventory(
+    counts_total: ti.template(),
+    inv_size: ti.template(),
+    seed_indices: ti.types.ndarray(dtype=ti.i32, ndim=1),
+):
+    inv_size[None] = 0
+    for i in range(seed_indices.shape[0]):
+        idx = seed_indices[i]
+        if idx >= 0:
+            counts_total[idx] = 1
+            inv_size[None] += 1
+
+
 def solve_coverage_gpu_full(
     part_vids_np: "object",
     variant_freq_np: "object",
@@ -946,6 +960,8 @@ def solve_coverage_gpu_full(
     lns_destroy: int = 6,
     lns_freq_weighted: bool = False,
     profile: bool = False,
+    seeded_variant_indices: "object" = None,
+    seeded_extra_count: int = 0,
 ) -> GpuFullSolution:
     import numpy as np
 
@@ -966,6 +982,35 @@ def solve_coverage_gpu_full(
     inv_cap = int(inventory_cap)
     if inv_cap <= 0:
         raise ValueError("inventory_cap must be positive.")
+
+    seeded_indices = None
+    if seeded_variant_indices is not None:
+        seeded_indices = np.asarray(seeded_variant_indices, dtype=np.int32).reshape(-1)
+        if seeded_indices.size > 0:
+            mask = (seeded_indices >= 0) & (seeded_indices < int(v_count))
+            seeded_indices = seeded_indices[mask]
+            if seeded_indices.size > 0:
+                seeded_indices = np.unique(seeded_indices)
+
+    seeded_in_universe = int(seeded_indices.size) if seeded_indices is not None else 0
+    seeded_missing = max(0, int(seeded_extra_count))
+    seeded_total = int(seeded_in_universe + seeded_missing)
+    cap_exceeded = False
+    effective_cap = int(inv_cap - seeded_missing)
+    if effective_cap < seeded_in_universe:
+        cap_exceeded = True
+        effective_cap = int(seeded_in_universe)
+    if effective_cap < 0:
+        effective_cap = 0
+    inv_cap = int(effective_cap)
+    seeded_info = {
+        "total": int(seeded_total),
+        "in_universe": int(seeded_in_universe),
+        "missing": int(seeded_missing),
+        "cap_requested": int(inventory_cap),
+        "cap_effective": int(inv_cap),
+        "cap_exceeded": bool(cap_exceeded),
+    }
 
     repack_passes = max(0, int(repack_passes))
     repack_rarity_weighted = bool(repack_rarity_weighted)
@@ -1190,6 +1235,9 @@ def solve_coverage_gpu_full(
 
     t0 = time.perf_counter()
     _reset_state(counts, counts_total, covered, chosen, propose, inv_size, cov_count)
+    if seeded_indices is not None and int(seeded_indices.size) > 0:
+        _seed_inventory(counts_total, inv_size, seeded_indices)
+        ti.sync()
     stabilize()
     ti.sync()
     base_cov = int(cov_count[None])
@@ -1377,6 +1425,7 @@ def solve_coverage_gpu_full(
             "k_scan_repack": int(k_scan_repack),
             "repack_rarity_weighted": bool(repack_rarity_weighted),
             "lns_freq_weighted": bool(lns_freq_weighted),
+            "seeded": seeded_info,
         },
     )
 
