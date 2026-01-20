@@ -4,6 +4,7 @@ import os
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -26,6 +27,7 @@ from .gpu_inventory_repair import repair_uncovered_with_inventory_gpu
 from .gpu_witness_pool import build_witness_offsets_gpu
 from .keys import ELEMENT_TO_ID, ID_TO_ELEMENT, OV_INDEX, STAT_KEYS
 from .models import CandidateSpec, SongCandidate, SongSpec
+from .seed_inventory import ALLOWED_UPGRADE_IDS, UPGRADE_ID_TO_ELEMENT, UPGRADE_ID_TO_STAT, normalize_for_lookup
 from .seed_inventory import SeedInventoryResult, build_seeded_inventory_variants
 from .variant_space import build_variant_offset_tables
 
@@ -63,6 +65,78 @@ class _MemoryLogger:
 class _CoverageSong:
     song_name: str
     candidate: CandidateSpec
+
+
+@lru_cache(maxsize=1)
+def _offset_lookup() -> Dict[Tuple[int, ...], int]:
+    gems, colors = build_variant_offset_tables()
+    lookup: Dict[Tuple[int, ...], int] = {}
+    for idx in range(int(gems.shape[0])):
+        vec = gems[idx]
+        key = (
+            int(vec[0]),
+            int(vec[1]),
+            int(vec[2]),
+            int(vec[3]),
+            int(vec[4]),
+            int(vec[5]),
+            int(colors[idx]),
+        )
+        lookup[key] = int(idx)
+    return lookup
+
+
+def _extract_upgrade_ids(entry: Any) -> List[int]:
+    upgrades_raw = entry.get("upgrades") if isinstance(entry, dict) else None
+    if not isinstance(upgrades_raw, list):
+        return []
+    upgrade_ids: List[int] = []
+    for upgrade in upgrades_raw:
+        upgrade_id = None
+        if isinstance(upgrade, dict):
+            upgrade_id = upgrade.get("upgradeId")
+        elif isinstance(upgrade, int):
+            upgrade_id = upgrade
+        if upgrade_id is None:
+            continue
+        try:
+            upgrade_id_int = int(upgrade_id)
+        except Exception:
+            continue
+        if upgrade_id_int in ALLOWED_UPGRADE_IDS:
+            upgrade_ids.append(upgrade_id_int)
+    return upgrade_ids
+
+
+def _raw_vid_for_variant_dict(variant: Dict[str, Any], gear_id_map: Dict[str, int]) -> Optional[int]:
+    gear_name = str(variant.get("gear_name") or "").strip()
+    if not gear_name:
+        return None
+    gid = gear_id_map.get(gear_name)
+    if gid is None:
+        return None
+
+    gems = variant.get("gems")
+    if not isinstance(gems, dict):
+        return None
+
+    counts = [0] * len(STAT_KEYS)
+    for i, key in enumerate(STAT_KEYS):
+        try:
+            counts[i] = int(gems.get(key) or 0)
+        except Exception:
+            counts[i] = 0
+
+    ov = int(counts[OV_INDEX])
+    color_id = 0
+    if ov > 0:
+        ov_color = str(variant.get("ov_color") or "").strip()
+        color_id = int(ELEMENT_TO_ID.get(ov_color, 0) or 0)
+    key = (counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], int(color_id))
+    off = _offset_lookup().get(key)
+    if off is None:
+        return None
+    return (int(gid) << 16) | int(off)
 
 
 def _collect_gear_names(candidates_by_song: Dict[str, List[SongCandidate]]) -> List[str]:
@@ -1923,6 +1997,202 @@ def run_inventory_meta_coverage(
         solver_seeded = result.get("solver_stats", {}).get("solver", {}).get("seeded")
         if isinstance(solver_seeded, dict):
             seed_diag["solver"] = solver_seeded
+
+        seed_items: List[Dict[str, Any]] = []
+        gear_id_by_norm = {normalize_for_lookup(name): gid for name, gid in gear_id_map.items()}
+        for entry in seed_inventory_gear or []:
+            if not isinstance(entry, dict):
+                continue
+            inv_id = entry.get("id")
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            gid = gear_id_by_norm.get(normalize_for_lookup(name))
+            if gid is None:
+                seed_items.append({"id": inv_id, "name": name, "seedable": False, "reason": "unknown_gear"})
+                continue
+
+            upgrade_ids = _extract_upgrade_ids(entry)
+            if not upgrade_ids:
+                seed_items.append({"id": inv_id, "name": name, "seedable": False, "reason": "partial_upgrades"})
+                continue
+
+            counts = [0] * len(STAT_KEYS)
+            element_name = None
+            mixed_element = False
+            for upgrade_id in upgrade_ids:
+                stat = UPGRADE_ID_TO_STAT.get(int(upgrade_id))
+                if stat:
+                    counts[STAT_KEYS.index(stat)] += 1
+                    continue
+                element = UPGRADE_ID_TO_ELEMENT.get(int(upgrade_id))
+                if element:
+                    counts[OV_INDEX] += 1
+                    if element_name is None:
+                        element_name = element
+                    elif element_name != element:
+                        mixed_element = True
+                    continue
+
+            if mixed_element:
+                seed_items.append({"id": inv_id, "name": name, "seedable": False, "reason": "mixed_elements"})
+                continue
+
+            total_gems = sum(counts)
+            if total_gems != 15:
+                seed_items.append(
+                    {"id": inv_id, "name": name, "seedable": False, "reason": "partial_upgrades", "total_gems": total_gems}
+                )
+                continue
+
+            ov = counts[OV_INDEX]
+            if ov > 0 and not element_name:
+                seed_items.append({"id": inv_id, "name": name, "seedable": False, "reason": "invalid_offsets"})
+                continue
+
+            color_id = int(ELEMENT_TO_ID.get(element_name or "", 0) or 0) if ov > 0 else 0
+            key = (counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], int(color_id))
+            off = _offset_lookup().get(key)
+            if off is None:
+                seed_items.append({"id": inv_id, "name": name, "seedable": False, "reason": "invalid_offsets"})
+                continue
+
+            raw_vid = (int(gid) << 16) | int(off)
+            seed_items.append(
+                {
+                    "id": inv_id,
+                    "name": name,
+                    "seedable": True,
+                    "raw_variant_id": int(raw_vid),
+                    "gear_id": int(gid),
+                }
+            )
+
+        # Allocate each required inventory variant to either an exact-owned copy, a rerollable copy, or "add".
+        required_variants = (result.get("inventory") or {}).get("gear_variants") or []
+        required_by_gid: Dict[int, List[Dict[str, Any]]] = {}
+        raw_by_variant_id: Dict[int, int] = {}
+
+        for variant in required_variants:
+            if not isinstance(variant, dict):
+                continue
+            try:
+                variant_id = int(variant.get("id") or 0)
+            except Exception:
+                continue
+            raw_vid = _raw_vid_for_variant_dict(variant, gear_id_map)
+            if raw_vid is None:
+                continue
+            raw_by_variant_id[variant_id] = int(raw_vid)
+            gid = int(raw_vid >> 16)
+            required_by_gid.setdefault(gid, []).append({"variant_id": variant_id, "raw_variant_id": int(raw_vid)})
+
+        pool_by_gid: Dict[int, List[Dict[str, Any]]] = {}
+        for item in seed_items:
+            if not isinstance(item, dict):
+                continue
+            if not item.get("seedable"):
+                continue
+            try:
+                gid = int(item.get("gear_id"))
+                raw_vid = int(item.get("raw_variant_id"))
+            except Exception:
+                continue
+            pool_by_gid.setdefault(gid, []).append({"id": item.get("id"), "raw_variant_id": raw_vid})
+
+        for pool in pool_by_gid.values():
+            pool.sort(key=lambda it: str(it.get("id") or ""))
+
+        actions: List[Dict[str, Any]] = []
+        counts = {"owned_exact": 0, "reroll": 0, "add": 0}
+
+        for gid, required in required_by_gid.items():
+            pool = pool_by_gid.get(int(gid)) or []
+
+            action_by_vid: Dict[int, Dict[str, Any]] = {}
+
+            for req in required:
+                vid = int(req["variant_id"])
+                target_raw = int(req["raw_variant_id"])
+                matched = None
+                for idx, item in enumerate(pool):
+                    if int(item["raw_variant_id"]) == target_raw:
+                        matched = pool.pop(idx)
+                        break
+                if matched is not None:
+                    action_by_vid[vid] = {
+                        "action": "owned_exact",
+                        "from_inventory_gear_id": matched.get("id"),
+                        "from_raw_variant_id": int(matched.get("raw_variant_id")),
+                    }
+
+            for req in required:
+                vid = int(req["variant_id"])
+                target_raw = int(req["raw_variant_id"])
+                if vid in action_by_vid:
+                    continue
+                matched = pool.pop(0) if pool else None
+                if matched is not None:
+                    action_by_vid[vid] = {
+                        "action": "reroll",
+                        "from_inventory_gear_id": matched.get("id"),
+                        "from_raw_variant_id": int(matched.get("raw_variant_id")),
+                    }
+                else:
+                    action_by_vid[vid] = {"action": "add"}
+
+                action_by_vid[vid]["to_raw_variant_id"] = int(target_raw)
+
+            for req in required:
+                vid = int(req["variant_id"])
+                info = action_by_vid.get(vid) or {"action": "add"}
+                row = {
+                    "variant_id": vid,
+                    "action": str(info.get("action") or "add"),
+                    "to_raw_variant_id": int(req["raw_variant_id"]),
+                }
+                if info.get("from_inventory_gear_id") is not None:
+                    row["from_inventory_gear_id"] = info.get("from_inventory_gear_id")
+                if info.get("from_raw_variant_id") is not None:
+                    row["from_raw_variant_id"] = info.get("from_raw_variant_id")
+                actions.append(row)
+                counts[row["action"]] = int(counts.get(row["action"], 0)) + 1
+
+        # Strict "current coverage" within the solver's covered set: songs where every used variant is owned exact.
+        owned_raw_set: set[int] = set()
+        for item in seed_items:
+            if item.get("seedable") and item.get("raw_variant_id") is not None:
+                try:
+                    owned_raw_set.add(int(item["raw_variant_id"]))
+                except Exception:
+                    pass
+
+        current_song_names: List[str] = []
+        assignments = result.get("assignments") or {}
+        if isinstance(assignments, dict):
+            for song_name, assignment in assignments.items():
+                if not isinstance(assignment, dict):
+                    continue
+                vids = assignment.get("variant_ids") or []
+                if not isinstance(vids, list) or len(vids) != 6:
+                    continue
+                ok = True
+                for vid in vids:
+                    try:
+                        raw = raw_by_variant_id.get(int(vid))
+                    except Exception:
+                        raw = None
+                    if raw is None or int(raw) not in owned_raw_set:
+                        ok = False
+                        break
+                if ok:
+                    current_song_names.append(str(song_name))
+
+        seed_diag["inventory_actions"] = {
+            "gear_variants": sorted(actions, key=lambda row: int(row.get("variant_id", 0))),
+            "stats": counts,
+        }
+        seed_diag["coverage"] = {"songs_current": len(current_song_names), "songs_current_list": current_song_names}
         result["seeded_inventory"] = seed_diag
 
     hydrate_force_details(result, db_path=db_path)
