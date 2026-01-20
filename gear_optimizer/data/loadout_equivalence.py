@@ -124,13 +124,33 @@ def encode_minis_groups(groups: Iterable[Iterable[str]]) -> str:
 
 def representative_mini_names(groups: list[list[str]]) -> list[str]:
     """
-    Pick a deterministic representative name per group (min lexicographically).
+    Pick a deterministic representative name per group.
+
+    When the same mini-variant group appears multiple times (e.g., two equipped minis
+    that are song-context equivalent), prefer picking distinct names across slots
+    when possible so downstream displays don't show duplicate minis.
     """
     reps: list[str] = []
-    for g in groups or []:
+    used: set[str] = set()
+    group_counts: dict[tuple[str, ...], int] = {}
+    for g0 in groups or []:
+        g = [str(x).strip() for x in (g0 or []) if x is not None]
+        g = [n for n in g if n]
         if not g:
             continue
-        reps.append(min(g))
+
+        key = tuple(g)
+        seen = int(group_counts.get(key, 0) or 0)
+        group_counts[key] = seen + 1
+
+        preferred = g[seen % len(g)]
+        if preferred not in used:
+            choice = preferred
+        else:
+            choice = next((n for n in g if n not in used), preferred)
+
+        reps.append(choice)
+        used.add(choice)
     return reps
 
 
