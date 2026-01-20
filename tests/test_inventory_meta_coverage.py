@@ -192,3 +192,47 @@ def test_inventory_meta_coverage_lns_runs(monkeypatch, tmp_path):
     assert results["stats"]["songs_total"] == 2
     assert results["stats"]["songs_covered"] == 2
     assert results["solver_stats"]["lns"]["enabled"] is True
+
+
+@pytest.mark.gpu
+def test_inventory_meta_coverage_gpu_full_parallel_repack_matches_serial(monkeypatch, tmp_path):
+    db_path = tmp_path / "evolution.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+
+    conn = get_db_connection(str(db_path))
+    try:
+        minis = [["MiniA"], ["MiniB"], ["MiniC"]]
+        gear = ["HatA", "NeckA", "FaceA", "ShirtA", "BackA", "PantA"]
+        _insert_loadout(conn, "SongOne", 100, gear, minis, _base_details("Chill", ov=0))
+        _insert_loadout(conn, "SongTwo", 100, gear, minis, _base_details("Rush", ov=0))
+        _insert_loadout(conn, "SongThree", 100, gear, minis, _base_details("Vibe", ov=0))
+        conn.commit()
+    finally:
+        conn.close()
+
+    common_args = dict(
+        solver="gpu_full",
+        inventory_cap=6,
+        partitions_per_song=16,
+        seed=123,
+        adaptive_rounds=0,
+        lns_time_sec=0.0,
+        lns_attempts=20,
+        gpu_repack_passes=2,
+        profile=False,
+    )
+
+    monkeypatch.setenv("GPU_FULL_REPACK_SERIAL", "1")
+    serial = run_inventory_meta_coverage(**common_args)
+
+    monkeypatch.delenv("GPU_FULL_REPACK_SERIAL", raising=False)
+    parallel = run_inventory_meta_coverage(**common_args)
+
+    assert serial["mode"] == "coverage_gpu_full"
+    assert parallel["mode"] == "coverage_gpu_full"
+    assert serial["solver_stats"]["status"] == "GPU_FULL_HEURISTIC"
+    assert parallel["solver_stats"]["status"] == "GPU_FULL_HEURISTIC"
+    assert serial["stats"]["songs_covered"] == 3
+    assert parallel["stats"]["songs_covered"] == 3
+    assert serial["stats"]["gear_variants_used"] == 6
+    assert parallel["stats"]["gear_variants_used"] == 6

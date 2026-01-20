@@ -1,10 +1,139 @@
+import os
 import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import taichi as ti
 
-_LAST_SHAPE_SIG: Optional[Tuple[int, int, int, int]] = None
+from .taichi_profile import maybe_print_kernel_profile
+
+_LAST_STATE_SIG: Optional[Tuple[int, int, int, int]] = None
+_LAST_STATE: Optional["_GpuFullState"] = None
+
+
+def _truthy_env(name: str) -> bool:
+    return str(os.environ.get(name, "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass
+class _GpuFullState:
+    part_vids: ti.Field
+    freq: ti.Field
+    counts: ti.Field
+    counts_total: ti.Field
+    covered: ti.Field
+    chosen: ti.Field
+    propose: ti.Field
+    inv_size: ti.Field
+    cov_count: ti.Field
+    best_key: ti.Field
+    removed_cnt: ti.Field
+    benefit_sum: ti.Field
+    tmp_cost: ti.Field
+    counts_best: ti.Field
+    counts_total_best: ti.Field
+    covered_best: ti.Field
+    chosen_best: ti.Field
+    inv_best: ti.Field
+    cov_best: ti.Field
+    repack_best_p: ti.Field
+
+
+def _get_or_build_state(
+    *,
+    s_count: int,
+    k_count: int,
+    v_count: int,
+    counter_stripes: int,
+) -> _GpuFullState:
+    """
+    Reuse Taichi fields across solves for the same shapes.
+
+    Without this, repeated solves with identical shapes in the same process can return all-zeros
+    (likely a Taichi/Vulkan field binding + kernel cache interaction).
+    """
+    global _LAST_STATE, _LAST_STATE_SIG
+
+    sig = (int(s_count), int(k_count), int(v_count), int(counter_stripes))
+    if _LAST_STATE is not None and _LAST_STATE_SIG == sig:
+        # Defensive: other modules in-process may `ti.reset()` / `reset_taichi()` and invalidate fields.
+        # If we detect a shape mismatch, drop the cached state and rebuild.
+        try:
+            if tuple(_LAST_STATE.part_vids.shape) == (int(s_count), int(k_count), 6) and tuple(_LAST_STATE.freq.shape) == (
+                int(v_count),
+            ):
+                return _LAST_STATE
+        except Exception:
+            pass
+        _LAST_STATE = None
+        _LAST_STATE_SIG = None
+
+    from gear_optimizer.solver.taichi_gem import runtime as ti_runtime
+
+    if _LAST_STATE is None:
+        # Start from a clean Taichi runtime before allocating the persistent GPU_FULL fields.
+        # This avoids interactions with other Taichi field graphs (e.g. witness pool builder) in the same process.
+        try:
+            ti_runtime.reset_taichi(reason="gpu_full_solver fresh state")
+        except Exception:
+            pass
+    elif _LAST_STATE_SIG != sig:
+        try:
+            ti_runtime.reset_taichi(reason="gpu_full_solver shape change")
+        except Exception:
+            try:
+                ti.reset()
+            except Exception:
+                pass
+
+    ti_runtime.init_taichi()
+
+    part_vids = ti.field(dtype=ti.i32, shape=(s_count, k_count, 6))
+    freq = ti.field(dtype=ti.i32, shape=(v_count,))
+    counts = ti.field(dtype=ti.i32, shape=(v_count, counter_stripes))
+    counts_total = ti.field(dtype=ti.i32, shape=(v_count,))
+    covered = ti.field(dtype=ti.i32, shape=(s_count,))
+    chosen = ti.field(dtype=ti.i32, shape=(s_count,))
+    propose = ti.field(dtype=ti.i32, shape=(s_count,))
+    inv_size = ti.field(dtype=ti.i32, shape=())
+    cov_count = ti.field(dtype=ti.i32, shape=())
+    best_key = ti.field(dtype=ti.u64, shape=())
+    removed_cnt = ti.field(dtype=ti.i32, shape=())
+    benefit_sum = ti.field(dtype=ti.i32, shape=())
+    tmp_cost = ti.field(dtype=ti.i32, shape=())
+
+    counts_best = ti.field(dtype=ti.i32, shape=(v_count, counter_stripes))
+    counts_total_best = ti.field(dtype=ti.i32, shape=(v_count,))
+    covered_best = ti.field(dtype=ti.i32, shape=(s_count,))
+    chosen_best = ti.field(dtype=ti.i32, shape=(s_count,))
+    inv_best = ti.field(dtype=ti.i32, shape=())
+    cov_best = ti.field(dtype=ti.i32, shape=())
+    repack_best_p = ti.field(dtype=ti.i32, shape=(s_count,))
+
+    _LAST_STATE = _GpuFullState(
+        part_vids=part_vids,
+        freq=freq,
+        counts=counts,
+        counts_total=counts_total,
+        covered=covered,
+        chosen=chosen,
+        propose=propose,
+        inv_size=inv_size,
+        cov_count=cov_count,
+        best_key=best_key,
+        removed_cnt=removed_cnt,
+        benefit_sum=benefit_sum,
+        tmp_cost=tmp_cost,
+        counts_best=counts_best,
+        counts_total_best=counts_total_best,
+        covered_best=covered_best,
+        chosen_best=chosen_best,
+        inv_best=inv_best,
+        cov_best=cov_best,
+        repack_best_p=repack_best_p,
+    )
+    _LAST_STATE_SIG = sig
+    return _LAST_STATE
 
 
 @dataclass(frozen=True)
@@ -287,6 +416,168 @@ def _repack_serial(
 
 
 @ti.kernel
+def _repack_eval_best_p(
+    part_vids: ti.template(),
+    freq: ti.template(),
+    counts_total: ti.template(),
+    covered: ti.template(),
+    chosen: ti.template(),
+    rarity_weighted: ti.i32,
+    k_scan: ti.i32,
+    salt: ti.u32,
+    out_best_p: ti.template(),
+):
+    k_count = part_vids.shape[1]
+    scan = k_count
+    if k_scan > 0 and k_scan < k_count:
+        scan = k_scan
+    for s in covered:
+        out_best_p[s] = -1
+        if covered[s] == 0:
+            continue
+        cur_p = chosen[s]
+        if cur_p < 0:
+            continue
+        best_p = cur_p
+        best_delta = ti.i32(0)  # never allow increasing inv size (serial behavior)
+        best_rarity_delta = ti.i32(0)
+        best_score = ti.i32(0)
+        for pp in range(scan):
+            st = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9)) ^ (ti.u32(pp) * ti.u32(0xC2B2AE35))
+            st = _xorshift32(st)
+            p = ti.i32(st % ti.u32(k_count))
+            if p == cur_p:
+                continue
+            removed_unique = ti.i32(0)
+            added_new = ti.i32(0)
+            removed_rarity = ti.i32(0)
+            added_rarity = ti.i32(0)
+            sc = ti.i32(0)
+            for j in ti.static(range(6)):
+                sc += freq[part_vids[s, p, j]]
+            for j in ti.static(range(6)):
+                v_cur = part_vids[s, cur_p, j]
+                in_new = 0
+                for jj in ti.static(range(6)):
+                    if part_vids[s, p, jj] == v_cur:
+                        in_new = 1
+                if (in_new == 0) and (counts_total[v_cur] == 1):
+                    removed_unique += 1
+                    if rarity_weighted != 0:
+                        f = ti.i32(freq[v_cur])
+                        f = ti.min(ti.i32(63), ti.max(ti.i32(0), f))
+                        removed_rarity += ti.i32(64) - f
+            for j in ti.static(range(6)):
+                v_new = part_vids[s, p, j]
+                in_cur = 0
+                for jj in ti.static(range(6)):
+                    if part_vids[s, cur_p, jj] == v_new:
+                        in_cur = 1
+                if (in_cur == 0) and (counts_total[v_new] == 0):
+                    added_new += 1
+                    if rarity_weighted != 0:
+                        f = ti.i32(freq[v_new])
+                        f = ti.min(ti.i32(63), ti.max(ti.i32(0), f))
+                        added_rarity += ti.i32(64) - f
+            delta = added_new - removed_unique
+            if delta > 0:
+                continue
+            rarity_delta = added_rarity - removed_rarity
+            if (delta < best_delta) or (
+                (delta == best_delta)
+                and (
+                    ((rarity_weighted != 0) and (rarity_delta < best_rarity_delta))
+                    or ((rarity_weighted != 0) and (rarity_delta == best_rarity_delta) and (sc > best_score))
+                    or ((rarity_weighted == 0) and (sc > best_score))
+                )
+            ):
+                best_delta = delta
+                best_rarity_delta = rarity_delta
+                best_score = sc
+                best_p = p
+        if best_p != cur_p:
+            out_best_p[s] = best_p
+
+
+@ti.kernel
+def _repack_apply_serial(
+    part_vids: ti.template(),
+    freq: ti.template(),
+    counts: ti.template(),
+    counts_total: ti.template(),
+    covered: ti.template(),
+    chosen: ti.template(),
+    inv_size: ti.template(),
+    rarity_weighted: ti.i32,
+    salt: ti.u32,
+    best_p: ti.template(),
+):
+    ti.loop_config(serialize=True)
+    for s in range(covered.shape[0]):
+        if covered[s] == 0:
+            continue
+        cur_p = chosen[s]
+        if cur_p < 0:
+            continue
+        p = best_p[s]
+        if p < 0 or p == cur_p:
+            continue
+
+        # Validate against current (mutable) counts_total: do not allow increasing inventory size.
+        removed_unique = ti.i32(0)
+        added_new = ti.i32(0)
+        for j in ti.static(range(6)):
+            v_cur = part_vids[s, cur_p, j]
+            in_new = 0
+            for jj in ti.static(range(6)):
+                if part_vids[s, p, jj] == v_cur:
+                    in_new = 1
+            if (in_new == 0) and (counts_total[v_cur] == 1):
+                removed_unique += 1
+        for j in ti.static(range(6)):
+            v_new = part_vids[s, p, j]
+            in_cur = 0
+            for jj in ti.static(range(6)):
+                if part_vids[s, cur_p, jj] == v_new:
+                    in_cur = 1
+            if (in_cur == 0) and (counts_total[v_new] == 0):
+                added_new += 1
+        if (added_new - removed_unique) > 0:
+            continue
+
+        # Apply swap (serial, so direct writes are safe and fast).
+        for j in ti.static(range(6)):
+            v_cur = part_vids[s, cur_p, j]
+            in_new = 0
+            for jj in ti.static(range(6)):
+                if part_vids[s, p, jj] == v_cur:
+                    in_new = 1
+            if in_new == 0:
+                prev_total = counts_total[v_cur]
+                counts_total[v_cur] = prev_total - 1
+                if prev_total == 1:
+                    inv_size[None] -= 1
+                stripe = _stripe_idx(counts, s, j)
+                counts[v_cur, stripe] = counts[v_cur, stripe] - 1
+
+        for j in ti.static(range(6)):
+            v_new = part_vids[s, p, j]
+            in_cur = 0
+            for jj in ti.static(range(6)):
+                if part_vids[s, cur_p, jj] == v_new:
+                    in_cur = 1
+            if in_cur == 0:
+                prev_total = counts_total[v_new]
+                counts_total[v_new] = prev_total + 1
+                if prev_total == 0:
+                    inv_size[None] += 1
+                stripe = _stripe_idx(counts, s, j)
+                counts[v_new, stripe] = counts[v_new, stripe] + 1
+
+        chosen[s] = p
+
+
+@ti.kernel
 def _destroy_random(
     part_vids: ti.template(),
     counts: ti.template(),
@@ -544,10 +835,6 @@ def solve_coverage_gpu_full(
 ) -> GpuFullSolution:
     import numpy as np
 
-    from gear_optimizer.solver.taichi_gem import runtime as ti_runtime
-
-    global _LAST_SHAPE_SIG
-
     part_vids_np = np.asarray(part_vids_np, dtype=np.int32)
     variant_freq_np = np.asarray(variant_freq_np, dtype=np.int32)
     if part_vids_np.ndim != 3 or part_vids_np.shape[2] != 6:
@@ -561,22 +848,6 @@ def solve_coverage_gpu_full(
     counter_stripes = int(counter_stripes)
     if counter_stripes <= 0:
         raise ValueError("counter_stripes must be positive.")
-
-    sig = (int(s_count), int(k_count), int(v_count), int(counter_stripes))
-    if _LAST_SHAPE_SIG != sig:
-        # Taichi kernel caching can behave poorly across changing field shapes in a single process.
-        try:
-            ti.reset()
-        except Exception:
-            pass
-        try:
-            ti_runtime._ti_initialized = False
-        except Exception:
-            pass
-        ti_runtime.init_taichi()
-        _LAST_SHAPE_SIG = sig
-    else:
-        ti_runtime.init_taichi()
 
     inv_cap = int(inventory_cap)
     if inv_cap <= 0:
@@ -592,29 +863,31 @@ def solve_coverage_gpu_full(
     lns_destroy = int(lns_destroy)
     lns_freq_weighted = bool(lns_freq_weighted)
 
-    part_vids = ti.field(dtype=ti.i32, shape=(s_count, k_count, 6))
-    freq = ti.field(dtype=ti.i32, shape=(v_count,))
-    counts = ti.field(dtype=ti.i32, shape=(v_count, counter_stripes))
-    counts_total = ti.field(dtype=ti.i32, shape=(v_count,))
-    covered = ti.field(dtype=ti.i32, shape=(s_count,))
-    chosen = ti.field(dtype=ti.i32, shape=(s_count,))
-    propose = ti.field(dtype=ti.i32, shape=(s_count,))
-    inv_size = ti.field(dtype=ti.i32, shape=())
-    cov_count = ti.field(dtype=ti.i32, shape=())
-    best_key = ti.field(dtype=ti.u64, shape=())
-    removed_cnt = ti.field(dtype=ti.i32, shape=())
-    benefit_sum = ti.field(dtype=ti.i32, shape=())
-    tmp_cost = ti.field(dtype=ti.i32, shape=())
-
-    counts_best = ti.field(dtype=ti.i32, shape=(v_count, counter_stripes))
-    counts_total_best = ti.field(dtype=ti.i32, shape=(v_count,))
-    covered_best = ti.field(dtype=ti.i32, shape=(s_count,))
-    chosen_best = ti.field(dtype=ti.i32, shape=(s_count,))
-    inv_best = ti.field(dtype=ti.i32, shape=())
-    cov_best = ti.field(dtype=ti.i32, shape=())
+    st = _get_or_build_state(s_count=s_count, k_count=k_count, v_count=v_count, counter_stripes=counter_stripes)
+    part_vids = st.part_vids
+    freq = st.freq
+    counts = st.counts
+    counts_total = st.counts_total
+    covered = st.covered
+    chosen = st.chosen
+    propose = st.propose
+    inv_size = st.inv_size
+    cov_count = st.cov_count
+    best_key = st.best_key
+    removed_cnt = st.removed_cnt
+    benefit_sum = st.benefit_sum
+    tmp_cost = st.tmp_cost
+    counts_best = st.counts_best
+    counts_total_best = st.counts_total_best
+    covered_best = st.covered_best
+    chosen_best = st.chosen_best
+    inv_best = st.inv_best
+    cov_best = st.cov_best
 
     part_vids.from_numpy(part_vids_np.reshape(s_count, k_count, 6))
     freq.from_numpy(variant_freq_np.reshape(v_count))
+
+    repack_serial = _truthy_env("GPU_FULL_REPACK_SERIAL")
 
     def greedy_fill() -> int:
         added = 0
@@ -651,21 +924,44 @@ def solve_coverage_gpu_full(
         for stabilize_round in range(int(max_rounds)):
             greedy_fill()
             for _rp in range(repack_passes):
-                repack_salt = int(
-                    (int(seed) + int(stabilize_round) * 0xA24BAED5 + int(_rp) * 0x9E3779B9) & 0xFFFFFFFF
-                )
-                _repack_serial(
-                    part_vids,
-                    freq,
-                    counts,
-                    counts_total,
-                    covered,
-                    chosen,
-                    inv_size,
-                    1 if repack_rarity_weighted else 0,
-                    int(k_scan_repack),
-                    int(repack_salt),
-                )
+                repack_salt = int((int(seed) + int(stabilize_round) * 0xA24BAED5 + int(_rp) * 0x9E3779B9) & 0xFFFFFFFF)
+                if repack_serial:
+                    _repack_serial(
+                        part_vids,
+                        freq,
+                        counts,
+                        counts_total,
+                        covered,
+                        chosen,
+                        inv_size,
+                        1 if repack_rarity_weighted else 0,
+                        int(k_scan_repack),
+                        int(repack_salt),
+                    )
+                else:
+                    _repack_eval_best_p(
+                        part_vids,
+                        freq,
+                        counts_total,
+                        covered,
+                        chosen,
+                        1 if repack_rarity_weighted else 0,
+                        int(k_scan_repack),
+                        int(repack_salt),
+                        st.repack_best_p,
+                    )
+                    _repack_apply_serial(
+                        part_vids,
+                        freq,
+                        counts,
+                        counts_total,
+                        covered,
+                        chosen,
+                        inv_size,
+                        1 if repack_rarity_weighted else 0,
+                        int(repack_salt),
+                        st.repack_best_p,
+                    )
             # Repack can reduce `inv_size` without changing coverage. Refill any freed capacity before we
             # decide stabilization is complete.
             greedy_fill()
@@ -901,6 +1197,7 @@ def solve_coverage_gpu_full(
             f"attempts={attempts_done} improvements={improvements} time={dt:.2f}s",
             flush=True,
         )
+    maybe_print_kernel_profile(label="inventory_meta_gpu_full", enabled=bool(profile))
 
     return GpuFullSolution(
         covered=covered.to_numpy(),

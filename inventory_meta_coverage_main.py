@@ -19,6 +19,24 @@ from gear_optimizer.data.database import init_db
 from inventory_optimizer import export_inventory_meta_json, run_inventory_meta_coverage
 
 
+def _truthy_env(name: str) -> bool:
+    return str(os.environ.get(name, "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _maybe_print_taichi_kernel_profile(*, requested: bool) -> None:
+    if not requested:
+        return
+    if not _truthy_env("TAICHI_KERNEL_PROFILER"):
+        return
+    try:
+        import taichi as ti
+
+        ti.sync()
+        ti.profiler.print_kernel_profiler_info()
+    except Exception:
+        pass
+
+
 def main() -> None:
     multiprocessing.freeze_support()
 
@@ -278,6 +296,7 @@ def main() -> None:
         print(f"Songs covered: {stats.get('songs_covered', 0)}")
         print(f"Gear variants used: {stats.get('gear_variants_used', 0)} / {stats.get('gear_variants_cap', 0)}")
         print(f"Minis used: {len(results.get('inventory', {}).get('minis', []))}")
+        _maybe_print_taichi_kernel_profile(requested=bool(args.profile or _truthy_env("TAICHI_KERNEL_PROFILER_PRINT")))
 
     except KeyboardInterrupt:
         print("\nCancelled by user.")

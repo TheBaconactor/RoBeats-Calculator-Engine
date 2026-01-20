@@ -7,6 +7,7 @@ import taichi as ti
 from gear_optimizer.solver.taichi_gem import runtime as ti_runtime
 
 from .keys import OV_INDEX
+from .taichi_profile import maybe_print_kernel_profile
 from .variant_space import OV0_VARIANTS, SLOT_GEM_BUDGET, STAT_COUNT
 
 _LAST_SHAPE_SIG: Optional[Tuple[int, int, int]] = None
@@ -334,6 +335,7 @@ def build_witness_offsets_gpu(
 
     if profile:
         print(f"[InventoryWitnessPool] built offsets (S={S}, K={K}) time={dt:.3f}s", flush=True)
+    maybe_print_kernel_profile(label="inventory_witness_pool", enabled=bool(profile))
 
     return out_offsets.to_numpy(), {
         "songs": int(S),

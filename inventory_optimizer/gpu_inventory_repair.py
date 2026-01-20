@@ -7,6 +7,8 @@ import taichi as ti
 
 from gear_optimizer.solver.taichi_gem import runtime as ti_runtime
 
+from .taichi_profile import maybe_print_kernel_profile
+
 
 _LAST_SIG: Optional[Tuple[int, int, int]] = None
 
@@ -251,6 +253,7 @@ def repair_uncovered_with_inventory_gpu(
     repaired = int((repaired_mask > 0).sum())
     if profile:
         print(f"[InventoryRepair] repaired={repaired} time={dt:.3f}s", flush=True)
+    maybe_print_kernel_profile(label="inventory_repair", enabled=bool(profile))
 
     return GpuRepairResult(
         repaired_mask=repaired_mask,
@@ -260,4 +263,3 @@ def repair_uncovered_with_inventory_gpu(
 
 
 __all__ = ["GpuRepairResult", "repair_uncovered_with_inventory_gpu"]
-
