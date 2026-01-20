@@ -63,9 +63,9 @@ def _get_or_build_state(
         # Defensive: other modules in-process may `ti.reset()` / `reset_taichi()` and invalidate fields.
         # If we detect a shape mismatch, drop the cached state and rebuild.
         try:
-            if tuple(_LAST_STATE.part_vids.shape) == (int(s_count), int(k_count), 6) and tuple(_LAST_STATE.freq.shape) == (
-                int(v_count),
-            ):
+            if tuple(_LAST_STATE.part_vids.shape) == (int(s_count), int(k_count), 6) and tuple(
+                _LAST_STATE.freq.shape
+            ) == (int(v_count),):
                 return _LAST_STATE
         except Exception:
             pass

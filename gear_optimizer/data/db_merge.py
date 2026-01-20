@@ -138,6 +138,30 @@ def validate_database_schema(db_path: str) -> Tuple[bool, str]:
                 conn.close()
                 return False, f"Missing required columns in fg_loadouts: {', '.join(missing_fg_columns)}"
 
+        # Validate optional TeamBuff tier tables if present (schema v9+).
+        cursor.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name IN ('team_buff_loadouts', 'team_buff_fg_loadouts')
+            """
+        )
+        tier_tables = {row[0] for row in cursor.fetchall()}
+        tier_required = set(required_columns) | {"team_buff"}
+        if "team_buff_loadouts" in tier_tables:
+            cursor.execute("PRAGMA table_info(team_buff_loadouts)")
+            cols = {row[1] for row in cursor.fetchall()}
+            missing = tier_required - cols
+            if missing:
+                conn.close()
+                return False, f"Missing required columns in team_buff_loadouts: {', '.join(missing)}"
+        if "team_buff_fg_loadouts" in tier_tables:
+            cursor.execute("PRAGMA table_info(team_buff_fg_loadouts)")
+            cols = {row[1] for row in cursor.fetchall()}
+            missing = tier_required - cols
+            if missing:
+                conn.close()
+                return False, f"Missing required columns in team_buff_fg_loadouts: {', '.join(missing)}"
+
         conn.close()
         return True, ""
 
@@ -174,6 +198,28 @@ def get_database_stats(db_path: str) -> Dict[str, int]:
             cursor.execute("SELECT COUNT(*) FROM fg_loadouts")
             fg_loadout_count = cursor.fetchone()[0]
 
+        team_buff_loadout_count = 0
+        cursor.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name='team_buff_loadouts'
+            """
+        )
+        if cursor.fetchone():
+            cursor.execute("SELECT COUNT(*) FROM team_buff_loadouts")
+            team_buff_loadout_count = cursor.fetchone()[0]
+
+        team_buff_fg_loadout_count = 0
+        cursor.execute(
+            """
+            SELECT name FROM sqlite_master
+            WHERE type='table' AND name='team_buff_fg_loadouts'
+            """
+        )
+        if cursor.fetchone():
+            cursor.execute("SELECT COUNT(*) FROM team_buff_fg_loadouts")
+            team_buff_fg_loadout_count = cursor.fetchone()[0]
+
         cursor.execute("SELECT SUM(best_score) FROM songs")
         result = cursor.fetchone()[0]
         total_score = result if result else 0
@@ -184,11 +230,20 @@ def get_database_stats(db_path: str) -> Dict[str, int]:
             "song_count": song_count,
             "loadout_count": loadout_count,
             "fg_loadout_count": fg_loadout_count,
+            "team_buff_loadout_count": team_buff_loadout_count,
+            "team_buff_fg_loadout_count": team_buff_fg_loadout_count,
             "total_score": total_score,
         }
     except Exception as e:
         logging.warning(f"[DB Merge] Failed to get stats: {e}")
-        return {"song_count": 0, "loadout_count": 0, "fg_loadout_count": 0, "total_score": 0}
+        return {
+            "song_count": 0,
+            "loadout_count": 0,
+            "fg_loadout_count": 0,
+            "team_buff_loadout_count": 0,
+            "team_buff_fg_loadout_count": 0,
+            "total_score": 0,
+        }
 
 
 def merge_databases(
@@ -545,6 +600,234 @@ def merge_databases(
                     """
                 )
 
+            # Merge TeamBuff tier tables (schema v9+), if present in the secondary DB.
+            secondary_has_team_buff_loadouts = bool(
+                conn.execute(
+                    """
+                    SELECT 1 FROM secondary.sqlite_master
+                    WHERE type='table' AND name='team_buff_loadouts'
+                    LIMIT 1
+                    """
+                ).fetchone()
+            )
+            if secondary_has_team_buff_loadouts:
+                insert_new_team_buff_loadouts_sql = """
+                    INSERT OR IGNORE INTO team_buff_loadouts (
+                        song_name, team_buff, loadout_hash, score, fg_score,
+                        gear_json, minis_json, details_json, force_details_json, timestamp
+                    )
+                    SELECT
+                        song_name, team_buff, loadout_hash, score, fg_score,
+                        gear_json, minis_json, details_json, force_details_json, timestamp
+                    FROM secondary.team_buff_loadouts
+                """
+                conn.execute(insert_new_team_buff_loadouts_sql)
+
+                update_existing_team_buff_loadouts_sql = """
+                    UPDATE team_buff_loadouts
+                    SET
+                        score = (
+                            SELECT CASE
+                                WHEN secondary.team_buff_loadouts.score > main.team_buff_loadouts.score
+                                THEN secondary.team_buff_loadouts.score
+                                ELSE main.team_buff_loadouts.score
+                            END
+                            FROM secondary.team_buff_loadouts
+                            WHERE secondary.team_buff_loadouts.song_name = main.team_buff_loadouts.song_name
+                            AND secondary.team_buff_loadouts.team_buff = main.team_buff_loadouts.team_buff
+                            AND secondary.team_buff_loadouts.loadout_hash = main.team_buff_loadouts.loadout_hash
+                        ),
+                        fg_score = (
+                            SELECT CASE
+                                WHEN secondary.team_buff_loadouts.fg_score > main.team_buff_loadouts.fg_score
+                                THEN secondary.team_buff_loadouts.fg_score
+                                ELSE main.team_buff_loadouts.fg_score
+                            END
+                            FROM secondary.team_buff_loadouts
+                            WHERE secondary.team_buff_loadouts.song_name = main.team_buff_loadouts.song_name
+                            AND secondary.team_buff_loadouts.team_buff = main.team_buff_loadouts.team_buff
+                            AND secondary.team_buff_loadouts.loadout_hash = main.team_buff_loadouts.loadout_hash
+                        ),
+                        gear_json = (
+                            SELECT CASE
+                                WHEN secondary.team_buff_loadouts.score > main.team_buff_loadouts.score
+                                THEN secondary.team_buff_loadouts.gear_json
+                                ELSE main.team_buff_loadouts.gear_json
+                            END
+                            FROM secondary.team_buff_loadouts
+                            WHERE secondary.team_buff_loadouts.song_name = main.team_buff_loadouts.song_name
+                            AND secondary.team_buff_loadouts.team_buff = main.team_buff_loadouts.team_buff
+                            AND secondary.team_buff_loadouts.loadout_hash = main.team_buff_loadouts.loadout_hash
+                        ),
+                        minis_json = (
+                            SELECT merge_minis_json(
+                                main.team_buff_loadouts.minis_json,
+                                secondary.team_buff_loadouts.minis_json,
+                                main.team_buff_loadouts.details_json,
+                                secondary.team_buff_loadouts.details_json
+                            )
+                            FROM secondary.team_buff_loadouts
+                            WHERE secondary.team_buff_loadouts.song_name = main.team_buff_loadouts.song_name
+                            AND secondary.team_buff_loadouts.team_buff = main.team_buff_loadouts.team_buff
+                            AND secondary.team_buff_loadouts.loadout_hash = main.team_buff_loadouts.loadout_hash
+                        ),
+                        details_json = (
+                            SELECT CASE
+                                WHEN secondary.team_buff_loadouts.score >= main.team_buff_loadouts.score
+                                THEN secondary.team_buff_loadouts.details_json
+                                ELSE main.team_buff_loadouts.details_json
+                            END
+                            FROM secondary.team_buff_loadouts
+                            WHERE secondary.team_buff_loadouts.song_name = main.team_buff_loadouts.song_name
+                            AND secondary.team_buff_loadouts.team_buff = main.team_buff_loadouts.team_buff
+                            AND secondary.team_buff_loadouts.loadout_hash = main.team_buff_loadouts.loadout_hash
+                        ),
+                        force_details_json = (
+                            SELECT CASE
+                                WHEN secondary.team_buff_loadouts.fg_score > main.team_buff_loadouts.fg_score
+                                THEN secondary.team_buff_loadouts.force_details_json
+                                ELSE main.team_buff_loadouts.force_details_json
+                            END
+                            FROM secondary.team_buff_loadouts
+                            WHERE secondary.team_buff_loadouts.song_name = main.team_buff_loadouts.song_name
+                            AND secondary.team_buff_loadouts.team_buff = main.team_buff_loadouts.team_buff
+                            AND secondary.team_buff_loadouts.loadout_hash = main.team_buff_loadouts.loadout_hash
+                        ),
+                        timestamp = (
+                            SELECT MAX(main.team_buff_loadouts.timestamp, secondary.team_buff_loadouts.timestamp)
+                            FROM secondary.team_buff_loadouts
+                            WHERE secondary.team_buff_loadouts.song_name = main.team_buff_loadouts.song_name
+                            AND secondary.team_buff_loadouts.team_buff = main.team_buff_loadouts.team_buff
+                            AND secondary.team_buff_loadouts.loadout_hash = main.team_buff_loadouts.loadout_hash
+                        )
+                    WHERE EXISTS (
+                        SELECT 1 FROM secondary.team_buff_loadouts
+                        WHERE secondary.team_buff_loadouts.song_name = main.team_buff_loadouts.song_name
+                        AND secondary.team_buff_loadouts.team_buff = main.team_buff_loadouts.team_buff
+                        AND secondary.team_buff_loadouts.loadout_hash = main.team_buff_loadouts.loadout_hash
+                    )
+                """
+                conn.execute(update_existing_team_buff_loadouts_sql)
+
+            secondary_has_team_buff_fg_loadouts = bool(
+                conn.execute(
+                    """
+                    SELECT 1 FROM secondary.sqlite_master
+                    WHERE type='table' AND name='team_buff_fg_loadouts'
+                    LIMIT 1
+                    """
+                ).fetchone()
+            )
+            if secondary_has_team_buff_fg_loadouts:
+                insert_new_team_buff_fg_loadouts_sql = """
+                    INSERT OR IGNORE INTO team_buff_fg_loadouts (
+                        song_name, team_buff, loadout_hash, score, fg_score,
+                        gear_json, minis_json, details_json, force_details_json, timestamp
+                    )
+                    SELECT
+                        song_name, team_buff, loadout_hash, score, fg_score,
+                        gear_json, minis_json, details_json, force_details_json, timestamp
+                    FROM secondary.team_buff_fg_loadouts
+                """
+                conn.execute(insert_new_team_buff_fg_loadouts_sql)
+
+                update_existing_team_buff_fg_loadouts_sql = """
+                    UPDATE team_buff_fg_loadouts
+                    SET
+                        score = (
+                            SELECT CASE
+                                WHEN secondary.team_buff_fg_loadouts.fg_score > main.team_buff_fg_loadouts.fg_score
+                                THEN secondary.team_buff_fg_loadouts.score
+                                ELSE main.team_buff_fg_loadouts.score
+                            END
+                            FROM secondary.team_buff_fg_loadouts
+                            WHERE secondary.team_buff_fg_loadouts.song_name = main.team_buff_fg_loadouts.song_name
+                            AND secondary.team_buff_fg_loadouts.team_buff = main.team_buff_fg_loadouts.team_buff
+                            AND secondary.team_buff_fg_loadouts.loadout_hash = main.team_buff_fg_loadouts.loadout_hash
+                        ),
+                        fg_score = (
+                            SELECT CASE
+                                WHEN secondary.team_buff_fg_loadouts.fg_score > main.team_buff_fg_loadouts.fg_score
+                                THEN secondary.team_buff_fg_loadouts.fg_score
+                                ELSE main.team_buff_fg_loadouts.fg_score
+                            END
+                            FROM secondary.team_buff_fg_loadouts
+                            WHERE secondary.team_buff_fg_loadouts.song_name = main.team_buff_fg_loadouts.song_name
+                            AND secondary.team_buff_fg_loadouts.team_buff = main.team_buff_fg_loadouts.team_buff
+                            AND secondary.team_buff_fg_loadouts.loadout_hash = main.team_buff_fg_loadouts.loadout_hash
+                        ),
+                        gear_json = (
+                            SELECT CASE
+                                WHEN secondary.team_buff_fg_loadouts.fg_score > main.team_buff_fg_loadouts.fg_score
+                                THEN secondary.team_buff_fg_loadouts.gear_json
+                                ELSE main.team_buff_fg_loadouts.gear_json
+                            END
+                            FROM secondary.team_buff_fg_loadouts
+                            WHERE secondary.team_buff_fg_loadouts.song_name = main.team_buff_fg_loadouts.song_name
+                            AND secondary.team_buff_fg_loadouts.team_buff = main.team_buff_fg_loadouts.team_buff
+                            AND secondary.team_buff_fg_loadouts.loadout_hash = main.team_buff_fg_loadouts.loadout_hash
+                        ),
+                        minis_json = (
+                            SELECT merge_minis_json(
+                                main.team_buff_fg_loadouts.minis_json,
+                                secondary.team_buff_fg_loadouts.minis_json,
+                                main.team_buff_fg_loadouts.details_json,
+                                secondary.team_buff_fg_loadouts.details_json
+                            )
+                            FROM secondary.team_buff_fg_loadouts
+                            WHERE secondary.team_buff_fg_loadouts.song_name = main.team_buff_fg_loadouts.song_name
+                            AND secondary.team_buff_fg_loadouts.team_buff = main.team_buff_fg_loadouts.team_buff
+                            AND secondary.team_buff_fg_loadouts.loadout_hash = main.team_buff_fg_loadouts.loadout_hash
+                        ),
+                        details_json = (
+                            SELECT CASE
+                                WHEN secondary.team_buff_fg_loadouts.fg_score >= main.team_buff_fg_loadouts.fg_score
+                                THEN secondary.team_buff_fg_loadouts.details_json
+                                ELSE main.team_buff_fg_loadouts.details_json
+                            END
+                            FROM secondary.team_buff_fg_loadouts
+                            WHERE secondary.team_buff_fg_loadouts.song_name = main.team_buff_fg_loadouts.song_name
+                            AND secondary.team_buff_fg_loadouts.team_buff = main.team_buff_fg_loadouts.team_buff
+                            AND secondary.team_buff_fg_loadouts.loadout_hash = main.team_buff_fg_loadouts.loadout_hash
+                        ),
+                        force_details_json = (
+                            SELECT CASE
+                                WHEN secondary.team_buff_fg_loadouts.fg_score > main.team_buff_fg_loadouts.fg_score
+                                THEN secondary.team_buff_fg_loadouts.force_details_json
+                                ELSE main.team_buff_fg_loadouts.force_details_json
+                            END
+                            FROM secondary.team_buff_fg_loadouts
+                            WHERE secondary.team_buff_fg_loadouts.song_name = main.team_buff_fg_loadouts.song_name
+                            AND secondary.team_buff_fg_loadouts.team_buff = main.team_buff_fg_loadouts.team_buff
+                            AND secondary.team_buff_fg_loadouts.loadout_hash = main.team_buff_fg_loadouts.loadout_hash
+                        ),
+                        timestamp = (
+                            SELECT MAX(main.team_buff_fg_loadouts.timestamp, secondary.team_buff_fg_loadouts.timestamp)
+                            FROM secondary.team_buff_fg_loadouts
+                            WHERE secondary.team_buff_fg_loadouts.song_name = main.team_buff_fg_loadouts.song_name
+                            AND secondary.team_buff_fg_loadouts.team_buff = main.team_buff_fg_loadouts.team_buff
+                            AND secondary.team_buff_fg_loadouts.loadout_hash = main.team_buff_fg_loadouts.loadout_hash
+                        )
+                    WHERE EXISTS (
+                        SELECT 1 FROM secondary.team_buff_fg_loadouts
+                        WHERE secondary.team_buff_fg_loadouts.song_name = main.team_buff_fg_loadouts.song_name
+                        AND secondary.team_buff_fg_loadouts.team_buff = main.team_buff_fg_loadouts.team_buff
+                        AND secondary.team_buff_fg_loadouts.loadout_hash = main.team_buff_fg_loadouts.loadout_hash
+                    )
+                """
+                conn.execute(update_existing_team_buff_fg_loadouts_sql)
+
+                # Enforce invariant: tier FG leaderboards should only contain entries where FG strictly beats base.
+                conn.execute(
+                    """
+                    DELETE FROM team_buff_fg_loadouts
+                    WHERE (song_name, team_buff) IN (
+                        SELECT DISTINCT song_name, team_buff FROM secondary.team_buff_fg_loadouts
+                    )
+                    AND fg_score <= score
+                    """
+                )
+
             # Commit transaction
             conn.commit()
 
@@ -579,9 +862,19 @@ def merge_databases(
             "fg_loadouts_after": main_stats_after.get("fg_loadout_count", 0),
             "fg_loadouts_added": main_stats_after.get("fg_loadout_count", 0)
             - main_stats_before.get("fg_loadout_count", 0),
+            "team_buff_loadouts_before": main_stats_before.get("team_buff_loadout_count", 0),
+            "team_buff_loadouts_after": main_stats_after.get("team_buff_loadout_count", 0),
+            "team_buff_loadouts_added": main_stats_after.get("team_buff_loadout_count", 0)
+            - main_stats_before.get("team_buff_loadout_count", 0),
+            "team_buff_fg_loadouts_before": main_stats_before.get("team_buff_fg_loadout_count", 0),
+            "team_buff_fg_loadouts_after": main_stats_after.get("team_buff_fg_loadout_count", 0),
+            "team_buff_fg_loadouts_added": main_stats_after.get("team_buff_fg_loadout_count", 0)
+            - main_stats_before.get("team_buff_fg_loadout_count", 0),
             "secondary_songs": secondary_stats["song_count"],
             "secondary_loadouts": secondary_stats["loadout_count"],
             "secondary_fg_loadouts": secondary_stats.get("fg_loadout_count", 0),
+            "secondary_team_buff_loadouts": secondary_stats.get("team_buff_loadout_count", 0),
+            "secondary_team_buff_fg_loadouts": secondary_stats.get("team_buff_fg_loadout_count", 0),
             "duration": time.time() - start_time,
         }
 

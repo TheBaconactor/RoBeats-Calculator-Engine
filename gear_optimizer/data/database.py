@@ -654,6 +654,294 @@ def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
         _log_timing("total", time.perf_counter() - _t0)
 
 
+def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[Dict[str, Any]]) -> None:
+    """
+    Batch insert/update tiered leaderboards for a song in a single transaction.
+
+    Mirrors `save_loadouts_batch`, but partitions by `team_buff` (T1/T5/T10/T15) into:
+    - team_buff_loadouts (base leaderboard for that tier)
+    - team_buff_fg_loadouts (FG leaderboard for that tier; FG strictly beats base)
+    """
+    song_name = str(song_name or "").strip()
+    team_buff = str(team_buff or "").strip().upper()
+    if not song_name or not team_buff or not entries:
+        return
+
+    timing = str(os.environ.get("DB_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    timing_threshold_ms = 50.0
+    try:
+        timing_threshold_ms = float(os.environ.get("DB_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))
+    except Exception:
+        timing_threshold_ms = 50.0
+
+    def _log_timing(label: str, dt_sec: float) -> None:
+        if not timing:
+            return
+        ms = float(dt_sec) * 1000.0
+        if ms < timing_threshold_ms:
+            return
+        print(f"[DB][TIMING] {song_name} {team_buff} {label}={ms:.1f}ms")
+
+    _t0 = time.perf_counter()
+
+    minis_by_name = get_minis_by_name_cached()
+
+    def _effective_hash_for_entry(entry: Dict[str, Any]) -> Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]:
+        gear_names_local = _compact_gear_for_db(entry.get("gear", []))
+        mini_names_local = _compact_minis_for_db(entry.get("minis", []))
+        details_local = entry.get("details", {})
+        p_color, s_color, sel_color = extract_song_colors(details_local)
+        if not p_color and not s_color:
+            return None
+        mini_sigs_local = [
+            effective_mini_signature_for_name(n, minis_by_name, p_color, s_color, sel_color) for n in mini_names_local
+        ]
+        return (
+            effective_loadout_hash_from_names(gear_names_local, mini_sigs_local),
+            mini_sigs_local,
+            p_color,
+            s_color,
+            sel_color,
+        )
+
+    # Deduplicate (score + hash) within this batch.
+    _t_dedup0 = time.perf_counter()
+    dedup_groups: Dict[tuple[int, str], list[Dict[str, Any]]] = {}
+    for entry in entries:
+        eff = _effective_hash_for_entry(entry)
+        if eff is None:
+            h = _loadout_hash_from_names(
+                _compact_gear_for_db(entry.get("gear", [])), _compact_minis_for_db(entry.get("minis", []))
+            )
+        else:
+            h = eff[0]
+        key = (int(entry.get("score", 0) or 0), str(h))
+        dedup_groups.setdefault(key, []).append(entry)
+
+    deduplicated_entries: list[Dict[str, Any]] = []
+    for (_score, _h), group in dedup_groups.items():
+        if len(group) == 1:
+            deduplicated_entries.append(group[0])
+            continue
+        try:
+            best_entry = max(
+                group, key=lambda e: (_get_overflow_from_details(e.get("details", {})), e.get("fg_score", 0))
+            )
+            deduplicated_entries.append(best_entry)
+        except Exception:
+            deduplicated_entries.append(group[0])
+
+    _log_timing("dedup_entries", time.perf_counter() - _t_dedup0)
+
+    db_path = get_evolution_db_path()
+    conn = get_db_connection(db_path)
+
+    try:
+        try:
+            conn.execute("PRAGMA synchronous=NORMAL;")
+        except Exception:
+            pass
+
+        _t_params0 = time.perf_counter()
+        loadouts_params = []
+        fg_loadouts_params = []
+
+        entry_to_effective: Dict[int, Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]] = {}
+        for i, entry in enumerate(deduplicated_entries):
+            entry_to_effective[i] = _effective_hash_for_entry(entry)
+
+        for i, entry in enumerate(deduplicated_entries):
+            score = int(entry.get("score", 0) or 0)
+            fg_score = int(entry.get("fg_score", 0) or 0)
+            gear = entry.get("gear", [])
+            minis = entry.get("minis", [])
+            details = entry.get("details", {})
+            force_data = entry.get("force")
+
+            gear_names = _compact_gear_for_db(gear)
+            mini_names = _compact_minis_for_db(minis)
+
+            eff = entry_to_effective.get(i)
+            if eff is not None:
+                (loadout_hash, _mini_sigs, p_color, s_color, sel_color) = eff
+                groups = canonical_minis_groups_from_names(
+                    mini_names,
+                    minis_by_name,
+                    p_color,
+                    s_color,
+                    sel_color,
+                )
+                minis_json = encode_minis_groups(groups)
+                mini_names = representative_mini_names(groups)
+            else:
+                loadout_hash = _loadout_hash_from_names(gear_names, mini_names)
+                minis_json = json.dumps([[n] for n in mini_names], separators=(",", ":"))
+
+            gear_json = json.dumps(gear_names, separators=(",", ":"))
+            details_json = json.dumps(details, separators=(",", ":")) if details else None
+            force_json = json.dumps(force_data, separators=(",", ":")) if force_data else None
+
+            loadouts_params.append(
+                (
+                    song_name,
+                    team_buff,
+                    loadout_hash,
+                    score,
+                    fg_score,
+                    gear_json,
+                    minis_json,
+                    details_json,
+                    force_json,
+                )
+            )
+
+            if force_data is not None and fg_score > score:
+                fg_loadouts_params.append(
+                    (
+                        song_name,
+                        team_buff,
+                        loadout_hash,
+                        score,
+                        fg_score,
+                        gear_json,
+                        minis_json,
+                        details_json,
+                        force_json,
+                    )
+                )
+
+        _log_timing("build_params_json", time.perf_counter() - _t_params0)
+
+        if loadouts_params:
+            _t_ins0 = time.perf_counter()
+            conn.executemany(
+                """
+                INSERT INTO team_buff_loadouts (
+                    song_name, team_buff, loadout_hash, score, fg_score,
+                    gear_json, minis_json, details_json, force_details_json, timestamp
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+                ON CONFLICT(song_name, team_buff, loadout_hash) DO UPDATE SET
+                    score = CASE WHEN excluded.score > score THEN excluded.score ELSE score END,
+                    fg_score = MAX(fg_score, excluded.fg_score),
+                    gear_json = excluded.gear_json,
+                    minis_json = excluded.minis_json,
+                    details_json = CASE WHEN excluded.score >= score THEN excluded.details_json ELSE details_json END,
+                    force_details_json = CASE
+                        WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
+                        ELSE force_details_json
+                    END,
+                    timestamp = strftime('%s', 'now')
+            """,
+                loadouts_params,
+            )
+            _log_timing("insert_team_buff_loadouts", time.perf_counter() - _t_ins0)
+
+        if fg_loadouts_params:
+            _t_insfg0 = time.perf_counter()
+            conn.executemany(
+                """
+                INSERT INTO team_buff_fg_loadouts (
+                    song_name, team_buff, loadout_hash, score, fg_score,
+                    gear_json, minis_json, details_json, force_details_json, timestamp
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+                ON CONFLICT(song_name, team_buff, loadout_hash) DO UPDATE SET
+                    score = CASE WHEN excluded.fg_score > fg_score THEN excluded.score ELSE score END,
+                    fg_score = MAX(fg_score, excluded.fg_score),
+                    gear_json = excluded.gear_json,
+                    minis_json = excluded.minis_json,
+                    details_json = CASE WHEN excluded.fg_score >= fg_score THEN excluded.details_json ELSE details_json END,
+                    force_details_json = CASE
+                        WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
+                        ELSE force_details_json
+                    END,
+                    timestamp = strftime('%s', 'now')
+            """,
+                fg_loadouts_params,
+            )
+            _log_timing("insert_team_buff_fg_loadouts", time.perf_counter() - _t_insfg0)
+
+        # Enforce FG leaderboard invariant.
+        _t_inv0 = time.perf_counter()
+        conn.execute(
+            """
+            DELETE FROM team_buff_fg_loadouts
+            WHERE song_name = ?
+            AND team_buff = ?
+            AND fg_score <= score
+            """,
+            (song_name, team_buff),
+        )
+        _log_timing("delete_team_buff_fg_invariant", time.perf_counter() - _t_inv0)
+
+        # Prune BOTH tables to `LOADOUTS_PER_SONG_LIMIT` for this (song, team_buff).
+        for table in ["team_buff_loadouts", "team_buff_fg_loadouts"]:
+            _t_cnt0 = time.perf_counter()
+            cursor = conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE song_name = ? AND team_buff = ?",
+                (song_name, team_buff),
+            )
+            count = cursor.fetchone()[0]
+            _log_timing(f"count_{table}", time.perf_counter() - _t_cnt0)
+            if count <= LOADOUTS_PER_SONG_LIMIT:
+                continue
+
+            if table == "team_buff_loadouts":
+                _t_pr0 = time.perf_counter()
+                conn.execute(
+                    """
+                    DELETE FROM team_buff_loadouts
+                    WHERE song_name = ?
+                    AND team_buff = ?
+                    AND loadout_hash NOT IN (
+                        SELECT loadout_hash FROM team_buff_loadouts
+                        WHERE song_name = ?
+                        AND team_buff = ?
+                        ORDER BY score DESC
+                        LIMIT ?
+                    )
+                    """,
+                    (song_name, team_buff, song_name, team_buff, LOADOUTS_PER_SONG_LIMIT),
+                )
+                _log_timing("prune_team_buff_loadouts", time.perf_counter() - _t_pr0)
+            else:
+                _t_prfg0 = time.perf_counter()
+                conn.execute(
+                    """
+                    DELETE FROM team_buff_fg_loadouts
+                    WHERE song_name = ?
+                    AND team_buff = ?
+                    AND loadout_hash NOT IN (
+                        SELECT loadout_hash FROM team_buff_fg_loadouts
+                        WHERE song_name = ?
+                        AND team_buff = ?
+                        ORDER BY fg_score DESC
+                        LIMIT ?
+                    )
+                    """,
+                    (song_name, team_buff, song_name, team_buff, LOADOUTS_PER_SONG_LIMIT),
+                )
+                _log_timing("prune_team_buff_fg_loadouts", time.perf_counter() - _t_prfg0)
+
+        _t_commit0 = time.perf_counter()
+        conn.commit()
+        _log_timing("commit", time.perf_counter() - _t_commit0)
+    except sqlite3.Error as e:
+        print(f"[DB] Error saving TeamBuff batch loadouts: {e}")
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass
+    finally:
+        try:
+            conn.execute("PRAGMA synchronous=FULL;")
+        except sqlite3.Error:
+            pass
+        conn.close()
+        _log_timing("total", time.perf_counter() - _t0)
+
+
 def get_best_loadouts(
     song_name: str,
     limit: int = LOADOUTS_PER_SONG_LIMIT,

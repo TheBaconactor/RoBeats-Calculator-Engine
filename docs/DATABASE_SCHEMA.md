@@ -79,6 +79,48 @@ CREATE TABLE pending_fg_jobs (
 );
 ```
 
+### 5. `team_buff_loadouts` Table (TeamBuff-Tier Base Leaderboard)
+Stores the **base leaderboard** re-scored under specific Team Buff tiers (`T1`, `T5`, `T10`, `T15`).
+This is populated in **post-processing** for new runs (no extra GPU work).
+
+```sql
+CREATE TABLE team_buff_loadouts (
+    song_name TEXT,
+    team_buff TEXT,                -- 'T1' | 'T5' | 'T10' | 'T15'
+    loadout_hash TEXT,             -- Same effective hash scheme as `loadouts`
+    score INTEGER,                 -- Base Score under this TeamBuff tier (PRIMARY RANKING METRIC)
+    fg_score INTEGER DEFAULT 0,    -- Force Greats score under this tier (Contextual; may be 0)
+    gear_json TEXT,
+    minis_json TEXT,
+    details_json TEXT,
+    force_details_json TEXT,
+    timestamp REAL,
+    PRIMARY KEY (song_name, team_buff, loadout_hash),
+    FOREIGN KEY (song_name) REFERENCES songs(name)
+);
+```
+
+### 6. `team_buff_fg_loadouts` Table (TeamBuff-Tier Force Greats Leaderboard)
+Stores the **Force Greats leaderboard** re-scored under Team Buff tiers.
+Only includes rows where `fg_score > score` (same invariant as `fg_loadouts`).
+
+```sql
+CREATE TABLE team_buff_fg_loadouts (
+    song_name TEXT,
+    team_buff TEXT,                -- 'T1' | 'T5' | 'T10' | 'T15'
+    loadout_hash TEXT,
+    score INTEGER,                 -- Base score under this TeamBuff tier (Contextual)
+    fg_score INTEGER,              -- Force Greats score under this tier (PRIMARY RANKING METRIC)
+    gear_json TEXT,
+    minis_json TEXT,
+    details_json TEXT,
+    force_details_json TEXT,
+    timestamp REAL,
+    PRIMARY KEY (song_name, team_buff, loadout_hash),
+    FOREIGN KEY (song_name) REFERENCES songs(name)
+);
+```
+
 ---
 
 ## Developer Guide: How to Query
@@ -109,6 +151,28 @@ cursor.execute("""
     ORDER BY fg_score DESC 
     LIMIT 10
 """, (song_name,))
+```
+
+#### Querying TeamBuff-Tier Base Scores
+```python
+cursor.execute("""
+    SELECT score, gear_json
+    FROM team_buff_loadouts
+    WHERE song_name = ? AND team_buff = ?
+    ORDER BY score DESC
+    LIMIT 10
+""", (song_name, "T10"))
+```
+
+#### Querying TeamBuff-Tier Force Greats Scores
+```python
+cursor.execute("""
+    SELECT fg_score, force_details_json
+    FROM team_buff_fg_loadouts
+    WHERE song_name = ? AND team_buff = ?
+    ORDER BY fg_score DESC
+    LIMIT 10
+""", (song_name, "T10"))
 ```
 
 ### Key Differences for Developers

@@ -14,7 +14,7 @@ Migration = Callable[[sqlite3.Connection], None]
 # NOTE: `evolution.db` in the wild may already have `PRAGMA user_version=8` even though
 # the physical schema matches v6 (v6 is a data-level migration only). Keep v7/v8 as
 # no-ops so older DBs can advance and newer DBs won't be rejected.
-LATEST_SCHEMA_VERSION = 8
+LATEST_SCHEMA_VERSION = 9
 
 
 def _migration_1_init_schema(conn: sqlite3.Connection) -> None:
@@ -351,6 +351,56 @@ def _migration_8_noop(conn: sqlite3.Connection) -> None:
     return
 
 
+def _migration_9_add_team_buff_tier_tables(conn: sqlite3.Connection) -> None:
+    """
+    Add TeamBuff-tiered leaderboards.
+
+    These tables mirror `loadouts` / `fg_loadouts` but are partitioned by `team_buff`
+    (T1/T5/T10/T15) so the same retained candidates can be re-scored under each tier
+    without rerunning the GPU pipeline.
+    """
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS team_buff_loadouts (
+            song_name TEXT,
+            team_buff TEXT,
+            loadout_hash TEXT,
+            score INTEGER,
+            fg_score INTEGER DEFAULT 0,
+            gear_json TEXT,
+            minis_json TEXT,
+            details_json TEXT,
+            force_details_json TEXT,
+            timestamp REAL,
+            PRIMARY KEY (song_name, team_buff, loadout_hash),
+            FOREIGN KEY (song_name) REFERENCES songs(name)
+        );
+
+        CREATE TABLE IF NOT EXISTS team_buff_fg_loadouts (
+            song_name TEXT,
+            team_buff TEXT,
+            loadout_hash TEXT,
+            score INTEGER, -- Base score context under this TeamBuff tier
+            fg_score INTEGER,
+            gear_json TEXT,
+            minis_json TEXT,
+            details_json TEXT,
+            force_details_json TEXT,
+            timestamp REAL,
+            PRIMARY KEY (song_name, team_buff, loadout_hash),
+            FOREIGN KEY (song_name) REFERENCES songs(name)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_team_buff_loadouts_score
+            ON team_buff_loadouts (song_name, team_buff, score DESC);
+        CREATE INDEX IF NOT EXISTS idx_team_buff_loadouts_fg_score
+            ON team_buff_loadouts (song_name, team_buff, fg_score DESC);
+        CREATE INDEX IF NOT EXISTS idx_team_buff_fg_loadouts_score
+            ON team_buff_fg_loadouts (song_name, team_buff, fg_score DESC);
+        """
+    )
+
+
 _MIGRATIONS: Dict[int, Migration] = {
     1: _migration_1_init_schema,
     2: _migration_2_add_pending_fg_jobs,
@@ -360,6 +410,7 @@ _MIGRATIONS: Dict[int, Migration] = {
     6: _migration_6_effective_loadout_hash_and_mini_variants,
     7: _migration_7_noop,
     8: _migration_8_noop,
+    9: _migration_9_add_team_buff_tier_tables,
 }
 
 

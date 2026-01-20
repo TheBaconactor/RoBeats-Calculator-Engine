@@ -117,6 +117,14 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     cpu_profile_path = str(os.environ.get("POST_CPU_PROFILE_PATH", "") or "").strip() or None
     profiler = _PostCpuProfiler(enabled=cpu_profile, out_path=cpu_profile_path)
 
+    team_buff_tiers_enabled = str(os.environ.get("POST_TEAM_BUFF_TIERS", "1") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "",
+    }
+
     def _log_timing(label: str, dt_sec: float, *, song: str | None = None) -> None:
         if not timing:
             return
@@ -485,6 +493,38 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         profiler.record("save_loadouts_batch", time.process_time() - cpu_t0)
                     else:
                         print(f"[DB] Skipped save for {song_name}: no valid entries")
+
+                    # Optional: post-production tiered rescoring for TeamBuff tiers (DB-integrated).
+                    if (
+                        team_buff_tiers_enabled
+                        and isinstance(item, dict)
+                        and item.get("_deferred_post")
+                        and valid_entries
+                    ):
+                        try:
+                            from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
+                            from gear_optimizer.data.database import save_team_buff_loadouts_batch
+                            from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
+                                build_team_buff_tier_db_batches,
+                            )
+
+                            cfg_dict0 = item.get("cfg_dict") or {}
+                            calc_song0 = item.get("calc_song") or {}
+                            ref_arrays0 = item.get("ref_arrays") or {}
+
+                            batches = build_team_buff_tier_db_batches(
+                                entries=valid_entries,
+                                calc_song=calc_song0,
+                                ref_arrays=ref_arrays0,
+                                cfg_dict=cfg_dict0,
+                                limit=int(LOADOUTS_PER_SONG_LIMIT),
+                            )
+                            for tier, tier_entries in (batches or {}).items():
+                                if not tier_entries:
+                                    continue
+                                save_team_buff_loadouts_batch(db_key, str(tier), tier_entries)
+                        except Exception:
+                            pass
 
             # Discord stats/log
             if total > 0:
