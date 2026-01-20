@@ -86,7 +86,7 @@ This is populated in **post-processing** for new runs (no extra GPU work).
 ```sql
 CREATE TABLE team_buff_loadouts (
     song_name TEXT,
-    team_buff TEXT,                -- 'T1' | 'T5' | 'T10' | 'T15'
+    team_buff TEXT,                -- 'NONE' | 'T1' | 'T5' | 'T10' | 'T15'
     loadout_hash TEXT,             -- Same effective hash scheme as `loadouts`
     score INTEGER,                 -- Base Score under this TeamBuff tier (PRIMARY RANKING METRIC)
     fg_score INTEGER DEFAULT 0,    -- Force Greats score under this tier (Contextual; may be 0)
@@ -107,7 +107,7 @@ Only includes rows where `fg_score > score` (same invariant as `fg_loadouts`).
 ```sql
 CREATE TABLE team_buff_fg_loadouts (
     song_name TEXT,
-    team_buff TEXT,                -- 'T1' | 'T5' | 'T10' | 'T15'
+    team_buff TEXT,                -- 'NONE' | 'T1' | 'T5' | 'T10' | 'T15'
     loadout_hash TEXT,
     score INTEGER,                 -- Base score under this TeamBuff tier (Contextual)
     fg_score INTEGER,              -- Force Greats score under this tier (PRIMARY RANKING METRIC)

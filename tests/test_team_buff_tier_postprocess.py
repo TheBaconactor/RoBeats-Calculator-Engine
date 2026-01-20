@@ -93,5 +93,6 @@ def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers():
     )
     tiers = out["tiers"]
 
+    assert "NONE" in tiers
     assert tiers["T5"]["base_top51"][0]["gear"] == entry_a["gear"]
     assert tiers["T15"]["base_top51"][0]["gear"] == entry_b["gear"]

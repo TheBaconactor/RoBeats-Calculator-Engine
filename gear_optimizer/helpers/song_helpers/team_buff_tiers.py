@@ -12,6 +12,7 @@ from ...solver.scoring.force_greats import _compute_force_greats_timeline
 from ...solver.scoring.stats_scoring import build_great_penalty_table
 
 _TEAM_BUFF_TIERS: dict[str, dict[str, int]] = {
+    "NONE": {"PP": 0, "Elem": 0},
     "T1": {"PP": 25, "Elem": 35},
     "T5": {"PP": 25, "Elem": 30},
     "T10": {"PP": 20, "Elem": 25},
@@ -398,7 +399,7 @@ def compute_team_buff_tier_leaderboards(
     ref_arrays: dict,
     cfg_dict: dict,
     limit: int = 51,
-    tiers: tuple[str, ...] = ("T1", "T5", "T10", "T15"),
+    tiers: tuple[str, ...] = ("NONE", "T1", "T5", "T10", "T15"),
 ) -> dict:
     """
     Re-score persisted entries under TeamBuff tiers and return per-tier leaderboards.
@@ -623,7 +624,7 @@ def build_team_buff_tier_db_batches(
     ref_arrays: dict,
     cfg_dict: dict,
     limit: int = 51,
-    tiers: tuple[str, ...] = ("T1", "T5", "T10", "T15"),
+    tiers: tuple[str, ...] = ("NONE", "T1", "T5", "T10", "T15"),
 ) -> dict[str, list[dict]]:
     """
     Return DB-ready entry batches per tier.
