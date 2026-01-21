@@ -1259,6 +1259,7 @@ def solve_coverage_gpu_full(
     )
     ti.sync()
     best_cov_val = int(cov_best[None])
+    best_inv_val = int(inv_best[None])
 
     improvements = 0
     attempts_done = 0
@@ -1333,8 +1334,10 @@ def solve_coverage_gpu_full(
             ti.sync()
 
             cur_cov = int(cov_count[None])
-            if cur_cov > best_cov_val:
+            cur_inv = int(inv_size[None])
+            if cur_cov > best_cov_val or (cur_cov == best_cov_val and cur_inv < best_inv_val):
                 best_cov_val = cur_cov
+                best_inv_val = cur_inv
                 improvements += 1
                 stagnation = 0
                 _copy_to_best(
