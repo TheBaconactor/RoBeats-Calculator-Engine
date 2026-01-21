@@ -462,6 +462,258 @@ def _select_best_add(
 
 
 @ti.kernel
+def _select_best_cost(
+    gear_ids: ti.template(),
+    totals: ti.template(),
+    elements: ti.template(),
+    counts: ti.template(),
+    active_offsets: ti.template(),
+    active_counts: ti.template(),
+    offset_gems: ti.template(),
+    offset_color: ti.template(),
+    covered: ti.template(),
+    chosen_offsets: ti.template(),
+    best_cost: ti.template(),
+    remaining: ti.i32,
+):
+    best_cost[None] = ti.u32(0xFFFFFFFF)
+    for s in range(covered.shape[0]):
+        if chosen_offsets[s, 0] >= 0:
+            continue
+
+        _choice, selected, _reuse_score, _selected_ov_slots = _try_best_existing_choice(
+            ti.i32(s),
+            gear_ids,
+            totals,
+            elements,
+            counts,
+            active_offsets,
+            active_counts,
+            offset_gems,
+            offset_color,
+        )
+        cost = ti.i32(6) - selected
+        if cost <= remaining:
+            ti.atomic_min(best_cost[None], ti.u32(cost))
+
+
+@ti.kernel
+def _select_best_inv1(
+    gear_ids: ti.template(),
+    totals: ti.template(),
+    elements: ti.template(),
+    counts: ti.template(),
+    active_offsets: ti.template(),
+    active_counts: ti.template(),
+    offset_gems: ti.template(),
+    offset_color: ti.template(),
+    covered: ti.template(),
+    chosen_offsets: ti.template(),
+    best_inv1: ti.template(),
+    remaining: ti.i32,
+    target_cost: ti.i32,
+):
+    best_inv1[None] = ti.u32(0xFFFFFFFF)
+    for s in range(covered.shape[0]):
+        if chosen_offsets[s, 0] >= 0:
+            continue
+
+        _choice, selected, reuse_score, _selected_ov_slots = _try_best_existing_choice(
+            ti.i32(s),
+            gear_ids,
+            totals,
+            elements,
+            counts,
+            active_offsets,
+            active_counts,
+            offset_gems,
+            offset_color,
+        )
+        cost = ti.i32(6) - selected
+        if cost != target_cost or cost > remaining:
+            continue
+        inv1 = ti.u32(65535) - ti.u32(ti.min(reuse_score, 65535))
+        ti.atomic_min(best_inv1[None], inv1)
+
+
+@ti.kernel
+def _select_best_inv2(
+    gear_ids: ti.template(),
+    totals: ti.template(),
+    elements: ti.template(),
+    gear_freq: ti.template(),
+    counts: ti.template(),
+    active_offsets: ti.template(),
+    active_counts: ti.template(),
+    offset_gems: ti.template(),
+    offset_color: ti.template(),
+    covered: ti.template(),
+    chosen_offsets: ti.template(),
+    best_inv2: ti.template(),
+    remaining: ti.i32,
+    target_cost: ti.i32,
+    target_inv1: ti.u32,
+):
+    best_inv2[None] = ti.u32(0xFFFFFFFF)
+    for s in range(covered.shape[0]):
+        if chosen_offsets[s, 0] >= 0:
+            continue
+
+        _choice, selected, reuse_score, _selected_ov_slots = _try_best_existing_choice(
+            ti.i32(s),
+            gear_ids,
+            totals,
+            elements,
+            counts,
+            active_offsets,
+            active_counts,
+            offset_gems,
+            offset_color,
+        )
+        cost = ti.i32(6) - selected
+        if cost != target_cost or cost > remaining:
+            continue
+        inv1 = ti.u32(65535) - ti.u32(ti.min(reuse_score, 65535))
+        if inv1 != target_inv1:
+            continue
+
+        common = ti.i32(0)
+        for j in ti.static(range(6)):
+            gid = ti.i32(gear_ids[s, j])
+            common += ti.i32(gear_freq[gid])
+        inv2 = ti.u32(65535) - ti.u32(ti.min(common, 65535))
+        ti.atomic_min(best_inv2[None], inv2)
+
+
+@ti.kernel
+def _select_best_new_ov(
+    gear_ids: ti.template(),
+    totals: ti.template(),
+    elements: ti.template(),
+    gear_freq: ti.template(),
+    counts: ti.template(),
+    active_offsets: ti.template(),
+    active_counts: ti.template(),
+    offset_gems: ti.template(),
+    offset_color: ti.template(),
+    covered: ti.template(),
+    chosen_offsets: ti.template(),
+    best_new_ov: ti.template(),
+    remaining: ti.i32,
+    target_cost: ti.i32,
+    target_inv1: ti.u32,
+    target_inv2: ti.u32,
+    prefer_wildcards: ti.i32,
+):
+    best_new_ov[None] = ti.u32(0xFFFFFFFF)
+    for s in range(covered.shape[0]):
+        if chosen_offsets[s, 0] >= 0:
+            continue
+
+        _choice, selected, reuse_score, selected_ov_slots = _try_best_existing_choice(
+            ti.i32(s),
+            gear_ids,
+            totals,
+            elements,
+            counts,
+            active_offsets,
+            active_counts,
+            offset_gems,
+            offset_color,
+        )
+        cost = ti.i32(6) - selected
+        if cost != target_cost or cost > remaining:
+            continue
+        inv1 = ti.u32(65535) - ti.u32(ti.min(reuse_score, 65535))
+        if inv1 != target_inv1:
+            continue
+
+        common = ti.i32(0)
+        for j in ti.static(range(6)):
+            gid = ti.i32(gear_ids[s, j])
+            common += ti.i32(gear_freq[gid])
+        inv2 = ti.u32(65535) - ti.u32(ti.min(common, 65535))
+        if inv2 != target_inv2:
+            continue
+
+        ov_total = ti.i32(totals[s, OV_INDEX])
+        req_ov_slots = ti.i32(0)
+        if ov_total > 0:
+            req_ov_slots = (ov_total + ti.i32(SLOT_GEM_BUDGET) - 1) // ti.i32(SLOT_GEM_BUDGET)
+        new_ov_slots = ti.max(ti.i32(0), req_ov_slots - selected_ov_slots)
+        new_ov_slots = ti.min(new_ov_slots, cost)
+        if prefer_wildcards == 0:
+            new_ov_slots = ti.i32(0)
+        ti.atomic_min(best_new_ov[None], ti.u32(new_ov_slots))
+
+
+@ti.kernel
+def _select_best_song(
+    gear_ids: ti.template(),
+    totals: ti.template(),
+    elements: ti.template(),
+    gear_freq: ti.template(),
+    counts: ti.template(),
+    active_offsets: ti.template(),
+    active_counts: ti.template(),
+    offset_gems: ti.template(),
+    offset_color: ti.template(),
+    covered: ti.template(),
+    chosen_offsets: ti.template(),
+    best_song: ti.template(),
+    remaining: ti.i32,
+    target_cost: ti.i32,
+    target_inv1: ti.u32,
+    target_inv2: ti.u32,
+    target_new_ov: ti.u32,
+    prefer_wildcards: ti.i32,
+):
+    best_song[None] = ti.u32(0xFFFFFFFF)
+    for s in range(covered.shape[0]):
+        if chosen_offsets[s, 0] >= 0:
+            continue
+
+        _choice, selected, reuse_score, selected_ov_slots = _try_best_existing_choice(
+            ti.i32(s),
+            gear_ids,
+            totals,
+            elements,
+            counts,
+            active_offsets,
+            active_counts,
+            offset_gems,
+            offset_color,
+        )
+        cost = ti.i32(6) - selected
+        if cost != target_cost or cost > remaining:
+            continue
+        inv1 = ti.u32(65535) - ti.u32(ti.min(reuse_score, 65535))
+        if inv1 != target_inv1:
+            continue
+
+        common = ti.i32(0)
+        for j in ti.static(range(6)):
+            gid = ti.i32(gear_ids[s, j])
+            common += ti.i32(gear_freq[gid])
+        inv2 = ti.u32(65535) - ti.u32(ti.min(common, 65535))
+        if inv2 != target_inv2:
+            continue
+
+        ov_total = ti.i32(totals[s, OV_INDEX])
+        req_ov_slots = ti.i32(0)
+        if ov_total > 0:
+            req_ov_slots = (ov_total + ti.i32(SLOT_GEM_BUDGET) - 1) // ti.i32(SLOT_GEM_BUDGET)
+        new_ov_slots = ti.max(ti.i32(0), req_ov_slots - selected_ov_slots)
+        new_ov_slots = ti.min(new_ov_slots, cost)
+        if prefer_wildcards == 0:
+            new_ov_slots = ti.i32(0)
+        if ti.u32(new_ov_slots) != target_new_ov:
+            continue
+
+        ti.atomic_min(best_song[None], ti.u32(s))
+
+
+@ti.kernel
 def _add_song(
     gear_ids: ti.template(),
     totals: ti.template(),
@@ -762,15 +1014,9 @@ def solve_coverage_gpu_dynamic(
 
     sig = (int(song_count), int(gear_count), int(inv_cap))
     if _LAST_SHAPE_SIG != sig:
-        # Taichi kernel caching can behave poorly across changing field shapes in a single process.
-        try:
-            ti.reset()
-        except Exception:
-            pass
-        try:
-            ti_runtime._ti_initialized = False
-        except Exception:
-            pass
+        # Taichi reset is not safe to call before first init on some backends (notably Metal).
+        # Use the shared runtime reset helper, which is a no-op until initialized.
+        ti_runtime.reset_taichi(reason="gpu_dynamic_solver shape change")
         ti_runtime.init_taichi()
         _LAST_SHAPE_SIG = sig
     else:
@@ -807,6 +1053,11 @@ def solve_coverage_gpu_dynamic(
     inv_size = ti.field(dtype=ti.i32, shape=())
     cov_count = ti.field(dtype=ti.i32, shape=())
     best_key = ti.field(dtype=ti.u64, shape=())
+    best_cost = ti.field(dtype=ti.u32, shape=())
+    best_inv1 = ti.field(dtype=ti.u32, shape=())
+    best_inv2 = ti.field(dtype=ti.u32, shape=())
+    best_new_ov = ti.field(dtype=ti.u32, shape=())
+    best_song = ti.field(dtype=ti.u32, shape=())
     removed_cnt = ti.field(dtype=ti.i32, shape=())
 
     counts_best = ti.field(dtype=ti.i32, shape=(gear_count + 1, VARIANTS_PER_GEAR))
@@ -827,6 +1078,13 @@ def solve_coverage_gpu_dynamic(
     cov_count[None] = 0
     ti.sync()
 
+    # Metal can hard-abort when using 64-bit atomics (e.g. `atomic_min` on u64).
+    # Use a multi-stage u32 selection path on Metal; keep the packed-u64 key on Vulkan.
+    try:
+        use_metal_select = ti.cfg.arch == ti.metal
+    except Exception:
+        use_metal_select = False
+
     def _assert_inventory_cap(stage: str) -> None:
         ti.sync()
         used = int(inv_size[None])
@@ -842,29 +1100,137 @@ def solve_coverage_gpu_dynamic(
             remaining = int(inv_cap - inv_used)
             if remaining < 0:
                 break
-            _select_best_add(
-                gear_ids,
-                totals,
-                elements,
-                gear_freq,
-                counts,
-                active_offsets,
-                active_counts,
-                offset_gems,
-                offset_color,
-                covered,
-                chosen_offsets,
-                best_key,
-                remaining,
-                1 if bool(prefer_wildcards) else 0,
-            )
-            key = int(best_key[None])
-            if key == 0xFFFFFFFFFFFFFFFF:
-                break
-            cost = int((key >> 56) & 0xFF)
-            if cost > remaining:
-                break
-            s_idx = int(key & 0xFFFF)
+            if use_metal_select:
+                _select_best_cost(
+                    gear_ids,
+                    totals,
+                    elements,
+                    counts,
+                    active_offsets,
+                    active_counts,
+                    offset_gems,
+                    offset_color,
+                    covered,
+                    chosen_offsets,
+                    best_cost,
+                    remaining,
+                )
+                ti.sync()
+                cost = int(best_cost[None])
+                if cost == 0xFFFFFFFF or cost > remaining:
+                    break
+                _select_best_inv1(
+                    gear_ids,
+                    totals,
+                    elements,
+                    counts,
+                    active_offsets,
+                    active_counts,
+                    offset_gems,
+                    offset_color,
+                    covered,
+                    chosen_offsets,
+                    best_inv1,
+                    remaining,
+                    int(cost),
+                )
+                ti.sync()
+                inv1 = int(best_inv1[None])
+                if inv1 == 0xFFFFFFFF:
+                    break
+                _select_best_inv2(
+                    gear_ids,
+                    totals,
+                    elements,
+                    gear_freq,
+                    counts,
+                    active_offsets,
+                    active_counts,
+                    offset_gems,
+                    offset_color,
+                    covered,
+                    chosen_offsets,
+                    best_inv2,
+                    remaining,
+                    int(cost),
+                    int(inv1),
+                )
+                ti.sync()
+                inv2 = int(best_inv2[None])
+                if inv2 == 0xFFFFFFFF:
+                    break
+                _select_best_new_ov(
+                    gear_ids,
+                    totals,
+                    elements,
+                    gear_freq,
+                    counts,
+                    active_offsets,
+                    active_counts,
+                    offset_gems,
+                    offset_color,
+                    covered,
+                    chosen_offsets,
+                    best_new_ov,
+                    remaining,
+                    int(cost),
+                    int(inv1),
+                    int(inv2),
+                    1 if bool(prefer_wildcards) else 0,
+                )
+                ti.sync()
+                new_ov = int(best_new_ov[None])
+                if new_ov == 0xFFFFFFFF:
+                    break
+                _select_best_song(
+                    gear_ids,
+                    totals,
+                    elements,
+                    gear_freq,
+                    counts,
+                    active_offsets,
+                    active_counts,
+                    offset_gems,
+                    offset_color,
+                    covered,
+                    chosen_offsets,
+                    best_song,
+                    remaining,
+                    int(cost),
+                    int(inv1),
+                    int(inv2),
+                    int(new_ov),
+                    1 if bool(prefer_wildcards) else 0,
+                )
+                ti.sync()
+                s_idx = int(best_song[None])
+                if s_idx == 0xFFFFFFFF:
+                    break
+            else:
+                _select_best_add(
+                    gear_ids,
+                    totals,
+                    elements,
+                    gear_freq,
+                    counts,
+                    active_offsets,
+                    active_counts,
+                    offset_gems,
+                    offset_color,
+                    covered,
+                    chosen_offsets,
+                    best_key,
+                    remaining,
+                    1 if bool(prefer_wildcards) else 0,
+                )
+                ti.sync()
+                key = int(best_key[None])
+                if key == 0xFFFFFFFFFFFFFFFF:
+                    break
+                cost = int((key >> 56) & 0xFF)
+                if cost > remaining:
+                    break
+                s_idx = int(key & 0xFFFF)
             _add_song(
                 gear_ids,
                 totals,

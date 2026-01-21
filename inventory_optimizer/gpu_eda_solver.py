@@ -453,14 +453,7 @@ def solve_coverage_gpu_eda(
 
     sig = (int(song_count), int(gear_count), int(inv_cap), int(W), int(P))
     if _LAST_SHAPE_SIG != sig:
-        try:
-            ti.reset()
-        except Exception:
-            pass
-        try:
-            ti_runtime._ti_initialized = False
-        except Exception:
-            pass
+        ti_runtime.reset_taichi(reason="gpu_eda_solver shape change")
         ti_runtime.init_taichi()
         _LAST_SHAPE_SIG = sig
     else:

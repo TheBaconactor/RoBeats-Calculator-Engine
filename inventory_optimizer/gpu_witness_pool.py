@@ -284,14 +284,7 @@ def build_witness_offsets_gpu(
 
     sig = (int(S), int(G), int(K))
     if _LAST_SHAPE_SIG != sig:
-        try:
-            ti.reset()
-        except Exception:
-            pass
-        try:
-            ti_runtime._ti_initialized = False
-        except Exception:
-            pass
+        ti_runtime.reset_taichi(reason="gpu_witness_pool shape change")
         ti_runtime.init_taichi()
         _LAST_SHAPE_SIG = sig
     else:

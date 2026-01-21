@@ -203,14 +203,7 @@ def repair_uncovered_with_inventory_gpu(
     sig = (int(S), int(C), int(M))
     global _LAST_SIG
     if _LAST_SIG != sig:
-        try:
-            ti.reset()
-        except Exception:
-            pass
-        try:
-            ti_runtime._ti_initialized = False
-        except Exception:
-            pass
+        ti_runtime.reset_taichi(reason="gpu_inventory_repair shape change")
         ti_runtime.init_taichi()
         _LAST_SIG = sig
     else:
