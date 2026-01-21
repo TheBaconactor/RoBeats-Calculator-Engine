@@ -16,6 +16,21 @@ def _truthy_env(name: str) -> bool:
     return str(os.environ.get(name, "0") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _int_env(name: str, default: int, min_value: int, max_value: int) -> int:
+    raw = str(os.environ.get(name, "") or "").strip()
+    if not raw:
+        return int(default)
+    try:
+        value = int(raw)
+    except ValueError:
+        return int(default)
+    if value < min_value:
+        return int(min_value)
+    if value > max_value:
+        return int(max_value)
+    return int(value)
+
+
 @dataclass
 class _GpuFullState:
     part_vids: ti.Field
@@ -257,6 +272,10 @@ def _select_best_add(
     remaining: ti.i32,
     k_scan: ti.i32,
     salt: ti.u32,
+    cost_weight: ti.u32,
+    key_shift: ti.i32,
+    cost_shift: ti.i32,
+    s_shift: ti.i32,
 ):
     best_key[None] = ti.u64(0xFFFFFFFFFFFFFFFF)
     k_count = part_vids.shape[1]
@@ -266,11 +285,12 @@ def _select_best_add(
     for s in covered:
         if covered[s] != 0:
             continue
+        start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9))
+        start = _xorshift32(start)
+        start_i = ti.i32(start % ti.u32(k_count))
         best_local = ti.u64(0xFFFFFFFFFFFFFFFF)
         for pp in range(scan):
-            st = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9)) ^ (ti.u32(pp) * ti.u32(0x85EBCA6B))
-            st = _xorshift32(st)
-            p = ti.i32(st % ti.u32(k_count))
+            p = (start_i + ti.i32(pp)) % ti.i32(k_count)
             cost = ti.i32(0)
             score = ti.i32(0)
             for j in ti.static(range(6)):
@@ -280,10 +300,97 @@ def _select_best_add(
                     score += freq[vid]
             if cost <= remaining:
                 invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
-                key = (ti.u64(cost) << 48) | (ti.u64(invscore) << 32) | (ti.u64(s) << 16) | ti.u64(p)
+                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore
+                key = (
+                    (ti.u64(combined) << ti.u64(key_shift))
+                    | (ti.u64(cost) << ti.u64(cost_shift))
+                    | (ti.u64(s) << ti.u64(s_shift))
+                    | ti.u64(p)
+                )
                 if key < best_local:
                     best_local = key
         ti.atomic_min(best_key[None], best_local)
+
+
+@ti.kernel
+def _select_best_combined(
+    part_vids: ti.template(),
+    freq: ti.template(),
+    counts_total: ti.template(),
+    covered: ti.template(),
+    best_cost: ti.template(),
+    remaining: ti.i32,
+    k_scan: ti.i32,
+    salt: ti.u32,
+    cost_weight: ti.u32,
+):
+    best_cost[None] = ti.u32(0xFFFFFFFF)
+    k_count = part_vids.shape[1]
+    scan = k_count
+    if k_scan > 0 and k_scan < k_count:
+        scan = k_scan
+    for s in covered:
+        if covered[s] != 0:
+            continue
+        start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9))
+        start = _xorshift32(start)
+        start_i = ti.i32(start % ti.u32(k_count))
+        for pp in range(scan):
+            p = (start_i + ti.i32(pp)) % ti.i32(k_count)
+            cost = ti.i32(0)
+            score = ti.i32(0)
+            for j in ti.static(range(6)):
+                vid = part_vids[s, p, j]
+                if counts_total[vid] == 0:
+                    cost += 1
+                    score += freq[vid]
+            if cost <= remaining:
+                invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
+                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore
+                ti.atomic_min(best_cost[None], combined)
+
+
+@ti.kernel
+def _select_best_candidate_weighted(
+    part_vids: ti.template(),
+    freq: ti.template(),
+    counts_total: ti.template(),
+    covered: ti.template(),
+    best_cand: ti.template(),
+    target_combined: ti.u32,
+    remaining: ti.i32,
+    k_scan: ti.i32,
+    salt: ti.u32,
+    cost_weight: ti.u32,
+    cost_shift: ti.i32,
+    s_shift: ti.i32,
+):
+    best_cand[None] = ti.u32(0xFFFFFFFF)
+    k_count = part_vids.shape[1]
+    scan = k_count
+    if k_scan > 0 and k_scan < k_count:
+        scan = k_scan
+    for s in covered:
+        if covered[s] != 0:
+            continue
+        start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9))
+        start = _xorshift32(start)
+        start_i = ti.i32(start % ti.u32(k_count))
+        for pp in range(scan):
+            p = (start_i + ti.i32(pp)) % ti.i32(k_count)
+            cost = ti.i32(0)
+            score = ti.i32(0)
+            for j in ti.static(range(6)):
+                vid = part_vids[s, p, j]
+                if counts_total[vid] == 0:
+                    cost += 1
+                    score += freq[vid]
+            if cost <= remaining:
+                invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
+                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore
+                if combined == target_combined:
+                    key = (ti.u32(cost) << ti.u32(cost_shift)) | (ti.u32(s) << ti.u32(s_shift)) | ti.u32(p)
+                    ti.atomic_min(best_cand[None], key)
 
 
 @ti.kernel
@@ -304,10 +411,11 @@ def _select_best_cost(
     for s in covered:
         if covered[s] != 0:
             continue
+        start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9))
+        start = _xorshift32(start)
+        start_i = ti.i32(start % ti.u32(k_count))
         for pp in range(scan):
-            st = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9)) ^ (ti.u32(pp) * ti.u32(0x85EBCA6B))
-            st = _xorshift32(st)
-            p = ti.i32(st % ti.u32(k_count))
+            p = (start_i + ti.i32(pp)) % ti.i32(k_count)
             cost = ti.i32(0)
             for j in ti.static(range(6)):
                 vid = part_vids[s, p, j]
@@ -336,10 +444,11 @@ def _select_best_invscore(
     for s in covered:
         if covered[s] != 0:
             continue
+        start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9))
+        start = _xorshift32(start)
+        start_i = ti.i32(start % ti.u32(k_count))
         for pp in range(scan):
-            st = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9)) ^ (ti.u32(pp) * ti.u32(0x85EBCA6B))
-            st = _xorshift32(st)
-            p = ti.i32(st % ti.u32(k_count))
+            p = (start_i + ti.i32(pp)) % ti.i32(k_count)
             cost = ti.i32(0)
             score = ti.i32(0)
             for j in ti.static(range(6)):
@@ -372,10 +481,11 @@ def _select_best_candidate(
     for s in covered:
         if covered[s] != 0:
             continue
+        start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9))
+        start = _xorshift32(start)
+        start_i = ti.i32(start % ti.u32(k_count))
         for pp in range(scan):
-            st = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9)) ^ (ti.u32(pp) * ti.u32(0x85EBCA6B))
-            st = _xorshift32(st)
-            p = ti.i32(st % ti.u32(k_count))
+            p = (start_i + ti.i32(pp)) % ti.i32(k_count)
             cost = ti.i32(0)
             score = ti.i32(0)
             for j in ti.static(range(6)):
@@ -439,14 +549,15 @@ def _repack_serial(
         cur_p = chosen[s]
         if cur_p < 0:
             continue
+        start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9)) ^ ti.u32(0xC2B2AE35)
+        start = _xorshift32(start)
+        start_i = ti.i32(start % ti.u32(k_count))
         best_p = cur_p
         best_delta = ti.i32(0)
         best_rarity_delta = ti.i32(0)
         best_score = ti.i32(0)
         for pp in range(scan):
-            st = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9)) ^ (ti.u32(pp) * ti.u32(0xC2B2AE35))
-            st = _xorshift32(st)
-            p = ti.i32(st % ti.u32(k_count))
+            p = (start_i + ti.i32(pp)) % ti.i32(k_count)
             if p == cur_p:
                 continue
             removed_unique = ti.i32(0)
@@ -552,14 +663,15 @@ def _repack_eval_best_p(
         cur_p = chosen[s]
         if cur_p < 0:
             continue
+        start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9)) ^ ti.u32(0xC2B2AE35)
+        start = _xorshift32(start)
+        start_i = ti.i32(start % ti.u32(k_count))
         best_p = cur_p
         best_delta = ti.i32(0)  # never allow increasing inv size (serial behavior)
         best_rarity_delta = ti.i32(0)
         best_score = ti.i32(0)
         for pp in range(scan):
-            st = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9)) ^ (ti.u32(pp) * ti.u32(0xC2B2AE35))
-            st = _xorshift32(st)
-            p = ti.i32(st % ti.u32(k_count))
+            p = (start_i + ti.i32(pp)) % ti.i32(k_count)
             if p == cur_p:
                 continue
             removed_unique = ti.i32(0)
@@ -1055,49 +1167,73 @@ def solve_coverage_gpu_full(
     except Exception:
         use_metal_select = sys.platform == "darwin"
 
+    cost_bits = 3
+    p_bits = max(1, int(k_count - 1).bit_length())
+    s_bits = max(1, int(s_count - 1).bit_length())
+    key_shift = int(cost_bits + s_bits + p_bits)
+    cost_shift = int(s_bits + p_bits)
+    s_shift = int(p_bits)
+    p_mask = (1 << p_bits) - 1
+    s_mask = (1 << s_bits) - 1
+    cost_mask = (1 << cost_bits) - 1
+
+    if key_shift + 32 > 64:
+        raise ValueError(
+            f"GPU_FULL key packing needs {key_shift + 32} bits (s_count={s_count}, k_count={k_count}); exceeds u64."
+        )
+    if use_metal_select and key_shift > 32:
+        raise ValueError(
+            f"GPU_FULL metal packing needs {key_shift} bits (s_count={s_count}, k_count={k_count}); exceeds u32."
+        )
+
+    cost_weight_base = _int_env("GPU_FULL_COST_WEIGHT_BASE", 2048, 1, 65535)
+    cost_weight_step = _int_env("GPU_FULL_COST_WEIGHT_STEP", 512, 0, 65535)
+
     def select_best_candidate(remaining: int, salt: int) -> Optional[Tuple[int, int, int]]:
+        remaining_i = int(remaining)
+        remaining_clamped = max(0, min(6, remaining_i))
+        cost_weight = int(cost_weight_base + cost_weight_step * (6 - remaining_clamped))
+        if cost_weight > 65535:
+            cost_weight = 65535
+        if cost_weight < 1:
+            cost_weight = 1
         if use_metal_select:
-            _select_best_cost(
-                part_vids,
-                counts_total,
-                covered,
-                best_cost,
-                int(remaining),
-                int(k_scan_select),
-                int(salt),
-            )
-            cost = int(best_cost[None])
-            if cost == 0xFFFFFFFF or cost > remaining or cost > 6:
-                return None
-            _select_best_invscore(
+            _select_best_combined(
                 part_vids,
                 freq,
                 counts_total,
                 covered,
-                best_invscore,
-                int(cost),
+                best_cost,
+                int(remaining_i),
                 int(k_scan_select),
                 int(salt),
+                int(cost_weight),
             )
-            invscore = int(best_invscore[None])
-            if invscore == 0xFFFFFFFF:
+            combined = int(best_cost[None])
+            if combined == 0xFFFFFFFF:
                 return None
-            _select_best_candidate(
+            _select_best_candidate_weighted(
                 part_vids,
                 freq,
                 counts_total,
                 covered,
                 best_cand,
-                int(cost),
-                int(invscore),
+                int(combined),
+                int(remaining_i),
                 int(k_scan_select),
                 int(salt),
+                int(cost_weight),
+                int(cost_shift),
+                int(s_shift),
             )
             cand_key = int(best_cand[None])
             if cand_key == 0xFFFFFFFF:
                 return None
-            s_idx = int((cand_key >> 16) & 0xFFFF)
-            p_idx = int(cand_key & 0xFFFF)
+            cost = int((cand_key >> cost_shift) & cost_mask)
+            if cost > remaining_i or cost > 6:
+                return None
+            s_idx = int((cand_key >> s_shift) & s_mask)
+            p_idx = int(cand_key & p_mask)
             return cost, s_idx, p_idx
 
         _select_best_add(
@@ -1107,18 +1243,22 @@ def solve_coverage_gpu_full(
             counts_total,
             covered,
             best_key,
-            int(remaining),
+            int(remaining_i),
             int(k_scan_select),
             int(salt),
+            int(cost_weight),
+            int(key_shift),
+            int(cost_shift),
+            int(s_shift),
         )
         key = int(best_key[None])
         if key == 0xFFFFFFFFFFFFFFFF:
             return None
-        cost = int((key >> 48) & 0xFFFF)
-        if cost > remaining or cost > 6:
+        cost = int((key >> cost_shift) & cost_mask)
+        if cost > remaining_i or cost > 6:
             return None
-        s_idx = int((key >> 16) & 0xFFFF)
-        p_idx = int(key & 0xFFFF)
+        s_idx = int((key >> s_shift) & s_mask)
+        p_idx = int(key & p_mask)
         return cost, s_idx, p_idx
 
     def greedy_fill() -> int:
