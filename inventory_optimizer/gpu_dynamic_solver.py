@@ -407,8 +407,7 @@ def _select_best_add(
     remaining: ti.i32,
     prefer_wildcards: ti.i32,
 ):
-    best = ti.u64(0xFFFFFFFFFFFFFFFF)
-    ti.loop_config(serialize=True)
+    best_key[None] = ti.u64(0xFFFFFFFFFFFFFFFF)
     for s in range(covered.shape[0]):
         if chosen_offsets[s, 0] >= 0:
             continue
@@ -459,9 +458,7 @@ def _select_best_add(
             | (ti.u64(new_ov_slots) << 16)
             | ti.u64(s)
         )
-        if key < best:
-            best = key
-    best_key[None] = best
+        ti.atomic_min(best_key[None], key)
 
 
 @ti.kernel
