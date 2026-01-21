@@ -94,13 +94,13 @@ def main() -> None:
         "--lns-time-sec",
         type=float,
         default=0.0,
-        help="Large-neighborhood search time budget in seconds (default: 0=off).",
+        help="Large-neighborhood search total time budget in seconds (split across restarts; default: 0=off).",
     )
     parser.add_argument(
         "--lns-attempts",
         type=int,
         default=200,
-        help="Max LNS attempts (default: 200).",
+        help="Max LNS attempts total (split across restarts; default: 200).",
     )
     parser.add_argument("--song-limit", type=int, default=0, help="Limit number of songs processed (debug only).")
     parser.add_argument("--profile", action="store_true", help="Print memory logs during phases.")

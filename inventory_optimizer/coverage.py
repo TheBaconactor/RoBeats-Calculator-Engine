@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import random
 import time
+import zlib
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
@@ -263,6 +265,7 @@ def _select_top_k_candidates_per_song(
     *,
     k_candidates: int,
     song_peak_by_name: Optional[Dict[str, int]] = None,
+    seed: int | None = None,
 ) -> List[SongSpec]:
     if int(k_candidates) <= 0:
         raise ValueError("k_candidates must be positive.")
@@ -275,6 +278,13 @@ def _select_top_k_candidates_per_song(
 
     selected: List[SongSpec] = []
     k_candidates = int(k_candidates)
+    seed_int = None
+    if seed is not None:
+        try:
+            seed_int = int(seed)
+        except Exception:
+            seed_int = None
+
     for song in song_specs:
         song_peak = None if song_peak_by_name is None else song_peak_by_name.get(song.name)
         dedup: Dict[Tuple[Any, ...], CandidateSpec] = {}
@@ -294,7 +304,29 @@ def _select_top_k_candidates_per_song(
         if not ranked:
             continue
         if len(ranked) > k_candidates:
-            ranked = ranked[:k_candidates]
+            # Keep the best few candidates deterministic, then sample additional candidates for diversity.
+            # This helps avoid getting stuck in a locally "reasonable" but globally suboptimal candidate set.
+            if seed_int is None:
+                ranked = ranked[:k_candidates]
+            else:
+                keep_top = min(2, int(k_candidates))
+                keep_top = max(1, int(keep_top))
+                deterministic = ranked[:keep_top]
+                remaining = ranked[keep_top:]
+                needed = int(k_candidates) - int(keep_top)
+                if needed <= 0 or not remaining:
+                    ranked = deterministic[:k_candidates]
+                else:
+                    # Sample from a prefix of the remaining ranked list to avoid pulling very low-quality candidates.
+                    pool_size = min(len(remaining), max(int(needed) * 8, 32))
+                    pool = remaining[:pool_size]
+                    salt = zlib.crc32(song.name.encode("utf-8")) & 0xFFFFFFFF
+                    rng = random.Random((int(seed_int) ^ int(salt)) & 0xFFFFFFFF)
+                    picked = rng.sample(pool, k=needed) if len(pool) >= needed else list(pool)
+                    # Preserve rank order among the chosen set; the GPU allocates witness budget by candidate index.
+                    chosen_set = set(picked)
+                    ranked = deterministic + [cand for cand in remaining if cand in chosen_set]
+                    ranked = ranked[:k_candidates]
         selected.append(SongSpec(name=song.name, candidates=ranked))
     return selected
 
@@ -1693,23 +1725,15 @@ def run_inventory_meta_coverage(
     mem.log("selected_one_candidate_per_song")
 
     use_multi_candidates = solver == "gpu_full" and gpu_full_top_candidates > 1
-    selected_multi_specs: Optional[List[SongSpec]] = None
+    multi_max_candidates: Optional[int] = None
     gear_ids_np = totals_np = elements_np = gear_freq_np = None
     if use_multi_candidates:
         k_total = int(partitions_per_song) + int(adaptive_rounds) * int(adaptive_keep_per_song)
         k_total = max(int(partitions_per_song), int(k_total))
-        max_candidates = min(int(gpu_full_top_candidates), int(k_total))
-        selected_multi_specs = _select_top_k_candidates_per_song(
-            song_specs,
-            k_candidates=max_candidates,
-            song_peak_by_name=song_peak_by_name,
-        )
-        mem.log(f"selected_top_candidates_per_song (k={int(max_candidates)})")
-        gear_freq_np = _build_candidate_gear_freq(selected_multi_specs, gear_count=len(gear_names))
+        multi_max_candidates = min(int(gpu_full_top_candidates), int(k_total))
+        mem.log(f"multi_candidate_mode_enabled (k={int(multi_max_candidates)})")
     else:
-        gear_ids_np, totals_np, elements_np, gear_freq_np = _build_gpu_dynamic_inputs(
-            selected_specs, gear_names=gear_names
-        )
+        gear_ids_np, totals_np, elements_np, gear_freq_np = _build_gpu_dynamic_inputs(selected_specs, gear_names=gear_names)
         mem.log("gpu_dynamic_inputs_built")
 
     legacy_args = {
@@ -1735,9 +1759,18 @@ def run_inventory_meta_coverage(
     best_cov = -1
     best_used = 10**9
     best_chosen_candidate_idx: Optional[np.ndarray] = None
+    best_multi_specs: Optional[List[SongSpec]] = None
     base_seed = int(seed)
     if base_seed == 0:
         base_seed = int(time.time_ns() & 0x7FFFFFFF) or 1
+
+    # Scale LNS budget across restarts so increasing `restarts` doesn't multiply total runtime.
+    # Treat (lns_time_sec, lns_attempts) as a total budget and split per restart.
+    lns_time_per_restart = float(lns_time_sec)
+    lns_attempts_per_restart = int(lns_attempts)
+    if int(restarts) > 1:
+        lns_time_per_restart = float(lns_time_sec) / float(int(restarts))
+        lns_attempts_per_restart = max(1, int((int(lns_attempts) + int(restarts) - 1) // int(restarts)))
 
     # `gpu_full` supports a multi-seed path that avoids repeated Taichi recompiles by using a
     # single dense variant universe (`V`) across all restarts.
@@ -1756,8 +1789,8 @@ def run_inventory_meta_coverage(
             seeds=seeds,
             k_total=int(k_total),
             gpu_repack_passes=int(gpu_repack_passes),
-            lns_time_sec=float(lns_time_sec),
-            lns_attempts=int(lns_attempts),
+            lns_time_sec=float(lns_time_per_restart),
+            lns_attempts=int(lns_attempts_per_restart),
             gpu_lns_destroy=int(gpu_lns_destroy),
             mem=mem,
             wildcard_freq_bonus=int(gpu_full_wildcard_freq_bonus),
@@ -1790,8 +1823,8 @@ def run_inventory_meta_coverage(
                     seed=run_seed,
                     gpu_repack_passes=gpu_repack_passes,
                     gpu_lns_destroy=gpu_lns_destroy,
-                    lns_time_sec=lns_time_sec,
-                    lns_attempts=lns_attempts,
+                    lns_time_sec=lns_time_per_restart,
+                    lns_attempts=lns_attempts_per_restart,
                     mem=mem,
                 )
                 covered_np = np.asarray(sol.covered, dtype=np.int32)
@@ -1811,7 +1844,7 @@ def run_inventory_meta_coverage(
                     gpu_repack_passes=gpu_repack_passes,
                     gpu_lns_destroy=gpu_lns_destroy,
                     lns_time_sec=0.0,
-                    lns_attempts=lns_attempts,
+                    lns_attempts=lns_attempts_per_restart,
                     mem=mem,
                 )
                 sol_eda = _run_gpu_eda_solver(
@@ -1854,8 +1887,15 @@ def run_inventory_meta_coverage(
                 k_total = int(partitions_per_song) + int(adaptive_rounds) * int(adaptive_keep_per_song)
                 k_total = max(int(partitions_per_song), int(k_total))
                 if use_multi_candidates:
-                    if selected_multi_specs is None or gear_freq_np is None:
-                        raise RuntimeError("Multi-candidate inputs not initialized.")
+                    if multi_max_candidates is None:
+                        raise RuntimeError("Multi-candidate configuration missing.")
+                    selected_multi_specs = _select_top_k_candidates_per_song(
+                        song_specs,
+                        k_candidates=int(multi_max_candidates),
+                        song_peak_by_name=song_peak_by_name,
+                        seed=int(run_seed),
+                    )
+                    gear_freq_np = _build_candidate_gear_freq(selected_multi_specs, gear_count=len(gear_names))
                     sol = _run_gpu_full_solver_from_candidates(
                         selected_multi_specs,
                         k_total=int(k_total),
@@ -1866,8 +1906,8 @@ def run_inventory_meta_coverage(
                         gpu_full_repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
                         gpu_full_k_scan_select=int(gpu_full_k_scan_select),
                         gpu_full_k_scan_repack=int(gpu_full_k_scan_repack),
-                        lns_time_sec=float(lns_time_sec),
-                        lns_attempts=int(lns_attempts),
+                        lns_time_sec=float(lns_time_per_restart),
+                        lns_attempts=int(lns_attempts_per_restart),
                         gpu_lns_destroy=int(gpu_lns_destroy),
                         gpu_full_lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
                         gpu_full_variant_freq_mode=str(gpu_full_variant_freq_mode),
@@ -1899,8 +1939,8 @@ def run_inventory_meta_coverage(
                         k_total=int(k_total),
                         gpu_repack_passes=int(gpu_repack_passes),
                         gpu_full_repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
-                        lns_time_sec=float(lns_time_sec),
-                        lns_attempts=int(lns_attempts),
+                        lns_time_sec=float(lns_time_per_restart),
+                        lns_attempts=int(lns_attempts_per_restart),
                         gpu_lns_destroy=int(gpu_lns_destroy),
                         gpu_full_lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
                         gpu_full_variant_freq_mode=str(gpu_full_variant_freq_mode),
@@ -1928,6 +1968,7 @@ def run_inventory_meta_coverage(
                 best_seed = run_seed
                 if use_multi_candidates:
                     best_chosen_candidate_idx = np.asarray(sol.chosen_candidate_idx, dtype=np.int32)
+                    best_multi_specs = selected_multi_specs
 
     assert best_sol is not None
     if solver == "gpu_dynamic":
@@ -1941,10 +1982,10 @@ def run_inventory_meta_coverage(
         status = "GPU_FULL_HEURISTIC"
 
     if use_multi_candidates:
-        if selected_multi_specs is None or best_chosen_candidate_idx is None:
+        if best_multi_specs is None or best_chosen_candidate_idx is None:
             raise RuntimeError("Multi-candidate materialization inputs missing.")
         result = _materialize_coverage_solution_multi(
-            selected_multi_specs,
+            best_multi_specs,
             gear_names=gear_names,
             sol=best_sol,
             chosen_candidate_idx=best_chosen_candidate_idx,
