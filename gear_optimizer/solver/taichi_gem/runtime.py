@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import taichi as ti
 
 # ============================================================================
@@ -18,6 +19,7 @@ import taichi as ti
 # ============================================================================
 
 _ti_initialized = False
+_ti_lock = threading.RLock()
 
 
 def is_initialized() -> bool:
@@ -178,7 +180,9 @@ def init_taichi():
     - Windows/Linux: Vulkan
     """
     global _ti_initialized
-    if not _ti_initialized:
+    with _ti_lock:
+        if _ti_initialized:
+            return
         kernel_profiler = get_kernel_profiler_enabled()
         block_dim = get_block_dim()
         arch, backend_name = _detect_backend()
@@ -234,23 +238,23 @@ def reset_taichi(*, reason: str | None = None) -> None:
     resources may leak.
     """
     global _ti_initialized
+    with _ti_lock:
+        if reason:
+            print(f"[Taichi] Resetting runtime: {reason}")
 
-    if reason:
-        print(f"[Taichi] Resetting runtime: {reason}")
+        if not _ti_initialized:
+            return
 
-    if not _ti_initialized:
-        return
+        try:
+            ti.sync()
+        except Exception:
+            pass
 
-    try:
-        ti.sync()
-    except Exception:
-        pass
+        try:
+            ti.reset()
+        except Exception:
+            # If reset fails, we'll still mark as uninitialized and let callers try
+            # to re-init; worst case they crash again but with a clearer log path.
+            pass
 
-    try:
-        ti.reset()
-    except Exception:
-        # If reset fails, we'll still mark as uninitialized and let callers try
-        # to re-init; worst case they crash again but with a clearer log path.
-        pass
-
-    _ti_initialized = False
+        _ti_initialized = False
