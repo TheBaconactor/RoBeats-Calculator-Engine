@@ -483,6 +483,21 @@ def process_force_greats_gpu_finder(
         print(
             f"[FG][ASYNC] mode={mode} max_inflight={fg_async_max_inflight} tasks_per_request={fg_async_tasks_per_request}"
         )
+
+    # ---------------------------------------------------------------------
+    # Race-safety guard (default-on for in-process in-flight mode).
+    #
+    # The `fg_tasks=` path can span multiple executor requests (reset -> solve tasks -> download).
+    # If other GPU work (GA or another song's FG) interleaves between those requests, GPU-resident
+    # "global best" buffers can mix results. The safest default is to keep each song's FG work
+    # within a single executor request when using in-process thread queues.
+    #
+    # Opt out (advanced): set `FG_ALLOW_MULTI_REQUEST_SESSION=1` to restore multi-request pipelining.
+    # ---------------------------------------------------------------------
+    if gpu_client is not None and in_process and (not _truthy_env("FG_ALLOW_MULTI_REQUEST_SESSION", "0")):
+        fg_async_max_inflight = 1
+        fg_async_tasks_per_request = 1_000_000_000
+
     fg_async_futures = []
     fg_tasks_batch = []
     genome_stats_uploaded = False

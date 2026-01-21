@@ -23,7 +23,6 @@ if TYPE_CHECKING:
     from gear_optimizer.solver.gpu_service import GpuServiceClient
 
 
-_FG_GPU_SEQUENCE_LOCK = threading.Lock()
 _FG_INPROCESS_GPU_CLIENT_LOCK = threading.Lock()
 _FG_INPROCESS_GPU_CLIENT = None
 _FG_INPROCESS_GPU_CLIENT_DISABLED = False
@@ -206,10 +205,6 @@ def process_force_greats(
     print(f"[ForceGreats] Processing {len(loadout_entries)} unique loadouts (DB + GA)...")
 
     if use_gpu and force_greats_finder:
-        lock_acquired = False
-        if gpu_client is not None:
-            _FG_GPU_SEQUENCE_LOCK.acquire()
-            lock_acquired = True
         try:
             return process_force_greats_gpu_finder(
                 loadout_entries,
@@ -252,9 +247,6 @@ def process_force_greats(
                     ).future.result()
                 except Exception:
                     pass
-        finally:
-            if lock_acquired:
-                _FG_GPU_SEQUENCE_LOCK.release()
 
     return _process_force_greats_cpu(
         loadout_entries=loadout_entries,
