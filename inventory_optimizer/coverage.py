@@ -108,6 +108,23 @@ def _extract_upgrade_ids(entry: Any) -> List[int]:
     return upgrade_ids
 
 
+_ELEMENT_BY_LOWER: Dict[str, str] = {str(k).strip().lower(): str(k) for k in ELEMENT_TO_ID.keys()}
+
+
+def _normalize_element_filter(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    cleaned = str(value).strip()
+    if not cleaned or cleaned.lower() == "all":
+        return None
+    canonical = _ELEMENT_BY_LOWER.get(cleaned.lower())
+    if canonical:
+        return canonical
+    if cleaned in ELEMENT_TO_ID:
+        return cleaned
+    return None
+
+
 def _raw_vid_for_variant_dict(variant: Dict[str, Any], gear_id_map: Dict[str, int]) -> Optional[int]:
     gear_name = str(variant.get("gear_name") or "").strip()
     if not gear_name:
@@ -1470,6 +1487,8 @@ def run_inventory_meta_coverage(
     *,
     inventory_cap: int = 100,
     seed_inventory_gear: Optional[Iterable[Dict[str, Any]]] = None,
+    element: Optional[str] = None,
+    secondary_element: Optional[str] = None,
     partitions_per_song: int = 32,
     seed: int = 1,
     restarts: int = 1,
@@ -1523,6 +1542,7 @@ def run_inventory_meta_coverage(
     Notes:
     - For `solver='gpu_full'`, `K_total = partitions_per_song + adaptive_rounds * adaptive_keep_per_song`.
     - For other solvers, `partitions_per_song` and `adaptive_*` are legacy arguments kept for CLI compatibility.
+    - `element` and `secondary_element` restrict the song set to peak rows matching those selected elements.
     """
     inventory_cap = int(inventory_cap)
     if inventory_cap <= 0:
@@ -1634,6 +1654,22 @@ def run_inventory_meta_coverage(
     finally:
         conn.close()
         mem.log("db_closed")
+
+    songs_total_unfiltered = int(len(candidates_by_song))
+    element = _normalize_element_filter(element)
+    secondary_element = _normalize_element_filter(secondary_element)
+    allowed_elements = {e for e in (element, secondary_element) if e}
+    songs_filtered_out = 0
+    if allowed_elements:
+        filtered: Dict[str, List[SongCandidate]] = {}
+        for song_name, candidates in candidates_by_song.items():
+            kept = [cand for cand in candidates if cand.selected_element in allowed_elements]
+            if kept:
+                filtered[song_name] = kept
+        songs_filtered_out = int(len(candidates_by_song) - len(filtered))
+        candidates_by_song = filtered
+        if song_peak_by_name is not None:
+            song_peak_by_name = {k: v for k, v in song_peak_by_name.items() if k in candidates_by_song}
 
     if not candidates_by_song:
         raise ValueError("No candidates found in loadouts/fg_loadouts.")
@@ -1991,6 +2027,12 @@ def run_inventory_meta_coverage(
     result["missing_songs"] = missing
     result["db_path"] = db_path
     result["generated_at"] = datetime.now().isoformat()
+    stats = result.get("stats")
+    if isinstance(stats, dict):
+        stats["songs_total_unfiltered"] = int(songs_total_unfiltered)
+        stats["songs_filtered_out"] = int(songs_filtered_out)
+        stats["element_filter"] = str(element or "")
+        stats["secondary_element_filter"] = str(secondary_element or "")
     if seed_result is not None:
         seed_diag = dict(seed_result.diagnostics)
         seed_diag["applied"] = bool(solver == "gpu_full")
