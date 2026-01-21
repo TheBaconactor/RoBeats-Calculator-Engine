@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
@@ -20,6 +21,17 @@ def _effective_score(loadout: dict) -> int:
     score = int(loadout.get("score") or 0)
     fg_score = int(loadout.get("fg_score") or 0)
     return max(score, fg_score)
+
+
+def _loadout_key_fingerprint(gears: tuple[str, ...], mini_sig: tuple[Any, ...]) -> str:
+    """
+    Return a stable, category-aware fingerprint for a (gear set + mini effect signature).
+
+    This is used to cheaply compare category winners across TeamBuff tiers without
+    being sensitive to representative mini-name choice.
+    """
+    payload = json.dumps([list(gears), list(mini_sig)], separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()
 
 
 def _relevant_elements_for_category(songs: List[dict]) -> Tuple[str, ...]:
@@ -116,6 +128,8 @@ def find_most_common_loadout(
     all_loadouts: List[dict],
     minis_by_name: Dict[str, dict],
     top_n: Optional[int] = 1,
+    *,
+    loadouts_by_song: Optional[Dict[str, list]] = None,
 ) -> List[dict]:
     """
     Find the most frequently appearing gear+mini SETs for songs in this category.
@@ -124,18 +138,19 @@ def find_most_common_loadout(
     song_names = {s["song_name"] for s in songs}
     relevant_elements = _relevant_elements_for_category(songs)
 
-    loadouts_by_song: Dict[str, list] = {}
-    for loadout in all_loadouts:
-        name = loadout["song_name"]
-        if name in song_names:
-            loadouts_by_song.setdefault(name, []).append(loadout)
+    if loadouts_by_song is None:
+        loadouts_by_song = {}
+        for loadout in all_loadouts:
+            name = loadout["song_name"]
+            if name in song_names:
+                loadouts_by_song.setdefault(name, []).append(loadout)
 
     wins: Counter = Counter()
     loadout_rows: Dict[Tuple[Any, ...], List[dict]] = {}
     mini_variants: Dict[Tuple[Any, ...], Counter] = {}
 
     for song_name in song_names:
-        loadouts = loadouts_by_song.get(song_name, [])
+        loadouts = (loadouts_by_song or {}).get(song_name, [])
         if not loadouts:
             continue
 
@@ -163,7 +178,9 @@ def find_most_common_loadout(
         if top_n is not None and idx >= int(top_n):
             break
         gears, _sig = key
+        loadout_key = _loadout_key_fingerprint(tuple(gears), tuple(_sig))
         rows = loadout_rows.get(key, [])
+        peak_in_songs = sorted({str(r.get("song_name") or "") for r in rows if (r.get("song_name") or "").strip()})
 
         # Representative mini variant (preserves per-mini group variants).
         variants = mini_variants.get(key) or Counter()
@@ -193,8 +210,10 @@ def find_most_common_loadout(
         results.append(
             {
                 "rank": idx + 1,
+                "loadout_key": loadout_key,
                 "gear_names": list(gears),
                 "minis_json": _groups_from_variant_key(tuple(chosen_variant) if chosen_variant else ()),
+                "peak_in_songs": peak_in_songs,
                 "songs_with_set": len(rows),
                 "win_frequency": count,
                 "avg_score": avg_score,

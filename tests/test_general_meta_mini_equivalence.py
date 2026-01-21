@@ -60,6 +60,7 @@ def test_general_meta_merges_mini_variants_when_irrelevant_to_category():
 
     assert result["win_frequency"] == 2
     assert result["songs_with_set"] == 2
+    assert result["peak_in_songs"] == ["Song1", "Song2"]
     assert result["minis_json"] in ([["MiniA"]], [["MiniB"]])
 
 
@@ -117,4 +118,5 @@ def test_general_meta_does_not_merge_mini_variants_when_secondary_varies():
     results = find_most_common_loadout(songs, all_loadouts, minis_by_name, top_n=None)
     assert len(results) == 2
     assert [r["win_frequency"] for r in results] == [1, 1]
+    assert sorted([r["peak_in_songs"] for r in results]) == [["Song1"], ["Song2"]]
     assert sorted([r["minis_json"] for r in results]) == [[["MiniA"]], [["MiniB"]]]
