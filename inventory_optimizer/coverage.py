@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import random
+import sys
 import time
 import zlib
 from dataclasses import dataclass
@@ -1267,35 +1268,74 @@ def _run_gpu_full_solver_from_offsets(
         f"(songs={gear_ids_np.shape[0]}, k_total={int(offsets_np.shape[1])}, v={int(v_count)}, "
         f"seeded={seeded_total})"
     )
-    sol_full = solve_coverage_gpu_full(
-        part_vids,
-        variant_freq_np,
-        inventory_cap=int(inventory_cap),
-        seed=int(seed),
-        repack_passes=int(gpu_repack_passes),
-        repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
-        counter_stripes=int(gpu_full_counter_stripes),
-        k_scan_select=int(gpu_full_k_scan_select),
-        k_scan_repack=int(gpu_full_k_scan_repack),
-        alns_enabled=bool(gpu_full_alns_enabled),
-        alns_islands=int(gpu_full_alns_islands),
-        pt_enabled=bool(gpu_full_pt_enabled),
-        pt_t_min=float(gpu_full_pt_t_min),
-        pt_t_max=float(gpu_full_pt_t_max),
-        pt_swap_interval=int(gpu_full_pt_swap_interval),
-        pt_destroy_beta=float(gpu_full_pt_destroy_beta),
-        pt_cap_slack_max=int(gpu_full_pt_cap_slack_max),
-        lns_time_sec=float(lns_time_sec),
-        lns_attempts=int(lns_attempts),
-        lns_destroy=int(gpu_lns_destroy),
-        lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
-        lns_random_destroy_prob=float(gpu_full_lns_random_destroy_prob),
-        lns_restore_after=int(gpu_full_lns_restore_after),
-        lns_restore_drop=int(gpu_full_lns_restore_drop),
-        profile=bool(mem.enabled),
-        seeded_variant_indices=seeded_dense,
-        seeded_extra_count=int(seeded_missing),
-    )
+    gpu_util_summary = None
+    gpu_sampler = None
+    if sys.platform == "darwin" and bool(mem.enabled):
+        try:
+            from .macos_gpu_util import MacosGpuUtilSampler
+
+            gpu_sampler = MacosGpuUtilSampler(interval_sec=0.25)
+            gpu_sampler.start()
+        except Exception:
+            gpu_sampler = None
+    try:
+        sol_full = solve_coverage_gpu_full(
+            part_vids,
+            variant_freq_np,
+            inventory_cap=int(inventory_cap),
+            seed=int(seed),
+            repack_passes=int(gpu_repack_passes),
+            repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
+            counter_stripes=int(gpu_full_counter_stripes),
+            k_scan_select=int(gpu_full_k_scan_select),
+            k_scan_repack=int(gpu_full_k_scan_repack),
+            alns_enabled=bool(gpu_full_alns_enabled),
+            alns_islands=int(gpu_full_alns_islands),
+            pt_enabled=bool(gpu_full_pt_enabled),
+            pt_t_min=float(gpu_full_pt_t_min),
+            pt_t_max=float(gpu_full_pt_t_max),
+            pt_swap_interval=int(gpu_full_pt_swap_interval),
+            pt_destroy_beta=float(gpu_full_pt_destroy_beta),
+            pt_cap_slack_max=int(gpu_full_pt_cap_slack_max),
+            lns_time_sec=float(lns_time_sec),
+            lns_attempts=int(lns_attempts),
+            lns_destroy=int(gpu_lns_destroy),
+            lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
+            lns_random_destroy_prob=float(gpu_full_lns_random_destroy_prob),
+            lns_restore_after=int(gpu_full_lns_restore_after),
+            lns_restore_drop=int(gpu_full_lns_restore_drop),
+            profile=bool(mem.enabled),
+            seeded_variant_indices=seeded_dense,
+            seeded_extra_count=int(seeded_missing),
+        )
+    finally:
+        if gpu_sampler is not None:
+            try:
+                gpu_util_summary = gpu_sampler.stop()
+            except Exception:
+                gpu_util_summary = None
+    if gpu_util_summary is not None:
+        sol_full.stats["macos_gpu_util_solve"] = {
+            "samples": int(gpu_util_summary.samples),
+            "wall_sec": round(float(gpu_util_summary.wall_sec), 3),
+            "device_util_avg": None
+            if gpu_util_summary.device_util_avg is None
+            else round(float(gpu_util_summary.device_util_avg), 2),
+            "device_util_max": gpu_util_summary.device_util_max,
+            "renderer_util_avg": None
+            if gpu_util_summary.renderer_util_avg is None
+            else round(float(gpu_util_summary.renderer_util_avg), 2),
+            "renderer_util_max": gpu_util_summary.renderer_util_max,
+            "tiler_util_avg": None
+            if gpu_util_summary.tiler_util_avg is None
+            else round(float(gpu_util_summary.tiler_util_avg), 2),
+            "tiler_util_max": gpu_util_summary.tiler_util_max,
+            "last_submit_pid_top": list(gpu_util_summary.last_submit_pid_top),
+            "proc_pid": gpu_util_summary.proc_pid,
+            "proc_gpu_time_util_est": None
+            if gpu_util_summary.proc_gpu_time_util_est is None
+            else round(float(gpu_util_summary.proc_gpu_time_util_est), 2),
+        }
     mem.log("gpu_full_solved")
 
     chosen_part = np.asarray(sol_full.chosen_part, dtype=np.int32)
@@ -1400,35 +1440,74 @@ def _run_gpu_full_solver_from_candidates(
         f"gpu_full_inputs_ready (songs={part_vids.shape[0]}, k_total={int(k_total)}, v={int(v_count)}, "
         f"seeded={seeded_total})"
     )
-    sol_full = solve_coverage_gpu_full(
-        part_vids,
-        variant_freq_np,
-        inventory_cap=int(inventory_cap),
-        seed=int(seed),
-        repack_passes=int(gpu_repack_passes),
-        repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
-        counter_stripes=int(gpu_full_counter_stripes),
-        k_scan_select=int(gpu_full_k_scan_select),
-        k_scan_repack=int(gpu_full_k_scan_repack),
-        alns_enabled=bool(gpu_full_alns_enabled),
-        alns_islands=int(gpu_full_alns_islands),
-        pt_enabled=bool(gpu_full_pt_enabled),
-        pt_t_min=float(gpu_full_pt_t_min),
-        pt_t_max=float(gpu_full_pt_t_max),
-        pt_swap_interval=int(gpu_full_pt_swap_interval),
-        pt_destroy_beta=float(gpu_full_pt_destroy_beta),
-        pt_cap_slack_max=int(gpu_full_pt_cap_slack_max),
-        lns_time_sec=float(lns_time_sec),
-        lns_attempts=int(lns_attempts),
-        lns_destroy=int(gpu_lns_destroy),
-        lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
-        lns_random_destroy_prob=float(gpu_full_lns_random_destroy_prob),
-        lns_restore_after=int(gpu_full_lns_restore_after),
-        lns_restore_drop=int(gpu_full_lns_restore_drop),
-        profile=bool(mem.enabled),
-        seeded_variant_indices=seeded_dense,
-        seeded_extra_count=int(seeded_missing),
-    )
+    gpu_util_summary = None
+    gpu_sampler = None
+    if sys.platform == "darwin" and bool(mem.enabled):
+        try:
+            from .macos_gpu_util import MacosGpuUtilSampler
+
+            gpu_sampler = MacosGpuUtilSampler(interval_sec=0.25)
+            gpu_sampler.start()
+        except Exception:
+            gpu_sampler = None
+    try:
+        sol_full = solve_coverage_gpu_full(
+            part_vids,
+            variant_freq_np,
+            inventory_cap=int(inventory_cap),
+            seed=int(seed),
+            repack_passes=int(gpu_repack_passes),
+            repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
+            counter_stripes=int(gpu_full_counter_stripes),
+            k_scan_select=int(gpu_full_k_scan_select),
+            k_scan_repack=int(gpu_full_k_scan_repack),
+            alns_enabled=bool(gpu_full_alns_enabled),
+            alns_islands=int(gpu_full_alns_islands),
+            pt_enabled=bool(gpu_full_pt_enabled),
+            pt_t_min=float(gpu_full_pt_t_min),
+            pt_t_max=float(gpu_full_pt_t_max),
+            pt_swap_interval=int(gpu_full_pt_swap_interval),
+            pt_destroy_beta=float(gpu_full_pt_destroy_beta),
+            pt_cap_slack_max=int(gpu_full_pt_cap_slack_max),
+            lns_time_sec=float(lns_time_sec),
+            lns_attempts=int(lns_attempts),
+            lns_destroy=int(gpu_lns_destroy),
+            lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
+            lns_random_destroy_prob=float(gpu_full_lns_random_destroy_prob),
+            lns_restore_after=int(gpu_full_lns_restore_after),
+            lns_restore_drop=int(gpu_full_lns_restore_drop),
+            profile=bool(mem.enabled),
+            seeded_variant_indices=seeded_dense,
+            seeded_extra_count=int(seeded_missing),
+        )
+    finally:
+        if gpu_sampler is not None:
+            try:
+                gpu_util_summary = gpu_sampler.stop()
+            except Exception:
+                gpu_util_summary = None
+    if gpu_util_summary is not None:
+        sol_full.stats["macos_gpu_util_solve"] = {
+            "samples": int(gpu_util_summary.samples),
+            "wall_sec": round(float(gpu_util_summary.wall_sec), 3),
+            "device_util_avg": None
+            if gpu_util_summary.device_util_avg is None
+            else round(float(gpu_util_summary.device_util_avg), 2),
+            "device_util_max": gpu_util_summary.device_util_max,
+            "renderer_util_avg": None
+            if gpu_util_summary.renderer_util_avg is None
+            else round(float(gpu_util_summary.renderer_util_avg), 2),
+            "renderer_util_max": gpu_util_summary.renderer_util_max,
+            "tiler_util_avg": None
+            if gpu_util_summary.tiler_util_avg is None
+            else round(float(gpu_util_summary.tiler_util_avg), 2),
+            "tiler_util_max": gpu_util_summary.tiler_util_max,
+            "last_submit_pid_top": list(gpu_util_summary.last_submit_pid_top),
+            "proc_pid": gpu_util_summary.proc_pid,
+            "proc_gpu_time_util_est": None
+            if gpu_util_summary.proc_gpu_time_util_est is None
+            else round(float(gpu_util_summary.proc_gpu_time_util_est), 2),
+        }
     mem.log("gpu_full_solved")
 
     chosen_part = np.asarray(sol_full.chosen_part, dtype=np.int32)
