@@ -182,6 +182,7 @@ class _GpuFullIslandsState:
     counts_total: ti.Field
     covered: ti.Field
     chosen: ti.Field
+    cap: ti.Field
     inv_size: ti.Field
     cov_count: ti.Field
     best_cost: ti.Field
@@ -245,6 +246,7 @@ def _get_or_build_islands_state(
     counts_total = ti.field(dtype=ti.i32, shape=(IV,))
     covered = ti.field(dtype=ti.i32, shape=(IS,))
     chosen = ti.field(dtype=ti.i32, shape=(IS,))
+    cap = ti.field(dtype=ti.i32, shape=(I,))
     inv_size = ti.field(dtype=ti.i32, shape=(I,))
     cov_count = ti.field(dtype=ti.i32, shape=(I,))
 
@@ -263,6 +265,7 @@ def _get_or_build_islands_state(
         counts_total=counts_total,
         covered=covered,
         chosen=chosen,
+        cap=cap,
         inv_size=inv_size,
         cov_count=cov_count,
         best_cost=best_cost,
@@ -341,12 +344,12 @@ def _greedy_fill_steps_islands(
     counts_total: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
+    cap: ti.template(),
     inv_size: ti.template(),
     cov_count: ti.template(),
     did_add_any: ti.template(),
     best_cost: ti.template(),
     best_cand: ti.template(),
-    inv_cap: ti.i32,
     k_scan: ti.i32,
     seed_u: ti.u32,
     v_count: ti.i32,
@@ -382,7 +385,8 @@ def _greedy_fill_steps_islands(
                 continue
             i = ti.i32(idx // s_count)
             s = ti.i32(idx - i * s_count)
-            remaining = ti.i32(inv_cap - inv_size[i])
+            inv_cap_i = ti.i32(cap[i])
+            remaining = ti.i32(inv_cap_i - inv_size[i])
             if remaining < 0:
                 continue
             remaining_clamped = ti.min(ti.i32(6), ti.max(ti.i32(0), remaining))
@@ -423,7 +427,8 @@ def _greedy_fill_steps_islands(
             target = best_cost[i]
             if target == ti.u32(0xFFFFFFFF):
                 continue
-            remaining = ti.i32(inv_cap - inv_size[i])
+            inv_cap_i = ti.i32(cap[i])
+            remaining = ti.i32(inv_cap_i - inv_size[i])
             if remaining < 0:
                 continue
             remaining_clamped = ti.min(ti.i32(6), ti.max(ti.i32(0), remaining))
@@ -465,7 +470,8 @@ def _greedy_fill_steps_islands(
             idx = ti.i32(i) * ti.i32(s_count) + s
             if covered[idx] != 0:
                 continue
-            remaining = ti.i32(inv_cap - inv_size[i])
+            inv_cap_i = ti.i32(cap[i])
+            remaining = ti.i32(inv_cap_i - inv_size[i])
             if remaining < 0:
                 continue
 
@@ -1906,6 +1912,12 @@ def _solve_coverage_gpu_full_alns_islands(
     lns_destroy: int,
     lns_freq_weighted: bool,
     profile: bool,
+    pt_enabled: bool,
+    pt_t_min: float,
+    pt_t_max: float,
+    pt_swap_interval: int,
+    pt_destroy_beta: float,
+    pt_cap_slack_max: int,
     seeded_variant_indices: "object",
     seeded_extra_count: int,
 ) -> GpuFullSolution:
@@ -1931,6 +1943,7 @@ def _solve_coverage_gpu_full_alns_islands(
     if effective_cap < 0:
         effective_cap = 0
     inv_cap = int(effective_cap)
+    hard_cap = int(inv_cap)
     seeded_info = {
         "total": int(seeded_in_universe + seeded_missing),
         "in_universe": int(seeded_in_universe),
@@ -1946,8 +1959,16 @@ def _solve_coverage_gpu_full_alns_islands(
     st.part_vids.from_numpy(part_vids_np.reshape(s_count, k_count, 6))
     st.freq.from_numpy(variant_freq_np.reshape(v_count))
 
+    # Best-feasible snapshot buffers (so PT can move islands around without losing the best solution found so far).
+    out_counts = ti.field(dtype=ti.i32, shape=(int(v_count), int(counter_stripes)))
+    out_counts_total = ti.field(dtype=ti.i32, shape=(int(v_count),))
+    out_covered = ti.field(dtype=ti.i32, shape=(int(s_count),))
+    out_chosen = ti.field(dtype=ti.i32, shape=(int(s_count),))
+
     # Initialize all islands.
     _reset_state_islands(st.counts, st.counts_total, st.covered, st.chosen, st.inv_size, st.cov_count)
+    # Default: hard cap for all islands (may be overwritten by PT slack later).
+    st.cap.from_numpy(np.full((int(islands),), int(hard_cap), dtype=np.int32))
     seeded_indices = None
     if seeded_variant_indices is not None:
         seeded_indices = np.asarray(seeded_variant_indices, dtype=np.int32).reshape(-1)
@@ -1970,12 +1991,12 @@ def _solve_coverage_gpu_full_alns_islands(
             st.counts_total,
             st.covered,
             st.chosen,
+            st.cap,
             st.inv_size,
             st.cov_count,
             st.did_add_any,
             st.best_cost,
             st.best_cand,
-            int(inv_cap),
             int(k_scan_select),
             int(seed_u) & 0xFFFFFFFF,
             int(v_count),
@@ -2022,16 +2043,38 @@ def _solve_coverage_gpu_full_alns_islands(
     cov = st.cov_count.to_numpy()
     inv = st.inv_size.to_numpy()
 
-    # Bandit-driven ALNS: action = (destroy_kind, destroy_multiplier)
-    # Based on recent bandit-LNS/ALNS work (e.g. BALANCE/ParBalans-style online selection).
+    # Bandit-driven ALNS: action = (destroy_kind, destroy_multiplier).
+    # When PT is enabled, we instead use a temperature-conditioned fixed policy (more stable),
+    # because PT swaps temperature labels across islands and a per-island bandit would be mismatched.
     arms = [(0, 1), (0, 2), (1, 1), (1, 2), (2, 1), (2, 2)]
-    arm_n = np.zeros((islands, len(arms)), dtype=np.int32)
-    arm_sum = np.zeros((islands, len(arms)), dtype=np.float64)
+    arm_n = None
+    arm_sum = None
     prev_score = (cov.astype(np.int64) * 1_000_000) - inv.astype(np.int64)
 
-    best_cov_val = int(cov.max(initial=0))
-    best_inv_val = int(inv.min(initial=10**9))
-    best_island = int(np.argmax(prev_score))
+    feasible0 = np.where(inv <= np.int32(hard_cap))[0]
+    if feasible0.size > 0:
+        best_island = int(feasible0[np.argmax(prev_score[feasible0])])
+        best_cov_val = int(cov[best_island])
+        best_inv_val = int(inv[best_island])
+    else:
+        best_island = int(np.argmin(inv))
+        best_cov_val = int(cov[best_island])
+        best_inv_val = int(inv[best_island])
+
+    # Snapshot the initial best.
+    _extract_island_solution(
+        st.counts,
+        st.counts_total,
+        st.covered,
+        st.chosen,
+        out_counts,
+        out_counts_total,
+        out_covered,
+        out_chosen,
+        int(best_island),
+        int(v_count),
+        int(s_count),
+    )
 
     t0 = time.perf_counter()
     t_end = t0 + float(max(0.0, lns_time_sec))
@@ -2042,33 +2085,138 @@ def _solve_coverage_gpu_full_alns_islands(
     destroy_target_np = np.zeros((islands,), dtype=np.int32)
     selected_arm = np.zeros((islands,), dtype=np.int32)
 
+    pt_enabled = bool(pt_enabled)
+    pt_swap_interval = int(pt_swap_interval)
+    if pt_swap_interval <= 0:
+        pt_swap_interval = 1
+    pt_t_min = float(pt_t_min)
+    pt_t_max = float(pt_t_max)
+    if pt_t_min <= 0.0:
+        pt_t_min = 1e-3
+    if pt_t_max < pt_t_min:
+        pt_t_max = pt_t_min
+    pt_destroy_beta = float(pt_destroy_beta)
+    if pt_destroy_beta < 0.0:
+        pt_destroy_beta = 0.0
+    pt_cap_slack_max = int(pt_cap_slack_max)
+    if pt_cap_slack_max < 0:
+        pt_cap_slack_max = 0
+
+    temps = None
+    temp_rank = None
+    island_for_rank = None
+    swap_accept = 0
+    swap_attempt = 0
+    caps_dirty = False
+    rng = np.random.default_rng(int(seed) ^ 0xBADC0FFE)
+    cap_host = np.full((int(islands),), int(hard_cap), dtype=np.int32)
+
+    if pt_enabled:
+        if islands < 2:
+            pt_enabled = False
+        else:
+            # Temperature ladder (geometric spacing).
+            # Use a modest range by default; temperatures operate on a reduced energy scale (coverage-level).
+            if islands == 2:
+                temps = np.asarray([pt_t_min, pt_t_max], dtype=np.float64)
+            else:
+                ratio = float(pt_t_max / pt_t_min) if pt_t_min > 0 else 1.0
+                temps = np.asarray(
+                    [pt_t_min * (ratio ** (float(r) / float(islands - 1))) for r in range(islands)],
+                    dtype=np.float64,
+                )
+            temp_rank = np.arange(islands, dtype=np.int32)
+            island_for_rank = np.arange(islands, dtype=np.int32)
+            # Temperature-conditioned fixed action policy; no per-island bandit.
+            arm_n = np.zeros((0, 0), dtype=np.int32)
+            arm_sum = np.zeros((0, 0), dtype=np.float64)
+    else:
+        arm_n = np.zeros((islands, len(arms)), dtype=np.int32)
+        arm_sum = np.zeros((islands, len(arms)), dtype=np.float64)
+
+    def _update_caps_from_temp_rank() -> None:
+        nonlocal cap_host
+        if pt_cap_slack_max <= 0 or (not pt_enabled) or temp_rank is None:
+            cap_host = np.full((int(islands),), int(hard_cap), dtype=np.int32)
+            st.cap.from_numpy(cap_host)
+            return
+        cap_host = np.zeros((int(islands),), dtype=np.int32)
+        for i in range(int(islands)):
+            r = int(temp_rank[i])
+            frac = 0.0 if islands <= 1 else float(r) / float(islands - 1)
+            slack = int(round(float(pt_cap_slack_max) * float(frac)))
+            cap_host[i] = int(hard_cap + max(0, slack))
+        st.cap.from_numpy(cap_host)
+
+    # Initial caps before the main loop.
+    _update_caps_from_temp_rank()
+
     while iters_done < int(lns_attempts) and time.perf_counter() < t_end:
         iters_done += 1
-        total_pulls = int(arm_n.sum()) + 1
-        logt = float(np.log(float(total_pulls) + 1.0))
+        if caps_dirty:
+            _update_caps_from_temp_rank()
+            caps_dirty = False
+
+        total_pulls = 1
+        logt = 0.0
+        if not pt_enabled and arm_n is not None:
+            total_pulls = int(arm_n.sum()) + 1
+            logt = float(np.log(float(total_pulls) + 1.0))
 
         for i in range(islands):
-            # UCB1 per island.
+            # Choose destroy operator.
+            kind = 1
+            mult = 1
             best_a = 0
-            best_ucb = -1e30
-            for a in range(len(arms)):
-                n = int(arm_n[i, a])
-                if n <= 0:
-                    best_a = a
-                    best_ucb = 1e30
-                    break
-                mean = float(arm_sum[i, a]) / float(n)
-                ucb = mean + float(c_ucb) * (logt / float(n)) ** 0.5
-                if ucb > best_ucb:
-                    best_ucb = ucb
-                    best_a = a
+            if pt_enabled and temps is not None and temp_rank is not None and islands > 1:
+                r = int(temp_rank[i])
+                frac = 0.0 if islands <= 1 else float(r) / float(islands - 1)
+                if frac < 0.25:
+                    kind, mult = (1, 1)  # cold: unique-weighted, gentle
+                elif frac < 0.5:
+                    kind, mult = (2, 1)  # mid: hybrid, gentle
+                elif frac < 0.75:
+                    kind, mult = (2, 2)  # warm: hybrid, stronger
+                else:
+                    kind, mult = (0, 2)  # hot: random, stronger
+            else:
+                # UCB1 per island.
+                best_a = 0
+                best_ucb = -1e30
+                if arm_n is None or arm_sum is None:
+                    raise RuntimeError("ALNS bandit state not initialized.")
+                for a in range(len(arms)):
+                    n = int(arm_n[i, a])
+                    if n <= 0:
+                        best_a = a
+                        best_ucb = 1e30
+                        break
+                    mean = float(arm_sum[i, a]) / float(n)
+                    ucb = mean + float(c_ucb) * (logt / float(n)) ** 0.5
+                    if ucb > best_ucb:
+                        best_ucb = ucb
+                        best_a = a
+                kind, mult = arms[int(best_a)]
 
-            kind, mult = arms[int(best_a)]
             destroy_kind_np[i] = int(kind)
             # Degree depends on current coverage; never exceed current covered count.
             cur_cov = int(cov[i]) if i < cov.shape[0] else 0
             deg = int(max(1, int(lns_destroy) * int(mult)))
-            destroy_target_np[i] = int(min(int(cur_cov), int(deg)))
+            if pt_enabled and temps is not None and temp_rank is not None:
+                r = int(temp_rank[i])
+                if 0 <= r < int(temps.size):
+                    t = float(temps[r])
+                    if t > pt_t_min and pt_t_min > 0:
+                        scale = (t / pt_t_min) ** float(pt_destroy_beta)
+                        deg = int(max(1, int(round(float(deg) * float(scale)))))
+            target = int(min(int(cur_cov), int(deg)))
+            cap_i = int(cap_host[i]) if i < int(cap_host.size) else int(hard_cap)
+            over = int(inv[i]) - int(cap_i) if i < inv.shape[0] else 0
+            if over > 0:
+                # If we're over the island's cap (possible when temperature drops), force extra destruction
+                # so the island can become feasible again and re-enter the competition.
+                target = int(min(int(cur_cov), max(int(target), int(over))))
+            destroy_target_np[i] = int(target)
             selected_arm[i] = int(best_a)
 
         st.destroy_kind.from_numpy(destroy_kind_np)
@@ -2106,39 +2254,66 @@ def _solve_coverage_gpu_full_alns_islands(
         delta = score - prev_score
         prev_score = score
 
-        for i in range(islands):
-            a = int(selected_arm[i])
-            if 0 <= a < len(arms):
-                arm_n[i, a] += 1
-                arm_sum[i, a] += float(delta[i]) / 1_000_000.0
+        if not pt_enabled and arm_n is not None and arm_sum is not None:
+            for i in range(islands):
+                a = int(selected_arm[i])
+                if 0 <= a < len(arms):
+                    arm_n[i, a] += 1
+                    arm_sum[i, a] += float(delta[i]) / 1_000_000.0
 
-        # Track best island (coverage first, then inventory).
-        best_i = int(np.argmax(score))
-        bc = int(cov[best_i])
-        bi = int(inv[best_i])
-        if (bc > best_cov_val) or (bc == best_cov_val and bi < best_inv_val):
-            best_cov_val = bc
-            best_inv_val = bi
-            best_island = best_i
+        # Track best feasible island (coverage first, then inventory), using the hard cap.
+        feasible = np.where(inv <= np.int32(hard_cap))[0]
+        if feasible.size > 0:
+            best_i = int(feasible[np.argmax(score[feasible])])
+            bc = int(cov[best_i])
+            bi = int(inv[best_i])
+            if (bc > best_cov_val) or (bc == best_cov_val and bi < best_inv_val):
+                best_cov_val = bc
+                best_inv_val = bi
+                best_island = best_i
+                _extract_island_solution(
+                    st.counts,
+                    st.counts_total,
+                    st.covered,
+                    st.chosen,
+                    out_counts,
+                    out_counts_total,
+                    out_covered,
+                    out_chosen,
+                    int(best_island),
+                    int(v_count),
+                    int(s_count),
+                )
 
-    # Extract best island state into compact outputs.
-    out_counts = ti.field(dtype=ti.i32, shape=(int(v_count), int(counter_stripes)))
-    out_counts_total = ti.field(dtype=ti.i32, shape=(int(v_count),))
-    out_covered = ti.field(dtype=ti.i32, shape=(int(s_count),))
-    out_chosen = ti.field(dtype=ti.i32, shape=(int(s_count),))
-    _extract_island_solution(
-        st.counts,
-        st.counts_total,
-        st.covered,
-        st.chosen,
-        out_counts,
-        out_counts_total,
-        out_covered,
-        out_chosen,
-        int(best_island),
-        int(v_count),
-        int(s_count),
-    )
+        # Parallel tempering: periodically exchange temperatures between adjacent replicas.
+        # We swap the *temperature labels* (not the full island state) so islands "move" along the ladder
+        # without copying large GPU buffers.
+        if pt_enabled and temps is not None and temp_rank is not None and island_for_rank is not None:
+            if (iters_done % pt_swap_interval) == 0:
+                island_for_rank[temp_rank] = np.arange(islands, dtype=np.int32)
+                parity = (iters_done // pt_swap_interval) & 1
+                energy = -cov.astype(np.float64) + (inv.astype(np.float64) * 1e-3)
+                for r in range(int(parity), int(islands - 1), 2):
+                    a = int(island_for_rank[r])
+                    b = int(island_for_rank[r + 1])
+                    if a < 0 or b < 0:
+                        continue
+                    ta = float(temps[r])
+                    tb = float(temps[r + 1])
+                    if ta <= 0.0 or tb <= 0.0:
+                        continue
+                    ea = float(energy[a])
+                    eb = float(energy[b])
+                    log_acc = (1.0 / ta - 1.0 / tb) * (eb - ea)
+                    swap_attempt += 1
+                    if log_acc >= 0.0 or float(np.log(float(rng.random()))) < float(log_acc):
+                        ra = int(temp_rank[a])
+                        rb = int(temp_rank[b])
+                        temp_rank[a] = rb
+                        temp_rank[b] = ra
+                        swap_accept += 1
+                        caps_dirty = True
+
     ti.sync()
 
     dt = time.perf_counter() - t0
@@ -2169,6 +2344,16 @@ def _solve_coverage_gpu_full_alns_islands(
             "alns_iters": int(iters_done),
             "alns_attempts_per_sec": round(float(attempts_per_sec), 3),
             "alns_arms": [{"kind": int(k), "mult": int(m)} for (k, m) in arms],
+            "pt": {
+                "enabled": bool(pt_enabled),
+                "t_min": float(pt_t_min),
+                "t_max": float(pt_t_max),
+                "swap_interval": int(pt_swap_interval),
+                "destroy_beta": float(pt_destroy_beta),
+                "cap_slack_max": int(pt_cap_slack_max),
+                "swap_attempt": int(swap_attempt),
+                "swap_accept": int(swap_accept),
+            },
             "seeded": seeded_info,
         },
     )
@@ -2182,6 +2367,12 @@ def solve_coverage_gpu_full(
     seed: int,
     alns_enabled: bool = False,
     alns_islands: int = 1,
+    pt_enabled: bool = False,
+    pt_t_min: float = 1.0,
+    pt_t_max: float = 10.0,
+    pt_swap_interval: int = 8,
+    pt_destroy_beta: float = 0.0,
+    pt_cap_slack_max: int = 0,
     repack_passes: int = 3,
     repack_rarity_weighted: bool = False,
     counter_stripes: int = 1,
@@ -2289,6 +2480,12 @@ def solve_coverage_gpu_full(
             lns_destroy=int(lns_destroy),
             lns_freq_weighted=bool(lns_freq_weighted),
             profile=bool(profile),
+            pt_enabled=bool(pt_enabled),
+            pt_t_min=float(pt_t_min),
+            pt_t_max=float(pt_t_max),
+            pt_swap_interval=int(pt_swap_interval),
+            pt_destroy_beta=float(pt_destroy_beta),
+            pt_cap_slack_max=int(pt_cap_slack_max),
             seeded_variant_indices=seeded_indices,
             seeded_extra_count=int(seeded_extra_count),
         )

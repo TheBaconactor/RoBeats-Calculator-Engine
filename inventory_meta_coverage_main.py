@@ -270,6 +270,41 @@ def main() -> None:
         help="GPU full: number of concurrent ALNS islands to run in one solve (default: 1).",
     )
     parser.add_argument(
+        "--gpu-full-pt",
+        action="store_true",
+        help="GPU full: enable parallel tempering across ALNS islands (swaps temperature labels; default: off).",
+    )
+    parser.add_argument(
+        "--gpu-full-pt-t-min",
+        type=float,
+        default=1.0,
+        help="GPU full PT: minimum temperature (default: 1.0).",
+    )
+    parser.add_argument(
+        "--gpu-full-pt-t-max",
+        type=float,
+        default=10.0,
+        help="GPU full PT: maximum temperature (default: 10.0).",
+    )
+    parser.add_argument(
+        "--gpu-full-pt-swap-interval",
+        type=int,
+        default=8,
+        help="GPU full PT: attempt replica exchange every N ALNS iterations (default: 8).",
+    )
+    parser.add_argument(
+        "--gpu-full-pt-destroy-beta",
+        type=float,
+        default=0.0,
+        help="GPU full PT: exponent for destroy degree scaling with temperature (default: 0.0).",
+    )
+    parser.add_argument(
+        "--gpu-full-pt-cap-slack-max",
+        type=int,
+        default=0,
+        help="GPU full PT: max extra inventory capacity for the hottest replicas (barrier crossing; default: 0).",
+    )
+    parser.add_argument(
         "--output", type=str, default="", help="Output JSON path (default: artifacts/inventory_meta_coverage.json)."
     )
     args = parser.parse_args()
@@ -338,6 +373,12 @@ def main() -> None:
             gpu_full_k_scan_repack=int(args.gpu_full_k_scan_repack),
             gpu_full_alns_enabled=bool(args.gpu_full_alns),
             gpu_full_alns_islands=int(args.gpu_full_alns_islands),
+            gpu_full_pt_enabled=bool(args.gpu_full_pt),
+            gpu_full_pt_t_min=float(args.gpu_full_pt_t_min),
+            gpu_full_pt_t_max=float(args.gpu_full_pt_t_max),
+            gpu_full_pt_swap_interval=int(args.gpu_full_pt_swap_interval),
+            gpu_full_pt_destroy_beta=float(args.gpu_full_pt_destroy_beta),
+            gpu_full_pt_cap_slack_max=int(args.gpu_full_pt_cap_slack_max),
             gpu_full_repair_enabled=bool(args.gpu_full_repair),
             gpu_full_repair_attempts=int(args.gpu_full_repair_attempts),
             gpu_full_repair_max_cands_per_slot=int(args.gpu_full_repair_max_cands_per_slot),
