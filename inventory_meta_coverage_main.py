@@ -131,20 +131,20 @@ def main() -> None:
     parser.add_argument(
         "--gpu-full-wildcard-freq-bonus",
         type=int,
-        default=0,
-        help="GPU full: add to variant frequency for OV==0 offsets (default: 0).",
+        default=40,
+        help="GPU full: add to variant frequency for OV==0 offsets (default: 40).",
     )
     parser.add_argument(
         "--gpu-full-witness-anchor-patterns",
         type=int,
-        default=24,
-        help="GPU full: deterministic witness patterns always included (default: 24).",
+        default=128,
+        help="GPU full: deterministic witness patterns always included (default: 128).",
     )
     parser.add_argument(
         "--gpu-full-witness-seed-streams",
         type=int,
-        default=4,
-        help="GPU full: internal RNG streams for witness patterns (default: 4).",
+        default=1,
+        help="GPU full: internal RNG streams for witness patterns (default: 1).",
     )
     parser.add_argument(
         "--gpu-full-witness-palettes",
@@ -178,8 +178,8 @@ def main() -> None:
     parser.add_argument(
         "--gpu-full-witness-pattern-profile",
         type=int,
-        default=0,
-        help="GPU full: witness pattern profile (0=balanced, 1=reuse-biased; default: 0).",
+        default=1,
+        help="GPU full: witness pattern profile (0=balanced, 1=reuse-biased, 2=reuse-biased+canonical anchors; default: 1).",
     )
     parser.add_argument(
         "--gpu-full-counter-stripes",
@@ -242,9 +242,9 @@ def main() -> None:
     parser.add_argument(
         "--gpu-full-variant-freq-mode",
         type=str,
-        default="occurrence",
+        default="song_support",
         choices=["occurrence", "song_support"],
-        help="GPU full: tie-break weight for variants (default: occurrence).",
+        help="GPU full: tie-break weight for variants (default: song_support).",
     )
     parser.add_argument(
         "--gpu-full-k-scan-select",

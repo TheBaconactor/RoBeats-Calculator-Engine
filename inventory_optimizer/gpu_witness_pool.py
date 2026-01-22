@@ -113,6 +113,30 @@ def _build_offsets_kernel(
         for st in ti.static(range(STAT_COUNT)):
             remaining[st] = ti.i32(totals[s, st])
 
+        # Use multiple internal seed streams (in contiguous blocks) to improve robustness vs unlucky seeds
+        # while keeping per-stream palettes coherent (encourages reuse).
+        # Also reserve a small deterministic anchor prefix to ensure core patterns are always present.
+        seed_k = seed_u
+        k_stream = ti.u32(k)
+        ap = ti.u32(ti.max(anchor_patterns, ti.i32(0)))
+        ss = ti.u32(ti.max(seed_streams, ti.i32(1)))
+        is_anchor = k_stream < ap
+        is_template_anchor = is_anchor and (k_stream < ti.u32(4))
+        use_templates = is_template_anchor and (ti.i32(pattern_profile) >= ti.i32(2))
+        if is_anchor:
+            # Deterministic anchors: stable across runs; still combined with the main solver's randomness
+            # via additional non-anchor patterns.
+            seed_k = ti.u32(0xD1B54A35) ^ (k_stream * ti.u32(0x9E3779B9))
+        else:
+            rem = ti.u32(K) - ap
+            block = ti.u32(1)
+            if rem > 0:
+                block = (rem + ss - 1) // ss
+            sub = (k_stream - ap) // block
+            if sub >= ss:
+                sub = ti.max(ti.u32(1), ss) - 1
+            seed_k = seed_u ^ (sub * ti.u32(0xA24BAED5))
+
         # Slot order: rare gear first (based on global frequency), with a seed+pattern perturbation
         # that is independent of `s` (so the "palette" is shared across songs).
         order = ti.Vector([ti.i32(i) for i in range(6)])
@@ -128,30 +152,10 @@ def _build_offsets_kernel(
 
         pat_mode = ti.i32(k % 3)
 
-        # Use multiple internal seed streams (in contiguous blocks) to improve robustness vs unlucky seeds
-        # while keeping per-stream palettes coherent (encourages reuse).
-        # Also reserve a small deterministic anchor prefix to ensure core patterns are always present.
-        seed_k = seed_u
-        k_stream = ti.u32(k)
-        ap = ti.u32(ti.max(anchor_patterns, ti.i32(0)))
-        ss = ti.u32(ti.max(seed_streams, ti.i32(1)))
-        if k_stream < ap:
-            # Deterministic anchors: stable across runs; still combined with the main solver's randomness
-            # via additional non-anchor patterns.
-            seed_k = ti.u32(0xD1B54A35) ^ (k_stream * ti.u32(0x9E3779B9))
-        else:
-            rem = ti.u32(K) - ap
-            block = ti.u32(1)
-            if rem > 0:
-                block = (rem + ss - 1) // ss
-            sub = (k_stream - ap) // block
-            if sub >= ss:
-                sub = ti.max(ti.u32(1), ss) - 1
-            seed_k = seed_u ^ (sub * ti.u32(0xA24BAED5))
-
         # Pattern profile knobs (applied only to non-anchor patterns):
         # - profile 0: balanced (original behavior)
         # - profile 1: reuse-biased (more OV-first patterns, less slot-order randomness)
+        # - profile 2: reuse-biased + a few canonicalizer-style deterministic anchors
         prof = ti.i32(pattern_profile)
         if (prof == 1) and (k_stream >= ap):
             r = ti.i32(k % 6)
@@ -162,6 +166,31 @@ def _build_offsets_kernel(
             else:
                 pat_mode = ti.i32(1)  # OV last (1/6)
 
+        # A small set of deterministic anchor templates designed to maximize cross-song reuse under a hard inventory cap.
+        # Only the first few anchors are templates; the rest of the anchor prefix stays seed-driven (as before).
+        allow_reverse = ti.i32(1)
+        if use_templates:
+            ak = ti.i32(k_stream)
+            if ak == 0:
+                # Canonicalizer: slot order 0..5, stat order PP,CM,FM,FT,FF,OV (OV last).
+                order = ti.Vector([ti.i32(0), ti.i32(1), ti.i32(2), ti.i32(3), ti.i32(4), ti.i32(5)])
+                pat_mode = ti.i32(1)
+                allow_reverse = ti.i32(0)
+            elif ak == 1:
+                # Canonical slot order, but OV first (encourages element-locking concentration).
+                order = ti.Vector([ti.i32(0), ti.i32(1), ti.i32(2), ti.i32(3), ti.i32(4), ti.i32(5)])
+                pat_mode = ti.i32(0)
+                allow_reverse = ti.i32(0)
+            elif ak == 2:
+                # Reverse slot order, OV last (pins mixed/locked stats to early slots).
+                order = ti.Vector([ti.i32(5), ti.i32(4), ti.i32(3), ti.i32(2), ti.i32(1), ti.i32(0)])
+                pat_mode = ti.i32(1)
+                allow_reverse = ti.i32(0)
+            elif ak == 3:
+                # Rare-first order, OV last, but no reverse (keeps rare-first intact).
+                pat_mode = ti.i32(1)
+                allow_reverse = ti.i32(0)
+
         st = seed_k ^ (ti.u32(k) * ti.u32(0x9E3779B9))
         for j in ti.static(range(5)):
             st = _xorshift32(st)
@@ -169,7 +198,7 @@ def _build_offsets_kernel(
             swap_mask = ti.u32(3)
             if (prof == 1) and (k_stream >= ap):
                 swap_mask = ti.u32(7)  # ~12.5% swap probability
-            if (st & swap_mask) == 0:
+            if (not use_templates) and ((st & swap_mask) == 0):
                 a = order[j]
                 b = order[j + 1]
                 order[j] = b
@@ -179,21 +208,22 @@ def _build_offsets_kernel(
         # We always include OV somewhere, but vary whether it is early/late and the
         # relative order of PP/CM/FM/FT/FF.
         base = ti.Vector([ti.i32(0), ti.i32(1), ti.i32(2), ti.i32(3), ti.i32(4), ti.i32(OV_INDEX)])
-        st2 = seed_k ^ (ti.u32(k) * ti.u32(0x85EBCA6B))
-        for j in ti.static(range(5, 0, -1)):
-            st2 = _xorshift32(st2)
-            swap_i = ti.i32(st2 % ti.u32(j + 1))
-            tmp = base[j]
-            base[j] = base[swap_i]
-            base[swap_i] = tmp
+        if not use_templates:
+            st2 = seed_k ^ (ti.u32(k) * ti.u32(0x85EBCA6B))
+            for j in ti.static(range(5, 0, -1)):
+                st2 = _xorshift32(st2)
+                swap_i = ti.i32(st2 % ti.u32(j + 1))
+                tmp = base[j]
+                base[j] = base[swap_i]
+                base[swap_i] = tmp
 
         # OV-locking control:
         # - If OV is last (mode=1), always put rare gear last (iterate common->rare) so OV lands on rare gear.
         # - If we use the shuffled base palette (mode=2) and OV ends up late in that palette, also reverse.
         reverse = ti.i32(0)
-        if pat_mode == 1:
+        if (allow_reverse != 0) and (pat_mode == 1):
             reverse = ti.i32(1)
-        elif pat_mode == 2:
+        elif (allow_reverse != 0) and (pat_mode == 2):
             ov_pos = ti.i32(0)
             for j in ti.static(range(6)):
                 if base[j] == ti.i32(OV_INDEX):
