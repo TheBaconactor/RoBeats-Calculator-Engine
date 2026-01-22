@@ -17,7 +17,6 @@ from gear_optimizer.data.database import get_db_connection, get_evolution_db_pat
 
 from .db import (
     fetch_candidates_for_peak,
-    fetch_candidates_within_delta_allow_missing,
     fetch_peak_candidates_allow_missing,
     fetch_song_names_limited,
     fetch_song_peak,
@@ -305,29 +304,63 @@ def _select_top_k_candidates_per_song(
         if not ranked:
             continue
         if len(ranked) > k_candidates:
-            # Keep the best few candidates deterministic, then sample additional candidates for diversity.
-            # This helps avoid getting stuck in a locally "reasonable" but globally suboptimal candidate set.
+            # Keep the best candidate deterministic, then add a small number of diverse alternatives.
+            # This helps coverage under a hard inventory cap by allowing "stat shifting" candidates
+            # that still hit peak for a song but unlock reuse across other songs.
             if seed_int is None:
                 ranked = ranked[:k_candidates]
             else:
-                keep_top = min(2, int(k_candidates))
-                keep_top = max(1, int(keep_top))
-                deterministic = ranked[:keep_top]
-                remaining = ranked[keep_top:]
-                needed = int(k_candidates) - int(keep_top)
-                if needed <= 0 or not remaining:
-                    ranked = deterministic[:k_candidates]
-                else:
-                    # Sample from a prefix of the remaining ranked list to avoid pulling very low-quality candidates.
-                    pool_size = min(len(remaining), max(int(needed) * 8, 32))
-                    pool = remaining[:pool_size]
-                    salt = zlib.crc32(song.name.encode("utf-8")) & 0xFFFFFFFF
-                    rng = random.Random((int(seed_int) ^ int(salt)) & 0xFFFFFFFF)
-                    picked = rng.sample(pool, k=needed) if len(pool) >= needed else list(pool)
-                    # Preserve rank order among the chosen set; the GPU allocates witness budget by candidate index.
-                    chosen_set = set(picked)
-                    ranked = deterministic + [cand for cand in remaining if cand in chosen_set]
-                    ranked = ranked[:k_candidates]
+                def _pair_distance(a: CandidateSpec, b: CandidateSpec) -> int:
+                    gear_diff = 0
+                    for j in range(6):
+                        if int(a.gear_ids[j]) != int(b.gear_ids[j]):
+                            gear_diff += 1
+                    ta = a.candidate.gem_totals
+                    tb = b.candidate.gem_totals
+                    l1 = 0
+                    for j in range(6):
+                        l1 += abs(int(ta[j]) - int(tb[j]))
+                    return int(gear_diff * 50 + l1)
+
+                top = ranked[0]
+                chosen: List[CandidateSpec] = [top]
+                chosen_ids = {id(top)}
+
+                pool_limit = min(len(ranked), max(32, int(k_candidates) * 16))
+                pool = list(enumerate(ranked[1:pool_limit], start=1))
+
+                salt = zlib.crc32(song.name.encode("utf-8")) & 0xFFFFFFFF
+                for _ in range(int(k_candidates) - 1):
+                    if not pool:
+                        break
+                    best_i = -1
+                    best_key: Optional[Tuple[int, int, int]] = None
+                    for i, (rank_pos, cand) in enumerate(pool):
+                        if id(cand) in chosen_ids:
+                            continue
+                        min_dist = min(_pair_distance(cand, prev) for prev in chosen)
+                        tie = zlib.crc32(f"{cand.candidate.rowid}:{rank_pos}".encode("utf-8")) & 0xFFFFFFFF
+                        # Prefer large distance, then better rank, then a stable seeded tie-break.
+                        key = (int(min_dist), int(-rank_pos), int((int(seed_int) ^ int(salt) ^ int(tie)) & 0xFFFFFFFF))
+                        if best_key is None or key > best_key:
+                            best_key = key
+                            best_i = i
+                    if best_i < 0:
+                        break
+                    _pos, picked = pool.pop(best_i)
+                    chosen.append(picked)
+                    chosen_ids.add(id(picked))
+
+                if len(chosen) < int(k_candidates):
+                    for cand in ranked[1:]:
+                        if id(cand) in chosen_ids:
+                            continue
+                        chosen.append(cand)
+                        chosen_ids.add(id(cand))
+                        if len(chosen) >= int(k_candidates):
+                            break
+
+                ranked = chosen[:k_candidates]
         selected.append(SongSpec(name=song.name, candidates=ranked))
     return selected
 
@@ -600,6 +633,207 @@ def _try_inventory_repair(
     stats = dict(res.stats)
     stats["songs_considered"] = int(len(eligible))
     return new_covered, new_chosen, stats
+
+
+def _try_inventory_repair_multi(
+    *,
+    songs: List[SongSpec],
+    covered_np: np.ndarray,
+    chosen_offsets_np: np.ndarray,
+    chosen_candidate_idx: np.ndarray,
+    inv_cap: int,
+    attempts: int,
+    seed: int,
+    max_cands_per_slot: int,
+    song_limit: int,
+    mem: _MemoryLogger,
+    profile: bool,
+    seeded_pairs: Optional[Iterable[Tuple[int, int]]] = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+    """
+    Multi-candidate variant of `_try_inventory_repair`.
+
+    For each uncovered song, choose a single candidate (among peak candidates) that has the best
+    support from the existing inventory, then attempt an exact totals match using only inventory variants.
+    """
+    if max_cands_per_slot <= 0:
+        raise ValueError("max_cands_per_slot must be positive.")
+    song_limit = int(song_limit)
+    if song_limit < 0:
+        raise ValueError("song_limit must be >= 0.")
+
+    covered_np = np.asarray(covered_np, dtype=np.int32)
+    chosen_offsets_np = np.asarray(chosen_offsets_np, dtype=np.int32)
+    chosen_candidate_idx = np.asarray(chosen_candidate_idx, dtype=np.int32)
+    if covered_np.ndim != 1:
+        raise ValueError("covered_np must be (S,).")
+    if chosen_offsets_np.shape != (covered_np.shape[0], 6):
+        raise ValueError("chosen_offsets_np must be (S,6).")
+    if chosen_candidate_idx.shape != (covered_np.shape[0],):
+        raise ValueError("chosen_candidate_idx must be (S,).")
+
+    # Build inventory variant list from currently covered songs.
+    used_pairs_set: set[Tuple[int, int]] = set()
+    for s_idx, is_cov in enumerate(covered_np.tolist()):
+        if int(is_cov) <= 0:
+            continue
+        c_idx = int(chosen_candidate_idx[s_idx])
+        if c_idx < 0 or c_idx >= int(len(songs[s_idx].candidates)):
+            continue
+        cand = songs[s_idx].candidates[c_idx]
+        for j in range(6):
+            used_pairs_set.add((int(cand.gear_ids[j]), int(chosen_offsets_np[s_idx, j])))
+    if seeded_pairs:
+        for gid, off in seeded_pairs:
+            used_pairs_set.add((int(gid), int(off)))
+
+    used_pairs = sorted(used_pairs_set)
+    if len(used_pairs) > int(inv_cap):
+        raise RuntimeError("Repair invariant violated: inventory exceeds cap.")
+    if not used_pairs:
+        return (
+            covered_np,
+            chosen_offsets_np,
+            chosen_candidate_idx,
+            {"enabled": True, "repaired": 0, "time_sec": 0.0, "attempts": int(attempts)},
+        )
+
+    offset_gems_np, offset_color_np = build_variant_offset_tables()
+
+    inv_gear_ids = np.asarray([p[0] for p in used_pairs], dtype=np.int32)
+    inv_offsets = np.asarray([p[1] for p in used_pairs], dtype=np.int32)
+    inv_gems = offset_gems_np[inv_offsets].astype(np.int32, copy=False)
+    inv_color = offset_color_np[inv_offsets].astype(np.int32, copy=False)
+
+    by_key: Dict[Tuple[int, int], List[int]] = {}
+    for idx in range(int(inv_gear_ids.shape[0])):
+        gid = int(inv_gear_ids[idx])
+        col = int(inv_color[idx])
+        by_key.setdefault((gid, col), []).append(int(idx))
+
+    S = int(covered_np.shape[0])
+    C = int(max_cands_per_slot)
+    cand_idx = np.full((S, 6, C), -1, dtype=np.int32)
+    cand_count = np.zeros((S, 6), dtype=np.int32)
+    totals_np = np.zeros((S, 6), dtype=np.int32)
+    elements_np = np.zeros((S,), dtype=np.int32)
+    repair_candidate_idx = chosen_candidate_idx.copy()
+
+    for s_idx in range(S):
+        if int(covered_np[s_idx]) != 0:
+            continue
+        best_c = -1
+        best_key: Optional[Tuple[int, int, int]] = None
+        for c_idx, cand in enumerate(songs[s_idx].candidates):
+            elem = int(cand.element_id)
+            ok_slots = 0
+            support_sum = 0
+            min_slot = 10**9
+            for slot in range(6):
+                gid = int(cand.gear_ids[slot])
+                cnt = int(len(by_key.get((gid, 0), [])) + len(by_key.get((gid, elem), [])))
+                support_sum += cnt
+                if cnt > 0:
+                    ok_slots += 1
+                if cnt < min_slot:
+                    min_slot = cnt
+            # Prefer candidates with all slots supported, then higher support, then earlier candidate index.
+            key = (int(ok_slots), int(min_slot), int(support_sum))
+            if best_key is None or key > best_key:
+                best_key = key
+                best_c = int(c_idx)
+        if best_c < 0:
+            continue
+        repair_candidate_idx[s_idx] = int(best_c)
+        chosen_cand = songs[s_idx].candidates[int(best_c)]
+        totals_np[s_idx, :] = np.asarray(chosen_cand.candidate.gem_totals, dtype=np.int32)
+        elements_np[s_idx] = int(chosen_cand.element_id)
+
+        elem = int(elements_np[s_idx])
+        for slot in range(6):
+            gid = int(chosen_cand.gear_ids[slot])
+            inds = by_key.get((gid, 0), []) + by_key.get((gid, elem), [])
+            if not inds:
+                cand_count[s_idx, slot] = 0
+                continue
+            inds_sorted = sorted(
+                inds,
+                key=lambda i: (
+                    int(inv_gems[i, OV_INDEX]),
+                    int(inv_gems[i, 0] + inv_gems[i, 1] + inv_gems[i, 2] + inv_gems[i, 3] + inv_gems[i, 4]),
+                ),
+                reverse=True,
+            )
+            take = min(C, len(inds_sorted))
+            cand_idx[s_idx, slot, :take] = np.asarray(inds_sorted[:take], dtype=np.int32)
+            cand_count[s_idx, slot] = int(take)
+
+    comb_scores: List[Tuple[int, int]] = []
+    for s_idx in range(S):
+        if int(covered_np[s_idx]) != 0:
+            continue
+        if int(repair_candidate_idx[s_idx]) < 0:
+            continue
+        cc = cand_count[s_idx]
+        if int(cc.min()) <= 0:
+            continue
+        comb = 1
+        for j in range(6):
+            comb *= int(cc[j])
+            if comb > 10**9:
+                break
+        comb_scores.append((comb, int(s_idx)))
+    comb_scores.sort(key=lambda t: t[0])
+    if song_limit > 0:
+        comb_scores = comb_scores[: int(song_limit)]
+    eligible = [s for _comb, s in comb_scores]
+
+    if not eligible:
+        return covered_np, chosen_offsets_np, chosen_candidate_idx, {
+            "enabled": True,
+            "attempts": int(attempts),
+            "repaired": 0,
+            "songs_considered": 0,
+            "time_sec": 0.0,
+        }
+
+    eligible_np = np.asarray(eligible, dtype=np.int32)
+    covered_sub = covered_np[eligible_np]
+    totals_sub = totals_np[eligible_np]
+    cand_idx_sub = cand_idx[eligible_np]
+    cand_count_sub = cand_count[eligible_np]
+
+    mem.log(f"gpu_full_repair_inputs_ready (songs={len(eligible)})")
+    res = repair_uncovered_with_inventory_gpu(
+        covered_np=covered_sub,
+        totals_np=totals_sub,
+        cand_idx_np=cand_idx_sub,
+        cand_count_np=cand_count_sub,
+        inv_offsets_np=inv_offsets,
+        inv_gems_np=inv_gems,
+        attempts=int(attempts),
+        seed=int(seed),
+        profile=bool(profile),
+    )
+    mem.log("gpu_full_repair_done")
+
+    repaired_mask = np.asarray(res.repaired_mask, dtype=np.int32)
+    repaired_offsets = np.asarray(res.repaired_offsets, dtype=np.int32)
+
+    new_covered = covered_np.copy()
+    new_offsets = chosen_offsets_np.copy()
+    new_candidate_idx = chosen_candidate_idx.copy()
+    for local_i, s_idx in enumerate(eligible):
+        if int(new_covered[s_idx]) != 0:
+            continue
+        if int(repaired_mask[local_i]) != 0:
+            new_covered[s_idx] = 1
+            new_offsets[s_idx, :] = repaired_offsets[local_i, :]
+            new_candidate_idx[s_idx] = int(repair_candidate_idx[s_idx])
+
+    stats = dict(res.stats)
+    stats["songs_considered"] = int(len(eligible))
+    return new_covered, new_offsets, new_candidate_idx, stats
 
 
 def _materialize_coverage_solution_multi(
@@ -1002,33 +1236,118 @@ def _build_multi_candidate_offsets(
     song_count = int(len(songs))
     offsets_out = np.zeros((song_count, k_total, 6), dtype=np.int32)
     part_to_candidate = np.full((song_count, k_total), -1, dtype=np.int32)
-    write_ptr = np.zeros((song_count,), dtype=np.int32)
+
+    def _apportion(total: int, weights: List[int], *, min_each: int = 0) -> List[int]:
+        total = int(total)
+        if total < 0:
+            raise ValueError("apportion total must be >= 0.")
+        n = int(len(weights))
+        if n <= 0:
+            return []
+        if int(min_each) < 0:
+            raise ValueError("apportion min_each must be >= 0.")
+        if total < n * int(min_each):
+            raise ValueError("apportion total too small for min_each constraint.")
+        w = [max(0, int(x)) for x in weights]
+        if sum(w) <= 0:
+            w = [1] * n
+
+        out = [int(min_each)] * n
+        remaining = int(total - n * int(min_each))
+        if remaining <= 0:
+            return out
+
+        denom = int(sum(w))
+        add = [int((remaining * w[i]) // denom) for i in range(n)]
+        rem = [int((remaining * w[i]) % denom) for i in range(n)]
+        used = int(sum(add))
+        leftover = int(remaining - used)
+        if leftover > 0:
+            order = sorted(range(n), key=lambda i: (rem[i], w[i], -i), reverse=True)
+            for t in range(int(leftover)):
+                add[order[t % n]] += 1
+
+        for i in range(n):
+            out[i] += int(add[i])
+        if sum(out) != total:
+            raise RuntimeError("apportion sum mismatch.")
+        return out
 
     # Build a flat list of candidate instances so we can run witness generation ONCE with fixed K_total,
     # then slice per-candidate budgets (avoids multiple Taichi recompiles for varying K).
-    items: List[Tuple[int, int, CandidateSpec, int, int]] = []  # (song_idx, cand_idx, cand, start, k_budget)
+    items: List[Tuple[int, int, CandidateSpec]] = []  # (song_idx, cand_idx, cand)
     cand_counts: List[int] = []
+    item_idx_by_song: List[List[int]] = []
     for s_idx, song in enumerate(songs):
         cand_count = int(len(song.candidates))
         if cand_count <= 0:
             raise ValueError(f"No candidates for song: {song.name}")
         if k_total < cand_count:
             raise ValueError("k_total must be >= candidates per song for multi-candidate mode.")
-        base = k_total // cand_count
-        rem = k_total % cand_count
-        if base <= 0:
-            raise ValueError("k_total budget too small for candidate split.")
+        # Candidate budgets are intentionally skewed toward the best-ranked candidate (index 0).
+        # Equal splitting tends to regress coverage because it deprives the primary candidate of
+        # enough anchor patterns and exploration budget.
+        primary_weight = 4
+        other_weight = 1
+        weights = [int(primary_weight)] + [int(other_weight)] * max(0, int(cand_count - 1))
+        budgets = _apportion(int(k_total), weights, min_each=1)
         cand_counts.append(cand_count)
-        for c_idx, cand in enumerate(song.candidates):
-            k_budget = base + (1 if c_idx < rem else 0)
-            start = int(write_ptr[s_idx])
-            end = start + int(k_budget)
-            part_to_candidate[s_idx, start:end] = int(c_idx)
-            write_ptr[s_idx] = int(end)
-            items.append((int(s_idx), int(c_idx), cand, int(start), int(k_budget)))
 
-    if np.any(write_ptr != int(k_total)):
-        raise RuntimeError("Multi-candidate witness layout mismatch (k_total allocation).")
+        # Allocate the witness anchor prefix mostly to the primary candidate to preserve reuse bias,
+        # while still giving alternatives enough anchors to be viable.
+        k_anchor = max(0, min(int(k_total), int(witness_anchor_patterns)))
+        anchor_min_each = 1 if k_anchor >= cand_count else 0
+        anchors = _apportion(int(k_anchor), weights, min_each=int(anchor_min_each)) if k_anchor > 0 else [0] * cand_count
+        # Clamp anchors to budgets and redistribute any overshoot.
+        overshoot = 0
+        for i in range(cand_count):
+            if anchors[i] > budgets[i]:
+                overshoot += int(anchors[i] - budgets[i])
+                anchors[i] = int(budgets[i])
+        if overshoot > 0:
+            cap = [int(budgets[i] - anchors[i]) for i in range(cand_count)]
+            order = sorted(range(cand_count), key=lambda i: (cap[i], weights[i], -i), reverse=True)
+            for t in range(int(overshoot)):
+                i = order[t % cand_count]
+                if cap[i] <= 0:
+                    continue
+                anchors[i] += 1
+                cap[i] -= 1
+
+        remaining_anchor = list(anchors)
+        c_ptr = 0
+        for p in range(int(k_anchor)):
+            spins = 0
+            while remaining_anchor[c_ptr] <= 0 and spins < cand_count:
+                c_ptr = (c_ptr + 1) % cand_count
+                spins += 1
+            if remaining_anchor[c_ptr] <= 0:
+                raise RuntimeError("Multi-candidate witness budget mismatch (anchors exhausted early).")
+            part_to_candidate[s_idx, p] = int(c_ptr)
+            remaining_anchor[c_ptr] -= 1
+            c_ptr = (c_ptr + 1) % cand_count
+        if any(r != 0 for r in remaining_anchor):
+            raise RuntimeError("Multi-candidate witness budget mismatch (anchors leftover).")
+
+        remaining = [int(budgets[i] - anchors[i]) for i in range(cand_count)]
+        for p in range(int(k_anchor), int(k_total)):
+            spins = 0
+            while remaining[c_ptr] <= 0 and spins < cand_count:
+                c_ptr = (c_ptr + 1) % cand_count
+                spins += 1
+            if remaining[c_ptr] <= 0:
+                raise RuntimeError("Multi-candidate witness budget mismatch (allocation exhausted early).")
+            part_to_candidate[s_idx, p] = int(c_ptr)
+            remaining[c_ptr] -= 1
+            c_ptr = (c_ptr + 1) % cand_count
+        if any(r != 0 for r in remaining):
+            raise RuntimeError("Multi-candidate witness budget mismatch (allocation leftover).")
+
+        idxs: List[int] = []
+        for c_idx, cand in enumerate(song.candidates):
+            idxs.append(int(len(items)))
+            items.append((int(s_idx), int(c_idx), cand))
+        item_idx_by_song.append(idxs)
 
     if not items:
         raise RuntimeError("No candidate instances to build witness pool.")
@@ -1036,7 +1355,7 @@ def _build_multi_candidate_offsets(
     gear_ids_np = np.zeros((len(items), 6), dtype=np.int32)
     totals_np = np.zeros((len(items), 6), dtype=np.int32)
     elements_np = np.zeros((len(items),), dtype=np.int32)
-    for idx, (_s_idx, _c_idx, cand, _start, _k_budget) in enumerate(items):
+    for idx, (_s_idx, _c_idx, cand) in enumerate(items):
         gear_ids_np[idx, :] = np.asarray(cand.gear_ids, dtype=np.int32)
         totals_np[idx, :] = np.asarray(cand.candidate.gem_totals, dtype=np.int32)
         elements_np[idx] = int(cand.element_id)
@@ -1053,9 +1372,20 @@ def _build_multi_candidate_offsets(
         pattern_profile=int(gpu_full_witness_pattern_profile),
         profile=bool(mem.enabled),
     )
-    for idx, (s_idx, _c_idx, _cand, start, k_budget) in enumerate(items):
-        end = int(start) + int(k_budget)
-        offsets_out[s_idx, start:end, :] = offsets_all[idx, : int(k_budget), :]
+    for s_idx, song in enumerate(songs):
+        cand_count = int(len(song.candidates))
+        if cand_count <= 0:
+            continue
+        if s_idx >= len(item_idx_by_song):
+            raise RuntimeError("Multi-candidate witness index mapping mismatch.")
+        idxs = item_idx_by_song[s_idx]
+        if len(idxs) != cand_count:
+            raise RuntimeError("Multi-candidate witness index mapping mismatch.")
+        for c_idx, inst_idx in enumerate(idxs):
+            mask = part_to_candidate[s_idx] == int(c_idx)
+            if not np.any(mask):
+                continue
+            offsets_out[s_idx, mask, :] = offsets_all[int(inst_idx), mask, :]
 
     mem.log(f"gpu_full_witness_pool_built (candidate_instances={len(items)})")
     cand_min = int(min(cand_counts)) if cand_counts else 0
@@ -1414,19 +1744,17 @@ def _run_gpu_full_solver_from_candidates(
 
     raw_vids = np.zeros_like(offsets_np, dtype=np.int32)
     for s_idx, song in enumerate(songs):
-        write_ptr = 0
-        for c_idx, cand in enumerate(song.candidates):
-            cand_mask = part_to_candidate[s_idx] == int(c_idx)
-            count = int(np.count_nonzero(cand_mask))
-            if count <= 0:
-                continue
-            start = int(write_ptr)
-            end = start + int(count)
-            write_ptr = int(end)
-            gids = (np.asarray(cand.gear_ids, dtype=np.int32) << np.int32(16)).reshape(1, 6)
-            raw_vids[s_idx, start:end, :] = gids | offsets_np[s_idx, start:end, :]
-        if write_ptr != int(k_total):
-            raise RuntimeError("Multi-candidate raw vids build mismatch.")
+        cand_count = int(len(song.candidates))
+        if cand_count <= 0:
+            raise RuntimeError("Multi-candidate raw vids build mismatch (no candidates).")
+        gids = (np.stack([np.asarray(c.gear_ids, dtype=np.int32) for c in song.candidates], axis=0) << np.int32(16)).astype(
+            np.int32,
+            copy=False,
+        )
+        cand_idx = np.asarray(part_to_candidate[s_idx], dtype=np.int32)
+        if np.any(cand_idx < 0) or np.any(cand_idx >= cand_count):
+            raise RuntimeError("Multi-candidate raw vids build mismatch (candidate index out of range).")
+        raw_vids[s_idx, :, :] = gids[cand_idx, :] | offsets_np[s_idx, :, :]
 
     part_vids, variant_freq_np, dense_vid_universe, v_count = _pack_part_vids_dense_from_raw(
         raw_vids,
@@ -1858,17 +2186,9 @@ def run_inventory_meta_coverage(
                 candidates_by_song[name] = cands
         else:
             if solver == "gpu_full" and int(gpu_full_candidate_score_delta) > 0:
-                lim = int(gpu_full_candidate_limit_per_song)
-                if lim <= 0:
-                    lim = max(50, int(gpu_full_top_candidates) * 10)
-                candidates_by_song, missing = fetch_candidates_within_delta_allow_missing(
-                    conn,
-                    score_delta=int(gpu_full_candidate_score_delta),
-                    limit_per_song=int(lim),
-                )
-                song_peak_by_name = None  # will be re-derived lazily from selected candidates
-            else:
-                candidates_by_song, missing = fetch_peak_candidates_allow_missing(conn)
+                # Inventory meta coverage is exact-peak-only: ignore "within delta" candidate fetching.
+                mem.log("gpu_full_candidate_score_delta_ignored_exact_peak_only")
+            candidates_by_song, missing = fetch_peak_candidates_allow_missing(conn)
     finally:
         conn.close()
         mem.log("db_closed")
@@ -2206,6 +2526,41 @@ def run_inventory_meta_coverage(
     if use_multi_candidates:
         if best_multi_specs is None or best_chosen_candidate_idx is None:
             raise RuntimeError("Multi-candidate materialization inputs missing.")
+        repair_stats = None
+        if solver == "gpu_full" and gpu_full_repair_enabled:
+            old_sol = best_sol
+            covered_np = np.asarray(best_sol.covered, dtype=np.int32)
+            chosen_offsets_np = np.asarray(best_sol.chosen_offsets, dtype=np.int32)
+            seeded_pairs = None
+            if seeded_raw_vids is not None and int(seeded_raw_vids.size) > 0:
+                gids = (seeded_raw_vids >> np.int32(16)).astype(np.int32, copy=False)
+                offs = (seeded_raw_vids & np.int32(0xFFFF)).astype(np.int32, copy=False)
+                seeded_pairs = list(zip(gids.tolist(), offs.tolist()))
+            repaired_cov, repaired_offsets, repaired_cands, repair_stats = _try_inventory_repair_multi(
+                songs=best_multi_specs,
+                covered_np=covered_np,
+                chosen_offsets_np=chosen_offsets_np,
+                chosen_candidate_idx=best_chosen_candidate_idx,
+                inv_cap=int(inventory_cap),
+                attempts=int(gpu_full_repair_attempts),
+                seed=int(best_seed or seed),
+                max_cands_per_slot=int(gpu_full_repair_max_cands_per_slot),
+                song_limit=int(gpu_full_repair_song_limit),
+                mem=mem,
+                profile=bool(profile),
+                seeded_pairs=seeded_pairs,
+            )
+            from types import SimpleNamespace
+
+            best_sol = SimpleNamespace(
+                covered=repaired_cov,
+                chosen_offsets=repaired_offsets,
+                covered_count=int(repaired_cov.sum()),
+                stats=dict(getattr(old_sol, "stats", {})),
+            )
+            best_chosen_candidate_idx = np.asarray(repaired_cands, dtype=np.int32)
+            if isinstance(best_sol.stats, dict):
+                best_sol.stats.setdefault("repair", repair_stats)
         result = _materialize_coverage_solution_multi(
             best_multi_specs,
             gear_names=gear_names,
@@ -2222,6 +2577,8 @@ def run_inventory_meta_coverage(
             mem=mem,
             legacy_args=legacy_args,
         )
+        if repair_stats is not None:
+            result.setdefault("solver_stats", {}).setdefault("solver", {}).setdefault("repair", repair_stats)
     else:
         if gear_ids_np is None:
             raise RuntimeError("Gear IDs not initialized for materialization.")
