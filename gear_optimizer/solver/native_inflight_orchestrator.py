@@ -776,8 +776,8 @@ def run_native_inflight_song_pipeline(
     except Exception:
         cfg0 = None
 
-    inflight_limit = max(1, int(in_flight_songs))
-    inflight_limit = min(inflight_limit, len(tasks))
+    requested_inflight = max(1, int(in_flight_songs))
+    inflight_limit = min(int(requested_inflight), len(tasks))
 
     # Limit concurrent in-flight songs by available GPU timeline slots.
     # Slot 0 is shared/fallback; we reserve 1..MAX_SONG_SLOTS-1 for deterministic reuse.
@@ -791,12 +791,28 @@ def run_native_inflight_song_pipeline(
     inflight_limit = min(int(inflight_limit), int(song_slot_limit))
     if int(in_flight_songs) > 1:
         try:
+            cap_reasons: list[str] = []
+            try:
+                if int(len(tasks)) < int(requested_inflight):
+                    cap_reasons.append(f"queue={int(len(tasks))}")
+            except Exception:
+                pass
+            try:
+                if int(song_slot_limit) < int(requested_inflight):
+                    cap_reasons.append(f"usable_slots={int(song_slot_limit)}")
+            except Exception:
+                pass
+
             msg = (
                 f"[InFlight] enabled: requested={int(in_flight_songs)} effective={int(inflight_limit)} "
                 f"(GPU_SONG_SLOTS={int(max_song_slots)}, usable_slots={int(song_slot_limit)})"
             )
             if int(inflight_limit) < int(in_flight_songs):
-                msg += " [capped by song slots; set GPU_SONG_SLOTS >= InFlightSongs + 1]"
+                if cap_reasons:
+                    msg += f" [capped by {', '.join(cap_reasons)}"
+                else:
+                    msg += " [capped"
+                msg += "; set GPU_SONG_SLOTS >= InFlightSongs + 1 to avoid slot caps]"
             print(msg)
         except Exception:
             pass
@@ -1947,6 +1963,52 @@ def run_native_inflight_song_pipeline(
                         still_pending.append((fg_song, fut, t_submit))
                 fg_futures = still_pending
 
+            no_ga_remaining = (not pending_tasks) and (not prepared) and (not prep_inflight) and (not ga_inflight) and (
+                not decode_inflight
+            )
+
+            # If we're not draining FG at end, do not start *new* FG work once GA has
+            # completed the queue. Defer any remaining FG candidates to the DB for
+            # later processing.
+            if (not fg_drain_at_end) and pending_fg and no_ga_remaining:
+                # If any FG work is already running, let it complete (don't submit more).
+                if fg_futures:
+                    should_start_fg = False
+                else:
+                    try:
+                        print(
+                            f"[InFlight][FG] Deferred {len(pending_fg)} pending FG job(s) "
+                            f"(FG_InterleaveEvery={fg_every}, FG_DrainAtEnd=false). "
+                            "Candidates were persisted to DB for later processing."
+                        )
+                    except Exception:
+                        pass
+
+                    # Best-effort: stop tracking FG prep for deferred songs so we can exit
+                    # without waiting on CPU prep threads.
+                    try:
+                        for s in list(fg_prep_inflight):
+                            try:
+                                s.fg_prep_future = None
+                            except Exception:
+                                pass
+                        fg_prep_inflight.clear()
+                    except Exception:
+                        pass
+
+                    # Release any reserved timeline slots for deferred FG songs.
+                    try:
+                        for s in list(pending_fg):
+                            try:
+                                slot_pool.release(int(getattr(s, "song_slot", 0) or 0))
+                                s.song_slot = 0
+                            except Exception:
+                                continue
+                        pending_fg.clear()
+                    except Exception:
+                        pass
+                    break
+
             should_start_fg = bool(pending_fg) and (
                 ga_completed_since_last_fg >= fg_every
                 or (
@@ -2045,41 +2107,6 @@ def run_native_inflight_song_pipeline(
 
             if did_work:
                 last_progress = time.monotonic()
-
-            # If we're not draining FG at end, allow the GA pipeline to finish once all
-            # GA work is complete, even if some FG jobs remain deferred.
-            if (
-                (not fg_drain_at_end)
-                and pending_fg
-                and (ga_completed_since_last_fg < fg_every)
-                and (not pending_tasks)
-                and (not prepared)
-                and (not prep_inflight)
-                and (not ga_inflight)
-                and (not decode_inflight)
-                and (not fg_prep_inflight)
-                and (not fg_futures)
-            ):
-                try:
-                    print(
-                        f"[InFlight][FG] Deferred {len(pending_fg)} pending FG job(s) "
-                        f"(FG_InterleaveEvery={fg_every}, FG_DrainAtEnd=false). "
-                        "Candidates were persisted to DB for later processing."
-                    )
-                except Exception:
-                    pass
-                # We are intentionally skipping FG; release reserved timeline slots.
-                try:
-                    for s in list(pending_fg):
-                        try:
-                            slot_pool.release(int(getattr(s, "song_slot", 0) or 0))
-                            s.song_slot = 0
-                        except Exception:
-                            continue
-                    pending_fg.clear()
-                except Exception:
-                    pass
-                break
 
             # Avoid tight spin.
             if not did_work:
