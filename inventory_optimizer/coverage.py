@@ -877,6 +877,8 @@ def _run_gpu_full_solver_from_witness_pool(
     gpu_full_witness_pattern_profile: int,
     gpu_full_k_scan_select: int,
     gpu_full_k_scan_repack: int,
+    gpu_full_alns_enabled: bool = False,
+    gpu_full_alns_islands: int = 1,
     gpu_full_witness_palettes: int,
     witness_anchor_patterns: int = 24,
     witness_seed_streams: int = 4,
@@ -948,6 +950,8 @@ def _run_gpu_full_solver_from_witness_pool(
         gpu_full_repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
         gpu_full_k_scan_select=int(gpu_full_k_scan_select),
         gpu_full_k_scan_repack=int(gpu_full_k_scan_repack),
+        gpu_full_alns_enabled=bool(gpu_full_alns_enabled),
+        gpu_full_alns_islands=int(gpu_full_alns_islands),
         lns_time_sec=float(lns_time_sec),
         lns_attempts=int(lns_attempts),
         gpu_lns_destroy=int(gpu_lns_destroy),
@@ -1199,6 +1203,8 @@ def _run_gpu_full_solver_from_offsets(
     gpu_full_repack_rarity_weighted: bool,
     gpu_full_k_scan_select: int,
     gpu_full_k_scan_repack: int,
+    gpu_full_alns_enabled: bool = False,
+    gpu_full_alns_islands: int = 1,
     lns_time_sec: float,
     lns_attempts: int,
     gpu_lns_destroy: int,
@@ -1253,6 +1259,8 @@ def _run_gpu_full_solver_from_offsets(
         counter_stripes=int(gpu_full_counter_stripes),
         k_scan_select=int(gpu_full_k_scan_select),
         k_scan_repack=int(gpu_full_k_scan_repack),
+        alns_enabled=bool(gpu_full_alns_enabled),
+        alns_islands=int(gpu_full_alns_islands),
         lns_time_sec=float(lns_time_sec),
         lns_attempts=int(lns_attempts),
         lns_destroy=int(gpu_lns_destroy),
@@ -1314,6 +1322,8 @@ def _run_gpu_full_solver_from_candidates(
     gpu_full_witness_pattern_profile: int,
     gpu_full_k_scan_select: int,
     gpu_full_k_scan_repack: int,
+    gpu_full_alns_enabled: bool = False,
+    gpu_full_alns_islands: int = 1,
     witness_anchor_patterns: int,
     witness_seed_streams: int,
     mem: _MemoryLogger,
@@ -1370,6 +1380,8 @@ def _run_gpu_full_solver_from_candidates(
         counter_stripes=int(gpu_full_counter_stripes),
         k_scan_select=int(gpu_full_k_scan_select),
         k_scan_repack=int(gpu_full_k_scan_repack),
+        alns_enabled=bool(gpu_full_alns_enabled),
+        alns_islands=int(gpu_full_alns_islands),
         lns_time_sec=float(lns_time_sec),
         lns_attempts=int(lns_attempts),
         lns_destroy=int(gpu_lns_destroy),
@@ -1583,6 +1595,8 @@ def run_inventory_meta_coverage(
     gpu_full_candidate_limit_per_song: int = 0,
     gpu_full_k_scan_select: int = 0,
     gpu_full_k_scan_repack: int = 0,
+    gpu_full_alns_enabled: bool = False,
+    gpu_full_alns_islands: int = 1,
     gpu_full_repair_enabled: bool = False,
     gpu_full_repair_attempts: int = 128,
     gpu_full_repair_max_cands_per_slot: int = 8,
@@ -1649,6 +1663,10 @@ def run_inventory_meta_coverage(
     gpu_full_counter_stripes = int(gpu_full_counter_stripes)
     if gpu_full_counter_stripes <= 0:
         raise ValueError("gpu_full_counter_stripes must be positive.")
+    gpu_full_alns_enabled = bool(gpu_full_alns_enabled)
+    gpu_full_alns_islands = int(gpu_full_alns_islands)
+    if gpu_full_alns_islands <= 0:
+        raise ValueError("gpu_full_alns_islands must be positive.")
     gpu_full_witness_palettes = int(gpu_full_witness_palettes)
     if gpu_full_witness_palettes <= 0:
         raise ValueError("gpu_full_witness_palettes must be positive.")
@@ -1789,6 +1807,8 @@ def run_inventory_meta_coverage(
         "gpu_full_k_scan_select": int(gpu_full_k_scan_select),
         "gpu_full_k_scan_repack": int(gpu_full_k_scan_repack),
         "gpu_full_witness_palettes": int(gpu_full_witness_palettes),
+        "gpu_full_alns_enabled": bool(gpu_full_alns_enabled),
+        "gpu_full_alns_islands": int(gpu_full_alns_islands),
         "gpu_full_lns_random_destroy_prob": float(gpu_full_lns_random_destroy_prob),
         "gpu_full_lns_restore_after": int(gpu_full_lns_restore_after),
         "gpu_full_lns_restore_drop": int(gpu_full_lns_restore_drop),
@@ -1818,7 +1838,7 @@ def run_inventory_meta_coverage(
 
     # `gpu_full` supports a multi-seed path that avoids repeated Taichi recompiles by using a
     # single dense variant universe (`V`) across all restarts.
-    if solver == "gpu_full" and restarts > 1 and not use_multi_candidates:
+    if solver == "gpu_full" and restarts > 1 and not use_multi_candidates and not gpu_full_alns_enabled:
         seeds = [int(base_seed) + r for r in range(int(restarts))]
         if profile:
             mem.log(f"gpu_full_multi_seed (restarts={int(restarts)})")
@@ -1851,6 +1871,8 @@ def run_inventory_meta_coverage(
             gpu_full_counter_stripes=int(gpu_full_counter_stripes),
             gpu_full_k_scan_select=int(gpu_full_k_scan_select),
             gpu_full_k_scan_repack=int(gpu_full_k_scan_repack),
+            gpu_full_alns_enabled=bool(gpu_full_alns_enabled),
+            gpu_full_alns_islands=int(gpu_full_alns_islands),
             seeded_raw_vids=seeded_raw_vids,
         )
     else:
@@ -1953,6 +1975,8 @@ def run_inventory_meta_coverage(
                         gpu_full_repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
                         gpu_full_k_scan_select=int(gpu_full_k_scan_select),
                         gpu_full_k_scan_repack=int(gpu_full_k_scan_repack),
+                        gpu_full_alns_enabled=bool(gpu_full_alns_enabled),
+                        gpu_full_alns_islands=int(gpu_full_alns_islands),
                         lns_time_sec=float(lns_time_per_restart),
                         lns_attempts=int(lns_attempts_per_restart),
                         gpu_lns_destroy=int(gpu_lns_destroy),
@@ -2001,6 +2025,8 @@ def run_inventory_meta_coverage(
                         gpu_full_witness_pattern_profile=int(gpu_full_witness_pattern_profile),
                         gpu_full_k_scan_select=int(gpu_full_k_scan_select),
                         gpu_full_k_scan_repack=int(gpu_full_k_scan_repack),
+                        gpu_full_alns_enabled=bool(gpu_full_alns_enabled),
+                        gpu_full_alns_islands=int(gpu_full_alns_islands),
                         gpu_full_witness_palettes=int(gpu_full_witness_palettes),
                         mem=mem,
                         v_pad_bin=int(gpu_full_v_pad_bin),

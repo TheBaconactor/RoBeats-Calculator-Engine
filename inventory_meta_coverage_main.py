@@ -259,6 +259,17 @@ def main() -> None:
         help="GPU full: scan only this many patterns per song in repack (0=all; default: 0).",
     )
     parser.add_argument(
+        "--gpu-full-alns",
+        action="store_true",
+        help="GPU full: enable multi-island ALNS (bandit ruin-and-recreate) instead of single-trajectory LNS (default: off).",
+    )
+    parser.add_argument(
+        "--gpu-full-alns-islands",
+        type=int,
+        default=1,
+        help="GPU full: number of concurrent ALNS islands to run in one solve (default: 1).",
+    )
+    parser.add_argument(
         "--output", type=str, default="", help="Output JSON path (default: artifacts/inventory_meta_coverage.json)."
     )
     args = parser.parse_args()
@@ -325,6 +336,8 @@ def main() -> None:
             gpu_full_candidate_limit_per_song=int(args.gpu_full_candidate_limit_per_song),
             gpu_full_k_scan_select=int(args.gpu_full_k_scan_select),
             gpu_full_k_scan_repack=int(args.gpu_full_k_scan_repack),
+            gpu_full_alns_enabled=bool(args.gpu_full_alns),
+            gpu_full_alns_islands=int(args.gpu_full_alns_islands),
             gpu_full_repair_enabled=bool(args.gpu_full_repair),
             gpu_full_repair_attempts=int(args.gpu_full_repair_attempts),
             gpu_full_repair_max_cands_per_slot=int(args.gpu_full_repair_max_cands_per_slot),

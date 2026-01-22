@@ -96,6 +96,8 @@ def main() -> int:
     ap.add_argument("--gpu-repack-passes", type=int, default=3, help="GPU repack passes (default: 3).")
     ap.add_argument("--gpu-lns-destroy", type=int, default=6, help="GPU LNS destroy count (default: 6).")
     ap.add_argument("--profile", action="store_true", help="Enable solver profiling/logs (default: off).")
+    ap.add_argument("--gpu-full-alns", action="store_true", help="Enable GPU full multi-island ALNS (default: off).")
+    ap.add_argument("--gpu-full-alns-islands", type=int, default=1, help="ALNS islands count (default: 1).")
     ap.add_argument("--elements", type=str, default="Chill,Rush,Vibe,Beat,Flow", help="Elements list (default: 5).")
     ap.add_argument(
         "--unique-gear",
@@ -151,6 +153,8 @@ def main() -> int:
             lns_attempts=int(args.lns_attempts),
             profile=bool(args.profile),
             solver=str(args.solver),
+            gpu_full_alns_enabled=bool(args.gpu_full_alns),
+            gpu_full_alns_islands=int(args.gpu_full_alns_islands),
         )
         dt = time.perf_counter() - t0
         stats = results.get("stats", {})

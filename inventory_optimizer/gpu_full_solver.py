@@ -174,6 +174,109 @@ class GpuFullSolution:
     stats: dict
 
 
+@dataclass
+class _GpuFullIslandsState:
+    part_vids: ti.Field
+    freq: ti.Field
+    counts: ti.Field
+    counts_total: ti.Field
+    covered: ti.Field
+    chosen: ti.Field
+    inv_size: ti.Field
+    cov_count: ti.Field
+    best_cost: ti.Field
+    best_cand: ti.Field
+    did_add_any: ti.Field
+    removed_cnt: ti.Field
+    destroy_kind: ti.Field
+    destroy_target: ti.Field
+    repack_best_p: ti.Field
+
+
+_LAST_ISLANDS_SIG: Optional[Tuple[int, int, int, int, int]] = None
+_LAST_ISLANDS_STATE: Optional[_GpuFullIslandsState] = None
+
+
+def _get_or_build_islands_state(
+    *,
+    islands: int,
+    s_count: int,
+    k_count: int,
+    v_count: int,
+    counter_stripes: int,
+) -> _GpuFullIslandsState:
+    """
+    Allocate persistent Taichi fields for the multi-island ALNS path.
+
+    We store islands by flattening `(I, S)` into `IS = I*S` for covered/chosen and `(I, V)` into `IV = I*V`
+    for counts_total. This avoids 2D loop/indexing overhead in Taichi kernels.
+    """
+    global _LAST_ISLANDS_SIG, _LAST_ISLANDS_STATE
+
+    sig = (int(islands), int(s_count), int(k_count), int(v_count), int(counter_stripes))
+    if _LAST_ISLANDS_STATE is not None and _LAST_ISLANDS_SIG == sig:
+        try:
+            if (
+                tuple(_LAST_ISLANDS_STATE.covered.shape) == (int(islands) * int(s_count),)
+                and tuple(_LAST_ISLANDS_STATE.counts_total.shape) == (int(islands) * int(v_count),)
+            ):
+                return _LAST_ISLANDS_STATE
+        except Exception:
+            pass
+        _LAST_ISLANDS_STATE = None
+        _LAST_ISLANDS_SIG = None
+
+    from gear_optimizer.solver.taichi_gem import runtime as ti_runtime
+
+    # Multi-island state is large; prefer a clean runtime to avoid backend graph conflicts.
+    try:
+        ti_runtime.reset_taichi(reason="gpu_full_solver islands state")
+    except Exception:
+        pass
+    ti_runtime.init_taichi()
+
+    I = int(islands)
+    IS = int(islands) * int(s_count)
+    IV = int(islands) * int(v_count)
+
+    part_vids = ti.field(dtype=ti.i32, shape=(int(s_count), int(k_count), 6))
+    freq = ti.field(dtype=ti.i32, shape=(int(v_count),))
+    counts = ti.field(dtype=ti.i32, shape=(IV, int(counter_stripes)))
+    counts_total = ti.field(dtype=ti.i32, shape=(IV,))
+    covered = ti.field(dtype=ti.i32, shape=(IS,))
+    chosen = ti.field(dtype=ti.i32, shape=(IS,))
+    inv_size = ti.field(dtype=ti.i32, shape=(I,))
+    cov_count = ti.field(dtype=ti.i32, shape=(I,))
+
+    best_cost = ti.field(dtype=ti.u32, shape=(I,))
+    best_cand = ti.field(dtype=ti.u32, shape=(I,))  # packed (s,p) key
+    did_add_any = ti.field(dtype=ti.i32, shape=(I,))
+    removed_cnt = ti.field(dtype=ti.i32, shape=(I,))
+    destroy_kind = ti.field(dtype=ti.i32, shape=(I,))
+    destroy_target = ti.field(dtype=ti.i32, shape=(I,))
+    repack_best_p = ti.field(dtype=ti.i32, shape=(IS,))
+
+    _LAST_ISLANDS_STATE = _GpuFullIslandsState(
+        part_vids=part_vids,
+        freq=freq,
+        counts=counts,
+        counts_total=counts_total,
+        covered=covered,
+        chosen=chosen,
+        inv_size=inv_size,
+        cov_count=cov_count,
+        best_cost=best_cost,
+        best_cand=best_cand,
+        did_add_any=did_add_any,
+        removed_cnt=removed_cnt,
+        destroy_kind=destroy_kind,
+        destroy_target=destroy_target,
+        repack_best_p=repack_best_p,
+    )
+    _LAST_ISLANDS_SIG = sig
+    return _LAST_ISLANDS_STATE
+
+
 @ti.func
 def _xorshift32(x):
     x ^= x << 13
@@ -188,6 +291,508 @@ def _stripe_idx(counts: ti.template(), s_idx: ti.i32, slot: ti.i32) -> ti.i32:
     # Hash by song+slot so add/remove are consistent and updates spread across stripes.
     h = ti.u32(s_idx) * ti.u32(0x7F4A7C15) + ti.u32(slot) * ti.u32(0x9E3779B9)
     return ti.i32(h % ti.u32(stripe_count))
+
+
+@ti.kernel
+def _reset_state_islands(
+    counts: ti.template(),
+    counts_total: ti.template(),
+    covered: ti.template(),
+    chosen: ti.template(),
+    inv_size: ti.template(),
+    cov_count: ti.template(),
+):
+    for idx in ti.grouped(counts):
+        counts[idx] = 0
+    for i in counts_total:
+        counts_total[i] = 0
+    for idx in covered:
+        covered[idx] = 0
+        chosen[idx] = -1
+    for i in inv_size:
+        inv_size[i] = 0
+        cov_count[i] = 0
+
+
+@ti.kernel
+def _seed_inventory_islands(
+    counts_total: ti.template(),
+    inv_size: ti.template(),
+    seed_indices: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    v_count: ti.i32,
+):
+    # Assume caller already cleared counts_total and set inv_size=0.
+    I = inv_size.shape[0]
+    for i in range(I):
+        inv_size[i] = 0
+        base = ti.i32(i) * ti.i32(v_count)
+        for k in range(seed_indices.shape[0]):
+            idx = seed_indices[k]
+            if idx >= 0:
+                counts_total[base + idx] = 1
+                inv_size[i] += 1
+
+
+@ti.kernel
+def _greedy_fill_steps_islands(
+    part_vids: ti.template(),
+    freq: ti.template(),
+    counts: ti.template(),
+    counts_total: ti.template(),
+    covered: ti.template(),
+    chosen: ti.template(),
+    inv_size: ti.template(),
+    cov_count: ti.template(),
+    did_add_any: ti.template(),
+    best_cost: ti.template(),
+    best_cand: ti.template(),
+    inv_cap: ti.i32,
+    k_scan: ti.i32,
+    seed_u: ti.u32,
+    v_count: ti.i32,
+    s_count: ti.i32,
+    p_bits: ti.i32,
+    cost_weight_base: ti.u32,
+    cost_weight_step: ti.u32,
+):
+    """
+    Do a small fixed number of greedy select+add steps per island to amortize host overhead.
+
+    Notes:
+    - Uses `best_cost[i]` for the combined (cost*weight + invscore) reduction per island.
+    - Uses `best_cand[i]` for tie-breaking by minimal packed (s,p).
+    - Packing is `(s << p_bits) | p` (no cost bits), then cost is recomputed on apply.
+    """
+    I = inv_size.shape[0]
+    K = part_vids.shape[1]
+    scan = K
+    if k_scan > 0 and k_scan < K:
+        scan = k_scan
+
+    for i in range(I):
+        did_add_any[i] = 0
+
+    for step in ti.static(range(8)):
+        for i in range(I):
+            best_cost[i] = ti.u32(0xFFFFFFFF)
+            best_cand[i] = ti.u32(0xFFFFFFFF)
+
+        for idx in covered:
+            if covered[idx] != 0:
+                continue
+            i = ti.i32(idx // s_count)
+            s = ti.i32(idx - i * s_count)
+            remaining = ti.i32(inv_cap - inv_size[i])
+            if remaining < 0:
+                continue
+            remaining_clamped = ti.min(ti.i32(6), ti.max(ti.i32(0), remaining))
+            cost_weight = cost_weight_base + cost_weight_step * ti.u32(6 - remaining_clamped)
+            if cost_weight > ti.u32(65535):
+                cost_weight = ti.u32(65535)
+            if cost_weight < ti.u32(1):
+                cost_weight = ti.u32(1)
+
+            salt = seed_u ^ (ti.u32(i) * ti.u32(0x85EBCA6B)) ^ (ti.u32(step) * ti.u32(0x9E3779B9))
+            start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9))
+            start = _xorshift32(start)
+            start_i = ti.i32(start % ti.u32(K))
+
+            best_local = ti.u32(0xFFFFFFFF)
+            for pp in range(scan):
+                p = (start_i + ti.i32(pp)) % ti.i32(K)
+                cost = ti.i32(0)
+                score = ti.i32(0)
+                base_v = i * ti.i32(v_count)
+                for j in ti.static(range(6)):
+                    vid = part_vids[s, p, j]
+                    if counts_total[base_v + vid] == 0:
+                        cost += 1
+                        score += freq[vid]
+                if cost <= remaining:
+                    invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
+                    combined = ti.u32(cost) * ti.u32(cost_weight) + invscore
+                    if combined < best_local:
+                        best_local = combined
+            ti.atomic_min(best_cost[i], best_local)
+
+        for idx in covered:
+            if covered[idx] != 0:
+                continue
+            i = ti.i32(idx // s_count)
+            s = ti.i32(idx - i * s_count)
+            target = best_cost[i]
+            if target == ti.u32(0xFFFFFFFF):
+                continue
+            remaining = ti.i32(inv_cap - inv_size[i])
+            if remaining < 0:
+                continue
+            remaining_clamped = ti.min(ti.i32(6), ti.max(ti.i32(0), remaining))
+            cost_weight = cost_weight_base + cost_weight_step * ti.u32(6 - remaining_clamped)
+            if cost_weight > ti.u32(65535):
+                cost_weight = ti.u32(65535)
+            if cost_weight < ti.u32(1):
+                cost_weight = ti.u32(1)
+
+            salt = seed_u ^ (ti.u32(i) * ti.u32(0x85EBCA6B)) ^ (ti.u32(step) * ti.u32(0x9E3779B9))
+            start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9))
+            start = _xorshift32(start)
+            start_i = ti.i32(start % ti.u32(K))
+            for pp in range(scan):
+                p = (start_i + ti.i32(pp)) % ti.i32(K)
+                cost = ti.i32(0)
+                score = ti.i32(0)
+                base_v = i * ti.i32(v_count)
+                for j in ti.static(range(6)):
+                    vid = part_vids[s, p, j]
+                    if counts_total[base_v + vid] == 0:
+                        cost += 1
+                        score += freq[vid]
+                if cost <= remaining:
+                    invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
+                    combined = ti.u32(cost) * ti.u32(cost_weight) + invscore
+                    if combined == target:
+                        key = (ti.u32(s) << ti.u32(p_bits)) | ti.u32(p)
+                        ti.atomic_min(best_cand[i], key)
+
+        for i in range(I):
+            key = best_cand[i]
+            if key == ti.u32(0xFFFFFFFF):
+                continue
+            p = ti.i32(key & ((ti.u32(1) << ti.u32(p_bits)) - ti.u32(1)))
+            s = ti.i32(key >> ti.u32(p_bits))
+            if s < 0 or s >= s_count:
+                continue
+            idx = ti.i32(i) * ti.i32(s_count) + s
+            if covered[idx] != 0:
+                continue
+            remaining = ti.i32(inv_cap - inv_size[i])
+            if remaining < 0:
+                continue
+
+            # Recompute cost (no cost bits in key).
+            cost = ti.i32(0)
+            base_v = ti.i32(i) * ti.i32(v_count)
+            for j in ti.static(range(6)):
+                vid = part_vids[s, p, j]
+                if counts_total[base_v + vid] == 0:
+                    cost += 1
+            if cost > remaining or cost > 6:
+                continue
+
+            for j in ti.static(range(6)):
+                vid = part_vids[s, p, j]
+                prev_total = ti.atomic_add(counts_total[base_v + vid], 1)
+                if prev_total == 0:
+                    ti.atomic_add(inv_size[i], 1)
+                stripe = _stripe_idx(counts, s, j)
+                ti.atomic_add(counts[base_v + vid, stripe], 1)
+            covered[idx] = 1
+            chosen[idx] = p
+            ti.atomic_add(cov_count[i], 1)
+            did_add_any[i] = 1
+
+
+@ti.kernel
+def _destroy_alns_islands(
+    part_vids: ti.template(),
+    freq: ti.template(),
+    counts: ti.template(),
+    counts_total: ti.template(),
+    covered: ti.template(),
+    chosen: ti.template(),
+    inv_size: ti.template(),
+    cov_count: ti.template(),
+    removed_cnt: ti.template(),
+    destroy_kind: ti.template(),
+    destroy_target: ti.template(),
+    seed_u: ti.u32,
+    freq_weighted: ti.i32,
+    v_count: ti.i32,
+    s_count: ti.i32,
+):
+    """
+    ALNS destroy operator, per island.
+
+    destroy_kind:
+      0 = random destroy
+      1 = unique-weighted destroy (prefer songs owning unique variants)
+      2 = hybrid (unique-weighted with extra randomness)
+    """
+    I = inv_size.shape[0]
+    for i in range(I):
+        removed_cnt[i] = 0
+
+    for pass_idx in ti.static(range(5)):
+        base_thresh = ti.u32(32 + pass_idx * 28)  # 32..144
+        for idx in covered:
+            if covered[idx] == 0:
+                continue
+            i = ti.i32(idx // s_count)
+            if removed_cnt[i] >= destroy_target[i]:
+                continue
+            kind = destroy_kind[i]
+            s = ti.i32(idx - i * s_count)
+            p_idx = chosen[idx]
+            if p_idx < 0:
+                continue
+
+            base_v = i * ti.i32(v_count)
+
+            uniq_count = ti.u32(0)
+            uniq_score = ti.u32(0)
+            if kind != 0:
+                for j in ti.static(range(6)):
+                    vid = part_vids[s, p_idx, j]
+                    if counts_total[base_v + vid] == 1:
+                        uniq_count += 1
+                        if freq_weighted != 0:
+                            f = ti.i32(freq[vid])
+                            f = ti.min(ti.i32(63), ti.max(ti.i32(0), f))
+                            uniq_score += ti.u32(64 - f)
+                        else:
+                            uniq_score += 1
+                if uniq_count == 0:
+                    continue
+
+            st = (
+                seed_u
+                ^ (ti.u32(i) * ti.u32(0x85EBCA6B))
+                ^ (ti.u32(s) * ti.u32(0x9E3779B9))
+                ^ (ti.u32(pass_idx) * ti.u32(0xC2B2AE35))
+            )
+            if kind == 2:
+                st ^= ti.u32(uniq_score) * ti.u32(0x27D4EB2D)
+            st = _xorshift32(st)
+
+            thresh = base_thresh
+            if kind == 0:
+                # Pure random.
+                pass
+            else:
+                # Favor songs with more / rarer unique variants.
+                thresh = ti.min(ti.u32(255), base_thresh * ti.max(ti.u32(1), uniq_score))
+                if kind == 2:
+                    # Add noise so we don't always destroy the same structure.
+                    thresh = ti.u32(ti.min(ti.u32(255), thresh + (st & ti.u32(31))))
+
+            if (st & ti.u32(0xFF)) < thresh:
+                idx2 = ti.atomic_add(removed_cnt[i], 1)
+                if idx2 < destroy_target[i]:
+                    for j in ti.static(range(6)):
+                        vid = part_vids[s, p_idx, j]
+                        prev_total = ti.atomic_add(counts_total[base_v + vid], -1)
+                        if prev_total == 1:
+                            ti.atomic_add(inv_size[i], -1)
+                        stripe = _stripe_idx(counts, s, j)
+                        ti.atomic_add(counts[base_v + vid, stripe], -1)
+                    covered[idx] = 0
+                    chosen[idx] = -1
+                    ti.atomic_add(cov_count[i], -1)
+                else:
+                    ti.atomic_add(removed_cnt[i], -1)
+
+
+@ti.kernel
+def _repack_eval_best_p_islands(
+    part_vids: ti.template(),
+    freq: ti.template(),
+    counts_total: ti.template(),
+    covered: ti.template(),
+    chosen: ti.template(),
+    rarity_weighted: ti.i32,
+    k_scan: ti.i32,
+    seed_u: ti.u32,
+    out_best_p: ti.template(),
+    v_count: ti.i32,
+    s_count: ti.i32,
+):
+    K = part_vids.shape[1]
+    scan = K
+    if k_scan > 0 and k_scan < K:
+        scan = k_scan
+    for idx in covered:
+        out_best_p[idx] = -1
+        if covered[idx] == 0:
+            continue
+        i = ti.i32(idx // s_count)
+        s = ti.i32(idx - i * s_count)
+        cur_p = chosen[idx]
+        if cur_p < 0:
+            continue
+
+        salt = seed_u ^ (ti.u32(i) * ti.u32(0x85EBCA6B)) ^ (ti.u32(s) * ti.u32(0x9E3779B9)) ^ ti.u32(0xC2B2AE35)
+        salt = _xorshift32(salt)
+        start_i = ti.i32(salt % ti.u32(K))
+
+        best_p = cur_p
+        best_delta = ti.i32(0)  # never allow increasing inv size (serial behavior)
+        best_rarity_delta = ti.i32(0)
+        best_score = ti.i32(0)
+        base_v = i * ti.i32(v_count)
+
+        for pp in range(scan):
+            p = (start_i + ti.i32(pp)) % ti.i32(K)
+            if p == cur_p:
+                continue
+            removed_unique = ti.i32(0)
+            added_new = ti.i32(0)
+            removed_rarity = ti.i32(0)
+            added_rarity = ti.i32(0)
+            sc = ti.i32(0)
+            for j in ti.static(range(6)):
+                sc += freq[part_vids[s, p, j]]
+            for j in ti.static(range(6)):
+                v_cur = part_vids[s, cur_p, j]
+                in_new = 0
+                for jj in ti.static(range(6)):
+                    if part_vids[s, p, jj] == v_cur:
+                        in_new = 1
+                if (in_new == 0) and (counts_total[base_v + v_cur] == 1):
+                    removed_unique += 1
+                    if rarity_weighted != 0:
+                        f = ti.i32(freq[v_cur])
+                        f = ti.min(ti.i32(63), ti.max(ti.i32(0), f))
+                        removed_rarity += ti.i32(64) - f
+            for j in ti.static(range(6)):
+                v_new = part_vids[s, p, j]
+                in_cur = 0
+                for jj in ti.static(range(6)):
+                    if part_vids[s, cur_p, jj] == v_new:
+                        in_cur = 1
+                if (in_cur == 0) and (counts_total[base_v + v_new] == 0):
+                    added_new += 1
+                    if rarity_weighted != 0:
+                        f = ti.i32(freq[v_new])
+                        f = ti.min(ti.i32(63), ti.max(ti.i32(0), f))
+                        added_rarity += ti.i32(64) - f
+            delta = added_new - removed_unique
+            if delta > 0:
+                continue
+            rarity_delta = added_rarity - removed_rarity
+            if (delta < best_delta) or (
+                (delta == best_delta)
+                and (
+                    ((rarity_weighted != 0) and (rarity_delta < best_rarity_delta))
+                    or ((rarity_weighted != 0) and (rarity_delta == best_rarity_delta) and (sc > best_score))
+                    or ((rarity_weighted == 0) and (sc > best_score))
+                )
+            ):
+                best_delta = delta
+                best_rarity_delta = rarity_delta
+                best_score = sc
+                best_p = p
+        if best_p != cur_p:
+            out_best_p[idx] = best_p
+
+
+@ti.kernel
+def _repack_apply_serial_islands(
+    part_vids: ti.template(),
+    freq: ti.template(),
+    counts: ti.template(),
+    counts_total: ti.template(),
+    covered: ti.template(),
+    chosen: ti.template(),
+    inv_size: ti.template(),
+    rarity_weighted: ti.i32,
+    best_p: ti.template(),
+    v_count: ti.i32,
+    s_count: ti.i32,
+):
+    ti.loop_config(serialize=True)
+    # Serialize across flattened (I*S) to keep counts_total updates safe within each island.
+    for idx in range(covered.shape[0]):
+        if covered[idx] == 0:
+            continue
+        i = ti.i32(idx // s_count)
+        s = ti.i32(idx - i * s_count)
+        cur_p = chosen[idx]
+        if cur_p < 0:
+            continue
+        p = best_p[idx]
+        if p < 0 or p == cur_p:
+            continue
+
+        base_v = i * ti.i32(v_count)
+
+        removed_unique = ti.i32(0)
+        added_new = ti.i32(0)
+        for j in ti.static(range(6)):
+            v_cur = part_vids[s, cur_p, j]
+            in_new = 0
+            for jj in ti.static(range(6)):
+                if part_vids[s, p, jj] == v_cur:
+                    in_new = 1
+            if (in_new == 0) and (counts_total[base_v + v_cur] == 1):
+                removed_unique += 1
+        for j in ti.static(range(6)):
+            v_new = part_vids[s, p, j]
+            in_cur = 0
+            for jj in ti.static(range(6)):
+                if part_vids[s, cur_p, jj] == v_new:
+                    in_cur = 1
+            if (in_cur == 0) and (counts_total[base_v + v_new] == 0):
+                added_new += 1
+        if (added_new - removed_unique) > 0:
+            continue
+
+        for j in ti.static(range(6)):
+            v_cur = part_vids[s, cur_p, j]
+            in_new = 0
+            for jj in ti.static(range(6)):
+                if part_vids[s, p, jj] == v_cur:
+                    in_new = 1
+            if in_new == 0:
+                prev_total = counts_total[base_v + v_cur]
+                counts_total[base_v + v_cur] = prev_total - 1
+                if prev_total == 1:
+                    inv_size[i] -= 1
+                stripe = _stripe_idx(counts, s, j)
+                counts[base_v + v_cur, stripe] = counts[base_v + v_cur, stripe] - 1
+
+        for j in ti.static(range(6)):
+            v_new = part_vids[s, p, j]
+            in_cur = 0
+            for jj in ti.static(range(6)):
+                if part_vids[s, cur_p, jj] == v_new:
+                    in_cur = 1
+            if in_cur == 0:
+                prev_total = counts_total[base_v + v_new]
+                counts_total[base_v + v_new] = prev_total + 1
+                if prev_total == 0:
+                    inv_size[i] += 1
+                stripe = _stripe_idx(counts, s, j)
+                counts[base_v + v_new, stripe] = counts[base_v + v_new, stripe] + 1
+
+        chosen[idx] = p
+
+
+@ti.kernel
+def _extract_island_solution(
+    counts: ti.template(),
+    counts_total: ti.template(),
+    covered: ti.template(),
+    chosen: ti.template(),
+    out_counts: ti.template(),
+    out_counts_total: ti.template(),
+    out_covered: ti.template(),
+    out_chosen: ti.template(),
+    island: ti.i32,
+    v_count: ti.i32,
+    s_count: ti.i32,
+):
+    base_v = island * v_count
+    base_s = island * s_count
+    for v in range(v_count):
+        out_counts_total[v] = counts_total[base_v + v]
+    for idx in ti.grouped(out_counts):
+        v = idx[0]
+        stripe = idx[1]
+        out_counts[v, stripe] = counts[base_v + v, stripe]
+    for s in range(s_count):
+        out_covered[s] = covered[base_s + s]
+        out_chosen[s] = chosen[base_s + s]
+
 
 
 @ti.kernel
@@ -1284,12 +1889,299 @@ def _seed_inventory(
             inv_size[None] += 1
 
 
+def _solve_coverage_gpu_full_alns_islands(
+    part_vids_np: "object",
+    variant_freq_np: "object",
+    *,
+    inventory_cap: int,
+    seed: int,
+    islands: int,
+    repack_passes: int,
+    repack_rarity_weighted: bool,
+    counter_stripes: int,
+    k_scan_select: int,
+    k_scan_repack: int,
+    lns_time_sec: float,
+    lns_attempts: int,
+    lns_destroy: int,
+    lns_freq_weighted: bool,
+    profile: bool,
+    seeded_variant_indices: "object",
+    seeded_extra_count: int,
+) -> GpuFullSolution:
+    import numpy as np
+
+    part_vids_np = np.asarray(part_vids_np, dtype=np.int32)
+    variant_freq_np = np.asarray(variant_freq_np, dtype=np.int32)
+    s_count, k_count, _ = map(int, part_vids_np.shape)
+    v_count = int(variant_freq_np.shape[0])
+
+    islands = int(islands)
+    if islands <= 1:
+        raise ValueError("islands must be > 1 for ALNS islands mode.")
+
+    # Cap accounting (match the single-island solver semantics).
+    seeded_in_universe = 0 if seeded_variant_indices is None else int(np.asarray(seeded_variant_indices).size)
+    seeded_missing = int(seeded_extra_count)
+    effective_cap = int(inventory_cap) - int(seeded_missing)
+    cap_exceeded = False
+    if seeded_in_universe > effective_cap:
+        cap_exceeded = True
+        effective_cap = int(seeded_in_universe)
+    if effective_cap < 0:
+        effective_cap = 0
+    inv_cap = int(effective_cap)
+    seeded_info = {
+        "total": int(seeded_in_universe + seeded_missing),
+        "in_universe": int(seeded_in_universe),
+        "missing": int(seeded_missing),
+        "cap_requested": int(inventory_cap),
+        "cap_effective": int(inv_cap),
+        "cap_exceeded": bool(cap_exceeded),
+    }
+
+    st = _get_or_build_islands_state(
+        islands=int(islands), s_count=int(s_count), k_count=int(k_count), v_count=int(v_count), counter_stripes=int(counter_stripes)
+    )
+    st.part_vids.from_numpy(part_vids_np.reshape(s_count, k_count, 6))
+    st.freq.from_numpy(variant_freq_np.reshape(v_count))
+
+    # Initialize all islands.
+    _reset_state_islands(st.counts, st.counts_total, st.covered, st.chosen, st.inv_size, st.cov_count)
+    seeded_indices = None
+    if seeded_variant_indices is not None:
+        seeded_indices = np.asarray(seeded_variant_indices, dtype=np.int32).reshape(-1)
+        if seeded_indices.size > 0:
+            _seed_inventory_islands(st.counts_total, st.inv_size, seeded_indices, int(v_count))
+    ti.sync()
+
+    p_bits = max(1, int(k_count - 1).bit_length())
+    if (max(1, int(s_count - 1).bit_length()) + p_bits) > 32:
+        raise ValueError(f"ALNS islands packing needs s_bits+p_bits<=32 (S={s_count}, K={k_count}).")
+
+    cost_weight_base = _int_env("GPU_FULL_COST_WEIGHT_BASE", 2048, 1, 65535)
+    cost_weight_step = _int_env("GPU_FULL_COST_WEIGHT_STEP", 512, 0, 65535)
+
+    def _repair_pass(seed_u: int) -> None:
+        _greedy_fill_steps_islands(
+            st.part_vids,
+            st.freq,
+            st.counts,
+            st.counts_total,
+            st.covered,
+            st.chosen,
+            st.inv_size,
+            st.cov_count,
+            st.did_add_any,
+            st.best_cost,
+            st.best_cand,
+            int(inv_cap),
+            int(k_scan_select),
+            int(seed_u) & 0xFFFFFFFF,
+            int(v_count),
+            int(s_count),
+            int(p_bits),
+            int(cost_weight_base),
+            int(cost_weight_step),
+        )
+        # One light repack per repair pass.
+        if int(repack_passes) > 0:
+            _repack_eval_best_p_islands(
+                st.part_vids,
+                st.freq,
+                st.counts_total,
+                st.covered,
+                st.chosen,
+                1 if repack_rarity_weighted else 0,
+                int(k_scan_repack),
+                int(seed_u) & 0xFFFFFFFF,
+                st.repack_best_p,
+                int(v_count),
+                int(s_count),
+            )
+            _repack_apply_serial_islands(
+                st.part_vids,
+                st.freq,
+                st.counts,
+                st.counts_total,
+                st.covered,
+                st.chosen,
+                st.inv_size,
+                1 if repack_rarity_weighted else 0,
+                st.repack_best_p,
+                int(v_count),
+                int(s_count),
+            )
+
+    # Warm start: do a couple repair passes to fill most capacity.
+    warm_passes = 2 if inv_cap >= 12 else 1
+    for w in range(int(warm_passes)):
+        _repair_pass(int(seed + 1009 * (w + 1)))
+    ti.sync()
+
+    cov = st.cov_count.to_numpy()
+    inv = st.inv_size.to_numpy()
+
+    # Bandit-driven ALNS: action = (destroy_kind, destroy_multiplier)
+    # Based on recent bandit-LNS/ALNS work (e.g. BALANCE/ParBalans-style online selection).
+    arms = [(0, 1), (0, 2), (1, 1), (1, 2), (2, 1), (2, 2)]
+    arm_n = np.zeros((islands, len(arms)), dtype=np.int32)
+    arm_sum = np.zeros((islands, len(arms)), dtype=np.float64)
+    prev_score = (cov.astype(np.int64) * 1_000_000) - inv.astype(np.int64)
+
+    best_cov_val = int(cov.max(initial=0))
+    best_inv_val = int(inv.min(initial=10**9))
+    best_island = int(np.argmax(prev_score))
+
+    t0 = time.perf_counter()
+    t_end = t0 + float(max(0.0, lns_time_sec))
+    iters_done = 0
+    c_ucb = 1.4
+
+    destroy_kind_np = np.zeros((islands,), dtype=np.int32)
+    destroy_target_np = np.zeros((islands,), dtype=np.int32)
+    selected_arm = np.zeros((islands,), dtype=np.int32)
+
+    while iters_done < int(lns_attempts) and time.perf_counter() < t_end:
+        iters_done += 1
+        total_pulls = int(arm_n.sum()) + 1
+        logt = float(np.log(float(total_pulls) + 1.0))
+
+        for i in range(islands):
+            # UCB1 per island.
+            best_a = 0
+            best_ucb = -1e30
+            for a in range(len(arms)):
+                n = int(arm_n[i, a])
+                if n <= 0:
+                    best_a = a
+                    best_ucb = 1e30
+                    break
+                mean = float(arm_sum[i, a]) / float(n)
+                ucb = mean + float(c_ucb) * (logt / float(n)) ** 0.5
+                if ucb > best_ucb:
+                    best_ucb = ucb
+                    best_a = a
+
+            kind, mult = arms[int(best_a)]
+            destroy_kind_np[i] = int(kind)
+            # Degree depends on current coverage; never exceed current covered count.
+            cur_cov = int(cov[i]) if i < cov.shape[0] else 0
+            deg = int(max(1, int(lns_destroy) * int(mult)))
+            destroy_target_np[i] = int(min(int(cur_cov), int(deg)))
+            selected_arm[i] = int(best_a)
+
+        st.destroy_kind.from_numpy(destroy_kind_np)
+        st.destroy_target.from_numpy(destroy_target_np)
+
+        seed_u = int((seed + iters_done * 9973) & 0xFFFFFFFF)
+        _destroy_alns_islands(
+            st.part_vids,
+            st.freq,
+            st.counts,
+            st.counts_total,
+            st.covered,
+            st.chosen,
+            st.inv_size,
+            st.cov_count,
+            st.removed_cnt,
+            st.destroy_kind,
+            st.destroy_target,
+            int(seed_u),
+            1 if lns_freq_weighted else 0,
+            int(v_count),
+            int(s_count),
+        )
+
+        # Repair schedule (fixed) to minimize syncs.
+        _repair_pass(seed_u ^ 0xA24BAED5)
+        _repair_pass(seed_u ^ 0x9E3779B9)
+        ti.sync()
+
+        cov = st.cov_count.to_numpy()
+        inv = st.inv_size.to_numpy()
+        score = (cov.astype(np.int64) * 1_000_000) - inv.astype(np.int64)
+
+        # Bandit reward: scaled improvement in lexicographic objective.
+        delta = score - prev_score
+        prev_score = score
+
+        for i in range(islands):
+            a = int(selected_arm[i])
+            if 0 <= a < len(arms):
+                arm_n[i, a] += 1
+                arm_sum[i, a] += float(delta[i]) / 1_000_000.0
+
+        # Track best island (coverage first, then inventory).
+        best_i = int(np.argmax(score))
+        bc = int(cov[best_i])
+        bi = int(inv[best_i])
+        if (bc > best_cov_val) or (bc == best_cov_val and bi < best_inv_val):
+            best_cov_val = bc
+            best_inv_val = bi
+            best_island = best_i
+
+    # Extract best island state into compact outputs.
+    out_counts = ti.field(dtype=ti.i32, shape=(int(v_count), int(counter_stripes)))
+    out_counts_total = ti.field(dtype=ti.i32, shape=(int(v_count),))
+    out_covered = ti.field(dtype=ti.i32, shape=(int(s_count),))
+    out_chosen = ti.field(dtype=ti.i32, shape=(int(s_count),))
+    _extract_island_solution(
+        st.counts,
+        st.counts_total,
+        st.covered,
+        st.chosen,
+        out_counts,
+        out_counts_total,
+        out_covered,
+        out_chosen,
+        int(best_island),
+        int(v_count),
+        int(s_count),
+    )
+    ti.sync()
+
+    dt = time.perf_counter() - t0
+    attempts_per_sec = 0.0 if dt <= 0 else float(iters_done) / float(dt)
+    if profile:
+        print(
+            f"[InventoryMetaGpuFullALNS] islands={islands} best_cov={best_cov_val} best_inv={best_inv_val} "
+            f"iters={iters_done} time={dt:.2f}s",
+            flush=True,
+        )
+
+    return GpuFullSolution(
+        covered=out_covered.to_numpy(),
+        chosen_part=out_chosen.to_numpy(),
+        counts=out_counts.to_numpy(),
+        inventory_size=int(best_inv_val),
+        covered_count=int(best_cov_val),
+        stats={
+            "time_sec": round(float(dt), 3),
+            "counter_stripes": int(counter_stripes),
+            "k_scan_select": int(k_scan_select),
+            "k_scan_repack": int(k_scan_repack),
+            "repack_rarity_weighted": bool(repack_rarity_weighted),
+            "lns_destroy": int(lns_destroy),
+            "lns_freq_weighted": bool(lns_freq_weighted),
+            "alns_enabled": True,
+            "alns_islands": int(islands),
+            "alns_iters": int(iters_done),
+            "alns_attempts_per_sec": round(float(attempts_per_sec), 3),
+            "alns_arms": [{"kind": int(k), "mult": int(m)} for (k, m) in arms],
+            "seeded": seeded_info,
+        },
+    )
+
+
 def solve_coverage_gpu_full(
     part_vids_np: "object",
     variant_freq_np: "object",
     *,
     inventory_cap: int,
     seed: int,
+    alns_enabled: bool = False,
+    alns_islands: int = 1,
     repack_passes: int = 3,
     repack_rarity_weighted: bool = False,
     counter_stripes: int = 1,
@@ -1321,6 +2213,11 @@ def solve_coverage_gpu_full(
     counter_stripes = int(counter_stripes)
     if counter_stripes <= 0:
         raise ValueError("counter_stripes must be positive.")
+
+    alns_enabled = bool(alns_enabled)
+    alns_islands = int(alns_islands)
+    if alns_islands <= 0:
+        raise ValueError("alns_islands must be positive.")
 
     inv_cap = int(inventory_cap)
     if inv_cap <= 0:
@@ -1373,6 +2270,28 @@ def solve_coverage_gpu_full(
     lns_restore_drop = int(lns_restore_drop)
     if lns_restore_drop < 0:
         raise ValueError("lns_restore_drop must be >= 0.")
+
+    # Multi-island ALNS path (bandit ruin-and-recreate).
+    if alns_enabled and alns_islands > 1:
+        return _solve_coverage_gpu_full_alns_islands(
+            part_vids_np,
+            variant_freq_np,
+            inventory_cap=int(inv_cap),
+            seed=int(seed),
+            islands=int(alns_islands),
+            repack_passes=int(repack_passes),
+            repack_rarity_weighted=bool(repack_rarity_weighted),
+            counter_stripes=int(counter_stripes),
+            k_scan_select=int(k_scan_select),
+            k_scan_repack=int(k_scan_repack),
+            lns_time_sec=float(lns_time_sec),
+            lns_attempts=int(lns_attempts),
+            lns_destroy=int(lns_destroy),
+            lns_freq_weighted=bool(lns_freq_weighted),
+            profile=bool(profile),
+            seeded_variant_indices=seeded_indices,
+            seeded_extra_count=int(seeded_extra_count),
+        )
 
     st = _get_or_build_state(s_count=s_count, k_count=k_count, v_count=v_count, counter_stripes=counter_stripes)
     part_vids = st.part_vids
