@@ -17,6 +17,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from gear_optimizer.data.database import init_db
 from inventory_optimizer import export_inventory_meta_json, run_inventory_meta_coverage
+from inventory_optimizer.macos_gpu_util import MacosGpuUtilSampler
 
 
 def _truthy_env(name: str) -> bool:
@@ -44,6 +45,18 @@ def main() -> None:
         prog="inventory_meta_coverage_main.py", description="Inventory Meta coverage solver."
     )
     parser.add_argument("--db-path", type=str, default="", help="Override SQLite path (sets EVOLUTION_DB_PATH).")
+    parser.add_argument(
+        "--element",
+        type=str,
+        default="",
+        help="Restrict songs to those with peak rows matching this element (e.g. Beat/Flow/Chill).",
+    )
+    parser.add_argument(
+        "--secondary-element",
+        type=str,
+        default="",
+        help="Optional second element filter; songs matching either element are included.",
+    )
     parser.add_argument("--inventory-cap", type=int, default=100, help="Max number of gear variants (default: 100).")
     parser.add_argument(
         "--solver",
@@ -203,6 +216,24 @@ def main() -> None:
         help="GPU full: weight LNS destroy/evict by witness frequency (default: off).",
     )
     parser.add_argument(
+        "--gpu-full-lns-random-destroy-prob",
+        type=float,
+        default=0.0,
+        help="GPU full: per-attempt probability of using a pure random destroy step (default: 0.0).",
+    )
+    parser.add_argument(
+        "--gpu-full-lns-restore-after",
+        type=int,
+        default=12,
+        help="GPU full: restore best after this many non-improving LNS attempts (default: 12).",
+    )
+    parser.add_argument(
+        "--gpu-full-lns-restore-drop",
+        type=int,
+        default=4,
+        help="GPU full: restore best if coverage drops this far below best (default: 4).",
+    )
+    parser.add_argument(
         "--gpu-full-v-pad-bin",
         type=int,
         default=4096,
@@ -241,9 +272,20 @@ def main() -> None:
     print()
 
     try:
+        gpu_sampler = None
+        if sys.platform == "darwin":
+            # Best-effort macOS GPU utilization sampling (IOKit/ioreg). Never crash a run.
+            try:
+                gpu_sampler = MacosGpuUtilSampler(interval_sec=0.25)
+                gpu_sampler.start()
+            except Exception:
+                gpu_sampler = None
+
         init_db()
         results = run_inventory_meta_coverage(
             inventory_cap=args.inventory_cap,
+            element=(args.element or None),
+            secondary_element=(args.secondary_element or None),
             partitions_per_song=args.partitions_per_song,
             seed=args.seed,
             restarts=args.restarts,
@@ -270,6 +312,9 @@ def main() -> None:
             gpu_full_witness_palettes=int(args.gpu_full_witness_palettes),
             gpu_full_repack_rarity_weighted=bool(args.gpu_full_repack_rarity_weighted),
             gpu_full_lns_freq_weighted=bool(args.gpu_full_lns_freq_weighted),
+            gpu_full_lns_random_destroy_prob=float(args.gpu_full_lns_random_destroy_prob),
+            gpu_full_lns_restore_after=int(args.gpu_full_lns_restore_after),
+            gpu_full_lns_restore_drop=int(args.gpu_full_lns_restore_drop),
             gpu_full_v_pad_bin=int(args.gpu_full_v_pad_bin),
             gpu_full_variant_freq_mode=str(args.gpu_full_variant_freq_mode),
             gpu_full_witness_pattern_profile=int(args.gpu_full_witness_pattern_profile),
@@ -284,6 +329,25 @@ def main() -> None:
             gpu_full_repair_max_cands_per_slot=int(args.gpu_full_repair_max_cands_per_slot),
             gpu_full_repair_song_limit=int(args.gpu_full_repair_song_limit),
         )
+        if gpu_sampler is not None:
+            try:
+                summary = gpu_sampler.stop()
+                results.setdefault("profiling", {})["macos_gpu_util"] = {
+                    "samples": int(summary.samples),
+                    "wall_sec": round(float(summary.wall_sec), 3),
+                    "device_util_avg": None if summary.device_util_avg is None else round(float(summary.device_util_avg), 2),
+                    "device_util_max": summary.device_util_max,
+                    "renderer_util_avg": None
+                    if summary.renderer_util_avg is None
+                    else round(float(summary.renderer_util_avg), 2),
+                    "renderer_util_max": summary.renderer_util_max,
+                    "tiler_util_avg": None if summary.tiler_util_avg is None else round(float(summary.tiler_util_avg), 2),
+                    "tiler_util_max": summary.tiler_util_max,
+                    "last_submit_pid_top": list(summary.last_submit_pid_top),
+                }
+            except Exception:
+                pass
+
         out = args.output or str(REPO_ROOT / "artifacts" / "inventory_meta_coverage.json")
         output_path = export_inventory_meta_json(results, out)
 

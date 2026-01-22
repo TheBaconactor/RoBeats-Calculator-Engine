@@ -869,6 +869,9 @@ def _run_gpu_full_solver_from_witness_pool(
     lns_attempts: int,
     gpu_lns_destroy: int,
     gpu_full_lns_freq_weighted: bool,
+    gpu_full_lns_random_destroy_prob: float,
+    gpu_full_lns_restore_after: int,
+    gpu_full_lns_restore_drop: int,
     gpu_full_variant_freq_mode: str,
     gpu_full_counter_stripes: int,
     gpu_full_witness_pattern_profile: int,
@@ -949,6 +952,9 @@ def _run_gpu_full_solver_from_witness_pool(
         lns_attempts=int(lns_attempts),
         gpu_lns_destroy=int(gpu_lns_destroy),
         gpu_full_lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
+        gpu_full_lns_random_destroy_prob=float(gpu_full_lns_random_destroy_prob),
+        gpu_full_lns_restore_after=int(gpu_full_lns_restore_after),
+        gpu_full_lns_restore_drop=int(gpu_full_lns_restore_drop),
         gpu_full_variant_freq_mode=str(gpu_full_variant_freq_mode),
         gpu_full_counter_stripes=int(gpu_full_counter_stripes),
         mem=mem,
@@ -1197,6 +1203,9 @@ def _run_gpu_full_solver_from_offsets(
     lns_attempts: int,
     gpu_lns_destroy: int,
     gpu_full_lns_freq_weighted: bool,
+    gpu_full_lns_random_destroy_prob: float,
+    gpu_full_lns_restore_after: int,
+    gpu_full_lns_restore_drop: int,
     gpu_full_variant_freq_mode: str,
     gpu_full_counter_stripes: int,
     mem: _MemoryLogger,
@@ -1248,6 +1257,9 @@ def _run_gpu_full_solver_from_offsets(
         lns_attempts=int(lns_attempts),
         lns_destroy=int(gpu_lns_destroy),
         lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
+        lns_random_destroy_prob=float(gpu_full_lns_random_destroy_prob),
+        lns_restore_after=int(gpu_full_lns_restore_after),
+        lns_restore_drop=int(gpu_full_lns_restore_drop),
         profile=bool(mem.enabled),
         seeded_variant_indices=seeded_dense,
         seeded_extra_count=int(seeded_missing),
@@ -1294,6 +1306,9 @@ def _run_gpu_full_solver_from_candidates(
     lns_attempts: int,
     gpu_lns_destroy: int,
     gpu_full_lns_freq_weighted: bool,
+    gpu_full_lns_random_destroy_prob: float,
+    gpu_full_lns_restore_after: int,
+    gpu_full_lns_restore_drop: int,
     gpu_full_variant_freq_mode: str,
     gpu_full_counter_stripes: int,
     gpu_full_witness_pattern_profile: int,
@@ -1359,6 +1374,9 @@ def _run_gpu_full_solver_from_candidates(
         lns_attempts=int(lns_attempts),
         lns_destroy=int(gpu_lns_destroy),
         lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
+        lns_random_destroy_prob=float(gpu_full_lns_random_destroy_prob),
+        lns_restore_after=int(gpu_full_lns_restore_after),
+        lns_restore_drop=int(gpu_full_lns_restore_drop),
         profile=bool(mem.enabled),
         seeded_variant_indices=seeded_dense,
         seeded_extra_count=int(seeded_missing),
@@ -1419,6 +1437,9 @@ def _run_gpu_full_solver_multi_seed(
     witness_seed_streams: int = 4,
     gpu_full_repack_rarity_weighted: bool = False,
     gpu_full_lns_freq_weighted: bool = False,
+    gpu_full_lns_random_destroy_prob: float = 0.0,
+    gpu_full_lns_restore_after: int = 12,
+    gpu_full_lns_restore_drop: int = 4,
     gpu_full_variant_freq_mode: str = "occurrence",
     gpu_full_witness_pattern_profile: int = 0,
     gpu_full_counter_stripes: int = 1,
@@ -1481,6 +1502,9 @@ def _run_gpu_full_solver_multi_seed(
             lns_attempts=int(lns_attempts),
             gpu_lns_destroy=int(gpu_lns_destroy),
             gpu_full_lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
+            gpu_full_lns_random_destroy_prob=float(gpu_full_lns_random_destroy_prob),
+            gpu_full_lns_restore_after=int(gpu_full_lns_restore_after),
+            gpu_full_lns_restore_drop=int(gpu_full_lns_restore_drop),
             gpu_full_variant_freq_mode=str(gpu_full_variant_freq_mode),
             gpu_full_counter_stripes=int(gpu_full_counter_stripes),
             mem=mem,
@@ -1546,6 +1570,9 @@ def run_inventory_meta_coverage(
     gpu_full_witness_seed_streams: int = 4,
     gpu_full_repack_rarity_weighted: bool = False,
     gpu_full_lns_freq_weighted: bool = False,
+    gpu_full_lns_random_destroy_prob: float = 0.0,
+    gpu_full_lns_restore_after: int = 12,
+    gpu_full_lns_restore_drop: int = 4,
     gpu_full_v_pad_bin: int = 4096,
     gpu_full_variant_freq_mode: str = "occurrence",
     gpu_full_witness_pattern_profile: int = 0,
@@ -1607,6 +1634,15 @@ def run_inventory_meta_coverage(
     if gpu_full_variant_freq_mode not in {"occurrence", "song_support"}:
         raise ValueError("gpu_full_variant_freq_mode must be 'occurrence' or 'song_support'.")
     gpu_full_repack_rarity_weighted = bool(gpu_full_repack_rarity_weighted)
+    gpu_full_lns_random_destroy_prob = float(gpu_full_lns_random_destroy_prob)
+    if not (0.0 <= gpu_full_lns_random_destroy_prob <= 1.0):
+        raise ValueError("gpu_full_lns_random_destroy_prob must be in [0, 1].")
+    gpu_full_lns_restore_after = int(gpu_full_lns_restore_after)
+    if gpu_full_lns_restore_after <= 0:
+        raise ValueError("gpu_full_lns_restore_after must be positive.")
+    gpu_full_lns_restore_drop = int(gpu_full_lns_restore_drop)
+    if gpu_full_lns_restore_drop < 0:
+        raise ValueError("gpu_full_lns_restore_drop must be >= 0.")
     gpu_full_witness_pattern_profile = int(gpu_full_witness_pattern_profile)
     if gpu_full_witness_pattern_profile < 0:
         raise ValueError("gpu_full_witness_pattern_profile must be >= 0.")
@@ -1753,6 +1789,9 @@ def run_inventory_meta_coverage(
         "gpu_full_k_scan_select": int(gpu_full_k_scan_select),
         "gpu_full_k_scan_repack": int(gpu_full_k_scan_repack),
         "gpu_full_witness_palettes": int(gpu_full_witness_palettes),
+        "gpu_full_lns_random_destroy_prob": float(gpu_full_lns_random_destroy_prob),
+        "gpu_full_lns_restore_after": int(gpu_full_lns_restore_after),
+        "gpu_full_lns_restore_drop": int(gpu_full_lns_restore_drop),
         "gpu_full_repair_enabled": bool(gpu_full_repair_enabled),
         "gpu_full_repair_attempts": int(gpu_full_repair_attempts),
         "gpu_full_repair_max_cands_per_slot": int(gpu_full_repair_max_cands_per_slot),
@@ -1803,6 +1842,9 @@ def run_inventory_meta_coverage(
             witness_seed_streams=int(gpu_full_witness_seed_streams),
             gpu_full_repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
             gpu_full_lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
+            gpu_full_lns_random_destroy_prob=float(gpu_full_lns_random_destroy_prob),
+            gpu_full_lns_restore_after=int(gpu_full_lns_restore_after),
+            gpu_full_lns_restore_drop=int(gpu_full_lns_restore_drop),
             v_pad_bin=int(gpu_full_v_pad_bin),
             gpu_full_variant_freq_mode=str(gpu_full_variant_freq_mode),
             gpu_full_witness_pattern_profile=int(gpu_full_witness_pattern_profile),
@@ -1915,6 +1957,9 @@ def run_inventory_meta_coverage(
                         lns_attempts=int(lns_attempts_per_restart),
                         gpu_lns_destroy=int(gpu_lns_destroy),
                         gpu_full_lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
+                        gpu_full_lns_random_destroy_prob=float(gpu_full_lns_random_destroy_prob),
+                        gpu_full_lns_restore_after=int(gpu_full_lns_restore_after),
+                        gpu_full_lns_restore_drop=int(gpu_full_lns_restore_drop),
                         gpu_full_variant_freq_mode=str(gpu_full_variant_freq_mode),
                         gpu_full_counter_stripes=int(gpu_full_counter_stripes),
                         gpu_full_witness_pattern_profile=int(gpu_full_witness_pattern_profile),
@@ -1948,6 +1993,9 @@ def run_inventory_meta_coverage(
                         lns_attempts=int(lns_attempts_per_restart),
                         gpu_lns_destroy=int(gpu_lns_destroy),
                         gpu_full_lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
+                        gpu_full_lns_random_destroy_prob=float(gpu_full_lns_random_destroy_prob),
+                        gpu_full_lns_restore_after=int(gpu_full_lns_restore_after),
+                        gpu_full_lns_restore_drop=int(gpu_full_lns_restore_drop),
                         gpu_full_variant_freq_mode=str(gpu_full_variant_freq_mode),
                         gpu_full_counter_stripes=int(gpu_full_counter_stripes),
                         gpu_full_witness_pattern_profile=int(gpu_full_witness_pattern_profile),

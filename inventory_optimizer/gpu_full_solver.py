@@ -49,6 +49,7 @@ class _GpuFullState:
     removed_cnt: ti.Field
     benefit_sum: ti.Field
     tmp_cost: ti.Field
+    greedy_did_add: ti.Field
     counts_best: ti.Field
     counts_total_best: ti.Field
     covered_best: ti.Field
@@ -123,6 +124,7 @@ def _get_or_build_state(
     removed_cnt = ti.field(dtype=ti.i32, shape=())
     benefit_sum = ti.field(dtype=ti.i32, shape=())
     tmp_cost = ti.field(dtype=ti.i32, shape=())
+    greedy_did_add = ti.field(dtype=ti.i32, shape=())
 
     counts_best = ti.field(dtype=ti.i32, shape=(v_count, counter_stripes))
     counts_total_best = ti.field(dtype=ti.i32, shape=(v_count,))
@@ -149,6 +151,7 @@ def _get_or_build_state(
         removed_cnt=removed_cnt,
         benefit_sum=benefit_sum,
         tmp_cost=tmp_cost,
+        greedy_did_add=greedy_did_add,
         counts_best=counts_best,
         counts_total_best=counts_total_best,
         covered_best=covered_best,
@@ -310,6 +313,127 @@ def _select_best_add(
                 if key < best_local:
                     best_local = key
         ti.atomic_min(best_key[None], best_local)
+
+
+@ti.kernel
+def _select_and_add_best_metal(
+    part_vids: ti.template(),
+    freq: ti.template(),
+    counts: ti.template(),
+    counts_total: ti.template(),
+    covered: ti.template(),
+    chosen: ti.template(),
+    inv_size: ti.template(),
+    cov_count: ti.template(),
+    did_add: ti.template(),
+    best_cost: ti.template(),
+    best_cand: ti.template(),
+    inv_cap: ti.i32,
+    k_scan: ti.i32,
+    salt: ti.u32,
+    cost_weight: ti.u32,
+    cost_shift: ti.i32,
+    s_shift: ti.i32,
+    cost_mask: ti.u32,
+    s_mask: ti.u32,
+    p_mask: ti.u32,
+):
+    """
+    Metal-friendly fused step: select best candidate (parallel) then apply add (scalar).
+
+    This replaces the (kernel -> sync -> python decode -> kernel) sequence with a single kernel call,
+    reducing host-side overhead and improving sustained GPU utilization.
+    """
+    did_add[None] = 0
+    active = ti.i32(1)
+    remaining = ti.i32(inv_cap - inv_size[None])
+    if remaining <= 0:
+        active = 0
+
+    k_count = part_vids.shape[1]
+    scan = k_count
+    if k_scan > 0 and k_scan < k_count:
+        scan = k_scan
+
+    best_cost[None] = ti.u32(0xFFFFFFFF)
+    for s in covered:
+        if active == 0:
+            continue
+        if covered[s] != 0:
+            continue
+        start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9))
+        start = _xorshift32(start)
+        start_i = ti.i32(start % ti.u32(k_count))
+        best_local = ti.u32(0xFFFFFFFF)
+        for pp in range(scan):
+            p = (start_i + ti.i32(pp)) % ti.i32(k_count)
+            cost = ti.i32(0)
+            score = ti.i32(0)
+            for j in ti.static(range(6)):
+                vid = part_vids[s, p, j]
+                if counts_total[vid] == 0:
+                    cost += 1
+                    score += freq[vid]
+            if cost <= remaining:
+                invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
+                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore
+                if combined < best_local:
+                    best_local = combined
+        ti.atomic_min(best_cost[None], best_local)
+
+    target = best_cost[None]
+    if target == ti.u32(0xFFFFFFFF):
+        active = 0
+
+    best_cand[None] = ti.u32(0xFFFFFFFF)
+    for s in covered:
+        if active == 0:
+            continue
+        if covered[s] != 0:
+            continue
+        start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9))
+        start = _xorshift32(start)
+        start_i = ti.i32(start % ti.u32(k_count))
+        for pp in range(scan):
+            p = (start_i + ti.i32(pp)) % ti.i32(k_count)
+            cost = ti.i32(0)
+            score = ti.i32(0)
+            for j in ti.static(range(6)):
+                vid = part_vids[s, p, j]
+                if counts_total[vid] == 0:
+                    cost += 1
+                    score += freq[vid]
+            if cost <= remaining:
+                invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
+                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore
+                if combined == target:
+                    key = (ti.u32(cost) << ti.u32(cost_shift)) | (ti.u32(s) << ti.u32(s_shift)) | ti.u32(p)
+                    ti.atomic_min(best_cand[None], key)
+
+    cand_key = best_cand[None]
+    if cand_key == ti.u32(0xFFFFFFFF):
+        active = 0
+
+    cost = ti.i32((cand_key >> ti.u32(cost_shift)) & cost_mask)
+    s_idx = ti.i32((cand_key >> ti.u32(s_shift)) & s_mask)
+    p_idx = ti.i32(cand_key & p_mask)
+    if cost > remaining or cost > 6:
+        active = 0
+    if active != 0 and covered[s_idx] != 0:
+        active = 0
+
+    if active != 0:
+        for j in ti.static(range(6)):
+            vid = part_vids[s_idx, p_idx, j]
+            prev_total = ti.atomic_add(counts_total[vid], 1)
+            if prev_total == 0:
+                ti.atomic_add(inv_size[None], 1)
+            stripe = _stripe_idx(counts, s_idx, j)
+            ti.atomic_add(counts[vid, stripe], 1)
+        covered[s_idx] = 1
+        chosen[s_idx] = p_idx
+        ti.atomic_add(cov_count[None], 1)
+        did_add[None] = 1
 
 
 @ti.kernel
@@ -1071,6 +1195,9 @@ def solve_coverage_gpu_full(
     lns_attempts: int = 200,
     lns_destroy: int = 6,
     lns_freq_weighted: bool = False,
+    lns_random_destroy_prob: float = 0.0,
+    lns_restore_after: int = 12,
+    lns_restore_drop: int = 4,
     profile: bool = False,
     seeded_variant_indices: "object" = None,
     seeded_extra_count: int = 0,
@@ -1133,6 +1260,15 @@ def solve_coverage_gpu_full(
     lns_attempts = int(lns_attempts)
     lns_destroy = int(lns_destroy)
     lns_freq_weighted = bool(lns_freq_weighted)
+    lns_random_destroy_prob = float(lns_random_destroy_prob)
+    if not (0.0 <= lns_random_destroy_prob <= 1.0):
+        raise ValueError("lns_random_destroy_prob must be in [0, 1].")
+    lns_restore_after = int(lns_restore_after)
+    if lns_restore_after <= 0:
+        raise ValueError("lns_restore_after must be positive.")
+    lns_restore_drop = int(lns_restore_drop)
+    if lns_restore_drop < 0:
+        raise ValueError("lns_restore_drop must be >= 0.")
 
     st = _get_or_build_state(s_count=s_count, k_count=k_count, v_count=v_count, counter_stripes=counter_stripes)
     part_vids = st.part_vids
@@ -1151,6 +1287,7 @@ def solve_coverage_gpu_full(
     removed_cnt = st.removed_cnt
     benefit_sum = st.benefit_sum
     tmp_cost = st.tmp_cost
+    greedy_did_add = st.greedy_did_add
     counts_best = st.counts_best
     counts_total_best = st.counts_total_best
     covered_best = st.covered_best
@@ -1262,6 +1399,48 @@ def solve_coverage_gpu_full(
         return cost, s_idx, p_idx
 
     def greedy_fill() -> int:
+        if use_metal_select:
+            added = 0
+            step = 0
+            while True:
+                remaining = int(inv_cap - int(inv_size[None]))
+                if remaining <= 0:
+                    break
+                remaining_clamped = max(0, min(6, int(remaining)))
+                cost_weight = int(cost_weight_base + cost_weight_step * (6 - remaining_clamped))
+                if cost_weight > 65535:
+                    cost_weight = 65535
+                if cost_weight < 1:
+                    cost_weight = 1
+                salt = int((seed + step * 2654435761) & 0xFFFFFFFF)
+                _select_and_add_best_metal(
+                    part_vids,
+                    freq,
+                    counts,
+                    counts_total,
+                    covered,
+                    chosen,
+                    inv_size,
+                    cov_count,
+                    greedy_did_add,
+                    best_cost,
+                    best_cand,
+                    int(inv_cap),
+                    int(k_scan_select),
+                    int(salt),
+                    int(cost_weight),
+                    int(cost_shift),
+                    int(s_shift),
+                    int(cost_mask),
+                    int(s_mask),
+                    int(p_mask),
+                )
+                if int(greedy_did_add[None]) == 0:
+                    break
+                added += 1
+                step += 1
+            return int(added)
+
         added = 0
         step = 0
         while True:
@@ -1407,15 +1586,20 @@ def solve_coverage_gpu_full(
         t_end = time.perf_counter() + lns_time_sec
         # "Walk" LNS: keep a mutable current state and checkpoint best occasionally.
         stagnation = 0
-        restore_after = 12
-        restore_drop = 4
+        restore_after = int(lns_restore_after)
+        restore_drop = int(lns_restore_drop)
         while attempts_done < lns_attempts and time.perf_counter() < t_end:
             attempts_done += 1
 
             destroy_n = max(1, min(int(lns_destroy), int(cov_count[None])))
             # Pick a "closest" uncovered target (min missing variants), then evict covered songs that
             # free unique variants without breaking target reuse.
-            selection = select_best_candidate(6, int((seed + attempts_done * 9973) & 0xFFFFFFFF))
+            attempt_salt = int((seed + attempts_done * 9973) & 0xFFFFFFFF)
+            diversify_u = int((seed * 0x9E3779B1 + attempts_done * 0x85EBCA6B) & 0xFFFFFFFF)
+            diversify_roll = float(diversify_u) / 4294967296.0
+            do_random_destroy = lns_random_destroy_prob > 0.0 and diversify_roll < float(lns_random_destroy_prob)
+
+            selection = None if do_random_destroy else select_best_candidate(6, attempt_salt)
             if selection is not None:
                 cost, target_s, target_p = selection
                 remaining = int(inv_cap - int(inv_size[None]))
@@ -1437,7 +1621,7 @@ def solve_coverage_gpu_full(
                         target_p,
                         int(needed),
                         1 if lns_freq_weighted else 0,
-                        int((seed + attempts_done * 9973) & 0xFFFFFFFF),
+                        int(attempt_salt),
                     )
                     ti.sync()
                     _partition_cost(part_vids, counts, counts_total, tmp_cost, target_s, target_p)
@@ -1455,6 +1639,19 @@ def solve_coverage_gpu_full(
                             target_s,
                             target_p,
                         )
+            elif do_random_destroy:
+                _destroy_random(
+                    part_vids,
+                    counts,
+                    counts_total,
+                    covered,
+                    chosen,
+                    inv_size,
+                    cov_count,
+                    removed_cnt,
+                    destroy_n,
+                    int(attempt_salt),
+                )
             else:
                 _destroy_unique_weighted(
                     part_vids,
@@ -1468,7 +1665,7 @@ def solve_coverage_gpu_full(
                     removed_cnt,
                     destroy_n,
                     1 if lns_freq_weighted else 0,
-                    int((seed + attempts_done * 9973) & 0xFFFFFFFF),
+                    int(attempt_salt),
                 )
             stabilize()
             ti.sync()
@@ -1568,6 +1765,9 @@ def solve_coverage_gpu_full(
             "k_scan_repack": int(k_scan_repack),
             "repack_rarity_weighted": bool(repack_rarity_weighted),
             "lns_freq_weighted": bool(lns_freq_weighted),
+            "lns_random_destroy_prob": float(lns_random_destroy_prob),
+            "lns_restore_after": int(lns_restore_after),
+            "lns_restore_drop": int(lns_restore_drop),
             "seeded": seeded_info,
         },
     )
