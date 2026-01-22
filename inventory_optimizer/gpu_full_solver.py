@@ -8,7 +8,7 @@ import taichi as ti
 
 from .taichi_profile import maybe_print_kernel_profile
 
-_LAST_STATE_SIG: Optional[Tuple[int, int, int, int]] = None
+_LAST_STATE_SIG: Optional[Tuple[int, int, int, int, int]] = None
 _LAST_STATE: Optional["_GpuFullState"] = None
 
 
@@ -35,8 +35,11 @@ def _int_env(name: str, default: int, min_value: int, max_value: int) -> int:
 class _GpuFullState:
     part_vids: ti.Field
     freq: ti.Field
+    vid_gid: ti.Field
+    vid_is_wild: ti.Field
     counts: ti.Field
     counts_total: ti.Field
+    gear_var_count: ti.Field
     covered: ti.Field
     chosen: ti.Field
     propose: ti.Field
@@ -52,6 +55,7 @@ class _GpuFullState:
     greedy_did_add: ti.Field
     counts_best: ti.Field
     counts_total_best: ti.Field
+    gear_var_count_best: ti.Field
     covered_best: ti.Field
     chosen_best: ti.Field
     inv_best: ti.Field
@@ -65,6 +69,7 @@ def _get_or_build_state(
     k_count: int,
     v_count: int,
     counter_stripes: int,
+    gear_count: int,
 ) -> _GpuFullState:
     """
     Reuse Taichi fields across solves for the same shapes.
@@ -74,13 +79,15 @@ def _get_or_build_state(
     """
     global _LAST_STATE, _LAST_STATE_SIG
 
-    sig = (int(s_count), int(k_count), int(v_count), int(counter_stripes))
+    sig = (int(s_count), int(k_count), int(v_count), int(counter_stripes), int(gear_count))
     if _LAST_STATE is not None and _LAST_STATE_SIG == sig:
         # Defensive: other modules in-process may `ti.reset()` / `reset_taichi()` and invalidate fields.
         # If we detect a shape mismatch, drop the cached state and rebuild.
         try:
-            if tuple(_LAST_STATE.part_vids.shape) == (int(s_count), int(k_count), 6) and tuple(_LAST_STATE.freq.shape) == (
-                int(v_count),
+            if (
+                tuple(_LAST_STATE.part_vids.shape) == (int(s_count), int(k_count), 6)
+                and tuple(_LAST_STATE.freq.shape) == (int(v_count),)
+                and tuple(_LAST_STATE.gear_var_count.shape) == (max(1, int(gear_count) + 1),)
             ):
                 return _LAST_STATE
         except Exception:
@@ -110,8 +117,11 @@ def _get_or_build_state(
 
     part_vids = ti.field(dtype=ti.i32, shape=(s_count, k_count, 6))
     freq = ti.field(dtype=ti.i32, shape=(v_count,))
+    vid_gid = ti.field(dtype=ti.i32, shape=(v_count,))
+    vid_is_wild = ti.field(dtype=ti.i32, shape=(v_count,))
     counts = ti.field(dtype=ti.i32, shape=(v_count, counter_stripes))
     counts_total = ti.field(dtype=ti.i32, shape=(v_count,))
+    gear_var_count = ti.field(dtype=ti.i32, shape=(max(1, int(gear_count) + 1),))
     covered = ti.field(dtype=ti.i32, shape=(s_count,))
     chosen = ti.field(dtype=ti.i32, shape=(s_count,))
     propose = ti.field(dtype=ti.i32, shape=(s_count,))
@@ -128,6 +138,7 @@ def _get_or_build_state(
 
     counts_best = ti.field(dtype=ti.i32, shape=(v_count, counter_stripes))
     counts_total_best = ti.field(dtype=ti.i32, shape=(v_count,))
+    gear_var_count_best = ti.field(dtype=ti.i32, shape=(max(1, int(gear_count) + 1),))
     covered_best = ti.field(dtype=ti.i32, shape=(s_count,))
     chosen_best = ti.field(dtype=ti.i32, shape=(s_count,))
     inv_best = ti.field(dtype=ti.i32, shape=())
@@ -137,8 +148,11 @@ def _get_or_build_state(
     _LAST_STATE = _GpuFullState(
         part_vids=part_vids,
         freq=freq,
+        vid_gid=vid_gid,
+        vid_is_wild=vid_is_wild,
         counts=counts,
         counts_total=counts_total,
+        gear_var_count=gear_var_count,
         covered=covered,
         chosen=chosen,
         propose=propose,
@@ -154,6 +168,7 @@ def _get_or_build_state(
         greedy_did_add=greedy_did_add,
         counts_best=counts_best,
         counts_total_best=counts_total_best,
+        gear_var_count_best=gear_var_count_best,
         covered_best=covered_best,
         chosen_best=chosen_best,
         inv_best=inv_best,
@@ -805,6 +820,7 @@ def _extract_island_solution(
 def _reset_state(
     counts: ti.template(),
     counts_total: ti.template(),
+    gear_var_count: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     propose: ti.template(),
@@ -815,6 +831,8 @@ def _reset_state(
         counts[idx] = 0
     for i in counts_total:
         counts_total[i] = 0
+    for g in gear_var_count:
+        gear_var_count[g] = 0
     for s in covered:
         covered[s] = 0
         chosen[s] = -1
@@ -827,12 +845,14 @@ def _reset_state(
 def _copy_to_best(
     counts: ti.template(),
     counts_total: ti.template(),
+    gear_var_count: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     inv_size: ti.template(),
     cov_count: ti.template(),
     counts_best: ti.template(),
     counts_total_best: ti.template(),
+    gear_var_count_best: ti.template(),
     covered_best: ti.template(),
     chosen_best: ti.template(),
     inv_best: ti.template(),
@@ -842,6 +862,8 @@ def _copy_to_best(
         counts_best[idx] = counts[idx]
     for i in counts_total:
         counts_total_best[i] = counts_total[i]
+    for g in gear_var_count:
+        gear_var_count_best[g] = gear_var_count[g]
     for s in covered:
         covered_best[s] = covered[s]
         chosen_best[s] = chosen[s]
@@ -853,12 +875,14 @@ def _copy_to_best(
 def _copy_from_best(
     counts: ti.template(),
     counts_total: ti.template(),
+    gear_var_count: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     inv_size: ti.template(),
     cov_count: ti.template(),
     counts_best: ti.template(),
     counts_total_best: ti.template(),
+    gear_var_count_best: ti.template(),
     covered_best: ti.template(),
     chosen_best: ti.template(),
     inv_best: ti.template(),
@@ -868,6 +892,8 @@ def _copy_from_best(
         counts[idx] = counts_best[idx]
     for i in counts_total:
         counts_total[i] = counts_total_best[i]
+    for g in gear_var_count:
+        gear_var_count[g] = gear_var_count_best[g]
     for s in covered:
         covered[s] = covered_best[s]
         chosen[s] = chosen_best[s]
@@ -879,14 +905,21 @@ def _copy_from_best(
 def _select_best_add(
     part_vids: ti.template(),
     freq: ti.template(),
+    vid_gid: ti.template(),
+    vid_is_wild: ti.template(),
     counts: ti.template(),
     counts_total: ti.template(),
+    gear_var_count: ti.template(),
     covered: ti.template(),
     best_key: ti.template(),
     remaining: ti.i32,
     k_scan: ti.i32,
     salt: ti.u32,
     cost_weight: ti.u32,
+    human_mode: ti.i32,
+    gear_free: ti.i32,
+    gear_penalty_step: ti.u32,
+    colored_penalty: ti.u32,
     key_shift: ti.i32,
     cost_shift: ti.i32,
     s_shift: ti.i32,
@@ -907,14 +940,26 @@ def _select_best_add(
             p = (start_i + ti.i32(pp)) % ti.i32(k_count)
             cost = ti.i32(0)
             score = ti.i32(0)
+            pen = ti.u32(0)
             for j in ti.static(range(6)):
                 vid = part_vids[s, p, j]
                 if counts_total[vid] == 0:
                     cost += 1
                     score += freq[vid]
+                    if human_mode != 0:
+                        gid = vid_gid[vid]
+                        gv = ti.i32(0)
+                        if gid >= 0 and gid < gear_var_count.shape[0]:
+                            gv = gear_var_count[gid]
+                        if gear_penalty_step != 0:
+                            over = gv - gear_free
+                            if over > 0:
+                                pen += ti.u32(over) * gear_penalty_step
+                        if colored_penalty != 0 and vid_is_wild[vid] == 0:
+                            pen += colored_penalty
             if cost <= remaining:
                 invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
-                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore
+                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore + pen
                 key = (
                     (ti.u64(combined) << ti.u64(key_shift))
                     | (ti.u64(cost) << ti.u64(cost_shift))
@@ -930,8 +975,11 @@ def _select_best_add(
 def _select_and_add_best_metal(
     part_vids: ti.template(),
     freq: ti.template(),
+    vid_gid: ti.template(),
+    vid_is_wild: ti.template(),
     counts: ti.template(),
     counts_total: ti.template(),
+    gear_var_count: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     inv_size: ti.template(),
@@ -943,6 +991,10 @@ def _select_and_add_best_metal(
     k_scan: ti.i32,
     salt: ti.u32,
     cost_weight: ti.u32,
+    human_mode: ti.i32,
+    gear_free: ti.i32,
+    gear_penalty_step: ti.u32,
+    colored_penalty: ti.u32,
     cost_shift: ti.i32,
     s_shift: ti.i32,
     cost_mask: ti.u32,
@@ -981,14 +1033,26 @@ def _select_and_add_best_metal(
             p = (start_i + ti.i32(pp)) % ti.i32(k_count)
             cost = ti.i32(0)
             score = ti.i32(0)
+            pen = ti.u32(0)
             for j in ti.static(range(6)):
                 vid = part_vids[s, p, j]
                 if counts_total[vid] == 0:
                     cost += 1
                     score += freq[vid]
+                    if human_mode != 0:
+                        gid = vid_gid[vid]
+                        gv = ti.i32(0)
+                        if gid >= 0 and gid < gear_var_count.shape[0]:
+                            gv = gear_var_count[gid]
+                        if gear_penalty_step != 0:
+                            over = gv - gear_free
+                            if over > 0:
+                                pen += ti.u32(over) * gear_penalty_step
+                        if colored_penalty != 0 and vid_is_wild[vid] == 0:
+                            pen += colored_penalty
             if cost <= remaining:
                 invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
-                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore
+                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore + pen
                 if combined < best_local:
                     best_local = combined
         ti.atomic_min(best_cost[None], best_local)
@@ -1010,14 +1074,26 @@ def _select_and_add_best_metal(
             p = (start_i + ti.i32(pp)) % ti.i32(k_count)
             cost = ti.i32(0)
             score = ti.i32(0)
+            pen = ti.u32(0)
             for j in ti.static(range(6)):
                 vid = part_vids[s, p, j]
                 if counts_total[vid] == 0:
                     cost += 1
                     score += freq[vid]
+                    if human_mode != 0:
+                        gid = vid_gid[vid]
+                        gv = ti.i32(0)
+                        if gid >= 0 and gid < gear_var_count.shape[0]:
+                            gv = gear_var_count[gid]
+                        if gear_penalty_step != 0:
+                            over = gv - gear_free
+                            if over > 0:
+                                pen += ti.u32(over) * gear_penalty_step
+                        if colored_penalty != 0 and vid_is_wild[vid] == 0:
+                            pen += colored_penalty
             if cost <= remaining:
                 invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
-                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore
+                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore + pen
                 if combined == target:
                     key = (ti.u32(cost) << ti.u32(cost_shift)) | (ti.u32(s) << ti.u32(s_shift)) | ti.u32(p)
                     ti.atomic_min(best_cand[None], key)
@@ -1040,6 +1116,9 @@ def _select_and_add_best_metal(
             prev_total = ti.atomic_add(counts_total[vid], 1)
             if prev_total == 0:
                 ti.atomic_add(inv_size[None], 1)
+                gid = vid_gid[vid]
+                if gid >= 0 and gid < gear_var_count.shape[0]:
+                    ti.atomic_add(gear_var_count[gid], 1)
             stripe = _stripe_idx(counts, s_idx, j)
             ti.atomic_add(counts[vid, stripe], 1)
         covered[s_idx] = 1
@@ -1052,7 +1131,10 @@ def _select_and_add_best_metal(
 def _select_best_candidate_key_metal(
     part_vids: ti.template(),
     freq: ti.template(),
+    vid_gid: ti.template(),
+    vid_is_wild: ti.template(),
     counts_total: ti.template(),
+    gear_var_count: ti.template(),
     covered: ti.template(),
     best_cost: ti.template(),
     best_cand: ti.template(),
@@ -1060,6 +1142,10 @@ def _select_best_candidate_key_metal(
     k_scan: ti.i32,
     salt: ti.u32,
     cost_weight: ti.u32,
+    human_mode: ti.i32,
+    gear_free: ti.i32,
+    gear_penalty_step: ti.u32,
+    colored_penalty: ti.u32,
     cost_shift: ti.i32,
     s_shift: ti.i32,
     cost_mask: ti.u32,
@@ -1095,14 +1181,26 @@ def _select_best_candidate_key_metal(
             p = (start_i + ti.i32(pp)) % ti.i32(k_count)
             cost = ti.i32(0)
             score = ti.i32(0)
+            pen = ti.u32(0)
             for j in ti.static(range(6)):
                 vid = part_vids[s, p, j]
                 if counts_total[vid] == 0:
                     cost += 1
                     score += freq[vid]
+                    if human_mode != 0:
+                        gid = vid_gid[vid]
+                        gv = ti.i32(0)
+                        if gid >= 0 and gid < gear_var_count.shape[0]:
+                            gv = gear_var_count[gid]
+                        if gear_penalty_step != 0:
+                            over = gv - gear_free
+                            if over > 0:
+                                pen += ti.u32(over) * gear_penalty_step
+                        if colored_penalty != 0 and vid_is_wild[vid] == 0:
+                            pen += colored_penalty
             if cost <= remaining:
                 invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
-                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore
+                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore + pen
                 if combined < best_local:
                     best_local = combined
         ti.atomic_min(best_cost[None], best_local)
@@ -1124,14 +1222,26 @@ def _select_best_candidate_key_metal(
             p = (start_i + ti.i32(pp)) % ti.i32(k_count)
             cost = ti.i32(0)
             score = ti.i32(0)
+            pen = ti.u32(0)
             for j in ti.static(range(6)):
                 vid = part_vids[s, p, j]
                 if counts_total[vid] == 0:
                     cost += 1
                     score += freq[vid]
+                    if human_mode != 0:
+                        gid = vid_gid[vid]
+                        gv = ti.i32(0)
+                        if gid >= 0 and gid < gear_var_count.shape[0]:
+                            gv = gear_var_count[gid]
+                        if gear_penalty_step != 0:
+                            over = gv - gear_free
+                            if over > 0:
+                                pen += ti.u32(over) * gear_penalty_step
+                        if colored_penalty != 0 and vid_is_wild[vid] == 0:
+                            pen += colored_penalty
             if cost <= remaining:
                 invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
-                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore
+                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore + pen
                 if combined == target:
                     key = (ti.u32(cost) << ti.u32(cost_shift)) | (ti.u32(s) << ti.u32(s_shift)) | ti.u32(p)
                     ti.atomic_min(best_cand[None], key)
@@ -1342,8 +1452,10 @@ def _select_best_candidate(
 @ti.kernel
 def _add_song(
     part_vids: ti.template(),
+    vid_gid: ti.template(),
     counts: ti.template(),
     counts_total: ti.template(),
+    gear_var_count: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     inv_size: ti.template(),
@@ -1357,6 +1469,9 @@ def _add_song(
             prev_total = ti.atomic_add(counts_total[vid], 1)
             if prev_total == 0:
                 ti.atomic_add(inv_size[None], 1)
+                gid = vid_gid[vid]
+                if gid >= 0 and gid < gear_var_count.shape[0]:
+                    ti.atomic_add(gear_var_count[gid], 1)
             stripe = _stripe_idx(counts, s_idx, j)
             ti.atomic_add(counts[vid, stripe], 1)
         covered[s_idx] = 1
@@ -1370,6 +1485,8 @@ def _repack_serial(
     freq: ti.template(),
     counts: ti.template(),
     counts_total: ti.template(),
+    vid_gid: ti.template(),
+    gear_var_count: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     inv_size: ti.template(),
@@ -1459,6 +1576,9 @@ def _repack_serial(
                 counts_total[v_cur] = prev_total - 1
                 if prev_total == 1:
                     inv_size[None] -= 1
+                    gid = vid_gid[v_cur]
+                    if gid >= 0 and gid < gear_var_count.shape[0]:
+                        gear_var_count[gid] -= 1
                 stripe = _stripe_idx(counts, s, j)
                 counts[v_cur, stripe] = counts[v_cur, stripe] - 1
 
@@ -1473,6 +1593,9 @@ def _repack_serial(
                 counts_total[v_new] = prev_total + 1
                 if prev_total == 0:
                     inv_size[None] += 1
+                    gid = vid_gid[v_new]
+                    if gid >= 0 and gid < gear_var_count.shape[0]:
+                        gear_var_count[gid] += 1
                 stripe = _stripe_idx(counts, s, j)
                 counts[v_new, stripe] = counts[v_new, stripe] + 1
 
@@ -1570,6 +1693,8 @@ def _repack_apply_serial(
     freq: ti.template(),
     counts: ti.template(),
     counts_total: ti.template(),
+    vid_gid: ti.template(),
+    gear_var_count: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     inv_size: ti.template(),
@@ -1622,6 +1747,9 @@ def _repack_apply_serial(
                 counts_total[v_cur] = prev_total - 1
                 if prev_total == 1:
                     inv_size[None] -= 1
+                    gid = vid_gid[v_cur]
+                    if gid >= 0 and gid < gear_var_count.shape[0]:
+                        gear_var_count[gid] -= 1
                 stripe = _stripe_idx(counts, s, j)
                 counts[v_cur, stripe] = counts[v_cur, stripe] - 1
 
@@ -1636,6 +1764,9 @@ def _repack_apply_serial(
                 counts_total[v_new] = prev_total + 1
                 if prev_total == 0:
                     inv_size[None] += 1
+                    gid = vid_gid[v_new]
+                    if gid >= 0 and gid < gear_var_count.shape[0]:
+                        gear_var_count[gid] += 1
                 stripe = _stripe_idx(counts, s, j)
                 counts[v_new, stripe] = counts[v_new, stripe] + 1
 
@@ -1645,8 +1776,10 @@ def _repack_apply_serial(
 @ti.kernel
 def _destroy_random(
     part_vids: ti.template(),
+    vid_gid: ti.template(),
     counts: ti.template(),
     counts_total: ti.template(),
+    gear_var_count: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     inv_size: ti.template(),
@@ -1675,6 +1808,9 @@ def _destroy_random(
                             prev_total = ti.atomic_add(counts_total[vid], -1)
                             if prev_total == 1:
                                 ti.atomic_add(inv_size[None], -1)
+                                gid = vid_gid[vid]
+                                if gid >= 0 and gid < gear_var_count.shape[0]:
+                                    ti.atomic_add(gear_var_count[gid], -1)
                             stripe = _stripe_idx(counts, s, j)
                             ti.atomic_add(counts[vid, stripe], -1)
                         covered[s] = 0
@@ -1688,8 +1824,10 @@ def _destroy_random(
 def _destroy_unique_weighted(
     part_vids: ti.template(),
     freq: ti.template(),
+    vid_gid: ti.template(),
     counts: ti.template(),
     counts_total: ti.template(),
+    gear_var_count: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     inv_size: ti.template(),
@@ -1746,6 +1884,9 @@ def _destroy_unique_weighted(
                         prev_total = ti.atomic_add(counts_total[vid], -1)
                         if prev_total == 1:
                             ti.atomic_add(inv_size[None], -1)
+                            gid = vid_gid[vid]
+                            if gid >= 0 and gid < gear_var_count.shape[0]:
+                                ti.atomic_add(gear_var_count[gid], -1)
                         stripe = _stripe_idx(counts, s, j)
                         ti.atomic_add(counts[vid, stripe], -1)
                     covered[s] = 0
@@ -1759,8 +1900,10 @@ def _destroy_unique_weighted(
 def _evict_for_target(
     part_vids: ti.template(),
     freq: ti.template(),
+    vid_gid: ti.template(),
     counts: ti.template(),
     counts_total: ti.template(),
+    gear_var_count: ti.template(),
     covered: ti.template(),
     chosen: ti.template(),
     inv_size: ti.template(),
@@ -1838,6 +1981,9 @@ def _evict_for_target(
                         prev_total = ti.atomic_add(counts_total[vid], -1)
                         if prev_total == 1:
                             ti.atomic_add(inv_size[None], -1)
+                            gid = vid_gid[vid]
+                            if gid >= 0 and gid < gear_var_count.shape[0]:
+                                ti.atomic_add(gear_var_count[gid], -1)
                         stripe = _stripe_idx(counts, s, j)
                         ti.atomic_add(counts[vid, stripe], -1)
                     covered[s] = 0
@@ -1884,6 +2030,8 @@ def _recompute_inv_size(counts_total: ti.template(), inv_size: ti.template()):
 @ti.kernel
 def _seed_inventory(
     counts_total: ti.template(),
+    vid_gid: ti.template(),
+    gear_var_count: ti.template(),
     inv_size: ti.template(),
     seed_indices: ti.types.ndarray(dtype=ti.i32, ndim=1),
 ):
@@ -1893,6 +2041,9 @@ def _seed_inventory(
         if idx >= 0:
             counts_total[idx] = 1
             inv_size[None] += 1
+            gid = vid_gid[idx]
+            if gid >= 0 and gid < gear_var_count.shape[0]:
+                gear_var_count[gid] += 1
 
 
 def _solve_coverage_gpu_full_alns_islands(
@@ -2365,6 +2516,13 @@ def solve_coverage_gpu_full(
     *,
     inventory_cap: int,
     seed: int,
+    human_mode: bool = False,
+    human_gear_free: int = 2,
+    human_gear_penalty_step: int = 8,
+    human_colored_penalty: int = 16,
+    vid_gid_np: "object" = None,
+    vid_is_wild_np: "object" = None,
+    gear_count: int = 0,
     alns_enabled: bool = False,
     alns_islands: int = 1,
     pt_enabled: bool = False,
@@ -2462,7 +2620,28 @@ def solve_coverage_gpu_full(
     if lns_restore_drop < 0:
         raise ValueError("lns_restore_drop must be >= 0.")
 
+    human_mode = bool(human_mode)
+    human_gear_free = max(0, int(human_gear_free))
+    human_gear_penalty_step = max(0, int(human_gear_penalty_step))
+    human_colored_penalty = max(0, int(human_colored_penalty))
+    if human_mode:
+        gear_count = int(gear_count)
+        if gear_count < 0:
+            gear_count = 0
+        if vid_gid_np is None or vid_is_wild_np is None:
+            raise ValueError("human_mode requires vid_gid_np and vid_is_wild_np (length == v_count).")
+        vid_gid_np = np.asarray(vid_gid_np, dtype=np.int32).reshape(-1)
+        vid_is_wild_np = np.asarray(vid_is_wild_np, dtype=np.int32).reshape(-1)
+        if int(vid_gid_np.size) != int(v_count) or int(vid_is_wild_np.size) != int(v_count):
+            raise ValueError("human_mode vid_gid_np/vid_is_wild_np must have length v_count.")
+    else:
+        gear_count = 0
+        vid_gid_np = np.zeros((int(v_count),), dtype=np.int32)
+        vid_is_wild_np = np.zeros((int(v_count),), dtype=np.int32)
+
     # Multi-island ALNS path (bandit ruin-and-recreate).
+    if human_mode and alns_enabled and alns_islands > 1:
+        raise ValueError("human_mode is not supported with alns_islands > 1.")
     if alns_enabled and alns_islands > 1:
         return _solve_coverage_gpu_full_alns_islands(
             part_vids_np,
@@ -2490,11 +2669,20 @@ def solve_coverage_gpu_full(
             seeded_extra_count=int(seeded_extra_count),
         )
 
-    st = _get_or_build_state(s_count=s_count, k_count=k_count, v_count=v_count, counter_stripes=counter_stripes)
+    st = _get_or_build_state(
+        s_count=s_count,
+        k_count=k_count,
+        v_count=v_count,
+        counter_stripes=counter_stripes,
+        gear_count=int(gear_count),
+    )
     part_vids = st.part_vids
     freq = st.freq
+    vid_gid = st.vid_gid
+    vid_is_wild = st.vid_is_wild
     counts = st.counts
     counts_total = st.counts_total
+    gear_var_count = st.gear_var_count
     covered = st.covered
     chosen = st.chosen
     propose = st.propose
@@ -2510,6 +2698,7 @@ def solve_coverage_gpu_full(
     greedy_did_add = st.greedy_did_add
     counts_best = st.counts_best
     counts_total_best = st.counts_total_best
+    gear_var_count_best = st.gear_var_count_best
     covered_best = st.covered_best
     chosen_best = st.chosen_best
     inv_best = st.inv_best
@@ -2517,6 +2706,8 @@ def solve_coverage_gpu_full(
 
     part_vids.from_numpy(part_vids_np.reshape(s_count, k_count, 6))
     freq.from_numpy(variant_freq_np.reshape(v_count))
+    vid_gid.from_numpy(np.asarray(vid_gid_np, dtype=np.int32).reshape(v_count))
+    vid_is_wild.from_numpy(np.asarray(vid_is_wild_np, dtype=np.int32).reshape(v_count))
 
     repack_serial = _truthy_env("GPU_FULL_REPACK_SERIAL")
     try:
@@ -2558,7 +2749,10 @@ def solve_coverage_gpu_full(
             _select_best_candidate_key_metal(
                 part_vids,
                 freq,
+                vid_gid,
+                vid_is_wild,
                 counts_total,
+                gear_var_count,
                 covered,
                 best_cost,
                 best_cand,
@@ -2566,6 +2760,10 @@ def solve_coverage_gpu_full(
                 int(k_scan_select),
                 int(salt),
                 int(cost_weight),
+                1 if human_mode else 0,
+                int(human_gear_free),
+                int(human_gear_penalty_step),
+                int(human_colored_penalty),
                 int(cost_shift),
                 int(s_shift),
                 int(cost_mask),
@@ -2585,14 +2783,21 @@ def solve_coverage_gpu_full(
         _select_best_add(
             part_vids,
             freq,
+            vid_gid,
+            vid_is_wild,
             counts,
             counts_total,
+            gear_var_count,
             covered,
             best_key,
             int(remaining_i),
             int(k_scan_select),
             int(salt),
             int(cost_weight),
+            1 if human_mode else 0,
+            int(human_gear_free),
+            int(human_gear_penalty_step),
+            int(human_colored_penalty),
             int(key_shift),
             int(cost_shift),
             int(s_shift),
@@ -2626,8 +2831,11 @@ def solve_coverage_gpu_full(
                 _select_and_add_best_metal(
                     part_vids,
                     freq,
+                    vid_gid,
+                    vid_is_wild,
                     counts,
                     counts_total,
+                    gear_var_count,
                     covered,
                     chosen,
                     inv_size,
@@ -2639,6 +2847,10 @@ def solve_coverage_gpu_full(
                     int(k_scan_select),
                     int(salt),
                     int(cost_weight),
+                    1 if human_mode else 0,
+                    int(human_gear_free),
+                    int(human_gear_penalty_step),
+                    int(human_colored_penalty),
                     int(cost_shift),
                     int(s_shift),
                     int(cost_mask),
@@ -2660,7 +2872,7 @@ def solve_coverage_gpu_full(
             if selection is None:
                 break
             _cost, s_idx, p_idx = selection
-            _add_song(part_vids, counts, counts_total, covered, chosen, inv_size, cov_count, s_idx, p_idx)
+            _add_song(part_vids, vid_gid, counts, counts_total, gear_var_count, covered, chosen, inv_size, cov_count, s_idx, p_idx)
             added += 1
             step += 1
         return added
@@ -2678,6 +2890,8 @@ def solve_coverage_gpu_full(
                         freq,
                         counts,
                         counts_total,
+                        vid_gid,
+                        gear_var_count,
                         covered,
                         chosen,
                         inv_size,
@@ -2702,6 +2916,8 @@ def solve_coverage_gpu_full(
                         freq,
                         counts,
                         counts_total,
+                        vid_gid,
+                        gear_var_count,
                         covered,
                         chosen,
                         inv_size,
@@ -2721,14 +2937,16 @@ def solve_coverage_gpu_full(
 
     # Prewarm kernels that may otherwise compile on first LNS attempt (which would contaminate time budgets).
     if lns_time_sec > 0:
-        _reset_state(counts, counts_total, covered, chosen, propose, inv_size, cov_count)
+        _reset_state(counts, counts_total, gear_var_count, covered, chosen, propose, inv_size, cov_count)
         _ = select_best_candidate(6, 0)
         _partition_cost(part_vids, counts, counts_total, tmp_cost, 0, 0)
         _destroy_unique_weighted(
             part_vids,
             freq,
+            vid_gid,
             counts,
             counts_total,
+            gear_var_count,
             covered,
             chosen,
             inv_size,
@@ -2741,8 +2959,10 @@ def solve_coverage_gpu_full(
         _evict_for_target(
             part_vids,
             freq,
+            vid_gid,
             counts,
             counts_total,
+            gear_var_count,
             covered,
             chosen,
             inv_size,
@@ -2758,9 +2978,9 @@ def solve_coverage_gpu_full(
         )
 
     t0 = time.perf_counter()
-    _reset_state(counts, counts_total, covered, chosen, propose, inv_size, cov_count)
+    _reset_state(counts, counts_total, gear_var_count, covered, chosen, propose, inv_size, cov_count)
     if seeded_indices is not None and int(seeded_indices.size) > 0:
-        _seed_inventory(counts_total, inv_size, seeded_indices)
+        _seed_inventory(counts_total, vid_gid, gear_var_count, inv_size, seeded_indices)
     stabilize()
     base_cov = int(cov_count[None])
     base_inv = int(inv_size[None])
@@ -2768,12 +2988,14 @@ def solve_coverage_gpu_full(
     _copy_to_best(
         counts,
         counts_total,
+        gear_var_count,
         covered,
         chosen,
         inv_size,
         cov_count,
         counts_best,
         counts_total_best,
+        gear_var_count_best,
         covered_best,
         chosen_best,
         inv_best,
@@ -2810,8 +3032,10 @@ def solve_coverage_gpu_full(
                     _evict_for_target(
                         part_vids,
                         freq,
+                        vid_gid,
                         counts,
                         counts_total,
+                        gear_var_count,
                         covered,
                         chosen,
                         inv_size,
@@ -2830,8 +3054,10 @@ def solve_coverage_gpu_full(
                     if int(tmp_cost[None]) <= remaining:
                         _add_song(
                             part_vids,
+                            vid_gid,
                             counts,
                             counts_total,
+                            gear_var_count,
                             covered,
                             chosen,
                             inv_size,
@@ -2842,8 +3068,10 @@ def solve_coverage_gpu_full(
             elif do_random_destroy:
                 _destroy_random(
                     part_vids,
+                    vid_gid,
                     counts,
                     counts_total,
+                    gear_var_count,
                     covered,
                     chosen,
                     inv_size,
@@ -2856,8 +3084,10 @@ def solve_coverage_gpu_full(
                 _destroy_unique_weighted(
                     part_vids,
                     freq,
+                    vid_gid,
                     counts,
                     counts_total,
+                    gear_var_count,
                     covered,
                     chosen,
                     inv_size,
@@ -2879,12 +3109,14 @@ def solve_coverage_gpu_full(
                 _copy_to_best(
                     counts,
                     counts_total,
+                    gear_var_count,
                     covered,
                     chosen,
                     inv_size,
                     cov_count,
                     counts_best,
                     counts_total_best,
+                    gear_var_count_best,
                     covered_best,
                     chosen_best,
                     inv_best,
@@ -2896,12 +3128,14 @@ def solve_coverage_gpu_full(
                     _copy_from_best(
                         counts,
                         counts_total,
+                        gear_var_count,
                         covered,
                         chosen,
                         inv_size,
                         cov_count,
                         counts_best,
                         counts_total_best,
+                        gear_var_count_best,
                         covered_best,
                         chosen_best,
                         inv_best,
@@ -2912,12 +3146,14 @@ def solve_coverage_gpu_full(
     _copy_from_best(
         counts,
         counts_total,
+        gear_var_count,
         covered,
         chosen,
         inv_size,
         cov_count,
         counts_best,
         counts_total_best,
+        gear_var_count_best,
         covered_best,
         chosen_best,
         inv_best,

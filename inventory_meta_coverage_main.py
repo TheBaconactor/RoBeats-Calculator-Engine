@@ -189,6 +189,29 @@ def main() -> None:
         help="GPU full: number of counter stripes for counts updates (default: 1).",
     )
     parser.add_argument(
+        "--gpu-full-human",
+        action="store_true",
+        help="GPU full: enable optionality-first ('human') mode (allows small score drop for reusable core gear; default: off).",
+    )
+    parser.add_argument(
+        "--gpu-full-human-gear-penalty-step",
+        type=int,
+        default=0,
+        help="GPU full human: penalty added per existing variant for a gear (default: 0).",
+    )
+    parser.add_argument(
+        "--gpu-full-human-gear-free",
+        type=int,
+        default=2,
+        help="GPU full human: number of variants per gear with no concentration penalty (default: 2).",
+    )
+    parser.add_argument(
+        "--gpu-full-human-colored-penalty",
+        type=int,
+        default=0,
+        help="GPU full human: extra penalty per new non-wild (OV>0) variant (default: 0).",
+    )
+    parser.add_argument(
         "--gpu-full-top-candidates",
         type=int,
         default=1,
@@ -367,6 +390,10 @@ def main() -> None:
             gpu_full_variant_freq_mode=str(args.gpu_full_variant_freq_mode),
             gpu_full_witness_pattern_profile=int(args.gpu_full_witness_pattern_profile),
             gpu_full_counter_stripes=int(args.gpu_full_counter_stripes),
+            gpu_full_human_mode=bool(args.gpu_full_human),
+            gpu_full_human_gear_free=int(args.gpu_full_human_gear_free),
+            gpu_full_human_gear_penalty_step=int(args.gpu_full_human_gear_penalty_step),
+            gpu_full_human_colored_penalty=int(args.gpu_full_human_colored_penalty),
             gpu_full_top_candidates=int(args.gpu_full_top_candidates),
             gpu_full_candidate_score_delta=int(args.gpu_full_candidate_score_delta),
             gpu_full_candidate_limit_per_song=int(args.gpu_full_candidate_limit_per_song),
