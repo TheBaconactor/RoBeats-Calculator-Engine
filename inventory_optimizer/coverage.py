@@ -1646,6 +1646,11 @@ def run_inventory_meta_coverage(
     if solver not in {"gpu_dynamic", "gpu_eda", "gpu_full"}:
         raise ValueError("solver must be one of: gpu_dynamic, gpu_eda, gpu_full")
 
+    # Entrapment avoidance: element-scoped runs are much smaller, so a few cheap restarts dramatically
+    # reduces "stuck" outcomes (same coverage but worse variant count) without blowing up runtime.
+    if solver == "gpu_full" and int(restarts) == 1 and (element is not None or secondary_element is not None):
+        restarts = 3
+
     mem = _MemoryLogger(enabled=bool(profile))
     mem.log("start")
 
