@@ -273,8 +273,9 @@ def main() -> None:
 
     try:
         gpu_sampler = None
-        if sys.platform == "darwin":
+        if sys.platform == "darwin" and (bool(args.profile) or _truthy_env("MACOS_GPU_UTIL_PROFILE")):
             # Best-effort macOS GPU utilization sampling (IOKit/ioreg). Never crash a run.
+            # Disabled by default to avoid adding host-side overhead to the optimization loop.
             try:
                 gpu_sampler = MacosGpuUtilSampler(interval_sec=0.25)
                 gpu_sampler.start()
@@ -344,6 +345,10 @@ def main() -> None:
                     "tiler_util_avg": None if summary.tiler_util_avg is None else round(float(summary.tiler_util_avg), 2),
                     "tiler_util_max": summary.tiler_util_max,
                     "last_submit_pid_top": list(summary.last_submit_pid_top),
+                    "proc_pid": summary.proc_pid,
+                    "proc_gpu_time_util_est": None
+                    if summary.proc_gpu_time_util_est is None
+                    else round(float(summary.proc_gpu_time_util_est), 2),
                 }
             except Exception:
                 pass

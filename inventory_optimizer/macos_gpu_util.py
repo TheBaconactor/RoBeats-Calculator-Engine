@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import threading
@@ -9,6 +10,8 @@ from typing import Optional
 
 _RE_UTIL = re.compile(r'"(?P<k>Device Utilization %|Renderer Utilization %|Tiler Utilization %)"=(?P<v>\d+)')
 _RE_LAST_SUBMIT_PID = re.compile(r'"fLastSubmissionPID"=(?P<pid>\d+)')
+_RE_UC_PID = re.compile(r'"IOUserClientCreator"\s*=\s*"pid\s+(?P<pid>\d+),')
+_RE_GPU_TIME = re.compile(r'"accumulatedGPUTime"=(?P<ns>\d+)')
 
 
 def _read_agx_stats() -> tuple[Optional[int], Optional[int], Optional[int], Optional[int]]:
@@ -47,6 +50,39 @@ def _read_agx_stats() -> tuple[Optional[int], Optional[int], Optional[int], Opti
     return device, renderer, tiler, last_pid
 
 
+def _read_agx_process_gpu_time_ns(pid: int) -> Optional[int]:
+    """
+    Best-effort sum of `accumulatedGPUTime` for AGX user clients owned by `pid`.
+
+    Notes:
+    - Values appear to be cumulative GPU time in nanoseconds per command-queue/user-client.
+    - Summing can exceed wall time if multiple queues overlap; this is still useful as a load proxy.
+    """
+    try:
+        out = subprocess.check_output(
+            ["ioreg", "-l", "-w0", "-r", "-c", "AGXDeviceUserClient"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return None
+
+    total = 0
+    found_any = False
+    blocks = out.split("+-o AGXDeviceUserClient")
+    for blk in blocks:
+        m_pid = _RE_UC_PID.search(blk)
+        if not m_pid or int(m_pid.group("pid")) != int(pid):
+            continue
+        found_any = True
+        for m_time in _RE_GPU_TIME.finditer(blk):
+            try:
+                total += int(m_time.group("ns"))
+            except Exception:
+                continue
+    return total if found_any else None
+
+
 @dataclass(frozen=True)
 class MacosGpuUtilSummary:
     samples: int
@@ -58,6 +94,8 @@ class MacosGpuUtilSummary:
     tiler_util_avg: Optional[float]
     tiler_util_max: Optional[int]
     last_submit_pid_top: list[dict]
+    proc_pid: Optional[int]
+    proc_gpu_time_util_est: Optional[float]
 
 
 class MacosGpuUtilSampler:
@@ -72,10 +110,15 @@ class MacosGpuUtilSampler:
         self._renderer: list[int] = []
         self._tiler: list[int] = []
         self._last_submit_pid: list[int] = []
+        self._proc_pid: Optional[int] = None
+        self._proc_gpu_time_start_ns: Optional[int] = None
+        self._proc_gpu_time_end_ns: Optional[int] = None
 
     def start(self) -> None:
         if self._thread is not None:
             return
+        self._proc_pid = int(os.getpid())
+        self._proc_gpu_time_start_ns = _read_agx_process_gpu_time_ns(self._proc_pid)
         self._t0 = time.monotonic()
 
         def _loop() -> None:
@@ -102,6 +145,8 @@ class MacosGpuUtilSampler:
             except Exception:
                 pass
         self._t1 = time.monotonic()
+        if self._proc_pid is not None:
+            self._proc_gpu_time_end_ns = _read_agx_process_gpu_time_ns(self._proc_pid)
         wall = 0.0
         if self._t0 is not None and self._t1 is not None:
             wall = max(0.0, float(self._t1 - self._t0))
@@ -118,6 +163,15 @@ class MacosGpuUtilSampler:
         top = sorted(hist.items(), key=lambda kv: kv[1], reverse=True)[:8]
         top_list = [{"pid": int(pid), "samples": int(cnt)} for pid, cnt in top]
 
+        proc_util = None
+        if (
+            self._proc_gpu_time_start_ns is not None
+            and self._proc_gpu_time_end_ns is not None
+            and wall > 0
+            and self._proc_gpu_time_end_ns >= self._proc_gpu_time_start_ns
+        ):
+            proc_util = ((self._proc_gpu_time_end_ns - self._proc_gpu_time_start_ns) / (wall * 1e9)) * 100.0
+
         return MacosGpuUtilSummary(
             samples=max(len(self._device), len(self._renderer), len(self._tiler), len(self._last_submit_pid)),
             wall_sec=wall,
@@ -128,8 +182,9 @@ class MacosGpuUtilSampler:
             tiler_util_avg=_avg(self._tiler),
             tiler_util_max=_mx(self._tiler),
             last_submit_pid_top=top_list,
+            proc_pid=self._proc_pid,
+            proc_gpu_time_util_est=proc_util,
         )
 
 
 __all__ = ["MacosGpuUtilSampler", "MacosGpuUtilSummary"]
-

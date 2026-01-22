@@ -183,10 +183,13 @@ def main() -> int:
 
     proc_util = None
     if pid is not None:
-        t0_ns = samples[0].proc_gpu_time_ns
-        t1_ns = samples[-1].proc_gpu_time_ns
-        if t0_ns is not None and t1_ns is not None and wall > 0:
-            proc_util = ((t1_ns - t0_ns) / (wall * 1e9)) * 100.0
+        valid = [(s.t_monotonic, s.proc_gpu_time_ns) for s in samples if s.proc_gpu_time_ns is not None]
+        if len(valid) >= 2:
+            t0_proc, ns0 = valid[0]
+            t1_proc, ns1 = valid[-1]
+            proc_wall = float(t1_proc - t0_proc)
+            if ns0 is not None and ns1 is not None and proc_wall > 0 and ns1 >= ns0:
+                proc_util = ((ns1 - ns0) / (proc_wall * 1e9)) * 100.0
 
     print("=== macOS GPU Utilization (IOKit/ioreg) ===")
     if pid is not None:

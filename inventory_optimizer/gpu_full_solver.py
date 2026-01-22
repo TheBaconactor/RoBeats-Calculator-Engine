@@ -347,7 +347,8 @@ def _select_and_add_best_metal(
     did_add[None] = 0
     active = ti.i32(1)
     remaining = ti.i32(inv_cap - inv_size[None])
-    if remaining <= 0:
+    # Allow remaining==0: we can still add songs whose chosen partition uses only already-owned variants (cost==0).
+    if remaining < 0:
         active = 0
 
     k_count = part_vids.shape[1]
@@ -434,6 +435,109 @@ def _select_and_add_best_metal(
         chosen[s_idx] = p_idx
         ti.atomic_add(cov_count[None], 1)
         did_add[None] = 1
+
+
+@ti.kernel
+def _select_best_candidate_key_metal(
+    part_vids: ti.template(),
+    freq: ti.template(),
+    counts_total: ti.template(),
+    covered: ti.template(),
+    best_cost: ti.template(),
+    best_cand: ti.template(),
+    remaining: ti.i32,
+    k_scan: ti.i32,
+    salt: ti.u32,
+    cost_weight: ti.u32,
+    cost_shift: ti.i32,
+    s_shift: ti.i32,
+    cost_mask: ti.u32,
+    s_mask: ti.u32,
+    p_mask: ti.u32,
+):
+    """
+    Metal-friendly fused selection: compute the best combined score, then the best (cost,s,p) key.
+
+    This replaces the Metal path's (kernel -> sync/read -> kernel) sequence with a single kernel call.
+    """
+    active = ti.i32(1)
+    # Allow remaining==0: we can still select partitions with cost==0 (no new inventory required).
+    if remaining < 0:
+        active = 0
+
+    k_count = part_vids.shape[1]
+    scan = k_count
+    if k_scan > 0 and k_scan < k_count:
+        scan = k_scan
+
+    best_cost[None] = ti.u32(0xFFFFFFFF)
+    for s in covered:
+        if active == 0:
+            continue
+        if covered[s] != 0:
+            continue
+        start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9))
+        start = _xorshift32(start)
+        start_i = ti.i32(start % ti.u32(k_count))
+        best_local = ti.u32(0xFFFFFFFF)
+        for pp in range(scan):
+            p = (start_i + ti.i32(pp)) % ti.i32(k_count)
+            cost = ti.i32(0)
+            score = ti.i32(0)
+            for j in ti.static(range(6)):
+                vid = part_vids[s, p, j]
+                if counts_total[vid] == 0:
+                    cost += 1
+                    score += freq[vid]
+            if cost <= remaining:
+                invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
+                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore
+                if combined < best_local:
+                    best_local = combined
+        ti.atomic_min(best_cost[None], best_local)
+
+    target = best_cost[None]
+    if target == ti.u32(0xFFFFFFFF):
+        active = 0
+
+    best_cand[None] = ti.u32(0xFFFFFFFF)
+    for s in covered:
+        if active == 0:
+            continue
+        if covered[s] != 0:
+            continue
+        start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9))
+        start = _xorshift32(start)
+        start_i = ti.i32(start % ti.u32(k_count))
+        for pp in range(scan):
+            p = (start_i + ti.i32(pp)) % ti.i32(k_count)
+            cost = ti.i32(0)
+            score = ti.i32(0)
+            for j in ti.static(range(6)):
+                vid = part_vids[s, p, j]
+                if counts_total[vid] == 0:
+                    cost += 1
+                    score += freq[vid]
+            if cost <= remaining:
+                invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
+                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore
+                if combined == target:
+                    key = (ti.u32(cost) << ti.u32(cost_shift)) | (ti.u32(s) << ti.u32(s_shift)) | ti.u32(p)
+                    ti.atomic_min(best_cand[None], key)
+
+    cand_key = best_cand[None]
+    if cand_key == ti.u32(0xFFFFFFFF):
+        active = 0
+
+    cost = ti.i32((cand_key >> ti.u32(cost_shift)) & cost_mask)
+    s_idx = ti.i32((cand_key >> ti.u32(s_shift)) & s_mask)
+    p_idx = ti.i32(cand_key & p_mask)
+    if cost > remaining or cost > 6:
+        active = 0
+    if active != 0 and covered[s_idx] != 0:
+        active = 0
+    if active == 0:
+        best_cand[None] = ti.u32(0xFFFFFFFF)
 
 
 @ti.kernel
@@ -1335,33 +1439,22 @@ def solve_coverage_gpu_full(
         if cost_weight < 1:
             cost_weight = 1
         if use_metal_select:
-            _select_best_combined(
+            _select_best_candidate_key_metal(
                 part_vids,
                 freq,
                 counts_total,
                 covered,
                 best_cost,
-                int(remaining_i),
-                int(k_scan_select),
-                int(salt),
-                int(cost_weight),
-            )
-            combined = int(best_cost[None])
-            if combined == 0xFFFFFFFF:
-                return None
-            _select_best_candidate_weighted(
-                part_vids,
-                freq,
-                counts_total,
-                covered,
                 best_cand,
-                int(combined),
                 int(remaining_i),
                 int(k_scan_select),
                 int(salt),
                 int(cost_weight),
                 int(cost_shift),
                 int(s_shift),
+                int(cost_mask),
+                int(s_mask),
+                int(p_mask),
             )
             cand_key = int(best_cand[None])
             if cand_key == 0xFFFFFFFF:
@@ -1404,7 +1497,8 @@ def solve_coverage_gpu_full(
             step = 0
             while True:
                 remaining = int(inv_cap - int(inv_size[None]))
-                if remaining <= 0:
+                # Allow remaining==0: we can still add cost==0 songs (inventory size unchanged).
+                if remaining < 0:
                     break
                 remaining_clamped = max(0, min(6, int(remaining)))
                 cost_weight = int(cost_weight_base + cost_weight_step * (6 - remaining_clamped))
@@ -1512,11 +1606,8 @@ def solve_coverage_gpu_full(
     # Prewarm kernels that may otherwise compile on first LNS attempt (which would contaminate time budgets).
     if lns_time_sec > 0:
         _reset_state(counts, counts_total, covered, chosen, propose, inv_size, cov_count)
-        ti.sync()
         _ = select_best_candidate(6, 0)
-        ti.sync()
         _partition_cost(part_vids, counts, counts_total, tmp_cost, 0, 0)
-        ti.sync()
         _destroy_unique_weighted(
             part_vids,
             freq,
@@ -1531,7 +1622,6 @@ def solve_coverage_gpu_full(
             1 if lns_freq_weighted else 0,
             0,
         )
-        ti.sync()
         _evict_for_target(
             part_vids,
             freq,
@@ -1550,15 +1640,12 @@ def solve_coverage_gpu_full(
             1 if lns_freq_weighted else 0,
             0,
         )
-        ti.sync()
 
     t0 = time.perf_counter()
     _reset_state(counts, counts_total, covered, chosen, propose, inv_size, cov_count)
     if seeded_indices is not None and int(seeded_indices.size) > 0:
         _seed_inventory(counts_total, inv_size, seeded_indices)
-        ti.sync()
     stabilize()
-    ti.sync()
     base_cov = int(cov_count[None])
     base_inv = int(inv_size[None])
 
@@ -1576,7 +1663,6 @@ def solve_coverage_gpu_full(
         inv_best,
         cov_best,
     )
-    ti.sync()
     best_cov_val = int(cov_best[None])
     best_inv_val = int(inv_best[None])
 
@@ -1623,9 +1709,7 @@ def solve_coverage_gpu_full(
                         1 if lns_freq_weighted else 0,
                         int(attempt_salt),
                     )
-                    ti.sync()
                     _partition_cost(part_vids, counts, counts_total, tmp_cost, target_s, target_p)
-                    ti.sync()
                     remaining = int(inv_cap - int(inv_size[None]))
                     if int(tmp_cost[None]) <= remaining:
                         _add_song(
@@ -1668,7 +1752,6 @@ def solve_coverage_gpu_full(
                     int(attempt_salt),
                 )
             stabilize()
-            ti.sync()
 
             cur_cov = int(cov_count[None])
             cur_inv = int(inv_size[None])
@@ -1691,7 +1774,6 @@ def solve_coverage_gpu_full(
                     inv_best,
                     cov_best,
                 )
-                ti.sync()
             else:
                 stagnation += 1
                 if stagnation >= restore_after or cur_cov + restore_drop < best_cov_val:
@@ -1709,7 +1791,6 @@ def solve_coverage_gpu_full(
                         inv_best,
                         cov_best,
                     )
-                    ti.sync()
                     stagnation = 0
 
     _copy_from_best(
@@ -1726,9 +1807,7 @@ def solve_coverage_gpu_full(
         inv_best,
         cov_best,
     )
-    ti.sync()
     _recompute_inv_size(counts_total, tmp_cost)
-    ti.sync()
     if int(tmp_cost[None]) != int(inv_size[None]):
         raise RuntimeError(
             f"GPU_FULL invariant violated: inv_size={int(inv_size[None])} but recomputed={int(tmp_cost[None])}"
