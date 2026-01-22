@@ -558,7 +558,6 @@ def _try_inventory_repair(
             if not inds:
                 cand_count[s_idx, slot] = 0
                 continue
-            # Truncate; prefer larger OV and overall fill to make exact matching more likely.
             inds_sorted = sorted(
                 inds,
                 key=lambda i: (

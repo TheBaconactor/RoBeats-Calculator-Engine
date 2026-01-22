@@ -154,8 +154,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--gpu-full-repair",
-        action="store_true",
-        help="GPU full: attempt inventory-aware repair for uncovered songs (default: off).",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="GPU full: attempt inventory-aware repair for uncovered songs (default: on).",
     )
     parser.add_argument(
         "--gpu-full-repair-attempts",
@@ -166,8 +167,8 @@ def main() -> None:
     parser.add_argument(
         "--gpu-full-repair-max-cands-per-slot",
         type=int,
-        default=8,
-        help="GPU full repair: max inventory variants considered per slot (default: 8).",
+        default=16,
+        help="GPU full repair: max inventory variants considered per slot (default: 16).",
     )
     parser.add_argument(
         "--gpu-full-repair-song-limit",
