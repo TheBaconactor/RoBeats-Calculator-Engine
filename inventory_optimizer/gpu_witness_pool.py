@@ -97,6 +97,10 @@ def _build_offsets_kernel(
     gear_freq: ti.template(),  # (G+1,) i32
     binom: ti.template(),
     ov_cum: ti.template(),
+    wild_palette: ti.template(),  # (Pmax,5) i32 (PP,CM,FM,FT,FF); each sums to 15
+    wild_palette_len: ti.i32,
+    wild_palette_scan: ti.i32,
+    wild_palette_tail_slots: ti.i32,
     out_offsets: ti.template(),  # (S,K,6) i32
     seed_u: ti.u32,
     anchor_patterns: ti.i32,
@@ -246,6 +250,15 @@ def _build_offsets_kernel(
             cap = ti.i32(SLOT_GEM_BUDGET)
             v = ti.Vector.zero(ti.i32, STAT_COUNT)
 
+            # Ensure feasibility for OV: if the remaining slots after this one are insufficient
+            # to hold the remaining OV (max 15 per slot), we MUST place OV in this slot.
+            slots_left_after = ti.i32(5 - ii)
+            ov_left = ti.i32(remaining[OV_INDEX])
+            ov_slots_after = ti.i32(0)
+            if ov_left > 0:
+                ov_slots_after = (ov_left + ti.i32(14)) // ti.i32(15)
+            must_place_ov = ti.i32(1) if slots_left_after < ov_slots_after else ti.i32(0)
+
             # Decide OV placement mode per slot and pattern.
             # 0: OV first, 1: OV last, 2: use shuffled base.
             mode = pat_mode
@@ -254,19 +267,67 @@ def _build_offsets_kernel(
                 stat_order = ti.Vector([ti.i32(OV_INDEX), ti.i32(0), ti.i32(1), ti.i32(2), ti.i32(3), ti.i32(4)])
             elif mode == 1:
                 stat_order = ti.Vector([ti.i32(0), ti.i32(1), ti.i32(2), ti.i32(3), ti.i32(4), ti.i32(OV_INDEX)])
+            if must_place_ov != 0:
+                # Hard override: OV must be allocated now.
+                stat_order = ti.Vector([ti.i32(OV_INDEX), ti.i32(0), ti.i32(1), ti.i32(2), ti.i32(3), ti.i32(4)])
 
-            for j in ti.static(range(6)):
-                st_id = stat_order[j]
-                take = ti.min(remaining[st_id], cap)
-                if take > 0:
-                    v[st_id] = take
-                    remaining[st_id] -= take
-                    cap -= take
+            used_palette = ti.i32(0)
+            # Learned wildcard palette injection (OV==0 vectors):
+            # - only when OV is NOT forced here (wildcard slot)
+            # - only on tail slots (common-gear side of rare-first order) to maximize reuse
+            # - best-effort: if no palette entry fits, fall back to greedy fill.
+            if (
+                (must_place_ov == 0)
+                and (wild_palette_len > 0)
+                and (wild_palette_tail_slots > 0)
+                and (ii >= (ti.i32(6) - wild_palette_tail_slots))
+            ):
+                stp = seed_k ^ (ti.u32(k) * ti.u32(0xA24BAED5)) ^ (ti.u32(slot) * ti.u32(0x85EBCA6B))
+                stp = _xorshift32(stp)
+                start_idx = ti.i32(stp % ti.u32(wild_palette_len))
+                scan = wild_palette_scan
+                if scan <= 0:
+                    scan = ti.i32(1)
+                if scan > wild_palette_len:
+                    scan = wild_palette_len
 
-            ov = v[OV_INDEX]
-            color = element_id if ov > 0 else ti.i32(0)
-            off = _offset_from_vec(binom, ov_cum, v[0], v[1], v[2], v[3], v[4], ov, color)
-            out_offsets[s, k, slot] = off
+                chosen_idx = ti.i32(-1)
+                for t in range(scan):
+                    idx = (start_idx + ti.i32(t)) % wild_palette_len
+                    ok = True
+                    for st_id in ti.static(range(5)):
+                        if wild_palette[idx, st_id] > remaining[st_id]:
+                            ok = False
+                    if ok:
+                        chosen_idx = idx
+                        break
+
+                if chosen_idx >= 0:
+                    for st_id in ti.static(range(5)):
+                        take = ti.i32(wild_palette[chosen_idx, st_id])
+                        if take > 0:
+                            v[st_id] = take
+                            remaining[st_id] -= take
+                            cap -= take
+                    used_palette = ti.i32(1)
+
+            if used_palette == 0:
+                for j in ti.static(range(6)):
+                    st_id = stat_order[j]
+                    take = ti.min(remaining[st_id], cap)
+                    if take > 0:
+                        v[st_id] = take
+                        remaining[st_id] -= take
+                        cap -= take
+
+                ov = v[OV_INDEX]
+                color = element_id if ov > 0 else ti.i32(0)
+                off = _offset_from_vec(binom, ov_cum, v[0], v[1], v[2], v[3], v[4], ov, color)
+                out_offsets[s, k, slot] = off
+            else:
+                # Palette implies OV==0, color==0.
+                off = _offset_from_vec(binom, ov_cum, v[0], v[1], v[2], v[3], v[4], ti.i32(0), ti.i32(0))
+                out_offsets[s, k, slot] = off
 
 
 def build_witness_offsets_gpu(
@@ -280,6 +341,9 @@ def build_witness_offsets_gpu(
     anchor_patterns: int = 24,
     seed_streams: int = 4,
     pattern_profile: int = 0,
+    wildcard_palette_vecs: Optional[np.ndarray] = None,
+    wildcard_palette_scan: int = 8,
+    wildcard_palette_tail_slots: int = 3,
     profile: bool = False,
 ) -> tuple[np.ndarray, dict]:
     """
@@ -339,6 +403,22 @@ def build_witness_offsets_gpu(
 
     out_offsets = ti.field(dtype=ti.i32, shape=(S, K, 6))
 
+    # Optional learned wildcard palette: (PP,CM,FM,FT,FF) vectors that sum to 15 (OV==0).
+    # Keep a fixed max size to avoid recompiles; effective length is passed separately.
+    palette_len = 0
+    palette_field = ti.field(dtype=ti.i32, shape=(256, 5))
+    palette_np = np.zeros((256, 5), dtype=np.int32)
+    if wildcard_palette_vecs is not None:
+        pal = np.asarray(wildcard_palette_vecs, dtype=np.int32)
+        if pal.ndim == 2 and pal.shape[1] == 5 and pal.shape[0] > 0:
+            pal = pal.reshape(-1, 5)
+            ok = np.all(pal >= 0, axis=1) & (np.sum(pal, axis=1) == np.int32(SLOT_GEM_BUDGET))
+            pal = pal[ok]
+            if pal.size > 0:
+                palette_len = int(min(256, pal.shape[0]))
+                palette_np[:palette_len, :] = pal[:palette_len, :]
+    palette_field.from_numpy(palette_np)
+
     t0 = time.perf_counter()
     _build_offsets_kernel(
         gear_ids,
@@ -347,6 +427,10 @@ def build_witness_offsets_gpu(
         gear_freq,
         binom,
         ov_cum,
+        palette_field,
+        int(palette_len),
+        int(wildcard_palette_scan),
+        int(wildcard_palette_tail_slots),
         out_offsets,
         int(seed) if int(seed) != 0 else 1,
         int(anchor_patterns),
@@ -366,6 +450,9 @@ def build_witness_offsets_gpu(
         "anchor_patterns": int(anchor_patterns),
         "seed_streams": int(seed_streams),
         "pattern_profile": int(pattern_profile),
+        "wildcard_palette_len": int(palette_len),
+        "wildcard_palette_scan": int(wildcard_palette_scan),
+        "wildcard_palette_tail_slots": int(wildcard_palette_tail_slots),
         "time_sec": float(round(dt, 6)),
     }
 

@@ -32,8 +32,10 @@ from .keys import ELEMENT_TO_ID, ID_TO_ELEMENT, OV_INDEX, STAT_KEYS
 from .models import CandidateSpec, SongCandidate, SongSpec
 from .seed_inventory import ALLOWED_UPGRADE_IDS, UPGRADE_ID_TO_ELEMENT, UPGRADE_ID_TO_STAT, normalize_for_lookup
 from .seed_inventory import SeedInventoryResult, build_seeded_inventory_variants
+from .synergy import compute_wildcard_ppmi_synergy
 from .variant_space import build_variant_offset_tables
 from .variant_space import OV0_VARIANTS
+from .wildcard_palette import learn_wildcard_palette
 
 
 class _MemoryLogger:
@@ -1309,6 +1311,16 @@ def _run_gpu_full_solver_from_witness_pool(
     gpu_full_witness_palettes: int,
     witness_anchor_patterns: int = 24,
     witness_seed_streams: int = 4,
+    wildcard_palette_size: int = 0,
+    wildcard_palette_min_count: int = 2,
+    wildcard_palette_scan: int = 8,
+    wildcard_palette_tail_slots: int = 3,
+    synergy_weight: int = 0,
+    synergy_top_offsets: int = 128,
+    synergy_min_pair_count: int = 2,
+    synergy_scale: int = 256,
+    synergy_max_bonus: int = 4095,
+    new_gear_penalty: int = 0,
     v_pad_bin: int = 4096,
     mem: _MemoryLogger,
     wildcard_freq_bonus: int = 0,
@@ -1317,6 +1329,18 @@ def _run_gpu_full_solver_from_witness_pool(
     palettes = int(gpu_full_witness_palettes)
     if palettes <= 0:
         raise ValueError("gpu_full_witness_palettes must be positive.")
+
+    palette_vecs = None
+    palette_meta = None
+    if int(wildcard_palette_size) > 0:
+        pal = learn_wildcard_palette(
+            totals_np,
+            palette_size=int(wildcard_palette_size),
+            min_count=int(wildcard_palette_min_count),
+        )
+        if int(getattr(pal, "vecs", np.zeros((0, 5), dtype=np.int32)).size) > 0:
+            palette_vecs = np.asarray(pal.vecs, dtype=np.int32)
+            palette_meta = dict(pal.meta)
 
     if palettes == 1:
         offsets_np, wp_stats = build_witness_offsets_gpu(
@@ -1329,6 +1353,9 @@ def _run_gpu_full_solver_from_witness_pool(
             anchor_patterns=int(witness_anchor_patterns),
             seed_streams=int(witness_seed_streams),
             pattern_profile=int(gpu_full_witness_pattern_profile),
+            wildcard_palette_vecs=palette_vecs,
+            wildcard_palette_scan=int(wildcard_palette_scan),
+            wildcard_palette_tail_slots=int(wildcard_palette_tail_slots),
             profile=bool(mem.enabled),
         )
     else:
@@ -1351,6 +1378,9 @@ def _run_gpu_full_solver_from_witness_pool(
                 anchor_patterns=int(anchors),
                 seed_streams=int(witness_seed_streams),
                 pattern_profile=int(gpu_full_witness_pattern_profile),
+                wildcard_palette_vecs=palette_vecs,
+                wildcard_palette_scan=int(wildcard_palette_scan),
+                wildcard_palette_tail_slots=int(wildcard_palette_tail_slots),
                 profile=bool(mem.enabled),
             )
             offsets_list.append(off)
@@ -1367,6 +1397,8 @@ def _run_gpu_full_solver_from_witness_pool(
             "time_sec": float(round(sum(float(s.get("time_sec") or 0.0) for s in stats_list), 6)),
             "palette_stats": stats_list,
         }
+    if palette_meta is not None:
+        wp_stats["learned_wildcard_palette"] = palette_meta
     mem.log("gpu_full_witness_pool_built")
     return _run_gpu_full_solver_from_offsets(
         gear_ids_np,
@@ -1398,6 +1430,12 @@ def _run_gpu_full_solver_from_witness_pool(
         gpu_full_human_gear_free=int(gpu_full_human_gear_free),
         gpu_full_human_gear_penalty_step=int(gpu_full_human_gear_penalty_step),
         gpu_full_human_colored_penalty=int(gpu_full_human_colored_penalty),
+        synergy_weight=int(synergy_weight),
+        synergy_top_offsets=int(synergy_top_offsets),
+        synergy_min_pair_count=int(synergy_min_pair_count),
+        synergy_scale=int(synergy_scale),
+        synergy_max_bonus=int(synergy_max_bonus),
+        new_gear_penalty=int(new_gear_penalty),
         mem=mem,
         wp_stats=wp_stats,
         v_pad_bin=int(v_pad_bin),
@@ -1415,6 +1453,10 @@ def _build_multi_candidate_offsets(
     witness_anchor_patterns: int,
     witness_seed_streams: int,
     gpu_full_witness_pattern_profile: int,
+    wildcard_palette_size: int = 0,
+    wildcard_palette_min_count: int = 2,
+    wildcard_palette_scan: int = 8,
+    wildcard_palette_tail_slots: int = 3,
     mem: _MemoryLogger,
 ) -> Tuple[np.ndarray, np.ndarray, dict]:
     if not songs:
@@ -1550,6 +1592,18 @@ def _build_multi_candidate_offsets(
         totals_np[idx, :] = np.asarray(cand.candidate.gem_totals, dtype=np.int32)
         elements_np[idx] = int(cand.element_id)
 
+    palette_vecs = None
+    palette_meta = None
+    if int(wildcard_palette_size) > 0:
+        pal = learn_wildcard_palette(
+            totals_np,
+            palette_size=int(wildcard_palette_size),
+            min_count=int(wildcard_palette_min_count),
+        )
+        if int(getattr(pal, "vecs", np.zeros((0, 5), dtype=np.int32)).size) > 0:
+            palette_vecs = np.asarray(pal.vecs, dtype=np.int32)
+            palette_meta = dict(pal.meta)
+
     offsets_all, wp_stats = build_witness_offsets_gpu(
         gear_ids_np,
         totals_np,
@@ -1560,6 +1614,9 @@ def _build_multi_candidate_offsets(
         anchor_patterns=int(witness_anchor_patterns),
         seed_streams=int(witness_seed_streams),
         pattern_profile=int(gpu_full_witness_pattern_profile),
+        wildcard_palette_vecs=palette_vecs,
+        wildcard_palette_scan=int(wildcard_palette_scan),
+        wildcard_palette_tail_slots=int(wildcard_palette_tail_slots),
         profile=bool(mem.enabled),
     )
     for s_idx, song in enumerate(songs):
@@ -1591,6 +1648,8 @@ def _build_multi_candidate_offsets(
         "candidate_instances": int(len(items)),
         "candidates_per_song": {"min": cand_min, "max": cand_max, "avg": round(cand_avg, 3)},
     }
+    if palette_meta is not None:
+        wp_summary["learned_wildcard_palette"] = palette_meta
     return offsets_out, part_to_candidate, wp_summary
 
 
@@ -1783,6 +1842,12 @@ def _run_gpu_full_solver_from_offsets(
     gpu_full_human_gear_free: int = 2,
     gpu_full_human_gear_penalty_step: int = 0,
     gpu_full_human_colored_penalty: int = 0,
+    synergy_weight: int = 0,
+    synergy_top_offsets: int = 128,
+    synergy_min_pair_count: int = 2,
+    synergy_scale: int = 256,
+    synergy_max_bonus: int = 4095,
+    new_gear_penalty: int = 0,
     mem: _MemoryLogger,
     wp_stats: Optional[dict] = None,
     dense_vid_universe: Optional[np.ndarray] = None,
@@ -1818,6 +1883,21 @@ def _run_gpu_full_solver_from_offsets(
         f"(songs={gear_ids_np.shape[0]}, k_total={int(offsets_np.shape[1])}, v={int(v_count)}, "
         f"seeded={seeded_total})"
     )
+    synergy_np = None
+    synergy_meta = None
+    if int(synergy_weight) > 0 and int(synergy_top_offsets) > 0:
+        syn = compute_wildcard_ppmi_synergy(
+            offsets_np,
+            top_n=int(synergy_top_offsets),
+            min_pair_count=int(synergy_min_pair_count),
+            scale=int(synergy_scale),
+            max_bonus=int(synergy_max_bonus),
+        )
+        synergy_np = np.asarray(syn.synergy, dtype=np.int32)
+        synergy_meta = dict(syn.meta)
+        synergy_meta["weight"] = int(synergy_weight)
+        if wp_stats is not None and isinstance(wp_stats, dict):
+            wp_stats["synergy"] = dict(synergy_meta)
     gpu_util_summary = None
     gpu_sampler = None
     if sys.platform == "darwin" and bool(mem.enabled):
@@ -1832,7 +1912,7 @@ def _run_gpu_full_solver_from_offsets(
         vid_gid = None
         vid_is_wild = None
         gear_count = 0
-        if bool(gpu_full_human_mode):
+        if bool(gpu_full_human_mode) or int(new_gear_penalty) > 0:
             vid_gid, vid_is_wild, gear_count = _build_vid_meta(dense_vid_universe, v_count=int(v_count))
         sol_full = solve_coverage_gpu_full(
             part_vids,
@@ -1843,6 +1923,9 @@ def _run_gpu_full_solver_from_offsets(
             human_gear_free=int(gpu_full_human_gear_free),
             human_gear_penalty_step=int(gpu_full_human_gear_penalty_step),
             human_colored_penalty=int(gpu_full_human_colored_penalty),
+            synergy_np=synergy_np,
+            synergy_weight=int(synergy_weight),
+            new_gear_penalty=int(new_gear_penalty),
             vid_gid_np=vid_gid,
             vid_is_wild_np=vid_is_wild,
             gear_count=int(gear_count),
@@ -1918,6 +2001,8 @@ def _run_gpu_full_solver_from_offsets(
         "v_count": int(v_count),
         "v_unpadded": int(dense_vid_universe.size),
     }
+    if synergy_meta is not None:
+        stats["synergy"] = dict(synergy_meta)
     return SimpleNamespace(
         covered=covered,
         chosen_offsets=chosen_offsets,
@@ -1962,6 +2047,16 @@ def _run_gpu_full_solver_from_candidates(
     gpu_full_pt_cap_slack_max: int = 0,
     witness_anchor_patterns: int,
     witness_seed_streams: int,
+    wildcard_palette_size: int = 0,
+    wildcard_palette_min_count: int = 2,
+    wildcard_palette_scan: int = 8,
+    wildcard_palette_tail_slots: int = 3,
+    synergy_weight: int = 0,
+    synergy_top_offsets: int = 128,
+    synergy_min_pair_count: int = 2,
+    synergy_scale: int = 256,
+    synergy_max_bonus: int = 4095,
+    new_gear_penalty: int = 0,
     mem: _MemoryLogger,
     v_pad_bin: int = 4096,
     wildcard_freq_bonus: int = 0,
@@ -1975,8 +2070,28 @@ def _run_gpu_full_solver_from_candidates(
         witness_anchor_patterns=int(witness_anchor_patterns),
         witness_seed_streams=int(witness_seed_streams),
         gpu_full_witness_pattern_profile=int(gpu_full_witness_pattern_profile),
+        wildcard_palette_size=int(wildcard_palette_size),
+        wildcard_palette_min_count=int(wildcard_palette_min_count),
+        wildcard_palette_scan=int(wildcard_palette_scan),
+        wildcard_palette_tail_slots=int(wildcard_palette_tail_slots),
         mem=mem,
     )
+
+    synergy_np = None
+    synergy_meta = None
+    if int(synergy_weight) > 0 and int(synergy_top_offsets) > 0:
+        syn = compute_wildcard_ppmi_synergy(
+            offsets_np,
+            top_n=int(synergy_top_offsets),
+            min_pair_count=int(synergy_min_pair_count),
+            scale=int(synergy_scale),
+            max_bonus=int(synergy_max_bonus),
+        )
+        synergy_np = np.asarray(syn.synergy, dtype=np.int32)
+        synergy_meta = dict(syn.meta)
+        synergy_meta["weight"] = int(synergy_weight)
+        if isinstance(wp_stats, dict):
+            wp_stats["synergy"] = dict(synergy_meta)
 
     raw_vids = np.zeros_like(offsets_np, dtype=np.int32)
     for s_idx, song in enumerate(songs):
@@ -2018,7 +2133,7 @@ def _run_gpu_full_solver_from_candidates(
         vid_gid = None
         vid_is_wild = None
         gear_count = 0
-        if bool(gpu_full_human_mode):
+        if bool(gpu_full_human_mode) or int(new_gear_penalty) > 0:
             vid_gid, vid_is_wild, gear_count = _build_vid_meta(dense_vid_universe, v_count=int(v_count))
         sol_full = solve_coverage_gpu_full(
             part_vids,
@@ -2029,6 +2144,9 @@ def _run_gpu_full_solver_from_candidates(
             human_gear_free=int(gpu_full_human_gear_free),
             human_gear_penalty_step=int(gpu_full_human_gear_penalty_step),
             human_colored_penalty=int(gpu_full_human_colored_penalty),
+            synergy_np=synergy_np,
+            synergy_weight=int(synergy_weight),
+            new_gear_penalty=int(new_gear_penalty),
             vid_gid_np=vid_gid,
             vid_is_wild_np=vid_is_wild,
             gear_count=int(gear_count),
@@ -2110,6 +2228,8 @@ def _run_gpu_full_solver_from_candidates(
             "candidates_per_song": wp_stats.get("candidates_per_song"),
         },
     }
+    if synergy_meta is not None:
+        stats["synergy"] = dict(synergy_meta)
     return SimpleNamespace(
         covered=covered,
         chosen_offsets=chosen_offsets,
@@ -2286,6 +2406,16 @@ def run_inventory_meta_coverage(
     eda_alpha: float = 0.25,
     eda_wildcard_bonus: float = 0.03,
     gpu_full_wildcard_freq_bonus: int = 0,
+    gpu_full_wildcard_palette_size: int = 0,
+    gpu_full_wildcard_palette_min_count: int = 2,
+    gpu_full_wildcard_palette_scan: int = 8,
+    gpu_full_wildcard_palette_tail_slots: int = 3,
+    gpu_full_synergy_weight: int = 0,
+    gpu_full_synergy_top_offsets: int = 128,
+    gpu_full_synergy_min_pair_count: int = 2,
+    gpu_full_synergy_scale: int = 256,
+    gpu_full_synergy_max_bonus: int = 4095,
+    gpu_full_new_gear_penalty: int = 0,
     gpu_full_witness_anchor_patterns: int = 24,
     gpu_full_witness_seed_streams: int = 4,
     gpu_full_repack_rarity_weighted: bool = False,
@@ -2359,6 +2489,36 @@ def run_inventory_meta_coverage(
     gpu_full_witness_seed_streams = int(gpu_full_witness_seed_streams)
     if gpu_full_witness_seed_streams <= 0:
         raise ValueError("gpu_full_witness_seed_streams must be positive.")
+    gpu_full_wildcard_palette_size = int(gpu_full_wildcard_palette_size)
+    if gpu_full_wildcard_palette_size < 0:
+        raise ValueError("gpu_full_wildcard_palette_size must be >= 0.")
+    gpu_full_wildcard_palette_min_count = int(gpu_full_wildcard_palette_min_count)
+    if gpu_full_wildcard_palette_min_count <= 0:
+        raise ValueError("gpu_full_wildcard_palette_min_count must be positive.")
+    gpu_full_wildcard_palette_scan = int(gpu_full_wildcard_palette_scan)
+    if gpu_full_wildcard_palette_scan <= 0:
+        raise ValueError("gpu_full_wildcard_palette_scan must be positive.")
+    gpu_full_wildcard_palette_tail_slots = int(gpu_full_wildcard_palette_tail_slots)
+    if not (0 <= gpu_full_wildcard_palette_tail_slots <= 6):
+        raise ValueError("gpu_full_wildcard_palette_tail_slots must be in [0, 6].")
+    gpu_full_synergy_weight = int(gpu_full_synergy_weight)
+    if gpu_full_synergy_weight < 0:
+        raise ValueError("gpu_full_synergy_weight must be >= 0.")
+    gpu_full_synergy_top_offsets = int(gpu_full_synergy_top_offsets)
+    if gpu_full_synergy_top_offsets < 0:
+        raise ValueError("gpu_full_synergy_top_offsets must be >= 0.")
+    gpu_full_synergy_min_pair_count = int(gpu_full_synergy_min_pair_count)
+    if gpu_full_synergy_min_pair_count <= 0:
+        raise ValueError("gpu_full_synergy_min_pair_count must be positive.")
+    gpu_full_synergy_scale = int(gpu_full_synergy_scale)
+    if gpu_full_synergy_scale <= 0:
+        raise ValueError("gpu_full_synergy_scale must be positive.")
+    gpu_full_synergy_max_bonus = int(gpu_full_synergy_max_bonus)
+    if gpu_full_synergy_max_bonus <= 0:
+        raise ValueError("gpu_full_synergy_max_bonus must be positive.")
+    gpu_full_new_gear_penalty = int(gpu_full_new_gear_penalty)
+    if gpu_full_new_gear_penalty < 0:
+        raise ValueError("gpu_full_new_gear_penalty must be >= 0.")
     gpu_full_v_pad_bin = int(gpu_full_v_pad_bin)
     if gpu_full_v_pad_bin <= 0:
         raise ValueError("gpu_full_v_pad_bin must be positive.")
@@ -2566,6 +2726,16 @@ def run_inventory_meta_coverage(
         "gpu_full_lns_random_destroy_prob": float(gpu_full_lns_random_destroy_prob),
         "gpu_full_lns_restore_after": int(gpu_full_lns_restore_after),
         "gpu_full_lns_restore_drop": int(gpu_full_lns_restore_drop),
+        "gpu_full_wildcard_palette_size": int(gpu_full_wildcard_palette_size),
+        "gpu_full_wildcard_palette_min_count": int(gpu_full_wildcard_palette_min_count),
+        "gpu_full_wildcard_palette_scan": int(gpu_full_wildcard_palette_scan),
+        "gpu_full_wildcard_palette_tail_slots": int(gpu_full_wildcard_palette_tail_slots),
+        "gpu_full_synergy_weight": int(gpu_full_synergy_weight),
+        "gpu_full_synergy_top_offsets": int(gpu_full_synergy_top_offsets),
+        "gpu_full_synergy_min_pair_count": int(gpu_full_synergy_min_pair_count),
+        "gpu_full_synergy_scale": int(gpu_full_synergy_scale),
+        "gpu_full_synergy_max_bonus": int(gpu_full_synergy_max_bonus),
+        "gpu_full_new_gear_penalty": int(gpu_full_new_gear_penalty),
         "gpu_full_repair_enabled": bool(gpu_full_repair_enabled),
         "gpu_full_repair_attempts": int(gpu_full_repair_attempts),
         "gpu_full_repair_max_cands_per_slot": int(gpu_full_repair_max_cands_per_slot),
@@ -2755,6 +2925,16 @@ def run_inventory_meta_coverage(
                         gpu_full_witness_pattern_profile=int(gpu_full_witness_pattern_profile),
                         witness_anchor_patterns=int(gpu_full_witness_anchor_patterns),
                         witness_seed_streams=int(gpu_full_witness_seed_streams),
+                        wildcard_palette_size=int(gpu_full_wildcard_palette_size),
+                        wildcard_palette_min_count=int(gpu_full_wildcard_palette_min_count),
+                        wildcard_palette_scan=int(gpu_full_wildcard_palette_scan),
+                        wildcard_palette_tail_slots=int(gpu_full_wildcard_palette_tail_slots),
+                        synergy_weight=int(gpu_full_synergy_weight),
+                        synergy_top_offsets=int(gpu_full_synergy_top_offsets),
+                        synergy_min_pair_count=int(gpu_full_synergy_min_pair_count),
+                        synergy_scale=int(gpu_full_synergy_scale),
+                        synergy_max_bonus=int(gpu_full_synergy_max_bonus),
+                        new_gear_penalty=int(gpu_full_new_gear_penalty),
                         mem=mem,
                         v_pad_bin=int(gpu_full_v_pad_bin),
                         wildcard_freq_bonus=int(gpu_full_wildcard_freq_bonus),
@@ -2807,6 +2987,16 @@ def run_inventory_meta_coverage(
                         mem=mem,
                         v_pad_bin=int(gpu_full_v_pad_bin),
                         wildcard_freq_bonus=int(gpu_full_wildcard_freq_bonus),
+                        wildcard_palette_size=int(gpu_full_wildcard_palette_size),
+                        wildcard_palette_min_count=int(gpu_full_wildcard_palette_min_count),
+                        wildcard_palette_scan=int(gpu_full_wildcard_palette_scan),
+                        wildcard_palette_tail_slots=int(gpu_full_wildcard_palette_tail_slots),
+                        synergy_weight=int(gpu_full_synergy_weight),
+                        synergy_top_offsets=int(gpu_full_synergy_top_offsets),
+                        synergy_min_pair_count=int(gpu_full_synergy_min_pair_count),
+                        synergy_scale=int(gpu_full_synergy_scale),
+                        synergy_max_bonus=int(gpu_full_synergy_max_bonus),
+                        new_gear_penalty=int(gpu_full_new_gear_penalty),
                         witness_anchor_patterns=int(gpu_full_witness_anchor_patterns),
                         witness_seed_streams=int(gpu_full_witness_seed_streams),
                         seeded_raw_vids=seeded_raw_vids,

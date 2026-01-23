@@ -135,6 +135,66 @@ def main() -> None:
         help="GPU full: add to variant frequency for OV==0 offsets (default: 40).",
     )
     parser.add_argument(
+        "--gpu-full-wildcard-palette-size",
+        type=int,
+        default=0,
+        help="GPU full: learn and inject a small OV==0 per-slot wildcard palette into witness generation (0=off; default: 0).",
+    )
+    parser.add_argument(
+        "--gpu-full-wildcard-palette-min-count",
+        type=int,
+        default=2,
+        help="GPU full: wildcard palette learning minimum frequency threshold (default: 2).",
+    )
+    parser.add_argument(
+        "--gpu-full-wildcard-palette-scan",
+        type=int,
+        default=8,
+        help="GPU full: per-slot max palette entries scanned when fitting (default: 8).",
+    )
+    parser.add_argument(
+        "--gpu-full-wildcard-palette-tail-slots",
+        type=int,
+        default=3,
+        help="GPU full: only try palette injection on the tail slots of the rare->common order (0..6, default: 3).",
+    )
+    parser.add_argument(
+        "--gpu-full-synergy-weight",
+        type=int,
+        default=0,
+        help="GPU full: per-pattern wildcard synergy bonus weight (0=off; default: 0).",
+    )
+    parser.add_argument(
+        "--gpu-full-synergy-top-offsets",
+        type=int,
+        default=128,
+        help="GPU full synergy: consider only the top-N wildcard offsets by witness frequency (default: 128).",
+    )
+    parser.add_argument(
+        "--gpu-full-synergy-min-pair-count",
+        type=int,
+        default=2,
+        help="GPU full synergy: minimum co-occurrence count for a pair to contribute (default: 2).",
+    )
+    parser.add_argument(
+        "--gpu-full-synergy-scale",
+        type=int,
+        default=256,
+        help="GPU full synergy: scale factor applied to the PPMI sum (default: 256).",
+    )
+    parser.add_argument(
+        "--gpu-full-synergy-max-bonus",
+        type=int,
+        default=4095,
+        help="GPU full synergy: clamp per-pattern bonus to this max (default: 4095).",
+    )
+    parser.add_argument(
+        "--gpu-full-new-gear-penalty",
+        type=int,
+        default=0,
+        help="GPU full: penalty per newly introduced gear ID when covering a song (0=off; default: 0).",
+    )
+    parser.add_argument(
         "--gpu-full-witness-anchor-patterns",
         type=int,
         default=128,
@@ -378,6 +438,16 @@ def main() -> None:
             eda_alpha=args.eda_alpha,
             eda_wildcard_bonus=args.eda_wildcard_bonus,
             gpu_full_wildcard_freq_bonus=args.gpu_full_wildcard_freq_bonus,
+            gpu_full_wildcard_palette_size=int(args.gpu_full_wildcard_palette_size),
+            gpu_full_wildcard_palette_min_count=int(args.gpu_full_wildcard_palette_min_count),
+            gpu_full_wildcard_palette_scan=int(args.gpu_full_wildcard_palette_scan),
+            gpu_full_wildcard_palette_tail_slots=int(args.gpu_full_wildcard_palette_tail_slots),
+            gpu_full_synergy_weight=int(args.gpu_full_synergy_weight),
+            gpu_full_synergy_top_offsets=int(args.gpu_full_synergy_top_offsets),
+            gpu_full_synergy_min_pair_count=int(args.gpu_full_synergy_min_pair_count),
+            gpu_full_synergy_scale=int(args.gpu_full_synergy_scale),
+            gpu_full_synergy_max_bonus=int(args.gpu_full_synergy_max_bonus),
+            gpu_full_new_gear_penalty=int(args.gpu_full_new_gear_penalty),
             gpu_full_witness_anchor_patterns=args.gpu_full_witness_anchor_patterns,
             gpu_full_witness_seed_streams=args.gpu_full_witness_seed_streams,
             gpu_full_witness_palettes=int(args.gpu_full_witness_palettes),

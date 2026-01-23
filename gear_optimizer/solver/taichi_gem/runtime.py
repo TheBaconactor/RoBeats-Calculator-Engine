@@ -20,6 +20,7 @@ import taichi as ti
 
 _ti_initialized = False
 _ti_lock = threading.RLock()
+_printed_vulkan_device_hint = False
 
 
 def is_initialized() -> bool:
@@ -91,6 +92,25 @@ def _maybe_set_vulkan_visible_device() -> None:
         print(f"[Taichi] Vulkan visible device override: {raw}")
     except Exception as exc:
         print(f"[Taichi] Failed to set Vulkan visible device ({type(exc).__name__}): {exc}")
+
+
+def _maybe_print_vulkan_device_hint() -> None:
+    """
+    Best-effort hint for hybrid/dual-GPU systems where Taichi may pick an iGPU by default.
+
+    We don't have a portable way to enumerate adapters from Taichi's public API, so we only
+    suggest the existing env var and avoid changing behavior automatically.
+    """
+    global _printed_vulkan_device_hint
+    if _printed_vulkan_device_hint:
+        return
+    _printed_vulkan_device_hint = True
+    if str(os.environ.get("TAICHI_VULKAN_VISIBLE_DEVICE", "") or "").strip():
+        return
+    print(
+        "[Taichi] Tip: on hybrid/dual-GPU systems, set TAICHI_VULKAN_VISIBLE_DEVICE=1 (or another index) "
+        "to force the discrete GPU."
+    )
 
 
 # IMPORTANT: These are read when init_taichi() is called, so callers can
@@ -189,6 +209,7 @@ def init_taichi():
 
         if arch == ti.vulkan:
             _maybe_set_vulkan_visible_device()
+            _maybe_print_vulkan_device_hint()
 
         init_kwargs = dict(
             arch=arch,
