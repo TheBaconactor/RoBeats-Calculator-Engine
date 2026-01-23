@@ -30,6 +30,9 @@ import numpy as np
 from cachetools import LRUCache
 
 from ..data.models import Tee, WarnOnce
+from ..core.env_config import ENV
+from ..core.result_payloads import build_error_payload
+from ..core.types import SongResultPayload
 from ..core.constants import (
     LOADOUTS_PER_SONG_LIMIT,
     FG_CANDIDATE_LIMIT,
@@ -67,8 +70,8 @@ WARN_ONCE = WarnOnce()
 # Global counter for deterministic garbage collection
 _SONG_GC_COUNTER = 0
 
-# Performance timing flag (set via env var or config)
-PERF_TIMING_ENABLED = os.environ.get("PERF_TIMING", "0") == "1"
+# Performance timing flag (set via env var)
+PERF_TIMING_ENABLED = bool(getattr(ENV, "perf_timing_unconditional", False))
 
 # GPU profiler for songs/hour tracking
 _gpu_profiler = get_gpu_profiler()
@@ -267,7 +270,7 @@ def read_song_file(fp):
         return data
 
 
-def process_song_task(args):
+def process_song_task(args) -> SongResultPayload:
     """
     Run a single song end-to-end optimization.
 
@@ -990,7 +993,7 @@ def process_song_task(args):
                 pass
 
 
-def safe_process_song_task(args):
+def safe_process_song_task(args) -> SongResultPayload:
     """
     Wrapper around process_song_task that never raises across process boundaries.
     Returns an error payload with traceback if anything escapes, to avoid crashing pools.
@@ -1029,12 +1032,10 @@ def safe_process_song_task(args):
             print(msg)
         except Exception:
             pass
-        return {
-            "song": song_name,
-            "_song_name": song_name,
-            "_queue_key": queue_label or song_name,
-            "_queue_label": queue_label or song_name,
-            "_error": str(exc),
-            "_error_type": type(exc).__name__,
-            "_trace": tb,
-        }
+        return build_error_payload(
+            song_name=str(song_name),
+            queue_key=str(queue_label or song_name),
+            queue_label=str(queue_label or song_name),
+            exc=exc,
+            trace=tb,
+        )

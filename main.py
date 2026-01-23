@@ -10,6 +10,8 @@ import multiprocessing
 import sys
 import configparser
 
+from gear_optimizer.core.config import get_config_path, load_config
+
 
 def _truthy_env(name: str, default: str = "0") -> bool:
     return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
@@ -27,7 +29,7 @@ def _truthy_cfg(cfg: configparser.ConfigParser, section: str, key: str, default:
 
 
 def _read_config_path() -> str:
-    return str(os.environ.get("METAFINDER_CONFIG_PATH", "config.ini") or "config.ini")
+    return get_config_path("config.ini")
 
 
 def _debug_profile_enabled(cfg_path: str) -> bool:
@@ -35,8 +37,7 @@ def _debug_profile_enabled(cfg_path: str) -> bool:
     if _truthy_env("DEBUG_PROFILE", "0") or _truthy_env("METAFINDER_DEBUG_PROFILE", "0"):
         return True
     try:
-        cfg = configparser.ConfigParser()
-        cfg.read(cfg_path, encoding="utf-8-sig")
+        cfg = load_config(cfg_path)
         if _truthy_cfg(cfg, "Debug", "DebugProfile", False):
             return True
         if _truthy_cfg(cfg, "IterationEngine", "DebugProfile", False):
@@ -103,8 +104,7 @@ def _apply_gpu_song_slots_default() -> None:
 
     cfg_path = _read_config_path()
     try:
-        cfg = configparser.ConfigParser()
-        cfg.read(cfg_path, encoding="utf-8-sig")
+        cfg = load_config(cfg_path)
         inflight = int(str(cfg.get("IterationEngine", "InFlightSongs", fallback="0") or "0"))
     except Exception:
         inflight = 0

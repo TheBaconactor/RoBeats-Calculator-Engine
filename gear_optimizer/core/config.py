@@ -3,6 +3,7 @@ Configuration management for the gear optimizer.
 Handles config.ini parsing, validation, and status file writing.
 """
 
+import configparser
 import json
 import logging
 import os
@@ -16,6 +17,38 @@ from .constants import (
     SCRIPT_DIR,
 )
 from .utils import safe_int, safe_float
+
+
+def get_config_path(default: str = "config.ini") -> str:
+    """
+    Resolve the effective config path.
+
+    Precedence:
+    - `METAFINDER_CONFIG_PATH` when set and non-empty
+    - `default` (typically "config.ini")
+    """
+    env_path = os.environ.get("METAFINDER_CONFIG_PATH")
+    if env_path is not None:
+        p = str(env_path).strip()
+        if p:
+            return p
+    return str(default)
+
+
+def load_config(path: str | None = None) -> configparser.ConfigParser:
+    """
+    Load config.ini (or an override path) into a ConfigParser.
+
+    This intentionally does not raise on missing files to preserve existing behavior in entrypoints
+    that historically used `ConfigParser().read(...)` without checking the return value.
+    """
+    cfg = configparser.ConfigParser()
+    cfg_path = str(path or get_config_path())
+    try:
+        cfg.read(cfg_path, encoding="utf-8-sig")
+    except Exception as exc:
+        logging.debug(f"[Config] Failed to read {cfg_path}: {type(exc).__name__}: {exc}")
+    return cfg
 
 
 def compute_memory_guard_limit(cfg):

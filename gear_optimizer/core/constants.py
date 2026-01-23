@@ -5,6 +5,8 @@ Global constants and configuration values for the gear optimizer.
 import os
 from dataclasses import dataclass
 
+from .env_config import ENV
+
 # --- SCORING CONSTANTS ---
 GEM_SCALE_NORMAL = 2
 GEM_SCALE_FEVER = 3
@@ -59,7 +61,7 @@ FG_CANDIDATE_LIMIT = 100  # Number of candidates to evaluate for Force Greats (f
 
 # --- FORCE GREATS OPTIMIZATION ---
 # FT/FF search radius around loadout centers (default ±5)
-FG_SEARCH_RADIUS = int(os.environ.get("FG_SEARCH_RADIUS", "5"))
+FG_SEARCH_RADIUS = int(getattr(ENV, "fg_search_radius", 5) or 5)
 
 # --- MEMORY MANAGEMENT CONSTANTS ---
 DEFAULT_MEMORY_GUARD_PERCENT = 50.0

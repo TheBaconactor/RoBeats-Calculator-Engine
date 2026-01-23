@@ -11,6 +11,7 @@ import time
 from collections.abc import Iterable
 from typing import Dict, List, Optional, Any
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
+from ..core.types import PersistenceEntry
 from .migrations import ensure_schema
 from .loadout_equivalence import (
     decode_minis_json,
@@ -327,14 +328,14 @@ def save_loadout_to_db(song_name, score, fg_score, gear, minis, details, force_d
     save_loadouts_batch(song_name, [entry])
 
 
-def save_loadouts_batch(song_name: str, entries: List[Dict[str, Any]]) -> None:
+def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None:
     """
     Batch insert/update loadouts for a song in a single transaction.
     Splits data into 'loadouts' (All) and 'fg_loadouts' (Valid FG Only).
 
     Args:
         song_name: Name of the song
-        entries: List of dicts with keys: score, fg_score, gear, minis, details, force
+        entries: List of persistence dicts with keys: score, fg_score, gear, minis, details, force
     """
     if not entries:
         return

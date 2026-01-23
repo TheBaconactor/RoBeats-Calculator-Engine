@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import os
-
 from ....solver.scoring.force_greats import FORCE_GREATS_ALGO_VERSION
+from ....core.env_config import ENV
 from ....core.utils import get_selected_element
 
 
@@ -24,7 +23,7 @@ def is_cached_force_valid_for_finder(cached_force_obj, expected_selected_element
         if algo is not None and int(algo) != int(FORCE_GREATS_ALGO_VERSION):
             return False
         sr = fg_meta.get("search_radius")
-        if sr is not None and int(sr) != int(os.environ.get("FG_SEARCH_RADIUS", "5")):
+        if sr is not None and int(sr) != int(getattr(ENV, "fg_search_radius", 5) or 5):
             return False
     except Exception:
         return False

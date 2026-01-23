@@ -37,6 +37,7 @@ from typing import Any, Optional, Dict
 from enum import Enum
 
 from gear_optimizer.core.env_config import ENV
+from gear_optimizer.core.types import JsonDict
 
 
 class GpuRequestType(Enum):
@@ -66,7 +67,7 @@ class GpuRequest:
     request_type: GpuRequestType
     request_id: int
     worker_id: int
-    payload: Dict[str, Any]
+    payload: JsonDict
 
 
 @dataclass
@@ -86,16 +87,8 @@ _REQUEST_QUEUE: Optional[multiprocessing.Queue] = None
 _RESPONSE_QUEUE: Optional[multiprocessing.Queue] = None
 _REQUEST_COUNTER = 0
 _PENDING_RESPONSES: OrderedDict[int, tuple["GpuResponse", float]] = OrderedDict()
-try:
-    _PENDING_TTL_SEC = float(os.environ.get("GPU_EXECUTOR_PENDING_TTL_SEC", "300"))
-except Exception:
-    _PENDING_TTL_SEC = 300.0
-_PENDING_TTL_SEC = max(0.0, float(_PENDING_TTL_SEC))
-try:
-    _PENDING_MAX = int(os.environ.get("GPU_EXECUTOR_PENDING_MAX", "2048"))
-except Exception:
-    _PENDING_MAX = 2048
-_PENDING_MAX = max(0, int(_PENDING_MAX))
+_PENDING_TTL_SEC = max(0.0, float(getattr(ENV, "gpu_executor_pending_ttl_sec", 300.0) or 0.0))
+_PENDING_MAX = max(0, int(getattr(ENV, "gpu_executor_pending_max", 2048) or 0))
 
 
 def _prune_pending_responses(now: float | None = None) -> None:
@@ -194,6 +187,8 @@ class GpuExecutor:
         self._exec_sec = 0.0
         self._req_type_counts = defaultdict(int)
         self._req_type_exec_sec = defaultdict(float)
+        self._req_type_pack_sec = defaultdict(float)
+        self._pack_sec = 0.0
         self._batch_size_counts = defaultdict(int)
         self._batches_observed = 0
         self._batch_size_sum = 0
@@ -221,6 +216,50 @@ class GpuExecutor:
         self._live_wait_sec = 0.0
         self._live_exec_sec = 0.0
         self._live_type_counts = defaultdict(int)
+
+        # Dispatch table (reduces branching in the hot loop and centralizes request routing).
+        self._dispatch = {
+            GpuRequestType.SOLVE_GENOMES_PARALLEL: self._handle_solve_genomes_parallel,
+            GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY: self._handle_solve_genomes_from_registry,
+            GpuRequestType.OPTIMIZE_GEMS_BATCH: self._execute_optimize_gems_batch,
+            GpuRequestType.LOAD_REF_ARRAYS: self._execute_load_refs,
+            GpuRequestType.PRECOMPUTE_TIMELINE: self._execute_precompute_timeline,
+            GpuRequestType.SOLVE_FORCE_GREATS_FINDER: self._execute_solve_force_greats_finder,
+            GpuRequestType.PROCESS_FORCE_GREATS: self._execute_process_force_greats,
+            GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run,
+            GpuRequestType.GA_STAGE_FG_GENOME_BASE_STATS: self._execute_ga_stage_fg_genome_base_stats,
+            GpuRequestType.FG_RESET_GLOBAL_BEST: self._execute_fg_reset_global_best,
+            GpuRequestType.FG_DOWNLOAD_GLOBAL_BEST: self._execute_fg_download_global_best,
+            GpuRequestType.FG_COMPUTE_BREAKPOINTS: self._execute_fg_compute_breakpoints,
+            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS: self._execute_fg_solve_with_breakpoints,
+            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH: self._execute_fg_solve_with_breakpoints_batch,
+        }
+
+    def _record_pack(self, request_type: GpuRequestType, dt_sec: float) -> None:
+        try:
+            dt = float(dt_sec)
+        except Exception:
+            return
+        if dt <= 0.0:
+            return
+        self._pack_sec += dt
+        self._req_type_pack_sec[request_type] += dt
+
+    def _handle_solve_genomes_parallel(self, request: GpuRequest) -> GpuResponse:
+        payload = request.payload or {}
+        try:
+            song_slot = int(payload.get("song_slot", 0) or 0)
+        except Exception:
+            song_slot = 0
+        return self._execute_solve_genomes(request, song_slot=song_slot)
+
+    def _handle_solve_genomes_from_registry(self, request: GpuRequest) -> GpuResponse:
+        payload = request.payload or {}
+        try:
+            song_slot = int(payload.get("song_slot", 0) or 0)
+        except Exception:
+            song_slot = 0
+        return self._execute_solve_genomes_from_registry(request, song_slot=song_slot)
 
         # Ref-array upload caching: avoid redundant `load_ref_arrays()` calls when inputs are identical.
         # This saves host work and can avoid implicit syncs inside Taichi APIs.
@@ -354,6 +393,8 @@ class GpuExecutor:
             avg_batch = (self._batch_size_sum / self._batches_observed) if self._batches_observed else 0.0
             top_types = sorted(self._req_type_exec_sec.items(), key=lambda kv: kv[1], reverse=True)[:6]
             top_types_str = ", ".join(f"{t.value}:{self._req_type_counts[t]} ({sec:.2f}s)" for t, sec in top_types)
+            top_pack = sorted(self._req_type_pack_sec.items(), key=lambda kv: kv[1], reverse=True)[:6]
+            top_pack_str = ", ".join(f"{t.value}:{sec:.2f}s" for t, sec in top_pack if sec > 0)
             top_batch_sizes = sorted(self._batch_size_counts.items(), key=lambda kv: kv[0])[:16]
             batch_hist_str = ", ".join(f"{sz}:{cnt}" for sz, cnt in top_batch_sizes if cnt)
             fg_tasks_avg = (self._fg_tasks_total / self._fg_tasks_batches) if self._fg_tasks_batches else 0.0
@@ -368,6 +409,7 @@ class GpuExecutor:
                 "[GpuExecutor][PROFILE] "
                 f"wait={self._wait_sec:.2f}s exec={self._exec_sec:.2f}s busy={util:.1f}% (executor) "
                 f"avg_exec_per_req={avg:.3f}s avg_batch={avg_batch:.2f} "
+                f"pack={self._pack_sec:.2f}s pack_types=[{top_pack_str}] "
                 f"idle_gaps={len(self._idle_gaps)} idle_sum={idle_total:.2f}s idle_max={idle_max:.3f}s idle_p95={idle_p95:.3f}s "
                 f"idle_initial={idle_initial:.3f}s idle_tail={idle_tail:.3f}s "
                 f"types=[{top_types_str}] batch_sizes=[{batch_hist_str}] "
@@ -513,14 +555,8 @@ class GpuExecutor:
         while self._running:
             try:
                 # Gather batch of pending requests (wait up to 10ms for more)
-                try:
-                    batch_wait_ms = int(os.environ.get("GPU_EXECUTOR_BATCH_WAIT_MS", "10"))
-                except Exception:
-                    batch_wait_ms = 10
-                try:
-                    batch_max = int(os.environ.get("GPU_EXECUTOR_MAX_BATCH", "8"))
-                except Exception:
-                    batch_max = 8
+                batch_wait_ms = int(getattr(ENV, "gpu_executor_batch_wait_ms", 10) or 10)
+                batch_max = int(getattr(ENV, "gpu_executor_max_batch", 8) or 8)
                 if batch_wait_ms < 0:
                     batch_wait_ms = 0
                 if batch_max <= 0:
@@ -926,6 +962,7 @@ class GpuExecutor:
             kwargs_local.pop("fg_download_base_scores", None)
             kwargs_local.pop("fg_download_keep_mask", None)
 
+            t_pack0 = perf_counter()
             try:
                 solve_force_greats_finder_gpu_tasks(
                     genome_stats_list,
@@ -936,9 +973,11 @@ class GpuExecutor:
                     fg_tasks=merged_tasks,
                     **kwargs_local,
                 )
+                self._record_pack(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, perf_counter() - t_pack0)
                 for req, *_rest in items:
                     out.append(GpuResponse(request_id=req.request_id, success=True, result=None))
             except Exception as e2:
+                self._record_pack(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, perf_counter() - t_pack0)
                 err = f"{type(e2).__name__}: {e2}"
                 for req, *_rest in items:
                     out.append(GpuResponse(request_id=req.request_id, success=False, error=err))
@@ -1055,6 +1094,7 @@ class GpuExecutor:
                 spans: list[tuple[int, int]] = []
                 cur = 0
                 ok = True
+                t_pack0 = perf_counter()
                 for req in chunk:
                     p = self._payload_dict(req)
                     pop_arr = np.asarray(p.get("population_indices"), dtype=np.int32)
@@ -1072,6 +1112,7 @@ class GpuExecutor:
                     continue
 
                 try:
+                    t_kernel0 = perf_counter()
                     merged = solve_genomes_from_registry(
                         population_indices=staging,
                         timeline_grid=p0["timeline_grid"],
@@ -1092,9 +1133,13 @@ class GpuExecutor:
                         gem_scale_fever=gem_scale_fever,
                         song_slot=song_slot,
                     )
+                    dt_kernel = perf_counter() - t_kernel0
+                    dt_total = perf_counter() - t_pack0
+                    self._record_pack(GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY, max(0.0, dt_total - dt_kernel))
                     for req, (a, b) in zip(chunk, spans):
                         out.append(GpuResponse(request_id=req.request_id, success=True, result=merged[a:b]))
                 except Exception as e2:
+                    self._record_pack(GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY, perf_counter() - t_pack0)
                     err = f"{type(e2).__name__}: {e2}"
                     for req in chunk:
                         out.append(GpuResponse(request_id=req.request_id, success=False, error=err))
@@ -1167,6 +1212,7 @@ class GpuExecutor:
             for start in range(0, len(group), max_slots):
                 sub = group[start : start + max_slots]
                 try:
+                    t_pack0 = perf_counter()
                     if log_batches and len(sub) > 1:
                         print(
                             f"[GpuExecutor][BATCH] requests={len(sub)} budget={int(sub[0].payload.get('total_budget', 90))} scale={int(sub[0].payload.get('gem_scale_fever', 3))}"
@@ -1177,11 +1223,15 @@ class GpuExecutor:
 
                     total_budget = int(sub[0].payload.get("total_budget", 90))
                     gem_scale_fever = int(sub[0].payload.get("gem_scale_fever", 3))
+                    t_kernel0 = perf_counter()
                     merged_results = solve_genomes_parallel_merged(
                         [r.payload for r in sub],
                         total_budget=total_budget,
                         gem_scale_fever=gem_scale_fever,
                     )
+                    dt_kernel = perf_counter() - t_kernel0
+                    dt_total = perf_counter() - t_pack0
+                    self._record_pack(GpuRequestType.SOLVE_GENOMES_PARALLEL, max(0.0, dt_total - dt_kernel))
                     for req, res in zip(sub, merged_results):
                         out.append(
                             GpuResponse(
@@ -1191,6 +1241,11 @@ class GpuExecutor:
                             )
                         )
                 except Exception:
+                    # Count the time spent trying to pack/merge even if we fall back.
+                    try:
+                        self._record_pack(GpuRequestType.SOLVE_GENOMES_PARALLEL, perf_counter() - t_pack0)
+                    except Exception:
+                        pass
                     # Conservative fallback: process each request individually.
                     for req in sub:
                         try:
@@ -1237,50 +1292,14 @@ class GpuExecutor:
     def _execute_request(self, request: GpuRequest) -> GpuResponse:
         """Execute a single GPU request."""
         try:
-            if request.request_type == GpuRequestType.SOLVE_GENOMES_PARALLEL:
-                payload = request.payload or {}
-                try:
-                    song_slot = int(payload.get("song_slot", 0) or 0)
-                except Exception:
-                    song_slot = 0
-                return self._execute_solve_genomes(request, song_slot=song_slot)
-            elif request.request_type == GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY:
-                payload = request.payload or {}
-                try:
-                    song_slot = int(payload.get("song_slot", 0) or 0)
-                except Exception:
-                    song_slot = 0
-                return self._execute_solve_genomes_from_registry(request, song_slot=song_slot)
-            elif request.request_type == GpuRequestType.OPTIMIZE_GEMS_BATCH:
-                return self._execute_optimize_gems_batch(request)
-            elif request.request_type == GpuRequestType.LOAD_REF_ARRAYS:
-                return self._execute_load_refs(request)
-            elif request.request_type == GpuRequestType.PRECOMPUTE_TIMELINE:
-                return self._execute_precompute_timeline(request)
-            elif request.request_type == GpuRequestType.SOLVE_FORCE_GREATS_FINDER:
-                return self._execute_solve_force_greats_finder(request)
-            elif request.request_type == GpuRequestType.PROCESS_FORCE_GREATS:
-                return self._execute_process_force_greats(request)
-            elif request.request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
-                return self._execute_gpu_native_ga_run(request)
-            elif request.request_type == GpuRequestType.GA_STAGE_FG_GENOME_BASE_STATS:
-                return self._execute_ga_stage_fg_genome_base_stats(request)
-            elif request.request_type == GpuRequestType.FG_RESET_GLOBAL_BEST:
-                return self._execute_fg_reset_global_best(request)
-            elif request.request_type == GpuRequestType.FG_DOWNLOAD_GLOBAL_BEST:
-                return self._execute_fg_download_global_best(request)
-            elif request.request_type == GpuRequestType.FG_COMPUTE_BREAKPOINTS:
-                return self._execute_fg_compute_breakpoints(request)
-            elif request.request_type == GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS:
-                return self._execute_fg_solve_with_breakpoints(request)
-            elif request.request_type == GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH:
-                return self._execute_fg_solve_with_breakpoints_batch(request)
-            else:
+            handler = self._dispatch.get(request.request_type)
+            if handler is None:
                 return GpuResponse(
                     request_id=request.request_id,
                     success=False,
                     error=f"Unknown request type: {request.request_type}",
                 )
+            return handler(request)
         except Exception as e:
             return GpuResponse(
                 request_id=request.request_id,

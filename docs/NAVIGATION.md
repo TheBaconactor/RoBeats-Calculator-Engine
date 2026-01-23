@@ -36,3 +36,4 @@
 ## Refactoring Notes
 
 - Duplication reduction map: `docs/DUPLICATION_REDUCTION.md`
+- Runtime/GPU maintenance playbook: `docs/MAINTENANCE_PLAYBOOK.md`

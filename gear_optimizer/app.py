@@ -5,7 +5,6 @@ import gc
 import logging
 import multiprocessing
 import os
-import queue as queue_module
 import re
 import secrets
 import signal
@@ -19,6 +18,7 @@ import numpy as np
 from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS, GA_POPULATION_SIZE
 from gear_optimizer.core.config import (
     compute_memory_guard_limit,
+    load_config,
     load_paths_cache,
     read_iteration_engine_settings,
 )
@@ -47,6 +47,8 @@ from gear_optimizer.data.csv_parser import (
 from gear_optimizer.core.utils import safe_int, cfg_to_dict, cfg_from_dict
 from gear_optimizer.solver.scoring import FEVER_TIMELINE_CACHE, FG_CACHE
 from gear_optimizer.solver.genetic import GEM_SOLVER_CACHE
+from gear_optimizer.app_async_db import AsyncDbSaver
+from gear_optimizer.app_stop_control import StopController
 
 
 # Module-level worker initializer for GPU executor (must be picklable)
@@ -70,137 +72,15 @@ def _gpu_worker_initializer(request_queue, registrations, counter, lock):
     set_gpu_worker_mode(worker_id, request_queue, response_queue)
 
 
-class _AsyncDbSaver:
-    """
-    Background DB writer to avoid blocking the main loop between songs.
-
-    This keeps `save_loadouts_batch()` off the critical path so the next song can
-    start immediately (GPU stays busier) while DB inserts/dedup/prune run in a
-    background thread.
-    """
-
-    def __init__(self, discord_reporter: DiscordReporter | None = None):
-        self._discord_reporter = discord_reporter
-        self._queue: queue_module.Queue = queue_module.Queue()
-        self._thread: threading.Thread | None = None
-        self._running = False
-        self._lock = threading.Lock()
-
-    def start(self) -> None:
-        with self._lock:
-            if self._running:
-                return
-            self._running = True
-            self._thread = threading.Thread(
-                target=self._loop,
-                name="AsyncDbSaver",
-                daemon=True,
-            )
-            self._thread.start()
-
-    def submit(self, song_name: str, entries: list[dict], *, meta: dict | None = None) -> None:
-        if not entries:
-            return
-        if not self._running:
-            self.start()
-        self._queue.put((song_name, entries, meta or {}))
-
-    def flush(self, timeout: float = 30.0) -> None:
-        if not self._running:
-            return
-        deadline = time.monotonic() + max(0.0, float(timeout))
-        while getattr(self._queue, "unfinished_tasks", 0) > 0:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            time.sleep(min(0.05, remaining))
-
-        if getattr(self._queue, "unfinished_tasks", 0) > 0:
-            try:
-                pending = int(getattr(self._queue, "unfinished_tasks", 0))
-            except Exception:
-                pending = -1
-            msg = f"[DB] Warning: async DB flush timed out; pending_tasks={pending}"
-            try:
-                print(msg)
-            except Exception:
-                pass
-            try:
-                logging.warning(msg)
-            except Exception:
-                pass
-            try:
-                if self._discord_reporter is not None:
-                    self._discord_reporter.send_log(msg)
-            except Exception:
-                pass
-
-    def shutdown(self, timeout: float = 30.0) -> None:
-        if not self._running:
-            return
-
-        # Best-effort flush before stopping.
-        self.flush(timeout=timeout)
-
-        try:
-            self._queue.put(None)
-        except Exception:
-            pass
-
-        try:
-            if self._thread is not None:
-                self._thread.join(timeout=timeout)
-        except Exception:
-            pass
-
-        with self._lock:
-            self._running = False
-            self._thread = None
-
-    def _loop(self) -> None:
-        while True:
-            item = self._queue.get()
-            try:
-                if item is None:
-                    return
-                song_name, entries, meta = item
-                if not isinstance(meta, dict):
-                    meta = {}
-
-                try:
-                    save_loadouts_batch(song_name, entries)
-                except Exception as exc:
-                    msg = f"[DB] Async save failed for {song_name}: {type(exc).__name__}: {exc}"
-                    try:
-                        print(msg)
-                    except Exception:
-                        pass
-                    try:
-                        logging.error(msg)
-                    except Exception:
-                        pass
-                    try:
-                        if self._discord_reporter is not None:
-                            self._discord_reporter.send_log(msg)
-                    except Exception:
-                        pass
-            finally:
-                try:
-                    self._queue.task_done()
-                except Exception:
-                    pass
-
-
 class GearOptimizerApp:
     def __init__(self):
         self.setup_logging()
         self.discord_reporter = self.setup_discord()
-        self._async_db_saver = _AsyncDbSaver(self.discord_reporter)
-        self._run_start_monotonic = time.monotonic()
-        self._stop_requested = threading.Event()
-        self._force_exit_requested = threading.Event()
-        self._signal_handlers_installed = False
-        self._signal_prev_handlers: dict[int, object] = {}
+        self._async_db_saver = AsyncDbSaver(self.discord_reporter)
+        self._stop_control = StopController(discord_reporter=self.discord_reporter, bin_dir=BIN_DIR)
+        # Back-compat: keep these names for existing control flow checks.
+        self._stop_requested = self._stop_control.stop_requested_event
+        self._force_exit_requested = self._stop_control.force_exit_requested_event
 
     def setup_logging(self):
         os.makedirs(BIN_DIR, exist_ok=True)
@@ -213,83 +93,13 @@ class GearOptimizerApp:
         return setup_discord_reporter(stats_batch_size=500)
 
     def request_stop(self, reason: str, *, force: bool = False) -> None:
-        """
-        Request a graceful stop (finish current work, flush DB, then exit).
-
-        - First request sets a stop flag checked between songs / futures.
-        - Second request (force=True) escalates to KeyboardInterrupt.
-        """
-        if force:
-            self._force_exit_requested.set()
-
-        if not self._stop_requested.is_set():
-            self._stop_requested.set()
-            msg = f"[Shutdown] Stop requested ({reason}). Finishing current work then exiting. Press Ctrl+C again to force."
-            try:
-                print(msg, flush=True)
-            except Exception:
-                pass
-            try:
-                self.discord_reporter.send_log(msg)
-            except Exception:
-                pass
-
-        if force:
-            raise KeyboardInterrupt
-
-    def _stop_file_path(self) -> str:
-        p = str(os.environ.get("METAFINDER_STOP_FILE", "") or "").strip()
-        if p:
-            return p
-        return os.path.join(BIN_DIR, "STOP")
+        return self._stop_control.request_stop(reason, force=force)
 
     def _stop_requested_now(self) -> bool:
-        if self._stop_requested.is_set():
-            return True
-        try:
-            started = getattr(self, "_run_start_monotonic", None)
-            stop_after = float(os.environ.get("METAFINDER_STOP_AFTER_SEC", "0") or "0")
-            if started is not None and stop_after > 0.0 and (time.monotonic() - float(started)) >= stop_after:
-                self.request_stop(f"stop-after timer reached: {stop_after:.0f}s")
-                return True
-        except Exception:
-            pass
-        try:
-            stop_file = self._stop_file_path()
-            if stop_file and os.path.exists(stop_file):
-                self.request_stop(f"stop file detected: {stop_file!r}")
-                return True
-        except Exception:
-            pass
-        return self._stop_requested.is_set()
+        return self._stop_control.stop_requested_now()
 
     def _install_signal_handlers(self) -> None:
-        if self._signal_handlers_installed:
-            return
-        if threading.current_thread() is not threading.main_thread():
-            return
-
-        def _handler(signum, _frame):
-            # First signal -> graceful stop, second -> force exit.
-            if self._stop_requested.is_set():
-                self.request_stop(f"signal {signum}", force=True)
-            else:
-                self.request_stop(f"signal {signum}", force=False)
-
-        for sig in (
-            getattr(signal, "SIGINT", None),
-            getattr(signal, "SIGTERM", None),
-            getattr(signal, "SIGBREAK", None),
-        ):
-            if sig is None:
-                continue
-            try:
-                self._signal_prev_handlers[int(sig)] = signal.getsignal(sig)
-                signal.signal(sig, _handler)
-            except Exception:
-                pass
-
-        self._signal_handlers_installed = True
+        return self._stop_control.install_signal_handlers()
 
     def run(self):
         multiprocessing.freeze_support()
@@ -332,9 +142,7 @@ class GearOptimizerApp:
                 loop_forever = False
                 return False
 
-            cfg = configparser.ConfigParser()
-            cfg_path = os.environ.get("METAFINDER_CONFIG_PATH", "config.ini")
-            cfg.read(cfg_path, encoding="utf-8-sig")
+            cfg = load_config()
             paths = load_paths_cache()
             set_memory_watchdog_limit(compute_memory_guard_limit(cfg))
             db_display_name = os.path.basename(get_evolution_db_path())
@@ -1837,7 +1645,7 @@ class GearOptimizerApp:
                     rem = max(0, int(total) - int(completed)) if total > 0 else 0
                     eta_s = float(rem) * avg_s if rem > 0 else 0.0
                     if rem > 0:
-                        print(f"[Throughput] {per_h:.1f} tasks/hour (avg {avg_s:.2f}s/task, ETA {eta_s/60.0:.1f}m)")
+                        print(f"[Throughput] {per_h:.1f} tasks/hour (avg {avg_s:.2f}s/task, ETA {eta_s / 60.0:.1f}m)")
                     else:
                         print(f"[Throughput] {per_h:.1f} tasks/hour (avg {avg_s:.2f}s/task)")
                 except Exception:

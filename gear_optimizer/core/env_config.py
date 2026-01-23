@@ -49,6 +49,28 @@ def _env_str(key: str, default: Optional[str] = None) -> Optional[str]:
     return os.environ.get(key, default)
 
 
+def _env_int(key: str, default: int) -> int:
+    """Parse int environment variable (best-effort, never raises)."""
+    raw = os.environ.get(key, None)
+    if raw is None:
+        return int(default)
+    try:
+        return int(str(raw).strip())
+    except Exception:
+        return int(default)
+
+
+def _env_float(key: str, default: float) -> float:
+    """Parse float environment variable (best-effort, never raises)."""
+    raw = os.environ.get(key, None)
+    if raw is None:
+        return float(default)
+    try:
+        return float(str(raw).strip())
+    except Exception:
+        return float(default)
+
+
 @dataclass(frozen=True)
 class EnvConfig:
     """
@@ -76,10 +98,20 @@ class EnvConfig:
     gpu_use_ftff_solver: bool  # GPU_USE_FTFF_SOLVER: Use FT/FF-on-GPU kernel for genome solves
 
     # General Performance
-    perf_timing: bool  # PERF_TIMING: Enable performance timing globally
+    perf_timing: bool  # PERF_TIMING (gated): Enable performance timing globally
+    perf_timing_unconditional: bool  # PERF_TIMING (ungated): used by legacy perf print sites
 
     # Genetic Algorithm
     ga_seed: Optional[str]  # GA_SEED: Seed for genetic algorithm RNG
+
+    # ForceGreats
+    fg_search_radius: int  # FG_SEARCH_RADIUS: default radius (env override, legacy)
+
+    # GPU Executor batching/IPC (read once; restart to apply changes)
+    gpu_executor_batch_wait_ms: int  # GPU_EXECUTOR_BATCH_WAIT_MS
+    gpu_executor_max_batch: int  # GPU_EXECUTOR_MAX_BATCH
+    gpu_executor_pending_ttl_sec: float  # GPU_EXECUTOR_PENDING_TTL_SEC
+    gpu_executor_pending_max: int  # GPU_EXECUTOR_PENDING_MAX
 
     @classmethod
     def from_environment(cls) -> "EnvConfig":
@@ -90,6 +122,7 @@ class EnvConfig:
             EnvConfig instance with all environment variables loaded
         """
         debug_profile = _env_bool("DEBUG_PROFILE") or _env_bool("METAFINDER_DEBUG_PROFILE")
+        perf_timing_unconditional = _env_bool("PERF_TIMING")
         return cls(
             debug_profile=debug_profile,
             # GPU Performance & Timing
@@ -105,9 +138,17 @@ class EnvConfig:
             gpu_strict=_env_bool("GPU_STRICT", "1"),
             gpu_use_ftff_solver=_env_bool("GPU_USE_FTFF_SOLVER", "1"),
             # General Performance
-            perf_timing=debug_profile and _env_bool("PERF_TIMING"),
+            perf_timing=debug_profile and perf_timing_unconditional,
+            perf_timing_unconditional=perf_timing_unconditional,
             # Genetic Algorithm
             ga_seed=_env_str("GA_SEED"),
+            # ForceGreats
+            fg_search_radius=_env_int("FG_SEARCH_RADIUS", 5),
+            # GPU Executor batching/IPC
+            gpu_executor_batch_wait_ms=max(0, _env_int("GPU_EXECUTOR_BATCH_WAIT_MS", 10)),
+            gpu_executor_max_batch=max(1, _env_int("GPU_EXECUTOR_MAX_BATCH", 8)),
+            gpu_executor_pending_ttl_sec=max(0.0, _env_float("GPU_EXECUTOR_PENDING_TTL_SEC", 300.0)),
+            gpu_executor_pending_max=max(0, _env_int("GPU_EXECUTOR_PENDING_MAX", 2048)),
         )
 
 

@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from general_meta import export_general_meta_json, run_general_meta
-from gear_optimizer.core.config import load_paths_cache
+from gear_optimizer.core.config import get_config_path, load_config, load_paths_cache
 from gear_optimizer.data.database import init_db
 
 
@@ -34,8 +34,7 @@ def main():
 
     try:
         # Load config
-        cfg = configparser.ConfigParser()
-        cfg.read(str(REPO_ROOT / "config.ini"), encoding="utf-8-sig")
+        cfg = load_config(get_config_path(str(REPO_ROOT / "config.ini")))
         paths = load_paths_cache()
 
         # Ensure database exists
