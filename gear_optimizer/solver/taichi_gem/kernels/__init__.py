@@ -113,6 +113,7 @@ from .kernels_solvers_batch import (
     solve_batch_kernel,
     solve_genomes_with_ftff_kernel,
     solve_ftff_parallel_kernel,
+    copy_genome_result_stats_to_download_staging_kernel,
 )
 
 # Import GA evaluation & reduction kernels

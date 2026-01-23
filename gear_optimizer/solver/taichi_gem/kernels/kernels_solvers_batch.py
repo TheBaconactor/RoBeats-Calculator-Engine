@@ -355,3 +355,16 @@ def solve_ftff_parallel_kernel(
         )
 
         kernels_helpers.result_stats[i] = res_vec
+
+
+@ti.kernel
+def copy_genome_result_stats_to_download_staging_kernel(out_stats: ti.template(), n_genomes: ti.i32):
+    """
+    Copy the populated slice of `genome_result_stats` into a smaller staging field.
+
+    On Vulkan, `to_numpy()` transfers the full field shape, so downloading the padded
+    MAX_GENOMES=4096 buffer can dominate throughput when only ~250 genomes are active.
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for g in range(n_genomes):
+        out_stats[g] = kernels_helpers.genome_result_stats[g]

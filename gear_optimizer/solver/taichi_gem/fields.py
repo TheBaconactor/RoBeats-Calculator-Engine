@@ -231,6 +231,10 @@ genome_result_cm: ti.Field = None
 genome_result_fm: ti.Field = None
 genome_result_ov: ti.Field = None
 genome_result_stats: ti.Field = None  # Vector field [score, ft, ff, pp, cm, fm, ov]
+# Download staging for FTFF `genome_result_stats` (bounded Vulkan `to_numpy()` transfers).
+# Typical workloads use GA_POPULATION_SIZE ~= 250, so a small staging field avoids transferring MAX_GENOMES (4096).
+genome_result_stats_download_staging_256: ti.Field = None  # (256,) vec7 i32
+genome_result_stats_download_staging_1024: ti.Field = None  # (1024,) vec7 i32
 genome_hint_allocation: ti.Field = None  # Vector field [pp, cm, fm, ov] - warm-start hints from previous gen
 chunk_best_key: ti.Field = None  # (MAX_GENOMES,) u64 packed key for safe per-chunk reduction
 chunk_best_key_tiles: ti.Field = None  # (MAX_GENOMES, CHUNK_BEST_KEY_TILES) u64 packed keys (contention reduction)
@@ -303,6 +307,7 @@ def reset_fields_state() -> None:
     global result_p_val, result_s_val, result_stats
     global genome_result_scores, genome_result_ft, genome_result_ff
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
+    global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
     global genome_hint_allocation
     global chunk_best_key, chunk_best_key_tiles, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
@@ -429,6 +434,8 @@ def reset_fields_state() -> None:
     genome_result_fm = None
     genome_result_ov = None
     genome_result_stats = None
+    genome_result_stats_download_staging_256 = None
+    genome_result_stats_download_staging_1024 = None
     genome_hint_allocation = None
     chunk_best_key = None
     chunk_best_key_tiles = None
@@ -545,6 +552,7 @@ def allocate_fields():
     global result_p_val, result_s_val, result_stats, _fields_allocated
     global genome_result_scores, genome_result_ft, genome_result_ff
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
+    global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
     global genome_hint_allocation
     global chunk_best_key, chunk_best_key_tiles, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
@@ -617,6 +625,9 @@ def allocate_fields():
     # Per-genome results (for FT/FF iteration kernel)
     # [score, ft, ff, pp, cm, fm, ov]
     genome_result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_GENOMES)
+    # Bounded download staging buffers (reduce padded Vulkan `to_numpy()` transfers).
+    genome_result_stats_download_staging_256 = ti.Vector.field(n=7, dtype=ti.i32, shape=256)
+    genome_result_stats_download_staging_1024 = ti.Vector.field(n=7, dtype=ti.i32, shape=1024)
     # Warm-start hints for local search optimization [pp_gems, cm_gems, fm_gems, ov_gems]
     genome_hint_allocation = ti.Vector.field(n=4, dtype=ti.i32, shape=MAX_GENOMES)
     # Per-chunk reduction key: ((score+1) << 32) | work_item_index

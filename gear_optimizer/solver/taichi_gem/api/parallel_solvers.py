@@ -165,9 +165,43 @@ def solve_genomes_with_ftff(
 
     # Download results
     # [score, ft, ff, pp, cm, fm, ov]
+    #
+    # Vulkan `to_numpy()` transfers the full field shape. For FTFF, that would be
+    # MAX_GENOMES=4096 rows every call, even when only ~250 genomes are active.
+    # Use a bounded staging field + copy kernel when possible.
     _maybe_sync(for_timing=False)
     _t_download = time.perf_counter()
-    results_np = fields.genome_result_stats.to_numpy()[:n_genomes]
+    results_np = None
+    try:
+        full_shape = getattr(fields.genome_result_stats, "shape", None)
+        full_elems = int(full_shape[0]) * 7 if full_shape is not None else 0
+
+        staging_candidates = [
+            ("staging_256", fields.genome_result_stats_download_staging_256),
+            ("staging_1024", fields.genome_result_stats_download_staging_1024),
+        ]
+        best = None
+        for name, fld in staging_candidates:
+            if fld is None:
+                continue
+            shape = getattr(fld, "shape", None)
+            if not shape or len(shape) < 1:
+                continue
+            if n_genomes <= int(shape[0]):
+                elems = int(shape[0]) * 7
+                if best is None or elems < best[0]:
+                    best = (elems, name, fld)
+
+        if best is not None and full_elems > int(best[0]):
+            _elems, _name, fld = best
+            kernels.copy_genome_result_stats_to_download_staging_kernel(fld, int(n_genomes))
+            results_np = fld.to_numpy()[:n_genomes]
+    except Exception:
+        results_np = None
+
+    if results_np is None:
+        results_np = fields.genome_result_stats.to_numpy()[:n_genomes]
+
     if _profiler.enabled:
         try:
             download_bytes = int(results_np.nbytes)
