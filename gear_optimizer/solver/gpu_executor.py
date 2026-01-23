@@ -555,8 +555,25 @@ class GpuExecutor:
         while self._running:
             try:
                 # Gather batch of pending requests (wait up to 10ms for more)
+                # Prefer runtime env overrides so batch sizing can be tuned without a restart.
+                # (ENV is a cached snapshot read at import time.)
                 batch_wait_ms = int(getattr(ENV, "gpu_executor_batch_wait_ms", 10) or 10)
                 batch_max = int(getattr(ENV, "gpu_executor_max_batch", 8) or 8)
+                try:
+                    raw = os.environ.get("GPU_EXECUTOR_BATCH_WAIT_MS")
+                    if raw is not None and str(raw).strip() != "":
+                        batch_wait_ms = int(str(raw).strip())
+                except Exception:
+                    pass
+                try:
+                    raw = os.environ.get("GPU_EXECUTOR_MAX_BATCH")
+                    if raw is not None and str(raw).strip() != "":
+                        batch_max = int(str(raw).strip())
+                except Exception:
+                    pass
+                # In-process mode benefits if we allow larger batches (producer is local and can enqueue quickly).
+                if self._in_process_queues and os.environ.get("GPU_EXECUTOR_MAX_BATCH") is None:
+                    batch_max = max(int(batch_max), 32)
                 if batch_wait_ms < 0:
                     batch_wait_ms = 0
                 if batch_max <= 0:

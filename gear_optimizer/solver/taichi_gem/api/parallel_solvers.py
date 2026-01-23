@@ -118,7 +118,13 @@ def solve_genomes_with_ftff(
 
     # Upload per-genome stats
     # [pp, cm, fm, p_val, s_val, ft, ff]
-    stats_buf = np.zeros((n_genomes, 7), dtype=np.int16)
+    #
+    # Avoid per-call allocations/zeroing on the CPU hot path by reusing a preallocated
+    # buffer (we fully overwrite every column for the active slice).
+    global _GENOME_STATS_CACHE
+    if _GENOME_STATS_CACHE is None:
+        _GENOME_STATS_CACHE = np.empty((MAX_GENOMES, 7), dtype=np.int16)
+    stats_buf = _GENOME_STATS_CACHE[:n_genomes]
 
     for i, stats in enumerate(genome_stats_list):
         stats_buf[i, 0] = stats["base_pp"]
