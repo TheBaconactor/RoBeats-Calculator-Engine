@@ -2152,6 +2152,15 @@ def _run_gpu_full_solver_multi_seed(
     gpu_full_human_colored_penalty: int = 0,
     gpu_full_k_scan_select: int = 0,
     gpu_full_k_scan_repack: int = 0,
+    # Forward-compat: multi-seed path doesn't support ALNS/PT, but callers may still pass these.
+    gpu_full_alns_enabled: bool = False,
+    gpu_full_alns_islands: int = 1,
+    gpu_full_pt_enabled: bool = False,
+    gpu_full_pt_t_min: float = 1.0,
+    gpu_full_pt_t_max: float = 10.0,
+    gpu_full_pt_swap_interval: int = 8,
+    gpu_full_pt_destroy_beta: float = 0.0,
+    gpu_full_pt_cap_slack_max: int = 0,
     seeded_raw_vids: Optional[np.ndarray] = None,
 ):
     if not seeds:
