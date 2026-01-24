@@ -485,18 +485,20 @@ def decode_gpu_native_ga_runs_payload(
         genome_ids_mat = np.asarray(packed[:, 1 : 1 + n_slots], dtype=np.int32)
         results_mat = np.asarray(packed[:, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32)
 
-        base_stats_arr, sel_color = _build_base_stats_array(base_stats_fixed, cfg_data)
-        sel_color = str(sel_color or "")
-        color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
-        sel_color_idx = int(color_to_idx.get(sel_color, -1))
+        sel_color = str(cfg_data.get("selected_color", "") or "")
 
-        item_stats = registry.to_gpu_arrays()["item_stats"]  # (n_items, 10)
-        t_stats = time.perf_counter() if perf else 0.0
-        item_stats_sum = item_stats[genome_ids_mat].sum(axis=1)
+        include_stats = str(os.environ.get("GA_DECODE_INCLUDE_STATS", "0") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        t_stats = time.perf_counter() if (perf and include_stats) else 0.0
+        stat_names = None
+        final_stats_mat = None
+        base_stats_arr = None
+        item_stats_sum = None
 
-        # Gem contributions: (n_cand, 10)
-        n_cand = int(genome_ids_mat.shape[0])
-        gem_contributions = np.zeros((n_cand, 10), dtype=np.int32)
         g_ft = results_mat[:, 1]
         g_ff = results_mat[:, 2]
         g_pp = results_mat[:, 3]
@@ -504,46 +506,57 @@ def decode_gpu_native_ga_runs_payload(
         g_fm = results_mat[:, 5]
         g_ov = results_mat[:, 6]
 
-        gem_contributions[:, 0] = g_pp * GEM_SCALE_NORMAL
-        gem_contributions[:, 1] = g_cm * GEM_SCALE_NORMAL
-        gem_contributions[:, 2] = g_fm * GEM_SCALE_FEVER
-        gem_contributions[:, 3] = g_ft * GEM_SCALE_FEVER
-        gem_contributions[:, 4] = g_ff * GEM_SCALE_FEVER
+        if include_stats:
+            # Optional (debug): compute per-candidate Stats/BaseStats dicts.
+            # This is expensive (large numpy gathers + per-candidate dict builds) and is not required
+            # for the in-flight pipeline, so keep it opt-in via GA_DECODE_INCLUDE_STATS=1.
+            base_stats_arr, sel_color_built = _build_base_stats_array(base_stats_fixed, cfg_data)
+            sel_color = str(sel_color_built or sel_color or "")
+            color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
+            sel_color_idx = int(color_to_idx.get(sel_color, -1))
 
-        gem_contributions[:, 5] = g_ft * GEM_STAT_TO_ELEMENT_SCALE
-        gem_contributions[:, 6] = g_ff * GEM_STAT_TO_ELEMENT_SCALE
-        gem_contributions[:, 7] = g_fm * GEM_STAT_TO_ELEMENT_SCALE
-        gem_contributions[:, 8] = g_cm * GEM_STAT_TO_ELEMENT_SCALE
-        gem_contributions[:, 9] = g_pp * GEM_STAT_TO_ELEMENT_SCALE
+            item_stats = registry.to_gpu_arrays()["item_stats"]  # (n_items, 10)
+            item_stats_sum = item_stats[genome_ids_mat].sum(axis=1)
 
-        if 5 <= sel_color_idx <= 9:
-            gem_contributions[:, sel_color_idx] += g_ov * ELEMENTAL_GEM_SCALE
+            # Gem contributions: (n_cand, 10)
+            n_cand = int(genome_ids_mat.shape[0])
+            gem_contributions = np.zeros((n_cand, 10), dtype=np.int32)
+            gem_contributions[:, 0] = g_pp * GEM_SCALE_NORMAL
+            gem_contributions[:, 1] = g_cm * GEM_SCALE_NORMAL
+            gem_contributions[:, 2] = g_fm * GEM_SCALE_FEVER
+            gem_contributions[:, 3] = g_ft * GEM_SCALE_FEVER
+            gem_contributions[:, 4] = g_ff * GEM_SCALE_FEVER
 
-        final_stats_mat = base_stats_arr + item_stats_sum + gem_contributions
+            gem_contributions[:, 5] = g_ft * GEM_STAT_TO_ELEMENT_SCALE
+            gem_contributions[:, 6] = g_ff * GEM_STAT_TO_ELEMENT_SCALE
+            gem_contributions[:, 7] = g_fm * GEM_STAT_TO_ELEMENT_SCALE
+            gem_contributions[:, 8] = g_cm * GEM_STAT_TO_ELEMENT_SCALE
+            gem_contributions[:, 9] = g_pp * GEM_STAT_TO_ELEMENT_SCALE
 
-        stat_names = [
-            "Perfect Points",
-            "Combo Multiplier",
-            "Fever Multiplier",
-            "Fever Time",
-            "Fever Fill Rate",
-            "Beat",
-            "Vibe",
-            "Rush",
-            "Flow",
-            "Chill",
-        ]
+            if 5 <= sel_color_idx <= 9:
+                gem_contributions[:, sel_color_idx] += g_ov * ELEMENTAL_GEM_SCALE
+
+            final_stats_mat = base_stats_arr + item_stats_sum + gem_contributions
+
+            stat_names = [
+                "Perfect Points",
+                "Combo Multiplier",
+                "Fever Multiplier",
+                "Fever Time",
+                "Fever Fill Rate",
+                "Beat",
+                "Vibe",
+                "Rush",
+                "Flow",
+                "Chill",
+            ]
 
         unique_evaluated: list[dict] = []
+        n_cand = int(genome_ids_mat.shape[0])
         for i in range(n_cand):
             score_val = int(scores_vec[i])
             ids_row = genome_ids_mat[i]
             genome = registry.decode_genome(ids_row)
-
-            row_stats = final_stats_mat[i]
-            current_stats = {stat_names[j]: int(row_stats[j]) for j in range(10)}
-            base_row_stats = base_stats_arr + item_stats_sum[i]
-            base_stats = {stat_names[j]: int(base_row_stats[j]) for j in range(10)}
 
             g_ft_i = int(g_ft[i])
             g_ff_i = int(g_ff[i])
@@ -562,13 +575,21 @@ def decode_gpu_native_ga_runs_payload(
                     "Fever Multiplier": g_fm_i,
                     "Element": g_ov_i,
                 },
-                "Stats": current_stats,
-                "BaseStats": base_stats,
                 "Selected Element": sel_color,
                 "BaseScore": score_val,
                 "_ga_gpu_run_idx": int(sel_run_idx[i]),
                 "_ga_gpu_row_idx": int(sel_rows[i]),
             }
+            if include_stats and final_stats_mat is not None and stat_names is not None and base_stats_arr is not None and item_stats_sum is not None:
+                try:
+                    row_stats = final_stats_mat[i]
+                    current_stats = {stat_names[j]: int(row_stats[j]) for j in range(10)}
+                    base_row_stats = base_stats_arr + item_stats_sum[i]
+                    base_stats = {stat_names[j]: int(base_row_stats[j]) for j in range(10)}
+                    data_obj["Stats"] = current_stats
+                    data_obj["BaseStats"] = base_stats
+                except Exception:
+                    pass
 
             cand_data = {
                 "Score": score_val,
@@ -603,7 +624,7 @@ def decode_gpu_native_ga_runs_payload(
                 best_minis = list(cand_best.get("Minis") or best_minis)
 
         if perf:
-            stats_ms = (time.perf_counter() - t_stats) * 1000.0 if perf else 0.0
+            stats_ms = (time.perf_counter() - t_stats) * 1000.0 if (perf and include_stats) else 0.0
             total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
             print(
                 "[PERF][GADecode] "
