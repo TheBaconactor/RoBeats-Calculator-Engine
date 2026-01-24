@@ -263,12 +263,26 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
         pass
 
     ga_candidates = list(song.ga_candidates or [])
-    ga_candidates = select_fg_candidates(
-        ga_candidates,
-        limit=fg_candidate_limit,
-        primary_color=str(song.meta_primary_color or ""),
-        secondary_color=str(song.meta_secondary_color or ""),
-    )
+    # If GA came from the GPU-native "selected payload" path, candidates are already GPU-selected
+    # (bounded + deduped) and re-running the CPU selector is pure overhead on slower machines.
+    is_gpu_selected_payload = False
+    try:
+        if ga_candidates:
+            d0 = ga_candidates[0].get("Data") if isinstance(ga_candidates[0], dict) else None
+            if isinstance(d0, dict) and ("_ga_gpu_run_idx" in d0 or "_ga_gpu_row_idx" in d0):
+                is_gpu_selected_payload = True
+    except Exception:
+        is_gpu_selected_payload = False
+
+    if is_gpu_selected_payload:
+        ga_candidates = ga_candidates[: int(fg_candidate_limit)]
+    else:
+        ga_candidates = select_fg_candidates(
+            ga_candidates,
+            limit=fg_candidate_limit,
+            primary_color=str(song.meta_primary_color or ""),
+            secondary_color=str(song.meta_secondary_color or ""),
+        )
     song.ga_candidates = ga_candidates
     t_select = time.perf_counter() if perf else 0.0
 
