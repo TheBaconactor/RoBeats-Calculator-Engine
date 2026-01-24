@@ -260,6 +260,7 @@ class GearOptimizerApp:
             loop_forever = cfg.getboolean("IterationEngine", "LoopForever", fallback=False)
             eval_cpu_limit = safe_int(cfg.get("IterationEngine", "EvalCPUCores", fallback=0))
             self._apply_inflight_overrides(cfg)
+            self._maybe_autoset_gpu_song_slots(cfg)
 
             # If the GPU executor initializes Taichi before the GA code runs, Taichi fields can be allocated with
             # default (padded) GA run buffers, making GPU-native GA payload downloads significantly slower.
@@ -885,6 +886,70 @@ class GearOptimizerApp:
                 pass
 
         # GPU_Native_GA is supported by a dedicated GPU-native in-flight orchestrator.
+
+    def _maybe_autoset_gpu_song_slots(self, cfg) -> None:
+        """
+        Best-effort auto sizing for `GPU_SONG_SLOTS` when native in-flight mode is enabled.
+
+        This targets a common throughput/stability failure mode on Vulkan:
+        the GPU owner thread goes idle because GA submission stalls on song-slot acquisition
+        (slot pressure), which users often interpret as the GPU executor "hanging".
+
+        Notes:
+        - Only applies when `GPU_SONG_SLOTS` is not already set in the environment.
+        - Must run before `gear_optimizer.solver.taichi_gem.fields` is imported.
+        - Users can always override by setting `GPU_SONG_SLOTS` explicitly.
+        """
+        raw = os.environ.get("GPU_SONG_SLOTS")
+        if raw is not None and str(raw).strip() != "":
+            return
+
+        inflight_songs = self._get_inflight_songs_requested(cfg)
+        if int(inflight_songs) <= 1:
+            return
+
+        try:
+            if "gear_optimizer.solver.taichi_gem.fields" in sys.modules:
+                print("[GPU] Auto GPU_SONG_SLOTS skipped: taichi_gem.fields already imported.")
+                return
+        except Exception:
+            pass
+
+        ga_queue_mult = 0
+        try:
+            ga_queue_mult = safe_int(cfg.get("IterationEngine", "InFlight_GA_QueueMult", fallback="0"), 0)
+        except Exception:
+            ga_queue_mult = 0
+        raw = os.environ.get("INFLIGHT_GA_QUEUE_MULT")
+        if raw is not None and str(raw).strip() != "":
+            try:
+                ga_queue_mult = int(raw)
+            except Exception:
+                pass
+        if ga_queue_mult <= 0:
+            ga_queue_mult = 2
+        ga_queue_mult = max(1, min(int(ga_queue_mult), 8))
+
+        # Slot 0 is reserved. In-flight also reserves at least one free slot so FG can submit without deadlocking.
+        # Make the default large enough that `ga_queue_mult` isn't immediately capped by slot availability.
+        required = int(inflight_songs) * int(ga_queue_mult) + 2
+        slots = max(24, int(required))
+
+        # Keep auto-sizing conservative to avoid surprising VRAM growth on smaller GPUs.
+        # Power users can opt in to larger values by setting `GPU_SONG_SLOTS` explicitly.
+        slots = min(int(slots), 256)
+
+        os.environ["GPU_SONG_SLOTS"] = str(int(slots))
+        try:
+            print(
+                "[GPU] Auto-set GPU_SONG_SLOTS={} (InFlightSongs={}, InFlight_GA_QueueMult={}). Set GPU_SONG_SLOTS to override.".format(
+                    int(slots),
+                    int(inflight_songs),
+                    int(ga_queue_mult),
+                )
+            )
+        except Exception:
+            pass
 
     def _execute_tasks(
         self,
