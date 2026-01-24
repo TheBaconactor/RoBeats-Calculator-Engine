@@ -853,6 +853,17 @@ def process_force_greats_gpu_finder(
     if song_slot < 0:
         song_slot = 0
 
+    # In GPU-native in-flight mode, GA can release a song slot before FG runs. When that happens, the GA->FG
+    # candidate table for the original slot may be overwritten by other songs, so the staging fast-path is unsafe.
+    ga_candidate_table_slot_held = True
+    try:
+        if isinstance(calc_song, dict):
+            held_flag = calc_song.get("_fg_ga_candidate_table_slot_held", None)
+            if held_flag is not None:
+                ga_candidate_table_slot_held = bool(held_flag)
+    except Exception:
+        ga_candidate_table_slot_held = True
+
     caps_mode = str(os.environ.get("FG_PAIR_CAPS_MODE", "timeline") or "").strip().lower()
     if caps_mode in {"timeline", "gpu", "1", "true", "yes", "on", ""}:
         pair_caps_from_timeline = True
@@ -1214,7 +1225,13 @@ def process_force_greats_gpu_finder(
             ga_stage_table_slot_pending = None
 
             coords_arr = None
-            if _FG_GA_CANDIDATE_TABLE_ENABLED and bool(use_gpu) and ga_coords_map:
+            if (
+                _FG_GA_CANDIDATE_TABLE_ENABLED
+                and ga_candidate_table_slot_held
+                and (gpu_client is None)
+                and bool(use_gpu)
+                and ga_coords_map
+            ):
                 try:
                     coords_list = [ga_coords_map.get(sig0) for sig0 in pending_sigs]
                     if coords_list and all(c is not None and len(c) >= 2 for c in coords_list):

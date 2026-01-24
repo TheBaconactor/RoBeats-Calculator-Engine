@@ -1788,6 +1788,15 @@ def run_native_inflight_song_pipeline(
                         pass
                     keep_slot_for_fg = int(held_slots) < int(hold_budget)
 
+                # When the song slot is released after GA, the GA->FG candidate table for that slot may be
+                # overwritten by other in-flight songs before FG runs. Mark whether the GA slot remained
+                # reserved so FG can safely decide whether to use that fast-path.
+                try:
+                    if isinstance(song.calc_song, dict):
+                        song.calc_song["_fg_ga_candidate_table_slot_held"] = bool(keep_slot_for_fg)
+                except Exception:
+                    pass
+
                 if not keep_slot_for_fg:
                     # Release the song slot immediately after GA completes unless we're keeping it
                     # resident for FG reuse (bounded by `fg_hold_budget` so GA won't deadlock on slots).
