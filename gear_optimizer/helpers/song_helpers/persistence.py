@@ -73,7 +73,7 @@ def build_db_payload(
     best_minis,
     prev_record,
     attempt_lifetime,
-    prev_attempts_first,
+    attempts_first,
     fg_variants,
     build_details_fn,
     db_best_fg_score=None,
@@ -87,7 +87,7 @@ def build_db_payload(
         best_minis: Best mini loadout
         prev_record: Previous database record
         attempt_lifetime: Lifetime attempt counter
-        prev_attempts_first: Previous attempts_first counter
+        attempts_first: Current attempts_first counter (already computed per-song)
         fg_variants: Force greats variants
         build_details_fn: Function to build details dict from data dict
         db_best_fg_score: Best FG score from DB (across all loadouts)
@@ -118,8 +118,6 @@ def build_db_payload(
     best_gear_names = names_list(best_gear)
     best_mini_names = names_list(best_minis)
     best_details = build_details_fn(best_data)
-
-    attempts_first = 1 if is_first or is_better else (prev_attempts_first + 1 if prev_attempts_first else 1)
 
     def attach_attempt_meta(details):
         """Copy details dict and tag attempt counters for DB persistence."""
@@ -232,6 +230,8 @@ def build_db_payload(
     updated_payload = {}
     updated_payload["attempt_lifetime"] = attempt_lifetime
     updated_payload["attempts_first"] = attempts_first
+    # Expose the current run's metrics for downstream per-song counter updates.
+    updated_payload["run_score"] = score or 0
     if top1:
         updated_payload.update(
             {
@@ -295,6 +295,7 @@ def build_db_payload(
     if current_run_fg_candidates:
         best_fg_entry = max(current_run_fg_candidates, key=lambda x: x.get("score", 0))
         best_fg_score = best_fg_entry.get("score", 0)
+        updated_payload["run_best_fg_score"] = best_fg_score or 0
         # Only include if it's actually better than top1's FG score
         if best_fg_score > fg_score_val:
             updated_payload["best_fg"] = {
@@ -304,6 +305,8 @@ def build_db_payload(
                 "minis": best_fg_entry.get("minis", []),
                 "details": best_fg_entry.get("details", {}),
             }
+    else:
+        updated_payload["run_best_fg_score"] = 0
 
     return updated_payload
 

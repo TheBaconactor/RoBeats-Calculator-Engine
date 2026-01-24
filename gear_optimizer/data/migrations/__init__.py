@@ -14,7 +14,7 @@ Migration = Callable[[sqlite3.Connection], None]
 # NOTE: `evolution.db` in the wild may already have `PRAGMA user_version=8` even though
 # the physical schema matches v6 (v6 is a data-level migration only). Keep v7/v8 as
 # no-ops so older DBs can advance and newer DBs won't be rejected.
-LATEST_SCHEMA_VERSION = 9
+LATEST_SCHEMA_VERSION = 10
 
 
 def _migration_1_init_schema(conn: sqlite3.Connection) -> None:
@@ -401,6 +401,28 @@ def _migration_9_add_team_buff_tier_tables(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migration_10_add_song_attempt_counters(conn: sqlite3.Connection) -> None:
+    """
+    Add per-song attempt counters.
+
+    - `attempt_lifetime`: increments once per processed run, monotonically.
+    - `attempts_first`: increments once per processed run but resets to 1 on any
+      new base OR FG record (per-song).
+    """
+
+    # SQLite doesn't support `ADD COLUMN IF NOT EXISTS` on all versions we may encounter,
+    # so do best-effort adds and tolerate duplicates.
+    for stmt in (
+        "ALTER TABLE songs ADD COLUMN attempt_lifetime INTEGER DEFAULT 0;",
+        "ALTER TABLE songs ADD COLUMN attempts_first INTEGER DEFAULT 0;",
+    ):
+        try:
+            conn.execute(stmt)
+        except sqlite3.Error:
+            # Likely: duplicate column name (already migrated).
+            pass
+
+
 _MIGRATIONS: Dict[int, Migration] = {
     1: _migration_1_init_schema,
     2: _migration_2_add_pending_fg_jobs,
@@ -411,6 +433,7 @@ _MIGRATIONS: Dict[int, Migration] = {
     7: _migration_7_noop,
     8: _migration_8_noop,
     9: _migration_9_add_team_buff_tier_tables,
+    10: _migration_10_add_song_attempt_counters,
 }
 
 

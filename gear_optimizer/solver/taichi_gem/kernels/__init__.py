@@ -122,6 +122,8 @@ from .ga_eval import (
     init_chunk_best_key_kernel,
     reduce_chunk_to_best_key_kernel,
     merge_chunk_best_to_genomes_kernel,
+    ga_clear_chunk_best_key_waves_kernel,
+    ga_merge_chunk_best_key_waves_to_global_kernel,
     ga_find_best_combo_key_kernel,
     ga_write_best_results_from_key_kernel,
     # GPU-side global best tracking
@@ -246,6 +248,8 @@ __all__ = [
     "init_chunk_best_key_kernel",
     "reduce_chunk_to_best_key_kernel",
     "merge_chunk_best_to_genomes_kernel",
+    "ga_clear_chunk_best_key_waves_kernel",
+    "ga_merge_chunk_best_key_waves_to_global_kernel",
     "ga_find_best_combo_key_kernel",
     "ga_write_best_results_from_key_kernel",
     # GPU-side global best tracking

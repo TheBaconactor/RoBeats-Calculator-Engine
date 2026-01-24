@@ -215,7 +215,7 @@ def load_database_context(
                         force_data = _LazyJsonDict(
                             str(force_blob),
                             warn_key="force-loadout-json",
-                            warn_msg=f"Invalid force JSON for {row.get('loadout_hash')}",
+                            warn_msg=f"Invalid force JSON for {row['loadout_hash']}",
                         )
 
                     details_blob = row["details_json"]
@@ -224,7 +224,7 @@ def load_database_context(
                         details_data = _LazyJsonDict(
                             str(details_blob),
                             warn_key="details-loadout-json",
-                            warn_msg=f"Invalid details JSON for {row.get('loadout_hash')}",
+                            warn_msg=f"Invalid details JSON for {row['loadout_hash']}",
                         )
 
                     known_loadouts[row["loadout_hash"]] = (

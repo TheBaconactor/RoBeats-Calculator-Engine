@@ -55,7 +55,7 @@ payload = build_db_payload(
     best_minis=mock_minis,
     prev_record=None,  # First run
     attempt_lifetime=1,
-    prev_attempts_first=0,
+    attempts_first=1,
     fg_variants=[{"score": 900000, "gear": mock_gear, "minis": mock_minis, "data": mock_variant}],
     build_details_fn=mock_build_details,
 )

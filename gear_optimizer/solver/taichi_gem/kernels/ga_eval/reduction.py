@@ -6,6 +6,8 @@ Includes:
 - init_chunk_best_key_kernel
 - reduce_chunk_to_best_key_kernel
 - merge_chunk_best_to_genomes_kernel
+- ga_clear_chunk_best_key_waves_kernel
+- ga_merge_chunk_best_key_waves_to_global_kernel
 """
 
 import sys
@@ -49,6 +51,57 @@ def init_chunk_best_key_kernel(n_genomes: ti.i32):
         else:
             kernels_helpers.chunk_best_score[g] = ti.cast(-2147483648, ti.i32)
             kernels_helpers.chunk_best_idx[g] = -1
+
+
+@ti.kernel
+def ga_clear_chunk_best_key_waves_kernel(n_genomes: ti.i32, n_tiles: ti.i32):
+    """
+    Clear Vulkan FT/FF reduction scratch buffer for the next combo chunk.
+
+    This prepares `chunk_best_key_waves[g, :]` so the FT/FF search kernel can
+    write per-wave best keys without atomics.
+
+    Args:
+        n_genomes: Number of genomes being evaluated
+        n_tiles: Number of 256-combo tiles in this combo chunk
+    """
+    if ti.static(IS_METAL):
+        # Metal path does not allocate the u64 scratch buffer.
+        for _ in range(1):
+            pass
+    else:
+        n_entries = n_tiles * ti.cast(kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE, ti.i32)
+        ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+        for g, i in ti.ndrange(n_genomes, n_entries):
+            kernels_helpers.chunk_best_key_waves[g, i] = ti.u64(0)
+
+
+@ti.kernel
+def ga_merge_chunk_best_key_waves_to_global_kernel(n_genomes: ti.i32, n_tiles: ti.i32):
+    """
+    Merge Vulkan FT/FF reduction scratch buffer into `chunk_best_key`.
+
+    One thread per genome scans the per-wave scratch keys and updates
+    `chunk_best_key[g]` with the best key found for this combo chunk.
+
+    Args:
+        n_genomes: Number of genomes being evaluated
+        n_tiles: Number of 256-combo tiles in this combo chunk
+    """
+    if ti.static(IS_METAL):
+        # Metal path uses chunk_best_score/chunk_best_idx atomics; no u64 scratch exists.
+        for _ in range(1):
+            pass
+    else:
+        n_entries = n_tiles * ti.cast(kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE, ti.i32)
+        ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+        for g in range(n_genomes):
+            best = kernels_helpers.chunk_best_key[g]
+            for i in range(n_entries):
+                k = kernels_helpers.chunk_best_key_waves[g, i]
+                if k > best:
+                    best = k
+            kernels_helpers.chunk_best_key[g] = best
 
 
 @ti.kernel

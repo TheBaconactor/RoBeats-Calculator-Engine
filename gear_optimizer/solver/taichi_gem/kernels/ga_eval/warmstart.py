@@ -357,4 +357,9 @@ def ga_find_best_combo_warmstart_kernel(
 
             best = subgroup.reduce_max(key)
             if subgroup.elect() and best != ti.u64(0):
-                ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], best)
+                # Two-stage reduction (Vulkan):
+                # - Stage A: write per-wave best key into scratch (no atomics)
+                # - Stage B: merge scratch -> chunk_best_key in a separate kernel
+                wave_slot = lane >> 5  # lane//32, valid for wave32 and wave64 (wave64 uses even slots)
+                out_i = (tile_in_genome * kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE) + wave_slot
+                kernels_helpers.chunk_best_key_waves[genome_idx, out_i] = best

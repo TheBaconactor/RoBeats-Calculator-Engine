@@ -47,7 +47,7 @@ def test_build_db_payload_accepts_string_items():
         best_minis=["Mini 1", "Mini 2", "Mini 3"],
         prev_record=None,
         attempt_lifetime=1,
-        prev_attempts_first=0,
+        attempts_first=1,
         fg_variants=[fg_variant],
         build_details_fn=build_details,
         db_best_fg_score=0,

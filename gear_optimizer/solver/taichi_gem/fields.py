@@ -57,6 +57,15 @@ MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 w
 MAX_BP_PAIRS = 256  # Breakpoint kernel scan pairs
 CHUNK_BEST_KEY_TILES = 8  # Reduce atomic contention in GA warm-start reduction
 
+# FT/FF combo reduction scratch sizing (Vulkan path).
+# Used to support a two-stage reduction that avoids highly contended atomics:
+# - Stage A writes per-wave best keys into a scratch buffer (no atomics)
+# - Stage B merges scratch -> chunk_best_key (one thread per genome)
+GA_FTFF_REDUCE_BLOCK_DIM = 256  # Must match kernels/ga_eval/warmstart.py Vulkan block dim
+GA_FTFF_REDUCE_WAVE_STRIDE = GA_FTFF_REDUCE_BLOCK_DIM // 32  # Works for wave32 and wave64 (uses lane//32)
+GA_FTFF_REDUCE_MAX_TILES = (MAX_FTFF_COMBOS + GA_FTFF_REDUCE_BLOCK_DIM - 1) // GA_FTFF_REDUCE_BLOCK_DIM
+GA_FTFF_REDUCE_SCRATCH_COLS = GA_FTFF_REDUCE_MAX_TILES * GA_FTFF_REDUCE_WAVE_STRIDE
+
 # GPU-native GA -> ForceGreats candidate table (compact GPU-resident buffer).
 #
 # Avoids downloading full `(runs, pop, payload_cols)` GA run payloads back to CPU just to
@@ -238,6 +247,7 @@ genome_result_stats_download_staging_1024: ti.Field = None  # (1024,) vec7 i32
 genome_hint_allocation: ti.Field = None  # Vector field [pp, cm, fm, ov] - warm-start hints from previous gen
 chunk_best_key: ti.Field = None  # (MAX_GENOMES,) u64 packed key for safe per-chunk reduction
 chunk_best_key_tiles: ti.Field = None  # (MAX_GENOMES, CHUNK_BEST_KEY_TILES) u64 packed keys (contention reduction)
+chunk_best_key_waves: ti.Field = None  # (MAX_GENOMES, GA_FTFF_REDUCE_SCRATCH_COLS) u64 scratch (per-wave best keys)
 ftff_combo_ft: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FT gems per combo
 ftff_combo_ff: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FF gems per combo
 
@@ -309,7 +319,7 @@ def reset_fields_state() -> None:
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
     global genome_hint_allocation
-    global chunk_best_key, chunk_best_key_tiles, chunk_best_score, chunk_best_idx, chunk_best_results
+    global chunk_best_key, chunk_best_key_tiles, chunk_best_key_waves, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results
     global ga_runs_payload_packed
@@ -439,6 +449,7 @@ def reset_fields_state() -> None:
     genome_hint_allocation = None
     chunk_best_key = None
     chunk_best_key_tiles = None
+    chunk_best_key_waves = None
     chunk_best_score = None
     chunk_best_idx = None
     chunk_best_results = None
@@ -554,7 +565,7 @@ def allocate_fields():
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
     global genome_hint_allocation
-    global chunk_best_key, chunk_best_key_tiles, chunk_best_score, chunk_best_idx, chunk_best_results
+    global chunk_best_key, chunk_best_key_tiles, chunk_best_key_waves, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results
     global ga_runs_payload_packed
@@ -635,6 +646,9 @@ def allocate_fields():
     if not IS_METAL:
         chunk_best_key = ti.field(dtype=ti.u64, shape=MAX_GENOMES)
         chunk_best_key_tiles = ti.field(dtype=ti.u64, shape=(MAX_GENOMES, CHUNK_BEST_KEY_TILES))
+        # Scratch: per-(genome,tile,wave-slot) packed best keys for two-stage reduction (Vulkan path).
+        # Shape is fixed to the worst-case number of tiles for MAX_FTFF_COMBOS.
+        chunk_best_key_waves = ti.field(dtype=ti.u64, shape=(MAX_GENOMES, int(GA_FTFF_REDUCE_SCRATCH_COLS)))
     else:
         chunk_best_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
         chunk_best_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
@@ -838,6 +852,7 @@ def bind_fields(kernels_module):
     if not IS_METAL:
         target.chunk_best_key = chunk_best_key
         target.chunk_best_key_tiles = chunk_best_key_tiles
+        target.chunk_best_key_waves = chunk_best_key_waves
     else:
         target.chunk_best_score = chunk_best_score
         target.chunk_best_idx = chunk_best_idx

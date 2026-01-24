@@ -24,6 +24,8 @@ from .payload import (
     ga_update_runs_best_kernel,
 )
 from .reduction import (
+    ga_clear_chunk_best_key_waves_kernel,
+    ga_merge_chunk_best_key_waves_to_global_kernel,
     init_chunk_best_key_kernel,
     init_genome_results_kernel,
     merge_chunk_best_to_genomes_kernel,
@@ -41,6 +43,8 @@ __all__ = [
     "init_chunk_best_key_kernel",
     "reduce_chunk_to_best_key_kernel",
     "merge_chunk_best_to_genomes_kernel",
+    "ga_clear_chunk_best_key_waves_kernel",
+    "ga_merge_chunk_best_key_waves_to_global_kernel",
     "ga_find_best_combo_key_kernel",
     "ga_write_best_results_from_key_kernel",
     "ga_write_best_and_update_global_kernel",

@@ -510,6 +510,9 @@ def process_song_task(args) -> SongResultPayload:
                 prev_attempts_first = 0
 
         attempt_lifetime = attempt_lifetime_prev + 1
+        # Note: per-song attempt counters are now tracked in `songs` and updated in the DB-writer
+        # (post-processor / async saver). This local value is best-effort metadata only.
+        attempts_first = (prev_attempts_first + 1) if prev_attempts_first else 1
 
         def emit(msg):
             if status_queue:
@@ -840,7 +843,7 @@ def process_song_task(args) -> SongResultPayload:
                 best_minis,
                 prev_record,
                 attempt_lifetime,
-                prev_attempts_first,
+                attempts_first,
                 fg_variants,
                 build_details,
                 db_best_fg_score=db_best_fg_score,

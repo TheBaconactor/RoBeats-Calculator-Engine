@@ -1306,6 +1306,7 @@ class GearOptimizerApp:
             memory_resume_tracker=memory_resume_tracker,
             total_tasks=len(tasks),
             throughput_t0=time.perf_counter(),
+            ref_arrays=ref_arrays,
         )
 
     def _queue_song_for_preload(self, preloader, task):
@@ -1473,6 +1474,7 @@ class GearOptimizerApp:
                             memory_resume_tracker=memory_resume_tracker,
                             total_tasks=len(tasks),
                             throughput_t0=throughput_t0,
+                            ref_arrays=ref_arrays,
                         )
 
                         if self._stop_requested_now():
@@ -1502,6 +1504,7 @@ class GearOptimizerApp:
                             memory_resume_tracker=memory_resume_tracker,
                             total_tasks=len(tasks),
                             throughput_t0=throughput_t0,
+                            ref_arrays=ref_arrays,
                         )
 
                         if self._stop_requested_now():
@@ -1565,6 +1568,7 @@ class GearOptimizerApp:
         memory_resume_tracker=None,
         total_tasks=0,
         throughput_t0: float | None = None,
+        ref_arrays=None,
     ):
         completed = completed_offset
         failed = 0
@@ -1668,10 +1672,26 @@ class GearOptimizerApp:
                             "file_path": res.get("file_path"),
                             "cfg_dict": res.get("cfg_dict"),
                             "db_key": res.get("db_key"),
+                            "ref_arrays": ref_arrays,
                         },
                     )
                 else:
                     print(f"[DB] Skipped save for {res['song']}: no valid entries (score=0 or empty loadout)")
+                    # Still count as a processed run for per-song attempt counters.
+                    try:
+                        self._async_db_saver.submit(
+                            res["song"],
+                            [],
+                            meta={
+                                "db_key": res.get("db_key") or res["song"],
+                                "_processed_run": True,
+                                "file_path": res.get("file_path"),
+                                "cfg_dict": res.get("cfg_dict"),
+                                "ref_arrays": ref_arrays,
+                            },
+                        )
+                    except Exception:
+                        pass
             elif res.get("db_payload"):
                 pl = res["db_payload"]
                 # Only save if score > 0 and has gear/minis (prevents tainting on errors)
@@ -1692,10 +1712,26 @@ class GearOptimizerApp:
                             "file_path": res.get("file_path"),
                             "cfg_dict": res.get("cfg_dict"),
                             "db_key": res.get("db_key"),
+                            "ref_arrays": ref_arrays,
                         },
                     )
                 else:
                     print(f"[DB] Skipped save for {res['song']}: invalid payload (score=0 or empty loadout)")
+                    # Still count as a processed run for per-song attempt counters.
+                    try:
+                        self._async_db_saver.submit(
+                            res["song"],
+                            [],
+                            meta={
+                                "db_key": res.get("db_key") or res["song"],
+                                "_processed_run": True,
+                                "file_path": res.get("file_path"),
+                                "cfg_dict": res.get("cfg_dict"),
+                                "ref_arrays": ref_arrays,
+                            },
+                        )
+                    except Exception:
+                        pass
 
             log_content = (res.get("log") or "").strip()
             if log_content:

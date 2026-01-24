@@ -144,6 +144,135 @@ def init_db():
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# Per-song attempt counters (songs table)
+# ---------------------------------------------------------------------------
+def get_song_counters(
+    song_name: str,
+    *,
+    conn: Optional[sqlite3.Connection] = None,
+) -> tuple[int, int, int, int]:
+    """
+    Fetch per-song attempt counters and best scores from `songs`.
+
+    Returns:
+        (attempt_lifetime, attempts_first, best_score, best_fg_score)
+    """
+    song_name = str(song_name or "").strip()
+    if not song_name:
+        return (0, 0, 0, 0)
+
+    close_conn = False
+    if conn is None:
+        conn = get_db_connection_cached(get_evolution_db_path())
+        close_conn = False
+
+    try:
+        row = conn.execute(
+            """
+            SELECT attempt_lifetime, attempts_first, best_score, best_fg_score
+            FROM songs
+            WHERE name = ?
+            """,
+            (song_name,),
+        ).fetchone()
+        if not row:
+            return (0, 0, 0, 0)
+        try:
+            attempt_lifetime = int(row["attempt_lifetime"] or 0)
+        except Exception:
+            attempt_lifetime = 0
+        try:
+            attempts_first = int(row["attempts_first"] or 0)
+        except Exception:
+            attempts_first = 0
+        try:
+            best_score = int(row["best_score"] or 0)
+        except Exception:
+            best_score = 0
+        try:
+            best_fg_score = int(row["best_fg_score"] or 0)
+        except Exception:
+            best_fg_score = 0
+        return (attempt_lifetime, attempts_first, best_score, best_fg_score)
+    except sqlite3.Error:
+        # Defensive: if the schema hasn't been migrated yet, treat as missing.
+        return (0, 0, 0, 0)
+    finally:
+        if close_conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def update_song_counters(
+    song_name: str,
+    *,
+    processed_run: bool,
+    record_improved: bool,
+    conn: Optional[sqlite3.Connection] = None,
+) -> None:
+    """
+    Update per-song attempt counters.
+
+    Semantics:
+    - If `processed_run=True`: increment `attempt_lifetime` and `attempts_first`
+    - If `record_improved=True`: reset `attempts_first = 1`
+    - If `processed_run=False`: do not increment (used for deferred FG-only updates)
+    """
+    song_name = str(song_name or "").strip()
+    if not song_name:
+        return
+
+    close_conn = False
+    if conn is None:
+        conn = get_db_connection(get_evolution_db_path())
+        close_conn = True
+
+    pr = 1 if processed_run else 0
+    ri = 1 if record_improved else 0
+
+    try:
+        with conn:
+            # Ensure row exists (older DBs can have loadouts without a songs row).
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO songs (name, best_score, best_fg_score, last_updated, attempt_lifetime, attempts_first)
+                VALUES (?, 0, 0, 0, 0, 0)
+                """,
+                (song_name,),
+            )
+
+            conn.execute(
+                """
+                UPDATE songs
+                SET
+                    attempt_lifetime = CASE
+                        WHEN ? THEN COALESCE(attempt_lifetime, 0) + 1
+                        ELSE COALESCE(attempt_lifetime, 0)
+                    END,
+                    attempts_first = CASE
+                        WHEN ? THEN 1
+                        WHEN ? THEN COALESCE(attempts_first, 0) + 1
+                        ELSE COALESCE(attempts_first, 0)
+                    END,
+                    last_updated = strftime('%s', 'now')
+                WHERE name = ?
+                """,
+                (pr, ri, pr, song_name),
+            )
+    except sqlite3.Error:
+        # Best-effort; avoid crashing the optimizer loop on counter updates.
+        return
+    finally:
+        if close_conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
 def _compact_gear_for_db(gear_list):
     """
     Convert gear list to compact storage format (names only).

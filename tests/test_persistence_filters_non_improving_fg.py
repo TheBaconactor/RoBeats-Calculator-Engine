@@ -33,7 +33,7 @@ def test_build_db_payload_drops_fg_variants_worse_than_base():
         best_minis,
         prev_record=None,
         attempt_lifetime=1,
-        prev_attempts_first=0,
+        attempts_first=1,
         fg_variants=fg_variants,
         build_details_fn=build_details,
         db_best_fg_score=0,
