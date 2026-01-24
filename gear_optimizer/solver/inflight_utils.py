@@ -27,7 +27,11 @@ def _song_file_cache_max() -> int:
     # Cache parsed song file -> numpy arrays across repeats.
     # Large enough to cover typical SongRepeats / small queues without ballooning RAM.
     try:
-        return max(0, int(os.environ.get("INFLIGHT_SONG_FILE_CACHE_MAX", "128") or "128"))
+        raw = os.environ.get("INFLIGHT_SONG_FILE_CACHE_MAX")
+        if raw is not None and str(raw).strip() != "":
+            return max(0, int(raw))
+        default = 2048 if _truthy(os.environ.get("INFLIGHT_RAM_MODE", "0")) else 128
+        return max(0, int(default))
     except Exception:
         return 128
 

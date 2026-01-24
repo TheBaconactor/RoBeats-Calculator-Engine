@@ -198,14 +198,18 @@ def _run_worker_from_stdin() -> int:
             "solver": str(kwargs.get("solver") or ""),
             "stats": {
                 "songs_total": int(stats.get("songs_total") or 0) if isinstance(stats, dict) else 0,
-                "songs_total_unfiltered": int(stats.get("songs_total_unfiltered") or 0) if isinstance(stats, dict) else 0,
+                "songs_total_unfiltered": int(stats.get("songs_total_unfiltered") or 0)
+                if isinstance(stats, dict)
+                else 0,
                 "songs_filtered_out": int(stats.get("songs_filtered_out") or 0) if isinstance(stats, dict) else 0,
                 "songs_covered": int(stats.get("songs_covered") or 0) if isinstance(stats, dict) else 0,
                 "gear_variants_used": int(stats.get("gear_variants_used") or 0) if isinstance(stats, dict) else 0,
                 "gear_variants_cap": int(stats.get("gear_variants_cap") or 0) if isinstance(stats, dict) else 0,
                 "unique_gears_used": int(unique_gears),
                 "element_filter": (stats.get("element_filter") if isinstance(stats, dict) else None),
-                "secondary_element_filter": (stats.get("secondary_element_filter") if isinstance(stats, dict) else None),
+                "secondary_element_filter": (
+                    stats.get("secondary_element_filter") if isinstance(stats, dict) else None
+                ),
             },
             # Keep all solver stats for future analysis (witness pool meta, GPU solver attempts, etc).
             "solver_stats": solver_stats,
@@ -302,7 +306,14 @@ def build_benchmark_suite(mode: str) -> tuple[list[tuple[str, Optional[str]]], d
         }
         return suite, cfg
     if mode == "precise":
-        suite = [("Chill", "Chill"), ("Vibe", "Vibe"), ("Flow", "Flow"), ("Rush", "Rush"), ("Beat", "Beat"), ("All", None)]
+        suite = [
+            ("Chill", "Chill"),
+            ("Vibe", "Vibe"),
+            ("Flow", "Flow"),
+            ("Rush", "Rush"),
+            ("Beat", "Beat"),
+            ("All", None),
+        ]
         cfg = {
             "partitions_per_song": 512,
             "lns_time_sec": 10.0,
@@ -397,18 +408,22 @@ def make_benchmark_config_sig(*, mode: str, seed: int, inventory_cap: int, cfg: 
             "gpu_full_k_scan_repack": int(cfg["gpu_full_k_scan_repack"]),
             "gpu_full_repair_attempts": int(cfg["gpu_full_repair_attempts"]),
             "gpu_full_repair_max_cands_per_slot": int(base_kwargs.get("gpu_full_repair_max_cands_per_slot") or 0),
-            "gpu_full_witness_anchor_patterns": int(base_kwargs["gpu_full_witness_anchor_patterns"]),
-            "gpu_full_witness_seed_streams": int(base_kwargs["gpu_full_witness_seed_streams"]),
-            "gpu_full_witness_pattern_profile": int(base_kwargs["gpu_full_witness_pattern_profile"]),
-            "gpu_full_counter_stripes": int(base_kwargs["gpu_full_counter_stripes"]),
-            "gpu_full_lns_freq_weighted": bool(base_kwargs["gpu_full_lns_freq_weighted"]),
-            "gpu_full_variant_freq_mode": str(base_kwargs["gpu_full_variant_freq_mode"]),
-            "gpu_full_wildcard_palette_size": int(base_kwargs["gpu_full_wildcard_palette_size"]),
+            # Allow older history/tests to pass a partial `base_kwargs` dict by applying
+            # the same defaults as `build_base_kwargs`.
+            "gpu_full_witness_anchor_patterns": int(base_kwargs.get("gpu_full_witness_anchor_patterns") or 128),
+            "gpu_full_witness_seed_streams": int(base_kwargs.get("gpu_full_witness_seed_streams") or 1),
+            "gpu_full_witness_pattern_profile": int(base_kwargs.get("gpu_full_witness_pattern_profile") or 1),
+            "gpu_full_counter_stripes": int(base_kwargs.get("gpu_full_counter_stripes") or 1),
+            "gpu_full_lns_freq_weighted": bool(base_kwargs.get("gpu_full_lns_freq_weighted") or False),
+            "gpu_full_variant_freq_mode": str(base_kwargs.get("gpu_full_variant_freq_mode") or "song_support"),
+            "gpu_full_wildcard_palette_size": int(base_kwargs.get("gpu_full_wildcard_palette_size") or 0),
         },
     }
 
 
-def find_previous_run(history: dict, *, db_path: Path, config_sig: dict, db_sig: dict) -> tuple[Optional[dict], Optional[str]]:
+def find_previous_run(
+    history: dict, *, db_path: Path, config_sig: dict, db_sig: dict
+) -> tuple[Optional[dict], Optional[str]]:
     runs = history.get("runs") or []
     if not isinstance(runs, list):
         return None, None
@@ -476,7 +491,9 @@ def benchmark_main(
     base_kwargs = build_base_kwargs(seed=seed, inventory_cap=inventory_cap, cfg=cfg)
 
     db_sig = compute_db_song_signature(db_path)
-    config_sig = make_benchmark_config_sig(mode=mode, seed=seed, inventory_cap=inventory_cap, cfg=cfg, base_kwargs=base_kwargs)
+    config_sig = make_benchmark_config_sig(
+        mode=mode, seed=seed, inventory_cap=inventory_cap, cfg=cfg, base_kwargs=base_kwargs
+    )
 
     history = _load_history(history_path)
     prev_run, prev_reason = find_previous_run(history, db_path=db_path, config_sig=config_sig, db_sig=db_sig)
@@ -510,7 +527,9 @@ def benchmark_main(
                         time_sec=float(v.get("time_sec") or 0.0),
                         wall_time_sec=float(v.get("wall_time_sec") or 0.0),
                         seed=int(v.get("seed") or 0),
-                        solver_stats=(v.get("solver_stats") or {}) if isinstance(v.get("solver_stats") or {}, dict) else {},
+                        solver_stats=(v.get("solver_stats") or {})
+                        if isinstance(v.get("solver_stats") or {}, dict)
+                        else {},
                     )
                 except Exception:
                     continue

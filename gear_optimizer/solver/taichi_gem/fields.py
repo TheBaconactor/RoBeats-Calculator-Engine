@@ -51,7 +51,7 @@ def _clamp_song_slots(n: int) -> int:
 
 # Concurrent song grid slots for batch coalescing / timeline caching.
 # Override via env var `GPU_SONG_SLOTS` (set before process start).
-MAX_SONG_SLOTS = _clamp_song_slots(_env_int("GPU_SONG_SLOTS", 8))
+MAX_SONG_SLOTS = _clamp_song_slots(_env_int("GPU_SONG_SLOTS", 24))
 MAX_TOTAL_BUDGET = 90  # Max supported total_budget for FT/FF combo tables
 MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 when MAX_TOTAL_BUDGET=90
 MAX_BP_PAIRS = 256  # Breakpoint kernel scan pairs
@@ -96,7 +96,7 @@ ref_ft_field: ti.Field = None  # Fever Time multipliers
 ref_ff_field: ti.Field = None  # Fever Fill Rate multipliers
 
 # Timeline grid with song slots (MAX_SONG_SLOTS, 161, 161)
-# Slot 0 is default for single-song mode; slots 1-7 for batch mode
+# Slot 0 is default for single-song mode; slots 1..MAX_SONG_SLOTS-1 for batch mode
 grid_count_body_fever: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32
 grid_count_body_normal: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32
 grid_head_len: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i32
@@ -320,7 +320,13 @@ def reset_fields_state() -> None:
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
     global genome_hint_allocation
-    global chunk_best_key, chunk_best_key_tiles, chunk_best_key_waves, chunk_best_score, chunk_best_idx, chunk_best_results
+    global \
+        chunk_best_key, \
+        chunk_best_key_tiles, \
+        chunk_best_key_waves, \
+        chunk_best_score, \
+        chunk_best_idx, \
+        chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results
     global ga_runs_payload_packed
@@ -557,7 +563,13 @@ def allocate_fields():
     global bp_pair_ft, bp_pair_ff, bp_result_mask
     global genome_base_pp, genome_base_cm, genome_base_fm, genome_base_p_val, genome_base_s_val
     global genome_base_ft, genome_base_ff, genome_base_stats
-    global population_indices, population_next_indices, ga_initial_populations, ga_init_heuristic_topk, item_stats, base_fixed_stats
+    global \
+        population_indices, \
+        population_next_indices, \
+        ga_initial_populations, \
+        ga_init_heuristic_topk, \
+        item_stats, \
+        base_fixed_stats
     global ga_scores, ga_rng_state, ga_parent_a, ga_parent_b
     global slot_start, slot_count
     global song_flags
@@ -567,7 +579,13 @@ def allocate_fields():
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
     global genome_hint_allocation
-    global chunk_best_key, chunk_best_key_tiles, chunk_best_key_waves, chunk_best_score, chunk_best_idx, chunk_best_results
+    global \
+        chunk_best_key, \
+        chunk_best_key_tiles, \
+        chunk_best_key_waves, \
+        chunk_best_score, \
+        chunk_best_idx, \
+        chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results
     global ga_runs_payload_packed

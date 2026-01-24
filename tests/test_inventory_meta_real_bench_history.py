@@ -103,4 +103,3 @@ def test_real_bench_ignores_previous_history_when_song_set_changes(tmp_path: Pat
     prev2, reason2 = find_previous_run(history, db_path=db_path, config_sig=config_sig, db_sig=db_sig2)
     assert prev2 is None
     assert reason2 == "db_song_signature_changed"
-

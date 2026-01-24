@@ -552,7 +552,19 @@ class GpuExecutor:
                 except Exception:
                     pass
 
+        def _try_put_response(req: GpuRequest, resp: GpuResponse) -> bool:
+            try:
+                q = self._response_queues.get(req.worker_id)
+                if q is None:
+                    return False
+                q.put(resp)
+                return True
+            except Exception:
+                return False
+
         while self._running:
+            batch: list[GpuRequest] = []
+            responded_ids: set[int] = set()
             try:
                 # Gather batch of pending requests (wait up to 15ms for more)
                 # Prefer runtime env overrides so batch sizing can be tuned without a restart.
@@ -658,8 +670,14 @@ class GpuExecutor:
 
                         # Dispatch responses back to originating workers
                         for req, resp in zip(solve_requests, responses):
-                            if req.worker_id in self._response_queues:
-                                self._response_queues[req.worker_id].put(resp)
+                            if resp is None:
+                                resp = GpuResponse(
+                                    request_id=req.request_id,
+                                    success=False,
+                                    error="GpuExecutor batch returned no response (internal error)",
+                                )
+                            if _try_put_response(req, resp):
+                                responded_ids.add(int(req.request_id))
                             self._requests_processed += 1
                         self._trace_event(
                             event="exec",
@@ -685,8 +703,14 @@ class GpuExecutor:
                             self._last_work_req_type = GpuRequestType.SOLVE_GENOMES_PARALLEL
 
                         for req, resp in zip(solve_requests, responses):
-                            if req.worker_id in self._response_queues:
-                                self._response_queues[req.worker_id].put(resp)
+                            if resp is None:
+                                resp = GpuResponse(
+                                    request_id=req.request_id,
+                                    success=False,
+                                    error="GpuExecutor returned no response (internal error)",
+                                )
+                            if _try_put_response(req, resp):
+                                responded_ids.add(int(req.request_id))
                             self._requests_processed += 1
                         self._trace_event(
                             event="exec",
@@ -716,8 +740,14 @@ class GpuExecutor:
                         self._last_work_req_type = GpuRequestType.SOLVE_FORCE_GREATS_FINDER
 
                     for req, resp in zip(fg_requests, responses):
-                        if req.worker_id in self._response_queues:
-                            self._response_queues[req.worker_id].put(resp)
+                        if resp is None:
+                            resp = GpuResponse(
+                                request_id=req.request_id,
+                                success=False,
+                                error="GpuExecutor FG batch returned no response (internal error)",
+                            )
+                        if _try_put_response(req, resp):
+                            responded_ids.add(int(req.request_id))
                         self._requests_processed += 1
                     self._trace_event(
                         event="exec",
@@ -747,8 +777,14 @@ class GpuExecutor:
                         self._last_work_req_type = GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY
 
                     for req, resp in zip(reg_requests, responses):
-                        if req.worker_id in self._response_queues:
-                            self._response_queues[req.worker_id].put(resp)
+                        if resp is None:
+                            resp = GpuResponse(
+                                request_id=req.request_id,
+                                success=False,
+                                error="GpuExecutor registry batch returned no response (internal error)",
+                            )
+                        if _try_put_response(req, resp):
+                            responded_ids.add(int(req.request_id))
                         self._requests_processed += 1
                     self._trace_event(
                         event="exec",
@@ -770,8 +806,14 @@ class GpuExecutor:
                     self._req_type_exec_sec[req.request_type] += dt_exec
                     self._last_work_req_type = req.request_type
 
-                    if req.worker_id in self._response_queues:
-                        self._response_queues[req.worker_id].put(response)
+                    if response is None:
+                        response = GpuResponse(
+                            request_id=req.request_id,
+                            success=False,
+                            error="GpuExecutor returned no response (internal error)",
+                        )
+                    if _try_put_response(req, response):
+                        responded_ids.add(int(req.request_id))
                     self._requests_processed += 1
                     self._trace_event(
                         event="exec",
@@ -787,8 +829,27 @@ class GpuExecutor:
                     self._profile_last_work_end_ts = perf_counter()
 
             except Exception as e:
-                print(f"[GpuExecutor] Error: {e}")
-                traceback.print_exc()
+                # The executor loop must never "drop" a batch on exception; otherwise callers can
+                # hang forever waiting for responses. Fail any un-answered requests in this batch.
+                err = f"{type(e).__name__}: {e}"
+                for req in batch or []:
+                    try:
+                        if req.request_type == GpuRequestType.SHUTDOWN:
+                            continue
+                        if int(req.request_id) in responded_ids:
+                            continue
+                        resp = GpuResponse(request_id=req.request_id, success=False, error=f"GpuExecutor error: {err}")
+                        _try_put_response(req, resp)
+                    except Exception:
+                        continue
+                try:
+                    print(f"[GpuExecutor] Error: {e}")
+                except Exception:
+                    pass
+                try:
+                    traceback.print_exc()
+                except Exception:
+                    pass
 
     def _gather_batch(self, max_wait_ms: int = 10, max_batch_size: int = 8) -> list:
         """

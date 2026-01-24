@@ -777,6 +777,31 @@ def run_native_inflight_song_pipeline(
     except Exception:
         cfg0 = None
 
+    inflight_ram_mode = False
+    try:
+        raw_env = os.environ.get("INFLIGHT_RAM_MODE")
+        if raw_env is not None and str(raw_env).strip() != "":
+            inflight_ram_mode = _truthy(raw_env)
+        elif cfg0 is not None:
+            inflight_ram_mode = cfg0.getboolean("IterationEngine", "InFlight_RamMode", fallback=False)
+    except Exception:
+        inflight_ram_mode = False
+
+    if inflight_ram_mode:
+        # Allow more caching when the user explicitly opts into higher RAM usage.
+        global _POOL_CACHE_MAX, _REGISTRY_CACHE_MAX, _INIT_HEURISTIC_CACHE_MAX
+
+        _POOL_CACHE_MAX = max(int(_POOL_CACHE_MAX), 128)
+        _REGISTRY_CACHE_MAX = max(int(_REGISTRY_CACHE_MAX), 128)
+        _INIT_HEURISTIC_CACHE_MAX = max(int(_INIT_HEURISTIC_CACHE_MAX), 256)
+        try:
+            print(
+                "[InFlight][RAM] enabled: default InFlight_GA_QueueMult=4 InFlight_PrepBufferMult=12 "
+                f"cache_max={{pool:{int(_POOL_CACHE_MAX)} registry:{int(_REGISTRY_CACHE_MAX)} heur:{int(_INIT_HEURISTIC_CACHE_MAX)}}}"
+            )
+        except Exception:
+            pass
+
     requested_inflight = max(1, int(in_flight_songs))
     inflight_limit = min(int(requested_inflight), len(tasks))
 
@@ -837,7 +862,7 @@ def run_native_inflight_song_pipeline(
         except Exception:
             pass
     if ga_queue_mult <= 0:
-        ga_queue_mult = 2
+        ga_queue_mult = 4 if inflight_ram_mode else 2
     ga_queue_mult = max(1, min(int(ga_queue_mult), 8))
     ga_queue_limit = max(1, int(inflight_limit) * int(ga_queue_mult))
     ga_queue_limit = min(int(ga_queue_limit), int(song_slot_limit))
@@ -857,7 +882,7 @@ def run_native_inflight_song_pipeline(
         except Exception:
             pass
     if prep_buffer_mult <= 0:
-        prep_buffer_mult = 4
+        prep_buffer_mult = 12 if inflight_ram_mode else 4
     prep_buffer_mult = max(1, min(int(prep_buffer_mult), 16))
     prep_limit = max(1, int(inflight_limit) * int(prep_buffer_mult))
 
@@ -2396,6 +2421,10 @@ def _run_fg_job_sync(
                 "db_key": song.db_key,
                 "use_evo_db": bool(song.use_evo_db),
                 "persist_entries": _build_fg_persist_entries(song),
+                # Allow downstream post-process / async DB hooks (e.g., TeamBuff tier leaderboards)
+                # to run without requiring ForceGreatsDebug (which ships large objects).
+                "file_path": song.fp,
+                "cfg_dict": song.cfg_dict,
             }
         )
 
