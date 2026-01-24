@@ -72,6 +72,12 @@ def get_db_connection_with_timeout(db_path: Optional[str] = None, *, timeout: fl
     conn.row_factory = sqlite3.Row
     # Enable WAL mode for better concurrency
     conn.execute("PRAGMA journal_mode=WAL;")
+    # Set busy timeout to prevent blocking readers for too long.
+    # This makes writers retry briefly instead of holding locks.
+    try:
+        conn.execute("PRAGMA busy_timeout=100;")
+    except Exception:
+        pass
     ensure_schema(conn)
     return conn
 
@@ -673,6 +679,15 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
     best_fg_max = None
 
     try:
+        # Use IMMEDIATE to acquire write lock upfront - fails fast instead of blocking readers.
+        # Also reduces lock duration by not waiting until the first write statement.
+        try:
+            conn.execute("BEGIN IMMEDIATE;")
+        except sqlite3.OperationalError:
+            # If we can't get the lock immediately, wait briefly and retry once
+            time.sleep(0.05)
+            conn.execute("BEGIN IMMEDIATE;")
+
         # Relax sync during batch for throughput
         try:
             conn.execute("PRAGMA synchronous=NORMAL;")
@@ -836,6 +851,19 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
                 (song_name, best_fg_max),
             )
             _log_timing("upsert_song_best_fg_score", time.perf_counter() - _t_songfg0)
+
+        # Commit bulk inserts early to release write lock before slower dedup/prune.
+        # This reduces the window where readers are blocked.
+        _t_commit_early = time.perf_counter()
+        conn.commit()
+        _log_timing("commit_inserts", time.perf_counter() - _t_commit_early)
+
+        # Start a new transaction for cleanup operations
+        try:
+            conn.execute("BEGIN IMMEDIATE;")
+        except sqlite3.OperationalError:
+            time.sleep(0.02)
+            conn.execute("BEGIN IMMEDIATE;")
 
         # Enforce FG leaderboard invariant (in case older DB rows exist):
         # fg_loadouts should only contain entries where FG strictly beats base.
