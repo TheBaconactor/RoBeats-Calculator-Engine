@@ -2369,6 +2369,10 @@ def _run_fg_job_sync(
                 "db_key": song.db_key,
                 "use_evo_db": bool(song.use_evo_db),
                 "persist_entries": _build_fg_persist_entries(song),
+                # Allow downstream post-process / async DB hooks (e.g., TeamBuff tier leaderboards)
+                # to run without requiring ForceGreatsDebug (which ships large objects).
+                "file_path": song.fp,
+                "cfg_dict": song.cfg_dict,
             }
         )
 

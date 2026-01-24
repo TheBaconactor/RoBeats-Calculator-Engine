@@ -5,10 +5,140 @@ import queue
 import threading
 import time
 import os
+from collections import OrderedDict
 from typing import Optional
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.data.database import get_song_counters, save_loadouts_batch, update_song_counters
+
+
+_TEAM_BUFF_REF_ARRAYS_LOCK = threading.Lock()
+_TEAM_BUFF_REF_ARRAYS_CACHE: dict | None = None
+
+_TEAM_BUFF_BASE_CALC_SONG_LOCK = threading.Lock()
+_TEAM_BUFF_BASE_CALC_SONG_CACHE: "OrderedDict[str, dict]" = OrderedDict()
+_TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX = 16
+
+
+def _truthy_env(name: str, default: str = "0") -> bool:
+    return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _team_buff_tier_limit() -> int:
+    """
+    Tier recomputation can be CPU-heavy; allow a smaller retained set when desired.
+
+    Default is `LOADOUTS_PER_SONG_LIMIT` to preserve current behavior.
+    """
+    limit = int(LOADOUTS_PER_SONG_LIMIT)
+    raw = os.environ.get("TEAM_BUFF_TIER_LIMIT")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            limit = int(raw)
+        except Exception:
+            pass
+    limit = max(1, min(int(limit), int(LOADOUTS_PER_SONG_LIMIT)))
+    return int(limit)
+
+
+def _get_team_buff_ref_arrays_cached() -> dict | None:
+    """
+    Lazily load `ref_arrays` for TeamBuff tier postprocess in contexts where we don't
+    ship ref arrays across process boundaries (e.g. native in-flight deferred post).
+    """
+    global _TEAM_BUFF_REF_ARRAYS_CACHE
+    if _TEAM_BUFF_REF_ARRAYS_CACHE is not None:
+        return _TEAM_BUFF_REF_ARRAYS_CACHE
+
+    with _TEAM_BUFF_REF_ARRAYS_LOCK:
+        if _TEAM_BUFF_REF_ARRAYS_CACHE is not None:
+            return _TEAM_BUFF_REF_ARRAYS_CACHE
+
+        try:
+            from gear_optimizer.core.config import load_paths_cache
+            from gear_optimizer.core.constants import TOTAL_ROWS, PATHS
+            from gear_optimizer.data.csv_parser import read_table
+
+            paths = {}
+            try:
+                paths = load_paths_cache() or {}
+            except Exception:
+                paths = {}
+
+            stats_path = str((paths.get("Stats", "") or "").strip() or PATHS.stats_csv)
+            stats_table = read_table(stats_path)
+
+            stat_names = [
+                "Perfect Points",
+                "Combo Multiplier",
+                "Fever Multiplier",
+                "Fever Fill Rate",
+                "Fever Time",
+            ]
+
+            ref_arrays: dict = {}
+            for i, name in enumerate(stat_names):
+                temp_list = []
+                for v in range(int(TOTAL_ROWS) + 1):
+                    lookup_index = int(TOTAL_ROWS) - int(v)
+                    try:
+                        val = stats_table[lookup_index][i] if stats_table else 0
+                    except Exception:
+                        val = 0
+                    temp_list.append(val)
+                # NOTE: preserve float64 here (matches the main preload path).
+                import numpy as np
+
+                ref_arrays[name] = np.array(temp_list, dtype=np.float64)
+
+            _TEAM_BUFF_REF_ARRAYS_CACHE = ref_arrays
+            return _TEAM_BUFF_REF_ARRAYS_CACHE
+        except Exception:
+            _TEAM_BUFF_REF_ARRAYS_CACHE = None
+            return None
+
+
+def _get_team_buff_base_calc_song_cached(file_path: str, cfg_dict: dict) -> dict | None:
+    """
+    Cache base chart parsing for TeamBuff tier postprocess.
+
+    We still clone+apply per-run HitSim (if any) on each call; only the base parse is cached.
+    """
+    fp = str(file_path or "").strip()
+    if not fp:
+        return None
+
+    # Allow opting out if memory-sensitive.
+    if _truthy_env("TEAM_BUFF_TIER_DISABLE_SONG_CACHE", "0"):
+        try:
+            from gear_optimizer.pipeline.song_processor import get_base_calc_song
+
+            return get_base_calc_song(fp, cfg_dict)
+        except Exception:
+            return None
+
+    with _TEAM_BUFF_BASE_CALC_SONG_LOCK:
+        cached = _TEAM_BUFF_BASE_CALC_SONG_CACHE.get(fp)
+        if cached is not None:
+            _TEAM_BUFF_BASE_CALC_SONG_CACHE.move_to_end(fp)
+            return cached
+
+    try:
+        from gear_optimizer.pipeline.song_processor import get_base_calc_song
+
+        base = get_base_calc_song(fp, cfg_dict)
+    except Exception:
+        return None
+
+    with _TEAM_BUFF_BASE_CALC_SONG_LOCK:
+        _TEAM_BUFF_BASE_CALC_SONG_CACHE[fp] = base
+        _TEAM_BUFF_BASE_CALC_SONG_CACHE.move_to_end(fp)
+        while len(_TEAM_BUFF_BASE_CALC_SONG_CACHE) > int(_TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX):
+            try:
+                _TEAM_BUFF_BASE_CALC_SONG_CACHE.popitem(last=False)
+            except Exception:
+                break
+    return base
 
 
 class AsyncDbSaver:
@@ -237,7 +367,7 @@ class AsyncDbSaver:
                         "on",
                         "",
                     }
-                    if tiers_enabled and entries and file_path and ref_arrays:
+                    if tiers_enabled and entries and file_path:
                         try:
                             from gear_optimizer.data.database import save_team_buff_loadouts_batch
                             from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
@@ -245,7 +375,15 @@ class AsyncDbSaver:
                             )
                             from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song
 
-                            base_calc_song = get_base_calc_song(str(file_path), cfg_dict)
+                            if ref_arrays is None:
+                                ref_arrays = _get_team_buff_ref_arrays_cached()
+                            if not ref_arrays:
+                                raise RuntimeError("TeamBuff tier postprocess missing ref_arrays")
+
+                            base_calc_song = _get_team_buff_base_calc_song_cached(str(file_path), cfg_dict)
+                            if base_calc_song is None:
+                                # Fallback (no caching).
+                                base_calc_song = get_base_calc_song(str(file_path), cfg_dict)
                             calc_song = clone_calc_song(base_calc_song)
                             # Match per-run timestamp semantics when HumanHitSim is enabled.
                             try:
@@ -260,7 +398,7 @@ class AsyncDbSaver:
                                 calc_song=calc_song,
                                 ref_arrays=ref_arrays,
                                 cfg_dict=cfg_dict,
-                                limit=int(LOADOUTS_PER_SONG_LIMIT),
+                                limit=int(_team_buff_tier_limit()),
                             )
                             for tier, tier_entries in (batches or {}).items():
                                 if not tier_entries:
