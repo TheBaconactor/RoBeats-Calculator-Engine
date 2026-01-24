@@ -146,9 +146,7 @@ class AsyncDbSaver:
                     if processed_run:
                         attempt_lifetime = int(prev_life or 0) + 1
                         attempts_first = (
-                            1
-                            if record_improved
-                            else (int(prev_attempts or 0) + 1 if int(prev_attempts or 0) else 1)
+                            1 if record_improved else (int(prev_attempts or 0) + 1 if int(prev_attempts or 0) else 1)
                         )
                         for e in entries or []:
                             if not isinstance(e, dict):
@@ -165,8 +163,10 @@ class AsyncDbSaver:
                         save_loadouts_batch(db_key, entries)
 
                     # Update per-song counters (even if there were no entries to persist).
-                    if processed_run:
-                        update_song_counters(db_key, processed_run=True, record_improved=record_improved)
+                    # NOTE: For deferred FG-only updates, `processed_run=False` is still meaningful:
+                    # we do not increment attempt counters, but we may reset `attempts_first` when
+                    # the best FG score improves.
+                    update_song_counters(db_key, processed_run=processed_run, record_improved=record_improved)
 
                     # Optional: Populate TeamBuff-tier tables (T1/T5/T10/T15/NONE) in async mode.
                     # This is intentionally after base persistence so it never blocks GPU work.
@@ -180,7 +180,9 @@ class AsyncDbSaver:
                     if tiers_enabled and entries and file_path and ref_arrays:
                         try:
                             from gear_optimizer.data.database import save_team_buff_loadouts_batch
-                            from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+                            from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
+                                build_team_buff_tier_db_batches,
+                            )
                             from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song
 
                             base_calc_song = get_base_calc_song(str(file_path), cfg_dict)

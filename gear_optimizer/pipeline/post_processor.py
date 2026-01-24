@@ -11,6 +11,7 @@ import sys
 from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.data.database import init_db, save_loadouts_batch, get_song_counters, update_song_counters
 from gear_optimizer.data.discord_reporter import build_stats_summary, setup_discord_reporter
+from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.helpers.song_helpers.persistence import (
     build_db_payload,
     build_persistence_entries,
@@ -101,6 +102,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
         pass
 
     reporter = setup_discord_reporter(stats_batch_size=500)
+    async_db = AsyncDbSaver(reporter)
 
     completed = 0
     failed = 0
@@ -153,7 +155,10 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             if not isinstance(fg_meta, dict):
                 fg_meta = {}
             cfg = fg_meta.get("config") or {}
-            if not isinstance(cfg, dict) or sum([(int(x) if isinstance(x, (int, float)) else 0) for x in cfg.values()]) <= 0:
+            if (
+                not isinstance(cfg, dict)
+                or sum([(int(x) if isinstance(x, (int, float)) else 0) for x in cfg.values()]) <= 0
+            ):
                 continue
             try:
                 fg_score = int(v.get("fg_score", 0) or 0)
@@ -265,11 +270,9 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
 
         # Deferred ForceGreats updates (do not affect completed/total counts).
         if isinstance(item, dict) and item.get("_fg_update"):
-            _t_item0 = time.perf_counter()
             try:
                 song_name = item.get("song", "Unknown")
                 db_key = item.get("db_key") or song_name
-                prev_life, prev_attempts, prev_best_score, prev_best_fg = get_song_counters(db_key)
                 fg_state = pending_fg_summary.get(song_name) or {}
                 fg_state["saw_fg_update"] = True
                 valid_entries: list[dict] = []
@@ -284,34 +287,22 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             print(f"[POST][FG] Saving {len(valid_entries)} FG variant(s) for {song_name}...")
                         cpu_t0 = time.process_time()
                         _t_db0 = time.perf_counter()
-                        save_loadouts_batch(db_key, valid_entries)
-                        # Deferred FG updates do not count as a processed run, but they can reset `attempts_first`
-                        # when they establish a new per-song best FG score.
-                        try:
-                            run_best_fg = 0
-                            for e in valid_entries:
-                                if not isinstance(e, dict):
-                                    continue
-                                if not e.get("force"):
-                                    continue
-                                try:
-                                    score_i = int(e.get("score", 0) or 0)
-                                except Exception:
-                                    score_i = 0
-                                try:
-                                    fg_i = int(e.get("fg_score", 0) or 0)
-                                except Exception:
-                                    fg_i = 0
-                                if fg_i <= score_i:
-                                    continue
-                                if fg_i > run_best_fg:
-                                    run_best_fg = fg_i
-                            record_improved = int(run_best_fg) > int(prev_best_fg or 0)
-                            update_song_counters(db_key, processed_run=False, record_improved=record_improved)
-                        except Exception:
-                            pass
-                        _log_timing("fg_save_loadouts_batch", time.perf_counter() - _t_db0, song=song_name)
-                        profiler.record("fg_save_loadouts_batch", time.process_time() - cpu_t0)
+
+                        # Offload SQLite work + counter updates so the post-process loop
+                        # keeps draining `result_queue` (prevents GPU starvation via backpressure).
+                        async_db.submit(
+                            song_name,
+                            valid_entries,
+                            meta={
+                                "db_key": db_key,
+                                "_processed_run": False,  # FG-only update: do NOT increment attempts
+                                "file_path": item.get("file_path"),
+                                "cfg_dict": item.get("cfg_dict") or {},
+                                "ref_arrays": item.get("ref_arrays"),
+                            },
+                        )
+                        _log_timing("fg_save_loadouts_batch_enqueue", time.perf_counter() - _t_db0, song=song_name)
+                        profiler.record("fg_save_loadouts_batch_enqueue", time.process_time() - cpu_t0)
                     else:
                         if persisted:
                             print(f"[DB] Skipped FG update for {song_name}: no valid entries")
@@ -429,7 +420,9 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 prev_record = item.get("prev_record")
                 fg_variants = item.get("fg_variants") or []
                 # Per-song counters (source of truth: `songs` table)
-                prev_life, prev_attempts, prev_best_score, prev_best_fg = get_song_counters(item.get("db_key") or item.get("song", "Unknown"))
+                prev_life, prev_attempts, prev_best_score, prev_best_fg = get_song_counters(
+                    item.get("db_key") or item.get("song", "Unknown")
+                )
                 try:
                     run_score = int(best_data.get("BaseScore") or best_data.get("Score", 0) or 0)
                 except Exception:
@@ -437,7 +430,9 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 run_best_fg = _best_fg_improving_score_from_variants(fg_variants)
                 record_improved = (run_score > int(prev_best_score or 0)) or (run_best_fg > int(prev_best_fg or 0))
                 attempt_lifetime = int(prev_life or 0) + 1
-                attempts_first = 1 if record_improved else (int(prev_attempts or 0) + 1 if int(prev_attempts or 0) else 1)
+                attempts_first = (
+                    1 if record_improved else (int(prev_attempts or 0) + 1 if int(prev_attempts or 0) else 1)
+                )
                 db_best_fg_score = prev_best_fg
 
                 _log_timing("deferred_payload_unpack", time.perf_counter() - _t_build0, song=item.get("song"))
@@ -553,66 +548,36 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     if valid_entries:
                         cpu_t0 = time.process_time()
                         _t_db0 = time.perf_counter()
-                        # Compute per-song counter reset semantics *before* DB upserts mutate `songs.best_*`.
-                        try:
-                            _pl, _pa, prev_best_score, prev_best_fg = get_song_counters(db_key)
-                            try:
-                                run_score = int(res.get("db_payload", {}).get("run_score", 0) or 0)
-                            except Exception:
-                                run_score = 0
-                            try:
-                                run_best_fg = int(res.get("db_payload", {}).get("run_best_fg_score", 0) or 0)
-                            except Exception:
-                                run_best_fg = 0
-                            record_improved = (run_score > int(prev_best_score or 0)) or (run_best_fg > int(prev_best_fg or 0))
-                        except Exception:
-                            record_improved = False
-
-                        save_loadouts_batch(db_key, valid_entries)
-                        # Update per-song counters once per processed run.
-                        try:
-                            update_song_counters(db_key, processed_run=True, record_improved=record_improved)
-                        except Exception:
-                            pass
-                        _log_timing("save_loadouts_batch", time.perf_counter() - _t_db0, song=song_name)
-                        profiler.record("save_loadouts_batch", time.process_time() - cpu_t0)
+                        # Offload SQLite work + counter updates so this post-process loop
+                        # keeps draining `result_queue` (prevents GPU starvation via backpressure).
+                        async_db.submit(
+                            song_name,
+                            valid_entries,
+                            meta={
+                                "db_key": db_key,
+                                "_processed_run": True,
+                                "file_path": item.get("file_path"),
+                                "cfg_dict": item.get("cfg_dict") or {},
+                                "ref_arrays": item.get("ref_arrays"),
+                            },
+                        )
+                        _log_timing("save_loadouts_batch_enqueue", time.perf_counter() - _t_db0, song=song_name)
+                        profiler.record("save_loadouts_batch_enqueue", time.process_time() - cpu_t0)
                     else:
                         print(f"[DB] Skipped save for {song_name}: no valid entries")
                         # Still count this as a processed run for per-song attempt counters.
                         try:
-                            update_song_counters(db_key, processed_run=True, record_improved=False)
-                        except Exception:
-                            pass
-
-                    # Optional: post-production tiered rescoring for TeamBuff tiers (DB-integrated).
-                    if (
-                        team_buff_tiers_enabled
-                        and isinstance(item, dict)
-                        and item.get("_deferred_post")
-                        and valid_entries
-                    ):
-                        try:
-                            from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
-                            from gear_optimizer.data.database import save_team_buff_loadouts_batch
-                            from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
-                                build_team_buff_tier_db_batches,
+                            async_db.submit(
+                                song_name,
+                                [],
+                                meta={
+                                    "db_key": db_key,
+                                    "_processed_run": True,
+                                    "file_path": item.get("file_path"),
+                                    "cfg_dict": item.get("cfg_dict") or {},
+                                    "ref_arrays": item.get("ref_arrays"),
+                                },
                             )
-
-                            cfg_dict0 = item.get("cfg_dict") or {}
-                            calc_song0 = item.get("calc_song") or {}
-                            ref_arrays0 = item.get("ref_arrays") or {}
-
-                            batches = build_team_buff_tier_db_batches(
-                                entries=valid_entries,
-                                calc_song=calc_song0,
-                                ref_arrays=ref_arrays0,
-                                cfg_dict=cfg_dict0,
-                                limit=int(LOADOUTS_PER_SONG_LIMIT),
-                            )
-                            for tier, tier_entries in (batches or {}).items():
-                                if not tier_entries:
-                                    continue
-                                save_team_buff_loadouts_batch(db_key, str(tier), tier_entries)
                         except Exception:
                             pass
 
@@ -648,6 +613,13 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 reporter.send_log(msg)
             except Exception:
                 pass
+
+    # Flush pending DB work (best-effort) before the process exits so we don't leave
+    # the main pipeline waiting on in-flight DB tasks.
+    try:
+        async_db.shutdown(timeout=30.0)
+    except Exception:
+        pass
 
     try:
         if pending_final_print:
