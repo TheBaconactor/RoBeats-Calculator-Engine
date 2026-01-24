@@ -42,8 +42,16 @@ def eval_data_from_entry(entry: dict[str, Any], meta_primary_color: str) -> dict
         eval_data = entry.get("eval_data")
     except Exception:
         eval_data = None
-    if isinstance(eval_data, dict) and isinstance(eval_data.get("Stats"), dict) and eval_data.get("Stats"):
-        return eval_data
+    if isinstance(eval_data, dict):
+        # Prefer full Stats when present (most complete signal).
+        stats = eval_data.get("Stats")
+        if isinstance(stats, dict) and stats:
+            return eval_data
+        # GPU-native GA can provide BaseStats without full Stats; that's sufficient for
+        # ForceGreatsFinder batching and signature grouping.
+        base_stats = eval_data.get("BaseStats")
+        if isinstance(base_stats, dict) and base_stats:
+            return eval_data
 
     try:
         det = entry.get("details") or {}

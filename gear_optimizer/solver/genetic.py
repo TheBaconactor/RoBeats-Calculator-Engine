@@ -500,6 +500,11 @@ def decode_gpu_native_ga_runs_payload(
             "yes",
             "on",
         }
+        if not include_stats:
+            # ForceGreatsFinder needs per-candidate Stats to compute stat signatures and
+            # produce meaningful FG improvements. Candidate decoding is already limited
+            # (typically <= FG_CANDIDATE_LIMIT), so computing Stats here is acceptable.
+            include_stats = bool(cfg_data.get("fg_require_stats", False))
         t_stats = time.perf_counter() if (perf and include_stats) else 0.0
         stat_names = None
         final_stats_mat = None
@@ -587,14 +592,20 @@ def decode_gpu_native_ga_runs_payload(
                 "_ga_gpu_run_idx": int(sel_run_idx[i]),
                 "_ga_gpu_row_idx": int(sel_rows[i]),
             }
-            if include_stats and final_stats_mat is not None and stat_names is not None and base_stats_arr is not None and item_stats_sum is not None:
+            if include_stats and stat_names is not None and base_stats_arr is not None and item_stats_sum is not None:
+                # Always try to provide BaseStats when requested; ForceGreats batching can
+                # operate on BaseStats even if full post-gem Stats reconstruction fails.
                 try:
-                    row_stats = final_stats_mat[i]
-                    current_stats = {stat_names[j]: int(row_stats[j]) for j in range(10)}
                     base_row_stats = base_stats_arr + item_stats_sum[i]
                     base_stats = {stat_names[j]: int(base_row_stats[j]) for j in range(10)}
-                    data_obj["Stats"] = current_stats
                     data_obj["BaseStats"] = base_stats
+                except Exception:
+                    pass
+                try:
+                    if final_stats_mat is not None:
+                        row_stats = final_stats_mat[i]
+                        current_stats = {stat_names[j]: int(row_stats[j]) for j in range(10)}
+                        data_obj["Stats"] = current_stats
                 except Exception:
                     pass
 
@@ -2135,6 +2146,17 @@ def solve_coevolution_genetic(
         "user_fm": safe_int(cfg.get("UserInputStatsGems", "fever_multiplier", fallback=0)),
         "static_elem_input": safe_int(cfg.get("ElementalGems", selected_color, fallback=0)),
     }
+    # ForceGreatsFinder runs after GA and requires Stats for downstream FG batching.
+    # Keep this flag on the cfg_data object so the GPU decode step can include Stats
+    # without relying on an environment variable.
+    try:
+        from ..core.config import read_iteration_engine_settings
+
+        ie = read_iteration_engine_settings(cfg)
+        fg_enabled = bool(ie.force_greats_mode) and (bool(ie.force_greats_finder) or bool(ie.manual_force_greats))
+    except Exception:
+        fg_enabled = False
+    cfg_data["fg_require_stats"] = bool(fg_enabled)
 
     # --- GPU-NATIVE GA PATH ---
     # If using GPU mode, bypass the entire CPU loop mechanism.

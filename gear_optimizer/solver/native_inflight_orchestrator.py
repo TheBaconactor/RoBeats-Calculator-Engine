@@ -579,6 +579,11 @@ def _prepare_song(task: tuple) -> _NativeSong:
         "static_elem_input": safe_int(cfg.get("ElementalGems", selected_color, fallback=0), 0),
     }
 
+    # ForceGreatsFinder runs after GA and needs per-candidate Stats/BaseStats for signature grouping.
+    # The GPU-native GA decode step is allowed to omit Stats for performance; explicitly require
+    # Stats when FG is enabled so FG does not silently skip GA candidates (which leads to `best_fg=0`).
+    cfg_data["fg_require_stats"] = bool(manual_force_greats or force_greats_finder)
+
     base_fixed_stats_arr, _ = build_base_fixed_stats_array(fixed_stats, cfg_data)
 
     tournament_k = safe_int(cfg.get("IterationEngine", "GPU_GA_TournamentK", fallback=3), 3)
@@ -836,12 +841,35 @@ def run_native_inflight_song_pipeline(
         fg_every = 12
     fg_every = max(1, int(fg_every))
 
-    fg_drain_at_end = True
+    # `FG_DrainAtEnd` controls whether we drain pending FG jobs when GA work completes.
+    #
+    # IMPORTANT: This should not "randomly" flip during a run. We parse it once here
+    # with explicit semantics:
+    # - default: False
+    # - config: parse truthy strings ("1/true/yes/on")
+    # - env override: `INFLIGHT_FG_DRAIN_AT_END` or `FG_DRAIN_AT_END` (same truthy parsing)
+    fg_drain_at_end = False
+    fg_drain_src = "default(false)"
     try:
-        if cfg0 is not None:
-            fg_drain_at_end = cfg0.getboolean("IterationEngine", "FG_DrainAtEnd", fallback=True)
+        if cfg0 is not None and cfg0.has_option("IterationEngine", "FG_DrainAtEnd"):
+            raw = str(cfg0.get("IterationEngine", "FG_DrainAtEnd", fallback="") or "").strip()
+            fg_drain_at_end = _truthy(raw)
+            fg_drain_src = f"config({raw})"
+        elif cfg0 is not None:
+            fg_drain_src = "config(missing->false)"
+    except Exception as exc:
+        fg_drain_at_end = False
+        fg_drain_src = f"config_error({type(exc).__name__})"
+    raw_env = os.environ.get("INFLIGHT_FG_DRAIN_AT_END")
+    if raw_env is None or str(raw_env).strip() == "":
+        raw_env = os.environ.get("FG_DRAIN_AT_END")
+    if raw_env is not None and str(raw_env).strip() != "":
+        fg_drain_at_end = _truthy(raw_env)
+        fg_drain_src = f"env({raw_env})"
+    try:
+        print(f"[InFlight][FG] drain_at_end={bool(fg_drain_at_end)} source={fg_drain_src} (FG_InterleaveEvery={fg_every})")
     except Exception:
-        fg_drain_at_end = True
+        pass
 
     inflight_fg_idle_fill = True
     try:
