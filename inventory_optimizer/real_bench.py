@@ -289,10 +289,16 @@ def build_benchmark_suite(mode: str) -> tuple[list[tuple[str, Optional[str]]], d
             "lns_time_sec": 3.0,
             "lns_attempts": 300,
             "gpu_lns_destroy": 10,
-            "gpu_full_k_scan_select": 128,
-            "gpu_full_k_scan_repack": 64,
+            # Leave these on auto (0) so results match the main CLI defaults.
+            "gpu_full_k_scan_select": 0,
+            "gpu_full_k_scan_repack": 0,
             "gpu_full_repair_attempts": 128,
             "element_restarts": 2,
+            # All-elements is materially harder; budget a few deterministic restarts while
+            # keeping per-restart budgets aligned with the element-scoped runs.
+            "all_restarts": 3,
+            "all_lns_time_sec": 9.0,
+            "all_lns_attempts": 900,
         }
         return suite, cfg
     if mode == "precise":
@@ -302,10 +308,15 @@ def build_benchmark_suite(mode: str) -> tuple[list[tuple[str, Optional[str]]], d
             "lns_time_sec": 10.0,
             "lns_attempts": 1000,
             "gpu_lns_destroy": 12,
-            "gpu_full_k_scan_select": 256,
-            "gpu_full_k_scan_repack": 128,
+            # Leave these on auto (0) so results match the main CLI defaults.
+            "gpu_full_k_scan_select": 0,
+            "gpu_full_k_scan_repack": 0,
             "gpu_full_repair_attempts": 256,
             "element_restarts": 3,
+            # All-elements needs more exploration; keep per-restart budgets at 10s/1000 attempts.
+            "all_restarts": 3,
+            "all_lns_time_sec": 30.0,
+            "all_lns_attempts": 3000,
         }
         return suite, cfg
     raise ValueError("mode must be 'fast' or 'precise'")
@@ -328,25 +339,29 @@ def build_base_kwargs(*, seed: int, inventory_cap: int, cfg: dict) -> dict:
         "adaptive_rounds": 0,
         "gpu_repack_passes": 3,
         "gpu_full_wildcard_freq_bonus": 40,
-        "gpu_full_wildcard_palette_size": 256,
+        # Match the main CLI defaults: keep wildcard palette injection off by default.
+        # (It tends to bias the All-elements case into islands unless explicitly tuned.)
+        "gpu_full_wildcard_palette_size": 0,
         "gpu_full_wildcard_palette_min_count": 2,
         "gpu_full_wildcard_palette_scan": 8,
         "gpu_full_wildcard_palette_tail_slots": 3,
         "gpu_full_synergy_weight": 0,
         "gpu_full_new_gear_penalty": 0,
-        # Balanced witness defaults (robust vs unlucky seeds; avoids reuse-biased regressions).
-        "gpu_full_witness_anchor_patterns": 24,
-        "gpu_full_witness_seed_streams": 4,
+        # Match the main CLI defaults.
+        "gpu_full_witness_anchor_patterns": 128,
+        "gpu_full_witness_seed_streams": 1,
         "gpu_full_witness_palettes": 1,
-        "gpu_full_witness_pattern_profile": 0,
+        "gpu_full_witness_pattern_profile": 1,
         "gpu_full_top_candidates": 1,
         # Exact-peak-only constraints (no human mode).
         "gpu_full_human_mode": False,
         "gpu_full_candidate_score_delta": 0,
         "gpu_full_candidate_limit_per_song": 0,
-        "gpu_full_lns_freq_weighted": True,
-        "gpu_full_counter_stripes": 4,
+        "gpu_full_lns_freq_weighted": False,
+        "gpu_full_counter_stripes": 1,
+        "gpu_full_variant_freq_mode": "song_support",
         "gpu_full_repair_enabled": True,
+        "gpu_full_repair_max_cands_per_slot": 16,
         "profile": False,
     }
     base.update(
@@ -374,13 +389,20 @@ def make_benchmark_config_sig(*, mode: str, seed: int, inventory_cap: int, cfg: 
             "partitions_per_song": int(cfg["partitions_per_song"]),
             "lns_time_sec": float(cfg["lns_time_sec"]),
             "lns_attempts": int(cfg["lns_attempts"]),
+            "all_restarts": int(cfg.get("all_restarts") or 1),
+            "all_lns_time_sec": float(cfg.get("all_lns_time_sec") or cfg["lns_time_sec"]),
+            "all_lns_attempts": int(cfg.get("all_lns_attempts") or cfg["lns_attempts"]),
             "gpu_lns_destroy": int(cfg["gpu_lns_destroy"]),
             "gpu_full_k_scan_select": int(cfg["gpu_full_k_scan_select"]),
             "gpu_full_k_scan_repack": int(cfg["gpu_full_k_scan_repack"]),
             "gpu_full_repair_attempts": int(cfg["gpu_full_repair_attempts"]),
+            "gpu_full_repair_max_cands_per_slot": int(base_kwargs.get("gpu_full_repair_max_cands_per_slot") or 0),
             "gpu_full_witness_anchor_patterns": int(base_kwargs["gpu_full_witness_anchor_patterns"]),
             "gpu_full_witness_seed_streams": int(base_kwargs["gpu_full_witness_seed_streams"]),
             "gpu_full_witness_pattern_profile": int(base_kwargs["gpu_full_witness_pattern_profile"]),
+            "gpu_full_counter_stripes": int(base_kwargs["gpu_full_counter_stripes"]),
+            "gpu_full_lns_freq_weighted": bool(base_kwargs["gpu_full_lns_freq_weighted"]),
+            "gpu_full_variant_freq_mode": str(base_kwargs["gpu_full_variant_freq_mode"]),
             "gpu_full_wildcard_palette_size": int(base_kwargs["gpu_full_wildcard_palette_size"]),
         },
     }
@@ -499,7 +521,12 @@ def benchmark_main(
         kwargs = dict(base_kwargs)
         kwargs["element"] = element
         # Avoid relying on implicit restart heuristics so historical comparisons stay stable.
-        kwargs["restarts"] = int(cfg["element_restarts"]) if element else 1
+        if element:
+            kwargs["restarts"] = int(cfg["element_restarts"])
+        else:
+            kwargs["restarts"] = int(cfg.get("all_restarts") or 1)
+            kwargs["lns_time_sec"] = float(cfg.get("all_lns_time_sec") or cfg["lns_time_sec"])
+            kwargs["lns_attempts"] = int(cfg.get("all_lns_attempts") or cfg["lns_attempts"])
 
         msg = run_inventory_meta_coverage_subprocess(
             repo_root=repo_root,
