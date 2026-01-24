@@ -61,6 +61,11 @@ try:
 except ImportError:
     pass
 
+# Cached env config for GA_FORCE_COLD_START (avoids repeated env lookups)
+_GA_FORCE_COLD_START: bool = (
+    os.environ.get("GA_FORCE_COLD_START", "").strip().lower() in {"1", "true", "yes", "on"}
+)
+
 
 def _build_base_stats_array(base_stats_fixed: dict, cfg_data: dict) -> tuple:
     """
