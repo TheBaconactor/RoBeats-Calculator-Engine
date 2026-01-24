@@ -613,6 +613,42 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
 
     minis_by_name = get_minis_by_name_cached()
 
+    def _coerce_int(v: Any) -> int:
+        try:
+            return int(v or 0)
+        except Exception:
+            return 0
+
+    def _fg_score_from_force(force_data: Any) -> int:
+        """
+        Best-effort recovery for callers that persisted a valid ForceGreats payload but left `fg_score` as 0.
+
+        Expected force payload shapes:
+          - {"score": <int>, "details": {...}}
+          - details include {"ForceGreats": {"final_score": <int>, ...}}
+        """
+        if not isinstance(force_data, dict):
+            return 0
+        # Prefer explicit score field on the force object.
+        s = _coerce_int(force_data.get("score", 0))
+        if s > 0:
+            return s
+        det = force_data.get("details") or {}
+        if not isinstance(det, dict):
+            return 0
+        fg = det.get("ForceGreats") or {}
+        if not isinstance(fg, dict):
+            return 0
+        # Primary key used throughout the codebase.
+        s2 = _coerce_int(fg.get("final_score", 0))
+        if s2 > 0:
+            return s2
+        # Backward-compatible fallbacks.
+        return max(
+            _coerce_int(fg.get("finalScore", 0)),
+            _coerce_int(fg.get("score", 0)),
+        )
+
     def _effective_hash_for_entry(entry: Dict[str, Any]) -> Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]:
         gear_names_local = _compact_gear_for_db(entry.get("gear", []))
         mini_names_local = _compact_minis_for_db(entry.get("minis", []))
@@ -687,12 +723,15 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
             entry_to_effective[i] = eff
 
         for i, entry in enumerate(deduplicated_entries):
-            score = entry.get("score", 0)
-            fg_score = entry.get("fg_score", 0)
+            score = _coerce_int(entry.get("score", 0))
+            fg_score = _coerce_int(entry.get("fg_score", 0))
             gear = entry.get("gear", [])
             minis = entry.get("minis", [])
             details = entry.get("details", {})
             force_data = entry.get("force")
+
+            if fg_score <= 0 and force_data is not None:
+                fg_score = _fg_score_from_force(force_data)
 
             gear_names = _compact_gear_for_db(gear)
             mini_names = _compact_minis_for_db(minis)
@@ -941,6 +980,32 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
 
     minis_by_name = get_minis_by_name_cached()
 
+    def _coerce_int(v: Any) -> int:
+        try:
+            return int(v or 0)
+        except Exception:
+            return 0
+
+    def _fg_score_from_force(force_data: Any) -> int:
+        if not isinstance(force_data, dict):
+            return 0
+        s = _coerce_int(force_data.get("score", 0))
+        if s > 0:
+            return s
+        det = force_data.get("details") or {}
+        if not isinstance(det, dict):
+            return 0
+        fg = det.get("ForceGreats") or {}
+        if not isinstance(fg, dict):
+            return 0
+        s2 = _coerce_int(fg.get("final_score", 0))
+        if s2 > 0:
+            return s2
+        return max(
+            _coerce_int(fg.get("finalScore", 0)),
+            _coerce_int(fg.get("score", 0)),
+        )
+
     def _effective_hash_for_entry(entry: Dict[str, Any]) -> Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]:
         gear_names_local = _compact_gear_for_db(entry.get("gear", []))
         mini_names_local = _compact_minis_for_db(entry.get("minis", []))
@@ -1006,12 +1071,15 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
             entry_to_effective[i] = _effective_hash_for_entry(entry)
 
         for i, entry in enumerate(deduplicated_entries):
-            score = int(entry.get("score", 0) or 0)
-            fg_score = int(entry.get("fg_score", 0) or 0)
+            score = _coerce_int(entry.get("score", 0))
+            fg_score = _coerce_int(entry.get("fg_score", 0))
             gear = entry.get("gear", [])
             minis = entry.get("minis", [])
             details = entry.get("details", {})
             force_data = entry.get("force")
+
+            if fg_score <= 0 and force_data is not None:
+                fg_score = _fg_score_from_force(force_data)
 
             gear_names = _compact_gear_for_db(gear)
             mini_names = _compact_minis_for_db(minis)

@@ -177,9 +177,27 @@ class AsyncDbSaver:
                             fg = int(e.get("fg_score", 0) or 0)
                         except Exception:
                             fg = 0
+                        if fg <= 0:
+                            try:
+                                force_obj = e.get("force")
+                            except Exception:
+                                force_obj = None
+                            if isinstance(force_obj, dict):
+                                try:
+                                    fg = max(fg, int(force_obj.get("score", 0) or 0))
+                                except Exception:
+                                    pass
+                                det = force_obj.get("details") or {}
+                                if isinstance(det, dict):
+                                    fg_meta = det.get("ForceGreats") or {}
+                                    if isinstance(fg_meta, dict):
+                                        try:
+                                            fg = max(fg, int(fg_meta.get("final_score", 0) or 0))
+                                        except Exception:
+                                            pass
                         if s > run_score:
                             run_score = s
-                        if e.get("force") and fg > s and fg > run_best_fg:
+                        if e.get("force") is not None and fg > s and fg > run_best_fg:
                             run_best_fg = fg
 
                     record_improved = (run_score > int(prev_best_score or 0)) or (run_best_fg > int(prev_best_fg or 0))

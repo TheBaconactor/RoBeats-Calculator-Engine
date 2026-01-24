@@ -3,7 +3,13 @@ import json
 
 import pytest
 
-from gear_optimizer.data.database import get_db_connection, get_song_counters, init_db, save_loadouts_batch, update_song_counters
+from gear_optimizer.data.database import (
+    get_db_connection,
+    get_song_counters,
+    init_db,
+    save_loadouts_batch,
+    update_song_counters,
+)
 
 
 @pytest.fixture
@@ -175,6 +181,45 @@ def test_fg_loadouts_requires_fg_beats_base(db_path):
         assert loadouts_count == 1
         assert fg_count == 0
         assert best_fg_score == 0
+    finally:
+        conn.close()
+
+
+def test_fg_score_recovers_from_force_details_when_wrapper_missing(db_path):
+    song = "FG Score Recovery Song"
+
+    save_loadouts_batch(
+        song,
+        [
+            {
+                "score": 900,
+                "fg_score": 0,  # simulate missing wrapper fg_score
+                "gear": ["G1"],
+                "minis": ["M1"],
+                "details": {"tag": "fg_missing_wrapper"},
+                "force": {
+                    # both of these are observed shapes across pipeline variants
+                    "score": 5000,
+                    "details": {"ForceGreats": {"config": {"NonFever1": 1}, "final_score": 5000}},
+                },
+            }
+        ],
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        best_fg_score = conn.execute("SELECT best_fg_score FROM songs WHERE name=?", (song,)).fetchone()[
+            "best_fg_score"
+        ]
+        assert best_fg_score == 5000
+
+        row = conn.execute(
+            "SELECT score, fg_score, force_details_json FROM fg_loadouts WHERE song_name=?",
+            (song,),
+        ).fetchone()
+        assert row["score"] == 900
+        assert row["fg_score"] == 5000
+        assert json.loads(row["force_details_json"])["score"] == 5000
     finally:
         conn.close()
 

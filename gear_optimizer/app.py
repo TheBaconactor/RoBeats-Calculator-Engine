@@ -1757,7 +1757,47 @@ class GearOptimizerApp:
             persisted = res.get("persist_entries")
             if persisted:
                 # Filter: only save entries with score > 0 and at least some gear
-                valid_entries = [e for e in persisted if e.get("score", 0) > 0 and (e.get("gear") or e.get("minis"))]
+                def _force_score_hint(entry: dict) -> int:
+                    try:
+                        force_obj = entry.get("force")
+                    except Exception:
+                        force_obj = None
+                    if not isinstance(force_obj, dict):
+                        return 0
+                    try:
+                        s = int(force_obj.get("score", 0) or 0)
+                    except Exception:
+                        s = 0
+                    if s > 0:
+                        return s
+                    det = force_obj.get("details") or {}
+                    if not isinstance(det, dict):
+                        return 0
+                    fg = det.get("ForceGreats") or {}
+                    if not isinstance(fg, dict):
+                        return 0
+                    try:
+                        return int(fg.get("final_score", 0) or 0)
+                    except Exception:
+                        return 0
+
+                valid_entries = []
+                for e in persisted:
+                    if not isinstance(e, dict):
+                        continue
+                    if not (e.get("gear") or e.get("minis")):
+                        continue
+                    try:
+                        score_i = int(e.get("score", 0) or 0)
+                    except Exception:
+                        score_i = 0
+                    try:
+                        fg_i = int(e.get("fg_score", 0) or 0)
+                    except Exception:
+                        fg_i = 0
+                    if max(score_i, fg_i, _force_score_hint(e)) <= 0:
+                        continue
+                    valid_entries.append(e)
                 if valid_entries:
                     self._async_db_saver.submit(
                         res["song"],
