@@ -76,6 +76,99 @@ def _sample_overrides(space: dict, rng: random.Random) -> dict:
     return out
 
 
+def _normalize_overrides(overrides: dict) -> dict:
+    """
+    Fix invalid / nonsensical combinations while keeping the search space simple.
+    """
+    out = dict(overrides or {})
+
+    alns = bool(out.get("gpu_full_alns_enabled", False))
+    if not alns:
+        out["gpu_full_alns_enabled"] = False
+        out.pop("gpu_full_pt_enabled", None)
+        out.pop("gpu_full_pt_t_min", None)
+        out.pop("gpu_full_pt_t_max", None)
+        out.pop("gpu_full_pt_swap_interval", None)
+        out.pop("gpu_full_pt_destroy_beta", None)
+        out.pop("gpu_full_pt_cap_slack_max", None)
+        out.pop("gpu_full_alns_islands", None)
+        return out
+
+    out["gpu_full_alns_enabled"] = True
+    out["gpu_full_alns_islands"] = max(1, int(out.get("gpu_full_alns_islands") or 1))
+    pt = bool(out.get("gpu_full_pt_enabled", False))
+    if not pt:
+        out["gpu_full_pt_enabled"] = False
+        out.pop("gpu_full_pt_t_min", None)
+        out.pop("gpu_full_pt_t_max", None)
+        out.pop("gpu_full_pt_swap_interval", None)
+        out.pop("gpu_full_pt_destroy_beta", None)
+        out.pop("gpu_full_pt_cap_slack_max", None)
+        return out
+
+    out["gpu_full_pt_enabled"] = True
+    out["gpu_full_pt_t_min"] = float(out.get("gpu_full_pt_t_min") or 1.0)
+    out["gpu_full_pt_t_max"] = float(out.get("gpu_full_pt_t_max") or 10.0)
+    out["gpu_full_pt_swap_interval"] = max(1, int(out.get("gpu_full_pt_swap_interval") or 8))
+    out["gpu_full_pt_destroy_beta"] = float(out.get("gpu_full_pt_destroy_beta") or 0.0)
+    out["gpu_full_pt_cap_slack_max"] = max(0, int(out.get("gpu_full_pt_cap_slack_max") or 0))
+    return out
+
+
+def _resolve_all_suite_cfg(cfg: dict, *, all_restarts: int, all_lns_time_sec: float, all_lns_attempts: int) -> tuple[int, float, int]:
+    cfg_all_restarts = int(cfg.get("all_restarts") or 1)
+    cfg_all_lns_time = float(cfg.get("all_lns_time_sec") or cfg.get("lns_time_sec") or 0.0)
+    cfg_all_lns_attempts = int(cfg.get("all_lns_attempts") or cfg.get("lns_attempts") or 0)
+
+    r = int(all_restarts) if int(all_restarts) > 0 else int(cfg_all_restarts)
+    t = float(all_lns_time_sec) if float(all_lns_time_sec) > 0 else float(cfg_all_lns_time)
+    a = int(all_lns_attempts) if int(all_lns_attempts) > 0 else int(cfg_all_lns_attempts)
+    return int(r), float(t), int(a)
+
+
+def _default_search_space(*, level: str) -> dict:
+    """
+    Keep this intentionally coarse/griddy to avoid enormous search spaces.
+    """
+    level = str(level or "").strip().lower()
+
+    # Exact-peak-only knobs.
+    base = {
+        "gpu_full_witness_anchor_patterns": [24, 48, 128],
+        "gpu_full_witness_seed_streams": [1, 2, 4],
+        "gpu_full_witness_pattern_profile": [0, 1, 2],
+        "gpu_full_witness_palettes": [1, 2, 3],
+        "gpu_full_wildcard_palette_size": [0, 64, 256],
+        # 0=all (CLI default); limiting scans can be faster but may reduce coverage.
+        "gpu_full_k_scan_select": [0, 128, 256],
+        "gpu_full_k_scan_repack": [0, 64, 128],
+        "gpu_full_repair_max_cands_per_slot": [8, 16],
+        "gpu_full_variant_freq_mode": ["occurrence", "song_support"],
+        "gpu_full_lns_freq_weighted": [False, True],
+    }
+
+    if level in ("basic", ""):
+        return base
+
+    if level in ("extended", "alns", "pt"):
+        base.update(
+            {
+                # ALNS/PT can materially change the search landscape; include it explicitly.
+                "gpu_full_alns_enabled": [False, True],
+                "gpu_full_alns_islands": [2, 4, 8],
+                "gpu_full_pt_enabled": [False, True],
+                "gpu_full_pt_t_min": [1.0],
+                "gpu_full_pt_t_max": [10.0, 12.0],
+                "gpu_full_pt_swap_interval": [8],
+                "gpu_full_pt_destroy_beta": [0.1, 0.15, 0.2],
+                "gpu_full_pt_cap_slack_max": [0],
+            }
+        )
+        return base
+
+    raise ValueError("--space must be 'basic' or 'extended'")
+
+
 RunLabelFn = Callable[[str, Optional[str], dict], dict]
 
 
@@ -107,10 +200,19 @@ def run_tuning_loop(
     search_space: dict,
     rng: random.Random,
     seed_generator: Callable[[], int],
+    all_restarts: int = 0,
+    all_lns_time_sec: float = 0.0,
+    all_lns_attempts: int = 0,
     run_label: Optional[RunLabelFn] = None,
 ) -> TuneSummary:
     suite, cfg = build_benchmark_suite(mode)
     base_kwargs = build_base_kwargs(seed=int(base_seed), inventory_cap=int(inventory_cap), cfg=cfg)
+    all_r, all_t, all_a = _resolve_all_suite_cfg(
+        cfg,
+        all_restarts=int(all_restarts),
+        all_lns_time_sec=float(all_lns_time_sec),
+        all_lns_attempts=int(all_lns_attempts),
+    )
 
     # Safety: force exact-peak-only constraints for tuning runs.
     base_kwargs["gpu_full_human_mode"] = False
@@ -122,7 +224,7 @@ def run_tuning_loop(
     out_trials: list[TuneTrial] = []
 
     for _ in range(int(max(1, trials))):
-        overrides = _sample_overrides(search_space, rng=rng)
+        overrides = _normalize_overrides(_sample_overrides(search_space, rng=rng))
         seed = int(seed_generator())
 
         # Apply per-trial seed and overrides.
@@ -132,7 +234,12 @@ def run_tuning_loop(
             kwargs = dict(base_kwargs)
             kwargs["seed"] = int(seed)
             kwargs["element"] = element
-            kwargs["restarts"] = int(cfg["element_restarts"]) if element else 1
+            if element:
+                kwargs["restarts"] = int(cfg["element_restarts"])
+            else:
+                kwargs["restarts"] = int(all_r)
+                kwargs["lns_time_sec"] = float(all_t)
+                kwargs["lns_attempts"] = int(all_a)
             kwargs.update(overrides)
             if run_label is not None:
                 msg = run_label(str(label), element, kwargs)
@@ -182,6 +289,9 @@ def run_baseline(
     mode: str,
     seed: int,
     timeout_sec: float,
+    all_restarts: int = 0,
+    all_lns_time_sec: float = 0.0,
+    all_lns_attempts: int = 0,
     run_label: Optional[RunLabelFn] = None,
 ) -> dict:
     """
@@ -191,6 +301,12 @@ def run_baseline(
     """
     suite, cfg = build_benchmark_suite(mode)
     base_kwargs = build_base_kwargs(seed=int(seed), inventory_cap=int(inventory_cap), cfg=cfg)
+    all_r, all_t, all_a = _resolve_all_suite_cfg(
+        cfg,
+        all_restarts=int(all_restarts),
+        all_lns_time_sec=float(all_lns_time_sec),
+        all_lns_attempts=int(all_lns_attempts),
+    )
     base_kwargs["gpu_full_human_mode"] = False
     base_kwargs["gpu_full_candidate_score_delta"] = 0
     base_kwargs["gpu_full_candidate_limit_per_song"] = 0
@@ -200,7 +316,12 @@ def run_baseline(
     for label, element in suite:
         kwargs = dict(base_kwargs)
         kwargs["element"] = element
-        kwargs["restarts"] = int(cfg["element_restarts"]) if element else 1
+        if element:
+            kwargs["restarts"] = int(cfg["element_restarts"])
+        else:
+            kwargs["restarts"] = int(all_r)
+            kwargs["lns_time_sec"] = float(all_t)
+            kwargs["lns_attempts"] = int(all_a)
         if run_label is not None:
             msg = run_label(str(label), element, kwargs)
         else:
@@ -233,6 +354,26 @@ def main() -> None:
     ap.add_argument("--db-path", type=str, default="", help="Path to evolution.db (default: EVOLUTION_DB_PATH).")
     ap.add_argument("--mode", type=str, default="fast", choices=["fast", "precise"], help="Suite to tune against.")
     ap.add_argument("--inventory-cap", type=int, default=100, help="Inventory cap (default: 100).")
+    ap.add_argument(
+        "--space",
+        type=str,
+        default="basic",
+        choices=["basic", "extended"],
+        help="Tuning search space size (default: basic).",
+    )
+    ap.add_argument("--all-restarts", type=int, default=0, help="Override All-elements restarts (0=use suite default).")
+    ap.add_argument(
+        "--all-lns-time-sec",
+        type=float,
+        default=0.0,
+        help="Override All-elements total LNS time budget (0=use suite default).",
+    )
+    ap.add_argument(
+        "--all-lns-attempts",
+        type=int,
+        default=0,
+        help="Override All-elements total LNS attempts budget (0=use suite default).",
+    )
     ap.add_argument("--baseline-seed", type=int, default=1, help="Deterministic baseline seed (default: 1).")
     ap.add_argument("--trials", type=int, default=12, help="Tuning trials (default: 12).")
     ap.add_argument("--timeout-sec", type=float, default=900.0, help="Per-run timeout (default: 900s).")
@@ -262,23 +403,17 @@ def main() -> None:
 
     mode = str(args.mode)
     inventory_cap = int(args.inventory_cap)
+    space = str(args.space)
     baseline_seed = int(args.baseline_seed)
     trials = int(args.trials)
     timeout_sec = float(args.timeout_sec)
+    all_restarts = int(args.all_restarts)
+    all_lns_time_sec = float(args.all_lns_time_sec)
+    all_lns_attempts = int(args.all_lns_attempts)
 
     db_sig = compute_db_song_signature(db_path)
 
-    # Search space (kept small on purpose; we can expand as we learn what matters).
-    # These are all exact-peak-only knobs.
-    search_space = {
-        "gpu_full_witness_anchor_patterns": [0, 24, 48],
-        "gpu_full_witness_seed_streams": [1, 2, 4],
-        "gpu_full_witness_pattern_profile": [0, 1, 2],
-        "gpu_full_witness_palettes": [1, 2, 3],
-        "gpu_full_wildcard_palette_size": [0, 64, 256],
-        "gpu_full_k_scan_select": [128, 256],
-        "gpu_full_k_scan_repack": [64, 128],
-    }
+    search_space = _default_search_space(level=space)
 
     # Deterministic RNG for *config sampling* so you can reproduce a tuning session by reusing the stored overrides.
     # The per-trial evaluation seed remains non-deterministic (seed_generator).
@@ -286,7 +421,9 @@ def main() -> None:
 
     print(f"DB: {db_path}")
     print(f"DB songs: {db_sig.get('songs_total')}  hash={db_sig.get('songs_name_hash')}")
-    print(f"Tune mode: {mode}  cap={inventory_cap}  trials={trials}")
+    print(f"Tune mode: {mode}  cap={inventory_cap}  trials={trials}  space={space}")
+    if int(all_restarts) > 0 or float(all_lns_time_sec) > 0 or int(all_lns_attempts) > 0:
+        print(f"All-elements overrides: restarts={all_restarts or '(suite)'}  lns_time_sec={all_lns_time_sec or '(suite)'}  lns_attempts={all_lns_attempts or '(suite)'}")
     print()
 
     baseline = run_baseline(
@@ -296,6 +433,9 @@ def main() -> None:
         mode=mode,
         seed=baseline_seed,
         timeout_sec=timeout_sec,
+        all_restarts=all_restarts,
+        all_lns_time_sec=all_lns_time_sec,
+        all_lns_attempts=all_lns_attempts,
     )
     print(f"Baseline score (deterministic seed={baseline_seed}): {baseline.get('score')}")
     print()
@@ -312,6 +452,9 @@ def main() -> None:
         search_space=search_space,
         rng=cfg_rng,
         seed_generator=_default_seed_generator,
+        all_restarts=all_restarts,
+        all_lns_time_sec=all_lns_time_sec,
+        all_lns_attempts=all_lns_attempts,
     )
     wall = time.perf_counter() - t0
 
@@ -321,6 +464,12 @@ def main() -> None:
         "db_song_signature": dict(db_sig),
         "mode": mode,
         "inventory_cap": int(inventory_cap),
+        "space": str(space),
+        "suite_overrides": {
+            "all_restarts": int(all_restarts),
+            "all_lns_time_sec": float(all_lns_time_sec),
+            "all_lns_attempts": int(all_lns_attempts),
+        },
         "baseline": baseline,
         "search_space": search_space,
         "best_score": int(summary.best_score),
