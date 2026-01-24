@@ -161,10 +161,13 @@ def get_db_connection_cached(db_path: Optional[str] = None) -> sqlite3.Connectio
     if conn is not None:
         return conn
 
+    # Default to a small non-zero timeout to allow brief lock contention during
+    # write bursts without immediate failure. This prevents spurious fallbacks
+    # to the empty in-memory DB when the AsyncDbSaver is actively writing.
     try:
-        read_timeout = float(os.environ.get("DB_READ_TIMEOUT_SEC", "0") or "0")
+        read_timeout = float(os.environ.get("DB_READ_TIMEOUT_SEC", "0.2") or "0.2")
     except Exception:
-        read_timeout = 0.0
+        read_timeout = 0.2
 
     try:
         conn = get_db_connection_readonly(db_path, timeout=read_timeout)
@@ -692,7 +695,13 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
             gear = entry.get("gear", [])
             minis = entry.get("minis", [])
             details = entry.get("details", {})
+            
+            # ForceGreats details are persisted as a lean, flat payload in `entry['force']`.
+            # Historical DBs may contain older nested formats; we preserve best-effort compatibility
+            # by unwrapping `{..., 'details': {...}}` into the details dict.
             force_data = entry.get("force")
+            if isinstance(force_data, dict) and ("ForceGreats" not in force_data) and isinstance(force_data.get("details"), dict):
+                force_data = force_data.get("details")
 
             gear_names = _compact_gear_for_db(gear)
             mini_names = _compact_minis_for_db(minis)
