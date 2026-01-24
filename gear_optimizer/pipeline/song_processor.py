@@ -488,10 +488,29 @@ def process_song_task(args) -> SongResultPayload:
 
         db_seed = prev_record if prev_record else None
 
-        # Calculate best FG score from DB before known_loadouts is cleared
-        # known_loadouts structure: {hash: (score, fg_score, force_data, details_data)}
+        # Calculate best FG score from DB.
+        # IMPORTANT: Do NOT derive this from `known_loadouts` alone because that list is
+        # ordered/limited by base score and can omit the true best FG-improving loadout.
         db_best_fg_score = 0
-        if known_loadouts:
+        if use_evo_db:
+            try:
+                from gear_optimizer.data.database import get_db_connection_cached
+
+                conn = get_db_connection_cached()
+                row = conn.execute(
+                    "SELECT best_fg_score FROM songs WHERE name = ?",
+                    (str(db_key or "").strip(),),
+                ).fetchone()
+                if row is not None:
+                    try:
+                        db_best_fg_score = int(row[0] or 0)
+                    except Exception:
+                        db_best_fg_score = 0
+            except Exception:
+                db_best_fg_score = 0
+
+        # Fallback: if songs row doesn't exist yet, approximate from known_loadouts.
+        if (not db_best_fg_score) and known_loadouts:
             try:
                 db_best_fg_score = max(v[1] for v in known_loadouts.values() if v[1])
             except (ValueError, IndexError, TypeError):
@@ -877,6 +896,7 @@ def process_song_task(args) -> SongResultPayload:
                 ref_arrays=ref_arrays,
                 calc_song=calc_song,
                 cfg=cfg,
+                db_best_fg_score=db_best_fg_score,
             )
             report_time_sec = time.perf_counter() - _t_report0
 

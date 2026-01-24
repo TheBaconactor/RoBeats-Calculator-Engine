@@ -44,6 +44,7 @@ __all__ = [
     "ga_write_best_results_from_key_kernel",
     "ga_write_best_and_update_global_kernel",
     "ga_init_global_best_kernel",
+    "ga_pack_global_best_kernel",
     "ga_update_global_best_kernel",
     "ga_pack_run_payload_kernel",
     "ga_pack_and_store_run_payload_kernel",

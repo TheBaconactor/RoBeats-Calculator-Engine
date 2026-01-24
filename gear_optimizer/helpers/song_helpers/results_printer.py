@@ -13,6 +13,7 @@ def print_results(
     ref_arrays=None,
     calc_song=None,
     cfg=None,
+    db_best_fg_score=None,
 ):
     """
     Print final results (console).
@@ -106,11 +107,19 @@ def print_results(
             best_fg_score_found = _extract_final_score(best_fg_entry)
             is_same = _is_same_variant(base_entry, best_fg_entry)
 
+    # When ForceGreats is deferred (or disabled by config), `fg_variants` can be empty even if the
+    # DB already contains a valid improving FG record. If the caller provides `db_best_fg_score`,
+    # use it as a floor so we don't misleadingly print FG=0.
+    fg_score_to_print = int(best_fg_score_found or 0)
+    db_best_fg_score_int = _coerce_int_score(db_best_fg_score)
+    if db_best_fg_score_int > fg_score_to_print:
+        fg_score_to_print = db_best_fg_score_int
+
     print("-" * 30)
     print(f"FINAL CONFIGURATION FOR: {found_song_name}")
     print(f"Best Base Score Found: {base_score_run}")
-    print(f"Best FG Score Found: {int(best_fg_score_found or 0)}")
-    status_emit_fn(f"DONE | Base={base_score_run} | FG={int(best_fg_score_found or 0)}")
+    print(f"Best FG Score Found: {fg_score_to_print}")
+    status_emit_fn(f"DONE | Base={base_score_run} | FG={fg_score_to_print}")
 
     if fg_variants:
         if fg_debug and ref_arrays and calc_song:

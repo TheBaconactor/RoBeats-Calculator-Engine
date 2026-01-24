@@ -164,9 +164,35 @@ def _compact_prev_record(record: Optional[dict]) -> Optional[dict]:
     return out
 
 
-def _summarize_db_context(prev_record: Optional[dict], known_loadouts: Optional[dict]) -> tuple[int, int, int]:
+def _summarize_db_context(
+    prev_record: Optional[dict],
+    known_loadouts: Optional[dict],
+    *,
+    db_key: Optional[str] = None,
+    use_evo_db: bool = False,
+) -> tuple[int, int, int]:
+    # Prefer the authoritative `songs.best_fg_score`.
+    # `known_loadouts` can be ordered/limited by base score, which can miss the true best FG record.
     db_best_fg_score = 0
-    if known_loadouts:
+    if use_evo_db and db_key:
+        try:
+            from gear_optimizer.data.database import get_db_connection_cached
+
+            conn = get_db_connection_cached()
+            row = conn.execute(
+                "SELECT best_fg_score FROM songs WHERE name = ?",
+                (str(db_key or "").strip(),),
+            ).fetchone()
+            if row is not None:
+                try:
+                    db_best_fg_score = int(row[0] or 0)
+                except Exception:
+                    db_best_fg_score = 0
+        except Exception:
+            db_best_fg_score = 0
+
+    # Fallback: for brand-new songs not yet in `songs`, approximate from cached loadouts.
+    if (not db_best_fg_score) and known_loadouts:
         try:
             db_best_fg_score = max(v[1] for v in known_loadouts.values() if v[1])
         except Exception:

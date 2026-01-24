@@ -17,7 +17,7 @@ from .retention import select_retained_hashes
 def _has_valid_fg_config(fg_container):
     """
     Check if FG container (entry or force obj) has a non-empty/non-zero configuration.
-    Handles both 'fg_entry' result format and 'force_obj' DB format.
+    Handles both 'fg_entry' result format and flat `force` payload format.
     """
     try:
         # Path 1: Result dict (has "data")
@@ -27,10 +27,9 @@ def _has_valid_fg_config(fg_container):
             config = fg_meta.get("config", {})
             return bool(config and sum(config.values()) > 0)
 
-        # Path 2: Force object (direct details)
-        details = fg_container.get("details", {})
-        if details:
-            fg_meta = details.get("ForceGreats", {})
+        # Path 2: Flat force payload (persisted in force_details_json)
+        fg_meta = fg_container.get("ForceGreats", {})
+        if fg_meta:
             config = fg_meta.get("config", {})
             return bool(config and sum(config.values()) > 0)
 
@@ -166,6 +165,8 @@ def build_db_payload(
                 "gear": fg_gear_names,
                 "minis": fg_mini_names,
                 "details": build_details_fn(fg_data),
+                # Flat raw payload to persist in `force_details_json`.
+                "force": fg_data if isinstance(fg_data, dict) else {},
             }
         )
 
@@ -260,12 +261,7 @@ def build_db_payload(
 
     if matching_fg:
         fg_score_val = matching_fg.get("score", 0) or 0
-        updated_payload["force"] = {
-            "score": matching_fg.get("score"),
-            "gear": matching_fg.get("gear", []),
-            "minis": matching_fg.get("minis", []),
-            "details": matching_fg.get("details", {}),
-        }
+        updated_payload["force"] = matching_fg.get("force") or {}
     # If no matching FG from current run, keep the old one from prev_record (if gear matches)
     elif prev_record and prev_record.get("force"):
         prev_force = prev_record.get("force")
@@ -275,11 +271,12 @@ def build_db_payload(
             prev_force = None
 
         if prev_force:
-            prev_force_gear = tuple(prev_force.get("gear", []))
-            prev_force_minis = tuple(prev_force.get("minis", []))
-            if prev_force_gear == top1_gear and prev_force_minis == top1_minis:
+            # `force` payload is flat and doesn't include gear/minis; match on the loadout itself.
+            if top1_gear == tuple(names_list(prev_record.get("gear") or [])) and top1_minis == tuple(
+                names_list(prev_record.get("minis") or [])
+            ):
                 updated_payload["force"] = prev_force
-                fg_score_val = prev_force.get("score", 0) or 0
+                fg_score_val = prev_record.get("fg_score", 0) or 0
             else:
                 updated_payload.pop("force", None)
         else:
@@ -304,6 +301,7 @@ def build_db_payload(
                 "gear": best_fg_entry.get("gear", []),
                 "minis": best_fg_entry.get("minis", []),
                 "details": best_fg_entry.get("details", {}),
+                "force": best_fg_entry.get("force") or {},
             }
     else:
         updated_payload["run_best_fg_score"] = 0
@@ -405,13 +403,8 @@ def build_persistence_entries(
         best_fg_details = best_fg.get("details", {})
         best_fg_score = best_fg.get("score", 0)
 
-        # Build force object for the best FG entry
-        best_fg_force = {
-            "score": best_fg_score,
-            "gear": best_fg_gear,
-            "minis": best_fg_minis,
-            "details": best_fg_details,
-        }
+        # Flat force payload (persisted in `force_details_json`).
+        best_fg_force = best_fg.get("force") if isinstance(best_fg.get("force"), dict) else None
 
         # Base score context for the best-FG loadout (never equals FG score).
         base_score = best_fg.get("base_score")

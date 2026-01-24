@@ -125,6 +125,31 @@ def _extract_force_config_counts(force_obj: dict) -> list[int]:
     return counts
 
 
+def _force_payload_stats(force_obj: dict, fallback_stats: dict) -> dict:
+    """Compute FG Stats from a flat force payload when possible."""
+    if not isinstance(force_obj, dict) or not force_obj:
+        return fallback_stats if isinstance(fallback_stats, dict) else {}
+    base_stats = force_obj.get("BaseStats")
+    if not isinstance(base_stats, dict) or not base_stats:
+        return fallback_stats if isinstance(fallback_stats, dict) else {}
+    gem_counts = force_obj.get("GemCounts") or {}
+    if not isinstance(gem_counts, dict):
+        gem_counts = {}
+    try:
+        from .force_greats.result_application import apply_gems_to_base_fast
+
+        sel = force_obj.get("Selected Element") or force_obj.get("SelectedElement") or ""
+        ft_val = int(force_obj.get("FT", 0) or 0)
+        ff_val = int(force_obj.get("FF", 0) or 0)
+        g_pp = int(gem_counts.get("Perfect Points", 0) or 0)
+        g_cm = int(gem_counts.get("Combo Multiplier", 0) or 0)
+        g_fm = int(gem_counts.get("Fever Multiplier", 0) or 0)
+        g_ov = int(gem_counts.get("Element", 0) or 0)
+        return apply_gems_to_base_fast(base_stats, str(sel), ft_val, ff_val, g_pp, g_cm, g_fm, g_ov)
+    except Exception:
+        return fallback_stats if isinstance(fallback_stats, dict) else {}
+
+
 def _safe_int(v: object, default: int = 0) -> int:
     try:
         return int(v) if v is not None else int(default)
@@ -175,37 +200,63 @@ def _apply_details_delta(details: object, delta: dict[str, int]) -> dict:
 def _apply_force_delta(force_obj: object, *, delta: dict[str, int], fg_score: int) -> object:
     if not isinstance(force_obj, dict) or not force_obj:
         return force_obj
+
+    # Legacy format: `{score, gear, minis, details: {...}}`
+    if isinstance(force_obj.get("details"), dict):
+        if not delta:
+            # Still update the score if present to prevent stale payloads.
+            out0 = dict(force_obj)
+            if "score" in out0:
+                out0["score"] = int(fg_score)
+            details0 = out0.get("details")
+            if isinstance(details0, dict):
+                fg0 = details0.get("ForceGreats")
+                if isinstance(fg0, dict):
+                    fg0_out = dict(fg0)
+                    fg0_out["final_score"] = int(fg_score)
+                    details0_out = dict(details0)
+                    details0_out["ForceGreats"] = fg0_out
+                    out0["details"] = details0_out
+            return out0
+
+        out = dict(force_obj)
+        if "score" in out:
+            out["score"] = int(fg_score)
+        details = out.get("details")
+        if isinstance(details, dict) and details:
+            details_out = dict(details)
+            stats = details_out.get("Stats")
+            if isinstance(stats, dict) and stats:
+                details_out["Stats"] = _apply_stat_delta(stats, delta)
+            fg = details_out.get("ForceGreats")
+            if isinstance(fg, dict):
+                fg_out = dict(fg)
+                fg_out["final_score"] = int(fg_score)
+                details_out["ForceGreats"] = fg_out
+            out["details"] = details_out
+        return out
+
+    # New format: flat raw FG payload (persisted in force_details_json)
     if not delta:
-        # Still update the score if present to prevent stale payloads.
         out0 = dict(force_obj)
-        if "score" in out0:
-            out0["score"] = int(fg_score)
-        details0 = out0.get("details")
-        if isinstance(details0, dict):
-            fg0 = details0.get("ForceGreats")
-            if isinstance(fg0, dict):
-                fg0_out = dict(fg0)
-                fg0_out["final_score"] = int(fg_score)
-                details0_out = dict(details0)
-                details0_out["ForceGreats"] = fg0_out
-                out0["details"] = details0_out
+        out0["Score"] = int(fg_score)
+        fg0 = out0.get("ForceGreats")
+        if isinstance(fg0, dict):
+            fg0_out = dict(fg0)
+            fg0_out["final_score"] = int(fg_score)
+            out0["ForceGreats"] = fg0_out
         return out0
 
     out = dict(force_obj)
-    if "score" in out:
-        out["score"] = int(fg_score)
-    details = out.get("details")
-    if isinstance(details, dict) and details:
-        details_out = dict(details)
-        stats = details_out.get("Stats")
-        if isinstance(stats, dict) and stats:
-            details_out["Stats"] = _apply_stat_delta(stats, delta)
-        fg = details_out.get("ForceGreats")
-        if isinstance(fg, dict):
-            fg_out = dict(fg)
-            fg_out["final_score"] = int(fg_score)
-            details_out["ForceGreats"] = fg_out
-        out["details"] = details_out
+    out["Score"] = int(fg_score)
+    base_stats = out.get("BaseStats")
+    if isinstance(base_stats, dict) and base_stats:
+        out["BaseStats"] = _apply_stat_delta(base_stats, delta)
+    fg = out.get("ForceGreats")
+    if isinstance(fg, dict):
+        fg_out = dict(fg)
+        fg_out["final_score"] = int(fg_score)
+        out["ForceGreats"] = fg_out
     return out
 
 
@@ -478,12 +529,7 @@ def compute_team_buff_tier_leaderboards(
         fg_primary_val = int(base_primary_val)
         fg_secondary_val = int(base_secondary_val)
         if fg_counts:
-            fg_details = {}
-            if isinstance(force_obj, dict):
-                fg_details = force_obj.get("details") or {}
-                if not isinstance(fg_details, dict):
-                    fg_details = {}
-            fg_stats = fg_details.get("Stats") or stats_base
+            fg_stats = _force_payload_stats(force_obj, stats_base) if isinstance(force_obj, dict) else stats_base
             if not isinstance(fg_stats, dict) or not fg_stats:
                 fg_stats = stats_base
 
@@ -525,7 +571,7 @@ def compute_team_buff_tier_leaderboards(
                     "s_val": int(fg_secondary_val),
                     "counts": fg_counts,
                     "config": (
-                        force_obj.get("details", {}).get("ForceGreats", {}).get("config")
+                        (force_obj.get("ForceGreats", {}) or {}).get("config")
                         if isinstance(force_obj, dict)
                         else None
                     ),

@@ -102,6 +102,7 @@ chunk_best_results = None  # (MAX_GENOMES, 4) i32 - cached [pp, cm, fm, ov] from
 ga_global_best_score = None  # (1,) i32 - best score across all generations
 ga_global_best_genome = None  # (MAX_SLOTS,) i32 - item IDs of best genome
 ga_global_best_results = None  # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for best genome
+ga_global_best_packed = None  # (17,) i32 - packed [score, genome_ids(9), results(7)] for single download
 ga_runs_payload_packed = None  # (MAX_GA_RUNS, MAX_GA_RUN_GENOMES+1, 17) i32 - packed snapshots per run
 ga_run_payload_packed = None  # (MAX_GENOMES+1, 17) i32 - packed snapshot payload for one-shot downloads
 ga_fg_candidates_packed = None  # (MAX_SONG_SLOTS, MAX_GA_RUNS, K+1, 24) i32 - compact GA->FG candidate table

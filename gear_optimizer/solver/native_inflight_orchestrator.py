@@ -504,7 +504,31 @@ def _prepare_song(task: tuple) -> _NativeSong:
     # Load database context (prev_record, known_loadouts)
     allow_db_seed = True
     prev_record, known_loadouts = load_database_context(db_key, bool(use_evo_db), gears_by_name, minis_by_name)
-    db_best_fg_score, attempt_lifetime, prev_attempts_first = _summarize_db_context(prev_record, known_loadouts)
+    db_best_fg_score, attempt_lifetime, prev_attempts_first = _summarize_db_context(
+        prev_record,
+        known_loadouts,
+        db_key=db_key,
+        use_evo_db=bool(use_evo_db),
+    )
+
+    # Defensive: ensure `db_best_fg_score` is sourced from the authoritative `songs` row.
+    # Some pipeline modes can load a score-limited subset of loadouts, which can hide the true best FG.
+    if bool(use_evo_db):
+        try:
+            from gear_optimizer.data.database import get_db_connection_cached
+
+            conn = get_db_connection_cached()
+            row = conn.execute(
+                "SELECT best_fg_score FROM songs WHERE name = ?",
+                (str(db_key or "").strip(),),
+            ).fetchone()
+            if row is not None:
+                try:
+                    db_best_fg_score = int(row[0] or 0)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     p_color = calc_song.get("metadata", {}).get("Primary Color", "Rush")
     s_color = calc_song.get("metadata", {}).get("Secondary Color", "")
@@ -2398,15 +2422,10 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
 
         force_obj = None
         try:
-            fg_meta = details.get("ForceGreats") or {}
+            fg_meta = (data.get("ForceGreats") or {}) if isinstance(data, dict) else {}
             cfg_obj = fg_meta.get("config") if isinstance(fg_meta, dict) else None
             if cfg_obj and isinstance(cfg_obj, dict) and sum(int(x or 0) for x in cfg_obj.values()) > 0:
-                force_obj = {
-                    "score": int(fg_score),
-                    "gear": _compact_items(gear),
-                    "minis": _compact_items(minis),
-                    "details": details,
-                }
+                force_obj = dict(data) if isinstance(data, dict) else None
         except Exception:
             force_obj = None
         entries.append(

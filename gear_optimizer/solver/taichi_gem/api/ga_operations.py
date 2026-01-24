@@ -1519,11 +1519,13 @@ def ga_download_global_best() -> tuple[int, np.ndarray, np.ndarray]:
         - best_results: np.ndarray (7,) int32 - [score, ft, ff, pp, cm, fm, ov]
     """
     ensure_ready()
-    # Batch all downloads together - first to_numpy syncs GPU, rest just copy
-    # NOTE: These are small arrays (1 scalar, 9 ints, 7 ints) so overhead is minimal
-    best_score = int(fields.ga_global_best_score.to_numpy()[0])
-    best_genome_ids = fields.ga_global_best_genome.to_numpy().copy()
-    best_results = fields.ga_global_best_results.to_numpy().copy()
+    # Pack into single field then download once (1 GPU sync instead of 3)
+    # Layout: [score(1), genome_ids(9), results(7)] = 17 values
+    kernels.ga_pack_global_best_kernel()
+    packed = fields.ga_global_best_packed.to_numpy()
+    best_score = int(packed[0])
+    best_genome_ids = packed[1:10].copy()
+    best_results = packed[10:17].copy()
     return best_score, best_genome_ids, best_results
 
 
