@@ -873,11 +873,11 @@ def run_native_inflight_song_pipeline(
     #
     # IMPORTANT: This should not "randomly" flip during a run. We parse it once here
     # with explicit semantics:
-    # - default: False
+    # - default: True (ensures every song gets FG evaluated)
     # - config: parse truthy strings ("1/true/yes/on")
     # - env override: `INFLIGHT_FG_DRAIN_AT_END` or `FG_DRAIN_AT_END` (same truthy parsing)
-    fg_drain_at_end = False
-    fg_drain_src = "default(false)"
+    fg_drain_at_end = True
+    fg_drain_src = "default(true)"
     try:
         if cfg0 is not None and cfg0.has_option("IterationEngine", "FG_DrainAtEnd"):
             raw = str(cfg0.get("IterationEngine", "FG_DrainAtEnd", fallback="") or "").strip()
@@ -2096,7 +2096,10 @@ def run_native_inflight_song_pipeline(
                 if (not drain_mode) and fg_futures:
                     pass
                 elif len(fg_futures) < fg_workers:
-                    submit_budget = fg_workers if drain_mode else 1
+                    # Process ALL pending FG jobs (up to worker limit) when triggered.
+                    # The cadence (`FG_InterleaveEvery`) controls *when* we start FG, not *how many*.
+                    # This ensures every song that finishes GA gets its FG evaluated.
+                    submit_budget = fg_workers
                     while submit_budget > 0 and len(fg_futures) < fg_workers and pending_fg:
                         fg_song = _pop_next_fg(allow_not_ready=bool(blocked_on_slot_acquire))
                         if fg_song is None:
