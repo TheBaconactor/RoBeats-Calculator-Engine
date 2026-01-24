@@ -441,7 +441,11 @@ def simulate_perfect_hit_timestamps_with_great_candidates(
         off = int(rng.integers(g_low, g_high + 1, endpoint=False))
         great_candidate_ms[s:e] = base_t + off
 
-    perfect_sec = perfect_event_ms.astype(np.float64) / 1000.0
-    great_sec = great_candidate_ms.astype(np.float64) / 1000.0
+    # PERF: avoid allocating intermediate float arrays from astype(); reuse thread-local buffers.
+    out_perfect = _buf("perfect_sec", np.float64, n)[:n]
+    out_great = _buf("great_sec", np.float64, n)[:n]
+    np.multiply(perfect_event_ms, 0.001, out=out_perfect, casting="unsafe")
+    np.multiply(great_candidate_ms, 0.001, out=out_great, casting="unsafe")
     debug = {"notes": n, "groups": int(group_count), "forced_monotonic": int(forced_monotonic)}
-    return perfect_sec, great_sec, debug
+    # Return copies sized exactly to n (callers may store these long-term).
+    return out_perfect.copy(), out_great.copy(), debug

@@ -71,6 +71,7 @@ _PREP_CACHE_LOCK = threading.Lock()
 _POOL_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...]], tuple[list, list]]" = OrderedDict()
 _REGISTRY_GPU_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...]], tuple[ItemRegistry, dict]]" = OrderedDict()
 _INIT_HEURISTIC_TOPK_CACHE: "OrderedDict[tuple[tuple[str, str, tuple[str, ...]], int], np.ndarray]" = OrderedDict()
+_REGISTRY_GPU_FIXED_CACHE: "OrderedDict[tuple, tuple[ItemRegistry, dict]]" = OrderedDict()
 
 # Optional cache hit/miss stats (helps tune CPU requirements on low-end machines).
 _CACHE_STATS = {
@@ -137,6 +138,23 @@ def _cache_stats_maybe_emit() -> None:
         pass
 
 
+def _fixed_registry_cache_key(
+    *,
+    pool_key: tuple[str, str, tuple[str, ...]],
+    fixed_gear: list[dict] | None,
+    fixed_minis: list[dict] | None,
+) -> tuple:
+    def _n(it: dict | None) -> str:
+        try:
+            return str((it or {}).get("Name", "") or "")
+        except Exception:
+            return ""
+
+    fg = tuple(_n(it) for it in (fixed_gear or [])[:6])
+    fm = tuple(sorted(_n(it) for it in (fixed_minis or [])[:3]))
+    return ("fixed", pool_key, fg, fm)
+
+
 def _thread_cpu_time_s() -> float:
     """
     Best-effort per-thread CPU timer for CPU-only profiling.
@@ -147,6 +165,37 @@ def _thread_cpu_time_s() -> float:
         return float(time.thread_time())
     except Exception:
         return 0.0
+
+
+def _default_worker_threads(*, inflight_limit: int, kind: str) -> int:
+    """
+    Choose conservative default worker counts for low-end CPUs.
+
+    Goal: avoid oversubscription that can *increase* wall time (thread contention)
+    and starve the GPU queue, especially on 4–8 core machines.
+    """
+    ncpu = os.cpu_count() or 1
+    try:
+        ncpu = int(ncpu)
+    except Exception:
+        ncpu = 1
+    ncpu = max(1, ncpu)
+    inflight_limit = max(1, int(inflight_limit))
+    kind = str(kind or "").strip().lower()
+
+    # Keep at most half the cores for background prep/decode work by default.
+    # (The main thread + GPU owner thread + other overhead still need room.)
+    base = max(1, ncpu // 2)
+    # On very small machines, don't exceed 2–3 threads per pool.
+    if ncpu <= 4:
+        base = min(base, 2)
+    elif ncpu <= 8:
+        base = min(base, 3)
+
+    # FG prep can be more expensive; keep it a bit lower by default.
+    if kind in {"fg_prep", "fgprep"}:
+        base = max(1, min(base, 2 if ncpu <= 8 else base))
+    return max(1, min(inflight_limit, int(base)))
 
 
 def _extract_repeat_ctx(task: tuple) -> dict | None:
@@ -494,8 +543,19 @@ def _prepare_song(task: tuple) -> _NativeSong:
     else:
         fixed_gear = list(current_gear_list or [])[:6] if not enable_gear else None
         fixed_minis = list(current_mini_list or [])[:3] if not enable_mini else None
-        registry = ItemRegistry(gear_pool, mini_pool, slots, fixed_gear=fixed_gear, fixed_minis=fixed_minis)
-        gpu_data = registry.to_gpu_arrays()
+        cache_key = _fixed_registry_cache_key(pool_key=pool_key, fixed_gear=fixed_gear, fixed_minis=fixed_minis)
+        cached_fixed = None
+        with _PREP_CACHE_LOCK:
+            cached_fixed = _lru_get(_REGISTRY_GPU_FIXED_CACHE, cache_key)
+        if cached_fixed is None:
+            _cache_stats_inc("registry_miss")
+            registry = ItemRegistry(gear_pool, mini_pool, slots, fixed_gear=fixed_gear, fixed_minis=fixed_minis)
+            gpu_data = registry.to_gpu_arrays()
+            with _PREP_CACHE_LOCK:
+                _lru_put(_REGISTRY_GPU_FIXED_CACHE, cache_key, (registry, gpu_data), maxsize=_REGISTRY_CACHE_MAX)
+        else:
+            _cache_stats_inc("registry_hit")
+            registry, gpu_data = cached_fixed
     _cache_stats_maybe_emit()
 
     fg_candidate_limit = read_fg_candidate_limit(
@@ -1050,7 +1110,7 @@ def run_native_inflight_song_pipeline(
         if ga_seed:
             prep_workers = 1
         else:
-            prep_workers = max(1, min(inflight_limit, os.cpu_count() or 1))
+            prep_workers = _default_worker_threads(inflight_limit=inflight_limit, kind="prep")
 
     prep_executor = concurrent.futures.ThreadPoolExecutor(max_workers=prep_workers, thread_name_prefix="SongPrep")
     prep_inflight: deque[tuple[tuple, concurrent.futures.Future, float]] = deque()
@@ -1068,7 +1128,7 @@ def run_native_inflight_song_pipeline(
         except Exception:
             pass
     if decode_workers <= 0:
-        decode_workers = max(1, min(inflight_limit, os.cpu_count() or 1))
+        decode_workers = _default_worker_threads(inflight_limit=inflight_limit, kind="decode")
     decode_executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=decode_workers,
         thread_name_prefix="GADecode",
@@ -1102,7 +1162,7 @@ def run_native_inflight_song_pipeline(
         except Exception:
             pass
     if fg_prep_workers <= 0:
-        fg_prep_workers = max(1, min(inflight_limit, os.cpu_count() or 1))
+        fg_prep_workers = _default_worker_threads(inflight_limit=inflight_limit, kind="fg_prep")
     fg_prep_executor = concurrent.futures.ThreadPoolExecutor(max_workers=fg_prep_workers, thread_name_prefix="FGPrep")
     fg_prep_inflight: deque[_NativeSong] = deque()
     fg_jit_warmup_submitted = False
