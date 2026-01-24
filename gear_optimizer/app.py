@@ -85,11 +85,12 @@ class _PostQueueSender:
         self._post_proc = post_proc
         self._stop_requested = stop_requested
 
-        backlog = 2048
+        # Default to unbounded backlog to avoid ever blocking the GPU feed loop.
+        backlog = 0
         try:
             backlog = int(os.environ.get("POST_LOCAL_BACKLOG", backlog))
         except Exception:
-            backlog = 2048
+            backlog = 0
         backlog = int(backlog)
         if backlog < 0:
             backlog = 0
@@ -1011,7 +1012,8 @@ class GearOptimizerApp:
             try:
                 from gear_optimizer.pipeline.post_processor import run_post_processor
 
-                post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 64), 64)
+                # Default to an unbounded multiprocessing queue to avoid producer backpressure.
+                post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 0), 0)
                 post_queue_maxsize = 0 if post_queue_size <= 0 else max(1, post_queue_size)
                 post_queue = multiprocessing.Queue(maxsize=post_queue_maxsize)
                 post_proc = multiprocessing.Process(
@@ -1130,7 +1132,8 @@ class GearOptimizerApp:
             try:
                 from gear_optimizer.pipeline.post_processor import run_post_processor
 
-                post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 64), 64)
+                # Default to an unbounded multiprocessing queue to avoid producer backpressure.
+                post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 0), 0)
                 post_queue_maxsize = 0 if post_queue_size <= 0 else max(1, post_queue_size)
                 post_queue = multiprocessing.Queue(maxsize=post_queue_maxsize)
                 post_proc = multiprocessing.Process(

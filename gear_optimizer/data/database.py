@@ -84,7 +84,7 @@ def _db_path_to_uri(db_path: str) -> str:
     return f"file:{quote(path, safe='/:')}?mode=ro"
 
 
-def get_db_connection_readonly(db_path: Optional[str] = None, *, timeout: float = 0.25) -> sqlite3.Connection:
+def get_db_connection_readonly(db_path: Optional[str] = None, *, timeout: float = 0.0) -> sqlite3.Connection:
     """
     Create a read-only SQLite connection (no PRAGMAs/migrations).
 
@@ -162,9 +162,9 @@ def get_db_connection_cached(db_path: Optional[str] = None) -> sqlite3.Connectio
         return conn
 
     try:
-        read_timeout = float(os.environ.get("DB_READ_TIMEOUT_SEC", "0.25") or "0.25")
+        read_timeout = float(os.environ.get("DB_READ_TIMEOUT_SEC", "0") or "0")
     except Exception:
-        read_timeout = 0.25
+        read_timeout = 0.0
 
     try:
         conn = get_db_connection_readonly(db_path, timeout=read_timeout)

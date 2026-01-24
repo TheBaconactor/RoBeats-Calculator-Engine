@@ -267,11 +267,12 @@ class _PostSender:
     def __init__(self, post_queue, *, stop_requested=None) -> None:
         self._post_queue = post_queue
         self._stop_requested = stop_requested
-        backlog = 2048
+        # Default to unbounded backlog to avoid ever blocking the GPU-owner pipeline.
+        backlog = 0
         try:
             backlog = int(os.environ.get("POST_LOCAL_BACKLOG", backlog))
         except Exception:
-            backlog = 2048
+            backlog = 0
         backlog = int(backlog)
         if backlog < 0:
             backlog = 0
