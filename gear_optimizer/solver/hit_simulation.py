@@ -16,6 +16,8 @@ from __future__ import annotations
 import os
 import secrets
 import numpy as np
+import copy
+import threading
 
 
 def _env_debug_fixed_seeds_enabled() -> bool:
@@ -75,6 +77,91 @@ def _get_cfg_section(cfg_dict: dict, name: str) -> dict:
     return {}
 
 
+def _get_cfg_value(section: dict, key: str, default: object = None) -> object:
+    """
+    Best-effort case-insensitive config dict lookup.
+
+    Many call sites build cfg_dict from ConfigParser where key casing can vary
+    (e.g., ApplyTo vs applyto). This helper makes HumanHitSim knobs robust.
+    """
+    if not isinstance(section, dict):
+        return default
+    if key in section:
+        return section.get(key, default)
+    lk = str(key).lower()
+    for k, v in section.items():
+        try:
+            if str(k).lower() == lk:
+                return v
+        except Exception:
+            continue
+    return default
+
+
+def plan_human_hit_sim(calc_song: dict, *, cfg_dict: dict) -> dict | None:
+    """
+    Plan (but do not execute) HumanHitSim.
+
+    This is a CPU-optimization hook for in-flight mode:
+    - If ApplyTo=ALL, the timestamps must be simulated up-front (affects GA scoring).
+    - If ApplyTo=FG, we can defer the expensive simulation until the FG stage actually runs.
+
+    Planning selects/records the seed + knobs so deferred application is deterministic.
+    Returns a summary dict when planned, or None if disabled/invalid.
+    """
+    if not isinstance(calc_song, dict):
+        return None
+    meta = calc_song.get("metadata", {}) or {}
+    if meta.get("HumanHitSimApplied") or meta.get("HumanHitSimPlanned"):
+        return None
+
+    human_cfg = _get_cfg_section(cfg_dict, "HumanHitSim")
+    if not _truthy(_get_cfg_value(human_cfg, "Enabled", _get_cfg_value(human_cfg, "enabled", "0"))):
+        return None
+
+    song_data = calc_song.get("song_data", {}) or {}
+    if song_data.get("timestamps") is None:
+        return None
+
+    apply_to = str(_get_cfg_value(human_cfg, "ApplyTo", _get_cfg_value(human_cfg, "applyto", "FG"))).strip().upper()
+    if apply_to not in {"FG", "ALL"}:
+        apply_to = "FG"
+
+    try:
+        seed_in = int(str(_get_cfg_value(human_cfg, "Seed", _get_cfg_value(human_cfg, "seed", "0")) or "0"))
+    except Exception:
+        seed_in = 0
+
+    dist = str(_get_cfg_value(human_cfg, "Distribution", _get_cfg_value(human_cfg, "distribution", "uniform"))).strip().lower()
+    great_mode = str(_get_cfg_value(human_cfg, "GreatMode", _get_cfg_value(human_cfg, "greatmode", "late"))).strip().lower()
+
+    seed_is_random = False
+    if seed_in == 0:
+        if _env_debug_fixed_seeds_enabled():
+            env_seed = _env_debug_human_hit_sim_seed()
+            seed_in = int(env_seed) if env_seed is not None else 1337
+        else:
+            seed_in = secrets.randbits(32)
+            seed_is_random = True
+
+    # Record planning info (but do NOT generate fg arrays yet).
+    meta = copy.deepcopy(meta)
+    meta["HumanHitSimSeed"] = int(seed_in)
+    meta["HumanHitSimApplyTo"] = apply_to
+    meta["HumanHitSimDistribution"] = dist
+    meta["HumanHitSimGreatMode"] = great_mode
+    meta["HumanHitSimSeedIsRandom"] = bool(seed_is_random)
+    meta["HumanHitSimPlanned"] = True
+    calc_song["metadata"] = meta
+    return {
+        "apply_to": apply_to,
+        "distribution": dist,
+        "seed": int(seed_in),
+        "great_mode": great_mode,
+        "planned": True,
+    }
+
+
 def apply_human_hit_sim(calc_song: dict, *, cfg_dict: dict) -> dict | None:
     """
     Apply HumanHitSim to calc_song in-place if enabled.
@@ -88,27 +175,39 @@ def apply_human_hit_sim(calc_song: dict, *, cfg_dict: dict) -> dict | None:
         return None
 
     human_cfg = _get_cfg_section(cfg_dict, "HumanHitSim")
-    if not _truthy(human_cfg.get("enabled", "0")):
+    if not _truthy(_get_cfg_value(human_cfg, "Enabled", _get_cfg_value(human_cfg, "enabled", "0"))):
         return None
 
     song_data = calc_song.get("song_data", {}) or {}
     if song_data.get("timestamps") is None:
         return None
 
-    apply_to = str(human_cfg.get("applyto", "FG")).strip().upper()
+    apply_to = str(_get_cfg_value(human_cfg, "ApplyTo", _get_cfg_value(human_cfg, "applyto", "FG"))).strip().upper()
     if apply_to not in {"FG", "ALL"}:
         apply_to = "FG"
 
+    planned_seed = None
+    if meta.get("HumanHitSimPlanned") and ("HumanHitSimSeed" in meta):
+        try:
+            planned_seed = int(meta.get("HumanHitSimSeed") or 0)
+        except Exception:
+            planned_seed = None
+        if planned_seed is not None and planned_seed <= 0:
+            planned_seed = None
+
     try:
-        seed_in = int(str(human_cfg.get("seed", "0") or "0"))
+        seed_in = int(str(_get_cfg_value(human_cfg, "Seed", _get_cfg_value(human_cfg, "seed", "0")) or "0"))
     except Exception:
         seed_in = 0
 
-    dist = str(human_cfg.get("distribution", "uniform")).strip().lower()
-    great_mode = str(human_cfg.get("greatmode", "late")).strip().lower()
+    dist = str(_get_cfg_value(human_cfg, "Distribution", _get_cfg_value(human_cfg, "distribution", "uniform"))).strip().lower()
+    great_mode = str(_get_cfg_value(human_cfg, "GreatMode", _get_cfg_value(human_cfg, "greatmode", "late"))).strip().lower()
 
     seed_is_random = False
-    if seed_in == 0:
+    if planned_seed is not None:
+        seed_in = int(planned_seed)
+        seed_is_random = bool(meta.get("HumanHitSimSeedIsRandom"))
+    elif seed_in == 0:
         if _env_debug_fixed_seeds_enabled():
             env_seed = _env_debug_human_hit_sim_seed()
             seed_in = int(env_seed) if env_seed is not None else 1337
@@ -135,6 +234,7 @@ def apply_human_hit_sim(calc_song: dict, *, cfg_dict: dict) -> dict | None:
 
     song_data["fg_timestamps"] = np.asarray(sim_ts, dtype=np.float64)
     song_data["fg_great_candidate_timestamps"] = np.asarray(sim_great_candidates, dtype=np.float64)
+    meta = copy.deepcopy(meta)
     meta["HumanHitSimSeed"] = int(seed_in)
     meta["HumanHitSimApplyTo"] = apply_to
     meta["HumanHitSimDistribution"] = dist
@@ -142,6 +242,7 @@ def apply_human_hit_sim(calc_song: dict, *, cfg_dict: dict) -> dict | None:
     meta["HumanHitSimSeedIsRandom"] = bool(seed_is_random)
     meta["HumanHitSimDebug"] = sim_dbg
     meta["HumanHitSimApplied"] = True
+    meta.pop("HumanHitSimPlanned", None)
     calc_song["metadata"] = meta
     calc_song["song_data"] = song_data
 
@@ -256,26 +357,41 @@ def simulate_perfect_hit_timestamps_with_great_candidates(
 
     rng = np.random.default_rng(int(seed) & 0xFFFFFFFF)
 
-    # Chord grouping by identical timestamp_ms runs.
-    group_starts = np.empty(n, dtype=np.int32)
-    group_ends = np.empty(n, dtype=np.int32)
-    group_count = 0
-    i = 0
-    while i < n:
-        j = i + 1
-        t = ts_ms[i]
-        while j < n and ts_ms[j] == t:
-            j += 1
-        group_starts[group_count] = i
-        group_ends[group_count] = j
-        group_count += 1
-        i = j
+    # PERF: reduce allocations in hot path (thread-local buffers).
+    # This does NOT cache HitSim outputs between repeats; it only reuses scratch arrays.
+    _tls = getattr(simulate_perfect_hit_timestamps_with_great_candidates, "_tls", None)
+    if _tls is None:
+        _tls = threading.local()
+        setattr(simulate_perfect_hit_timestamps_with_great_candidates, "_tls", _tls)
 
-    group_starts = group_starts[:group_count]
-    group_ends = group_ends[:group_count]
+    def _buf(name: str, dtype, size: int) -> np.ndarray:
+        arr = getattr(_tls, name, None)
+        if arr is None or int(getattr(arr, "shape", (0,))[0]) < int(size):
+            arr = np.empty(int(size), dtype=dtype)
+            setattr(_tls, name, arr)
+        return arr
+
+    # Chord grouping by identical timestamp_ms runs.
+    # Vectorized boundary detection (much less Python looping than a nested while).
+    if n == 1:
+        group_starts = np.asarray([0], dtype=np.int32)
+        group_ends = np.asarray([1], dtype=np.int32)
+        group_count = 1
+    else:
+        boundaries = np.nonzero(ts_ms[1:] != ts_ms[:-1])[0].astype(np.int32) + 1
+        group_count = int(boundaries.shape[0]) + 1
+        starts = _buf("group_starts", np.int32, group_count)
+        ends = _buf("group_ends", np.int32, group_count)
+        starts[0] = 0
+        if group_count > 1:
+            starts[1:group_count] = boundaries
+            ends[: group_count - 1] = boundaries
+        ends[group_count - 1] = int(n)
+        group_starts = starts[:group_count]
+        group_ends = ends[:group_count]
 
     # Perfect event times (monotonic per chord group).
-    perfect_event_ms = np.empty(n, dtype=np.int32)
+    perfect_event_ms = _buf("perfect_event_ms", np.int32, n)[:n]
     prev_event_ms: int | None = None
     forced_monotonic = 0
 
@@ -307,8 +423,8 @@ def simulate_perfect_hit_timestamps_with_great_candidates(
         perfect_event_ms[s:e] = event_ms
         prev_event_ms = event_ms
 
-    # Great-candidate times (late-only band, chord-grouped, no monotonic clamp).
-    great_candidate_ms = np.empty(n, dtype=np.int32)
+    # Great-candidate times (chord-grouped, no monotonic clamp).
+    great_candidate_ms = _buf("great_candidate_ms", np.int32, n)[:n]
     for g in range(group_count):
         s = int(group_starts[g])
         e = int(group_ends[g])

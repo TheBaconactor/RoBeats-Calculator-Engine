@@ -487,6 +487,13 @@ def decode_gpu_native_ga_runs_payload(
 
         sel_color = str(cfg_data.get("selected_color", "") or "")
 
+        # PERF/CPU NOTE:
+        # - The GPU-selected payload already contains everything the in-flight pipeline needs
+        #   (score + FT/FF + gem counts + selected element + (run,row) provenance).
+        # - Reconstructing full per-candidate `Stats` / `BaseStats` is expensive: it requires a large
+        #   gather+sum over `item_stats[genome_ids_mat]` plus per-candidate Python dict builds.
+        # - Keep that reconstruction OFF by default to lower CPU requirements on slower machines.
+        # - Opt in only for debugging/analysis/export tooling via GA_DECODE_INCLUDE_STATS=1.
         include_stats = str(os.environ.get("GA_DECODE_INCLUDE_STATS", "0") or "").strip().lower() in {
             "1",
             "true",

@@ -72,6 +72,70 @@ _POOL_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...]], tuple[list, list]]" 
 _REGISTRY_GPU_CACHE: "OrderedDict[tuple[str, str, tuple[str, ...]], tuple[ItemRegistry, dict]]" = OrderedDict()
 _INIT_HEURISTIC_TOPK_CACHE: "OrderedDict[tuple[tuple[str, str, tuple[str, ...]], int], np.ndarray]" = OrderedDict()
 
+# Optional cache hit/miss stats (helps tune CPU requirements on low-end machines).
+_CACHE_STATS = {
+    "pools_hit": 0,
+    "pools_miss": 0,
+    "registry_hit": 0,
+    "registry_miss": 0,
+    "heur_hit": 0,
+    "heur_miss": 0,
+}
+_CACHE_STATS_LOCK = threading.Lock()
+_CACHE_STATS_LAST_EMIT = 0.0
+
+
+def _cache_stats_enabled() -> bool:
+    return _truthy(os.environ.get("INFLIGHT_CACHE_STATS", "0"))
+
+
+def _cache_stats_emit_interval_s() -> float:
+    try:
+        return float(os.environ.get("INFLIGHT_CACHE_STATS_EMIT_SEC", "30") or "30")
+    except Exception:
+        return 30.0
+
+
+def _cache_stats_inc(key: str) -> None:
+    try:
+        with _CACHE_STATS_LOCK:
+            _CACHE_STATS[key] = int(_CACHE_STATS.get(key, 0) or 0) + 1
+    except Exception:
+        return
+
+
+def _cache_stats_maybe_emit() -> None:
+    if not _cache_stats_enabled():
+        return
+    interval = float(_cache_stats_emit_interval_s())
+    if interval <= 0:
+        return
+    now = time.monotonic()
+    global _CACHE_STATS_LAST_EMIT
+    try:
+        with _CACHE_STATS_LOCK:
+            if (now - float(_CACHE_STATS_LAST_EMIT)) < interval:
+                return
+            _CACHE_STATS_LAST_EMIT = now
+            snap = dict(_CACHE_STATS)
+    except Exception:
+        return
+    try:
+        pools_h = int(snap.get("pools_hit", 0) or 0)
+        pools_m = int(snap.get("pools_miss", 0) or 0)
+        reg_h = int(snap.get("registry_hit", 0) or 0)
+        reg_m = int(snap.get("registry_miss", 0) or 0)
+        heur_h = int(snap.get("heur_hit", 0) or 0)
+        heur_m = int(snap.get("heur_miss", 0) or 0)
+        print(
+            "[InFlight][CacheStats] "
+            f"pools hit={pools_h} miss={pools_m} | "
+            f"registry hit={reg_h} miss={reg_m} | "
+            f"heur_topk hit={heur_h} miss={heur_m}"
+        )
+    except Exception:
+        pass
+
 
 def _thread_cpu_time_s() -> float:
     """
@@ -398,6 +462,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
     with _PREP_CACHE_LOCK:
         cached_pools = _lru_get(_POOL_CACHE, pool_key)
     if cached_pools is None:
+        _cache_stats_inc("pools_miss")
         pools = initialize_pools(all_gears, all_minis, p_color, slots, s_color=s_color)
         if pools is None:
             raise RuntimeError("initialize_pools returned None")
@@ -410,6 +475,7 @@ def _prepare_song(task: tuple) -> _NativeSong:
         with _PREP_CACHE_LOCK:
             _lru_put(_POOL_CACHE, pool_key, (gear_pool, mini_pool), maxsize=_POOL_CACHE_MAX)
     else:
+        _cache_stats_inc("pools_hit")
         gear_pool, mini_pool = cached_pools
 
     cacheable_registry = bool(enable_gear and enable_mini)
@@ -417,17 +483,20 @@ def _prepare_song(task: tuple) -> _NativeSong:
         with _PREP_CACHE_LOCK:
             cached_registry = _lru_get(_REGISTRY_GPU_CACHE, pool_key)
         if cached_registry is None:
+            _cache_stats_inc("registry_miss")
             registry = ItemRegistry(gear_pool, mini_pool, slots)
             gpu_data = registry.to_gpu_arrays()
             with _PREP_CACHE_LOCK:
                 _lru_put(_REGISTRY_GPU_CACHE, pool_key, (registry, gpu_data), maxsize=_REGISTRY_CACHE_MAX)
         else:
+            _cache_stats_inc("registry_hit")
             registry, gpu_data = cached_registry
     else:
         fixed_gear = list(current_gear_list or [])[:6] if not enable_gear else None
         fixed_minis = list(current_mini_list or [])[:3] if not enable_mini else None
         registry = ItemRegistry(gear_pool, mini_pool, slots, fixed_gear=fixed_gear, fixed_minis=fixed_minis)
         gpu_data = registry.to_gpu_arrays()
+    _cache_stats_maybe_emit()
 
     fg_candidate_limit = read_fg_candidate_limit(
         cfg,
@@ -494,6 +563,10 @@ def _prepare_song(task: tuple) -> _NativeSong:
                 cache_key = (pool_key, int(init_heuristic_k))
                 with _PREP_CACHE_LOCK:
                     init_heuristic_topk = _lru_get(_INIT_HEURISTIC_TOPK_CACHE, cache_key)
+                if init_heuristic_topk is None:
+                    _cache_stats_inc("heur_miss")
+                else:
+                    _cache_stats_inc("heur_hit")
 
             if init_heuristic_topk is None:
                 init_heuristic_topk = build_ga_init_heuristic_topk(

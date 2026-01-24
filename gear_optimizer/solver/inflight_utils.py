@@ -7,7 +7,10 @@ between in-flight implementations.
 
 from __future__ import annotations
 
+import os
+import copy
 from collections import deque
+from collections import OrderedDict
 from typing import Any, Optional
 
 import numpy as np
@@ -15,6 +18,51 @@ import numpy as np
 
 def _truthy(v: Any) -> bool:
     return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+_SONG_FILE_CACHE: "OrderedDict[str, tuple[dict, np.ndarray, np.ndarray]]" = OrderedDict()
+
+
+def _song_file_cache_max() -> int:
+    # Cache parsed song file -> numpy arrays across repeats.
+    # Large enough to cover typical SongRepeats / small queues without ballooning RAM.
+    try:
+        return max(0, int(os.environ.get("INFLIGHT_SONG_FILE_CACHE_MAX", "128") or "128"))
+    except Exception:
+        return 128
+
+
+def _song_file_cache_get(fp: str) -> tuple[dict, np.ndarray, np.ndarray] | None:
+    try:
+        v = _SONG_FILE_CACHE.get(fp)
+    except Exception:
+        return None
+    if v is not None:
+        try:
+            _SONG_FILE_CACHE.move_to_end(fp)
+        except Exception:
+            pass
+    return v
+
+
+def _song_file_cache_put(fp: str, meta: dict, ts: np.ndarray, note_types: np.ndarray) -> None:
+    try:
+        _SONG_FILE_CACHE[fp] = (meta, ts, note_types)
+        _SONG_FILE_CACHE.move_to_end(fp)
+    except Exception:
+        return
+    max_n = int(_song_file_cache_max())
+    if max_n <= 0:
+        try:
+            _SONG_FILE_CACHE.clear()
+        except Exception:
+            pass
+        return
+    try:
+        while len(_SONG_FILE_CACHE) > max_n:
+            _SONG_FILE_CACHE.popitem(last=False)
+    except Exception:
+        pass
 
 
 class SongSlotPool:
@@ -39,14 +87,24 @@ class SongSlotPool:
 def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg, cfg_dict: Optional[dict] = None) -> dict:
     from gear_optimizer.pipeline.song_processor import read_song_file
 
-    song_data = read_song_file(fp)
-    song_timestamps_np = np.array(song_data.get("timestamps") or [], dtype=np.float64)
-    song_note_types_np = np.array(song_data.get("note_types") or [], dtype=np.int16)
-    if song_note_types_np.shape[0] != song_timestamps_np.shape[0]:
-        song_note_types_np = np.ones(song_timestamps_np.shape[0], dtype=np.int16)
+    cached = _song_file_cache_get(fp)
+    if cached is None:
+        song_data = read_song_file(fp)
+        song_timestamps_np = np.array(song_data.get("timestamps") or [], dtype=np.float64)
+        song_note_types_np = np.array(song_data.get("note_types") or [], dtype=np.int16)
+        if song_note_types_np.shape[0] != song_timestamps_np.shape[0]:
+            song_note_types_np = np.ones(song_timestamps_np.shape[0], dtype=np.int16)
+        meta0 = song_data.get("song_details") or {}
+        _song_file_cache_put(fp, meta0 if isinstance(meta0, dict) else {}, song_timestamps_np, song_note_types_np)
+        cached = _song_file_cache_get(fp)
+    if cached is None:
+        # Defensive fallback (shouldn't happen).
+        cached = ({}, np.array([], dtype=np.float64), np.array([], dtype=np.int16))
+    meta0, song_timestamps_np, song_note_types_np = cached
 
     calc_song = {
-        "metadata": song_data.get("song_details") or {},
+        # NOTE: must not share metadata across runs; HumanHitSim mutates metadata in-place.
+        "metadata": copy.deepcopy(meta0) if isinstance(meta0, dict) else {},
         "song_data": {
             "timestamps": song_timestamps_np,
             "chart_timestamps": song_timestamps_np,
@@ -60,9 +118,15 @@ def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg, cfg_dict: 
             from gear_optimizer.core.utils import cfg_to_dict
 
             cfg_dict = cfg_to_dict(cfg)
-        from gear_optimizer.solver.hit_simulation import apply_human_hit_sim
+        from gear_optimizer.solver.hit_simulation import apply_human_hit_sim, plan_human_hit_sim
 
-        apply_human_hit_sim(calc_song, cfg_dict=cfg_dict or {})
+        # Plan deterministically (records seed/knobs), then:
+        # - Apply immediately when ApplyTo=ALL (affects GA/base scoring).
+        # - Defer when ApplyTo=FG (FG stage will apply later if needed).
+        plan_human_hit_sim(calc_song, cfg_dict=cfg_dict or {})
+        apply_to = str((calc_song.get("metadata") or {}).get("HumanHitSimApplyTo", "FG") or "").strip().upper()
+        if apply_to == "ALL":
+            apply_human_hit_sim(calc_song, cfg_dict=cfg_dict or {})
     except Exception:
         pass
 

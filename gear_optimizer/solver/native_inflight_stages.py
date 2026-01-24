@@ -251,6 +251,17 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
     song.fg_candidate_limit = int(fg_candidate_limit)
     song.fg_search_radius = read_fg_search_radius(cfg)
 
+    # If HumanHitSim is configured for FG-only, we defer the expensive simulation until
+    # we actually enter the FG prep stage (keeps CPU prep lighter on low-end machines).
+    try:
+        meta = song.calc_song.get("metadata") if isinstance(song.calc_song, dict) else None
+        if isinstance(meta, dict) and str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper() == "FG":
+            from gear_optimizer.solver.hit_simulation import apply_human_hit_sim
+
+            apply_human_hit_sim(song.calc_song, cfg_dict=song.cfg_dict or {})
+    except Exception:
+        pass
+
     ga_candidates = list(song.ga_candidates or [])
     # If GA came from the GPU-native "selected payload" path, candidates are already GPU-selected
     # (bounded + deduped) and re-running the CPU selector is pure overhead on slower machines.
