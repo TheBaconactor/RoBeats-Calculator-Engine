@@ -260,6 +260,7 @@ class GearOptimizerApp:
             loop_forever = cfg.getboolean("IterationEngine", "LoopForever", fallback=False)
             eval_cpu_limit = safe_int(cfg.get("IterationEngine", "EvalCPUCores", fallback=0))
             self._apply_inflight_overrides(cfg)
+            self._maybe_apply_inflight_ram_mode(cfg)
             self._maybe_autoset_gpu_song_slots(cfg)
 
             # If the GPU executor initializes Taichi before the GA code runs, Taichi fields can be allocated with
@@ -887,6 +888,66 @@ class GearOptimizerApp:
 
         # GPU_Native_GA is supported by a dedicated GPU-native in-flight orchestrator.
 
+    def _maybe_apply_inflight_ram_mode(self, cfg) -> None:
+        """
+        Opt-in "RAM mode" for in-flight runs.
+
+        Goal: reduce periodic GPU starvation on very fast GPUs by increasing CPU-side buffering/caching.
+
+        Enable via:
+        - config: IterationEngine.InFlight_RamMode=true
+        - env: INFLIGHT_RAM_MODE=1
+        """
+        inflight_songs = self._get_inflight_songs_requested(cfg)
+        if int(inflight_songs) <= 1:
+            return
+
+        raw_env = os.environ.get("INFLIGHT_RAM_MODE")
+        env_set = raw_env is not None and str(raw_env).strip() != ""
+        ram_mode = self._truthy(raw_env) if env_set else False
+        if not env_set:
+            try:
+                ram_mode = cfg.getboolean("IterationEngine", "InFlight_RamMode", fallback=False)
+            except Exception:
+                ram_mode = False
+
+        if not ram_mode:
+            return
+
+        os.environ.setdefault("INFLIGHT_RAM_MODE", "1")
+
+        # Cache parsed song files across repeats/LoopForever (system RAM).
+        if os.environ.get("INFLIGHT_SONG_FILE_CACHE_MAX") in {None, ""}:
+            cache_max = 0
+            try:
+                cache_max = safe_int(cfg.get("IterationEngine", "InFlight_SongFileCacheMax", fallback="0"), 0)
+            except Exception:
+                cache_max = 0
+            if cache_max <= 0:
+                cache_max = 2048
+            os.environ["INFLIGHT_SONG_FILE_CACHE_MAX"] = str(int(cache_max))
+
+        # TeamBuff post-processing can re-parse base calc_song; enlarge cache when allowed.
+        if os.environ.get("TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX") in {None, ""}:
+            tb_cache = 0
+            try:
+                tb_cache = safe_int(cfg.get("IterationEngine", "TeamBuff_BaseCalcSongCacheMax", fallback="0"), 0)
+            except Exception:
+                tb_cache = 0
+            if tb_cache <= 0:
+                tb_cache = 256
+            os.environ["TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX"] = str(int(tb_cache))
+
+        try:
+            print(
+                "[InFlight][RAM] enabled: INFLIGHT_SONG_FILE_CACHE_MAX={} TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX={}".format(
+                    os.environ.get("INFLIGHT_SONG_FILE_CACHE_MAX"),
+                    os.environ.get("TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX"),
+                )
+            )
+        except Exception:
+            pass
+
     def _maybe_autoset_gpu_song_slots(self, cfg) -> None:
         """
         Best-effort auto sizing for `GPU_SONG_SLOTS` when native in-flight mode is enabled.
@@ -927,7 +988,18 @@ class GearOptimizerApp:
             except Exception:
                 pass
         if ga_queue_mult <= 0:
-            ga_queue_mult = 2
+            # Match the in-flight orchestrator defaults, but allow "RAM mode" to opt
+            # into a deeper GA backlog (reduces starvation at the cost of VRAM).
+            ram_mode = False
+            try:
+                raw_env = os.environ.get("INFLIGHT_RAM_MODE")
+                if raw_env is not None and str(raw_env).strip() != "":
+                    ram_mode = self._truthy(raw_env)
+                else:
+                    ram_mode = cfg.getboolean("IterationEngine", "InFlight_RamMode", fallback=False)
+            except Exception:
+                ram_mode = False
+            ga_queue_mult = 4 if ram_mode else 2
         ga_queue_mult = max(1, min(int(ga_queue_mult), 8))
 
         # Slot 0 is reserved. In-flight also reserves at least one free slot so FG can submit without deadlocking.

@@ -17,11 +17,27 @@ _TEAM_BUFF_REF_ARRAYS_CACHE: dict | None = None
 
 _TEAM_BUFF_BASE_CALC_SONG_LOCK = threading.Lock()
 _TEAM_BUFF_BASE_CALC_SONG_CACHE: "OrderedDict[str, dict]" = OrderedDict()
-_TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX = 16
+_TEAM_BUFF_BASE_CALC_SONG_CACHE_DEFAULT = 16
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
     return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _team_buff_base_calc_song_cache_max() -> int:
+    """
+    Cache size for TeamBuff base calc_song derivation.
+
+    This can materially affect throughput on LoopForever/in-flight runs because the post processor may
+    repeatedly need `get_base_calc_song(fp, cfg_dict)` for the same song files.
+    """
+    raw = os.environ.get("TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            return max(0, int(raw))
+        except Exception:
+            return _TEAM_BUFF_BASE_CALC_SONG_CACHE_DEFAULT
+    return 256 if _truthy_env("INFLIGHT_RAM_MODE", "0") else _TEAM_BUFF_BASE_CALC_SONG_CACHE_DEFAULT
 
 
 def _team_buff_tier_limit() -> int:
@@ -133,11 +149,15 @@ def _get_team_buff_base_calc_song_cached(file_path: str, cfg_dict: dict) -> dict
     with _TEAM_BUFF_BASE_CALC_SONG_LOCK:
         _TEAM_BUFF_BASE_CALC_SONG_CACHE[fp] = base
         _TEAM_BUFF_BASE_CALC_SONG_CACHE.move_to_end(fp)
-        while len(_TEAM_BUFF_BASE_CALC_SONG_CACHE) > int(_TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX):
-            try:
-                _TEAM_BUFF_BASE_CALC_SONG_CACHE.popitem(last=False)
-            except Exception:
-                break
+        max_n = int(_team_buff_base_calc_song_cache_max())
+        if max_n <= 0:
+            _TEAM_BUFF_BASE_CALC_SONG_CACHE.clear()
+        else:
+            while len(_TEAM_BUFF_BASE_CALC_SONG_CACHE) > int(max_n):
+                try:
+                    _TEAM_BUFF_BASE_CALC_SONG_CACHE.popitem(last=False)
+                except Exception:
+                    break
     return base
 
 
