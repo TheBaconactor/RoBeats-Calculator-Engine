@@ -33,7 +33,6 @@ The optimizer will:
 - Load all songs from Data folders (Easy/Normal/Hard)
 - Run genetic algorithm optimization for each song
 - Store results in `evolution.db` SQLite database
-- Report progress via Discord webhooks (if configured)
 - Use GPU acceleration for gem allocation (if available)
 
 ---
@@ -61,7 +60,6 @@ The optimizer will:
 - **Loadout Deduplication:** MD5 hashing prevents redundant evaluations
 - **Stats Signatures:** Deterministic cache keys for identical configurations
 - **Database Merging:** Utilities for combining results from multiple runs
-- **Discord Integration:** Real-time progress reporting with rate limiting
 - **Dual-Table Architecture:** Clean separation of Base and Force Greats loadouts
 
 ---
@@ -117,16 +115,6 @@ Pant =
 3 =
 ```
 
-### Discord Integration (Optional)
-
-Create `Discord.env` for real-time progress reporting:
-
-```env
-DISCORD_TOKEN=your_bot_token_here
-LOGGINGCHANNEL=123456789
-STATSCHANNEL=987654321
-```
-
 ### Advanced Configuration
 
 Environment variable overrides:
@@ -177,7 +165,6 @@ RoBeats-Calculator-Engine/
 RoBeats-Calculator-Engine/
 ├── main.py                           # Entry point → GearOptimizerApp
 ├── config.ini                        # User configuration (GA, memory, paths)
-├── Discord.env                       # Discord credentials (gitignored)
 ├── requirements.txt                  # Runtime dependencies
 ├── requirements-dev.txt              # Dev/test dependencies
 ├── evolution.db                      # SQLite results database
@@ -198,7 +185,6 @@ RoBeats-Calculator-Engine/
 │   │   ├── models.py                 # Tee, WarnOnce, GASettings dataclasses
 │   │   ├── database.py               # SQLite CRUD, loadout hashing, batch inserts
 │   │   ├── csv_parser.py             # Gear/mini/stats CSV parsing
-│   │   ├── discord_reporter.py       # Discord webhook integration
 │   │   └── db_merge.py               # Database merging utilities
 │   │
 │   ├── solver/                       # Algorithm layer (40+ modules, 7,200+ LOC)
@@ -347,7 +333,7 @@ RoBeats-Calculator-Engine/
 ┌────────────────────┴────────────────────┐
 │      Data Layer                        │
 │  gear_optimizer/data/database.py + migrations/ │
-│  gear_optimizer/data/csv_parser.py + discord_reporter.py │
+│  gear_optimizer/data/csv_parser.py                      │
 └────────────────────┬────────────────────┘
                      │
 ┌────────────────────┴────────────────────┐
@@ -526,7 +512,7 @@ This project is for personal use. All rights reserved.
 
 ## Security Note
 
-⚠️ **Never commit tokens.** Keep `Discord.env` local and rotate your Discord bot token if it is ever exposed.
+⚠️ **Never commit tokens.**
 
 ---
 

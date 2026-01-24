@@ -132,6 +132,10 @@ def _maybe_wal_maintenance(conn) -> None:
     except Exception:
         logging.debug("[DB] WAL checkpoint(PASSIVE) failed", exc_info=True)
 
+    optimize_enabled = str(os.environ.get("DB_OPTIMIZE", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    if not optimize_enabled:
+        return
+
     try:
         conn.execute("PRAGMA optimize")
     except Exception:
@@ -176,25 +180,32 @@ def load_database_context(
         else:
             # If we expected a DB seed but didn't find one, show nearby candidates.
             # This catches cases where the song key differs by suffix/spacing.
-            try:
-                conn = get_db_connection()
-                base_key = str(found_song_name or "").strip()
-                if "|" in base_key:
-                    base_key = base_key.split("|", 1)[0].strip()
-                base_key = base_key.split("(", 1)[0].strip()
-                if not base_key:
+            suggest_enabled = str(os.environ.get("DB_SEED_SUGGEST", "0") or "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            if suggest_enabled:
+                try:
+                    conn = get_db_connection_cached()
                     base_key = str(found_song_name or "").strip()
-                rows = conn.execute(
-                    "SELECT DISTINCT song_name FROM loadouts WHERE song_name LIKE ? LIMIT 8",
-                    (f"%{base_key}%",),
-                ).fetchall()
-                if rows:
-                    print("[DB] No exact seed found. Similar keys in DB:")
-                    for r in rows:
-                        # sqlite3.Row supports index access in this connection setup
-                        print(f"  - {str(r[0])!r}")
-            except Exception:
-                pass
+                    if "|" in base_key:
+                        base_key = base_key.split("|", 1)[0].strip()
+                    base_key = base_key.split("(", 1)[0].strip()
+                    if not base_key:
+                        base_key = str(found_song_name or "").strip()
+                    rows = conn.execute(
+                        "SELECT DISTINCT song_name FROM loadouts WHERE song_name LIKE ? LIMIT 8",
+                        (f"%{base_key}%",),
+                    ).fetchall()
+                    if rows:
+                        print("[DB] No exact seed found. Similar keys in DB:")
+                        for r in rows:
+                            # sqlite3.Row supports index access in this connection setup
+                            print(f"  - {str(r[0])!r}")
+                except Exception:
+                    pass
 
         if load_known_loadouts:
             # Fetch known loadouts for persistent caching

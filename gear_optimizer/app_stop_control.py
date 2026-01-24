@@ -4,7 +4,6 @@ import os
 import signal
 import threading
 import time
-from typing import Any
 
 
 class StopController:
@@ -17,8 +16,7 @@ class StopController:
     - Provide events that the main loop can poll cheaply
     """
 
-    def __init__(self, *, discord_reporter: Any | None, bin_dir: str):
-        self._discord_reporter = discord_reporter
+    def __init__(self, *, bin_dir: str):
         self._bin_dir = str(bin_dir)
         self._run_start_monotonic = time.monotonic()
         self.stop_requested_event = threading.Event()
@@ -44,11 +42,6 @@ class StopController:
             )
             try:
                 print(msg, flush=True)
-            except Exception:
-                pass
-            try:
-                if self._discord_reporter is not None:
-                    self._discord_reporter.send_log(msg)
             except Exception:
                 pass
 

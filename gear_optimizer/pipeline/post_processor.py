@@ -9,8 +9,7 @@ import time
 import sys
 
 from gear_optimizer.core.utils import cfg_from_dict
-from gear_optimizer.data.database import init_db, save_loadouts_batch, get_song_counters, update_song_counters
-from gear_optimizer.data.discord_reporter import build_stats_summary, setup_discord_reporter
+from gear_optimizer.data.database import init_db
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.helpers.song_helpers.persistence import (
     build_db_payload,
@@ -83,7 +82,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     - Build DB payload + persistence entries
     - Print results / debug output
     - Persist to SQLite
-    - Send Discord stats/logs
     """
     # Ensure timely console output from the post-process worker. On Windows,
     # `multiprocessing.Process` stdout can become block-buffered, making the
@@ -101,8 +99,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     except Exception:
         pass
 
-    reporter = setup_discord_reporter(stats_batch_size=500)
-    async_db = AsyncDbSaver(reporter)
+    async_db = AsyncDbSaver()
 
     completed = 0
     failed = 0
@@ -308,13 +305,11 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             print(f"[DB] Skipped FG update for {song_name}: no valid entries")
 
                     try:
-                        from gear_optimizer.data.database import delete_pending_fg_job
-
                         _t_del0 = time.perf_counter()
                         cpu_t0 = time.process_time()
-                        delete_pending_fg_job(db_key)
-                        _log_timing("fg_delete_pending_job", time.perf_counter() - _t_del0, song=song_name)
-                        profiler.record("fg_delete_pending_job", time.process_time() - cpu_t0)
+                        async_db.delete_pending_fg_job(db_key)
+                        _log_timing("fg_delete_pending_job_enqueue", time.perf_counter() - _t_del0, song=song_name)
+                        profiler.record("fg_delete_pending_job_enqueue", time.process_time() - cpu_t0)
                     except Exception:
                         pass
 
@@ -392,10 +387,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     logging.error(item.get("_trace"))
             except Exception:
                 pass
-            try:
-                reporter.send_log(msg)
-            except Exception:
-                pass
             continue
 
         completed += 1
@@ -419,19 +410,53 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 best_minis = item.get("best_minis") or []
                 prev_record = item.get("prev_record")
                 fg_variants = item.get("fg_variants") or []
-                # Per-song counters (source of truth: `songs` table)
-                prev_life, prev_attempts, prev_best_score, prev_best_fg = get_song_counters(
-                    item.get("db_key") or item.get("song", "Unknown")
-                )
+
                 try:
                     run_score = int(best_data.get("BaseScore") or best_data.get("Score", 0) or 0)
                 except Exception:
                     run_score = 0
                 run_best_fg = _best_fg_improving_score_from_variants(fg_variants)
-                record_improved = (run_score > int(prev_best_score or 0)) or (run_best_fg > int(prev_best_fg or 0))
-                attempt_lifetime = int(prev_life or 0) + 1
+
+                prev_best_score = 0
+                try:
+                    prev_best_score = int((prev_record or {}).get("score", 0) or 0)
+                except Exception:
+                    prev_best_score = 0
+
+                prev_best_fg = 0
+                try:
+                    prev_best_fg = int(item.get("db_best_fg_score", 0) or 0)
+                except Exception:
+                    prev_best_fg = 0
+
+                record_improved = (run_score > prev_best_score) or (run_best_fg > prev_best_fg)
+
+                attempt_lifetime = 0
+                try:
+                    attempt_lifetime = int(item.get("attempt_lifetime", 0) or 0)
+                except Exception:
+                    attempt_lifetime = 0
+                if attempt_lifetime <= 0 and isinstance(prev_record, dict):
+                    try:
+                        attempt_lifetime = int((prev_record.get("details") or {}).get("attempt_lifetime", 0) or 0) + 1
+                    except Exception:
+                        attempt_lifetime = 0
+                if attempt_lifetime <= 0:
+                    attempt_lifetime = 1
+
+                prev_attempts_first = 0
+                try:
+                    prev_attempts_first = int(item.get("prev_attempts_first", 0) or 0)
+                except Exception:
+                    prev_attempts_first = 0
+                if prev_attempts_first <= 0 and isinstance(prev_record, dict):
+                    try:
+                        prev_attempts_first = int((prev_record.get("details") or {}).get("attempts_first", 0) or 0)
+                    except Exception:
+                        prev_attempts_first = 0
+
                 attempts_first = (
-                    1 if record_improved else (int(prev_attempts or 0) + 1 if int(prev_attempts or 0) else 1)
+                    1 if record_improved else (int(prev_attempts_first or 0) + 1 if prev_attempts_first else 1)
                 )
                 db_best_fg_score = prev_best_fg
 
@@ -467,14 +492,18 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 # Crash-safe deferred FG: store GA candidates so FG can run later without rerunning GA.
                 if item.get("_pending_fg_job") and item.get("use_evo_db", True):
                     try:
-                        from gear_optimizer.data.database import upsert_pending_fg_job
-
                         _t_upsert0 = time.perf_counter()
-                        upsert_pending_fg_job(
+                        cpu_t0 = time.process_time()
+                        async_db.submit_pending_fg_job(
                             item.get("db_key", item.get("song", "Unknown")),
                             item.get("ga_candidates") or [],
                         )
-                        _log_timing("upsert_pending_fg_job", time.perf_counter() - _t_upsert0, song=item.get("song"))
+                        _log_timing(
+                            "upsert_pending_fg_job_enqueue",
+                            time.perf_counter() - _t_upsert0,
+                            song=item.get("song"),
+                        )
+                        profiler.record("upsert_pending_fg_job_enqueue", time.process_time() - cpu_t0)
                     except Exception:
                         pass
 
@@ -581,23 +610,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         except Exception:
                             pass
 
-            # Discord stats/log
-            if total > 0:
-                try:
-                    _t_stats0 = time.perf_counter()
-                    reporter.send_stats(build_stats_summary(res, completed, total))
-                    _log_timing("discord_send_stats", time.perf_counter() - _t_stats0, song=song_name)
-                except Exception:
-                    pass
-            log_content = (res.get("log") or "").strip()
-            if log_content:
-                tail = log_content[-3000:] if len(log_content) > 3000 else log_content
-                try:
-                    _t_log0 = time.perf_counter()
-                    reporter.send_log(f"Log for {song_name}:\n{tail}")
-                    _log_timing("discord_send_log", time.perf_counter() - _t_log0, song=song_name)
-                except Exception:
-                    pass
             _log_timing("post_item_total", time.perf_counter() - _t_item0, song=song_name)
             profiler.record("post_item_total", time.process_time() - cpu_item_t0)
 
@@ -607,10 +619,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             print(msg)
             try:
                 logging.error(msg + "\n" + traceback.format_exc())
-            except Exception:
-                pass
-            try:
-                reporter.send_log(msg)
             except Exception:
                 pass
 
@@ -633,6 +641,5 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
 
     try:
         profiler.emit()
-        reporter.shutdown(timeout=10.0)
     except Exception:
         pass

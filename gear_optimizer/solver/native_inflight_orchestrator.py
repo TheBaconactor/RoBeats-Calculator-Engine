@@ -267,12 +267,15 @@ class _PostSender:
     def __init__(self, post_queue, *, stop_requested=None) -> None:
         self._post_queue = post_queue
         self._stop_requested = stop_requested
-        backlog = 256
+        backlog = 2048
         try:
             backlog = int(os.environ.get("POST_LOCAL_BACKLOG", backlog))
         except Exception:
-            backlog = 256
-        self._q: queue.Queue[Any] = queue.Queue(maxsize=max(1, backlog))
+            backlog = 2048
+        backlog = int(backlog)
+        if backlog < 0:
+            backlog = 0
+        self._q: queue.Queue[Any] = queue.Queue(maxsize=backlog)
         self._sentinel = object()
         self._thread = threading.Thread(target=self._run, name="PostQueueSender", daemon=True)
         self._thread.start()
@@ -867,7 +870,9 @@ def run_native_inflight_song_pipeline(
         fg_drain_at_end = _truthy(raw_env)
         fg_drain_src = f"env({raw_env})"
     try:
-        print(f"[InFlight][FG] drain_at_end={bool(fg_drain_at_end)} source={fg_drain_src} (FG_InterleaveEvery={fg_every})")
+        print(
+            f"[InFlight][FG] drain_at_end={bool(fg_drain_at_end)} source={fg_drain_src} (FG_InterleaveEvery={fg_every})"
+        )
     except Exception:
         pass
 

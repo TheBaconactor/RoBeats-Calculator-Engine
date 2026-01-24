@@ -78,7 +78,6 @@ The merge strategy ensures data integrity:
 
 ```
 ✓ Detailed console output
-✓ Discord notifications
 ✓ Logging to error.log
 ✓ Statistics (songs/loadouts added)
 ```

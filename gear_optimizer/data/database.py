@@ -13,6 +13,7 @@ import atexit
 import weakref
 from collections.abc import Iterable
 from typing import Dict, List, Optional, Any
+from urllib.parse import quote
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
 from ..core.types import PersistenceEntry
 from .migrations import ensure_schema
@@ -49,6 +50,15 @@ def get_db_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     Returns:
         sqlite3.Connection: Database connection with WAL mode enabled
     """
+    return get_db_connection_with_timeout(db_path=db_path)
+
+
+def get_db_connection_with_timeout(db_path: Optional[str] = None, *, timeout: float = 30.0) -> sqlite3.Connection:
+    """
+    Create a SQLite connection with optimized settings.
+
+    `timeout` is the maximum time SQLite will wait for a lock before raising.
+    """
     if db_path is None:
         db_path = get_evolution_db_path()
     # Ensure parent directory exists for custom paths (e.g. benchmark artifacts).
@@ -58,11 +68,43 @@ def get_db_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
             os.makedirs(parent, exist_ok=True)
     except Exception:
         pass
-    conn = sqlite3.connect(db_path, timeout=30.0)
+    conn = sqlite3.connect(db_path, timeout=float(timeout))
     conn.row_factory = sqlite3.Row
     # Enable WAL mode for better concurrency
     conn.execute("PRAGMA journal_mode=WAL;")
     ensure_schema(conn)
+    return conn
+
+
+def _db_path_to_uri(db_path: str) -> str:
+    # SQLite URI filenames expect forward slashes. Percent-encode spaces and other
+    # characters while preserving "/" and ":" (Windows drive roots).
+    path = os.path.abspath(str(db_path))
+    path = path.replace("\\", "/")
+    return f"file:{quote(path, safe='/:')}?mode=ro"
+
+
+def get_db_connection_readonly(db_path: Optional[str] = None, *, timeout: float = 0.25) -> sqlite3.Connection:
+    """
+    Create a read-only SQLite connection (no PRAGMAs/migrations).
+
+    This is used for read-heavy seed/context fetches where we must never block the GPU feed loop.
+    """
+    if db_path is None:
+        db_path = get_evolution_db_path()
+    db_path = str(db_path)
+    if not db_path:
+        raise sqlite3.OperationalError("Empty db path")
+    if not os.path.exists(db_path):
+        raise sqlite3.OperationalError("DB not found")
+
+    uri = _db_path_to_uri(db_path)
+    conn = sqlite3.connect(uri, timeout=float(timeout), uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA query_only=1;")
+    except Exception:
+        pass
     return conn
 
 
@@ -119,7 +161,28 @@ def get_db_connection_cached(db_path: Optional[str] = None) -> sqlite3.Connectio
     if conn is not None:
         return conn
 
-    conn = get_db_connection(db_path)
+    try:
+        read_timeout = float(os.environ.get("DB_READ_TIMEOUT_SEC", "0.25") or "0.25")
+    except Exception:
+        read_timeout = 0.25
+
+    try:
+        conn = get_db_connection_readonly(db_path, timeout=read_timeout)
+    except sqlite3.Error:
+        # Best-effort: DB might be locked briefly during heavy write bursts.
+        # Never block the GPU feed loop on a read-only seed/context fetch.
+        fallback = getattr(_DB_TLS, "fallback_conn", None)
+        if fallback is None:
+            try:
+                fallback = sqlite3.connect(":memory:")
+                fallback.row_factory = sqlite3.Row
+                setattr(_DB_TLS, "fallback_conn", fallback)
+                _register_db_conn(fallback)
+            except Exception:
+                # Last resort: re-raise so callers can handle it.
+                raise
+        return fallback
+
     conns[db_path] = conn
     _register_db_conn(conn)
     return conn
@@ -1253,37 +1316,37 @@ def get_song_names_present_in_db(song_names: Iterable[str], db_path: Optional[st
 
     if db_path is None:
         db_path = get_evolution_db_path()
+    db_path = str(db_path)
+    if not db_path or not os.path.exists(db_path):
+        return set()
 
-    conn = get_db_connection(db_path)
-    try:
-        present: set[str] = set()
-        batch_size = 900  # sqlite default parameter cap is commonly 999
-        for offset in range(0, len(names), batch_size):
-            batch = names[offset : offset + batch_size]
-            placeholders = ",".join("?" for _ in batch)
+    conn = get_db_connection_cached(db_path)
+    present: set[str] = set()
+    batch_size = 900  # sqlite default parameter cap is commonly 999
+    for offset in range(0, len(names), batch_size):
+        batch = names[offset : offset + batch_size]
+        placeholders = ",".join("?" for _ in batch)
 
+        try:
+            rows = conn.execute(
+                f"SELECT name FROM songs WHERE name IN ({placeholders})",
+                batch,
+            ).fetchall()
+            present.update(row[0] for row in rows if row and row[0])
+        except sqlite3.Error:
+            pass
+
+        for table in ("loadouts", "fg_loadouts"):
             try:
                 rows = conn.execute(
-                    f"SELECT name FROM songs WHERE name IN ({placeholders})",
+                    f"SELECT DISTINCT song_name FROM {table} WHERE song_name IN ({placeholders})",
                     batch,
                 ).fetchall()
                 present.update(row[0] for row in rows if row and row[0])
             except sqlite3.Error:
-                pass
+                continue
 
-            for table in ("loadouts", "fg_loadouts"):
-                try:
-                    rows = conn.execute(
-                        f"SELECT DISTINCT song_name FROM {table} WHERE song_name IN ({placeholders})",
-                        batch,
-                    ).fetchall()
-                    present.update(row[0] for row in rows if row and row[0])
-                except sqlite3.Error:
-                    continue
-
-        return present
-    finally:
-        conn.close()
+    return present
 
 
 def prioritize_song_queue_missing_db(

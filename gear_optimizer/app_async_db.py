@@ -5,7 +5,7 @@ import queue
 import threading
 import time
 import os
-from typing import Any, Optional
+from typing import Optional
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.data.database import get_song_counters, save_loadouts_batch, update_song_counters
@@ -20,10 +20,7 @@ class AsyncDbSaver:
     background thread.
     """
 
-    def __init__(self, discord_reporter: Any | None = None):
-        # `discord_reporter` is intentionally typed loosely to avoid import cycles.
-        # It is expected to expose `.send_log(str) -> None`.
-        self._discord_reporter = discord_reporter
+    def __init__(self):
         self._queue: queue.Queue = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._running = False
@@ -49,7 +46,21 @@ class AsyncDbSaver:
             return
         if not self._running:
             self.start()
-        self._queue.put((song_name, entries or [], meta))
+        self._queue.put(("save", song_name, entries or [], meta))
+
+    def submit_pending_fg_job(self, song_name: str, candidates: list[dict]) -> None:
+        if not song_name:
+            return
+        if not self._running:
+            self.start()
+        self._queue.put(("upsert_pending_fg_job", str(song_name), candidates or []))
+
+    def delete_pending_fg_job(self, song_name: str) -> None:
+        if not song_name:
+            return
+        if not self._running:
+            self.start()
+        self._queue.put(("delete_pending_fg_job", str(song_name)))
 
     def flush(self, timeout: float = 30.0) -> None:
         if not self._running:
@@ -73,11 +84,6 @@ class AsyncDbSaver:
                 pass
             try:
                 logging.warning(msg)
-            except Exception:
-                pass
-            try:
-                if self._discord_reporter is not None:
-                    self._discord_reporter.send_log(msg)
             except Exception:
                 pass
 
@@ -109,7 +115,43 @@ class AsyncDbSaver:
             try:
                 if item is None:
                     return
-                song_name, entries, meta = item
+                if not isinstance(item, tuple) or not item:
+                    continue
+
+                kind = item[0]
+                if kind == "delete_pending_fg_job":
+                    try:
+                        _, song_name = item
+                    except Exception:
+                        continue
+                    try:
+                        from gear_optimizer.data.database import delete_pending_fg_job
+
+                        delete_pending_fg_job(str(song_name))
+                    except Exception:
+                        pass
+                    continue
+
+                if kind == "upsert_pending_fg_job":
+                    try:
+                        _, song_name, candidates = item
+                    except Exception:
+                        continue
+                    try:
+                        from gear_optimizer.data.database import upsert_pending_fg_job
+
+                        upsert_pending_fg_job(str(song_name), list(candidates or []))
+                    except Exception:
+                        pass
+                    continue
+
+                if kind != "save":
+                    continue
+
+                try:
+                    _, song_name, entries, meta = item
+                except Exception:
+                    continue
                 if not isinstance(meta, dict):
                     meta = {}
 
@@ -216,11 +258,6 @@ class AsyncDbSaver:
                         pass
                     try:
                         logging.error(msg)
-                    except Exception:
-                        pass
-                    try:
-                        if self._discord_reporter is not None:
-                            self._discord_reporter.send_log(msg)
                     except Exception:
                         pass
             finally:

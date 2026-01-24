@@ -89,7 +89,7 @@ class PathConfig:
         # Project root resolution:
         # This file lives at: <root>/gear_optimizer/core/constants.py
         # We want <root> as the script_dir so that user-facing files like
-        # config.ini, Discord.env, Data/, bin/, etc resolve correctly.
+        # config.ini, Data/, bin/, etc resolve correctly.
         script_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         bin_dir = os.path.join(script_dir, "bin")
 
@@ -98,11 +98,6 @@ class PathConfig:
     def bin_path(self, *parts):
         """Get a path within the bin directory."""
         return os.path.join(self.bin_dir, *parts)
-
-    @property
-    def discord_env(self):
-        """Path to Discord.env file."""
-        return os.path.join(self.script_dir, "Discord.env")
 
     @property
     def stats_csv(self):

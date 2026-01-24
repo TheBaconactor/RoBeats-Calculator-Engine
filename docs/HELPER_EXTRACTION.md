@@ -233,7 +233,6 @@ gear_optimizer/
 ├── genetic.py (424 lines) ← ✅ Refactored!
 ├── song_processor.py (561 lines) ← ✅ Refactored!
 ├── memory.py (459 lines)
-├── discord_reporter.py (182 lines)
 └── helpers/
     ├── __init__.py (7 lines)
     ├── song_helpers.py (757 lines) ← ✅ 7 helpers

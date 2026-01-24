@@ -22,7 +22,6 @@ Your root directory has **23 files** including:
 Gear Optimizer/
 ├── main.py                          # NEW: Main entry point
 ├── config.ini                       # Keep: User configuration
-├── Discord.env                      # Keep: Discord credentials
 ├── Bootstrapper.py                  # Keep: Still needed for path detection
 ├── README.md                        # NEW: Single comprehensive guide
 │
@@ -38,7 +37,6 @@ Gear Optimizer/
 │   ├── scoring.py
 │   ├── genetic.py
 │   ├── memory.py
-│   ├── discord_reporter.py
 │   └── song_processor.py
 │
 ├── bin/                             # Keep: Runtime data
@@ -150,7 +148,6 @@ Create a single `README.md` that explains:
 **Essential Files Only:**
 1. `main.py` - Entry point
 2. `config.ini` - User configuration
-3. `Discord.env` - Credentials
 4. `Bootstrapper.py` - Path discovery
 5. `README.md` - Project overview
 6. `evolution.db` - Database file

@@ -11,7 +11,7 @@
 - **JIT-compiled scoring** (Numba) and **GPU-accelerated gem solving** (Taichi)
 - **Zero circular dependencies** - pure hierarchical structure
 - **Comprehensive test suite** - 44 test files, 45 total test modules
-- **Advanced features:** Multi-start GA, memetic local search, force greats optimization, memory watchdog, Discord integration
+- **Advanced features:** Multi-start GA, memetic local search, force greats optimization, memory watchdog
 
 ---
 
@@ -70,7 +70,6 @@
 │ ├─ data/csv_parser.py - Gear/mini/stats CSV parsing           │
 │ ├─ data/models.py - Dataclasses (Tee, WarnOnce, GASettings)  │
 │ ├─ data/db_merge.py (705 LOC) - Database merging utilities    │
-│ └─ data/discord_reporter.py - Discord integration            │
 └────────────────────┬────────────────────────────────────────────┘
                      │
 ┌────────────────────┴────────────────────────────────────────────┐
@@ -121,7 +120,7 @@ class AppContainer:
 
 #### 2. Event-Driven Architecture for Cross-Cutting Concerns
 
-**Current State:** Direct calls between layers (e.g., Discord reporting, memory watchdog callbacks).
+**Current State:** Direct calls between layers (e.g., memory watchdog callbacks).
 
 **Proposal:** Add a lightweight event bus for decoupling:
 
@@ -138,7 +137,6 @@ class EventBus:
 ```
 
 **Benefits:**
-- Discord reporter subscribes to events instead of being called directly
 - Memory watchdog can emit events instead of setting globals
 - Easier to add new integrations (logging, metrics, webhooks)
 
@@ -405,7 +403,6 @@ gear_optimizer/
 │   └── context.py            # Pipeline context
 │
 ├── integrations/             # NEW: External integrations
-│   ├── discord/
 │   └── metrics/              # Future: Prometheus/StatsD
 │
 └── app.py                    # Application entry point
@@ -449,7 +446,6 @@ gear_optimizer/
 ### Phase 2: Configuration & Events
 - Implement typed dataclass configuration
 - Add lightweight event bus
-- Migrate Discord reporter to event-driven
 
 ### Phase 3: Data Layer
 - Implement repository pattern for database
@@ -1229,7 +1225,6 @@ class ProfilingRunner:
 ### Phase 2: Configuration & Events
 - Implement typed dataclass configuration
 - Add lightweight event bus
-- Migrate Discord reporter to event-driven
 - **Add CLI runner for tools**
 
 ### Phase 3: Data Layer

@@ -63,7 +63,7 @@ def log_memory_usage(label=""):
 
 def trigger_memory_release(reason):
     """
-    Trigger memory release event and notify Discord (if configured).
+    Trigger memory release event (best-effort logging).
 
     Args:
         reason: Reason for triggering memory release
@@ -72,12 +72,6 @@ def trigger_memory_release(reason):
         return
     logging.warning(reason)
     print(reason)
-    reporter = globals().get("discord_reporter")
-    if reporter:
-        try:
-            reporter.send_log(reason)
-        except Exception:
-            logging.debug("[MemoryGuard] Failed to send Discord log", exc_info=True)
     MEMORY_WATCHDOG_EVENT.set()
 
 

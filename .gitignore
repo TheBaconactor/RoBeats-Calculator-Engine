@@ -63,5 +63,6 @@ general_meta_results.json
 
 # Local benchmark / run artifacts
 artifacts/
+tmp_dbg/
 runs*/
 run_*.log

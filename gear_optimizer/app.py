@@ -5,6 +5,7 @@ import gc
 import logging
 import multiprocessing
 import os
+import queue
 import re
 import secrets
 import signal
@@ -37,7 +38,6 @@ from gear_optimizer.core.memory import (
     restart_process_for_memory_guard,
     MEMORY_GUARD_RESUME_FILE,
 )
-from gear_optimizer.data.discord_reporter import DiscordReporter, build_stats_summary, setup_discord_reporter
 from gear_optimizer.pipeline.song_processor import safe_process_song_task, scan_song_header
 from gear_optimizer.data.csv_parser import (
     load_all_gears_list,
@@ -72,12 +72,101 @@ def _gpu_worker_initializer(request_queue, registrations, counter, lock):
     set_gpu_worker_mode(worker_id, request_queue, response_queue)
 
 
+class _PostQueueSender:
+    """
+    Non-blocking (from the caller's perspective) sender for the post-process multiprocessing queue.
+
+    The caller enqueues items into an in-process backlog queue; a dedicated thread performs
+    the potentially-blocking `multiprocessing.Queue.put()` work.
+    """
+
+    def __init__(self, post_queue, *, post_proc=None, stop_requested=None) -> None:
+        self._post_queue = post_queue
+        self._post_proc = post_proc
+        self._stop_requested = stop_requested
+
+        backlog = 2048
+        try:
+            backlog = int(os.environ.get("POST_LOCAL_BACKLOG", backlog))
+        except Exception:
+            backlog = 2048
+        backlog = int(backlog)
+        if backlog < 0:
+            backlog = 0
+
+        self._out_q: queue.Queue = queue.Queue(maxsize=backlog)
+        self._ack_q: queue.Queue = queue.Queue()
+        self._sentinel = object()
+        self._thread = threading.Thread(target=self._run, name="PostQueueSender", daemon=True)
+        self._thread.start()
+
+    def send(self, item, *, done_key: str | None = None, done_name: str | None = None) -> None:
+        if self._post_queue is None:
+            return
+        payload = (item, done_key, done_name)
+        try:
+            self._out_q.put(payload, block=False)
+        except queue.Full:
+            self._out_q.put(payload, block=True)
+
+    def drain_acks(self) -> list[tuple[str, str]]:
+        acks: list[tuple[str, str]] = []
+        while True:
+            try:
+                item = self._ack_q.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                k, n = item
+            except Exception:
+                continue
+            if k and n:
+                acks.append((str(k), str(n)))
+        return acks
+
+    def close(self, *, timeout: float = 30.0) -> None:
+        if self._post_queue is None:
+            return
+        try:
+            self._out_q.put((self._sentinel, None, None), block=True, timeout=max(0.0, float(timeout)))
+        except Exception:
+            return
+        try:
+            self._thread.join(timeout=timeout)
+        except Exception:
+            pass
+
+    def _run(self) -> None:
+        while True:
+            item, done_key, done_name = self._out_q.get()
+            if item is self._sentinel:
+                return
+            while True:
+                if self._stop_requested is not None and callable(self._stop_requested) and self._stop_requested():
+                    return
+                if (
+                    self._post_proc is not None
+                    and hasattr(self._post_proc, "is_alive")
+                    and not self._post_proc.is_alive()
+                ):
+                    return
+                try:
+                    self._post_queue.put(item, block=True, timeout=0.5)
+                    break
+                except Exception:
+                    continue
+            if done_key and done_name:
+                try:
+                    self._ack_q.put((str(done_key), str(done_name)))
+                except Exception:
+                    pass
+
+
 class GearOptimizerApp:
     def __init__(self):
         self.setup_logging()
-        self.discord_reporter = self.setup_discord()
-        self._async_db_saver = AsyncDbSaver(self.discord_reporter)
-        self._stop_control = StopController(discord_reporter=self.discord_reporter, bin_dir=BIN_DIR)
+        self._async_db_saver = AsyncDbSaver()
+        self._stop_control = StopController(bin_dir=BIN_DIR)
         # Back-compat: keep these names for existing control flow checks.
         self._stop_requested = self._stop_control.stop_requested_event
         self._force_exit_requested = self._stop_control.force_exit_requested_event
@@ -88,9 +177,6 @@ class GearOptimizerApp:
         logging.basicConfig(
             filename=log_file_path, level=logging.WARNING, format="%(asctime)s %(levelname)s: %(message)s"
         )
-
-    def setup_discord(self):
-        return setup_discord_reporter(stats_batch_size=500)
 
     def request_stop(self, reason: str, *, force: bool = False) -> None:
         return self._stop_control.request_stop(reason, force=force)
@@ -146,7 +232,7 @@ class GearOptimizerApp:
             paths = load_paths_cache()
             set_memory_watchdog_limit(compute_memory_guard_limit(cfg))
             db_display_name = os.path.basename(get_evolution_db_path())
-            self.discord_reporter.send_log(f"Gear Optimizer run started. DB file: {db_display_name}")
+            print(f"[Run] Gear Optimizer started. DB file: {db_display_name}")
 
             init_db()
             self._auto_merge_databases()
@@ -223,8 +309,10 @@ class GearOptimizerApp:
 
             song_queue = self._build_song_queue(cfg, paths, use_evo_db)
             queued_songs = len(song_queue)
-
-            self.discord_reporter.send_log(f"Queued {len(song_queue)} song(s) for processing.")
+            try:
+                print(f"[Run] Queued {len(song_queue)} song(s) for processing.")
+            except Exception:
+                pass
 
             memory_resume_tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)
             memory_resume_tracker.prime(song_queue, build_memory_guard_resume_context(*self._get_filter_params(cfg)))
@@ -283,7 +371,6 @@ class GearOptimizerApp:
         except Exception as e:
             logging.error(f"Error: {e}")
             print(f"Error: {e}")
-            self.discord_reporter.send_log(f"Error encountered: {e}")
 
         finally:
             self._cleanup_resources(status_queue, status_thread, manager)
@@ -291,7 +378,6 @@ class GearOptimizerApp:
             elapsed = time.time() - start_time
             done_msg = f"Run completed in {elapsed:.2f}s"
             print(done_msg)
-            self.discord_reporter.send_log(done_msg)
             try:
                 elapsed_h = float(elapsed) / 3600.0 if elapsed and elapsed > 0 else 0.0
             except Exception:
@@ -325,10 +411,6 @@ class GearOptimizerApp:
                 print("[Shutdown] Exiting by user request.")
             except Exception:
                 pass
-            try:
-                self.discord_reporter.send_log("Exiting by user request.")
-            except Exception:
-                pass
             return False
 
         if memory_guard_restart:
@@ -339,7 +421,6 @@ class GearOptimizerApp:
             return True
         else:
             print("LoopForever=FALSE; exiting after completing queue.")
-            self.discord_reporter.send_log("LoopForever disabled; exiting.")
             return False
 
     def _auto_merge_databases(self):
@@ -351,7 +432,6 @@ class GearOptimizerApp:
             )
             if merge_success and "No secondary databases" not in merge_message:
                 print(f"[DB Merge] {merge_message}")
-                self.discord_reporter.send_log(f"Database merge: {merge_message}")
             elif not merge_success:
                 print(f"[DB Merge] Warning: {merge_message}")
                 logging.warning(f"[DB Merge] {merge_message}")
@@ -586,7 +666,6 @@ class GearOptimizerApp:
             except (ValueError, OSError):
                 # Handle "I/O operation on closed file" during shutdown
                 pass
-            self.discord_reporter.send_log(str(msg))
 
     def _prepare_tasks(
         self,
@@ -874,7 +953,6 @@ class GearOptimizerApp:
             print("[MemoryGuard] Soft limit reached; pending songs saved for resume.")
             if loop_forever:
                 print("[MemoryGuard] LoopForever enabled; scheduling automatic restart.")
-                self.discord_reporter.send_log("Memory soft limit reached; restarting MetaFinder to release RAM.")
 
         if memory_resume_tracker:
             memory_resume_tracker.finalize(memory_release_requested())
@@ -889,6 +967,11 @@ class GearOptimizerApp:
         completed_offset = len(completed_songs)
         if self._stop_requested_now():
             return
+        ref_arrays = None
+        try:
+            ref_arrays = tasks[0][5] if tasks and len(tasks[0]) > 5 else None
+        except Exception:
+            ref_arrays = None
 
         # ------------------------------------------------------------------
         # In-flight multi-song pipeline (opt-in):
@@ -928,8 +1011,9 @@ class GearOptimizerApp:
             try:
                 from gear_optimizer.pipeline.post_processor import run_post_processor
 
-                post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 8), 8)
-                post_queue = multiprocessing.Queue(maxsize=max(1, post_queue_size))
+                post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 64), 64)
+                post_queue_maxsize = 0 if post_queue_size <= 0 else max(1, post_queue_size)
+                post_queue = multiprocessing.Queue(maxsize=post_queue_maxsize)
                 post_proc = multiprocessing.Process(
                     target=run_post_processor,
                     args=(post_queue, len(tasks)),
@@ -1041,12 +1125,14 @@ class GearOptimizerApp:
         if pipeline_enabled:
             post_queue = None
             post_proc = None
+            post_sender = None
             pipeline_ok = False
             try:
                 from gear_optimizer.pipeline.post_processor import run_post_processor
 
-                post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 8), 8)
-                post_queue = multiprocessing.Queue(maxsize=max(1, post_queue_size))
+                post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 64), 64)
+                post_queue_maxsize = 0 if post_queue_size <= 0 else max(1, post_queue_size)
+                post_queue = multiprocessing.Queue(maxsize=post_queue_maxsize)
                 post_proc = multiprocessing.Process(
                     target=run_post_processor,
                     args=(post_queue, len(tasks)),
@@ -1054,6 +1140,11 @@ class GearOptimizerApp:
                     name="SongPostProcessor",
                 )
                 post_proc.start()
+                post_sender = _PostQueueSender(
+                    post_queue,
+                    post_proc=post_proc,
+                    stop_requested=self._stop_requested_now,
+                )
 
                 preload_idx = 5  # Start preloading from index 5
                 preloaded_by_path = {}
@@ -1069,6 +1160,11 @@ class GearOptimizerApp:
                     task_key = self._task_queue_label(t)
                     if task_key in completed_songs:
                         continue
+                    if post_sender is not None:
+                        for done_key, done_name in post_sender.drain_acks():
+                            completed_songs.add(done_key)
+                            if memory_resume_tracker and done_name:
+                                memory_resume_tracker.mark_completed(done_name)
 
                     song_name = t[1]
                     song_path_key = os.path.abspath(str(t[0]))
@@ -1145,30 +1241,16 @@ class GearOptimizerApp:
                                 )
 
                     # Enqueue for post-processing (non-blocking relative to GPU compute).
-                    enqueued = True
-                    if post_queue is not None:
-                        enqueued = False
-                        while True:
-                            if self._stop_requested_now():
-                                break
-                            if post_proc is not None and not post_proc.is_alive():
-                                self.request_stop("post-processor died")
-                                break
-                            try:
-                                post_queue.put(res, block=True, timeout=0.5)
-                                enqueued = True
-                                break
-                            except Exception:
-                                continue
-
-                    # Track completion for resume queue (only for successful compute payloads).
-                    if enqueued and isinstance(res, dict) and "_error" not in res:
-                        done_name = res.get("song") or song_name
-                        done_key = res.get("_queue_key") or res.get("_queue_label") or task_key
-                        if done_key:
-                            completed_songs.add(done_key)
-                        if memory_resume_tracker and done_name:
-                            memory_resume_tracker.mark_completed(done_name)
+                    if post_proc is not None and not post_proc.is_alive():
+                        self.request_stop("post-processor died")
+                        break
+                    if post_sender is not None:
+                        done_key = None
+                        done_name = None
+                        if isinstance(res, dict) and "_error" not in res:
+                            done_name = res.get("song") or song_name
+                            done_key = res.get("_queue_key") or res.get("_queue_label") or task_key
+                        post_sender.send(res, done_key=done_key, done_name=done_name)
 
                     if memory_release_requested():
                         print("[MemoryGuard] Early stop in sequential pipeline loop")
@@ -1178,6 +1260,15 @@ class GearOptimizerApp:
                 pipeline_ok = True
 
             finally:
+                try:
+                    if post_sender is not None:
+                        post_sender.close(timeout=30.0)
+                        for done_key, done_name in post_sender.drain_acks():
+                            completed_songs.add(done_key)
+                            if memory_resume_tracker and done_name:
+                                memory_resume_tracker.mark_completed(done_name)
+                except Exception:
+                    pass
                 try:
                     if post_queue is not None:
                         post_queue.put(None, block=True, timeout=1.0)
@@ -1388,6 +1479,11 @@ class GearOptimizerApp:
     def _run_parallel(
         self, tasks, max_workers, completed_songs, memory_resume_tracker, manager, status_queue, status_thread
     ):
+        ref_arrays = None
+        try:
+            ref_arrays = tasks[0][5] if tasks and len(tasks[0]) > 5 else None
+        except Exception:
+            ref_arrays = None
         remaining_tasks = list(tasks)
         max_pool_retries = 3
         broken_pool_failures = 0
@@ -1523,7 +1619,6 @@ class GearOptimizerApp:
                 warn_msg = f"[Auto-Recover] Process pool broke; attempt {broken_pool_failures}/{max_pool_retries}. Reason: {bpp}"
                 print(warn_msg)
                 logging.error(warn_msg)
-                self.discord_reporter.send_log(warn_msg)
 
                 # Restart status infra
                 self._cleanup_resources(status_queue, status_thread, manager)
@@ -1597,7 +1692,6 @@ class GearOptimizerApp:
                     err_msg = f"[{completed}/{total}] FAILED: {song_name} - {type(task_err).__name__}: {task_err}"
                     print(err_msg)
                     logging.error(err_msg)
-                    self.discord_reporter.send_log(err_msg)
                     if propagate_broken_pool and isinstance(task_err, BrokenProcessPool):
                         raise
                     continue
@@ -1611,7 +1705,6 @@ class GearOptimizerApp:
                     logging.error(err_msg)
                     if res.get("_trace"):
                         logging.error(res.get("_trace"))
-                    self.discord_reporter.send_log(err_msg)
                     continue
             else:
                 res = item
@@ -1624,7 +1717,6 @@ class GearOptimizerApp:
                     logging.error(err_msg)
                     if res.get("_trace"):
                         logging.error(res.get("_trace"))
-                    self.discord_reporter.send_log(err_msg)
                     continue
 
             song_name = res.get("song", "Unknown")
@@ -1657,7 +1749,6 @@ class GearOptimizerApp:
             print("=" * 60)
             print(f"PROCESSING SONG: {task_label}")
             print("=" * 60)
-            self.discord_reporter.send_stats(build_stats_summary(res, completed, total))
 
             # DB Stuff - Only save valid entries (non-zero score, has gear/minis)
             persisted = res.get("persist_entries")
@@ -1735,8 +1826,8 @@ class GearOptimizerApp:
 
             log_content = (res.get("log") or "").strip()
             if log_content:
-                tail = log_content[-3000:] if len(log_content) > 3000 else log_content
-                self.discord_reporter.send_log(f"Log for {res['song']}:\n{tail}")
+                # Worker/post-processor output is printed locally; avoid duplicating large logs.
+                pass
 
             # Cleanup
             res["log"] = None
@@ -1769,12 +1860,6 @@ class GearOptimizerApp:
             if hasattr(self, "_async_db_saver"):
                 try:
                     self._async_db_saver.shutdown(timeout=30.0)
-                except Exception:
-                    pass
-            # Graceful shutdown of async Discord reporter
-            if hasattr(self.discord_reporter, "shutdown"):
-                try:
-                    self.discord_reporter.shutdown(timeout=5.0)
                 except Exception:
                     pass
             # Force GC on manager
