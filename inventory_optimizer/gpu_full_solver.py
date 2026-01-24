@@ -2523,10 +2523,18 @@ def _solve_coverage_gpu_full_alns_islands(
     cov = st.cov_count.to_numpy()
     inv = st.inv_size.to_numpy()
 
-    # Bandit-driven ALNS: action = (destroy_kind, destroy_multiplier).
-    # When PT is enabled, we instead use a temperature-conditioned fixed policy (more stable),
-    # because PT swaps temperature labels across islands and a per-island bandit would be mismatched.
-    arms = [(0, 1), (0, 2), (1, 1), (1, 2), (2, 1), (2, 2)]
+    # ALNS action space: (destroy_kind, destroy_multiplier).
+    #
+    # destroy_kind:
+    #   0 = random destroy
+    #   1 = unique-weighted destroy (prefer songs owning unique variants)
+    #   2 = hybrid (unique-weighted with extra randomness)
+    #
+    # destroy_multiplier scales the base `lns_destroy`.
+    #
+    # Note: when PT is enabled, temperature labels swap across islands, so any adaptation must be
+    # keyed by temperature rank (not island index) to stay coherent.
+    arms = [(0, 1), (0, 2), (0, 3), (1, 1), (1, 2), (1, 3), (2, 1), (2, 2), (2, 3)]
     arm_n = None
     arm_sum = None
     prev_score = (cov.astype(np.int64) * 1_000_000) - inv.astype(np.int64)
@@ -2607,12 +2615,34 @@ def _solve_coverage_gpu_full_alns_islands(
                 )
             temp_rank = np.arange(islands, dtype=np.int32)
             island_for_rank = np.arange(islands, dtype=np.int32)
-            # Temperature-conditioned fixed action policy; no per-island bandit.
-            arm_n = np.zeros((0, 0), dtype=np.int32)
-            arm_sum = np.zeros((0, 0), dtype=np.float64)
+            # PT-friendly bandit: track pulls/reward by temperature rank (not island index).
+            arm_n = np.zeros((int(islands), len(arms)), dtype=np.int32)
+            arm_sum = np.zeros((int(islands), len(arms)), dtype=np.float64)
     else:
         arm_n = np.zeros((islands, len(arms)), dtype=np.int32)
         arm_sum = np.zeros((islands, len(arms)), dtype=np.float64)
+
+    # Classic ALNS weight adaptation (EMA), keyed by:
+    # - temperature rank when PT is enabled
+    # - island index otherwise
+    #
+    # Controls via env:
+    # - GPU_FULL_ALNS_ETA (percent; default 20 => 0.20)
+    # - GPU_FULL_ALNS_EPSILON (percent; default 5 => 0.05)
+    # - GPU_FULL_ALNS_BEST_BONUS (tenths; default 25 => 2.5)
+    # - GPU_FULL_ALNS_POS_ONLY (0/1; default 1)
+    alns_eta = float(_int_env("GPU_FULL_ALNS_ETA", 20, 1, 1000)) / 100.0
+    alns_epsilon = float(_int_env("GPU_FULL_ALNS_EPSILON", 5, 0, 100)) / 100.0
+    alns_best_bonus = float(_int_env("GPU_FULL_ALNS_BEST_BONUS", 25, 0, 10_000)) / 10.0
+    alns_pos_only = bool(_int_env("GPU_FULL_ALNS_POS_ONLY", 1, 0, 1))
+    arm_w = np.ones((int(islands), len(arms)), dtype=np.float64)
+    arm_pulls = np.zeros((int(islands),), dtype=np.int64)
+
+    def _bandit_index(i: int) -> int:
+        if pt_enabled and temp_rank is not None:
+            r = int(temp_rank[i])
+            return int(max(0, min(int(islands - 1), r)))
+        return int(i)
 
     def _update_caps_from_temp_rank() -> None:
         nonlocal cap_host
@@ -2639,7 +2669,7 @@ def _solve_coverage_gpu_full_alns_islands(
 
         total_pulls = 1
         logt = 0.0
-        if not pt_enabled and arm_n is not None:
+        if (not pt_enabled) and arm_n is not None:
             total_pulls = int(arm_n.sum()) + 1
             logt = float(np.log(float(total_pulls) + 1.0))
 
@@ -2649,16 +2679,25 @@ def _solve_coverage_gpu_full_alns_islands(
             mult = 1
             best_a = 0
             if pt_enabled and temps is not None and temp_rank is not None and islands > 1:
-                r = int(temp_rank[i])
-                frac = 0.0 if islands <= 1 else float(r) / float(islands - 1)
-                if frac < 0.25:
-                    kind, mult = (1, 1)  # cold: unique-weighted, gentle
-                elif frac < 0.5:
-                    kind, mult = (2, 1)  # mid: hybrid, gentle
-                elif frac < 0.75:
-                    kind, mult = (2, 2)  # warm: hybrid, stronger
+                # Temperature-rank-conditioned classic ALNS (epsilon-greedy weighted sampling).
+                b = _bandit_index(i)
+                if alns_epsilon > 0.0 and float(rng.random()) < float(alns_epsilon):
+                    best_a = int(rng.integers(low=0, high=len(arms)))
                 else:
-                    kind, mult = (0, 2)  # hot: random, stronger
+                    w = arm_w[b]
+                    s = float(w.sum())
+                    if s <= 0.0:
+                        best_a = int(rng.integers(low=0, high=len(arms)))
+                    else:
+                        u = float(rng.random()) * s
+                        running = 0.0
+                        best_a = 0
+                        for a in range(len(arms)):
+                            running += float(w[a])
+                            if running >= u:
+                                best_a = a
+                                break
+                kind, mult = arms[int(best_a)]
             else:
                 # UCB1 per island.
                 best_a = 0
@@ -2734,20 +2773,29 @@ def _solve_coverage_gpu_full_alns_islands(
         delta = score - prev_score
         prev_score = score
 
-        if not pt_enabled and arm_n is not None and arm_sum is not None:
-            for i in range(islands):
-                a = int(selected_arm[i])
-                if 0 <= a < len(arms):
-                    arm_n[i, a] += 1
-                    arm_sum[i, a] += float(delta[i]) / 1_000_000.0
+        if arm_n is None or arm_sum is None:
+            raise RuntimeError("ALNS bandit state not initialized.")
+        for i in range(islands):
+            a = int(selected_arm[i])
+            if not (0 <= a < len(arms)):
+                continue
+            b = _bandit_index(i)
+            arm_n[b, a] += 1
+            arm_pulls[b] += 1
+            reward = float(delta[i]) / 1_000_000.0
+            if alns_pos_only:
+                reward = max(0.0, reward)
+            arm_sum[b, a] += float(reward)
 
         # Track best feasible island (coverage first, then inventory), using the hard cap.
         feasible = np.where(inv <= np.int32(hard_cap))[0]
+        new_best_found = False
         if feasible.size > 0:
             best_i = int(feasible[np.argmax(score[feasible])])
             bc = int(cov[best_i])
             bi = int(inv[best_i])
             if (bc > best_cov_val) or (bc == best_cov_val and bi < best_inv_val):
+                new_best_found = True
                 best_cov_val = bc
                 best_inv_val = bi
                 best_island = best_i
@@ -2764,6 +2812,20 @@ def _solve_coverage_gpu_full_alns_islands(
                     int(v_count),
                     int(s_count),
                 )
+
+        # Classic ALNS weight update (EMA).
+        if alns_eta > 0.0:
+            for i in range(islands):
+                a = int(selected_arm[i])
+                if not (0 <= a < len(arms)):
+                    continue
+                b = _bandit_index(i)
+                r = float(delta[i]) / 1_000_000.0
+                if alns_pos_only:
+                    r = max(0.0, r)
+                if new_best_found and i == int(best_island):
+                    r = float(r) + float(alns_best_bonus)
+                arm_w[b, a] = max(1e-6, (1.0 - float(alns_eta)) * float(arm_w[b, a]) + float(alns_eta) * float(1e-3 + r))
 
         # Parallel tempering: periodically exchange temperatures between adjacent replicas.
         # We swap the *temperature labels* (not the full island state) so islands "move" along the ladder
@@ -2824,6 +2886,14 @@ def _solve_coverage_gpu_full_alns_islands(
             "alns_iters": int(iters_done),
             "alns_attempts_per_sec": round(float(attempts_per_sec), 3),
             "alns_arms": [{"kind": int(k), "mult": int(m)} for (k, m) in arms],
+            "alns_policy": {
+                "eta": float(alns_eta),
+                "epsilon": float(alns_epsilon),
+                "best_bonus": float(alns_best_bonus),
+                "pos_only": bool(alns_pos_only),
+                "arm_weights": arm_w.tolist(),
+                "arm_pulls": arm_pulls.tolist(),
+            },
             "pt": {
                 "enabled": bool(pt_enabled),
                 "t_min": float(pt_t_min),

@@ -389,6 +389,25 @@ def main() -> None:
         help="GPU full PT: max extra inventory capacity for the hottest replicas (barrier crossing; default: 0).",
     )
     parser.add_argument(
+        "--cluster-k",
+        type=int,
+        default=0,
+        help="If >0, run clustered GPU_FULL solve: k-means on gem_totals, then bridge solve (default: 0=off).",
+    )
+    parser.add_argument("--cluster-seed", type=int, default=1, help="Cluster RNG seed (default: 1).")
+    parser.add_argument(
+        "--cluster-bridge-reserve",
+        type=int,
+        default=10,
+        help="Reserve this many variants for the final bridge solve (default: 10).",
+    )
+    parser.add_argument(
+        "--cluster-report",
+        type=str,
+        default="",
+        help="Optional JSON output path for the gem cluster report.",
+    )
+    parser.add_argument(
         "--output", type=str, default="", help="Output JSON path (default: artifacts/inventory_meta_coverage.json)."
     )
     args = parser.parse_args()
@@ -413,75 +432,128 @@ def main() -> None:
                 gpu_sampler = None
 
         init_db()
-        results = run_inventory_meta_coverage(
-            inventory_cap=args.inventory_cap,
-            element=(args.element or None),
-            secondary_element=(args.secondary_element or None),
-            partitions_per_song=args.partitions_per_song,
-            seed=args.seed,
-            restarts=args.restarts,
-            gpu_repack_passes=args.gpu_repack_passes,
-            gpu_lns_destroy=args.gpu_lns_destroy,
-            adaptive_rounds=args.adaptive_rounds,
-            adaptive_patterns_per_round=args.adaptive_patterns_per_round,
-            adaptive_keep_per_song=args.adaptive_keep_per_song,
-            adaptive_repack_songs=args.adaptive_repack_songs,
-            lns_time_sec=args.lns_time_sec,
-            lns_attempts=args.lns_attempts,
-            song_limit=args.song_limit or None,
-            profile=args.profile,
-            solver=args.solver,
-            eda_witnesses_per_song=args.eda_witnesses_per_song,
-            eda_population=args.eda_population,
-            eda_iterations=args.eda_iterations,
-            eda_elites=args.eda_elites,
-            eda_alpha=args.eda_alpha,
-            eda_wildcard_bonus=args.eda_wildcard_bonus,
-            gpu_full_wildcard_freq_bonus=args.gpu_full_wildcard_freq_bonus,
-            gpu_full_wildcard_palette_size=int(args.gpu_full_wildcard_palette_size),
-            gpu_full_wildcard_palette_min_count=int(args.gpu_full_wildcard_palette_min_count),
-            gpu_full_wildcard_palette_scan=int(args.gpu_full_wildcard_palette_scan),
-            gpu_full_wildcard_palette_tail_slots=int(args.gpu_full_wildcard_palette_tail_slots),
-            gpu_full_synergy_weight=int(args.gpu_full_synergy_weight),
-            gpu_full_synergy_top_offsets=int(args.gpu_full_synergy_top_offsets),
-            gpu_full_synergy_min_pair_count=int(args.gpu_full_synergy_min_pair_count),
-            gpu_full_synergy_scale=int(args.gpu_full_synergy_scale),
-            gpu_full_synergy_max_bonus=int(args.gpu_full_synergy_max_bonus),
-            gpu_full_new_gear_penalty=int(args.gpu_full_new_gear_penalty),
-            gpu_full_witness_anchor_patterns=args.gpu_full_witness_anchor_patterns,
-            gpu_full_witness_seed_streams=args.gpu_full_witness_seed_streams,
-            gpu_full_witness_palettes=int(args.gpu_full_witness_palettes),
-            gpu_full_repack_rarity_weighted=bool(args.gpu_full_repack_rarity_weighted),
-            gpu_full_lns_freq_weighted=bool(args.gpu_full_lns_freq_weighted),
-            gpu_full_lns_random_destroy_prob=float(args.gpu_full_lns_random_destroy_prob),
-            gpu_full_lns_restore_after=int(args.gpu_full_lns_restore_after),
-            gpu_full_lns_restore_drop=int(args.gpu_full_lns_restore_drop),
-            gpu_full_v_pad_bin=int(args.gpu_full_v_pad_bin),
-            gpu_full_variant_freq_mode=str(args.gpu_full_variant_freq_mode),
-            gpu_full_witness_pattern_profile=int(args.gpu_full_witness_pattern_profile),
-            gpu_full_counter_stripes=int(args.gpu_full_counter_stripes),
-            gpu_full_human_mode=bool(args.gpu_full_human),
-            gpu_full_human_gear_free=int(args.gpu_full_human_gear_free),
-            gpu_full_human_gear_penalty_step=int(args.gpu_full_human_gear_penalty_step),
-            gpu_full_human_colored_penalty=int(args.gpu_full_human_colored_penalty),
-            gpu_full_top_candidates=int(args.gpu_full_top_candidates),
-            gpu_full_candidate_score_delta=int(args.gpu_full_candidate_score_delta),
-            gpu_full_candidate_limit_per_song=int(args.gpu_full_candidate_limit_per_song),
-            gpu_full_k_scan_select=int(args.gpu_full_k_scan_select),
-            gpu_full_k_scan_repack=int(args.gpu_full_k_scan_repack),
-            gpu_full_alns_enabled=bool(args.gpu_full_alns),
-            gpu_full_alns_islands=int(args.gpu_full_alns_islands),
-            gpu_full_pt_enabled=bool(args.gpu_full_pt),
-            gpu_full_pt_t_min=float(args.gpu_full_pt_t_min),
-            gpu_full_pt_t_max=float(args.gpu_full_pt_t_max),
-            gpu_full_pt_swap_interval=int(args.gpu_full_pt_swap_interval),
-            gpu_full_pt_destroy_beta=float(args.gpu_full_pt_destroy_beta),
-            gpu_full_pt_cap_slack_max=int(args.gpu_full_pt_cap_slack_max),
-            gpu_full_repair_enabled=bool(args.gpu_full_repair),
-            gpu_full_repair_attempts=int(args.gpu_full_repair_attempts),
-            gpu_full_repair_max_cands_per_slot=int(args.gpu_full_repair_max_cands_per_slot),
-            gpu_full_repair_song_limit=int(args.gpu_full_repair_song_limit),
-        )
+        if int(args.cluster_k) > 0:
+            if str(args.solver) != "gpu_full":
+                raise ValueError("--cluster-k requires --solver gpu_full")
+            from inventory_optimizer.clustered import run_clustered_gpu_full_coverage, write_cluster_report_json
+            from inventory_optimizer.db import fetch_peak_candidates_allow_missing
+
+            candidates_by_song, _missing = fetch_peak_candidates_allow_missing()
+            # Apply element filter here (mirrors run_inventory_meta_coverage behavior).
+            element = (args.element or "").strip() or None
+            secondary = (args.secondary_element or "").strip() or None
+            allowed = {e for e in (element, secondary) if e}
+            if allowed:
+                candidates_by_song = {
+                    k: [c for c in v if getattr(c, "selected_element", None) in allowed] for k, v in candidates_by_song.items()
+                }
+                candidates_by_song = {k: v for k, v in candidates_by_song.items() if v}
+
+            results, report = run_clustered_gpu_full_coverage(
+                candidates_by_song=candidates_by_song,
+                inventory_cap=int(args.inventory_cap),
+                cluster_k=int(args.cluster_k),
+                cluster_seed=int(args.cluster_seed),
+                bridge_reserve=int(args.cluster_bridge_reserve),
+                seed=int(args.seed),
+                partitions_per_song=int(args.partitions_per_song),
+                adaptive_rounds=int(args.adaptive_rounds),
+                adaptive_keep_per_song=int(args.adaptive_keep_per_song),
+                gpu_repack_passes=int(args.gpu_repack_passes),
+                gpu_lns_destroy=int(args.gpu_lns_destroy),
+                lns_time_sec=float(args.lns_time_sec),
+                lns_attempts=int(args.lns_attempts),
+                gpu_full_witness_palettes=int(args.gpu_full_witness_palettes),
+                gpu_full_witness_pattern_profile=int(args.gpu_full_witness_pattern_profile),
+                gpu_full_witness_anchor_patterns=int(args.gpu_full_witness_anchor_patterns),
+                gpu_full_witness_seed_streams=int(args.gpu_full_witness_seed_streams),
+                wildcard_freq_bonus=int(args.gpu_full_wildcard_freq_bonus),
+                gpu_full_variant_freq_mode=str(args.gpu_full_variant_freq_mode),
+                gpu_full_counter_stripes=int(args.gpu_full_counter_stripes),
+                gpu_full_k_scan_select=int(args.gpu_full_k_scan_select),
+                gpu_full_k_scan_repack=int(args.gpu_full_k_scan_repack),
+                gpu_full_alns_enabled=bool(args.gpu_full_alns),
+                gpu_full_alns_islands=int(args.gpu_full_alns_islands),
+                gpu_full_pt_enabled=bool(args.gpu_full_pt),
+                gpu_full_pt_t_min=float(args.gpu_full_pt_t_min),
+                gpu_full_pt_t_max=float(args.gpu_full_pt_t_max),
+                gpu_full_pt_swap_interval=int(args.gpu_full_pt_swap_interval),
+                gpu_full_pt_destroy_beta=float(args.gpu_full_pt_destroy_beta),
+                gpu_full_pt_cap_slack_max=int(args.gpu_full_pt_cap_slack_max),
+                profile=bool(args.profile),
+            )
+            if args.cluster_report:
+                write_cluster_report_json(report, args.cluster_report)
+        else:
+            results = run_inventory_meta_coverage(
+                inventory_cap=args.inventory_cap,
+                element=(args.element or None),
+                secondary_element=(args.secondary_element or None),
+                partitions_per_song=args.partitions_per_song,
+                seed=args.seed,
+                restarts=args.restarts,
+                gpu_repack_passes=args.gpu_repack_passes,
+                gpu_lns_destroy=args.gpu_lns_destroy,
+                adaptive_rounds=args.adaptive_rounds,
+                adaptive_patterns_per_round=args.adaptive_patterns_per_round,
+                adaptive_keep_per_song=args.adaptive_keep_per_song,
+                adaptive_repack_songs=args.adaptive_repack_songs,
+                lns_time_sec=args.lns_time_sec,
+                lns_attempts=args.lns_attempts,
+                song_limit=args.song_limit or None,
+                profile=args.profile,
+                solver=args.solver,
+                eda_witnesses_per_song=args.eda_witnesses_per_song,
+                eda_population=args.eda_population,
+                eda_iterations=args.eda_iterations,
+                eda_elites=args.eda_elites,
+                eda_alpha=args.eda_alpha,
+                eda_wildcard_bonus=args.eda_wildcard_bonus,
+                gpu_full_wildcard_freq_bonus=args.gpu_full_wildcard_freq_bonus,
+                gpu_full_wildcard_palette_size=int(args.gpu_full_wildcard_palette_size),
+                gpu_full_wildcard_palette_min_count=int(args.gpu_full_wildcard_palette_min_count),
+                gpu_full_wildcard_palette_scan=int(args.gpu_full_wildcard_palette_scan),
+                gpu_full_wildcard_palette_tail_slots=int(args.gpu_full_wildcard_palette_tail_slots),
+                gpu_full_synergy_weight=int(args.gpu_full_synergy_weight),
+                gpu_full_synergy_top_offsets=int(args.gpu_full_synergy_top_offsets),
+                gpu_full_synergy_min_pair_count=int(args.gpu_full_synergy_min_pair_count),
+                gpu_full_synergy_scale=int(args.gpu_full_synergy_scale),
+                gpu_full_synergy_max_bonus=int(args.gpu_full_synergy_max_bonus),
+                gpu_full_new_gear_penalty=int(args.gpu_full_new_gear_penalty),
+                gpu_full_witness_anchor_patterns=args.gpu_full_witness_anchor_patterns,
+                gpu_full_witness_seed_streams=args.gpu_full_witness_seed_streams,
+                gpu_full_witness_palettes=int(args.gpu_full_witness_palettes),
+                gpu_full_repack_rarity_weighted=bool(args.gpu_full_repack_rarity_weighted),
+                gpu_full_lns_freq_weighted=bool(args.gpu_full_lns_freq_weighted),
+                gpu_full_lns_random_destroy_prob=float(args.gpu_full_lns_random_destroy_prob),
+                gpu_full_lns_restore_after=int(args.gpu_full_lns_restore_after),
+                gpu_full_lns_restore_drop=int(args.gpu_full_lns_restore_drop),
+                gpu_full_v_pad_bin=int(args.gpu_full_v_pad_bin),
+                gpu_full_variant_freq_mode=str(args.gpu_full_variant_freq_mode),
+                gpu_full_witness_pattern_profile=int(args.gpu_full_witness_pattern_profile),
+                gpu_full_counter_stripes=int(args.gpu_full_counter_stripes),
+                gpu_full_human_mode=bool(args.gpu_full_human),
+                gpu_full_human_gear_free=int(args.gpu_full_human_gear_free),
+                gpu_full_human_gear_penalty_step=int(args.gpu_full_human_gear_penalty_step),
+                gpu_full_human_colored_penalty=int(args.gpu_full_human_colored_penalty),
+                gpu_full_top_candidates=int(args.gpu_full_top_candidates),
+                gpu_full_candidate_score_delta=int(args.gpu_full_candidate_score_delta),
+                gpu_full_candidate_limit_per_song=int(args.gpu_full_candidate_limit_per_song),
+                gpu_full_k_scan_select=int(args.gpu_full_k_scan_select),
+                gpu_full_k_scan_repack=int(args.gpu_full_k_scan_repack),
+                gpu_full_alns_enabled=bool(args.gpu_full_alns),
+                gpu_full_alns_islands=int(args.gpu_full_alns_islands),
+                gpu_full_pt_enabled=bool(args.gpu_full_pt),
+                gpu_full_pt_t_min=float(args.gpu_full_pt_t_min),
+                gpu_full_pt_t_max=float(args.gpu_full_pt_t_max),
+                gpu_full_pt_swap_interval=int(args.gpu_full_pt_swap_interval),
+                gpu_full_pt_destroy_beta=float(args.gpu_full_pt_destroy_beta),
+                gpu_full_pt_cap_slack_max=int(args.gpu_full_pt_cap_slack_max),
+                gpu_full_repair_enabled=bool(args.gpu_full_repair),
+                gpu_full_repair_attempts=int(args.gpu_full_repair_attempts),
+                gpu_full_repair_max_cands_per_slot=int(args.gpu_full_repair_max_cands_per_slot),
+                gpu_full_repair_song_limit=int(args.gpu_full_repair_song_limit),
+            )
         if gpu_sampler is not None:
             try:
                 summary = gpu_sampler.stop()
