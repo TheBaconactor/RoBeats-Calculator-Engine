@@ -8,6 +8,9 @@ import json
 import os
 import sqlite3
 import time
+import threading
+import atexit
+import weakref
 from collections.abc import Iterable
 from typing import Dict, List, Optional, Any
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
@@ -60,6 +63,65 @@ def get_db_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     # Enable WAL mode for better concurrency
     conn.execute("PRAGMA journal_mode=WAL;")
     ensure_schema(conn)
+    return conn
+
+
+# ---------------------------------------------------------------------------
+# Perf: thread-local DB connections for read-heavy paths
+# ---------------------------------------------------------------------------
+_DB_TLS = threading.local()
+_DB_CONN_REGISTRY: "weakref.WeakSet[sqlite3.Connection]" = weakref.WeakSet()
+_DB_CONN_REGISTRY_LOCK = threading.Lock()
+
+
+def _register_db_conn(conn: sqlite3.Connection) -> None:
+    try:
+        with _DB_CONN_REGISTRY_LOCK:
+            _DB_CONN_REGISTRY.add(conn)
+    except Exception:
+        pass
+
+
+def _close_all_registered_db_conns() -> None:
+    try:
+        with _DB_CONN_REGISTRY_LOCK:
+            conns = list(_DB_CONN_REGISTRY)
+    except Exception:
+        conns = []
+    for c in conns:
+        try:
+            c.close()
+        except Exception:
+            pass
+
+
+atexit.register(_close_all_registered_db_conns)
+
+
+def get_db_connection_cached(db_path: Optional[str] = None) -> sqlite3.Connection:
+    """
+    Return a per-thread cached SQLite connection.
+
+    This keeps exact query semantics while avoiding per-call reconnect + PRAGMA + migration
+    overhead on read-heavy call sites (e.g., per-song DB seed/context reads).
+    """
+    if db_path is None:
+        db_path = get_evolution_db_path()
+    try:
+        conns = getattr(_DB_TLS, "conns", None)
+        if conns is None:
+            conns = {}
+            setattr(_DB_TLS, "conns", conns)
+    except Exception:
+        conns = {}
+
+    conn = conns.get(db_path)
+    if conn is not None:
+        return conn
+
+    conn = get_db_connection(db_path)
+    conns[db_path] = conn
+    _register_db_conn(conn)
     return conn
 
 
@@ -972,7 +1034,8 @@ def get_best_loadouts(
 
     song_name = str(song_name or "").strip()
 
-    conn = get_db_connection(db_path)
+    # PERF: use a cached per-thread connection for read-heavy call sites.
+    conn = get_db_connection_cached(db_path)
     try:
         # 1. Fetch Top Base Score Loadouts
         cursor = conn.execute(
@@ -1045,7 +1108,8 @@ def get_best_loadouts(
         print(f"[DB] Error retrieving loadouts: {e}")
         return []
     finally:
-        conn.close()
+        # Thread-local connection is intentionally not closed here.
+        pass
 
 
 def get_song_names_present_in_db(song_names: Iterable[str], db_path: Optional[str] = None) -> set[str]:

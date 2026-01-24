@@ -13,6 +13,7 @@ import time
 
 from ...data.database import (
     get_db_connection,
+    get_db_connection_cached,
     get_best_loadouts,
     get_evolution_db_path,
     LOADOUTS_PER_SONG_LIMIT,
@@ -24,6 +25,70 @@ WARN_ONCE = WarnOnce()
 
 _WAL_MAINT_LOCK = threading.Lock()
 _LAST_WAL_MAINT_TS = 0.0
+
+
+class _LazyJsonDict(dict):
+    """
+    Lazy JSON decoder that still satisfies isinstance(x, dict).
+
+    Used to avoid eager json.loads() for every known_loadouts row when most code paths
+    only care about (score, fg_score) and never touch details/force payloads.
+    """
+
+    __slots__ = ("_blob", "_loaded", "_warn_key", "_warn_msg")
+
+    def __init__(self, blob: str, *, warn_key: str, warn_msg: str):
+        super().__init__()
+        self._blob = str(blob or "")
+        self._loaded = False
+        self._warn_key = str(warn_key or "lazy-json")
+        self._warn_msg = str(warn_msg or "Invalid JSON")
+
+    def _ensure(self) -> None:
+        if self._loaded:
+            return
+        self._loaded = True
+        try:
+            data = json.loads(self._blob) if self._blob else None
+            if isinstance(data, dict):
+                self.update(data)
+        except Exception as exc:
+            try:
+                WARN_ONCE.warn(self._warn_key, f"{self._warn_msg}: {exc}")
+            except Exception:
+                pass
+
+    def __getitem__(self, key):
+        self._ensure()
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        self._ensure()
+        return super().get(key, default)
+
+    def items(self):
+        self._ensure()
+        return super().items()
+
+    def keys(self):
+        self._ensure()
+        return super().keys()
+
+    def values(self):
+        self._ensure()
+        return super().values()
+
+    def __iter__(self):
+        self._ensure()
+        return super().__iter__()
+
+    def __len__(self):
+        self._ensure()
+        return super().__len__()
+
+    def __contains__(self, item):
+        self._ensure()
+        return super().__contains__(item)
 
 
 def build_db_key(found_song_name: str, calc_song: dict | None = None) -> str:
@@ -123,7 +188,6 @@ def load_database_context(
                     "SELECT DISTINCT song_name FROM loadouts WHERE song_name LIKE ? LIMIT 8",
                     (f"%{base_key}%",),
                 ).fetchall()
-                conn.close()
                 if rows:
                     print("[DB] No exact seed found. Similar keys in DB:")
                     for r in rows:
@@ -135,7 +199,7 @@ def load_database_context(
         if load_known_loadouts:
             # Fetch known loadouts for persistent caching
             try:
-                conn = get_db_connection()
+                conn = get_db_connection_cached()
                 cursor = conn.execute(
                     """SELECT loadout_hash, score, fg_score, force_details_json, details_json
                        FROM loadouts
@@ -148,26 +212,20 @@ def load_database_context(
                     force_blob = row["force_details_json"]
                     force_data = None
                     if force_blob:
-                        try:
-                            force_data = json.loads(force_blob)
-                        except Exception as exc:
-                            WARN_ONCE.warn(
-                                "force-loadout-json",
-                                f"Invalid force JSON for {row.get('loadout_hash')}: {exc}",
-                            )
-                            force_data = None
+                        force_data = _LazyJsonDict(
+                            str(force_blob),
+                            warn_key="force-loadout-json",
+                            warn_msg=f"Invalid force JSON for {row.get('loadout_hash')}",
+                        )
 
                     details_blob = row["details_json"]
                     details_data = None
                     if details_blob:
-                        try:
-                            details_data = json.loads(details_blob)
-                        except Exception as exc:
-                            WARN_ONCE.warn(
-                                "details-loadout-json",
-                                f"Invalid details JSON for {row.get('loadout_hash')}: {exc}",
-                            )
-                            details_data = None
+                        details_data = _LazyJsonDict(
+                            str(details_blob),
+                            warn_key="details-loadout-json",
+                            warn_msg=f"Invalid details JSON for {row.get('loadout_hash')}",
+                        )
 
                     known_loadouts[row["loadout_hash"]] = (
                         row["score"],
@@ -177,7 +235,6 @@ def load_database_context(
                     )
 
                 _maybe_wal_maintenance(conn)
-                conn.close()
             except Exception as e:
                 print(f"[DB] Error fetching known loadouts: {e}")
 
