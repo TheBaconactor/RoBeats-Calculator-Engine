@@ -96,3 +96,65 @@ def test_team_buff_tier_postprocess_reorders_top_entries_across_tiers():
     assert "NONE" in tiers
     assert tiers["T5"]["base_top51"][0]["gear"] == entry_a["gear"]
     assert tiers["T15"]["base_top51"][0]["gear"] == entry_b["gear"]
+
+
+def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base():
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import compute_team_buff_tier_leaderboards
+
+    # Primary/secondary determine scoring contribution; TeamColor should follow Primary in auto mode.
+    calc_song = {
+        "metadata": {
+            "Song Name": "pytest_team_buff_auto_mode",
+            "Difficulty": "Hard",
+            "Primary Color": "Vibe",
+            "Secondary Color": "Flow",
+            "Long Notes": 0,
+            "Last Note Time": 10.0,
+            "Total Notes": 12,
+        },
+        "song_data": {"timestamps": np.linspace(0.0, 10.0, 12, dtype=np.float32)},
+    }
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+
+    # NOTE: cfg_dict intentionally lies about TeamBuff/TeamColor. In runtime auto mode, we override to:
+    # - TeamBuff=T5
+    # - TeamColor=Primary Color
+    cfg_dict = {
+        "IterationEngine": {"AutoSelectBuffAndColor": "true"},
+        "TeamContributionBuffConstant": {"TeamBuff": "T15", "TeamColor": "Rush"},
+    }
+
+    # Stats represent the base run under auto TeamBuff=T5 + TeamColor=Vibe already applied.
+    # Under T1 (vs base T5), Vibe should increase by +5 which should increase score.
+    stats = {
+        "Perfect Points": 25,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Vibe": 130,
+        "Flow": 10,
+    }
+    entry = {
+        "score": 0,
+        "fg_score": 0,
+        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+        "minis": ["M1", "M2", "M3"],
+        "details": {"Stats": stats},
+        "force": None,
+    }
+
+    out = compute_team_buff_tier_leaderboards(
+        entries=[entry],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        tiers=("T5", "T1"),
+    )
+    assert out["meta"]["team_color"] == "Vibe"
+    assert out["meta"]["base_team_buff"] == "T5"
+
+    t5_score = out["tiers"]["T5"]["base_top51"][0]["score"]
+    t1_score = out["tiers"]["T1"]["base_top51"][0]["score"]
+    assert t1_score > t5_score

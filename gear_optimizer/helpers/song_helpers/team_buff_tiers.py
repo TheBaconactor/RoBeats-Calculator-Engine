@@ -26,6 +26,20 @@ def _norm_text(v: object) -> str:
     return str(v or "").strip()
 
 
+def _truthy_cfg(v: object) -> bool:
+    return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _auto_select_team_buff_and_color(cfg_dict: dict) -> bool:
+    if not isinstance(cfg_dict, dict):
+        return False
+    ie = cfg_dict.get("IterationEngine") or {}
+    if not isinstance(ie, dict):
+        return False
+    raw = ie.get("AutoSelectBuffAndColor", ie.get("autoselectbuffandcolor", ""))
+    return _truthy_cfg(raw)
+
+
 def _norm_team_buff(v: object) -> str:
     s = _norm_text(v).upper()
     return s if s in _TEAM_BUFF_TIERS else ""
@@ -39,6 +53,12 @@ def _resolve_team_section(cfg_dict: dict) -> dict:
 
 
 def _resolve_team_color(cfg_dict: dict, calc_song: dict) -> str:
+    # Match runtime: when auto mode is enabled, we always set TeamColor to the song's primary color.
+    if _auto_select_team_buff_and_color(cfg_dict):
+        try:
+            return _norm_text((calc_song.get("metadata", {}) or {}).get("Primary Color", ""))
+        except Exception:
+            return ""
     team_section = _resolve_team_section(cfg_dict)
     team_color = _norm_text(team_section.get("TeamColor", team_section.get("teamcolor", "")))
     if not team_color:
@@ -50,6 +70,9 @@ def _resolve_team_color(cfg_dict: dict, calc_song: dict) -> str:
 
 
 def _resolve_base_team_buff(cfg_dict: dict) -> str:
+    # Match runtime: when auto mode is enabled, we always set TeamBuff to T5.
+    if _auto_select_team_buff_and_color(cfg_dict):
+        return "T5"
     team_section = _resolve_team_section(cfg_dict)
     base = _norm_team_buff(team_section.get("TeamBuff", team_section.get("teambuff", "T5")))
     return base or "T5"
