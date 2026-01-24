@@ -1759,7 +1759,14 @@ def _map_seeded_raw_to_dense(
         return np.zeros((0,), dtype=np.int32), 0, 0
     seed_raw = np.unique(seed_raw)
     idx = np.searchsorted(dense_vid_universe, seed_raw)
-    in_bounds = (idx < dense_vid_universe.size) & (dense_vid_universe[idx] == seed_raw)
+    # `np.searchsorted` can return `len(dense_vid_universe)` for missing keys greater than the max.
+    # Avoid out-of-bounds indexing when validating matches.
+    mask = idx < dense_vid_universe.size
+    matches = np.zeros_like(mask, dtype=bool)
+    if bool(mask.any()):
+        sel = mask.nonzero()[0]
+        matches[sel] = dense_vid_universe[idx[sel]] == seed_raw[sel]
+    in_bounds = mask & matches
     dense_idx = idx[in_bounds].astype(np.int32, copy=False)
     missing = int((~in_bounds).sum())
     return dense_idx, missing, int(seed_raw.size)

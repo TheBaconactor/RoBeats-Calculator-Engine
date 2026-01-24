@@ -229,6 +229,11 @@ def run_clustered_gpu_full_coverage(
     gpu_full_pt_swap_interval: int,
     gpu_full_pt_destroy_beta: float,
     gpu_full_pt_cap_slack_max: int,
+    gpu_full_repair_enabled: bool,
+    gpu_full_repair_attempts: int,
+    gpu_full_repair_max_cands_per_slot: int,
+    gpu_full_repair_song_limit: int,
+    gpu_full_lns_freq_weighted: bool,
     profile: bool,
 ) -> Tuple[dict, GemClusterReport]:
     """
@@ -327,7 +332,7 @@ def run_clustered_gpu_full_coverage(
             lns_time_sec=float(lns_time_sec),
             lns_attempts=int(lns_attempts),
             gpu_lns_destroy=int(gpu_lns_destroy),
-            gpu_full_lns_freq_weighted=True,
+            gpu_full_lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
             gpu_full_lns_random_destroy_prob=0.0,
             gpu_full_lns_restore_after=12,
             gpu_full_lns_restore_drop=4,
@@ -404,7 +409,7 @@ def run_clustered_gpu_full_coverage(
         lns_time_sec=float(lns_time_sec),
         lns_attempts=int(lns_attempts),
         gpu_lns_destroy=int(gpu_lns_destroy),
-        gpu_full_lns_freq_weighted=True,
+        gpu_full_lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
         gpu_full_lns_random_destroy_prob=0.0,
         gpu_full_lns_restore_after=12,
         gpu_full_lns_restore_drop=4,
@@ -427,6 +432,45 @@ def run_clustered_gpu_full_coverage(
         wildcard_freq_bonus=int(wildcard_freq_bonus),
         seeded_raw_vids=seed_arr,
     )
+
+    # Match the main coverage path: attempt inventory-aware repair using ONLY existing inventory variants.
+    # This preserves "exact peak" constraints and does not increase inventory size.
+    if bool(gpu_full_repair_enabled):
+        old_sol = sol_all
+        covered_np = np.asarray(sol_all.covered, dtype=np.int32)
+        chosen_offsets_np = np.asarray(sol_all.chosen_offsets, dtype=np.int32)
+        seeded_pairs = None
+        if seed_arr is not None and int(seed_arr.size) > 0:
+            gids = (seed_arr >> np.int32(16)).astype(np.int32, copy=False)
+            offs = (seed_arr & np.int32(0xFFFF)).astype(np.int32, copy=False)
+            seeded_pairs = list(zip(gids.tolist(), offs.tolist()))
+        repaired_cov, repaired_offsets, repair_stats = cov._try_inventory_repair(
+            songs=selected,
+            gear_ids_np=gear_ids_np_all,
+            totals_np=totals_np_all,
+            elements_np=elements_np_all,
+            covered_np=covered_np,
+            chosen_offsets_np=chosen_offsets_np,
+            inv_cap=int(total_cap),
+            attempts=int(gpu_full_repair_attempts),
+            seed=int(seed),
+            max_cands_per_slot=int(gpu_full_repair_max_cands_per_slot),
+            song_limit=int(gpu_full_repair_song_limit),
+            mem=mem,
+            profile=bool(profile),
+            seeded_pairs=seeded_pairs,
+        )
+        from types import SimpleNamespace
+
+        sol_all = SimpleNamespace(
+            covered=repaired_cov,
+            chosen_offsets=repaired_offsets,
+            covered_count=int(repaired_cov.sum()),
+            stats=dict(getattr(old_sol, "stats", {})),
+            dense_vid_universe=getattr(old_sol, "dense_vid_universe", None),
+        )
+        if isinstance(sol_all.stats, dict):
+            sol_all.stats.setdefault("repair", repair_stats)
 
     final = cov._materialize_coverage_solution(
         selected,
@@ -464,4 +508,3 @@ def write_cluster_report_json(report: GemClusterReport, path: str) -> None:
     with open(path, "w", encoding="utf-8") as f:
         f.write(json.dumps(payload, indent=2, ensure_ascii=False))
         f.write("\n")
-

@@ -437,8 +437,16 @@ def main() -> None:
                 raise ValueError("--cluster-k requires --solver gpu_full")
             from inventory_optimizer.clustered import run_clustered_gpu_full_coverage, write_cluster_report_json
             from inventory_optimizer.db import fetch_peak_candidates_allow_missing
+            from gear_optimizer.data.database import get_db_connection
 
-            candidates_by_song, _missing = fetch_peak_candidates_allow_missing()
+            conn = get_db_connection(args.db_path or None)
+            try:
+                candidates_by_song, _missing = fetch_peak_candidates_allow_missing(conn)
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
             # Apply element filter here (mirrors run_inventory_meta_coverage behavior).
             element = (args.element or "").strip() or None
             secondary = (args.secondary_element or "").strip() or None
@@ -480,6 +488,11 @@ def main() -> None:
                 gpu_full_pt_swap_interval=int(args.gpu_full_pt_swap_interval),
                 gpu_full_pt_destroy_beta=float(args.gpu_full_pt_destroy_beta),
                 gpu_full_pt_cap_slack_max=int(args.gpu_full_pt_cap_slack_max),
+                gpu_full_repair_enabled=bool(args.gpu_full_repair),
+                gpu_full_repair_attempts=int(args.gpu_full_repair_attempts),
+                gpu_full_repair_max_cands_per_slot=int(args.gpu_full_repair_max_cands_per_slot),
+                gpu_full_repair_song_limit=int(args.gpu_full_repair_song_limit),
+                gpu_full_lns_freq_weighted=bool(args.gpu_full_lns_freq_weighted),
                 profile=bool(args.profile),
             )
             if args.cluster_report:
