@@ -1309,18 +1309,27 @@ def _solve_force_greats_finder_gpu_impl(
         if _SYNC_PER_CHUNK:
             ti.sync()
 
-    # Single sync after all config chunks dispatched - required before Stage 2
-    # This is the key optimization: N chunks now cause 1 sync instead of N syncs
-    ti.sync()
-    _stage1_wall = time.perf_counter() - _t_stage1_wall0
-    _record_kernel_wall("stage1_sync_wall", _stage1_wall, genome_count=n_genomes)
-    if _FG_TRANSFER_TRACE:
-        try:
-            print(
-                f"[FG][KERNEL] stage1_sync_wall={_stage1_wall * 1000:.2f}ms (genomes={int(n_genomes)}, cfgs={int(n_cfg_total)}, ftff={int(n_ftff)}, chunks={int(n_chunks)})"
-            )
-        except Exception:
-            pass
+    # Kernel ordering is preserved on the device. Avoid forcing a host sync between
+    # Stage 1 and Stage 2 unless we're explicitly timing/tracing (host syncs can
+    # create visible "dips" between bursts on Vulkan).
+    stage1_synced = False
+    if _SYNC_PER_CHUNK:
+        stage1_synced = True  # last chunk sync already waited for Stage 1 completion
+
+    if _perf or _FORCE_SYNC or _SYNC_FOR_TIMING or _FG_TRANSFER_TRACE:
+        if not stage1_synced:
+            ti.sync()
+            stage1_synced = True
+        stage1_wall = time.perf_counter() - _t_stage1_wall0
+        _record_kernel_wall("stage1_sync_wall", stage1_wall, genome_count=n_genomes)
+        if _FG_TRANSFER_TRACE:
+            try:
+                print(
+                    f"[FG][KERNEL] stage1_sync_wall={stage1_wall * 1000:.2f}ms "
+                    f"(genomes={int(n_genomes)}, cfgs={int(n_cfg_total)}, ftff={int(n_ftff)}, chunks={int(n_chunks)})"
+                )
+            except Exception:
+                pass
 
     # Stage 2: Reduce across ftff to find best per genome
     _t_stage2_wall0 = time.perf_counter()
@@ -1942,7 +1951,7 @@ def solve_force_greats_finder_gpu_tasks(
     # Taichi Vulkan can schedule host->device transfers and kernels asynchronously. The packed-task
     # solver relies on forced-count tables being fully uploaded before Stage 1 reads them; ensure
     # the upload kernel sequence is complete before proceeding.
-    if int(cfg_upload_kernels) > 1:
+    if int(cfg_upload_kernels) > 1 and (_PERF_TIMING or _FORCE_SYNC or _SYNC_FOR_TIMING or _FG_TRANSFER_TRACE):
         ti.sync()
     if t_cfg_upload0 and _PERF_TIMING:
         try:
@@ -2155,9 +2164,11 @@ def solve_force_greats_finder_gpu_tasks(
                         int(1 if pair_caps_from_timeline else 0),
                     )
 
-        # Single sync after all cfg bands, then Stage 2.
-        ti.sync()
-        if t_stage1_wall0:
+        # Ordering is preserved on-device; only force a host sync when timing/tracing.
+        did_sync_stage1 = bool(_PERF_TIMING or _FORCE_SYNC or _SYNC_FOR_TIMING or _FG_TRANSFER_TRACE)
+        if did_sync_stage1:
+            ti.sync()
+        if did_sync_stage1 and t_stage1_wall0:
             stage1_wall = time.perf_counter() - float(t_stage1_wall0)
             _record_kernel_wall("packed_tasks_stage1_sync_wall", stage1_wall, genome_count=n_genomes)
             if _PERF_TIMING:
