@@ -72,6 +72,53 @@ def _stats_missing_or_empty(stats: Any) -> bool:
     return False
 
 
+def _safe_int(value: object, default: int = 0) -> int:
+    try:
+        return int(value) if value is not None else int(default)
+    except Exception:
+        try:
+            return int(float(value))
+        except Exception:
+            return int(default)
+
+
+def _stats_from_force_payload(force: Any) -> dict[str, Any] | None:
+    if not isinstance(force, dict) or not force:
+        return None
+    base_stats = force.get("BaseStats")
+    if not isinstance(base_stats, dict) or not base_stats:
+        return None
+    gem_counts = force.get("GemCounts")
+    if not isinstance(gem_counts, dict):
+        gem_counts = {}
+    selected_element = force.get("Selected Element") or force.get("SelectedElement") or ""
+    ft_val = _safe_int(force.get("FT", gem_counts.get("Fever Time", 0)), 0)
+    ff_val = _safe_int(
+        force.get("FF", gem_counts.get("Fever Fill", gem_counts.get("Fever Fill Rate", 0))),
+        0,
+    )
+    g_pp = _safe_int(gem_counts.get("Perfect Points", 0), 0)
+    g_cm = _safe_int(gem_counts.get("Combo Multiplier", 0), 0)
+    g_fm = _safe_int(gem_counts.get("Fever Multiplier", 0), 0)
+    g_ov = _safe_int(gem_counts.get("Element", gem_counts.get("Element Overflow", 0)), 0)
+    try:
+        from gear_optimizer.helpers.song_helpers.force_greats.result_application import apply_gems_to_base_fast
+
+        stats = apply_gems_to_base_fast(
+            base_stats,
+            str(selected_element),
+            ft_val,
+            ff_val,
+            g_pp,
+            g_cm,
+            g_fm,
+            g_ov,
+        )
+        return stats if isinstance(stats, dict) else dict(base_stats)
+    except Exception:
+        return dict(base_stats)
+
+
 def _repair_minis_node(node: Any) -> tuple[Any, int]:
     """
     Repair minis_json corruption where a string contains a python-list literal like:
@@ -280,9 +327,9 @@ def repair_frontend_db(
 
             stats_needs_repair = _stats_missing_or_empty(details.get("Stats"))
             if stats_needs_repair:
-                base_stats_from_force = _extract_base_stats_from_force(force)
-                if base_stats_from_force is not None:
-                    details["Stats"] = base_stats_from_force
+                stats_from_force = _stats_from_force_payload(force)
+                if stats_from_force is not None:
+                    details["Stats"] = stats_from_force
                     stats.stats_fixed += 1
                 else:
                     gear_names = _json_loads(row["gear_json"], [])

@@ -14,6 +14,72 @@ from .item_utils import names_list
 from .retention import select_retained_hashes
 
 
+def _safe_int_force(value: object, default: int = 0) -> int:
+    try:
+        return int(value) if value is not None else int(default)
+    except Exception:
+        try:
+            return int(float(value))
+        except Exception:
+            return int(default)
+
+
+def _normalize_force_payload(force_obj: object) -> dict:
+    if not isinstance(force_obj, dict) or not force_obj:
+        return {}
+
+    out = dict(force_obj)
+
+    selected_element = get_selected_element(out, "")
+    if selected_element:
+        out["SelectedElement"] = selected_element
+        out["Selected Element"] = selected_element
+
+    stats_obj = out.get("Stats")
+    if isinstance(stats_obj, dict) and stats_obj:
+        return out
+
+    base_stats = out.get("BaseStats")
+    if not isinstance(base_stats, dict) or not base_stats:
+        return out
+
+    gem_counts = out.get("GemCounts")
+    if not isinstance(gem_counts, dict):
+        gem_counts = {}
+
+    ft_val = _safe_int_force(out.get("FT", gem_counts.get("Fever Time", 0)), 0)
+    ff_val = _safe_int_force(
+        out.get("FF", gem_counts.get("Fever Fill", gem_counts.get("Fever Fill Rate", 0))),
+        0,
+    )
+    g_pp = _safe_int_force(gem_counts.get("Perfect Points", 0), 0)
+    g_cm = _safe_int_force(gem_counts.get("Combo Multiplier", 0), 0)
+    g_fm = _safe_int_force(gem_counts.get("Fever Multiplier", 0), 0)
+    g_ov = _safe_int_force(gem_counts.get("Element", 0), 0)
+
+    try:
+        from .force_greats.result_application import apply_gems_to_base_fast
+
+        computed_stats = apply_gems_to_base_fast(
+            base_stats,
+            str(selected_element),
+            ft_val,
+            ff_val,
+            g_pp,
+            g_cm,
+            g_fm,
+            g_ov,
+        )
+        if isinstance(computed_stats, dict) and computed_stats:
+            out["Stats"] = computed_stats
+            return out
+    except Exception:
+        pass
+
+    out["Stats"] = dict(base_stats)
+    return out
+
+
 def _has_valid_fg_config(fg_container):
     """
     Check if FG container (entry or force obj) has a non-empty/non-zero configuration.
@@ -164,9 +230,9 @@ def build_db_payload(
                 "base_score": base_score_i,
                 "gear": fg_gear_names,
                 "minis": fg_mini_names,
-                "details": build_details_fn(fg_data),
+                "details": build_details_fn(_normalize_force_payload(fg_data)),
                 # Flat raw payload to persist in `force_details_json`.
-                "force": fg_data if isinstance(fg_data, dict) else {},
+                "force": _normalize_force_payload(fg_data),
             }
         )
 
@@ -357,6 +423,8 @@ def build_persistence_entries(
         details_with_meta["attempt_lifetime"] = attempt_lifetime
         details_with_meta["attempts_first"] = attempts_first
 
+        force_out = _normalize_force_payload(force_obj) if isinstance(force_obj, dict) else force_obj
+
         persist_entries.append(
             {
                 "score": score_val or 0,
@@ -364,7 +432,7 @@ def build_persistence_entries(
                 "gear": names_list(gear_items),
                 "minis": names_list(mini_items),
                 "details": details_with_meta,
-                "force": force_obj,
+                "force": force_out,
             }
         )
 
