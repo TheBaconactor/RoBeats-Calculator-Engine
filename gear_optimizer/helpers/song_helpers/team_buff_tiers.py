@@ -516,14 +516,30 @@ def compute_team_buff_tier_leaderboards(
         if not isinstance(stats_base, dict) or not stats_base:
             continue
 
-        gear = entry.get("gear") or []
+        gear = entry.get("minis") or []
         minis = entry.get("minis") or []
         try:
             gear = [str(x) for x in gear]
         except Exception:
             gear = []
         try:
-            minis = [str(x) for x in minis]
+            # Flatten nested lists (minis_json groups) before stringifying.
+            # Correct: ["Electroman", "Fusq"] -> ["Electroman", "Fusq"]
+            # Nested: [["Electroman"], ["Fusq"]] -> ["Electroman", "Fusq"]
+            flat_minis = []
+            for item in minis:
+                if isinstance(item, (list, tuple)):
+                    # If it's a variant group, take the first representative name.
+                    flat_minis.extend(str(x) for x in item if x)
+                elif isinstance(item, dict):
+                    name = str(item.get("Name", "") or "")
+                    if name:
+                        flat_minis.append(name)
+                else:
+                    name = str(item) if item else ""
+                    if name:
+                        flat_minis.append(name)
+            minis = flat_minis
         except Exception:
             minis = []
 
@@ -718,15 +734,29 @@ def build_team_buff_tier_db_batches(
 
     # Map original entries by a stable key (order-invariant names).
     def _names(items):
+        """Flatten minis_json groups (list of lists) into a single flat list of names."""
         out = []
         for it in items or []:
-            if isinstance(it, dict):
+            if isinstance(it, (list, tuple)):
+                # Nested group: extract all variant names.
+                for sub in it:
+                    if isinstance(sub, dict):
+                        n = str(sub.get("Name", "") or "")
+                    else:
+                        n = str(sub or "")
+                    n = n.strip()
+                    if n:
+                        out.append(n)
+            elif isinstance(it, dict):
                 n = str(it.get("Name", "") or "")
+                n = n.strip()
+                if n:
+                    out.append(n)
             else:
                 n = str(it or "")
-            n = n.strip()
-            if n:
-                out.append(n)
+                n = n.strip()
+                if n:
+                    out.append(n)
         return out
 
     def _stable_key_from_entry(e: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
