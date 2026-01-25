@@ -34,7 +34,7 @@ def load_config_dict() -> dict:
     for section in cfg.sections():
         result[section] = dict(cfg.items(section))
     return result
-from gear_optimizer.pipeline.song_processor import get_base_calc_song, clone_calc_song
+from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song, scan_song_header
 from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
 
 
@@ -74,78 +74,35 @@ def load_ref_arrays() -> dict:
     return ref_arrays
 
 
-def get_song_file_path(song_name: str, paths: dict) -> str | None:
-    """Try to find the song file path from song name."""
-    import re
-    
-    difficulties = ["Easy", "Normal", "Hard"]
-    
-    # Clean up song name - remove special characters that might not match
-    clean_name = song_name.replace("%", "").strip()
-    
-    # Parse song name to find difficulty
-    detected_diff = None
-    base_name = clean_name
-    for diff in difficulties:
-        diff_marker = f"({diff})"
-        if diff_marker in clean_name:
-            detected_diff = diff
-            base_name = clean_name.replace(diff_marker, "").strip()
-            break
-    
-    def normalize(s: str) -> str:
-        return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+def build_song_name_index(paths: dict) -> dict[str, str]:
+    """Build a mapping from DB song_name -> .txt filepath by parsing song headers.
 
-    # Also extract just the title (before " by ")
-    title_only = base_name.split(" by ")[0].strip() if " by " in base_name else base_name
-    title_norm = normalize(title_only)
-    title_first_token_norm = normalize(title_only.split()[0]) if title_only.split() else ""
-    
-    # Build list of folders to search (prioritize detected difficulty)
-    search_order = []
-    if detected_diff:
-        search_order.append(detected_diff)
-    search_order.extend([d for d in difficulties if d not in search_order])
-    
-    for diff in search_order:
-        diff_folder = paths.get(diff, "")
-        if not diff_folder or not os.path.isdir(diff_folder):
+    This reuses the same parsing logic as the main pipeline (scan_song_header)
+    and avoids fragile filename-based matching (Windows filename sanitization,
+    punctuation differences, etc).
+    """
+
+    song_index: dict[str, str] = {}
+    for diff in ("Easy", "Normal", "Hard"):
+        root_dir = paths.get(diff, "")
+        if not root_dir or not os.path.isdir(root_dir):
             continue
-        
-        for filename in os.listdir(diff_folder):
-            # Song files are .txt format
-            if not filename.endswith(".txt"):
-                continue
-            
-            filename_stem = os.path.splitext(filename)[0]
-            filename_norm = normalize(filename_stem)
 
-            # Robust match: filenames sanitize characters like ':', '*', '/', '.', etc.
-            if not title_norm:
-                continue
-            if title_norm not in filename_norm and filename_norm not in title_norm:
-                if title_first_token_norm and title_first_token_norm not in filename_norm:
+        for root, _, files in os.walk(root_dir):
+            for filename in files:
+                if not filename.lower().endswith(".txt"):
                     continue
+                fp = os.path.join(root, filename)
+                meta = scan_song_header(fp)
+                if not meta:
+                    continue
+                song_name = meta.get("Song Name")
+                if not song_name:
+                    continue
+                # First win; duplicates should be rare and this keeps behavior deterministic.
+                song_index.setdefault(song_name, fp)
 
-            file_path = os.path.join(diff_folder, filename)
-
-            # Verify by reading the file header
-            try:
-                from gear_optimizer.pipeline.song_processor import read_song_file
-
-                song_data = read_song_file(file_path)
-                meta = song_data.get("song_details", {}) or {}
-                file_title = meta.get("Song Name", "")
-                file_title_norm = normalize(file_title)
-
-                # Confirm title match against song metadata when possible
-                if file_title_norm and (title_norm in file_title_norm or file_title_norm in title_norm):
-                    return file_path
-            except Exception:
-                # If we can't read it, still return candidate path.
-                return file_path
-    
-    return None
+    return song_index
 
 
 def backfill_tiers_for_song(
@@ -222,6 +179,10 @@ def main():
     print("Loading configuration...")
     cfg_dict = load_config_dict()
     paths = load_paths_cache()
+
+    print("Indexing song files...")
+    song_index = build_song_name_index(paths)
+    print(f"Indexed {len(song_index):,} song file(s) from headers")
     
     print("Loading reference arrays...")
     ref_arrays = load_ref_arrays()
@@ -335,8 +296,10 @@ def main():
         
         print(f"    Found {len(entries)} loadout entries with Stats")
         
-        # Find song file path
-        file_path = get_song_file_path(song_name, paths)
+        # Find song file path via header-based index (same parsing logic as the app queue builder)
+        file_path = song_index.get(song_name)
+        if not file_path and "%" in song_name:
+            file_path = song_index.get(song_name.replace("%", "").strip())
         if not file_path:
             print(f"    Could not find song file, skipping")
             failed += 1
