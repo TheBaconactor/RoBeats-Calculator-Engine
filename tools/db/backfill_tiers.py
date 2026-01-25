@@ -9,7 +9,7 @@ This is a ONE-TIME backfill to populate tier data for songs that were
 processed before the tier functionality was added.
 
 Usage:
-    python tools/db/backfill_tiers.py [--dry-run] [--limit N] [--song "song_name"]
+    python tools/db/backfill_tiers.py [--db path] [--dry-run] [--limit N] [--song "song_name"]
 """
 
 import argparse
@@ -18,6 +18,7 @@ import sys
 import time
 import sqlite3
 import json
+from pathlib import Path
 
 # Ensure root directory is in path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
@@ -25,6 +26,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../.
 from gear_optimizer.data.database import get_evolution_db_path, save_team_buff_loadouts_batch
 from gear_optimizer.core.config import load_paths_cache, load_config
 from gear_optimizer.data.csv_parser import parse_gear_rows, parse_mini_rows
+
+from repair_frontend_db import repair_frontend_db
 
 
 def load_config_dict() -> dict:
@@ -165,9 +168,20 @@ def backfill_tiers_for_song(
 
 def main():
     parser = argparse.ArgumentParser(description="Backfill team buff tier data for all songs")
+    parser.add_argument(
+        "--db",
+        type=str,
+        default="",
+        help="DB path (defaults to EVOLUTION_DB_PATH / ./evolution.db).",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Preview without saving")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of songs to process (0=all)")
     parser.add_argument("--song", type=str, default="", help="Process only this song name")
+    parser.add_argument(
+        "--no-preflight-repair",
+        action="store_true",
+        help="Skip preflight integrity repair (minis_json + Stats) before backfill.",
+    )
     args = parser.parse_args()
 
     print("=" * 60)
@@ -176,6 +190,9 @@ def main():
 
     if args.dry_run:
         print("\n*** DRY RUN MODE - No changes will be saved ***\n")
+
+    if args.db:
+        os.environ["EVOLUTION_DB_PATH"] = str(args.db)
 
     # Load config and paths
     print("Loading configuration...")
@@ -198,6 +215,14 @@ def main():
 
     # Connect to DB
     db_path = get_evolution_db_path()
+    if not args.no_preflight_repair:
+        print("\n[Preflight] Repairing DB integrity (minis_json + Stats) so backfill can safely rescore...")
+        repair_stats = repair_frontend_db(db_path=Path(db_path), dry_run=bool(args.dry_run), verbose=False)
+        print(
+            f"[Preflight] scanned_rows={repair_stats.scanned_rows:,} minis_fixed={repair_stats.minis_fixed:,} "
+            f"stats_fixed={repair_stats.stats_fixed:,} fg_invariant_deleted={repair_stats.fg_invariant_deleted:,}"
+        )
+
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
@@ -213,15 +238,44 @@ def main():
         """
         songs = conn.execute(query, (args.song,)).fetchall()
     else:
-        query = """
-            SELECT DISTINCT f.song_name 
+        # Primary target: songs missing tier FG rows entirely.
+        query_missing = """
+            SELECT DISTINCT f.song_name
             FROM fg_loadouts f
-            LEFT JOIN (
-                SELECT DISTINCT song_name FROM team_buff_fg_loadouts
-            ) tb ON f.song_name = tb.song_name
+            LEFT JOIN (SELECT DISTINCT song_name FROM team_buff_fg_loadouts) tb
+            ON f.song_name = tb.song_name
             WHERE tb.song_name IS NULL
         """
-        songs = conn.execute(query).fetchall()
+        songs_missing = {r["song_name"] for r in conn.execute(query_missing).fetchall()}
+
+        # Also include songs where tier tables exist but show known corruption signature.
+        songs_corrupt = set()
+        try:
+            patt = "%['%"
+            songs_corrupt |= {
+                r["song_name"]
+                for r in conn.execute(
+                    "SELECT DISTINCT song_name FROM team_buff_fg_loadouts WHERE minis_json LIKE ?",
+                    (patt,),
+                ).fetchall()
+            }
+        except Exception:
+            pass
+        try:
+            patt = "%['%"
+            songs_corrupt |= {
+                r["song_name"]
+                for r in conn.execute(
+                    "SELECT DISTINCT song_name FROM team_buff_loadouts WHERE minis_json LIKE ?",
+                    (patt,),
+                ).fetchall()
+            }
+        except Exception:
+            pass
+
+        songs = [{"song_name": s} for s in sorted(songs_missing | songs_corrupt)]
+        if songs_corrupt:
+            print(f"Detected minis corruption signature on {len(songs_corrupt):,} song(s); including for repair.")
 
     total_songs = len(songs)
     print(f"Found {total_songs} songs needing FG tier backfill")
