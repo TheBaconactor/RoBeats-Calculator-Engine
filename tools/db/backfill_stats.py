@@ -27,11 +27,10 @@ def main():
     minis_by_name = {m["Name"]: m for m in minis_list}
     print(f"Loaded {len(gears_by_name)} gears, {len(minis_by_name)} minis")
 
-    # Use EMPTY base stats - DB Stats should represent ONLY the loadout contribution
-    # (gear + minis + gems for that specific entry), NOT user config settings.
-    # User config (team buffs, user gems) varies per user and should be applied
-    # at display time, not baked into the persisted Stats.
-    base_stats = {
+    # Base persistence assumes TeamBuff auto-mode (T5). Tier recomputation is expressed as a delta
+    # vs this base, so if we backfill "loadout-only" Stats here, the frontend can display T5 as NONE
+    # (missing +PP/+primary element), and NONE can go negative when deltas are applied.
+    base_stats_zero = {
         "Perfect Points": 0,
         "Combo Multiplier": 0,
         "Fever Multiplier": 0,
@@ -43,64 +42,72 @@ def main():
         "Beat": 0,
         "Vibe": 0,
     }
-    print(f"Using empty base stats (loadout-only): {base_stats}")
+    print(f"Using base TeamBuff=T5 effect (+25 PP, +30 primary element) for backfilled Stats.")
 
     db_path = get_evolution_db_path()
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
-    print("Fetching entries...")
-    # Find entries to update
-    cur = conn.execute("""
-        SELECT rowid, song_name, gear_json, minis_json, details_json 
-        FROM loadouts
-    """)
-    rows = cur.fetchall()
+    total_updated = 0
+    for table in ("loadouts", "fg_loadouts"):
+        print(f"\nFetching entries from {table}...")
+        cur = conn.execute(f"""
+            SELECT rowid, song_name, gear_json, minis_json, details_json
+            FROM {table}
+        """)
+        rows = cur.fetchall()
 
-    updated = 0
+        updated = 0
+        print(f"Processing {len(rows)} entries from {table}... this may take a moment.")
 
-    print(f"Processing {len(rows)} entries... this may take a moment.")
+        for i, row in enumerate(rows):
+            if i % 10000 == 0:
+                print(f"[{table}] Processed {i}/{len(rows)}...")
 
-    for i, row in enumerate(rows):
-        if i % 10000 == 0:
-            print(f"Processed {i}/{len(rows)}...")
+            details = json.loads(row["details_json"]) if row["details_json"] else {}
+            gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
+            mini_names_raw = json.loads(row["minis_json"]) if row["minis_json"] else []
 
-        details = json.loads(row["details_json"]) if row["details_json"] else {}
-        gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
-        mini_names_raw = json.loads(row["minis_json"]) if row["minis_json"] else []
+            # Handle variant group format: [["MiniA", "MiniA2"], ["MiniB"]] -> ["MiniA", "MiniB"]
+            # Extract first name from each group (representative)
+            mini_names = []
+            for item in mini_names_raw:
+                if isinstance(item, list) and item:
+                    mini_names.append(item[0])  # Take first variant as representative
+                elif isinstance(item, str):
+                    mini_names.append(item)  # Legacy flat format
 
-        # Handle variant group format: [["MiniA", "MiniA2"], ["MiniB"]] -> ["MiniA", "MiniB"]
-        # Extract first name from each group (representative)
-        mini_names = []
-        for item in mini_names_raw:
-            if isinstance(item, list) and item:
-                mini_names.append(item[0])  # Take first variant as representative
-            elif isinstance(item, str):
-                mini_names.append(item)  # Legacy flat format
+            gem_counts = dict(details.get("GemCounts", {}) or {})
+            # DB stores FT/FF gem allocations at the top level (not inside GemCounts).
+            # Include them so computed Stats match the score configuration.
+            gem_counts["Fever Time"] = int(details.get("FT", 0) or 0)
+            gem_counts["Fever Fill Rate"] = int(details.get("FF", 0) or 0)
+            selected_element = details.get("SelectedElement") or details.get("Selected Element") or ""
 
-        gem_counts = dict(details.get("GemCounts", {}) or {})
-        # DB stores FT/FF gem allocations at the top level (not inside GemCounts).
-        # Include them so computed Stats match the score configuration.
-        gem_counts["Fever Time"] = int(details.get("FT", 0) or 0)
-        gem_counts["Fever Fill Rate"] = int(details.get("FF", 0) or 0)
-        selected_element = details.get("SelectedElement") or details.get("Selected Element") or ""
+            # Apply base TeamBuff=T5 effect (auto mode uses the song primary color).
+            base_stats = dict(base_stats_zero)
+            primary = str(details.get("PrimaryColor") or details.get("Primary Color") or "").strip()
+            if primary in {"Chill", "Flow", "Rush", "Beat", "Vibe"}:
+                base_stats[primary] = int(base_stats.get(primary, 0) or 0) + 30
+            base_stats["Perfect Points"] = int(base_stats.get("Perfect Points", 0) or 0) + 25
 
-        # Compute Stats (Unconditionally recompute to ensure Team Buffs are added)
-        computed_stats = compute_full_stats(
-            gear_names, mini_names, gem_counts, selected_element, gears_by_name, minis_by_name, base_stats
-        )
+            # Compute Stats (unconditionally recompute for consistency)
+            computed_stats = compute_full_stats(
+                gear_names, mini_names, gem_counts, selected_element, gears_by_name, minis_by_name, base_stats
+            )
 
-        # Update details with computed Stats
-        details["Stats"] = computed_stats
+            # Update details with computed Stats
+            details["Stats"] = computed_stats
 
-        # Write back
-        conn.execute("UPDATE loadouts SET details_json = ? WHERE rowid = ?", (json.dumps(details), row["rowid"]))
-        updated += 1
+            # Write back
+            conn.execute(f"UPDATE {table} SET details_json = ? WHERE rowid = ?", (json.dumps(details), row["rowid"]))
+            updated += 1
 
-    conn.commit()
+        conn.commit()
+        total_updated += updated
     conn.close()
 
-    print(f"Done! Updated {updated} entries.")
+    print(f"\nDone! Updated {total_updated} entries across loadouts + fg_loadouts.")
 
 
 if __name__ == "__main__":

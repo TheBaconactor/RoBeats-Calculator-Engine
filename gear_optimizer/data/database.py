@@ -627,6 +627,9 @@ def _ensure_stats_in_details(
     gear: list,
     minis: list,
     minis_by_name: dict,
+    *,
+    team_buff: "Optional[str]" = None,
+    team_color: "Optional[str]" = None,
 ) -> dict:
     """
     Ensure Stats are populated in details dict.
@@ -668,7 +671,9 @@ def _ensure_stats_in_details(
         # Get gear lookup (use cached version)
         gears_by_name = get_gears_by_name_cached()
 
-        # Base stats (loadout-only, no user config)
+        # Base stats for fallback computation:
+        # - We intentionally avoid user config gems here (those should already be reflected in GemCounts).
+        # - But we DO want TeamBuff reflected for correct tier/base display (Perfect Points + element).
         base_stats = {
             "Perfect Points": 0,
             "Combo Multiplier": 0,
@@ -681,6 +686,36 @@ def _ensure_stats_in_details(
             "Beat": 0,
             "Vibe": 0,
         }
+
+        # Apply TeamBuff to the fallback base_stats when we have enough context.
+        # This prevents persisting tier/base rows with missing PP/element buffs when Stats is absent.
+        buff_tier = str(team_buff or "").strip().upper()
+        buff_color = str(team_color or "").strip()
+        if not buff_color:
+            buff_color = str(
+                details.get("PrimaryColor")
+                or details.get("Primary Color")
+                or details.get("SelectedElement")
+                or details.get("Selected Element")
+                or ""
+            ).strip()
+
+        buff_tiers = {
+            "T1": {"PP": 25, "Elem": 35},
+            "T5": {"PP": 25, "Elem": 30},
+            "T10": {"PP": 20, "Elem": 25},
+            "T15": {"PP": 15, "Elem": 20},
+            "NONE": {"PP": 0, "Elem": 0},
+        }
+        if buff_tier in buff_tiers:
+            base_stats["Perfect Points"] = int(base_stats.get("Perfect Points", 0) or 0) + int(buff_tiers[buff_tier]["PP"])
+            # TeamBuff applies to the team color element (auto mode uses song primary color).
+            elements = ["Chill", "Flow", "Rush", "Beat", "Vibe"]
+            valid_color_key = next((k for k in elements if k.lower() == buff_color.lower()), None)
+            if valid_color_key:
+                base_stats[valid_color_key] = int(base_stats.get(valid_color_key, 0) or 0) + int(
+                    buff_tiers[buff_tier]["Elem"]
+                )
 
         # Get gem counts and FT/FF from details
         gem_counts = dict(details.get("GemCounts", {}) or {})
@@ -933,7 +968,17 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
             # If Stats is missing or empty, compute it from loadout components
             current_stats = details.get("Stats") if isinstance(details, dict) else None
             if not current_stats or (isinstance(current_stats, dict) and len(current_stats) == 0):
-                details = _ensure_stats_in_details(details, gear, minis, minis_by_name)
+                # Base (non-tier) persistence is treated as TeamBuff auto-mode (T5) for display and
+                # for tier-delta postprocessing. If we persist loadout-only stats here, the frontend
+                # can make T5 look like NONE (missing +PP/+primary element).
+                details = _ensure_stats_in_details(
+                    details,
+                    gear,
+                    minis,
+                    minis_by_name,
+                    team_buff="T5",
+                    team_color=str(details.get("PrimaryColor") or details.get("Primary Color") or "").strip(),
+                )
 
             force_data = entry.get("force")
 
@@ -1328,12 +1373,20 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
             minis = entry.get("minis", [])
             details = entry.get("details", {})
             force_data = entry.get("force")
-
+            
             # Defensive: ensure Stats are populated in details
             # If Stats is missing or empty, compute it from loadout components
             current_stats = details.get("Stats") if isinstance(details, dict) else None
             if not current_stats or (isinstance(current_stats, dict) and len(current_stats) == 0):
-                details = _ensure_stats_in_details(details, gear, minis, minis_by_name)
+                # TeamBuff tier tables must include their tier effect in Stats for correct frontend display.
+                details = _ensure_stats_in_details(
+                    details,
+                    gear,
+                    minis,
+                    minis_by_name,
+                    team_buff=team_buff,
+                    team_color=str(details.get("PrimaryColor") or details.get("Primary Color") or "").strip(),
+                )
 
             if fg_score <= 0 and force_data is not None:
                 fg_score = _fg_score_from_force(force_data)
