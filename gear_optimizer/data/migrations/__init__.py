@@ -14,7 +14,7 @@ Migration = Callable[[sqlite3.Connection], None]
 # NOTE: `evolution.db` in the wild may already have `PRAGMA user_version=8` even though
 # the physical schema matches v6 (v6 is a data-level migration only). Keep v7/v8 as
 # no-ops so older DBs can advance and newer DBs won't be rejected.
-LATEST_SCHEMA_VERSION = 14
+LATEST_SCHEMA_VERSION = 15
 
 
 def _migration_1_init_schema(conn: sqlite3.Connection) -> None:
@@ -645,6 +645,208 @@ def _migration_14_add_frontend_fg_top51_view(conn: sqlite3.Connection) -> None:
         """
     )
 
+
+def _migration_15_add_loadouts_unified_and_frontend_best_views(conn: sqlite3.Connection) -> None:
+    """
+    Add unified base view + frontend convenience views.
+
+    Notes:
+    - `loadouts` is treated as legacy implicit T5. If explicit tier rows exist for a song+tier in
+      `team_buff_loadouts`, the legacy row is excluded to avoid duplicate T5 entries.
+    - These views are used by frontend/export consumers that want a single query surface and
+      deterministic "best row" selection rules.
+    """
+
+    # Base unified view (mirrors `fg_loadouts_unified` behavior).
+    conn.execute("DROP VIEW IF EXISTS loadouts_unified;")
+    conn.execute(
+        """
+        CREATE VIEW loadouts_unified AS
+        -- Prioritize explicit tier-tracked base entries
+        SELECT
+            song_name,
+            UPPER(team_buff) AS team_buff,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            'team_buff_loadouts' AS source_table
+        FROM team_buff_loadouts
+        UNION ALL
+        -- Include legacy base entries ONLY if no explicit tier-tracked entry exists for that song+tier
+        SELECT
+            l.song_name,
+            'T5' AS team_buff,
+            l.loadout_hash,
+            l.score,
+            l.fg_score,
+            l.gear_json,
+            l.minis_json,
+            l.details_json,
+            l.force_details_json,
+            l.timestamp,
+            'loadouts' AS source_table
+        FROM loadouts l
+        WHERE NOT EXISTS (
+            SELECT 1 FROM team_buff_loadouts tb
+            WHERE tb.song_name = l.song_name AND UPPER(tb.team_buff) = 'T5'
+        );
+        """
+    )
+
+    # Deterministic "best row" surfaces per (song_name, team_buff).
+    conn.execute("DROP VIEW IF EXISTS frontend_best_base_loadouts;")
+    conn.execute(
+        """
+        CREATE VIEW frontend_best_base_loadouts AS
+        SELECT
+            song_name,
+            team_buff,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            source_table
+        FROM (
+            SELECT
+                lu.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY lu.song_name, lu.team_buff
+                    ORDER BY lu.score DESC, lu.fg_score DESC, lu.timestamp DESC
+                ) AS rn
+            FROM loadouts_unified lu
+        )
+        WHERE rn = 1;
+        """
+    )
+
+    conn.execute("DROP VIEW IF EXISTS frontend_best_fg_loadouts;")
+    conn.execute(
+        """
+        CREATE VIEW frontend_best_fg_loadouts AS
+        SELECT
+            song_name,
+            UPPER(team_buff) AS team_buff,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            source_table
+        FROM (
+            SELECT
+                fu.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY fu.song_name, UPPER(fu.team_buff)
+                    ORDER BY fu.fg_score DESC, fu.score DESC, fu.timestamp DESC
+                ) AS rn
+            FROM fg_loadouts_unified fu
+        )
+        WHERE rn = 1;
+        """
+    )
+
+    # Recreate top51 views to use the unified sources and to parse difficulty/title from the standard "(Hard) by" form.
+    conn.execute("DROP VIEW IF EXISTS frontend_base_top51_by_song_tier;")
+    conn.execute(
+        """
+        CREATE VIEW frontend_base_top51_by_song_tier AS
+        WITH ranked AS (
+            SELECT
+                lu.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY lu.song_name, lu.team_buff
+                    ORDER BY lu.score DESC, lu.fg_score DESC, lu.timestamp DESC
+                ) AS rank
+            FROM loadouts_unified lu
+        )
+        SELECT
+            song_name,
+            CASE
+                WHEN instr(song_name, ' (Easy) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Easy) by ') - 1))
+                WHEN instr(song_name, ' (Hard) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Hard) by ') - 1))
+                WHEN instr(song_name, ' (Normal) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Normal) by ') - 1))
+                WHEN instr(song_name, ' by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' by ') - 1))
+                ELSE song_name
+            END AS song_title,
+            CASE
+                WHEN instr(song_name, ' (Easy) by ') > 0 THEN 'Easy'
+                WHEN instr(song_name, ' (Hard) by ') > 0 THEN 'Hard'
+                WHEN instr(song_name, ' (Normal) by ') > 0 THEN 'Normal'
+                ELSE 'Normal'
+            END AS difficulty,
+            team_buff,
+            rank,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            source_table
+        FROM ranked
+        WHERE rank <= 51;
+        """
+    )
+
+    conn.execute("DROP VIEW IF EXISTS frontend_fg_top51_by_song_tier;")
+    conn.execute(
+        """
+        CREATE VIEW frontend_fg_top51_by_song_tier AS
+        WITH ranked AS (
+            SELECT
+                fu.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY fu.song_name, UPPER(fu.team_buff)
+                    ORDER BY fu.fg_score DESC, fu.score DESC, fu.timestamp DESC
+                ) AS rank
+            FROM fg_loadouts_unified fu
+            WHERE fg_score > 0
+        )
+        SELECT
+            song_name,
+            CASE
+                WHEN instr(song_name, ' (Easy) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Easy) by ') - 1))
+                WHEN instr(song_name, ' (Hard) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Hard) by ') - 1))
+                WHEN instr(song_name, ' (Normal) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Normal) by ') - 1))
+                WHEN instr(song_name, ' by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' by ') - 1))
+                ELSE song_name
+            END AS song_title,
+            CASE
+                WHEN instr(song_name, ' (Easy) by ') > 0 THEN 'Easy'
+                WHEN instr(song_name, ' (Hard) by ') > 0 THEN 'Hard'
+                WHEN instr(song_name, ' (Normal) by ') > 0 THEN 'Normal'
+                ELSE 'Normal'
+            END AS difficulty,
+            UPPER(team_buff) AS team_buff,
+            rank,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            source_table
+        FROM ranked
+        WHERE rank <= 51;
+        """
+    )
+
 _MIGRATIONS: Dict[int, Migration] = {
     1: _migration_1_init_schema,
     2: _migration_2_add_pending_fg_jobs,
@@ -660,6 +862,7 @@ _MIGRATIONS: Dict[int, Migration] = {
     12: _migration_12_add_fg_loadouts_unified_view,
     13: _migration_13_add_frontend_base_top51_view,
     14: _migration_14_add_frontend_fg_top51_view,
+    15: _migration_15_add_loadouts_unified_and_frontend_best_views,
 }
 
 

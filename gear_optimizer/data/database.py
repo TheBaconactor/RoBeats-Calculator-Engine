@@ -4,6 +4,7 @@ Handles all SQLite interactions for loadout persistence and retrieval.
 """
 
 import hashlib
+import ast
 import json
 import os
 import sqlite3
@@ -373,7 +374,12 @@ def _compact_gear_for_db(gear_list):
 def _compact_minis_for_db(mini_list):
     """
     Convert mini list to compact storage format (names only).
-    Handles both dicts and strings.
+
+    Handles:
+    - dicts: {"Name": ...}
+    - strings: "Electroman"
+    - nested variant groups: [["A","B"], ["C"], ...] (takes a representative per slot)
+    - legacy corruption: "['Electroman']" or "['A', \"B\"]" (parses and takes first element)
 
     Args:
         mini_list: List of mini items (dicts or strings)
@@ -383,12 +389,35 @@ def _compact_minis_for_db(mini_list):
     """
     if not mini_list:
         return []
+    
+    def _first_name(v: Any) -> str:
+        if v is None:
+            return ""
+        if isinstance(v, dict):
+            return str(v.get("Name", "") or "").strip()
+        if isinstance(v, (list, tuple)):
+            for it in v:
+                name = _first_name(it)
+                if name:
+                    return name
+            return ""
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return ""
+            # Best-effort repair for corrupted list-literal strings like "['Electroman']".
+            if s.startswith("[") and s.endswith("]"):
+                try:
+                    parsed = ast.literal_eval(s)
+                    if isinstance(parsed, (list, tuple)) and parsed:
+                        return _first_name(parsed[0])
+                except Exception:
+                    return s
+            return s
+        return str(v).strip()
     result = []
     for m in mini_list:
-        if isinstance(m, dict):
-            name = m.get("Name", "")
-        else:
-            name = str(m) if m else ""
+        name = _first_name(m)
         if name:
             result.append(name)
     return result
@@ -673,6 +702,33 @@ def _ensure_stats_in_details(
     return details
 
 
+def _normalize_details_for_persistence(details: Any, *, score: int, fg_score: int, force_data: Any) -> dict:
+    """
+    Normalize details payload before persistence.
+
+    Goals:
+    - Keep `details["ForceGreats"]["final_score"]` consistent with the persisted `fg_score` when FG ran.
+      (Some downstream consumers read this field and will otherwise treat FG as missing/zero.)
+    """
+    if not isinstance(details, dict):
+        return {}
+
+    if force_data is None or int(fg_score or 0) <= 0:
+        return details
+
+    fg_meta = details.get("ForceGreats")
+    if not isinstance(fg_meta, dict):
+        return details
+
+    # Update (or create) the final_score field for consistency.
+    fg_out = dict(fg_meta)
+    fg_out["final_score"] = int(fg_score)
+
+    out = dict(details)
+    out["ForceGreats"] = fg_out
+    return out
+
+
 def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None:
     """
     Batch insert/update loadouts for a song in a single transaction.
@@ -844,6 +900,8 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
 
             if fg_score <= 0 and force_data is not None:
                 fg_score = _fg_score_from_force(force_data)
+
+            details = _normalize_details_for_persistence(details, score=score, fg_score=fg_score, force_data=force_data)
 
             gear_names = _compact_gear_for_db(gear)
             mini_names = _compact_minis_for_db(minis)
@@ -1211,6 +1269,8 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
 
             if fg_score <= 0 and force_data is not None:
                 fg_score = _fg_score_from_force(force_data)
+
+            details = _normalize_details_for_persistence(details, score=score, fg_score=fg_score, force_data=force_data)
 
             gear_names = _compact_gear_for_db(gear)
             mini_names = _compact_minis_for_db(minis)

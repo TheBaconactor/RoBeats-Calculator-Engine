@@ -123,6 +123,31 @@ CREATE TABLE team_buff_fg_loadouts (
 
 ---
 
+## Convenience Views (Frontend/Exports)
+
+These views provide stable query surfaces for consumers that want:
+- A single FG leaderboard surface with `team_buff` always present.
+- A single base leaderboard surface that treats legacy `loadouts` as implicit `T5` when tier tables are present.
+- Deterministic "best row" selection for each `(song_name, team_buff)`.
+
+### `fg_loadouts_unified`
+Unifies FG rows across:
+- `team_buff_fg_loadouts` (preferred)
+- `fg_loadouts` (legacy implicit `T5`, excluded when explicit tier rows exist)
+
+### `loadouts_unified` (schema v15+)
+Unifies base rows across:
+- `team_buff_loadouts` (preferred)
+- `loadouts` (legacy implicit `T5`, excluded when explicit tier rows exist)
+
+### Frontend helpers (schema v15+)
+- `frontend_best_base_loadouts`: best base row per `(song_name, team_buff)` (ranked by `score DESC`, then `fg_score`, then `timestamp`).
+- `frontend_best_fg_loadouts`: best FG row per `(song_name, team_buff)` (ranked by `fg_score DESC`, then `score`, then `timestamp`).
+- `frontend_base_top51_by_song_tier`: top 51 base rows per `(song_name, team_buff)` with derived `song_title`/`difficulty`.
+- `frontend_fg_top51_by_song_tier`: top 51 FG rows per `(song_name, team_buff)` with derived `song_title`/`difficulty`.
+
+---
+
 ## Developer Guide: How to Query
 
 ### Python (Using `sqlite3`)

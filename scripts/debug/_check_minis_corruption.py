@@ -25,7 +25,7 @@ conn.row_factory = sqlite3.Row
 # Pattern: inner element is a stringified Python list like "['Name']" instead of just "Name"
 # Correct: [["Electroman"],["Fusq"]]
 # Corrupt: [["['Electroman']"],["['Fusq']"]]
-CORRUPT_PATTERN = re.compile(r"\['\w")
+CORRUPT_PATTERN = re.compile(r"\['")
 
 tables = ["loadouts", "fg_loadouts", "team_buff_loadouts", "team_buff_fg_loadouts"]
 print(f"DB: {db_path}")
