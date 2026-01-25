@@ -93,8 +93,13 @@ def get_song_file_path(song_name: str, paths: dict) -> str | None:
             base_name = clean_name.replace(diff_marker, "").strip()
             break
     
+    def normalize(s: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
+
     # Also extract just the title (before " by ")
     title_only = base_name.split(" by ")[0].strip() if " by " in base_name else base_name
+    title_norm = normalize(title_only)
+    title_first_token_norm = normalize(title_only.split()[0]) if title_only.split() else ""
     
     # Build list of folders to search (prioritize detected difficulty)
     search_order = []
@@ -112,28 +117,33 @@ def get_song_file_path(song_name: str, paths: dict) -> str | None:
             if not filename.endswith(".txt"):
                 continue
             
-            # Quick filename match before loading file
-            filename_clean = filename.replace("%", "").lower()
-            title_clean = title_only.lower()
-            
-            # Check if title appears in filename
-            if title_clean[:15] in filename_clean or title_clean.split()[0].lower() in filename_clean:
-                file_path = os.path.join(diff_folder, filename)
-                # Verify by reading the file header
-                try:
-                    from gear_optimizer.pipeline.song_processor import read_song_file
-                    song_data = read_song_file(file_path)
-                    meta = song_data.get("song_details", {}) or {}
-                    file_title = meta.get("Song Name", "")
-                    file_diff = meta.get("Difficulty", "")
-                    
-                    # Check for title match (file_title could be just the song name)
-                    if file_title and (title_clean in file_title.lower() or file_title.lower() in title_clean):
-                        return file_path
-                        
-                except Exception:
-                    # If we can't read it, still try it - the caller will handle errors
+            filename_stem = os.path.splitext(filename)[0]
+            filename_norm = normalize(filename_stem)
+
+            # Robust match: filenames sanitize characters like ':', '*', '/', '.', etc.
+            if not title_norm:
+                continue
+            if title_norm not in filename_norm and filename_norm not in title_norm:
+                if title_first_token_norm and title_first_token_norm not in filename_norm:
+                    continue
+
+            file_path = os.path.join(diff_folder, filename)
+
+            # Verify by reading the file header
+            try:
+                from gear_optimizer.pipeline.song_processor import read_song_file
+
+                song_data = read_song_file(file_path)
+                meta = song_data.get("song_details", {}) or {}
+                file_title = meta.get("Song Name", "")
+                file_title_norm = normalize(file_title)
+
+                # Confirm title match against song metadata when possible
+                if file_title_norm and (title_norm in file_title_norm or file_title_norm in title_norm):
                     return file_path
+            except Exception:
+                # If we can't read it, still return candidate path.
+                return file_path
     
     return None
 
@@ -269,25 +279,25 @@ def main():
         song_name = row["song_name"]
         print(f"\n[{i+1}/{len(songs)}] Processing: {song_name}")
         
-        # Get existing loadout entries for this song from loadouts table
-        # We need the full gear/minis/details data for rescoring under other tiers
+        # Prefer fg_loadouts as the source so we preserve force payloads
+        # (many loadouts rows do not have force_details_json, which prevents FG tier backfill).
         entries_query = """
             SELECT score, fg_score, gear_json, minis_json, details_json, force_details_json
-            FROM loadouts
+            FROM fg_loadouts
             WHERE song_name = ?
-            ORDER BY score DESC
-            LIMIT 100
+            ORDER BY fg_score DESC
+            LIMIT 200
         """
         entry_rows = conn.execute(entries_query, (song_name,)).fetchall()
-        
+
         if not entry_rows:
-            # Fallback: Try fg_loadouts if no loadouts exist
+            # Fallback: Try base loadouts if there are no FG rows for this song.
             entries_query = """
                 SELECT score, fg_score, gear_json, minis_json, details_json, force_details_json
-                FROM fg_loadouts
+                FROM loadouts
                 WHERE song_name = ?
-                ORDER BY fg_score DESC
-                LIMIT 100
+                ORDER BY score DESC
+                LIMIT 200
             """
             entry_rows = conn.execute(entries_query, (song_name,)).fetchall()
         
