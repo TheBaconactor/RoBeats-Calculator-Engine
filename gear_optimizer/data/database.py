@@ -940,8 +940,8 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
             _t_insfg0 = time.perf_counter()
             conn.executemany(
                 """
-                INSERT INTO fg_loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+                INSERT INTO fg_loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, team_buff, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'T5', strftime('%s', 'now'))
                 ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
                     score = CASE WHEN excluded.fg_score > fg_score THEN excluded.score ELSE score END,
                     fg_score = MAX(fg_score, excluded.fg_score),

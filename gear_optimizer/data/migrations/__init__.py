@@ -14,7 +14,7 @@ Migration = Callable[[sqlite3.Connection], None]
 # NOTE: `evolution.db` in the wild may already have `PRAGMA user_version=8` even though
 # the physical schema matches v6 (v6 is a data-level migration only). Keep v7/v8 as
 # no-ops so older DBs can advance and newer DBs won't be rejected.
-LATEST_SCHEMA_VERSION = 10
+LATEST_SCHEMA_VERSION = 11
 
 
 def _migration_1_init_schema(conn: sqlite3.Connection) -> None:
@@ -423,6 +423,31 @@ def _migration_10_add_song_attempt_counters(conn: sqlite3.Connection) -> None:
             pass
 
 
+def _migration_11_add_team_buff_to_fg_loadouts(conn: sqlite3.Connection) -> None:
+    """
+    Add team_buff column to fg_loadouts table.
+
+    This column stores the team buff tier used when scoring the loadout.
+    All existing entries are backfilled with 'T5' since that was the default
+    (AutoSelectBuffAndColor=true always uses T5).
+    """
+    # Add team_buff column with default 'T5'
+    try:
+        conn.execute("ALTER TABLE fg_loadouts ADD COLUMN team_buff TEXT DEFAULT 'T5';")
+    except sqlite3.Error:
+        # Column already exists
+        pass
+
+    # Backfill all existing entries with T5
+    conn.execute("UPDATE fg_loadouts SET team_buff = 'T5' WHERE team_buff IS NULL;")
+
+    # Create index for efficient tier queries
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fg_loadouts_team_buff ON fg_loadouts (song_name, team_buff, fg_score DESC);")
+    except sqlite3.Error:
+        pass
+
+
 _MIGRATIONS: Dict[int, Migration] = {
     1: _migration_1_init_schema,
     2: _migration_2_add_pending_fg_jobs,
@@ -434,6 +459,7 @@ _MIGRATIONS: Dict[int, Migration] = {
     8: _migration_8_noop,
     9: _migration_9_add_team_buff_tier_tables,
     10: _migration_10_add_song_attempt_counters,
+    11: _migration_11_add_team_buff_to_fg_loadouts,
 }
 
 
