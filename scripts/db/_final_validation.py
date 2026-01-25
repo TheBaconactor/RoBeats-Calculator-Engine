@@ -1,98 +1,79 @@
 """
-Final DB validation before shipping to frontend.
-Verifies all critical aspects are working correctly.
+Quick DB validation for frontend handoff.
+
+For a deeper audit across frontend views (JSON parseability, Stats nonzero, minis corruption),
+use the maintained tool:
+  python tools/db/audit_frontend_db.py --db <path>
 """
 
+from __future__ import annotations
+
+import argparse
 import sqlite3
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+from gear_optimizer.data.database import get_evolution_db_path
 
 
-def check_db():
-    conn = sqlite3.connect("evolution.db")
+EXPECTED_TEAM_BUFFS = {"NONE", "T1", "T5", "T10", "T15"}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Quick DB validation for frontend handoff.")
+    parser.add_argument("--db", type=str, default="", help="DB path (defaults to EVOLUTION_DB_PATH / ./evolution.db).")
+    args = parser.parse_args()
+
+    db_path = Path(args.db).expanduser() if args.db else Path(get_evolution_db_path())
+    if not db_path.exists():
+        raise SystemExit(f"DB not found: {db_path}")
+
+    conn = sqlite3.connect(db_path)
     c = conn.cursor()
 
     print("=" * 60)
-    print("FINAL DB VALIDATION FOR FRONTEND")
+    print("DB VALIDATION (QUICK)")
     print("=" * 60)
 
-    # 1. Schema version
     version = c.execute("PRAGMA user_version").fetchone()[0]
-    print(f"\n1. Schema Version: {version}")
-    print(f"   {'✓' if version == 12 else '✗'} Expected: 12")
+    print(f"\n1) Schema Version: {version}")
 
-    # 2. Unified view exists
-    view_exists = c.execute(
-        "SELECT name FROM sqlite_master WHERE type='view' AND name='fg_loadouts_unified'"
-    ).fetchone()
-    print(f"\n2. Unified View: {'✓ Exists' if view_exists else '✗ Missing'}")
+    view_exists = c.execute("SELECT 1 FROM sqlite_master WHERE type='view' AND name='fg_loadouts_unified'").fetchone()
+    print(f"\n2) Unified View fg_loadouts_unified: {'OK' if view_exists else 'MISSING'}")
 
-    # 3. Deduplication working
     legacy_count = c.execute("SELECT COUNT(*) FROM fg_loadouts").fetchone()[0]
     tiered_count = c.execute("SELECT COUNT(*) FROM team_buff_fg_loadouts").fetchone()[0]
     unified_count = c.execute("SELECT COUNT(*) FROM fg_loadouts_unified").fetchone()[0]
     duplicates_removed = (legacy_count + tiered_count) - unified_count
 
-    print(f"\n3. Deduplication:")
-    print(f"   Legacy (fg_loadouts): {legacy_count:,}")
-    print(f"   Tiered (team_buff_fg_loadouts): {tiered_count:,}")
-    print(f"   Union total: {legacy_count + tiered_count:,}")
-    print(f"   Unified view: {unified_count:,}")
-    print(f"   Duplicates removed: {duplicates_removed:,}")
-    print(f"   {'✓' if duplicates_removed > 0 else '✗'} Working")
+    print("\n3) Deduplication:")
+    print(f"   legacy fg_loadouts: {legacy_count:,}")
+    print(f"   tiered team_buff_fg_loadouts: {tiered_count:,}")
+    print(f"   unified fg_loadouts_unified: {unified_count:,}")
+    print(f"   duplicates_removed: {duplicates_removed:,} ({'OK' if duplicates_removed >= 0 else 'BAD'})")
 
-    # 4. Tier breakdown for sample song
-    sample = c.execute("SELECT DISTINCT song_name FROM team_buff_fg_loadouts LIMIT 1").fetchone()
-    if sample:
-        song = sample[0]
-        tiers = c.execute(
-            """
-            SELECT DISTINCT team_buff 
-            FROM fg_loadouts_unified 
-            WHERE song_name = ? 
-            ORDER BY team_buff
-        """,
-            (song,),
-        ).fetchall()
-
-        print(f"\n4. Tier Breakdown (sample: {song[:50]}...):")
-        tier_names = [t[0] for t in tiers]
-        expected = ["NONE", "T1", "T10", "T15", "T5"]
-        missing = set(expected) - set(tier_names)
-        extra = set(tier_names) - set(expected)
-
-        print(f"   Tiers present: {', '.join(tier_names)}")
-        print(f"   {'✓' if not missing else '✗'} All expected tiers present")
-        if missing:
-            print(f"   Missing: {', '.join(missing)}")
-        if extra:
-            print(f"   Extra: {', '.join(extra)}")
-
-    # 5. team_buff column exists in fg_loadouts
-    columns = c.execute("PRAGMA table_info(fg_loadouts)").fetchall()
-    has_team_buff = any(col[1] == "team_buff" for col in columns)
-    print(f"\n5. fg_loadouts.team_buff column: {'✓ Exists' if has_team_buff else '✗ Missing'}")
-
-    # 6. Verify no NULL team_buff in unified view
-    null_count = c.execute("SELECT COUNT(*) FROM fg_loadouts_unified WHERE team_buff IS NULL").fetchone()[0]
-    print(f"\n6. NULL team_buff check: {'✓ None' if null_count == 0 else f'✗ {null_count} NULL entries'}")
-
-    # 7. Tier distribution
-    tier_counts = c.execute("""
-        SELECT team_buff, COUNT(*) 
-        FROM fg_loadouts_unified 
-        GROUP BY team_buff 
-        ORDER BY team_buff
-    """).fetchall()
-
-    print(f"\n7. Tier Distribution:")
+    print("\n4) Tier distribution (unified):")
+    tier_counts = c.execute(
+        """
+        SELECT UPPER(team_buff) AS team_buff, COUNT(*)
+        FROM fg_loadouts_unified
+        GROUP BY UPPER(team_buff)
+        ORDER BY UPPER(team_buff)
+        """
+    ).fetchall()
     for tier, count in tier_counts:
-        print(f"   {tier:4s}: {count:,} entries")
+        flag = "OK" if tier in EXPECTED_TEAM_BUFFS else "UNEXPECTED"
+        print(f"   {tier:4s}: {count:,} ({flag})")
 
     conn.close()
 
     print("\n" + "=" * 60)
-    print("VALIDATION COMPLETE")
+    print("DONE")
     print("=" * 60)
 
 
 if __name__ == "__main__":
-    check_db()
+    main()
