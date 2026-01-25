@@ -1,10 +1,30 @@
 #!/usr/bin/env python
 """Repair double-encoded minis_json corruption in team_buff tables."""
+
+from __future__ import annotations
+
+import ast
 import json
 import re
 import sqlite3
+import sys
+from pathlib import Path
 
-conn = sqlite3.connect("evolution.db")
+"""
+Repair minis_json corruption in a SQLite DB.
+
+Corruption pattern:
+  Correct: [["Electroman"],["Fusq"]]
+  Corrupt : [["['Electroman']"],["['Fusq']"]]
+
+Usage:
+  python scripts/debug/_repair_minis_corruption.py [path/to/evolution.db]
+
+Defaults to ./evolution.db
+"""
+
+db_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("evolution.db")
+conn = sqlite3.connect(str(db_path))
 conn.row_factory = sqlite3.Row
 
 CORRUPT_PATTERN = re.compile(r"\['")
@@ -33,11 +53,19 @@ def repair_minis_json(mj_str: str) -> str | None:
 
         new_group = []
         for item in group:
-            if isinstance(item, str) and item.startswith("['") and item.endswith("']"):
-                # Likely corrupted: "['Name']" -> parse it back to list.
+            if isinstance(item, str):
+                s = item.strip()
+            else:
+                s = ""
+
+            # Likely corrupted: stringified Python list, e.g.
+            # - "['Name']"
+            # - "['A', 'B']"
+            # - "['Fusq', \"Santa's Helper Marsha\"]"
+            if isinstance(item, str) and s.startswith("[") and s.endswith("]"):
                 try:
-                    parsed = eval(item)  # Safe here since we control the DB.
-                    if isinstance(parsed, list):
+                    parsed = ast.literal_eval(s)
+                    if isinstance(parsed, (list, tuple)):
                         new_group.extend(str(x) for x in parsed if x)
                         changed = True
                     else:
@@ -55,6 +83,7 @@ def repair_minis_json(mj_str: str) -> str | None:
 
 
 tables = ["team_buff_loadouts", "team_buff_fg_loadouts"]
+print(f"DB: {db_path}")
 for table in tables:
     try:
         rows = conn.execute(f"SELECT rowid, minis_json FROM {table}").fetchall()

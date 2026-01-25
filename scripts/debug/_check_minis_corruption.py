@@ -1,10 +1,25 @@
 #!/usr/bin/env python
-"""Check for double-encoded minis_json corruption in evolution.db."""
-import sqlite3
 import json
 import re
+import sqlite3
+import sys
+from pathlib import Path
 
-conn = sqlite3.connect("evolution.db")
+"""
+Check for double-encoded minis_json corruption in a SQLite DB.
+
+Corruption pattern:
+  Correct: [["Electroman"],["Fusq"]]
+  Corrupt : [["['Electroman']"],["['Fusq']"]]
+
+Usage:
+  python scripts/debug/_check_minis_corruption.py [path/to/evolution.db]
+
+Defaults to ./evolution.db
+"""
+
+db_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("evolution.db")
+conn = sqlite3.connect(str(db_path))
 conn.row_factory = sqlite3.Row
 
 # Pattern: inner element is a stringified Python list like "['Name']" instead of just "Name"
@@ -13,6 +28,7 @@ conn.row_factory = sqlite3.Row
 CORRUPT_PATTERN = re.compile(r"\['\w")
 
 tables = ["loadouts", "fg_loadouts", "team_buff_loadouts", "team_buff_fg_loadouts"]
+print(f"DB: {db_path}")
 for table in tables:
     try:
         rows = conn.execute(f"SELECT song_name, minis_json FROM {table}").fetchall()
