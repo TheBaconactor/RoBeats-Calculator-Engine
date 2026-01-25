@@ -4,6 +4,7 @@ import os
 
 # Get a timestamp before the test
 import time
+
 test_start_time = time.time()
 
 # Run optimizer with 1 song
@@ -15,6 +16,7 @@ print("Running optimizer to test Stats persistence...")
 print("=" * 70)
 
 from gear_optimizer.app import GearOptimizerApp
+
 app = GearOptimizerApp()
 app.run()
 
@@ -23,16 +25,19 @@ print("Checking database for Stats...")
 print("=" * 70)
 
 # Check entries created/updated during this test
-conn = sqlite3.connect('evolution.db')
+conn = sqlite3.connect("evolution.db")
 conn.row_factory = sqlite3.Row
 
-rows = conn.execute("""
+rows = conn.execute(
+    """
     SELECT song_name, score, details_json, timestamp
     FROM loadouts 
     WHERE timestamp >= ?
     ORDER BY timestamp DESC
     LIMIT 5
-""", (test_start_time,)).fetchall()
+""",
+    (test_start_time,),
+).fetchall()
 
 if not rows:
     print("\n⚠️  No new entries found (test_start_time may be off or no updates)")
@@ -49,33 +54,33 @@ success_count = 0
 fail_count = 0
 
 for row in rows:
-    song = row['song_name']
-    score = row['score']
-    details_raw = row['details_json']
-    
+    song = row["song_name"]
+    score = row["score"]
+    details_raw = row["details_json"]
+
     print(f"\n--- {song} (Score: {score:,}) ---")
-    
+
     if not details_raw:
         print("  ❌ details_json is NULL")
         fail_count += 1
         continue
-    
+
     details = json.loads(details_raw)
-    
-    if 'Stats' not in details:
+
+    if "Stats" not in details:
         print("  ❌ Stats key missing in details_json")
         fail_count += 1
         continue
-    
-    stats = details['Stats']
-    
+
+    stats = details["Stats"]
+
     if not stats or stats == {}:
         print("  ❌ Stats is EMPTY DICT {}")
         fail_count += 1
         continue
-    
+
     # Check elemental stats
-    elemental_stats = {k: stats.get(k, 'MISSING') for k in ['Chill', 'Vibe', 'Beat', 'Flow', 'Rush']}
+    elemental_stats = {k: stats.get(k, "MISSING") for k in ["Chill", "Vibe", "Beat", "Flow", "Rush"]}
     print(f"  ✅ Stats populated:")
     print(f"     Chill: {elemental_stats['Chill']}")
     print(f"     Vibe: {elemental_stats['Vibe']}")

@@ -62,9 +62,7 @@ except ImportError:
     pass
 
 # Cached env config for GA_FORCE_COLD_START (avoids repeated env lookups)
-_GA_FORCE_COLD_START: bool = (
-    os.environ.get("GA_FORCE_COLD_START", "").strip().lower() in {"1", "true", "yes", "on"}
-)
+_GA_FORCE_COLD_START: bool = os.environ.get("GA_FORCE_COLD_START", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _build_base_stats_array(base_stats_fixed: dict, cfg_data: dict) -> tuple:
@@ -480,7 +478,9 @@ def decode_gpu_native_ga_runs_payload(
         cand_rows = runs_payload[1 : 1 + selected_n]
         packed_cols = 1 + n_slots + 7 + 7
         if int(cand_rows.shape[1]) < 2 + packed_cols:
-            raise ValueError(f"runs_payload candidate rows have too few columns: {cand_rows.shape[1]} < {2 + packed_cols}")
+            raise ValueError(
+                f"runs_payload candidate rows have too few columns: {cand_rows.shape[1]} < {2 + packed_cols}"
+            )
 
         sel_run_idx = np.asarray(cand_rows[:, 0], dtype=np.int32)
         sel_rows = np.asarray(cand_rows[:, 1], dtype=np.int32)
@@ -2110,7 +2110,9 @@ def solve_coevolution_genetic(
     # GPU-only policy: ignore any attempt to disable GPU via config.
     use_gpu_mode_requested = True
     try:
-        use_gpu_mode_requested = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=True) if hasattr(cfg, "getboolean") else True
+        use_gpu_mode_requested = (
+            cfg.getboolean("IterationEngine", "GPU_Mode", fallback=True) if hasattr(cfg, "getboolean") else True
+        )
     except Exception:
         use_gpu_mode_requested = True
     if not use_gpu_mode_requested:
@@ -2119,7 +2121,9 @@ def solve_coevolution_genetic(
 
     use_gpu_native_requested = True
     try:
-        use_gpu_native_requested = cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=True) if hasattr(cfg, "getboolean") else True
+        use_gpu_native_requested = (
+            cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=True) if hasattr(cfg, "getboolean") else True
+        )
     except Exception:
         use_gpu_native_requested = True
     if not use_gpu_native_requested:
@@ -2201,7 +2205,9 @@ def solve_coevolution_genetic(
         # 3. Create Registry (restrict pools only for non-optimized slots).
         registry_fixed_gear = fixed_gear if not bool(optimize_gear) else None
         registry_fixed_minis = fixed_minis if not bool(optimize_minis) else None
-        registry = ItemRegistry(gear_pool, mini_pool, slots, fixed_gear=registry_fixed_gear, fixed_minis=registry_fixed_minis)
+        registry = ItemRegistry(
+            gear_pool, mini_pool, slots, fixed_gear=registry_fixed_gear, fixed_minis=registry_fixed_minis
+        )
 
         # Upload static per-song GA data once (item stats + base fixed stats)
         # Doing this once avoids large repeated from_numpy() calls which can

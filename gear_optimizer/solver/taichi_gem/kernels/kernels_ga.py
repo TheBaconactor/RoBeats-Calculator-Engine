@@ -229,6 +229,7 @@ def ga_generate_initial_populations_kernel(
                 kernels_helpers.ga_initial_populations[run_id, g, 7] = m1
                 kernels_helpers.ga_initial_populations[run_id, g, 8] = m2
 
+
 @ti.kernel
 def ga_upload_item_stats_and_slots_kernel(
     item_stats_src: ti.types.ndarray(dtype=ti.i32, ndim=2),

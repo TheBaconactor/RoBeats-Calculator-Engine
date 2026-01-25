@@ -234,4 +234,3 @@ def test_gpu_ga_eval_key_consistency_and_determinism() -> None:
             os.environ.pop("GPU_NATIVE_GA_PLATEAU_PRUNE", None)
         else:
             os.environ["GPU_NATIVE_GA_PLATEAU_PRUNE"] = old_prune
-

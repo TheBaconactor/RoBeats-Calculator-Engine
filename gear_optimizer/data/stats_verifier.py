@@ -148,7 +148,9 @@ def verify_and_repair_stats(
                 )
 
                 details["Stats"] = computed_stats
-                conn.execute("UPDATE loadouts SET details_json = ? WHERE rowid = ?", (json.dumps(details), row["rowid"]))
+                conn.execute(
+                    "UPDATE loadouts SET details_json = ? WHERE rowid = ?", (json.dumps(details), row["rowid"])
+                )
                 repaired += 1
 
     if not dry_run and repaired > 0:
@@ -159,16 +161,20 @@ def verify_and_repair_stats(
     # ============================================================
     # PART 2: Verify and repair `fg_loadouts` table
     # ============================================================
-    fg_total, fg_empty, fg_repaired = _verify_fg_table(conn, "fg_loadouts", gears_by_name, minis_by_name, base_stats, dry_run, verbose, sample_size)
+    fg_total, fg_empty, fg_repaired = _verify_fg_table(
+        conn, "fg_loadouts", gears_by_name, minis_by_name, base_stats, dry_run, verbose, sample_size
+    )
 
     # ============================================================
     # PART 3: Verify and repair `team_buff_fg_loadouts` table
     # ============================================================
-    tb_fg_total, tb_fg_empty, tb_fg_repaired = _verify_fg_table(conn, "team_buff_fg_loadouts", gears_by_name, minis_by_name, base_stats, dry_run, verbose, sample_size)
+    tb_fg_total, tb_fg_empty, tb_fg_repaired = _verify_fg_table(
+        conn, "team_buff_fg_loadouts", gears_by_name, minis_by_name, base_stats, dry_run, verbose, sample_size
+    )
 
     conn.close()
 
-    all_valid = (missing == 0 and empty == 0 and fg_empty == 0 and tb_fg_empty == 0)
+    all_valid = missing == 0 and empty == 0 and fg_empty == 0 and tb_fg_empty == 0
     stats_dict = {
         "total": total,
         "missing": missing,
@@ -193,7 +199,7 @@ def _verify_fg_table(
     base_stats: Dict,
     dry_run: bool,
     verbose: bool,
-    sample_size: int
+    sample_size: int,
 ) -> Tuple[int, int, int]:
     """
     Verify and repair an FG table (fg_loadouts or team_buff_fg_loadouts).
@@ -264,7 +270,9 @@ def _verify_fg_table(
                     )
                     details["Stats"] = computed_stats
 
-                conn.execute(f"UPDATE {table_name} SET details_json = ? WHERE rowid = ?", (json.dumps(details), row["rowid"]))
+                conn.execute(
+                    f"UPDATE {table_name} SET details_json = ? WHERE rowid = ?", (json.dumps(details), row["rowid"])
+                )
                 repaired_count += 1
 
     if not dry_run and repaired_count > 0:

@@ -236,10 +236,9 @@ def _get_or_build_islands_state(
     sig = (int(islands), int(s_count), int(k_count), int(v_count), int(counter_stripes))
     if _LAST_ISLANDS_STATE is not None and _LAST_ISLANDS_SIG == sig:
         try:
-            if (
-                tuple(_LAST_ISLANDS_STATE.covered.shape) == (int(islands) * int(s_count),)
-                and tuple(_LAST_ISLANDS_STATE.counts_total.shape) == (int(islands) * int(v_count),)
-            ):
+            if tuple(_LAST_ISLANDS_STATE.covered.shape) == (int(islands) * int(s_count),) and tuple(
+                _LAST_ISLANDS_STATE.counts_total.shape
+            ) == (int(islands) * int(v_count),):
                 return _LAST_ISLANDS_STATE
         except Exception:
             pass
@@ -255,7 +254,7 @@ def _get_or_build_islands_state(
         pass
     ti_runtime.init_taichi()
 
-    I = int(islands)
+    n_islands = int(islands)
     IS = int(islands) * int(s_count)
     IV = int(islands) * int(v_count)
 
@@ -266,16 +265,16 @@ def _get_or_build_islands_state(
     counts_total = ti.field(dtype=ti.i32, shape=(IV,))
     covered = ti.field(dtype=ti.i32, shape=(IS,))
     chosen = ti.field(dtype=ti.i32, shape=(IS,))
-    cap = ti.field(dtype=ti.i32, shape=(I,))
-    inv_size = ti.field(dtype=ti.i32, shape=(I,))
-    cov_count = ti.field(dtype=ti.i32, shape=(I,))
+    cap = ti.field(dtype=ti.i32, shape=(n_islands,))
+    inv_size = ti.field(dtype=ti.i32, shape=(n_islands,))
+    cov_count = ti.field(dtype=ti.i32, shape=(n_islands,))
 
-    best_cost = ti.field(dtype=ti.u32, shape=(I,))
-    best_cand = ti.field(dtype=ti.u32, shape=(I,))  # packed (s,p) key
-    did_add_any = ti.field(dtype=ti.i32, shape=(I,))
-    removed_cnt = ti.field(dtype=ti.i32, shape=(I,))
-    destroy_kind = ti.field(dtype=ti.i32, shape=(I,))
-    destroy_target = ti.field(dtype=ti.i32, shape=(I,))
+    best_cost = ti.field(dtype=ti.u32, shape=(n_islands,))
+    best_cand = ti.field(dtype=ti.u32, shape=(n_islands,))  # packed (s,p) key
+    did_add_any = ti.field(dtype=ti.i32, shape=(n_islands,))
+    removed_cnt = ti.field(dtype=ti.i32, shape=(n_islands,))
+    destroy_kind = ti.field(dtype=ti.i32, shape=(n_islands,))
+    destroy_target = ti.field(dtype=ti.i32, shape=(n_islands,))
     repack_best_p = ti.field(dtype=ti.i32, shape=(IS,))
 
     _LAST_ISLANDS_STATE = _GpuFullIslandsState(
@@ -346,8 +345,8 @@ def _seed_inventory_islands(
     v_count: ti.i32,
 ):
     # Assume caller already cleared counts_total and set inv_size=0.
-    I = inv_size.shape[0]
-    for i in range(I):
+    n_islands = inv_size.shape[0]
+    for i in range(n_islands):
         inv_size[i] = 0
         base = ti.i32(i) * ti.i32(v_count)
         for k in range(seed_indices.shape[0]):
@@ -387,17 +386,17 @@ def _greedy_fill_steps_islands(
     - Uses `best_cand[i]` for tie-breaking by minimal packed (s,p).
     - Packing is `(s << p_bits) | p` (no cost bits), then cost is recomputed on apply.
     """
-    I = inv_size.shape[0]
+    n_islands = inv_size.shape[0]
     K = part_vids.shape[1]
     scan = K
     if k_scan > 0 and k_scan < K:
         scan = k_scan
 
-    for i in range(I):
+    for i in range(n_islands):
         did_add_any[i] = 0
 
     for step in ti.static(range(8)):
-        for i in range(I):
+        for i in range(n_islands):
             best_cost[i] = ti.u32(0xFFFFFFFF)
             best_cand[i] = ti.u32(0xFFFFFFFF)
 
@@ -480,7 +479,7 @@ def _greedy_fill_steps_islands(
                         key = (ti.u32(s) << ti.u32(p_bits)) | ti.u32(p)
                         ti.atomic_min(best_cand[i], key)
 
-        for i in range(I):
+        for i in range(n_islands):
             key = best_cand[i]
             if key == ti.u32(0xFFFFFFFF):
                 continue
@@ -545,8 +544,8 @@ def _destroy_alns_islands(
       1 = unique-weighted destroy (prefer songs owning unique variants)
       2 = hybrid (unique-weighted with extra randomness)
     """
-    I = inv_size.shape[0]
-    for i in range(I):
+    n_islands = inv_size.shape[0]
+    for i in range(n_islands):
         removed_cnt[i] = 0
 
     for pass_idx in ti.static(range(5)):
@@ -819,7 +818,6 @@ def _extract_island_solution(
     for s in range(s_count):
         out_covered[s] = covered[base_s + s]
         out_chosen[s] = chosen[base_s + s]
-
 
 
 @ti.kernel
@@ -2434,7 +2432,11 @@ def _solve_coverage_gpu_full_alns_islands(
     }
 
     st = _get_or_build_islands_state(
-        islands=int(islands), s_count=int(s_count), k_count=int(k_count), v_count=int(v_count), counter_stripes=int(counter_stripes)
+        islands=int(islands),
+        s_count=int(s_count),
+        k_count=int(k_count),
+        v_count=int(v_count),
+        counter_stripes=int(counter_stripes),
     )
     st.part_vids.from_numpy(part_vids_np.reshape(s_count, k_count, 6))
     st.freq.from_numpy(variant_freq_np.reshape(v_count))
@@ -2825,7 +2827,9 @@ def _solve_coverage_gpu_full_alns_islands(
                     r = max(0.0, r)
                 if new_best_found and i == int(best_island):
                     r = float(r) + float(alns_best_bonus)
-                arm_w[b, a] = max(1e-6, (1.0 - float(alns_eta)) * float(arm_w[b, a]) + float(alns_eta) * float(1e-3 + r))
+                arm_w[b, a] = max(
+                    1e-6, (1.0 - float(alns_eta)) * float(arm_w[b, a]) + float(alns_eta) * float(1e-3 + r)
+                )
 
         # Parallel tempering: periodically exchange temperatures between adjacent replicas.
         # We swap the *temperature labels* (not the full island state) so islands "move" along the ladder
@@ -3349,7 +3353,19 @@ def solve_coverage_gpu_full(
             if selection is None:
                 break
             _cost, s_idx, p_idx = selection
-            _add_song(part_vids, vid_gid, counts, counts_total, gear_var_count, covered, chosen, inv_size, cov_count, s_idx, p_idx)
+            _add_song(
+                part_vids,
+                vid_gid,
+                counts,
+                counts_total,
+                gear_var_count,
+                covered,
+                chosen,
+                inv_size,
+                cov_count,
+                s_idx,
+                p_idx,
+            )
             added += 1
             step += 1
         return added

@@ -443,7 +443,9 @@ def _migration_11_add_team_buff_to_fg_loadouts(conn: sqlite3.Connection) -> None
 
     # Create index for efficient tier queries
     try:
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_fg_loadouts_team_buff ON fg_loadouts (song_name, team_buff, fg_score DESC);")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_fg_loadouts_team_buff ON fg_loadouts (song_name, team_buff, fg_score DESC);"
+        )
     except sqlite3.Error:
         pass
 
@@ -458,7 +460,7 @@ def _migration_12_add_fg_loadouts_unified_view(conn: sqlite3.Connection) -> None
     Some consumers (exporters/frontends) want a single query surface that always includes `team_buff`.
     This view provides that without changing write paths.
 
-    Deduplication: If a song+tier combo exists in `team_buff_fg_loadouts`, exclude 
+    Deduplication: If a song+tier combo exists in `team_buff_fg_loadouts`, exclude
     the legacy `fg_loadouts` entry for that same song+tier to avoid duplicate T5 entries.
     """
     # Ensure idempotent updates in case the view definition changes.
@@ -846,6 +848,7 @@ def _migration_15_add_loadouts_unified_and_frontend_best_views(conn: sqlite3.Con
         WHERE rank <= 51;
         """
     )
+
 
 _MIGRATIONS: Dict[int, Migration] = {
     1: _migration_1_init_schema,

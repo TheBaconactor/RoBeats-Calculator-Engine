@@ -127,7 +127,7 @@ def test_seeded_inventory_reports_per_song_used_items_for_element(monkeypatch, t
     conn = get_db_connection(str(db_path))
     try:
         for i, profile in enumerate(song_profiles):
-            song_name = f"{selected_element}_Song{i+1:02d}"
+            song_name = f"{selected_element}_Song{i + 1:02d}"
             profile_by_song[song_name] = profile
 
             if profile == "OV":
@@ -245,4 +245,3 @@ def test_seeded_inventory_reports_per_song_used_items_for_element(monkeypatch, t
             # Inventory item id should match the expected per-song profile for this gear slot.
             expected_id = f"{gear_name}:OV" if profile == "OV" else f"{gear_name}:{profile}"
             assert inv_id == expected_id
-

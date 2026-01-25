@@ -303,7 +303,7 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
             else:
                 # DB prefetch still running - proceed without it to keep GPU fed
                 if perf:
-                    print(f"[PERF][FGPrep] db_prefetch not ready, proceeding without DB loadouts")
+                    print("[PERF][FGPrep] db_prefetch not ready, proceeding without DB loadouts")
                 db_loadouts_full = None
         except Exception:
             db_loadouts_full = None

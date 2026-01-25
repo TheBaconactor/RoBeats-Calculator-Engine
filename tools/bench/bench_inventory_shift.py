@@ -316,8 +316,12 @@ def main() -> None:
     print(f"songs_total={stats.get('songs_total')} songs_covered={stats.get('songs_covered')}")
     print(f"gear_variants_used={stats.get('gear_variants_used')} / cap={stats.get('gear_variants_cap')}")
     if inv_opt:
-        print(f"unique_gear_ids={inv_opt.get('unique_gear_ids')} avg_variants_per_gear={inv_opt.get('avg_variants_per_gear')}")
-        print(f"wildcard_share={inv_opt.get('wildcard_share')} top_gears={len(inv_opt.get('top_gears_by_variant_count') or [])}")
+        print(
+            f"unique_gear_ids={inv_opt.get('unique_gear_ids')} avg_variants_per_gear={inv_opt.get('avg_variants_per_gear')}"
+        )
+        print(
+            f"wildcard_share={inv_opt.get('wildcard_share')} top_gears={len(inv_opt.get('top_gears_by_variant_count') or [])}"
+        )
     print()
 
 

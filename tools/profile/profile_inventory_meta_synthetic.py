@@ -138,7 +138,9 @@ def main() -> int:
     ap.add_argument("--partitions-per-song", type=int, default=32, help="Witness patterns per song (default: 32).")
     ap.add_argument("--seed", type=int, default=1, help="RNG seed for synthesis + solver (default: 1).")
     ap.add_argument("--adaptive-rounds", type=int, default=3, help="GPU full: witness rounds (default: 3).")
-    ap.add_argument("--adaptive-keep-per-song", type=int, default=8, help="GPU full: keep patterns per round (default: 8).")
+    ap.add_argument(
+        "--adaptive-keep-per-song", type=int, default=8, help="GPU full: keep patterns per round (default: 8)."
+    )
     ap.add_argument("--lns-time-sec", type=float, default=8.0, help="LNS time budget (default: 8.0).")
     ap.add_argument("--lns-attempts", type=int, default=999999, help="Max LNS attempts (default: 999999).")
     ap.add_argument("--gpu-repack-passes", type=int, default=3, help="GPU repack passes (default: 3).")

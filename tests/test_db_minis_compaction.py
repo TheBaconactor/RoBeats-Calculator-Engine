@@ -15,4 +15,3 @@ def test_compact_minis_handles_nested_variant_groups_and_corrupt_list_literals()
         "Trailblazing Trance Zara",
         "BlackY",
     ]
-

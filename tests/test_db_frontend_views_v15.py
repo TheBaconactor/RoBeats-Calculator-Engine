@@ -51,7 +51,12 @@ def test_schema_v15_creates_frontend_views_and_unified_behavior(tmp_path):
             "SELECT team_buff, loadout_hash, score, source_table FROM loadouts_unified WHERE song_name = ?",
             (song_a,),
         ).fetchone()
-        assert dict(row) == {"team_buff": "T5", "loadout_hash": "tierhash", "score": 20, "source_table": "team_buff_loadouts"}
+        assert dict(row) == {
+            "team_buff": "T5",
+            "loadout_hash": "tierhash",
+            "score": 20,
+            "source_table": "team_buff_loadouts",
+        }
 
         # Song B: no tier rows exist, so legacy loadouts row is surfaced as implicit T5.
         song_b = "Some Song (Normal) by Someone"
@@ -83,4 +88,3 @@ def test_schema_v15_creates_frontend_views_and_unified_behavior(tmp_path):
         assert dict(row) == {"song_title": "Insight", "difficulty": "Hard"}
     finally:
         conn.close()
-

@@ -420,13 +420,21 @@ def fetch_candidates_within_delta_allow_missing(
 
     for song_name, candidates in list(candidates_by_song.items()):
         dedup: Dict[Tuple[Any, ...], SongCandidate] = {}
+
         # Highest score first for selection diversity; stable within table by rowid.
         def _metric(c: SongCandidate) -> int:
             return int(c.fg_score) if c.source_table == "fg_loadouts" else int(c.score)
 
         ordered = sorted(candidates, key=lambda c: (-_metric(c), 0 if c.source_table == "loadouts" else 1, c.rowid))
         for cand in ordered:
-            key = (cand.gear_names, cand.mini_groups, cand.gem_totals, cand.selected_element, cand.source_table, _metric(cand))
+            key = (
+                cand.gear_names,
+                cand.mini_groups,
+                cand.gem_totals,
+                cand.selected_element,
+                cand.source_table,
+                _metric(cand),
+            )
             if key not in dedup:
                 dedup[key] = cand
         candidates_by_song[song_name] = list(dedup.values())

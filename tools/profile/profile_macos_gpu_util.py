@@ -194,7 +194,7 @@ def main() -> int:
     print("=== macOS GPU Utilization (IOKit/ioreg) ===")
     if pid is not None:
         print(f"pid={pid} cmd={args.cmd!r}")
-    print(f"wall_sec={wall:.3f} samples={len(samples)} interval_ms={int(interval_sec*1000)}")
+    print(f"wall_sec={wall:.3f} samples={len(samples)} interval_ms={int(interval_sec * 1000)}")
     print(f"device_util_avg={_format_pct(_avg(dev_vals))} device_util_max={_format_pct(_mx(dev_vals))}")
     print(f"renderer_util_avg={_format_pct(_avg(ren_vals))} renderer_util_max={_format_pct(_mx(ren_vals))}")
     print(f"tiler_util_avg={_format_pct(_avg(til_vals))} tiler_util_max={_format_pct(_mx(til_vals))}")

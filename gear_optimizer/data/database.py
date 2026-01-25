@@ -389,7 +389,7 @@ def _compact_minis_for_db(mini_list):
     """
     if not mini_list:
         return []
-    
+
     def _first_name(v: Any) -> str:
         if v is None:
             return ""
@@ -415,6 +415,7 @@ def _compact_minis_for_db(mini_list):
                     return s
             return s
         return str(v).strip()
+
     result = []
     for m in mini_list:
         name = _first_name(m)
@@ -629,29 +630,29 @@ def _ensure_stats_in_details(
 ) -> dict:
     """
     Ensure Stats are populated in details dict.
-    
+
     If Stats is missing or empty, compute it from loadout components using
     a lightweight approach that doesn't require full gear lookup.
-    
+
     This is a defensive fallback - the optimizer should populate Stats properly,
     but this ensures we never persist entries with empty Stats.
     """
     if not isinstance(details, dict):
         details = {}
-    
+
     try:
         from gear_optimizer.core.stats_calculator import compute_full_stats
-        
+
         # Extract gear/mini names from potentially nested structures
         gear_names = []
-        for g in (gear or []):
+        for g in gear or []:
             if isinstance(g, dict):
                 gear_names.append(g.get("Name", ""))
             elif isinstance(g, str):
                 gear_names.append(g)
-        
+
         mini_names = []
-        for m in (minis or []):
+        for m in minis or []:
             if isinstance(m, dict):
                 mini_names.append(m.get("Name", ""))
             elif isinstance(m, str):
@@ -663,10 +664,10 @@ def _ensure_stats_in_details(
                     mini_names.append(first.get("Name", ""))
                 elif isinstance(first, str):
                     mini_names.append(first)
-        
+
         # Get gear lookup (use cached version)
         gears_by_name = get_gears_by_name_cached()
-        
+
         # Base stats (loadout-only, no user config)
         base_stats = {
             "Perfect Points": 0,
@@ -680,25 +681,24 @@ def _ensure_stats_in_details(
             "Beat": 0,
             "Vibe": 0,
         }
-        
+
         # Get gem counts and FT/FF from details
         gem_counts = dict(details.get("GemCounts", {}) or {})
         gem_counts["Fever Time"] = int(details.get("FT", 0) or 0)
         gem_counts["Fever Fill Rate"] = int(details.get("FF", 0) or 0)
         selected_element = details.get("SelectedElement") or details.get("Selected Element") or ""
-        
+
         # Compute Stats
         computed = compute_full_stats(
-            gear_names, mini_names, gem_counts, selected_element,
-            gears_by_name, minis_by_name, base_stats
+            gear_names, mini_names, gem_counts, selected_element, gears_by_name, minis_by_name, base_stats
         )
-        
+
         details["Stats"] = computed
-        
+
     except Exception:
         # If Stats computation fails, leave details as-is (will be caught by verifier)
         pass
-    
+
     return details
 
 
@@ -776,25 +776,69 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
         """
         if not isinstance(force_data, dict):
             return 0
-        # Prefer explicit score field on the force object.
+
+        # Prefer explicit score field on the force object (support both key spellings).
         s = _coerce_int(force_data.get("score", 0))
+        if s <= 0:
+            s = _coerce_int(force_data.get("Score", 0))
         if s > 0:
             return s
-        det = force_data.get("details") or {}
+
+        # Support both wrapper and flat formats.
+        det = force_data.get("details")
         if not isinstance(det, dict):
-            return 0
+            det = force_data
+
         fg = det.get("ForceGreats") or {}
         if not isinstance(fg, dict):
             return 0
+
         # Primary key used throughout the codebase.
         s2 = _coerce_int(fg.get("final_score", 0))
         if s2 > 0:
             return s2
+
         # Backward-compatible fallbacks.
         return max(
             _coerce_int(fg.get("finalScore", 0)),
             _coerce_int(fg.get("score", 0)),
         )
+
+    def _normalize_force_for_persistence(force_data: Any, *, fg_score: int) -> Any:
+        """
+        Normalize force payload for DB persistence.
+
+        Invariants:
+        - If this entry has FG, ensure `force_details_json` includes a top-level `score` key
+          (lowercase) so consumers/tests can reliably read it.
+        - Preserve the wrapper format `{"score": ..., "details": {...}}` when provided.
+        """
+        if not isinstance(force_data, dict):
+            return force_data
+
+        out = dict(force_data)
+
+        # Prefer wrapper score if present; otherwise copy from alternate spellings.
+        score_v = _coerce_int(out.get("score", 0))
+        if score_v <= 0:
+            score_v = _coerce_int(out.get("Score", 0))
+        if score_v <= 0 and int(fg_score or 0) > 0:
+            score_v = int(fg_score)
+        if score_v > 0:
+            out["score"] = int(score_v)
+
+        # If wrapper has `details`, keep it (do not unwrap); ensure nested final_score is consistent when possible.
+        det = out.get("details")
+        if isinstance(det, dict):
+            fg = det.get("ForceGreats")
+            if isinstance(fg, dict) and int(fg_score or 0) > 0:
+                fg_out = dict(fg)
+                fg_out["final_score"] = int(fg_score)
+                det_out = dict(det)
+                det_out["ForceGreats"] = fg_out
+                out["details"] = det_out
+
+        return out
 
     def _effective_hash_for_entry(entry: Dict[str, Any]) -> Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]:
         gear_names_local = _compact_gear_for_db(entry.get("gear", []))
@@ -884,23 +928,19 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
             gear = entry.get("gear", [])
             minis = entry.get("minis", [])
             details = entry.get("details", {})
-            
+
             # Defensive: ensure Stats are populated in details
             # If Stats is missing or empty, compute it from loadout components
             current_stats = details.get("Stats") if isinstance(details, dict) else None
             if not current_stats or (isinstance(current_stats, dict) and len(current_stats) == 0):
                 details = _ensure_stats_in_details(details, gear, minis, minis_by_name)
-            
-            # ForceGreats details are persisted as a lean, flat payload in `entry['force']`.
-            # Historical DBs may contain older nested formats; we preserve best-effort compatibility
-            # by unwrapping `{..., 'details': {...}}` into the details dict.
+
             force_data = entry.get("force")
-            if isinstance(force_data, dict) and ("ForceGreats" not in force_data) and isinstance(force_data.get("details"), dict):
-                force_data = force_data.get("details")
 
             if fg_score <= 0 and force_data is not None:
                 fg_score = _fg_score_from_force(force_data)
 
+            force_data = _normalize_force_for_persistence(force_data, fg_score=fg_score)
             details = _normalize_details_for_persistence(details, score=score, fg_score=fg_score, force_data=force_data)
 
             gear_names = _compact_gear_for_db(gear)
@@ -1173,11 +1213,15 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
         if not isinstance(force_data, dict):
             return 0
         s = _coerce_int(force_data.get("score", 0))
+        if s <= 0:
+            s = _coerce_int(force_data.get("Score", 0))
         if s > 0:
             return s
-        det = force_data.get("details") or {}
+
+        det = force_data.get("details")
         if not isinstance(det, dict):
-            return 0
+            det = force_data
+
         fg = det.get("ForceGreats") or {}
         if not isinstance(fg, dict):
             return 0
@@ -1188,6 +1232,30 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
             _coerce_int(fg.get("finalScore", 0)),
             _coerce_int(fg.get("score", 0)),
         )
+
+    def _normalize_force_for_persistence(force_data: Any, *, fg_score: int) -> Any:
+        if not isinstance(force_data, dict):
+            return force_data
+
+        out = dict(force_data)
+        score_v = _coerce_int(out.get("score", 0))
+        if score_v <= 0:
+            score_v = _coerce_int(out.get("Score", 0))
+        if score_v <= 0 and int(fg_score or 0) > 0:
+            score_v = int(fg_score)
+        if score_v > 0:
+            out["score"] = int(score_v)
+
+        det = out.get("details")
+        if isinstance(det, dict):
+            fg = det.get("ForceGreats")
+            if isinstance(fg, dict) and int(fg_score or 0) > 0:
+                fg_out = dict(fg)
+                fg_out["final_score"] = int(fg_score)
+                det_out = dict(det)
+                det_out["ForceGreats"] = fg_out
+                out["details"] = det_out
+        return out
 
     def _effective_hash_for_entry(entry: Dict[str, Any]) -> Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]:
         gear_names_local = _compact_gear_for_db(entry.get("gear", []))
@@ -1260,7 +1328,7 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
             minis = entry.get("minis", [])
             details = entry.get("details", {})
             force_data = entry.get("force")
-            
+
             # Defensive: ensure Stats are populated in details
             # If Stats is missing or empty, compute it from loadout components
             current_stats = details.get("Stats") if isinstance(details, dict) else None
@@ -1270,6 +1338,7 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
             if fg_score <= 0 and force_data is not None:
                 fg_score = _fg_score_from_force(force_data)
 
+            force_data = _normalize_force_for_persistence(force_data, fg_score=fg_score)
             details = _normalize_details_for_persistence(details, score=score, fg_score=fg_score, force_data=force_data)
 
             gear_names = _compact_gear_for_db(gear)

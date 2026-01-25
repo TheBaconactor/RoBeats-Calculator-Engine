@@ -180,4 +180,3 @@ def compute_wildcard_ppmi_synergy(
 
 
 __all__ = ["WildcardSynergy", "compute_wildcard_ppmi_synergy"]
-

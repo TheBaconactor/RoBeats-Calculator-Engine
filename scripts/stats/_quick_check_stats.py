@@ -1,7 +1,7 @@
 import sqlite3
 import json
 
-conn = sqlite3.connect('evolution.db')
+conn = sqlite3.connect("evolution.db")
 conn.row_factory = sqlite3.Row
 
 # Check most recent entries
@@ -15,20 +15,20 @@ rows = conn.execute("""
 print("Checking most recent 5 database entries...\n")
 
 for row in rows:
-    song = row['song_name']
-    details_raw = row['details_json']
-    
+    song = row["song_name"]
+    details_raw = row["details_json"]
+
     if not details_raw:
         print(f"❌ {song}: NULL details_json")
         continue
-    
+
     details = json.loads(details_raw)
-    stats = details.get('Stats', {})
-    
+    stats = details.get("Stats", {})
+
     if not stats or stats == {}:
         print(f"❌ {song}: Empty Stats {{}}")
     else:
-        chill = stats.get('Chill', 'N/A')
+        chill = stats.get("Chill", "N/A")
         print(f"✅ {song}: Stats OK (Chill={chill})")
 
 conn.close()

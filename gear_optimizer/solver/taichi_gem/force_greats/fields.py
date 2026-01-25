@@ -141,7 +141,14 @@ def reset_fields_state() -> None:
     global _fields_allocated
     global song_timestamps, song_timestamps_great_candidate
     global fg_fever_end_idx_song, fg_fever_end_idx_great_candidate
-    global fg_forced_counts, fg_pair_caps, fg_ft_list, fg_ff_list, fg_cfg_start_list, fg_cfg_len_list, fg_cfg_total_len_list
+    global \
+        fg_forced_counts, \
+        fg_pair_caps, \
+        fg_ft_list, \
+        fg_ff_list, \
+        fg_cfg_start_list, \
+        fg_cfg_len_list, \
+        fg_cfg_total_len_list
     global fg_cfg_total_len_list
     global fg_cfg_base_list, fg_cfg_mode_list, fg_cfg_max_fp
     global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx
@@ -301,7 +308,14 @@ def allocate_fields() -> None:
     """Allocate ForceGreats GPU fields. Must be called after ti.init()."""
     global song_timestamps, song_timestamps_great_candidate
     global fg_fever_end_idx_song, fg_fever_end_idx_great_candidate
-    global fg_forced_counts, fg_pair_caps, fg_ft_list, fg_ff_list, fg_cfg_start_list, fg_cfg_len_list, fg_cfg_total_len_list
+    global \
+        fg_forced_counts, \
+        fg_pair_caps, \
+        fg_ft_list, \
+        fg_ff_list, \
+        fg_cfg_start_list, \
+        fg_cfg_len_list, \
+        fg_cfg_total_len_list
     global fg_cfg_base_list, fg_cfg_mode_list, fg_cfg_max_fp
     global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx, fg_best_ft, fg_best_ff
     global fg_best_g_pp, fg_best_g_cm, fg_best_g_fm, fg_best_g_ov

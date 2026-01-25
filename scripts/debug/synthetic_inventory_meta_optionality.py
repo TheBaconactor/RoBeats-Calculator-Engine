@@ -65,7 +65,9 @@ def main() -> int:
 
     from inventory_optimizer.coverage import _MemoryLogger, _optionality_stats_single, _run_gpu_full_solver_from_offsets
 
-    gear_names, gear_ids_np, offsets_np = _build_synthetic(a_songs=args.a_songs, b_songs=args.b_songs, m_offsets=args.m_offsets)
+    gear_names, gear_ids_np, offsets_np = _build_synthetic(
+        a_songs=args.a_songs, b_songs=args.b_songs, m_offsets=args.m_offsets
+    )
     mem = _MemoryLogger(enabled=False)
 
     sol = _run_gpu_full_solver_from_offsets(
@@ -104,7 +106,11 @@ def main() -> int:
     print(
         json.dumps(
             {
-                "synthetic": {"a_songs": int(args.a_songs), "b_songs": int(args.b_songs), "m_offsets": int(args.m_offsets)},
+                "synthetic": {
+                    "a_songs": int(args.a_songs),
+                    "b_songs": int(args.b_songs),
+                    "m_offsets": int(args.m_offsets),
+                },
                 "solution": {"covered": int(covered_np.sum()), "total": int(covered_np.size)},
                 "optionality": opt,
             },

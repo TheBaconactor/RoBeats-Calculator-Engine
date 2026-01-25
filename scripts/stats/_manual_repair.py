@@ -3,6 +3,7 @@
 import sqlite3
 import json
 import sys
+
 sys.path.insert(0, ".")
 
 from gear_optimizer.core.stats_calculator import compute_full_stats
@@ -17,22 +18,33 @@ gears_by_name = {g["Name"]: g for g in gears_list}
 minis_by_name = {m["Name"]: m for m in minis_list}
 
 # Empty base stats
-base_stats = {stat: 0 for stat in [
-    "Perfect Points", "Combo Multiplier", "Fever Multiplier", 
-    "Fever Fill Rate", "Fever Time", "Chill", "Flow", "Rush", "Beat", "Vibe"
-]}
+base_stats = {
+    stat: 0
+    for stat in [
+        "Perfect Points",
+        "Combo Multiplier",
+        "Fever Multiplier",
+        "Fever Fill Rate",
+        "Fever Time",
+        "Chill",
+        "Flow",
+        "Rush",
+        "Beat",
+        "Vibe",
+    ]
+}
 
 # Get all broken entries
-conn = sqlite3.connect('evolution.db')
+conn = sqlite3.connect("evolution.db")
 conn.row_factory = sqlite3.Row
 
 print("Finding broken entries...")
-rows = conn.execute('SELECT rowid, gear_json, minis_json, details_json FROM loadouts').fetchall()
+rows = conn.execute("SELECT rowid, gear_json, minis_json, details_json FROM loadouts").fetchall()
 
 broken = []
 for row in rows:
-    details = json.loads(row['details_json']) if row['details_json'] else {}
-    stats = details.get('Stats')
+    details = json.loads(row["details_json"]) if row["details_json"] else {}
+    stats = details.get("Stats")
     if stats is None or (isinstance(stats, dict) and len(stats) == 0):
         broken.append(row)
 
@@ -41,10 +53,10 @@ print(f"Found {len(broken)} broken entries")
 # Repair each one
 repaired = 0
 for row in broken:
-    details = json.loads(row['details_json']) if row['details_json'] else {}
-    gear_names = json.loads(row['gear_json']) if row['gear_json'] else []
-    mini_names_raw = json.loads(row['minis_json']) if row['minis_json'] else []
-    
+    details = json.loads(row["details_json"]) if row["details_json"] else {}
+    gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
+    mini_names_raw = json.loads(row["minis_json"]) if row["minis_json"] else []
+
     # Handle variant group format
     mini_names = []
     for item in mini_names_raw:
@@ -52,23 +64,23 @@ for row in broken:
             mini_names.append(item[0])
         elif isinstance(item, str):
             mini_names.append(item)
-    
+
     gem_counts = dict(details.get("GemCounts", {}) or {})
     gem_counts["Fever Time"] = int(details.get("FT", 0) or 0)
     gem_counts["Fever Fill Rate"] = int(details.get("FF", 0) or 0)
     selected_element = details.get("SelectedElement") or details.get("Selected Element") or ""
-    
+
     # Compute Stats
     computed = compute_full_stats(
         gear_names, mini_names, gem_counts, selected_element, gears_by_name, minis_by_name, base_stats
     )
-    
+
     details["Stats"] = computed
-    
+
     # Update
-    conn.execute("UPDATE loadouts SET details_json = ? WHERE rowid = ?", (json.dumps(details), row['rowid']))
+    conn.execute("UPDATE loadouts SET details_json = ? WHERE rowid = ?", (json.dumps(details), row["rowid"]))
     repaired += 1
-    
+
     if repaired <= 3:
         print(f"  Repaired rowid {row['rowid']}: Chill={computed.get('Chill', 0)}, Vibe={computed.get('Vibe', 0)}")
 

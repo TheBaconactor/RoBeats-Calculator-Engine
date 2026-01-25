@@ -535,7 +535,9 @@ def _hash9_i32(
 
 
 @ti.func
-def _fg_proxy_from_base_stats7(pp: ti.i32, cm: ti.i32, fm: ti.i32, p_val: ti.i32, s_val: ti.i32, ft: ti.i32, ff: ti.i32) -> ti.i64:
+def _fg_proxy_from_base_stats7(
+    pp: ti.i32, cm: ti.i32, fm: ti.i32, p_val: ti.i32, s_val: ti.i32, ft: ti.i32, ff: ti.i32
+) -> ti.i64:
     # Match CPU proxy weights (constant base offsets do not affect ordering).
     return (
         ti.cast(fm, ti.i64) * 4
@@ -643,7 +645,9 @@ def _minis_used(m0: ti.i32, m1: ti.i32, m2: ti.i32, selected_n: ti.i32) -> ti.i3
 
 
 @ti.func
-def _pick_best_base_stub(n_stub: ti.i32, selected_n: ti.i32, require_new_center: ti.i32, require_new_mini: ti.i32) -> ti.i32:
+def _pick_best_base_stub(
+    n_stub: ti.i32, selected_n: ti.i32, require_new_center: ti.i32, require_new_mini: ti.i32
+) -> ti.i32:
     best = ti.i32(-1)
     ti.loop_config(serialize=True)
     for i in range(n_stub):
@@ -996,9 +1000,7 @@ def ga_copy_fg_selected_payload_to_download_staging_kernel(
     for s in ti.static(range(9)):
         out_payload[0, 2 + s] = kernels_helpers.ga_fg_candidates_packed[table_slot, best_run, 0, 1 + s]
     for t in ti.static(range(_GA_FG_RESULTS_COLS)):
-        out_payload[0, 2 + 9 + t] = kernels_helpers.ga_fg_candidates_packed[
-            table_slot, best_run, 0, results_col0 + t
-        ]
+        out_payload[0, 2 + 9 + t] = kernels_helpers.ga_fg_candidates_packed[table_slot, best_run, 0, results_col0 + t]
     out_payload[0, 2 + 9 + _GA_FG_RESULTS_COLS] = best_run
 
     # Candidate rows.

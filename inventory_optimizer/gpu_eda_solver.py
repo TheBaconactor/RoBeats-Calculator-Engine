@@ -292,7 +292,8 @@ def _construct_population(
                     inv_score = ti.i32(65535) - q
 
                     if (delta < best_delta) or (
-                        delta == best_delta and (new_col < best_new_col or (new_col == best_new_col and inv_score < best_inv_score))
+                        delta == best_delta
+                        and (new_col < best_new_col or (new_col == best_new_col and inv_score < best_inv_score))
                     ):
                         best_delta = delta
                         best_new_col = new_col

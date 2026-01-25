@@ -94,7 +94,10 @@ def _read_typeperf_csv(path: Path, *, pid: int) -> dict[str, Any]:
                     i
                     for i, name in enumerate(header[1:], start=1)
                     if (pid_tag in str(name or "").lower())
-                    and ("engtype_compute" in str(name or "").lower() or "high priority compute" in str(name or "").lower())
+                    and (
+                        "engtype_compute" in str(name or "").lower()
+                        or "high priority compute" in str(name or "").lower()
+                    )
                 ]
                 counter_count = int(len(keep_idxs))
                 counter_count_compute = int(len(keep_compute_idxs))
@@ -142,7 +145,9 @@ def _summarize_series(values: list[float]) -> dict[str, Any]:
     }
 
 
-def _find_low_util_intervals(samples: list[dict[str, Any]], *, threshold: float, min_len_s: int) -> list[dict[str, Any]]:
+def _find_low_util_intervals(
+    samples: list[dict[str, Any]], *, threshold: float, min_len_s: int
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if not samples:
         return out
@@ -305,6 +310,7 @@ def main() -> int:
     t0 = time.perf_counter()
     dt = 0.0
     try:
+
         def _typeperf_worker() -> None:
             nonlocal tp_proc, tp_stderr_fh
             while not tp_stop.is_set():

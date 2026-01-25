@@ -37,7 +37,7 @@ test_entries = [
 for song, gear, minis, details, score, fg_score in test_entries:
     conn.execute(
         "INSERT INTO loadouts (song_name, gear_json, minis_json, details_json, score, fg_score) VALUES (?, ?, ?, ?, ?, ?)",
-        (song, gear, minis, details, score, fg_score)
+        (song, gear, minis, details, score, fg_score),
     )
 
 conn.commit()
@@ -51,6 +51,7 @@ print()
 
 # Now test the verifier
 import sys
+
 sys.path.insert(0, os.path.abspath("."))
 
 # Temporarily override DB path
@@ -59,28 +60,28 @@ os.environ["EVOLUTION_DB_PATH"] = test_db
 
 try:
     from gear_optimizer.data.stats_verifier import verify_and_repair_stats, print_verification_warning
-    
+
     print("=" * 80)
     print("Testing verifier (dry run)...")
     print("=" * 80)
     all_valid, stats = verify_and_repair_stats(dry_run=True, verbose=True, sample_size=0)
-    
+
     print()
     print(f"Result: all_valid={all_valid}")
     print(f"Stats: {stats}")
     print()
-    
+
     if not all_valid:
         print("Testing warning display...")
         print_verification_warning(stats)
-    
+
 finally:
     # Restore original DB path
     if original_db_env:
         os.environ["EVOLUTION_DB_PATH"] = original_db_env
     else:
         os.environ.pop("EVOLUTION_DB_PATH", None)
-    
+
     # Clean up test DB
     try:
         os.unlink(test_db)

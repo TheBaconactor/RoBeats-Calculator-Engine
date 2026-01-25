@@ -37,7 +37,9 @@ if _raw in {"0", "false", "no", "off"}:
 del _raw
 
 _GA_COMBO_CHUNK_MIN: int = max(64, int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MIN", "1024") or 1024))
-_GA_COMBO_CHUNK_MAX: int = max(_GA_COMBO_CHUNK_MIN, int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MAX", "4096") or 4096))
+_GA_COMBO_CHUNK_MAX: int = max(
+    _GA_COMBO_CHUNK_MIN, int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MAX", "4096") or 4096)
+)
 
 # Get appropriate kernels for current platform (Metal-safe on macOS)
 kernels = get_kernels()
@@ -304,6 +306,7 @@ def ga_generate_initial_populations(
         int(heuristic_copies),
         seed_ids_arr,
     )
+
 
 def ga_seed_rng(n_genomes: int, seed: int = 12345) -> None:
     """Seed per-genome RNG state for GPU GA operators."""
@@ -1335,6 +1338,7 @@ def ga_pack_fg_candidates_table_segmented(
         int(is_p_ov),
         int(is_s_ov),
     )
+
 
 def ga_download_fg_selected_payload(
     *,

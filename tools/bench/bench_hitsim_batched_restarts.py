@@ -173,7 +173,9 @@ def main() -> int:
         help="Comma-separated list from {Easy,Normal,Hard}. Example: Hard",
     )
     parser.add_argument("--out", default=str(Path("artifacts") / "bench" / "hitsim_batched_restarts.json"))
-    parser.add_argument("--base-ga-seed", type=int, default=7070000, help="GA seed base (kept consistent across modes).")
+    parser.add_argument(
+        "--base-ga-seed", type=int, default=7070000, help="GA seed base (kept consistent across modes)."
+    )
     parser.add_argument("--checkpoint-every", type=int, default=10, help="Write partial results every N macro runs.")
     parser.add_argument(
         "--fixed-hitsim-seed",

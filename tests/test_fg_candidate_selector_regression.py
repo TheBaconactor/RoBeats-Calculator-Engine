@@ -44,7 +44,9 @@ def _make_candidate(*, idx: int, base: int, fg_bonus: int = 0, ft: int = 0, ff: 
 def test_fg_candidate_selector_keeps_top_base_slice():
     candidates = [_make_candidate(idx=i, base=1000 + i, fg_bonus=0, ft=i, ff=i) for i in range(200)]
 
-    selected = select_fg_candidates(candidates, limit=LOADOUTS_PER_SONG_LIMIT + 10, primary_color="Rush", secondary_color="Flow")
+    selected = select_fg_candidates(
+        candidates, limit=LOADOUTS_PER_SONG_LIMIT + 10, primary_color="Rush", secondary_color="Flow"
+    )
     selected_keys = {_candidate_key(c) for c in selected}
 
     # Must include the top-N base-score candidates for DB stability.
@@ -72,8 +74,9 @@ def test_fg_candidate_selector_includes_high_fg_proxy_candidate():
     special = _make_candidate(idx=999, base=1, fg_bonus=10_000, ft=80, ff=80)
     candidates.append(special)
 
-    selected = select_fg_candidates(candidates, limit=LOADOUTS_PER_SONG_LIMIT + 12, primary_color="Rush", secondary_color="Flow")
+    selected = select_fg_candidates(
+        candidates, limit=LOADOUTS_PER_SONG_LIMIT + 12, primary_color="Rush", secondary_color="Flow"
+    )
     selected_keys = {_candidate_key(c) for c in selected}
 
     assert _candidate_key(special) in selected_keys
-

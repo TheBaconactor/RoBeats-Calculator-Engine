@@ -191,11 +191,11 @@ def ga_find_best_combo_key_kernel(
                             head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
 
                             budget: ti.i32 = total_budget - ft - ff
-                            p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (
-                                ff * GEM_STAT_TO_ELEMENT * is_p_ff
+                            p_val: ti.i32 = (
+                                base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
                             )
-                            s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (
-                                ff * GEM_STAT_TO_ELEMENT * is_s_ff
+                            s_val: ti.i32 = (
+                                base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
                             )
 
                             res_vec = optimize_core_device(

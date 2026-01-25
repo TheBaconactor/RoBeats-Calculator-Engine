@@ -67,4 +67,3 @@ def eval_data_from_entry(entry: dict[str, Any], meta_primary_color: str) -> dict
         }
     except Exception:
         return None
-

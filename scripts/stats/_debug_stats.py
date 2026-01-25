@@ -1,22 +1,27 @@
 """
 Debug: Check actual stats for a lonely stella loadout
 """
+
 import sqlite3
 import json
 import sys
-sys.path.insert(0, '.')
+
+sys.path.insert(0, ".")
 
 from gear_optimizer.data.csv_parser import load_csv_db
 from gear_optimizer.core.constants import (
-    GEM_SCALE_NORMAL, GEM_SCALE_FEVER, ELEMENTAL_GEM_SCALE, GEM_STAT_TO_ELEMENT_SCALE,
-    SKIP_ITEM_KEYS
+    GEM_SCALE_NORMAL,
+    GEM_SCALE_FEVER,
+    ELEMENTAL_GEM_SCALE,
+    GEM_STAT_TO_ELEMENT_SCALE,
+    SKIP_ITEM_KEYS,
 )
 
 # Load gear/mini data
 gears = load_csv_db("Data/Gear/Gears.csv", "gear")
 minis = load_csv_db("Data/Gear/Minis.csv", "mini")
 
-conn = sqlite3.connect('evolution.db')
+conn = sqlite3.connect("evolution.db")
 conn.row_factory = sqlite3.Row
 
 row = conn.execute("""
@@ -27,9 +32,9 @@ row = conn.execute("""
     LIMIT 1
 """).fetchone()
 
-gear_names = json.loads(row['gear_json'])
-minis_raw = json.loads(row['minis_json'])
-details = json.loads(row['details_json'])
+gear_names = json.loads(row["gear_json"])
+minis_raw = json.loads(row["minis_json"])
+details = json.loads(row["details_json"])
 
 # Extract first mini from each group
 mini_names = []
@@ -79,19 +84,29 @@ for k in set(list(gear_stats.keys()) + list(mini_stats.keys())):
     total_stats[k] = gear_stats.get(k, 0) + mini_stats.get(k, 0)
 
 print("\n=== GEAR + MINI TOTALS (no gems) ===")
-for k in ['Perfect Points', 'Combo Multiplier', 'Fever Multiplier', 'Fever Time', 'Fever Fill Rate', 
-          'Chill', 'Flow', 'Rush', 'Beat', 'Vibe']:
+for k in [
+    "Perfect Points",
+    "Combo Multiplier",
+    "Fever Multiplier",
+    "Fever Time",
+    "Fever Fill Rate",
+    "Chill",
+    "Flow",
+    "Rush",
+    "Beat",
+    "Vibe",
+]:
     print(f"  {k}: {total_stats.get(k, 0)}")
 
 # Now add gem contributions
-gem_counts = details.get('GemCounts', {})
-g_pp = gem_counts.get('Perfect Points', 0) or 0
-g_cm = gem_counts.get('Combo Multiplier', 0) or 0
-g_fm = gem_counts.get('Fever Multiplier', 0) or 0
-g_ft = details.get('FT', 0) or 0
-g_ff = details.get('FF', 0) or 0
-g_ov = gem_counts.get('Element', 0) or 0
-sel_elem = details.get('SelectedElement', '')
+gem_counts = details.get("GemCounts", {})
+g_pp = gem_counts.get("Perfect Points", 0) or 0
+g_cm = gem_counts.get("Combo Multiplier", 0) or 0
+g_fm = gem_counts.get("Fever Multiplier", 0) or 0
+g_ft = details.get("FT", 0) or 0
+g_ff = details.get("FF", 0) or 0
+g_ov = gem_counts.get("Element", 0) or 0
+sel_elem = details.get("SelectedElement", "")
 
 print(f"\n=== GEM CONTRIBUTIONS ===")
 print(f"  PP gems ({g_pp}): +{g_pp * GEM_SCALE_NORMAL} PP, +{g_pp * GEM_STAT_TO_ELEMENT_SCALE} Chill")
@@ -103,28 +118,48 @@ print(f"  Overflow ({g_ov}) -> {sel_elem}: +{g_ov * ELEMENTAL_GEM_SCALE}")
 
 # Final stats (gear + minis + gems, NO config base)
 final_stats = dict(total_stats)
-final_stats['Perfect Points'] = final_stats.get('Perfect Points', 0) + g_pp * GEM_SCALE_NORMAL
-final_stats['Combo Multiplier'] = final_stats.get('Combo Multiplier', 0) + g_cm * GEM_SCALE_NORMAL
-final_stats['Fever Multiplier'] = final_stats.get('Fever Multiplier', 0) + g_fm * GEM_SCALE_FEVER
-final_stats['Fever Time'] = final_stats.get('Fever Time', 0) + g_ft * GEM_SCALE_FEVER
-final_stats['Fever Fill Rate'] = final_stats.get('Fever Fill Rate', 0) + g_ff * GEM_SCALE_FEVER
-final_stats['Chill'] = final_stats.get('Chill', 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
-final_stats['Flow'] = final_stats.get('Flow', 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
-final_stats['Rush'] = final_stats.get('Rush', 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
-final_stats['Beat'] = final_stats.get('Beat', 0) + g_ft * GEM_STAT_TO_ELEMENT_SCALE
-final_stats['Vibe'] = final_stats.get('Vibe', 0) + g_ff * GEM_STAT_TO_ELEMENT_SCALE
+final_stats["Perfect Points"] = final_stats.get("Perfect Points", 0) + g_pp * GEM_SCALE_NORMAL
+final_stats["Combo Multiplier"] = final_stats.get("Combo Multiplier", 0) + g_cm * GEM_SCALE_NORMAL
+final_stats["Fever Multiplier"] = final_stats.get("Fever Multiplier", 0) + g_fm * GEM_SCALE_FEVER
+final_stats["Fever Time"] = final_stats.get("Fever Time", 0) + g_ft * GEM_SCALE_FEVER
+final_stats["Fever Fill Rate"] = final_stats.get("Fever Fill Rate", 0) + g_ff * GEM_SCALE_FEVER
+final_stats["Chill"] = final_stats.get("Chill", 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
+final_stats["Flow"] = final_stats.get("Flow", 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
+final_stats["Rush"] = final_stats.get("Rush", 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
+final_stats["Beat"] = final_stats.get("Beat", 0) + g_ft * GEM_STAT_TO_ELEMENT_SCALE
+final_stats["Vibe"] = final_stats.get("Vibe", 0) + g_ff * GEM_STAT_TO_ELEMENT_SCALE
 if sel_elem:
     final_stats[sel_elem] = final_stats.get(sel_elem, 0) + g_ov * ELEMENTAL_GEM_SCALE
 
 print(f"\n=== FINAL STATS (gear + minis + gems, NO config base) ===")
-for k in ['Perfect Points', 'Combo Multiplier', 'Fever Multiplier', 'Fever Time', 'Fever Fill Rate', 
-          'Chill', 'Flow', 'Rush', 'Beat', 'Vibe']:
+for k in [
+    "Perfect Points",
+    "Combo Multiplier",
+    "Fever Multiplier",
+    "Fever Time",
+    "Fever Fill Rate",
+    "Chill",
+    "Flow",
+    "Rush",
+    "Beat",
+    "Vibe",
+]:
     print(f"  {k}: {final_stats.get(k, 0)}")
 
 print(f"\n=== WHAT DB CURRENTLY HAS ===")
-db_stats = details.get('Stats', {})
-for k in ['Perfect Points', 'Combo Multiplier', 'Fever Multiplier', 'Fever Time', 'Fever Fill Rate', 
-          'Chill', 'Flow', 'Rush', 'Beat', 'Vibe']:
+db_stats = details.get("Stats", {})
+for k in [
+    "Perfect Points",
+    "Combo Multiplier",
+    "Fever Multiplier",
+    "Fever Time",
+    "Fever Fill Rate",
+    "Chill",
+    "Flow",
+    "Rush",
+    "Beat",
+    "Vibe",
+]:
     print(f"  {k}: {db_stats.get(k, 0)}")
 
 conn.close()

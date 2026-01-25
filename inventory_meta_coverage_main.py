@@ -453,7 +453,8 @@ def main() -> None:
             allowed = {e for e in (element, secondary) if e}
             if allowed:
                 candidates_by_song = {
-                    k: [c for c in v if getattr(c, "selected_element", None) in allowed] for k, v in candidates_by_song.items()
+                    k: [c for c in v if getattr(c, "selected_element", None) in allowed]
+                    for k, v in candidates_by_song.items()
                 }
                 candidates_by_song = {k: v for k, v in candidates_by_song.items() if v}
 
@@ -573,13 +574,17 @@ def main() -> None:
                 results.setdefault("profiling", {})["macos_gpu_util"] = {
                     "samples": int(summary.samples),
                     "wall_sec": round(float(summary.wall_sec), 3),
-                    "device_util_avg": None if summary.device_util_avg is None else round(float(summary.device_util_avg), 2),
+                    "device_util_avg": None
+                    if summary.device_util_avg is None
+                    else round(float(summary.device_util_avg), 2),
                     "device_util_max": summary.device_util_max,
                     "renderer_util_avg": None
                     if summary.renderer_util_avg is None
                     else round(float(summary.renderer_util_avg), 2),
                     "renderer_util_max": summary.renderer_util_max,
-                    "tiler_util_avg": None if summary.tiler_util_avg is None else round(float(summary.tiler_util_avg), 2),
+                    "tiler_util_avg": None
+                    if summary.tiler_util_avg is None
+                    else round(float(summary.tiler_util_avg), 2),
                     "tiler_util_max": summary.tiler_util_max,
                     "last_submit_pid_top": list(summary.last_submit_pid_top),
                     "proc_pid": summary.proc_pid,

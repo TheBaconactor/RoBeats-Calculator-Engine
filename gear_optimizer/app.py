@@ -238,7 +238,7 @@ class GearOptimizerApp:
 
             init_db()
             self._auto_merge_databases()
-            
+
             # Verify Stats integrity (only on fresh queue, not resume)
             # This ensures all database entries have properly populated Stats objects.
             # If issues are detected (missing or empty Stats), the verifier will:
@@ -248,7 +248,7 @@ class GearOptimizerApp:
             ignore_resume = os.environ.get("METAFINDER_IGNORE_RESUME_QUEUE", "").lower() in ("1", "true", "yes")
             memory_resume_exists = os.path.exists(MEMORY_GUARD_RESUME_FILE)
             is_fresh_queue = ignore_resume or not memory_resume_exists
-            
+
             if is_fresh_queue:
                 self._verify_stats_integrity()
 
@@ -459,7 +459,7 @@ class GearOptimizerApp:
     def _verify_stats_integrity(self):
         """
         Verify and repair database Stats integrity on fresh queue startup.
-        
+
         Performs a FULL scan of all database entries (not sample-based) to ensure
         no entries with missing/empty Stats slip through. Automatically repairs
         any issues found and displays a prominent warning.
@@ -468,7 +468,7 @@ class GearOptimizerApp:
             # Full scan of all entries - sample-based checks can miss scattered bad entries
             print("[StatsVerifier] Full database integrity check...")
             all_valid, full_stats = verify_and_repair_stats(dry_run=False, verbose=True, sample_size=0)
-            
+
             if all_valid:
                 print(f"[StatsVerifier] All {full_stats['total']:,} entries have valid Stats")
             else:
@@ -478,7 +478,7 @@ class GearOptimizerApp:
                 if repaired > 100:
                     # Only show prominent warning if many repairs needed
                     print_verification_warning(full_stats)
-                
+
         except Exception as e:
             logging.error(f"[StatsVerifier] Unexpected error: {e}")
             print(f"[StatsVerifier] Warning: Could not verify Stats integrity: {e}")

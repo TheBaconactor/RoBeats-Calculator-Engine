@@ -11,7 +11,15 @@ def test_build_db_payload_drops_fg_variants_worse_than_base():
 
     build_details = make_build_details_fn("Chill", "Flow", "Hard")
 
-    best_data = {"BaseScore": 100, "Score": 100, "FT": 0, "FF": 0, "GemCounts": {}, "Stats": {}, "Selected Element": "Chill"}
+    best_data = {
+        "BaseScore": 100,
+        "Score": 100,
+        "FT": 0,
+        "FF": 0,
+        "GemCounts": {},
+        "Stats": {},
+        "Selected Element": "Chill",
+    }
     best_gear = [{"Name": "A"}] * 6
     best_minis = [{"Name": "M"}] * 3
 
@@ -42,4 +50,3 @@ def test_build_db_payload_drops_fg_variants_worse_than_base():
     # No persisted FG since it didn't improve the loadout's score.
     assert payload.get("fg_score", 0) == 0
     assert payload.get("force") is None
-

@@ -48,7 +48,7 @@ def get_all_loadouts_from_db() -> List[Dict]:
                 )
 
         _select_all_from("loadouts")
-        
+
         # Use unified view for FG rows so team_buff is always present
         try:
             cursor = conn.execute(

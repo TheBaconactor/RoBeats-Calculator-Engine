@@ -160,4 +160,3 @@ def test_seeded_inventory_actions_prefer_owned_and_report_unused(monkeypatch, tm
     all_ids = {str(entry.get("id") or "") for entry in seed_inventory_gear if isinstance(entry, dict)}
     unused = all_ids - used_ids
     assert unused == {"b_hat_unused"}
-

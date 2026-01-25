@@ -217,4 +217,3 @@ def test_gpu_ga_fg_selection_matches_cpu_candidate_selector():
     )
 
     assert [_key_by_name(c) for c in decoded] == [_key_by_name(c) for c in expected]
-

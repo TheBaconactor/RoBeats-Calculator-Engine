@@ -115,7 +115,9 @@ def _normalize_overrides(overrides: dict) -> dict:
     return out
 
 
-def _resolve_all_suite_cfg(cfg: dict, *, all_restarts: int, all_lns_time_sec: float, all_lns_attempts: int) -> tuple[int, float, int]:
+def _resolve_all_suite_cfg(
+    cfg: dict, *, all_restarts: int, all_lns_time_sec: float, all_lns_attempts: int
+) -> tuple[int, float, int]:
     cfg_all_restarts = int(cfg.get("all_restarts") or 1)
     cfg_all_lns_time = float(cfg.get("all_lns_time_sec") or cfg.get("lns_time_sec") or 0.0)
     cfg_all_lns_attempts = int(cfg.get("all_lns_attempts") or cfg.get("lns_attempts") or 0)
@@ -346,7 +348,12 @@ def run_baseline(
 
     wall = float(time.perf_counter() - t0)
     score = _score_suite(results_by_label)
-    return {"seed": int(seed), "score": int(score), "wall_time_sec": float(round(wall, 6)), "results_by_label": results_by_label}
+    return {
+        "seed": int(seed),
+        "score": int(score),
+        "wall_time_sec": float(round(wall, 6)),
+        "results_by_label": results_by_label,
+    }
 
 
 def main() -> None:
@@ -423,7 +430,9 @@ def main() -> None:
     print(f"DB songs: {db_sig.get('songs_total')}  hash={db_sig.get('songs_name_hash')}")
     print(f"Tune mode: {mode}  cap={inventory_cap}  trials={trials}  space={space}")
     if int(all_restarts) > 0 or float(all_lns_time_sec) > 0 or int(all_lns_attempts) > 0:
-        print(f"All-elements overrides: restarts={all_restarts or '(suite)'}  lns_time_sec={all_lns_time_sec or '(suite)'}  lns_attempts={all_lns_attempts or '(suite)'}")
+        print(
+            f"All-elements overrides: restarts={all_restarts or '(suite)'}  lns_time_sec={all_lns_time_sec or '(suite)'}  lns_attempts={all_lns_attempts or '(suite)'}"
+        )
     print()
 
     baseline = run_baseline(

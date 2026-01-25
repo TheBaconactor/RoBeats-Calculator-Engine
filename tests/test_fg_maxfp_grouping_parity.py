@@ -49,6 +49,7 @@ def test_group_ftff_pairs_by_max_fp_matrix_matches_legacy():
             got = _group_ftff_pairs_by_max_fp_matrix(ftff_pairs, max_fp, n_sections=n_sections)
             assert _normalize(got) == _normalize(exp)
 
-            got_arr = _group_ftff_pairs_by_max_fp_matrix(np.asarray(ftff_pairs, dtype=np.int32), max_fp, n_sections=n_sections)
+            got_arr = _group_ftff_pairs_by_max_fp_matrix(
+                np.asarray(ftff_pairs, dtype=np.int32), max_fp, n_sections=n_sections
+            )
             assert _normalize(got_arr) == _normalize(exp)
-

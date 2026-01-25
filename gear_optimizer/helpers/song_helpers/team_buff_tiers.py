@@ -700,9 +700,7 @@ def compute_team_buff_tier_leaderboards(
                     "s_val": int(fg_secondary_val),
                     "counts": fg_counts,
                     "config": (
-                        (force_obj.get("ForceGreats", {}) or {}).get("config")
-                        if isinstance(force_obj, dict)
-                        else None
+                        (force_obj.get("ForceGreats", {}) or {}).get("config") if isinstance(force_obj, dict) else None
                     ),
                 },
             }

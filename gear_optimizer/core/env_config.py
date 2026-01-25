@@ -103,7 +103,9 @@ class EnvConfig:
 
     # Genetic Algorithm
     ga_seed: Optional[str]  # GA_SEED: Seed for genetic algorithm RNG
-    ga_force_cold_start: bool  # GA_FORCE_COLD_START: Skip warm-start local search, use greedy (faster, may affect quality)
+    ga_force_cold_start: (
+        bool  # GA_FORCE_COLD_START: Skip warm-start local search, use greedy (faster, may affect quality)
+    )
 
     # ForceGreats
     fg_search_radius: int  # FG_SEARCH_RADIUS: default radius (env override, legacy)

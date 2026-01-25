@@ -65,7 +65,7 @@ def unpack_optimized_dict(genome_stats_list: list[dict], stats_buf: np.ndarray) 
     """Optimized dict unpacking: enumerate keys, use list comp -> numpy."""
     keys = ["base_pp", "base_cm", "base_fm", "base_p_val", "base_s_val", "base_ft_stat", "base_ff_stat"]
     for j, k in enumerate(keys):
-        stats_buf[:len(genome_stats_list), j] = [g[k] for g in genome_stats_list]
+        stats_buf[: len(genome_stats_list), j] = [g[k] for g in genome_stats_list]
 
 
 def unpack_numpy_passthrough(genome_stats_np: np.ndarray, stats_buf: np.ndarray) -> None:
@@ -112,31 +112,13 @@ def main():
 
     for n in genome_counts:
         # Current approach: dict loop
-        avg1, std1 = benchmark_approach(
-            "current",
-            make_genome_stats_dicts,
-            unpack_current,
-            n,
-            n_iters
-        )
+        avg1, std1 = benchmark_approach("current", make_genome_stats_dicts, unpack_current, n, n_iters)
 
         # Optimized dict: list comprehension per column
-        avg2, std2 = benchmark_approach(
-            "optimized_dict",
-            make_genome_stats_dicts,
-            unpack_optimized_dict,
-            n,
-            n_iters
-        )
+        avg2, std2 = benchmark_approach("optimized_dict", make_genome_stats_dicts, unpack_optimized_dict, n, n_iters)
 
         # Numpy passthrough (ideal case)
-        avg3, std3 = benchmark_approach(
-            "numpy",
-            make_genome_stats_numpy,
-            unpack_numpy_passthrough,
-            n,
-            n_iters
-        )
+        avg3, std3 = benchmark_approach("numpy", make_genome_stats_numpy, unpack_numpy_passthrough, n, n_iters)
 
         print(f"{n:>8} {avg1:>12.1f} ± {std1:>6.1f} {avg2:>12.1f} ± {std2:>6.1f} {avg3:>12.1f} ± {std3:>6.1f}")
 

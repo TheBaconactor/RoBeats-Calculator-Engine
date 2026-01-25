@@ -17,6 +17,7 @@ from .ga_eval import (
     ga_find_best_combo_warmstart_kernel,
     ga_find_island_elites_kernel,
     ga_init_global_best_kernel,
+    ga_pack_global_best_kernel,
     ga_pack_fg_candidates_table_segmented_kernel,
     ga_island_migration_kernel,
     ga_merge_chunk_best_key_waves_to_global_kernel,

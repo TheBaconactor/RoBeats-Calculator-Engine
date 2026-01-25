@@ -137,7 +137,9 @@ def _make_shift_workload(db_path: Path, *, songs: int, seed: int) -> None:
             pp, cm, fm, ft, ff = _sum6(vecs)
             details = _details(selected_element, pp=pp, cm=cm, fm=fm, ft=ft, ff=ff, ov=0)
 
-            _insert_loadout(conn, song_name=song_name, score=score, gear_names=list(core_gear), minis_groups=minis, details=details)
+            _insert_loadout(
+                conn, song_name=song_name, score=score, gear_names=list(core_gear), minis_groups=minis, details=details
+            )
 
         conn.commit()
     finally:

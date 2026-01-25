@@ -5,6 +5,7 @@ import random
 import sys
 import time
 import zlib
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
@@ -435,7 +436,9 @@ def _candidate_rank_key(
     freq_sum = sum(gear_freq.get(g, 0) for g in cand.gear_ids)
     src_rank = 0 if cand.candidate.source_table == "loadouts" else 1
     ov_total = int(cand.candidate.gem_totals[OV_INDEX])
-    eff_score = int(cand.candidate.fg_score) if cand.candidate.source_table == "fg_loadouts" else int(cand.candidate.score)
+    eff_score = (
+        int(cand.candidate.fg_score) if cand.candidate.source_table == "fg_loadouts" else int(cand.candidate.score)
+    )
     score_gap = 0 if song_peak is None else max(0, int(song_peak) - int(eff_score))
     # Minimum number of OV-positive slots needed is ceil(OV_total / 15).
     req_ov_slots = 0 if ov_total <= 0 else (ov_total + 14) // 15
@@ -495,6 +498,7 @@ def _select_top_k_candidates_per_song(
             if seed_int is None:
                 ranked = ranked[:k_candidates]
             else:
+
                 def _pair_distance(a: CandidateSpec, b: CandidateSpec) -> int:
                     gear_diff = 0
                     for j in range(6):
@@ -710,7 +714,11 @@ def _try_inventory_repair(
     if len(used_pairs) > int(inv_cap):
         raise RuntimeError("Repair invariant violated: inventory exceeds cap.")
     if not used_pairs:
-        return covered_np, chosen_offsets_np, {"enabled": True, "repaired": 0, "time_sec": 0.0, "attempts": int(attempts)}
+        return (
+            covered_np,
+            chosen_offsets_np,
+            {"enabled": True, "repaired": 0, "time_sec": 0.0, "attempts": int(attempts)},
+        )
 
     offset_gems_np, offset_color_np = build_variant_offset_tables()
 
@@ -775,13 +783,17 @@ def _try_inventory_repair(
     eligible = [s for _comb, s in comb_scores]
 
     if not eligible:
-        return covered_np, chosen_offsets_np, {
-            "enabled": True,
-            "attempts": int(attempts),
-            "repaired": 0,
-            "songs_considered": 0,
-            "time_sec": 0.0,
-        }
+        return (
+            covered_np,
+            chosen_offsets_np,
+            {
+                "enabled": True,
+                "attempts": int(attempts),
+                "repaired": 0,
+                "songs_considered": 0,
+                "time_sec": 0.0,
+            },
+        )
 
     covered_sub = covered_np[np.asarray(eligible, dtype=np.int32)]
     totals_sub = totals_np[np.asarray(eligible, dtype=np.int32)]
@@ -973,13 +985,18 @@ def _try_inventory_repair_multi(
     eligible = [s for _comb, s in comb_scores]
 
     if not eligible:
-        return covered_np, chosen_offsets_np, chosen_candidate_idx, {
-            "enabled": True,
-            "attempts": int(attempts),
-            "repaired": 0,
-            "songs_considered": 0,
-            "time_sec": 0.0,
-        }
+        return (
+            covered_np,
+            chosen_offsets_np,
+            chosen_candidate_idx,
+            {
+                "enabled": True,
+                "attempts": int(attempts),
+                "repaired": 0,
+                "songs_considered": 0,
+                "time_sec": 0.0,
+            },
+        )
 
     eligible_np = np.asarray(eligible, dtype=np.int32)
     covered_sub = covered_np[eligible_np]
@@ -1529,7 +1546,9 @@ def _build_multi_candidate_offsets(
         # while still giving alternatives enough anchors to be viable.
         k_anchor = max(0, min(int(k_total), int(witness_anchor_patterns)))
         anchor_min_each = 1 if k_anchor >= cand_count else 0
-        anchors = _apportion(int(k_anchor), weights, min_each=int(anchor_min_each)) if k_anchor > 0 else [0] * cand_count
+        anchors = (
+            _apportion(int(k_anchor), weights, min_each=int(anchor_min_each)) if k_anchor > 0 else [0] * cand_count
+        )
         # Clamp anchors to budgets and redistribute any overshoot.
         overshoot = 0
         for i in range(cand_count):
@@ -2105,7 +2124,9 @@ def _run_gpu_full_solver_from_candidates(
         cand_count = int(len(song.candidates))
         if cand_count <= 0:
             raise RuntimeError("Multi-candidate raw vids build mismatch (no candidates).")
-        gids = (np.stack([np.asarray(c.gear_ids, dtype=np.int32) for c in song.candidates], axis=0) << np.int32(16)).astype(
+        gids = (
+            np.stack([np.asarray(c.gear_ids, dtype=np.int32) for c in song.candidates], axis=0) << np.int32(16)
+        ).astype(
             np.int32,
             copy=False,
         )
@@ -2646,7 +2667,9 @@ def run_inventory_meta_coverage(
                 lim = int(gpu_full_candidate_limit_per_song)
                 if lim <= 0:
                     lim = max(50, int(gpu_full_top_candidates) * 10)
-                mem.log(f"gpu_full_human_candidates_within_delta (delta={int(gpu_full_candidate_score_delta)}, lim={lim})")
+                mem.log(
+                    f"gpu_full_human_candidates_within_delta (delta={int(gpu_full_candidate_score_delta)}, lim={lim})"
+                )
                 candidates_by_song, missing = fetch_candidates_within_delta_allow_missing(
                     conn,
                     score_delta=int(gpu_full_candidate_score_delta),
@@ -2707,7 +2730,9 @@ def run_inventory_meta_coverage(
         multi_max_candidates = min(int(gpu_full_top_candidates), int(k_total))
         mem.log(f"multi_candidate_mode_enabled (k={int(multi_max_candidates)})")
     else:
-        gear_ids_np, totals_np, elements_np, gear_freq_np = _build_gpu_dynamic_inputs(selected_specs, gear_names=gear_names)
+        gear_ids_np, totals_np, elements_np, gear_freq_np = _build_gpu_dynamic_inputs(
+            selected_specs, gear_names=gear_names
+        )
         mem.log("gpu_dynamic_inputs_built")
 
     legacy_args = {
@@ -3240,7 +3265,13 @@ def run_inventory_meta_coverage(
             total_gems = sum(counts)
             if total_gems != 15:
                 seed_items.append(
-                    {"id": inv_id, "name": name, "seedable": False, "reason": "partial_upgrades", "total_gems": total_gems}
+                    {
+                        "id": inv_id,
+                        "name": name,
+                        "seedable": False,
+                        "reason": "partial_upgrades",
+                        "total_gems": total_gems,
+                    }
                 )
                 continue
 

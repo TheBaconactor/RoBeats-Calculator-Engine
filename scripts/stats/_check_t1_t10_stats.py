@@ -3,7 +3,7 @@
 import sqlite3
 import json
 
-conn = sqlite3.connect('evolution.db')
+conn = sqlite3.connect("evolution.db")
 conn.row_factory = sqlite3.Row
 
 print("=" * 90)
@@ -21,17 +21,17 @@ for song_label, pattern in test_songs:
     print(f"\n--- {song_label.upper()} (Top 10) ---")
     rows = conn.execute(
         "SELECT song_name, score, details_json FROM loadouts WHERE song_name LIKE ? ORDER BY score DESC LIMIT 10",
-        (pattern,)
+        (pattern,),
     ).fetchall()
-    
+
     if not rows:
         print("  No entries found")
         continue
-        
+
     for i, row in enumerate(rows):
         details = json.loads(row["details_json"]) if row["details_json"] else {}
         stats = details.get("Stats")
-        
+
         if stats is None:
             stats_status = "MISSING (None)"
         elif len(stats) == 0:
@@ -41,8 +41,8 @@ for song_label, pattern in test_songs:
             vibe = stats.get("Vibe", "?")
             rush = stats.get("Rush", "?")
             stats_status = f"Chill={chill}, Vibe={vibe}, Rush={rush}"
-        
-        print(f"  T{i+1}: Score {row['score']:>12,} | {stats_status}")
+
+        print(f"  T{i + 1}: Score {row['score']:>12,} | {stats_status}")
 
 # Summary check
 print("\n" + "=" * 90)
@@ -58,7 +58,7 @@ rows = conn.execute("SELECT details_json FROM loadouts").fetchall()
 for row in rows:
     details = json.loads(row["details_json"]) if row["details_json"] else {}
     stats = details.get("Stats")
-    
+
     if stats is None:
         missing += 1
     elif len(stats) == 0:

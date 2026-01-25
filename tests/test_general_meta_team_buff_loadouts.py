@@ -67,4 +67,3 @@ def test_get_all_team_buff_loadouts_groups_rows_by_team_buff(monkeypatch, tmp_pa
     assert "NONE" in grouped
     assert any(r["song_name"] == "Song A" and r["score"] == 123 for r in grouped["T1"])
     assert any(r["song_name"] == "Song A" and r["fg_score"] == 999 for r in grouped["NONE"])
-

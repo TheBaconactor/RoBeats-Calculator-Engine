@@ -56,4 +56,3 @@ def test_fg_baseline_params_grid_matches_non_fever_sections(monkeypatch):
         assert int(got_base) == int(exp_base)
 
     assert _FG_BASELINE_GRID_CACHE, "Expected fg_baseline_params to populate the per-song baseline grid cache"
-

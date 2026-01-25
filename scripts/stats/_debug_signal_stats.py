@@ -3,6 +3,7 @@
 import sqlite3
 import json
 import sys
+
 sys.path.insert(0, ".")
 
 from gear_optimizer.core.stats_calculator import compute_full_stats
@@ -31,17 +32,17 @@ base_stats = {
 }
 
 # Get a broken entry
-conn = sqlite3.connect('evolution.db')
+conn = sqlite3.connect("evolution.db")
 conn.row_factory = sqlite3.Row
-row = conn.execute('SELECT * FROM loadouts WHERE rowid=16207').fetchone()
+row = conn.execute("SELECT * FROM loadouts WHERE rowid=16207").fetchone()
 
 print("=" * 60)
 print("Debugging rowid 16207")
 print("=" * 60)
 
-details = json.loads(row['details_json'])
-gear_names = json.loads(row['gear_json'])
-mini_names_raw = json.loads(row['minis_json'])
+details = json.loads(row["details_json"])
+gear_names = json.loads(row["gear_json"])
+mini_names_raw = json.loads(row["minis_json"])
 
 print(f"Gear names: {gear_names}")
 print(f"Minis raw: {mini_names_raw}")

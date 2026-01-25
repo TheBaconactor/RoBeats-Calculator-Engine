@@ -156,11 +156,11 @@ def _compute_combo_key_warmstart(
 
                     budget: ti.i32 = combo_budget - ft - ff
 
-                    p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (
-                        ff * GEM_STAT_TO_ELEMENT * is_p_ff
+                    p_val: ti.i32 = (
+                        base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
                     )
-                    s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (
-                        ff * GEM_STAT_TO_ELEMENT * is_s_ff
+                    s_val: ti.i32 = (
+                        base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
                     )
 
                     res_vec = ti.Vector([0, 0, 0, 0, 0, 0, 0])

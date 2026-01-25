@@ -14,7 +14,6 @@ from gear_optimizer.data.csv_parser import parse_gear_rows, parse_mini_rows
 
 
 def main():
-
     print("Loading gear and mini data...")
     paths = load_paths_cache()
 
@@ -69,7 +68,7 @@ def main():
         details = json.loads(row["details_json"]) if row["details_json"] else {}
         gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
         mini_names_raw = json.loads(row["minis_json"]) if row["minis_json"] else []
-        
+
         # Handle variant group format: [["MiniA", "MiniA2"], ["MiniB"]] -> ["MiniA", "MiniB"]
         # Extract first name from each group (representative)
         mini_names = []
@@ -78,7 +77,7 @@ def main():
                 mini_names.append(item[0])  # Take first variant as representative
             elif isinstance(item, str):
                 mini_names.append(item)  # Legacy flat format
-        
+
         gem_counts = dict(details.get("GemCounts", {}) or {})
         # DB stores FT/FF gem allocations at the top level (not inside GemCounts).
         # Include them so computed Stats match the score configuration.

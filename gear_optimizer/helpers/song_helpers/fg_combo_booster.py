@@ -1575,7 +1575,10 @@ def prepare_fg_combo_booster_candidates_job(
     solver_mode = str(os.environ.get("FG_COMBO_BOOSTER_GPU_SOLVER", "auto") or "").strip().lower()
     prefer_registry = solver_mode in {"auto", "registry", "from_registry"}
     use_registry = bool(
-        prefer_registry and registry is not None and hasattr(registry, "encode_population") and hasattr(registry, "to_gpu_arrays")
+        prefer_registry
+        and registry is not None
+        and hasattr(registry, "encode_population")
+        and hasattr(registry, "to_gpu_arrays")
     )
     if not use_registry:
         return None

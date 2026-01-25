@@ -86,7 +86,9 @@ def main() -> None:
     ap.add_argument("--gpu-repack-passes", type=int, default=3, help="GPU repack passes (default: 3).")
     ap.add_argument("--gpu-full-witness-palettes", type=int, default=1, help="Witness palettes (default: 1).")
     ap.add_argument("--gpu-full-repair", action="store_true", help="Enable inventory-aware repair (default: off).")
-    ap.add_argument("--gpu-full-repair-attempts", type=int, default=128, help="Repair attempts per song (default: 128).")
+    ap.add_argument(
+        "--gpu-full-repair-attempts", type=int, default=128, help="Repair attempts per song (default: 128)."
+    )
     ap.add_argument("--gpu-full-repair-song-limit", type=int, default=512, help="Max songs for repair (default: 512).")
     ap.add_argument(
         "--gpu-full-variant-freq-mode",

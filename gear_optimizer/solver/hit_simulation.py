@@ -132,8 +132,14 @@ def plan_human_hit_sim(calc_song: dict, *, cfg_dict: dict) -> dict | None:
     except Exception:
         seed_in = 0
 
-    dist = str(_get_cfg_value(human_cfg, "Distribution", _get_cfg_value(human_cfg, "distribution", "uniform"))).strip().lower()
-    great_mode = str(_get_cfg_value(human_cfg, "GreatMode", _get_cfg_value(human_cfg, "greatmode", "late"))).strip().lower()
+    dist = (
+        str(_get_cfg_value(human_cfg, "Distribution", _get_cfg_value(human_cfg, "distribution", "uniform")))
+        .strip()
+        .lower()
+    )
+    great_mode = (
+        str(_get_cfg_value(human_cfg, "GreatMode", _get_cfg_value(human_cfg, "greatmode", "late"))).strip().lower()
+    )
 
     seed_is_random = False
     if seed_in == 0:
@@ -200,8 +206,14 @@ def apply_human_hit_sim(calc_song: dict, *, cfg_dict: dict) -> dict | None:
     except Exception:
         seed_in = 0
 
-    dist = str(_get_cfg_value(human_cfg, "Distribution", _get_cfg_value(human_cfg, "distribution", "uniform"))).strip().lower()
-    great_mode = str(_get_cfg_value(human_cfg, "GreatMode", _get_cfg_value(human_cfg, "greatmode", "late"))).strip().lower()
+    dist = (
+        str(_get_cfg_value(human_cfg, "Distribution", _get_cfg_value(human_cfg, "distribution", "uniform")))
+        .strip()
+        .lower()
+    )
+    great_mode = (
+        str(_get_cfg_value(human_cfg, "GreatMode", _get_cfg_value(human_cfg, "greatmode", "late"))).strip().lower()
+    )
 
     seed_is_random = False
     if planned_seed is not None:

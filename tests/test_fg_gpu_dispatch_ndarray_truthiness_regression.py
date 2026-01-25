@@ -31,4 +31,3 @@ def test_gpu_dispatch_group_payload_handles_ndarray_ftff_pairs_without_truthines
         assert not _is_empty_pairs(group_pairs)
 
     assert _is_empty_pairs(np.zeros((0, 2), dtype=np.int32))
-
