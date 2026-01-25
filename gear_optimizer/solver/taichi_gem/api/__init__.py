@@ -56,6 +56,12 @@ try:
 except ImportError:
     pass
 
+# Import from fixed_scoring
+try:
+    from .fixed_scoring import score_fixed_stats_gpu
+except ImportError:
+    pass
+
 # Import from ga_operations
 try:
     from .ga_operations import (
@@ -133,6 +139,8 @@ __all__ = [
     "solve_genomes_parallel",
     "solve_genomes_parallel_merged",
     "solve_genomes_from_registry",
+    # Fixed score
+    "score_fixed_stats_gpu",
     # GA operations
     "ga_upload_population_indices",
     "ga_upload_initial_populations",
