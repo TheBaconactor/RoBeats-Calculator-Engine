@@ -457,26 +457,16 @@ def _migration_12_add_fg_loadouts_unified_view(conn: sqlite3.Connection) -> None
 
     Some consumers (exporters/frontends) want a single query surface that always includes `team_buff`.
     This view provides that without changing write paths.
+
+    Deduplication: If a song+tier combo exists in `team_buff_fg_loadouts`, exclude 
+    the legacy `fg_loadouts` entry for that same song+tier to avoid duplicate T5 entries.
     """
     # Ensure idempotent updates in case the view definition changes.
     conn.execute("DROP VIEW IF EXISTS fg_loadouts_unified;")
     conn.execute(
         """
         CREATE VIEW fg_loadouts_unified AS
-        SELECT
-            song_name,
-            team_buff,
-            loadout_hash,
-            score,
-            fg_score,
-            gear_json,
-            minis_json,
-            details_json,
-            force_details_json,
-            timestamp,
-            'fg_loadouts' AS source_table
-        FROM fg_loadouts
-        UNION ALL
+        -- Prioritize explicit tier-tracked entries
         SELECT
             song_name,
             team_buff,
@@ -489,7 +479,26 @@ def _migration_12_add_fg_loadouts_unified_view(conn: sqlite3.Connection) -> None
             force_details_json,
             timestamp,
             'team_buff_fg_loadouts' AS source_table
-        FROM team_buff_fg_loadouts;
+        FROM team_buff_fg_loadouts
+        UNION ALL
+        -- Include legacy fg_loadouts ONLY if no team_buff_fg_loadouts entry exists for that song+tier
+        SELECT
+            fg.song_name,
+            fg.team_buff,
+            fg.loadout_hash,
+            fg.score,
+            fg.fg_score,
+            fg.gear_json,
+            fg.minis_json,
+            fg.details_json,
+            fg.force_details_json,
+            fg.timestamp,
+            'fg_loadouts' AS source_table
+        FROM fg_loadouts fg
+        WHERE NOT EXISTS (
+            SELECT 1 FROM team_buff_fg_loadouts tb
+            WHERE tb.song_name = fg.song_name AND tb.team_buff = fg.team_buff
+        );
         """
     )
 
