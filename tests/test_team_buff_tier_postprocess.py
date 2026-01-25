@@ -158,3 +158,50 @@ def test_team_buff_tiers_auto_mode_uses_primary_color_and_t5_base():
     t5_score = out["tiers"]["T5"]["base_top51"][0]["score"]
     t1_score = out["tiers"]["T1"]["base_top51"][0]["score"]
     assert t1_score > t5_score
+
+
+def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_minis():
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+
+    calc_song = _mock_song(name="pytest_team_buff_batches", n_notes=12)
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
+
+    stats = {
+        "Perfect Points": 120,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 200,
+        "Flow": 0,
+        "Beat": 0,
+        "Vibe": 0,
+        "Chill": 0,
+    }
+
+    entry = {
+        "score": 1,
+        "fg_score": 0,
+        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+        # Corrupted minis sometimes show up as strings like "['Name']" inside minis_json groups.
+        "minis": [["['M1']"], ["M2"], ["M3"]],
+        "details": {"Stats": stats},
+        "force": None,
+    }
+
+    batches = build_team_buff_tier_db_batches(
+        entries=[entry],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        limit=1,
+        tiers=("T5",),
+    )
+
+    assert "T5" in batches
+    assert len(batches["T5"]) == 1
+    out = batches["T5"][0]
+    assert out["gear"] == entry["gear"]
+    assert out["minis"] == ["M1", "M2", "M3"]

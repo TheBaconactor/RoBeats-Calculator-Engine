@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import ast
 import copy
 from dataclasses import dataclass
 
 import numpy as np
 
 from ...core.constants import TOTAL_ROWS
+from ...data.loadout_equivalence import representative_mini_names
 from ...solver.fever_timeline import calculate_fever_timeline_indices
 from ...solver.scoring_core import fast_calculate_score, lookup_reference_py
 from ...solver.scoring.force_greats import _compute_force_greats_timeline
@@ -28,6 +30,118 @@ def _norm_text(v: object) -> str:
 
 def _truthy_cfg(v: object) -> bool:
     return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _unwrap_list_literal(s: str) -> list[str] | None:
+    """
+    Best-effort recovery for legacy minis corruption where names were persisted as strings like:
+      "['Electroman']"  (Python repr) or '["Electroman"]' (JSON-ish)
+    """
+    s = str(s or "").strip()
+    if len(s) < 2:
+        return None
+    if (s[0] not in "[(") or (s[-1] not in "])"):
+        return None
+    try:
+        parsed = ast.literal_eval(s)
+    except Exception:
+        return None
+    if not isinstance(parsed, (list, tuple)):
+        return None
+    out: list[str] = []
+    for item in parsed:
+        if isinstance(item, (list, tuple)):
+            for sub in item:
+                sub_s = str(sub or "").strip()
+                if sub_s:
+                    out.append(sub_s)
+        else:
+            item_s = str(item or "").strip()
+            if item_s:
+                out.append(item_s)
+    return out or None
+
+
+def _flat_item_names(items: object) -> list[str]:
+    out: list[str] = []
+    if not items:
+        return out
+    for it in items if isinstance(items, (list, tuple)) else [items]:
+        if isinstance(it, (list, tuple)):
+            out.extend(_flat_item_names(it))
+        elif isinstance(it, dict):
+            name = _norm_text(it.get("Name", it.get("name", "")))
+            if name:
+                out.append(name)
+        else:
+            name = _norm_text(it)
+            if name:
+                out.append(name)
+    return out
+
+
+def _mini_groups_from_any(minis: object) -> list[list[str]]:
+    groups: list[list[str]] = []
+    if not minis:
+        return groups
+    for slot in minis if isinstance(minis, (list, tuple)) else [minis]:
+        # Slot can be:
+        # - "Name" (str)
+        # - {"Name": "..."} (dict)
+        # - ["A", "B"] (variant group)
+        # - ["['A']"] (corrupted repr)
+        if isinstance(slot, (list, tuple)):
+            names: list[str] = []
+            for raw in slot:
+                if isinstance(raw, dict):
+                    s = _norm_text(raw.get("Name", raw.get("name", "")))
+                    if s:
+                        names.append(s)
+                    continue
+                if isinstance(raw, str):
+                    repaired = _unwrap_list_literal(raw)
+                    if repaired:
+                        names.extend(repaired)
+                    else:
+                        s = raw.strip()
+                        if s:
+                            names.append(s)
+                    continue
+                s = _norm_text(raw)
+                if s:
+                    names.append(s)
+            names = sorted(set(n for n in names if n))
+            if names:
+                groups.append(names)
+            continue
+
+        if isinstance(slot, dict):
+            s = _norm_text(slot.get("Name", slot.get("name", "")))
+            if s:
+                groups.append([s])
+            continue
+
+        if isinstance(slot, str):
+            repaired = _unwrap_list_literal(slot)
+            if repaired:
+                names = sorted(set(n for n in repaired if n))
+                if names:
+                    groups.append(names)
+            else:
+                s = slot.strip()
+                if s:
+                    groups.append([s])
+            continue
+
+        s = _norm_text(slot)
+        if s:
+            groups.append([s])
+    return groups
+
+
+def _representative_mini_names_from_any(minis: object) -> list[str]:
+    groups = _mini_groups_from_any(minis)
+    return representative_mini_names(groups) if groups else []
 
 
 def _auto_select_team_buff_and_color(cfg_dict: dict) -> bool:
@@ -516,32 +630,8 @@ def compute_team_buff_tier_leaderboards(
         if not isinstance(stats_base, dict) or not stats_base:
             continue
 
-        gear = entry.get("minis") or []
-        minis = entry.get("minis") or []
-        try:
-            gear = [str(x) for x in gear]
-        except Exception:
-            gear = []
-        try:
-            # Flatten nested lists (minis_json groups) before stringifying.
-            # Correct: ["Electroman", "Fusq"] -> ["Electroman", "Fusq"]
-            # Nested: [["Electroman"], ["Fusq"]] -> ["Electroman", "Fusq"]
-            flat_minis = []
-            for item in minis:
-                if isinstance(item, (list, tuple)):
-                    # If it's a variant group, take the first representative name.
-                    flat_minis.extend(str(x) for x in item if x)
-                elif isinstance(item, dict):
-                    name = str(item.get("Name", "") or "")
-                    if name:
-                        flat_minis.append(name)
-                else:
-                    name = str(item) if item else ""
-                    if name:
-                        flat_minis.append(name)
-            minis = flat_minis
-        except Exception:
-            minis = []
+        gear = _flat_item_names(entry.get("gear") or [])
+        minis = _representative_mini_names_from_any(entry.get("minis") or [])
 
         # Base timeline + multipliers for base scoring.
         base_ctx = _build_base_timeline_ctx(
@@ -733,34 +823,11 @@ def build_team_buff_tier_db_batches(
     base_team_buff = _resolve_base_team_buff(cfg_dict)
 
     # Map original entries by a stable key (order-invariant names).
-    def _names(items):
-        """Flatten minis_json groups (list of lists) into a single flat list of names."""
-        out = []
-        for it in items or []:
-            if isinstance(it, (list, tuple)):
-                # Nested group: extract all variant names.
-                for sub in it:
-                    if isinstance(sub, dict):
-                        n = str(sub.get("Name", "") or "")
-                    else:
-                        n = str(sub or "")
-                    n = n.strip()
-                    if n:
-                        out.append(n)
-            elif isinstance(it, dict):
-                n = str(it.get("Name", "") or "")
-                n = n.strip()
-                if n:
-                    out.append(n)
-            else:
-                n = str(it or "")
-                n = n.strip()
-                if n:
-                    out.append(n)
-        return out
-
     def _stable_key_from_entry(e: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        return (tuple(sorted(_names(e.get("gear")))), tuple(sorted(_names(e.get("minis")))))
+        return (
+            tuple(sorted(_flat_item_names(e.get("gear")))),
+            tuple(sorted(_representative_mini_names_from_any(e.get("minis")))),
+        )
 
     orig_by_key: dict[tuple[tuple[str, ...], tuple[str, ...]], dict] = {}
     for e in entries or []:
@@ -782,14 +849,20 @@ def build_team_buff_tier_db_batches(
         for r in base_top:
             if not isinstance(r, dict):
                 continue
-            k = (tuple(sorted(_names(r.get("gear")))), tuple(sorted(_names(r.get("minis")))))
+            k = (
+                tuple(sorted(_flat_item_names(r.get("gear")))),
+                tuple(sorted(_representative_mini_names_from_any(r.get("minis")))),
+            )
             base_score_by_key[k] = _safe_int(r.get("score"), 0)
             fg_score_by_key[k] = _safe_int(r.get("fg_score"), 0)
 
         for r in fg_top:
             if not isinstance(r, dict):
                 continue
-            k = (tuple(sorted(_names(r.get("gear")))), tuple(sorted(_names(r.get("minis")))))
+            k = (
+                tuple(sorted(_flat_item_names(r.get("gear")))),
+                tuple(sorted(_representative_mini_names_from_any(r.get("minis")))),
+            )
             fg_score_by_key[k] = _safe_int(r.get("fg_score"), 0)
             if k not in base_score_by_key:
                 base_score_by_key[k] = _safe_int(r.get("score"), 0)
@@ -816,8 +889,8 @@ def build_team_buff_tier_db_batches(
                 {
                     "score": score_out,
                     "fg_score": fg_score_out,
-                    "gear": _names(orig.get("gear")),
-                    "minis": _names(orig.get("minis")),
+                    "gear": _flat_item_names(orig.get("gear")),
+                    "minis": _representative_mini_names_from_any(orig.get("minis")),
                     "details": details_out,
                     "force": force_out,
                 }
