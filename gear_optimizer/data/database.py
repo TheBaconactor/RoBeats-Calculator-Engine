@@ -1202,6 +1202,12 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
             minis = entry.get("minis", [])
             details = entry.get("details", {})
             force_data = entry.get("force")
+            
+            # Defensive: ensure Stats are populated in details
+            # If Stats is missing or empty, compute it from loadout components
+            current_stats = details.get("Stats") if isinstance(details, dict) else None
+            if not current_stats or (isinstance(current_stats, dict) and len(current_stats) == 0):
+                details = _ensure_stats_in_details(details, gear, minis, minis_by_name)
 
             if fg_score <= 0 and force_data is not None:
                 fg_score = _fg_score_from_force(force_data)
