@@ -30,7 +30,15 @@ from gear_optimizer.core.stats_calculator import compute_full_stats
 from gear_optimizer.data.database import get_evolution_db_path
 from gear_optimizer.data.csv_parser import parse_gear_rows, parse_mini_rows
 from gear_optimizer.core.config import load_paths_cache
-from gear_optimizer.data.loadout_equivalence import encode_minis_groups, decode_minis_json
+from gear_optimizer.data.loadout_equivalence import (
+    decode_minis_json,
+    encode_minis_groups,
+    effective_loadout_hash_from_names,
+    effective_mini_signature_for_name,
+    extract_song_colors,
+    merge_minis_groups_for_entry,
+    representative_mini_names,
+)
 
 
 EXPECTED_TEAM_BUFFS = {"NONE", "T1", "T5", "T10", "T15"}
@@ -283,6 +291,8 @@ class RepairStats:
     fg_invariant_deleted: int = 0
     team_buff_fixed_case: int = 0
     team_buff_unexpected: int = 0
+    team_buff_rehash_scanned: int = 0
+    team_buff_rehash_deduped: int = 0
 
 
 def repair_frontend_db(
@@ -535,6 +545,209 @@ def repair_frontend_db(
                             (minis_text_out, json.dumps(details), row["rowid"]),
                         )
 
+    # 4) Rehash + dedupe team_buff tables to collapse legacy/variant hash drift.
+    def _rehash_team_buff_table(table_name: str) -> None:
+        if not table_exists(table_name):
+            return
+
+        total_rows = conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+        if not total_rows:
+            return
+
+        stats.team_buff_rehash_scanned += int(total_rows)
+        if verbose:
+            print(f"[Repair] Rehashing table: {table_name} ({total_rows:,} rows)")
+
+        new_table = f"{table_name}__rehash"
+        if not dry_run:
+            conn.execute(f"DROP TABLE IF EXISTS {new_table};")
+            conn.execute(
+                f"""
+                CREATE TABLE {new_table} (
+                    song_name TEXT,
+                    team_buff TEXT,
+                    loadout_hash TEXT,
+                    score INTEGER,
+                    fg_score INTEGER DEFAULT 0,
+                    gear_json TEXT,
+                    minis_json TEXT,
+                    details_json TEXT,
+                    force_details_json TEXT,
+                    timestamp REAL,
+                    PRIMARY KEY (song_name, team_buff, loadout_hash),
+                    FOREIGN KEY (song_name) REFERENCES songs(name)
+                );
+                """
+            )
+
+        is_fg_table = table_name == "team_buff_fg_loadouts"
+
+        song_rows = conn.execute(f"SELECT DISTINCT song_name FROM {table_name}").fetchall()
+        total_out = 0
+        for (song_name,) in song_rows:
+            aggregated: dict[tuple[str, str, str], dict[str, Any]] = {}
+            cur = conn.execute(
+                f"""
+                SELECT song_name, team_buff, loadout_hash, score, fg_score,
+                       gear_json, minis_json, details_json, force_details_json, timestamp
+                FROM {table_name}
+                WHERE song_name = ?
+                """,
+                (song_name,),
+            )
+            for row in cur:
+                team_buff = str(row["team_buff"] or "").strip().upper()
+                if not team_buff:
+                    team_buff = "T5"
+                if team_buff not in EXPECTED_TEAM_BUFFS:
+                    team_buff = "T5"
+
+                details = _json_loads(row["details_json"], {})
+                if not isinstance(details, dict):
+                    details = {}
+                p_color, s_color, sel_color = extract_song_colors(details)
+
+                gear_names = _json_loads(row["gear_json"], [])
+                if not isinstance(gear_names, list):
+                    gear_names = []
+                gear_names = [str(n) for n in gear_names if str(n)]
+
+                groups_in = decode_minis_json(row["minis_json"])
+                mini_names_rep = representative_mini_names(groups_in)
+
+                new_hash = str(row["loadout_hash"] or "")
+                can_hash = bool(minis_by_name) and (p_color or s_color) and bool(mini_names_rep)
+                if can_hash:
+                    try:
+                        mini_sigs = [
+                            effective_mini_signature_for_name(n, minis_by_name, p_color, s_color, sel_color)
+                            for n in mini_names_rep
+                        ]
+                        new_hash = effective_loadout_hash_from_names(gear_names, mini_sigs)
+                    except Exception:
+                        new_hash = str(row["loadout_hash"] or "")
+
+                key = (str(song_name), team_buff, new_hash)
+                prev = aggregated.get(key)
+                score = _safe_int(row["score"], 0)
+                fg_score = _safe_int(row["fg_score"], 0)
+                timestamp = float(row["timestamp"] or 0.0)
+
+                if prev is None:
+                    aggregated[key] = {
+                        "song_name": str(song_name),
+                        "team_buff": team_buff,
+                        "loadout_hash": new_hash,
+                        "score": score,
+                        "fg_score": fg_score,
+                        "gear_json": row["gear_json"],
+                        "details_json": row["details_json"],
+                        "force_details_json": row["force_details_json"],
+                        "timestamp": timestamp,
+                        "minis_groups": groups_in,
+                        "p_color": p_color,
+                        "s_color": s_color,
+                        "sel_color": sel_color,
+                    }
+                    continue
+
+                # Merge minis groups (best-effort).
+                prev_groups = prev.get("minis_groups") or []
+                use_p = prev.get("p_color") or p_color
+                use_s = prev.get("s_color") or s_color
+                use_sel = prev.get("sel_color") or sel_color
+                if minis_by_name and (use_p or use_s):
+                    merged = merge_minis_groups_for_entry(
+                        prev_groups,
+                        mini_names_rep,
+                        minis_by_name,
+                        use_p,
+                        use_s,
+                        use_sel,
+                    )
+                    prev["minis_groups"] = merged
+                else:
+                    flat = []
+                    for g in prev_groups + groups_in:
+                        flat.extend(g or [])
+                    prev["minis_groups"] = [[n] for n in sorted(set([n for n in flat if n]))]
+
+                prev["p_color"] = use_p
+                prev["s_color"] = use_s
+                prev["sel_color"] = use_sel
+
+                # Align score/fg_score + details/force to the best row.
+                if is_fg_table:
+                    better = fg_score > _safe_int(prev.get("fg_score"), 0)
+                    if not better and fg_score == _safe_int(prev.get("fg_score"), 0):
+                        better = score > _safe_int(prev.get("score"), 0) or timestamp >= float(prev.get("timestamp") or 0)
+                    if better:
+                        prev["score"] = score
+                        prev["fg_score"] = fg_score
+                        prev["gear_json"] = row["gear_json"]
+                        prev["details_json"] = row["details_json"]
+                        prev["force_details_json"] = row["force_details_json"]
+                else:
+                    better = score > _safe_int(prev.get("score"), 0)
+                    if not better and score == _safe_int(prev.get("score"), 0):
+                        better = timestamp >= float(prev.get("timestamp") or 0)
+                    if better:
+                        prev["score"] = score
+                        prev["gear_json"] = row["gear_json"]
+                        prev["details_json"] = row["details_json"]
+                    if fg_score > _safe_int(prev.get("fg_score"), 0):
+                        prev["fg_score"] = fg_score
+                        prev["force_details_json"] = row["force_details_json"]
+
+                prev["timestamp"] = max(float(prev.get("timestamp") or 0.0), timestamp)
+
+            total_out += len(aggregated)
+
+            if not dry_run:
+                for rec in aggregated.values():
+                    minis_json = encode_minis_groups(rec.get("minis_groups") or [])
+                    conn.execute(
+                        f"""
+                        INSERT INTO {new_table} (
+                            song_name, team_buff, loadout_hash, score, fg_score,
+                            gear_json, minis_json, details_json, force_details_json, timestamp
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            rec.get("song_name"),
+                            rec.get("team_buff"),
+                            rec.get("loadout_hash"),
+                            _safe_int(rec.get("score"), 0),
+                            _safe_int(rec.get("fg_score"), 0),
+                            rec.get("gear_json"),
+                            minis_json,
+                            rec.get("details_json"),
+                            rec.get("force_details_json"),
+                            rec.get("timestamp"),
+                        ),
+                    )
+
+        stats.team_buff_rehash_deduped += int(total_rows - total_out)
+
+        if not dry_run:
+            conn.execute(f"DELETE FROM {table_name};")
+            conn.execute(
+                f"""
+                INSERT INTO {table_name} (
+                    song_name, team_buff, loadout_hash, score, fg_score,
+                    gear_json, minis_json, details_json, force_details_json, timestamp
+                )
+                SELECT song_name, team_buff, loadout_hash, score, fg_score,
+                       gear_json, minis_json, details_json, force_details_json, timestamp
+                FROM {new_table};
+                """
+            )
+            conn.execute(f"DROP TABLE IF EXISTS {new_table};")
+
+    _rehash_team_buff_table("team_buff_loadouts")
+    _rehash_team_buff_table("team_buff_fg_loadouts")
+
     if not dry_run:
         conn.commit()
     conn.close()
@@ -570,6 +783,8 @@ def main() -> None:
     print(f"force_normalized: {result.force_normalized:,}")
     print(f"fg_invariant_rows_deleted: {result.fg_invariant_deleted:,}")
     print(f"team_buff_case_fixed_rows: {result.team_buff_fixed_case:,}")
+    print(f"team_buff_rehash_scanned: {result.team_buff_rehash_scanned:,}")
+    print(f"team_buff_rehash_deduped: {result.team_buff_rehash_deduped:,}")
     if result.team_buff_unexpected:
         print(f"WARNING: unexpected team_buff rows remain: {result.team_buff_unexpected:,}")
         print(f"expected: {sorted(EXPECTED_TEAM_BUFFS)}")
