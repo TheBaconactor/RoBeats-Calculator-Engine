@@ -24,6 +24,7 @@ from .loadout_equivalence import (
     encode_minis_groups,
     extract_song_colors,
     get_minis_by_name_cached,
+    get_gears_by_name_cached,
     canonical_minis_groups_from_names,
     representative_mini_names,
 )
@@ -591,6 +592,87 @@ def save_loadout_to_db(song_name, score, fg_score, gear, minis, details, force_d
     save_loadouts_batch(song_name, [entry])
 
 
+def _ensure_stats_in_details(
+    details: dict,
+    gear: list,
+    minis: list,
+    minis_by_name: dict,
+) -> dict:
+    """
+    Ensure Stats are populated in details dict.
+    
+    If Stats is missing or empty, compute it from loadout components using
+    a lightweight approach that doesn't require full gear lookup.
+    
+    This is a defensive fallback - the optimizer should populate Stats properly,
+    but this ensures we never persist entries with empty Stats.
+    """
+    if not isinstance(details, dict):
+        details = {}
+    
+    try:
+        from gear_optimizer.core.stats_calculator import compute_full_stats
+        
+        # Extract gear/mini names from potentially nested structures
+        gear_names = []
+        for g in (gear or []):
+            if isinstance(g, dict):
+                gear_names.append(g.get("Name", ""))
+            elif isinstance(g, str):
+                gear_names.append(g)
+        
+        mini_names = []
+        for m in (minis or []):
+            if isinstance(m, dict):
+                mini_names.append(m.get("Name", ""))
+            elif isinstance(m, str):
+                mini_names.append(m)
+            elif isinstance(m, list) and m:
+                # Variant group format
+                first = m[0]
+                if isinstance(first, dict):
+                    mini_names.append(first.get("Name", ""))
+                elif isinstance(first, str):
+                    mini_names.append(first)
+        
+        # Get gear lookup (use cached version)
+        gears_by_name = get_gears_by_name_cached()
+        
+        # Base stats (loadout-only, no user config)
+        base_stats = {
+            "Perfect Points": 0,
+            "Combo Multiplier": 0,
+            "Fever Multiplier": 0,
+            "Fever Fill Rate": 0,
+            "Fever Time": 0,
+            "Chill": 0,
+            "Flow": 0,
+            "Rush": 0,
+            "Beat": 0,
+            "Vibe": 0,
+        }
+        
+        # Get gem counts and FT/FF from details
+        gem_counts = dict(details.get("GemCounts", {}) or {})
+        gem_counts["Fever Time"] = int(details.get("FT", 0) or 0)
+        gem_counts["Fever Fill Rate"] = int(details.get("FF", 0) or 0)
+        selected_element = details.get("SelectedElement") or details.get("Selected Element") or ""
+        
+        # Compute Stats
+        computed = compute_full_stats(
+            gear_names, mini_names, gem_counts, selected_element,
+            gears_by_name, minis_by_name, base_stats
+        )
+        
+        details["Stats"] = computed
+        
+    except Exception:
+        # If Stats computation fails, leave details as-is (will be caught by verifier)
+        pass
+    
+    return details
+
+
 def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None:
     """
     Batch insert/update loadouts for a song in a single transaction.
@@ -746,6 +828,12 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
             gear = entry.get("gear", [])
             minis = entry.get("minis", [])
             details = entry.get("details", {})
+            
+            # Defensive: ensure Stats are populated in details
+            # If Stats is missing or empty, compute it from loadout components
+            current_stats = details.get("Stats") if isinstance(details, dict) else None
+            if not current_stats or (isinstance(current_stats, dict) and len(current_stats) == 0):
+                details = _ensure_stats_in_details(details, gear, minis, minis_by_name)
             
             # ForceGreats details are persisted as a lean, flat payload in `entry['force']`.
             # Historical DBs may contain older nested formats; we preserve best-effort compatibility

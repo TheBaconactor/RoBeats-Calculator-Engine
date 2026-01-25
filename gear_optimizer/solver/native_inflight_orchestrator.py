@@ -2133,7 +2133,11 @@ def run_native_inflight_song_pipeline(
                             try:
                                 fg_song.song_slot = int(slot_pool.acquire())
                             except Exception:
-                                # No free slots: defer FG submission until GA releases slots.
+                                # No free slots: put the song back and defer FG submission
+                                # until GA releases slots. Without this, the song would be
+                                # dropped from FG processing entirely (it was removed from
+                                # pending_fg by _pop_next_fg but never submitted).
+                                pending_fg.appendleft(fg_song)
                                 break
                             try:
                                 if isinstance(fg_song.calc_song, dict):
@@ -2386,7 +2390,6 @@ def _run_fg_job_sync(
                     song.minis_by_name,
                     build_details,
                     db_loadouts_full=song.db_loadouts_full,
-                    lean_ga_candidates=not bool(song.fg_debug),
                 )
     except Exception:
         pass

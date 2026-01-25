@@ -321,7 +321,6 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
         song.minis_by_name,
         build_details,
         db_loadouts_full=db_loadouts_full,
-        lean_ga_candidates=not bool(song.fg_debug),
     )
     t_build = time.perf_counter() if perf else 0.0
 

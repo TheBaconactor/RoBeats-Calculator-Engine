@@ -708,9 +708,6 @@ def process_song_task(args) -> SongResultPayload:
                 gears_by_name,
                 minis_by_name,
                 build_details,
-                # PERF: Avoid constructing a large `details` dict for every GA candidate.
-                # We can build details lazily later during persistence for the small retained set.
-                lean_ga_candidates=bool(gpu_mode),
             )
 
             # Process force greats

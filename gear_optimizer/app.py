@@ -48,6 +48,7 @@ from gear_optimizer.core.utils import safe_int, cfg_to_dict, cfg_from_dict
 from gear_optimizer.solver.scoring import FEVER_TIMELINE_CACHE, FG_CACHE
 from gear_optimizer.solver.genetic import GEM_SOLVER_CACHE
 from gear_optimizer.app_async_db import AsyncDbSaver
+from gear_optimizer.data.stats_verifier import verify_and_repair_stats, print_verification_warning
 from gear_optimizer.app_stop_control import StopController
 
 
@@ -237,6 +238,19 @@ class GearOptimizerApp:
 
             init_db()
             self._auto_merge_databases()
+            
+            # Verify Stats integrity (only on fresh queue, not resume)
+            # This ensures all database entries have properly populated Stats objects.
+            # If issues are detected (missing or empty Stats), the verifier will:
+            # 1. Automatically repair them by recomputing Stats
+            # 2. Display a prominent warning if any issues were found
+            # This prevents frontend/extractors from seeing 0 for elemental stats.
+            ignore_resume = os.environ.get("METAFINDER_IGNORE_RESUME_QUEUE", "").lower() in ("1", "true", "yes")
+            memory_resume_exists = os.path.exists(MEMORY_GUARD_RESUME_FILE)
+            is_fresh_queue = ignore_resume or not memory_resume_exists
+            
+            if is_fresh_queue:
+                self._verify_stats_integrity()
 
             # Config reading
             ie = read_iteration_engine_settings(cfg)
@@ -441,6 +455,33 @@ class GearOptimizerApp:
         except Exception as e:
             logging.error(f"[DB Merge] Unexpected error: {e}")
             print(f"[DB Merge] Error: {e}")
+
+    def _verify_stats_integrity(self):
+        """
+        Verify and repair database Stats integrity on fresh queue startup.
+        
+        Performs a FULL scan of all database entries (not sample-based) to ensure
+        no entries with missing/empty Stats slip through. Automatically repairs
+        any issues found and displays a prominent warning.
+        """
+        try:
+            # Full scan of all entries - sample-based checks can miss scattered bad entries
+            print("[StatsVerifier] Full database integrity check...")
+            all_valid, full_stats = verify_and_repair_stats(dry_run=False, verbose=True, sample_size=0)
+            
+            if all_valid:
+                print(f"[StatsVerifier] All {full_stats['total']:,} entries have valid Stats")
+            else:
+                # Repairs were made - display prominent warning
+                repaired = full_stats.get("repaired", 0)
+                print(f"[StatsVerifier] Repaired {repaired:,} entries with invalid Stats")
+                if repaired > 100:
+                    # Only show prominent warning if many repairs needed
+                    print_verification_warning(full_stats)
+                
+        except Exception as e:
+            logging.error(f"[StatsVerifier] Unexpected error: {e}")
+            print(f"[StatsVerifier] Warning: Could not verify Stats integrity: {e}")
 
     def _disable_inputs_to_prevent_taint(self, cfg):
         print(

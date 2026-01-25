@@ -22,6 +22,7 @@ from .csv_parser import load_csv_db
 
 
 _MINIS_BY_NAME_CACHE: Optional[Dict[str, dict]] = None
+_GEARS_BY_NAME_CACHE: Optional[Dict[str, dict]] = None
 _MINI_SIG_TO_NAMES_CACHE: dict[tuple[int, str, str, str], dict[tuple[Any, ...], list[str]]] = {}
 
 
@@ -45,6 +46,28 @@ def get_minis_by_name_cached() -> Dict[str, dict]:
         minis = {}
     _MINIS_BY_NAME_CACHE = minis
     return minis
+
+
+def get_gears_by_name_cached() -> Dict[str, dict]:
+    """
+    Lazily load Gears.csv into a name->stats dict (cached for process lifetime).
+
+    Notes:
+    - On failure (missing Data/ or parse issues), returns {}.
+    - Callers should treat missing gears as "name-only" (no stats available).
+    """
+    global _GEARS_BY_NAME_CACHE
+    if _GEARS_BY_NAME_CACHE is not None:
+        return _GEARS_BY_NAME_CACHE
+
+    gears: Dict[str, dict] = {}
+    try:
+        gears_path = os.path.join(PATHS.data_dir, "Gear", "Gears.csv")
+        gears = load_csv_db(gears_path, "gear") or {}
+    except Exception:
+        gears = {}
+    _GEARS_BY_NAME_CACHE = gears
+    return gears
 
 
 def extract_song_colors(details: Any) -> tuple[str, str, str]:

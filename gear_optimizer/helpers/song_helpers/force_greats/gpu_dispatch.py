@@ -537,7 +537,7 @@ def process_force_greats_gpu_finder(
             names_list_fn=names_list_fn,
             perf=perf,
             materialize_force_details=False,
-            materialize_stats=False,
+            materialize_stats=True,  # Must materialize Stats for DB persistence
             store_raw=True,
         )
 
