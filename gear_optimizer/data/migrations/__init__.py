@@ -14,7 +14,7 @@ Migration = Callable[[sqlite3.Connection], None]
 # NOTE: `evolution.db` in the wild may already have `PRAGMA user_version=8` even though
 # the physical schema matches v6 (v6 is a data-level migration only). Keep v7/v8 as
 # no-ops so older DBs can advance and newer DBs won't be rejected.
-LATEST_SCHEMA_VERSION = 11
+LATEST_SCHEMA_VERSION = 12
 
 
 def _migration_1_init_schema(conn: sqlite3.Connection) -> None:
@@ -448,6 +448,52 @@ def _migration_11_add_team_buff_to_fg_loadouts(conn: sqlite3.Connection) -> None
         pass
 
 
+def _migration_12_add_fg_loadouts_unified_view(conn: sqlite3.Connection) -> None:
+    """Create a convenient unified FG view across tiers.
+
+    Motivation:
+    - `fg_loadouts` represents the default FG leaderboard (historically implicit T5).
+    - `team_buff_fg_loadouts` represents explicit per-tier FG leaderboards.
+
+    Some consumers (exporters/frontends) want a single query surface that always includes `team_buff`.
+    This view provides that without changing write paths.
+    """
+    # Ensure idempotent updates in case the view definition changes.
+    conn.execute("DROP VIEW IF EXISTS fg_loadouts_unified;")
+    conn.execute(
+        """
+        CREATE VIEW fg_loadouts_unified AS
+        SELECT
+            song_name,
+            team_buff,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            'fg_loadouts' AS source_table
+        FROM fg_loadouts
+        UNION ALL
+        SELECT
+            song_name,
+            team_buff,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            'team_buff_fg_loadouts' AS source_table
+        FROM team_buff_fg_loadouts;
+        """
+    )
+
+
 _MIGRATIONS: Dict[int, Migration] = {
     1: _migration_1_init_schema,
     2: _migration_2_add_pending_fg_jobs,
@@ -460,6 +506,7 @@ _MIGRATIONS: Dict[int, Migration] = {
     9: _migration_9_add_team_buff_tier_tables,
     10: _migration_10_add_song_attempt_counters,
     11: _migration_11_add_team_buff_to_fg_loadouts,
+    12: _migration_12_add_fg_loadouts_unified_view,
 }
 
 

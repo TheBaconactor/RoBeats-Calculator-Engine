@@ -48,7 +48,29 @@ def get_all_loadouts_from_db() -> List[Dict]:
                 )
 
         _select_all_from("loadouts")
-        _select_all_from("fg_loadouts")
+        
+        # Use unified view for FG rows so team_buff is always present
+        try:
+            cursor = conn.execute(
+                """
+                SELECT song_name, team_buff, score, fg_score, gear_json, minis_json, details_json
+                FROM fg_loadouts_unified
+                """
+            )
+            for row in cursor:
+                results.append(
+                    {
+                        "song_name": row["song_name"],
+                        "team_buff": row["team_buff"],
+                        "score": row["score"],
+                        "fg_score": row["fg_score"],
+                        "gear_json": row["gear_json"],
+                        "minis_json": row["minis_json"],
+                        "details_json": row["details_json"],
+                    }
+                )
+        except sqlite3.Error:
+            pass
         return results
     finally:
         conn.close()
