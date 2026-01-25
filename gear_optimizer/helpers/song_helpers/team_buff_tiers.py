@@ -322,6 +322,27 @@ def _apply_stat_delta(stats: dict, delta: dict[str, int]) -> dict:
     return out
 
 
+def _ensure_stats_include_base_effect(stats: dict, base_effect: dict[str, int]) -> dict:
+    """
+    Ensure `stats` includes the base TeamBuff effect when tiering is expressed as deltas vs base.
+
+    Some historical DB repairs/backfills computed `details["Stats"]` as loadout-only (no TeamBuff),
+    while tier recomputation assumes the saved stats represent the runtime base (auto mode => T5).
+
+    Heuristic: if Perfect Points is less than the base PP add, treat the stats as missing TeamBuff
+    and add the base effect.
+    """
+    if not isinstance(stats, dict) or not stats or not isinstance(base_effect, dict) or not base_effect:
+        return stats if isinstance(stats, dict) else {}
+    base_pp = _safe_int(base_effect.get("Perfect Points", 0), 0)
+    if base_pp <= 0:
+        return dict(stats)
+    pp0 = _safe_int(stats.get("Perfect Points", 0), 0)
+    if pp0 < base_pp:
+        return _apply_stat_delta(stats, base_effect)
+    return dict(stats)
+
+
 def _apply_details_delta(details: object, delta: dict[str, int]) -> dict:
     if not isinstance(details, dict) or not details:
         return {}
@@ -626,7 +647,10 @@ def compute_team_buff_tier_leaderboards(
         details = entry.get("details") or {}
         if not isinstance(details, dict):
             details = {}
-        stats_base = details.get("Stats") or {}
+        stats_base_raw = details.get("Stats") or {}
+        stats_base = (
+            _ensure_stats_include_base_effect(stats_base_raw, base_effect) if isinstance(stats_base_raw, dict) else {}
+        )
         if not isinstance(stats_base, dict) or not stats_base:
             continue
 
@@ -658,7 +682,8 @@ def compute_team_buff_tier_leaderboards(
         fg_primary_val = int(base_primary_val)
         fg_secondary_val = int(base_secondary_val)
         if fg_counts:
-            fg_stats = _force_payload_stats(force_obj, stats_base) if isinstance(force_obj, dict) else stats_base
+            fg_stats0 = _force_payload_stats(force_obj, stats_base) if isinstance(force_obj, dict) else stats_base
+            fg_stats = _ensure_stats_include_base_effect(fg_stats0, base_effect) if isinstance(fg_stats0, dict) else {}
             if not isinstance(fg_stats, dict) or not fg_stats:
                 fg_stats = stats_base
 
@@ -819,6 +844,7 @@ def build_team_buff_tier_db_batches(
 
     team_color = _resolve_team_color(cfg_dict, calc_song)
     base_team_buff = _resolve_base_team_buff(cfg_dict)
+    base_effect = _team_buff_effect(base_team_buff, team_color)
 
     # Map original entries by a stable key (order-invariant names).
     def _stable_key_from_entry(e: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -876,9 +902,29 @@ def build_team_buff_tier_db_batches(
             fg_score_out = int(fg_score_by_key.get(k, 0) or 0)
 
             # Keep payloads internally consistent: adjust Stats + FG score fields for this tier.
-            details_out = _apply_details_delta(copy.deepcopy(orig.get("details") or {}), delta_map)
+            details_base = copy.deepcopy(orig.get("details") or {})
+            if isinstance(details_base, dict):
+                stats0 = details_base.get("Stats")
+                if isinstance(stats0, dict) and stats0:
+                    details_base["Stats"] = _ensure_stats_include_base_effect(stats0, base_effect)
+            details_out = _apply_details_delta(details_base, delta_map)
+
+            force_base = copy.deepcopy(orig.get("force"))
+            # If the persisted BaseStats payload is missing the base TeamBuff effect, add it first so
+            # the tier delta map can't create negative stats.
+            if isinstance(force_base, dict) and base_effect:
+                bs = force_base.get("BaseStats")
+                if isinstance(bs, dict) and bs:
+                    force_base["BaseStats"] = _ensure_stats_include_base_effect(bs, base_effect)
+                det = force_base.get("details")
+                if isinstance(det, dict):
+                    st = det.get("Stats")
+                    if isinstance(st, dict) and st:
+                        det_out = dict(det)
+                        det_out["Stats"] = _ensure_stats_include_base_effect(st, base_effect)
+                        force_base["details"] = det_out
             force_out = _apply_force_delta(
-                copy.deepcopy(orig.get("force")),
+                force_base,
                 delta=delta_map,
                 fg_score=fg_score_out,
             )

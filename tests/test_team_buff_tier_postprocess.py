@@ -205,3 +205,53 @@ def test_build_team_buff_tier_db_batches_preserves_identity_and_repairs_corrupt_
     out = batches["T5"][0]
     assert out["gear"] == entry["gear"]
     assert out["minis"] == ["M1", "M2", "M3"]
+
+
+def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp():
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+
+    calc_song = _mock_song(name="pytest_team_buff_missing_base_effect", n_notes=12)
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+
+    # Auto mode => base TeamBuff is T5 + TeamColor follows Primary (Rush).
+    cfg_dict = {"IterationEngine": {"AutoSelectBuffAndColor": "true"}}
+
+    # Stats here are intentionally loadout-only (missing base T5 effect).
+    stats = {
+        "Perfect Points": 0,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 10,
+        "Flow": 0,
+        "Beat": 0,
+        "Vibe": 0,
+        "Chill": 0,
+    }
+
+    entry = {
+        "score": 1,
+        "fg_score": 2,
+        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+        "minis": ["M1", "M2", "M3"],
+        "details": {"Stats": stats},
+        # Flat force payload as stored in DB; BaseStats also missing base effect to emulate repaired rows.
+        "force": {"BaseStats": stats, "GemCounts": {"Perfect Points": 0}, "ForceGreats": {"config": {"NonFever1": 1}}},
+    }
+
+    batches = build_team_buff_tier_db_batches(
+        entries=[entry],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        limit=1,
+        tiers=("NONE", "T5", "T10", "T15"),
+    )
+
+    # All produced Stats should be non-negative PP.
+    for tier in ("NONE", "T5", "T10", "T15"):
+        out = batches[tier][0]
+        pp = out["details"]["Stats"]["Perfect Points"]
+        assert pp >= 0
