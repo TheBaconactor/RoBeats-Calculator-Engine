@@ -8,6 +8,7 @@ from typing import Any, Dict
 from gear_optimizer.core.constants import PATHS, TOTAL_ROWS
 from gear_optimizer.core.stats_calculator import compute_full_stats
 from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
+from gear_optimizer.data.loadout_equivalence import normalize_minis_groups_for_display
 
 from .analysis import (
     _ELEMENT_ORDER,
@@ -102,7 +103,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
     def _build_loadout_entry(loadout_data: dict, selected_element: str, *, team_buff: str, team_color: str) -> dict:
         loadout_key = str(loadout_data.get("loadout_key") or "").strip()
         gear_names = sort_gears_by_slot(loadout_data["gear_names"], gears_by_name)
-        minis_groups = loadout_data.get("minis_json") or []
+        minis_groups = normalize_minis_groups_for_display(loadout_data.get("minis_json") or [])
         mini_names = sorted([min(g) for g in minis_groups if g])
         avg_gems = loadout_data["avg_gems"]
         peak_in_songs = loadout_data.get("peak_in_songs") or []
@@ -212,7 +213,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
         team_color = _resolve_team_color(primary)
         for loadout_data in top_loadouts:
             gear_names = sort_gears_by_slot(loadout_data["gear_names"], gears_by_name)
-            minis_groups = loadout_data.get("minis_json") or []
+            minis_groups = normalize_minis_groups_for_display(loadout_data.get("minis_json") or [])
             mini_names = sorted([min(g) for g in minis_groups if g])
             avg_gems = loadout_data["avg_gems"]
             peak_in_songs = loadout_data.get("peak_in_songs") or []
@@ -233,6 +234,9 @@ def run_general_meta(cfg, paths: dict) -> dict:
             loadout_entries.append(_build_loadout_entry(loadout_data, primary, team_buff="T5", team_color=team_color))
 
         team_buff_winners = _empty_team_buff_winners()
+
+        # GeneralMeta contract: T5 is the "default" (baseline-derived) result.
+        # Only None/T1/T10/T15 are sourced from tiered DB tables.
         team_buff_winners["T5"]["songs_count_with_data"] = len(songs)
         team_buff_winners["T5"]["winner"] = loadout_entries[0] if loadout_entries else None
 
@@ -260,16 +264,17 @@ def run_general_meta(cfg, paths: dict) -> dict:
                     team_color=team_color,
                 )
 
-        non_t5_winners = [t for t in team_buff_tiers if t != "T5" and team_buff_winners[t]["winner"] is not None]
-        if non_t5_winners:
-            print("  TeamBuff winners (DB-tiered):")
-            for label in non_t5_winners:
+        winners_to_print = [t for t in team_buff_tiers if team_buff_winners[t]["winner"] is not None]
+        if winners_to_print:
+            print("  TeamBuff winners (T5 baseline; others DB-tiered):")
+            for label in winners_to_print:
                 winner = team_buff_winners[label]["winner"] or {}
                 minis_groups = winner.get("minis_json") or []
                 mini_names = sorted([min(g) for g in minis_groups if g])
+                songs_note = "songs in category" if label == "T5" else "songs with tier data"
                 print(
                     f"    {label}: {int(winner.get('win_frequency') or 0)} wins "
-                    f"(from {int(team_buff_winners[label]['songs_count_with_data'] or 0)} songs with tier data)"
+                    f"(from {int(team_buff_winners[label]['songs_count_with_data'] or 0)} {songs_note})"
                 )
                 print(f"      Gear: {winner.get('gear') or []}")
                 print(f"      Minis: {mini_names}")
@@ -345,7 +350,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
         team_color = _resolve_team_color(primary)
         for loadout_data in top_loadouts:
             gear_names = sort_gears_by_slot(loadout_data["gear_names"], gears_by_name)
-            minis_groups = loadout_data.get("minis_json") or []
+            minis_groups = normalize_minis_groups_for_display(loadout_data.get("minis_json") or [])
             mini_names = sorted([min(g) for g in minis_groups if g])
             avg_gems = loadout_data["avg_gems"]
             peak_in_songs = loadout_data.get("peak_in_songs") or []
@@ -366,6 +371,9 @@ def run_general_meta(cfg, paths: dict) -> dict:
             loadout_entries.append(_build_loadout_entry(loadout_data, primary, team_buff="T5", team_color=team_color))
 
         team_buff_winners = _empty_team_buff_winners()
+
+        # GeneralMeta contract: T5 is the "default" (baseline-derived) result.
+        # Only None/T1/T10/T15 are sourced from tiered DB tables.
         team_buff_winners["T5"]["songs_count_with_data"] = len(songs)
         team_buff_winners["T5"]["winner"] = loadout_entries[0] if loadout_entries else None
 
@@ -393,16 +401,17 @@ def run_general_meta(cfg, paths: dict) -> dict:
                     team_color=team_color,
                 )
 
-        non_t5_winners = [t for t in team_buff_tiers if t != "T5" and team_buff_winners[t]["winner"] is not None]
-        if non_t5_winners:
-            print("  TeamBuff winners (DB-tiered):")
-            for label in non_t5_winners:
+        winners_to_print = [t for t in team_buff_tiers if team_buff_winners[t]["winner"] is not None]
+        if winners_to_print:
+            print("  TeamBuff winners (T5 baseline; others DB-tiered):")
+            for label in winners_to_print:
                 winner = team_buff_winners[label]["winner"] or {}
                 minis_groups = winner.get("minis_json") or []
                 mini_names = sorted([min(g) for g in minis_groups if g])
+                songs_note = "songs in category" if label == "T5" else "songs with tier data"
                 print(
                     f"    {label}: {int(winner.get('win_frequency') or 0)} wins "
-                    f"(from {int(team_buff_winners[label]['songs_count_with_data'] or 0)} songs with tier data)"
+                    f"(from {int(team_buff_winners[label]['songs_count_with_data'] or 0)} {songs_note})"
                 )
                 print(f"      Gear: {winner.get('gear') or []}")
                 print(f"      Minis: {mini_names}")

@@ -177,6 +177,60 @@ def representative_mini_names(groups: list[list[str]]) -> list[str]:
     return reps
 
 
+def normalize_minis_groups_for_display(groups: list[list[str]]) -> list[list[str]]:
+    """Normalize minis groups for frontend display.
+
+    The DB can legitimately store repeated *variant groups* when multiple equipped
+    minis are song-context equivalent. Example (two slots share the same signature):
+
+        [["A", "B"], ["A", "B"], ["C"]]
+
+    Semantically this means: two distinct slots, each of which could be A or B
+    across equivalent loadouts. For display, showing "A / B" twice is confusing;
+    it's clearer to show one concrete name per slot when duplicates occur:
+
+        [["A"], ["B"], ["C"]]
+
+    Rules:
+    - If a variant group appears only once, keep it as-is (so true duo-name minis
+      like "BlackY / Heavy Metal Starlet" remain a single displayed slot).
+    - If a variant group appears multiple times and has multiple candidate names,
+      expand each occurrence into a singleton using `representative_mini_names`.
+
+    This is a display-layer transformation only; it does not change the underlying
+    equivalence model.
+    """
+
+    if not groups:
+        return []
+
+    # Ensure consistent shape: drop empties, strip strings, and keep per-group sorted unique names.
+    normalized: list[list[str]] = []
+    for g0 in groups:
+        if not g0:
+            continue
+        g = [str(x).strip() for x in g0 if x is not None]
+        g = [n for n in g if n]
+        if not g:
+            continue
+        normalized.append(sorted(set(g)))
+
+    if not normalized:
+        return []
+
+    counts: Counter[tuple[str, ...]] = Counter(tuple(g) for g in normalized)
+    reps = representative_mini_names(normalized)
+
+    out: list[list[str]] = []
+    for g, rep in zip(normalized, reps):
+        key = tuple(g)
+        if counts.get(key, 0) > 1 and len(g) > 1 and rep:
+            out.append([rep])
+        else:
+            out.append(g)
+    return out
+
+
 def _stat_int(stats: Any, key: str) -> int:
     try:
         if isinstance(stats, dict):
