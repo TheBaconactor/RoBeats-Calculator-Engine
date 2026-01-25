@@ -128,6 +128,7 @@ from .ga_eval import (
     ga_write_best_results_from_key_kernel,
     # GPU-side global best tracking
     ga_init_global_best_kernel,
+    ga_pack_global_best_kernel,
     ga_update_global_best_kernel,
     ga_pack_and_store_run_payload_kernel,
     ga_pack_and_store_run_payload_segmented_kernel,
@@ -254,6 +255,7 @@ __all__ = [
     "ga_write_best_results_from_key_kernel",
     # GPU-side global best tracking
     "ga_init_global_best_kernel",
+    "ga_pack_global_best_kernel",
     "ga_update_global_best_kernel",
     "ga_pack_and_store_run_payload_kernel",
     "ga_pack_and_store_run_payload_segmented_kernel",

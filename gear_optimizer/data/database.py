@@ -24,6 +24,7 @@ from .loadout_equivalence import (
     encode_minis_groups,
     extract_song_colors,
     get_minis_by_name_cached,
+    get_gears_by_name_cached,
     canonical_minis_groups_from_names,
     representative_mini_names,
 )
@@ -72,6 +73,12 @@ def get_db_connection_with_timeout(db_path: Optional[str] = None, *, timeout: fl
     conn.row_factory = sqlite3.Row
     # Enable WAL mode for better concurrency
     conn.execute("PRAGMA journal_mode=WAL;")
+    # Set busy timeout to prevent blocking readers for too long.
+    # This makes writers retry briefly instead of holding locks.
+    try:
+        conn.execute("PRAGMA busy_timeout=100;")
+    except Exception:
+        pass
     ensure_schema(conn)
     return conn
 
@@ -161,10 +168,13 @@ def get_db_connection_cached(db_path: Optional[str] = None) -> sqlite3.Connectio
     if conn is not None:
         return conn
 
+    # Default to a small non-zero timeout to allow brief lock contention during
+    # write bursts without immediate failure. This prevents spurious fallbacks
+    # to the empty in-memory DB when the AsyncDbSaver is actively writing.
     try:
-        read_timeout = float(os.environ.get("DB_READ_TIMEOUT_SEC", "0") or "0")
+        read_timeout = float(os.environ.get("DB_READ_TIMEOUT_SEC", "0.2") or "0.2")
     except Exception:
-        read_timeout = 0.0
+        read_timeout = 0.2
 
     try:
         conn = get_db_connection_readonly(db_path, timeout=read_timeout)
@@ -582,6 +592,87 @@ def save_loadout_to_db(song_name, score, fg_score, gear, minis, details, force_d
     save_loadouts_batch(song_name, [entry])
 
 
+def _ensure_stats_in_details(
+    details: dict,
+    gear: list,
+    minis: list,
+    minis_by_name: dict,
+) -> dict:
+    """
+    Ensure Stats are populated in details dict.
+    
+    If Stats is missing or empty, compute it from loadout components using
+    a lightweight approach that doesn't require full gear lookup.
+    
+    This is a defensive fallback - the optimizer should populate Stats properly,
+    but this ensures we never persist entries with empty Stats.
+    """
+    if not isinstance(details, dict):
+        details = {}
+    
+    try:
+        from gear_optimizer.core.stats_calculator import compute_full_stats
+        
+        # Extract gear/mini names from potentially nested structures
+        gear_names = []
+        for g in (gear or []):
+            if isinstance(g, dict):
+                gear_names.append(g.get("Name", ""))
+            elif isinstance(g, str):
+                gear_names.append(g)
+        
+        mini_names = []
+        for m in (minis or []):
+            if isinstance(m, dict):
+                mini_names.append(m.get("Name", ""))
+            elif isinstance(m, str):
+                mini_names.append(m)
+            elif isinstance(m, list) and m:
+                # Variant group format
+                first = m[0]
+                if isinstance(first, dict):
+                    mini_names.append(first.get("Name", ""))
+                elif isinstance(first, str):
+                    mini_names.append(first)
+        
+        # Get gear lookup (use cached version)
+        gears_by_name = get_gears_by_name_cached()
+        
+        # Base stats (loadout-only, no user config)
+        base_stats = {
+            "Perfect Points": 0,
+            "Combo Multiplier": 0,
+            "Fever Multiplier": 0,
+            "Fever Fill Rate": 0,
+            "Fever Time": 0,
+            "Chill": 0,
+            "Flow": 0,
+            "Rush": 0,
+            "Beat": 0,
+            "Vibe": 0,
+        }
+        
+        # Get gem counts and FT/FF from details
+        gem_counts = dict(details.get("GemCounts", {}) or {})
+        gem_counts["Fever Time"] = int(details.get("FT", 0) or 0)
+        gem_counts["Fever Fill Rate"] = int(details.get("FF", 0) or 0)
+        selected_element = details.get("SelectedElement") or details.get("Selected Element") or ""
+        
+        # Compute Stats
+        computed = compute_full_stats(
+            gear_names, mini_names, gem_counts, selected_element,
+            gears_by_name, minis_by_name, base_stats
+        )
+        
+        details["Stats"] = computed
+        
+    except Exception:
+        # If Stats computation fails, leave details as-is (will be caught by verifier)
+        pass
+    
+    return details
+
+
 def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None:
     """
     Batch insert/update loadouts for a song in a single transaction.
@@ -706,6 +797,15 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
     best_fg_max = None
 
     try:
+        # Use IMMEDIATE to acquire write lock upfront - fails fast instead of blocking readers.
+        # Also reduces lock duration by not waiting until the first write statement.
+        try:
+            conn.execute("BEGIN IMMEDIATE;")
+        except sqlite3.OperationalError:
+            # If we can't get the lock immediately, wait briefly and retry once
+            time.sleep(0.05)
+            conn.execute("BEGIN IMMEDIATE;")
+
         # Relax sync during batch for throughput
         try:
             conn.execute("PRAGMA synchronous=NORMAL;")
@@ -728,7 +828,19 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
             gear = entry.get("gear", [])
             minis = entry.get("minis", [])
             details = entry.get("details", {})
+            
+            # Defensive: ensure Stats are populated in details
+            # If Stats is missing or empty, compute it from loadout components
+            current_stats = details.get("Stats") if isinstance(details, dict) else None
+            if not current_stats or (isinstance(current_stats, dict) and len(current_stats) == 0):
+                details = _ensure_stats_in_details(details, gear, minis, minis_by_name)
+            
+            # ForceGreats details are persisted as a lean, flat payload in `entry['force']`.
+            # Historical DBs may contain older nested formats; we preserve best-effort compatibility
+            # by unwrapping `{..., 'details': {...}}` into the details dict.
             force_data = entry.get("force")
+            if isinstance(force_data, dict) and ("ForceGreats" not in force_data) and isinstance(force_data.get("details"), dict):
+                force_data = force_data.get("details")
 
             if fg_score <= 0 and force_data is not None:
                 fg_score = _fg_score_from_force(force_data)
@@ -828,8 +940,8 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
             _t_insfg0 = time.perf_counter()
             conn.executemany(
                 """
-                INSERT INTO fg_loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+                INSERT INTO fg_loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, team_buff, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'T5', strftime('%s', 'now'))
                 ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
                     score = CASE WHEN excluded.fg_score > fg_score THEN excluded.score ELSE score END,
                     fg_score = MAX(fg_score, excluded.fg_score),
@@ -866,6 +978,19 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
                 (song_name, best_fg_max),
             )
             _log_timing("upsert_song_best_fg_score", time.perf_counter() - _t_songfg0)
+
+        # Commit bulk inserts early to release write lock before slower dedup/prune.
+        # This reduces the window where readers are blocked.
+        _t_commit_early = time.perf_counter()
+        conn.commit()
+        _log_timing("commit_inserts", time.perf_counter() - _t_commit_early)
+
+        # Start a new transaction for cleanup operations
+        try:
+            conn.execute("BEGIN IMMEDIATE;")
+        except sqlite3.OperationalError:
+            time.sleep(0.02)
+            conn.execute("BEGIN IMMEDIATE;")
 
         # Enforce FG leaderboard invariant (in case older DB rows exist):
         # fg_loadouts should only contain entries where FG strictly beats base.
@@ -1077,6 +1202,12 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
             minis = entry.get("minis", [])
             details = entry.get("details", {})
             force_data = entry.get("force")
+            
+            # Defensive: ensure Stats are populated in details
+            # If Stats is missing or empty, compute it from loadout components
+            current_stats = details.get("Stats") if isinstance(details, dict) else None
+            if not current_stats or (isinstance(current_stats, dict) and len(current_stats) == 0):
+                details = _ensure_stats_in_details(details, gear, minis, minis_by_name)
 
             if fg_score <= 0 and force_data is not None:
                 fg_score = _fg_score_from_force(force_data)

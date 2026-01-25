@@ -61,6 +61,11 @@ try:
 except ImportError:
     pass
 
+# Cached env config for GA_FORCE_COLD_START (avoids repeated env lookups)
+_GA_FORCE_COLD_START: bool = (
+    os.environ.get("GA_FORCE_COLD_START", "").strip().lower() in {"1", "true", "yes", "on"}
+)
+
 
 def _build_base_stats_array(base_stats_fixed: dict, cfg_data: dict) -> tuple:
     """
@@ -485,8 +490,6 @@ def decode_gpu_native_ga_runs_payload(
         genome_ids_mat = np.asarray(packed[:, 1 : 1 + n_slots], dtype=np.int32)
         results_mat = np.asarray(packed[:, 1 + n_slots : 1 + n_slots + 7], dtype=np.int32)
 
-        sel_color = str(cfg_data.get("selected_color", "") or "")
-
         # PERF/CPU NOTE:
         # - The GPU-selected payload already contains everything the in-flight pipeline needs
         #   (score + FT/FF + gem counts + selected element + (run,row) provenance).
@@ -505,34 +508,39 @@ def decode_gpu_native_ga_runs_payload(
             # produce meaningful FG improvements. Candidate decoding is already limited
             # (typically <= FG_CANDIDATE_LIMIT), so computing Stats here is acceptable.
             include_stats = bool(cfg_data.get("fg_require_stats", False))
-        t_stats = time.perf_counter() if (perf and include_stats) else 0.0
-        stat_names = None
-        final_stats_mat = None
-        base_stats_arr = None
-        item_stats_sum = None
 
-        g_ft = results_mat[:, 1]
-        g_ff = results_mat[:, 2]
-        g_pp = results_mat[:, 3]
-        g_cm = results_mat[:, 4]
-        g_fm = results_mat[:, 5]
-        g_ov = results_mat[:, 6]
+        base_stats_arr = None
+        sel_color_built = None
+        if include_stats:
+            base_stats_arr, sel_color_built = _build_base_stats_array(base_stats_fixed, cfg_data)
+
+        sel_color = str(cfg_data.get("selected_color", "") or "")
+        if sel_color_built:
+            sel_color = str(sel_color_built)
+
+        color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
+        sel_color_idx = int(color_to_idx.get(sel_color, -1))
+
+        t_stats = 0.0
+        final_stats_mat = None
+        item_stats_sum = None
+        stat_names = None
 
         if include_stats:
-            # Optional (debug): compute per-candidate Stats/BaseStats dicts.
-            # This is expensive (large numpy gathers + per-candidate dict builds) and is not required
-            # for the in-flight pipeline, so keep it opt-in via GA_DECODE_INCLUDE_STATS=1.
-            base_stats_arr, sel_color_built = _build_base_stats_array(base_stats_fixed, cfg_data)
-            sel_color = str(sel_color_built or sel_color or "")
-            color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
-            sel_color_idx = int(color_to_idx.get(sel_color, -1))
-
             item_stats = registry.to_gpu_arrays()["item_stats"]  # (n_items, 10)
+            t_stats = time.perf_counter() if perf else 0.0
             item_stats_sum = item_stats[genome_ids_mat].sum(axis=1)
 
             # Gem contributions: (n_cand, 10)
             n_cand = int(genome_ids_mat.shape[0])
             gem_contributions = np.zeros((n_cand, 10), dtype=np.int32)
+            g_ft = results_mat[:, 1]
+            g_ff = results_mat[:, 2]
+            g_pp = results_mat[:, 3]
+            g_cm = results_mat[:, 4]
+            g_fm = results_mat[:, 5]
+            g_ov = results_mat[:, 6]
+
             gem_contributions[:, 0] = g_pp * GEM_SCALE_NORMAL
             gem_contributions[:, 1] = g_cm * GEM_SCALE_NORMAL
             gem_contributions[:, 2] = g_fm * GEM_SCALE_FEVER
@@ -565,6 +573,13 @@ def decode_gpu_native_ga_runs_payload(
 
         unique_evaluated: list[dict] = []
         n_cand = int(genome_ids_mat.shape[0])
+        g_ft = results_mat[:, 1]
+        g_ff = results_mat[:, 2]
+        g_pp = results_mat[:, 3]
+        g_cm = results_mat[:, 4]
+        g_fm = results_mat[:, 5]
+        g_ov = results_mat[:, 6]
+
         for i in range(n_cand):
             score_val = int(scores_vec[i])
             ids_row = genome_ids_mat[i]
@@ -592,6 +607,7 @@ def decode_gpu_native_ga_runs_payload(
                 "_ga_gpu_run_idx": int(sel_run_idx[i]),
                 "_ga_gpu_row_idx": int(sel_rows[i]),
             }
+
             if include_stats and stat_names is not None and base_stats_arr is not None and item_stats_sum is not None:
                 # Always try to provide BaseStats when requested; ForceGreats batching can
                 # operate on BaseStats even if full post-gem Stats reconstruction fails.

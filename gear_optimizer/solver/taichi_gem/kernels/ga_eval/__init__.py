@@ -6,7 +6,7 @@ This subpackage contains the kernels previously defined in
 """
 
 from .combo_search import ga_find_best_combo_key_kernel
-from .global_best import ga_init_global_best_kernel, ga_update_global_best_kernel
+from .global_best import ga_init_global_best_kernel, ga_pack_global_best_kernel, ga_update_global_best_kernel
 from .islands import ga_find_island_elites_kernel
 from .migration import ga_island_migration_kernel, ga_island_migration_runs_kernel
 from .payload import (
@@ -50,6 +50,7 @@ __all__ = [
     "ga_write_best_and_update_global_kernel",
     "ga_write_best_and_store_hints_kernel",
     "ga_init_global_best_kernel",
+    "ga_pack_global_best_kernel",
     "ga_update_global_best_kernel",
     "ga_pack_run_payload_kernel",
     "ga_pack_and_store_run_payload_kernel",

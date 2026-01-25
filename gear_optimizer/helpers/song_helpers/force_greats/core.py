@@ -98,14 +98,14 @@ def _process_force_greats_cpu(
 
         if (
             cached_force
-            and (cached_force.get("score") or entry.get("fg_score"))
+            and (entry.get("fg_score") or cached_force.get("Score"))
             and cache_validation.is_cached_force_valid(cached_force, expected_sel)
         ):
             base_score = entry.get("base_score") or entry.get("score", 0)
-            cached_fg_score = cached_force.get("score", entry.get("fg_score", 0))
+            cached_fg_score = entry.get("fg_score", 0) or cached_force.get("Score", 0)
             fg_variants.append(
                 {
-                    "data": cached_force.get("details", {}),
+                    "data": cached_force,
                     "gear": entry.get("gear", []),
                     "minis": entry.get("minis", []),
                     "score": base_score,
@@ -146,12 +146,7 @@ def _process_force_greats_cpu(
                     "_is_ga": str(entry.get("_source") or "") == "ga",
                 }
             )
-            entry["force"] = {
-                "score": fg_score,
-                "gear": names_list(entry.get("gear", [])),
-                "minis": names_list(entry.get("minis", [])),
-                "details": build_details_fn(fg_variant),
-            }
+            entry["force"] = fg_variant
             entry["fg_score"] = fg_score
 
     print(

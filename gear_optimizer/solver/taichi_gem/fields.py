@@ -157,6 +157,7 @@ ga_parent_b: ti.Field = None  # (MAX_GENOMES,) int32 selected parent index B
 ga_global_best_score: ti.Field = None  # (1,) i32 - best score across all generations
 ga_global_best_genome: ti.Field = None  # (MAX_SLOTS,) i32 - item IDs of best genome
 ga_global_best_results: ti.Field = None  # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for best genome
+ga_global_best_packed: ti.Field = None  # (17,) i32 - packed [score, genome_ids(9), results(7)] for single download
 # Packed GA download payload (reduce CPU<->GPU transfers): row 0 = global best, rows 1..n = per-genome snapshot.
 ga_run_payload_packed: ti.Field = None  # (MAX_GENOMES+1, 17) i32 - [score, slot_ids(9), result(7)]
 # Multi-start GA snapshot buffer (stores packed payload per run to avoid per-run downloads).
@@ -407,6 +408,7 @@ def reset_fields_state() -> None:
     ga_global_best_score = None
     ga_global_best_genome = None
     ga_global_best_results = None
+    ga_global_best_packed = None
     ga_runs_payload_packed = None
     ga_run_payload_packed = None
     ga_runs_payload_download_staging_16 = None
@@ -680,6 +682,7 @@ def allocate_fields():
     ga_global_best_score = ti.field(dtype=ti.i32, shape=1)
     ga_global_best_genome = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
     ga_global_best_results = ti.field(dtype=ti.i32, shape=7)  # [score, ft, ff, pp, cm, fm, ov]
+    ga_global_best_packed = ti.field(dtype=ti.i32, shape=17)  # [score, genome_ids(9), results(7)]
     ga_run_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES + 1, 1 + MAX_SLOTS + 7))
     ga_runs_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GA_RUNS, MAX_GA_RUN_GENOMES + 1, 1 + MAX_SLOTS + 7))
     # NOTE: these staging buffers are intentionally smaller than ga_runs_payload_packed so we can
@@ -882,6 +885,7 @@ def bind_fields(kernels_module):
     target.ga_global_best_score = ga_global_best_score
     target.ga_global_best_genome = ga_global_best_genome
     target.ga_global_best_results = ga_global_best_results
+    target.ga_global_best_packed = ga_global_best_packed
     target.ga_runs_payload_packed = ga_runs_payload_packed
     target.ga_run_payload_packed = ga_run_payload_packed
     target.ga_fg_candidates_packed = ga_fg_candidates_packed

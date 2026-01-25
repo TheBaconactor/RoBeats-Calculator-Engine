@@ -161,12 +161,24 @@ def load_database_context(
     known_loadouts = {}
 
     if use_evo_db:
+        pid = None
+        try:
+            pid = os.getpid()
+        except Exception:
+            pid = None
+
         # Always print DB path + exact lookup key to make seeding issues obvious.
         # (repr shows hidden whitespace / mismatched suffixes that would otherwise be invisible.)
         try:
-            print(f"[DB] Using DB: {get_evolution_db_path()} | lookup key: {found_song_name!r}")
+            if pid is not None:
+                print(f"[DB pid={pid}] Using DB: {get_evolution_db_path()} | lookup key: {found_song_name!r}")
+            else:
+                print(f"[DB] Using DB: {get_evolution_db_path()} | lookup key: {found_song_name!r}")
         except Exception:
-            print(f"[DB] Using DB: (unknown) | lookup key: {found_song_name!r}")
+            if pid is not None:
+                print(f"[DB pid={pid}] Using DB: (unknown) | lookup key: {found_song_name!r}")
+            else:
+                print(f"[DB] Using DB: (unknown) | lookup key: {found_song_name!r}")
 
         # Load previous best for seeding
         best_loadouts = get_best_loadouts(
@@ -176,7 +188,22 @@ def load_database_context(
             prev_record = best_loadouts[0]
 
         if prev_record:
-            print(f"[DB] Found previous best: {prev_record.get('score', 0)}")
+            try:
+                prev_base = int(prev_record.get("score", 0) or 0)
+            except Exception:
+                prev_base = 0
+            # `get_best_loadouts(..., limit=1)` may include both:
+            # - top base loadout from `loadouts`
+            # - top FG loadout from `fg_loadouts`
+            # so we can cheaply surface an approximate best-FG alongside base.
+            prev_best_fg = 0
+            try:
+                prev_best_fg = max(int(r.get("fg_score", 0) or 0) for r in (best_loadouts or []) if isinstance(r, dict))
+            except Exception:
+                prev_best_fg = 0
+
+            tag = f"[DB pid={pid}]" if pid is not None else "[DB]"
+            print(f"{tag} Found previous best (Base: {prev_base}, FG: {prev_best_fg})")
         else:
             # If we expected a DB seed but didn't find one, show nearby candidates.
             # This catches cases where the song key differs by suffix/spacing.

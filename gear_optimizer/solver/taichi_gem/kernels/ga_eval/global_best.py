@@ -54,3 +54,20 @@ def ga_update_global_best_kernel(n_genomes: ti.i32, n_slots: ti.i32):
             res = kernels_helpers.genome_result_stats[best_g]
             for r in ti.static(range(7)):
                 kernels_helpers.ga_global_best_results[r] = res[r]
+
+
+@ti.kernel
+def ga_pack_global_best_kernel():
+    """
+    Pack GA global best into a single field for efficient download.
+
+    Layout: [score(1), genome_ids(9), results(7)] = 17 values
+    This reduces 3 separate to_numpy() calls (3 GPU syncs) to 1.
+    """
+    for _ in range(1):
+        # Pack: [score, genome_ids..., results...]
+        kernels_helpers.ga_global_best_packed[0] = kernels_helpers.ga_global_best_score[0]
+        for s in ti.static(range(9)):
+            kernels_helpers.ga_global_best_packed[1 + s] = kernels_helpers.ga_global_best_genome[s]
+        for r in ti.static(range(7)):
+            kernels_helpers.ga_global_best_packed[10 + r] = kernels_helpers.ga_global_best_results[r]

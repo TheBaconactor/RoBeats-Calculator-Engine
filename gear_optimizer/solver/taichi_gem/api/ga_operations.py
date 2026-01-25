@@ -29,6 +29,16 @@ from ..kernel_loader import get_kernels
 
 from .initialization import ensure_ready, _ensure_ftff_combo_tables
 
+# Cache environment variables at module load time to avoid per-call overhead
+_GA_PLATEAU_PRUNE_ENABLED: int = 1
+_raw = str(os.environ.get("GPU_NATIVE_GA_PLATEAU_PRUNE", "1") or "").strip().lower()
+if _raw in {"0", "false", "no", "off"}:
+    _GA_PLATEAU_PRUNE_ENABLED = 0
+del _raw
+
+_GA_COMBO_CHUNK_MIN: int = max(64, int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MIN", "1024") or 1024))
+_GA_COMBO_CHUNK_MAX: int = max(_GA_COMBO_CHUNK_MIN, int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MAX", "4096") or 4096))
+
 # Get appropriate kernels for current platform (Metal-safe on macOS)
 kernels = get_kernels()
 
@@ -543,10 +553,8 @@ def ga_evaluate_population(
     # Warm-start logic: Default to cold start (0) unless specified
     use_hints_i = int(use_hints)
 
-    prune_plateaus_i = 1
-    raw_prune = str(os.environ.get("GPU_NATIVE_GA_PLATEAU_PRUNE", "1") or "").strip().lower()
-    if raw_prune in {"0", "false", "no", "off"}:
-        prune_plateaus_i = 0
+    # Use cached module-level plateau prune setting (avoids per-call os.environ overhead)
+    prune_plateaus_i = _GA_PLATEAU_PRUNE_ENABLED
 
     # Precompute FT/FF combo tables once per budget (tiny upload, reused across generations).
     n_combos = _ensure_ftff_combo_tables(total_budget_i)
@@ -554,25 +562,8 @@ def ga_evaluate_population(
     # Chunk very large workloads to reduce kernel wall time (helps avoid Windows TDR on Vulkan).
     if n_genomes * n_combos > MAX_WORK_ITEMS:
         # Pick the largest chunk that keeps the 2D kernel's total work items bounded.
-        # This reduces per-generation dispatch overhead without creating a single very long-running kernel.
-        #
-        # NOTE: MAX_WORK_ITEMS is also used by other Taichi GEM staging buffers and reflects practical
-        # Vulkan stability limits on Windows; keep this conservative.
-        try:
-            target = int(MAX_WORK_ITEMS) // max(1, int(n_genomes))
-        except Exception:
-            target = 1024
-        try:
-            min_chunk = int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MIN", "1024") or 1024)
-        except Exception:
-            min_chunk = 1024
-        try:
-            max_chunk = int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MAX", "4096") or 4096)
-        except Exception:
-            max_chunk = 4096
-        min_chunk = max(64, int(min_chunk))
-        max_chunk = max(min_chunk, int(max_chunk))
-        combo_chunk = int(min(int(n_combos), max_chunk, max(int(min_chunk), max(1, int(target)))))
+        target = MAX_WORK_ITEMS // max(1, n_genomes)
+        combo_chunk = min(n_combos, _GA_COMBO_CHUNK_MAX, max(_GA_COMBO_CHUNK_MIN, max(1, target)))
 
     for offset in range(0, n_combos, combo_chunk):
         chunk_len = int(min(combo_chunk, n_combos - offset))
@@ -1519,11 +1510,13 @@ def ga_download_global_best() -> tuple[int, np.ndarray, np.ndarray]:
         - best_results: np.ndarray (7,) int32 - [score, ft, ff, pp, cm, fm, ov]
     """
     ensure_ready()
-    # Batch all downloads together - first to_numpy syncs GPU, rest just copy
-    # NOTE: These are small arrays (1 scalar, 9 ints, 7 ints) so overhead is minimal
-    best_score = int(fields.ga_global_best_score.to_numpy()[0])
-    best_genome_ids = fields.ga_global_best_genome.to_numpy().copy()
-    best_results = fields.ga_global_best_results.to_numpy().copy()
+    # Pack into single field then download once (1 GPU sync instead of 3)
+    # Layout: [score(1), genome_ids(9), results(7)] = 17 values
+    kernels.ga_pack_global_best_kernel()
+    packed = fields.ga_global_best_packed.to_numpy()
+    best_score = int(packed[0])
+    best_genome_ids = packed[1:10].copy()
+    best_results = packed[10:17].copy()
     return best_score, best_genome_ids, best_results
 
 

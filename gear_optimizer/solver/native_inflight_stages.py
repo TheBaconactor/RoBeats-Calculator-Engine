@@ -273,6 +273,7 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
                 is_gpu_selected_payload = True
     except Exception:
         is_gpu_selected_payload = False
+
     if is_gpu_selected_payload:
         ga_candidates = ga_candidates[: int(fg_candidate_limit)]
     else:
@@ -285,11 +286,25 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
     song.ga_candidates = ga_candidates
     t_select = time.perf_counter() if perf else 0.0
 
+    # Non-blocking DB prefetch: check if future is ready without blocking.
+    # If the DB read is still in progress, proceed with GA candidates only.
+    # This prevents FG worker threads from stalling on DB I/O and starving the GPU.
     db_loadouts_full = song.db_loadouts_full
     if db_loadouts_full is None and song.db_loadouts_future is not None:
         try:
-            db_loadouts_full = song.db_loadouts_future.result()
-            song.db_loadouts_full = db_loadouts_full
+            fut = song.db_loadouts_future
+            # Use done() check to avoid blocking - if DB read isn't ready, skip it
+            if fut.done():
+                try:
+                    db_loadouts_full = fut.result(timeout=0)
+                    song.db_loadouts_full = db_loadouts_full
+                except Exception:
+                    db_loadouts_full = None
+            else:
+                # DB prefetch still running - proceed without it to keep GPU fed
+                if perf:
+                    print(f"[PERF][FGPrep] db_prefetch not ready, proceeding without DB loadouts")
+                db_loadouts_full = None
         except Exception:
             db_loadouts_full = None
         finally:
@@ -306,7 +321,6 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
         song.minis_by_name,
         build_details,
         db_loadouts_full=db_loadouts_full,
-        lean_ga_candidates=not bool(song.fg_debug),
     )
     t_build = time.perf_counter() if perf else 0.0
 

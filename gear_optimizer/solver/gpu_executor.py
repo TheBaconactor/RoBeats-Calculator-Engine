@@ -566,10 +566,11 @@ class GpuExecutor:
             batch: list[GpuRequest] = []
             responded_ids: set[int] = set()
             try:
-                # Gather batch of pending requests (wait up to 10ms for more)
+                # Gather batch of pending requests (wait up to 15ms for more)
                 # Prefer runtime env overrides so batch sizing can be tuned without a restart.
                 # (ENV is a cached snapshot read at import time.)
-                batch_wait_ms = int(getattr(ENV, "gpu_executor_batch_wait_ms", 10) or 10)
+                # Increased from 10ms to 15ms to improve work coalescing and reduce GPU sync gaps.
+                batch_wait_ms = int(getattr(ENV, "gpu_executor_batch_wait_ms", 15) or 15)
                 batch_max = int(getattr(ENV, "gpu_executor_max_batch", 8) or 8)
                 try:
                     raw = os.environ.get("GPU_EXECUTOR_BATCH_WAIT_MS")

@@ -14,7 +14,7 @@ Migration = Callable[[sqlite3.Connection], None]
 # NOTE: `evolution.db` in the wild may already have `PRAGMA user_version=8` even though
 # the physical schema matches v6 (v6 is a data-level migration only). Keep v7/v8 as
 # no-ops so older DBs can advance and newer DBs won't be rejected.
-LATEST_SCHEMA_VERSION = 10
+LATEST_SCHEMA_VERSION = 12
 
 
 def _migration_1_init_schema(conn: sqlite3.Connection) -> None:
@@ -423,6 +423,86 @@ def _migration_10_add_song_attempt_counters(conn: sqlite3.Connection) -> None:
             pass
 
 
+def _migration_11_add_team_buff_to_fg_loadouts(conn: sqlite3.Connection) -> None:
+    """
+    Add team_buff column to fg_loadouts table.
+
+    This column stores the team buff tier used when scoring the loadout.
+    All existing entries are backfilled with 'T5' since that was the default
+    (AutoSelectBuffAndColor=true always uses T5).
+    """
+    # Add team_buff column with default 'T5'
+    try:
+        conn.execute("ALTER TABLE fg_loadouts ADD COLUMN team_buff TEXT DEFAULT 'T5';")
+    except sqlite3.Error:
+        # Column already exists
+        pass
+
+    # Backfill all existing entries with T5
+    conn.execute("UPDATE fg_loadouts SET team_buff = 'T5' WHERE team_buff IS NULL;")
+
+    # Create index for efficient tier queries
+    try:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_fg_loadouts_team_buff ON fg_loadouts (song_name, team_buff, fg_score DESC);")
+    except sqlite3.Error:
+        pass
+
+
+def _migration_12_add_fg_loadouts_unified_view(conn: sqlite3.Connection) -> None:
+    """Create a convenient unified FG view across tiers.
+
+    Motivation:
+    - `fg_loadouts` represents the default FG leaderboard (historically implicit T5).
+    - `team_buff_fg_loadouts` represents explicit per-tier FG leaderboards.
+
+    Some consumers (exporters/frontends) want a single query surface that always includes `team_buff`.
+    This view provides that without changing write paths.
+
+    Deduplication: If a song+tier combo exists in `team_buff_fg_loadouts`, exclude 
+    the legacy `fg_loadouts` entry for that same song+tier to avoid duplicate T5 entries.
+    """
+    # Ensure idempotent updates in case the view definition changes.
+    conn.execute("DROP VIEW IF EXISTS fg_loadouts_unified;")
+    conn.execute(
+        """
+        CREATE VIEW fg_loadouts_unified AS
+        -- Prioritize explicit tier-tracked entries
+        SELECT
+            song_name,
+            team_buff,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            'team_buff_fg_loadouts' AS source_table
+        FROM team_buff_fg_loadouts
+        UNION ALL
+        -- Include legacy fg_loadouts ONLY if no team_buff_fg_loadouts entry exists for that song+tier
+        SELECT
+            fg.song_name,
+            fg.team_buff,
+            fg.loadout_hash,
+            fg.score,
+            fg.fg_score,
+            fg.gear_json,
+            fg.minis_json,
+            fg.details_json,
+            fg.force_details_json,
+            fg.timestamp,
+            'fg_loadouts' AS source_table
+        FROM fg_loadouts fg
+        WHERE NOT EXISTS (
+            SELECT 1 FROM team_buff_fg_loadouts tb
+            WHERE tb.song_name = fg.song_name AND tb.team_buff = fg.team_buff
+        );
+        """
+    )
+
+
 _MIGRATIONS: Dict[int, Migration] = {
     1: _migration_1_init_schema,
     2: _migration_2_add_pending_fg_jobs,
@@ -434,6 +514,8 @@ _MIGRATIONS: Dict[int, Migration] = {
     8: _migration_8_noop,
     9: _migration_9_add_team_buff_tier_tables,
     10: _migration_10_add_song_attempt_counters,
+    11: _migration_11_add_team_buff_to_fg_loadouts,
+    12: _migration_12_add_fg_loadouts_unified_view,
 }
 
 

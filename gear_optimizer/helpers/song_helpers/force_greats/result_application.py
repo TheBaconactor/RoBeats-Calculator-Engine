@@ -93,9 +93,9 @@ def apply_gpu_results_to_entries(
     build_details_fn: Callable[[dict[str, Any]], dict[str, Any]] | None,
     names_list_fn: Callable[[Any], list[str]],
     perf: bool,
-    # PERF/GPU-residency knobs:
-    # - When False, we avoid building per-loadout Python dict payloads (Stats/details),
-    #   and instead stash a compact raw payload on the entry for later materialization.
+    # PERF/GPU-residency knobs (legacy):
+    # The repo has migrated to a lean-only FG payload. These flags are kept for
+    # backward-compatible call sites but no longer change behavior.
     materialize_force_details: bool = True,
     materialize_stats: bool = True,
     store_raw: bool = False,
@@ -174,22 +174,21 @@ def apply_gpu_results_to_entries(
             "ForceGreats": fg_info,
         }
 
-        raw_payload = None
-        if store_raw or (not materialize_force_details):
-            # Compact payload to allow downstream materialization without re-running GPU.
-            raw_payload = {
-                "BaseScore": base_score,
-                "Score": final_score,
-                "FT": ft_val,
-                "FF": ff_val,
-                "GemCounts": gem_counts,
-                # Store base stats so we can materialize Stats later without recomputing.
-                "BaseStats": bs,
-                "Selected Element": str(sel_color),
-                "ForceGreats": fg_info,
-                # Keep a copy of the config counts for callers that need per-section values.
-                "forced_counts": list(forced_counts) if forced_counts else [],
-            }
+        # Lean-only: always store a compact raw payload for DB/UI consumers without
+        # building heavyweight `details` dicts.
+        raw_payload = {
+            "BaseScore": base_score,
+            "Score": final_score,
+            "FT": ft_val,
+            "FF": ff_val,
+            "GemCounts": gem_counts,
+            # Store base stats so downstream can materialize Stats if needed.
+            "BaseStats": bs,
+            "Selected Element": str(sel_color),
+            "ForceGreats": fg_info,
+            # Per-section forced counts (useful for tiering / recompute paths).
+            "forced_counts": list(forced_counts) if forced_counts else [],
+        }
 
         for item in sig_map.get(sig, []):
             # Backward-compatible: older callers used (entry, eval_data, base_stats) tuples.
@@ -205,32 +204,22 @@ def apply_gpu_results_to_entries(
             # Always store the numeric FG score for downstream ranking/retention.
             entry["fg_score"] = final_score
 
-            if raw_payload is not None:
-                entry["_fg_raw"] = raw_payload
+            # Store the raw payload directly under `force` (persisted to force_details_json).
+            entry["force"] = raw_payload
+            entry.pop("_fg_raw", None)
 
-            if materialize_force_details and build_details_fn is not None:
-                # Full (legacy) materialization path.
-                if fg_variants is not None:
-                    fg_variants.append(
-                        {
-                            "data": fg_variant,
-                            "gear": entry.get("gear", []),
-                            "minis": entry.get("minis", []),
-                            "score": base_score,
-                            "fg_score": final_score,
-                            "base_score": base_score,
-                        }
-                    )
-                entry["force"] = {
-                    "score": final_score,
-                    "gear": names_list_fn(entry.get("gear", [])),
-                    "minis": names_list_fn(entry.get("minis", [])),
-                    "details": build_details_fn(fg_variant),
-                }
-            else:
-                # Lean path: don't build `force.details` (heavy) on the critical path.
-                # We only materialize for retained entries later (DB/UI).
-                entry.pop("force", None)
+            if fg_variants is not None:
+                # Keep FG variants for printing/debug without requiring materialized Stats.
+                fg_variants.append(
+                    {
+                        "data": raw_payload,
+                        "gear": entry.get("gear", []),
+                        "minis": entry.get("minis", []),
+                        "score": base_score,
+                        "fg_score": final_score,
+                        "base_score": base_score,
+                    }
+                )
 
             c_ft = int(eval_data.get("FT", 0) or 0)
             c_ff = int(eval_data.get("FF", 0) or 0)
