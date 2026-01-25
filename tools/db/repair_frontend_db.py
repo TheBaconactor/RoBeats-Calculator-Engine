@@ -5,6 +5,7 @@ This tool is intended to be safe to run on large, messy datasets where:
   - Tier tables already exist (team_buff_*), but have corrupted minis_json shapes.
   - details_json["Stats"] is missing/empty, causing frontend to show 0 stats.
   - FG tables contain rows where fg_score <= score (should never happen).
+  - Optional: legacy loadouts need to be migrated into tier tables (T5).
 
 It is conservative:
   - It repairs known-corruption patterns and missing Stats.
@@ -95,6 +96,17 @@ def _safe_int(value: object, default: int = 0) -> int:
             return int(float(value))
         except Exception:
             return int(default)
+
+
+def _normalize_team_buff_value(team_buff: Any) -> str:
+    value = str(team_buff or "").strip().upper()
+    if value in {"0", "NO_BUFF", "NO BUFF", "NONEBUFF", "NONE BUFF"}:
+        return "NONE"
+    if not value:
+        return "T5"
+    if value not in EXPECTED_TEAM_BUFFS:
+        return "T5"
+    return value
 
 
 def _stats_from_force_payload(force: Any) -> dict[str, Any] | None:
@@ -293,6 +305,10 @@ class RepairStats:
     team_buff_unexpected: int = 0
     team_buff_rehash_scanned: int = 0
     team_buff_rehash_deduped: int = 0
+    legacy_base_migrated: int = 0
+    legacy_fg_migrated: int = 0
+    legacy_base_deleted: int = 0
+    legacy_fg_deleted: int = 0
 
 
 def repair_frontend_db(
@@ -300,6 +316,7 @@ def repair_frontend_db(
     db_path: Path,
     dry_run: bool,
     verbose: bool,
+    move_legacy: bool = False,
 ) -> RepairStats:
     # Allow downstream helpers that read get_evolution_db_path() to use this DB.
     os.environ["EVOLUTION_DB_PATH"] = str(db_path)
@@ -375,7 +392,150 @@ def repair_frontend_db(
         if deleted and not dry_run:
             conn.execute(f"DELETE FROM {tbl} WHERE fg_score <= score")
 
-    # 3) Repair minis_json corruption + missing Stats.
+    # 3) Optional: move legacy rows into tiered tables (T5).
+    if move_legacy:
+        def _batch_upsert(sql: str, rows_iter: Any, *, batch_size: int = 1000) -> None:
+            batch: list[tuple[Any, ...]] = []
+            for row in rows_iter:
+                batch.append(row)
+                if len(batch) >= batch_size:
+                    conn.executemany(sql, batch)
+                    batch.clear()
+            if batch:
+                conn.executemany(sql, batch)
+
+        if table_exists("loadouts") and table_exists("team_buff_loadouts"):
+            legacy_base = conn.execute("SELECT COUNT(*) FROM loadouts").fetchone()[0]
+            if legacy_base:
+                stats.legacy_base_migrated += int(legacy_base)
+                if not dry_run:
+                    before = conn.total_changes
+                    cur = conn.execute(
+                        """
+                        SELECT
+                            song_name,
+                            loadout_hash,
+                            score,
+                            fg_score,
+                            gear_json,
+                            minis_json,
+                            details_json,
+                            force_details_json,
+                            timestamp
+                        FROM loadouts
+                        """
+                    )
+                    _batch_upsert(
+                        """
+                        INSERT INTO team_buff_loadouts (
+                            song_name, team_buff, loadout_hash, score, fg_score,
+                            gear_json, minis_json, details_json, force_details_json, timestamp
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(song_name, team_buff, loadout_hash) DO UPDATE SET
+                            score = CASE WHEN excluded.score > score THEN excluded.score ELSE score END,
+                            fg_score = MAX(fg_score, excluded.fg_score),
+                            gear_json = excluded.gear_json,
+                            minis_json = excluded.minis_json,
+                            details_json = CASE WHEN excluded.score >= score THEN excluded.details_json ELSE details_json END,
+                            force_details_json = CASE
+                                WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
+                                ELSE force_details_json
+                            END,
+                            timestamp = MAX(COALESCE(timestamp, 0), COALESCE(excluded.timestamp, 0))
+                        """,
+                        (
+                            (
+                                row["song_name"],
+                                "T5",
+                                row["loadout_hash"],
+                                _safe_int(row["score"], 0),
+                                _safe_int(row["fg_score"], 0),
+                                row["gear_json"],
+                                row["minis_json"],
+                                row["details_json"],
+                                row["force_details_json"],
+                                row["timestamp"],
+                            )
+                            for row in cur
+                        ),
+                    )
+                    stats.legacy_base_migrated = int(conn.total_changes - before)
+
+        if table_exists("fg_loadouts") and table_exists("team_buff_fg_loadouts"):
+            legacy_fg = conn.execute("SELECT COUNT(*) FROM fg_loadouts").fetchone()[0]
+            if legacy_fg:
+                stats.legacy_fg_migrated += int(legacy_fg)
+                if not dry_run:
+                    before = conn.total_changes
+                    cur = conn.execute(
+                        """
+                        SELECT
+                            song_name,
+                            team_buff,
+                            loadout_hash,
+                            score,
+                            fg_score,
+                            gear_json,
+                            minis_json,
+                            details_json,
+                            force_details_json,
+                            timestamp
+                        FROM fg_loadouts
+                        """
+                    )
+                    _batch_upsert(
+                        """
+                        INSERT INTO team_buff_fg_loadouts (
+                            song_name, team_buff, loadout_hash, score, fg_score,
+                            gear_json, minis_json, details_json, force_details_json, timestamp
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(song_name, team_buff, loadout_hash) DO UPDATE SET
+                            score = CASE WHEN excluded.fg_score > fg_score THEN excluded.score ELSE score END,
+                            fg_score = MAX(fg_score, excluded.fg_score),
+                            gear_json = excluded.gear_json,
+                            minis_json = excluded.minis_json,
+                            details_json = CASE WHEN excluded.fg_score >= fg_score THEN excluded.details_json ELSE details_json END,
+                            force_details_json = CASE
+                                WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
+                                ELSE force_details_json
+                            END,
+                            timestamp = MAX(COALESCE(timestamp, 0), COALESCE(excluded.timestamp, 0))
+                        """,
+                        (
+                            (
+                                row["song_name"],
+                                _normalize_team_buff_value(row["team_buff"]),
+                                row["loadout_hash"],
+                                _safe_int(row["score"], 0),
+                                _safe_int(row["fg_score"], 0),
+                                row["gear_json"],
+                                row["minis_json"],
+                                row["details_json"],
+                                row["force_details_json"],
+                                row["timestamp"],
+                            )
+                            for row in cur
+                        ),
+                    )
+                    stats.legacy_fg_migrated = int(conn.total_changes - before)
+
+        if move_legacy:
+            if table_exists("loadouts"):
+                legacy_base = conn.execute("SELECT COUNT(*) FROM loadouts").fetchone()[0]
+                if legacy_base:
+                    stats.legacy_base_deleted += int(legacy_base)
+                    if not dry_run:
+                        conn.execute("DELETE FROM loadouts")
+            if table_exists("fg_loadouts"):
+                legacy_fg = conn.execute("SELECT COUNT(*) FROM fg_loadouts").fetchone()[0]
+                if legacy_fg:
+                    stats.legacy_fg_deleted += int(legacy_fg)
+                    if not dry_run:
+                        conn.execute("DELETE FROM fg_loadouts")
+
+    # 4) Repair minis_json corruption + missing Stats.
     tables = ("loadouts", "fg_loadouts", "team_buff_loadouts", "team_buff_fg_loadouts")
     for tbl in tables:
         if not table_exists(tbl):
@@ -545,7 +705,7 @@ def repair_frontend_db(
                             (minis_text_out, json.dumps(details), row["rowid"]),
                         )
 
-    # 4) Rehash + dedupe team_buff tables to collapse legacy/variant hash drift.
+    # 5) Rehash + dedupe team_buff tables to collapse legacy/variant hash drift.
     def _rehash_team_buff_table(table_name: str) -> None:
         if not table_exists(table_name):
             return
@@ -764,13 +924,23 @@ def main() -> None:
     )
     parser.add_argument("--dry-run", action="store_true", help="Scan and report, but do not write changes.")
     parser.add_argument("--verbose", action="store_true", help="Print per-table progress.")
+    parser.add_argument(
+        "--move-legacy",
+        action="store_true",
+        help="Copy legacy loadouts/fg_loadouts into tier tables (T5) and delete legacy rows.",
+    )
     args = parser.parse_args()
 
     db_path = Path(args.db).expanduser() if args.db else Path(get_evolution_db_path())
     if not db_path.exists():
         raise SystemExit(f"DB not found: {db_path}")
 
-    result = repair_frontend_db(db_path=db_path, dry_run=bool(args.dry_run), verbose=bool(args.verbose))
+    result = repair_frontend_db(
+        db_path=db_path,
+        dry_run=bool(args.dry_run),
+        verbose=bool(args.verbose),
+        move_legacy=bool(args.move_legacy),
+    )
     print("\n" + "=" * 60)
     print("REPAIR SUMMARY" + (" (DRY RUN)" if args.dry_run else ""))
     print("=" * 60)
@@ -785,6 +955,11 @@ def main() -> None:
     print(f"team_buff_case_fixed_rows: {result.team_buff_fixed_case:,}")
     print(f"team_buff_rehash_scanned: {result.team_buff_rehash_scanned:,}")
     print(f"team_buff_rehash_deduped: {result.team_buff_rehash_deduped:,}")
+    if args.move_legacy:
+        print(f"legacy_base_migrated: {result.legacy_base_migrated:,}")
+        print(f"legacy_fg_migrated: {result.legacy_fg_migrated:,}")
+        print(f"legacy_base_deleted: {result.legacy_base_deleted:,}")
+        print(f"legacy_fg_deleted: {result.legacy_fg_deleted:,}")
     if result.team_buff_unexpected:
         print(f"WARNING: unexpected team_buff rows remain: {result.team_buff_unexpected:,}")
         print(f"expected: {sorted(EXPECTED_TEAM_BUFFS)}")

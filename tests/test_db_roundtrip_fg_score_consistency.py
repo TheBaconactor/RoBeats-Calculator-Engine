@@ -133,7 +133,8 @@ def test_db_roundtrip_force_greats_manual_score_is_self_consistent():
 
     with get_db_connection() as conn:
         row = conn.execute(
-            "SELECT score, fg_score, details_json, force_details_json FROM loadouts WHERE song_name = ? LIMIT 1",
+            "SELECT score, fg_score, details_json, force_details_json "
+            "FROM team_buff_loadouts WHERE song_name = ? AND team_buff = 'T5' LIMIT 1",
             (song_name,),
         ).fetchone()
 

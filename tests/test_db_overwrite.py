@@ -32,7 +32,9 @@ def test_save_loadout_singular_overwrite(db_connection):
     save_loadout_to_db(song, 1000, 500, gear, minis, {"test": "high"})
 
     # Verify insert
-    row = db_connection.execute("SELECT score, details_json FROM loadouts").fetchone()
+    row = db_connection.execute(
+        "SELECT score, details_json FROM team_buff_loadouts WHERE team_buff='T5'"
+    ).fetchone()
     assert row["score"] == 1000
     assert json.loads(row["details_json"])["test"] == "high"
 
@@ -40,7 +42,9 @@ def test_save_loadout_singular_overwrite(db_connection):
     save_loadout_to_db(song, 900, 400, gear, minis, {"test": "low"})
 
     # Verify protection (Should still be 1000/high)
-    row = db_connection.execute("SELECT score, details_json FROM loadouts").fetchone()
+    row = db_connection.execute(
+        "SELECT score, details_json FROM team_buff_loadouts WHERE team_buff='T5'"
+    ).fetchone()
     assert row["score"] == 1000, "High score was overwritten by low score!"
     assert json.loads(row["details_json"])["test"] == "high", "High score details were overwritten!"
 
@@ -48,7 +52,9 @@ def test_save_loadout_singular_overwrite(db_connection):
     save_loadout_to_db(song, 1100, 600, gear, minis, {"test": "higher"})
 
     # Verify update
-    row = db_connection.execute("SELECT score, details_json FROM loadouts").fetchone()
+    row = db_connection.execute(
+        "SELECT score, details_json FROM team_buff_loadouts WHERE team_buff='T5'"
+    ).fetchone()
     assert row["score"] == 1100
     assert json.loads(row["details_json"])["test"] == "higher"
 
@@ -70,14 +76,20 @@ def test_save_loadouts_batch_overwrite(db_connection):
     }
     save_loadouts_batch(song, [entry_high])
 
-    row = db_connection.execute("SELECT score, details_json FROM loadouts WHERE song_name=?", (song,)).fetchone()
+    row = db_connection.execute(
+        "SELECT score, details_json FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
+        (song,),
+    ).fetchone()
     assert row["score"] == 1000
 
     # 2. Attempt Overwrite with Low Score via Batch
     entry_low = {"score": 900, "fg_score": 400, "gear": gear, "minis": minis, "details": {"test": "low"}, "force": None}
     save_loadouts_batch(song, [entry_low])
 
-    row = db_connection.execute("SELECT score, details_json FROM loadouts WHERE song_name=?", (song,)).fetchone()
+    row = db_connection.execute(
+        "SELECT score, details_json FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
+        (song,),
+    ).fetchone()
     assert row["score"] == 1000, "High score was overwritten by low score in batch!"
     assert json.loads(row["details_json"])["test"] == "high"
 
@@ -92,6 +104,9 @@ def test_save_loadouts_batch_overwrite(db_connection):
     }
     save_loadouts_batch(song, [entry_higher])
 
-    row = db_connection.execute("SELECT score, details_json FROM loadouts WHERE song_name=?", (song,)).fetchone()
+    row = db_connection.execute(
+        "SELECT score, details_json FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
+        (song,),
+    ).fetchone()
     assert row["score"] == 1100
     assert json.loads(row["details_json"])["test"] == "higher"

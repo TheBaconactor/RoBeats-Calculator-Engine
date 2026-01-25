@@ -109,7 +109,7 @@ def test_db_roundtrip_base_score_is_self_consistent(tmp_path, monkeypatch):
     conn = get_db_connection(str(db_path))
     try:
         row = conn.execute(
-            "SELECT score, details_json FROM loadouts WHERE song_name = ? ORDER BY score DESC LIMIT 1",
+            "SELECT score, details_json FROM team_buff_loadouts WHERE song_name = ? AND team_buff = 'T5' ORDER BY score DESC LIMIT 1",
             (song_name,),
         ).fetchone()
     finally:

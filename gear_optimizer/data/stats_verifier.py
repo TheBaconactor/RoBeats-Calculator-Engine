@@ -10,7 +10,7 @@ import sqlite3
 from typing import Dict, List, Tuple
 
 from gear_optimizer.core.stats_calculator import compute_full_stats
-from gear_optimizer.data.database import get_evolution_db_path
+from gear_optimizer.data.database import _ensure_stats_in_details, get_evolution_db_path
 from gear_optimizer.data.csv_parser import parse_gear_rows, parse_mini_rows
 from gear_optimizer.core.config import load_paths_cache
 
@@ -80,9 +80,22 @@ def verify_and_repair_stats(
     conn.row_factory = sqlite3.Row
 
     # ============================================================
-    # PART 1: Verify and repair `loadouts` table
+    # PART 1: Verify and repair base table (team_buff_loadouts preferred)
     # ============================================================
-    query = "SELECT rowid, song_name, gear_json, minis_json, details_json FROM loadouts"
+    base_table = "team_buff_loadouts"
+    table_exists = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (base_table,)
+    ).fetchone()
+    if not table_exists:
+        base_table = "loadouts"
+
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({base_table})").fetchall()}
+    has_team_buff = "team_buff" in cols
+    select_cols = ["rowid", "song_name", "gear_json", "minis_json", "details_json"]
+    if has_team_buff:
+        select_cols.append("team_buff")
+
+    query = f"SELECT {', '.join(select_cols)} FROM {base_table}"
     if sample_size > 0:
         query += f" LIMIT {int(sample_size)}"
 
@@ -96,7 +109,7 @@ def verify_and_repair_stats(
     issues: List[Tuple[int, str, str]] = []  # (rowid, song_name, issue_type)
 
     if verbose and total > 0:
-        print(f"[StatsVerifier] Checking {total} loadouts entries...")
+        print(f"[StatsVerifier] Checking {total} {base_table} entries...")
 
     for i, row in enumerate(rows):
         if verbose and total > 1000 and i > 0 and i % 10000 == 0:
@@ -125,38 +138,52 @@ def verify_and_repair_stats(
             issues.append((row["rowid"], row["song_name"], issue_type))
 
             if not dry_run:
-                # Repair by recomputing Stats
                 gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
                 mini_names_raw = json.loads(row["minis_json"]) if row["minis_json"] else []
 
-                # Handle variant group format: [["MiniA", "MiniA2"], ["MiniB"]] -> ["MiniA", "MiniB"]
                 mini_names = []
                 for item in mini_names_raw:
                     if isinstance(item, list) and item:
-                        mini_names.append(item[0])  # First variant is representative
+                        mini_names.append(item[0])
                     elif isinstance(item, str):
-                        mini_names.append(item)  # Legacy flat format
+                        mini_names.append(item)
 
-                gem_counts = dict(details.get("GemCounts", {}) or {})
-                gem_counts["Fever Time"] = int(details.get("FT", 0) or 0)
-                gem_counts["Fever Fill Rate"] = int(details.get("FF", 0) or 0)
-                selected_element = details.get("SelectedElement") or details.get("Selected Element") or ""
+                if has_team_buff:
+                    details = _ensure_stats_in_details(
+                        details,
+                        gear_names,
+                        mini_names,
+                        minis_by_name,
+                        team_buff=row["team_buff"] if isinstance(row, sqlite3.Row) else None,
+                        team_color=str(details.get("PrimaryColor") or details.get("Primary Color") or "").strip(),
+                    )
+                else:
+                    gem_counts = dict(details.get("GemCounts", {}) or {})
+                    gem_counts["Fever Time"] = int(details.get("FT", 0) or 0)
+                    gem_counts["Fever Fill Rate"] = int(details.get("FF", 0) or 0)
+                    selected_element = details.get("SelectedElement") or details.get("Selected Element") or ""
 
-                # Recompute Stats
-                computed_stats = compute_full_stats(
-                    gear_names, mini_names, gem_counts, selected_element, gears_by_name, minis_by_name, base_stats
-                )
+                    computed_stats = compute_full_stats(
+                        gear_names,
+                        mini_names,
+                        gem_counts,
+                        selected_element,
+                        gears_by_name,
+                        minis_by_name,
+                        base_stats,
+                    )
+                    details["Stats"] = computed_stats
 
-                details["Stats"] = computed_stats
                 conn.execute(
-                    "UPDATE loadouts SET details_json = ? WHERE rowid = ?", (json.dumps(details), row["rowid"])
+                    f"UPDATE {base_table} SET details_json = ? WHERE rowid = ?",
+                    (json.dumps(details), row["rowid"]),
                 )
                 repaired += 1
 
     if not dry_run and repaired > 0:
         conn.commit()
         if verbose:
-            print(f"[StatsVerifier] Committed {repaired} repairs to loadouts table")
+            print(f"[StatsVerifier] Committed {repaired} repairs to {base_table} table")
 
     # ============================================================
     # PART 2: Verify and repair `fg_loadouts` table
@@ -218,7 +245,13 @@ def _verify_fg_table(
             print(f"[StatsVerifier] Table {table_name} does not exist, skipping...")
         return 0, 0, 0
 
-    query = f"SELECT rowid, song_name, gear_json, minis_json, details_json, force_details_json FROM {table_name}"
+    cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table_name})").fetchall()}
+    has_team_buff = "team_buff" in cols
+    select_cols = ["rowid", "song_name", "gear_json", "minis_json", "details_json", "force_details_json"]
+    if has_team_buff:
+        select_cols.append("team_buff")
+
+    query = f"SELECT {', '.join(select_cols)} FROM {table_name}"
     if sample_size > 0:
         query += f" LIMIT {int(sample_size)}"
 
@@ -260,15 +293,31 @@ def _verify_fg_table(
                         elif isinstance(item, str):
                             mini_names.append(item)
 
-                    gem_counts = dict(details.get("GemCounts", {}) or {})
-                    gem_counts["Fever Time"] = int(details.get("FT", 0) or 0)
-                    gem_counts["Fever Fill Rate"] = int(details.get("FF", 0) or 0)
-                    selected_element = details.get("SelectedElement") or details.get("Selected Element") or ""
+                    if has_team_buff:
+                        details = _ensure_stats_in_details(
+                            details,
+                            gear_names,
+                            mini_names,
+                            minis_by_name,
+                            team_buff=row["team_buff"] if isinstance(row, sqlite3.Row) else None,
+                            team_color=str(details.get("PrimaryColor") or details.get("Primary Color") or "").strip(),
+                        )
+                    else:
+                        gem_counts = dict(details.get("GemCounts", {}) or {})
+                        gem_counts["Fever Time"] = int(details.get("FT", 0) or 0)
+                        gem_counts["Fever Fill Rate"] = int(details.get("FF", 0) or 0)
+                        selected_element = details.get("SelectedElement") or details.get("Selected Element") or ""
 
-                    computed_stats = compute_full_stats(
-                        gear_names, mini_names, gem_counts, selected_element, gears_by_name, minis_by_name, base_stats
-                    )
-                    details["Stats"] = computed_stats
+                        computed_stats = compute_full_stats(
+                            gear_names,
+                            mini_names,
+                            gem_counts,
+                            selected_element,
+                            gears_by_name,
+                            minis_by_name,
+                            base_stats,
+                        )
+                        details["Stats"] = computed_stats
 
                 conn.execute(
                     f"UPDATE {table_name} SET details_json = ? WHERE rowid = ?", (json.dumps(details), row["rowid"])

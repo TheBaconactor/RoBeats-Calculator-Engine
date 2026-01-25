@@ -39,16 +39,22 @@ def test_retention_keeps_top_scores_and_best_fg(tmp_path, monkeypatch):
 
     conn = get_db_connection(str(db_path))
     try:
-        total = conn.execute("SELECT count(*) FROM loadouts WHERE song_name=?", (song_name,)).fetchone()[0]
+        total = conn.execute(
+            "SELECT count(*) FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song_name,),
+        ).fetchone()[0]
         count_raw = conn.execute(
-            "SELECT count(*) FROM loadouts WHERE song_name=? AND score >= 2000",
+            "SELECT count(*) FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5' AND score >= 2000",
             (song_name,),
         ).fetchone()[0]
         count_fg = conn.execute(
-            "SELECT count(*) FROM loadouts WHERE song_name=? AND fg_score >= 5000",
+            "SELECT count(*) FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5' AND fg_score >= 5000",
             (song_name,),
         ).fetchone()[0]
-        fg_total = conn.execute("SELECT count(*) FROM fg_loadouts WHERE song_name=?", (song_name,)).fetchone()[0]
+        fg_total = conn.execute(
+            "SELECT count(*) FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song_name,),
+        ).fetchone()[0]
     finally:
         conn.close()
 

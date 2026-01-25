@@ -67,7 +67,10 @@ def test_save_loadouts_batch_unions_equivalent_mini_variants(db_path, monkeypatc
 
     conn = get_db_connection(db_path)
     try:
-        rows = conn.execute("SELECT minis_json FROM loadouts WHERE song_name=?", (song,)).fetchall()
+        rows = conn.execute(
+            "SELECT minis_json FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song,),
+        ).fetchall()
         assert len(rows) == 1
         groups = json.loads(rows[0]["minis_json"])
         assert groups == [["MiniA", "MiniB"]]
@@ -121,7 +124,10 @@ def test_songs_best_scores_and_fg_scores_update(db_path):
         assert song_row["best_score"] == 1100
         assert song_row["best_fg_score"] == 5000
 
-        fg_count = conn.execute("SELECT COUNT(*) FROM fg_loadouts WHERE song_name=?", (song,)).fetchone()[0]
+        fg_count = conn.execute(
+            "SELECT COUNT(*) FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song,),
+        ).fetchone()[0]
         assert fg_count == 2  # two distinct FG-valid loadouts were inserted
     finally:
         conn.close()
@@ -146,8 +152,14 @@ def test_fg_loadouts_requires_force_details(db_path):
 
     conn = get_db_connection(db_path)
     try:
-        loadouts_count = conn.execute("SELECT COUNT(*) FROM loadouts WHERE song_name=?", (song,)).fetchone()[0]
-        fg_count = conn.execute("SELECT COUNT(*) FROM fg_loadouts WHERE song_name=?", (song,)).fetchone()[0]
+        loadouts_count = conn.execute(
+            "SELECT COUNT(*) FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song,),
+        ).fetchone()[0]
+        fg_count = conn.execute(
+            "SELECT COUNT(*) FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song,),
+        ).fetchone()[0]
         assert loadouts_count == 1
         assert fg_count == 0
     finally:
@@ -173,8 +185,14 @@ def test_fg_loadouts_requires_fg_beats_base(db_path):
 
     conn = get_db_connection(db_path)
     try:
-        loadouts_count = conn.execute("SELECT COUNT(*) FROM loadouts WHERE song_name=?", (song,)).fetchone()[0]
-        fg_count = conn.execute("SELECT COUNT(*) FROM fg_loadouts WHERE song_name=?", (song,)).fetchone()[0]
+        loadouts_count = conn.execute(
+            "SELECT COUNT(*) FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song,),
+        ).fetchone()[0]
+        fg_count = conn.execute(
+            "SELECT COUNT(*) FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song,),
+        ).fetchone()[0]
         best_fg_score = conn.execute("SELECT best_fg_score FROM songs WHERE name=?", (song,)).fetchone()[
             "best_fg_score"
         ]
@@ -214,7 +232,7 @@ def test_fg_score_recovers_from_force_details_when_wrapper_missing(db_path):
         assert best_fg_score == 5000
 
         row = conn.execute(
-            "SELECT score, fg_score, force_details_json FROM fg_loadouts WHERE song_name=?",
+            "SELECT score, fg_score, force_details_json FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5'",
             (song,),
         ).fetchone()
         assert row["score"] == 900
@@ -252,7 +270,7 @@ def test_fg_loadouts_keeps_details_for_best_fg_score(db_path):
     conn = get_db_connection(db_path)
     try:
         row = conn.execute(
-            "SELECT score, fg_score, details_json, force_details_json FROM fg_loadouts WHERE song_name=?",
+            "SELECT score, fg_score, details_json, force_details_json FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5'",
             (song,),
         ).fetchone()
         assert row["score"] == 100
@@ -293,7 +311,10 @@ def test_concurrent_save_loadouts_batch_no_corruption(db_path):
         row = conn.execute("SELECT best_score FROM songs WHERE name=?", (song,)).fetchone()
         assert row["best_score"] == max(scores)
 
-        count = conn.execute("SELECT COUNT(*) FROM loadouts WHERE song_name=?", (song,)).fetchone()[0]
+        count = conn.execute(
+            "SELECT COUNT(*) FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song,),
+        ).fetchone()[0]
         assert count == len(scores)
     finally:
         conn.close()

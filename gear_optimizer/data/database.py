@@ -767,7 +767,7 @@ def _normalize_details_for_persistence(details: Any, *, score: int, fg_score: in
 def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None:
     """
     Batch insert/update loadouts for a song in a single transaction.
-    Splits data into 'loadouts' (All) and 'fg_loadouts' (Valid FG Only).
+    Persists base results into TeamBuff tier tables (T5) instead of legacy tables.
 
     Args:
         song_name: Name of the song
@@ -775,25 +775,9 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
     """
     if not entries:
         return
-
-    timing = str(os.environ.get("DB_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
-    timing_threshold_ms = 50.0
-    try:
-        timing_threshold_ms = float(os.environ.get("DB_TIMING_THRESHOLD_MS", str(timing_threshold_ms)))
-    except Exception:
-        timing_threshold_ms = 50.0
-
-    def _log_timing(label: str, dt_sec: float) -> None:
-        if not timing:
-            return
-        ms = float(dt_sec) * 1000.0
-        if ms < timing_threshold_ms:
-            return
-        print(f"[DB][TIMING] {song_name} {label}={ms:.1f}ms")
-
-    _t0 = time.perf_counter()
-
-    minis_by_name = get_minis_by_name_cached()
+    song_name = str(song_name or "").strip()
+    if not song_name:
+        return
 
     def _coerce_int(v: Any) -> int:
         try:
@@ -802,24 +786,14 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
             return 0
 
     def _fg_score_from_force(force_data: Any) -> int:
-        """
-        Best-effort recovery for callers that persisted a valid ForceGreats payload but left `fg_score` as 0.
-
-        Expected force payload shapes:
-          - {"score": <int>, "details": {...}}
-          - details include {"ForceGreats": {"final_score": <int>, ...}}
-        """
         if not isinstance(force_data, dict):
             return 0
-
-        # Prefer explicit score field on the force object (support both key spellings).
         s = _coerce_int(force_data.get("score", 0))
         if s <= 0:
             s = _coerce_int(force_data.get("Score", 0))
         if s > 0:
             return s
 
-        # Support both wrapper and flat formats.
         det = force_data.get("details")
         if not isinstance(det, dict):
             det = force_data
@@ -828,392 +802,69 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
         if not isinstance(fg, dict):
             return 0
 
-        # Primary key used throughout the codebase.
         s2 = _coerce_int(fg.get("final_score", 0))
         if s2 > 0:
             return s2
-
-        # Backward-compatible fallbacks.
         return max(
             _coerce_int(fg.get("finalScore", 0)),
             _coerce_int(fg.get("score", 0)),
         )
 
-    def _normalize_force_for_persistence(force_data: Any, *, fg_score: int) -> Any:
-        """
-        Normalize force payload for DB persistence.
-
-        Invariants:
-        - If this entry has FG, ensure `force_details_json` includes a top-level `score` key
-          (lowercase) so consumers/tests can reliably read it.
-        - Preserve the wrapper format `{"score": ..., "details": {...}}` when provided.
-        """
-        if not isinstance(force_data, dict):
-            return force_data
-
-        out = dict(force_data)
-
-        # Prefer wrapper score if present; otherwise copy from alternate spellings.
-        score_v = _coerce_int(out.get("score", 0))
-        if score_v <= 0:
-            score_v = _coerce_int(out.get("Score", 0))
-        if score_v <= 0 and int(fg_score or 0) > 0:
-            score_v = int(fg_score)
-        if score_v > 0:
-            out["score"] = int(score_v)
-
-        # If wrapper has `details`, keep it (do not unwrap); ensure nested final_score is consistent when possible.
-        det = out.get("details")
-        if isinstance(det, dict):
-            fg = det.get("ForceGreats")
-            if isinstance(fg, dict) and int(fg_score or 0) > 0:
-                fg_out = dict(fg)
-                fg_out["final_score"] = int(fg_score)
-                det_out = dict(det)
-                det_out["ForceGreats"] = fg_out
-                out["details"] = det_out
-
-        return out
-
-    def _effective_hash_for_entry(entry: Dict[str, Any]) -> Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]:
-        gear_names_local = _compact_gear_for_db(entry.get("gear", []))
-        mini_names_local = _compact_minis_for_db(entry.get("minis", []))
-        details_local = entry.get("details", {})
-        p_color, s_color, sel_color = extract_song_colors(details_local)
-        if not p_color and not s_color:
-            return None
-        mini_sigs_local = [
-            effective_mini_signature_for_name(n, minis_by_name, p_color, s_color, sel_color) for n in mini_names_local
-        ]
-        return (
-            effective_loadout_hash_from_names(gear_names_local, mini_sigs_local),
-            mini_sigs_local,
-            p_color,
-            s_color,
-            sel_color,
-        )
-
-    # Deduplicate entries before DB insertion (use effective hash when we have song colors).
-    _t_dedup0 = time.perf_counter()
-    dedup_groups: Dict[tuple[int, str], list[Dict[str, Any]]] = {}
-    entry_effective: Dict[int, Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]] = {}
-
-    for idx, entry in enumerate(entries):
-        eff = _effective_hash_for_entry(entry)
-        entry_effective[idx] = eff
-        if eff is None:
-            # Legacy key: score + name-hash
-            h = _loadout_hash_from_names(
-                _compact_gear_for_db(entry.get("gear", [])), _compact_minis_for_db(entry.get("minis", []))
-            )
-        else:
-            h = eff[0]
-        key = (int(entry.get("score", 0) or 0), str(h))
-        dedup_groups.setdefault(key, []).append(entry)
-
-    deduplicated_entries: list[Dict[str, Any]] = []
-    for (_score, _h), group in dedup_groups.items():
-        if len(group) == 1:
-            deduplicated_entries.append(group[0])
+    best_score_max = None
+    best_fg_max = None
+    for entry in entries:
+        if not isinstance(entry, dict):
             continue
-        try:
-            best_entry = max(
-                group, key=lambda e: (_get_overflow_from_details(e.get("details", {})), e.get("fg_score", 0))
-            )
-            deduplicated_entries.append(best_entry)
-        except Exception:
-            deduplicated_entries.append(group[0])
+        score = _coerce_int(entry.get("score", 0))
+        fg_score = _coerce_int(entry.get("fg_score", 0))
+        force_data = entry.get("force")
+        if fg_score <= 0 and force_data is not None:
+            fg_score = _fg_score_from_force(force_data)
 
-    _log_timing("dedup_entries", time.perf_counter() - _t_dedup0)
+        if best_score_max is None or score > best_score_max:
+            best_score_max = score
+        if force_data is not None and fg_score > score and (best_fg_max is None or fg_score > best_fg_max):
+            best_fg_max = fg_score
+
+    # Persist the base run as TeamBuff T5 (default auto mode).
+    save_team_buff_loadouts_batch(song_name, "T5", entries)
+
+    if best_score_max is None and not best_fg_max:
+        return
 
     db_path = get_evolution_db_path()
     conn = get_db_connection(db_path)
-    best_score_max = None
-    best_fg_max = None
-
     try:
-        # Use IMMEDIATE to acquire write lock upfront - fails fast instead of blocking readers.
-        # Also reduces lock duration by not waiting until the first write statement.
-        try:
-            conn.execute("BEGIN IMMEDIATE;")
-        except sqlite3.OperationalError:
-            # If we can't get the lock immediately, wait briefly and retry once
-            time.sleep(0.05)
-            conn.execute("BEGIN IMMEDIATE;")
-
-        # Relax sync during batch for throughput
-        try:
-            conn.execute("PRAGMA synchronous=NORMAL;")
-        except Exception:
-            pass
-
-        # Pre-build parameter lists for executemany (faster than per-entry execute)
-        _t_params0 = time.perf_counter()
-        loadouts_params = []
-        fg_loadouts_params = []
-
-        entry_to_effective: Dict[int, Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]] = {}
-        for i, entry in enumerate(deduplicated_entries):
-            eff = _effective_hash_for_entry(entry)
-            entry_to_effective[i] = eff
-
-        for i, entry in enumerate(deduplicated_entries):
-            score = _coerce_int(entry.get("score", 0))
-            fg_score = _coerce_int(entry.get("fg_score", 0))
-            gear = entry.get("gear", [])
-            minis = entry.get("minis", [])
-            details = entry.get("details", {})
-
-            # Defensive: ensure Stats are populated in details
-            # If Stats is missing or empty, compute it from loadout components
-            current_stats = details.get("Stats") if isinstance(details, dict) else None
-            if not current_stats or (isinstance(current_stats, dict) and len(current_stats) == 0):
-                # Base (non-tier) persistence is treated as TeamBuff auto-mode (T5) for display and
-                # for tier-delta postprocessing. If we persist loadout-only stats here, the frontend
-                # can make T5 look like NONE (missing +PP/+primary element).
-                details = _ensure_stats_in_details(
-                    details,
-                    gear,
-                    minis,
-                    minis_by_name,
-                    team_buff="T5",
-                    team_color=str(details.get("PrimaryColor") or details.get("Primary Color") or "").strip(),
-                )
-
-            force_data = entry.get("force")
-
-            if fg_score <= 0 and force_data is not None:
-                fg_score = _fg_score_from_force(force_data)
-
-            force_data = _normalize_force_for_persistence(force_data, fg_score=fg_score)
-            details = _normalize_details_for_persistence(details, score=score, fg_score=fg_score, force_data=force_data)
-
-            gear_names = _compact_gear_for_db(gear)
-            mini_names = _compact_minis_for_db(minis)
-
-            eff = entry_to_effective.get(i)
-            if eff is not None:
-                (loadout_hash, _mini_sigs, p_color, s_color, sel_color) = eff
-                # Deterministically expand mini variant groups from Minis.csv equivalence.
-                # This avoids relying on the GA to have explored both names and removes
-                # the need for cross-row union/merging.
-                groups = canonical_minis_groups_from_names(
-                    mini_names,
-                    minis_by_name,
-                    p_color,
-                    s_color,
-                    sel_color,
-                )
-                minis_json = encode_minis_groups(groups)
-                # Store representatives in-memory for any downstream name-based utilities.
-                mini_names = representative_mini_names(groups)
-            else:
-                loadout_hash = _loadout_hash_from_names(gear_names, mini_names)
-                minis_json = json.dumps([[n] for n in mini_names], separators=(",", ":"))
-
-            gear_json = json.dumps(gear_names, separators=(",", ":"))
-            details_json = json.dumps(details, separators=(",", ":")) if details else None
-            force_json = json.dumps(force_data, separators=(",", ":")) if force_data else None
-
-            # All entries go to loadouts table
-            loadouts_params.append(
-                (
-                    song_name,
-                    loadout_hash,
-                    score,
-                    fg_score,
-                    gear_json,
-                    minis_json,
-                    details_json,
-                    force_json,
-                )
-            )
-
-            # Only FG-improving entries go to fg_loadouts table (FG leaderboard):
-            # We require fg_score strictly better than base score to avoid storing
-            # "FG results" that are worse than the base outcome.
-            if force_data is not None and fg_score > score:
-                fg_loadouts_params.append(
-                    (
-                        song_name,
-                        loadout_hash,
-                        score,
-                        fg_score,
-                        gear_json,
-                        minis_json,
-                        details_json,
-                        force_json,
-                    )
-                )
-
-            # Track best scores
-            if best_score_max is None or score > best_score_max:
-                best_score_max = score
-            if force_data is not None and fg_score > score and (best_fg_max is None or fg_score > best_fg_max):
-                best_fg_max = fg_score
-        _log_timing("build_params_json", time.perf_counter() - _t_params0)
-
-        # Batch insert into loadouts table
-        if loadouts_params:
-            _t_ins0 = time.perf_counter()
-            conn.executemany(
-                """
-                INSERT INTO loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
-                ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
-                    score = CASE WHEN excluded.score > score THEN excluded.score ELSE score END,
-                    fg_score = MAX(fg_score, excluded.fg_score),
-                    gear_json = excluded.gear_json,
-                    minis_json = excluded.minis_json,
-                    -- Update details on ties so attempt counters (and other run metadata) can advance
-                    -- without requiring a new best score.
-                    details_json = CASE WHEN excluded.score >= score THEN excluded.details_json ELSE details_json END,
-                    force_details_json = CASE
-                        WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
-                        ELSE force_details_json
-                    END,
-                    timestamp = strftime('%s', 'now')
-            """,
-                loadouts_params,
-            )
-            _log_timing("insert_loadouts", time.perf_counter() - _t_ins0)
-
-        # Batch insert into fg_loadouts table
-        if fg_loadouts_params:
-            _t_insfg0 = time.perf_counter()
-            conn.executemany(
-                """
-                INSERT INTO fg_loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, team_buff, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'T5', strftime('%s', 'now'))
-                ON CONFLICT(song_name, loadout_hash) DO UPDATE SET
-                    score = CASE WHEN excluded.fg_score > fg_score THEN excluded.score ELSE score END,
-                    fg_score = MAX(fg_score, excluded.fg_score),
-                    gear_json = excluded.gear_json,
-                    minis_json = excluded.minis_json,
-                    -- Same reasoning as `loadouts`: allow metadata (e.g., attempt counters) to advance on ties.
-                    details_json = CASE WHEN excluded.fg_score >= fg_score THEN excluded.details_json ELSE details_json END,
-                    force_details_json = CASE WHEN excluded.fg_score > fg_score THEN excluded.force_details_json ELSE force_details_json END,
-                    timestamp = strftime('%s', 'now')
-            """,
-                fg_loadouts_params,
-            )
-            _log_timing("insert_fg_loadouts", time.perf_counter() - _t_insfg0)
-
-        # Update Song Stats
         if best_score_max is not None:
-            _t_song0 = time.perf_counter()
             conn.execute(
                 """
                 INSERT INTO songs (name, best_score) VALUES (?, ?)
-                ON CONFLICT(name) DO UPDATE SET best_score = MAX(best_score, excluded.best_score), last_updated = strftime('%s', 'now')
-            """,
+                ON CONFLICT(name) DO UPDATE SET
+                    best_score = MAX(best_score, excluded.best_score),
+                    last_updated = strftime('%s', 'now')
+                """,
                 (song_name, best_score_max),
             )
-            _log_timing("upsert_song_best_score", time.perf_counter() - _t_song0)
 
         if best_fg_max:
-            _t_songfg0 = time.perf_counter()
             conn.execute(
                 """
                 INSERT INTO songs (name, best_fg_score) VALUES (?, ?)
-                ON CONFLICT(name) DO UPDATE SET best_fg_score = MAX(best_fg_score, excluded.best_fg_score), last_updated = strftime('%s', 'now')
-            """,
+                ON CONFLICT(name) DO UPDATE SET
+                    best_fg_score = MAX(best_fg_score, excluded.best_fg_score),
+                    last_updated = strftime('%s', 'now')
+                """,
                 (song_name, best_fg_max),
             )
-            _log_timing("upsert_song_best_fg_score", time.perf_counter() - _t_songfg0)
-
-        # Commit bulk inserts early to release write lock before slower dedup/prune.
-        # This reduces the window where readers are blocked.
-        _t_commit_early = time.perf_counter()
         conn.commit()
-        _log_timing("commit_inserts", time.perf_counter() - _t_commit_early)
-
-        # Start a new transaction for cleanup operations
-        try:
-            conn.execute("BEGIN IMMEDIATE;")
-        except sqlite3.OperationalError:
-            time.sleep(0.02)
-            conn.execute("BEGIN IMMEDIATE;")
-
-        # Enforce FG leaderboard invariant (in case older DB rows exist):
-        # fg_loadouts should only contain entries where FG strictly beats base.
-        _t_inv0 = time.perf_counter()
-        conn.execute(
-            """
-            DELETE FROM fg_loadouts
-            WHERE song_name = ?
-            AND fg_score <= score
-            """,
-            (song_name,),
-        )
-        _log_timing("delete_fg_invariant", time.perf_counter() - _t_inv0)
-
-        # Deduplicate and Prune BOTH tables
-        for table in ["loadouts", "fg_loadouts"]:
-            # Deduplicate
-            _t_dd0 = time.perf_counter()
-            _deduplicate_db_loadouts(conn, song_name, table)
-            _log_timing(f"dedup_db_{table}", time.perf_counter() - _t_dd0)
-
-            # Prune (Limit size)
-            _t_cnt0 = time.perf_counter()
-            cursor = conn.execute(f"SELECT COUNT(*) FROM {table} WHERE song_name = ?", (song_name,))
-            count = cursor.fetchone()[0]
-            _log_timing(f"count_{table}", time.perf_counter() - _t_cnt0)
-            if count <= LOADOUTS_PER_SONG_LIMIT:
-                continue
-
-            if table == "loadouts":
-                # Base leaderboard retention: keep top-N by base score only.
-                _t_pr0 = time.perf_counter()
-                conn.execute(
-                    """
-                    DELETE FROM loadouts
-                    WHERE song_name = ?
-                    AND loadout_hash NOT IN (
-                        SELECT loadout_hash FROM loadouts
-                        WHERE song_name = ?
-                        ORDER BY score DESC
-                        LIMIT ?
-                    )
-                    """,
-                    (song_name, song_name, LOADOUTS_PER_SONG_LIMIT),
-                )
-                _log_timing("prune_loadouts", time.perf_counter() - _t_pr0)
-            else:
-                # For fg_loadouts we prioritize FG_SCORE only.
-                _t_prfg0 = time.perf_counter()
-                conn.execute(
-                    """
-                    DELETE FROM fg_loadouts
-                    WHERE song_name = ?
-                    AND loadout_hash NOT IN (
-                        SELECT loadout_hash FROM fg_loadouts
-                        WHERE song_name = ?
-                        ORDER BY fg_score DESC
-                        LIMIT ?
-                    )
-                    """,
-                    (song_name, song_name, LOADOUTS_PER_SONG_LIMIT),
-                )
-                _log_timing("prune_fg_loadouts", time.perf_counter() - _t_prfg0)
-
-        _t_commit0 = time.perf_counter()
-        conn.commit()
-        _log_timing("commit", time.perf_counter() - _t_commit0)
     except sqlite3.Error as e:
-        print(f"[DB] Error saving batch loadouts: {e}")
+        print(f"[DB] Error updating best scores: {e}")
         try:
             conn.rollback()
         except sqlite3.Error:
             pass
     finally:
-        try:
-            conn.execute("PRAGMA synchronous=FULL;")
-        except sqlite3.Error:
-            pass
         conn.close()
-        _log_timing("total", time.perf_counter() - _t0)
 
 
 def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[Dict[str, Any]]) -> None:
@@ -1583,6 +1234,7 @@ def get_best_loadouts(
     limit: int = LOADOUTS_PER_SONG_LIMIT,
     gears_by_name: Optional[Dict[str, Any]] = None,
     minis_by_name: Optional[Dict[str, Any]] = None,
+    team_buff: str = "T5",
 ) -> List[Dict[str, Any]]:
     """
     Retrieve the top N loadouts for a song to seed the GA.
@@ -1597,6 +1249,7 @@ def get_best_loadouts(
         limit: Maximum number of loadouts to retrieve
         gears_by_name: Optional dict mapping gear names to full dicts
         minis_by_name: Optional dict mapping mini names to full dicts
+        team_buff: TeamBuff tier to seed from (defaults to T5)
 
     Returns:
         list: List of loadout dictionaries
@@ -1607,20 +1260,45 @@ def get_best_loadouts(
 
     song_name = str(song_name or "").strip()
 
+    team_buff = str(team_buff or "").strip().upper() or "T5"
+
     # PERF: use a cached per-thread connection for read-heavy call sites.
     conn = get_db_connection_cached(db_path)
     try:
+        def _table_exists(name: str) -> bool:
+            try:
+                return conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                    (name,),
+                ).fetchone() is not None
+            except sqlite3.Error:
+                return False
+
+        use_team_buff = _table_exists("team_buff_loadouts")
+
         # 1. Fetch Top Base Score Loadouts
-        cursor = conn.execute(
-            """
-            SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
-            FROM loadouts
-            WHERE song_name = ?
-            ORDER BY score DESC
-            LIMIT ?
-        """,
-            (song_name, limit),
-        )
+        if use_team_buff:
+            cursor = conn.execute(
+                """
+                SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
+                FROM team_buff_loadouts
+                WHERE song_name = ? AND team_buff = ?
+                ORDER BY score DESC
+                LIMIT ?
+                """,
+                (song_name, team_buff, limit),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
+                FROM loadouts
+                WHERE song_name = ?
+                ORDER BY score DESC
+                LIMIT ?
+                """,
+                (song_name, limit),
+            )
 
         results = []
         seen_hashes = set()
@@ -1662,16 +1340,28 @@ def get_best_loadouts(
             process_row(row)
 
         # 2. Fetch Top Force Greats Loadouts
-        cursor = conn.execute(
-            """
-            SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
-            FROM fg_loadouts
-            WHERE song_name = ?
-            ORDER BY fg_score DESC
-            LIMIT ?
-        """,
-            (song_name, limit),
-        )
+        if use_team_buff and _table_exists("team_buff_fg_loadouts"):
+            cursor = conn.execute(
+                """
+                SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
+                FROM team_buff_fg_loadouts
+                WHERE song_name = ? AND team_buff = ?
+                ORDER BY fg_score DESC
+                LIMIT ?
+                """,
+                (song_name, team_buff, limit),
+            )
+        else:
+            cursor = conn.execute(
+                """
+                SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
+                FROM fg_loadouts
+                WHERE song_name = ?
+                ORDER BY fg_score DESC
+                LIMIT ?
+                """,
+                (song_name, limit),
+            )
 
         for row in cursor:
             process_row(row)
@@ -1689,7 +1379,7 @@ def get_song_names_present_in_db(song_names: Iterable[str], db_path: Optional[st
     """
     Return the subset of song names that are already present in the DB.
 
-    Presence is defined as having a row in `songs` OR any row in `loadouts`/`fg_loadouts`.
+    Presence is defined as having a row in `songs` OR any row in the loadout tables.
     """
     names = [name for name in (song_names or []) if name]
     if not names:
@@ -1717,7 +1407,7 @@ def get_song_names_present_in_db(song_names: Iterable[str], db_path: Optional[st
         except sqlite3.Error:
             pass
 
-        for table in ("loadouts", "fg_loadouts"):
+        for table in ("team_buff_loadouts", "team_buff_fg_loadouts", "loadouts", "fg_loadouts"):
             try:
                 rows = conn.execute(
                     f"SELECT DISTINCT song_name FROM {table} WHERE song_name IN ({placeholders})",

@@ -216,6 +216,16 @@ def load_database_context(
             if suggest_enabled:
                 try:
                     conn = get_db_connection_cached()
+                    def _table_exists(name: str) -> bool:
+                        try:
+                            return conn.execute(
+                                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                                (name,),
+                            ).fetchone() is not None
+                        except Exception:
+                            return False
+
+                    lookup_table = "team_buff_loadouts" if _table_exists("team_buff_loadouts") else "loadouts"
                     base_key = str(found_song_name or "").strip()
                     if "|" in base_key:
                         base_key = base_key.split("|", 1)[0].strip()
@@ -223,7 +233,7 @@ def load_database_context(
                     if not base_key:
                         base_key = str(found_song_name or "").strip()
                     rows = conn.execute(
-                        "SELECT DISTINCT song_name FROM loadouts WHERE song_name LIKE ? LIMIT 8",
+                        f"SELECT DISTINCT song_name FROM {lookup_table} WHERE song_name LIKE ? LIMIT 8",
                         (f"%{base_key}%",),
                     ).fetchall()
                     if rows:
@@ -238,14 +248,34 @@ def load_database_context(
             # Fetch known loadouts for persistent caching
             try:
                 conn = get_db_connection_cached()
-                cursor = conn.execute(
-                    """SELECT loadout_hash, score, fg_score, force_details_json, details_json
-                       FROM loadouts
-                       WHERE song_name = ?
-                       ORDER BY score DESC
-                       LIMIT ?""",
-                    (str(found_song_name or "").strip(), LOADOUTS_PER_SONG_LIMIT),
-                )
+                def _table_exists(name: str) -> bool:
+                    try:
+                        return conn.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                            (name,),
+                        ).fetchone() is not None
+                    except Exception:
+                        return False
+
+                song_key = str(found_song_name or "").strip()
+                if _table_exists("team_buff_loadouts"):
+                    cursor = conn.execute(
+                        """SELECT loadout_hash, score, fg_score, force_details_json, details_json
+                           FROM team_buff_loadouts
+                           WHERE song_name = ? AND team_buff = 'T5'
+                           ORDER BY score DESC
+                           LIMIT ?""",
+                        (song_key, LOADOUTS_PER_SONG_LIMIT),
+                    )
+                else:
+                    cursor = conn.execute(
+                        """SELECT loadout_hash, score, fg_score, force_details_json, details_json
+                           FROM loadouts
+                           WHERE song_name = ?
+                           ORDER BY score DESC
+                           LIMIT ?""",
+                        (song_key, LOADOUTS_PER_SONG_LIMIT),
+                    )
                 for row in cursor:
                     force_blob = row["force_details_json"]
                     force_data = None

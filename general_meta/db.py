@@ -25,13 +25,16 @@ def get_all_loadouts_from_db() -> List[Dict]:
     try:
         results: list[dict] = []
 
-        def _select_all_from(table: str) -> None:
+        def _select_all_from(table: str, *, where: str = "", params: tuple = ()) -> None:
             try:
                 cursor = conn.execute(
                     f"""
                     SELECT song_name, score, fg_score, gear_json, minis_json, details_json
                     FROM {table}
+                    {where}
                     """
+                    ,
+                    params,
                 )
             except sqlite3.Error:
                 return
@@ -47,7 +50,16 @@ def get_all_loadouts_from_db() -> List[Dict]:
                     }
                 )
 
-        _select_all_from("loadouts")
+        has_unified = (
+            conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='view' AND name='loadouts_unified'"
+            ).fetchone()
+            is not None
+        )
+        if has_unified:
+            _select_all_from("loadouts_unified", where="WHERE UPPER(team_buff) = 'T5'")
+        else:
+            _select_all_from("loadouts")
 
         # Use unified view for FG rows so team_buff is always present
         try:

@@ -36,7 +36,10 @@ def test_base_loadouts_stats_include_team_buff_t5(monkeypatch, tmp_path: Path):
 
     con = sqlite3.connect(db_path)
     try:
-        row = con.execute("SELECT details_json FROM loadouts WHERE song_name=? LIMIT 1", ("pytest_song",)).fetchone()
+        row = con.execute(
+            "SELECT details_json FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5' LIMIT 1",
+            ("pytest_song",),
+        ).fetchone()
         assert row is not None
         details = json.loads(row[0])
         stats = details.get("Stats") or {}
@@ -44,4 +47,3 @@ def test_base_loadouts_stats_include_team_buff_t5(monkeypatch, tmp_path: Path):
         assert stats.get("Rush") == 30
     finally:
         con.close()
-
