@@ -411,8 +411,25 @@ def decode_gpu_native_ga_runs_payload(
         best_gear = best_global_genome[:6]
         best_minis = best_global_genome[6:9]
 
-        # Compute full stats for best genome (like FG candidates).
-        best_stats = dict(base_stats_fixed or {})
+        # Reconstruct Stats exactly like the GPU kernels:
+        # - Start from the "base_fixed" vector with user-fixed gems + static overflow removed
+        #   (see solver/base_stats.py).
+        # - Add item stats.
+        # - Add gem allocation contributions (FT/FF/PP/CM/FM + overflow).
+        stat_names = [
+            "Perfect Points",
+            "Combo Multiplier",
+            "Fever Multiplier",
+            "Fever Time",
+            "Fever Fill Rate",
+            "Beat",
+            "Vibe",
+            "Rush",
+            "Flow",
+            "Chill",
+        ]
+        base_fixed_arr, sel_color_built = _build_base_stats_array(base_stats_fixed, cfg_data)
+        best_stats = {stat_names[i]: int(base_fixed_arr[i]) for i in range(len(stat_names))}
         for item in best_global_genome or []:
             if not item:
                 continue
@@ -439,7 +456,7 @@ def decode_gpu_native_ga_runs_payload(
         best_stats["Beat"] = best_stats.get("Beat", 0) + g_ft * GEM_STAT_TO_ELEMENT_SCALE
         best_stats["Vibe"] = best_stats.get("Vibe", 0) + g_ff * GEM_STAT_TO_ELEMENT_SCALE
 
-        selected_color = str(cfg_data.get("selected_color", ""))
+        selected_color = str(sel_color_built or cfg_data.get("selected_color", "") or "")
         if selected_color:
             best_stats[selected_color] = best_stats.get(selected_color, 0) + g_ov * ELEMENTAL_GEM_SCALE
 
@@ -2563,6 +2580,7 @@ def solve_coevolution_genetic(
                     unique_evaluated,
                     base_stats_fixed=base_stats_fixed,
                     selected_color=str(cfg_data.get("selected_color", "") or ""),
+                    cfg_data=cfg_data,
                 )
         except Exception:
             pass

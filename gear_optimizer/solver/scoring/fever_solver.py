@@ -304,6 +304,7 @@ def solve_best_fever_combination(
     )
 
     # 2. Optimize Gems for each Timeline
+    best_gpu_final = None  # (final_pp, final_cm, final_fm, final_p_val, final_s_val) from GPU solver
     if use_gpu:
         # GPU BATCH PATH: Process all timelines in parallel on GPU
         _, batch_solver = _get_gpu_solver()
@@ -380,6 +381,11 @@ def solve_best_fever_combination(
             ff = t_data["ff_gems"]
             # Result: (score, pp, cm, fm, p_val, s_val, gems_pp, gems_cm, gems_fm, gems_ov)
             total_score = result[0]
+            final_pp = result[1]
+            final_cm = result[2]
+            final_fm = result[3]
+            final_p_val = result[4]
+            final_s_val = result[5]
             g_pp = result[6]
             g_cm = result[7]
             g_fm = result[8]
@@ -388,6 +394,7 @@ def solve_best_fever_combination(
             if total_score > best_score:
                 best_score = total_score
                 best_tuple = (total_score, ft, ff, g_pp, g_cm, g_fm, g_ov)
+                best_gpu_final = (final_pp, final_cm, final_fm, final_p_val, final_s_val)
 
     if not use_gpu:
         # CPU PATH: Sequential processing
@@ -476,6 +483,22 @@ def solve_best_fever_combination(
             g_ov,
             add_missing_element_key=False,
         )
+        # GPU batch solver already computes the authoritative final stat indices and
+        # primary/secondary element values used during scoring. Align the returned
+        # Stats payload with those GPU-derived values to avoid "score vs Stats"
+        # mismatches in consumers (frontend/export/debug).
+        if use_gpu and isinstance(best_gpu_final, tuple) and len(best_gpu_final) == 5:
+            try:
+                f_pp, f_cm, f_fm, f_p, f_s = best_gpu_final
+                final_stats["Perfect Points"] = int(f_pp)
+                final_stats["Combo Multiplier"] = int(f_cm)
+                final_stats["Fever Multiplier"] = int(f_fm)
+                if p_color:
+                    final_stats[p_color] = int(f_p)
+                if s_color:
+                    final_stats[s_color] = int(f_s)
+            except Exception:
+                pass
 
         gem_counts = {
             "Perfect Points": g_pp,

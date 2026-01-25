@@ -1302,6 +1302,7 @@ def hydrate_fg_candidate_stats(
     *,
     base_stats_fixed: dict,
     selected_color: str,
+    cfg_data: Optional[dict] = None,
 ) -> None:
     """
     Ensure candidates have `Data` with `Stats` for ForceGreats.
@@ -1314,6 +1315,29 @@ def hydrate_fg_candidate_stats(
         return
 
     selected_color = str(selected_color or "")
+    cfg_data = cfg_data if isinstance(cfg_data, dict) else {}
+
+    # Match GPU kernels: start from base_fixed (user-fixed gems + static overflow removed).
+    base_fixed_list, fallback_sel = build_base_fixed_stats_list(
+        base_stats_fixed,
+        cfg_data,
+        fallback_selected_color=selected_color,
+    )
+    stat_names = [
+        "Perfect Points",
+        "Combo Multiplier",
+        "Fever Multiplier",
+        "Fever Time",
+        "Fever Fill Rate",
+        "Beat",
+        "Vibe",
+        "Rush",
+        "Flow",
+        "Chill",
+    ]
+    base_fixed = {stat_names[i]: int(base_fixed_list[i]) for i in range(min(len(stat_names), len(base_fixed_list)))}
+    if fallback_sel and not selected_color:
+        selected_color = str(fallback_sel)
 
     for cand in candidates:
         if not isinstance(cand, dict):
@@ -1353,8 +1377,8 @@ def hydrate_fg_candidate_stats(
         if not isinstance(genome, list) or not genome:
             genome = _as_genome(cand)
 
-        # Aggregate base stats from fixed + items.
-        stats = dict(base_stats_fixed or {})
+        # Aggregate base stats from base_fixed + items.
+        stats = dict(base_fixed)
         for item in genome[:9]:
             if not isinstance(item, dict) or not item:
                 continue

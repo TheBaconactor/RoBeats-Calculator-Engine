@@ -2380,6 +2380,7 @@ def _run_fg_job_sync(
                     song.ga_candidates,
                     base_stats_fixed=song.fixed_stats,
                     selected_color=str(song.cfg_data.get("selected_color", "") or ""),
+                    cfg_data=song.cfg_data,
                 )
                 song.loadout_entries = build_loadout_entries(
                     song.db_key,
