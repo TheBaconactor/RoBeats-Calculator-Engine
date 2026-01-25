@@ -14,7 +14,7 @@ Migration = Callable[[sqlite3.Connection], None]
 # NOTE: `evolution.db` in the wild may already have `PRAGMA user_version=8` even though
 # the physical schema matches v6 (v6 is a data-level migration only). Keep v7/v8 as
 # no-ops so older DBs can advance and newer DBs won't be rejected.
-LATEST_SCHEMA_VERSION = 12
+LATEST_SCHEMA_VERSION = 14
 
 
 def _migration_1_init_schema(conn: sqlite3.Connection) -> None:
@@ -503,6 +503,148 @@ def _migration_12_add_fg_loadouts_unified_view(conn: sqlite3.Connection) -> None
     )
 
 
+def _migration_13_add_frontend_base_top51_view(conn: sqlite3.Connection) -> None:
+    """
+    Create a frontend-oriented view for "Top 51" base (non-FG) rows per song + team_buff.
+
+    Columns include:
+      - song_title / difficulty derived from the "(Easy)/(Normal)/(Hard)" suffix (or default Normal)
+      - rank (1..51) within (song_name, team_buff) ordered by score desc
+
+    NOTE: team_buff values are emitted as DB keys (e.g. NONE, T1, T5, T10, T15).
+    """
+    conn.execute("DROP VIEW IF EXISTS frontend_base_top51_by_song_tier;")
+    conn.execute(
+        """
+        CREATE VIEW frontend_base_top51_by_song_tier AS
+        WITH base AS (
+            SELECT
+                song_name,
+                'NONE' AS team_buff,
+                loadout_hash,
+                score,
+                gear_json,
+                minis_json,
+                details_json,
+                timestamp
+            FROM loadouts
+            UNION ALL
+            SELECT
+                song_name,
+                UPPER(team_buff) AS team_buff,
+                loadout_hash,
+                score,
+                gear_json,
+                minis_json,
+                details_json,
+                timestamp
+            FROM team_buff_loadouts
+            WHERE UPPER(team_buff) != 'NONE'
+        ),
+        ranked AS (
+            SELECT
+                song_name,
+                CASE
+                    WHEN instr(song_name, ' (Easy) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Easy) by ') - 1))
+                    WHEN instr(song_name, ' (Hard) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Hard) by ') - 1))
+                    WHEN instr(song_name, ' (Normal) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Normal) by ') - 1))
+                    WHEN instr(song_name, ' by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' by ') - 1))
+                    ELSE song_name
+                END AS song_title,
+                CASE
+                    WHEN instr(song_name, ' (Easy) by ') > 0 THEN 'Easy'
+                    WHEN instr(song_name, ' (Hard) by ') > 0 THEN 'Hard'
+                    WHEN instr(song_name, ' (Normal) by ') > 0 THEN 'Normal'
+                    ELSE 'Normal'
+                END AS difficulty,
+                team_buff,
+                ROW_NUMBER() OVER (PARTITION BY song_name, team_buff ORDER BY score DESC) AS rank,
+                loadout_hash,
+                score,
+                gear_json,
+                minis_json,
+                details_json,
+                timestamp
+            FROM base
+        )
+        SELECT
+            song_name,
+            song_title,
+            difficulty,
+            team_buff,
+            rank,
+            loadout_hash,
+            score,
+            gear_json,
+            minis_json,
+            details_json,
+            timestamp
+        FROM ranked
+        WHERE rank <= 51;
+        """
+    )
+
+
+def _migration_14_add_frontend_fg_top51_view(conn: sqlite3.Connection) -> None:
+    """
+    Create a frontend-oriented view for "Top 51" FG rows per song + team_buff.
+
+    Uses `fg_loadouts_unified` as the single FG surface and ranks by fg_score desc.
+    """
+    conn.execute("DROP VIEW IF EXISTS frontend_fg_top51_by_song_tier;")
+    conn.execute(
+        """
+        CREATE VIEW frontend_fg_top51_by_song_tier AS
+        WITH ranked AS (
+            SELECT
+                song_name,
+                CASE
+                    WHEN instr(song_name, ' (Easy) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Easy) by ') - 1))
+                    WHEN instr(song_name, ' (Hard) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Hard) by ') - 1))
+                    WHEN instr(song_name, ' (Normal) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Normal) by ') - 1))
+                    WHEN instr(song_name, ' by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' by ') - 1))
+                    ELSE song_name
+                END AS song_title,
+                CASE
+                    WHEN instr(song_name, ' (Easy) by ') > 0 THEN 'Easy'
+                    WHEN instr(song_name, ' (Hard) by ') > 0 THEN 'Hard'
+                    WHEN instr(song_name, ' (Normal) by ') > 0 THEN 'Normal'
+                    ELSE 'Normal'
+                END AS difficulty,
+                UPPER(team_buff) AS team_buff,
+                ROW_NUMBER() OVER (PARTITION BY song_name, UPPER(team_buff) ORDER BY fg_score DESC) AS rank,
+                loadout_hash,
+                score,
+                fg_score,
+                gear_json,
+                minis_json,
+                details_json,
+                force_details_json,
+                timestamp,
+                source_table
+            FROM fg_loadouts_unified
+            WHERE fg_score > 0
+        )
+        SELECT
+            song_name,
+            song_title,
+            difficulty,
+            team_buff,
+            rank,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            source_table
+        FROM ranked
+        WHERE rank <= 51;
+        """
+    )
+
 _MIGRATIONS: Dict[int, Migration] = {
     1: _migration_1_init_schema,
     2: _migration_2_add_pending_fg_jobs,
@@ -516,6 +658,8 @@ _MIGRATIONS: Dict[int, Migration] = {
     10: _migration_10_add_song_attempt_counters,
     11: _migration_11_add_team_buff_to_fg_loadouts,
     12: _migration_12_add_fg_loadouts_unified_view,
+    13: _migration_13_add_frontend_base_top51_view,
+    14: _migration_14_add_frontend_fg_top51_view,
 }
 
 
