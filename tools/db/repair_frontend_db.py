@@ -30,6 +30,7 @@ from gear_optimizer.core.stats_calculator import compute_full_stats
 from gear_optimizer.data.database import get_evolution_db_path
 from gear_optimizer.data.csv_parser import parse_gear_rows, parse_mini_rows
 from gear_optimizer.core.config import load_paths_cache
+from gear_optimizer.data.loadout_equivalence import encode_minis_groups, decode_minis_json
 
 
 EXPECTED_TEAM_BUFFS = {"NONE", "T1", "T5", "T10", "T15"}
@@ -139,6 +140,7 @@ def _extract_base_stats_from_force(force: Any) -> dict[str, Any] | None:
 class RepairStats:
     scanned_rows: int = 0
     minis_fixed: int = 0
+    minis_reordered: int = 0
     stats_fixed: int = 0
     fg_invariant_deleted: int = 0
     team_buff_fixed_case: int = 0
@@ -245,10 +247,30 @@ def repair_frontend_db(
         for row in cur:
             stats.scanned_rows += 1
 
-            minis_obj = _json_loads(row["minis_json"], [])
+            minis_text_in = row["minis_json"] or ""
+            minis_obj = _json_loads(minis_text_in, [])
             minis_fixed_obj, minis_repairs = _repair_minis_node(minis_obj)
             if minis_repairs:
                 stats.minis_fixed += minis_repairs
+
+            # Always re-encode minis groups to:
+            # - canonicalize shape (list[list[str]])
+            # - rotate repeated groups so naive frontends don't show duplicate minis in multiple slots
+            groups = []
+            if isinstance(minis_fixed_obj, list):
+                if minis_fixed_obj and all(isinstance(x, str) for x in minis_fixed_obj):
+                    groups = [[str(x).strip()] for x in minis_fixed_obj if str(x).strip()]
+                else:
+                    groups = [
+                        [str(x).strip() for x in (g or []) if x is not None and str(x).strip()]
+                        for g in minis_fixed_obj
+                        if isinstance(g, list)
+                    ]
+            minis_text_out = (
+                encode_minis_groups(groups) if groups else encode_minis_groups(decode_minis_json(minis_text_in))
+            )
+            if minis_text_out and minis_text_out != minis_text_in:
+                stats.minis_reordered += 1
 
             details = _json_loads(row["details_json"], {})
             if not isinstance(details, dict):
@@ -283,11 +305,11 @@ def repair_frontend_db(
                     details["Stats"] = computed_stats
                     stats.stats_fixed += 1
 
-            if minis_repairs or stats_needs_repair:
+            if minis_repairs or stats_needs_repair or (minis_text_out and minis_text_out != minis_text_in):
                 if not dry_run:
                     conn.execute(
                         f"UPDATE {tbl} SET minis_json = ?, details_json = ? WHERE rowid = ?",
-                        (json.dumps(minis_fixed_obj), json.dumps(details), row["rowid"]),
+                        (minis_text_out, json.dumps(details), row["rowid"]),
                     )
 
     if not dry_run:
@@ -319,6 +341,7 @@ def main() -> None:
     print(f"DB: {db_path}")
     print(f"scanned_rows: {result.scanned_rows:,}")
     print(f"minis_fixed: {result.minis_fixed:,}")
+    print(f"minis_reordered: {result.minis_reordered:,}")
     print(f"stats_fixed: {result.stats_fixed:,}")
     print(f"fg_invariant_rows_deleted: {result.fg_invariant_deleted:,}")
     print(f"team_buff_case_fixed_rows: {result.team_buff_fixed_case:,}")

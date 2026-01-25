@@ -88,6 +88,7 @@ class AuditCounts:
     missing_stats: int = 0
     zero_stats: int = 0
     corrupt_minis: int = 0
+    minis_display_dupe_rows: int = 0
     bad_fg_invariant: int = 0
     missing_force_score: int = 0
 
@@ -124,6 +125,15 @@ def _audit_view(conn: sqlite3.Connection, *, view_name: str, is_fg: bool) -> Aud
         if _minis_json_has_corruption_signature(r["minis_json"]):
             counts.corrupt_minis += 1
 
+        # Frontend display sanity:
+        # Some consumers display slot minis as "group[0]" (first element). If that consumer does not
+        # apply `normalize_minis_groups_for_display`, repeated variant groups can show the same mini
+        # twice across slots (e.g., ["BlackY", "Heavy Metal Starlet"] appears twice -> "BlackY", "BlackY").
+        if isinstance(minis, list) and minis and all(isinstance(x, list) for x in minis):
+            firsts = [g[0] for g in minis if isinstance(g, list) and g]
+            if len(firsts) >= 2 and len(set(firsts)) != len(firsts):
+                counts.minis_display_dupe_rows += 1
+
         score = int(r["score"] or 0)
         fg_score = int(r["fg_score"] or 0)
         if is_fg:
@@ -155,6 +165,7 @@ def _print_counts(label: str, counts: AuditCounts) -> None:
     print(f"  missing_stats: {counts.missing_stats:,}")
     print(f"  zero_stats: {counts.zero_stats:,}")
     print(f"  corrupt_minis_signature: {counts.corrupt_minis:,}")
+    print(f"  minis_display_dupe_rows: {counts.minis_display_dupe_rows:,}")
     if counts.bad_fg_invariant:
         print(f"  bad_fg_invariant(fg_score<=score): {counts.bad_fg_invariant:,}")
     if counts.missing_force_score:

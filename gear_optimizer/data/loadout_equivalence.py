@@ -137,12 +137,32 @@ def encode_minis_groups(groups: Iterable[Iterable[str]]) -> str:
     for g in groups or []:
         if not g:
             continue
-        names = [str(x).strip() for x in g if x is not None]
+
+        # Guard against accidentally treating a string as an iterable of characters.
+        if isinstance(g, str):
+            names = [g.strip()]
+        else:
+            names = [str(x).strip() for x in g if x is not None]
         names = [n for n in names if n]
         if not names:
             continue
         normalized.append(sorted(set(names)))
-    return json.dumps(normalized, separators=(",", ":"))
+
+    if not normalized:
+        return json.dumps([], separators=(",", ":"))
+
+    # Frontend/export consumers often pick the first element of each group as the displayed
+    # mini for that slot. If multiple slots share the same variant group, rotate the group
+    # so the first elements become distinct when possible (A/B, A/B, C -> A/B, B/A, C).
+    reps = representative_mini_names(normalized)
+    rotated: list[list[str]] = []
+    for g, rep in zip(normalized, reps):
+        if rep and rep in g and len(g) > 1:
+            rotated.append([rep, *[n for n in g if n != rep]])
+        else:
+            rotated.append(g)
+
+    return json.dumps(rotated, separators=(",", ":"))
 
 
 def representative_mini_names(groups: list[list[str]]) -> list[str]:
