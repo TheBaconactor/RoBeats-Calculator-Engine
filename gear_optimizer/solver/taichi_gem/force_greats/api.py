@@ -31,6 +31,17 @@ from . import kernels as fg_kernels
 _USE_ASYNC_FG = os.environ.get("USE_ASYNC_FG", "1") == "1"
 
 
+def _env_truthy(name: str, default: str = "0") -> bool:
+    return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default) or default)
+    except Exception:
+        return int(default)
+
+
 # ============================================================================
 # SYNC POLICY
 # ============================================================================
@@ -193,6 +204,61 @@ _FG_FORCED_COUNTS_STAGING_TIERS_DEFAULT = (256, 512, 1024, 2048, _FG_FORCED_COUN
 _fg_forced_counts_staging_tiers: tuple[int, ...] | None = None
 _fg_forced_counts_staging_pool: dict[int, Any] | None = None
 
+# Optional optimization: force a single Stage-1 band for small workloads.
+# This does NOT change the search space or scoring; it only reduces kernel launch overhead.
+_FG_SMALL_WORK_SINGLE_BAND = _env_truthy("FG_SMALL_WORK_SINGLE_BAND", "1")
+_FG_SMALL_WORK_MAX_WORK_ITEMS = _env_int("FG_SMALL_WORK_MAX_WORK_ITEMS", 20000)
+_FG_SMALL_WORK_MAX_CFG_LEN = _env_int("FG_SMALL_WORK_MAX_CFG_LEN", _FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)
+_FG_STAGE1_NO_ATOMICS = _env_truthy("FG_STAGE1_NO_ATOMICS", "0")
+
+_fg_cfg_defaults_uploaded = False
+_fg_cfg_defaults_buf: dict[str, np.ndarray] | None = None
+
+
+def _ensure_cfg_mode_defaults() -> None:
+    global _fg_cfg_defaults_uploaded, _fg_cfg_defaults_buf
+    if _fg_cfg_defaults_uploaded:
+        return
+    try:
+        if _fg_cfg_defaults_buf is None:
+            _fg_cfg_defaults_buf = {
+                "mode": np.zeros((fg_fields.FG_MAX_FTFF,), dtype=np.int32),
+                "base": np.zeros((fg_fields.FG_MAX_FTFF,), dtype=np.int32),
+            }
+        fg_fields.fg_cfg_mode_list.from_numpy(_fg_cfg_defaults_buf["mode"])
+        fg_fields.fg_cfg_base_list.from_numpy(_fg_cfg_defaults_buf["base"])
+        _fg_cfg_defaults_uploaded = True
+    except Exception:
+        return
+
+
+def _maybe_force_single_band(
+    cfg_chunk: int,
+    *,
+    n_work_items: int,
+    max_cfg_len: int,
+    label: str = "",
+) -> int:
+    if not _FG_SMALL_WORK_SINGLE_BAND:
+        return int(cfg_chunk)
+    try:
+        if int(n_work_items) <= int(_FG_SMALL_WORK_MAX_WORK_ITEMS) and int(max_cfg_len) <= int(
+            _FG_SMALL_WORK_MAX_CFG_LEN
+        ):
+            if _PERF_TIMING and int(cfg_chunk) < int(max_cfg_len):
+                try:
+                    suffix = f" ({label})" if label else ""
+                    print(
+                        f"[PERF] FG single-band{suffix}: work={int(n_work_items)} max_cfg={int(max_cfg_len)} "
+                        f"cfg_chunk={int(max_cfg_len)}"
+                    )
+                except Exception:
+                    pass
+            return int(max_cfg_len)
+    except Exception:
+        return int(cfg_chunk)
+    return int(cfg_chunk)
+
 # Cached buffers for genome stats uploads (reuse to avoid alloc churn)
 _fg_genome_stats_buf: np.ndarray | None = None
 _fg_flat_work_buf: dict[str, np.ndarray] | None = None
@@ -209,6 +275,7 @@ _fg_forced_configs_upload_key: tuple[int, int, int] | None = None  # (id(fg_conf
 # Device-resident forced-config caching (upload full config list once, reuse across many FT/FF chunks).
 _fg_forced_resident_key: tuple | None = None  # signature from _forced_configs_sig
 _fg_forced_resident_n_cfg_total: int | None = None
+_fg_forced_resident_base_offset: int | None = None
 
 # Pair-caps upload state. The flat kernel clamps FP targets using per-section
 # forced-count caps stored in fg_pair_caps.
@@ -269,7 +336,7 @@ def reset_force_greats_api_state() -> None:
     global _fg_download_topk_base_buf, _fg_download_topk_keep_buf
     global _fg_genome_stats_upload_key, _fg_flat_work_key
     global _fg_forced_configs_upload_key
-    global _fg_forced_resident_key, _fg_forced_resident_n_cfg_total
+    global _fg_forced_resident_key, _fg_forced_resident_n_cfg_total, _fg_forced_resident_base_offset
     global _fg_pair_caps_state, _fg_pair_caps_default_buf, _fg_pair_caps_custom_key
     global _fg_last_ftff_key
 
@@ -292,6 +359,7 @@ def reset_force_greats_api_state() -> None:
     _fg_forced_configs_upload_key = None
     _fg_forced_resident_key = None
     _fg_forced_resident_n_cfg_total = None
+    _fg_forced_resident_base_offset = None
     _fg_pair_caps_state = None
     _fg_pair_caps_default_buf = None
     _fg_pair_caps_custom_key = None
@@ -1015,8 +1083,17 @@ def _solve_force_greats_finder_gpu_impl(
     n_cfg_total = int(len(fg_configs))
     if n_cfg_total <= 0:
         return []
-    if n_cfg_total > int(fg_fields.FG_MAX_CONFIGS):
-        raise ValueError(f"Too many FG configs: {n_cfg_total} > {int(fg_fields.FG_MAX_CONFIGS)}")
+    max_cfg = int(fg_fields.FG_MAX_CONFIGS)
+    if n_cfg_total > max_cfg:
+        raise ValueError(f"Too many FG configs: {n_cfg_total} > {max_cfg}")
+    base_cfg_offset = int(base_cfg_offset or 0)
+    if base_cfg_offset < 0:
+        raise ValueError("base_cfg_offset must be >= 0 for FG configs")
+    if base_cfg_offset + n_cfg_total > max_cfg:
+        raise ValueError(
+            f"FG configs exceed FG_MAX_CONFIGS when applying base_cfg_offset: "
+            f"{base_cfg_offset}+{n_cfg_total} > {max_cfg}"
+        )
 
     n_sections = int(n_sections) if int(n_sections) > 0 else 1
     if n_sections > fg_fields.FG_MAX_SECTIONS:
@@ -1058,6 +1135,12 @@ def _solve_force_greats_finder_gpu_impl(
     else:
         cfg_chunk = int(cfg_chunk)
 
+    cfg_chunk = _maybe_force_single_band(
+        int(cfg_chunk),
+        n_work_items=int(n_work_items),
+        max_cfg_len=int(n_cfg_total),
+        label="single",
+    )
     cfg_chunk = min(cfg_chunk, n_cfg_total, fg_fields.FG_MAX_CONFIGS)
     # Keep `forced_counts` external array shape stable by clamping chunk size to a fixed staging buffer.
     cfg_chunk = min(cfg_chunk, _FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)
@@ -1107,7 +1190,7 @@ def _solve_force_greats_finder_gpu_impl(
         "yes",
         "on",
     }
-    global _fg_forced_resident_key, _fg_forced_resident_n_cfg_total
+    global _fg_forced_resident_key, _fg_forced_resident_n_cfg_total, _fg_forced_resident_base_offset
 
     cfg_sig = None
     try:
@@ -1120,6 +1203,7 @@ def _solve_force_greats_finder_gpu_impl(
         and cfg_sig is not None
         and _fg_forced_resident_key == cfg_sig
         and int(_fg_forced_resident_n_cfg_total or 0) == int(n_cfg_total)
+        and int(_fg_forced_resident_base_offset or 0) == int(base_cfg_offset)
     )
 
     if resident_enabled and (not resident_ok) and cfg_sig is not None:
@@ -1164,10 +1248,12 @@ def _solve_force_greats_finder_gpu_impl(
             staging.from_numpy(buf[: int(staging_rows), :])
             _dt = time.perf_counter() - _t0
             _record_upload("forced_counts_staging(resident)", _dt, _bytes_of_array(buf[: int(staging_rows), :]))
-            fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), int(cfg_off), staging)
+            cfg_upload_offset = int(cfg_off) + int(base_cfg_offset)
+            fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), int(cfg_upload_offset), staging)
 
         _fg_forced_resident_key = cfg_sig
         _fg_forced_resident_n_cfg_total = int(n_cfg_total)
+        _fg_forced_resident_base_offset = int(base_cfg_offset)
         resident_ok = True
 
     # Legacy cache key (n_chunks==1 only) is now redundant when resident mode is enabled.
@@ -1184,9 +1270,10 @@ def _solve_force_greats_finder_gpu_impl(
     for cfg_offset in range(0, n_cfg_total, cfg_chunk):
         chunk = fg_configs[cfg_offset : cfg_offset + cfg_chunk]
         n_cfg = int(len(chunk))
+        global_cfg_offset = cfg_offset + base_cfg_offset
 
         if not resident_ok:
-            # Legacy path: upload this chunk into row 0..n_cfg-1 each time.
+            # Non-resident path: upload this chunk into its global cfg rows (base_cfg_offset + cfg_offset).
             buf[:n_cfg, :] = 0
             try:
                 if packed_configs is not None and packed_cols > 0:
@@ -1213,14 +1300,14 @@ def _solve_force_greats_finder_gpu_impl(
             staging.from_numpy(buf[: int(staging_rows), :])
             _dt = time.perf_counter() - _t0
             _record_upload("forced_counts_staging(chunk)", _dt, _bytes_of_array(buf[: int(staging_rows), :]))
-            fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), 0, staging)
+            fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), int(global_cfg_offset), staging)
 
-        # Call Kernel based on platform
+        # Call Kernel based on platform / atomics policy.
         # On Metal (macOS), 64-bit atomics for the flat kernel are not supported.
-        # Fallback to the sequential-loop kernel (fg_stage1_kernel) which is atomic-free.
-        # Add base_cfg_offset for global cfg indexing across multiple GPU calls
-        global_cfg_offset = cfg_offset + base_cfg_offset
-        if gem_fields.IS_METAL:
+        # Optionally force the atomic-free sequential kernel on Vulkan via FG_STAGE1_NO_ATOMICS=1.
+        # Add base_cfg_offset for global cfg indexing across multiple GPU calls.
+        use_no_atomic = bool(gem_fields.IS_METAL or _FG_STAGE1_NO_ATOMICS)
+        if use_no_atomic:
             fg_kernels.fg_stage1_kernel(
                 int(n_genomes),
                 int(total_notes),
@@ -1232,7 +1319,7 @@ def _solve_force_greats_finder_gpu_impl(
                 int(n_sections),
                 int(n_ftff),
                 int(global_cfg_offset),
-                int(cfg_offset if resident_ok else 0),
+                int(global_cfg_offset),
                 int(is_p_ft),
                 int(is_s_ft),
                 int(is_p_ff),
@@ -1256,7 +1343,7 @@ def _solve_force_greats_finder_gpu_impl(
                     int(n_work_items),
                     int(n_cfg),
                     int(global_cfg_offset),
-                    int(cfg_offset if resident_ok else 0),
+                    int(global_cfg_offset),
                     int(total_notes),
                     int(long_notes),
                     float(last_note_time),
@@ -1283,7 +1370,7 @@ def _solve_force_greats_finder_gpu_impl(
                     int(n_work_items),
                     int(n_cfg),
                     int(global_cfg_offset),
-                    int(cfg_offset if resident_ok else 0),
+                    int(global_cfg_offset),
                     int(total_notes),
                     int(long_notes),
                     float(last_note_time),
@@ -1331,12 +1418,60 @@ def _solve_force_greats_finder_gpu_impl(
             except Exception:
                 pass
 
-    # Stage 2: Reduce across ftff to find best per genome
+    # Stage 2: Reduce across ftff to find best per genome.
+    # Recompute aux outputs from the packed winner to avoid races on flat-kernel atomics.
+    _ensure_cfg_mode_defaults()
     _t_stage2_wall0 = time.perf_counter()
     if accumulate_global:
-        fg_kernels.fg_stage2_and_update_global_best_kernel(n_genomes, n_ftff)
+        fg_kernels.fg_stage2_recompute_and_update_global_best_kernel(
+            n_genomes,
+            n_ftff,
+            total_notes,
+            long_notes,
+            float(last_note_time),
+            total_budget,
+            gem_scale_fever,
+            n_sections,
+            is_p_ft,
+            is_s_ft,
+            is_p_ff,
+            is_s_ff,
+            is_p_pp,
+            is_s_pp,
+            is_p_cm,
+            is_s_cm,
+            is_p_fm,
+            is_s_fm,
+            is_p_ov,
+            is_s_ov,
+            song_slot,
+            1 if pair_caps_from_timeline else 0,
+        )
     else:
-        fg_kernels.fg_stage2_kernel(n_genomes, n_ftff)
+        fg_kernels.fg_stage2_recompute_kernel(
+            n_genomes,
+            n_ftff,
+            total_notes,
+            long_notes,
+            float(last_note_time),
+            total_budget,
+            gem_scale_fever,
+            n_sections,
+            is_p_ft,
+            is_s_ft,
+            is_p_ff,
+            is_s_ff,
+            is_p_pp,
+            is_s_pp,
+            is_p_cm,
+            is_s_cm,
+            is_p_fm,
+            is_s_fm,
+            is_p_ov,
+            is_s_ov,
+            song_slot,
+            1 if pair_caps_from_timeline else 0,
+        )
     maybe_sync(sync_fn=ti.sync, force_sync=_FORCE_SYNC, sync_for_timing=_SYNC_FOR_TIMING, for_timing=True)
     if _FORCE_SYNC or _SYNC_FOR_TIMING:
         _stage2_wall = time.perf_counter() - _t_stage2_wall0
@@ -2019,6 +2154,12 @@ def solve_force_greats_finder_gpu_tasks(
         target_tiles = max(1, int(target_threads) // max(1, n_work_items_est))
         cfg_chunk = max(256, int(target_tiles * stage1_cfg_tile))
     cfg_chunk = int(cfg_chunk)
+    cfg_chunk = _maybe_force_single_band(
+        int(cfg_chunk),
+        n_work_items=int(n_work_items_est),
+        max_cfg_len=int(max_cfg_len),
+        label="packed",
+    )
     cfg_chunk = max(1, min(int(cfg_chunk), int(max_cfg_len)))
 
     # Process FT/FF entries in FG_MAX_FTFF-sized chunks (field shape stability).
@@ -2027,7 +2168,7 @@ def solve_force_greats_finder_gpu_tasks(
     cfg_max_fp_buf[:, :] = 0
 
     def _flush_chunk(n_ftff: int) -> None:
-        global _fg_flat_work_key
+        global _fg_flat_work_key, _fg_cfg_defaults_uploaded
         if int(n_ftff) <= 0:
             return
 
@@ -2064,6 +2205,7 @@ def solve_force_greats_finder_gpu_tasks(
             fg_fields.fg_cfg_mode_list.from_numpy(cfg_mode_buf)
             fg_fields.fg_cfg_max_fp.from_numpy(cfg_max_fp_buf)
             fg_fields.fg_cfg_total_len_list.from_numpy(cfg_total_len_buf)
+        _fg_cfg_defaults_uploaded = False
 
         # Reset per-call outputs and init stage1.
         fg_kernels.fg_reset_best_kernel(int(n_genomes))
@@ -2105,7 +2247,8 @@ def solve_force_greats_finder_gpu_tasks(
                 fg_kernels.fg_upload_cfg_ranges_kernel(int(n_ftff), cfg_start_buf, cfg_len_buf)
 
             # Use cfg_offset<0 to enable per-ftff cfg windows in the kernel.
-            if gem_fields.IS_METAL:
+            use_no_atomic = bool(gem_fields.IS_METAL or _FG_STAGE1_NO_ATOMICS)
+            if use_no_atomic:
                 fg_kernels.fg_stage1_kernel(
                     int(n_genomes),
                     int(total_notes),

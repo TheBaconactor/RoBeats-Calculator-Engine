@@ -97,6 +97,18 @@ Note: this can add overhead; use for targeted investigations.
 Stages are aggregated in:
 - `gear_optimizer/solver/native_inflight_stages.py` (`_InFlightStageProfiler`)
 
+## Safe FG Stage-1 tuning (no quality reduction)
+These knobs **do not change the search space or scoring math**; they only affect kernel launch sizing and banding:
+
+- `FG_SMALL_WORK_SINGLE_BAND=1` (default): when workloads are small, force a single Stage‑1 band to reduce launch overhead.
+- `FG_SMALL_WORK_MAX_WORK_ITEMS` (default `20000`): max `n_genomes * n_ftff` eligible for single‑band.
+- `FG_SMALL_WORK_MAX_CFG_LEN` (default `4096`): max cfg window length eligible for single‑band.
+
+You can also sweep the existing knobs for occupancy:
+- `FG_TARGET_THREADS_PER_KERNEL`: increases/decreases Stage‑1 `cfg_chunk` target (larger = fewer bands).
+- `FG_STAGE1_CFG_TILE`: configs per thread inside Stage‑1 flat kernels.
+- `FG_STAGE1_NO_ATOMICS=1`: force the sequential Stage‑1 kernel (no atomics) on Vulkan for benchmarking; may be slower but avoids atomic contention.
+
 ## Recent modularization points (where to edit)
 - **Env access**: `gear_optimizer/core/env_config.py` (single source of truth for env knobs)
 - **Result payload contract**: `gear_optimizer/core/result_payloads.py`
@@ -104,4 +116,3 @@ Stages are aggregated in:
   - `gear_optimizer/app_async_db.py` (async DB saves off the critical path)
   - `gear_optimizer/app_stop_control.py` (stop/signal control)
 - **In-flight stages**: `gear_optimizer/solver/native_inflight_stages.py` (decode + FG prep + stage profiling)
-
