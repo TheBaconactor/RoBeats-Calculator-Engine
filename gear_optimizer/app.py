@@ -53,7 +53,7 @@ from gear_optimizer.app_stop_control import StopController
 
 
 # Module-level worker initializer for GPU executor (must be picklable)
-def _gpu_worker_initializer(request_queue, registrations, counter, lock):
+def _gpu_worker_initializer(registrations, counter, lock):
     """
     Initialize GPU worker mode in spawned process.
 
@@ -69,7 +69,7 @@ def _gpu_worker_initializer(request_queue, registrations, counter, lock):
         # Defensive fallback: disable GPU worker mode if we ran out of registrations.
         return
 
-    worker_id, response_queue = registrations[idx]
+    worker_id, request_queue, response_queue = registrations[idx]
     set_gpu_worker_mode(worker_id, request_queue, response_queue)
 
 
@@ -1006,6 +1006,24 @@ class GearOptimizerApp:
         if raw is not None and str(raw).strip() != "":
             return
 
+        # Allow config to explicitly set song slots (useful when users want more slot slack
+        # than the conservative auto-sizing heuristic provides).
+        try:
+            cfg_slots = safe_int(cfg.get("IterationEngine", "GPU_SongSlots", fallback="0"), 0)
+        except Exception:
+            cfg_slots = 0
+        if int(cfg_slots) > 0:
+            os.environ["GPU_SONG_SLOTS"] = str(int(cfg_slots))
+            try:
+                print(
+                    "[GPU] Set GPU_SONG_SLOTS={} from config (IterationEngine.GPU_SongSlots). Set GPU_SONG_SLOTS env var to override.".format(
+                        int(cfg_slots)
+                    )
+                )
+            except Exception:
+                pass
+            return
+
         inflight_songs = self._get_inflight_songs_requested(cfg)
         if int(inflight_songs) <= 1:
             return
@@ -1717,17 +1735,104 @@ class GearOptimizerApp:
             try:
                 # Register workers with GPU executor (if available)
                 worker_registrations = []
+                secondary_gpu_proc = None
+                secondary_gpu_req_q = None
                 if gpu_executor and gpu_executor.is_running:
-                    for _ in range(effective_workers):
+                    # Optional: start a secondary GPU executor (separate process) for hybrid/dual-GPU systems.
+                    # Each worker is pinned to exactly one executor/request-queue, so we never need Taichi to
+                    # drive multiple Vulkan devices from a single process.
+                    secondary_workers = 0
+                    try:
+                        secondary_workers = int(os.environ.get("GPU_EXECUTOR_SECONDARY_WORKERS", "0") or 0)
+                    except Exception:
+                        secondary_workers = 0
+                    secondary_workers = max(0, min(int(secondary_workers), int(effective_workers)))
+                    primary_workers = int(effective_workers) - int(secondary_workers)
+
+                    # Primary executor registrations (typically discrete GPU).
+                    for _ in range(primary_workers):
                         worker_id, req_q, resp_q = gpu_executor.register_worker()
                         worker_registrations.append((worker_id, req_q, resp_q))
 
+                    # Secondary executor registrations (typically iGPU).
+                    if secondary_workers > 0:
+                        try:
+                            from gear_optimizer.solver.gpu_executor import run_gpu_executor_server
+
+                            secondary_gpu_req_q = mp_ctx.Queue()
+                            secondary_resp_map = {}
+                            secondary_regs = []
+                            for wid in range(int(secondary_workers)):
+                                resp_q = mp_ctx.Queue()
+                                secondary_resp_map[int(wid)] = resp_q
+                                secondary_regs.append((int(wid), secondary_gpu_req_q, resp_q))
+
+                            secondary_ready = mp_ctx.Event()
+                            secondary_status_q = mp_ctx.Queue()
+                            visible_device = str(
+                                os.environ.get("GPU_EXECUTOR_SECONDARY_VULKAN_VISIBLE_DEVICE", "0") or ""
+                            ).strip()
+
+                            secondary_gpu_proc = mp_ctx.Process(
+                                target=run_gpu_executor_server,
+                                args=(secondary_gpu_req_q, secondary_resp_map),
+                                kwargs={
+                                    "ready_event": secondary_ready,
+                                    "ready_queue": secondary_status_q,
+                                    "vulkan_visible_device": visible_device,
+                                    "label": "Secondary",
+                                },
+                                name="GpuExecutorSecondaryProcess",
+                            )
+                            secondary_gpu_proc.start()
+
+                            try:
+                                init_timeout = float(os.environ.get("GPU_EXECUTOR_INIT_TIMEOUT_SEC", "30"))
+                            except Exception:
+                                init_timeout = 30.0
+                            if not secondary_ready.wait(timeout=max(0.0, float(init_timeout))):
+                                print("[GPU Executor][Secondary] Init timed out; disabling secondary executor for this pool")
+                                try:
+                                    secondary_gpu_proc.terminate()
+                                except Exception:
+                                    pass
+                                secondary_gpu_proc = None
+                                secondary_gpu_req_q = None
+                            else:
+                                ok = True
+                                err = None
+                                try:
+                                    status = secondary_status_q.get(timeout=1.0)
+                                    ok = bool(status.get("ok", False)) if isinstance(status, dict) else True
+                                    err = status.get("error") if isinstance(status, dict) else None
+                                except Exception:
+                                    ok = True
+                                    err = None
+
+                                if not ok:
+                                    msg = "[GPU Executor][Secondary] Taichi init failed; disabling secondary executor for this pool"
+                                    if err:
+                                        msg = f"{msg} ({err})"
+                                    print(msg)
+                                    try:
+                                        secondary_gpu_proc.terminate()
+                                    except Exception:
+                                        pass
+                                    secondary_gpu_proc = None
+                                    secondary_gpu_req_q = None
+                                else:
+                                    worker_registrations.extend(secondary_regs)
+                                    print(
+                                        f"[GPU Executor][Secondary] Started with {secondary_workers} worker(s) "
+                                        f"(TAICHI_VULKAN_VISIBLE_DEVICE={visible_device or 'default'})"
+                                    )
+                        except Exception as e:
+                            print(f"[GPU Executor][Secondary] Failed to start: {e}")
+                            secondary_gpu_proc = None
+                            secondary_gpu_req_q = None
+
                 # Use module-level initializer (local functions can't be pickled for spawn)
                 if worker_registrations:
-                    # All workers share the same request queue, but each worker must have its
-                    # own response queue and worker_id to avoid response cross-talk.
-                    req_q = worker_registrations[0][1]
-                    registrations = [(wid, resp_q) for (wid, _req_q, resp_q) in worker_registrations]
                     reg_counter = mp_ctx.Value("i", 0)
                     reg_lock = mp_ctx.Lock()
 
@@ -1735,7 +1840,7 @@ class GearOptimizerApp:
                         max_workers=effective_workers,
                         mp_context=mp_ctx,
                         initializer=_gpu_worker_initializer,
-                        initargs=(req_q, registrations, reg_counter, reg_lock),
+                        initargs=(worker_registrations, reg_counter, reg_lock),
                     )
                     try:
                         future_map = {
@@ -1764,6 +1869,23 @@ class GearOptimizerApp:
                             executor.shutdown(wait=True, cancel_futures=bool(self._stop_requested.is_set()))
                         except Exception:
                             pass
+
+                        if secondary_gpu_req_q is not None and secondary_gpu_proc is not None:
+                            try:
+                                from gear_optimizer.solver.gpu_executor import send_gpu_executor_shutdown
+
+                                send_gpu_executor_shutdown(secondary_gpu_req_q)
+                            except Exception:
+                                pass
+                            try:
+                                secondary_gpu_proc.join(timeout=10.0)
+                            except Exception:
+                                pass
+                            if secondary_gpu_proc.is_alive():
+                                try:
+                                    secondary_gpu_proc.terminate()
+                                except Exception:
+                                    pass
                 else:
                     # Fallback: no GPU executor, workers use direct GPU (may conflict)
                     executor = concurrent.futures.ProcessPoolExecutor(max_workers=effective_workers, mp_context=mp_ctx)

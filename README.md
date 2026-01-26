@@ -414,6 +414,7 @@ See `tests/` for CPU/GPU parity checks, DB correctness, and regression coverage.
 3. **GA Depth:** Increase `GA_SearchDepth` for better solutions (slower)
 4. **GPU Profiling:** Enable `GPU_EXECUTOR_PROFILE=1` to measure utilization
 5. **Caching:** Avoid clearing `bin/numba_cache/` (JIT cache) and `bin/paths_cache.json` (data discovery cache) unless troubleshooting
+6. **Dual-GPU (experimental):** Set `GPU_EXECUTOR_SECONDARY_WORKERS=<n>` and `GPU_EXECUTOR_SECONDARY_VULKAN_VISIBLE_DEVICE=<idx>` to split workers across two Vulkan devices (multi-process Taichi)
 
 ---
 

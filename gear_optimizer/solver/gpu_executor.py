@@ -2589,6 +2589,98 @@ def _auto_stop_gpu_executor_at_exit() -> None:
 atexit.register(_auto_stop_gpu_executor_at_exit)
 
 
+def send_gpu_executor_shutdown(request_queue) -> None:
+    """
+    Best-effort helper to stop a GPU executor loop using its request queue.
+
+    Intended for out-of-process GPU executor servers, where the owner process needs a simple
+    "poke" to request shutdown without holding a `GpuExecutor` instance.
+    """
+    try:
+        req = GpuRequest(
+            request_type=GpuRequestType.SHUTDOWN,
+            request_id=-1,
+            worker_id=-1,
+            payload={},
+        )
+        request_queue.put(req)
+    except Exception:
+        pass
+
+
+def run_gpu_executor_server(
+    request_queue,
+    response_queues: dict[int, multiprocessing.Queue],
+    *,
+    ready_event=None,
+    ready_queue=None,
+    vulkan_visible_device: Optional[str] = None,
+    label: str = "Server",
+) -> None:
+    """
+    Run a dedicated GPU-owner loop in a separate process.
+
+    This is used to own a second Vulkan device (e.g., iGPU) in parallel with the primary executor.
+    Taichi's Vulkan backend is single-device per process, so multi-GPU requires multi-process.
+
+    Args:
+        request_queue: Shared request queue (multiprocessing.Queue).
+        response_queues: worker_id -> response queue mapping (multiprocessing.Queue).
+        ready_event: Optional multiprocessing.Event set after Taichi init completes (success or fail).
+        vulkan_visible_device: If provided, sets `TAICHI_VULKAN_VISIBLE_DEVICE` for this process before init.
+        label: Log label for this server instance.
+    """
+    if vulkan_visible_device is not None and str(vulkan_visible_device).strip() != "":
+        os.environ["TAICHI_VULKAN_VISIBLE_DEVICE"] = str(vulkan_visible_device).strip()
+
+    ex = get_gpu_executor()
+
+    # Wire external queues before entering the loop.
+    ex._request_queue = request_queue
+    ex._response_queues = dict(response_queues or {})
+    ex._in_process_queues = isinstance(request_queue, queue.Queue)
+    ex._running = True
+    ex._taichi_ready = False
+    ex._last_init_error = None
+    try:
+        ex._ready_event.clear()
+    except Exception:
+        pass
+
+    if ready_event is not None:
+        # Bridge the executor's thread Event into a multiprocessing.Event for the parent.
+        def _signal_ready() -> None:
+            try:
+                ex._ready_event.wait()
+            finally:
+                try:
+                    ready_event.set()
+                except Exception:
+                    pass
+                if ready_queue is not None:
+                    try:
+                        ready_queue.put(
+                            {
+                                "ok": bool(getattr(ex, "_taichi_ready", False)),
+                                "error": getattr(ex, "_last_init_error", None),
+                            }
+                        )
+                    except Exception:
+                        pass
+
+        threading.Thread(target=_signal_ready, name=f"GpuExecutorReady[{label}]", daemon=True).start()
+
+    try:
+        print(
+            f"[GpuExecutor][{label}] Starting server loop "
+            f"(TAICHI_VULKAN_VISIBLE_DEVICE={os.environ.get('TAICHI_VULKAN_VISIBLE_DEVICE', '') or 'default'})"
+        )
+    except Exception:
+        pass
+
+    ex._executor_loop()
+
+
 def submit_gpu_solve_genomes(
     genome_stats_list: list,
     timeline_grid,

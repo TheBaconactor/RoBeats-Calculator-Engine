@@ -12,6 +12,9 @@ from helpers.ga_helpers for improved modularity and maintainability.
 import os
 import random
 import time
+import importlib.util
+
+import numpy as np
 
 # Support deterministic testing via GA_SEED environment variable
 _GA_SEED = os.environ.get("GA_SEED")
@@ -49,17 +52,22 @@ from ..helpers.song_helpers.fg_combo_booster import (
     build_fg_combo_booster_candidates,
     hydrate_fg_candidate_stats,
 )
+from .item_registry import ItemRegistry
 
-# Optional: GPU-native GA imports (only loaded if needed)
-_GPU_NATIVE_AVAILABLE = False
+# Optional: GPU-native GA dependencies are probed without importing Taichi eagerly.
 try:
-    from .item_registry import ItemRegistry
-    from .taichi_gem import api as gpu_api
-    import numpy as np
+    _GPU_NATIVE_AVAILABLE = importlib.util.find_spec("taichi") is not None
+except Exception:
+    _GPU_NATIVE_AVAILABLE = False
 
-    _GPU_NATIVE_AVAILABLE = True
-except ImportError:
-    pass
+
+def _require_gpu_api():
+    # Import on-demand so the app can auto-size GPU_SONG_SLOTS before Taichi fields allocate.
+    try:
+        from .taichi_gem import api as gpu_api  # type: ignore[no-redef]
+    except Exception as exc:
+        raise RuntimeError(f"GPU-native GA requires taichi_gem api/fields: {exc}") from exc
+    return gpu_api
 
 # Cached env config for GA_FORCE_COLD_START (avoids repeated env lookups)
 _GA_FORCE_COLD_START: bool = os.environ.get("GA_FORCE_COLD_START", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -1229,6 +1237,8 @@ def _run_gpu_native_ga(
     if not _GPU_NATIVE_AVAILABLE:
         raise RuntimeError("GPU-native GA not available (missing dependencies)")
 
+    gpu_api = _require_gpu_api()
+
     if n_genomes_override is not None:
         n_genomes = int(n_genomes_override)
     else:
@@ -1508,6 +1518,8 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     """
     if not _GPU_NATIVE_AVAILABLE:
         raise RuntimeError("GPU-native GA not available (missing dependencies)")
+
+    gpu_api = _require_gpu_api()
 
     cfg_data = dict(cfg_data or {})
     color_flags = dict(color_flags or {})
@@ -2198,6 +2210,7 @@ def solve_coevolution_genetic(
     # --- GPU-NATIVE GA PATH ---
     # If using GPU mode, bypass the entire CPU loop mechanism.
     if cfg_data.get("use_gpu", False) and cfg_data.get("use_gpu_native", True) and _GPU_NATIVE_AVAILABLE:
+        gpu_api = _require_gpu_api()
         print("\n=== RUNNING GPU-NATIVE GENETIC ALGORITHM ===")
         print(f"  Population: {GA_POPULATION_SIZE}, Generations: {ga_depth}")
 
