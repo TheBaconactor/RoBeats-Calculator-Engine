@@ -185,7 +185,6 @@ def find_most_common_loadout(
         # Representative mini variant (preserves per-mini group variants).
         variants = mini_variants.get(key) or Counter()
         chosen_variant = _pick_representative_variant(variants)
-
         avg_gems = {"PP": 0, "CM": 0, "FM": 0, "FT": 0, "FF": 0, "Element": 0}
         avg_score = 0
         for row in rows:

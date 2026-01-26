@@ -894,6 +894,30 @@ def run_native_inflight_song_pipeline(
         fg_every = 12
     fg_every = max(1, int(fg_every))
 
+    # ForceGreats scheduling strategy (in-flight pipeline).
+    #
+    # - backlog (default): accumulate pending FG jobs; once the backlog reaches
+    #   `FG_InterleaveEvery`, stop submitting new GA jobs and drain FG in a burst.
+    #   Always drains remaining FG at end-of-run (so small runs still compute FG).
+    # - interleave: legacy cadence/idle/blocked-slots interleaving for maximum overlap.
+    fg_scheduler = "backlog"
+    try:
+        if cfg0 is not None and cfg0.has_option("IterationEngine", "InFlight_FGScheduler"):
+            fg_scheduler = str(cfg0.get("IterationEngine", "InFlight_FGScheduler", fallback=fg_scheduler) or "").strip()
+    except Exception:
+        fg_scheduler = "backlog"
+    raw = os.environ.get("INFLIGHT_FG_SCHEDULER")
+    if raw is not None and str(raw).strip() != "":
+        fg_scheduler = str(raw).strip()
+    fg_scheduler_norm = str(fg_scheduler or "").strip().lower()
+    if fg_scheduler_norm in {"interleave", "interleaved", "legacy"}:
+        fg_scheduler_norm = "interleave"
+    elif fg_scheduler_norm in {"backlog", "batch", "pause_ga", "pause-ga", "backlog_pause_ga"}:
+        fg_scheduler_norm = "backlog"
+    else:
+        fg_scheduler_norm = "backlog"
+    fg_batch_scheduler = bool(fg_scheduler_norm == "backlog")
+
     # `FG_DrainAtEnd` controls whether we drain pending FG jobs when GA work completes.
     #
     # IMPORTANT: This should not "randomly" flip during a run. We parse it once here
@@ -921,7 +945,8 @@ def run_native_inflight_song_pipeline(
         fg_drain_src = f"env({raw_env})"
     try:
         print(
-            f"[InFlight][FG] drain_at_end={bool(fg_drain_at_end)} source={fg_drain_src} (FG_InterleaveEvery={fg_every})"
+            f"[InFlight][FG] scheduler={fg_scheduler_norm} drain_at_end={bool(fg_drain_at_end)} source={fg_drain_src} "
+            f"(FG_InterleaveEvery={fg_every})"
         )
     except Exception:
         pass
@@ -1231,6 +1256,8 @@ def run_native_inflight_song_pipeline(
     fg_executor = concurrent.futures.ThreadPoolExecutor(max_workers=fg_workers, thread_name_prefix="FG")
     fg_futures: deque[tuple[_NativeSong, concurrent.futures.Future, float]] = deque()
     ga_completed_since_last_fg = 0
+    fg_backlog_pause_ga = bool(fg_batch_scheduler)
+    fg_backlog_active = False
 
     fg_prep_workers = 0
     if cfg0 is not None:
@@ -1626,6 +1653,10 @@ def run_native_inflight_song_pipeline(
                 # that keeps the GPU fed while CPU decode/FG prep runs.
                 if stopping:
                     break
+                # Backlog scheduler: once we hit the FG backlog trigger, pause GA submission
+                # (and new song prep) until FG drains. Existing GA/Decode work will still complete.
+                if fg_backlog_pause_ga and fg_backlog_active:
+                    break
                 ga_queue_limit_effective = _effective_ga_queue_limit()
                 if ga_queue_debug and ga_queue_limit_effective != last_ga_queue_limit_effective:
                     last_ga_queue_limit_effective = int(ga_queue_limit_effective)
@@ -1919,6 +1950,16 @@ def run_native_inflight_song_pipeline(
 
                 if song.manual_force_greats or song.force_greats_finder:
                     pending_fg.append(song)
+                    if fg_backlog_pause_ga and (not fg_backlog_active) and int(len(pending_fg)) >= int(fg_every):
+                        fg_backlog_active = True
+                        stage_profiler.record("fg_backlog_trigger", 0.0)
+                        try:
+                            print(
+                                "[InFlight][FG] backlog_trigger "
+                                f"pending_fg={len(pending_fg)} >= FG_InterleaveEvery={int(fg_every)}; pausing GA to drain FG."
+                            )
+                        except Exception:
+                            pass
                     if song.fg_prep_future is None:
                         try:
                             setattr(song, "_fg_prep_submit_t0", time.perf_counter())
@@ -2018,6 +2059,29 @@ def run_native_inflight_song_pipeline(
                         still_pending.append((fg_song, fut, t_submit))
                 fg_futures = still_pending
 
+            # Backlog scheduler safety: if GA submission is blocked on song-slot acquisition while
+            # we already have pending FG work, force a drain cycle even if the backlog threshold
+            # hasn't been reached yet. This prevents a stalemate where FG-held slots starve GA.
+            if fg_backlog_pause_ga and (not fg_backlog_active) and blocked_on_slot_acquire and pending_fg:
+                fg_backlog_active = True
+                stage_profiler.record("fg_backlog_blocked_slots", 0.0)
+                try:
+                    print(
+                        "[InFlight][FG] backlog_trigger blocked_slots=1 "
+                        f"pending_fg={len(pending_fg)}; pausing GA to drain FG."
+                    )
+                except Exception:
+                    pass
+
+            if fg_backlog_pause_ga and fg_backlog_active and (not pending_fg) and (not fg_futures):
+                fg_backlog_active = False
+                ga_completed_since_last_fg = 0
+                stage_profiler.record("fg_backlog_drained", 0.0)
+                try:
+                    print("[InFlight][FG] backlog_drained; resuming GA.")
+                except Exception:
+                    pass
+
             no_ga_remaining = (
                 (not pending_tasks)
                 and (not prepared)
@@ -2029,7 +2093,7 @@ def run_native_inflight_song_pipeline(
             # If we're not draining FG at end, do not start *new* FG work once GA has
             # completed the queue. Defer any remaining FG candidates to the DB for
             # later processing.
-            if (not fg_drain_at_end) and pending_fg and no_ga_remaining:
+            if (not fg_backlog_pause_ga) and (not fg_drain_at_end) and pending_fg and no_ga_remaining:
                 # If any FG work is already running, let it complete (don't submit more).
                 if fg_futures:
                     should_start_fg = False
@@ -2068,38 +2132,54 @@ def run_native_inflight_song_pipeline(
                         pass
                     break
 
-            should_start_fg = bool(pending_fg) and (
-                ga_completed_since_last_fg >= fg_every
-                or (
-                    fg_drain_at_end and (not pending_tasks and not prepared and not prep_inflight) and (not ga_inflight)
+            if fg_backlog_pause_ga:
+                # Backlog scheduler: start FG only when we either
+                # - reached the backlog trigger and GA/Decode have drained, or
+                # - reached the end of the run (small queue / natural completion).
+                should_start_fg = bool(pending_fg) and (
+                    (fg_backlog_active and (not ga_inflight) and (not decode_inflight)) or bool(no_ga_remaining)
                 )
-                # If GA can't currently feed the GPU (no in-flight GA and no prepared
-                # work), run FG to avoid GPU idle gaps even if the configured cadence
-                # hasn't been met yet.
-                or (inflight_fg_idle_fill and (not ga_inflight and not prepared))
-                # Avoid a deadlock-like state where all GPU timeline slots are reserved by
-                # songs awaiting FG, while `prepared` is non-empty and GA submission keeps
-                # failing due to "no free slots". In that case, starting FG is the only
-                # way to release slots and resume GA progress.
-                or (inflight_fg_blocked_slots and blocked_on_slot_acquire)
-            )
+            else:
+                should_start_fg = bool(pending_fg) and (
+                    ga_completed_since_last_fg >= fg_every
+                    or (
+                        fg_drain_at_end
+                        and (not pending_tasks and not prepared and not prep_inflight)
+                        and (not ga_inflight)
+                    )
+                    # If GA can't currently feed the GPU (no in-flight GA and no prepared
+                    # work), run FG to avoid GPU idle gaps even if the configured cadence
+                    # hasn't been met yet.
+                    or (inflight_fg_idle_fill and (not ga_inflight and not prepared))
+                    # Avoid a deadlock-like state where all GPU timeline slots are reserved by
+                    # songs awaiting FG, while `prepared` is non-empty and GA submission keeps
+                    # failing due to "no free slots". In that case, starting FG is the only
+                    # way to release slots and resume GA progress.
+                    or (inflight_fg_blocked_slots and blocked_on_slot_acquire)
+                )
 
             if should_start_fg:
                 if fg_decision_debug:
                     try:
                         reasons: list[str] = []
-                        if ga_completed_since_last_fg >= fg_every:
-                            reasons.append("cadence")
-                        if (
-                            fg_drain_at_end
-                            and (not pending_tasks and not prepared and not prep_inflight)
-                            and (not ga_inflight)
-                        ):
-                            reasons.append("drain_end")
-                        if not ga_inflight and not prepared:
-                            reasons.append("idle_fill")
-                        if blocked_on_slot_acquire:
-                            reasons.append("blocked_slots")
+                        if fg_backlog_pause_ga:
+                            if fg_backlog_active and (not ga_inflight) and (not decode_inflight):
+                                reasons.append("backlog")
+                            if no_ga_remaining:
+                                reasons.append("drain_end")
+                        else:
+                            if ga_completed_since_last_fg >= fg_every:
+                                reasons.append("cadence")
+                            if (
+                                fg_drain_at_end
+                                and (not pending_tasks and not prepared and not prep_inflight)
+                                and (not ga_inflight)
+                            ):
+                                reasons.append("drain_end")
+                            if not ga_inflight and not prepared:
+                                reasons.append("idle_fill")
+                            if blocked_on_slot_acquire:
+                                reasons.append("blocked_slots")
 
                         # Highlight "early FG" starts (i.e., not cadence-driven).
                         if ("cadence" not in reasons) and ("drain_end" not in reasons):
@@ -2115,9 +2195,14 @@ def run_native_inflight_song_pipeline(
                     except Exception:
                         pass
 
-                drain_mode = bool(
-                    fg_drain_at_end and (not pending_tasks and not prepared and not prep_inflight) and (not ga_inflight)
-                )
+                if fg_backlog_pause_ga:
+                    drain_mode = bool(fg_backlog_active or no_ga_remaining)
+                else:
+                    drain_mode = bool(
+                        fg_drain_at_end
+                        and (not pending_tasks and not prepared and not prep_inflight)
+                        and (not ga_inflight)
+                    )
                 if (not drain_mode) and fg_futures:
                     pass
                 elif len(fg_futures) < fg_workers:
@@ -2126,7 +2211,8 @@ def run_native_inflight_song_pipeline(
                     # This ensures every song that finishes GA gets its FG evaluated.
                     submit_budget = fg_workers
                     while submit_budget > 0 and len(fg_futures) < fg_workers and pending_fg:
-                        fg_song = _pop_next_fg(allow_not_ready=bool(blocked_on_slot_acquire))
+                        allow_not_ready = bool(blocked_on_slot_acquire or (fg_backlog_pause_ga and drain_mode))
+                        fg_song = _pop_next_fg(allow_not_ready=allow_not_ready)
                         if fg_song is None:
                             break
                         if int(getattr(fg_song, "song_slot", 0) or 0) <= 0:
