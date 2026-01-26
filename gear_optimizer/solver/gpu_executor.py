@@ -759,6 +759,45 @@ class GpuExecutor:
                     self._live_type_counts[GpuRequestType.SOLVE_FORCE_GREATS_FINDER] += len(fg_requests)
                     self._maybe_live_report()
 
+                # Coalesce fused FG bundle requests (breakpoints + solve) to reduce per-request overhead.
+                fg_bundle_requests = [
+                    r for r in rest_requests if r.request_type == GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH
+                ]
+                rest_requests = [
+                    r for r in rest_requests if r.request_type != GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH
+                ]
+
+                if fg_bundle_requests:
+                    t_exec0 = perf_counter()
+                    responses = self._coalesce_fg_solve_with_breakpoints_batch_requests(fg_bundle_requests)
+                    dt_exec = perf_counter() - t_exec0
+                    self._exec_sec += dt_exec
+                    per_req = dt_exec / max(1, len(fg_bundle_requests))
+                    for _ in fg_bundle_requests:
+                        self._req_type_counts[GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH] += 1
+                        self._req_type_exec_sec[GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH] += per_req
+                        self._last_work_req_type = GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH
+
+                    for req, resp in zip(fg_bundle_requests, responses):
+                        if resp is None:
+                            resp = GpuResponse(
+                                request_id=req.request_id,
+                                success=False,
+                                error="GpuExecutor FG bundle batch returned no response (internal error)",
+                            )
+                        if _try_put_response(req, resp):
+                            responded_ids.add(int(req.request_id))
+                        self._requests_processed += 1
+                    self._trace_event(
+                        event="exec",
+                        exec_sec=float(dt_exec),
+                        batch_size=len(fg_bundle_requests),
+                        types=f"{GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH.value}:{len(fg_bundle_requests)}",
+                    )
+                    self._live_exec_sec += float(dt_exec)
+                    self._live_type_counts[GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH] += len(fg_bundle_requests)
+                    self._maybe_live_report()
+
                 # Coalesce solve_genomes_from_registry requests (concatenate small populations).
                 reg_requests = [
                     r for r in rest_requests if r.request_type == GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY
@@ -868,15 +907,19 @@ class GpuExecutor:
             GpuRequestType.SOLVE_GENOMES_PARALLEL,
             GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+            # FG bundle requests: cheap to enqueue, expensive to dispatch repeatedly.
+            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
+            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
         }
-        inproc_coalesce_enabled = str(os.environ.get("GPU_EXECUTOR_INPROC_COALESCE", "0") or "").strip().lower() in {
+        # Default to enabled for in-process queues; callers can opt out via env var.
+        inproc_coalesce_enabled = str(os.environ.get("GPU_EXECUTOR_INPROC_COALESCE", "1") or "").strip().lower() in {
             "1",
             "true",
             "yes",
             "on",
         }
         try:
-            inproc_after_first_ms = int(os.environ.get("GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS", "0"))
+            inproc_after_first_ms = int(os.environ.get("GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS", "2"))
         except Exception:
             inproc_after_first_ms = 0
         inproc_after_first_ms = max(0, int(inproc_after_first_ms))
@@ -1062,6 +1105,84 @@ class GpuExecutor:
                     out.append(GpuResponse(request_id=req.request_id, success=False, error=err))
 
         by_id = {r.request_id: r for r in out}
+        return [by_id.get(req.request_id) for req in requests]
+
+    def _coalesce_fg_solve_with_breakpoints_batch_requests(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
+        """
+        Coalesce multiple `FG_SOLVE_WITH_BREAKPOINTS_BATCH` requests.
+
+        Each request contains `payload['payloads'] = list[dict]` (one dict per fused solve). We flatten all
+        payloads, execute them sequentially on the owner thread, and then split the results back into
+        per-request slices.
+
+        This reduces request queue overhead and prevents small FG jobs from creating GPU bubbles when many
+        FG jobs are produced concurrently (in-flight drain mode).
+        """
+        if not requests:
+            return []
+
+        # Only valid in in-process mode; fall back gracefully otherwise.
+        if not self._in_process_queues:
+            return [self._execute_request(req) for req in requests]
+
+        merged_payloads: list[dict[str, Any]] = []
+        slices: list[tuple["GpuRequest", int, int]] = []
+        fallback: list[GpuResponse] = []
+
+        for req in requests:
+            payload = self._payload_dict(req)
+            payloads = payload.get("payloads")
+            if not isinstance(payloads, (list, tuple)) or not payloads:
+                fallback.append(self._execute_request(req))
+                continue
+            ok = True
+            for p in payloads:
+                if not isinstance(p, dict):
+                    ok = False
+                    break
+            if not ok:
+                fallback.append(self._execute_request(req))
+                continue
+
+            start = len(merged_payloads)
+            merged_payloads.extend(list(payloads))
+            slices.append((req, start, int(len(payloads))))
+
+        out: list[GpuResponse] = []
+        out.extend(fallback)
+
+        # If nothing to coalesce, we're done.
+        if not slices:
+            by_id = {r.request_id: r for r in out if r is not None}
+            return [by_id.get(req.request_id) for req in requests]
+
+        # Single request: run it normally (avoids surprising behavior changes on edge cases).
+        if len(slices) == 1:
+            out.append(self._execute_request(slices[0][0]))
+            by_id = {r.request_id: r for r in out if r is not None}
+            return [by_id.get(req.request_id) for req in requests]
+
+        try:
+            results: list[Any] = []
+            for p in merged_payloads:
+                if not isinstance(p, dict):
+                    results.append(None)
+                    continue
+                results.append(self._run_fg_solve_with_breakpoints_payload(p))
+
+            for req, start, n in slices:
+                out.append(
+                    GpuResponse(
+                        request_id=req.request_id,
+                        success=True,
+                        result=list(results[int(start) : int(start) + int(n)]),
+                    )
+                )
+        except Exception:
+            # Preserve robustness: if batching fails, execute each request independently.
+            out = [self._execute_request(req) for req in requests]
+
+        by_id = {r.request_id: r for r in out if r is not None}
         return [by_id.get(req.request_id) for req in requests]
 
     def _coalesce_solve_genomes_from_registry(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:

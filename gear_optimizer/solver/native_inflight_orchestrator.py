@@ -1245,6 +1245,14 @@ def run_native_inflight_song_pipeline(
 
     fg_workers_default = min(4, inflight_limit)
     fg_workers = fg_workers_default
+    if cfg0 is not None:
+        try:
+            fg_workers = safe_int(
+                cfg0.get("IterationEngine", "InFlight_FGWorkers", fallback=str(fg_workers_default)),
+                fg_workers_default,
+            )
+        except Exception:
+            fg_workers = fg_workers_default
     raw = os.environ.get("INFLIGHT_FG_WORKERS")
     if raw is not None and str(raw).strip() != "":
         try:
@@ -2530,11 +2538,46 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
         gear = v.get("gear") or []
         minis = v.get("minis") or []
         data = v.get("data") or {}
+        stats_obj = data.get("Stats", {})
+        if not stats_obj:
+            try:
+                base_stats = data.get("BaseStats")
+            except Exception:
+                base_stats = None
+            if isinstance(base_stats, dict) and base_stats:
+                try:
+                    from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
+                        apply_gems_to_base_fast,
+                    )
+
+                    gem_counts = data.get("GemCounts") if isinstance(data.get("GemCounts"), dict) else {}
+                    ft_val = int(data.get("FT", gem_counts.get("Fever Time", 0)) or 0)
+                    ff_val = int(
+                        data.get("FF", gem_counts.get("Fever Fill", gem_counts.get("Fever Fill Rate", 0))) or 0
+                    )
+                    g_pp = int(gem_counts.get("Perfect Points", 0) or 0)
+                    g_cm = int(gem_counts.get("Combo Multiplier", 0) or 0)
+                    g_fm = int(gem_counts.get("Fever Multiplier", 0) or 0)
+                    g_ov = int(gem_counts.get("Element", gem_counts.get("Element Overflow", 0)) or 0)
+                    selected = get_selected_element(data, "") or ""
+                    stats_obj = apply_gems_to_base_fast(
+                        base_stats,
+                        selected,
+                        ft_val,
+                        ff_val,
+                        g_pp,
+                        g_cm,
+                        g_fm,
+                        g_ov,
+                    )
+                except Exception:
+                    stats_obj = stats_obj or {}
+
         details = {
             "FT": data.get("FT", 0),
             "FF": data.get("FF", 0),
             "GemCounts": data.get("GemCounts", {}),
-            "Stats": data.get("Stats", {}),
+            "Stats": stats_obj or {},
             "SelectedElement": get_selected_element(data, ""),
             "PrimaryColor": song.meta_primary_color,
             "SecondaryColor": song.meta_secondary_color,

@@ -158,6 +158,10 @@ class GpuProfiler:
 
             # Categorize timing
             name_lower = name.lower()
+            # ForceGreatsFinder adds named measurements *in addition* to calling the typed
+            # record_* APIs. Skip categorization for these to avoid double-counting.
+            if name_lower.startswith(("fg_upload::", "fg_download::", "fg_kernel::")):
+                return
             if "kernel" in name_lower or "solve" in name_lower:
                 self._current_song.kernel_sec += duration
                 self._current_song.kernel_calls += 1

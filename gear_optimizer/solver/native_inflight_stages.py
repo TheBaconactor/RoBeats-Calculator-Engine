@@ -42,9 +42,26 @@ class _InFlightStageProfiler:
         self._t0 = time.perf_counter()
         self._stage: dict[str, dict[str, Any]] = {}
         self._song: dict[str, dict[str, float]] = {}
+        self._allow_prefixes = self._parse_prefixes(os.environ.get("INFLIGHT_STAGE_PROFILE_PREFIX", ""))
+        if _truthy(os.environ.get("INFLIGHT_STAGE_PROFILE_FG_ONLY", "0")) and not self._allow_prefixes:
+            # Convenience mode: only record FG-related stages (and the "underfed" wait marker that indicates
+            # CPU-side bubbles while no GPU work is in flight).
+            self._allow_prefixes = ("fg_", "underfed_wait")
+
+    @staticmethod
+    def _parse_prefixes(raw: Any) -> tuple[str, ...]:
+        prefixes: list[str] = []
+        for part in str(raw or "").split(","):
+            part = str(part).strip()
+            if part:
+                prefixes.append(part)
+        return tuple(prefixes)
 
     def record(self, stage: str, seconds: float, *, cpu_seconds: float | None = None, song: str | None = None) -> None:
         if not self.enabled:
+            return
+        allow = self._allow_prefixes
+        if allow and not any(str(stage).startswith(p) for p in allow):
             return
         try:
             seconds = float(seconds)

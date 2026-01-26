@@ -1695,6 +1695,8 @@ def solve_force_greats_finder_gpu_tasks(
         _ensure_pair_caps_uploaded(pair_caps_grid)
 
     genome_stats_preuploaded = bool(genome_stats_preuploaded)
+    p = _get_gpu_profiler()
+    want_xfer_stats = bool(_PERF_TIMING or _FG_TRANSFER_TRACE or p is not None)
 
     # Upload per-genome base stats once (or reuse the existing GPU-resident buffer).
     if genome_stats_preuploaded:
@@ -1725,7 +1727,10 @@ def solve_force_greats_finder_gpu_tasks(
                 stats_buf[i, 4] = int(st.get("base_s_val", 0))
                 stats_buf[i, 5] = int(st.get("base_ft_stat", 0))
                 stats_buf[i, 6] = int(st.get("base_ff_stat", 0))
+        _t_up0 = time.perf_counter() if want_xfer_stats else 0.0
         gem_fields.genome_base_stats.from_numpy(stats_buf)
+        if _t_up0:
+            _record_upload("genome_base_stats(packed_tasks)", time.perf_counter() - _t_up0, _bytes_of_array(stats_buf))
         try:
             if isinstance(genome_stats_list, np.ndarray):
                 ptr = int(genome_stats_list.__array_interface__["data"][0])
@@ -1765,7 +1770,6 @@ def solve_force_greats_finder_gpu_tasks(
     prepared_tasks: list[dict[str, Any]] = []
     total_pairs = 0
     max_cfg_len = 0
-    p = _get_gpu_profiler()
     t_cfg_upload0 = time.perf_counter() if (_PERF_TIMING or p is not None) else 0.0
     cfg_upload_kernels = 0
 
@@ -2033,12 +2037,33 @@ def solve_force_greats_finder_gpu_tasks(
 
         t_chunk0 = time.perf_counter() if _PERF_TIMING else 0.0
 
-        fg_fields.fg_ft_list.from_numpy(ft_buf)
-        fg_fields.fg_ff_list.from_numpy(ff_buf)
-        fg_fields.fg_cfg_base_list.from_numpy(cfg_base_buf)
-        fg_fields.fg_cfg_mode_list.from_numpy(cfg_mode_buf)
-        fg_fields.fg_cfg_max_fp.from_numpy(cfg_max_fp_buf)
-        fg_fields.fg_cfg_total_len_list.from_numpy(cfg_total_len_buf)
+        if want_xfer_stats:
+            _t_up0 = time.perf_counter()
+            fg_fields.fg_ft_list.from_numpy(ft_buf)
+            _t_up1 = time.perf_counter()
+            fg_fields.fg_ff_list.from_numpy(ff_buf)
+            _t_up2 = time.perf_counter()
+            fg_fields.fg_cfg_base_list.from_numpy(cfg_base_buf)
+            _t_up3 = time.perf_counter()
+            fg_fields.fg_cfg_mode_list.from_numpy(cfg_mode_buf)
+            _t_up4 = time.perf_counter()
+            fg_fields.fg_cfg_max_fp.from_numpy(cfg_max_fp_buf)
+            _t_up5 = time.perf_counter()
+            fg_fields.fg_cfg_total_len_list.from_numpy(cfg_total_len_buf)
+            _t_up6 = time.perf_counter()
+            _record_upload("ft_list(packed_tasks)", _t_up1 - _t_up0, _bytes_of_array(ft_buf))
+            _record_upload("ff_list(packed_tasks)", _t_up2 - _t_up1, _bytes_of_array(ff_buf))
+            _record_upload("cfg_base(packed_tasks)", _t_up3 - _t_up2, _bytes_of_array(cfg_base_buf))
+            _record_upload("cfg_mode(packed_tasks)", _t_up4 - _t_up3, _bytes_of_array(cfg_mode_buf))
+            _record_upload("cfg_max_fp(packed_tasks)", _t_up5 - _t_up4, _bytes_of_array(cfg_max_fp_buf))
+            _record_upload("cfg_total_len(packed_tasks)", _t_up6 - _t_up5, _bytes_of_array(cfg_total_len_buf))
+        else:
+            fg_fields.fg_ft_list.from_numpy(ft_buf)
+            fg_fields.fg_ff_list.from_numpy(ff_buf)
+            fg_fields.fg_cfg_base_list.from_numpy(cfg_base_buf)
+            fg_fields.fg_cfg_mode_list.from_numpy(cfg_mode_buf)
+            fg_fields.fg_cfg_max_fp.from_numpy(cfg_max_fp_buf)
+            fg_fields.fg_cfg_total_len_list.from_numpy(cfg_total_len_buf)
 
         # Reset per-call outputs and init stage1.
         fg_kernels.fg_reset_best_kernel(int(n_genomes))

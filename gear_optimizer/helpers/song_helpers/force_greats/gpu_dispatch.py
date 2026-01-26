@@ -1216,7 +1216,7 @@ def process_force_greats_gpu_finder(
             if (
                 _FG_GA_CANDIDATE_TABLE_ENABLED
                 and ga_candidate_table_slot_held
-                and (gpu_client is None)
+                and (gpu_client is None or in_process)
                 and bool(use_gpu)
                 and ga_coords_map
             ):
