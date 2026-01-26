@@ -74,7 +74,7 @@ class GpuServiceClient:
         self._profile_sample_cap = 5000
 
         # FG job coalescing (optional, in-process only).
-        self._fg_coalesce_enabled = str(os.environ.get("FG_COALESCE_BREAKPOINTS_BATCH", "0") or "").strip().lower() in {
+        self._fg_coalesce_enabled = str(os.environ.get("FG_COALESCE_BREAKPOINTS_BATCH", "1") or "").strip().lower() in {
             "1",
             "true",
             "yes",
@@ -82,16 +82,16 @@ class GpuServiceClient:
         }
         try:
             self._fg_coalesce_max_payloads = int(
-                os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "256") or "256"
+                os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "128") or "128"
             )
         except Exception:
-            self._fg_coalesce_max_payloads = 256
+            self._fg_coalesce_max_payloads = 128
         try:
             self._fg_coalesce_max_wait_ms = int(
-                os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS", "2") or "2"
+                os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS", "4") or "4"
             )
         except Exception:
-            self._fg_coalesce_max_wait_ms = 2
+            self._fg_coalesce_max_wait_ms = 4
         self._fg_coalesce_max_payloads = max(1, int(self._fg_coalesce_max_payloads))
         self._fg_coalesce_max_wait_ms = max(0, int(self._fg_coalesce_max_wait_ms))
         self._fg_coalesce_payloads: list[dict[str, Any]] = []

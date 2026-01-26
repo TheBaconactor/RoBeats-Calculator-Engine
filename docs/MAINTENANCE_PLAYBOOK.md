@@ -112,9 +112,9 @@ You can also sweep the existing knobs for occupancy:
 ## FG job coalescing (safe, queue overhead only)
 These knobs **do not change the search space or scoring math**; they only coalesce FG batch requests in-process:
 
-- `FG_COALESCE_BREAKPOINTS_BATCH=1`: enable coalescing of FG breakpoint+solve batches across jobs (in-process only).
-- `FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS` (default `256`): max payloads per coalesced request.
-- `FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS` (default `2`): max wait time before flushing a coalesced batch.
+- `FG_COALESCE_BREAKPOINTS_BATCH=1` (default): enable coalescing of FG breakpoint+solve batches across jobs (in-process only).
+- `FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS` (default `128`): max payloads per coalesced request.
+- `FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS` (default `4`): max wait time before flushing a coalesced batch.
 
 ## Recent modularization points (where to edit)
 - **Env access**: `gear_optimizer/core/env_config.py` (single source of truth for env knobs)
