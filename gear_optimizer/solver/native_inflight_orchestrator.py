@@ -902,7 +902,8 @@ def run_native_inflight_song_pipeline(
     #   `FG_InterleaveEvery`, stop submitting new GA jobs and drain FG in a burst.
     #   Always drains remaining FG at end-of-run (so small runs still compute FG).
     # - interleave: legacy cadence/idle/blocked-slots interleaving for maximum overlap.
-    fg_scheduler = "backlog"
+    # Default to continuous scheduling (steady FG throughput, avoids burst drains).
+    fg_scheduler = "continuous"
     try:
         if cfg0 is not None and cfg0.has_option("IterationEngine", "InFlight_FGScheduler"):
             fg_scheduler = str(cfg0.get("IterationEngine", "InFlight_FGScheduler", fallback=fg_scheduler) or "").strip()
@@ -912,12 +913,15 @@ def run_native_inflight_song_pipeline(
     if raw is not None and str(raw).strip() != "":
         fg_scheduler = str(raw).strip()
     fg_scheduler_norm = str(fg_scheduler or "").strip().lower()
-    if fg_scheduler_norm in {"interleave", "interleaved", "legacy"}:
+    if fg_scheduler_norm in {"continuous", "cont", "steady", "stream"}:
+        fg_scheduler_norm = "continuous"
+    elif fg_scheduler_norm in {"interleave", "interleaved", "legacy"}:
         fg_scheduler_norm = "interleave"
     elif fg_scheduler_norm in {"backlog", "batch", "pause_ga", "pause-ga", "backlog_pause_ga"}:
         fg_scheduler_norm = "backlog"
     else:
-        fg_scheduler_norm = "backlog"
+        fg_scheduler_norm = "continuous"
+    fg_continuous = bool(fg_scheduler_norm == "continuous")
     fg_batch_scheduler = bool(fg_scheduler_norm == "backlog")
 
     # `FG_DrainAtEnd` controls whether we drain pending FG jobs when GA work completes.
@@ -946,10 +950,11 @@ def run_native_inflight_song_pipeline(
         fg_drain_at_end = _truthy(raw_env)
         fg_drain_src = f"env({raw_env})"
     try:
-        print(
+        msg = (
             f"[InFlight][FG] scheduler={fg_scheduler_norm} drain_at_end={bool(fg_drain_at_end)} source={fg_drain_src} "
             f"(FG_InterleaveEvery={fg_every})"
         )
+        print(msg)
     except Exception:
         pass
 
@@ -1292,6 +1297,39 @@ def run_native_inflight_song_pipeline(
     ga_completed_since_last_fg = 0
     fg_backlog_pause_ga = bool(fg_batch_scheduler)
     fg_backlog_active = False
+
+    # Continuous FG batching controls (throughput-oriented, no quality impact).
+    fg_batch_window_ms = 50.0
+    try:
+        raw = os.environ.get("INFLIGHT_FG_BATCH_WINDOW_MS")
+        if raw is not None and str(raw).strip() != "":
+            fg_batch_window_ms = float(raw)
+    except Exception:
+        fg_batch_window_ms = 50.0
+    fg_batch_window_s = max(0.0, float(fg_batch_window_ms) / 1000.0)
+
+    fg_batch_max = int(fg_workers)
+    try:
+        raw = os.environ.get("INFLIGHT_FG_BATCH_MAX")
+        if raw is not None and str(raw).strip() != "":
+            fg_batch_max = int(raw)
+    except Exception:
+        fg_batch_max = int(fg_workers)
+    fg_batch_max = max(1, min(int(fg_batch_max), int(fg_workers)))
+
+    fg_target_jps = 0.0
+    try:
+        raw = os.environ.get("INFLIGHT_FG_TARGET_JOBS_PER_SEC")
+        if raw is None or str(raw).strip() == "":
+            raw = os.environ.get("INFLIGHT_FG_TARGET_JPS")
+        if raw is not None and str(raw).strip() != "":
+            fg_target_jps = max(0.0, float(raw))
+    except Exception:
+        fg_target_jps = 0.0
+
+    fg_last_batch_t = time.monotonic()
+    fg_last_token_t = fg_last_batch_t
+    fg_token_bucket = float(fg_batch_max)
 
     fg_prep_workers = 0
     if cfg0 is not None:
@@ -2185,7 +2223,10 @@ def run_native_inflight_song_pipeline(
                         pass
                     break
 
-            if fg_backlog_pause_ga:
+            submit_budget = 0
+            if fg_continuous:
+                should_start_fg = bool(pending_fg)
+            elif fg_backlog_pause_ga:
                 # Backlog scheduler: start FG only when we either
                 # - reached the backlog trigger and GA/Decode have drained, or
                 # - reached the end of the run (small queue / natural completion).
@@ -2248,21 +2289,41 @@ def run_native_inflight_song_pipeline(
                     except Exception:
                         pass
 
-                if fg_backlog_pause_ga:
+                if fg_continuous:
+                    drain_mode = bool(
+                        fg_drain_at_end
+                        and (not pending_tasks and not prepared and not prep_inflight)
+                        and (not ga_inflight)
+                    )
+                    submit_budget = max(0, min(int(fg_workers) - len(fg_futures), int(fg_batch_max), len(pending_fg)))
+                    if submit_budget > 0 and not drain_mode:
+                        if fg_batch_window_s > 0.0 and (now - float(fg_last_batch_t)) < float(fg_batch_window_s):
+                            submit_budget = 0
+                        if submit_budget > 0 and fg_target_jps > 0.0:
+                            dt_tokens = max(0.0, float(now - fg_last_token_t))
+                            fg_last_token_t = float(now)
+                            fg_token_bucket = min(
+                                float(fg_batch_max),
+                                float(fg_token_bucket) + (dt_tokens * float(fg_target_jps)),
+                            )
+                            submit_budget = min(submit_budget, int(fg_token_bucket))
+                    if submit_budget > 0 and fg_target_jps > 0.0:
+                        fg_token_bucket = max(0.0, float(fg_token_bucket) - float(submit_budget))
+                    if submit_budget > 0:
+                        fg_last_batch_t = float(now)
+                elif fg_backlog_pause_ga:
                     drain_mode = bool(fg_backlog_active or no_ga_remaining)
+                    submit_budget = int(fg_workers)
                 else:
                     drain_mode = bool(
                         fg_drain_at_end
                         and (not pending_tasks and not prepared and not prep_inflight)
                         and (not ga_inflight)
                     )
-                if (not drain_mode) and fg_futures:
-                    pass
-                elif len(fg_futures) < fg_workers:
-                    # Process ALL pending FG jobs (up to worker limit) when triggered.
-                    # The cadence (`FG_InterleaveEvery`) controls *when* we start FG, not *how many*.
-                    # This ensures every song that finishes GA gets its FG evaluated.
-                    submit_budget = fg_workers
+                    submit_budget = int(fg_workers)
+
+                if submit_budget > 0 and len(fg_futures) < fg_workers:
+                    # Process pending FG jobs (up to worker + batch budget).
                     while submit_budget > 0 and len(fg_futures) < fg_workers and pending_fg:
                         allow_not_ready = bool(blocked_on_slot_acquire or (fg_backlog_pause_ga and drain_mode))
                         fg_song = _pop_next_fg(allow_not_ready=allow_not_ready)
