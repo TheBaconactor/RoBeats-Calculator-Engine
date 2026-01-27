@@ -1755,7 +1755,9 @@ def solve_force_greats_finder_gpu_tasks(
     Each task must be a dict containing:
       - counts_list: list of FP-target configs (legacy)
         OR
-      - counts_max_fp: list[int] of per-section max FP (GPU-generated rectangular configs)
+      - counts_max_fp:
+          - list[int] of per-section max FP (GPU-generated rectangular configs), OR
+          - ndarray shape (n_pairs, n_sections) for per-pair max-FP caps (no CPU grouping)
       - ftff_pairs: list of (ft_gems, ff_gems)
       - optional base_cfg_offset: global cfg index offset
     """
@@ -1919,6 +1921,10 @@ def solve_force_greats_finder_gpu_tasks(
             continue
         fg_configs = task.get("counts_list")
         counts_max_fp = task.get("counts_max_fp")
+        counts_max_fp_compute = None
+        if isinstance(counts_max_fp, dict) and str(counts_max_fp.get("mode") or "") == "gpu":
+            counts_max_fp_compute = counts_max_fp
+            counts_max_fp = None
         ftff_pairs = task.get("ftff_pairs")
         if ftff_pairs is None:
             continue
@@ -1926,6 +1932,10 @@ def solve_force_greats_finder_gpu_tasks(
             ftff_empty = int(getattr(ftff_pairs, "size", 0) or 0) <= 0
         else:
             ftff_empty = not ftff_pairs
+        try:
+            n_pairs = int(ftff_pairs.shape[0]) if isinstance(ftff_pairs, np.ndarray) else int(len(ftff_pairs))
+        except Exception:
+            n_pairs = 0
         if fg_configs is None:
             cfg_empty = True
         elif isinstance(fg_configs, np.ndarray):
@@ -1933,15 +1943,113 @@ def solve_force_greats_finder_gpu_tasks(
         else:
             cfg_empty = not fg_configs
 
+        counts_max_fp_arr = None
+        per_pair_max_fp = False
+        per_pair_max_fp_gpu = False
         if counts_max_fp is None:
             max_fp_empty = True
-        elif isinstance(counts_max_fp, np.ndarray):
-            max_fp_empty = int(getattr(counts_max_fp, "size", 0) or 0) <= 0
         else:
-            max_fp_empty = not counts_max_fp
+            try:
+                counts_max_fp_arr = np.asarray(counts_max_fp, dtype=np.int32)
+            except Exception:
+                counts_max_fp_arr = None
+            if isinstance(counts_max_fp_arr, np.ndarray) and int(getattr(counts_max_fp_arr, "ndim", 0) or 0) == 2:
+                if n_pairs > 0 and int(counts_max_fp_arr.shape[0]) == int(n_pairs):
+                    per_pair_max_fp = True
+                    max_fp_empty = int(getattr(counts_max_fp_arr, "size", 0) or 0) <= 0
+                else:
+                    max_fp_empty = True
+            else:
+                if counts_max_fp_arr is None:
+                    max_fp_empty = not counts_max_fp
+                else:
+                    max_fp_empty = int(getattr(counts_max_fp_arr, "size", 0) or 0) <= 0
 
         if (cfg_empty and max_fp_empty) or ftff_empty:
             continue
+        if counts_max_fp_compute is not None and implicit_cfgs:
+            per_pair_max_fp_gpu = True
+        if per_pair_max_fp_gpu:
+            try:
+                base_pairs = np.asarray(counts_max_fp_compute.get("base_stats_pairs"), dtype=np.int32)
+                non_fever_base_by_ff = np.ascontiguousarray(
+                    np.asarray(counts_max_fp_compute.get("non_fever_base_by_ff"), dtype=np.int16),
+                    dtype=np.int16,
+                )
+                fp_cap_table = np.ascontiguousarray(
+                    np.asarray(counts_max_fp_compute.get("fp_cap_table"), dtype=np.int16),
+                    dtype=np.int16,
+                )
+                compute_n_sections = int(counts_max_fp_compute.get("n_sections", n_sections) or n_sections)
+                compute_song_slot = int(counts_max_fp_compute.get("song_slot", song_slot) or song_slot)
+                compute_gem_scale = int(counts_max_fp_compute.get("gem_scale_fever", gem_scale_fever) or gem_scale_fever)
+            except Exception:
+                continue
+            if base_pairs.ndim != 2 or int(base_pairs.shape[1]) < 2:
+                continue
+            if non_fever_base_by_ff.ndim != 1 or int(non_fever_base_by_ff.shape[0]) < 161:
+                continue
+            if fp_cap_table.ndim != 2 or int(fp_cap_table.shape[0]) < 161 or int(fp_cap_table.shape[1]) < 51:
+                continue
+            base_ft = np.ascontiguousarray(base_pairs[:, 0], dtype=np.int32)
+            base_ff = np.ascontiguousarray(base_pairs[:, 1], dtype=np.int32)
+            prepared_tasks.append(
+                {
+                    "ftff_pairs": ftff_pairs,
+                    "cfg_base": 0,
+                    "cfg_len": 0,
+                    "cfg_mode": 1,
+                    "max_fp_arr": None,
+                    "max_fp_matrix": None,
+                    "cfg_len_matrix": None,
+                    "max_fp_compute": {
+                        "base_ft": base_ft,
+                        "base_ff": base_ff,
+                        "non_fever_base_by_ff": non_fever_base_by_ff,
+                        "fp_cap_table": fp_cap_table,
+                        "n_sections": int(compute_n_sections),
+                        "song_slot": int(compute_song_slot),
+                        "gem_scale_fever": int(compute_gem_scale),
+                    },
+                }
+            )
+            continue
+        if per_pair_max_fp:
+            # Per-pair max-FP caps: avoid CPU grouping and keep implicit configs per FT/FF pair.
+            try:
+                max_fp_matrix = np.asarray(counts_max_fp_arr[:, : int(n_sections)], dtype=np.int32)
+            except Exception:
+                continue
+            if int(max_fp_matrix.shape[0]) <= 0:
+                continue
+            try:
+                cfg_len_matrix = np.prod(np.maximum(max_fp_matrix, 0) + 1, axis=1, dtype=np.int64)
+            except Exception:
+                cfg_len_matrix = None
+            if cfg_len_matrix is None:
+                continue
+            try:
+                cfg_len_matrix = np.clip(cfg_len_matrix, 1, np.iinfo(np.int32).max).astype(np.int32, copy=False)
+            except Exception:
+                cfg_len_matrix = np.asarray(cfg_len_matrix, dtype=np.int32)
+            try:
+                max_cfg_len = max(int(max_cfg_len), int(np.max(cfg_len_matrix)))
+            except Exception:
+                pass
+            total_pairs += int(n_pairs)
+            prepared_tasks.append(
+                {
+                    "ftff_pairs": ftff_pairs,
+                    "cfg_base": 0,
+                    "cfg_len": 0,
+                    "cfg_mode": 1,
+                    "max_fp_arr": None,
+                    "max_fp_matrix": max_fp_matrix,
+                    "cfg_len_matrix": cfg_len_matrix,
+                }
+            )
+            continue
+
         try:
             cfg_base = int(task.get("base_cfg_offset", base_cfg_offset) or base_cfg_offset)
         except Exception:
@@ -2082,6 +2190,9 @@ def solve_force_greats_finder_gpu_tasks(
                 "cfg_len": int(cfg_len),
                 "cfg_mode": int(cfg_mode),
                 "max_fp_arr": max_fp_arr,
+                "max_fp_matrix": None,
+                "cfg_len_matrix": None,
+                "max_fp_compute": None,
             }
         )
 
@@ -2188,24 +2299,47 @@ def solve_force_greats_finder_gpu_tasks(
             _t_up3 = time.perf_counter()
             fg_fields.fg_cfg_mode_list.from_numpy(cfg_mode_buf)
             _t_up4 = time.perf_counter()
-            fg_fields.fg_cfg_max_fp.from_numpy(cfg_max_fp_buf)
-            _t_up5 = time.perf_counter()
-            fg_fields.fg_cfg_total_len_list.from_numpy(cfg_total_len_buf)
-            _t_up6 = time.perf_counter()
             _record_upload("ft_list(packed_tasks)", _t_up1 - _t_up0, _bytes_of_array(ft_buf))
             _record_upload("ff_list(packed_tasks)", _t_up2 - _t_up1, _bytes_of_array(ff_buf))
             _record_upload("cfg_base(packed_tasks)", _t_up3 - _t_up2, _bytes_of_array(cfg_base_buf))
             _record_upload("cfg_mode(packed_tasks)", _t_up4 - _t_up3, _bytes_of_array(cfg_mode_buf))
-            _record_upload("cfg_max_fp(packed_tasks)", _t_up5 - _t_up4, _bytes_of_array(cfg_max_fp_buf))
-            _record_upload("cfg_total_len(packed_tasks)", _t_up6 - _t_up5, _bytes_of_array(cfg_total_len_buf))
+            if not use_gpu_max_fp:
+                _t_up5 = time.perf_counter()
+                fg_fields.fg_cfg_max_fp.from_numpy(cfg_max_fp_buf)
+                _t_up6 = time.perf_counter()
+                fg_fields.fg_cfg_total_len_list.from_numpy(cfg_total_len_buf)
+                _t_up7 = time.perf_counter()
+                _record_upload("cfg_max_fp(packed_tasks)", _t_up6 - _t_up5, _bytes_of_array(cfg_max_fp_buf))
+                _record_upload("cfg_total_len(packed_tasks)", _t_up7 - _t_up6, _bytes_of_array(cfg_total_len_buf))
         else:
             fg_fields.fg_ft_list.from_numpy(ft_buf)
             fg_fields.fg_ff_list.from_numpy(ff_buf)
             fg_fields.fg_cfg_base_list.from_numpy(cfg_base_buf)
             fg_fields.fg_cfg_mode_list.from_numpy(cfg_mode_buf)
-            fg_fields.fg_cfg_max_fp.from_numpy(cfg_max_fp_buf)
-            fg_fields.fg_cfg_total_len_list.from_numpy(cfg_total_len_buf)
+            if not use_gpu_max_fp:
+                fg_fields.fg_cfg_max_fp.from_numpy(cfg_max_fp_buf)
+                fg_fields.fg_cfg_total_len_list.from_numpy(cfg_total_len_buf)
         _fg_cfg_defaults_uploaded = False
+
+        if use_gpu_max_fp and max_fp_compute_ctx is not None:
+            try:
+                fg_kernels.fg_compute_max_fp_for_ftff_kernel(
+                    int(n_ftff),
+                    int(getattr(max_fp_compute_ctx.get("base_ft"), "shape", (0,))[0] or 0),
+                    int(max_fp_compute_ctx.get("n_sections", n_sections) or n_sections),
+                    int(max_fp_compute_ctx.get("song_slot", 0) or 0),
+                    int(max_fp_compute_ctx.get("gem_scale_fever", gem_scale_fever) or gem_scale_fever),
+                    max_fp_compute_ctx.get("base_ft"),
+                    max_fp_compute_ctx.get("base_ff"),
+                    max_fp_compute_ctx.get("non_fever_base_by_ff"),
+                    max_fp_compute_ctx.get("fp_cap_table"),
+                )
+                fg_kernels.fg_compute_cfg_total_len_kernel(
+                    int(n_ftff),
+                    int(max_fp_compute_ctx.get("n_sections", n_sections) or n_sections),
+                )
+            except Exception:
+                pass
 
         # Reset per-call outputs and init stage1.
         fg_kernels.fg_reset_best_kernel(int(n_genomes))
@@ -2388,6 +2522,16 @@ def solve_force_greats_finder_gpu_tasks(
             except Exception:
                 pass
 
+    max_fp_compute_ctx = None
+    for task in prepared_tasks:
+        if task.get("max_fp_compute") is not None:
+            max_fp_compute_ctx = task.get("max_fp_compute")
+            break
+
+    use_gpu_max_fp = bool(max_fp_compute_ctx) and all(task.get("max_fp_compute") is not None for task in prepared_tasks)
+    if not use_gpu_max_fp:
+        max_fp_compute_ctx = None
+
     for task in prepared_tasks:
         ftff_pairs = task.get("ftff_pairs")
         # `ftff_pairs` may be either a Python sequence or a numpy array; numpy arrays have ambiguous truthiness.
@@ -2405,6 +2549,9 @@ def solve_force_greats_finder_gpu_tasks(
         except Exception:
             continue
         max_fp_arr = task.get("max_fp_arr")
+        max_fp_matrix = task.get("max_fp_matrix")
+        cfg_len_matrix = task.get("cfg_len_matrix")
+        max_fp_compute = task.get("max_fp_compute")
 
         # Normalize to a compact int32 (n,2) array for fast slicing.
         try:
@@ -2435,14 +2582,31 @@ def solve_force_greats_finder_gpu_tasks(
 
             ft_buf[sl] = block[: int(take), 0]
             ff_buf[sl] = block[: int(take), 1]
-            cfg_base_buf[sl] = int(cfg_base)
-            cfg_total_len_buf[sl] = int(cfg_len)
-            cfg_mode_buf[sl] = int(cfg_mode)
-            if int(cfg_mode) != 0 and max_fp_arr is not None:
+            if max_fp_compute is not None:
+                cfg_base_buf[sl] = 0
+                cfg_total_len_buf[sl] = 0
+                cfg_mode_buf[sl] = 1
+            elif max_fp_matrix is not None and cfg_len_matrix is not None:
+                cfg_base_buf[sl] = 0
+                cfg_total_len_buf[sl] = cfg_len_matrix[int(idx) : int(idx) + int(take)]
+                cfg_mode_buf[sl] = 1
                 try:
-                    cfg_max_fp_buf[sl, : int(n_sections)] = max_fp_arr[: int(n_sections)]
+                    cfg_max_fp_buf[sl, : int(n_sections)] = max_fp_matrix[
+                        int(idx) : int(idx) + int(take), : int(n_sections)
+                    ]
                 except Exception:
-                    cfg_max_fp_buf[sl, : int(n_sections)] = np.asarray(max_fp_arr, dtype=np.int32)[: int(n_sections)]
+                    cfg_max_fp_buf[sl, : int(n_sections)] = np.asarray(
+                        max_fp_matrix[int(idx) : int(idx) + int(take)], dtype=np.int32
+                    )[:, : int(n_sections)]
+            else:
+                cfg_base_buf[sl] = int(cfg_base)
+                cfg_total_len_buf[sl] = int(cfg_len)
+                cfg_mode_buf[sl] = int(cfg_mode)
+                if int(cfg_mode) != 0 and max_fp_arr is not None:
+                    try:
+                        cfg_max_fp_buf[sl, : int(n_sections)] = max_fp_arr[: int(n_sections)]
+                    except Exception:
+                        cfg_max_fp_buf[sl, : int(n_sections)] = np.asarray(max_fp_arr, dtype=np.int32)[: int(n_sections)]
 
             chunk_n += int(take)
             idx += int(take)

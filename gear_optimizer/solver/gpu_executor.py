@@ -2302,6 +2302,84 @@ class GpuExecutor:
                 cfg_counts[gi, s] = int(val)
         return cfg_counts
 
+    @staticmethod
+    def _decode_cfg_counts_from_max_fp_matrix(
+        cfg_idx,
+        ft_vals,
+        ff_vals,
+        max_fp_matrix,
+        ftff_pairs,
+        n_sections: int,
+    ):
+        import numpy as np
+
+        if cfg_idx is None or max_fp_matrix is None or ft_vals is None or ff_vals is None:
+            return None
+        try:
+            n_sections_i = int(n_sections)
+        except Exception:
+            return None
+        if n_sections_i <= 0:
+            return None
+
+        try:
+            cfg_idx_np = np.asarray(cfg_idx, dtype=np.int64)
+            ft_np = np.asarray(ft_vals, dtype=np.int32)
+            ff_np = np.asarray(ff_vals, dtype=np.int32)
+        except Exception:
+            return None
+        if cfg_idx_np.shape[0] != ft_np.shape[0] or cfg_idx_np.shape[0] != ff_np.shape[0]:
+            return None
+
+        try:
+            pairs_arr = np.asarray(ftff_pairs, dtype=np.int32)
+        except Exception:
+            return None
+        if pairs_arr.ndim != 2 or int(pairs_arr.shape[1]) < 2:
+            return None
+
+        try:
+            max_fp_arr = np.asarray(max_fp_matrix, dtype=np.int32)
+        except Exception:
+            return None
+        if max_fp_arr.ndim != 2 or int(max_fp_arr.shape[0]) != int(pairs_arr.shape[0]):
+            return None
+
+        # Build mapping from (ft, ff) -> row index.
+        try:
+            pair_index: dict[tuple[int, int], int] = {}
+            for i in range(int(pairs_arr.shape[0])):
+                ft_i = int(pairs_arr[i, 0])
+                ff_i = int(pairs_arr[i, 1])
+                pair_index[(ft_i, ff_i)] = int(i)
+        except Exception:
+            return None
+
+        n_out = int(cfg_idx_np.shape[0])
+        cfg_counts = np.zeros((int(n_out), int(n_sections_i)), dtype=np.int32)
+        for gi in range(int(n_out)):
+            row = pair_index.get((int(ft_np[gi]), int(ff_np[gi])), -1)
+            if row < 0:
+                continue
+            idx = int(cfg_idx_np[gi])
+            if idx < 0:
+                continue
+            try:
+                max_fp_row = max_fp_arr[row]
+            except Exception:
+                continue
+            for s in range(int(n_sections_i) - 1, -1, -1):
+                try:
+                    basev = int(max(0, int(max_fp_row[s] if s < len(max_fp_row) else 0))) + 1
+                except Exception:
+                    basev = 1
+                if basev <= 0:
+                    basev = 1
+                val = idx % basev
+                idx //= basev
+                cfg_counts[gi, s] = int(val)
+        return cfg_counts
+
     def _execute_fg_solve_with_breakpoints(self, request: GpuRequest) -> GpuResponse:
         """
         Fused FG path for in-process mode:
@@ -2423,86 +2501,114 @@ class GpuExecutor:
         try:
             pairs_arr = np.ascontiguousarray(pairs_arr, dtype=np.int32)
             base_arr = np.ascontiguousarray(base_arr, dtype=np.int32)
-            pair_ft = np.ascontiguousarray(pairs_arr[:, 0], dtype=np.int32)
-            pair_ff = np.ascontiguousarray(pairs_arr[:, 1], dtype=np.int32)
             base_ft = np.ascontiguousarray(base_arr[:, 0], dtype=np.int32)
             base_ff = np.ascontiguousarray(base_arr[:, 1], dtype=np.int32)
-            max_fp_matrix = self._compute_fg_breakpoints_max_fp_matrix(
-                pair_ft=pair_ft,
-                pair_ff=pair_ff,
-                base_ft=base_ft,
-                base_ff=base_ff,
-                n_sections=int(n_sections),
-                song_slot=int(song_slot),
-                gem_scale_fever=int(gem_scale_fever),
-                non_fever_base_by_ff=non_fever_base_by_ff,
-                fp_cap_table=fp_cap_table,
-            )
         except Exception as e:
-            raise RuntimeError(f"breakpoint kernel failed: {type(e).__name__}: {e}") from e
+            raise RuntimeError(f"breakpoint inputs invalid: {type(e).__name__}: {e}") from e
 
-        # Group by identical per-section max-FP caps (avoid transferring the full matrix to callers).
-        try:
-            rows = np.ascontiguousarray(max_fp_matrix[:, : int(n_sections)], dtype=np.int16)
-            uniq, inv = np.unique(rows, axis=0, return_inverse=True)
-        except Exception as e:
-            raise RuntimeError(f"grouping failed: {type(e).__name__}: {e}") from e
+        implicit_cfgs = str(os.environ.get("FG_IMPLICIT_CONFIGS", "1") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+            "",
+        }
 
-        # Build packed FG tasks + config windows for decoding cfg_idx at the end.
-        cfg_windows: list[dict] = []
         fg_tasks: list[dict[str, Any]] = []
-        cfg_next_base = 0
-
-        try:
-            from .taichi_gem.force_greats import fg_fields
-
-            chunk_size = int(getattr(fg_fields, "FG_MAX_FTFF", 0) or 0)
-        except Exception:
-            chunk_size = 0
-        if chunk_size <= 0:
-            chunk_size = 1024
-
-        for i_group in range(int(uniq.shape[0])):
-            mask = inv == int(i_group)
-            if not np.any(mask):
-                continue
-            group_pairs = pairs_arr[mask]
-            try:
-                max_fp_norm = [max(0, int(v)) for v in uniq[int(i_group)].tolist()[: int(n_sections)]]
-            except Exception:
-                max_fp_norm = [0] * int(n_sections)
-            if not max_fp_norm:
-                max_fp_norm = [0] * int(n_sections)
-
-            cfg_len = 1
-            for v in max_fp_norm[: int(n_sections)]:
-                cfg_len *= int(v) + 1
-            cfg_len = max(1, int(cfg_len))
-
-            group_cfg_offset = int(cfg_next_base)
-            cfg_windows.append(
+        cfg_windows: list[dict] | None = None
+        if implicit_cfgs:
+            # Per-pair max-FP caps (no CPU grouping). The packed-task solver can consume
+            # per-pair max-FP caps computed on GPU and decode per-ftff configs on-GPU.
+            fg_tasks.append(
                 {
-                    "base": int(group_cfg_offset),
-                    "len": int(cfg_len),
-                    "kind": "max_fp",
-                    "max_fp": list(max_fp_norm),
-                    "n_sections": int(n_sections),
+                    "counts_list": None,
+                    "counts_max_fp": {
+                        "mode": "gpu",
+                        "base_stats_pairs": base_arr,
+                        "non_fever_base_by_ff": non_fever_base_by_ff,
+                        "fp_cap_table": fp_cap_table,
+                        "n_sections": int(n_sections),
+                        "song_slot": int(song_slot),
+                        "gem_scale_fever": int(gem_scale_fever),
+                    },
+                    "ftff_pairs": pairs_arr,
+                    "base_cfg_offset": 0,
                 }
             )
-            cfg_next_base = int(group_cfg_offset) + int(cfg_len)
+        else:
+            # Fallback: group identical max-FP rows on CPU (legacy explicit grouping path).
+            try:
+                pair_ft = np.ascontiguousarray(pairs_arr[:, 0], dtype=np.int32)
+                pair_ff = np.ascontiguousarray(pairs_arr[:, 1], dtype=np.int32)
+                max_fp_matrix = self._compute_fg_breakpoints_max_fp_matrix(
+                    pair_ft=pair_ft,
+                    pair_ff=pair_ff,
+                    base_ft=base_ft,
+                    base_ff=base_ff,
+                    n_sections=int(n_sections),
+                    song_slot=int(song_slot),
+                    gem_scale_fever=int(gem_scale_fever),
+                    non_fever_base_by_ff=non_fever_base_by_ff,
+                    fp_cap_table=fp_cap_table,
+                )
+                rows = np.ascontiguousarray(max_fp_matrix[:, : int(n_sections)], dtype=np.int16)
+                uniq, inv = np.unique(rows, axis=0, return_inverse=True)
+            except Exception as e:
+                raise RuntimeError(f"grouping failed: {type(e).__name__}: {e}") from e
 
-            for j in range(0, int(group_pairs.shape[0]), int(chunk_size)):
-                chunk = group_pairs[j : j + int(chunk_size)]
-                if int(chunk.shape[0]) <= 0:
+            cfg_windows = []
+            cfg_next_base = 0
+
+            try:
+                from .taichi_gem.force_greats import fg_fields
+
+                chunk_size = int(getattr(fg_fields, "FG_MAX_FTFF", 0) or 0)
+            except Exception:
+                chunk_size = 0
+            if chunk_size <= 0:
+                chunk_size = 1024
+
+            for i_group in range(int(uniq.shape[0])):
+                mask = inv == int(i_group)
+                if not np.any(mask):
                     continue
-                fg_tasks.append(
+                group_pairs = pairs_arr[mask]
+                try:
+                    max_fp_norm = [max(0, int(v)) for v in uniq[int(i_group)].tolist()[: int(n_sections)]]
+                except Exception:
+                    max_fp_norm = [0] * int(n_sections)
+                if not max_fp_norm:
+                    max_fp_norm = [0] * int(n_sections)
+
+                cfg_len = 1
+                for v in max_fp_norm[: int(n_sections)]:
+                    cfg_len *= int(v) + 1
+                cfg_len = max(1, int(cfg_len))
+
+                group_cfg_offset = int(cfg_next_base)
+                cfg_windows.append(
                     {
-                        "counts_list": None,
-                        "counts_max_fp": list(max_fp_norm),
-                        "ftff_pairs": np.asarray(chunk, dtype=np.int32),
-                        "base_cfg_offset": int(group_cfg_offset),
+                        "base": int(group_cfg_offset),
+                        "len": int(cfg_len),
+                        "kind": "max_fp",
+                        "max_fp": list(max_fp_norm),
+                        "n_sections": int(n_sections),
                     }
                 )
+                cfg_next_base = int(group_cfg_offset) + int(cfg_len)
+
+                for j in range(0, int(group_pairs.shape[0]), int(chunk_size)):
+                    chunk = group_pairs[j : j + int(chunk_size)]
+                    if int(chunk.shape[0]) <= 0:
+                        continue
+                    fg_tasks.append(
+                        {
+                            "counts_list": None,
+                            "counts_max_fp": list(max_fp_norm),
+                            "ftff_pairs": np.asarray(chunk, dtype=np.int32),
+                            "base_cfg_offset": int(group_cfg_offset),
+                        }
+                    )
 
         if not fg_tasks:
             return None
@@ -2580,7 +2686,37 @@ class GpuExecutor:
             result = fg_download_global_best(int(n_genomes))
 
         if isinstance(result, dict):
-            cfg_counts = self._decode_cfg_counts_from_windows(result.get("cfg_idx"), cfg_windows, int(n_sections))
+            cfg_counts = None
+            if implicit_cfgs:
+                try:
+                    result_ft = np.asarray(result.get("FT"), dtype=np.int32)
+                    result_ff = np.asarray(result.get("FF"), dtype=np.int32)
+                    if result_ft.ndim == 1 and result_ff.ndim == 1 and int(result_ft.shape[0]) == int(result_ff.shape[0]):
+                        # Compute max-FP only for the returned FT/FF rows (avoid full matrix download).
+                        max_fp_rows = self._compute_fg_breakpoints_max_fp_matrix(
+                            pair_ft=result_ft,
+                            pair_ff=result_ff,
+                            base_ft=base_ft,
+                            base_ff=base_ff,
+                            n_sections=int(n_sections),
+                            song_slot=int(song_slot),
+                            gem_scale_fever=int(gem_scale_fever),
+                            non_fever_base_by_ff=non_fever_base_by_ff,
+                            fp_cap_table=fp_cap_table,
+                        )
+                        result_pairs = np.stack([result_ft, result_ff], axis=1)
+                        cfg_counts = self._decode_cfg_counts_from_max_fp_matrix(
+                            result.get("cfg_idx"),
+                            result_ft,
+                            result_ff,
+                            max_fp_rows,
+                            result_pairs,
+                            int(n_sections),
+                        )
+                except Exception:
+                    cfg_counts = None
+            elif cfg_windows:
+                cfg_counts = self._decode_cfg_counts_from_windows(result.get("cfg_idx"), cfg_windows, int(n_sections))
             if cfg_counts is not None:
                 result = dict(result)
                 result["cfg_counts"] = cfg_counts

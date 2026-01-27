@@ -591,6 +591,92 @@ def fg_compute_cfg_ranges_kernel(n_ftff: ti.i32, band_start: ti.i32, band_len: t
 
 
 @ti.kernel
+def fg_compute_max_fp_for_ftff_kernel(
+    n_pairs: ti.i32,
+    n_base_pairs: ti.i32,
+    n_sections: ti.i32,
+    song_slot: ti.i32,
+    gem_scale_fever: ti.i32,
+    base_ft_stat: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    base_ff_stat: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    non_fever_base_by_ff: ti.types.ndarray(dtype=ti.i16, ndim=1),
+    fp_cap_table: ti.types.ndarray(dtype=ti.i16, ndim=2),
+):
+    """
+    Compute per-(ftff_pair, section) max-FP caps directly into fg_cfg_max_fp.
+
+    Uses GPU-resident ft/ff lists and per-song timeline grids; avoids downloading
+    the full max-FP matrix to CPU.
+    """
+    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
+
+    for pair_idx, sec in ti.ndrange(n_pairs, n_sections):
+        max_fp: ti.i32 = 0
+
+        ft_g = fg_ft_list[pair_idx]
+        ff_g = fg_ff_list[pair_idx]
+
+        for b in range(n_base_pairs):
+            ft_idx = base_ft_stat[b] + ft_g * gem_scale_fever
+            ff_idx = base_ff_stat[b] + ff_g * gem_scale_fever
+            if ft_idx < 0:
+                ft_idx = 0
+            if ft_idx > 160:
+                ft_idx = 160
+            if ff_idx < 0:
+                ff_idx = 0
+            if ff_idx > 160:
+                ff_idx = 160
+
+            fever_acts = ti.cast(kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx], ti.i32)
+            if sec >= fever_acts:
+                continue
+
+            gap = ti.cast(kernels_helpers.grid_gap[song_slot, ft_idx, ff_idx], ti.i32)
+            if gap < 0:
+                gap = 0
+
+            base_notes = ti.cast(non_fever_base_by_ff[ff_idx], ti.i32)
+            base_cap = base_notes
+
+            cap = base_cap
+            if sec == 1:
+                cap = (cap * 3) // 5
+            elif sec >= 2:
+                cap = (cap * 3) // 10
+
+            hard_cap = _fg_section_forced_cap(sec)
+            if cap > hard_cap:
+                cap = hard_cap
+            if cap < 0:
+                cap = 0
+            if cap > 50:
+                cap = 50
+
+            fp = ti.cast(fp_cap_table[ff_idx, cap], ti.i32)
+            if fp > max_fp:
+                max_fp = fp
+
+        fg_cfg_max_fp[pair_idx, sec] = max_fp
+
+
+@ti.kernel
+def fg_compute_cfg_total_len_kernel(n_pairs: ti.i32, n_sections: ti.i32):
+    """
+    Compute per-ftff config length from fg_cfg_max_fp and store in fg_cfg_total_len_list.
+    """
+    for i in range(n_pairs):
+        total: ti.i64 = 1
+        for s in range(n_sections):
+            total = total * (ti.cast(fg_cfg_max_fp[i, s], ti.i64) + 1)
+        if total < 1:
+            total = 1
+        if total > 2147483647:
+            total = 2147483647
+        fg_cfg_total_len_list[i] = ti.cast(total, ti.i32)
+
+
+@ti.kernel
 def fg_build_flat_work_kernel(n_genomes: ti.i32, n_ftff: ti.i32):
     """
     Build the flat work-item arrays on GPU.
