@@ -988,6 +988,10 @@ class GpuExecutor:
           - provides `kwargs['fg_tasks']`
           - does NOT request reset/download in the same call
           - shares the same song/genome inputs and scalar knobs
+
+        IMPORTANT: preserve request ordering relative to "barrier" FG requests (reset/download).
+        A download request must never be executed before earlier task-only requests in the same batch,
+        or it can read a partial global-best state and return fewer/incorrect results.
         """
         from .taichi_gem.force_greats.api import solve_force_greats_finder_gpu_tasks
 
@@ -1006,25 +1010,12 @@ class GpuExecutor:
                 return None
             return tuple(args), dict(kwargs), list(fg_tasks)
 
-        groups: dict[
-            tuple[Any, ...],
-            list[tuple["GpuRequest", tuple[Any, ...], dict[str, Any], list[dict[str, Any]]]],
-        ] = {}
-        fallback: list[GpuResponse] = []
-
-        for req in requests:
-            extracted = _extract_task_only(req)
-            if extracted is None:
-                fallback.append(self._execute_request(req))
-                continue
-            args, kwargs, fg_tasks = extracted
+        def _key_for_task_only(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[Any, ...] | None:
             try:
                 genome_stats_list, timestamps_np, great_candidate_timestamps_np, long_notes, last_note_time, _, _ = args
             except Exception:
-                fallback.append(self._execute_request(req))
-                continue
-
-            key = (
+                return None
+            return (
                 id(genome_stats_list),
                 id(timestamps_np),
                 id(great_candidate_timestamps_np),
@@ -1052,60 +1043,114 @@ class GpuExecutor:
                 int(long_notes or 0),
                 float(last_note_time or 0.0),
             )
-            groups.setdefault(key, []).append((req, args, kwargs, fg_tasks))
 
-        out: list[GpuResponse] = []
-        out.extend(fallback)
+        def _flush_task_only_segment(
+            seg: list[tuple["GpuRequest", tuple[Any, ...], dict[str, Any], list[dict[str, Any]]]],
+        ) -> dict[int, "GpuResponse"]:
+            """
+            Execute a contiguous segment of task-only requests.
 
-        for _key, items in groups.items():
-            if not items:
+            We can safely reorder within this segment because every request is task-only
+            (accumulate_global, no reset/download). Barrier requests are executed by the
+            caller outside this function in strict order.
+            """
+            if not seg:
+                return {}
+
+            groups: dict[
+                tuple[Any, ...],
+                list[tuple["GpuRequest", tuple[Any, ...], dict[str, Any], list[dict[str, Any]]]],
+            ] = {}
+            out_by_id: dict[int, GpuResponse] = {}
+
+            for req, args, kwargs, fg_tasks in seg:
+                k = _key_for_task_only(args, kwargs)
+                if k is None:
+                    # Shouldn't happen for task-only, but stay robust.
+                    out_by_id[int(req.request_id)] = self._execute_request(req)
+                    continue
+                groups.setdefault(k, []).append((req, args, kwargs, fg_tasks))
+
+            for _k, items in groups.items():
+                if not items:
+                    continue
+                if len(items) == 1:
+                    req0 = items[0][0]
+                    out_by_id[int(req0.request_id)] = self._execute_request(req0)
+                    continue
+
+                req0, args0, kwargs0, _tasks0 = items[0]
+                genome_stats_list, timestamps_np, great_candidate_timestamps_np, long_notes, last_note_time, _, _ = args0
+
+                merged_tasks: list[dict[str, Any]] = []
+                upload_any = False
+                for _req, _args, _kwargs, _fg_tasks in items:
+                    merged_tasks.extend(list(_fg_tasks))
+                    upload_any = upload_any or bool(_kwargs.get("upload_genome_stats", True))
+
+                kwargs_local = dict(kwargs0)
+                kwargs_local.pop("fg_tasks", None)
+                kwargs_local["accumulate_global"] = True
+                kwargs_local["return_raw"] = True
+                kwargs_local["upload_genome_stats"] = bool(upload_any)
+                kwargs_local.pop("fg_reset_before", None)
+                kwargs_local.pop("fg_download_after", None)
+                kwargs_local.pop("fg_download_topk", None)
+                kwargs_local.pop("fg_download_base_scores", None)
+                kwargs_local.pop("fg_download_keep_mask", None)
+
+                t_pack0 = perf_counter()
+                try:
+                    solve_force_greats_finder_gpu_tasks(
+                        genome_stats_list,
+                        timestamps_np,
+                        great_candidate_timestamps_np,
+                        int(long_notes),
+                        float(last_note_time),
+                        fg_tasks=merged_tasks,
+                        **kwargs_local,
+                    )
+                    self._record_pack(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, perf_counter() - t_pack0)
+                    for req, *_rest in items:
+                        out_by_id[int(req.request_id)] = GpuResponse(request_id=req.request_id, success=True, result=None)
+                except Exception as e2:
+                    self._record_pack(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, perf_counter() - t_pack0)
+                    err = f"{type(e2).__name__}: {e2}"
+                    for req, *_rest in items:
+                        out_by_id[int(req.request_id)] = GpuResponse(request_id=req.request_id, success=False, error=err)
+
+            return out_by_id
+
+        # Execute in original request order, treating any non-task-only request as a barrier.
+        # This preserves "reset -> tasks -> download" correctness while still coalescing
+        # bursts of task-only work between barriers.
+        responses_by_id: dict[int, GpuResponse] = {}
+        segment: list[tuple["GpuRequest", tuple[Any, ...], dict[str, Any], list[dict[str, Any]]]] = []
+
+        def _flush_segment() -> None:
+            nonlocal segment
+            if not segment:
+                return
+            seg_resps = _flush_task_only_segment(segment)
+            responses_by_id.update({int(k): v for k, v in seg_resps.items() if v is not None})
+            segment = []
+
+        for req in requests:
+            extracted = _extract_task_only(req)
+            if extracted is not None:
+                args, kwargs, fg_tasks = extracted
+                segment.append((req, args, kwargs, fg_tasks))
                 continue
-            if len(items) == 1:
-                out.append(self._execute_request(items[0][0]))
-                continue
 
-            req0, args0, kwargs0, _tasks0 = items[0]
-            genome_stats_list, timestamps_np, great_candidate_timestamps_np, long_notes, last_note_time, _, _ = args0
+            # Barrier: flush any prior coalescable task-only segment, then execute this request.
+            _flush_segment()
+            resp = self._execute_request(req)
+            responses_by_id[int(req.request_id)] = resp
 
-            merged_tasks: list[dict[str, Any]] = []
-            upload_any = False
-            for _req, _args, _kwargs, _fg_tasks in items:
-                merged_tasks.extend(list(_fg_tasks))
-                upload_any = upload_any or bool(_kwargs.get("upload_genome_stats", True))
+        _flush_segment()
 
-            kwargs_local = dict(kwargs0)
-            kwargs_local.pop("fg_tasks", None)
-            kwargs_local["accumulate_global"] = True
-            kwargs_local["return_raw"] = True
-            kwargs_local["upload_genome_stats"] = bool(upload_any)
-            kwargs_local.pop("fg_reset_before", None)
-            kwargs_local.pop("fg_download_after", None)
-            kwargs_local.pop("fg_download_topk", None)
-            kwargs_local.pop("fg_download_base_scores", None)
-            kwargs_local.pop("fg_download_keep_mask", None)
-
-            t_pack0 = perf_counter()
-            try:
-                solve_force_greats_finder_gpu_tasks(
-                    genome_stats_list,
-                    timestamps_np,
-                    great_candidate_timestamps_np,
-                    int(long_notes),
-                    float(last_note_time),
-                    fg_tasks=merged_tasks,
-                    **kwargs_local,
-                )
-                self._record_pack(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, perf_counter() - t_pack0)
-                for req, *_rest in items:
-                    out.append(GpuResponse(request_id=req.request_id, success=True, result=None))
-            except Exception as e2:
-                self._record_pack(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, perf_counter() - t_pack0)
-                err = f"{type(e2).__name__}: {e2}"
-                for req, *_rest in items:
-                    out.append(GpuResponse(request_id=req.request_id, success=False, error=err))
-
-        by_id = {r.request_id: r for r in out}
-        return [by_id.get(req.request_id) for req in requests]
+        # Preserve original ordering in the return list.
+        return [responses_by_id.get(int(req.request_id)) for req in requests]
 
     def _coalesce_fg_solve_with_breakpoints_batch_requests(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
         """
@@ -1714,9 +1759,13 @@ class GpuExecutor:
             # Allow callers to keep genome stats GPU-resident across multiple requests.
             # Default remains True for safety.
             kwargs_local["upload_genome_stats"] = bool(kwargs_local.get("upload_genome_stats", True))
+            try:
+                fg_session_slot = int(kwargs_local.get("song_slot", 0) or 0)
+            except Exception:
+                fg_session_slot = 0
 
             if reset_before:
-                fg_reset_global_best(int(n_genomes))
+                fg_reset_global_best(int(n_genomes), session_slot=int(fg_session_slot))
 
             if fg_tasks:
                 solve_force_greats_finder_gpu_tasks(
@@ -1735,15 +1784,16 @@ class GpuExecutor:
                     if download_topk is not None and download_base_scores is not None:
                         result = fg_download_global_best(
                             int(n_genomes),
+                            session_slot=int(fg_session_slot),
                             topk=int(download_topk),
                             base_scores=download_base_scores,
                             keep_mask=download_keep_mask,
                         )
                     else:
-                        result = fg_download_global_best(int(n_genomes))
+                        result = fg_download_global_best(int(n_genomes), session_slot=int(fg_session_slot))
                 except Exception:
                     # Fall back to full download for robustness.
-                    result = fg_download_global_best(int(n_genomes))
+                    result = fg_download_global_best(int(n_genomes), session_slot=int(fg_session_slot))
 
             return GpuResponse(request_id=request.request_id, success=True, result=result)
 
@@ -1986,10 +2036,14 @@ class GpuExecutor:
             n_genomes = int(payload.get("n_genomes", 0) or 0)
         except Exception:
             n_genomes = 0
+        try:
+            song_slot = int(payload.get("song_slot", 0) or 0)
+        except Exception:
+            song_slot = 0
 
         from .taichi_gem.force_greats.api import fg_reset_global_best
 
-        fg_reset_global_best(int(n_genomes))
+        fg_reset_global_best(int(n_genomes), session_slot=int(song_slot))
         return GpuResponse(
             request_id=request.request_id,
             success=True,
@@ -2010,6 +2064,10 @@ class GpuExecutor:
             n_genomes = int(payload.get("n_genomes", 0) or 0)
         except Exception:
             n_genomes = 0
+        try:
+            song_slot = int(payload.get("song_slot", 0) or 0)
+        except Exception:
+            song_slot = 0
 
         from .taichi_gem.force_greats.api import fg_download_global_best
 
@@ -2019,12 +2077,13 @@ class GpuExecutor:
         if download_topk is not None and download_base_scores is not None:
             result = fg_download_global_best(
                 int(n_genomes),
+                session_slot=int(song_slot),
                 topk=int(download_topk),
                 base_scores=download_base_scores,
                 keep_mask=download_keep_mask,
             )
         else:
-            result = fg_download_global_best(int(n_genomes))
+            result = fg_download_global_best(int(n_genomes), session_slot=int(song_slot))
         return GpuResponse(
             request_id=request.request_id,
             success=True,
@@ -2691,7 +2750,7 @@ class GpuExecutor:
                 kwargs_local["upload_genome_stats"] = True
 
         if bool(payload.get("fg_reset_before", True)):
-            fg_reset_global_best(int(n_genomes))
+            fg_reset_global_best(int(n_genomes), session_slot=int(song_slot))
 
         solve_force_greats_finder_gpu_tasks(
             genome_stats_list,
@@ -2711,12 +2770,13 @@ class GpuExecutor:
         if download_topk is not None and download_base_scores is not None:
             result = fg_download_global_best(
                 int(n_genomes),
+                session_slot=int(song_slot),
                 topk=int(download_topk),
                 base_scores=download_base_scores,
                 keep_mask=download_keep_mask,
             )
         else:
-            result = fg_download_global_best(int(n_genomes))
+            result = fg_download_global_best(int(n_genomes), session_slot=int(song_slot))
 
         if isinstance(result, dict):
             cfg_counts = result.get("cfg_counts")

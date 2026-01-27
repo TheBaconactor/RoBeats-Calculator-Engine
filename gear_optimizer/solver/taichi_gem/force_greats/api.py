@@ -439,7 +439,7 @@ def _is_vulkan_backend_failure(exc: BaseException) -> bool:
 # ============================================================================
 
 
-def fg_reset_global_best(n_genomes: int) -> None:
+def fg_reset_global_best(n_genomes: int, *, session_slot: int = 0) -> None:
     """
     Reset global best fields before multi-group processing.
 
@@ -448,14 +448,19 @@ def fg_reset_global_best(n_genomes: int) -> None:
 
     Args:
         n_genomes: Number of genomes to reset
+        session_slot: Song/session slot to reset (use the same slot as the FG solve calls).
     """
     fg_fields.ensure_ready_with_warmup()
-    fg_kernels.fg_reset_global_best_kernel(int(n_genomes))
+    slot = int(session_slot)
+    if slot < 0 or slot >= int(getattr(gem_fields, "MAX_SONG_SLOTS", 1) or 1):
+        raise ValueError(f"session_slot out of range: {slot}")
+    fg_kernels.fg_reset_global_best_kernel(int(slot), int(n_genomes))
 
 
 def fg_download_global_best(
     n_genomes: int,
     *,
+    session_slot: int = 0,
     topk: int | None = None,
     base_scores: np.ndarray | None = None,
     keep_mask: np.ndarray | None = None,
@@ -469,6 +474,7 @@ def fg_download_global_best(
         n_genomes: Number of genomes to download
 
     Args:
+        session_slot: Song/session slot to download (use the same slot as the FG solve calls).
         topk: Optional top-K selection for reduced download. When provided with `base_scores`,
               returns only `keep_mask` rows plus up to `topk` high-score candidate rows.
         base_scores: Per-genome base score used for the candidate eligibility filter (final_score > base_score).
@@ -484,6 +490,9 @@ def fg_download_global_best(
     ti.sync()
     _sync_sec = time.perf_counter() - _t0
     n = int(n_genomes)
+    slot = int(session_slot)
+    if slot < 0 or slot >= int(getattr(gem_fields, "MAX_SONG_SLOTS", 1) or 1):
+        raise ValueError(f"session_slot out of range: {slot}")
 
     # Optional reduced download path: select/pack only a small subset.
     if topk is not None and base_scores is not None:
@@ -526,7 +535,7 @@ def fg_download_global_best(
         fg_fields.fg_input_base_score.from_numpy(_fg_download_topk_base_buf)
         fg_fields.fg_keep_mask.from_numpy(_fg_download_topk_keep_buf)
 
-        fg_kernels.fg_select_global_best_topk_kernel(n, int(k))
+        fg_kernels.fg_select_global_best_topk_kernel(int(slot), n, int(k))
         try:
             n_pack = int(getattr(fg_fields, "FG_DOWNLOAD_TOPK_MAX", 0) or 0)
         except Exception:
@@ -535,7 +544,7 @@ def fg_download_global_best(
             n_pack = 256
 
         # Pack a fixed number of rows to avoid extra sync/scalar reads.
-        fg_kernels.fg_pack_selected_global_best_kernel(int(n_pack))
+        fg_kernels.fg_pack_selected_global_best_kernel(int(slot), int(n_pack))
         _t1 = time.perf_counter()
         sel_packed_all = fg_fields.fg_selected_packed.to_numpy()
         _dl_sec = time.perf_counter() - _t1
@@ -579,7 +588,7 @@ def fg_download_global_best(
         }
 
     # Default: download all rows
-    fg_kernels.fg_pack_global_best_kernel(n)
+    fg_kernels.fg_pack_global_best_kernel(int(slot), n)
     _t1 = time.perf_counter()
     packed = fg_fields.fg_global_best_packed.to_numpy()[:n, :]
     _dl_sec = time.perf_counter() - _t1
@@ -2355,10 +2364,15 @@ def solve_force_greats_finder_gpu_tasks(
                     int(n_ftff),
                     int(max_fp_compute_ctx.get("n_sections", n_sections) or n_sections),
                 )
-                try:
-                    cfg_total_len_buf[: int(n_ftff)] = fg_fields.fg_cfg_total_len_list.to_numpy()[: int(n_ftff)]
-                except Exception:
-                    pass
+                if not use_gpu_cfg_ranges:
+                    # CPU needs per-ftff lengths to build cfg_start/cfg_len per band.
+                    try:
+                        cfg_total_len_buf[: int(n_ftff)] = fg_fields.fg_cfg_total_len_list.to_numpy()[: int(n_ftff)]
+                    except Exception:
+                        pass
+                else:
+                    # Avoid downloading the full len list (1024 ints) just to compute max().
+                    fg_kernels.fg_reduce_cfg_total_len_max_kernel(int(n_ftff))
             except Exception as e:
                 raise RuntimeError(f"FG max-FP GPU compute failed: {type(e).__name__}: {e}") from e
 
@@ -2376,15 +2390,37 @@ def solve_force_greats_finder_gpu_tasks(
             _fg_flat_work_key = flat_key
 
         # Stage 1: run in cfg bands to avoid long-running kernels on Windows.
-        try:
-            max_cfg_len_chunk = int(np.max(cfg_total_len_buf[: int(n_ftff)]))
-        except Exception:
-            max_cfg_len_chunk = 0
-        n_bands = (int(max_cfg_len_chunk) + int(cfg_chunk) - 1) // int(cfg_chunk)
+        #
+        # When per-FT/FF max-FP caps are computed on GPU, `max_cfg_len` is not known ahead of time,
+        # which can make the global `cfg_chunk` conservative and inflate band count (more launches).
+        # We can safely tune per-chunk banding after we observe `max_cfg_len_chunk` from the GPU.
+        if use_gpu_max_fp and use_gpu_cfg_ranges and max_fp_compute_ctx is not None:
+            try:
+                max_cfg_len_chunk = int(fg_fields.fg_cfg_total_len_max[None])
+            except Exception:
+                max_cfg_len_chunk = 0
+        else:
+            try:
+                max_cfg_len_chunk = int(np.max(cfg_total_len_buf[: int(n_ftff)]))
+            except Exception:
+                max_cfg_len_chunk = 0
+        cfg_chunk_run = int(cfg_chunk)
+        if use_gpu_max_fp and int(max_cfg_len_chunk) > 0:
+            try:
+                cfg_chunk_run = _maybe_force_single_band(
+                    int(cfg_chunk_run),
+                    n_work_items=int(n_work_items),
+                    max_cfg_len=int(max_cfg_len_chunk),
+                    label="packed_gpu_max_fp",
+                )
+                cfg_chunk_run = max(1, min(int(cfg_chunk_run), int(max_cfg_len_chunk)))
+            except Exception:
+                cfg_chunk_run = int(cfg_chunk)
+        n_bands = (int(max_cfg_len_chunk) + int(cfg_chunk_run) - 1) // int(cfg_chunk_run)
         t_stage1_wall0 = time.perf_counter() if (_PERF_TIMING or p is not None) else 0.0
         for band_idx in range(n_bands):
-            band_start = int(band_idx) * int(cfg_chunk)
-            band_len = min(int(cfg_chunk), int(max_cfg_len_chunk) - int(band_start))
+            band_start = int(band_idx) * int(cfg_chunk_run)
+            band_len = min(int(cfg_chunk_run), int(max_cfg_len_chunk) - int(band_start))
             if band_len <= 0:
                 continue
 

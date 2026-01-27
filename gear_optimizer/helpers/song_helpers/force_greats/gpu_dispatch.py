@@ -337,13 +337,13 @@ def process_force_greats_gpu_finder(
         if gpu_client is not None:
             fut = gpu_client.submit(
                 GpuRequestType.FG_RESET_GLOBAL_BEST,
-                {"n_genomes": int(n_genomes)},
+                {"n_genomes": int(n_genomes), "song_slot": int(song_slot)},
             ).future
             if blocking:
                 fut.result()
                 return None
             return fut
-        fg_reset_global_best(int(n_genomes))
+        fg_reset_global_best(int(n_genomes), session_slot=int(song_slot))
         return None
 
     def _submit_fg_download_global_best(
@@ -355,7 +355,7 @@ def process_force_greats_gpu_finder(
         keep_mask=None,
     ):
         if gpu_client is not None:
-            payload = {"n_genomes": int(n_genomes)}
+            payload = {"n_genomes": int(n_genomes), "song_slot": int(song_slot)}
             if topk is not None and base_scores is not None:
                 payload["topk"] = int(topk)
                 payload["base_scores"] = base_scores
@@ -366,8 +366,14 @@ def process_force_greats_gpu_finder(
             ).future
             return fut.result() if blocking else fut
         if topk is not None and base_scores is not None:
-            return fg_download_global_best(int(n_genomes), topk=int(topk), base_scores=base_scores, keep_mask=keep_mask)
-        return fg_download_global_best(int(n_genomes))
+            return fg_download_global_best(
+                int(n_genomes),
+                session_slot=int(song_slot),
+                topk=int(topk),
+                base_scores=base_scores,
+                keep_mask=keep_mask,
+            )
+        return fg_download_global_best(int(n_genomes), session_slot=int(song_slot))
 
     def _submit_solve_force_greats_finder(*args, blocking: bool = True, **kwargs):
         nonlocal timeline_precompute_queued

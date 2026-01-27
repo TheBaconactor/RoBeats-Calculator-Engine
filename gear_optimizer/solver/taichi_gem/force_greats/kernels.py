@@ -34,6 +34,7 @@ fg_ff_list = None
 fg_cfg_start_list = None
 fg_cfg_len_list = None
 fg_cfg_total_len_list = None
+fg_cfg_total_len_max = None
 fg_cfg_base_list = None
 fg_cfg_mode_list = None
 fg_cfg_max_fp = None
@@ -679,6 +680,14 @@ def fg_compute_cfg_total_len_kernel(n_pairs: ti.i32, n_sections: ti.i32):
         if total > 2147483647:
             total = 2147483647
         fg_cfg_total_len_list[i] = ti.cast(total, ti.i32)
+
+
+@ti.kernel
+def fg_reduce_cfg_total_len_max_kernel(n_pairs: ti.i32):
+    """Compute max(fg_cfg_total_len_list[:n_pairs]) into fg_cfg_total_len_max[None]."""
+    fg_cfg_total_len_max[None] = 0
+    for i in range(n_pairs):
+        ti.atomic_max(fg_cfg_total_len_max[None], fg_cfg_total_len_list[i])
 
 
 @ti.kernel
@@ -1469,7 +1478,7 @@ def fg_stage2_recompute_kernel(
             fg_best_cfg_counts[gid, s] = cfg_counts_vec[s]
 
 @ti.kernel
-def fg_stage2_and_update_global_best_kernel(n_genomes: ti.i32, n_ftff: ti.i32):
+def fg_stage2_and_update_global_best_kernel(session_slot: ti.i32, n_genomes: ti.i32, n_ftff: ti.i32):
     """
     Fused Stage 2 + global-best update.
 
@@ -1516,10 +1525,10 @@ def fg_stage2_and_update_global_best_kernel(n_genomes: ti.i32, n_ftff: ti.i32):
         fg_best_fill_penalty[gid] = fp_val
 
         # Update global best (same tie-break as fg_update_global_best_kernel)
-        old_score = fg_global_best_final_score[gid]
-        old_cfg = fg_global_best_cfg_idx[gid]
-        old_ft = fg_global_best_ft[gid]
-        old_ff = fg_global_best_ff[gid]
+        old_score = fg_global_best_final_score[session_slot, gid]
+        old_cfg = fg_global_best_cfg_idx[session_slot, gid]
+        old_ft = fg_global_best_ft[session_slot, gid]
+        old_ff = fg_global_best_ff[session_slot, gid]
 
         better = False
         if best_final > old_score:
@@ -1536,17 +1545,17 @@ def fg_stage2_and_update_global_best_kernel(n_genomes: ti.i32, n_ftff: ti.i32):
                     better = True
 
         if better:
-            fg_global_best_final_score[gid] = best_final
-            fg_global_best_base_score[gid] = base_score
-            fg_global_best_cfg_idx[gid] = best_cfg
-            fg_global_best_ft[gid] = ft_val
-            fg_global_best_ff[gid] = ff_val
-            fg_global_best_g_pp[gid] = g_pp
-            fg_global_best_g_cm[gid] = g_cm
-            fg_global_best_g_fm[gid] = g_fm
-            fg_global_best_g_ov[gid] = g_ov
-            fg_global_best_score_penalty[gid] = sp_val
-            fg_global_best_fill_penalty[gid] = fp_val
+            fg_global_best_final_score[session_slot, gid] = best_final
+            fg_global_best_base_score[session_slot, gid] = base_score
+            fg_global_best_cfg_idx[session_slot, gid] = best_cfg
+            fg_global_best_ft[session_slot, gid] = ft_val
+            fg_global_best_ff[session_slot, gid] = ff_val
+            fg_global_best_g_pp[session_slot, gid] = g_pp
+            fg_global_best_g_cm[session_slot, gid] = g_cm
+            fg_global_best_g_fm[session_slot, gid] = g_fm
+            fg_global_best_g_ov[session_slot, gid] = g_ov
+            fg_global_best_score_penalty[session_slot, gid] = sp_val
+            fg_global_best_fill_penalty[session_slot, gid] = fp_val
 
 
 @ti.kernel
@@ -1857,11 +1866,11 @@ def fg_stage2_recompute_and_update_global_best_kernel(
         fg_best_score_penalty[gid] = score_penalty_total
         fg_best_fill_penalty[gid] = fill_penalty_total
 
-        # Update global best (same tie-break as fg_stage2_and_update_global_best_kernel)
-        old_score = fg_global_best_final_score[gid]
-        old_cfg = fg_global_best_cfg_idx[gid]
-        old_ft = fg_global_best_ft[gid]
-        old_ff = fg_global_best_ff[gid]
+        # Update global best for this song_slot (same tie-break as fg_stage2_and_update_global_best_kernel)
+        old_score = fg_global_best_final_score[song_slot, gid]
+        old_cfg = fg_global_best_cfg_idx[song_slot, gid]
+        old_ft = fg_global_best_ft[song_slot, gid]
+        old_ff = fg_global_best_ff[song_slot, gid]
 
         better = False
         if best_final > old_score:
@@ -1878,19 +1887,19 @@ def fg_stage2_recompute_and_update_global_best_kernel(
                     better = True
 
         if better:
-            fg_global_best_final_score[gid] = best_final
-            fg_global_best_base_score[gid] = base_score
-            fg_global_best_cfg_idx[gid] = best_cfg
-            fg_global_best_ft[gid] = ft_gems
-            fg_global_best_ff[gid] = ff_gems
-            fg_global_best_g_pp[gid] = gems_pp
-            fg_global_best_g_cm[gid] = gems_cm
-            fg_global_best_g_fm[gid] = gems_fm
-            fg_global_best_g_ov[gid] = gems_ov
-            fg_global_best_score_penalty[gid] = score_penalty_total
-            fg_global_best_fill_penalty[gid] = fill_penalty_total
+            fg_global_best_final_score[song_slot, gid] = best_final
+            fg_global_best_base_score[song_slot, gid] = base_score
+            fg_global_best_cfg_idx[song_slot, gid] = best_cfg
+            fg_global_best_ft[song_slot, gid] = ft_gems
+            fg_global_best_ff[song_slot, gid] = ff_gems
+            fg_global_best_g_pp[song_slot, gid] = gems_pp
+            fg_global_best_g_cm[song_slot, gid] = gems_cm
+            fg_global_best_g_fm[song_slot, gid] = gems_fm
+            fg_global_best_g_ov[song_slot, gid] = gems_ov
+            fg_global_best_score_penalty[song_slot, gid] = score_penalty_total
+            fg_global_best_fill_penalty[song_slot, gid] = fill_penalty_total
             for s in ti.static(range(FG_MAX_SECTIONS)):
-                fg_global_best_cfg_counts[gid, s] = cfg_counts_vec[s]
+                fg_global_best_cfg_counts[song_slot, gid, s] = cfg_counts_vec[s]
 
 
 @ti.kernel
@@ -1920,7 +1929,7 @@ def fg_pack_results_kernel(n_genomes: ti.i32):
 
 
 @ti.kernel
-def fg_pack_global_best_kernel(n_genomes: ti.i32):
+def fg_pack_global_best_kernel(session_slot: ti.i32, n_genomes: ti.i32):
     """
     Pack all global-best fields + cfg_counts into a single contiguous array for efficient CPU download.
 
@@ -1928,23 +1937,23 @@ def fg_pack_global_best_kernel(n_genomes: ti.i32):
     multi-group accumulation.
     """
     for g in range(n_genomes):
-        fg_global_best_packed[g, 0] = fg_global_best_final_score[g]
-        fg_global_best_packed[g, 1] = fg_global_best_base_score[g]
-        fg_global_best_packed[g, 2] = fg_global_best_cfg_idx[g]
-        fg_global_best_packed[g, 3] = fg_global_best_ft[g]
-        fg_global_best_packed[g, 4] = fg_global_best_ff[g]
-        fg_global_best_packed[g, 5] = fg_global_best_g_pp[g]
-        fg_global_best_packed[g, 6] = fg_global_best_g_cm[g]
-        fg_global_best_packed[g, 7] = fg_global_best_g_fm[g]
-        fg_global_best_packed[g, 8] = fg_global_best_g_ov[g]
-        fg_global_best_packed[g, 9] = fg_global_best_score_penalty[g]
-        fg_global_best_packed[g, 10] = fg_global_best_fill_penalty[g]
+        fg_global_best_packed[g, 0] = fg_global_best_final_score[session_slot, g]
+        fg_global_best_packed[g, 1] = fg_global_best_base_score[session_slot, g]
+        fg_global_best_packed[g, 2] = fg_global_best_cfg_idx[session_slot, g]
+        fg_global_best_packed[g, 3] = fg_global_best_ft[session_slot, g]
+        fg_global_best_packed[g, 4] = fg_global_best_ff[session_slot, g]
+        fg_global_best_packed[g, 5] = fg_global_best_g_pp[session_slot, g]
+        fg_global_best_packed[g, 6] = fg_global_best_g_cm[session_slot, g]
+        fg_global_best_packed[g, 7] = fg_global_best_g_fm[session_slot, g]
+        fg_global_best_packed[g, 8] = fg_global_best_g_ov[session_slot, g]
+        fg_global_best_packed[g, 9] = fg_global_best_score_penalty[session_slot, g]
+        fg_global_best_packed[g, 10] = fg_global_best_fill_penalty[session_slot, g]
         for s in ti.static(range(FG_MAX_SECTIONS)):
-            fg_global_best_packed[g, 11 + s] = fg_global_best_cfg_counts[g, s]
+            fg_global_best_packed[g, 11 + s] = fg_global_best_cfg_counts[session_slot, g, s]
 
 
 @ti.kernel
-def fg_select_global_best_topk_kernel(n_genomes: ti.i32, topk: ti.i32):
+def fg_select_global_best_topk_kernel(session_slot: ti.i32, n_genomes: ti.i32, topk: ti.i32):
     """
     Build a compact list of genome indices worth downloading from global_best.
 
@@ -1994,10 +2003,10 @@ def fg_select_global_best_topk_kernel(n_genomes: ti.i32, topk: ti.i32):
     for i in range(n_genomes):
         if fg_keep_mask[i] != 0:
             continue
-        score: ti.i32 = fg_global_best_final_score[i]
+        score: ti.i32 = fg_global_best_final_score[session_slot, i]
         if score <= fg_input_base_score[i]:
             continue
-        if fg_global_best_fill_penalty[i] <= 0:
+        if fg_global_best_fill_penalty[session_slot, i] <= 0:
             continue
 
         key: ti.i64 = (ti.cast(score, ti.i64) << 32) | ti.cast(0x7FFFFFFF - i, ti.i64)
@@ -2009,7 +2018,7 @@ def fg_select_global_best_topk_kernel(n_genomes: ti.i32, topk: ti.i32):
             if idx_j < 0:
                 pos = j
                 break
-            score_j: ti.i32 = fg_global_best_final_score[idx_j]
+            score_j: ti.i32 = fg_global_best_final_score[session_slot, idx_j]
             key_j: ti.i64 = (ti.cast(score_j, ti.i64) << 32) | ti.cast(0x7FFFFFFF - idx_j, ti.i64)
             if key > key_j:
                 pos = j
@@ -2035,7 +2044,7 @@ def fg_select_global_best_topk_kernel(n_genomes: ti.i32, topk: ti.i32):
 
 
 @ti.kernel
-def fg_pack_selected_global_best_kernel(n_selected: ti.i32):
+def fg_pack_selected_global_best_kernel(session_slot: ti.i32, n_selected: ti.i32):
     """Pack selected rows from global_best into fg_selected_packed for fast CPU download.
 
     Column order (12 + FG_MAX_SECTIONS):
@@ -2049,19 +2058,19 @@ def fg_pack_selected_global_best_kernel(n_selected: ti.i32):
             for c in range(1, total_cols):
                 fg_selected_packed[j, c] = 0
             continue
-        fg_selected_packed[j, 1] = fg_global_best_final_score[idx]
-        fg_selected_packed[j, 2] = fg_global_best_base_score[idx]
-        fg_selected_packed[j, 3] = fg_global_best_cfg_idx[idx]
-        fg_selected_packed[j, 4] = fg_global_best_ft[idx]
-        fg_selected_packed[j, 5] = fg_global_best_ff[idx]
-        fg_selected_packed[j, 6] = fg_global_best_g_pp[idx]
-        fg_selected_packed[j, 7] = fg_global_best_g_cm[idx]
-        fg_selected_packed[j, 8] = fg_global_best_g_fm[idx]
-        fg_selected_packed[j, 9] = fg_global_best_g_ov[idx]
-        fg_selected_packed[j, 10] = fg_global_best_score_penalty[idx]
-        fg_selected_packed[j, 11] = fg_global_best_fill_penalty[idx]
+        fg_selected_packed[j, 1] = fg_global_best_final_score[session_slot, idx]
+        fg_selected_packed[j, 2] = fg_global_best_base_score[session_slot, idx]
+        fg_selected_packed[j, 3] = fg_global_best_cfg_idx[session_slot, idx]
+        fg_selected_packed[j, 4] = fg_global_best_ft[session_slot, idx]
+        fg_selected_packed[j, 5] = fg_global_best_ff[session_slot, idx]
+        fg_selected_packed[j, 6] = fg_global_best_g_pp[session_slot, idx]
+        fg_selected_packed[j, 7] = fg_global_best_g_cm[session_slot, idx]
+        fg_selected_packed[j, 8] = fg_global_best_g_fm[session_slot, idx]
+        fg_selected_packed[j, 9] = fg_global_best_g_ov[session_slot, idx]
+        fg_selected_packed[j, 10] = fg_global_best_score_penalty[session_slot, idx]
+        fg_selected_packed[j, 11] = fg_global_best_fill_penalty[session_slot, idx]
         for s in ti.static(range(FG_MAX_SECTIONS)):
-            fg_selected_packed[j, 12 + s] = fg_global_best_cfg_counts[idx, s]
+            fg_selected_packed[j, 12 + s] = fg_global_best_cfg_counts[session_slot, idx, s]
 
 
 @ti.kernel
@@ -2807,30 +2816,30 @@ def fg_stage1_flat_kernel(
 
 
 @ti.kernel
-def fg_reset_global_best_kernel(n_genomes: ti.i32):
+def fg_reset_global_best_kernel(session_slot: ti.i32, n_genomes: ti.i32):
     """
     Reset global best fields to sentinel values before multi-group processing.
 
     Call this once at the start of a batch of FG groups, before the loop.
     """
     for i in range(n_genomes):
-        fg_global_best_final_score[i] = -1
-        fg_global_best_base_score[i] = 0
-        fg_global_best_cfg_idx[i] = -1
-        fg_global_best_ft[i] = 0
-        fg_global_best_ff[i] = 0
-        fg_global_best_g_pp[i] = 0
-        fg_global_best_g_cm[i] = 0
-        fg_global_best_g_fm[i] = 0
-        fg_global_best_g_ov[i] = 0
-        fg_global_best_score_penalty[i] = 0
-        fg_global_best_fill_penalty[i] = 0
+        fg_global_best_final_score[session_slot, i] = -1
+        fg_global_best_base_score[session_slot, i] = 0
+        fg_global_best_cfg_idx[session_slot, i] = -1
+        fg_global_best_ft[session_slot, i] = 0
+        fg_global_best_ff[session_slot, i] = 0
+        fg_global_best_g_pp[session_slot, i] = 0
+        fg_global_best_g_cm[session_slot, i] = 0
+        fg_global_best_g_fm[session_slot, i] = 0
+        fg_global_best_g_ov[session_slot, i] = 0
+        fg_global_best_score_penalty[session_slot, i] = 0
+        fg_global_best_fill_penalty[session_slot, i] = 0
         for s in ti.static(range(FG_MAX_SECTIONS)):
-            fg_global_best_cfg_counts[i, s] = 0
+            fg_global_best_cfg_counts[session_slot, i, s] = 0
 
 
 @ti.kernel
-def fg_update_global_best_kernel(n_genomes: ti.i32):
+def fg_update_global_best_kernel(session_slot: ti.i32, n_genomes: ti.i32):
     """
     Compare current fg_best_* results with fg_global_best_*, update if better.
 
@@ -2839,13 +2848,13 @@ def fg_update_global_best_kernel(n_genomes: ti.i32):
     """
     for gid in range(n_genomes):
         new_score = fg_best_final_score[gid]
-        old_score = fg_global_best_final_score[gid]
+        old_score = fg_global_best_final_score[session_slot, gid]
         new_cfg = fg_best_cfg_idx[gid]
-        old_cfg = fg_global_best_cfg_idx[gid]
+        old_cfg = fg_global_best_cfg_idx[session_slot, gid]
         new_ft = fg_best_ft[gid]
-        old_ft = fg_global_best_ft[gid]
+        old_ft = fg_global_best_ft[session_slot, gid]
         new_ff = fg_best_ff[gid]
-        old_ff = fg_global_best_ff[gid]
+        old_ff = fg_global_best_ff[session_slot, gid]
 
         # Deterministic tie-breaking:
         # 1) Higher final score wins.
@@ -2866,14 +2875,14 @@ def fg_update_global_best_kernel(n_genomes: ti.i32):
                     better = True
 
         if better:
-            fg_global_best_final_score[gid] = new_score
-            fg_global_best_base_score[gid] = fg_best_base_score[gid]
-            fg_global_best_cfg_idx[gid] = new_cfg
-            fg_global_best_ft[gid] = new_ft
-            fg_global_best_ff[gid] = new_ff
-            fg_global_best_g_pp[gid] = fg_best_g_pp[gid]
-            fg_global_best_g_cm[gid] = fg_best_g_cm[gid]
-            fg_global_best_g_fm[gid] = fg_best_g_fm[gid]
-            fg_global_best_g_ov[gid] = fg_best_g_ov[gid]
-            fg_global_best_score_penalty[gid] = fg_best_score_penalty[gid]
-            fg_global_best_fill_penalty[gid] = fg_best_fill_penalty[gid]
+            fg_global_best_final_score[session_slot, gid] = new_score
+            fg_global_best_base_score[session_slot, gid] = fg_best_base_score[gid]
+            fg_global_best_cfg_idx[session_slot, gid] = new_cfg
+            fg_global_best_ft[session_slot, gid] = new_ft
+            fg_global_best_ff[session_slot, gid] = new_ff
+            fg_global_best_g_pp[session_slot, gid] = fg_best_g_pp[gid]
+            fg_global_best_g_cm[session_slot, gid] = fg_best_g_cm[gid]
+            fg_global_best_g_fm[session_slot, gid] = fg_best_g_fm[gid]
+            fg_global_best_g_ov[session_slot, gid] = fg_best_g_ov[gid]
+            fg_global_best_score_penalty[session_slot, gid] = fg_best_score_penalty[gid]
+            fg_global_best_fill_penalty[session_slot, gid] = fg_best_fill_penalty[gid]
