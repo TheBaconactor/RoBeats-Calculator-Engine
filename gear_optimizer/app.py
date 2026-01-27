@@ -7,6 +7,7 @@ import multiprocessing
 import os
 import queue
 import re
+import shutil
 import secrets
 import signal
 import sys
@@ -340,6 +341,13 @@ class _ProgressUI:
         if not self._enabled or self._stream is None:
             return
         try:
+            term_width = 0
+            try:
+                term_width = int(shutil.get_terminal_size(fallback=(0, 0)).columns or 0)
+            except Exception:
+                term_width = 0
+            if term_width > 0:
+                line = self._truncate_ansi(line, max_len=max(1, term_width - 1))
             # `\x1b[K` clears to end-of-line, avoiding needing to pad (and avoiding ANSI-length math).
             self._stream.write("\r" + line + "\x1b[K")
             if final:
@@ -348,6 +356,28 @@ class _ProgressUI:
             self._last_len = len(line)
         except Exception:
             pass
+
+    @staticmethod
+    def _truncate_ansi(text: str, *, max_len: int) -> str:
+        if max_len <= 0:
+            return ""
+        ansi_re = re.compile(r"\x1b\[[0-9;]*m")
+        out = []
+        visible = 0
+        i = 0
+        n = len(text)
+        while i < n and visible < max_len:
+            if text[i] == "\x1b":
+                m = ansi_re.match(text, i)
+                if m:
+                    out.append(m.group(0))
+                    i = m.end()
+                    continue
+            out.append(text[i])
+            visible += 1
+            i += 1
+        out.append("\x1b[0m")
+        return "".join(out)
 
     @staticmethod
     def _format_duration(seconds: float | None) -> str:
