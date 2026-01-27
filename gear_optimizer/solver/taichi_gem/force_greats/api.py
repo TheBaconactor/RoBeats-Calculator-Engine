@@ -2270,13 +2270,21 @@ def solve_force_greats_finder_gpu_tasks(
         target_tiles = max(1, int(target_threads) // max(1, n_work_items_est))
         cfg_chunk = max(256, int(target_tiles * stage1_cfg_tile))
     cfg_chunk = int(cfg_chunk)
-    cfg_chunk = _maybe_force_single_band(
-        int(cfg_chunk),
-        n_work_items=int(n_work_items_est),
-        max_cfg_len=int(max_cfg_len),
-        label="packed",
-    )
-    cfg_chunk = max(1, min(int(cfg_chunk), int(max_cfg_len)))
+    # `max_cfg_len` is computed from CPU-visible config windows/matrices.
+    #
+    # In the GPU max-FP compute path (per-ftff mixed-radix caps computed on-device),
+    # we don't know max cfg length up-front; clamping by 0 would collapse cfg_chunk
+    # to 1 and explode band count (severe perf regression).
+    if int(max_cfg_len) > 0:
+        cfg_chunk = _maybe_force_single_band(
+            int(cfg_chunk),
+            n_work_items=int(n_work_items_est),
+            max_cfg_len=int(max_cfg_len),
+            label="packed",
+        )
+        cfg_chunk = max(1, min(int(cfg_chunk), int(max_cfg_len)))
+    else:
+        cfg_chunk = max(1, int(cfg_chunk))
 
     # Process FT/FF entries in FG_MAX_FTFF-sized chunks (field shape stability).
     max_ftff = int(max_ftff)
