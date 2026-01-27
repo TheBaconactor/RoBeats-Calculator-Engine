@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -185,7 +186,7 @@ def find_most_common_loadout(
         # Representative mini variant (preserves per-mini group variants).
         variants = mini_variants.get(key) or Counter()
         chosen_variant = _pick_representative_variant(variants)
-        avg_gems = {"PP": 0, "CM": 0, "FM": 0, "FT": 0, "FF": 0, "Element": 0}
+        gem_sums = {"PP": 0, "CM": 0, "FM": 0, "FT": 0, "FF": 0, "Element": 0}
         avg_score = 0
         for row in rows:
             avg_score += int(_effective_score(row))
@@ -194,17 +195,16 @@ def find_most_common_loadout(
             except Exception:
                 details = {}
             gems = details.get("GemCounts") or {}
-            avg_gems["PP"] += int(gems.get("Perfect Points", 0) or 0)
-            avg_gems["CM"] += int(gems.get("Combo Multiplier", 0) or 0)
-            avg_gems["FM"] += int(gems.get("Fever Multiplier", 0) or 0)
-            avg_gems["FT"] += int(details.get("FT", 0) or 0)
-            avg_gems["FF"] += int(details.get("FF", 0) or 0)
-            avg_gems["Element"] += int(gems.get("Element", 0) or 0)
+            gem_sums["PP"] += int(gems.get("Perfect Points", 0) or 0)
+            gem_sums["CM"] += int(gems.get("Combo Multiplier", 0) or 0)
+            gem_sums["FM"] += int(gems.get("Fever Multiplier", 0) or 0)
+            gem_sums["FT"] += int(details.get("FT", 0) or 0)
+            gem_sums["FF"] += int(details.get("FF", 0) or 0)
+            gem_sums["Element"] += int(gems.get("Element", 0) or 0)
 
         denom = max(1, len(rows))
         avg_score = int(avg_score / denom)
-        for k in list(avg_gems.keys()):
-            avg_gems[k] = int(round(avg_gems[k] / denom))
+        avg_gems = _round_mean_gems_to_total(gem_sums, denom, total=90)
 
         results.append(
             {
@@ -243,6 +243,69 @@ def sort_gears_by_slot(gear_names: List[str], gears_by_name: Dict[str, dict]) ->
         return 99
 
     return sorted(gear_names, key=get_slot_index)
+
+
+def _round_mean_gems_to_total(gem_sums: Dict[str, int], denom: int, *, total: int) -> Dict[str, int]:
+    """
+    Convert per-field gem sums into an integer mean allocation that always sums to `total`.
+
+    This uses a largest-remainder style allocation so that:
+    - the vector is as close as possible to the true mean,
+    - the sum is exact (no 89/91 gem artifacts from independent rounding).
+    """
+    denom = max(1, int(denom))
+    keys = ("PP", "CM", "FM", "FT", "FF", "Element")
+
+    means: Dict[str, float] = {k: float(int(gem_sums.get(k, 0) or 0)) / denom for k in keys}
+    floors: Dict[str, int] = {k: int(math.floor(means[k])) for k in keys}
+
+    current_total = sum(floors.values())
+    remaining = int(total) - current_total
+    if remaining == 0:
+        return floors
+
+    def sort_key_for_add(k: str) -> tuple[float, float, int]:
+        frac = means[k] - floors[k]
+        return (frac, means[k], keys.index(k))
+
+    def sort_key_for_sub(k: str) -> tuple[float, float, int]:
+        frac = means[k] - floors[k]
+        # Prefer subtracting from smallest fractional part / smallest mean, while staying >= 0.
+        return (frac, means[k], keys.index(k))
+
+    if remaining > 0:
+        order = sorted(keys, key=sort_key_for_add, reverse=True)
+        for k in order:
+            if remaining <= 0:
+                break
+            floors[k] += 1
+            remaining -= 1
+    else:
+        order = sorted(keys, key=sort_key_for_sub)
+        for k in order:
+            if remaining >= 0:
+                break
+            if floors[k] <= 0:
+                continue
+            floors[k] -= 1
+            remaining += 1
+
+    # If float error or weird inputs leave us off by a few, repair deterministically.
+    if remaining != 0:
+        repair_keys = list(keys)
+        i = 0
+        while remaining != 0 and i < 10_000:
+            k = repair_keys[i % len(repair_keys)]
+            if remaining > 0:
+                floors[k] += 1
+                remaining -= 1
+            else:
+                if floors[k] > 0:
+                    floors[k] -= 1
+                    remaining += 1
+            i += 1
+
+    return floors
 
 
 def format_gem_counts(avg_gems: Dict[str, int]) -> Dict[str, int]:
