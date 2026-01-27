@@ -1638,19 +1638,19 @@ def fg_stage2_recompute_and_update_global_best_kernel(
         cfg_mode: ti.i32 = fg_cfg_mode_list[best_ftff]
         cfg_base: ti.i32 = fg_cfg_base_list[best_ftff]
         fp_targets_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+        cfg_counts_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
         if cfg_mode != 0:
             local_cfg_idx: ti.i32 = best_cfg - cfg_base
             if local_cfg_idx < 0:
                 local_cfg_idx = 0
             fp_targets_vec = _fg_decode_fp_targets_vec(local_cfg_idx, best_ftff, n_sections)
-            cfg_counts_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
-            if cfg_mode != 0:
-                cfg_counts_vec = fp_targets_vec
-            else:
-                if best_cfg >= 0:
-                    for s in ti.static(range(FG_MAX_SECTIONS)):
-                        if s < n_sections:
-                            cfg_counts_vec[s] = fg_forced_counts[best_cfg, s]
+        if cfg_mode != 0:
+            cfg_counts_vec = fp_targets_vec
+        else:
+            if best_cfg >= 0:
+                for s in ti.static(range(FG_MAX_SECTIONS)):
+                    if s < n_sections:
+                        cfg_counts_vec[s] = fg_forced_counts[best_cfg, s]
 
         m0 = ti.cast(0, ti.u32)
         m1 = ti.cast(0, ti.u32)
