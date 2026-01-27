@@ -2516,25 +2516,58 @@ class GpuExecutor:
 
         fg_tasks: list[dict[str, Any]] = []
         cfg_windows: list[dict] | None = None
+        use_gpu_max_fp_compute = str(os.environ.get("FG_MAX_FP_GPU_COMPUTE", "0") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         if implicit_cfgs:
-            # Per-pair max-FP caps (no CPU grouping). The packed-task solver can consume
-            # per-pair max-FP caps computed on GPU and decode per-ftff configs on-GPU.
-            fg_tasks.append(
-                {
-                    "counts_list": None,
-                    "counts_max_fp": {
-                        "mode": "gpu",
-                        "base_stats_pairs": base_arr,
-                        "non_fever_base_by_ff": non_fever_base_by_ff,
-                        "fp_cap_table": fp_cap_table,
-                        "n_sections": int(n_sections),
-                        "song_slot": int(song_slot),
-                        "gem_scale_fever": int(gem_scale_fever),
-                    },
-                    "ftff_pairs": pairs_arr,
-                    "base_cfg_offset": 0,
-                }
-            )
+            if use_gpu_max_fp_compute:
+                # Per-pair max-FP caps (no CPU grouping). The packed-task solver can consume
+                # per-pair max-FP caps computed on GPU and decode per-ftff configs on-GPU.
+                fg_tasks.append(
+                    {
+                        "counts_list": None,
+                        "counts_max_fp": {
+                            "mode": "gpu",
+                            "base_stats_pairs": base_arr,
+                            "non_fever_base_by_ff": non_fever_base_by_ff,
+                            "fp_cap_table": fp_cap_table,
+                            "n_sections": int(n_sections),
+                            "song_slot": int(song_slot),
+                            "gem_scale_fever": int(gem_scale_fever),
+                        },
+                        "ftff_pairs": pairs_arr,
+                        "base_cfg_offset": 0,
+                    }
+                )
+            else:
+                # Per-pair max-FP caps with full matrix download (avoid CPU grouping).
+                try:
+                    pair_ft = np.ascontiguousarray(pairs_arr[:, 0], dtype=np.int32)
+                    pair_ff = np.ascontiguousarray(pairs_arr[:, 1], dtype=np.int32)
+                    max_fp_matrix = self._compute_fg_breakpoints_max_fp_matrix(
+                        pair_ft=pair_ft,
+                        pair_ff=pair_ff,
+                        base_ft=base_ft,
+                        base_ff=base_ff,
+                        n_sections=int(n_sections),
+                        song_slot=int(song_slot),
+                        gem_scale_fever=int(gem_scale_fever),
+                        non_fever_base_by_ff=non_fever_base_by_ff,
+                        fp_cap_table=fp_cap_table,
+                    )
+                except Exception as e:
+                    raise RuntimeError(f"per-pair max-FP compute failed: {type(e).__name__}: {e}") from e
+                fg_tasks.append(
+                    {
+                        "counts_list": None,
+                        "counts_max_fp": max_fp_matrix,
+                        "ftff_pairs": pairs_arr,
+                        "base_cfg_offset": 0,
+                    }
+                )
         else:
             # Fallback: group identical max-FP rows on CPU (legacy explicit grouping path).
             try:

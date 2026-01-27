@@ -15,6 +15,9 @@ import taichi as ti
 from ..kernels import kernels_helpers
 from .fields import FG_DOWNLOAD_TOPK_MAX, FG_MAX_SECTIONS, FG_MAX_STAT
 
+# Reuse the shared kernel block dim to keep launch config consistent with other kernels.
+_KERNEL_BLOCK_DIM = kernels_helpers._KERNEL_BLOCK_DIM
+
 
 # ============================================================================
 # FIELD PLACEHOLDERS (bound by force_greats.fields.bind_fields)

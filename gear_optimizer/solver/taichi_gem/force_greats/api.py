@@ -1965,10 +1965,11 @@ def solve_force_greats_finder_gpu_tasks(
                 else:
                     max_fp_empty = int(getattr(counts_max_fp_arr, "size", 0) or 0) <= 0
 
-        if (cfg_empty and max_fp_empty) or ftff_empty:
-            continue
         if counts_max_fp_compute is not None and implicit_cfgs:
             per_pair_max_fp_gpu = True
+            max_fp_empty = False
+        if (cfg_empty and max_fp_empty) or ftff_empty:
+            continue
         if per_pair_max_fp_gpu:
             try:
                 base_pairs = np.asarray(counts_max_fp_compute.get("base_stats_pairs"), dtype=np.int32)
@@ -2338,6 +2339,10 @@ def solve_force_greats_finder_gpu_tasks(
                     int(n_ftff),
                     int(max_fp_compute_ctx.get("n_sections", n_sections) or n_sections),
                 )
+                try:
+                    cfg_total_len_buf[: int(n_ftff)] = fg_fields.fg_cfg_total_len_list.to_numpy()[: int(n_ftff)]
+                except Exception:
+                    pass
             except Exception as e:
                 raise RuntimeError(f"FG max-FP GPU compute failed: {type(e).__name__}: {e}") from e
 
