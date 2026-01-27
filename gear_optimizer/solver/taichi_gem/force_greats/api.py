@@ -2338,8 +2338,8 @@ def solve_force_greats_finder_gpu_tasks(
                     int(n_ftff),
                     int(max_fp_compute_ctx.get("n_sections", n_sections) or n_sections),
                 )
-            except Exception:
-                pass
+            except Exception as e:
+                raise RuntimeError(f"FG max-FP GPU compute failed: {type(e).__name__}: {e}") from e
 
         # Reset per-call outputs and init stage1.
         fg_kernels.fg_reset_best_kernel(int(n_genomes))
