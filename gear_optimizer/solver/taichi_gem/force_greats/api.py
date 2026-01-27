@@ -561,6 +561,7 @@ def fg_download_global_best(
 
         sel_packed = sel_packed_all[: int(n_sel), :]
         sel_idx = sel_packed[:, 0]
+        cfg_counts = sel_packed[:, 12 : 12 + int(fg_fields.FG_MAX_SECTIONS)]
         return {
             "selected_indices": sel_idx,
             "final_score": sel_packed[:, 1],
@@ -574,6 +575,7 @@ def fg_download_global_best(
             "g_ov": sel_packed[:, 9],
             "score_penalty": sel_packed[:, 10],
             "fill_penalty": sel_packed[:, 11],
+            "cfg_counts": cfg_counts,
         }
 
     # Default: download all rows
@@ -590,6 +592,7 @@ def fg_download_global_best(
             )
         except Exception:
             pass
+    cfg_counts = packed[:, 11 : 11 + int(fg_fields.FG_MAX_SECTIONS)]
     return {
         "final_score": packed[:, 0],
         "base_score": packed[:, 1],
@@ -602,6 +605,7 @@ def fg_download_global_best(
         "g_ov": packed[:, 8],
         "score_penalty": packed[:, 9],
         "fill_penalty": packed[:, 10],
+        "cfg_counts": cfg_counts,
     }
 
 
@@ -1495,7 +1499,7 @@ def _solve_force_greats_finder_gpu_impl(
         t_kernel = time.perf_counter() - _t1
         _t2 = time.perf_counter()
 
-    # Pack results on GPU (all 11 fields → 1 array)
+    # Pack results on GPU (11 fields + cfg_counts → 1 array)
     fg_kernels.fg_pack_results_kernel(n_genomes)
 
     # Download results (1 transfer instead of 11!)

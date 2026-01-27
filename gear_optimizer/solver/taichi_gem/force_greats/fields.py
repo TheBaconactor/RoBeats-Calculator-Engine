@@ -23,6 +23,8 @@ FG_MAX_CONFIGS = 1048576
 FG_MAX_FTFF = 1024
 FG_MAX_SONG_NOTES = 200000  # safety cap for timestamps uploaded to GPU
 FG_DOWNLOAD_TOPK_MAX = 256  # Max selected rows for reduced global_best download (keep + candidates)
+FG_PACKED_COLS = 11 + FG_MAX_SECTIONS
+FG_SELECTED_PACKED_COLS = 12 + FG_MAX_SECTIONS
 
 # Flattened parallelization: MAX_GENOMES * FG_MAX_FTFF threads
 # Each thread processes ONE config at a time (chunked)
@@ -73,10 +75,12 @@ fg_best_g_fm: ti.Field | None = None  # (MAX_GENOMES,) i32
 fg_best_g_ov: ti.Field | None = None  # (MAX_GENOMES,) i32
 fg_best_score_penalty: ti.Field | None = None  # (MAX_GENOMES,) i32
 fg_best_fill_penalty: ti.Field | None = None  # (MAX_GENOMES,) i32
+fg_best_cfg_counts: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_SECTIONS) i32
 
-# Packed results for efficient CPU download (all 11 fields in one transfer)
-# Format: (MAX_GENOMES, 11) with columns: [final_score, base_score, cfg_idx, ft, ff, g_pp, g_cm, g_fm, g_ov, score_penalty, fill_penalty]
-fg_best_packed: ti.Field | None = None  # (MAX_GENOMES, 11) i32
+# Packed results for efficient CPU download.
+# Format: (MAX_GENOMES, 11 + FG_MAX_SECTIONS) with columns:
+# [final_score, base_score, cfg_idx, ft, ff, g_pp, g_cm, g_fm, g_ov, score_penalty, fill_penalty, cfg_counts...]
+fg_best_packed: ti.Field | None = None  # (MAX_GENOMES, FG_PACKED_COLS) i32
 
 # NEW: Packed 64-bit field for atomic (score, cfg_idx) updates - fixes race condition
 # Format: (score << 32) | (cfg_idx & 0xFFFFFFFF) - score in upper 32 bits for correct atomic_max ordering
@@ -111,14 +115,15 @@ fg_global_best_g_fm: ti.Field | None = None  # (MAX_GENOMES,) i32
 fg_global_best_g_ov: ti.Field | None = None  # (MAX_GENOMES,) i32
 fg_global_best_score_penalty: ti.Field | None = None  # (MAX_GENOMES,) i32
 fg_global_best_fill_penalty: ti.Field | None = None  # (MAX_GENOMES,) i32
-fg_global_best_packed: ti.Field | None = None  # (MAX_GENOMES, 11) i32
+fg_global_best_cfg_counts: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_SECTIONS) i32
+fg_global_best_packed: ti.Field | None = None  # (MAX_GENOMES, FG_PACKED_COLS) i32
 
 # Optional: reduce host downloads by selecting/packing only a small subset of global_best rows.
 fg_input_base_score: ti.Field | None = None  # (MAX_GENOMES,) i32 (base score per genome for eligibility filter)
 fg_keep_mask: ti.Field | None = None  # (MAX_GENOMES,) i32 (1=force include this genome in selected list)
 fg_selected_count: ti.Field | None = None  # () i32 (number of selected rows)
 fg_selected_indices: ti.Field | None = None  # (FG_DOWNLOAD_TOPK_MAX,) i32 (genome indices into global_best arrays)
-fg_selected_packed: ti.Field | None = None  # (FG_DOWNLOAD_TOPK_MAX, 12) i32 (idx + packed row)
+fg_selected_packed: ti.Field | None = None  # (FG_DOWNLOAD_TOPK_MAX, 12 + FG_MAX_SECTIONS) i32 (idx + packed row)
 
 # Warm-start hints for FG gem allocation (local search optimization)
 # Stores: [pp_gems, cm_gems, fm_gems, ov_gems] from previous best allocation
@@ -153,7 +158,7 @@ def reset_fields_state() -> None:
     global fg_cfg_base_list, fg_cfg_mode_list, fg_cfg_max_fp
     global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx
     global fg_best_ft, fg_best_ff, fg_best_g_pp, fg_best_g_cm, fg_best_g_fm, fg_best_g_ov
-    global fg_best_score_penalty, fg_best_fill_penalty, fg_best_packed
+    global fg_best_score_penalty, fg_best_fill_penalty, fg_best_cfg_counts, fg_best_packed
     global fg_stage1_packed
     global fg_stage1_final_score, fg_stage1_base_score, fg_stage1_cfg_idx
     global fg_stage1_g_pp, fg_stage1_g_cm, fg_stage1_g_fm, fg_stage1_g_ov
@@ -186,6 +191,7 @@ def reset_fields_state() -> None:
     fg_best_g_ov = None
     fg_best_score_penalty = None
     fg_best_fill_penalty = None
+    fg_best_cfg_counts = None
     fg_best_packed = None
 
     fg_stage1_packed = None
@@ -206,7 +212,7 @@ def reset_fields_state() -> None:
     global fg_global_best_final_score, fg_global_best_base_score, fg_global_best_cfg_idx
     global fg_global_best_ft, fg_global_best_ff
     global fg_global_best_g_pp, fg_global_best_g_cm, fg_global_best_g_fm, fg_global_best_g_ov
-    global fg_global_best_score_penalty, fg_global_best_fill_penalty, fg_global_best_packed
+    global fg_global_best_score_penalty, fg_global_best_fill_penalty, fg_global_best_cfg_counts, fg_global_best_packed
     global fg_input_base_score, fg_keep_mask, fg_selected_count, fg_selected_indices, fg_selected_packed
     global fg_genome_hint_allocation
     fg_global_best_final_score = None
@@ -220,6 +226,7 @@ def reset_fields_state() -> None:
     fg_global_best_g_ov = None
     fg_global_best_score_penalty = None
     fg_global_best_fill_penalty = None
+    fg_global_best_cfg_counts = None
     fg_global_best_packed = None
 
     fg_input_base_score = None
@@ -265,6 +272,7 @@ def bind_fields(kernels_module) -> None:
     kernels_module.fg_best_g_ov = fg_best_g_ov
     kernels_module.fg_best_score_penalty = fg_best_score_penalty
     kernels_module.fg_best_fill_penalty = fg_best_fill_penalty
+    kernels_module.fg_best_cfg_counts = fg_best_cfg_counts
     kernels_module.fg_best_packed = fg_best_packed
 
     kernels_module.fg_stage1_final_score = fg_stage1_final_score
@@ -294,6 +302,7 @@ def bind_fields(kernels_module) -> None:
     kernels_module.fg_global_best_g_ov = fg_global_best_g_ov
     kernels_module.fg_global_best_score_penalty = fg_global_best_score_penalty
     kernels_module.fg_global_best_fill_penalty = fg_global_best_fill_penalty
+    kernels_module.fg_global_best_cfg_counts = fg_global_best_cfg_counts
     kernels_module.fg_global_best_packed = fg_global_best_packed
 
     kernels_module.fg_input_base_score = fg_input_base_score
@@ -319,7 +328,7 @@ def allocate_fields() -> None:
     global fg_cfg_base_list, fg_cfg_mode_list, fg_cfg_max_fp
     global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx, fg_best_ft, fg_best_ff
     global fg_best_g_pp, fg_best_g_cm, fg_best_g_fm, fg_best_g_ov
-    global fg_best_score_penalty, fg_best_fill_penalty, fg_best_packed
+    global fg_best_score_penalty, fg_best_fill_penalty, fg_best_cfg_counts, fg_best_packed
     global fg_stage1_final_score, fg_stage1_base_score, fg_stage1_cfg_idx
     global fg_stage1_g_pp, fg_stage1_g_cm, fg_stage1_g_fm, fg_stage1_g_ov
     global fg_stage1_score_penalty, fg_stage1_fill_penalty
@@ -357,7 +366,8 @@ def allocate_fields() -> None:
     fg_best_g_ov = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_best_score_penalty = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_best_fill_penalty = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    fg_best_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, 11))
+    fg_best_cfg_counts = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_SECTIONS))
+    fg_best_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_PACKED_COLS))
 
     fg_stage1_final_score = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
     fg_stage1_base_score = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
@@ -380,7 +390,7 @@ def allocate_fields() -> None:
     global fg_global_best_final_score, fg_global_best_base_score, fg_global_best_cfg_idx
     global fg_global_best_ft, fg_global_best_ff
     global fg_global_best_g_pp, fg_global_best_g_cm, fg_global_best_g_fm, fg_global_best_g_ov
-    global fg_global_best_score_penalty, fg_global_best_fill_penalty, fg_global_best_packed
+    global fg_global_best_score_penalty, fg_global_best_fill_penalty, fg_global_best_cfg_counts, fg_global_best_packed
     global fg_input_base_score, fg_keep_mask, fg_selected_count, fg_selected_indices, fg_selected_packed
     fg_global_best_final_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_global_best_base_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
@@ -393,13 +403,14 @@ def allocate_fields() -> None:
     fg_global_best_g_ov = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_global_best_score_penalty = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_global_best_fill_penalty = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
-    fg_global_best_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, 11))
+    fg_global_best_cfg_counts = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_SECTIONS))
+    fg_global_best_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_PACKED_COLS))
 
     fg_input_base_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_keep_mask = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_selected_count = ti.field(dtype=ti.i32, shape=())
     fg_selected_indices = ti.field(dtype=ti.i32, shape=FG_DOWNLOAD_TOPK_MAX)
-    fg_selected_packed = ti.field(dtype=ti.i32, shape=(FG_DOWNLOAD_TOPK_MAX, 12))
+    fg_selected_packed = ti.field(dtype=ti.i32, shape=(FG_DOWNLOAD_TOPK_MAX, FG_SELECTED_PACKED_COLS))
 
     # Warm-start hints for FG gem allocation
     global fg_genome_hint_allocation

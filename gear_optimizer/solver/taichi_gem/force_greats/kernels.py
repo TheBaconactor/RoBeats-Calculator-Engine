@@ -49,6 +49,7 @@ fg_best_g_fm = None
 fg_best_g_ov = None
 fg_best_score_penalty = None
 fg_best_fill_penalty = None
+fg_best_cfg_counts = None
 fg_best_packed = None
 
 fg_stage1_final_score = None
@@ -80,6 +81,7 @@ fg_global_best_g_fm = None
 fg_global_best_g_ov = None
 fg_global_best_score_penalty = None
 fg_global_best_fill_penalty = None
+fg_global_best_cfg_counts = None
 fg_global_best_packed = None
 
 fg_input_base_score = None
@@ -707,6 +709,8 @@ def fg_reset_best_kernel(n_genomes: ti.i32):
         fg_best_g_ov[i] = 0
         fg_best_score_penalty[i] = 0
         fg_best_fill_penalty[i] = 0
+        for s in ti.static(range(FG_MAX_SECTIONS)):
+            fg_best_cfg_counts[i, s] = 0
 
 
 @ti.kernel
@@ -1248,6 +1252,14 @@ def fg_stage2_recompute_kernel(
             if local_cfg_idx < 0:
                 local_cfg_idx = 0
             fp_targets_vec = _fg_decode_fp_targets_vec(local_cfg_idx, best_ftff, n_sections)
+        cfg_counts_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+        if cfg_mode != 0:
+            cfg_counts_vec = fp_targets_vec
+        else:
+            if best_cfg >= 0:
+                for s in ti.static(range(FG_MAX_SECTIONS)):
+                    if s < n_sections:
+                        cfg_counts_vec[s] = fg_forced_counts[best_cfg, s]
 
         m0 = ti.cast(0, ti.u32)
         m1 = ti.cast(0, ti.u32)
@@ -1453,6 +1465,8 @@ def fg_stage2_recompute_kernel(
         fg_best_g_ov[gid] = gems_ov
         fg_best_score_penalty[gid] = score_penalty_total
         fg_best_fill_penalty[gid] = fill_penalty_total
+        for s in ti.static(range(FG_MAX_SECTIONS)):
+            fg_best_cfg_counts[gid, s] = cfg_counts_vec[s]
 
 @ti.kernel
 def fg_stage2_and_update_global_best_kernel(n_genomes: ti.i32, n_ftff: ti.i32):
@@ -1629,6 +1643,14 @@ def fg_stage2_recompute_and_update_global_best_kernel(
             if local_cfg_idx < 0:
                 local_cfg_idx = 0
             fp_targets_vec = _fg_decode_fp_targets_vec(local_cfg_idx, best_ftff, n_sections)
+            cfg_counts_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+            if cfg_mode != 0:
+                cfg_counts_vec = fp_targets_vec
+            else:
+                if best_cfg >= 0:
+                    for s in ti.static(range(FG_MAX_SECTIONS)):
+                        if s < n_sections:
+                            cfg_counts_vec[s] = fg_forced_counts[best_cfg, s]
 
         m0 = ti.cast(0, ti.u32)
         m1 = ti.cast(0, ti.u32)
@@ -1867,17 +1889,19 @@ def fg_stage2_recompute_and_update_global_best_kernel(
             fg_global_best_g_ov[gid] = gems_ov
             fg_global_best_score_penalty[gid] = score_penalty_total
             fg_global_best_fill_penalty[gid] = fill_penalty_total
+            for s in ti.static(range(FG_MAX_SECTIONS)):
+                fg_global_best_cfg_counts[gid, s] = cfg_counts_vec[s]
 
 
 @ti.kernel
 def fg_pack_results_kernel(n_genomes: ti.i32):
     """
-    Pack all 11 best result fields into a single contiguous array for efficient CPU download.
+    Pack best result fields + cfg_counts into a single contiguous array for efficient CPU download.
 
     This eliminates 11 separate to_numpy() calls (11 CPU waits) into 1 single download.
     MASSIVE speedup on weak CPUs that bottleneck on GPU synchronization.
 
-    Column order: [final_score, base_score, cfg_idx, ft, ff, g_pp, g_cm, g_fm, g_ov, score_penalty, fill_penalty]
+    Column order: [final_score, base_score, cfg_idx, ft, ff, g_pp, g_cm, g_fm, g_ov, score_penalty, fill_penalty, cfg_counts...]
     """
     for g in range(n_genomes):
         fg_best_packed[g, 0] = fg_best_final_score[g]
@@ -1891,12 +1915,14 @@ def fg_pack_results_kernel(n_genomes: ti.i32):
         fg_best_packed[g, 8] = fg_best_g_ov[g]
         fg_best_packed[g, 9] = fg_best_score_penalty[g]
         fg_best_packed[g, 10] = fg_best_fill_penalty[g]
+        for s in ti.static(range(FG_MAX_SECTIONS)):
+            fg_best_packed[g, 11 + s] = fg_best_cfg_counts[g, s]
 
 
 @ti.kernel
 def fg_pack_global_best_kernel(n_genomes: ti.i32):
     """
-    Pack all 11 global-best fields into a single contiguous array for efficient CPU download.
+    Pack all global-best fields + cfg_counts into a single contiguous array for efficient CPU download.
 
     Mirrors `fg_pack_results_kernel`, but for the GPU-resident global best buffers used by
     multi-group accumulation.
@@ -1913,6 +1939,8 @@ def fg_pack_global_best_kernel(n_genomes: ti.i32):
         fg_global_best_packed[g, 8] = fg_global_best_g_ov[g]
         fg_global_best_packed[g, 9] = fg_global_best_score_penalty[g]
         fg_global_best_packed[g, 10] = fg_global_best_fill_penalty[g]
+        for s in ti.static(range(FG_MAX_SECTIONS)):
+            fg_global_best_packed[g, 11 + s] = fg_global_best_cfg_counts[g, s]
 
 
 @ti.kernel
@@ -2010,14 +2038,15 @@ def fg_select_global_best_topk_kernel(n_genomes: ti.i32, topk: ti.i32):
 def fg_pack_selected_global_best_kernel(n_selected: ti.i32):
     """Pack selected rows from global_best into fg_selected_packed for fast CPU download.
 
-    Column order (12):
-      [genome_idx, final_score, base_score, cfg_idx, ft, ff, g_pp, g_cm, g_fm, g_ov, score_penalty, fill_penalty]
+    Column order (12 + FG_MAX_SECTIONS):
+      [genome_idx, final_score, base_score, cfg_idx, ft, ff, g_pp, g_cm, g_fm, g_ov, score_penalty, fill_penalty, cfg_counts...]
     """
+    total_cols = 12 + FG_MAX_SECTIONS
     for j in range(n_selected):
         idx: ti.i32 = fg_selected_indices[j]
         fg_selected_packed[j, 0] = idx
         if idx < 0:
-            for c in range(1, 12):
+            for c in range(1, total_cols):
                 fg_selected_packed[j, c] = 0
             continue
         fg_selected_packed[j, 1] = fg_global_best_final_score[idx]
@@ -2031,6 +2060,8 @@ def fg_pack_selected_global_best_kernel(n_selected: ti.i32):
         fg_selected_packed[j, 9] = fg_global_best_g_ov[idx]
         fg_selected_packed[j, 10] = fg_global_best_score_penalty[idx]
         fg_selected_packed[j, 11] = fg_global_best_fill_penalty[idx]
+        for s in ti.static(range(FG_MAX_SECTIONS)):
+            fg_selected_packed[j, 12 + s] = fg_global_best_cfg_counts[idx, s]
 
 
 @ti.kernel
@@ -2794,6 +2825,8 @@ def fg_reset_global_best_kernel(n_genomes: ti.i32):
         fg_global_best_g_ov[i] = 0
         fg_global_best_score_penalty[i] = 0
         fg_global_best_fill_penalty[i] = 0
+        for s in ti.static(range(FG_MAX_SECTIONS)):
+            fg_global_best_cfg_counts[i, s] = 0
 
 
 @ti.kernel

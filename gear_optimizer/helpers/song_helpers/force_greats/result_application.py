@@ -118,7 +118,10 @@ def apply_gpu_results_to_entries(
                 cfg_counts = []
             else:
                 try:
-                    cfg_counts = list(row)
+                    if int(n_sections) > 0:
+                        cfg_counts = list(row[: int(n_sections)])
+                    else:
+                        cfg_counts = list(row)
                 except Exception:
                     cfg_counts = []
         else:

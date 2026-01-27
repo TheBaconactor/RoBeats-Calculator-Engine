@@ -2719,38 +2719,43 @@ class GpuExecutor:
             result = fg_download_global_best(int(n_genomes))
 
         if isinstance(result, dict):
-            cfg_counts = None
-            if implicit_cfgs:
-                try:
-                    result_ft = np.asarray(result.get("FT"), dtype=np.int32)
-                    result_ff = np.asarray(result.get("FF"), dtype=np.int32)
-                    if result_ft.ndim == 1 and result_ff.ndim == 1 and int(result_ft.shape[0]) == int(result_ff.shape[0]):
-                        # Compute max-FP only for the returned FT/FF rows (avoid full matrix download).
-                        max_fp_rows = self._compute_fg_breakpoints_max_fp_matrix(
-                            pair_ft=result_ft,
-                            pair_ff=result_ff,
-                            base_ft=base_ft,
-                            base_ff=base_ff,
-                            n_sections=int(n_sections),
-                            song_slot=int(song_slot),
-                            gem_scale_fever=int(gem_scale_fever),
-                            non_fever_base_by_ff=non_fever_base_by_ff,
-                            fp_cap_table=fp_cap_table,
-                        )
-                        result_pairs = np.stack([result_ft, result_ff], axis=1)
-                        cfg_counts = self._decode_cfg_counts_from_max_fp_matrix(
-                            result.get("cfg_idx"),
-                            result_ft,
-                            result_ff,
-                            max_fp_rows,
-                            result_pairs,
-                            int(n_sections),
-                        )
-                except Exception:
-                    cfg_counts = None
-            elif cfg_windows:
-                cfg_counts = self._decode_cfg_counts_from_windows(result.get("cfg_idx"), cfg_windows, int(n_sections))
-            if cfg_counts is not None:
+            cfg_counts = result.get("cfg_counts")
+            if cfg_counts is None:
+                if implicit_cfgs:
+                    try:
+                        result_ft = np.asarray(result.get("FT"), dtype=np.int32)
+                        result_ff = np.asarray(result.get("FF"), dtype=np.int32)
+                        if (
+                            result_ft.ndim == 1
+                            and result_ff.ndim == 1
+                            and int(result_ft.shape[0]) == int(result_ff.shape[0])
+                        ):
+                            # Compute max-FP only for the returned FT/FF rows (avoid full matrix download).
+                            max_fp_rows = self._compute_fg_breakpoints_max_fp_matrix(
+                                pair_ft=result_ft,
+                                pair_ff=result_ff,
+                                base_ft=base_ft,
+                                base_ff=base_ff,
+                                n_sections=int(n_sections),
+                                song_slot=int(song_slot),
+                                gem_scale_fever=int(gem_scale_fever),
+                                non_fever_base_by_ff=non_fever_base_by_ff,
+                                fp_cap_table=fp_cap_table,
+                            )
+                            result_pairs = np.stack([result_ft, result_ff], axis=1)
+                            cfg_counts = self._decode_cfg_counts_from_max_fp_matrix(
+                                result.get("cfg_idx"),
+                                result_ft,
+                                result_ff,
+                                max_fp_rows,
+                                result_pairs,
+                                int(n_sections),
+                            )
+                    except Exception:
+                        cfg_counts = None
+                elif cfg_windows:
+                    cfg_counts = self._decode_cfg_counts_from_windows(result.get("cfg_idx"), cfg_windows, int(n_sections))
+            if cfg_counts is not None and result.get("cfg_counts") is None:
                 result = dict(result)
                 result["cfg_counts"] = cfg_counts
         return result
