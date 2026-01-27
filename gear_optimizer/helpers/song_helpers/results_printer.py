@@ -119,7 +119,7 @@ def print_results(
     print(f"FINAL CONFIGURATION FOR: {found_song_name}")
     print(f"Best Base Score Found: {base_score_run}")
     print(f"Best FG Score Found: {fg_score_to_print}")
-    status_emit_fn(f"DONE | Base={base_score_run} | FG={fg_score_to_print}")
+    status_emit_fn(f"Base={base_score_run} | FG={fg_score_to_print}")
 
     if fg_variants:
         if fg_debug and ref_arrays and calc_song:
