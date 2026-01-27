@@ -376,7 +376,9 @@ def process_song_task(args) -> SongResultPayload:
     output_enabled = bool(getattr(ENV, "output_enabled", False))
     tee = Tee(sys.stdout, buf) if output_enabled else Tee(buf)
     redirect_ctx = contextlib.redirect_stdout(tee)
+    redirect_err_ctx = contextlib.redirect_stderr(tee)
     redirect_ctx.__enter__()
+    redirect_err_ctx.__enter__()
 
     # Memory leak tracking: Log memory at start of song
     log_memory_usage(f"Start: {found_song_name}")
@@ -1017,6 +1019,7 @@ def process_song_task(args) -> SongResultPayload:
         log_memory_usage(f"After cleanup: {found_song_name}")
 
         redirect_ctx.__exit__(None, None, None)
+        redirect_err_ctx.__exit__(None, None, None)
 
         # Release GPU timeline slot after GA + FG (and any deferred-post early returns).
         if gpu_mode and int(_gpu_song_slot) > 0 and _prefetch_mgr is not None:

@@ -18,7 +18,7 @@ import numpy as np
 # Import from refactored modules
 from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS, GA_POPULATION_SIZE
 from gear_optimizer.core.env_config import ENV
-from gear_optimizer.core.output import suppress_stdout, restore_stdout
+from gear_optimizer.core.output import suppress_stdout, restore_stdout, suppress_stderr, restore_stderr
 from gear_optimizer.core.config import (
     compute_memory_guard_limit,
     load_config,
@@ -380,6 +380,7 @@ class GearOptimizerApp:
         self._progress_bar_width = int(getattr(ENV, "progress_bar_width", 24))
         self._progress: _ProgressUI | None = None
         self._orig_stdout = None
+        self._orig_stderr = None
         self._progress_counts_driven = False
         self._hotkey_thread: threading.Thread | None = None
         self._hotkeys_enabled = True
@@ -419,6 +420,7 @@ class GearOptimizerApp:
         try:
             if not self._output_enabled:
                 self._orig_stdout = suppress_stdout(True)
+                self._orig_stderr = suppress_stderr(True)
 
             while True:
                 if self._stop_requested_now():
@@ -428,6 +430,7 @@ class GearOptimizerApp:
                     break
         finally:
             restore_stdout(self._orig_stdout)
+            restore_stderr(self._orig_stderr)
 
     def _run_single_iteration(self):
         memory_guard_restart = False

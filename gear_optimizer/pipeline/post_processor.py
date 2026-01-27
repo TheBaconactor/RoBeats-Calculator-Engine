@@ -10,7 +10,7 @@ import sys
 
 from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.core.env_config import ENV
-from gear_optimizer.core.output import suppress_stdout
+from gear_optimizer.core.output import suppress_stdout, suppress_stderr
 from gear_optimizer.data.database import init_db
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.helpers.song_helpers.persistence import (
@@ -98,6 +98,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     output_enabled = bool(getattr(ENV, "output_enabled", False))
     if not output_enabled:
         suppress_stdout(True)
+        suppress_stderr(True)
 
     try:
         init_db()
