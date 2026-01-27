@@ -1994,6 +1994,10 @@ def solve_force_greats_finder_gpu_tasks(
                 continue
             base_ft = np.ascontiguousarray(base_pairs[:, 0], dtype=np.int32)
             base_ff = np.ascontiguousarray(base_pairs[:, 1], dtype=np.int32)
+            # IMPORTANT: packed-task streaming uses `total_pairs` to size the work estimate.
+            # If we don't count pairs here, the function returns early and never runs Stage-1/2,
+            # leaving cfg_max_fp/cfg_total_len as zeros -> cfg_idx=-1 -> 0 FG variants.
+            total_pairs += int(n_pairs)
             prepared_tasks.append(
                 {
                     "ftff_pairs": ftff_pairs,
