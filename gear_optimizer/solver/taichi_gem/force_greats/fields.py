@@ -451,6 +451,7 @@ def warmup_kernels() -> None:
 
     import taichi as ti
     from . import kernels as fg_kernels
+    from ..fields import IS_METAL
 
     # Minimal warmup parameters
     n_genomes = 1
@@ -470,6 +471,9 @@ def warmup_kernels() -> None:
 
     # Warmup stage1 init kernel
     fg_kernels.fg_stage1_init_kernel(n_genomes, n_ftff)
+    # Vulkan runtime uses the minimal packed-only init; precompile it too.
+    if not IS_METAL:
+        fg_kernels.fg_stage1_init_packed_kernel(n_genomes, n_ftff)
 
     # Warmup precomputed fever-end tables (used by Stage 1 kernels)
     fg_kernels.fg_precompute_fever_end_idx_tables_kernel(total_notes, float(last_note_time))
@@ -477,8 +481,6 @@ def warmup_kernels() -> None:
     # Warmup Stage 1 (the heavy one).
     # Note: kernels read forced-count targets from `fg_forced_counts` (a GPU field). We don't need
     # to populate it here; warmup outputs are discarded and the field is allocated/zeroed by Taichi.
-    from ..fields import IS_METAL
-
     if IS_METAL:
         fg_kernels.fg_stage1_kernel(
             n_genomes,
@@ -508,6 +510,33 @@ def warmup_kernels() -> None:
             0,  # pair_caps_from_timeline
         )
     else:
+        # Warm both Stage-1 flat variants to avoid first-call JIT when section counts differ.
+        fg_kernels.fg_stage1_flat_kernel_small3(
+            n_work_items,
+            n_cfg,
+            cfg_offset,
+            0,  # cfg_read_offset
+            total_notes,
+            long_notes,
+            last_note_time,
+            total_budget,
+            gem_scale_fever,
+            n_sections,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,  # color flags
+            0,  # song_slot
+            0,  # pair_caps_from_timeline
+        )
         fg_kernels.fg_stage1_flat_kernel(
             n_work_items,
             n_cfg,
@@ -535,12 +564,58 @@ def warmup_kernels() -> None:
             0,  # pair_caps_from_timeline
         )
 
-    # Warmup stage2 reduction kernel
-    fg_kernels.fg_stage2_kernel(n_genomes, n_ftff)
+    # Warmup Stage-2 recompute kernels (used by runtime to avoid Stage-1 aux races).
+    fg_kernels.fg_stage2_recompute_kernel(
+        n_genomes,
+        n_ftff,
+        total_notes,
+        long_notes,
+        float(last_note_time),
+        total_budget,
+        gem_scale_fever,
+        n_sections,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,  # color flags
+        0,  # song_slot
+        0,  # pair_caps_from_timeline
+    )
 
     # Warmup global best kernels (new for GPU-resident accumulation)
     fg_kernels.fg_reset_global_best_kernel(n_genomes)
-    fg_kernels.fg_stage2_and_update_global_best_kernel(n_genomes, n_ftff)
+    fg_kernels.fg_stage2_recompute_and_update_global_best_kernel(
+        n_genomes,
+        n_ftff,
+        total_notes,
+        long_notes,
+        float(last_note_time),
+        total_budget,
+        gem_scale_fever,
+        n_sections,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,  # color flags
+        0,  # song_slot
+        0,  # pair_caps_from_timeline
+    )
     fg_kernels.fg_update_global_best_kernel(n_genomes)
 
     # Warmup packing kernels (avoid first-download JIT hiccup)
