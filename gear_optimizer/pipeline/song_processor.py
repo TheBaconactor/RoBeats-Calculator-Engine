@@ -60,7 +60,7 @@ from ..helpers.song_helpers import (
     build_persistence_entries,
     print_results,
 )
-from ..helpers.song_helpers.persistence import make_build_details_fn
+from ..helpers.song_helpers.persistence import make_build_details_fn, evaluate_record_update
 from ..helpers.song_helpers.fg_candidate_selector import select_fg_candidates
 from ..helpers.song_helpers.item_utils import names_list
 
@@ -373,7 +373,8 @@ def process_song_task(args) -> SongResultPayload:
             )
 
     buf = StringIO()
-    tee = Tee(sys.stdout, buf)
+    output_enabled = bool(getattr(ENV, "output_enabled", False))
+    tee = Tee(sys.stdout, buf) if output_enabled else Tee(buf)
     redirect_ctx = contextlib.redirect_stdout(tee)
     redirect_ctx.__enter__()
 
@@ -814,6 +815,16 @@ def process_song_task(args) -> SongResultPayload:
             # BUG FIX: Capture buffer content BEFORE finally block closes it
             buf_content = buf.getvalue() if buf else ""
 
+            try:
+                record_info = evaluate_record_update(
+                    best_data,
+                    prev_record,
+                    fg_variants,
+                    db_best_fg_score=db_best_fg_score,
+                )
+            except Exception:
+                record_info = None
+
             result_payload = {
                 "_deferred_post": True,
                 "song": found_song_name,
@@ -846,6 +857,7 @@ def process_song_task(args) -> SongResultPayload:
                 "meta_primary_color": meta_primary_color,
                 "meta_secondary_color": meta_secondary_color,
                 "fg_debug": bool(fg_debug),
+                "_record": record_info,
                 "log": buf_content,
             }
             return result_payload
@@ -932,6 +944,7 @@ def process_song_task(args) -> SongResultPayload:
             "difficulty": effective_difficulty,
             "cfg_dict": cfg_dict,
             "db_payload": db_payload,
+            "_record": db_payload.get("_record") if isinstance(db_payload, dict) else None,
             "best_data": best_data,
             "best_gear": best_gear,
             "best_minis": best_minis,
@@ -1049,7 +1062,7 @@ def safe_process_song_task(args) -> SongResultPayload:
         msg = f"[safe_process_song_task] {song_name} failed: {type(exc).__name__}: {exc}"
         try:
             logging.error(msg + "\n" + tb)
-            print(msg)
+            print(msg, file=sys.stderr)
         except Exception:
             pass
         return build_error_payload(

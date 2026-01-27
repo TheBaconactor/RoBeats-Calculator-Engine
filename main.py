@@ -92,6 +92,16 @@ def _apply_throughput_mode_env() -> None:
             os.environ.pop(k, None)
 
 
+def _apply_taichi_shell_env() -> None:
+    """
+    Silence Taichi's graphical shell detection banner.
+
+    TI_ENABLE_PYBUF=0 disables the wrapped stdout path that emits the
+    "Graphical python shell detected" info line.
+    """
+    os.environ.setdefault("TI_ENABLE_PYBUF", "0")
+
+
 def _apply_gpu_song_slots_default() -> None:
     """
     Set a sensible default for `GPU_SONG_SLOTS` before Taichi initializes.
@@ -121,6 +131,7 @@ if __name__ == "__main__":
     multiprocessing.freeze_support()
     try:
         cfg_path = _read_config_path()
+        _apply_taichi_shell_env()
         _apply_debug_profile_env(cfg_path)
         _apply_gpu_song_slots_default()
         _apply_throughput_mode_env()

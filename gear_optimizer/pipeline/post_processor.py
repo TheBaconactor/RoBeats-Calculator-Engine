@@ -9,6 +9,8 @@ import time
 import sys
 
 from gear_optimizer.core.utils import cfg_from_dict
+from gear_optimizer.core.env_config import ENV
+from gear_optimizer.core.output import suppress_stdout
 from gear_optimizer.data.database import init_db
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.helpers.song_helpers.persistence import (
@@ -93,6 +95,9 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             sys.stderr.reconfigure(line_buffering=True)
     except Exception:
         pass
+    output_enabled = bool(getattr(ENV, "output_enabled", False))
+    if not output_enabled:
+        suppress_stdout(True)
 
     try:
         init_db()
@@ -393,7 +398,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         print(f"[POST][FG] Saved {saved} FG variant(s) for {song_name} (best_fg={best_fg})")
             except Exception as exc:
                 msg = f"[POST][FG] Error: {type(exc).__name__}: {exc}"
-                print(msg)
+                print(msg, file=sys.stderr)
                 try:
                     logging.error(msg + "\n" + traceback.format_exc())
                 except Exception:
@@ -406,7 +411,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             song_name = item.get("_song_name") or item.get("song") or "Unknown"
             err_type = item.get("_error_type") or type(item.get("_error")).__name__
             msg = f"[POST] FAILED: {song_name} - {err_type}: {item.get('_error')}"
-            print(msg)
+            print(msg, file=sys.stderr)
             try:
                 logging.error(msg)
                 if item.get("_trace"):
@@ -664,7 +669,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
         except Exception as exc:
             failed += 1
             msg = f"[POST] Error: {type(exc).__name__}: {exc}"
-            print(msg)
+            print(msg, file=sys.stderr)
             try:
                 logging.error(msg + "\n" + traceback.format_exc())
             except Exception:

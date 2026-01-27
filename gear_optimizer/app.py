@@ -17,6 +17,8 @@ import numpy as np
 
 # Import from refactored modules
 from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS, GA_POPULATION_SIZE
+from gear_optimizer.core.env_config import ENV
+from gear_optimizer.core.output import suppress_stdout, restore_stdout
 from gear_optimizer.core.config import (
     compute_memory_guard_limit,
     load_config,
@@ -28,6 +30,8 @@ from gear_optimizer.data.database import (
     save_loadouts_batch,
     get_evolution_db_path,
     prioritize_song_queue_missing_db,
+    get_song_counters,
+    get_best_loadouts,
 )
 from gear_optimizer.core.memory import (
     set_memory_watchdog_limit,
@@ -50,6 +54,7 @@ from gear_optimizer.solver.genetic import GEM_SOLVER_CACHE
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.data.stats_verifier import verify_and_repair_stats, print_verification_warning
 from gear_optimizer.app_stop_control import StopController
+from gear_optimizer.helpers.song_helpers.persistence import evaluate_record_update
 
 
 # Module-level worker initializer for GPU executor (must be picklable)
@@ -164,6 +169,201 @@ class _PostQueueSender:
                     pass
 
 
+class _ProgressUI:
+    """Lightweight single-line progress renderer with spinner + ETA."""
+
+    def __init__(
+        self,
+        total: int,
+        *,
+        completed: int = 0,
+        failed: int = 0,
+        new_records: int = 0,
+        enabled: bool = True,
+        bar_width: int = 24,
+        update_interval: float = 0.2,
+        stream=None,
+    ) -> None:
+        self._enabled = bool(enabled)
+        self._total = max(0, int(total or 0))
+        self._completed = max(0, int(completed or 0))
+        self._failed = max(0, int(failed or 0))
+        self._new_records = max(0, int(new_records or 0))
+        self._bar_width = max(10, int(bar_width or 24))
+        self._interval = max(0.05, float(update_interval or 0.2))
+        self._stream = stream or getattr(sys, "__stdout__", None) or sys.stdout
+        self._start = time.perf_counter()
+        self._status = ""
+        self._song = ""
+        self._spinner = ["|", "/", "-", "\\"]
+        self._frame = 0
+        self._last_len = 0
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        if not self._enabled or self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run, name="ProgressUI", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if not self._enabled:
+            return
+        self._stop.set()
+        if self._thread is not None:
+            try:
+                self._thread.join(timeout=2.0)
+            except Exception:
+                pass
+        self._render(final=True)
+
+    def update_counts(self, *, completed: int | None = None, total: int | None = None, failed: int | None = None) -> None:
+        if not self._enabled:
+            return
+        with self._lock:
+            if completed is not None:
+                self._completed = max(0, int(completed))
+            if total is not None:
+                self._total = max(0, int(total))
+            if failed is not None:
+                self._failed = max(0, int(failed))
+        self._render()
+
+    def add_new_record(self, count: int = 1) -> None:
+        if not self._enabled:
+            return
+        with self._lock:
+            self._new_records = max(0, int(self._new_records + int(count)))
+        self._render()
+
+    def add_completed(self, count: int = 1) -> None:
+        if not self._enabled:
+            return
+        with self._lock:
+            self._completed = max(0, int(self._completed + int(count)))
+        self._render()
+
+    def add_failed(self, count: int = 1) -> None:
+        if not self._enabled:
+            return
+        with self._lock:
+            self._failed = max(0, int(self._failed + int(count)))
+        self._render()
+
+    def set_status(self, song: str | None, status: str | None) -> None:
+        if not self._enabled:
+            return
+        with self._lock:
+            if song is not None:
+                self._song = str(song)
+            if status is not None:
+                self._status = str(status)
+        self._render()
+
+    def emit_block(self, lines: list[str]) -> None:
+        """Print a multi-line block without fighting the single-line renderer."""
+        if not self._enabled or self._stream is None:
+            return
+        try:
+            with self._lock:
+                self._stream.write("\r\x1b[K")
+                self._stream.write("\n")
+                for line in lines:
+                    self._stream.write(str(line) + "\n")
+                self._stream.flush()
+        except Exception:
+            pass
+        self._render()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._render()
+            self._stop.wait(self._interval)
+
+    def _render(self, *, final: bool = False) -> None:
+        if not self._enabled:
+            return
+        try:
+            now = time.perf_counter()
+            with self._lock:
+                completed = int(self._completed)
+                total = int(self._total)
+                failed = int(self._failed)
+                new_records = int(self._new_records)
+                status = str(self._status or "")
+                song = str(self._song or "")
+                frame = self._frame
+                self._frame = (self._frame + 1) % len(self._spinner)
+            elapsed = max(0.0, float(now - self._start))
+            eta_s = None
+            if completed > 0 and total > 0 and completed <= total:
+                avg = float(elapsed) / float(completed)
+                eta_s = max(0.0, float(total - completed) * avg)
+
+            spinner = self._spinner[frame % len(self._spinner)]
+            pct = (float(completed) / float(total) * 100.0) if total > 0 else 0.0
+            filled = int(round((float(completed) / float(total)) * self._bar_width)) if total > 0 else 0
+            filled = max(0, min(self._bar_width, filled))
+            bar = "=" * filled + "-" * (self._bar_width - filled)
+
+            eta_str = self._format_duration(eta_s) if eta_s is not None else "--:--"
+            elapsed_str = self._format_duration(elapsed)
+
+            tail = ""
+            if song:
+                tail += f" | Song: {song}"
+            if status:
+                tail += f" | {status}"
+            if len(tail) > 60:
+                tail = tail[:57] + "..."
+
+            # Colors (best-effort); they render fine in Windows Terminal / modern consoles.
+            def c(text: str, code: str) -> str:
+                return f"\x1b[{code}m{text}\x1b[0m"
+
+            spinner_s = c(spinner, "36")  # cyan
+            bar_s = c(bar, "96")  # bright cyan
+            pct_s = c(f"{pct:5.1f}%", "92" if pct >= 99.9 else "36")
+            new_s = c(str(new_records), "92")  # green
+            failed_s = c(str(failed), "91")  # red
+            line = (
+                f"{spinner_s} [{bar_s}] {completed}/{total} {pct_s} "
+                f"| ETA {eta_str} | Elapsed {elapsed_str} | New: {new_s} | Failed: {failed_s}{tail}"
+            )
+            self._write(line, final=final)
+        except Exception:
+            pass
+
+    def _write(self, line: str, *, final: bool = False) -> None:
+        if not self._enabled or self._stream is None:
+            return
+        try:
+            # `\x1b[K` clears to end-of-line, avoiding needing to pad (and avoiding ANSI-length math).
+            self._stream.write("\r" + line + "\x1b[K")
+            if final:
+                self._stream.write("\n")
+            self._stream.flush()
+            self._last_len = len(line)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _format_duration(seconds: float | None) -> str:
+        if seconds is None:
+            return "--:--"
+        try:
+            total = int(max(0.0, float(seconds)))
+        except Exception:
+            total = 0
+        h, rem = divmod(total, 3600)
+        m, s = divmod(rem, 60)
+        if h > 0:
+            return f"{h}:{m:02d}:{s:02d}"
+        return f"{m:02d}:{s:02d}"
+
+
 class GearOptimizerApp:
     def __init__(self):
         self.setup_logging()
@@ -172,6 +372,22 @@ class GearOptimizerApp:
         # Back-compat: keep these names for existing control flow checks.
         self._stop_requested = self._stop_control.stop_requested_event
         self._force_exit_requested = self._stop_control.force_exit_requested_event
+        self._output_enabled = bool(getattr(ENV, "output_enabled", False))
+        self._progress_enabled = bool(getattr(ENV, "progress_enabled", True))
+        if self._output_enabled and "METAFINDER_PROGRESS" not in os.environ:
+            self._progress_enabled = False
+        self._progress_interval = float(getattr(ENV, "progress_interval_sec", 0.2))
+        self._progress_bar_width = int(getattr(ENV, "progress_bar_width", 24))
+        self._progress: _ProgressUI | None = None
+        self._orig_stdout = None
+        self._progress_counts_driven = False
+        self._hotkey_thread: threading.Thread | None = None
+        self._hotkeys_enabled = True
+        self._run_tasks_ref = None
+        self._run_completed_ref = None
+        self._run_current_song_label = ""
+        # Session-scoped counters (persist across loop restarts).
+        self._session_new_records = 0
 
     def setup_logging(self):
         os.makedirs(BIN_DIR, exist_ok=True)
@@ -200,12 +416,18 @@ class GearOptimizerApp:
         except Exception:
             pass
 
-        while True:
-            if self._stop_requested_now():
-                break
-            should_loop = self._run_single_iteration()
-            if not should_loop:
-                break
+        try:
+            if not self._output_enabled:
+                self._orig_stdout = suppress_stdout(True)
+
+            while True:
+                if self._stop_requested_now():
+                    break
+                should_loop = self._run_single_iteration()
+                if not should_loop:
+                    break
+        finally:
+            restore_stdout(self._orig_stdout)
 
     def _run_single_iteration(self):
         memory_guard_restart = False
@@ -234,6 +456,7 @@ class GearOptimizerApp:
             paths = load_paths_cache()
             set_memory_watchdog_limit(compute_memory_guard_limit(cfg))
             db_display_name = os.path.basename(get_evolution_db_path())
+            self._print_banner()
             print(f"[Run] Gear Optimizer started. DB file: {db_display_name}")
 
             init_db()
@@ -359,6 +582,8 @@ class GearOptimizerApp:
 
             parallel_workers = 1
 
+            self._start_progress(queued_tasks)
+
             self._execute_tasks(
                 tasks,
                 eval_cpu_limit,
@@ -387,9 +612,10 @@ class GearOptimizerApp:
                 raise
         except Exception as e:
             logging.error(f"Error: {e}")
-            print(f"Error: {e}")
+            print(f"Error: {e}", file=sys.stderr)
 
         finally:
+            self._stop_progress()
             self._cleanup_resources(status_queue, status_thread, manager)
 
             elapsed = time.time() - start_time
@@ -697,6 +923,341 @@ class GearOptimizerApp:
         print(f"Found {len(song_queue)} songs to process.")
         return song_queue
 
+    def _start_progress(self, total_tasks: int, *, completed: int = 0) -> None:
+        if not self._progress_enabled:
+            return
+        stream = self._orig_stdout or getattr(sys, "__stdout__", None) or sys.stdout
+        self._progress = _ProgressUI(
+            total_tasks,
+            completed=completed,
+            new_records=self._session_new_records,
+            enabled=True,
+            bar_width=self._progress_bar_width,
+            update_interval=self._progress_interval,
+            stream=stream,
+        )
+        self._progress.start()
+
+    def _stop_progress(self) -> None:
+        if self._progress is None:
+            return
+        try:
+            self._progress.stop()
+        finally:
+            self._progress = None
+
+    def _progress_event(
+        self,
+        *,
+        completed_delta: int = 0,
+        failed_delta: int = 0,
+        record_info: dict | None = None,
+    ) -> None:
+        record_update = bool(record_info and record_info.get("record_update"))
+        if record_update:
+            try:
+                self._session_new_records = int(self._session_new_records) + 1
+            except Exception:
+                self._session_new_records = 1
+        if self._progress is None:
+            return
+        if isinstance(record_info, dict):
+            try:
+                song_label = record_info.get("song") or record_info.get("_song_name") or record_info.get("_queue_label")
+                status = record_info.get("status")
+                if song_label:
+                    self._run_current_song_label = str(song_label)
+                    self._progress.set_status(str(song_label), str(status) if status is not None else None)
+            except Exception:
+                pass
+        if completed_delta:
+            self._progress.add_completed(int(completed_delta))
+        if failed_delta:
+            self._progress.add_failed(int(failed_delta))
+        if record_update:
+            score = int(record_info.get("score", 0) or 0)
+            best_fg = int(record_info.get("best_fg_score_run", 0) or 0)
+            if score > 0 or best_fg > 0:
+                self._progress.add_new_record(1)
+
+    def _handle_status_message(self, msg: str) -> None:
+        if not msg:
+            return
+        if self._progress is not None:
+            song = None
+            status = str(msg)
+            if status.startswith("[") and "]" in status:
+                try:
+                    end = status.index("]")
+                    song = status[1:end]
+                    status = status[end + 1 :].strip()
+                except Exception:
+                    song = None
+            if not self._progress_counts_driven and status.upper().startswith("DONE"):
+                self._progress.add_completed(1)
+            if song:
+                self._run_current_song_label = str(song)
+            self._progress.set_status(song, status)
+            return
+        try:
+            print(msg, flush=True)
+        except (ValueError, OSError):
+            pass
+
+    def _start_hotkeys(self) -> None:
+        if not self._hotkeys_enabled or self._hotkey_thread is not None:
+            return
+        # Windows-only hotkeys (best-effort; no-op on other platforms).
+        try:
+            import msvcrt  # noqa: F401
+        except Exception:
+            return
+
+        def _runner() -> None:
+            import msvcrt
+
+            # Print once (in quiet mode too).
+            if self._progress is not None:
+                self._progress.emit_block(
+                    [
+                        "\x1b[90m[Hotkeys]\x1b[0m n=next 10  d=db best  c=db counters  ?=help  q=stop",
+                    ]
+                )
+            while True:
+                if self._stop_requested_now():
+                    return
+                try:
+                    if not msvcrt.kbhit():
+                        time.sleep(0.05)
+                        continue
+                    ch = msvcrt.getwch()
+                except Exception:
+                    time.sleep(0.05)
+                    continue
+                if not ch:
+                    continue
+                key = str(ch).strip().lower()
+                if key == "q":
+                    try:
+                        self.request_stop("hotkey stop")
+                    except Exception:
+                        pass
+                    return
+                if key in {"?", "h"}:
+                    self._hotkey_help()
+                elif key == "n":
+                    self._hotkey_next_songs(10)
+                elif key == "d":
+                    self._hotkey_db_best()
+                elif key == "c":
+                    self._hotkey_db_counters()
+
+        self._hotkey_thread = threading.Thread(target=_runner, name="Hotkeys", daemon=True)
+        self._hotkey_thread.start()
+
+    def _stop_hotkeys(self) -> None:
+        self._hotkey_thread = None
+
+    def _emit_block(self, lines: list[str]) -> None:
+        if self._progress is not None:
+            self._progress.emit_block(lines)
+            return
+        stream = self._orig_stdout or getattr(sys, "__stdout__", None) or sys.stdout
+        try:
+            for line in lines:
+                stream.write(str(line) + "\n")
+            stream.flush()
+        except Exception:
+            pass
+
+    def _normalize_song_label(self, label: str) -> str:
+        # Strip "(Run x/y)" suffix so DB queries map to the base song key.
+        s = str(label or "").strip()
+        if not s:
+            return s
+        try:
+            return re.sub(r"\s*\(Run\s+\d+\s*/\s*\d+\)\s*$", "", s).strip()
+        except Exception:
+            return s
+
+    def _hotkey_help(self) -> None:
+        self._emit_block(
+            [
+                "\x1b[96mRoBeats MetaFinder Hotkeys\x1b[0m",
+                "  n  show next 10 songs in queue",
+                "  d  show best loadout from DB for current song",
+                "  c  show DB counters/best scores for current song",
+                "  q  request graceful stop",
+            ]
+        )
+
+    def _hotkey_next_songs(self, n: int) -> None:
+        tasks = self._run_tasks_ref
+        completed = self._run_completed_ref
+        if not isinstance(tasks, list) or not isinstance(completed, set):
+            self._emit_block(["\x1b[91m[Hotkeys]\x1b[0m No active queue."])
+            return
+        out: list[str] = ["\x1b[96mUp Next\x1b[0m"]
+        shown = 0
+        for t in tasks:
+            label = self._task_queue_label(t)
+            if label in completed:
+                continue
+            try:
+                diff = str(t[2] or "")
+            except Exception:
+                diff = ""
+            out.append(f"  {shown+1:>2}. \x1b[93m{label}\x1b[0m \x1b[90m[{diff}]\x1b[0m")
+            shown += 1
+            if shown >= int(n):
+                break
+        if shown <= 0:
+            out.append("  (none)")
+        self._emit_block(out)
+
+    def _hotkey_db_counters(self) -> None:
+        label = self._normalize_song_label(self._run_current_song_label)
+        if not label:
+            self._emit_block(["\x1b[91m[DB]\x1b[0m No current song yet."])
+            return
+        try:
+            a, af, bs, bfg = get_song_counters(label)
+        except Exception as e:
+            self._emit_block([f"\x1b[91m[DB]\x1b[0m Error: {type(e).__name__}: {e}"])
+            return
+        self._emit_block(
+            [
+                f"\x1b[96mDB Counters\x1b[0m \x1b[93m{label}\x1b[0m",
+                f"  attempts_lifetime: {a}",
+                f"  attempts_first:    {af}",
+                f"  best_score:        {bs}",
+                f"  best_fg_score:     {bfg}",
+            ]
+        )
+
+    def _hotkey_db_best(self) -> None:
+        label = self._normalize_song_label(self._run_current_song_label)
+        if not label:
+            self._emit_block(["\x1b[91m[DB]\x1b[0m No current song yet."])
+            return
+        try:
+            rows = get_best_loadouts(label, limit=3, gears_by_name=None, minis_by_name=None, team_buff="T5")
+        except Exception as e:
+            self._emit_block([f"\x1b[91m[DB]\x1b[0m Error: {type(e).__name__}: {e}"])
+            return
+        if not rows:
+            self._emit_block([f"\x1b[90m[DB]\x1b[0m No loadouts found for \x1b[93m{label}\x1b[0m"])
+            return
+        best = rows[0]
+        gear = best.get("gear") or []
+        minis = best.get("minis") or []
+        score = best.get("score", 0)
+        fg_score = best.get("fg_score", 0)
+        out = [
+            f"\x1b[96mDB Best Loadout\x1b[0m \x1b[93m{label}\x1b[0m",
+            f"  score:    \x1b[92m{score}\x1b[0m",
+            f"  fg_score: \x1b[92m{fg_score}\x1b[0m",
+            "  gear:",
+        ]
+        for g in gear:
+            out.append(f"    - {g}")
+        out.append("  minis:")
+        for m in minis:
+            out.append(f"    - {m}")
+        self._emit_block(out)
+
+    def _print_banner(self) -> None:
+        stream = self._orig_stdout or getattr(sys, "__stdout__", None) or sys.stdout
+        import textwrap
+
+        banner = textwrap.dedent(
+            """\
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠶⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠲⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣸⡒⠢⠤⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⠄⠄⠀⠀⠄⠀⠤⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⡖⢒⣒⡒⡆⠀⠀⠀⠀⠀⠀⣿⠹⡘⣷⣦⣤⣍⣒⠢⡀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⠃⡎⠉⠉⠉⠉⠉⠙⢦⢱⠀⠀⠀⣀⡀⠀⠀⠀⠀⠀⢀⣀⠀⠀⠰⣧⢰⠀⢁⢠⠀⠀⠀⠀⠀⠀⠘⣄⠱⡘⣿⣿⣿⣿⡆⢇⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⣀⣀⣀⣀⣀⣀⣀⣀⣀⡎⡜⠀⡰⠒⠒⠒⢲⠀⢘⡎⠗⢊⡭⠤⠭⣑⠢⣀⠔⣊⠭⠤⢍⡑⢎⣉⣘⠆⠸⣌⣀⣀⡀⠖⢂⣉⣀⣉⣉⣁⠙⣿⣿⣿⣷⠸⡀⠀⠀⠀
+⠀⠀⠀⢀⠌⣤⣤⣤⣤⣤⡤⢤⣤⣤⢰⠁⢠⣃⣀⣀⣠⠜⠀⡜⢠⠞⠁⢀⣀⠀⠀⢳⢁⠞⠀⢀⣀⡀⠈⠛⢸⠇⠀⠀⠀⠀⠀⢡⢰⠁⠀⠀⠀⠀⠈⣆⠹⣿⣿⣿⡇⠇⠀⠀⠀
+⠀⠀⢀⠎⣼⠏⣠⣤⠟⣡⣶⠀⣿⢏⠃⠀⠀⠀⠀⠀⠀⠀⡞⢠⠇⢀⡞⢁⠞⠀⡰⠁⡎⢀⡴⠁⠀⠈⢦⠀⠸⡄⢱⠀⢸⠀⠀⠈⠸⡀⠸⣅⣀⣀⣀⠈⠀⠹⣿⣿⣷⠸⡀⠀⠀
+⠀⢠⢎⣼⢃⣾⣿⡏⠸⣿⠟⣰⡟⣾⣿⡿⠛⠛⠓⠛⣿⣿⣿⣼⣿⡟⣠⣿⣼⡟⠁⠀⣷⣾⡇⠀⠀⠀⠈⣿⣷⡇⠘⣿⣿⡇⠀⠀⠀⠙⣿⣷⣾⣿⣿⣿⣶⡄⠙⠿⠿⡇⠇⠀⠀
+⢠⢂⣾⣧⣾⣿⣿⣧⣤⣤⣾⡿⣼⣿⣿⠃⠀⠀⠀⣠⣿⣿⡟⣿⣿⣿⣿⣿⠋⣠⣆⠀⣿⣿⣷⡀⠀⠀⣸⣿⣿⣇⢀⢻⣿⣷⡄⠀⠀⠀⠈⠙⠛⠛⠛⠛⣿⣿⣆⣠⣶⣤⡘⢄⠀
+⡧⠤⠤⠤⠤⠤⠤⠤⠤⠤⡤⢰⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⣁⢹⣿⣿⣿⣷⣾⣿⣿⡧⠹⣿⣿⣿⣶⣾⣿⣿⣿⣿⢸⣎⢿⣿⣿⣿⣿⣷⢻⣿⣿⣿⣿⣿⣿⣿⣿⠿⣿⣿⣿⣆⢣
+⠸⠦⠤⠤⠤⠤⢤⣾⣶⣶⢃⣿⣿⣿⣿⣿⣿⣿⣿⡿⢋⡔⣻⣎⠻⣿⣿⣿⣿⣿⢟⡴⣳⡙⢿⣿⣿⣿⣿⠿⡙⣿⡎⡯⢢⡙⢿⣿⣿⣿⣯⣿⣿⣿⣿⣿⣿⣿⣿⢠⡙⢿⣿⣿⠘
+⠀⠐⠶⣷⣿⣷⣻⣿⣿⣯⠬⠭⠭⠭⠭⠭⠭⠭⣄⠞⢻⡵⡏⣿⡓⡬⠭⣭⠭⠔⢛⣷⡷⡹⠒⠬⢭⡭⢥⢞⣗⡬⡤⣿⣮⡊⡓⠢⠭⠭⠭⠬⠭⠭⠭⠭⠭⢭⢴⣏⠹⠢⢭⣭⡼
+⠀⠀⠀⠀⠀⠀⠀⢿⡿⠿⠤⠤⠤⠤⠤⠤⢤⣭⣽⣿⡟⡇⡇⣿⢿⢦⠀⢴⠤⠶⠋⠉⠣⡏⠷⠄⠰⡦⠴⠛⠣⠭⠴⠇⠈⠿⣿⢯⢭⢯⢿⢭⣭⡤⠤⠤⠴⠶⠛⠿⠷⠴⠾⠿⠁
+⠀⠀⠀⠀⠀⠀⠀⠀⠁⠀⠀⠀⠀⠀⠀⠀⠀⢹⣿⣿⡇⡇⡇⣿⠈⠿⠀⠀⠀⠀⠀⠀⠀⠓⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠹⣼⢸⢸⢸⢸⡏⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠹⢿⡇⡇⡧⠏⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠹⣸⢸⢸⣸⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⢃⡗⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠋⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+"""
+        ).splitlines()
+        try:
+            for line in banner:
+                stream.write(line + "\n")
+            stream.flush()
+        except Exception:
+            pass
+
+    def _extract_record_info(self, res: dict | None) -> dict | None:
+        if not isinstance(res, dict):
+            return None
+        record_info = res.get("_record")
+        if not record_info:
+            db_payload = res.get("db_payload")
+            if isinstance(db_payload, dict):
+                record_info = db_payload.get("_record")
+        if record_info:
+            return record_info
+        best_data = res.get("best_data")
+        prev_record = res.get("prev_record")
+        fg_variants = res.get("fg_variants")
+        db_best_fg_score = res.get("db_best_fg_score")
+        if isinstance(best_data, dict) and (prev_record is not None or fg_variants):
+            try:
+                return evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score=db_best_fg_score)
+            except Exception:
+                return None
+        return None
+
+    def _progress_on_result(
+        self,
+        res: dict | None,
+        *,
+        completed: int,
+        total: int,
+        failed_delta: int = 0,
+    ) -> None:
+        try:
+            if isinstance(res, dict):
+                song_label = res.get("_queue_label") or res.get("_queue_key") or res.get("song") or res.get("_song_name")
+            else:
+                song_label = None
+        except Exception:
+            song_label = None
+        record_info = None if failed_delta else self._extract_record_info(res)
+        record_update = bool(record_info and record_info.get("record_update"))
+        if record_update:
+            try:
+                self._session_new_records = int(self._session_new_records) + 1
+            except Exception:
+                self._session_new_records = 1
+        if self._progress is None:
+            return
+        if song_label:
+            try:
+                self._run_current_song_label = str(song_label)
+                self._progress.set_status(str(song_label), "FAILED" if failed_delta else "DONE")
+            except Exception:
+                pass
+        if failed_delta:
+            self._progress.add_failed(failed_delta)
+        if record_update:
+            score = int(record_info.get("score", 0) or 0)
+            best_fg = int(record_info.get("best_fg_score_run", 0) or 0)
+            if score > 0 or best_fg > 0:
+                self._progress.add_new_record(1)
+        self._progress.update_counts(completed=completed, total=total)
+
     def _status_listener(self, q):
         while True:
             try:
@@ -705,11 +1266,7 @@ class GearOptimizerApp:
                 break
             if msg is None:
                 break
-            try:
-                print(msg, flush=True)
-            except (ValueError, OSError):
-                # Handle "I/O operation on closed file" during shutdown
-                pass
+            self._handle_status_message(msg)
 
     def _prepare_tasks(
         self,
@@ -1130,6 +1687,11 @@ class GearOptimizerApp:
         print(f"Using {available_cpus} logical CPU cores")
 
         completed_songs = set()
+        # Hotkeys need access to the current queue and completion set.
+        self._run_tasks_ref = tasks if isinstance(tasks, list) else None
+        self._run_completed_ref = completed_songs
+        self._run_current_song_label = ""
+        self._start_hotkeys()
 
         if len(tasks) > 1 and max_workers > 1:
             self._run_parallel(
@@ -1153,6 +1715,9 @@ class GearOptimizerApp:
 
         if memory_resume_tracker:
             memory_resume_tracker.finalize(memory_release_requested())
+        self._run_tasks_ref = None
+        self._run_completed_ref = None
+        self._stop_hotkeys()
 
     def _run_sequential(self, tasks, completed_songs, memory_resume_tracker):
         """Sequential song processing with async preloading and GPU look-ahead prefetch.
@@ -1222,6 +1787,9 @@ class GearOptimizerApp:
 
                 from gear_optimizer.solver.native_inflight_orchestrator import run_native_inflight_song_pipeline
 
+                self._progress_counts_driven = True
+                if self._progress is not None:
+                    self._progress.update_counts(completed=len(completed_songs), total=len(tasks))
                 run_native_inflight_song_pipeline(
                     tasks,
                     in_flight_songs=int(inflight_songs),
@@ -1230,6 +1798,7 @@ class GearOptimizerApp:
                     post_queue=post_queue,
                     total_tasks=len(tasks),
                     stop_requested=self._stop_requested_now,
+                    progress_cb=self._progress_event,
                 )
                 inflight_ok = True
             except Exception as inflight_err:
@@ -1258,6 +1827,7 @@ class GearOptimizerApp:
                 except Exception:
                     pass
             finally:
+                self._progress_counts_driven = False
                 try:
                     if post_queue is not None:
                         post_queue.put(None, block=True, timeout=1.0)
@@ -1325,6 +1895,10 @@ class GearOptimizerApp:
             post_proc = None
             post_sender = None
             pipeline_ok = False
+            progress_completed = len(completed_songs)
+            if self._progress is not None:
+                self._progress.update_counts(completed=progress_completed, total=len(tasks))
+            self._progress_counts_driven = True
             try:
                 from gear_optimizer.pipeline.post_processor import run_post_processor
 
@@ -1367,6 +1941,12 @@ class GearOptimizerApp:
 
                     song_name = t[1]
                     song_path_key = os.path.abspath(str(t[0]))
+                    if self._progress is not None:
+                        try:
+                            self._run_current_song_label = str(task_key)
+                            self._progress.set_status(str(task_key), "Running")
+                        except Exception:
+                            pass
 
                     # Drain any newly preloaded songs into a local map for reuse.
                     if use_gpu_preload and preloader is not None:
@@ -1404,6 +1984,9 @@ class GearOptimizerApp:
                             "_song_name": song_name,
                             "song": song_name,
                         }
+                    progress_completed += 1
+                    failed_delta = 1 if isinstance(res, dict) and "_error" in res else 0
+                    self._progress_on_result(res, completed=progress_completed, total=len(tasks), failed_delta=failed_delta)
 
                     # POST-SONG GPU PREFETCH: Kick off the next song's timeline kernel
                     # while the post-processor builds payloads/prints/saves DB.
@@ -1459,6 +2042,7 @@ class GearOptimizerApp:
                 pipeline_ok = True
 
             finally:
+                self._progress_counts_driven = False
                 try:
                     if post_sender is not None:
                         post_sender.close(timeout=30.0)
@@ -1972,6 +2556,9 @@ class GearOptimizerApp:
         failed = 0
         total = total_tasks or 0  # approximate if unknown
         t0 = float(throughput_t0) if throughput_t0 is not None else time.perf_counter()
+        if self._progress is not None:
+            self._progress.update_counts(completed=completed, total=total)
+        self._progress_counts_driven = True
 
         for item in results_iter:
             if self._stop_requested_now():
@@ -1993,8 +2580,9 @@ class GearOptimizerApp:
                 except Exception as task_err:
                     failed += 1
                     err_msg = f"[{completed}/{total}] FAILED: {song_name} - {type(task_err).__name__}: {task_err}"
-                    print(err_msg)
+                    print(err_msg, file=sys.stderr)
                     logging.error(err_msg)
+                    self._progress_on_result(None, completed=completed, total=total, failed_delta=1)
                     if propagate_broken_pool and isinstance(task_err, BrokenProcessPool):
                         raise
                     continue
@@ -2004,10 +2592,11 @@ class GearOptimizerApp:
                     failed += 1
                     err_type = res.get("_error_type") or type(res.get("_error")).__name__
                     err_msg = f"[{completed}/{total}] FAILED: {song_name} - {err_type}: {res.get('_error')}"
-                    print(err_msg)
+                    print(err_msg, file=sys.stderr)
                     logging.error(err_msg)
                     if res.get("_trace"):
                         logging.error(res.get("_trace"))
+                    self._progress_on_result(None, completed=completed, total=total, failed_delta=1)
                     continue
             else:
                 res = item
@@ -2016,10 +2605,11 @@ class GearOptimizerApp:
                     err_name = res.get("_queue_label") or res.get("_song_name") or res.get("song")
                     err_type = res.get("_error_type") or type(res.get("_error")).__name__
                     err_msg = f"[{completed}/{total}] FAILED: {err_name} - {err_type}: {res.get('_error')}"
-                    print(err_msg)
+                    print(err_msg, file=sys.stderr)
                     logging.error(err_msg)
                     if res.get("_trace"):
                         logging.error(res.get("_trace"))
+                    self._progress_on_result(None, completed=completed, total=total, failed_delta=1)
                     continue
 
             song_name = res.get("song", "Unknown")
@@ -2029,6 +2619,8 @@ class GearOptimizerApp:
                 completed_songs.add(task_key)
             if memory_resume_tracker and song_name:
                 memory_resume_tracker.mark_completed(song_name)
+
+            self._progress_on_result(res, completed=completed, total=total)
 
             if memory_release_requested():
                 print("[MemoryGuard] Early stop in consume_results")
@@ -2178,6 +2770,8 @@ class GearOptimizerApp:
                 res["persist_entries"] = None
             if "db_payload" in res:
                 res["db_payload"] = None
+
+        self._progress_counts_driven = False
 
         if failed > 0:
             print(f"[SUMMARY] {failed}/{total} songs failed.")

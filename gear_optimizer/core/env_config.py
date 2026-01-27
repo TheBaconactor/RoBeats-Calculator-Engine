@@ -110,6 +110,12 @@ class EnvConfig:
     # ForceGreats
     fg_search_radius: int  # FG_SEARCH_RADIUS: default radius (env override, legacy)
 
+    # Console output / progress
+    output_enabled: bool  # METAFINDER_OUTPUT / METAFINDER_VERBOSE: enable verbose console output
+    progress_enabled: bool  # METAFINDER_PROGRESS: enable CLI progress UI (default on)
+    progress_interval_sec: float  # METAFINDER_PROGRESS_INTERVAL: UI refresh cadence
+    progress_bar_width: int  # METAFINDER_PROGRESS_WIDTH: progress bar width in chars
+
     # GPU Executor batching/IPC (read once; restart to apply changes)
     gpu_executor_batch_wait_ms: int  # GPU_EXECUTOR_BATCH_WAIT_MS
     gpu_executor_max_batch: int  # GPU_EXECUTOR_MAX_BATCH
@@ -126,6 +132,10 @@ class EnvConfig:
         """
         debug_profile = _env_bool("DEBUG_PROFILE") or _env_bool("METAFINDER_DEBUG_PROFILE")
         perf_timing_unconditional = _env_bool("PERF_TIMING")
+        output_enabled = _env_bool("METAFINDER_OUTPUT") or _env_bool("METAFINDER_VERBOSE")
+        progress_enabled = _env_bool("METAFINDER_PROGRESS", "1")
+        progress_interval_sec = _env_float("METAFINDER_PROGRESS_INTERVAL", 0.2)
+        progress_bar_width = _env_int("METAFINDER_PROGRESS_WIDTH", 24)
         return cls(
             debug_profile=debug_profile,
             # GPU Performance & Timing
@@ -148,6 +158,11 @@ class EnvConfig:
             ga_force_cold_start=_env_bool("GA_FORCE_COLD_START"),
             # ForceGreats
             fg_search_radius=_env_int("FG_SEARCH_RADIUS", 5),
+            # Console output / progress
+            output_enabled=output_enabled,
+            progress_enabled=progress_enabled,
+            progress_interval_sec=max(0.05, float(progress_interval_sec)),
+            progress_bar_width=max(10, int(progress_bar_width)),
             # GPU Executor batching/IPC
             gpu_executor_batch_wait_ms=max(0, _env_int("GPU_EXECUTOR_BATCH_WAIT_MS", 10)),
             gpu_executor_max_batch=max(1, _env_int("GPU_EXECUTOR_MAX_BATCH", 8)),

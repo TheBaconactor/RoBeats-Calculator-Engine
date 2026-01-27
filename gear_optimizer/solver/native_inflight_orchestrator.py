@@ -41,7 +41,7 @@ from gear_optimizer.helpers.song_helpers.fg_combo_booster import (
 )
 from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
 from gear_optimizer.helpers.song_helpers.loadout_builder import build_loadout_entries
-from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
+from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn, evaluate_record_update
 from gear_optimizer.helpers.song_helpers.song_config import setup_song_config
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.genetic import GA_POPULATION_SIZE
@@ -405,6 +405,7 @@ class _NativeSong:
     best_data: Optional[dict] = None
     best_gear: Optional[list] = None
     best_minis: Optional[list] = None
+    record_info: Optional[dict] = None
 
     # DB prefetch for FG (can overlap with GA)
     db_loadouts_future: Optional[concurrent.futures.Future] = None
@@ -767,6 +768,7 @@ def run_native_inflight_song_pipeline(
     post_queue=None,
     total_tasks: int | None = None,
     stop_requested=None,
+    progress_cb=None,
 ) -> None:
     if not tasks:
         return
@@ -1186,9 +1188,33 @@ def run_native_inflight_song_pipeline(
     fg_decision_debug = _truthy(os.environ.get("INFLIGHT_FG_DECISION_DEBUG", "0"))
     fg_submit_debug = _truthy(os.environ.get("INFLIGHT_FG_SUBMIT_DEBUG", "0"))
 
+    def _emit_progress(*, completed_delta: int = 0, failed_delta: int = 0, record_info: dict | None = None) -> None:
+        if progress_cb is None:
+            return
+        try:
+            progress_cb(completed_delta=completed_delta, failed_delta=failed_delta, record_info=record_info)
+        except Exception:
+            pass
+
     def _post(item: dict) -> None:
         if post_sender is not None:
             post_sender.send(item)
+        if isinstance(item, dict) and item.get("_error"):
+            try:
+                song_label = (
+                    item.get("song")
+                    or item.get("_song_name")
+                    or item.get("song_name")
+                    or item.get("_queue_label")
+                    or item.get("_queue_key")
+                )
+            except Exception:
+                song_label = None
+            _emit_progress(
+                completed_delta=1,
+                failed_delta=1,
+                record_info={"song": song_label, "status": "FAILED"},
+            )
 
     pending_tasks = deque(t for t in tasks if _task_key(t) not in completed_songs)
     # If the queue is shorter than the configured FG cadence, cap the effective cadence
@@ -1985,6 +2011,18 @@ def run_native_inflight_song_pipeline(
                     except Exception:
                         pass
 
+                record_info = None
+                try:
+                    record_info = evaluate_record_update(
+                        song.best_data or {},
+                        song.prev_record,
+                        song.fg_variants or [],
+                        db_best_fg_score=song.db_best_fg_score,
+                    )
+                except Exception:
+                    record_info = None
+                song.record_info = record_info
+
                 _post(
                     {
                         "_deferred_post": True,
@@ -2036,6 +2074,13 @@ def run_native_inflight_song_pipeline(
                 completed_songs.add(song.task_key)
                 if memory_resume_tracker:
                     memory_resume_tracker.mark_completed(song.song_name)
+                try:
+                    record_info = dict(record_info or {})
+                    record_info.setdefault("song", song.song_name or song.task_key)
+                    record_info.setdefault("status", "DONE")
+                except Exception:
+                    pass
+                _emit_progress(completed_delta=1, record_info=record_info)
 
             # Reap completed FG workers (capture errors).
             if fg_futures:
@@ -2257,6 +2302,7 @@ def run_native_inflight_song_pipeline(
                                     fg_song,
                                     gpu_client=gpu_client,
                                     post_sender=post_sender,
+                                    progress_cb=progress_cb,
                                 ),
                                 t_submit,
                             )
@@ -2423,6 +2469,7 @@ def _run_fg_job_sync(
     *,
     gpu_client: GpuServiceClient,
     post_sender: Optional[_PostSender] = None,
+    progress_cb=None,
 ) -> None:
     cpu_t0 = _thread_cpu_time_s()
     if song.fg_prep_future is not None:
@@ -2510,6 +2557,26 @@ def _run_fg_job_sync(
         setattr(song, "_cpu_fg_run_s", max(0.0, _thread_cpu_time_s() - float(cpu_t0)))
     except Exception:
         pass
+
+    if progress_cb is not None:
+        fg_record_info = None
+        try:
+            fg_record_info = evaluate_record_update(
+                song.best_data or {},
+                song.prev_record,
+                song.fg_variants or [],
+                db_best_fg_score=song.db_best_fg_score,
+            )
+        except Exception:
+            fg_record_info = None
+        if isinstance(fg_record_info, dict):
+            fg_record_info = dict(fg_record_info)
+            # Only count FG improvements in this stage (independent of base GA updates).
+            fg_record_info["record_update"] = bool(fg_record_info.get("is_fg_better"))
+            try:
+                progress_cb(completed_delta=0, failed_delta=0, record_info=fg_record_info)
+            except Exception:
+                pass
 
     if post_sender is not None:
         post_sender.send(

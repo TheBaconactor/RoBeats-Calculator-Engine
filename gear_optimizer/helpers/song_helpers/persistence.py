@@ -104,6 +104,67 @@ def _has_valid_fg_config(fg_container):
         return False
 
 
+def evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score=None) -> dict:
+    """
+    Evaluate whether the current run beats prior base/FG records.
+
+    Returns a dict with:
+        - record_update (bool)
+        - is_first (bool)
+        - is_better (bool)
+        - is_fg_better (bool)
+        - score (int)
+        - prev_score (int|None)
+        - best_fg_score_run (int)
+        - prev_fg_score (int)
+    """
+    score = 0
+    if isinstance(best_data, dict):
+        score = _safe_int_force(best_data.get("BaseScore") or best_data.get("Score", 0), 0)
+
+    prev_score = None
+    if isinstance(prev_record, dict):
+        prev_score_raw = prev_record.get("score")
+        if prev_score_raw is not None:
+            prev_score = _safe_int_force(prev_score_raw, 0)
+
+    is_first = prev_record is None
+    is_better = (prev_score is None) or (score > prev_score)
+
+    best_fg_score_run = 0
+    for fg_entry in fg_variants or []:
+        if not isinstance(fg_entry, dict):
+            continue
+        if not _has_valid_fg_config(fg_entry):
+            continue
+        base_score = fg_entry.get("base_score")
+        if base_score is None:
+            base_score = fg_entry.get("score", 0)
+        base_score_i = _safe_int_force(base_score, 0)
+        fg_score_i = _safe_int_force(fg_entry.get("fg_score", 0), 0)
+        if fg_score_i <= base_score_i:
+            continue
+        if fg_score_i > best_fg_score_run:
+            best_fg_score_run = fg_score_i
+
+    prev_fg_score = (
+        db_best_fg_score if db_best_fg_score is not None else (prev_record.get("fg_score") if prev_record else 0)
+    )
+    prev_fg_score = _safe_int_force(prev_fg_score, 0)
+    is_fg_better = best_fg_score_run > prev_fg_score
+
+    return {
+        "record_update": bool(is_better or is_fg_better),
+        "is_first": bool(is_first),
+        "is_better": bool(is_better),
+        "is_fg_better": bool(is_fg_better),
+        "score": int(score),
+        "prev_score": prev_score,
+        "best_fg_score_run": int(best_fg_score_run),
+        "prev_fg_score": int(prev_fg_score),
+    }
+
+
 def make_build_details_fn(
     primary_color: str, secondary_color: str, effective_difficulty: str
 ) -> Callable[[dict], dict]:
@@ -249,6 +310,17 @@ def build_db_payload(
     prev_fg_score = prev_fg_score or 0  # Ensure it's not None
     is_fg_better = best_fg_score_run > prev_fg_score
 
+    record_info = {
+        "record_update": bool(is_better or is_fg_better),
+        "is_first": bool(is_first),
+        "is_better": bool(is_better),
+        "is_fg_better": bool(is_fg_better),
+        "score": _safe_int_force(score, 0),
+        "prev_score": _safe_int_force(prev_score, 0) if prev_score is not None else None,
+        "best_fg_score_run": _safe_int_force(best_fg_score_run, 0),
+        "prev_fg_score": _safe_int_force(prev_fg_score, 0),
+    }
+
     if is_first:
         print(" >> NEW RECORD! (First entry for this song/context). Saving to Evolution Database...")
     elif is_better:
@@ -299,6 +371,7 @@ def build_db_payload(
     updated_payload["attempts_first"] = attempts_first
     # Expose the current run's metrics for downstream per-song counter updates.
     updated_payload["run_score"] = score or 0
+    updated_payload["_record"] = record_info
     if top1:
         updated_payload.update(
             {
