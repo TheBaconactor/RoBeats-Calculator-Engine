@@ -1176,9 +1176,41 @@ class GpuExecutor:
         if not self._in_process_queues:
             return [self._execute_request(req) for req in requests]
 
-        merged_payloads: list[dict[str, Any]] = []
-        slices: list[tuple["GpuRequest", int, int]] = []
+        try:
+            max_payloads = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "64") or "64")
+        except Exception:
+            max_payloads = 64
+        max_payloads = max(1, min(int(max_payloads), 512))
+        try:
+            max_pairs = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAIRS", "0") or "0")
+        except Exception:
+            max_pairs = 0
+        max_pairs = max(0, int(max_pairs))
+        if max_pairs > 0:
+            import numpy as np
+
+        def _payload_pairs(payloads: list[dict[str, Any]]) -> int:
+            if max_pairs <= 0:
+                return 0
+            total = 0
+            for p in payloads:
+                ftff_pairs = p.get("ftff_pairs")
+                if ftff_pairs is None:
+                    continue
+                try:
+                    if isinstance(ftff_pairs, np.ndarray):
+                        total += int(ftff_pairs.shape[0])
+                    else:
+                        total += int(len(ftff_pairs))
+                except Exception:
+                    continue
+            return total
+
         fallback: list[GpuResponse] = []
+        groups: list[list[tuple["GpuRequest", list[dict[str, Any]], int, int]]] = []
+        cur: list[tuple["GpuRequest", list[dict[str, Any]], int, int]] = []
+        cur_payloads = 0
+        cur_pairs = 0
 
         for req in requests:
             payload = self._payload_dict(req)
@@ -1195,51 +1227,77 @@ class GpuExecutor:
                 fallback.append(self._execute_request(req))
                 continue
 
-            start = len(merged_payloads)
-            merged_payloads.extend(list(payloads))
-            slices.append((req, start, int(len(payloads))))
+            payload_list = list(payloads)
+            n_payloads = int(len(payload_list))
+            if n_payloads <= 0:
+                fallback.append(self._execute_request(req))
+                continue
+            if n_payloads > int(max_payloads):
+                fallback.append(self._execute_request(req))
+                continue
+            n_pairs = _payload_pairs(payload_list)
+
+            if cur and (
+                cur_payloads + n_payloads > int(max_payloads)
+                or (max_pairs > 0 and cur_pairs + n_pairs > int(max_pairs))
+            ):
+                groups.append(cur)
+                cur = []
+                cur_payloads = 0
+                cur_pairs = 0
+
+            cur.append((req, payload_list, n_payloads, n_pairs))
+            cur_payloads += n_payloads
+            cur_pairs += n_pairs
+
+        if cur:
+            groups.append(cur)
 
         out: list[GpuResponse] = []
         out.extend(fallback)
 
-        # If nothing to coalesce, we're done.
-        if not slices:
+        if not groups:
             by_id = {r.request_id: r for r in out if r is not None}
             return [by_id.get(req.request_id) for req in requests]
 
-        # Single request: run it normally (avoids surprising behavior changes on edge cases).
-        if len(slices) == 1:
-            out.append(self._execute_request(slices[0][0]))
-            by_id = {r.request_id: r for r in out if r is not None}
-            return [by_id.get(req.request_id) for req in requests]
+        for group in groups:
+            if len(group) == 1:
+                out.append(self._execute_request(group[0][0]))
+                continue
+            try:
+                merged_payloads: list[dict[str, Any]] = []
+                slices: list[tuple["GpuRequest", int, int]] = []
+                for req, payload_list, n_payloads, _ in group:
+                    start = len(merged_payloads)
+                    merged_payloads.extend(payload_list)
+                    slices.append((req, start, int(n_payloads)))
 
-        try:
-            merged_req = GpuRequest(
-                request_type=GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
-                request_id=-1,
-                worker_id=-1,
-                payload={"payloads": merged_payloads},
-            )
-            merged_resp = self._execute_fg_solve_with_breakpoints_batch(merged_req)
-            if not getattr(merged_resp, "success", False):
-                raise RuntimeError(f"merged FG bundle failed: {merged_resp.error}")
-            merged_results = getattr(merged_resp, "result", None)
-            if not isinstance(merged_results, list):
-                raise TypeError("merged FG bundle returned non-list result")
-            if int(len(merged_results)) != int(len(merged_payloads)):
-                raise RuntimeError("merged FG bundle length mismatch")
-
-            for req, start, n in slices:
-                out.append(
-                    GpuResponse(
-                        request_id=req.request_id,
-                        success=True,
-                        result=list(merged_results[int(start) : int(start) + int(n)]),
-                    )
+                merged_req = GpuRequest(
+                    request_type=GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
+                    request_id=-1,
+                    worker_id=-1,
+                    payload={"payloads": merged_payloads},
                 )
-        except Exception:
-            # Preserve robustness: if batching fails, execute each request independently.
-            out = [self._execute_request(req) for req in requests]
+                merged_resp = self._execute_fg_solve_with_breakpoints_batch(merged_req)
+                if not getattr(merged_resp, "success", False):
+                    raise RuntimeError(f"merged FG bundle failed: {merged_resp.error}")
+                merged_results = getattr(merged_resp, "result", None)
+                if not isinstance(merged_results, list):
+                    raise TypeError("merged FG bundle returned non-list result")
+                if int(len(merged_results)) != int(len(merged_payloads)):
+                    raise RuntimeError("merged FG bundle length mismatch")
+
+                for req, start, n in slices:
+                    out.append(
+                        GpuResponse(
+                            request_id=req.request_id,
+                            success=True,
+                            result=list(merged_results[int(start) : int(start) + int(n)]),
+                        )
+                    )
+            except Exception:
+                for req, _, _, _ in group:
+                    out.append(self._execute_request(req))
 
         by_id = {r.request_id: r for r in out if r is not None}
         return [by_id.get(req.request_id) for req in requests]

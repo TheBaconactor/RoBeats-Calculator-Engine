@@ -8,6 +8,7 @@ reference tables + base genome stats fields for scoring.
 
 from __future__ import annotations
 
+import os
 import taichi as ti
 
 from ..runtime import init_taichi_vulkan, is_initialized
@@ -23,8 +24,11 @@ FG_MAX_CONFIGS = 1048576
 FG_MAX_FTFF = 1024
 FG_MAX_SONG_NOTES = 200000  # safety cap for timestamps uploaded to GPU
 FG_DOWNLOAD_TOPK_MAX = 256  # Max selected rows for reduced global_best download (keep + candidates)
-# Batch download staging for executor-side payload bundles (avoid per-payload to_numpy()).
-FG_DOWNLOAD_BATCH_MAX = 128
+try:
+    _fg_download_batch_env = int(os.environ.get("FG_DOWNLOAD_BATCH_MAX", "128") or "128")
+except Exception:
+    _fg_download_batch_env = 128
+FG_DOWNLOAD_BATCH_MAX = max(1, min(int(_fg_download_batch_env), 256))
 FG_PACKED_COLS = 11 + FG_MAX_SECTIONS
 FG_SELECTED_PACKED_COLS = 12 + FG_MAX_SECTIONS
 

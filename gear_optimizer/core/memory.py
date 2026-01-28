@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -434,16 +435,27 @@ class MemoryGuardResumeTracker:
             logging.warning(f"[MemoryGuard] Failed to create resume queue directory: {exc}")
             return
 
-        tmp_path = self.path + ".tmp"
+        tmp_path = None
+        tmp_fd = None
         try:
-            with open(tmp_path, "w", encoding="utf-8") as fh:
+            tmp_dir = os.path.dirname(self.path) or "."
+            tmp_prefix = os.path.basename(self.path) + "."
+            tmp_fd, tmp_path = tempfile.mkstemp(prefix=tmp_prefix, suffix=".tmp", dir=tmp_dir, text=True)
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
                 json.dump(payload, fh)
+            tmp_fd = None
         except Exception as exc:
             logging.warning(f"[MemoryGuard] Failed to write resume queue tmp file: {exc}")
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass
+            if tmp_fd is not None:
+                try:
+                    os.close(tmp_fd)
+                except Exception:
+                    pass
+            if tmp_path:
+                try:
+                    os.remove(tmp_path)
+                except Exception:
+                    pass
             return
 
         # Windows can intermittently raise PermissionError on atomic replace if an external

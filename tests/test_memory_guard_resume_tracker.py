@@ -21,4 +21,4 @@ def test_resume_tracker_replace_errors_do_not_raise(tmp_path, monkeypatch):
         tracker.mark_completed("Song1")
 
         assert [entry["song"] for entry in tracker.pending] == ["Song2"]
-        assert not (tmp_path / "resume.json.tmp").exists()
+        assert not list(tmp_path.glob("resume.json.*.tmp"))
