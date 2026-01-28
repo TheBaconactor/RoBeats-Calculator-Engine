@@ -482,7 +482,7 @@ def process_force_greats_gpu_finder(
     # Race-safety guard (default-on for in-process in-flight mode).
     #
     # The `fg_tasks=` path can span multiple executor requests (reset -> solve tasks -> download).
-    # If other GPU work (GA or another song's FG) interleaves between those requests, GPU-resident
+    # If other GPU work (GA or another song's FG) overlaps between those requests, GPU-resident
     # "global best" buffers can mix results. The safest default is to keep each song's FG work
     # within a single executor request when using in-process thread queues.
     #

@@ -112,7 +112,7 @@ fg_flat_work_ftff: ti.Field | None = None  # (FG_MAX_FLAT_WORK_ITEMS,) i32
 
 # Global best fields for GPU-resident accumulation (persist across group calls)
 # These track the best results found across all GPU calls within a single FG batch
-# NOTE: These buffers are indexed by `song_slot` so multiple in-flight FG sessions can safely interleave
+# NOTE: These buffers are indexed by `song_slot` so multiple in-flight FG sessions can safely overlap
 # (global-best state must not mix across songs when multi-request pipelining is enabled).
 fg_global_best_final_score: ti.Field | None = None  # (MAX_SONG_SLOTS, MAX_GENOMES) i32
 fg_global_best_base_score: ti.Field | None = None  # (MAX_SONG_SLOTS, MAX_GENOMES) i32

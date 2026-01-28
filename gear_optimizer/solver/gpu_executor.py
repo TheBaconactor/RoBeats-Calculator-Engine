@@ -1584,7 +1584,7 @@ class GpuExecutor:
         """
         Pick a stable per-worker song_slot in [1, MAX_SONG_SLOTS-1].
 
-        Motivation: in spawn-based parallel processing, different workers submit interleaved
+        Motivation: in spawn-based parallel processing, different workers submit overlapping
         `calc_song` dict requests. If everything uses song_slot=0, the timeline cache in
         `precompute_timeline_gpu()` thrashes (cache is keyed by (song_slot, song_key)),
         forcing repeated recomputation and leaving the GPU underfed by avoidable work.
@@ -1646,7 +1646,7 @@ class GpuExecutor:
         # Run the solver with song_slot
         song_slot = int(payload.get("song_slot", song_slot) or 0)
         # IPC optimization: choose a stable per-worker song_slot so timeline precompute caches
-        # don't thrash across interleaved songs (precompute_timeline_gpu caches per slot).
+        # don't thrash across overlapping songs (precompute_timeline_gpu caches per slot).
         if (
             song_slot == 0
             and (not self._in_process_queues)

@@ -1448,7 +1448,7 @@ def upsert_pending_fg_job(song_name: str, candidates: List[Dict[str, Any]]) -> N
     Persist a crash-safe pending ForceGreats job for a song.
 
     This stores a compact candidate list so FG can be computed later without
-    rerunning GA (e.g. when FG is deferred/interleaved for throughput).
+    rerunning GA (e.g. when FG is deferred/batched for throughput).
     """
     song_name = str(song_name or "").strip()
     if not song_name:

@@ -794,10 +794,6 @@ class GearOptimizerApp:
 
         target_primary_raw = cfg.get("CalculateSong", "TargetPrimary", fallback="")
         target_secondary_raw = cfg.get("CalculateSong", "TargetSecondary", fallback="")
-        legacy_target_raw = cfg.get("CalculateSong", "TargetColor", fallback="")
-
-        if not target_primary_raw and legacy_target_raw:
-            target_primary_raw = legacy_target_raw
         if not target_secondary_raw:
             target_secondary_raw = "all"
 
@@ -1777,7 +1773,7 @@ class GearOptimizerApp:
 
         # ------------------------------------------------------------------
         # In-flight multi-song pipeline (opt-in):
-        # Interleave multiple songs' CPU GA orchestration while a single GPU-owner
+        # Overlap multiple songs' CPU GA orchestration while a single GPU-owner
         # thread runs Taichi kernels via the GPU executor. This is different from
         # per-song multiprocessing: it stays within one process and avoids per-song
         # worker overhead.

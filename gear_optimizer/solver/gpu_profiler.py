@@ -181,7 +181,7 @@ class GpuProfiler:
                 self._current_song.kernel_calls += 1
                 self._current_song.genome_evaluations += genome_count
             else:
-                # In-flight mode can interleave songs, so we may not have a per-song
+                # In-flight mode can overlap songs, so we may not have a per-song
                 # context. Still accumulate global totals for transfer/throughput.
                 self._total_kernel_sec += float(duration_sec)
                 self._total_genome_evals += int(genome_count or 0)

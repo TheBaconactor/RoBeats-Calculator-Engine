@@ -39,7 +39,7 @@
 ### Solver & GPU
 - `gear_optimizer/solver/genetic.py` - GA decode optimizations, env var caching
 - `gear_optimizer/solver/gpu_executor.py` - Sync reduction
-- `gear_optimizer/solver/inflight_utils.py` - Interleave improvements
+- `gear_optimizer/solver/inflight_utils.py` - In-flight overlap improvements
 - `gear_optimizer/solver/native_inflight_orchestrator.py` - FG job batching
 - `gear_optimizer/solver/native_inflight_stages.py` - Timing improvements
 - `gear_optimizer/solver/taichi_gem/api/ga_operations.py` - Numpy fast-path
@@ -126,7 +126,7 @@
 - Defensive save logic prevents corruption
 
 ### 3. FG Improvements 🚀
-- Process all pending FG jobs per interleave (not just 1)
+- Process all pending FG jobs per backlog batch (not just 1)
 - FG_DrainAtEnd now defaults to true (ensures all songs get FG)
 - Better batch dispatch reduces GPU sync gaps
 
@@ -172,7 +172,7 @@ b1ec0cb fix: enforce Stats population in DB, add full-database Stats verifier
 e3a5539 Merge remote-tracking branch 'origin/main' into revert-cpu-opt
 8bf17d1 Reintroduce lean GA decode optimizations (FG-safe)
 f8cef23 chore(logging): clarify DB seed log with base/FG and pid
-a9dfcde fix(FG): process all pending FG jobs per interleave, drain at end by default
+a9dfcde fix(FG): process all pending FG jobs per backlog batch, drain at end by default
 39c55f4 Save workspace changes
 d5b0717 Cache env vars at module load in GA hot path (9.6x)
 aef5767 Add numpy fast-path for genome_stats_list (196x faster)

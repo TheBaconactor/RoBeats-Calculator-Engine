@@ -160,7 +160,7 @@ def _build_interesting_items_by_slot(
             reverse=True,
         )
 
-        # Interleave "GA-ranked" items with FG-heuristic items so we don't end up with
+        # Mix "GA-ranked" items with FG-heuristic items so we don't end up with
         # a pure base-score list for every slot (common regression shape at high depth).
         out: list[dict] = []
         seen: set[str] = set()
@@ -273,7 +273,7 @@ def _build_interesting_items_by_slot_multi_axis(
             seen.add(name)
             out.append(it)
 
-        # Interleave top-by-base and top-by-FG-proxy so early truncations keep coverage.
+        # Mix top-by-base and top-by-FG-proxy so early truncations keep coverage.
         i = 0
         base_cap = max(1, min(len(by_base), top_k))
         fg_cap = max(1, min(len(by_fg), top_k))
