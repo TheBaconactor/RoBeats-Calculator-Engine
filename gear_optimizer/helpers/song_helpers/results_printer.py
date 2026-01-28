@@ -119,6 +119,22 @@ def print_results(
     print(f"FINAL CONFIGURATION FOR: {found_song_name}")
     print(f"Best Base Score Found: {base_score_run}")
     print(f"Best FG Score Found: {fg_score_to_print}")
+
+    # Optional: HumanHitSim timing summary for the best-improving FG variant (if available).
+    try:
+        if best_fg_entry is not None:
+            fg_data = best_fg_entry.get("data", {}) or {}
+            fg_meta = fg_data.get("ForceGreats") or {}
+            if isinstance(fg_meta, dict):
+                delta = fg_meta.get("hitsim_offset_delta_ms")
+                try:
+                    delta_i = int(delta)
+                except Exception:
+                    delta_i = None
+                if delta_i is not None:
+                    print(f"HitSim Offset Delta: {delta_i:+d}ms")
+    except Exception:
+        pass
     status_emit_fn(f"Base={base_score_run} | FG={fg_score_to_print}")
 
     if fg_variants:

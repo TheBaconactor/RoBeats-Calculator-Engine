@@ -57,6 +57,190 @@ FG_TIMELINE_CACHE = LRUCache(maxsize=1000)
 _FG_TIMELINE_TLS = threading.local()
 
 
+def _floor_to_int_ms(timestamps_sec: np.ndarray) -> np.ndarray:
+    ts = np.asarray(timestamps_sec, dtype=np.float64)
+    # Match server/client behavior (floor to integer milliseconds) and mirror hit_simulation.py.
+    return np.floor(ts * 1000.0 + 1e-6).astype(np.int32)
+
+
+def _fg_config_to_counts(config: object) -> list[int]:
+    if not isinstance(config, dict) or not config:
+        return []
+
+    lowered: dict[str, object] = {}
+    for k, v in config.items():
+        try:
+            lowered[str(k).strip().lower()] = v
+        except Exception:
+            continue
+
+    max_idx = 0
+    prefix = "nonfever"
+    for k in lowered.keys():
+        if not k.startswith(prefix):
+            continue
+        suf = k[len(prefix) :].strip()
+        try:
+            idx = int(suf)
+        except Exception:
+            continue
+        if idx > max_idx:
+            max_idx = idx
+
+    if max_idx <= 0:
+        return []
+
+    out: list[int] = []
+    for idx in range(1, max_idx + 1):
+        raw = lowered.get(f"{prefix}{idx}", 0)
+        try:
+            val = int(raw or 0)
+        except Exception:
+            val = 0
+        out.append(max(0, val))
+    return out
+
+
+def summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song: dict, fg_data: dict, ref_arrays: dict) -> int | None:
+    """
+    Return a single signed ms offset (vs chart time) on the note that delays a fever start via carry_time.
+
+    Intended for persistence/analysis as:
+      ForceGreats.hitsim_offset_delta_ms = +X / -Y
+
+    Returns None when HumanHitSim timing data is not available or no carry-driven fever delay occurs.
+    """
+    if not isinstance(calc_song, dict) or not isinstance(fg_data, dict) or not isinstance(ref_arrays, dict):
+        return None
+
+    fg_meta = fg_data.get("ForceGreats") or {}
+    if not isinstance(fg_meta, dict):
+        return None
+
+    config = fg_meta.get("config") or {}
+    forced_counts = _fg_config_to_counts(config)
+    if not forced_counts or sum(forced_counts) <= 0:
+        return None
+
+    stats = fg_data.get("Stats") or {}
+    if not isinstance(stats, dict) or not stats:
+        return None
+
+    song_data = calc_song.get("song_data", {}) or {}
+    chart_ts = song_data.get("chart_timestamps")
+    great_candidates = song_data.get("fg_great_candidate_timestamps")
+    if chart_ts is None or great_candidates is None:
+        return None
+
+    timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
+    if timestamps is None:
+        return None
+
+    timestamps = np.asarray(timestamps, dtype=np.float64)
+    great_candidates = np.asarray(great_candidates, dtype=np.float64)
+    total_notes = int(timestamps.shape[0])
+    if total_notes <= 0:
+        return None
+
+    try:
+        fever_fill_rate = lookup_reference_py(stats["Fever Fill Rate"], ref_arrays["Fever Fill Rate"], TOTAL_ROWS)
+        fever_time_stat = lookup_reference_py(stats["Fever Time"], ref_arrays["Fever Time"], TOTAL_ROWS)
+    except Exception:
+        return None
+
+    meta0 = calc_song.get("metadata", {}) or {}
+    long_notes = safe_int(meta0.get("Long Notes"), 0)
+
+    base_ts = song_data.get("timestamps", timestamps)
+    try:
+        default_last_note = float(base_ts[-1]) if len(base_ts) else 0.0
+    except Exception:
+        default_last_note = 0.0
+    last_note_time = safe_float(meta0.get("Last Note Time"), default_last_note)
+
+    try:
+        _, _, _, _non_fever_base, section_details = _compute_force_greats_timeline(
+            timestamps,
+            great_candidates,
+            total_notes,
+            fever_fill_rate,
+            fever_time_stat,
+            long_notes,
+            last_note_time,
+            forced_counts,
+            clamp_base_notes_nonnegative=True,
+            clamp_forced_to_section_notes=True,
+            use_forced_great_timing=True,
+        )
+    except Exception:
+        return None
+
+    chart_ms = _floor_to_int_ms(np.asarray(chart_ts, dtype=np.float64))
+    cand_ms = _floor_to_int_ms(np.asarray(great_candidates, dtype=np.float64))
+    song_ms = _floor_to_int_ms(np.asarray(timestamps, dtype=np.float64))
+    n = min(int(chart_ms.shape[0]), int(cand_ms.shape[0]), total_notes)
+    if n <= 0:
+        return None
+
+    carry_time_ms = 0
+    carry_note_idx: int | None = None
+
+    for detail in section_details or []:
+        try:
+            section_start = int(detail.get("start_idx", 0) or 0)
+        except Exception:
+            section_start = 0
+        try:
+            notes_to_fill = int(detail.get("notes", 0) or 0)
+        except Exception:
+            notes_to_fill = 0
+        try:
+            forced = int(detail.get("forced", 0) or 0)
+        except Exception:
+            forced = 0
+
+        end_normal = section_start + notes_to_fill
+        if end_normal < 0:
+            end_normal = 0
+        if end_normal >= n:
+            break
+
+        # Update carry_time based on the carry-driving note for this section.
+        if forced > 0:
+            skip_wasted = bool(detail.get("skip_wasted"))
+            forced_start = section_start + (0 if skip_wasted else 1)
+            if forced_start < 0:
+                forced_start = 0
+            forced_end = forced_start + forced - 1
+            if forced_end >= n:
+                forced_end = n - 1
+            if forced_end >= forced_start:
+                cand_t_ms = int(cand_ms[forced_end])
+                if cand_t_ms > carry_time_ms:
+                    carry_time_ms = cand_t_ms
+                    carry_note_idx = int(forced_end)
+
+        # Fever start is delayed when carry_time exceeds the per-hit perfect event time.
+        start_time_ms = int(song_ms[end_normal])
+        if carry_note_idx is not None and carry_time_ms > start_time_ms:
+            idx = int(carry_note_idx)
+            if 0 <= idx < n:
+                return int(cand_ms[idx]) - int(chart_ms[idx])
+            return None
+
+    return None
+
+
+def summarize_hitsim_offsets_for_fg_variant(calc_song: dict, fg_data: dict, ref_arrays: dict) -> dict | None:
+    """
+    Back-compat wrapper (deprecated): keep the old name but only expose the single-field summary.
+    """
+    delta = summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song, fg_data, ref_arrays)
+    if delta is None:
+        return None
+    return {"hitsim_offset_delta_ms": int(delta)}
+
+
 def _get_fg_timeline_buffers(total_notes: int):
     """
     Get (or allocate) reusable scratch buffers sized for `total_notes`.

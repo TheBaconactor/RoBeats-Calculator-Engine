@@ -739,6 +739,53 @@ def process_song_task(args) -> SongResultPayload:
                 n_loadouts = len(loadout_entries) if loadout_entries else 0
                 print(f"[PERF] ForceGreats: {fg_time_sec:.2f}s ({n_loadouts} loadouts, finder={force_greats_finder})")
 
+        # ------------------------------------------------------------------
+        # HumanHitSim timing summary (FG best-improving candidate, GA-origin).
+        # Attach to the FG payload so it can be logged/persisted without per-note spam.
+        # ------------------------------------------------------------------
+        try:
+            if fg_variants:
+                from ..solver.scoring.force_greats import summarize_hitsim_offset_delta_ms_for_fg_variant
+
+                best_fg_variant = None
+                best_fg_score = -1
+                for v in fg_variants or []:
+                    if not isinstance(v, dict):
+                        continue
+                    if not bool(v.get("_is_ga", True)):
+                        continue
+                    try:
+                        fg_score_v = int(v.get("fg_score", 0) or 0)
+                    except Exception:
+                        fg_score_v = 0
+                    try:
+                        base_score_v = int(v.get("score", 0) or 0)
+                    except Exception:
+                        base_score_v = 0
+                    if fg_score_v <= base_score_v:
+                        continue
+                    if fg_score_v > best_fg_score:
+                        best_fg_score = fg_score_v
+                        best_fg_variant = v
+
+                if best_fg_variant is not None:
+                    fg_data = best_fg_variant.get("data") or {}
+                    if isinstance(fg_data, dict):
+                        fg_meta = fg_data.get("ForceGreats") or {}
+                        already = isinstance(fg_meta, dict) and ("hitsim_offset_delta_ms" in fg_meta)
+                        if not already:
+                            delta_ms = summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song, fg_data, ref_arrays)
+                            if delta_ms is not None:
+                                try:
+                                    fg_meta_out = fg_data.get("ForceGreats") or {}
+                                    if isinstance(fg_meta_out, dict):
+                                        fg_meta_out["hitsim_offset_delta_ms"] = int(delta_ms)
+                                        fg_data["ForceGreats"] = fg_meta_out
+                                except Exception:
+                                    pass
+        except Exception:
+            pass
+
         # --- REPORTING & DB UPDATE (payload only; saved by coordinator) ---
         if defer_post and best_data:
 
