@@ -259,6 +259,7 @@ def _maybe_force_single_band(
         return int(cfg_chunk)
     return int(cfg_chunk)
 
+
 # Cached buffers for genome stats uploads (reuse to avoid alloc churn)
 _fg_genome_stats_buf: np.ndarray | None = None
 _fg_flat_work_buf: dict[str, np.ndarray] | None = None
@@ -616,6 +617,141 @@ def fg_download_global_best(
         "fill_penalty": packed[:, 10],
         "cfg_counts": cfg_counts,
     }
+
+
+def fg_pack_global_best_topk_to_batch(
+    n_genomes: int,
+    *,
+    session_slot: int,
+    topk: int,
+    base_scores: np.ndarray,
+    keep_mask: np.ndarray | None,
+    batch_idx: int,
+) -> None:
+    """
+    Pack a top-K subset of `fg_global_best_*` into `fg_selected_packed_batch[batch_idx]`.
+
+    This is the "download-later" primitive used by the GPU executor's bundled FG path:
+      - solve payload N -> update global_best
+      - pack payload N -> staging batch slice
+      - ... repeat ...
+      - single `to_numpy()` download at the end of the bundle
+    """
+    fg_fields.ensure_ready_with_warmup()
+
+    n = int(n_genomes)
+    slot = int(session_slot)
+    k = int(topk)
+    bidx = int(batch_idx)
+    if n <= 0:
+        return
+
+    base_np = np.asarray(base_scores, dtype=np.int32)
+    if int(base_np.shape[0]) != n:
+        raise ValueError(f"base_scores length mismatch: {int(base_np.shape[0])} != {n}")
+    if not base_np.flags["C_CONTIGUOUS"]:
+        base_np = np.ascontiguousarray(base_np, dtype=np.int32)
+
+    if keep_mask is None:
+        keep_np = np.zeros((n,), dtype=np.int32)
+    else:
+        keep_np = np.asarray(keep_mask, dtype=np.int32)
+        if int(keep_np.shape[0]) != n:
+            raise ValueError(f"keep_mask length mismatch: {int(keep_np.shape[0])} != {n}")
+        if not keep_np.flags["C_CONTIGUOUS"]:
+            keep_np = np.ascontiguousarray(keep_np, dtype=np.int32)
+
+    global _fg_download_topk_base_buf, _fg_download_topk_keep_buf
+    try:
+        max_g = int(getattr(fg_fields, "MAX_GENOMES", 0) or 0)
+    except Exception:
+        max_g = 0
+    if max_g <= 0:
+        max_g = int(n)
+
+    if _fg_download_topk_base_buf is None or int(_fg_download_topk_base_buf.shape[0]) != int(max_g):
+        _fg_download_topk_base_buf = np.zeros((int(max_g),), dtype=np.int32)
+    if _fg_download_topk_keep_buf is None or int(_fg_download_topk_keep_buf.shape[0]) != int(max_g):
+        _fg_download_topk_keep_buf = np.zeros((int(max_g),), dtype=np.int32)
+
+    _fg_download_topk_base_buf[:n] = base_np[:n]
+    _fg_download_topk_keep_buf[:n] = keep_np[:n]
+    fg_fields.fg_input_base_score.from_numpy(_fg_download_topk_base_buf)
+    fg_fields.fg_keep_mask.from_numpy(_fg_download_topk_keep_buf)
+
+    fg_kernels.fg_select_global_best_topk_kernel(int(slot), int(n), int(k))
+    n_pack = int(getattr(fg_fields, "FG_DOWNLOAD_TOPK_MAX", 256) or 256)
+    fg_kernels.fg_pack_selected_global_best_batch_kernel(int(slot), int(n_pack), int(bidx))
+
+
+def fg_download_packed_topk_batch(n_payloads: int) -> list[dict[str, np.ndarray]]:
+    """
+    Download `fg_selected_packed_batch` (previously filled by `fg_pack_global_best_topk_to_batch`).
+    """
+    fg_fields.ensure_ready_with_warmup()
+    n_payloads = int(n_payloads)
+    if n_payloads <= 0:
+        return []
+    try:
+        max_batch = int(getattr(fg_fields, "FG_DOWNLOAD_BATCH_MAX", 0) or 0)
+    except Exception:
+        max_batch = 0
+    if max_batch <= 0:
+        max_batch = 1
+    if n_payloads > int(max_batch):
+        raise ValueError(f"n_payloads exceeds FG_DOWNLOAD_BATCH_MAX: {n_payloads} > {max_batch}")
+
+    _t0 = time.perf_counter()
+    ti.sync()
+    _sync_sec = time.perf_counter() - _t0
+
+    _t1 = time.perf_counter()
+    sel_packed_all = fg_fields.fg_selected_packed_batch.to_numpy()
+    _dl_sec = time.perf_counter() - _t1
+
+    _record_kernel_wall("packed_topk_batch_sync", _sync_sec)
+    _record_download("packed_topk_batch", _dl_sec, int(getattr(sel_packed_all, "nbytes", 0) or 0))
+    if _FG_TRANSFER_TRACE:
+        try:
+            print(
+                f"[FG][XFER] packed_topk_batch: sync={_sync_sec * 1000:.2f}ms download={_dl_sec * 1000:.2f}ms "
+                f"payloads={n_payloads} bytes={int(getattr(sel_packed_all, 'nbytes', 0) or 0)}"
+            )
+        except Exception:
+            pass
+
+    n_pack = int(getattr(fg_fields, "FG_DOWNLOAD_TOPK_MAX", 256) or 256)
+    out: list[dict[str, np.ndarray]] = []
+    for batch_idx in range(int(n_payloads)):
+        view_all = sel_packed_all[int(batch_idx), : int(n_pack), :]
+        idx_all = view_all[:, 0]
+        try:
+            neg = np.nonzero(np.asarray(idx_all) < 0)[0]
+            n_sel = int(neg[0]) if int(getattr(neg, "shape", (0,))[0] or 0) > 0 else int(n_pack)
+        except Exception:
+            n_sel = int(n_pack)
+        n_sel = max(0, min(int(n_sel), int(n_pack)))
+        sel_packed = view_all[: int(n_sel), :]
+        sel_idx = sel_packed[:, 0]
+        cfg_counts = sel_packed[:, 12 : 12 + int(fg_fields.FG_MAX_SECTIONS)]
+        out.append(
+            {
+                "selected_indices": sel_idx,
+                "final_score": sel_packed[:, 1],
+                "base_score": sel_packed[:, 2],
+                "cfg_idx": sel_packed[:, 3],
+                "FT": sel_packed[:, 4],
+                "FF": sel_packed[:, 5],
+                "g_pp": sel_packed[:, 6],
+                "g_cm": sel_packed[:, 7],
+                "g_fm": sel_packed[:, 8],
+                "g_ov": sel_packed[:, 9],
+                "score_penalty": sel_packed[:, 10],
+                "fill_penalty": sel_packed[:, 11],
+                "cfg_counts": cfg_counts,
+            }
+        )
+    return out
 
 
 def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
@@ -1996,7 +2132,9 @@ def solve_force_greats_finder_gpu_tasks(
                 )
                 compute_n_sections = int(counts_max_fp_compute.get("n_sections", n_sections) or n_sections)
                 compute_song_slot = int(counts_max_fp_compute.get("song_slot", song_slot) or song_slot)
-                compute_gem_scale = int(counts_max_fp_compute.get("gem_scale_fever", gem_scale_fever) or gem_scale_fever)
+                compute_gem_scale = int(
+                    counts_max_fp_compute.get("gem_scale_fever", gem_scale_fever) or gem_scale_fever
+                )
             except Exception:
                 continue
             if base_pairs.ndim != 2 or int(base_pairs.shape[1]) < 2:
@@ -2663,7 +2801,9 @@ def solve_force_greats_finder_gpu_tasks(
                     try:
                         cfg_max_fp_buf[sl, : int(n_sections)] = max_fp_arr[: int(n_sections)]
                     except Exception:
-                        cfg_max_fp_buf[sl, : int(n_sections)] = np.asarray(max_fp_arr, dtype=np.int32)[: int(n_sections)]
+                        cfg_max_fp_buf[sl, : int(n_sections)] = np.asarray(max_fp_arr, dtype=np.int32)[
+                            : int(n_sections)
+                        ]
 
             chunk_n += int(take)
             idx += int(take)

@@ -220,7 +220,9 @@ class _ProgressUI:
                 pass
         self._render(final=True)
 
-    def update_counts(self, *, completed: int | None = None, total: int | None = None, failed: int | None = None) -> None:
+    def update_counts(
+        self, *, completed: int | None = None, total: int | None = None, failed: int | None = None
+    ) -> None:
         if not self._enabled:
             return
         with self._lock:
@@ -1140,7 +1142,7 @@ class GearOptimizerApp:
                 diff = str(t[2] or "")
             except Exception:
                 diff = ""
-            out.append(f"  {shown+1:>2}. \x1b[93m{label}\x1b[0m \x1b[90m[{diff}]\x1b[0m")
+            out.append(f"  {shown + 1:>2}. \x1b[93m{label}\x1b[0m \x1b[90m[{diff}]\x1b[0m")
             shown += 1
             if shown >= int(n):
                 break
@@ -1262,7 +1264,9 @@ class GearOptimizerApp:
     ) -> None:
         try:
             if isinstance(res, dict):
-                song_label = res.get("_queue_label") or res.get("_queue_key") or res.get("song") or res.get("_song_name")
+                song_label = (
+                    res.get("_queue_label") or res.get("_queue_key") or res.get("song") or res.get("_song_name")
+                )
             else:
                 song_label = None
         except Exception:
@@ -1788,6 +1792,19 @@ class GearOptimizerApp:
         except Exception:
             inflight_songs = 0
 
+        allow_sequential = self._truthy(os.environ.get("ALLOW_SEQUENTIAL_PIPELINE", "0"))
+        if len(tasks) > 1 and inflight_songs <= 1 and not allow_sequential:
+            # GPU-only policy + throughput goal: multi-song runs should use the native in-flight pipeline.
+            inflight_songs = max(2, min(16, len(tasks)))
+            try:
+                print(
+                    "[InFlight][DEPRECATION] Sequential multi-song pipeline is disabled by default; "
+                    f"forcing InFlightSongs={int(inflight_songs)}. "
+                    "Set ALLOW_SEQUENTIAL_PIPELINE=1 to override."
+                )
+            except Exception:
+                pass
+
         # Check if GPU preloading should be used (sequential/non-inflight path).
         use_gpu_preload = len(tasks) > 1
         preloader = None
@@ -1803,6 +1820,7 @@ class GearOptimizerApp:
             inflight_ok = False
             post_queue = None
             post_proc = None
+            inflight_err_captured = None
             try:
                 from gear_optimizer.pipeline.post_processor import run_post_processor
 
@@ -1835,6 +1853,7 @@ class GearOptimizerApp:
                 )
                 inflight_ok = True
             except Exception as inflight_err:
+                inflight_err_captured = inflight_err
                 print(f"[InFlight] Disabled: {type(inflight_err).__name__}: {inflight_err}", flush=True)
                 try:
                     import traceback
@@ -1884,6 +1903,12 @@ class GearOptimizerApp:
                     pass
             if inflight_ok:
                 return
+
+            if len(tasks) > 1 and not allow_sequential:
+                raise RuntimeError(
+                    "Native in-flight pipeline failed to start and sequential fallback is disabled. "
+                    "Set ALLOW_SEQUENTIAL_PIPELINE=1 to allow sequential fallback."
+                ) from inflight_err_captured
 
             # If inflight was configured but failed to start, fall through to the normal
             # sequential pipeline. Ensure the preloader is running for that path.
@@ -2019,7 +2044,9 @@ class GearOptimizerApp:
                         }
                     progress_completed += 1
                     failed_delta = 1 if isinstance(res, dict) and "_error" in res else 0
-                    self._progress_on_result(res, completed=progress_completed, total=len(tasks), failed_delta=failed_delta)
+                    self._progress_on_result(
+                        res, completed=progress_completed, total=len(tasks), failed_delta=failed_delta
+                    )
 
                     # POST-SONG GPU PREFETCH: Kick off the next song's timeline kernel
                     # while the post-processor builds payloads/prints/saves DB.
@@ -2408,7 +2435,9 @@ class GearOptimizerApp:
                             except Exception:
                                 init_timeout = 30.0
                             if not secondary_ready.wait(timeout=max(0.0, float(init_timeout))):
-                                print("[GPU Executor][Secondary] Init timed out; disabling secondary executor for this pool")
+                                print(
+                                    "[GPU Executor][Secondary] Init timed out; disabling secondary executor for this pool"
+                                )
                                 try:
                                     secondary_gpu_proc.terminate()
                                 except Exception:

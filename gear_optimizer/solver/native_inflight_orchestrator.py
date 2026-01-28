@@ -921,6 +921,17 @@ def run_native_inflight_song_pipeline(
         fg_scheduler_norm = "backlog"
     else:
         fg_scheduler_norm = "continuous"
+
+    if fg_scheduler_norm == "interleave" and not _truthy(os.environ.get("INFLIGHT_ALLOW_LEGACY_INTERLEAVE", "0")):
+        try:
+            print(
+                "[InFlight][DEPRECATION] InFlight_FGScheduler=interleave is disabled by default; "
+                "falling back to continuous. Set INFLIGHT_ALLOW_LEGACY_INTERLEAVE=1 to override."
+            )
+        except Exception:
+            pass
+        fg_scheduler_norm = "continuous"
+
     fg_continuous = bool(fg_scheduler_norm == "continuous")
     fg_batch_scheduler = bool(fg_scheduler_norm == "backlog")
 
@@ -1299,7 +1310,8 @@ def run_native_inflight_song_pipeline(
     fg_backlog_active = False
 
     # Continuous FG batching controls (throughput-oriented, no quality impact).
-    fg_batch_window_ms = 50.0
+    # Work-conserving default: never stall FG submission just to "wait to batch".
+    fg_batch_window_ms = 0.0
     try:
         raw = os.environ.get("INFLIGHT_FG_BATCH_WINDOW_MS")
         if raw is not None and str(raw).strip() != "":

@@ -13,7 +13,7 @@ import os
 import taichi as ti
 
 from ..kernels import kernels_helpers
-from .fields import FG_DOWNLOAD_TOPK_MAX, FG_MAX_SECTIONS, FG_MAX_STAT
+from .fields import FG_DOWNLOAD_BATCH_MAX, FG_DOWNLOAD_TOPK_MAX, FG_MAX_SECTIONS, FG_MAX_STAT
 
 # Reuse the shared kernel block dim to keep launch config consistent with other kernels.
 _KERNEL_BLOCK_DIM = kernels_helpers._KERNEL_BLOCK_DIM
@@ -90,6 +90,7 @@ fg_keep_mask = None
 fg_selected_count = None
 fg_selected_indices = None
 fg_selected_packed = None
+fg_selected_packed_batch = None
 
 # Warm-start hint allocation (bound from fields.py)
 fg_genome_hint_allocation = None
@@ -1477,6 +1478,7 @@ def fg_stage2_recompute_kernel(
         for s in ti.static(range(FG_MAX_SECTIONS)):
             fg_best_cfg_counts[gid, s] = cfg_counts_vec[s]
 
+
 @ti.kernel
 def fg_stage2_and_update_global_best_kernel(session_slot: ti.i32, n_genomes: ti.i32, n_ftff: ti.i32):
     """
@@ -2071,6 +2073,36 @@ def fg_pack_selected_global_best_kernel(session_slot: ti.i32, n_selected: ti.i32
         fg_selected_packed[j, 11] = fg_global_best_fill_penalty[session_slot, idx]
         for s in ti.static(range(FG_MAX_SECTIONS)):
             fg_selected_packed[j, 12 + s] = fg_global_best_cfg_counts[session_slot, idx, s]
+
+
+@ti.kernel
+def fg_pack_selected_global_best_batch_kernel(session_slot: ti.i32, n_selected: ti.i32, batch_idx: ti.i32):
+    """Pack selected rows from global_best into `fg_selected_packed_batch[batch_idx]`.
+
+    This is used by executor-side batching so multiple payloads can be downloaded via a single `to_numpy()`.
+    """
+    if batch_idx >= 0 and batch_idx < ti.i32(FG_DOWNLOAD_BATCH_MAX):
+        total_cols = 12 + FG_MAX_SECTIONS
+        for j in range(n_selected):
+            idx: ti.i32 = fg_selected_indices[j]
+            fg_selected_packed_batch[batch_idx, j, 0] = idx
+            if idx < 0:
+                for c in range(1, total_cols):
+                    fg_selected_packed_batch[batch_idx, j, c] = 0
+                continue
+            fg_selected_packed_batch[batch_idx, j, 1] = fg_global_best_final_score[session_slot, idx]
+            fg_selected_packed_batch[batch_idx, j, 2] = fg_global_best_base_score[session_slot, idx]
+            fg_selected_packed_batch[batch_idx, j, 3] = fg_global_best_cfg_idx[session_slot, idx]
+            fg_selected_packed_batch[batch_idx, j, 4] = fg_global_best_ft[session_slot, idx]
+            fg_selected_packed_batch[batch_idx, j, 5] = fg_global_best_ff[session_slot, idx]
+            fg_selected_packed_batch[batch_idx, j, 6] = fg_global_best_g_pp[session_slot, idx]
+            fg_selected_packed_batch[batch_idx, j, 7] = fg_global_best_g_cm[session_slot, idx]
+            fg_selected_packed_batch[batch_idx, j, 8] = fg_global_best_g_fm[session_slot, idx]
+            fg_selected_packed_batch[batch_idx, j, 9] = fg_global_best_g_ov[session_slot, idx]
+            fg_selected_packed_batch[batch_idx, j, 10] = fg_global_best_score_penalty[session_slot, idx]
+            fg_selected_packed_batch[batch_idx, j, 11] = fg_global_best_fill_penalty[session_slot, idx]
+            for s in ti.static(range(FG_MAX_SECTIONS)):
+                fg_selected_packed_batch[batch_idx, j, 12 + s] = fg_global_best_cfg_counts[session_slot, idx, s]
 
 
 @ti.kernel

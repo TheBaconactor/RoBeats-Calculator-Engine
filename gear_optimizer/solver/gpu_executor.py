@@ -1080,7 +1080,9 @@ class GpuExecutor:
                     continue
 
                 req0, args0, kwargs0, _tasks0 = items[0]
-                genome_stats_list, timestamps_np, great_candidate_timestamps_np, long_notes, last_note_time, _, _ = args0
+                genome_stats_list, timestamps_np, great_candidate_timestamps_np, long_notes, last_note_time, _, _ = (
+                    args0
+                )
 
                 merged_tasks: list[dict[str, Any]] = []
                 upload_any = False
@@ -1112,12 +1114,16 @@ class GpuExecutor:
                     )
                     self._record_pack(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, perf_counter() - t_pack0)
                     for req, *_rest in items:
-                        out_by_id[int(req.request_id)] = GpuResponse(request_id=req.request_id, success=True, result=None)
+                        out_by_id[int(req.request_id)] = GpuResponse(
+                            request_id=req.request_id, success=True, result=None
+                        )
                 except Exception as e2:
                     self._record_pack(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, perf_counter() - t_pack0)
                     err = f"{type(e2).__name__}: {e2}"
                     for req, *_rest in items:
-                        out_by_id[int(req.request_id)] = GpuResponse(request_id=req.request_id, success=False, error=err)
+                        out_by_id[int(req.request_id)] = GpuResponse(
+                            request_id=req.request_id, success=False, error=err
+                        )
 
             return out_by_id
 
@@ -1208,19 +1214,27 @@ class GpuExecutor:
             return [by_id.get(req.request_id) for req in requests]
 
         try:
-            results: list[Any] = []
-            for p in merged_payloads:
-                if not isinstance(p, dict):
-                    results.append(None)
-                    continue
-                results.append(self._run_fg_solve_with_breakpoints_payload(p))
+            merged_req = GpuRequest(
+                request_type=GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
+                request_id=-1,
+                worker_id=-1,
+                payload={"payloads": merged_payloads},
+            )
+            merged_resp = self._execute_fg_solve_with_breakpoints_batch(merged_req)
+            if not getattr(merged_resp, "success", False):
+                raise RuntimeError(f"merged FG bundle failed: {merged_resp.error}")
+            merged_results = getattr(merged_resp, "result", None)
+            if not isinstance(merged_results, list):
+                raise TypeError("merged FG bundle returned non-list result")
+            if int(len(merged_results)) != int(len(merged_payloads)):
+                raise RuntimeError("merged FG bundle length mismatch")
 
             for req, start, n in slices:
                 out.append(
                     GpuResponse(
                         request_id=req.request_id,
                         success=True,
-                        result=list(results[int(start) : int(start) + int(n)]),
+                        result=list(merged_results[int(start) : int(start) + int(n)]),
                     )
                 )
         except Exception:
@@ -2492,6 +2506,150 @@ class GpuExecutor:
                 error="FG_SOLVE_WITH_BREAKPOINTS_BATCH requires payloads: list[dict]",
             )
 
+        debug_batch_pack = str(os.environ.get("FG_BREAKPOINTS_BATCH_PACK_DEBUG", "0") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        try:
+            min_pack_payloads = int(os.environ.get("FG_BREAKPOINTS_BATCH_PACK_MIN_PAYLOADS", "2") or "2")
+        except Exception:
+            min_pack_payloads = 2
+        min_pack_payloads = max(1, min(int(min_pack_payloads), 128))
+        if debug_batch_pack:
+            try:
+                print(f"[FG][BatchPack] request payloads={len(payloads)}")
+            except Exception:
+                pass
+
+        # Fast path: batch-pack top-K results into a staging field, then download once.
+        try:
+            want_batch_pack = bool(payloads) and int(len(payloads)) >= int(min_pack_payloads)
+            if want_batch_pack:
+                for p in payloads:
+                    if not isinstance(p, dict):
+                        raise TypeError("FG_SOLVE_WITH_BREAKPOINTS_BATCH payload item must be dict")
+                    # Only support the reduced-download top-K mode (default for the fast path).
+                    if p.get("fg_download_topk") is None or p.get("fg_download_base_scores") is None:
+                        want_batch_pack = False
+                        break
+
+            if want_batch_pack:
+                import numpy as np
+
+                try:
+                    from .taichi_gem.force_greats import fields as fg_fields
+
+                    max_batch = int(getattr(fg_fields, "FG_DOWNLOAD_BATCH_MAX", 0) or 0)
+                except Exception:
+                    max_batch = 0
+                if max_batch <= 0:
+                    max_batch = 1
+
+                from .taichi_gem.force_greats.api import fg_download_packed_topk_batch
+
+                results: list[Any] = []
+                for chunk_start in range(0, int(len(payloads)), int(max_batch)):
+                    chunk = list(payloads[chunk_start : chunk_start + int(max_batch)])
+                    if not chunk:
+                        continue
+
+                    decode_ctx: list[dict[str, Any]] = []
+                    for i, p in enumerate(chunk):
+                        ctx = self._run_fg_solve_with_breakpoints_payload(p, batch_pack_idx=int(i))
+                        if not isinstance(ctx, dict) or not ctx.get("_packed_batch"):
+                            raise RuntimeError("FG batch-pack expected packed ctx dict")
+                        decode_ctx.append(ctx)
+
+                    chunk_results = fg_download_packed_topk_batch(int(len(chunk)))
+
+                    # Ensure cfg_counts present (defensive; most paths include it in the packed payload).
+                    for ctx, result in zip(decode_ctx, chunk_results):
+                        if not isinstance(result, dict):
+                            continue
+                        cfg_counts = result.get("cfg_counts")
+                        if cfg_counts is None:
+                            # Match single-payload behavior for legacy callers.
+                            n_sections = int(ctx.get("n_sections", 0) or 0)
+                            implicit_cfgs = bool(ctx.get("implicit_cfgs", False))
+                            cfg_windows = ctx.get("cfg_windows")
+                            if implicit_cfgs:
+                                try:
+                                    result_ft = np.asarray(result.get("FT"), dtype=np.int32)
+                                    result_ff = np.asarray(result.get("FF"), dtype=np.int32)
+                                    if (
+                                        result_ft.ndim == 1
+                                        and result_ff.ndim == 1
+                                        and int(result_ft.shape[0]) == int(result_ff.shape[0])
+                                    ):
+                                        max_fp_rows = self._compute_fg_breakpoints_max_fp_matrix(
+                                            pair_ft=result_ft,
+                                            pair_ff=result_ff,
+                                            base_ft=np.asarray(ctx.get("base_ft"), dtype=np.int32),
+                                            base_ff=np.asarray(ctx.get("base_ff"), dtype=np.int32),
+                                            n_sections=int(n_sections),
+                                            song_slot=int(ctx.get("song_slot", 0) or 0),
+                                            gem_scale_fever=int(ctx.get("gem_scale_fever", 0) or 0),
+                                            non_fever_base_by_ff=ctx.get("non_fever_base_by_ff"),
+                                            fp_cap_table=ctx.get("fp_cap_table"),
+                                        )
+                                        result_pairs = np.stack([result_ft, result_ff], axis=1)
+                                        cfg_counts = self._decode_cfg_counts_from_max_fp_matrix(
+                                            result.get("cfg_idx"),
+                                            result_ft,
+                                            result_ff,
+                                            max_fp_rows,
+                                            result_pairs,
+                                            int(n_sections),
+                                        )
+                                except Exception:
+                                    cfg_counts = None
+                            elif cfg_windows:
+                                try:
+                                    cfg_counts = self._decode_cfg_counts_from_windows(
+                                        result.get("cfg_idx"),
+                                        cfg_windows,
+                                        int(n_sections),
+                                    )
+                                except Exception:
+                                    cfg_counts = None
+                            if cfg_counts is not None:
+                                result = dict(result)
+                                result["cfg_counts"] = cfg_counts
+                        results.append(result)
+
+                return GpuResponse(request_id=request.request_id, success=True, result=results)
+            elif debug_batch_pack:
+                try:
+                    reason = f"payloads<{int(min_pack_payloads)}"
+                    if int(len(payloads)) >= int(min_pack_payloads):
+                        reason = "unknown"
+                        for idx, p in enumerate(payloads):
+                            if not isinstance(p, dict):
+                                reason = f"payload[{idx}] not dict"
+                                break
+                            if p.get("fg_download_topk") is None:
+                                reason = f"payload[{idx}] fg_download_topk=None"
+                                break
+                            if p.get("fg_download_base_scores") is None:
+                                reason = f"payload[{idx}] fg_download_base_scores=None"
+                                break
+                    print(f"[FG][BatchPack] skipped: {reason} (payloads={len(payloads)})")
+                except Exception:
+                    pass
+        except Exception as exc:
+            if debug_batch_pack:
+                try:
+                    import traceback
+
+                    print(f"[FG][BatchPack] disabled: {type(exc).__name__}: {exc}")
+                    print(traceback.format_exc())
+                except Exception:
+                    pass
+            # Fall through to legacy per-payload download path.
+            pass
+
         results: list[Any] = []
         try:
             for p in payloads:
@@ -2506,7 +2664,9 @@ class GpuExecutor:
             )
         return GpuResponse(request_id=request.request_id, success=True, result=results)
 
-    def _run_fg_solve_with_breakpoints_payload(self, payload: dict[str, Any]) -> Any:
+    def _run_fg_solve_with_breakpoints_payload(
+        self, payload: dict[str, Any], *, batch_pack_idx: int | None = None
+    ) -> Any:
         import numpy as np
 
         try:
@@ -2767,6 +2927,30 @@ class GpuExecutor:
         download_topk = payload.get("fg_download_topk", None)
         download_base_scores = payload.get("fg_download_base_scores", None)
         download_keep_mask = payload.get("fg_download_keep_mask", None)
+        if batch_pack_idx is not None and download_topk is not None and download_base_scores is not None:
+            from .taichi_gem.force_greats.api import fg_pack_global_best_topk_to_batch
+
+            fg_pack_global_best_topk_to_batch(
+                int(n_genomes),
+                session_slot=int(song_slot),
+                topk=int(download_topk),
+                base_scores=download_base_scores,
+                keep_mask=download_keep_mask,
+                batch_idx=int(batch_pack_idx),
+            )
+            return {
+                "_packed_batch": True,
+                "implicit_cfgs": bool(implicit_cfgs),
+                "cfg_windows": cfg_windows,
+                "n_sections": int(n_sections),
+                "song_slot": int(song_slot),
+                "gem_scale_fever": int(gem_scale_fever),
+                "base_ft": base_ft,
+                "base_ff": base_ff,
+                "non_fever_base_by_ff": non_fever_base_by_ff,
+                "fp_cap_table": fp_cap_table,
+            }
+
         if download_topk is not None and download_base_scores is not None:
             result = fg_download_global_best(
                 int(n_genomes),
@@ -2814,7 +2998,9 @@ class GpuExecutor:
                     except Exception:
                         cfg_counts = None
                 elif cfg_windows:
-                    cfg_counts = self._decode_cfg_counts_from_windows(result.get("cfg_idx"), cfg_windows, int(n_sections))
+                    cfg_counts = self._decode_cfg_counts_from_windows(
+                        result.get("cfg_idx"), cfg_windows, int(n_sections)
+                    )
             if cfg_counts is not None and result.get("cfg_counts") is None:
                 result = dict(result)
                 result["cfg_counts"] = cfg_counts
