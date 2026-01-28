@@ -131,6 +131,7 @@ def find_most_common_loadout(
     top_n: Optional[int] = 1,
     *,
     loadouts_by_song: Optional[Dict[str, list]] = None,
+    gears_by_name: Optional[Dict[str, dict]] = None,
 ) -> List[dict]:
     """
     Find the most frequently appearing gear+mini SETs for songs in this category.
@@ -164,7 +165,11 @@ def find_most_common_loadout(
         rep_names, variant_key = _decode_db_minis(best.get("minis_json"))
         sig = _mini_set_effect_signature(rep_names, minis_by_name, relevant_elements)
 
-        loadout_key = (tuple(sorted(gears)), sig)
+        if gears_by_name:
+            ordered_gears = sort_gears_by_slot(list(gears), gears_by_name)
+        else:
+            ordered_gears = sorted(gears)
+        loadout_key = (tuple(ordered_gears), sig)
         wins[loadout_key] += 1
         loadout_rows.setdefault(loadout_key, []).append(best)
         mini_variants.setdefault(loadout_key, Counter())[variant_key] += 1

@@ -192,6 +192,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
             minis_by_name,
             top_n=None,
             loadouts_by_song=baseline_loadouts_by_song,
+            gears_by_name=gears_by_name,
         )
         if not top_loadouts:
             print("  No loadouts found for this category")
@@ -255,6 +256,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
                 minis_by_name,
                 top_n=1,
                 loadouts_by_song=per_song,
+                gears_by_name=gears_by_name,
             )
             if tier_top:
                 team_buff_winners[label]["winner"] = _build_loadout_entry(
@@ -329,6 +331,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
             minis_by_name,
             top_n=None,
             loadouts_by_song=baseline_loadouts_by_song,
+            gears_by_name=gears_by_name,
         )
         if not top_loadouts:
             print("  No loadouts found for this category")
@@ -392,6 +395,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
                 minis_by_name,
                 top_n=1,
                 loadouts_by_song=per_song,
+                gears_by_name=gears_by_name,
             )
             if tier_top:
                 team_buff_winners[label]["winner"] = _build_loadout_entry(
