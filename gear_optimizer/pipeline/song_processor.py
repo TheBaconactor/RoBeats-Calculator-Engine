@@ -912,6 +912,17 @@ def process_song_task(args) -> SongResultPayload:
             return result_payload
 
         if best_data:
+            # Optional: HumanHitSim timing summary for base fever activation (ApplyTo=ALL only).
+            try:
+                from ..solver.scoring.force_greats import summarize_hitsim_offset_delta_ms_for_base
+
+                if "hitsim_offset_delta_ms" not in best_data:
+                    delta_ms = summarize_hitsim_offset_delta_ms_for_base(calc_song, best_data, ref_arrays)
+                    if delta_ms is not None:
+                        best_data["hitsim_offset_delta_ms"] = int(delta_ms)
+            except Exception:
+                pass
+
             # Build database payload
             _t_db0 = time.perf_counter()
             db_payload = build_db_payload(

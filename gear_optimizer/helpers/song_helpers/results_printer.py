@@ -120,8 +120,16 @@ def print_results(
     print(f"Best Base Score Found: {base_score_run}")
     print(f"Best FG Score Found: {fg_score_to_print}")
 
-    # Optional: HumanHitSim timing summary for the best-improving FG variant (if available).
+    # Optional: HumanHitSim timing summary for base + FG (if available).
     try:
+        base_delta = best_data.get("hitsim_offset_delta_ms") if isinstance(best_data, dict) else None
+        try:
+            base_delta_i = int(base_delta) if base_delta is not None else None
+        except Exception:
+            base_delta_i = None
+        if base_delta_i is not None:
+            print(f"HitSim Offset Delta (Base): {base_delta_i:+d}ms")
+
         if best_fg_entry is not None:
             fg_data = best_fg_entry.get("data", {}) or {}
             fg_meta = fg_data.get("ForceGreats") or {}

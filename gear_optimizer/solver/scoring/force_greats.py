@@ -27,6 +27,7 @@ from ...core.constants import (
     GEM_STAT_TO_ELEMENT_SCALE,
     ELEMENTAL_GEM_SCALE,
     FG_SEARCH_RADIUS,
+    FEVER_FILL_BASE_RATE,
 )
 from ...core.color_flags import build_color_flags
 from ...core.env_config import ENV
@@ -239,6 +240,60 @@ def summarize_hitsim_offsets_for_fg_variant(calc_song: dict, fg_data: dict, ref_
     if delta is None:
         return None
     return {"hitsim_offset_delta_ms": int(delta)}
+
+
+def summarize_hitsim_offset_delta_ms_for_base(calc_song: dict, base_data: dict, ref_arrays: dict) -> int | None:
+    """
+    Return a signed ms offset (vs chart time) for the note that activates the *first* base fever window.
+
+    This only applies when HumanHitSim.ApplyTo=ALL (timestamps are simulated).
+    """
+    if not isinstance(calc_song, dict) or not isinstance(base_data, dict) or not isinstance(ref_arrays, dict):
+        return None
+
+    meta0 = calc_song.get("metadata", {}) or {}
+    if not meta0.get("HumanHitSimApplied"):
+        return None
+    apply_to = str(meta0.get("HumanHitSimApplyTo", "") or "").strip().upper()
+    if apply_to != "ALL":
+        return None
+
+    stats = base_data.get("Stats") or {}
+    if not isinstance(stats, dict) or not stats:
+        return None
+
+    song_data = calc_song.get("song_data", {}) or {}
+    chart_ts = song_data.get("chart_timestamps")
+    timestamps = song_data.get("timestamps")
+    if chart_ts is None or timestamps is None:
+        return None
+
+    timestamps = np.asarray(timestamps, dtype=np.float64)
+    total_notes = int(timestamps.shape[0])
+    if total_notes <= 0:
+        return None
+
+    try:
+        fever_fill_rate = lookup_reference_py(stats["Fever Fill Rate"], ref_arrays["Fever Fill Rate"], TOTAL_ROWS)
+    except Exception:
+        return None
+
+    long_notes = safe_int(meta0.get("Long Notes"), 0)
+    non_fever_cas = (total_notes - long_notes) * FEVER_FILL_BASE_RATE
+    non_fever_base = ceil(non_fever_cas * fever_fill_rate)
+
+    notes_to_fill = non_fever_base - 1
+    end_normal_idx = min(int(notes_to_fill), total_notes)
+    if end_normal_idx <= 0:
+        return None
+
+    chart_ms = _floor_to_int_ms(np.asarray(chart_ts, dtype=np.float64))
+    sim_ms = _floor_to_int_ms(np.asarray(timestamps, dtype=np.float64))
+    n = min(int(chart_ms.shape[0]), int(sim_ms.shape[0]), total_notes)
+    if end_normal_idx >= n:
+        return None
+
+    return int(sim_ms[end_normal_idx]) - int(chart_ms[end_normal_idx])
 
 
 def _get_fg_timeline_buffers(total_notes: int):

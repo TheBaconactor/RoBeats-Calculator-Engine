@@ -178,6 +178,11 @@ def make_build_details_fn(
     def build_details(data_dict: dict) -> dict:
         if not isinstance(data_dict, dict) or not data_dict:
             return {}
+        hitsim_delta = data_dict.get("hitsim_offset_delta_ms")
+        try:
+            hitsim_delta = int(hitsim_delta) if hitsim_delta is not None else None
+        except Exception:
+            hitsim_delta = None
         return {
             "FT": data_dict.get("FT", 0),
             "FF": data_dict.get("FF", 0),
@@ -188,6 +193,7 @@ def make_build_details_fn(
             "SecondaryColor": secondary_color,
             "Difficulty": effective_difficulty,
             "ForceGreats": data_dict.get("ForceGreats", {}),
+            "hitsim_offset_delta_ms": hitsim_delta,
         }
 
     return build_details
