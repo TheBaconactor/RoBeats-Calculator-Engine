@@ -30,6 +30,7 @@ from gear_optimizer.data.database import (
     init_db,
     save_loadouts_batch,
     get_evolution_db_path,
+    get_song_names_present_in_db,
     prioritize_song_queue_missing_db,
     get_song_counters,
     get_best_loadouts,
@@ -833,6 +834,7 @@ class GearOptimizerApp:
                     break
             return int(limit)
 
+        resume_seed_queue: list[tuple[str, str, str]] = []
         ignore_resume = False
         try:
             ignore_resume = cfg.getboolean("IterationEngine", "IgnoreResumeQueue", fallback=False)
@@ -845,14 +847,22 @@ class GearOptimizerApp:
             resume_seed_queue = load_memory_guard_resume_queue(resume_context)
             if resume_seed_queue:
                 print(f"[MemoryGuard] Resuming {len(resume_seed_queue)} song(s) from previous interrupted run.")
-                # Optional deterministic limit (useful for benchmarks / iteration), even in resume mode.
-                song_queue_limit = _read_song_queue_limit()
-                if song_queue_limit and song_queue_limit > 0 and len(resume_seed_queue) > song_queue_limit:
-                    resume_seed_queue = resume_seed_queue[: int(song_queue_limit)]
-                    print(
-                        f"[Queue] SongQueueLimit={song_queue_limit}: running {len(resume_seed_queue)} song(s) (resume)"
-                    )
-                return resume_seed_queue
+                if use_evo_db:
+                    try:
+                        resume_seed_queue = prioritize_song_queue_missing_db(resume_seed_queue)
+                    except Exception as exc:
+                        logging.warning(
+                            f"[DB] Failed to prioritize resume queue: {type(exc).__name__}: {exc}",
+                        )
+                else:
+                    # Optional deterministic limit (useful for benchmarks / iteration), even in resume mode.
+                    song_queue_limit = _read_song_queue_limit()
+                    if song_queue_limit and song_queue_limit > 0 and len(resume_seed_queue) > song_queue_limit:
+                        resume_seed_queue = resume_seed_queue[: int(song_queue_limit)]
+                        print(
+                            f"[Queue] SongQueueLimit={song_queue_limit}: running {len(resume_seed_queue)} song(s) (resume)"
+                        )
+                    return resume_seed_queue
 
         diff = cfg.get("CalculateSong", "Difficulty", fallback="Hard")
         search_dir = paths.get(diff, SCRIPT_DIR)
@@ -918,7 +928,7 @@ class GearOptimizerApp:
                         song_queue.append((fp, name, detected_diff))
                         seen_paths.add(abs_fp)
 
-        if not song_queue:
+        if not song_queue and not resume_seed_queue:
             print("Error: No matching songs found.")
             return []
 
@@ -934,21 +944,53 @@ class GearOptimizerApp:
                 logging.warning(f"[DB] Failed to prioritize song queue: {type(exc).__name__}: {exc}")
 
         # Optional deterministic limit (useful for benchmarks / iteration).
-        song_queue_limit = _read_song_queue_limit()
-        if song_queue_limit and song_queue_limit > 0 and len(song_queue) > song_queue_limit:
+        # If resuming with DB priority, apply the limit after merging new-missing + resume.
+        apply_limit = not (resume_seed_queue and use_evo_db)
+        if apply_limit:
+            song_queue_limit = _read_song_queue_limit()
+            if song_queue_limit and song_queue_limit > 0 and len(song_queue) > song_queue_limit:
+                try:
+                    song_queue = sorted(
+                        song_queue,
+                        key=lambda t: (
+                            str(t[1] or "").casefold(),
+                            str(t[2] or "").casefold(),
+                            os.path.abspath(str(t[0] or "")).casefold(),
+                        ),
+                    )
+                except Exception:
+                    pass
+                song_queue = song_queue[: int(song_queue_limit)]
+                print(f"[Queue] SongQueueLimit={song_queue_limit}: running {len(song_queue)} song(s)")
+
+        if resume_seed_queue and use_evo_db:
+            new_missing: list[tuple[str, str, str]] = []
             try:
-                song_queue = sorted(
-                    song_queue,
-                    key=lambda t: (
-                        str(t[1] or "").casefold(),
-                        str(t[2] or "").casefold(),
-                        os.path.abspath(str(t[0] or "")).casefold(),
-                    ),
-                )
-            except Exception:
-                pass
-            song_queue = song_queue[: int(song_queue_limit)]
-            print(f"[Queue] SongQueueLimit={song_queue_limit}: running {len(song_queue)} song(s)")
+                present = get_song_names_present_in_db((item[1] for item in song_queue))
+                resume_paths = {os.path.abspath(str(item[0] or "")).casefold() for item in (resume_seed_queue or [])}
+                for item in song_queue:
+                    try:
+                        if os.path.abspath(str(item[0] or "")).casefold() in resume_paths:
+                            continue
+                    except Exception:
+                        pass
+                    if item[1] not in present:
+                        new_missing.append(item)
+            except Exception as exc:
+                logging.warning(f"[DB] Failed to detect new missing songs: {type(exc).__name__}: {exc}")
+
+            if new_missing:
+                try:
+                    print(f"[Queue] Prepending {len(new_missing)} new missing song(s) ahead of resume queue.")
+                except Exception:
+                    pass
+
+            merged_queue = list(new_missing) + list(resume_seed_queue)
+            song_queue_limit = _read_song_queue_limit()
+            if song_queue_limit and song_queue_limit > 0 and len(merged_queue) > song_queue_limit:
+                merged_queue = merged_queue[: int(song_queue_limit)]
+                print(f"[Queue] SongQueueLimit={song_queue_limit}: running {len(merged_queue)} song(s) (resume+new)")
+            return merged_queue
 
         # Queue all discovered songs; filtering is handled by difficulty folder + optional search string.
         if not filter_search:
