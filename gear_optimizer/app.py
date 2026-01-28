@@ -296,6 +296,9 @@ class _ProgressUI:
                 failed = int(self._failed)
                 new_records = int(self._new_records)
                 status = str(self._status or "")
+                status_clean = status.strip()
+                if status_clean.upper() == "DONE":
+                    status_clean = ""
                 song = str(self._song or "")
                 frame = self._frame
                 self._frame = (self._frame + 1) % len(self._spinner)
@@ -317,8 +320,8 @@ class _ProgressUI:
             tail = ""
             if song:
                 tail += f" | Song: {song}"
-            if status:
-                tail += f" | {status}"
+            if status_clean:
+                tail += f" | {status_clean}"
             if len(tail) > 60:
                 tail = tail[:57] + "..."
 
