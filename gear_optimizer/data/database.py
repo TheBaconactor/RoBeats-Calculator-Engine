@@ -708,7 +708,9 @@ def _ensure_stats_in_details(
             "NONE": {"PP": 0, "Elem": 0},
         }
         if buff_tier in buff_tiers:
-            base_stats["Perfect Points"] = int(base_stats.get("Perfect Points", 0) or 0) + int(buff_tiers[buff_tier]["PP"])
+            base_stats["Perfect Points"] = int(base_stats.get("Perfect Points", 0) or 0) + int(
+                buff_tiers[buff_tier]["PP"]
+            )
             # TeamBuff applies to the team color element (auto mode uses song primary color).
             elements = ["Chill", "Flow", "Rush", "Beat", "Vibe"]
             valid_color_key = next((k for k in elements if k.lower() == buff_color.lower()), None)
@@ -761,6 +763,117 @@ def _normalize_details_for_persistence(details: Any, *, score: int, fg_score: in
 
     out = dict(details)
     out["ForceGreats"] = fg_out
+    return out
+
+
+def _safe_int_for_db(value: Any, default: int = 0) -> int:
+    try:
+        if value is None:
+            return int(default)
+        return int(value)
+    except Exception:
+        try:
+            return int(float(value))
+        except Exception:
+            return int(default)
+
+
+def _fg_details_from_force_payload(details: Any, force_data: Any, *, fg_score: int) -> Optional[dict]:
+    """
+    Build the *FG-accurate* details payload for persistence in `team_buff_fg_loadouts`.
+
+    Why: some pipelines persist base `details` (Stats/GemCounts/FT/FF) alongside a richer
+    `force` payload that may include gem re-allocation (FT/FF/Element) used to produce
+    the improved `fg_score`. Frontend consumers expect the FG leaderboard row's details
+    to reflect the FG configuration, not the base configuration.
+    """
+    if not isinstance(details, dict):
+        return None
+    if not isinstance(force_data, dict) or not force_data:
+        return None
+
+    # Prefer a flat force payload (ForceGreats Finder shape). If the nested `details` dict
+    # carries the gem/materialization fields, use it instead.
+    payload = force_data
+    nested = force_data.get("details")
+    if isinstance(nested, dict) and any(
+        k in nested for k in ("BaseStats", "Stats", "GemCounts", "FT", "FF", "SelectedElement", "Selected Element")
+    ):
+        payload = nested
+
+    has_gem_materialization = any(k in payload for k in ("BaseStats", "Stats", "GemCounts", "FT", "FF"))
+    if not has_gem_materialization:
+        return None
+
+    out = dict(details)
+
+    # Selected element
+    selected_element = (
+        payload.get("SelectedElement")
+        or payload.get("Selected Element")
+        or out.get("SelectedElement")
+        or out.get("Selected Element")
+        or ""
+    )
+    selected_element = str(selected_element or "").strip()
+    if selected_element:
+        out["SelectedElement"] = selected_element
+
+    # Gem allocations (Finder payload stores FT/FF separately from GemCounts)
+    if "FT" in payload:
+        out["FT"] = _safe_int_for_db(payload.get("FT", 0), 0)
+    if "FF" in payload:
+        out["FF"] = _safe_int_for_db(payload.get("FF", 0), 0)
+
+    gem_counts = payload.get("GemCounts")
+    if isinstance(gem_counts, dict):
+        out["GemCounts"] = gem_counts
+    else:
+        gem_counts = out.get("GemCounts") if isinstance(out.get("GemCounts"), dict) else {}
+
+    # ForceGreats meta: prefer the top-level shape (persisted by Finder), but fall back to payload.
+    fg_meta = None
+    fg_top = force_data.get("ForceGreats")
+    if isinstance(fg_top, dict) and fg_top:
+        fg_meta = fg_top
+    else:
+        fg_payload = payload.get("ForceGreats")
+        if isinstance(fg_payload, dict) and fg_payload:
+            fg_meta = fg_payload
+
+    if isinstance(fg_meta, dict):
+        fg_out = dict(fg_meta)
+        if int(fg_score or 0) > 0:
+            fg_out["final_score"] = int(fg_score)
+        out["ForceGreats"] = fg_out
+
+    # Stats: prefer pre-materialized Stats; else materialize from BaseStats + gems (fast path).
+    stats_obj = payload.get("Stats")
+    if isinstance(stats_obj, dict) and stats_obj:
+        out["Stats"] = stats_obj
+    else:
+        base_stats = payload.get("BaseStats")
+        if not (isinstance(base_stats, dict) and base_stats):
+            base_stats = force_data.get("BaseStats") if isinstance(force_data.get("BaseStats"), dict) else None
+        if isinstance(base_stats, dict) and base_stats:
+            try:
+                from gear_optimizer.helpers.song_helpers.force_greats.result_application import apply_gems_to_base_fast
+
+                ft_val = _safe_int_for_db(out.get("FT", payload.get("FT", 0)), 0)
+                ff_val = _safe_int_for_db(out.get("FF", payload.get("FF", 0)), 0)
+                g_pp = _safe_int_for_db(gem_counts.get("Perfect Points", 0), 0)
+                g_cm = _safe_int_for_db(gem_counts.get("Combo Multiplier", 0), 0)
+                g_fm = _safe_int_for_db(gem_counts.get("Fever Multiplier", 0), 0)
+                g_ov = _safe_int_for_db(
+                    gem_counts.get("Element", gem_counts.get("Element Overflow", gem_counts.get("ElementOverflow", 0))),
+                    0,
+                )
+                computed = apply_gems_to_base_fast(base_stats, selected_element, ft_val, ff_val, g_pp, g_cm, g_fm, g_ov)
+                if isinstance(computed, dict) and computed:
+                    out["Stats"] = computed
+            except Exception:
+                pass
+
     return out
 
 
@@ -1024,7 +1137,7 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
             minis = entry.get("minis", [])
             details = entry.get("details", {})
             force_data = entry.get("force")
-            
+
             # Defensive: ensure Stats are populated in details
             # If Stats is missing or empty, compute it from loadout components
             current_stats = details.get("Stats") if isinstance(details, dict) else None
@@ -1083,6 +1196,12 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
             )
 
             if force_data is not None and fg_score > score:
+                fg_details = _fg_details_from_force_payload(details, force_data, fg_score=fg_score)
+                fg_details_json = (
+                    json.dumps(fg_details, separators=(",", ":"))
+                    if isinstance(fg_details, dict) and fg_details
+                    else details_json
+                )
                 fg_loadouts_params.append(
                     (
                         song_name,
@@ -1092,7 +1211,7 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
                         fg_score,
                         gear_json,
                         minis_json,
-                        details_json,
+                        fg_details_json,
                         force_json,
                     )
                 )
@@ -1265,12 +1384,16 @@ def get_best_loadouts(
     # PERF: use a cached per-thread connection for read-heavy call sites.
     conn = get_db_connection_cached(db_path)
     try:
+
         def _table_exists(name: str) -> bool:
             try:
-                return conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-                    (name,),
-                ).fetchone() is not None
+                return (
+                    conn.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                        (name,),
+                    ).fetchone()
+                    is not None
+                )
             except sqlite3.Error:
                 return False
 

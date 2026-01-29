@@ -299,6 +299,7 @@ class RepairStats:
     minis_reordered: int = 0
     stats_fixed: int = 0
     stats_team_buff_fixed: int = 0
+    fg_details_synced: int = 0
     force_normalized: int = 0
     fg_invariant_deleted: int = 0
     team_buff_fixed_case: int = 0
@@ -317,6 +318,9 @@ def repair_frontend_db(
     dry_run: bool,
     verbose: bool,
     move_legacy: bool = False,
+    sync_fg_details: bool = True,
+    normalize_force: bool = True,
+    rehash_team_buff_tables: bool = True,
 ) -> RepairStats:
     # Allow downstream helpers that read get_evolution_db_path() to use this DB.
     os.environ["EVOLUTION_DB_PATH"] = str(db_path)
@@ -394,6 +398,7 @@ def repair_frontend_db(
 
     # 3) Optional: move legacy rows into tiered tables (T5).
     if move_legacy:
+
         def _batch_upsert(sql: str, rows_iter: Any, *, batch_size: int = 1000) -> None:
             batch: list[tuple[Any, ...]] = []
             for row in rows_iter:
@@ -546,11 +551,17 @@ def repair_frontend_db(
             continue
         has_force = "force_details_json" in cols
         has_team_buff = "team_buff" in cols
+        has_score = "score" in cols
+        has_fg_score = "fg_score" in cols
 
         if verbose:
             print(f"[Repair] Scanning table: {tbl}")
 
         select_cols = ["rowid", "gear_json", "minis_json", "details_json"]
+        if has_score:
+            select_cols.append("score")
+        if has_fg_score:
+            select_cols.append("fg_score")
         if has_force:
             select_cols.append("force_details_json")
         if has_team_buff:
@@ -599,12 +610,119 @@ def repair_frontend_db(
             fallback_selected = str(details.get("SelectedElement") or details.get("Selected Element") or "").strip()
 
             force_changed = False
-            if has_force and isinstance(force, dict) and force:
-                force_out = _normalize_force_payload(force, fallback_selected=fallback_selected, team_buff=team_buff_val)
-                if isinstance(force_out, dict) and json.dumps(force_out, sort_keys=True) != json.dumps(force, sort_keys=True):
+            if normalize_force and has_force and isinstance(force, dict) and force:
+                force_out = _normalize_force_payload(
+                    force, fallback_selected=fallback_selected, team_buff=team_buff_val
+                )
+                if isinstance(force_out, dict) and json.dumps(force_out, sort_keys=True) != json.dumps(
+                    force, sort_keys=True
+                ):
                     force = force_out
                     stats.force_normalized += 1
                     force_changed = True
+
+            fg_details_synced_this_row = False
+            if sync_fg_details and has_force and tbl in {"fg_loadouts", "team_buff_fg_loadouts"}:
+                if isinstance(force, dict) and force and isinstance(force.get("GemCounts"), dict):
+                    base_stats = _extract_base_stats_from_force(force)
+                    if not isinstance(base_stats, dict) or not base_stats:
+                        base_stats = None
+
+                    gem_counts = force.get("GemCounts") or {}
+                    ft_val = _safe_int(force.get("FT", gem_counts.get("Fever Time", 0)), 0)
+                    ff_val = _safe_int(
+                        force.get("FF", gem_counts.get("Fever Fill", gem_counts.get("Fever Fill Rate", 0))),
+                        0,
+                    )
+                    selected = str(
+                        force.get("SelectedElement")
+                        or force.get("Selected Element")
+                        or fallback_selected
+                        or details.get("PrimaryColor")
+                        or details.get("Primary Color")
+                        or ""
+                    ).strip()
+
+                    expected_stats: dict[str, Any] | None = None
+                    if base_stats is not None:
+                        try:
+                            from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
+                                apply_gems_to_base_fast,
+                            )
+
+                            team_color = str(details.get("PrimaryColor") or selected or "").strip()
+                            base_effect = _team_buff_effect("T5", team_color)
+                            base_stats2 = _ensure_stats_include_base_effect(base_stats, base_effect)
+                            g_pp = _safe_int(gem_counts.get("Perfect Points", 0), 0)
+                            g_cm = _safe_int(gem_counts.get("Combo Multiplier", 0), 0)
+                            g_fm = _safe_int(gem_counts.get("Fever Multiplier", 0), 0)
+                            g_ov = _safe_int(gem_counts.get("Element", gem_counts.get("Element Overflow", 0)), 0)
+                            stats_t5 = apply_gems_to_base_fast(
+                                base_stats2,
+                                selected,
+                                ft_val,
+                                ff_val,
+                                g_pp,
+                                g_cm,
+                                g_fm,
+                                g_ov,
+                            )
+                            if isinstance(stats_t5, dict) and stats_t5:
+                                expected_stats = _apply_stat_delta(
+                                    stats_t5, _delta_map("T5", team_buff_val, team_color)
+                                )
+                        except Exception:
+                            expected_stats = None
+
+                    # Avoid partially syncing FT/FF/GemCounts without also syncing Stats.
+                    if expected_stats is not None:
+                        changed = False
+                        if _safe_int(details.get("FT", 0), 0) != ft_val:
+                            details["FT"] = ft_val
+                            changed = True
+                        if _safe_int(details.get("FF", 0), 0) != ff_val:
+                            details["FF"] = ff_val
+                            changed = True
+                        if details.get("GemCounts") != gem_counts:
+                            details["GemCounts"] = gem_counts
+                            changed = True
+                        if selected:
+                            cur_sel = str(
+                                details.get("SelectedElement")
+                                or details.get("Selected Element")
+                                or details.get("PrimaryColor")
+                                or ""
+                            ).strip()
+                            if cur_sel != selected:
+                                details["SelectedElement"] = selected
+                                details["Selected Element"] = selected
+                                changed = True
+                        if details.get("Stats") != expected_stats:
+                            details["Stats"] = expected_stats
+                            changed = True
+
+                        fg_meta = force.get("ForceGreats")
+                        if isinstance(fg_meta, dict) and fg_meta:
+                            fg_out = dict(fg_meta)
+                        else:
+                            fg_existing = details.get("ForceGreats")
+                            fg_out = dict(fg_existing) if isinstance(fg_existing, dict) else {}
+
+                        fg_score_val = 0
+                        if has_fg_score:
+                            fg_score_val = _safe_int(row["fg_score"], 0)
+                        if not fg_score_val:
+                            fg_score_val = _safe_int(force.get("score", force.get("Score", 0)), 0)
+                        if fg_score_val > 0 and _safe_int(fg_out.get("final_score", 0), 0) != fg_score_val:
+                            fg_out["final_score"] = int(fg_score_val)
+                            changed = True
+                        if fg_out and details.get("ForceGreats") != fg_out:
+                            details["ForceGreats"] = fg_out
+                            changed = True
+
+                        if changed:
+                            stats.fg_details_synced += 1
+                            fg_details_synced_this_row = True
 
             stats_needs_repair = _stats_missing_or_empty(details.get("Stats"))
             if stats_needs_repair:
@@ -636,9 +754,16 @@ def repair_frontend_db(
             # Tiered FG tables: ensure details Stats includes the TeamBuff effect for the row's tier.
             # This prevents "T5" rows from displaying "NONE" stats (e.g., missing +PP/+color).
             team_buff_fixed_this_row = False
-            if tbl == "team_buff_fg_loadouts" and isinstance(force, dict) and force and isinstance(details.get("Stats"), dict):
+            if (
+                tbl == "team_buff_fg_loadouts"
+                and isinstance(force, dict)
+                and force
+                and isinstance(details.get("Stats"), dict)
+            ):
                 try:
-                    from gear_optimizer.helpers.song_helpers.force_greats.result_application import apply_gems_to_base_fast
+                    from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
+                        apply_gems_to_base_fast,
+                    )
 
                     det_stats = dict(details.get("Stats") or {})
                     selected = str(
@@ -690,15 +815,21 @@ def repair_frontend_db(
                     pass
 
             needs_update = minis_repairs or stats_needs_repair or (minis_text_out and minis_text_out != minis_text_in)
-            needs_update = needs_update or force_changed or team_buff_fixed_this_row
+            needs_update = needs_update or force_changed or team_buff_fixed_this_row or fg_details_synced_this_row
 
             if needs_update:
                 if not dry_run:
                     if has_force:
-                        conn.execute(
-                            f"UPDATE {tbl} SET minis_json = ?, details_json = ?, force_details_json = ? WHERE rowid = ?",
-                            (minis_text_out, json.dumps(details), json.dumps(force), row["rowid"]),
-                        )
+                        if force_changed:
+                            conn.execute(
+                                f"UPDATE {tbl} SET minis_json = ?, details_json = ?, force_details_json = ? WHERE rowid = ?",
+                                (minis_text_out, json.dumps(details), json.dumps(force), row["rowid"]),
+                            )
+                        else:
+                            conn.execute(
+                                f"UPDATE {tbl} SET minis_json = ?, details_json = ? WHERE rowid = ?",
+                                (minis_text_out, json.dumps(details), row["rowid"]),
+                            )
                     else:
                         conn.execute(
                             f"UPDATE {tbl} SET minis_json = ?, details_json = ? WHERE rowid = ?",
@@ -840,7 +971,9 @@ def repair_frontend_db(
                 if is_fg_table:
                     better = fg_score > _safe_int(prev.get("fg_score"), 0)
                     if not better and fg_score == _safe_int(prev.get("fg_score"), 0):
-                        better = score > _safe_int(prev.get("score"), 0) or timestamp >= float(prev.get("timestamp") or 0)
+                        better = score > _safe_int(prev.get("score"), 0) or timestamp >= float(
+                            prev.get("timestamp") or 0
+                        )
                     if better:
                         prev["score"] = score
                         prev["fg_score"] = fg_score
@@ -905,8 +1038,9 @@ def repair_frontend_db(
             )
             conn.execute(f"DROP TABLE IF EXISTS {new_table};")
 
-    _rehash_team_buff_table("team_buff_loadouts")
-    _rehash_team_buff_table("team_buff_fg_loadouts")
+    if rehash_team_buff_tables:
+        _rehash_team_buff_table("team_buff_loadouts")
+        _rehash_team_buff_table("team_buff_fg_loadouts")
 
     if not dry_run:
         conn.commit()
@@ -929,6 +1063,21 @@ def main() -> None:
         action="store_true",
         help="Copy legacy loadouts/fg_loadouts into tier tables (T5) and delete legacy rows.",
     )
+    parser.add_argument(
+        "--no-sync-fg-details",
+        action="store_true",
+        help="Disable syncing FG details_json (FT/FF/GemCounts/Stats) from force_details_json when available.",
+    )
+    parser.add_argument(
+        "--no-normalize-force",
+        action="store_true",
+        help="Disable normalizing force_details_json payloads (recommended when only repairing details_json).",
+    )
+    parser.add_argument(
+        "--skip-rehash",
+        action="store_true",
+        help="Skip the expensive team_buff_* rehash/dedupe pass (only apply JSON/Stats/FG repairs).",
+    )
     args = parser.parse_args()
 
     db_path = Path(args.db).expanduser() if args.db else Path(get_evolution_db_path())
@@ -940,6 +1089,9 @@ def main() -> None:
         dry_run=bool(args.dry_run),
         verbose=bool(args.verbose),
         move_legacy=bool(args.move_legacy),
+        sync_fg_details=not bool(args.no_sync_fg_details),
+        normalize_force=not bool(args.no_normalize_force),
+        rehash_team_buff_tables=not bool(args.skip_rehash),
     )
     print("\n" + "=" * 60)
     print("REPAIR SUMMARY" + (" (DRY RUN)" if args.dry_run else ""))
@@ -950,6 +1102,7 @@ def main() -> None:
     print(f"minis_reordered: {result.minis_reordered:,}")
     print(f"stats_fixed: {result.stats_fixed:,}")
     print(f"stats_team_buff_fixed: {result.stats_team_buff_fixed:,}")
+    print(f"fg_details_synced: {result.fg_details_synced:,}")
     print(f"force_normalized: {result.force_normalized:,}")
     print(f"fg_invariant_rows_deleted: {result.fg_invariant_deleted:,}")
     print(f"team_buff_case_fixed_rows: {result.team_buff_fixed_case:,}")

@@ -281,6 +281,78 @@ def test_fg_loadouts_keeps_details_for_best_fg_score(db_path):
         conn.close()
 
 
+def test_team_buff_fg_loadouts_details_syncs_force_gems_when_available(db_path, monkeypatch):
+    monkeypatch.setattr("gear_optimizer.data.database.get_minis_by_name_cached", lambda: {})
+
+    song = "FG Gem Sync Song"
+
+    # Base details reflect the *base* gem allocation.
+    base_details = {
+        "tag": "base",
+        "FT": 0,
+        "FF": 15,
+        "GemCounts": {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 10, "Element": 65},
+        "Stats": {"dummy": 1},
+    }
+
+    # Force payload reflects the *FG* gem allocation that produced the improved fg_score.
+    force_details = {
+        "score": 200,
+        "BaseStats": {"Fever Fill Rate": 10, "Fever Time": 20, "Beat": 5, "Vibe": 7},
+        "GemCounts": {"Perfect Points": 0, "Combo Multiplier": 0, "Fever Multiplier": 10, "Element": 62},
+        "FT": 1,
+        "FF": 17,
+        "Selected Element": "Vibe",
+        "ForceGreats": {"config": {"NonFever1": 2}, "final_score": 200},
+    }
+
+    save_loadouts_batch(
+        song,
+        [
+            {
+                "score": 100,
+                "fg_score": 200,
+                "gear": ["G1"],
+                "minis": ["M1"],
+                "details": base_details,
+                "force": force_details,
+            }
+        ],
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT score, fg_score, details_json, force_details_json "
+            "FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song,),
+        ).fetchone()
+        assert row is not None
+        assert row["score"] == 100
+        assert row["fg_score"] == 200
+
+        stored_details = json.loads(row["details_json"])
+        stored_force = json.loads(row["force_details_json"])
+
+        assert stored_force["FT"] == 1
+        assert stored_force["FF"] == 17
+        assert stored_force["GemCounts"]["Element"] == 62
+
+        # The FG leaderboard row should show the FG gem allocation (not the base one).
+        assert stored_details["FT"] == 1
+        assert stored_details["FF"] == 17
+        assert stored_details["GemCounts"]["Element"] == 62
+        assert stored_details["ForceGreats"]["final_score"] == 200
+
+        stats = stored_details["Stats"]
+        assert stats["Fever Time"] == 23  # 20 + 1*3
+        assert stats["Fever Fill Rate"] == 61  # 10 + 17*3
+        assert stats["Beat"] == 8  # 5 + 1*3
+        assert stats["Vibe"] == 430  # 7 + 17*3 + 62*6
+    finally:
+        conn.close()
+
+
 def test_concurrent_save_loadouts_batch_no_corruption(db_path):
     song = "Concurrent Save Song"
 
