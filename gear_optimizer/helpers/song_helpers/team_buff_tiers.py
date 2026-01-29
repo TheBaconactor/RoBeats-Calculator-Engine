@@ -3,10 +3,11 @@ from __future__ import annotations
 import ast
 import copy
 from dataclasses import dataclass
+from math import ceil
 
 import numpy as np
 
-from ...core.constants import TOTAL_ROWS
+from ...core.constants import FEVER_FILL_BASE_RATE, TOTAL_ROWS
 from ...data.loadout_equivalence import representative_mini_names
 from ...solver.fever_timeline import calculate_fever_timeline_indices
 from ...solver.scoring_core import fast_calculate_score, lookup_reference_py
@@ -295,6 +296,84 @@ def _safe_int(v: object, default: int = 0) -> int:
             return int(float(v))
         except Exception:
             return int(default)
+
+
+def _floor_to_int_ms(timestamps_sec: np.ndarray) -> np.ndarray:
+    ts = np.asarray(timestamps_sec, dtype=np.float64)
+    return np.floor(ts * 1000.0 + 1e-6).astype(np.int32)
+
+
+def _build_base_hitsim_ctx(calc_song: dict) -> dict | None:
+    if not isinstance(calc_song, dict):
+        return None
+    meta = calc_song.get("metadata", {}) or {}
+    if not meta.get("HumanHitSimApplied"):
+        return None
+    apply_to = str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper()
+    if apply_to != "ALL":
+        return None
+    song_data = calc_song.get("song_data", {}) or {}
+    chart_ts = song_data.get("chart_timestamps")
+    timestamps = song_data.get("timestamps")
+    if chart_ts is None or timestamps is None:
+        return None
+    chart_ms = _floor_to_int_ms(np.asarray(chart_ts, dtype=np.float64))
+    sim_ms = _floor_to_int_ms(np.asarray(timestamps, dtype=np.float64))
+    total_notes = int(np.asarray(timestamps).shape[0])
+    if total_notes <= 0:
+        return None
+    n = min(int(chart_ms.shape[0]), int(sim_ms.shape[0]), int(total_notes))
+    if n <= 0:
+        return None
+    long_notes = _safe_int(meta.get("Long Notes"), 0)
+    return {
+        "chart_ms": chart_ms,
+        "sim_ms": sim_ms,
+        "n": int(n),
+        "total_notes": int(total_notes),
+        "long_notes": int(long_notes),
+    }
+
+
+def _base_hitsim_delta_for_stats(
+    *, stats: dict, ref_arrays: dict, ctx: dict, ff_cache: dict[int, float]
+) -> int | None:
+    if not isinstance(stats, dict) or not stats:
+        return None
+    try:
+        ff_stat = _stats_get_int(stats, "Fever Fill Rate", 0)
+    except Exception:
+        ff_stat = 0
+    try:
+        ff_factor = ff_cache.get(int(ff_stat))
+    except Exception:
+        ff_factor = None
+    if ff_factor is None:
+        try:
+            ff_factor = lookup_reference_py(ff_stat, ref_arrays["Fever Fill Rate"], TOTAL_ROWS)
+        except Exception:
+            return None
+        try:
+            ff_cache[int(ff_stat)] = float(ff_factor)
+        except Exception:
+            pass
+
+    total_notes = int(ctx.get("total_notes", 0) or 0)
+    long_notes = int(ctx.get("long_notes", 0) or 0)
+    non_fever_cas = (total_notes - long_notes) * FEVER_FILL_BASE_RATE
+    non_fever_base = ceil(non_fever_cas * float(ff_factor))
+    notes_to_fill = int(non_fever_base) - 1
+    end_normal_idx = min(int(notes_to_fill), int(total_notes))
+    if end_normal_idx <= 0:
+        return None
+    n = int(ctx.get("n", 0) or 0)
+    if end_normal_idx >= n:
+        return None
+    chart_ms = ctx.get("chart_ms")
+    sim_ms = ctx.get("sim_ms")
+    if chart_ms is None or sim_ms is None:
+        return None
+    return int(sim_ms[end_normal_idx]) - int(chart_ms[end_normal_idx])
 
 
 def _team_buff_delta_map(*, base_team_buff: str, target_team_buff: str, team_color: str) -> dict[str, int]:
@@ -845,6 +924,9 @@ def build_team_buff_tier_db_batches(
     team_color = _resolve_team_color(cfg_dict, calc_song)
     base_team_buff = _resolve_base_team_buff(cfg_dict)
     base_effect = _team_buff_effect(base_team_buff, team_color)
+    base_hitsim_ctx = _build_base_hitsim_ctx(calc_song)
+    base_ff_cache: dict[int, float] = {}
+    fg_delta_cache: dict[tuple[int, int, tuple[int, ...]], int] = {}
 
     # Map original entries by a stable key (order-invariant names).
     def _stable_key_from_entry(e: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -908,6 +990,19 @@ def build_team_buff_tier_db_batches(
                 if isinstance(stats0, dict) and stats0:
                     details_base["Stats"] = _ensure_stats_include_base_effect(stats0, base_effect)
             details_out = _apply_details_delta(details_base, delta_map)
+            if isinstance(details_out, dict) and base_hitsim_ctx is not None:
+                existing = details_out.get("hitsim_offset_delta_ms")
+                if existing is None:
+                    stats0 = details_out.get("Stats")
+                    if isinstance(stats0, dict):
+                        delta_ms = _base_hitsim_delta_for_stats(
+                            stats=stats0,
+                            ref_arrays=ref_arrays,
+                            ctx=base_hitsim_ctx,
+                            ff_cache=base_ff_cache,
+                        )
+                        if delta_ms is not None:
+                            details_out["hitsim_offset_delta_ms"] = int(delta_ms)
 
             force_base = copy.deepcopy(orig.get("force"))
             # If the persisted BaseStats payload is missing the base TeamBuff effect, add it first so
@@ -928,6 +1023,47 @@ def build_team_buff_tier_db_batches(
                 delta=delta_map,
                 fg_score=fg_score_out,
             )
+            if isinstance(force_out, dict) and fg_score_out > score_out:
+                fg_meta = force_out.get("ForceGreats")
+                if isinstance(fg_meta, dict) and fg_meta.get("hitsim_offset_delta_ms") is None:
+                    forced_counts = _extract_force_config_counts(force_out)
+                    if forced_counts:
+                        fg_stats = force_out.get("Stats")
+                        if not isinstance(fg_stats, dict) or not fg_stats:
+                            fg_stats = _force_payload_stats(force_out, details_out.get("Stats", {}))
+                        if isinstance(fg_stats, dict) and fg_stats:
+                            try:
+                                ff_stat = _stats_get_int(fg_stats, "Fever Fill Rate", 0)
+                                ft_stat = _stats_get_int(fg_stats, "Fever Time", 0)
+                            except Exception:
+                                ff_stat = 0
+                                ft_stat = 0
+                            cfg_key = (int(ff_stat), int(ft_stat), tuple(int(x) for x in forced_counts))
+                            delta_ms = fg_delta_cache.get(cfg_key)
+                            if delta_ms is None:
+                                try:
+                                    from ...solver.scoring.force_greats import (
+                                        summarize_hitsim_offset_delta_ms_for_fg_variant,
+                                    )
+
+                                    fg_data = {"ForceGreats": fg_meta, "Stats": fg_stats}
+                                    delta_ms = summarize_hitsim_offset_delta_ms_for_fg_variant(
+                                        calc_song, fg_data, ref_arrays
+                                    )
+                                except Exception:
+                                    delta_ms = None
+                                if delta_ms is not None:
+                                    fg_delta_cache[cfg_key] = int(delta_ms)
+                            if delta_ms is not None:
+                                fg_meta_out = dict(fg_meta)
+                                fg_meta_out["hitsim_offset_delta_ms"] = int(delta_ms)
+                                force_out["ForceGreats"] = fg_meta_out
+                                if isinstance(details_out, dict):
+                                    fg_det = details_out.get("ForceGreats")
+                                    if isinstance(fg_det, dict) and fg_det.get("hitsim_offset_delta_ms") is None:
+                                        fg_det_out = dict(fg_det)
+                                        fg_det_out["hitsim_offset_delta_ms"] = int(delta_ms)
+                                        details_out["ForceGreats"] = fg_det_out
 
             out_entries.append(
                 {

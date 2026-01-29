@@ -166,6 +166,82 @@ def _thread_cpu_time_s() -> float:
         return 0.0
 
 
+def _attach_hitsim_delta_for_base(best_data: dict | None, calc_song: dict | None, ref_arrays: dict | None) -> None:
+    if not isinstance(best_data, dict) or not best_data:
+        return
+    if "hitsim_offset_delta_ms" in best_data:
+        try:
+            if best_data.get("hitsim_offset_delta_ms") is not None:
+                return
+        except Exception:
+            return
+    if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+        return
+    try:
+        from gear_optimizer.solver.scoring.force_greats import summarize_hitsim_offset_delta_ms_for_base
+
+        delta_ms = summarize_hitsim_offset_delta_ms_for_base(calc_song, best_data, ref_arrays)
+        if delta_ms is not None:
+            best_data["hitsim_offset_delta_ms"] = int(delta_ms)
+    except Exception:
+        return
+
+
+def _attach_hitsim_delta_for_fg_variant(
+    fg_variants: list[dict] | None,
+    calc_song: dict | None,
+    ref_arrays: dict | None,
+) -> None:
+    if not fg_variants or not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+        return
+    best_variant = None
+    best_fg_score = -1
+    for v in fg_variants or []:
+        if not isinstance(v, dict):
+            continue
+        if not bool(v.get("_is_ga", True)):
+            continue
+        try:
+            fg_score = int(v.get("fg_score", 0) or 0)
+        except Exception:
+            fg_score = 0
+        try:
+            base_score = int(v.get("score", 0) or 0)
+        except Exception:
+            base_score = 0
+        if fg_score <= base_score:
+            continue
+        if fg_score > best_fg_score:
+            best_fg_score = fg_score
+            best_variant = v
+
+    if best_variant is None:
+        return
+    fg_data = best_variant.get("data") or {}
+    if not isinstance(fg_data, dict):
+        return
+    fg_meta = fg_data.get("ForceGreats") or {}
+    if isinstance(fg_meta, dict) and "hitsim_offset_delta_ms" in fg_meta:
+        try:
+            if fg_meta.get("hitsim_offset_delta_ms") is not None:
+                return
+        except Exception:
+            return
+
+    try:
+        from gear_optimizer.solver.scoring.force_greats import summarize_hitsim_offset_delta_ms_for_fg_variant
+
+        delta_ms = summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song, fg_data, ref_arrays)
+        if delta_ms is None:
+            return
+        fg_meta_out = dict(fg_meta) if isinstance(fg_meta, dict) else {}
+        fg_meta_out["hitsim_offset_delta_ms"] = int(delta_ms)
+        fg_data["ForceGreats"] = fg_meta_out
+        best_variant["data"] = fg_data
+    except Exception:
+        return
+
+
 def _default_worker_threads(*, inflight_limit: int, kind: str) -> int:
     """
     Choose conservative default worker counts for low-end CPUs.
@@ -1989,6 +2065,7 @@ def run_native_inflight_song_pipeline(
                 song.best_gear = best_gear
                 song.best_minis = best_minis
                 song.ga_candidates = list(ga_candidates or [])
+                _attach_hitsim_delta_for_base(song.best_data, song.calc_song, song.ref_arrays)
 
                 if song.manual_force_greats or song.force_greats_finder:
                     pending_fg.append(song)
@@ -2542,6 +2619,7 @@ def _run_fg_job_sync(
     )
 
     song.fg_variants = list(fg_variants or [])
+    _attach_hitsim_delta_for_fg_variant(song.fg_variants, song.calc_song, song.ref_arrays)
     try:
         setattr(song, "_cpu_fg_run_s", max(0.0, _thread_cpu_time_s() - float(cpu_t0)))
     except Exception:
