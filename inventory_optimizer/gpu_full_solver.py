@@ -38,6 +38,7 @@ class _GpuFullState:
     freq: ti.Field
     vid_gid: ti.Field
     vid_is_wild: ti.Field
+    seeded: ti.Field
     counts: ti.Field
     counts_total: ti.Field
     gear_var_count: ti.Field
@@ -121,6 +122,7 @@ def _get_or_build_state(
     freq = ti.field(dtype=ti.i32, shape=(v_count,))
     vid_gid = ti.field(dtype=ti.i32, shape=(v_count,))
     vid_is_wild = ti.field(dtype=ti.i32, shape=(v_count,))
+    seeded = ti.field(dtype=ti.i32, shape=(v_count,))
     counts = ti.field(dtype=ti.i32, shape=(v_count, counter_stripes))
     counts_total = ti.field(dtype=ti.i32, shape=(v_count,))
     gear_var_count = ti.field(dtype=ti.i32, shape=(max(1, int(gear_count) + 1),))
@@ -153,6 +155,7 @@ def _get_or_build_state(
         freq=freq,
         vid_gid=vid_gid,
         vid_is_wild=vid_is_wild,
+        seeded=seeded,
         counts=counts,
         counts_total=counts_total,
         gear_var_count=gear_var_count,
@@ -830,11 +833,13 @@ def _reset_state(
     propose: ti.template(),
     inv_size: ti.template(),
     cov_count: ti.template(),
+    seeded: ti.template(),
 ):
     for idx in ti.grouped(counts):
         counts[idx] = 0
     for i in counts_total:
         counts_total[i] = 0
+        seeded[i] = 0
     for g in gear_var_count:
         gear_var_count[g] = 0
     for s in covered:
@@ -2373,6 +2378,45 @@ def _seed_inventory(
                 gear_var_count[gid] += 1
 
 
+@ti.kernel
+def _seed_inventory_soft(
+    counts_total: ti.template(),
+    seeded: ti.template(),
+    vid_gid: ti.template(),
+    gear_var_count: ti.template(),
+    inv_size: ti.template(),
+    seed_indices: ti.types.ndarray(dtype=ti.i32, ndim=1),
+):
+    inv_size[None] = 0
+    for i in range(seed_indices.shape[0]):
+        idx = seed_indices[i]
+        if idx >= 0:
+            counts_total[idx] = 1
+            seeded[idx] = 1
+            inv_size[None] += 1
+            gid = vid_gid[idx]
+            if gid >= 0 and gid < gear_var_count.shape[0]:
+                gear_var_count[gid] += 1
+
+
+@ti.kernel
+def _drop_unused_seeded(
+    counts_total: ti.template(),
+    seeded: ti.template(),
+    vid_gid: ti.template(),
+    gear_var_count: ti.template(),
+    inv_size: ti.template(),
+):
+    for vid in counts_total:
+        if seeded[vid] != 0 and counts_total[vid] == 1:
+            counts_total[vid] = 0
+            seeded[vid] = 0
+            ti.atomic_add(inv_size[None], -1)
+            gid = vid_gid[vid]
+            if gid >= 0 and gid < gear_var_count.shape[0]:
+                ti.atomic_add(gear_var_count[gid], -1)
+
+
 def _solve_coverage_gpu_full_alns_islands(
     part_vids_np: "object",
     variant_freq_np: "object",
@@ -2423,6 +2467,7 @@ def _solve_coverage_gpu_full_alns_islands(
     inv_cap = int(effective_cap)
     hard_cap = int(inv_cap)
     seeded_info = {
+        "mode": "hard",
         "total": int(seeded_in_universe + seeded_missing),
         "in_universe": int(seeded_in_universe),
         "missing": int(seeded_missing),
@@ -2952,6 +2997,7 @@ def solve_coverage_gpu_full(
     profile: bool = False,
     seeded_variant_indices: "object" = None,
     seeded_extra_count: int = 0,
+    seeded_mode: str = "hard",
 ) -> GpuFullSolution:
     import numpy as np
 
@@ -2973,6 +3019,10 @@ def solve_coverage_gpu_full(
     alns_islands = int(alns_islands)
     if alns_islands <= 0:
         raise ValueError("alns_islands must be positive.")
+
+    seeded_mode = str(seeded_mode or "hard").strip().lower()
+    if seeded_mode not in {"hard", "soft"}:
+        raise ValueError("seeded_mode must be 'hard' or 'soft'.")
 
     inv_cap = int(inventory_cap)
     if inv_cap <= 0:
@@ -2999,6 +3049,7 @@ def solve_coverage_gpu_full(
         effective_cap = 0
     inv_cap = int(effective_cap)
     seeded_info = {
+        "mode": str(seeded_mode),
         "total": int(seeded_total),
         "in_universe": int(seeded_in_universe),
         "missing": int(seeded_missing),
@@ -3069,6 +3120,8 @@ def solve_coverage_gpu_full(
     # Multi-island ALNS path (bandit ruin-and-recreate).
     # This path currently does not model per-gear metadata, so keep feature flags explicit.
     if alns_enabled and alns_islands > 1:
+        if seeded_mode != "hard":
+            raise ValueError("seeded_mode='soft' is not supported with alns_islands > 1.")
         if human_mode:
             raise ValueError("human_mode is not supported with alns_islands > 1.")
         if synergy_weight > 0 or new_gear_penalty > 0:
@@ -3111,6 +3164,7 @@ def solve_coverage_gpu_full(
     freq = st.freq
     vid_gid = st.vid_gid
     vid_is_wild = st.vid_is_wild
+    seeded = st.seeded
     counts = st.counts
     counts_total = st.counts_total
     gear_var_count = st.gear_var_count
@@ -3421,6 +3475,9 @@ def solve_coverage_gpu_full(
             # Repack can reduce `inv_size` without changing coverage. Refill any freed capacity before we
             # decide stabilization is complete.
             greedy_fill()
+            if seeded_mode == "soft":
+                _drop_unused_seeded(counts_total, seeded, vid_gid, gear_var_count, inv_size)
+                greedy_fill()
             cur_cov = int(cov_count[None])
             cur_inv = int(inv_size[None])
             if cur_cov == last_cov and cur_inv == last_inv:
@@ -3430,7 +3487,7 @@ def solve_coverage_gpu_full(
 
     # Prewarm kernels that may otherwise compile on first LNS attempt (which would contaminate time budgets).
     if lns_time_sec > 0:
-        _reset_state(counts, counts_total, gear_var_count, covered, chosen, propose, inv_size, cov_count)
+        _reset_state(counts, counts_total, gear_var_count, covered, chosen, propose, inv_size, cov_count, seeded)
         _ = select_best_candidate(6, 0)
         _partition_cost(part_vids, counts, counts_total, tmp_cost, 0, 0)
         _destroy_unique_weighted(
@@ -3471,9 +3528,12 @@ def solve_coverage_gpu_full(
         )
 
     t0 = time.perf_counter()
-    _reset_state(counts, counts_total, gear_var_count, covered, chosen, propose, inv_size, cov_count)
+    _reset_state(counts, counts_total, gear_var_count, covered, chosen, propose, inv_size, cov_count, seeded)
     if seeded_indices is not None and int(seeded_indices.size) > 0:
-        _seed_inventory(counts_total, vid_gid, gear_var_count, inv_size, seeded_indices)
+        if seeded_mode == "soft":
+            _seed_inventory_soft(counts_total, seeded, vid_gid, gear_var_count, inv_size, seeded_indices)
+        else:
+            _seed_inventory(counts_total, vid_gid, gear_var_count, inv_size, seeded_indices)
     stabilize()
     base_cov = int(cov_count[None])
     base_inv = int(inv_size[None])

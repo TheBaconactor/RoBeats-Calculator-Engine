@@ -404,7 +404,7 @@ def _select_one_peak_candidate_per_song(song_specs: List[SongSpec]) -> List[_Cov
     choose a deterministic candidate that tends to improve inventory reuse:
     - Prefer gear used by many songs.
     - Prefer lower total OV / fewer OV-positive slots (less element-locking).
-    - Prefer `loadouts` over `fg_loadouts`, then lower rowid.
+    - Prefer base leaderboard over FG leaderboard, then lower rowid.
     """
     gear_freq: Dict[int, int] = {}
     for song in song_specs:
@@ -434,10 +434,12 @@ def _candidate_rank_key(
     song_peak: Optional[int] = None,
 ) -> Tuple[Any, ...]:
     freq_sum = sum(gear_freq.get(g, 0) for g in cand.gear_ids)
-    src_rank = 0 if cand.candidate.source_table == "loadouts" else 1
+    src_rank = 0 if str(cand.candidate.source_table) in {"loadouts", "team_buff_loadouts"} else 1
     ov_total = int(cand.candidate.gem_totals[OV_INDEX])
     eff_score = (
-        int(cand.candidate.fg_score) if cand.candidate.source_table == "fg_loadouts" else int(cand.candidate.score)
+        int(cand.candidate.fg_score)
+        if str(cand.candidate.source_table) in {"fg_loadouts", "team_buff_fg_loadouts"}
+        else int(cand.candidate.score)
     )
     score_gap = 0 if song_peak is None else max(0, int(song_peak) - int(eff_score))
     # Minimum number of OV-positive slots needed is ceil(OV_total / 15).
@@ -601,6 +603,7 @@ def _materialize_coverage_solution(
             {
                 "id": int(idx),
                 "gear_name": gear_names[gid - 1] if gid > 0 else "",
+                "offset": int(off),
                 "gems": {STAT_KEYS[i]: int(vec[i]) for i in range(len(STAT_KEYS))},
                 "ov_color": ID_TO_ELEMENT.get(int(ov_color_id), "") if ov_color_id else "",
             }
@@ -1088,6 +1091,7 @@ def _materialize_coverage_solution_multi(
             {
                 "id": int(idx),
                 "gear_name": gear_names[gid - 1] if gid > 0 else "",
+                "offset": int(off),
                 "gems": {STAT_KEYS[i]: int(vec[i]) for i in range(len(STAT_KEYS))},
                 "ov_color": ID_TO_ELEMENT.get(int(ov_color_id), "") if ov_color_id else "",
             }
@@ -1342,6 +1346,9 @@ def _run_gpu_full_solver_from_witness_pool(
     mem: _MemoryLogger,
     wildcard_freq_bonus: int = 0,
     seeded_raw_vids: Optional[np.ndarray] = None,
+    seeded_mode: str = "hard",
+    restricted_raw_vids: Optional[np.ndarray] = None,
+    restricted_universe_diag: Optional[dict] = None,
 ):
     palettes = int(gpu_full_witness_palettes)
     if palettes <= 0:
@@ -1417,6 +1424,107 @@ def _run_gpu_full_solver_from_witness_pool(
     if palette_meta is not None:
         wp_stats["learned_wildcard_palette"] = palette_meta
     mem.log("gpu_full_witness_pool_built")
+
+    if restricted_raw_vids is not None and int(getattr(restricted_raw_vids, "size", 0)) > 0:
+        from .restricted_universe import build_witness_restriction_index
+
+        s_all, k_all, _ = map(int, offsets_np.shape)
+        raw_vids = (gear_ids_np[:, None, :].astype(np.int32, copy=False) << np.int32(16)) | offsets_np.astype(
+            np.int32, copy=False
+        )
+        restriction = build_witness_restriction_index(raw_vids, allowed_raw_vids=restricted_raw_vids)
+        keep_idx = np.nonzero(restriction.keep_mask)[0].astype(np.int32, copy=False)
+
+        wp_stats = dict(wp_stats) if isinstance(wp_stats, dict) else {}
+        wp_stats["songs_original"] = int(s_all)
+        wp_stats["songs"] = int(keep_idx.size)
+        wp_stats["restricted_universe"] = {
+            "load": restricted_universe_diag,
+            "allowed_raw_vids": int(np.asarray(restricted_raw_vids, dtype=np.int32).size),
+            **dict(restriction.stats),
+        }
+
+        if keep_idx.size <= 0:
+            from types import SimpleNamespace
+
+            covered = np.zeros((s_all,), dtype=np.int32)
+            chosen_offsets = np.full((s_all, 6), -1, dtype=np.int32)
+            stats = {
+                "witness_pool": wp_stats,
+                "gpu_full": {"skipped": "no_witness_patterns_in_restricted_universe"},
+                "k_total": int(k_all),
+                "v_count": 0,
+                "v_unpadded": 0,
+            }
+            return SimpleNamespace(
+                covered=covered,
+                chosen_offsets=chosen_offsets,
+                covered_count=int(0),
+                stats=stats,
+                dense_vid_universe=np.zeros((0,), dtype=np.int32),
+            )
+
+        s_idx = np.arange(s_all, dtype=np.int32)[:, None]
+        offsets_sel = offsets_np[s_idx, restriction.sel_idx, :]
+
+        sol_keep = _run_gpu_full_solver_from_offsets(
+            gear_ids_np[keep_idx, :],
+            offsets_sel[keep_idx, :, :],
+            inventory_cap=int(inventory_cap),
+            seed=int(seed),
+            gpu_repack_passes=int(gpu_repack_passes),
+            gpu_full_repack_rarity_weighted=bool(gpu_full_repack_rarity_weighted),
+            gpu_full_k_scan_select=int(gpu_full_k_scan_select),
+            gpu_full_k_scan_repack=int(gpu_full_k_scan_repack),
+            gpu_full_alns_enabled=bool(gpu_full_alns_enabled),
+            gpu_full_alns_islands=int(gpu_full_alns_islands),
+            gpu_full_pt_enabled=bool(gpu_full_pt_enabled),
+            gpu_full_pt_t_min=float(gpu_full_pt_t_min),
+            gpu_full_pt_t_max=float(gpu_full_pt_t_max),
+            gpu_full_pt_swap_interval=int(gpu_full_pt_swap_interval),
+            gpu_full_pt_destroy_beta=float(gpu_full_pt_destroy_beta),
+            gpu_full_pt_cap_slack_max=int(gpu_full_pt_cap_slack_max),
+            lns_time_sec=float(lns_time_sec),
+            lns_attempts=int(lns_attempts),
+            gpu_lns_destroy=int(gpu_lns_destroy),
+            gpu_full_lns_freq_weighted=bool(gpu_full_lns_freq_weighted),
+            gpu_full_lns_random_destroy_prob=float(gpu_full_lns_random_destroy_prob),
+            gpu_full_lns_restore_after=int(gpu_full_lns_restore_after),
+            gpu_full_lns_restore_drop=int(gpu_full_lns_restore_drop),
+            gpu_full_variant_freq_mode=str(gpu_full_variant_freq_mode),
+            gpu_full_counter_stripes=int(gpu_full_counter_stripes),
+            gpu_full_human_mode=bool(gpu_full_human_mode),
+            gpu_full_human_gear_free=int(gpu_full_human_gear_free),
+            gpu_full_human_gear_penalty_step=int(gpu_full_human_gear_penalty_step),
+            gpu_full_human_colored_penalty=int(gpu_full_human_colored_penalty),
+            synergy_weight=int(synergy_weight),
+            synergy_top_offsets=int(synergy_top_offsets),
+            synergy_min_pair_count=int(synergy_min_pair_count),
+            synergy_scale=int(synergy_scale),
+            synergy_max_bonus=int(synergy_max_bonus),
+            new_gear_penalty=int(new_gear_penalty),
+            mem=mem,
+            wp_stats=wp_stats,
+            v_pad_bin=int(v_pad_bin),
+            wildcard_freq_bonus=int(wildcard_freq_bonus),
+            seeded_raw_vids=seeded_raw_vids,
+            seeded_mode=str(seeded_mode),
+        )
+
+        from types import SimpleNamespace
+
+        covered_full = np.zeros((s_all,), dtype=np.int32)
+        chosen_full = np.full((s_all, 6), -1, dtype=np.int32)
+        covered_full[keep_idx] = np.asarray(sol_keep.covered, dtype=np.int32)
+        chosen_full[keep_idx, :] = np.asarray(sol_keep.chosen_offsets, dtype=np.int32)
+        return SimpleNamespace(
+            covered=covered_full,
+            chosen_offsets=chosen_full,
+            covered_count=int(covered_full.sum()),
+            stats=dict(sol_keep.stats),
+            dense_vid_universe=getattr(sol_keep, "dense_vid_universe", np.zeros((0,), dtype=np.int32)),
+        )
+
     return _run_gpu_full_solver_from_offsets(
         gear_ids_np,
         offsets_np,
@@ -1458,6 +1566,7 @@ def _run_gpu_full_solver_from_witness_pool(
         v_pad_bin=int(v_pad_bin),
         wildcard_freq_bonus=int(wildcard_freq_bonus),
         seeded_raw_vids=seeded_raw_vids,
+        seeded_mode=str(seeded_mode),
     )
 
 
@@ -1882,6 +1991,7 @@ def _run_gpu_full_solver_from_offsets(
     seeded_raw_vids: Optional[np.ndarray] = None,
     seeded_dense_indices: Optional[np.ndarray] = None,
     seeded_missing_count: int = 0,
+    seeded_mode: str = "hard",
 ):
     part_vids, variant_freq_np, dense_vid_universe, v_count = _pack_part_vids_dense(
         gear_ids_np,
@@ -1978,6 +2088,7 @@ def _run_gpu_full_solver_from_offsets(
             profile=bool(mem.enabled),
             seeded_variant_indices=seeded_dense,
             seeded_extra_count=int(seeded_missing),
+            seeded_mode=str(seeded_mode),
         )
     finally:
         if gpu_sampler is not None:
@@ -2087,6 +2198,9 @@ def _run_gpu_full_solver_from_candidates(
     v_pad_bin: int = 4096,
     wildcard_freq_bonus: int = 0,
     seeded_raw_vids: Optional[np.ndarray] = None,
+    seeded_mode: str = "hard",
+    restricted_raw_vids: Optional[np.ndarray] = None,
+    restricted_universe_diag: Optional[dict] = None,
 ):
     offsets_np, part_to_candidate, wp_stats = _build_multi_candidate_offsets(
         songs,
@@ -2102,22 +2216,6 @@ def _run_gpu_full_solver_from_candidates(
         wildcard_palette_tail_slots=int(wildcard_palette_tail_slots),
         mem=mem,
     )
-
-    synergy_np = None
-    synergy_meta = None
-    if int(synergy_weight) > 0 and int(synergy_top_offsets) > 0:
-        syn = compute_wildcard_ppmi_synergy(
-            offsets_np,
-            top_n=int(synergy_top_offsets),
-            min_pair_count=int(synergy_min_pair_count),
-            scale=int(synergy_scale),
-            max_bonus=int(synergy_max_bonus),
-        )
-        synergy_np = np.asarray(syn.synergy, dtype=np.int32)
-        synergy_meta = dict(syn.meta)
-        synergy_meta["weight"] = int(synergy_weight)
-        if isinstance(wp_stats, dict):
-            wp_stats["synergy"] = dict(synergy_meta)
 
     raw_vids = np.zeros_like(offsets_np, dtype=np.int32)
     for s_idx, song in enumerate(songs):
@@ -2135,8 +2233,75 @@ def _run_gpu_full_solver_from_candidates(
             raise RuntimeError("Multi-candidate raw vids build mismatch (candidate index out of range).")
         raw_vids[s_idx, :, :] = gids[cand_idx, :] | offsets_np[s_idx, :, :]
 
+    s_total = int(len(songs))
+    keep_song_idx = np.arange(s_total, dtype=np.int32)
+    raw_vids_work = raw_vids
+    offsets_work = offsets_np
+    part_to_candidate_work = part_to_candidate
+    if restricted_raw_vids is not None and int(getattr(restricted_raw_vids, "size", 0)) > 0:
+        from .restricted_universe import build_witness_restriction_index
+
+        restriction = build_witness_restriction_index(raw_vids, allowed_raw_vids=restricted_raw_vids)
+        keep_song_idx = np.nonzero(restriction.keep_mask)[0].astype(np.int32, copy=False)
+
+        wp_stats = dict(wp_stats) if isinstance(wp_stats, dict) else {}
+        wp_stats["songs_original"] = int(s_total)
+        wp_stats["songs"] = int(keep_song_idx.size)
+        wp_stats["restricted_universe"] = {
+            "load": restricted_universe_diag,
+            "allowed_raw_vids": int(np.asarray(restricted_raw_vids, dtype=np.int32).size),
+            **dict(restriction.stats),
+        }
+
+        if keep_song_idx.size <= 0:
+            from types import SimpleNamespace
+
+            covered = np.zeros((s_total,), dtype=np.int32)
+            chosen_offsets = np.full((s_total, 6), -1, dtype=np.int32)
+            chosen_candidate_idx = np.full((s_total,), -1, dtype=np.int32)
+            stats = {
+                "witness_pool": wp_stats,
+                "gpu_full": {"skipped": "no_witness_patterns_in_restricted_universe"},
+                "k_total": int(k_total),
+                "v_count": 0,
+                "v_unpadded": 0,
+                "multi_candidate": {"enabled": True, "candidates_per_song": wp_stats.get("candidates_per_song")},
+            }
+            return SimpleNamespace(
+                covered=covered,
+                chosen_offsets=chosen_offsets,
+                covered_count=0,
+                stats=stats,
+                dense_vid_universe=np.zeros((0,), dtype=np.int32),
+                chosen_candidate_idx=chosen_candidate_idx,
+            )
+
+        s_idx = np.arange(raw_vids.shape[0], dtype=np.int32)[:, None]
+        raw_vids_sel = raw_vids[s_idx, restriction.sel_idx, :]
+        offsets_sel = offsets_np[s_idx, restriction.sel_idx, :]
+        ptc_sel = part_to_candidate[s_idx, restriction.sel_idx]
+        raw_vids_work = raw_vids_sel[keep_song_idx, :, :]
+        offsets_work = offsets_sel[keep_song_idx, :, :]
+        part_to_candidate_work = ptc_sel[keep_song_idx, :]
+
+    synergy_np = None
+    synergy_meta = None
+    if int(synergy_weight) > 0 and int(synergy_top_offsets) > 0:
+        syn = compute_wildcard_ppmi_synergy(
+            offsets_work,
+            top_n=int(synergy_top_offsets),
+            min_pair_count=int(synergy_min_pair_count),
+            scale=int(synergy_scale),
+            max_bonus=int(synergy_max_bonus),
+        )
+        synergy_np = np.asarray(syn.synergy, dtype=np.int32)
+        synergy_meta = dict(syn.meta)
+        synergy_meta["weight"] = int(synergy_weight)
+        if isinstance(wp_stats, dict):
+            wp_stats["synergy"] = dict(synergy_meta)
+
     part_vids, variant_freq_np, dense_vid_universe, v_count = _pack_part_vids_dense_from_raw(
-        raw_vids,
+        raw_vids_work,
         v_pad_bin=int(v_pad_bin),
         variant_freq_mode=str(gpu_full_variant_freq_mode),
         wildcard_freq_bonus=int(wildcard_freq_bonus),
@@ -2201,6 +2366,7 @@ def _run_gpu_full_solver_from_candidates(
             profile=bool(mem.enabled),
             seeded_variant_indices=seeded_dense,
             seeded_extra_count=int(seeded_missing),
+            seeded_mode=str(seeded_mode),
         )
     finally:
         if gpu_sampler is not None:
@@ -2233,15 +2399,16 @@ def _run_gpu_full_solver_from_candidates(
     mem.log("gpu_full_solved")
 
     chosen_part = np.asarray(sol_full.chosen_part, dtype=np.int32)
-    chosen_offsets = np.full((len(songs), 6), -1, dtype=np.int32)
-    chosen_candidate_idx = np.full((len(songs),), -1, dtype=np.int32)
-    for s_idx in range(int(len(songs))):
-        p = int(chosen_part[s_idx])
+    chosen_offsets = np.full((s_total, 6), -1, dtype=np.int32)
+    chosen_candidate_idx = np.full((s_total,), -1, dtype=np.int32)
+    covered = np.zeros((s_total,), dtype=np.int32)
+    for local_idx in range(int(chosen_part.size)):
+        s_idx = int(keep_song_idx[local_idx])
+        p = int(chosen_part[local_idx])
         if p >= 0:
-            chosen_offsets[s_idx, :] = offsets_np[s_idx, p, :]
-            chosen_candidate_idx[s_idx] = int(part_to_candidate[s_idx, p])
-
-    covered = (chosen_part >= 0).astype(np.int32, copy=False)
+            chosen_offsets[s_idx, :] = offsets_work[local_idx, p, :]
+            chosen_candidate_idx[s_idx] = int(part_to_candidate_work[local_idx, p])
+            covered[s_idx] = 1
 
     from types import SimpleNamespace
 
@@ -2310,6 +2477,7 @@ def _run_gpu_full_solver_multi_seed(
     gpu_full_pt_destroy_beta: float = 0.0,
     gpu_full_pt_cap_slack_max: int = 0,
     seeded_raw_vids: Optional[np.ndarray] = None,
+    seeded_mode: str = "hard",
 ):
     if not seeds:
         raise ValueError("seeds must be non-empty.")
@@ -2382,6 +2550,7 @@ def _run_gpu_full_solver_multi_seed(
             wildcard_freq_bonus=int(wildcard_freq_bonus),
             seeded_dense_indices=seeded_dense,
             seeded_missing_count=int(seeded_missing),
+            seeded_mode=str(seeded_mode),
         )
         covered_np = np.asarray(sol.covered, dtype=np.int32)
         chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32)
@@ -2411,6 +2580,11 @@ def run_inventory_meta_coverage(
     *,
     inventory_cap: int = 100,
     seed_inventory_gear: Optional[Iterable[Dict[str, Any]]] = None,
+    seed_inventory_variants_path: str = "",
+    seed_inventory_mode: str = "hard",
+    candidates_by_song_override: Optional[Dict[str, List[SongCandidate]]] = None,
+    gear_names_override: Optional[Iterable[str]] = None,
+    mini_names_override: Optional[Iterable[str]] = None,
     element: Optional[str] = None,
     secondary_element: Optional[str] = None,
     partitions_per_song: int = 32,
@@ -2425,6 +2599,7 @@ def run_inventory_meta_coverage(
     lns_time_sec: float = 0.0,
     lns_attempts: int = 200,
     song_limit: Optional[int] = None,
+    song_allowlist: Optional[Iterable[str]] = None,
     profile: bool = False,
     solver: str = "gpu_dynamic",
     eda_witnesses_per_song: int = 16,
@@ -2477,6 +2652,7 @@ def run_inventory_meta_coverage(
     gpu_full_repair_attempts: int = 128,
     gpu_full_repair_max_cands_per_slot: int = 8,
     gpu_full_repair_song_limit: int = 512,
+    gpu_full_restricted_universe_path: str = "",
 ) -> dict:
     """
     Inventory Meta coverage mode (GPU-only optimization loop):
@@ -2618,9 +2794,17 @@ def run_inventory_meta_coverage(
     if gpu_full_repair_song_limit < 0:
         raise ValueError("gpu_full_repair_song_limit must be >= 0.")
 
+    gpu_full_restricted_universe_path = str(gpu_full_restricted_universe_path or "").strip()
+
     solver = str(solver or "gpu_dynamic").strip().lower()
     if solver not in {"gpu_dynamic", "gpu_eda", "gpu_full"}:
         raise ValueError("solver must be one of: gpu_dynamic, gpu_eda, gpu_full")
+
+    seed_inventory_mode = str(seed_inventory_mode or "hard").strip().lower()
+    if seed_inventory_mode not in {"hard", "soft"}:
+        raise ValueError("seed_inventory_mode must be 'hard' or 'soft'.")
+    if seed_inventory_mode != "hard" and solver != "gpu_full":
+        raise ValueError("seed_inventory_mode != 'hard' is only supported with solver='gpu_full'.")
 
     # Entrapment avoidance: element-scoped runs are much smaller, so a few cheap restarts dramatically
     # reduces "stuck" outcomes (same coverage but worse variant count) without blowing up runtime.
@@ -2644,47 +2828,70 @@ def run_inventory_meta_coverage(
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"Evolution DB not found: {db_path}")
 
-    conn = get_db_connection(db_path)
-    try:
-        mem.log("db_connected")
-        song_peak_by_name: Optional[Dict[str, int]] = None
+    song_peak_by_name: Optional[Dict[str, int]] = None
+    if candidates_by_song_override is not None:
         if song_limit is not None:
-            song_names = fetch_song_names_limited(conn, int(song_limit))
-            candidates_by_song: Dict[str, List[SongCandidate]] = {}
-            missing: List[str] = []
-            song_peak_by_name = {}
-            for name in song_names:
-                peak, base_peak, fg_peak = fetch_song_peak(conn, name)
-                song_peak_by_name[str(name)] = int(peak)
-                cands = fetch_candidates_for_peak(conn, name, peak, base_peak, fg_peak)
-                if not cands:
-                    missing.append(name)
-                    continue
-                candidates_by_song[name] = cands
-        else:
-            if solver == "gpu_full" and bool(gpu_full_human_mode) and int(gpu_full_candidate_score_delta) > 0:
-                # Human-mode: allow small score drops to prioritize a shared gear set / optionality.
-                lim = int(gpu_full_candidate_limit_per_song)
-                if lim <= 0:
-                    lim = max(50, int(gpu_full_top_candidates) * 10)
-                mem.log(
-                    f"gpu_full_human_candidates_within_delta (delta={int(gpu_full_candidate_score_delta)}, lim={lim})"
-                )
-                candidates_by_song, missing = fetch_candidates_within_delta_allow_missing(
-                    conn,
-                    score_delta=int(gpu_full_candidate_score_delta),
-                    limit_per_song=int(lim),
-                )
+            raise ValueError("song_limit is incompatible with candidates_by_song_override.")
+        if solver == "gpu_full" and (bool(gpu_full_human_mode) or int(gpu_full_candidate_score_delta) > 0):
+            raise ValueError("Human mode / candidate widening is incompatible with candidates_by_song_override.")
+        candidates_by_song = {str(k): list(v) for k, v in candidates_by_song_override.items()}
+        missing = []
+        song_peak_by_name = {}
+        for name, cands in candidates_by_song.items():
+            peak = 0
+            for cand in cands:
+                peak = max(int(peak), int(getattr(cand, "score", 0) or 0), int(getattr(cand, "fg_score", 0) or 0))
+            song_peak_by_name[str(name)] = int(peak)
+        mem.log(f"candidates_override_loaded (songs={len(candidates_by_song)})")
+    else:
+        conn = get_db_connection(db_path)
+        try:
+            mem.log("db_connected")
+            if song_limit is not None:
+                song_names = fetch_song_names_limited(conn, int(song_limit))
+                candidates_by_song = {}
+                missing = []
+                song_peak_by_name = {}
+                for name in song_names:
+                    peak, base_peak, fg_peak = fetch_song_peak(conn, name)
+                    song_peak_by_name[str(name)] = int(peak)
+                    cands = fetch_candidates_for_peak(conn, name, peak, base_peak, fg_peak)
+                    if not cands:
+                        missing.append(name)
+                        continue
+                    candidates_by_song[name] = cands
             else:
-                if solver == "gpu_full" and int(gpu_full_candidate_score_delta) > 0:
-                    # Inventory meta coverage is exact-peak-only unless human mode is enabled.
-                    mem.log("gpu_full_candidate_score_delta_ignored_exact_peak_only")
-                candidates_by_song, missing = fetch_peak_candidates_allow_missing(conn)
-    finally:
-        conn.close()
-        mem.log("db_closed")
+                if solver == "gpu_full" and bool(gpu_full_human_mode) and int(gpu_full_candidate_score_delta) > 0:
+                    # Human-mode: allow small score drops to prioritize a shared gear set / optionality.
+                    lim = int(gpu_full_candidate_limit_per_song)
+                    if lim <= 0:
+                        lim = max(50, int(gpu_full_top_candidates) * 10)
+                    mem.log(
+                        f"gpu_full_human_candidates_within_delta (delta={int(gpu_full_candidate_score_delta)}, lim={lim})"
+                    )
+                    candidates_by_song, missing = fetch_candidates_within_delta_allow_missing(
+                        conn,
+                        score_delta=int(gpu_full_candidate_score_delta),
+                        limit_per_song=int(lim),
+                    )
+                else:
+                    if solver == "gpu_full" and int(gpu_full_candidate_score_delta) > 0:
+                        # Inventory meta coverage is exact-peak-only unless human mode is enabled.
+                        mem.log("gpu_full_candidate_score_delta_ignored_exact_peak_only")
+                    candidates_by_song, missing = fetch_peak_candidates_allow_missing(conn)
+        finally:
+            conn.close()
+            mem.log("db_closed")
 
     songs_total_unfiltered = int(len(candidates_by_song))
+    if song_allowlist is not None:
+        allow = {str(name) for name in song_allowlist if str(name or "").strip()}
+        if allow:
+            missing = sorted(set(missing) | (allow - set(candidates_by_song.keys())))
+            candidates_by_song = {k: v for k, v in candidates_by_song.items() if k in allow}
+            if song_peak_by_name is not None:
+                song_peak_by_name = {k: v for k, v in song_peak_by_name.items() if k in candidates_by_song}
+
     element = _normalize_element_filter(element)
     secondary_element = _normalize_element_filter(secondary_element)
     allowed_elements = {e for e in (element, secondary_element) if e}
@@ -2701,19 +2908,50 @@ def run_inventory_meta_coverage(
             song_peak_by_name = {k: v for k, v in song_peak_by_name.items() if k in candidates_by_song}
 
     if not candidates_by_song:
-        raise ValueError("No candidates found in loadouts/fg_loadouts.")
+        raise ValueError("No candidates found in loadouts/fg_loadouts (or team_buff_* tables).")
 
-    gear_names = _collect_gear_names(candidates_by_song)
+    if gear_names_override is not None:
+        gear_names = [str(x) for x in gear_names_override if str(x or "").strip()]
+    else:
+        gear_names = _collect_gear_names(candidates_by_song)
     gear_id_map = {name: idx + 1 for idx, name in enumerate(gear_names)}
 
-    mini_names = _collect_mini_names(candidates_by_song)
+    if mini_names_override is not None:
+        mini_names = [str(x) for x in mini_names_override if str(x or "").strip()]
+    else:
+        mini_names = _collect_mini_names(candidates_by_song)
     mini_id_map = {name: idx for idx, name in enumerate(mini_names)}
+
+    restricted_raw_vids: Optional[np.ndarray] = None
+    restricted_universe_diag: Optional[dict] = None
+    if solver == "gpu_full" and gpu_full_restricted_universe_path:
+        from .restricted_universe import load_restricted_universe_raw_vids
+
+        loaded = load_restricted_universe_raw_vids(gpu_full_restricted_universe_path, gear_id_map)
+        restricted_raw_vids = loaded.raw_vids
+        restricted_universe_diag = loaded.diagnostics
+        if int(restricted_raw_vids.size) <= 0:
+            raise ValueError("Restricted universe loaded but mapped to 0 variants; check gear_name matching.")
+        mem.log(f"gpu_full_restricted_universe_loaded (variants={int(restricted_raw_vids.size)})")
 
     seed_result: Optional[SeedInventoryResult] = None
     seeded_raw_vids: Optional[np.ndarray] = None
     if seed_inventory_gear:
         seed_result = build_seeded_inventory_variants(seed_inventory_gear, gear_id_map)
         seeded_raw_vids = seed_result.raw_variant_ids
+    seed_variants_diag: Optional[dict] = None
+    if seed_inventory_variants_path:
+        from .restricted_universe import load_restricted_universe_raw_vids
+
+        loaded = load_restricted_universe_raw_vids(seed_inventory_variants_path, gear_id_map)
+        seed_variants_diag = loaded.diagnostics
+        raw = loaded.raw_vids
+        if int(raw.size) > 0:
+            if seeded_raw_vids is None or int(seeded_raw_vids.size) <= 0:
+                seeded_raw_vids = raw
+            else:
+                seeded_raw_vids = np.unique(np.concatenate([seeded_raw_vids, raw], axis=0)).astype(np.int32, copy=False)
+            mem.log(f"seed_inventory_variants_loaded (variants={int(raw.size)})")
 
     song_specs = _build_song_specs(candidates_by_song, gear_id_map, mini_id_map)
     mem.log(f"song_specs_built (songs={len(song_specs)}, missing={len(missing)})")
@@ -2772,6 +3010,7 @@ def run_inventory_meta_coverage(
         "gpu_full_repair_attempts": int(gpu_full_repair_attempts),
         "gpu_full_repair_max_cands_per_slot": int(gpu_full_repair_max_cands_per_slot),
         "gpu_full_repair_song_limit": int(gpu_full_repair_song_limit),
+        "gpu_full_restricted_universe_path": str(gpu_full_restricted_universe_path or ""),
     }
 
     best_seed: Optional[int] = None
@@ -2794,7 +3033,13 @@ def run_inventory_meta_coverage(
 
     # `gpu_full` supports a multi-seed path that avoids repeated Taichi recompiles by using a
     # single dense variant universe (`V`) across all restarts.
-    if solver == "gpu_full" and restarts > 1 and not use_multi_candidates and not gpu_full_alns_enabled:
+    if (
+        solver == "gpu_full"
+        and restarts > 1
+        and not use_multi_candidates
+        and not gpu_full_alns_enabled
+        and restricted_raw_vids is None
+    ):
         seeds = [int(base_seed) + r for r in range(int(restarts))]
         if profile:
             mem.log(f"gpu_full_multi_seed (restarts={int(restarts)})")
@@ -2832,6 +3077,7 @@ def run_inventory_meta_coverage(
             gpu_full_k_scan_select=int(gpu_full_k_scan_select),
             gpu_full_k_scan_repack=int(gpu_full_k_scan_repack),
             seeded_raw_vids=seeded_raw_vids,
+            seeded_mode=str(seed_inventory_mode),
         )
     else:
         for r in range(restarts):
@@ -2971,6 +3217,9 @@ def run_inventory_meta_coverage(
                         v_pad_bin=int(gpu_full_v_pad_bin),
                         wildcard_freq_bonus=int(gpu_full_wildcard_freq_bonus),
                         seeded_raw_vids=seeded_raw_vids,
+                        seeded_mode=str(seed_inventory_mode),
+                        restricted_raw_vids=restricted_raw_vids,
+                        restricted_universe_diag=restricted_universe_diag,
                     )
                     covered_np = np.asarray(sol.covered, dtype=np.int32)
                     chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32)
@@ -3032,6 +3281,9 @@ def run_inventory_meta_coverage(
                         witness_anchor_patterns=int(gpu_full_witness_anchor_patterns),
                         witness_seed_streams=int(gpu_full_witness_seed_streams),
                         seeded_raw_vids=seeded_raw_vids,
+                        seeded_mode=str(seed_inventory_mode),
+                        restricted_raw_vids=restricted_raw_vids,
+                        restricted_universe_diag=restricted_universe_diag,
                     )
                     covered_np = np.asarray(sol.covered, dtype=np.int32)
                     chosen_offsets_np = np.asarray(sol.chosen_offsets, dtype=np.int32)
@@ -3127,7 +3379,7 @@ def run_inventory_meta_coverage(
             covered_np = np.asarray(best_sol.covered, dtype=np.int32)
             chosen_offsets_np = np.asarray(best_sol.chosen_offsets, dtype=np.int32)
             seeded_pairs = None
-            if seeded_raw_vids is not None and int(seeded_raw_vids.size) > 0:
+            if seed_inventory_mode == "hard" and seeded_raw_vids is not None and int(seeded_raw_vids.size) > 0:
                 gids = (seeded_raw_vids >> np.int32(16)).astype(np.int32, copy=False)
                 offs = (seeded_raw_vids & np.int32(0xFFFF)).astype(np.int32, copy=False)
                 seeded_pairs = list(zip(gids.tolist(), offs.tolist()))
@@ -3188,6 +3440,8 @@ def run_inventory_meta_coverage(
         stats["songs_filtered_out"] = int(songs_filtered_out)
         stats["element_filter"] = str(element or "")
         stats["secondary_element_filter"] = str(secondary_element or "")
+        if seed_variants_diag is not None:
+            stats["seed_inventory_variants"] = seed_variants_diag
         if _truthy_env("INVENTORY_META_OPTIONALITY"):
             try:
                 if use_multi_candidates:

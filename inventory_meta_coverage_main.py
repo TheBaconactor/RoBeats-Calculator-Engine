@@ -7,6 +7,7 @@ using an inventory of <=100 gear variants (GPU heuristic; no proof).
 """
 
 import argparse
+import json
 import multiprocessing
 import os
 from pathlib import Path
@@ -117,6 +118,25 @@ def main() -> None:
     )
     parser.add_argument("--song-limit", type=int, default=0, help="Limit number of songs processed (debug only).")
     parser.add_argument("--profile", action="store_true", help="Print memory logs during phases.")
+    parser.add_argument(
+        "--song-allowlist-file",
+        type=str,
+        default="",
+        help="Optional file containing a song allowlist (JSON list or newline-delimited). Applied after DB load.",
+    )
+    parser.add_argument(
+        "--seed-inventory-variants",
+        type=str,
+        default="",
+        help="Optional JSON file of seed variants (gear_name+offset); pre-seeds the inventory before solving (gpu_full only).",
+    )
+    parser.add_argument(
+        "--seed-inventory-mode",
+        type=str,
+        default="hard",
+        choices=["hard", "soft"],
+        help="GPU full: seed handling (hard=locked variants, soft=drop seeded variants when unused).",
+    )
     parser.add_argument("--eda-witnesses-per-song", type=int, default=16, help="EDA: witnesses per song (default: 16).")
     parser.add_argument("--eda-population", type=int, default=64, help="EDA: population size (default: 64).")
     parser.add_argument("--eda-iterations", type=int, default=20, help="EDA: iterations (default: 20).")
@@ -331,6 +351,12 @@ def main() -> None:
         help="GPU full: tie-break weight for variants (default: song_support).",
     )
     parser.add_argument(
+        "--gpu-full-restricted-universe",
+        type=str,
+        default="",
+        help="GPU full: optional JSON file of allowed variants (gear_name+offset); filters witness pool to this universe.",
+    )
+    parser.add_argument(
         "--gpu-full-k-scan-select",
         type=int,
         default=0,
@@ -408,6 +434,36 @@ def main() -> None:
         help="Optional JSON output path for the gem cluster report.",
     )
     parser.add_argument(
+        "--build-variant-frequency-universe",
+        type=str,
+        default="",
+        help="Build a variant-frequency universe JSON (Monte Carlo witness sampling) and exit.",
+    )
+    parser.add_argument(
+        "--variant-frequency-top-candidates",
+        type=int,
+        default=5,
+        help="Universe build: max peak candidates per song (default: 5).",
+    )
+    parser.add_argument(
+        "--variant-frequency-patterns-per-candidate",
+        type=int,
+        default=1000,
+        help="Universe build: random partitions per candidate (default: 1000).",
+    )
+    parser.add_argument(
+        "--variant-frequency-universe-size",
+        type=int,
+        default=5000,
+        help="Universe build: keep top-N variants by frequency (default: 5000).",
+    )
+    parser.add_argument(
+        "--variant-frequency-batch-instances",
+        type=int,
+        default=1024,
+        help="Universe build: candidate-instance batch size (default: 1024).",
+    )
+    parser.add_argument(
         "--output", type=str, default="", help="Output JSON path (default: artifacts/inventory_meta_coverage.json)."
     )
     args = parser.parse_args()
@@ -432,6 +488,32 @@ def main() -> None:
                 gpu_sampler = None
 
         init_db()
+        if args.build_variant_frequency_universe:
+            from inventory_optimizer.variant_frequency_universe import (
+                VariantUniverseBuildConfig,
+                build_variant_frequency_universe,
+                write_variant_frequency_universe_json,
+            )
+
+            cfg = VariantUniverseBuildConfig(
+                top_candidates_per_song=int(args.variant_frequency_top_candidates),
+                patterns_per_candidate=int(args.variant_frequency_patterns_per_candidate),
+                universe_size=int(args.variant_frequency_universe_size),
+                seed=int(args.seed),
+                element=(args.element or "").strip() or None,
+                secondary_element=(args.secondary_element or "").strip() or None,
+                song_limit=int(args.song_limit) if int(args.song_limit) > 0 else None,
+                batch_instances=int(args.variant_frequency_batch_instances),
+            )
+            payload = build_variant_frequency_universe(config=cfg, db_path=args.db_path or "")
+            out_path = write_variant_frequency_universe_json(payload, args.build_variant_frequency_universe)
+            print(f"[VariantFrequencyUniverse] wrote: {out_path}")
+            if gpu_sampler is not None:
+                try:
+                    gpu_sampler.stop()
+                except Exception:
+                    pass
+            return
         if int(args.cluster_k) > 0:
             if str(args.solver) != "gpu_full":
                 raise ValueError("--cluster-k requires --solver gpu_full")
@@ -499,6 +581,19 @@ def main() -> None:
             if args.cluster_report:
                 write_cluster_report_json(report, args.cluster_report)
         else:
+            song_allowlist = None
+            if args.song_allowlist_file:
+                p = Path(str(args.song_allowlist_file))
+                if not p.exists():
+                    raise FileNotFoundError(f"--song-allowlist-file not found: {p}")
+                if p.suffix.lower() == ".json":
+                    raw = json.loads(p.read_text(encoding="utf-8"))
+                    if not isinstance(raw, list):
+                        raise ValueError("--song-allowlist-file JSON must be a list of song names.")
+                    song_allowlist = [str(x) for x in raw if str(x or "").strip()]
+                else:
+                    song_allowlist = [line.strip() for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
+
             results = run_inventory_meta_coverage(
                 inventory_cap=args.inventory_cap,
                 element=(args.element or None),
@@ -515,8 +610,11 @@ def main() -> None:
                 lns_time_sec=args.lns_time_sec,
                 lns_attempts=args.lns_attempts,
                 song_limit=args.song_limit or None,
+                song_allowlist=song_allowlist,
                 profile=args.profile,
                 solver=args.solver,
+                seed_inventory_variants_path=str(args.seed_inventory_variants or ""),
+                seed_inventory_mode=str(args.seed_inventory_mode or "hard"),
                 eda_witnesses_per_song=args.eda_witnesses_per_song,
                 eda_population=args.eda_population,
                 eda_iterations=args.eda_iterations,
@@ -567,6 +665,7 @@ def main() -> None:
                 gpu_full_repair_attempts=int(args.gpu_full_repair_attempts),
                 gpu_full_repair_max_cands_per_slot=int(args.gpu_full_repair_max_cands_per_slot),
                 gpu_full_repair_song_limit=int(args.gpu_full_repair_song_limit),
+                gpu_full_restricted_universe_path=str(args.gpu_full_restricted_universe),
             )
         if gpu_sampler is not None:
             try:

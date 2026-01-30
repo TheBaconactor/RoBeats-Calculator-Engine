@@ -1,3 +1,4 @@
+import os
 import time
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -1084,6 +1085,23 @@ def solve_coverage_gpu_dynamic(
         use_metal_select = ti.cfg.arch == ti.metal
     except Exception:
         use_metal_select = False
+    # Workaround: some Vulkan drivers appear to misbehave with u64 atomic_min when `song_count` is odd.
+    # Fall back to the u32 selection path in that case (or when explicitly requested).
+    force_u32_select = str(os.environ.get("GPU_DYNAMIC_FORCE_U32_SELECT", "0") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if force_u32_select:
+        use_metal_select = True
+    else:
+        try:
+            if ti.cfg.arch == ti.vulkan and (song_count % 2) == 1:
+                use_metal_select = True
+        except Exception:
+            if (song_count % 2) == 1:
+                use_metal_select = True
 
     def _assert_inventory_cap(stage: str) -> None:
         ti.sync()
