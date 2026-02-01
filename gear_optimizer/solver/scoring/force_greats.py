@@ -104,12 +104,12 @@ def _fg_config_to_counts(config: object) -> list[int]:
 
 def summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song: dict, fg_data: dict, ref_arrays: dict) -> int | None:
     """
-    Return a single signed ms offset (vs chart time) on the note that delays a fever start via carry_time.
+    Return a single signed ms offset (vs chart time) for the note that activates the *first* FG fever window.
 
     Intended for persistence/analysis as:
       ForceGreats.hitsim_offset_delta_ms = +X / -Y
 
-    Returns None when HumanHitSim timing data is not available or no carry-driven fever delay occurs.
+    Returns None when HumanHitSim timing data is not available.
     """
     if not isinstance(calc_song, dict) or not isinstance(fg_data, dict) or not isinstance(ref_arrays, dict):
         return None
@@ -183,9 +183,6 @@ def summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song: dict, fg_data: di
     if n <= 0:
         return None
 
-    carry_time_ms = 0
-    carry_note_idx: int | None = None
-
     for detail in section_details or []:
         try:
             section_start = int(detail.get("start_idx", 0) or 0)
@@ -204,9 +201,10 @@ def summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song: dict, fg_data: di
         if end_normal < 0:
             end_normal = 0
         if end_normal >= n:
-            break
+            return None
+        carry_time_ms = 0
 
-        # Update carry_time based on the carry-driving note for this section.
+        # Compute carry_time based on the carry-driving note for this section.
         if forced > 0:
             skip_wasted = bool(detail.get("skip_wasted"))
             forced_start = section_start + (0 if skip_wasted else 1)
@@ -219,15 +217,11 @@ def summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song: dict, fg_data: di
                 cand_t_ms = int(cand_ms[forced_end])
                 if cand_t_ms > carry_time_ms:
                     carry_time_ms = cand_t_ms
-                    carry_note_idx = int(forced_end)
 
-        # Fever start is delayed when carry_time exceeds the per-hit perfect event time.
+        # Fever start time is the later of the perfect-event time and any carry-driven delay.
         start_time_ms = int(song_ms[end_normal])
-        if carry_note_idx is not None and carry_time_ms > start_time_ms:
-            idx = int(carry_note_idx)
-            if 0 <= idx < n:
-                return int(cand_ms[idx]) - int(chart_ms[idx])
-            return None
+        effective_start_ms = int(carry_time_ms) if carry_time_ms > start_time_ms else int(start_time_ms)
+        return int(effective_start_ms) - int(chart_ms[end_normal])
 
     return None
 
