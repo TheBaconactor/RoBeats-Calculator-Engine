@@ -32,7 +32,7 @@ The Stats integrity verifier is now integrated into the main optimizer startup f
 2. **`gear_optimizer/app.py`**
    - Added import: `from gear_optimizer.data.stats_verifier import verify_and_repair_stats, print_verification_warning`
    - Added `_verify_stats_integrity()` method
-   - Integrated into `_run_single_iteration()` after `init_db()` and `_auto_merge_databases()`
+   - Integrated into `_run_single_iteration()` after `init_db()`
    - Only runs on fresh queue (not resume operations)
 
 ### When It Runs

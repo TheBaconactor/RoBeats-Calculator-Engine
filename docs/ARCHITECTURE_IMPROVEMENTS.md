@@ -69,7 +69,6 @@
 │ ├─ data/database.py (727 LOC) - SQLite CRUD, batch ops       │
 │ ├─ data/csv_parser.py - Gear/mini/stats CSV parsing           │
 │ ├─ data/models.py - Dataclasses (Tee, WarnOnce, GASettings)  │
-│ ├─ data/db_merge.py (705 LOC) - Database merging utilities    │
 └────────────────────┬────────────────────────────────────────────┘
                      │
 ┌────────────────────┴────────────────────────────────────────────┐
@@ -863,8 +862,6 @@ def benchmark():
 |------|---------|
 | `ARCHITECTURE.md` | System architecture and layer diagrams |
 | `DATABASE_SCHEMA.md` | SQLite schema (dual-table architecture) |
-| `DATABASE_MERGE.md` | Database merging procedures |
-| `DATABASE_MERGE_BUG_FIX.md` | Merge bug fixes and solutions |
 | `CHANGES_SUMMARY.md` | Changelog and version updates |
 | `CODEBASE_CLEANUP_PLAN.md` | Refactoring roadmap |
 | `FEVER_TIMELINE_MATH.md` | Fever mechanics mathematics |

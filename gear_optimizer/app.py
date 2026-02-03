@@ -499,7 +499,6 @@ class GearOptimizerApp:
             print(f"[Run] Gear Optimizer started. DB file: {db_display_name}")
 
             init_db()
-            self._auto_merge_databases()
 
             # Verify Stats integrity (only on fresh queue, not resume)
             # This ensures all database entries have properly populated Stats objects.
@@ -704,22 +703,6 @@ class GearOptimizerApp:
         else:
             print("LoopForever=FALSE; exiting after completing queue.")
             return False
-
-    def _auto_merge_databases(self):
-        try:
-            from gear_optimizer.data.db_merge import auto_merge_secondary_databases
-
-            merge_success, merge_message = auto_merge_secondary_databases(
-                delete_after_merge=True, backup_before_merge=True
-            )
-            if merge_success and "No secondary databases" not in merge_message:
-                print(f"[DB Merge] {merge_message}")
-            elif not merge_success:
-                print(f"[DB Merge] Warning: {merge_message}")
-                logging.warning(f"[DB Merge] {merge_message}")
-        except Exception as e:
-            logging.error(f"[DB Merge] Unexpected error: {e}")
-            print(f"[DB Merge] Error: {e}")
 
     def _verify_stats_integrity(self):
         """

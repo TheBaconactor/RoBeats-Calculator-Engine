@@ -59,7 +59,6 @@ The optimizer will:
 - **SQLite Database:** Efficient storage with WAL mode, batch inserts, indexed queries
 - **Loadout Deduplication:** MD5 hashing prevents redundant evaluations
 - **Stats Signatures:** Deterministic cache keys for identical configurations
-- **Database Merging:** Utilities for combining results from multiple runs
 - **Dual-Table Architecture:** Clean separation of Base and Force Greats loadouts
 
 ---
@@ -185,7 +184,6 @@ RoBeats-Calculator-Engine/
 │   │   ├── models.py                 # Tee, WarnOnce, GASettings dataclasses
 │   │   ├── database.py               # SQLite CRUD, loadout hashing, batch inserts
 │   │   ├── csv_parser.py             # Gear/mini/stats CSV parsing
-│   │   └── db_merge.py               # Database merging utilities
 │   │
 │   ├── solver/                       # Algorithm layer (40+ modules, 7,200+ LOC)
 │   │   ├── genetic.py                # Main GA loop with multi-start restarts

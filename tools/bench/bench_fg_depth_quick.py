@@ -128,9 +128,8 @@ def main() -> int:
             if inflight is not None:
                 tag += f"_inflight{int(inflight)}"
 
-            # IMPORTANT: `GearOptimizerApp` auto-merges *all* `.db` files in the same directory
-            # as `EVOLUTION_DB_PATH` on startup. To keep benchmarks independent (no cross-run
-            # DB seeding / merging), isolate each (depth,inflight) run into its own directory.
+            # IMPORTANT: Keep benchmarks independent (no cross-run DB reuse/seeding)
+            # by isolating each (depth,inflight) run into its own directory.
             run_dir = outdir / tag
             run_dir.mkdir(parents=True, exist_ok=True)
 
