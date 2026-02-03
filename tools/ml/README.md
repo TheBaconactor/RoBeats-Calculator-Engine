@@ -13,7 +13,7 @@ Never point these scripts at the live `evolution.db`. Create a snapshot first (S
 
 Example:
 
-`python inventory_meta_coverage_main.py --db-path artifacts/db_backups/<snapshot>.db --build-variant-frequency-universe artifacts/bench_compare/<ts>/variant_universe_top5000.json --variant-frequency-top-candidates 5 --variant-frequency-patterns-per-candidate 1000 --variant-frequency-universe-size 5000 --seed 1`
+`python inventory_meta_coverage_main.py build-universe --db-path artifacts/db_backups/<snapshot>.db --out artifacts/bench_compare/<ts>/variant_universe_top5000.json --top-candidates 5 --patterns-per-candidate 1000 --universe-size 5000 --seed 1`
 
 ### 2) Generate a toy training dataset
 
@@ -65,7 +65,7 @@ Infer with DirectML:
 
 ### 5) Run solver with the model seed
 
-`python inventory_meta_coverage_main.py --db-path artifacts/db_backups/<snapshot>.db --solver gpu_full --inventory-cap 100 --partitions-per-song 256 --adaptive-rounds 0 --adaptive-keep-per-song 0 --seed 1 --seed-inventory-variants artifacts/ml/pred_seed_top100.json --output artifacts/ml/seeded_run.json`
+`python inventory_meta_coverage_main.py run --db-path artifacts/db_backups/<snapshot>.db --quality high --inventory-cap 100 --seed 1 --set WitnessPool.PartitionsPerSong=256 --set WitnessPool.AdaptiveRounds=0 --set WitnessPool.AdaptiveKeepPerSong=0 --set SeedInventory.VariantsPath=artifacts/ml/pred_seed_top100.json --set SeedInventory.Mode=hard --output artifacts/ml/seeded_run.json`
 
 ### 5b) Search multiple model seeds + GPU eval (Stockfish-style branching)
 

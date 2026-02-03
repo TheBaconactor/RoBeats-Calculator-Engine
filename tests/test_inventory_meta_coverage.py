@@ -94,6 +94,7 @@ def test_inventory_meta_coverage_caps_song_count(monkeypatch, tmp_path):
         conn.close()
 
     results = run_inventory_meta_coverage(
+        solver="gpu_full",
         inventory_cap=6,
         partitions_per_song=8,
         seed=123,
@@ -131,7 +132,7 @@ def test_inventory_meta_coverage_reuses_variants(monkeypatch, tmp_path):
     assert results["stats"]["songs_total"] == 3
     assert results["stats"]["songs_covered"] == 3
     assert results["stats"]["gear_variants_used"] == 6
-    assert results["mode"] == "coverage_gpu_dynamic"
+    assert results["mode"] == "coverage_gpu_full"
 
 
 @pytest.mark.gpu
@@ -150,6 +151,7 @@ def test_inventory_meta_coverage_full_gpu_smoke(monkeypatch, tmp_path):
         conn.close()
 
     results = run_inventory_meta_coverage(
+        solver="gpu_full",
         inventory_cap=6,
         partitions_per_song=8,
         seed=1,
@@ -159,10 +161,10 @@ def test_inventory_meta_coverage_full_gpu_smoke(monkeypatch, tmp_path):
         gpu_lns_destroy=1,
         profile=False,
     )
-    assert results["mode"] == "coverage_gpu_dynamic"
+    assert results["mode"] == "coverage_gpu_full"
     assert results["stats"]["songs_total"] == 2
     assert results["stats"]["songs_covered"] == 2
-    assert results["solver_stats"]["status"] == "GPU_DYNAMIC_HEURISTIC"
+    assert results["solver_stats"]["status"] == "GPU_FULL_HEURISTIC"
 
 
 @pytest.mark.gpu
@@ -181,6 +183,7 @@ def test_inventory_meta_coverage_lns_runs(monkeypatch, tmp_path):
         conn.close()
 
     results = run_inventory_meta_coverage(
+        solver="gpu_full",
         inventory_cap=6,
         partitions_per_song=8,
         seed=1,

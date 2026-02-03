@@ -6,6 +6,11 @@ Repo: <redacted-user-home>\Desktop\Top Secret\Beats\Gear Optimizer
 This document summarizes how the inventory meta coverage system works, what it solves, and
 the full control surface (CLI + env flags) as implemented in the current codebase.
 
+Update: 2026-02-03
+- `inventory_meta_coverage_main.py` moved to a config-first CLI with quality presets.
+- Default config: `configs/inventory_meta_coverage.ini` (override with `inventory_meta_coverage_main.py run --config ...`).
+- Solver standardized on `gpu_full` for the main entrypoint; legacy flags are kept for compatibility but hidden from `--help`.
+
 ---
 
 ## Scope and effective settings

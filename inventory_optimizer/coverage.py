@@ -4,6 +4,7 @@ import os
 import random
 import sys
 import time
+import warnings
 import zlib
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -2601,14 +2602,14 @@ def run_inventory_meta_coverage(
     song_limit: Optional[int] = None,
     song_allowlist: Optional[Iterable[str]] = None,
     profile: bool = False,
-    solver: str = "gpu_dynamic",
+    solver: str = "gpu_full",
     eda_witnesses_per_song: int = 16,
     eda_population: int = 64,
     eda_iterations: int = 20,
     eda_elites: int = 8,
     eda_alpha: float = 0.25,
     eda_wildcard_bonus: float = 0.03,
-    gpu_full_wildcard_freq_bonus: int = 0,
+    gpu_full_wildcard_freq_bonus: int = 40,
     gpu_full_wildcard_palette_size: int = 0,
     gpu_full_wildcard_palette_min_count: int = 2,
     gpu_full_wildcard_palette_scan: int = 8,
@@ -2619,16 +2620,16 @@ def run_inventory_meta_coverage(
     gpu_full_synergy_scale: int = 256,
     gpu_full_synergy_max_bonus: int = 4095,
     gpu_full_new_gear_penalty: int = 0,
-    gpu_full_witness_anchor_patterns: int = 24,
-    gpu_full_witness_seed_streams: int = 4,
+    gpu_full_witness_anchor_patterns: int = 128,
+    gpu_full_witness_seed_streams: int = 1,
     gpu_full_repack_rarity_weighted: bool = False,
     gpu_full_lns_freq_weighted: bool = False,
     gpu_full_lns_random_destroy_prob: float = 0.0,
     gpu_full_lns_restore_after: int = 12,
     gpu_full_lns_restore_drop: int = 4,
     gpu_full_v_pad_bin: int = 4096,
-    gpu_full_variant_freq_mode: str = "occurrence",
-    gpu_full_witness_pattern_profile: int = 0,
+    gpu_full_variant_freq_mode: str = "song_support",
+    gpu_full_witness_pattern_profile: int = 1,
     gpu_full_counter_stripes: int = 1,
     gpu_full_human_mode: bool = False,
     gpu_full_human_gear_free: int = 2,
@@ -2648,9 +2649,9 @@ def run_inventory_meta_coverage(
     gpu_full_pt_swap_interval: int = 8,
     gpu_full_pt_destroy_beta: float = 0.0,
     gpu_full_pt_cap_slack_max: int = 0,
-    gpu_full_repair_enabled: bool = False,
+    gpu_full_repair_enabled: bool = True,
     gpu_full_repair_attempts: int = 128,
-    gpu_full_repair_max_cands_per_slot: int = 8,
+    gpu_full_repair_max_cands_per_slot: int = 16,
     gpu_full_repair_song_limit: int = 512,
     gpu_full_restricted_universe_path: str = "",
 ) -> dict:
@@ -2796,9 +2797,15 @@ def run_inventory_meta_coverage(
 
     gpu_full_restricted_universe_path = str(gpu_full_restricted_universe_path or "").strip()
 
-    solver = str(solver or "gpu_dynamic").strip().lower()
+    solver = str(solver or "gpu_full").strip().lower()
     if solver not in {"gpu_dynamic", "gpu_eda", "gpu_full"}:
         raise ValueError("solver must be one of: gpu_dynamic, gpu_eda, gpu_full")
+    if solver in {"gpu_dynamic", "gpu_eda"}:
+        warnings.warn(
+            f"Inventory Meta solvers '{solver}' are deprecated; use solver='gpu_full'.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     seed_inventory_mode = str(seed_inventory_mode or "hard").strip().lower()
     if seed_inventory_mode not in {"hard", "soft"}:
