@@ -117,7 +117,7 @@ class InventoryMetaCoverageSettings:
     gpu_full_wildcard_freq_bonus: int = 40
     gpu_full_wildcard_palette_size: int = 0
     gpu_full_wildcard_palette_min_count: int = 2
-    gpu_full_wildcard_palette_scan: int = 8
+    gpu_full_wildcard_palette_scan: int = 0
     gpu_full_wildcard_palette_tail_slots: int = 3
     gpu_full_new_gear_penalty: int = 0
 

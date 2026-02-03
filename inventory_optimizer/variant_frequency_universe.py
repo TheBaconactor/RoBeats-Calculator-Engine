@@ -186,7 +186,6 @@ def build_variant_frequency_universe(*, config: VariantUniverseBuildConfig, db_p
     global_counts = np.zeros((0,), dtype=np.int64)
 
     t0 = time.perf_counter()
-    processed_instances = 0
     for start in range(0, int(candidate_count), int(batch)):
         end = min(int(candidate_count), int(start + batch))
         n = int(end - start)
@@ -224,7 +223,6 @@ def build_variant_frequency_universe(*, config: VariantUniverseBuildConfig, db_p
         global_keys, global_counts = _merge_unique_counts(
             global_keys, global_counts, u.astype(np.int32), c.astype(np.int64)
         )
-        processed_instances += n
 
     dt = float(time.perf_counter() - t0)
 

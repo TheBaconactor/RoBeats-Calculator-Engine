@@ -99,16 +99,14 @@ def test_inventory_meta_coverage_caps_song_count(monkeypatch, tmp_path):
         partitions_per_song=8,
         seed=123,
         adaptive_rounds=1,
-        adaptive_patterns_per_round=24,
         adaptive_keep_per_song=6,
-        adaptive_repack_songs=0,
         profile=False,
     )
     assert results["stats"]["songs_total"] == 3
     assert results["stats"]["songs_covered"] == 1
     assert results["stats"]["gear_variants_used"] <= 6
-    assert results["solver_stats"]["legacy"]["adaptive_rounds"] == 1
-    assert results["solver_stats"]["legacy"]["partitions_per_song"] == 8
+    assert results["solver_stats"]["run_params"]["adaptive_rounds"] == 1
+    assert results["solver_stats"]["run_params"]["partitions_per_song"] == 8
 
 
 @pytest.mark.gpu

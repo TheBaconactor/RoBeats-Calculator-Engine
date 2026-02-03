@@ -1,6 +1,5 @@
 import concurrent.futures
 from concurrent.futures.process import BrokenProcessPool
-import configparser
 import gc
 import logging
 import multiprocessing
@@ -9,7 +8,6 @@ import queue
 import re
 import shutil
 import secrets
-import signal
 import sys
 import threading
 import time
@@ -28,7 +26,6 @@ from gear_optimizer.core.config import (
 )
 from gear_optimizer.data.database import (
     init_db,
-    save_loadouts_batch,
     get_evolution_db_path,
     get_song_names_present_in_db,
     prioritize_song_queue_missing_db,
@@ -50,7 +47,7 @@ from gear_optimizer.data.csv_parser import (
     load_all_minis_list,
     read_table,
 )
-from gear_optimizer.core.utils import safe_int, cfg_to_dict, cfg_from_dict
+from gear_optimizer.core.utils import safe_int, cfg_to_dict
 from gear_optimizer.solver.scoring import FEVER_TIMELINE_CACHE, FG_CACHE
 from gear_optimizer.solver.genetic import GEM_SOLVER_CACHE
 from gear_optimizer.app_async_db import AsyncDbSaver
@@ -199,7 +196,6 @@ class _ProgressUI:
         self._song = ""
         self._spinner = ["|", "/", "-", "\\"]
         self._frame = 0
-        self._last_len = 0
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -359,7 +355,6 @@ class _ProgressUI:
             if final:
                 self._stream.write("\n")
             self._stream.flush()
-            self._last_len = len(line)
         except Exception:
             pass
 
@@ -2177,7 +2172,6 @@ class GearOptimizerApp:
                 if task_key in completed_songs:
                     continue
 
-                song_name = t[1]
                 song_path_key = os.path.abspath(str(t[0]))
 
                 # Drain any newly preloaded songs into a local map for reuse.

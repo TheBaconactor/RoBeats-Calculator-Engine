@@ -244,6 +244,7 @@ __all__ = [
     "solve_batch_kernel",
     "solve_genomes_with_ftff_kernel",
     "solve_ftff_parallel_kernel",
+    "copy_genome_result_stats_to_download_staging_kernel",
     # GA evaluation kernels
     "init_genome_results_kernel",
     "init_chunk_best_key_kernel",

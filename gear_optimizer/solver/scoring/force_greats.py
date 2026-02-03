@@ -30,7 +30,6 @@ from ...core.constants import (
     FEVER_FILL_BASE_RATE,
 )
 from ...core.color_flags import build_color_flags
-from ...core.env_config import ENV
 from ...core.utils import safe_int, safe_float, stats_signature
 
 from ..fever_timeline import (
@@ -224,16 +223,6 @@ def summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song: dict, fg_data: di
         return int(effective_start_ms) - int(chart_ms[end_normal])
 
     return None
-
-
-def summarize_hitsim_offsets_for_fg_variant(calc_song: dict, fg_data: dict, ref_arrays: dict) -> dict | None:
-    """
-    Back-compat wrapper (deprecated): keep the old name but only expose the single-field summary.
-    """
-    delta = summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song, fg_data, ref_arrays)
-    if delta is None:
-        return None
-    return {"hitsim_offset_delta_ms": int(delta)}
 
 
 def summarize_hitsim_offset_delta_ms_for_base(calc_song: dict, base_data: dict, ref_arrays: dict) -> int | None:

@@ -10,7 +10,6 @@ Usage:
     python general_meta_main.py
 """
 
-import configparser
 import multiprocessing
 from pathlib import Path
 import sys

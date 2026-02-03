@@ -93,12 +93,7 @@ def apply_gpu_results_to_entries(
     build_details_fn: Callable[[dict[str, Any]], dict[str, Any]] | None,
     names_list_fn: Callable[[Any], list[str]],
     perf: bool,
-    # PERF/GPU-residency knobs (legacy):
-    # The repo has migrated to a lean-only FG payload. These flags are kept for
-    # backward-compatible call sites but no longer change behavior.
-    materialize_force_details: bool = True,
     materialize_stats: bool = True,
-    store_raw: bool = False,
 ) -> float:
     t0 = time.perf_counter() if perf else 0.0
     for idx, (sig, bs) in enumerate(zip(pending_sigs, pending)):

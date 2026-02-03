@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 
@@ -88,8 +88,6 @@ def kmeans_cluster(
 
     iters = max(1, int(iters))
     restarts = max(1, int(restarts))
-    rng = np.random.default_rng(int(seed) ^ 0xC0FFEE)
-
     best_inertia = float("inf")
     best_labels = None
     best_centers = None
@@ -287,7 +285,7 @@ def run_clustered_gpu_full_coverage(
             continue
 
         cluster_selected = [selected[i] for i in idxs]
-        gear_ids_np, totals_np, elements_np, gear_freq_np = cov._build_gpu_dynamic_inputs(
+        gear_ids_np, totals_np, elements_np, gear_freq_np = cov._build_gpu_full_inputs(
             cluster_selected, gear_names=gear_names
         )
 
@@ -371,7 +369,7 @@ def run_clustered_gpu_full_coverage(
 
     # Final "bridge" solve over all songs (coherent assignments), seeded with the union inventory.
     seed_arr = np.asarray(sorted(seeded_raw), dtype=np.int32) if seeded_raw else None
-    gear_ids_np_all, totals_np_all, elements_np_all, gear_freq_np_all = cov._build_gpu_dynamic_inputs(
+    gear_ids_np_all, totals_np_all, elements_np_all, gear_freq_np_all = cov._build_gpu_full_inputs(
         selected, gear_names=gear_names
     )
     k_total = int(partitions_per_song) + int(adaptive_rounds) * int(adaptive_keep_per_song)
@@ -490,7 +488,7 @@ def run_clustered_gpu_full_coverage(
         lns_time_sec=float(lns_time_sec),
         lns_attempts=int(lns_attempts),
         mem=mem,
-        legacy_args={
+        run_params={
             "cluster_k": int(cluster_k),
             "bridge_reserve": int(bridge_reserve),
             "cluster_budget": int(cluster_budget),

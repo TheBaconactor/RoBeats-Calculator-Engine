@@ -544,9 +544,7 @@ def process_force_greats_gpu_finder(
             build_details_fn=None,
             names_list_fn=names_list_fn,
             perf=perf,
-            materialize_force_details=False,
             materialize_stats=True,  # Must materialize Stats for DB persistence
-            store_raw=True,
         )
 
     def _iter_ftff_chunks(pairs):
@@ -2256,52 +2254,51 @@ def process_force_greats_gpu_finder(
     # ------------------------------------------------------------------
     # Build `fg_variants` only for the retained set (DB/UI retention).
     # ------------------------------------------------------------------
-    if True:
-        try:
-            items = list(loadout_entries.items()) if isinstance(loadout_entries, dict) else []
-        except Exception:
-            items = []
+    try:
+        items = list(loadout_entries.items()) if isinstance(loadout_entries, dict) else []
+    except Exception:
+        items = []
 
-        retained_hashes = select_retained_hashes(
-            items,
-            limit=int(LOADOUTS_PER_SONG_LIMIT),
-            base_score_fn=_entry_base_score,
-            fg_score_fn=_entry_fg_score,
-            fg_valid_fn=_entry_has_valid_fg_config,
+    retained_hashes = select_retained_hashes(
+        items,
+        limit=int(LOADOUTS_PER_SONG_LIMIT),
+        base_score_fn=_entry_base_score,
+        fg_score_fn=_entry_fg_score,
+        fg_valid_fn=_entry_has_valid_fg_config,
+    )
+
+    # Build fg_variants for UI/debug.
+    fg_variants.clear()
+    for h, entry in items:
+        if str(h) not in retained_hashes:
+            continue
+
+        base_score = _entry_base_score(entry)
+        fg_score = _entry_fg_score(entry)
+
+        force_obj = entry.get("force") if isinstance(entry, dict) else None
+        if not isinstance(force_obj, dict):
+            continue
+        cfg = _entry_fg_config_dict(entry)
+        if not _is_valid_fg_config(cfg):
+            continue
+        fg_variants.append(
+            {
+                "data": force_obj,
+                "gear": entry.get("gear", []),
+                "minis": entry.get("minis", []),
+                "score": base_score,
+                "fg_score": fg_score,
+                "base_score": base_score,
+                "_is_ga": str(entry.get("_source") or "") == "ga",
+            }
         )
 
-        # Build fg_variants for UI/debug.
-        fg_variants.clear()
-        for h, entry in items:
-            if str(h) not in retained_hashes:
-                continue
-
-            base_score = _entry_base_score(entry)
-            fg_score = _entry_fg_score(entry)
-
-            force_obj = entry.get("force") if isinstance(entry, dict) else None
-            if not isinstance(force_obj, dict):
-                continue
-            cfg = _entry_fg_config_dict(entry)
-            if not _is_valid_fg_config(cfg):
-                continue
-            fg_variants.append(
-                {
-                    "data": force_obj,
-                    "gear": entry.get("gear", []),
-                    "minis": entry.get("minis", []),
-                    "score": base_score,
-                    "fg_score": fg_score,
-                    "base_score": base_score,
-                    "_is_ga": str(entry.get("_source") or "") == "ga",
-                }
-            )
-
-        # Keep output deterministic and small (UI/debug only): sort by FG score descending.
-        try:
-            fg_variants.sort(key=lambda v: int(v.get("fg_score", 0) or 0), reverse=True)
-        except Exception:
-            pass
+    # Keep output deterministic and small (UI/debug only): sort by FG score descending.
+    try:
+        fg_variants.sort(key=lambda v: int(v.get("fg_score", 0) or 0), reverse=True)
+    except Exception:
+        pass
 
     unique_sig_count = 0
     try:

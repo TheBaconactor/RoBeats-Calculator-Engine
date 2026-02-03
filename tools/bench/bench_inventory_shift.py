@@ -242,7 +242,6 @@ def main() -> None:
     ap.add_argument("--k", type=int, default=64, help="Witness patterns per song (partitions_per_song).")
     ap.add_argument("--adaptive-rounds", type=int, default=0)
     ap.add_argument("--adaptive-keep-per-song", type=int, default=0)
-    ap.add_argument("--solver", type=str, default="gpu_full", choices=["gpu_dynamic", "gpu_eda", "gpu_full"])
     ap.add_argument("--restarts", type=int, default=1)
     ap.add_argument("--lns-time-sec", type=float, default=0.0)
     ap.add_argument("--lns-attempts", type=int, default=200)
@@ -279,7 +278,6 @@ def main() -> None:
 
     t0 = time.perf_counter()
     res = run_inventory_meta_coverage(
-        solver=str(args.solver),
         inventory_cap=int(args.inventory_cap),
         seed=int(args.seed),
         restarts=int(args.restarts),

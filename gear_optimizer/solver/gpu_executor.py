@@ -177,6 +177,9 @@ class GpuExecutor:
         self._ready_event = threading.Event()
         self._last_init_error: Optional[str] = None
         self._in_process_queues = False
+        # Ref-array upload caching: avoid redundant `load_ref_arrays()` calls when inputs are identical.
+        # This saves host work and can avoid implicit syncs inside Taichi APIs.
+        self._last_ref_arrays_sig: bytes | None = None
 
         # Stats
         self._requests_processed = 0
@@ -260,10 +263,6 @@ class GpuExecutor:
         except Exception:
             song_slot = 0
         return self._execute_solve_genomes_from_registry(request, song_slot=song_slot)
-
-        # Ref-array upload caching: avoid redundant `load_ref_arrays()` calls when inputs are identical.
-        # This saves host work and can avoid implicit syncs inside Taichi APIs.
-        self._last_ref_arrays_sig: bytes | None = None
 
     def start(self, *, in_process: bool = False):
         """Start the GPU executor thread in the main process."""
@@ -2524,7 +2523,6 @@ class GpuExecutor:
                 error="FG_SOLVE_WITH_BREAKPOINTS requires in-process queues (avoid IPC pickling)",
             )
 
-        import numpy as np
 
         try:
             result = self._run_fg_solve_with_breakpoints_payload(request.payload or {})

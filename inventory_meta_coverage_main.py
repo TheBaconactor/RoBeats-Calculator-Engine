@@ -47,18 +47,6 @@ def _maybe_print_taichi_kernel_profile(*, requested: bool) -> None:
         pass
 
 
-def _read_song_allowlist(path: str) -> list[str]:
-    p = Path(str(path))
-    if not p.exists():
-        raise FileNotFoundError(f"song allowlist not found: {p}")
-    if p.suffix.lower() == ".json":
-        raw = json.loads(p.read_text(encoding="utf-8"))
-        if not isinstance(raw, list):
-            raise ValueError("song allowlist JSON must be a list of song names.")
-        return [str(x) for x in raw if str(x or "").strip()]
-    return [line.strip() for line in p.read_text(encoding="utf-8").splitlines() if line.strip()]
-
-
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="inventory_meta_coverage_main.py",
@@ -98,50 +86,6 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print the effective config (after preset + overrides) as JSON and exit.",
     )
-
-    # Legacy/advanced options (intentionally hidden).
-    run.add_argument("--solver", type=str, default="", help=argparse.SUPPRESS)
-    run.add_argument("--song-allowlist-file", type=str, default="", help=argparse.SUPPRESS)
-    run.add_argument("--seed-inventory-variants", type=str, default="", help=argparse.SUPPRESS)
-    run.add_argument("--seed-inventory-mode", type=str, default="", help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-restricted-universe", type=str, default="", help=argparse.SUPPRESS)
-    run.add_argument("--partitions-per-song", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--adaptive-rounds", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--adaptive-keep-per-song", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-repack-passes", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-lns-destroy", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--lns-time-sec", type=float, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--lns-attempts", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-top-candidates", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-candidate-score-delta", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-candidate-limit-per-song", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-variant-freq-mode", type=str, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-wildcard-freq-bonus", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-new-gear-penalty", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-witness-anchor-patterns", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-witness-seed-streams", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-witness-palettes", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-witness-pattern-profile", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-counter-stripes", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-repair", action=argparse.BooleanOptionalAction, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-repair-attempts", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-repair-max-cands-per-slot", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-repair-song-limit", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-wildcard-palette-size", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-wildcard-palette-min-count", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-wildcard-palette-scan", type=int, default=None, help=argparse.SUPPRESS)
-    run.add_argument("--gpu-full-wildcard-palette-tail-slots", type=int, default=None, help=argparse.SUPPRESS)
-
-    run.add_argument("--cluster-k", type=int, default=0, help=argparse.SUPPRESS)
-    run.add_argument("--cluster-seed", type=int, default=1, help=argparse.SUPPRESS)
-    run.add_argument("--cluster-bridge-reserve", type=int, default=10, help=argparse.SUPPRESS)
-    run.add_argument("--cluster-report", type=str, default="", help=argparse.SUPPRESS)
-
-    run.add_argument("--build-variant-frequency-universe", type=str, default="", help=argparse.SUPPRESS)
-    run.add_argument("--variant-frequency-top-candidates", type=int, default=5, help=argparse.SUPPRESS)
-    run.add_argument("--variant-frequency-patterns-per-candidate", type=int, default=1000, help=argparse.SUPPRESS)
-    run.add_argument("--variant-frequency-universe-size", type=int, default=5000, help=argparse.SUPPRESS)
-    run.add_argument("--variant-frequency-batch-instances", type=int, default=1024, help=argparse.SUPPRESS)
 
     cluster = sub.add_parser("cluster", help="Run clustered gpu_full solve (advanced).")
     cluster.add_argument(
@@ -206,79 +150,6 @@ def _load_settings_from_args(args) -> tuple[InventoryMetaCoverageSettings, dict,
         secondary_element=secondary if secondary else settings.secondary_element,
         profile=profile or settings.profile,
     )
-
-    # Legacy solver knobs (hidden; last-wins overrides on top of config/preset).
-    if getattr(args, "partitions_per_song", None) is not None:
-        settings = replace(settings, partitions_per_song=int(args.partitions_per_song))
-    if getattr(args, "adaptive_rounds", None) is not None:
-        settings = replace(settings, adaptive_rounds=int(args.adaptive_rounds))
-    if getattr(args, "adaptive_keep_per_song", None) is not None:
-        settings = replace(settings, adaptive_keep_per_song=int(args.adaptive_keep_per_song))
-    if getattr(args, "gpu_repack_passes", None) is not None:
-        settings = replace(settings, gpu_repack_passes=int(args.gpu_repack_passes))
-    if getattr(args, "gpu_lns_destroy", None) is not None:
-        settings = replace(settings, gpu_lns_destroy=int(args.gpu_lns_destroy))
-    if getattr(args, "lns_time_sec", None) is not None:
-        settings = replace(settings, lns_time_sec=float(args.lns_time_sec))
-    if getattr(args, "lns_attempts", None) is not None:
-        settings = replace(settings, lns_attempts=int(args.lns_attempts))
-    if getattr(args, "gpu_full_top_candidates", None) is not None:
-        settings = replace(settings, gpu_full_top_candidates=int(args.gpu_full_top_candidates))
-    if getattr(args, "gpu_full_candidate_score_delta", None) is not None:
-        settings = replace(settings, gpu_full_candidate_score_delta=int(args.gpu_full_candidate_score_delta))
-    if getattr(args, "gpu_full_candidate_limit_per_song", None) is not None:
-        settings = replace(settings, gpu_full_candidate_limit_per_song=int(args.gpu_full_candidate_limit_per_song))
-    if getattr(args, "gpu_full_variant_freq_mode", None) is not None:
-        settings = replace(settings, gpu_full_variant_freq_mode=str(args.gpu_full_variant_freq_mode))
-    if getattr(args, "gpu_full_wildcard_freq_bonus", None) is not None:
-        settings = replace(settings, gpu_full_wildcard_freq_bonus=int(args.gpu_full_wildcard_freq_bonus))
-    if getattr(args, "gpu_full_new_gear_penalty", None) is not None:
-        settings = replace(settings, gpu_full_new_gear_penalty=int(args.gpu_full_new_gear_penalty))
-    if getattr(args, "gpu_full_witness_anchor_patterns", None) is not None:
-        settings = replace(settings, gpu_full_witness_anchor_patterns=int(args.gpu_full_witness_anchor_patterns))
-    if getattr(args, "gpu_full_witness_seed_streams", None) is not None:
-        settings = replace(settings, gpu_full_witness_seed_streams=int(args.gpu_full_witness_seed_streams))
-    if getattr(args, "gpu_full_witness_palettes", None) is not None:
-        settings = replace(settings, gpu_full_witness_palettes=int(args.gpu_full_witness_palettes))
-    if getattr(args, "gpu_full_witness_pattern_profile", None) is not None:
-        settings = replace(settings, gpu_full_witness_pattern_profile=int(args.gpu_full_witness_pattern_profile))
-    if getattr(args, "gpu_full_counter_stripes", None) is not None:
-        settings = replace(settings, gpu_full_counter_stripes=int(args.gpu_full_counter_stripes))
-    if getattr(args, "gpu_full_repair", None) is not None:
-        settings = replace(settings, gpu_full_repair_enabled=bool(args.gpu_full_repair))
-    if getattr(args, "gpu_full_repair_attempts", None) is not None:
-        settings = replace(settings, gpu_full_repair_attempts=int(args.gpu_full_repair_attempts))
-    if getattr(args, "gpu_full_repair_max_cands_per_slot", None) is not None:
-        settings = replace(settings, gpu_full_repair_max_cands_per_slot=int(args.gpu_full_repair_max_cands_per_slot))
-    if getattr(args, "gpu_full_repair_song_limit", None) is not None:
-        settings = replace(settings, gpu_full_repair_song_limit=int(args.gpu_full_repair_song_limit))
-    if getattr(args, "gpu_full_wildcard_palette_size", None) is not None:
-        settings = replace(settings, gpu_full_wildcard_palette_size=int(args.gpu_full_wildcard_palette_size))
-    if getattr(args, "gpu_full_wildcard_palette_min_count", None) is not None:
-        settings = replace(settings, gpu_full_wildcard_palette_min_count=int(args.gpu_full_wildcard_palette_min_count))
-    if getattr(args, "gpu_full_wildcard_palette_scan", None) is not None:
-        settings = replace(settings, gpu_full_wildcard_palette_scan=int(args.gpu_full_wildcard_palette_scan))
-    if getattr(args, "gpu_full_wildcard_palette_tail_slots", None) is not None:
-        settings = replace(
-            settings, gpu_full_wildcard_palette_tail_slots=int(args.gpu_full_wildcard_palette_tail_slots)
-        )
-
-    # Hidden/advanced run options (kept for compatibility with internal tooling).
-    seed_inventory_variants = str(getattr(args, "seed_inventory_variants", "") or "").strip()
-    if seed_inventory_variants:
-        settings = replace(settings, seed_inventory_variants_path=seed_inventory_variants)
-
-    seed_inventory_mode = str(getattr(args, "seed_inventory_mode", "") or "").strip()
-    if seed_inventory_mode:
-        settings = replace(settings, seed_inventory_mode=seed_inventory_mode)
-
-    restricted_universe = str(getattr(args, "gpu_full_restricted_universe", "") or "").strip()
-    if restricted_universe:
-        settings = replace(settings, gpu_full_restricted_universe_path=restricted_universe)
-
-    solver = str(getattr(args, "solver", "") or "").strip()
-    if solver and solver != "gpu_full":
-        raise ValueError(f"--solver {solver!r} is deprecated. Inventory Meta is standardized on gpu_full.")
 
     effective_quality = str(((meta.get("meta") or {}).get("quality") or "medium")).strip().lower() or "medium"
     effective_path = str(((meta.get("meta") or {}).get("config_path") or default_inventory_meta_config_path())).strip()
@@ -429,42 +300,6 @@ def main() -> None:
         if args.cmd != "run":
             raise ValueError(f"Unknown command: {args.cmd}")
 
-        # Legacy build-universe / cluster flags are still accepted, but hidden; dispatch them here.
-        if str(getattr(args, "build_variant_frequency_universe", "") or "").strip():
-            print(
-                "[Deprecated] Use `inventory_meta_coverage_main.py build-universe ...` instead of "
-                "--build-variant-frequency-universe.",
-                flush=True,
-            )
-            from inventory_optimizer.variant_frequency_universe import (
-                VariantUniverseBuildConfig,
-                build_variant_frequency_universe,
-                write_variant_frequency_universe_json,
-            )
-
-            cfg = VariantUniverseBuildConfig(
-                top_candidates_per_song=int(args.variant_frequency_top_candidates),
-                patterns_per_candidate=int(args.variant_frequency_patterns_per_candidate),
-                universe_size=int(args.variant_frequency_universe_size),
-                seed=int(args.seed) if int(args.seed) > 0 else 1,
-                element=(args.element or "").strip() or None,
-                secondary_element=(args.secondary_element or "").strip() or None,
-                song_limit=int(args.song_limit) if int(args.song_limit) > 0 else None,
-                batch_instances=int(args.variant_frequency_batch_instances),
-            )
-            payload = build_variant_frequency_universe(config=cfg, db_path=args.db_path or "")
-            out_path = write_variant_frequency_universe_json(payload, args.build_variant_frequency_universe)
-            print(f"[VariantFrequencyUniverse] wrote: {out_path}")
-            if gpu_sampler is not None:
-                try:
-                    gpu_sampler.stop()
-                except Exception:
-                    pass
-            return
-
-        if int(getattr(args, "cluster_k", 0) or 0) > 0:
-            raise ValueError("[Deprecated] Use `inventory_meta_coverage_main.py cluster ...` instead of --cluster-k.")
-
         settings, meta, warnings = _load_settings_from_args(args)
         if args.print_effective_config:
             payload = {"effective_config": meta, "warnings": warnings}
@@ -476,13 +311,8 @@ def main() -> None:
                     pass
             return
 
-        song_allowlist = None
-        if getattr(args, "song_allowlist_file", ""):
-            song_allowlist = _read_song_allowlist(str(args.song_allowlist_file))
-
         results = run_inventory_meta_coverage(
             **{k: v for k, v in settings.to_run_kwargs().items() if v is not None},
-            song_allowlist=song_allowlist,
         )
         results["effective_config"] = meta
         if warnings:

@@ -16,7 +16,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from gear_optimizer.data.database import get_db_connection
-from inventory_optimizer.coverage import _build_gpu_dynamic_inputs, _build_song_specs, _pack_part_vids_dense, _select_one_peak_candidate_per_song
+from inventory_optimizer.coverage import _build_gpu_full_inputs, _build_song_specs, _pack_part_vids_dense, _select_one_peak_candidate_per_song
 from inventory_optimizer.db import fetch_peak_candidates_allow_missing, fetch_song_names, fetch_song_peak
 from inventory_optimizer.gpu_full_solver import solve_coverage_gpu_full
 from inventory_optimizer.gpu_witness_pool import build_witness_offsets_gpu
@@ -165,7 +165,7 @@ def main() -> None:
         selected_specs = _select_one_peak_candidate_per_song(song_specs)
 
         # Prepare per-song arrays for witness pool generation and later packing.
-        gear_ids_all, totals_all, elements_all, gear_freq_all = _build_gpu_dynamic_inputs(
+        gear_ids_all, totals_all, elements_all, gear_freq_all = _build_gpu_full_inputs(
             selected_specs, gear_names=gear_names_all
         )
 

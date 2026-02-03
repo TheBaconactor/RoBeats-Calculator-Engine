@@ -105,7 +105,6 @@ def print_results(
         if candidates:
             best_fg_entry = max(candidates, key=_extract_final_score)
             best_fg_score_found = _extract_final_score(best_fg_entry)
-            is_same = _is_same_variant(base_entry, best_fg_entry)
 
     # When ForceGreats is deferred (or disabled by config), `fg_variants` can be empty even if the
     # DB already contains a valid improving FG record. If the caller provides `db_best_fg_score`,

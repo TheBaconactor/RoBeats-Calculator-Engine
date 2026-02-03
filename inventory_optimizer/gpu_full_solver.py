@@ -1584,201 +1584,12 @@ def _select_best_candidate_key_metal(
 
     cost = ti.i32((cand_key >> ti.u32(cost_shift)) & cost_mask)
     s_idx = ti.i32((cand_key >> ti.u32(s_shift)) & s_mask)
-    p_idx = ti.i32(cand_key & p_mask)
     if cost > remaining or cost > 6:
         active = 0
     if active != 0 and covered[s_idx] != 0:
         active = 0
     if active == 0:
         best_cand[None] = ti.u32(0xFFFFFFFF)
-
-
-@ti.kernel
-def _select_best_combined(
-    part_vids: ti.template(),
-    freq: ti.template(),
-    counts_total: ti.template(),
-    covered: ti.template(),
-    best_cost: ti.template(),
-    remaining: ti.i32,
-    k_scan: ti.i32,
-    salt: ti.u32,
-    cost_weight: ti.u32,
-):
-    best_cost[None] = ti.u32(0xFFFFFFFF)
-    k_count = part_vids.shape[1]
-    scan = k_count
-    if k_scan > 0 and k_scan < k_count:
-        scan = k_scan
-    for s in covered:
-        if covered[s] != 0:
-            continue
-        start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9))
-        start = _xorshift32(start)
-        start_i = ti.i32(start % ti.u32(k_count))
-        for pp in range(scan):
-            p = (start_i + ti.i32(pp)) % ti.i32(k_count)
-            cost = ti.i32(0)
-            score = ti.i32(0)
-            for j in ti.static(range(6)):
-                vid = part_vids[s, p, j]
-                if counts_total[vid] == 0:
-                    cost += 1
-                    score += freq[vid]
-            if cost <= remaining:
-                invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
-                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore
-                ti.atomic_min(best_cost[None], combined)
-
-
-@ti.kernel
-def _select_best_candidate_weighted(
-    part_vids: ti.template(),
-    freq: ti.template(),
-    counts_total: ti.template(),
-    covered: ti.template(),
-    best_cand: ti.template(),
-    target_combined: ti.u32,
-    remaining: ti.i32,
-    k_scan: ti.i32,
-    salt: ti.u32,
-    cost_weight: ti.u32,
-    cost_shift: ti.i32,
-    s_shift: ti.i32,
-):
-    best_cand[None] = ti.u32(0xFFFFFFFF)
-    k_count = part_vids.shape[1]
-    scan = k_count
-    if k_scan > 0 and k_scan < k_count:
-        scan = k_scan
-    for s in covered:
-        if covered[s] != 0:
-            continue
-        start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9))
-        start = _xorshift32(start)
-        start_i = ti.i32(start % ti.u32(k_count))
-        for pp in range(scan):
-            p = (start_i + ti.i32(pp)) % ti.i32(k_count)
-            cost = ti.i32(0)
-            score = ti.i32(0)
-            for j in ti.static(range(6)):
-                vid = part_vids[s, p, j]
-                if counts_total[vid] == 0:
-                    cost += 1
-                    score += freq[vid]
-            if cost <= remaining:
-                invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
-                combined = ti.u32(cost) * ti.u32(cost_weight) + invscore
-                if combined == target_combined:
-                    key = (ti.u32(cost) << ti.u32(cost_shift)) | (ti.u32(s) << ti.u32(s_shift)) | ti.u32(p)
-                    ti.atomic_min(best_cand[None], key)
-
-
-@ti.kernel
-def _select_best_cost(
-    part_vids: ti.template(),
-    counts_total: ti.template(),
-    covered: ti.template(),
-    best_cost: ti.template(),
-    remaining: ti.i32,
-    k_scan: ti.i32,
-    salt: ti.u32,
-):
-    best_cost[None] = ti.u32(0xFFFFFFFF)
-    k_count = part_vids.shape[1]
-    scan = k_count
-    if k_scan > 0 and k_scan < k_count:
-        scan = k_scan
-    for s in covered:
-        if covered[s] != 0:
-            continue
-        start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9))
-        start = _xorshift32(start)
-        start_i = ti.i32(start % ti.u32(k_count))
-        for pp in range(scan):
-            p = (start_i + ti.i32(pp)) % ti.i32(k_count)
-            cost = ti.i32(0)
-            for j in ti.static(range(6)):
-                vid = part_vids[s, p, j]
-                if counts_total[vid] == 0:
-                    cost += 1
-            if cost <= remaining:
-                ti.atomic_min(best_cost[None], ti.u32(cost))
-
-
-@ti.kernel
-def _select_best_invscore(
-    part_vids: ti.template(),
-    freq: ti.template(),
-    counts_total: ti.template(),
-    covered: ti.template(),
-    best_invscore: ti.template(),
-    target_cost: ti.i32,
-    k_scan: ti.i32,
-    salt: ti.u32,
-):
-    best_invscore[None] = ti.u32(0xFFFFFFFF)
-    k_count = part_vids.shape[1]
-    scan = k_count
-    if k_scan > 0 and k_scan < k_count:
-        scan = k_scan
-    for s in covered:
-        if covered[s] != 0:
-            continue
-        start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9))
-        start = _xorshift32(start)
-        start_i = ti.i32(start % ti.u32(k_count))
-        for pp in range(scan):
-            p = (start_i + ti.i32(pp)) % ti.i32(k_count)
-            cost = ti.i32(0)
-            score = ti.i32(0)
-            for j in ti.static(range(6)):
-                vid = part_vids[s, p, j]
-                if counts_total[vid] == 0:
-                    cost += 1
-                    score += freq[vid]
-            if cost == target_cost:
-                invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
-                ti.atomic_min(best_invscore[None], invscore)
-
-
-@ti.kernel
-def _select_best_candidate(
-    part_vids: ti.template(),
-    freq: ti.template(),
-    counts_total: ti.template(),
-    covered: ti.template(),
-    best_cand: ti.template(),
-    target_cost: ti.i32,
-    target_invscore: ti.u32,
-    k_scan: ti.i32,
-    salt: ti.u32,
-):
-    best_cand[None] = ti.u32(0xFFFFFFFF)
-    k_count = part_vids.shape[1]
-    scan = k_count
-    if k_scan > 0 and k_scan < k_count:
-        scan = k_scan
-    for s in covered:
-        if covered[s] != 0:
-            continue
-        start = salt ^ (ti.u32(s) * ti.u32(0x9E3779B9))
-        start = _xorshift32(start)
-        start_i = ti.i32(start % ti.u32(k_count))
-        for pp in range(scan):
-            p = (start_i + ti.i32(pp)) % ti.i32(k_count)
-            cost = ti.i32(0)
-            score = ti.i32(0)
-            for j in ti.static(range(6)):
-                vid = part_vids[s, p, j]
-                if counts_total[vid] == 0:
-                    cost += 1
-                    score += freq[vid]
-            if cost == target_cost:
-                invscore = ti.u32(65535) - ti.u32(ti.min(score, 65535))
-                if invscore == target_invscore:
-                    key = (ti.u32(s) << ti.u32(16)) | ti.u32(p)
-                    ti.atomic_min(best_cand[None], key)
 
 
 @ti.kernel
@@ -2341,14 +2152,6 @@ def _partition_cost(
         if counts_total[vid] == 0:
             cost += 1
     out_cost[None] = cost
-
-
-@ti.kernel
-def _recompute_cov_count(covered: ti.template(), cov_count: ti.template()):
-    cov_count[None] = 0
-    for s in covered:
-        if covered[s] != 0:
-            ti.atomic_add(cov_count[None], 1)
 
 
 @ti.kernel
@@ -3060,7 +2863,6 @@ def solve_coverage_gpu_full(
 
     repack_passes = max(0, int(repack_passes))
     repack_rarity_weighted = bool(repack_rarity_weighted)
-    use_stripes = counter_stripes > 1
     k_scan_select = int(k_scan_select)
     k_scan_repack = int(k_scan_repack)
     lns_time_sec = float(lns_time_sec)
@@ -3175,7 +2977,6 @@ def solve_coverage_gpu_full(
     cov_count = st.cov_count
     best_key = st.best_key
     best_cost = st.best_cost
-    best_invscore = st.best_invscore
     best_cand = st.best_cand
     removed_cnt = st.removed_cnt
     benefit_sum = st.benefit_sum

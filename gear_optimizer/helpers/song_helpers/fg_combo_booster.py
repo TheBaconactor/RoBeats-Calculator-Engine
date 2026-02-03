@@ -7,10 +7,7 @@ from dataclasses import dataclass
 from typing import Optional, Iterable
 
 from ...core.constants import (
-    ELEMENTAL_GEM_SCALE,
     GEM_SCALE_FEVER,
-    GEM_SCALE_NORMAL,
-    GEM_STAT_TO_ELEMENT_SCALE,
     SKIP_ITEM_KEYS,
     TOTAL_GEM_BUDGET,
 )

@@ -12,7 +12,6 @@ This pipeline is designed to keep the GPU continuously busy in GPU_Native_GA mod
 from __future__ import annotations
 
 import concurrent.futures
-import json
 import os
 import queue
 import threading
@@ -24,7 +23,7 @@ from typing import Any, Optional
 
 import numpy as np
 
-from gear_optimizer.core.config import read_fg_candidate_limit, read_fg_search_radius
+from gear_optimizer.core.config import read_fg_candidate_limit
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.memory import memory_release_requested
@@ -36,7 +35,6 @@ from gear_optimizer.helpers.song_helpers.fg_combo_booster import (
     build_fg_combo_booster_candidates,
     finalize_fg_combo_booster_candidates_job,
     hydrate_fg_candidate_stats,
-    prepare_fg_combo_booster_candidates_job,
 )
 from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
 from gear_optimizer.helpers.song_helpers.loadout_builder import build_loadout_entries

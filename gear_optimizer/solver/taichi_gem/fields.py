@@ -328,7 +328,7 @@ def reset_fields_state() -> None:
         chunk_best_idx, \
         chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
-    global ga_global_best_score, ga_global_best_genome, ga_global_best_results
+    global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_packed
     global ga_runs_payload_packed
     global ga_run_payload_packed
     global \
@@ -587,7 +587,7 @@ def allocate_fields():
         chunk_best_idx, \
         chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
-    global ga_global_best_score, ga_global_best_genome, ga_global_best_results
+    global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_packed
     global ga_runs_payload_packed
     global ga_run_payload_packed
     global \

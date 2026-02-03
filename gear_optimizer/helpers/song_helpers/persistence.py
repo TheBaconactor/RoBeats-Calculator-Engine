@@ -6,7 +6,6 @@ This module provides persistence operations:
 - build_persistence_entries: Build all persistence entries
 """
 
-import json
 from collections.abc import Callable
 
 from ...core.utils import get_selected_element

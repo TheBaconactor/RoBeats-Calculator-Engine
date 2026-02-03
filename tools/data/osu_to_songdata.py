@@ -40,7 +40,6 @@ MANUAL_CONFIG = {
 OSU_LANE_BOUNDARIES = [128, 256, 384]  # Boundaries between lanes
 
 # Hit object type flags
-HIT_CIRCLE = 1
 HOLD_NOTE = 128
 
 
@@ -129,15 +128,7 @@ def parse_hit_objects(lines: list[str]) -> list[dict]:
             if obj_type & HOLD_NOTE:
                 # Hold note - extract end time from extras
                 note_type = 2  # Long note
-                # End time is in the last field before the colon-separated extras
-                if len(parts) >= 6:
-                    extras = parts[5].split(":")
-                    if extras:
-                        try:
-                            end_time_ms = int(extras[0])
-                            # Store duration info (not used in current format but available)
-                        except ValueError:
-                            pass
+                # End time is in the last field before the colon-separated extras (unused in current format)
             else:
                 note_type = 1  # Normal note
 

@@ -309,20 +309,6 @@ def effective_mini_signature_for_name(
     return effective_mini_signature(stats, primary_color, secondary_color, selected_color)
 
 
-def effective_mini_signature_for_item(
-    mini_item: Any,
-    minis_by_name: Optional[Dict[str, dict]],
-    primary_color: str,
-    secondary_color: str,
-    selected_color: str,
-) -> tuple[Any, ...]:
-    if isinstance(mini_item, dict):
-        # Prefer stats on the dict directly (hot path for GA genomes).
-        return effective_mini_signature(mini_item, primary_color, secondary_color, selected_color)
-    name = str(mini_item) if mini_item else ""
-    return effective_mini_signature_for_name(name, minis_by_name or {}, primary_color, secondary_color, selected_color)
-
-
 def minis_signature_to_names_map(
     minis_by_name: Dict[str, dict],
     primary_color: str,
@@ -475,4 +461,3 @@ def merge_minis_groups_for_entry(
         for _ in range(int(sig_counts[sig] or 0)):
             merged.append(names)
     return merged
-

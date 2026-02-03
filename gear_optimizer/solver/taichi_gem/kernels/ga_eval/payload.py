@@ -970,7 +970,6 @@ def ga_copy_fg_selected_payload_to_download_staging_kernel(
       - Rows 1..N: candidates [run,row] + packed candidate row (24)
     """
     base_cols = ti.static(_GA_FG_COLS)  # 24
-    K = ti.static(_GA_FG_CANDIDATES_PER_RUN)
     results_col0 = ti.static(1 + 9)
 
     # Header: selected_count, best_score, best_ids(9), best_results(7), best_run_idx

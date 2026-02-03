@@ -336,7 +336,6 @@ def print_verification_warning(stats_dict: Dict[str, int]) -> None:
     """Print a prominent warning if Stats issues were detected."""
     missing = stats_dict.get("missing", 0)
     empty = stats_dict.get("empty", 0)
-    total = stats_dict.get("total", 0)
     fg_empty = stats_dict.get("fg_empty", 0)
     fg_total = stats_dict.get("fg_total", 0)
     tb_fg_empty = stats_dict.get("tb_fg_empty", 0)

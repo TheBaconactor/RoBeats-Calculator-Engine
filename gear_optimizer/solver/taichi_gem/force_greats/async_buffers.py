@@ -22,8 +22,7 @@ import numpy as np
 # ============================================================================
 
 from concurrent.futures import ThreadPoolExecutor, Future
-from typing import List, Dict, Any, Callable
-import queue
+from typing import Any, Callable, Dict, List
 
 
 class AsyncResultProcessor:
@@ -39,7 +38,6 @@ class AsyncResultProcessor:
     def __init__(self, max_workers: int = 1):
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="FG_Result")
         self._pending_futures: List[Future] = []
-        self._result_queue: queue.Queue = queue.Queue()
         self._lock = threading.Lock()
 
     def submit_result_build(

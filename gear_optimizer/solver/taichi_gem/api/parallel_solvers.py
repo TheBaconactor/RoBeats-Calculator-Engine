@@ -37,10 +37,29 @@ from .ga_operations import (
 _profiler = get_gpu_profiler()
 
 # Cache for genome_base_stats uploads to avoid redundant from_numpy calls
-_GENOME_STATS_CACHE = None
+_GENOME_STATS_BUFFER = None
+_GENOME_STATS_HASH_CACHE = None
 
 # Get appropriate kernels for current platform (Metal-safe on macOS)
 kernels = get_kernels()
+
+
+def _results_from_stats(results_np: np.ndarray, n_genomes: int) -> list[tuple[int, int, int, int, int, int, int]]:
+    results: list[tuple[int, int, int, int, int, int, int]] = []
+    for i in range(n_genomes):
+        row = results_np[i]
+        results.append(
+            (
+                int(row[0]),  # score
+                int(row[1]),  # ft
+                int(row[2]),  # ff
+                int(row[3]),  # pp
+                int(row[4]),  # cm
+                int(row[5]),  # fm
+                int(row[6]),  # ov
+            )
+        )
+    return results
 
 
 def solve_genomes_with_ftff(
@@ -121,10 +140,10 @@ def solve_genomes_with_ftff(
     #
     # Avoid per-call allocations/zeroing on the CPU hot path by reusing a preallocated
     # buffer (we fully overwrite every column for the active slice).
-    global _GENOME_STATS_CACHE
-    if _GENOME_STATS_CACHE is None:
-        _GENOME_STATS_CACHE = np.empty((MAX_GENOMES, 7), dtype=np.int16)
-    stats_buf = _GENOME_STATS_CACHE[:n_genomes]
+    global _GENOME_STATS_BUFFER
+    if _GENOME_STATS_BUFFER is None:
+        _GENOME_STATS_BUFFER = np.empty((MAX_GENOMES, 7), dtype=np.int16)
+    stats_buf = _GENOME_STATS_BUFFER[:n_genomes]
 
     # Fast path: if genome_stats_list is already a numpy array, use slice copy (182x faster)
     if isinstance(genome_stats_list, np.ndarray):
@@ -220,22 +239,7 @@ def solve_genomes_with_ftff(
             download_bytes = 0
         _profiler.record_download(time.perf_counter() - _t_download, bytes_count=download_bytes)
 
-    results = []
-    for i in range(n_genomes):
-        row = results_np[i]
-        results.append(
-            (
-                int(row[0]),  # score
-                int(row[1]),  # ft
-                int(row[2]),  # ff
-                int(row[3]),  # pp
-                int(row[4]),  # cm
-                int(row[5]),  # fm
-                int(row[6]),  # ov
-            )
-        )
-
-    return results
+    return _results_from_stats(results_np, n_genomes)
 
 
 def solve_genomes_parallel(
@@ -348,14 +352,14 @@ def solve_genomes_parallel(
 
     # OPTIMIZATION: Skip upload if genome stats unchanged (saves ~1-2s per run)
     # Hash only the portion of the buffer that's actually used
-    global _GENOME_STATS_CACHE
+    global _GENOME_STATS_HASH_CACHE
     stats_slice = genome_stats_np[:n_genomes].tobytes()
     stats_hash = hash(stats_slice)
     cache_key = (n_genomes, stats_hash)
 
-    if _GENOME_STATS_CACHE != cache_key:
+    if _GENOME_STATS_HASH_CACHE != cache_key:
         fields.genome_base_stats.from_numpy(genome_stats_np)
-        _GENOME_STATS_CACHE = cache_key
+        _GENOME_STATS_HASH_CACHE = cache_key
 
     # Generate work items directly into the fixed staging buffer to avoid per-call
     # allocation of huge intermediate arrays (work_ft/work_ff/work_budget/...).
@@ -477,22 +481,7 @@ def solve_genomes_parallel(
         _profiler.record_download(time.perf_counter() - _t_download, bytes_count=download_bytes)
 
     # Build results in order
-    results = []
-    for i in range(n_genomes):
-        row = results_np[i]
-        results.append(
-            (
-                int(row[0]),  # score
-                int(row[1]),  # ft
-                int(row[2]),  # ff
-                int(row[3]),  # pp
-                int(row[4]),  # cm
-                int(row[5]),  # fm
-                int(row[6]),  # ov
-            )
-        )
-
-    return results
+    return _results_from_stats(results_np, n_genomes)
 
 
 def solve_genomes_from_registry(

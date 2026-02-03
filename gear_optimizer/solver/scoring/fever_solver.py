@@ -24,7 +24,6 @@ from ...core.constants import (
     ELEMENTAL_GEM_SCALE,
 )
 from ...core.color_flags import build_color_flags
-from ...core.env_config import ENV
 from ...core.utils import safe_int
 
 from ..fever_timeline import (

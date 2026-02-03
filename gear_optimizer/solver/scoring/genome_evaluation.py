@@ -15,7 +15,6 @@ Key optimizations:
 from dataclasses import dataclass
 from typing import Optional, Callable
 
-import numpy as np
 
 from ..base_stats import build_base_fixed_stats_array
 from ...core.constants import (

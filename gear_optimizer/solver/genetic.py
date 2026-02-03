@@ -43,7 +43,7 @@ from ..core.color_flags import build_color_flags
 from ..core.env_config import env_flag
 from ..core.utils import safe_int, safe_float
 from .base_stats import build_base_fixed_stats_array
-from .scoring import worker_coevolution_evaluate, GEM_SOLVER_CACHE, FG_CACHE, FEVER_TIMELINE_CACHE
+from .scoring import GEM_SOLVER_CACHE, FG_CACHE, FEVER_TIMELINE_CACHE
 from ..data.models import GASettings
 from ..helpers.ga_helpers import (
     initialize_pools,

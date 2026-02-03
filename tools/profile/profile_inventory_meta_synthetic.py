@@ -134,7 +134,6 @@ def main() -> int:
     ap = argparse.ArgumentParser(prog="profile_inventory_meta_synthetic.py")
     ap.add_argument("--songs", type=int, default=1500, help="Number of synthetic songs to insert (default: 1500).")
     ap.add_argument("--inventory-cap", type=int, default=100, help="Inventory cap V (default: 100).")
-    ap.add_argument("--solver", type=str, default="gpu_full", choices=["gpu_dynamic", "gpu_eda", "gpu_full"])
     ap.add_argument("--partitions-per-song", type=int, default=32, help="Witness patterns per song (default: 32).")
     ap.add_argument("--seed", type=int, default=1, help="RNG seed for synthesis + solver (default: 1).")
     ap.add_argument("--adaptive-rounds", type=int, default=3, help="GPU full: witness rounds (default: 3).")
@@ -306,7 +305,6 @@ def main() -> int:
             lns_time_sec=float(args.lns_time_sec),
             lns_attempts=int(args.lns_attempts),
             profile=bool(args.profile),
-            solver=str(args.solver),
             gpu_full_alns_enabled=bool(args.gpu_full_alns),
             gpu_full_alns_islands=int(args.gpu_full_alns_islands),
             gpu_full_pt_enabled=bool(args.gpu_full_pt),

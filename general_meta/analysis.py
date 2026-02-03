@@ -209,7 +209,10 @@ def find_most_common_loadout(
 
         denom = max(1, len(rows))
         avg_score = int(avg_score / denom)
-        avg_gems = _round_mean_gems_to_total(gem_sums, denom, total=90)
+        if sum(int(v) for v in gem_sums.values()) <= 0:
+            avg_gems = {k: 0 for k in gem_sums}
+        else:
+            avg_gems = _round_mean_gems_to_total(gem_sums, denom, total=90)
 
         results.append(
             {

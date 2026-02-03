@@ -245,7 +245,7 @@ def main() -> int:
     gpu_client = GpuServiceClient()
     gpu_client.start(start_executor=True, in_process_queues=True)
 
-    def _run_one(job_i: int) -> float:
+    def _run_one() -> float:
         entries = _make_entries()
         t0 = time.perf_counter()
         process_force_greats(
@@ -276,7 +276,7 @@ def main() -> int:
     t0 = time.perf_counter()
     durs: list[float] = []
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futs = [ex.submit(_run_one, i) for i in range(jobs)]
+        futs = [ex.submit(_run_one) for _ in range(jobs)]
         for fut in as_completed(futs):
             try:
                 durs.append(float(fut.result() or 0.0))

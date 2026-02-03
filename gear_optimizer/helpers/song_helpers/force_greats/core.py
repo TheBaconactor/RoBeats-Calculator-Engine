@@ -16,7 +16,7 @@ from . import cache_validation
 from .entry_utils import eval_data_from_entry, expected_selected_element
 from .gpu_dispatch import process_force_greats_gpu_finder
 from ..item_utils import names_list
-from ....core.utils import get_selected_element, stats_signature
+from ....core.utils import stats_signature
 from ....solver.scoring import apply_force_greats_to_result
 
 if TYPE_CHECKING:

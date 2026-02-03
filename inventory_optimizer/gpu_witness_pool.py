@@ -253,6 +253,7 @@ def _build_offsets_kernel(
             # Ensure feasibility for OV: if the remaining slots after this one are insufficient
             # to hold the remaining OV (max 15 per slot), we MUST place OV in this slot.
             slots_left_after = ti.i32(5 - ii)
+            max_per_stat = slots_left_after * ti.i32(SLOT_GEM_BUDGET)
             ov_left = ti.i32(remaining[OV_INDEX])
             ov_slots_after = ti.i32(0)
             if ov_left > 0:
@@ -282,14 +283,10 @@ def _build_offsets_kernel(
                 and (wild_palette_tail_slots > 0)
                 and (ii >= (ti.i32(6) - wild_palette_tail_slots))
             ):
-                stp = seed_k ^ (ti.u32(k) * ti.u32(0xA24BAED5)) ^ (ti.u32(slot) * ti.u32(0x85EBCA6B))
-                stp = _xorshift32(stp)
-                start_idx = ti.i32(stp % ti.u32(wild_palette_len))
-                scan = wild_palette_scan
-                if scan <= 0:
-                    scan = ti.i32(1)
-                if scan > wild_palette_len:
-                    scan = wild_palette_len
+                start_idx = ti.i32(0)
+                scan = wild_palette_len
+                if wild_palette_scan > 0 and wild_palette_scan < scan:
+                    scan = wild_palette_scan
 
                 chosen_idx = ti.i32(-1)
                 for t in range(scan):
@@ -297,6 +294,8 @@ def _build_offsets_kernel(
                     ok = True
                     for st_id in ti.static(range(5)):
                         if wild_palette[idx, st_id] > remaining[st_id]:
+                            ok = False
+                        elif (remaining[st_id] - wild_palette[idx, st_id]) > max_per_stat:
                             ok = False
                     if ok:
                         chosen_idx = idx
@@ -342,7 +341,7 @@ def build_witness_offsets_gpu(
     seed_streams: int = 4,
     pattern_profile: int = 0,
     wildcard_palette_vecs: Optional[np.ndarray] = None,
-    wildcard_palette_scan: int = 8,
+    wildcard_palette_scan: int = 0,
     wildcard_palette_tail_slots: int = 3,
     profile: bool = False,
 ) -> tuple[np.ndarray, dict]:

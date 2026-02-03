@@ -16,6 +16,7 @@ from ..kernels_scoring import local_search_from_hint, optimize_core_device
 # Platform detection for atomic operations
 IS_METAL = sys.platform == "darwin"
 _GA_FTFF_REDUCE_BLOCK_DIM = 256  # Power-of-two block for shared-memory max reduction (Vulkan path).
+MAX_STAT = 160  # gear_optimizer.core.constants.MAX_STAT_INDEX
 
 
 @ti.func
@@ -60,7 +61,6 @@ def _compute_combo_key_warmstart(
         0 when the combo is invalid/pruned or yields a negative score.
     """
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
-    MAX_STAT: ti.i32 = 160
 
     out_key = ti.u64(0)
 
@@ -270,7 +270,6 @@ def ga_find_best_combo_warmstart_kernel(
         use_hints: 0=cold start, 1=warm start from hints
     """
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
-    MAX_STAT: ti.i32 = 160
 
     # FT/FF elemental contribution weights in base_value space (2*p + s).
     # Each FT/FF gem adds GEM_STAT_TO_ELEMENT to the corresponding color stat.

@@ -7,7 +7,6 @@ Runs the inventory meta solver once per element (Chill/Flow/Rush/Beat/Vibe) and 
 - wall-clock time
 
 Notes:
-- Defaults to solver='gpu_full' because gpu_dynamic currently hard-aborts on some macOS/Metal setups.
 - Uses EVOLUTION_DB_PATH if set; otherwise uses repo default.
 """
 
@@ -34,7 +33,6 @@ def _run_once(*, element: str | None, args: argparse.Namespace, seed: int) -> Di
 
     t0 = time.perf_counter()
     res = run_inventory_meta_coverage(
-        solver=str(args.solver),
         inventory_cap=int(args.inventory_cap),
         restarts=int(args.restarts),
         seed=int(seed),
@@ -43,9 +41,7 @@ def _run_once(*, element: str | None, args: argparse.Namespace, seed: int) -> Di
         secondary_element=None,
         partitions_per_song=int(args.partitions_per_song),
         adaptive_rounds=int(args.adaptive_rounds),
-        adaptive_patterns_per_round=int(args.adaptive_patterns_per_round),
         adaptive_keep_per_song=int(args.adaptive_keep_per_song),
-        adaptive_repack_songs=int(args.adaptive_repack_songs),
         gpu_repack_passes=int(args.gpu_repack_passes),
         gpu_lns_destroy=int(args.gpu_lns_destroy),
         lns_time_sec=float(args.lns_time_sec),
@@ -69,19 +65,15 @@ def _run_once(*, element: str | None, args: argparse.Namespace, seed: int) -> Di
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--solver", default="gpu_full", choices=["gpu_full", "gpu_dynamic", "gpu_eda"])
     ap.add_argument("--inventory-cap", type=int, default=100)
     ap.add_argument("--restarts", type=int, default=1)
     ap.add_argument("--song-limit", type=int, default=0, help="0 = no limit")
     ap.add_argument("--runs", type=int, default=1, help="Runs per element (different seeds)")
     ap.add_argument("--seed", type=int, default=1, help="Base seed")
 
-    # Legacy args (kept for compatibility; gpu_full uses some of them)
     ap.add_argument("--partitions-per-song", type=int, default=32)
     ap.add_argument("--adaptive-rounds", type=int, default=0)
-    ap.add_argument("--adaptive-patterns-per-round", type=int, default=64)
     ap.add_argument("--adaptive-keep-per-song", type=int, default=8)
-    ap.add_argument("--adaptive-repack-songs", type=int, default=256)
 
     ap.add_argument("--gpu-repack-passes", type=int, default=3)
     ap.add_argument("--gpu-lns-destroy", type=int, default=6)
@@ -100,7 +92,7 @@ def main() -> int:
         json.dumps(
             {
                 "bench": "inventory_meta_elements",
-                "solver": args.solver,
+                "solver": "gpu_full",
                 "inventory_cap": int(args.inventory_cap),
                 "restarts": int(args.restarts),
                 "song_limit": int(args.song_limit),

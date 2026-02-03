@@ -13,7 +13,6 @@ import time
 
 from ...core.env_config import env_flag
 from ...data.database import (
-    get_db_connection,
     get_db_connection_cached,
     get_best_loadouts,
     get_evolution_db_path,

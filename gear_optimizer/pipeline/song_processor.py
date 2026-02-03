@@ -48,7 +48,7 @@ from ..solver.scoring import (
 )
 from ..solver.gpu_profiler import get_gpu_profiler
 from ..core.memory import log_memory_usage
-from ..core.utils import cfg_from_dict, safe_int
+from ..core.utils import cfg_from_dict
 from ..helpers.song_helpers import (
     load_database_context,
     setup_song_config,
