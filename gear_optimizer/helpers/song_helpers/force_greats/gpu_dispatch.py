@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Optional
 
 from cachetools import LRUCache
 
+from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
+
 from . import cache_validation, result_application
 from .entry_utils import eval_data_from_entry, expected_selected_element
 from ....core.color_flags import build_color_flags
@@ -29,7 +31,7 @@ _FG_ANALYTICAL_BREAKPOINTS_LOCK = threading.Lock()
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
-    return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+    return str(os.environ.get(name, default) or "").strip().lower() in TRUTHY_ENV_VALUES
 
 
 _GPU_STRICT = _truthy_env("GPU_STRICT", "1")
@@ -983,13 +985,9 @@ def process_force_greats_gpu_finder(
         if search_radius >= TOTAL_GEM_BUDGET:
             search_radius = TOTAL_GEM_BUDGET
 
-        fast_pairs = str(os.environ.get("FG_FTFF_PAIRS_FAST", "1") or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-            "",
-        }
+        fast_pairs = (
+            str(os.environ.get("FG_FTFF_PAIRS_FAST", "1") or "").strip().lower() in (TRUTHY_ENV_VALUES | {""})
+        )
         ftff_pairs = _collect_ftff_pairs_from_centers(
             centers,
             search_radius=int(search_radius),
@@ -1056,12 +1054,7 @@ def process_force_greats_gpu_finder(
 
         sig_list = list(sig_map.keys())
 
-        use_gpu_breakpoints = str(os.environ.get("FG_BREAKPOINTS_GPU", "1") or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+        use_gpu_breakpoints = _truthy_env("FG_BREAKPOINTS_GPU", "1")
         fg_breakpoints_non_fever_base_by_ff = None
         fg_breakpoints_fp_cap_table = None
         if per_pair_breakpoints and use_gpu_breakpoints:

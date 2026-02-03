@@ -11,6 +11,7 @@ import os
 import threading
 import time
 
+from ...core.env_config import env_flag
 from ...data.database import (
     get_db_connection,
     get_db_connection_cached,
@@ -132,7 +133,7 @@ def _maybe_wal_maintenance(conn) -> None:
     except Exception:
         logging.debug("[DB] WAL checkpoint(PASSIVE) failed", exc_info=True)
 
-    optimize_enabled = str(os.environ.get("DB_OPTIMIZE", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    optimize_enabled = env_flag("DB_OPTIMIZE", "0")
     if not optimize_enabled:
         return
 
@@ -207,12 +208,7 @@ def load_database_context(
         else:
             # If we expected a DB seed but didn't find one, show nearby candidates.
             # This catches cases where the song key differs by suffix/spacing.
-            suggest_enabled = str(os.environ.get("DB_SEED_SUGGEST", "0") or "").strip().lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
+            suggest_enabled = env_flag("DB_SEED_SUGGEST", "0")
             if suggest_enabled:
                 try:
                     conn = get_db_connection_cached()

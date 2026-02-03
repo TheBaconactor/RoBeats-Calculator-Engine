@@ -40,6 +40,7 @@ from ..core.constants import (
 )
 from ..core.config import read_fg_candidate_limit
 from ..core.color_flags import build_color_flags
+from ..core.env_config import env_flag
 from ..core.utils import safe_int, safe_float
 from .base_stats import build_base_fixed_stats_array
 from .scoring import worker_coevolution_evaluate, GEM_SOLVER_CACHE, FG_CACHE, FEVER_TIMELINE_CACHE
@@ -522,12 +523,7 @@ def decode_gpu_native_ga_runs_payload(
         #   gather+sum over `item_stats[genome_ids_mat]` plus per-candidate Python dict builds.
         # - Keep that reconstruction OFF by default to lower CPU requirements on slower machines.
         # - Opt in only for debugging/analysis/export tooling via GA_DECODE_INCLUDE_STATS=1.
-        include_stats = str(os.environ.get("GA_DECODE_INCLUDE_STATS", "0") or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+        include_stats = env_flag("GA_DECODE_INCLUDE_STATS", "0")
         if not include_stats:
             # ForceGreatsFinder needs per-candidate Stats to compute stat signatures and
             # produce meaningful FG improvements. Candidate decoding is already limited
@@ -1685,12 +1681,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     payload_segments: list[np.ndarray] = []
 
     perf = str(os.environ.get("PERF_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
-    phase_timing = perf and str(os.environ.get("GPU_NATIVE_GA_PHASE_TIMING", "0") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    phase_timing = perf and env_flag("GPU_NATIVE_GA_PHASE_TIMING", "0")
     if phase_timing:
         import taichi as ti
 
@@ -2561,12 +2552,7 @@ def solve_coevolution_genetic(
                 force_greats_enabled = bool(read_iteration_engine_settings(cfg).force_greats_finder)
             except Exception:
                 force_greats_enabled = False
-            combo_enabled = str(os.environ.get("FG_COMBO_BOOSTER_ENABLED", "1") or "").strip().lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
+            combo_enabled = env_flag("FG_COMBO_BOOSTER_ENABLED", "1")
 
             boosted = None
             if force_greats_enabled and combo_enabled:

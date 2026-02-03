@@ -23,7 +23,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from gear_optimizer.core.env_config import ENV
+from gear_optimizer.core.env_config import ENV, env_flag
 
 from .gpu_executor import (
     GpuExecutor,
@@ -74,12 +74,7 @@ class GpuServiceClient:
         self._profile_sample_cap = 5000
 
         # FG job coalescing (optional, in-process only).
-        self._fg_coalesce_enabled = str(os.environ.get("FG_COALESCE_BREAKPOINTS_BATCH", "1") or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+        self._fg_coalesce_enabled = env_flag("FG_COALESCE_BREAKPOINTS_BATCH", "1")
         try:
             self._fg_coalesce_max_payloads = int(
                 os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "128") or "128"

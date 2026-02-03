@@ -17,6 +17,7 @@ from collections.abc import Iterable
 from typing import Dict, List, Optional, Any
 from urllib.parse import quote
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
+from ..core.env_config import env_flag
 from ..core.types import PersistenceEntry
 from .migrations import ensure_schema
 from .loadout_equivalence import (
@@ -1331,16 +1332,9 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
                 )
                 _log_timing("prune_team_buff_fg_loadouts", time.perf_counter() - _t_prfg0)
 
-        verify_integrity = (
-            str(os.environ.get("DB_VERIFY_WRITE_INTEGRITY", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
-        )
+        verify_integrity = env_flag("DB_VERIFY_WRITE_INTEGRITY", "0")
         if verify_integrity:
-            strict = str(os.environ.get("DB_STRICT_WRITE_INTEGRITY", "0") or "").strip().lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
+            strict = env_flag("DB_STRICT_WRITE_INTEGRITY", "0")
 
             def _warn_or_raise(msg: str) -> None:
                 if strict:

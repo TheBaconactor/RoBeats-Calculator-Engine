@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 import numpy as np
 import taichi as ti
 
+from gear_optimizer.core.env_config import env_flag
 from gear_optimizer.solver.taichi_gem import runtime as ti_runtime
 
 from .variant_space import (
@@ -1087,12 +1088,7 @@ def solve_coverage_gpu_dynamic(
         use_metal_select = False
     # Workaround: some Vulkan drivers appear to misbehave with u64 atomic_min when `song_count` is odd.
     # Fall back to the u32 selection path in that case (or when explicitly requested).
-    force_u32_select = str(os.environ.get("GPU_DYNAMIC_FORCE_U32_SELECT", "0") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    force_u32_select = env_flag("GPU_DYNAMIC_FORCE_U32_SELECT", "0")
     if force_u32_select:
         use_metal_select = True
     else:

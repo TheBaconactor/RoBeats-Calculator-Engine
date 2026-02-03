@@ -16,6 +16,8 @@ from typing import Any
 import numpy as np
 import taichi as ti
 
+from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
+
 from .. import api as gem_api
 from ..api.sync_policy import maybe_sync
 from .. import fields as gem_fields
@@ -32,7 +34,7 @@ _USE_ASYNC_FG = os.environ.get("USE_ASYNC_FG", "1") == "1"
 
 
 def _env_truthy(name: str, default: str = "0") -> bool:
-    return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+    return str(os.environ.get(name, default) or "").strip().lower() in TRUTHY_ENV_VALUES
 
 
 def _env_int(name: str, default: int) -> int:
@@ -1333,12 +1335,7 @@ def _solve_force_greats_finder_gpu_impl(
     # share the same config list (common across FT/FF chunking) don't pay
     # repeated host packing + host->device uploads.
     # ------------------------------------------------------------------
-    resident_enabled = str(os.environ.get("FG_RESIDENT_FORCED_CONFIGS", "1") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    resident_enabled = _env_truthy("FG_RESIDENT_FORCED_CONFIGS", "1")
     global _fg_forced_resident_key, _fg_forced_resident_n_cfg_total, _fg_forced_resident_base_offset
 
     cfg_sig = None
@@ -1919,13 +1916,9 @@ def solve_force_greats_finder_gpu_tasks(
     if not fg_tasks:
         return
 
-    use_gpu_cfg_ranges = str(os.environ.get("FG_GPU_CFG_RANGES", "1") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-        "",
-    }
+    use_gpu_cfg_ranges = (
+        str(os.environ.get("FG_GPU_CFG_RANGES", "1") or "").strip().lower() in (TRUTHY_ENV_VALUES | {""})
+    )
 
     # Packed mega-job mode:
     # - Upload all config windows into the global config table once (at their base_cfg_offset)

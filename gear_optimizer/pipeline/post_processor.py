@@ -9,7 +9,7 @@ import time
 import sys
 
 from gear_optimizer.core.utils import cfg_from_dict
-from gear_optimizer.core.env_config import ENV
+from gear_optimizer.core.env_config import ENV, TRUTHY_ENV_VALUES
 from gear_optimizer.core.output import suppress_stdout, suppress_stderr
 from gear_optimizer.data.database import init_db
 from gear_optimizer.app_async_db import AsyncDbSaver
@@ -122,13 +122,9 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     cpu_profile_path = str(os.environ.get("POST_CPU_PROFILE_PATH", "") or "").strip() or None
     profiler = _PostCpuProfiler(enabled=cpu_profile, out_path=cpu_profile_path)
 
-    team_buff_tiers_enabled = str(os.environ.get("POST_TEAM_BUFF_TIERS", "1") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-        "",
-    }
+    team_buff_tiers_enabled = (
+        str(os.environ.get("POST_TEAM_BUFF_TIERS", "1") or "").strip().lower() in (TRUTHY_ENV_VALUES | {""})
+    )
 
     def _log_timing(label: str, dt_sec: float, *, song: str | None = None) -> None:
         if not timing:

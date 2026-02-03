@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from typing import Any, Optional, Dict
 from enum import Enum
 
-from gear_optimizer.core.env_config import ENV
+from gear_optimizer.core.env_config import ENV, TRUTHY_ENV_VALUES, env_flag
 from gear_optimizer.core.types import JsonDict
 
 
@@ -912,12 +912,7 @@ class GpuExecutor:
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
         }
         # Default to enabled for in-process queues; callers can opt out via env var.
-        inproc_coalesce_enabled = str(os.environ.get("GPU_EXECUTOR_INPROC_COALESCE", "1") or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+        inproc_coalesce_enabled = env_flag("GPU_EXECUTOR_INPROC_COALESCE", "1")
         try:
             inproc_after_first_ms = int(os.environ.get("GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS", "2"))
         except Exception:
@@ -2564,12 +2559,7 @@ class GpuExecutor:
                 error="FG_SOLVE_WITH_BREAKPOINTS_BATCH requires payloads: list[dict]",
             )
 
-        debug_batch_pack = str(os.environ.get("FG_BREAKPOINTS_BATCH_PACK_DEBUG", "0") or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+        debug_batch_pack = env_flag("FG_BREAKPOINTS_BATCH_PACK_DEBUG", "0")
         try:
             min_pack_payloads = int(os.environ.get("FG_BREAKPOINTS_BATCH_PACK_MIN_PAYLOADS", "2") or "2")
         except Exception:
@@ -2783,22 +2773,13 @@ class GpuExecutor:
         except Exception as e:
             raise RuntimeError(f"breakpoint inputs invalid: {type(e).__name__}: {e}") from e
 
-        implicit_cfgs = str(os.environ.get("FG_IMPLICIT_CONFIGS", "1") or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-            "",
-        }
+        implicit_cfgs = (
+            str(os.environ.get("FG_IMPLICIT_CONFIGS", "1") or "").strip().lower() in (TRUTHY_ENV_VALUES | {""})
+        )
 
         fg_tasks: list[dict[str, Any]] = []
         cfg_windows: list[dict] | None = None
-        use_gpu_max_fp_compute = str(os.environ.get("FG_MAX_FP_GPU_COMPUTE", "0") or "").strip().lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
+        use_gpu_max_fp_compute = env_flag("FG_MAX_FP_GPU_COMPUTE", "0")
         if implicit_cfgs:
             if use_gpu_max_fp_compute:
                 # Per-pair max-FP caps (no CPU grouping). The packed-task solver can consume

@@ -9,6 +9,7 @@ from collections import OrderedDict
 from typing import Optional
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
+from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
 from gear_optimizer.data.database import get_song_counters, save_loadouts_batch, update_song_counters
 
 
@@ -21,7 +22,7 @@ _TEAM_BUFF_BASE_CALC_SONG_CACHE_DEFAULT = 16
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
-    return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+    return str(os.environ.get(name, default) or "").strip().lower() in TRUTHY_ENV_VALUES
 
 
 def _team_buff_base_calc_song_cache_max() -> int:
@@ -380,13 +381,10 @@ class AsyncDbSaver:
 
                     # Optional: Populate TeamBuff-tier tables (T1/T5/T10/T15/NONE) in async mode.
                     # This is intentionally after base persistence so it never blocks GPU work.
-                    tiers_enabled = str(os.environ.get("POST_TEAM_BUFF_TIERS", "1") or "").strip().lower() in {
-                        "1",
-                        "true",
-                        "yes",
-                        "on",
-                        "",
-                    }
+                    tiers_enabled = (
+                        str(os.environ.get("POST_TEAM_BUFF_TIERS", "1") or "").strip().lower()
+                        in (TRUTHY_ENV_VALUES | {""})
+                    )
                     if tiers_enabled and entries and file_path:
                         try:
                             from gear_optimizer.data.database import save_team_buff_loadouts_batch

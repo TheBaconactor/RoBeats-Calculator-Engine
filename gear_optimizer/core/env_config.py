@@ -19,20 +19,30 @@ import os
 from dataclasses import dataclass
 from typing import Optional
 
+TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _normalize_env_value(value: Optional[str]) -> str:
+    return str(value or "").strip().lower()
+
+
+def env_flag(key: str, default: str = "0") -> bool:
+    """Parse a boolean environment variable using common truthy values."""
+    return _normalize_env_value(os.environ.get(key, default)) in TRUTHY_ENV_VALUES
+
 
 def _env_bool(key: str, default: str = "0") -> bool:
     """
-    Parse boolean environment variable (0/1 or true/false).
+    Parse boolean environment variable (1/true/yes/on).
 
     Args:
         key: Environment variable name
         default: Default value if not set (default: "0")
 
     Returns:
-        True if value is "1" or "true" (case-insensitive), False otherwise
+        True if value is a recognized truthy token (case-insensitive), False otherwise
     """
-    value = os.environ.get(key, default).lower()
-    return value in ("1", "true")
+    return env_flag(key, default)
 
 
 def _env_str(key: str, default: Optional[str] = None) -> Optional[str]:
