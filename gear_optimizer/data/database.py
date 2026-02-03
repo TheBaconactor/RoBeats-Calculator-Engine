@@ -12,6 +12,7 @@ import time
 import threading
 import atexit
 import weakref
+import warnings
 from collections.abc import Iterable
 from typing import Dict, List, Optional, Any
 from urllib.parse import quote
@@ -1230,8 +1231,8 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
                 ON CONFLICT(song_name, team_buff, loadout_hash) DO UPDATE SET
                     score = CASE WHEN excluded.score > score THEN excluded.score ELSE score END,
                     fg_score = MAX(fg_score, excluded.fg_score),
-                    gear_json = excluded.gear_json,
-                    minis_json = excluded.minis_json,
+                    gear_json = CASE WHEN excluded.score >= score THEN excluded.gear_json ELSE gear_json END,
+                    minis_json = CASE WHEN excluded.score >= score THEN excluded.minis_json ELSE minis_json END,
                     details_json = CASE WHEN excluded.score >= score THEN excluded.details_json ELSE details_json END,
                     force_details_json = CASE
                         WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
@@ -1255,8 +1256,8 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
                 ON CONFLICT(song_name, team_buff, loadout_hash) DO UPDATE SET
                     score = CASE WHEN excluded.fg_score > fg_score THEN excluded.score ELSE score END,
                     fg_score = MAX(fg_score, excluded.fg_score),
-                    gear_json = excluded.gear_json,
-                    minis_json = excluded.minis_json,
+                    gear_json = CASE WHEN excluded.fg_score >= fg_score THEN excluded.gear_json ELSE gear_json END,
+                    minis_json = CASE WHEN excluded.fg_score >= fg_score THEN excluded.minis_json ELSE minis_json END,
                     details_json = CASE WHEN excluded.fg_score >= fg_score THEN excluded.details_json ELSE details_json END,
                     force_details_json = CASE
                         WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
@@ -1330,6 +1331,96 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
                 )
                 _log_timing("prune_team_buff_fg_loadouts", time.perf_counter() - _t_prfg0)
 
+        verify_integrity = (
+            str(os.environ.get("DB_VERIFY_WRITE_INTEGRITY", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+        )
+        if verify_integrity:
+            strict = str(os.environ.get("DB_STRICT_WRITE_INTEGRITY", "0") or "").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+
+            def _warn_or_raise(msg: str) -> None:
+                if strict:
+                    raise RuntimeError(msg)
+                warnings.warn(msg, RuntimeWarning, stacklevel=2)
+
+            def _verify_table_row(*, table: str, loadout_hash: str, expected_score: int, expected_fg_score: int) -> None:
+                row = conn.execute(
+                    f"SELECT score, fg_score, gear_json, minis_json, details_json FROM {table} "
+                    "WHERE song_name = ? AND team_buff = ? AND loadout_hash = ?",
+                    (song_name, team_buff, loadout_hash),
+                ).fetchone()
+                if row is None:
+                    _warn_or_raise(
+                        f"[DB] Missing expected row after persistence: table={table} song={song_name!r} "
+                        f"team_buff={team_buff!r} hash={loadout_hash}"
+                    )
+                    return
+
+                got_score = int(row["score"] or 0)
+                got_fg_score = int(row["fg_score"] or 0)
+                if got_score < int(expected_score):
+                    _warn_or_raise(
+                        f"[DB] Score regressed after persistence (possible override/race): table={table} "
+                        f"song={song_name!r} team_buff={team_buff!r} hash={loadout_hash} "
+                        f"expected>={int(expected_score)} got={got_score}"
+                    )
+                if got_fg_score < int(expected_fg_score):
+                    _warn_or_raise(
+                        f"[DB] FG score regressed after persistence (possible override/race): table={table} "
+                        f"song={song_name!r} team_buff={team_buff!r} hash={loadout_hash} "
+                        f"expected>={int(expected_fg_score)} got={got_fg_score}"
+                    )
+
+                # Hash consistency check: ensure persisted (gear/minis/details) re-hash back to the stored hash.
+                try:
+                    gear_names_row = json.loads(row["gear_json"]) if row["gear_json"] else []
+                    mini_groups_row = decode_minis_json(row["minis_json"])
+                    mini_names_row = representative_mini_names(mini_groups_row)
+                    details_row = json.loads(row["details_json"]) if row["details_json"] else {}
+                    p_color, s_color, sel_color = extract_song_colors(details_row)
+                    if p_color or s_color:
+                        mini_sigs_row = [
+                            effective_mini_signature_for_name(n, minis_by_name, p_color, s_color, sel_color)
+                            for n in mini_names_row
+                        ]
+                        expected_hash = effective_loadout_hash_from_names(gear_names_row, mini_sigs_row)
+                    else:
+                        expected_hash = _loadout_hash_from_names(gear_names_row, mini_names_row)
+                    if expected_hash and str(expected_hash) != str(loadout_hash):
+                        _warn_or_raise(
+                            f"[DB] Loadout hash mismatch after persistence (possible override/race): table={table} "
+                            f"song={song_name!r} team_buff={team_buff!r} stored={loadout_hash} expected={expected_hash}"
+                        )
+                except Exception:
+                    pass
+
+            try:
+                if loadouts_params:
+                    best = max(loadouts_params, key=lambda t: int(t[3] or 0))
+                    _verify_table_row(
+                        table="team_buff_loadouts",
+                        loadout_hash=str(best[2]),
+                        expected_score=int(best[3] or 0),
+                        expected_fg_score=int(best[4] or 0),
+                    )
+                if fg_loadouts_params:
+                    best_fg = max(fg_loadouts_params, key=lambda t: int(t[4] or 0))
+                    _verify_table_row(
+                        table="team_buff_fg_loadouts",
+                        loadout_hash=str(best_fg[2]),
+                        expected_score=int(best_fg[3] or 0),
+                        expected_fg_score=int(best_fg[4] or 0),
+                    )
+            except Exception as exc:
+                _warn_or_raise(
+                    f"[DB] Write integrity verification failed: song={song_name!r} team_buff={team_buff!r} "
+                    f"error={type(exc).__name__}: {exc}"
+                )
+
         _t_commit0 = time.perf_counter()
         conn.commit()
         _log_timing("commit", time.perf_counter() - _t_commit0)
@@ -1380,6 +1471,7 @@ def get_best_loadouts(
     song_name = str(song_name or "").strip()
 
     team_buff = str(team_buff or "").strip().upper() or "T5"
+    strict_seed_hash = str(os.environ.get("DB_STRICT_SEED_HASH", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
 
     # PERF: use a cached per-thread connection for read-heavy call sites.
     conn = get_db_connection_cached(db_path)
@@ -1433,6 +1525,33 @@ def get_best_loadouts(
             gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
             mini_groups = decode_minis_json(row["minis_json"])
             mini_names = representative_mini_names(mini_groups)
+            details = json.loads(row["details_json"]) if row["details_json"] else {}
+
+            # Defensive: Detect corrupted/mismatched hashes to avoid seeding GA with inconsistent loadouts.
+            # This can happen if a lower-scoring write overwrote a row's payload fields (or if a legacy
+            # DB predates the current effective-hash semantics).
+            try:
+                p_color, s_color, sel_color = extract_song_colors(details)
+                if p_color or s_color:
+                    lookup = minis_by_name or get_minis_by_name_cached()
+                    mini_sigs = [
+                        effective_mini_signature_for_name(n, lookup, p_color, s_color, sel_color) for n in mini_names
+                    ]
+                    expected = effective_loadout_hash_from_names(gear_names, mini_sigs)
+                else:
+                    expected = _loadout_hash_from_names(gear_names, mini_names)
+                if expected and str(expected) != str(row["loadout_hash"]):
+                    warnings.warn(
+                        f"[DB] Loadout hash mismatch (seed): song={song_name!r} team_buff={team_buff!r} "
+                        f"stored={row['loadout_hash']} expected={expected}",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    if strict_seed_hash:
+                        return
+            except Exception:
+                # Best-effort only; never break seeding on verifier errors.
+                pass
             force_block = json.loads(row["force_details_json"]) if row["force_details_json"] else None
 
             # Expand names to full dicts if lookup provided
@@ -1453,7 +1572,7 @@ def get_best_loadouts(
                     "gear": gear_data,
                     "minis": minis_data,
                     "mini_groups": mini_groups,
-                    "details": json.loads(row["details_json"]) if row["details_json"] else {},
+                    "details": details,
                     "force": force_block if isinstance(force_block, dict) else None,
                 }
             )
