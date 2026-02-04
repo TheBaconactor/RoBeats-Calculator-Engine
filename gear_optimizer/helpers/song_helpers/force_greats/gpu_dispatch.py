@@ -456,7 +456,7 @@ def process_force_greats_gpu_finder(
     # - In-process mode can also benefit (hide CPU prep between submits) and does not
     #   pay pickling overhead, so a modest bump is safe.
     if gpu_client is not None:
-        fg_async_max_inflight_default = 16 if in_process else 16
+        fg_async_max_inflight_default = 32 if in_process else 32
     try:
         fg_async_max_inflight = int(os.environ.get("FG_ASYNC_MAX_INFLIGHT", str(fg_async_max_inflight_default)))
     except Exception:
