@@ -335,6 +335,18 @@ def process_force_greats_gpu_finder(
         download_topk_k = int(LOADOUTS_PER_SONG_LIMIT)
     download_topk_k = max(0, int(download_topk_k))
 
+    # Resolve song_slot early so async-guard decisions see the actual slot.
+    song_slot = 0
+    try:
+        if isinstance(calc_song, dict):
+            song_slot = int(calc_song.get("_gpu_song_slot", 0) or 0)
+        else:
+            song_slot = 0
+    except Exception:
+        song_slot = 0
+    if song_slot < 0:
+        song_slot = 0
+
     def _submit_fg_reset_global_best(n_genomes: int, *, blocking: bool = True):
         if gpu_client is not None:
             fut = gpu_client.submit(
@@ -488,9 +500,24 @@ def process_force_greats_gpu_finder(
     # "global best" buffers can mix results. The safest default is to keep each song's FG work
     # within a single executor request when using in-process thread queues.
     #
-    # Opt out (advanced): set `FG_ALLOW_MULTI_REQUEST_SESSION=1` to restore multi-request pipelining.
+    # Multi-request FG sessions are enabled by default to keep the GPU queue saturated.
+    # Safety guard: if a song has no slot (song_slot <= 0), force single-request to avoid
+    # global-best mixing across songs.
     # ---------------------------------------------------------------------
-    if gpu_client is not None and in_process and (not _truthy_env("FG_ALLOW_MULTI_REQUEST_SESSION", "0")):
+    unsafe_multi_request_slot = False
+    try:
+        unsafe_multi_request_slot = int(song_slot) <= 0
+    except Exception:
+        unsafe_multi_request_slot = True
+
+    enforce_single_request = False
+    if gpu_client is not None and unsafe_multi_request_slot:
+        enforce_single_request = True
+        if not hasattr(process_force_greats_gpu_finder, "_fg_multi_request_slot_warned"):
+            process_force_greats_gpu_finder._fg_multi_request_slot_warned = True
+            print("[FG][ASYNC][WARN] Multi-request FG requires non-zero song_slot; falling back to single request.")
+
+    if enforce_single_request:
         fg_async_max_inflight = 1
         fg_async_tasks_per_request = 1_000_000_000
 
@@ -834,18 +861,7 @@ def process_force_greats_gpu_finder(
     # CPU-side cap-grid construction and the host->device upload (major GPU-queue starvation source).
     pair_caps_grid = None
     pair_caps_from_timeline = False
-    song_slot = 0
     song_data_cache = calc_song.get("song_data", {}) if isinstance(calc_song, dict) else {}
-
-    try:
-        if isinstance(calc_song, dict):
-            song_slot = int(calc_song.get("_gpu_song_slot", 0) or 0)
-        else:
-            song_slot = 0
-    except Exception:
-        song_slot = 0
-    if song_slot < 0:
-        song_slot = 0
 
     # In GPU-native in-flight mode, GA can release a song slot before FG runs. When that happens, the GA->FG
     # candidate table for the original slot may be overwritten by other songs, so the staging fast-path is unsafe.
@@ -1574,6 +1590,11 @@ def process_force_greats_gpu_finder(
                                     "download_future": None,
                                     "download_index": None,
                                     "futures": [],
+                                    "download_topk": int(download_topk_k)
+                                    if (download_topk_enabled and download_base_scores is not None)
+                                    else None,
+                                    "download_base_scores": download_base_scores,
+                                    "download_keep_mask": download_keep_mask,
                                 }
                                 deferred_gpu_applies.append(ctx)
                                 fused_payload_batch.append(fused_payload)
@@ -1921,6 +1942,11 @@ def process_force_greats_gpu_finder(
                             "fg_scorer": fg_scorer,
                             "download_future": download_future,
                             "futures": group_futures,
+                            "download_topk": int(download_topk_k)
+                            if (download_topk_enabled and download_base_scores is not None)
+                            else None,
+                            "download_base_scores": download_base_scores,
+                            "download_keep_mask": download_keep_mask,
                         }
                     )
                     continue
@@ -2193,6 +2219,20 @@ def process_force_greats_gpu_finder(
                     gpu_results = gpu_results_raw[int(download_index)]
                 else:
                     gpu_results = gpu_results_raw
+            if not isinstance(gpu_results, dict):
+                download_topk = ctx.get("download_topk")
+                download_base_scores = ctx.get("download_base_scores")
+                download_keep_mask = ctx.get("download_keep_mask")
+                if download_topk is not None and download_base_scores is not None:
+                    gpu_results = _submit_fg_download_global_best(
+                        n_pending,
+                        blocking=True,
+                        topk=int(download_topk),
+                        base_scores=download_base_scores,
+                        keep_mask=download_keep_mask,
+                    )
+                else:
+                    gpu_results = _submit_fg_download_global_best(n_pending, blocking=True)
             if not isinstance(gpu_results, dict):
                 raise RuntimeError("Deferred FG download returned no result")
 

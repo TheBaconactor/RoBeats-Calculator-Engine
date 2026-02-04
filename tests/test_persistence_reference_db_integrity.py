@@ -68,55 +68,13 @@ def _find_song_file(*, song_name: str, difficulty: str, paths: dict) -> Optional
     return None
 
 
-def test_reference_db_roundtrip_persistence_matches_recomputed_score(tmp_path, monkeypatch):
-    """
-    Integration-style invariant against the repo's current `evolution.db`:
-    - Pick a real (song, best loadout) row from the reference DB.
-    - Recompute its score from persisted Stats + real song chart + Stats.txt ref arrays.
-    - Re-persist the same payload into a fresh temp DB and ensure:
-      - persisted score matches the recomputed score (±2 tolerance)
-      - a lower-scoring "override" attempt cannot overwrite gear/minis/details payloads
-    """
-    repo_root = _repo_root()
-    ref_db_path = repo_root / "evolution.db"
-    if not ref_db_path.exists():
-        pytest.skip("reference evolution.db not present in repo root")
-
-    from gear_optimizer.core.config import load_paths_cache
-
-    paths = load_paths_cache()
-    stats_txt = str(paths.get("Stats") or "")
-    if not stats_txt or not Path(stats_txt).exists():
-        pytest.skip("Stats.txt not available (paths cache missing or invalid)")
-
-    ref_arrays = _load_ref_arrays_from_stats_txt(stats_txt)
-
-    conn = _connect_readonly_sqlite(ref_db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        candidates = conn.execute(
-            """
-            SELECT song_name, team_buff, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
-            FROM team_buff_loadouts
-            WHERE details_json IS NOT NULL
-            AND details_json LIKE '%"Stats"%'
-            AND team_buff = 'T5'
-            ORDER BY score DESC
-            LIMIT 50
-            """
-        ).fetchall()
-    finally:
-        conn.close()
-
+def _select_reference_rows(*, candidates: list, paths: dict, ref_arrays: dict, max_count: int) -> tuple[list, dict]:
     from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song
     from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
-
     from gear_optimizer.data.database import _ensure_stats_in_details, get_minis_by_name_cached
     from gear_optimizer.data.loadout_equivalence import decode_minis_json, representative_mini_names
 
-    selected = None
-    selected_fp = None
-    selected_details = None
+    selected = []
     skipped_no_song = 0
     skipped_no_stats = 0
     skipped_score_mismatch = 0
@@ -167,30 +125,46 @@ def test_reference_db_roundtrip_persistence_matches_recomputed_score(tmp_path, m
             skipped_rebuild_mismatch += 1
             continue
 
-        selected = row
-        selected_fp = fp
-        selected_details = details
-        break
+        selected.append((row, fp, details))
+        if len(selected) >= max_count:
+            break
 
-    if selected is None or selected_fp is None or selected_details is None:
-        pytest.skip(
-            "could not find a self-consistent reference DB row that maps to an on-disk song chart "
-            f"(no_song={skipped_no_song}, no_stats={skipped_no_stats}, "
-            f"score_mismatch={skipped_score_mismatch}, rebuild_mismatch={skipped_rebuild_mismatch})"
-        )
+    skip_info = {
+        "no_song": skipped_no_song,
+        "no_stats": skipped_no_stats,
+        "score_mismatch": skipped_score_mismatch,
+        "rebuild_mismatch": skipped_rebuild_mismatch,
+    }
+    return selected, skip_info
 
-    calc_song = clone_calc_song(get_base_calc_song(str(selected_fp), cfg_dict=None))
-    stored_stats = selected_details.get("Stats") or {}
+
+def _validate_reference_row(
+    *,
+    row,
+    fp: Path,
+    details: dict,
+    ref_arrays: dict,
+    tmp_path: Path,
+    monkeypatch,
+    idx: int,
+) -> None:
+    from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song
+    from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
+    from gear_optimizer.data.database import _ensure_stats_in_details, get_minis_by_name_cached
+    from gear_optimizer.data.loadout_equivalence import decode_minis_json, representative_mini_names
+    from gear_optimizer.data.database import get_db_connection, init_db, save_loadouts_batch
+
+    calc_song = clone_calc_song(get_base_calc_song(str(fp), cfg_dict=None))
+    stored_stats = details.get("Stats") or {}
     recomputed_score = int(evaluate_stats_score(stored_stats, calc_song, ref_arrays))
-    db_score = int(selected["score"] or 0)
+    db_score = int(row["score"] or 0)
     assert abs(recomputed_score - db_score) <= 2
 
-    # Secondary verification method: recompute Stats from (gear/minis/gems/team_buff) and verify it re-scores.
-    gear_names = json.loads(selected["gear_json"]) if selected["gear_json"] else []
-    mini_groups = decode_minis_json(selected["minis_json"])
+    gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
+    mini_groups = decode_minis_json(row["minis_json"])
     mini_names = representative_mini_names(mini_groups)
 
-    details_no_stats = dict(selected_details)
+    details_no_stats = dict(details)
     details_no_stats.pop("Stats", None)
     rebuilt = _ensure_stats_in_details(
         details_no_stats,
@@ -198,31 +172,29 @@ def test_reference_db_roundtrip_persistence_matches_recomputed_score(tmp_path, m
         mini_groups,
         get_minis_by_name_cached(),
         team_buff="T5",
-        team_color=str(selected_details.get("PrimaryColor") or selected_details.get("Primary Color") or "").strip(),
+        team_color=str(details.get("PrimaryColor") or details.get("Primary Color") or "").strip(),
     )
     rebuilt_stats = rebuilt.get("Stats") or {}
     rebuilt_score = int(evaluate_stats_score(rebuilt_stats, calc_song, ref_arrays))
     assert abs(rebuilt_score - db_score) <= 2
 
     # Persist into a fresh temp DB and compare live persisted payload vs the stored reference payload.
-    db_path = tmp_path / "reference_roundtrip.db"
+    db_path = tmp_path / f"reference_roundtrip_{idx}.db"
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
     monkeypatch.setenv("DB_VERIFY_WRITE_INTEGRITY", "1")
     monkeypatch.setenv("DB_STRICT_WRITE_INTEGRITY", "1")
 
-    from gear_optimizer.data.database import get_db_connection, init_db, save_loadouts_batch
-
     init_db()
 
-    song_name = str(selected["song_name"])
+    song_name = str(row["song_name"])
     team_buff = "T5"
     entry = {
-        "score": int(selected["score"] or 0),
-        "fg_score": int(selected["fg_score"] or 0),
+        "score": int(row["score"] or 0),
+        "fg_score": int(row["fg_score"] or 0),
         "gear": gear_names,
         "minis": mini_names,
-        "details": selected_details,
-        "force": json.loads(selected["force_details_json"]) if selected["force_details_json"] else None,
+        "details": details,
+        "force": json.loads(row["force_details_json"]) if row["force_details_json"] else None,
     }
     save_loadouts_batch(song_name, [entry])
 
@@ -244,8 +216,8 @@ def test_reference_db_roundtrip_persistence_matches_recomputed_score(tmp_path, m
     assert json.loads(row1["gear_json"]) == gear_names
 
     # Simulate a "racy" second writer: same effective loadout, worse score, different order + tainted details.
-    tainted = dict(selected_details)
-    tainted["Stats"] = {k: 0 for k in (selected_details.get("Stats") or {}).keys()}
+    tainted = dict(details)
+    tainted["Stats"] = {k: 0 for k in (details.get("Stats") or {}).keys()}
     entry_worse = {
         **entry,
         "score": max(0, db_score - 5000),
@@ -269,3 +241,82 @@ def test_reference_db_roundtrip_persistence_matches_recomputed_score(tmp_path, m
     assert json.loads(row2["gear_json"]) == gear_names
     row2_details = json.loads(row2["details_json"]) if row2["details_json"] else {}
     assert (row2_details.get("Stats") or {}) != (tainted.get("Stats") or {})
+
+
+def test_reference_db_roundtrip_persistence_matches_recomputed_score(tmp_path, monkeypatch):
+    """
+    Integration-style invariant against the repo's current `evolution.db`:
+    - Pick real (song, best loadout) rows from the reference DB.
+    - Recompute scores from persisted Stats + real song charts + Stats.txt ref arrays.
+    - Re-persist the same payloads into fresh temp DBs and ensure:
+      - persisted score matches the recomputed score (±2 tolerance)
+      - a lower-scoring "override" attempt cannot overwrite gear/minis/details payloads
+    """
+    repo_root = _repo_root()
+    ref_db_path = repo_root / "evolution.db"
+    if not ref_db_path.exists():
+        pytest.skip("reference evolution.db not present in repo root")
+
+    from gear_optimizer.core.config import load_paths_cache
+
+    paths = load_paths_cache()
+    stats_txt = str(paths.get("Stats") or "")
+    if not stats_txt or not Path(stats_txt).exists():
+        pytest.skip("Stats.txt not available (paths cache missing or invalid)")
+
+    ref_arrays = _load_ref_arrays_from_stats_txt(stats_txt)
+
+    conn = _connect_readonly_sqlite(ref_db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        candidates = conn.execute(
+            """
+            SELECT song_name, team_buff, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
+            FROM team_buff_loadouts
+            WHERE details_json IS NOT NULL
+            AND details_json LIKE '%"Stats"%'
+            AND team_buff = 'T5'
+            ORDER BY score DESC
+            LIMIT 50
+            """
+        ).fetchall()
+    finally:
+        conn.close()
+
+    from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song
+    from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
+
+    from gear_optimizer.data.database import _ensure_stats_in_details, get_minis_by_name_cached
+    from gear_optimizer.data.loadout_equivalence import decode_minis_json, representative_mini_names
+
+    try:
+        target_count = int(os.environ.get("REF_DB_ROUNDTRIP_COUNT", "1"))
+    except Exception:
+        target_count = 1
+    target_count = max(1, int(target_count))
+
+    selected_rows, skip_info = _select_reference_rows(
+        candidates=candidates,
+        paths=paths,
+        ref_arrays=ref_arrays,
+        max_count=target_count,
+    )
+
+    if len(selected_rows) < target_count:
+        pytest.skip(
+            "could not find enough self-consistent reference DB rows that map to on-disk song charts "
+            f"(selected={len(selected_rows)}/{target_count}, no_song={skip_info['no_song']}, "
+            f"no_stats={skip_info['no_stats']}, score_mismatch={skip_info['score_mismatch']}, "
+            f"rebuild_mismatch={skip_info['rebuild_mismatch']})"
+        )
+
+    for idx, (row, fp, details) in enumerate(selected_rows, start=1):
+        _validate_reference_row(
+            row=row,
+            fp=fp,
+            details=details,
+            ref_arrays=ref_arrays,
+            tmp_path=tmp_path,
+            monkeypatch=monkeypatch,
+            idx=idx,
+        )

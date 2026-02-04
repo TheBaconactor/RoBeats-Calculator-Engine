@@ -1,6 +1,4 @@
-import os
 import time
-import threading
 
 import numpy as np
 import pytest
@@ -89,10 +87,11 @@ def _make_minimal_entries() -> dict:
 def _run_fg_once(
     *,
     monkeypatch,
-    allow_multi_request_session: bool,
     tasks_per_request_env: int,
     fg_search_radius: int,
-) -> int:
+    song_slot: int = 1,
+    return_calc_song: bool = False,
+) -> int | tuple[int, dict]:
     from gear_optimizer.helpers.song_helpers.force_greats.core import process_force_greats
     from gear_optimizer.helpers.song_helpers.force_greats import gpu_dispatch as _gpu_dispatch
     from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequestType
@@ -103,7 +102,6 @@ def _run_fg_once(
     # `SOLVE_FORCE_GREATS_FINDER` (fg_tasks) path we are guarding.
     _gpu_dispatch._FG_FUSE_BREAKPOINTS_SOLVE = False
 
-    monkeypatch.setenv("FG_ALLOW_MULTI_REQUEST_SESSION", "1" if allow_multi_request_session else "0")
     monkeypatch.setenv("FG_ASYNC_TASKS_PER_REQUEST", str(int(tasks_per_request_env)))
     monkeypatch.setenv("FG_ASYNC_MAX_INFLIGHT", "16")
 
@@ -117,7 +115,7 @@ def _run_fg_once(
     gpu_client.start(start_executor=False)
 
     try:
-        calc_song, ref_arrays = _make_minimal_song(song_name="FG session guard", song_slot=1)
+        calc_song, ref_arrays = _make_minimal_song(song_name="FG session guard", song_slot=int(song_slot))
         entries = _make_minimal_entries()
 
         before = int(executor._req_type_counts.get(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, 0))
@@ -139,7 +137,10 @@ def _run_fg_once(
         )
 
         after = int(executor._req_type_counts.get(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, 0))
-        return max(0, after - before)
+        count = max(0, after - before)
+        if return_calc_song:
+            return count, calc_song
+        return count
     finally:
         try:
             gpu_client.close()
@@ -151,38 +152,42 @@ def _run_fg_once(
             GpuExecutor._instance = None
 
 
-def test_fg_inprocess_session_guard_forces_single_request(monkeypatch):
+def test_fg_inprocess_multi_request_default_allows_multiple_requests(monkeypatch):
     """
-    Regression test for the in-process FG "session guard".
-
-    We intentionally set a tiny `FG_ASYNC_TASKS_PER_REQUEST` (which would normally split
-    a single song across multiple executor requests) and verify the default guard
-    forces a single SOLVE_FORCE_GREATS_FINDER request, eliminating cross-request
-    global-best mixing risk.
+    Default behavior should allow multiple requests per song when tasks_per_request
+    is small enough to split the FT/FF grid.
     """
     # Radius 35 => 36*36=1296 FT/FF pairs (budget constraint doesn't bind here),
     # which requires multiple FT/FF chunks internally.
-    n = _run_fg_once(
+    n = _run_fg_once(monkeypatch=monkeypatch, tasks_per_request_env=2, fg_search_radius=35)
+    assert n >= 2
+
+
+def test_fg_inprocess_auto_assign_slot_allows_multi_request(monkeypatch):
+    n, calc_song = _run_fg_once(
         monkeypatch=monkeypatch,
-        allow_multi_request_session=False,
         tasks_per_request_env=2,
         fg_search_radius=35,
-    )
-    assert n == 1
-
-
-def test_fg_inprocess_session_guard_optout_allows_multiple_requests(monkeypatch):
-    """
-    Sanity check: when `FG_ALLOW_MULTI_REQUEST_SESSION=1`, the same workload can
-    split into multiple SOLVE_FORCE_GREATS_FINDER requests.
-
-    This doesn't prove mixing occurs, but it confirms the guard is what prevents
-    multi-request sessions by default.
-    """
-    n = _run_fg_once(
-        monkeypatch=monkeypatch,
-        allow_multi_request_session=True,
-        tasks_per_request_env=2,
-        fg_search_radius=35,
+        song_slot=0,
+        return_calc_song=True,
     )
     assert n >= 2
+    assert int(calc_song.get("_gpu_song_slot", 0) or 0) == 0
+    assert "_fg_auto_assigned_slot" not in calc_song
+
+
+def test_fg_inprocess_auto_assign_failure_forces_single_request(monkeypatch):
+    from gear_optimizer.helpers.song_helpers.force_greats import core as fg_core
+
+    def _boom():
+        raise RuntimeError("slot pool unavailable")
+
+    monkeypatch.setattr(fg_core, "_get_fg_session_slot_pool", _boom)
+
+    n = _run_fg_once(
+        monkeypatch=monkeypatch,
+        tasks_per_request_env=2,
+        fg_search_radius=35,
+        song_slot=0,
+    )
+    assert n == 1

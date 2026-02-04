@@ -27,10 +27,45 @@ _FG_INPROCESS_GPU_CLIENT_LOCK = threading.Lock()
 _FG_INPROCESS_GPU_CLIENT = None
 _FG_INPROCESS_GPU_CLIENT_DISABLED = False
 
+_FG_SESSION_SLOT_LOCK = threading.Lock()
+_FG_SESSION_SLOT_POOL = None
+_FG_SESSION_SLOT_LOGGED = False
+
 
 def _truthy_env(name: str, default: str = "0") -> bool:
     return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
 
+
+def _is_inprocess_gpu_client(gpu_client: Optional["GpuServiceClient"]) -> bool:
+    if gpu_client is None:
+        return False
+    try:
+        ex = getattr(gpu_client, "executor", None)
+        return bool(getattr(ex, "_in_process_queues", False))
+    except Exception:
+        return False
+
+
+def _get_fg_session_slot_pool():
+    global _FG_SESSION_SLOT_POOL
+    if _FG_SESSION_SLOT_POOL is not None:
+        return _FG_SESSION_SLOT_POOL
+    try:
+        raw = os.environ.get("GPU_SONG_SLOTS")
+        max_slots = int(raw) if raw is not None and str(raw).strip() != "" else 0
+    except Exception:
+        max_slots = 0
+    if max_slots <= 0:
+        try:
+            from ....solver.taichi_gem import fields as gem_fields
+
+            max_slots = int(getattr(gem_fields, "MAX_SONG_SLOTS", 8) or 8)
+        except Exception:
+            max_slots = 8
+    from ....solver.inflight_utils import SongSlotPool
+
+    _FG_SESSION_SLOT_POOL = SongSlotPool(max_song_slots=int(max_slots))
+    return _FG_SESSION_SLOT_POOL
 
 def _get_inprocess_gpu_client():
     global _FG_INPROCESS_GPU_CLIENT, _FG_INPROCESS_GPU_CLIENT_DISABLED
@@ -200,6 +235,32 @@ def process_force_greats(
     print(f"[ForceGreats] Processing {len(loadout_entries)} unique loadouts (DB + GA)...")
 
     if use_gpu and force_greats_finder:
+        auto_slot_assigned = False
+        auto_slot_id = None
+        had_gpu_slot = False
+        prev_gpu_slot = None
+        if (
+            isinstance(calc_song, dict)
+            and _is_inprocess_gpu_client(gpu_client)
+        ):
+            try:
+                had_gpu_slot = "_gpu_song_slot" in calc_song
+                prev_gpu_slot = calc_song.get("_gpu_song_slot")
+                curr_slot = int(prev_gpu_slot or 0)
+                if curr_slot <= 0:
+                    with _FG_SESSION_SLOT_LOCK:
+                        slot_pool = _get_fg_session_slot_pool()
+                        auto_slot_id = int(slot_pool.acquire())
+                    calc_song["_gpu_song_slot"] = int(auto_slot_id)
+                    calc_song["_fg_auto_assigned_slot"] = True
+                    auto_slot_assigned = True
+                    global _FG_SESSION_SLOT_LOGGED
+                    if not _FG_SESSION_SLOT_LOGGED:
+                        _FG_SESSION_SLOT_LOGGED = True
+                        print("[ForceGreats][GPU] Auto-assigned FG session slots enabled.")
+            except Exception:
+                auto_slot_assigned = False
+
         try:
             return process_force_greats_gpu_finder(
                 loadout_entries,
@@ -240,6 +301,22 @@ def process_force_greats(
                         perf_timing=perf_timing,
                         gpu_client=None,
                     ).future.result()
+                except Exception:
+                    pass
+        finally:
+            if auto_slot_assigned and isinstance(calc_song, dict):
+                try:
+                    with _FG_SESSION_SLOT_LOCK:
+                        slot_pool = _get_fg_session_slot_pool()
+                        slot_pool.release(int(auto_slot_id or 0))
+                except Exception:
+                    pass
+                try:
+                    if had_gpu_slot:
+                        calc_song["_gpu_song_slot"] = prev_gpu_slot
+                    else:
+                        calc_song.pop("_gpu_song_slot", None)
+                    calc_song.pop("_fg_auto_assigned_slot", None)
                 except Exception:
                     pass
 
