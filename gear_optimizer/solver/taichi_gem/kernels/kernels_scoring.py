@@ -456,7 +456,7 @@ def local_search_from_hint(
     ELEMENTAL_GEM_SCALE: ti.i32 = 6  # gear_optimizer.core.constants.ELEMENTAL_GEM_SCALE
     GEM_STAT_TO_ELEMENT: ti.i32 = 3  # gear_optimizer.core.constants.GEM_STAT_TO_ELEMENT_SCALE
     MAX_STAT: ti.i32 = 160  # gear_optimizer.core.constants.MAX_STAT_INDEX
-    MAX_ITER: ti.i32 = 20  # gear_optimizer.core.constants.LOCAL_SEARCH_MAX_ITERATIONS
+    MAX_ITER: ti.i32 = 5  # gear_optimizer.core.constants.LOCAL_SEARCH_MAX_ITERATIONS
 
     # Load cached bitmasks once
     m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
