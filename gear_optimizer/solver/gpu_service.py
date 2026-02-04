@@ -71,26 +71,29 @@ class GpuServiceClient:
         self._profile_total_sec: dict[GpuRequestType, float] = defaultdict(float)
         self._profile_max_sec: dict[GpuRequestType, float] = defaultdict(float)
         self._profile_samples: dict[GpuRequestType, list[float]] = defaultdict(list)
+        # Client-level profiling for Futures that do not correspond 1:1 with executor requests
+        # (e.g., coalesced FG solve batch handles).
+        self._client_profile_counts: dict[str, int] = defaultdict(int)
+        self._client_profile_total_sec: dict[str, float] = defaultdict(float)
+        self._client_profile_max_sec: dict[str, float] = defaultdict(float)
+        self._client_profile_samples: dict[str, list[float]] = defaultdict(list)
         self._profile_sample_cap = 5000
 
         # FG job coalescing (optional, in-process only).
         self._fg_coalesce_enabled = env_flag("FG_COALESCE_BREAKPOINTS_BATCH", "1")
         try:
-            self._fg_coalesce_max_payloads = int(
-                os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "192") or "192"
-            )
+            self._fg_coalesce_max_payloads = int(os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "192") or "192")
         except Exception:
             self._fg_coalesce_max_payloads = 128
         try:
-            self._fg_coalesce_max_wait_ms = int(
-                os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS", "4") or "4"
-            )
+            self._fg_coalesce_max_wait_ms = int(os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS", "4") or "4")
         except Exception:
             self._fg_coalesce_max_wait_ms = 4
         self._fg_coalesce_max_payloads = max(1, int(self._fg_coalesce_max_payloads))
         self._fg_coalesce_max_wait_ms = max(0, int(self._fg_coalesce_max_wait_ms))
         self._fg_coalesce_payloads: list[dict[str, Any]] = []
-        self._fg_coalesce_slices: list[tuple[Future, int, int]] = []
+        # (future, start, count, submit_ts)
+        self._fg_coalesce_slices: list[tuple[Future, int, int, float]] = []
         self._fg_coalesce_first_ts: float | None = None
         self._fg_coalesce_lock = threading.Lock()
         self._fg_coalesce_event = threading.Event()
@@ -152,7 +155,7 @@ class GpuServiceClient:
                 self._fg_coalesce_payloads.clear()
                 self._fg_coalesce_slices.clear()
                 self._fg_coalesce_first_ts = None
-            for fut, _start, _count in pending:
+            for fut, _start, _count, _submit_ts in pending:
                 if not fut.done():
                     fut.set_exception(RuntimeError("GPU client closed"))
             try:
@@ -213,9 +216,47 @@ class GpuServiceClient:
             request_id=request_id,
             worker_id=int(self._worker_id),
             payload=dict(payload or {}),
+            submit_perf_ns=time.perf_counter_ns(),
         )
         self._request_queue.put(req)
         return GpuJobHandle(request_id=request_id, future=fut)
+
+    def _record_latency_sample(
+        self,
+        *,
+        key: Any,
+        latency_sec: float,
+        counts: dict[Any, int],
+        totals: dict[Any, float],
+        maxes: dict[Any, float],
+        samples: dict[Any, list[float]],
+    ) -> None:
+        try:
+            latency = float(latency_sec)
+        except Exception:
+            return
+        if latency < 0.0:
+            latency = 0.0
+        try:
+            counts[key] += 1
+            totals[key] += float(latency)
+            if latency > float(maxes[key]):
+                maxes[key] = float(latency)
+        except Exception:
+            return
+
+        try:
+            sample_list = samples[key]
+            if len(sample_list) < int(self._profile_sample_cap):
+                sample_list.append(float(latency))
+            else:
+                n = int(counts[key])
+                if n > 0:
+                    j = random.randint(0, n - 1)
+                    if j < int(self._profile_sample_cap):
+                        sample_list[j] = float(latency)
+        except Exception:
+            return
 
     def submit_precompute_timeline(
         self,
@@ -300,6 +341,7 @@ class GpuServiceClient:
             raise RuntimeError("GpuServiceClient not started")
         fut: Future = Future()
         request_id = int(next(self._counter))
+        t_submit = time.perf_counter() if self._profile_enabled else 0.0
 
         batch = None
         with self._fg_coalesce_lock:
@@ -310,7 +352,7 @@ class GpuServiceClient:
                 self._fg_coalesce_first_ts = time.perf_counter()
             start = len(self._fg_coalesce_payloads)
             self._fg_coalesce_payloads.extend(payloads)
-            self._fg_coalesce_slices.append((fut, int(start), int(len(payloads))))
+            self._fg_coalesce_slices.append((fut, int(start), int(len(payloads)), float(t_submit)))
             if (
                 int(len(self._fg_coalesce_payloads)) >= int(self._fg_coalesce_max_payloads)
                 or int(self._fg_coalesce_max_wait_ms) <= 0
@@ -325,7 +367,7 @@ class GpuServiceClient:
 
         return GpuJobHandle(request_id=request_id, future=fut)
 
-    def _pop_fg_coalesce_locked(self) -> tuple[list[dict[str, Any]], list[tuple[Future, int, int]]] | None:
+    def _pop_fg_coalesce_locked(self) -> tuple[list[dict[str, Any]], list[tuple[Future, int, int, float]]] | None:
         if not self._fg_coalesce_payloads:
             return None
         payloads = list(self._fg_coalesce_payloads)
@@ -338,31 +380,75 @@ class GpuServiceClient:
     def _submit_fg_coalesced_batch(
         self,
         payloads: list[dict[str, Any]],
-        slices: list[tuple[Future, int, int]],
+        slices: list[tuple[Future, int, int, float]],
     ) -> None:
+        t_batch_submit = time.perf_counter() if self._profile_enabled else 0.0
         try:
             job = self.submit(GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH, {"payloads": payloads})
         except Exception as exc:
-            for fut, _start, _count in slices:
+            if self._profile_enabled:
+                now = time.perf_counter()
+                for _fut, _start, _count, submit_ts in slices:
+                    if not isinstance(submit_ts, (int, float)) or submit_ts <= 0.0:
+                        continue
+                    self._record_latency_sample(
+                        key=f"client/{GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH.value}",
+                        latency_sec=max(0.0, now - float(submit_ts)),
+                        counts=self._client_profile_counts,
+                        totals=self._client_profile_total_sec,
+                        maxes=self._client_profile_max_sec,
+                        samples=self._client_profile_samples,
+                    )
+                    self._record_latency_sample(
+                        key=f"coalesce_wait/{GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH.value}",
+                        latency_sec=max(0.0, float(t_batch_submit) - float(submit_ts)),
+                        counts=self._client_profile_counts,
+                        totals=self._client_profile_total_sec,
+                        maxes=self._client_profile_max_sec,
+                        samples=self._client_profile_samples,
+                    )
+            for fut, _start, _count, _submit_ts in slices:
                 if not fut.done():
                     fut.set_exception(exc)
             return
 
         def _on_done(done_fut: Future) -> None:
+            if self._profile_enabled:
+                now = time.perf_counter()
+                for _fut, _start, _count, submit_ts in slices:
+                    if not isinstance(submit_ts, (int, float)) or submit_ts <= 0.0:
+                        continue
+                    self._record_latency_sample(
+                        key=f"client/{GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH.value}",
+                        latency_sec=max(0.0, now - float(submit_ts)),
+                        counts=self._client_profile_counts,
+                        totals=self._client_profile_total_sec,
+                        maxes=self._client_profile_max_sec,
+                        samples=self._client_profile_samples,
+                    )
+                    self._record_latency_sample(
+                        key=f"coalesce_wait/{GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH.value}",
+                        latency_sec=max(0.0, float(t_batch_submit) - float(submit_ts)),
+                        counts=self._client_profile_counts,
+                        totals=self._client_profile_total_sec,
+                        maxes=self._client_profile_max_sec,
+                        samples=self._client_profile_samples,
+                    )
+
             try:
                 result = done_fut.result()
             except Exception as exc2:
-                for fut, _start, _count in slices:
+                for fut, _start, _count, _submit_ts in slices:
                     if not fut.done():
                         fut.set_exception(exc2)
                 return
             if not isinstance(result, list):
                 err = RuntimeError("FG coalesced batch returned non-list result")
-                for fut, _start, _count in slices:
+                for fut, _start, _count, _submit_ts in slices:
                     if not fut.done():
                         fut.set_exception(err)
                 return
-            for fut, start, count in slices:
+            for fut, start, count, _submit_ts in slices:
                 if fut.done():
                     continue
                 try:
@@ -425,21 +511,14 @@ class GpuServiceClient:
             if self._profile_enabled and isinstance(req_type, GpuRequestType) and isinstance(t_submit, (int, float)):
                 try:
                     latency = max(0.0, time.perf_counter() - float(t_submit))
-                    self._profile_counts[req_type] += 1
-                    self._profile_total_sec[req_type] += float(latency)
-                    if latency > float(self._profile_max_sec[req_type]):
-                        self._profile_max_sec[req_type] = float(latency)
-
-                    samples = self._profile_samples[req_type]
-                    # Reservoir sampling to cap memory usage in long runs.
-                    if len(samples) < int(self._profile_sample_cap):
-                        samples.append(float(latency))
-                    else:
-                        n = int(self._profile_counts[req_type])
-                        if n > 0:
-                            j = random.randint(0, n - 1)
-                            if j < int(self._profile_sample_cap):
-                                samples[j] = float(latency)
+                    self._record_latency_sample(
+                        key=req_type,
+                        latency_sec=float(latency),
+                        counts=self._profile_counts,
+                        totals=self._profile_total_sec,
+                        maxes=self._profile_max_sec,
+                        samples=self._profile_samples,
+                    )
                 except Exception:
                     pass
 
@@ -452,7 +531,7 @@ class GpuServiceClient:
         if not self._profile_enabled:
             return {"enabled": False}
 
-        out: dict[str, Any] = {"enabled": True, "by_type": {}}
+        out: dict[str, Any] = {"enabled": True, "by_type": {}, "client_jobs": {}}
         for req_type, count in sorted(self._profile_counts.items(), key=lambda kv: kv[0].value):
             total = float(self._profile_total_sec.get(req_type, 0.0) or 0.0)
             mx = float(self._profile_max_sec.get(req_type, 0.0) or 0.0)
@@ -468,6 +547,26 @@ class GpuServiceClient:
                 except Exception:
                     p95 = None
             out["by_type"][req_type.value] = {
+                "count": int(count),
+                "avg_sec": float(avg),
+                "p95_sec": p95,
+                "max_sec": float(mx),
+            }
+        for name, count in sorted(self._client_profile_counts.items(), key=lambda kv: kv[0]):
+            total = float(self._client_profile_total_sec.get(name, 0.0) or 0.0)
+            mx = float(self._client_profile_max_sec.get(name, 0.0) or 0.0)
+            avg = (total / count) if count else 0.0
+            samples = list(self._client_profile_samples.get(name, ()))
+            p95 = None
+            if samples:
+                try:
+                    samples_sorted = sorted(samples)
+                    idx = int(round(0.95 * (len(samples_sorted) - 1)))
+                    idx = max(0, min(idx, len(samples_sorted) - 1))
+                    p95 = float(samples_sorted[idx])
+                except Exception:
+                    p95 = None
+            out["client_jobs"][name] = {
                 "count": int(count),
                 "avg_sec": float(avg),
                 "p95_sec": p95,
@@ -505,4 +604,28 @@ class GpuServiceClient:
             print(line)
         except Exception:
             pass
+        client_jobs = summary.get("client_jobs") or {}
+        if client_jobs:
+            items2 = []
+            for k, v in client_jobs.items():
+                try:
+                    items2.append((str(k), float(v.get("avg_sec", 0.0) or 0.0), v))
+                except Exception:
+                    continue
+            items2.sort(key=lambda t: t[1], reverse=True)
+            items2 = items2[:8]
+            parts2 = []
+            for name, _avg, v in items2:
+                try:
+                    parts2.append(
+                        f"{name}:n={int(v.get('count', 0))} avg={float(v.get('avg_sec', 0.0)):.3f}s "
+                        f"p95={float(v.get('p95_sec') or 0.0):.3f}s max={float(v.get('max_sec', 0.0)):.3f}s"
+                    )
+                except Exception:
+                    continue
+            line2 = "[GpuServiceClient][CLIENT_PROFILE] " + "; ".join(parts2)
+            try:
+                print(line2)
+            except Exception:
+                pass
         return line

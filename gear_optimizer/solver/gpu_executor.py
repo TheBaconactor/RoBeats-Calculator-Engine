@@ -29,6 +29,7 @@ import os
 import atexit
 import traceback
 import time
+import random
 from pathlib import Path
 from collections import defaultdict, OrderedDict
 from time import perf_counter
@@ -68,6 +69,9 @@ class GpuRequest:
     request_id: int
     worker_id: int
     payload: JsonDict
+    # Perf timestamps (best-effort, optional). `perf_counter_ns()` is monotonic and comparable across processes.
+    submit_perf_ns: int = 0
+    dequeue_perf_ns: int = 0
 
 
 @dataclass
@@ -209,6 +213,19 @@ class GpuExecutor:
         self._fg_tasks_max = 0
         self._fg_tasks_batch_hist = defaultdict(int)
 
+        # Request latency profiling (submit -> dequeue -> exec_start -> exec_end).
+        self._lat_sample_cap = 5000
+        self._lat_counts = defaultdict(int)
+        self._lat_total_sec = defaultdict(float)
+        self._lat_max_sec = defaultdict(float)
+        self._lat_samples = defaultdict(list)
+        self._lat_queue_total_sec = defaultdict(float)
+        self._lat_queue_max_sec = defaultdict(float)
+        self._lat_queue_samples = defaultdict(list)
+        self._lat_in_exec_total_sec = defaultdict(float)
+        self._lat_in_exec_max_sec = defaultdict(float)
+        self._lat_in_exec_samples = defaultdict(list)
+
         # Optional live utilization/trace (opt-in via env vars)
         self._trace_fp = None
         self._trace_start_perf: Optional[float] = None
@@ -247,6 +264,79 @@ class GpuExecutor:
             return
         self._pack_sec += dt
         self._req_type_pack_sec[request_type] += dt
+
+    def _record_latency(
+        self,
+        request: "GpuRequest",
+        *,
+        exec_start_ns: int,
+        exec_end_ns: int,
+    ) -> None:
+        if not self._profile_enabled:
+            return
+        try:
+            req_type = request.request_type
+        except Exception:
+            return
+        try:
+            submit_ns = int(getattr(request, "submit_perf_ns", 0) or 0)
+            dequeue_ns = int(getattr(request, "dequeue_perf_ns", 0) or 0)
+            exec_start_ns = int(exec_start_ns or 0)
+            exec_end_ns = int(exec_end_ns or 0)
+        except Exception:
+            return
+        if submit_ns <= 0 or exec_end_ns <= 0:
+            return
+        if dequeue_ns <= 0:
+            dequeue_ns = exec_start_ns
+        if exec_start_ns < dequeue_ns:
+            exec_start_ns = dequeue_ns
+        if exec_end_ns < exec_start_ns:
+            exec_end_ns = exec_start_ns
+
+        queue_sec = max(0.0, float(dequeue_ns - submit_ns) / 1e9)
+        in_exec_sec = max(0.0, float(exec_start_ns - dequeue_ns) / 1e9)
+        total_sec = max(0.0, float(exec_end_ns - submit_ns) / 1e9)
+
+        try:
+            self._lat_counts[req_type] += 1
+            n = int(self._lat_counts[req_type])
+            self._lat_total_sec[req_type] += float(total_sec)
+            if total_sec > float(self._lat_max_sec[req_type]):
+                self._lat_max_sec[req_type] = float(total_sec)
+            self._lat_queue_total_sec[req_type] += float(queue_sec)
+            if queue_sec > float(self._lat_queue_max_sec[req_type]):
+                self._lat_queue_max_sec[req_type] = float(queue_sec)
+            self._lat_in_exec_total_sec[req_type] += float(in_exec_sec)
+            if in_exec_sec > float(self._lat_in_exec_max_sec[req_type]):
+                self._lat_in_exec_max_sec[req_type] = float(in_exec_sec)
+        except Exception:
+            return
+
+        try:
+            cap = int(self._lat_sample_cap)
+        except Exception:
+            cap = 0
+        if cap <= 0:
+            return
+
+        try:
+            total_samples = self._lat_samples[req_type]
+            queue_samples = self._lat_queue_samples[req_type]
+            in_exec_samples = self._lat_in_exec_samples[req_type]
+            if len(total_samples) < cap:
+                total_samples.append(float(total_sec))
+                queue_samples.append(float(queue_sec))
+                in_exec_samples.append(float(in_exec_sec))
+            else:
+                if n > 0:
+                    j = random.randint(0, n - 1)
+                    if j < cap:
+                        total_samples[j] = float(total_sec)
+                        queue_samples[j] = float(queue_sec)
+                        in_exec_samples[j] = float(in_exec_sec)
+        except Exception:
+            return
 
     def _handle_solve_genomes_parallel(self, request: GpuRequest) -> GpuResponse:
         payload = request.payload or {}
@@ -299,6 +389,19 @@ class GpuExecutor:
         self._fg_tasks_total = 0
         self._fg_tasks_max = 0
         self._fg_tasks_batch_hist = defaultdict(int)
+        try:
+            self._lat_counts.clear()
+            self._lat_total_sec.clear()
+            self._lat_max_sec.clear()
+            self._lat_samples.clear()
+            self._lat_queue_total_sec.clear()
+            self._lat_queue_max_sec.clear()
+            self._lat_queue_samples.clear()
+            self._lat_in_exec_total_sec.clear()
+            self._lat_in_exec_max_sec.clear()
+            self._lat_in_exec_samples.clear()
+        except Exception:
+            pass
         self._response_queues = {}
         self._next_worker_id = 0
         self._taichi_ready = False
@@ -415,6 +518,59 @@ class GpuExecutor:
                 f"fg_task_batches={self._fg_tasks_batches} fg_tasks_total={self._fg_tasks_total} "
                 f"fg_tasks_avg={fg_tasks_avg:.1f} fg_tasks_max={self._fg_tasks_max} fg_tasks_hist=[{fg_tasks_hist}]"
             )
+            try:
+                fg_exec = float(self._req_type_exec_sec.get(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, 0.0) or 0.0)
+                if fg_exec > 0 and self._fg_tasks_total > 0:
+                    fg_tasks_per_s = float(self._fg_tasks_total) / fg_exec
+                    print(
+                        f"[GpuExecutor][FG] tasks_per_sec~={fg_tasks_per_s:.1f} (executor-wall) fg_exec={fg_exec:.2f}s"
+                    )
+            except Exception:
+                pass
+            try:
+                if self._lat_counts:
+                    items = []
+
+                    def _p95(d: dict, k: Any) -> float:
+                        try:
+                            samples = list(d.get(k) or [])
+                        except Exception:
+                            samples = []
+                        if not samples:
+                            return 0.0
+                        samples_sorted = sorted(samples)
+                        idx = int(round(0.95 * (len(samples_sorted) - 1)))
+                        idx = max(0, min(idx, len(samples_sorted) - 1))
+                        return float(samples_sorted[idx])
+
+                    for req_type, count in self._lat_counts.items():
+                        n = int(count or 0)
+                        if n <= 0:
+                            continue
+                        total_avg = float(self._lat_total_sec.get(req_type, 0.0) or 0.0) / n
+                        queue_avg = float(self._lat_queue_total_sec.get(req_type, 0.0) or 0.0) / n
+                        in_exec_avg = float(self._lat_in_exec_total_sec.get(req_type, 0.0) or 0.0) / n
+
+                        total_p95 = _p95(self._lat_samples, req_type)
+                        queue_p95 = _p95(self._lat_queue_samples, req_type)
+                        in_exec_p95 = _p95(self._lat_in_exec_samples, req_type)
+                        items.append(
+                            (total_avg, req_type, n, total_p95, queue_p95, in_exec_p95, queue_avg, in_exec_avg)
+                        )
+                    items.sort(key=lambda t: t[0], reverse=True)
+                    items = items[:6]
+                    if items:
+                        parts = []
+                        for total_avg, req_type, n, total_p95, queue_p95, in_exec_p95, queue_avg, in_exec_avg in items:
+                            parts.append(
+                                f"{req_type.value}:n={n} "
+                                f"total_avg={total_avg * 1000:.1f}ms p95={total_p95 * 1000:.1f}ms "
+                                f"queue_avg={queue_avg * 1000:.1f}ms p95={queue_p95 * 1000:.1f}ms "
+                                f"in_exec_avg={in_exec_avg * 1000:.1f}ms p95={in_exec_p95 * 1000:.1f}ms"
+                            )
+                        print(f"[GpuExecutor][LATENCY] {'; '.join(parts)}")
+            except Exception:
+                pass
             try:
                 top_transitions = sorted(self._idle_transitions_sec.items(), key=lambda kv: kv[1], reverse=True)[:6]
                 if top_transitions:
@@ -656,9 +812,10 @@ class GpuExecutor:
                 # Execute solve_genomes requests (true batched kernel execution when possible)
                 if solve_requests:
                     if len(solve_requests) > 1 and not ENV.gpu_use_ftff_solver:
-                        t_exec0 = perf_counter()
+                        exec_start_ns = time.perf_counter_ns()
                         responses = self._execute_solve_batch(solve_requests)
-                        dt_exec = perf_counter() - t_exec0
+                        exec_end_ns = time.perf_counter_ns()
+                        dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
                         # Attribute exec time proportionally (for profiling only)
                         per_req = dt_exec / max(1, len(solve_requests))
                         self._exec_sec += dt_exec
@@ -675,6 +832,7 @@ class GpuExecutor:
                                     success=False,
                                     error="GpuExecutor batch returned no response (internal error)",
                                 )
+                            self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
                             if _try_put_response(req, resp):
                                 responded_ids.add(int(req.request_id))
                             self._requests_processed += 1
@@ -689,11 +847,12 @@ class GpuExecutor:
                         self._maybe_live_report()
                     else:
                         # FTFF solver mode (or single request): execute each request independently.
-                        t_exec0 = perf_counter()
+                        exec_start_ns = time.perf_counter_ns()
                         responses = []
                         for req in solve_requests:
                             responses.append(self._execute_request(req))
-                        dt_exec = perf_counter() - t_exec0
+                        exec_end_ns = time.perf_counter_ns()
+                        dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
                         self._exec_sec += dt_exec
                         per_req = dt_exec / max(1, len(solve_requests))
                         for _ in solve_requests:
@@ -708,6 +867,7 @@ class GpuExecutor:
                                     success=False,
                                     error="GpuExecutor returned no response (internal error)",
                                 )
+                            self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
                             if _try_put_response(req, resp):
                                 responded_ids.add(int(req.request_id))
                             self._requests_processed += 1
@@ -728,9 +888,10 @@ class GpuExecutor:
                 ]
 
                 if fg_requests:
-                    t_exec0 = perf_counter()
+                    exec_start_ns = time.perf_counter_ns()
                     responses = self._coalesce_fg_task_requests(fg_requests)
-                    dt_exec = perf_counter() - t_exec0
+                    exec_end_ns = time.perf_counter_ns()
+                    dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
                     self._exec_sec += dt_exec
                     per_req = dt_exec / max(1, len(fg_requests))
                     for _ in fg_requests:
@@ -745,6 +906,7 @@ class GpuExecutor:
                                 success=False,
                                 error="GpuExecutor FG batch returned no response (internal error)",
                             )
+                        self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
                         if _try_put_response(req, resp):
                             responded_ids.add(int(req.request_id))
                         self._requests_processed += 1
@@ -767,9 +929,10 @@ class GpuExecutor:
                 ]
 
                 if fg_bundle_requests:
-                    t_exec0 = perf_counter()
+                    exec_start_ns = time.perf_counter_ns()
                     responses = self._coalesce_fg_solve_with_breakpoints_batch_requests(fg_bundle_requests)
-                    dt_exec = perf_counter() - t_exec0
+                    exec_end_ns = time.perf_counter_ns()
+                    dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
                     self._exec_sec += dt_exec
                     per_req = dt_exec / max(1, len(fg_bundle_requests))
                     for _ in fg_bundle_requests:
@@ -784,6 +947,7 @@ class GpuExecutor:
                                 success=False,
                                 error="GpuExecutor FG bundle batch returned no response (internal error)",
                             )
+                        self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
                         if _try_put_response(req, resp):
                             responded_ids.add(int(req.request_id))
                         self._requests_processed += 1
@@ -804,9 +968,10 @@ class GpuExecutor:
                 remaining = [r for r in rest_requests if r.request_type != GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY]
 
                 if reg_requests:
-                    t_exec0 = perf_counter()
+                    exec_start_ns = time.perf_counter_ns()
                     responses = self._coalesce_solve_genomes_from_registry(reg_requests)
-                    dt_exec = perf_counter() - t_exec0
+                    exec_end_ns = time.perf_counter_ns()
+                    dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
                     self._exec_sec += dt_exec
                     per_req = dt_exec / max(1, len(reg_requests))
                     for _ in reg_requests:
@@ -821,6 +986,7 @@ class GpuExecutor:
                                 success=False,
                                 error="GpuExecutor registry batch returned no response (internal error)",
                             )
+                        self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
                         if _try_put_response(req, resp):
                             responded_ids.add(int(req.request_id))
                         self._requests_processed += 1
@@ -836,9 +1002,10 @@ class GpuExecutor:
 
                 # Process remaining request types individually
                 for req in remaining:
-                    t_exec0 = perf_counter()
+                    exec_start_ns = time.perf_counter_ns()
                     response = self._execute_request(req)
-                    dt_exec = perf_counter() - t_exec0
+                    exec_end_ns = time.perf_counter_ns()
+                    dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
                     self._exec_sec += dt_exec
                     self._req_type_counts[req.request_type] += 1
                     self._req_type_exec_sec[req.request_type] += dt_exec
@@ -850,6 +1017,7 @@ class GpuExecutor:
                             success=False,
                             error="GpuExecutor returned no response (internal error)",
                         )
+                    self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
                     if _try_put_response(req, response):
                         responded_ids.add(int(req.request_id))
                     self._requests_processed += 1
@@ -946,6 +1114,10 @@ class GpuExecutor:
                 else:
                     timeout = max(0.001, remaining) if len(batch) > 0 else 0.1
                 request = self._request_queue.get(timeout=timeout)
+                try:
+                    request.dequeue_perf_ns = time.perf_counter_ns()
+                except Exception:
+                    pass
                 batch.append(request)
 
                 # If shutdown, return immediately
@@ -1083,6 +1255,16 @@ class GpuExecutor:
                 for _req, _args, _kwargs, _fg_tasks in items:
                     merged_tasks.extend(list(_fg_tasks))
                     upload_any = upload_any or bool(_kwargs.get("upload_genome_stats", True))
+                    if self._profile_enabled:
+                        try:
+                            task_count = int(len(_fg_tasks))
+                        except Exception:
+                            task_count = 0
+                        self._fg_tasks_batches += 1
+                        self._fg_tasks_total += task_count
+                        if task_count > self._fg_tasks_max:
+                            self._fg_tasks_max = task_count
+                        self._fg_tasks_batch_hist[task_count] += 1
 
                 kwargs_local = dict(kwargs0)
                 kwargs_local.pop("fg_tasks", None)
@@ -2523,7 +2705,6 @@ class GpuExecutor:
                 error="FG_SOLVE_WITH_BREAKPOINTS requires in-process queues (avoid IPC pickling)",
             )
 
-
         try:
             result = self._run_fg_solve_with_breakpoints_payload(request.payload or {})
             return GpuResponse(request_id=request.request_id, success=True, result=result)
@@ -2771,8 +2952,8 @@ class GpuExecutor:
         except Exception as e:
             raise RuntimeError(f"breakpoint inputs invalid: {type(e).__name__}: {e}") from e
 
-        implicit_cfgs = (
-            str(os.environ.get("FG_IMPLICIT_CONFIGS", "1") or "").strip().lower() in (TRUTHY_ENV_VALUES | {""})
+        implicit_cfgs = str(os.environ.get("FG_IMPLICIT_CONFIGS", "1") or "").strip().lower() in (
+            TRUTHY_ENV_VALUES | {""}
         )
 
         fg_tasks: list[dict[str, Any]] = []
@@ -3330,6 +3511,7 @@ def submit_gpu_solve_genomes(
             "gem_scale_fever": gem_scale_fever,
             "song_slot": int(song_slot),
         },
+        submit_perf_ns=time.perf_counter_ns(),
     )
 
     # Submit request
@@ -3434,6 +3616,7 @@ def submit_gpu_solve_genomes_from_registry(
             "gem_scale_fever": int(gem_scale_fever),
             "song_slot": int(song_slot),
         },
+        submit_perf_ns=time.perf_counter_ns(),
     )
 
     _REQUEST_QUEUE.put(request)
@@ -3532,6 +3715,7 @@ def submit_gpu_optimize_gems_batch(
             "is_s_ov": int(is_s_ov),
             "ref_arrays": ref_arrays,
         },
+        submit_perf_ns=time.perf_counter_ns(),
     )
 
     _REQUEST_QUEUE.put(request)
@@ -3581,6 +3765,7 @@ def submit_gpu_load_ref_arrays(ref_arrays: dict, timeout: float = 30.0) -> None:
         request_id=request_id,
         worker_id=_WORKER_ID,
         payload={"ref_arrays": ref_arrays},
+        submit_perf_ns=time.perf_counter_ns(),
     )
 
     _REQUEST_QUEUE.put(request)
@@ -3637,6 +3822,7 @@ def submit_gpu_solve_force_greats_finder(
             "args": args,
             "kwargs": kwargs,
         },
+        submit_perf_ns=time.perf_counter_ns(),
     )
 
     _REQUEST_QUEUE.put(request)
