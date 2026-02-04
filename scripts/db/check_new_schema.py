@@ -7,13 +7,13 @@ conn = sqlite3.connect(db_path)
 conn.row_factory = sqlite3.Row
 
 # Check if there are any entries
-cur = conn.execute("SELECT COUNT(*) as cnt FROM loadouts")
+cur = conn.execute("SELECT COUNT(*) as cnt FROM team_buff_loadouts")
 count = cur.fetchone()["cnt"]
 print(f"Total loadouts: {count}")
 
 if count > 0:
     # Get a sample entry
-    cur = conn.execute("SELECT song_name, score, fg_score, details_json, force_details_json FROM loadouts LIMIT 1")
+    cur = conn.execute("SELECT song_name, score, fg_score, details_json, force_details_json FROM team_buff_loadouts LIMIT 1")
     row = cur.fetchone()
     print(f"Song: {row['song_name']}")
     print(f"Score: {row['score']}, FG Score: {row['fg_score']}")

@@ -37,7 +37,7 @@ def find_songs_by_gear():
 
     sql = """
         SELECT song_name, gear_json, minis_json, details_json, score
-        FROM loadouts 
+        FROM team_buff_loadouts 
         WHERE gear_json LIKE ? OR minis_json LIKE ?
     """
 
@@ -103,7 +103,7 @@ def find_songs_by_gear():
 
     # Check nanobii songs and BUBBLE TEA
     cursor.execute(
-        "SELECT song_name, details_json FROM loadouts WHERE song_name LIKE '%nanobii%' OR song_name LIKE '%BUBBLE TEA%'"
+        "SELECT song_name, details_json FROM team_buff_loadouts WHERE song_name LIKE '%nanobii%' OR song_name LIKE '%BUBBLE TEA%'"
     )
     rows = cursor.fetchall()
 

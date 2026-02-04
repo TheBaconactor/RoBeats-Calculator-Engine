@@ -11,7 +11,7 @@ print("Checking 10 most recent entries...\n")
 
 rows = conn.execute("""
     SELECT song_name, score, details_json, timestamp
-    FROM loadouts 
+    FROM team_buff_loadouts 
     ORDER BY timestamp DESC
     LIMIT 10
 """).fetchall()

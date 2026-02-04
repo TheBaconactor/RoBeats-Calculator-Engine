@@ -13,15 +13,9 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import psutil
 
-from gear_optimizer.data.database import get_db_connection, get_evolution_db_path
+from gear_optimizer.data.database import get_evolution_db_path
 
-from .db import (
-    fetch_candidates_for_peak,
-    fetch_candidates_within_delta_allow_missing,
-    fetch_peak_candidates_allow_missing,
-    fetch_song_names_limited,
-    fetch_song_peak,
-)
+from .coverage_candidates import apply_element_filter, load_candidates_by_song, normalize_element_filter
 from .export import export_inventory_meta_json, hydrate_force_details
 from .gpu_full_solver import solve_coverage_gpu_full
 from .gpu_inventory_repair import repair_uncovered_with_inventory_gpu
@@ -291,23 +285,6 @@ def _extract_upgrade_ids(entry: Any) -> List[int]:
         if upgrade_id_int in ALLOWED_UPGRADE_IDS:
             upgrade_ids.append(upgrade_id_int)
     return upgrade_ids
-
-
-_ELEMENT_BY_LOWER: Dict[str, str] = {str(k).strip().lower(): str(k) for k in ELEMENT_TO_ID.keys()}
-
-
-def _normalize_element_filter(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    cleaned = str(value).strip()
-    if not cleaned or cleaned.lower() == "all":
-        return None
-    canonical = _ELEMENT_BY_LOWER.get(cleaned.lower())
-    if canonical:
-        return canonical
-    if cleaned in ELEMENT_TO_ID:
-        return cleaned
-    return None
 
 
 def _raw_vid_for_variant_dict(variant: Dict[str, Any], gear_id_map: Dict[str, int]) -> Optional[int]:
@@ -2529,13 +2506,11 @@ def run_inventory_meta_coverage(
     lns_time_sec: float = 0.0,
     lns_attempts: int = 200,
     song_limit: Optional[int] = None,
-    song_allowlist: Optional[Iterable[str]] = None,
     profile: bool = False,
-    solver: str = "gpu_full",
     gpu_full_wildcard_freq_bonus: int = 40,
     gpu_full_wildcard_palette_size: int = 0,
     gpu_full_wildcard_palette_min_count: int = 2,
-    gpu_full_wildcard_palette_scan: int = 8,
+    gpu_full_wildcard_palette_scan: int = 0,
     gpu_full_wildcard_palette_tail_slots: int = 3,
     gpu_full_synergy_weight: int = 0,
     gpu_full_synergy_top_offsets: int = 128,
@@ -2719,10 +2694,6 @@ def run_inventory_meta_coverage(
 
     gpu_full_restricted_universe_path = str(gpu_full_restricted_universe_path or "").strip()
 
-    solver = str(solver or "gpu_full").strip().lower()
-    if solver and solver != "gpu_full":
-        raise ValueError("solver must be 'gpu_full'.")
-
     seed_inventory_mode = str(seed_inventory_mode or "hard").strip().lower()
     if seed_inventory_mode not in {"hard", "soft"}:
         raise ValueError("seed_inventory_mode must be 'hard' or 'soft'.")
@@ -2748,84 +2719,38 @@ def run_inventory_meta_coverage(
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"Evolution DB not found: {db_path}")
 
-    song_peak_by_name: Optional[Dict[str, int]] = None
-    if candidates_by_song_override is not None:
-        if song_limit is not None:
-            raise ValueError("song_limit is incompatible with candidates_by_song_override.")
-        if bool(gpu_full_human_mode) or int(gpu_full_candidate_score_delta) > 0:
-            raise ValueError("Human mode / candidate widening is incompatible with candidates_by_song_override.")
-        candidates_by_song = {str(k): list(v) for k, v in candidates_by_song_override.items()}
-        missing = []
-        song_peak_by_name = {}
-        for name, cands in candidates_by_song.items():
-            peak = 0
-            for cand in cands:
-                peak = max(int(peak), int(getattr(cand, "score", 0) or 0), int(getattr(cand, "fg_score", 0) or 0))
-            song_peak_by_name[str(name)] = int(peak)
-        mem.log(f"candidates_override_loaded (songs={len(candidates_by_song)})")
-    else:
-        conn = get_db_connection(db_path)
-        try:
-            mem.log("db_connected")
-            if song_limit is not None:
-                song_names = fetch_song_names_limited(conn, int(song_limit))
-                candidates_by_song = {}
-                missing = []
-                song_peak_by_name = {}
-                for name in song_names:
-                    peak, base_peak, fg_peak = fetch_song_peak(conn, name)
-                    song_peak_by_name[str(name)] = int(peak)
-                    cands = fetch_candidates_for_peak(conn, name, peak, base_peak, fg_peak)
-                    if not cands:
-                        missing.append(name)
-                        continue
-                    candidates_by_song[name] = cands
-            else:
-                if bool(gpu_full_human_mode) and int(gpu_full_candidate_score_delta) > 0:
-                    # Human-mode: allow small score drops to prioritize a shared gear set / optionality.
-                    lim = int(gpu_full_candidate_limit_per_song)
-                    if lim <= 0:
-                        lim = max(50, int(gpu_full_top_candidates) * 10)
-                    mem.log(
-                        f"gpu_full_human_candidates_within_delta (delta={int(gpu_full_candidate_score_delta)}, lim={lim})"
-                    )
-                    candidates_by_song, missing = fetch_candidates_within_delta_allow_missing(
-                        conn,
-                        score_delta=int(gpu_full_candidate_score_delta),
-                        limit_per_song=int(lim),
-                    )
-                else:
-                    if int(gpu_full_candidate_score_delta) > 0:
-                        # Inventory meta coverage is exact-peak-only unless human mode is enabled.
-                        mem.log("gpu_full_candidate_score_delta_ignored_exact_peak_only")
-                    candidates_by_song, missing = fetch_peak_candidates_allow_missing(conn)
-        finally:
-            conn.close()
-            mem.log("db_closed")
+    use_human_delta = bool(gpu_full_human_mode) and int(gpu_full_candidate_score_delta) > 0
+    if use_human_delta:
+        mem.log(
+            f"gpu_full_human_candidates_within_delta (delta={int(gpu_full_candidate_score_delta)}, "
+            f"lim={int(gpu_full_candidate_limit_per_song)})"
+        )
+    elif int(gpu_full_candidate_score_delta) > 0:
+        # Inventory meta coverage is exact-peak-only unless human mode is enabled.
+        mem.log("gpu_full_candidate_score_delta_ignored_exact_peak_only")
 
-    songs_total_unfiltered = int(len(candidates_by_song))
-    if song_allowlist is not None:
-        allow = {str(name) for name in song_allowlist if str(name or "").strip()}
-        if allow:
-            missing = sorted(set(missing) | (allow - set(candidates_by_song.keys())))
-            candidates_by_song = {k: v for k, v in candidates_by_song.items() if k in allow}
-            if song_peak_by_name is not None:
-                song_peak_by_name = {k: v for k, v in song_peak_by_name.items() if k in candidates_by_song}
+    load_result = load_candidates_by_song(
+        db_path=db_path,
+        candidates_by_song_override=candidates_by_song_override,
+        song_limit=song_limit,
+        use_human_mode=bool(gpu_full_human_mode),
+        candidate_score_delta=int(gpu_full_candidate_score_delta),
+        candidate_limit_per_song=int(gpu_full_candidate_limit_per_song),
+        log_fn=mem.log,
+    )
+    candidates_by_song = load_result.candidates_by_song
+    missing = load_result.missing
+    song_peak_by_name = load_result.song_peak_by_name
+    songs_total_unfiltered = load_result.songs_total_unfiltered
 
-    element = _normalize_element_filter(element)
-    secondary_element = _normalize_element_filter(secondary_element)
-    allowed_elements = {e for e in (element, secondary_element) if e}
-    songs_filtered_out = 0
-    if allowed_elements:
-        filtered: Dict[str, List[SongCandidate]] = {}
-        for song_name, candidates in candidates_by_song.items():
-            kept = [cand for cand in candidates if cand.selected_element in allowed_elements]
-            if kept:
-                filtered[song_name] = kept
-        songs_filtered_out = int(len(candidates_by_song) - len(filtered))
-        candidates_by_song = filtered
-        if song_peak_by_name is not None:
-            song_peak_by_name = {k: v for k, v in song_peak_by_name.items() if k in candidates_by_song}
+    element = normalize_element_filter(element)
+    secondary_element = normalize_element_filter(secondary_element)
+    candidates_by_song, song_peak_by_name, songs_filtered_out = apply_element_filter(
+        candidates_by_song=candidates_by_song,
+        song_peak_by_name=song_peak_by_name,
+        element=element,
+        secondary_element=secondary_element,
+    )
 
     if not candidates_by_song:
         raise ValueError("No candidates found in loadouts/fg_loadouts (or team_buff_* tables).")

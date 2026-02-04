@@ -265,7 +265,7 @@ def fg_baseline_params(stats, calc_song, ref_arrays):
                 _FG_BASELINE_CACHE[cache_key] = result
             return result
         except Exception:
-            # Fall back to the legacy per-point baseline computation.
+            # Fall back to the per-point baseline computation.
             pass
 
     ref_ff = ref_arrays["Fever Fill Rate"]

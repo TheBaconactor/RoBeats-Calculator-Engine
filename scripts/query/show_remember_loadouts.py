@@ -116,7 +116,7 @@ def main():
     cursor = conn.execute(
         """
         SELECT score, fg_score, gear_json, minis_json, details_json, force_details_json
-        FROM loadouts
+        FROM team_buff_loadouts
         WHERE song_name = ?
         ORDER BY score DESC
         LIMIT 5
@@ -131,7 +131,7 @@ def main():
     cursor = conn.execute(
         """
         SELECT score, fg_score, gear_json, minis_json, details_json, force_details_json
-        FROM loadouts
+        FROM team_buff_loadouts
         WHERE song_name = ?
         ORDER BY fg_score DESC
         LIMIT 5

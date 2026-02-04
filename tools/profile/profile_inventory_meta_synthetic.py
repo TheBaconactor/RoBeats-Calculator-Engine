@@ -6,7 +6,7 @@ Creates a temporary SQLite DB with N synthetic songs/loadouts, then runs
 `run_inventory_meta_coverage()` with the requested solver settings.
 
 This is intended for GPU utilization/throughput profiling when you don't have a
-real `evolution.db` with `loadouts` populated on disk.
+real `evolution.db` with `team_buff_loadouts` populated on disk.
 """
 
 from __future__ import annotations
@@ -111,13 +111,23 @@ def _insert_loadout(
     )
     conn.execute(
         """
-        INSERT INTO loadouts (
-            song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp
+        INSERT INTO team_buff_loadouts (
+            song_name,
+            team_buff,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             song_name,
+            "T5",
             str(loadout_hash),
             score,
             0,

@@ -5,7 +5,7 @@ conn.row_factory = sqlite3.Row
 
 rows = conn.execute("""
     SELECT song_name, score, details_json, timestamp
-    FROM loadouts 
+    FROM team_buff_loadouts 
     ORDER BY timestamp DESC
     LIMIT 10
 """).fetchall()

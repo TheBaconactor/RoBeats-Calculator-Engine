@@ -49,7 +49,6 @@ class _GpuFullState:
     cov_count: ti.Field
     best_key: ti.Field
     best_cost: ti.Field
-    best_invscore: ti.Field
     best_cand: ti.Field
     removed_cnt: ti.Field
     benefit_sum: ti.Field
@@ -133,7 +132,6 @@ def _get_or_build_state(
     cov_count = ti.field(dtype=ti.i32, shape=())
     best_key = ti.field(dtype=ti.u64, shape=())
     best_cost = ti.field(dtype=ti.u32, shape=())
-    best_invscore = ti.field(dtype=ti.u32, shape=())
     best_cand = ti.field(dtype=ti.u32, shape=())
     removed_cnt = ti.field(dtype=ti.i32, shape=())
     benefit_sum = ti.field(dtype=ti.i32, shape=())
@@ -166,7 +164,6 @@ def _get_or_build_state(
         cov_count=cov_count,
         best_key=best_key,
         best_cost=best_cost,
-        best_invscore=best_invscore,
         best_cand=best_cand,
         removed_cnt=removed_cnt,
         benefit_sum=benefit_sum,

@@ -44,22 +44,19 @@ def main() -> None:
     view_exists = c.execute("SELECT 1 FROM sqlite_master WHERE type='view' AND name='fg_loadouts_unified'").fetchone()
     print(f"\n2) Unified View fg_loadouts_unified: {'OK' if view_exists else 'MISSING'}")
 
-    legacy_count = c.execute("SELECT COUNT(*) FROM fg_loadouts").fetchone()[0]
     tiered_count = c.execute("SELECT COUNT(*) FROM team_buff_fg_loadouts").fetchone()[0]
-    unified_count = c.execute("SELECT COUNT(*) FROM fg_loadouts_unified").fetchone()[0]
-    duplicates_removed = (legacy_count + tiered_count) - unified_count
+    unified_count = c.execute("SELECT COUNT(*) FROM team_buff_fg_loadouts_unified").fetchone()[0]
 
-    print("\n3) Deduplication:")
-    print(f"   legacy fg_loadouts: {legacy_count:,}")
-    print(f"   tiered team_buff_fg_loadouts: {tiered_count:,}")
-    print(f"   unified fg_loadouts_unified: {unified_count:,}")
-    print(f"   duplicates_removed: {duplicates_removed:,} ({'OK' if duplicates_removed >= 0 else 'BAD'})")
+    print("\n3) FG Counts:")
+    print(f"   team_buff_fg_loadouts: {tiered_count:,}")
+    print(f"   fg_loadouts_unified: {unified_count:,}")
+    print(f"   matches source: {'OK' if unified_count == tiered_count else 'MISMATCH'}")
 
     print("\n4) Tier distribution (unified):")
     tier_counts = c.execute(
         """
         SELECT UPPER(team_buff) AS team_buff, COUNT(*)
-        FROM fg_loadouts_unified
+        FROM team_buff_fg_loadouts_unified
         GROUP BY UPPER(team_buff)
         ORDER BY UPPER(team_buff)
         """

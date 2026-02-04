@@ -26,7 +26,7 @@ conn.row_factory = sqlite3.Row
 
 row = conn.execute("""
     SELECT song_name, gear_json, minis_json, details_json
-    FROM loadouts 
+    FROM team_buff_loadouts 
     WHERE song_name LIKE '%lonely stella%'
     ORDER BY score DESC
     LIMIT 1

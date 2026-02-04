@@ -22,7 +22,7 @@ def run_real_solver():
     song_name_target = "Ice Angel (Easy)"
 
     print(f"Clearing old entries for '{song_name_target}'...")
-    conn.execute("DELETE FROM loadouts WHERE song_name = ?", (song_name_target,))
+    conn.execute("DELETE FROM team_buff_loadouts WHERE song_name = ?", (song_name_target,))
     conn.execute("DELETE FROM songs WHERE name = ?", (song_name_target,))
     conn.commit()
     conn.close()
@@ -61,7 +61,7 @@ def run_real_solver():
     # process_song_task may derive name from file path, so clear both possible variants.
 
     conn = get_db_connection(db_path)
-    conn.execute("DELETE FROM loadouts WHERE song_name = ?", ("Ice Angel (Easy) by Yooh",))
+    conn.execute("DELETE FROM team_buff_loadouts WHERE song_name = ?", ("Ice Angel (Easy) by Yooh",))
     conn.execute("DELETE FROM songs WHERE name = ?", ("Ice Angel (Easy) by Yooh",))
     conn.commit()
     conn.close()

@@ -2616,7 +2616,7 @@ class GpuExecutor:
                             continue
                         cfg_counts = result.get("cfg_counts")
                         if cfg_counts is None:
-                            # Match single-payload behavior for legacy callers.
+                            # Match single-payload behavior for callers without cfg_counts.
                             n_sections = int(ctx.get("n_sections", 0) or 0)
                             implicit_cfgs = bool(ctx.get("implicit_cfgs", False))
                             cfg_windows = ctx.get("cfg_windows")
@@ -2693,7 +2693,7 @@ class GpuExecutor:
                     print(traceback.format_exc())
                 except Exception:
                     pass
-            # Fall through to legacy per-payload download path.
+            # Fall through to per-payload download path.
             pass
 
         results: list[Any] = []
@@ -2825,7 +2825,7 @@ class GpuExecutor:
                     }
                 )
         else:
-            # Fallback: group identical max-FP rows on CPU (legacy explicit grouping path).
+            # Fallback: group identical max-FP rows on CPU (explicit grouping path).
             try:
                 pair_ft = np.ascontiguousarray(pairs_arr[:, 0], dtype=np.int32)
                 pair_ff = np.ascontiguousarray(pairs_arr[:, 1], dtype=np.int32)

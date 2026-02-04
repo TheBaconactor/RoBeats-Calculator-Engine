@@ -41,7 +41,7 @@ Install `torch-directml` and pass `--device dml`. For strict "no CPU fallback", 
 
 ### 4) Predict seed variants JSON
 
-Produces a JSON compatible with `inventory_meta_coverage_main.py --seed-inventory-variants ...`.
+Produces a JSON compatible with `SeedInventory.VariantsPath` (use `--set SeedInventory.VariantsPath=...`).
 
 `python tools/ml/predict_seed_variants.py --model artifacts/ml/seed_transformer.pt --data artifacts/ml/transformer_ds.pt --out artifacts/ml/pred_seed_top100.json --cap 100 --subset-size 128 --samples 64 --seed 1`
 
@@ -69,7 +69,7 @@ Infer with DirectML:
 
 ### 5b) Search multiple model seeds + GPU eval (Stockfish-style branching)
 
-This samples multiple seed sets from the model (Gumbel-topK) and evaluates each on a small allowlist
+This samples multiple seed sets from the model (Gumbel-topK) and evaluates each on a small song subset
 using the GPU solver, then optionally runs a full solve on the best candidate.
 
 `python tools/ml/search_seed_variants.py --model artifacts/ml/seed_transformer.pt --data artifacts/ml/transformer_ds.pt --db-path artifacts/db_backups/<snapshot>.db --out-dir artifacts/ml/seed_search --seed-cap 50 --inventory-cap 100 --candidates 12 --subset-size 128 --samples 64 --strategy gumbel --temperature 1.0 --eval-song-count 256 --eval-k 128 --eval-restarts 3 --eval-lns-attempts 200 --device dml --strict-no-cpu`

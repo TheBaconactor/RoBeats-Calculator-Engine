@@ -156,7 +156,7 @@ def select_fg_candidates(
 
     # Optional environment overrides so benchmarks (and power users) can switch
     # candidate selection modes without touching config files.
-    if mode in {"default", "legacy"}:
+    if mode == "default":
         env_mode = os.environ.get("FG_CANDIDATE_SELECTOR_MODE")
         if env_mode:
             mode = str(env_mode).strip().lower()

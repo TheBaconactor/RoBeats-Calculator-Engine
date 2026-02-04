@@ -27,7 +27,7 @@ conn.row_factory = sqlite3.Row
 # Corrupt: [["['Electroman']"],["['Fusq']"]]
 CORRUPT_PATTERN = re.compile(r"\['")
 
-tables = ["loadouts", "fg_loadouts", "team_buff_loadouts", "team_buff_fg_loadouts"]
+tables = ["team_buff_loadouts", "team_buff_fg_loadouts"]
 print(f"DB: {db_path}")
 for table in tables:
     try:

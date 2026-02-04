@@ -40,7 +40,7 @@ def _read_fg_best(db_path: Path, *, song_substr: str) -> list[dict]:
             best_fg_score = int(r["best_fg_score"] or 0)
 
             best_fg = conn.execute(
-                "SELECT fg_score, gear_json, minis_json FROM fg_loadouts WHERE song_name = ? ORDER BY fg_score DESC LIMIT 1",
+                "SELECT fg_score, gear_json, minis_json FROM team_buff_fg_loadouts WHERE song_name = ? ORDER BY fg_score DESC LIMIT 1",
                 (song_name,),
             ).fetchone()
             gear = []

@@ -5,7 +5,7 @@ This tool is intended to be safe to run on large, messy datasets where:
   - Tier tables already exist (team_buff_*), but have corrupted minis_json shapes.
   - details_json["Stats"] is missing/empty, causing frontend to show 0 stats.
   - FG tables contain rows where fg_score <= score (should never happen).
-  - Optional: legacy loadouts need to be migrated into tier tables (T5).
+  - Tier tables already exist (team_buff_*) and should be the only leaderboards.
 
 It is conservative:
   - It repairs known-corruption patterns and missing Stats.
@@ -15,7 +15,6 @@ It is conservative:
 from __future__ import annotations
 
 import argparse
-import ast
 import json
 import os
 import sqlite3
@@ -228,52 +227,6 @@ def _normalize_force_payload(force: Any, *, fallback_selected: str, team_buff: s
     return out
 
 
-def _repair_minis_node(node: Any) -> tuple[Any, int]:
-    """
-    Repair minis_json corruption where a string contains a python-list literal like:
-      \"['Electroman']\"
-    Returns: (new_node, repair_count)
-    """
-    if isinstance(node, str):
-        text = node.strip()
-        if text.startswith("[") and text.endswith("]") and "['" in text:
-            try:
-                val = ast.literal_eval(text)
-            except Exception:
-                return node, 0
-            if isinstance(val, list) and all(isinstance(x, str) for x in val):
-                return val, 1
-        return node, 0
-
-    if isinstance(node, list):
-        repaired = 0
-        out: list[Any] = []
-        for item in node:
-            new_item, r = _repair_minis_node(item)
-            repaired += r
-            out.append(new_item)
-        return out, repaired
-
-    return node, 0
-
-
-def _representative_mini_names(minis_json_obj: Any) -> list[str]:
-    """
-    Normalize minis_json into a list[str] for Stats recompute.
-    - Supports legacy flat list[str]
-    - Supports grouped list[list[str]] (variant groups)
-    """
-    minis: list[str] = []
-    if isinstance(minis_json_obj, list):
-        for item in minis_json_obj:
-            if isinstance(item, list) and item:
-                if isinstance(item[0], str):
-                    minis.append(item[0])
-            elif isinstance(item, str):
-                minis.append(item)
-    return minis
-
-
 def _extract_base_stats_from_force(force: Any) -> dict[str, Any] | None:
     if not isinstance(force, dict) or not force:
         return None
@@ -285,17 +238,12 @@ def _extract_base_stats_from_force(force: Any) -> dict[str, Any] | None:
         and force["details"]["BaseStats"]
     ):
         return force["details"]["BaseStats"]
-    # Some legacy shapes embed under ForceGreats.
-    if isinstance(force.get("ForceGreats"), dict) and isinstance(force["ForceGreats"].get("BaseStats"), dict):
-        if force["ForceGreats"]["BaseStats"]:
-            return force["ForceGreats"]["BaseStats"]
     return None
 
 
 @dataclass
 class RepairStats:
     scanned_rows: int = 0
-    minis_fixed: int = 0
     minis_reordered: int = 0
     stats_fixed: int = 0
     stats_team_buff_fixed: int = 0
@@ -306,10 +254,6 @@ class RepairStats:
     team_buff_unexpected: int = 0
     team_buff_rehash_scanned: int = 0
     team_buff_rehash_deduped: int = 0
-    legacy_base_migrated: int = 0
-    legacy_fg_migrated: int = 0
-    legacy_base_deleted: int = 0
-    legacy_fg_deleted: int = 0
 
 
 def repair_frontend_db(
@@ -317,7 +261,6 @@ def repair_frontend_db(
     db_path: Path,
     dry_run: bool,
     verbose: bool,
-    move_legacy: bool = False,
     sync_fg_details: bool = True,
     normalize_force: bool = True,
     rehash_team_buff_tables: bool = True,
@@ -353,7 +296,7 @@ def repair_frontend_db(
         return conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone() is not None
 
     # 1) Normalize team_buff casing for tables that have it.
-    for tbl in ("fg_loadouts", "team_buff_loadouts", "team_buff_fg_loadouts"):
+    for tbl in ("team_buff_loadouts", "team_buff_fg_loadouts"):
         if not table_exists(tbl):
             continue
         # Skip if column missing.
@@ -388,7 +331,7 @@ def repair_frontend_db(
         stats.team_buff_unexpected += int(unexpected)
 
     # 2) Enforce FG invariant (delete rows where fg_score <= score).
-    for tbl in ("fg_loadouts", "team_buff_fg_loadouts"):
+    for tbl in ("team_buff_fg_loadouts",):
         if not table_exists(tbl):
             continue
         deleted = conn.execute(f"SELECT COUNT(*) FROM {tbl} WHERE fg_score <= score").fetchone()[0]
@@ -396,152 +339,8 @@ def repair_frontend_db(
         if deleted and not dry_run:
             conn.execute(f"DELETE FROM {tbl} WHERE fg_score <= score")
 
-    # 3) Optional: move legacy rows into tiered tables (T5).
-    if move_legacy:
-
-        def _batch_upsert(sql: str, rows_iter: Any, *, batch_size: int = 1000) -> None:
-            batch: list[tuple[Any, ...]] = []
-            for row in rows_iter:
-                batch.append(row)
-                if len(batch) >= batch_size:
-                    conn.executemany(sql, batch)
-                    batch.clear()
-            if batch:
-                conn.executemany(sql, batch)
-
-        if table_exists("loadouts") and table_exists("team_buff_loadouts"):
-            legacy_base = conn.execute("SELECT COUNT(*) FROM loadouts").fetchone()[0]
-            if legacy_base:
-                stats.legacy_base_migrated += int(legacy_base)
-                if not dry_run:
-                    before = conn.total_changes
-                    cur = conn.execute(
-                        """
-                        SELECT
-                            song_name,
-                            loadout_hash,
-                            score,
-                            fg_score,
-                            gear_json,
-                            minis_json,
-                            details_json,
-                            force_details_json,
-                            timestamp
-                        FROM loadouts
-                        """
-                    )
-                    _batch_upsert(
-                        """
-                        INSERT INTO team_buff_loadouts (
-                            song_name, team_buff, loadout_hash, score, fg_score,
-                            gear_json, minis_json, details_json, force_details_json, timestamp
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(song_name, team_buff, loadout_hash) DO UPDATE SET
-                            score = CASE WHEN excluded.score > score THEN excluded.score ELSE score END,
-                            fg_score = MAX(fg_score, excluded.fg_score),
-                            gear_json = excluded.gear_json,
-                            minis_json = excluded.minis_json,
-                            details_json = CASE WHEN excluded.score >= score THEN excluded.details_json ELSE details_json END,
-                            force_details_json = CASE
-                                WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
-                                ELSE force_details_json
-                            END,
-                            timestamp = MAX(COALESCE(timestamp, 0), COALESCE(excluded.timestamp, 0))
-                        """,
-                        (
-                            (
-                                row["song_name"],
-                                "T5",
-                                row["loadout_hash"],
-                                _safe_int(row["score"], 0),
-                                _safe_int(row["fg_score"], 0),
-                                row["gear_json"],
-                                row["minis_json"],
-                                row["details_json"],
-                                row["force_details_json"],
-                                row["timestamp"],
-                            )
-                            for row in cur
-                        ),
-                    )
-                    stats.legacy_base_migrated = int(conn.total_changes - before)
-
-        if table_exists("fg_loadouts") and table_exists("team_buff_fg_loadouts"):
-            legacy_fg = conn.execute("SELECT COUNT(*) FROM fg_loadouts").fetchone()[0]
-            if legacy_fg:
-                stats.legacy_fg_migrated += int(legacy_fg)
-                if not dry_run:
-                    before = conn.total_changes
-                    cur = conn.execute(
-                        """
-                        SELECT
-                            song_name,
-                            team_buff,
-                            loadout_hash,
-                            score,
-                            fg_score,
-                            gear_json,
-                            minis_json,
-                            details_json,
-                            force_details_json,
-                            timestamp
-                        FROM fg_loadouts
-                        """
-                    )
-                    _batch_upsert(
-                        """
-                        INSERT INTO team_buff_fg_loadouts (
-                            song_name, team_buff, loadout_hash, score, fg_score,
-                            gear_json, minis_json, details_json, force_details_json, timestamp
-                        )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(song_name, team_buff, loadout_hash) DO UPDATE SET
-                            score = CASE WHEN excluded.fg_score > fg_score THEN excluded.score ELSE score END,
-                            fg_score = MAX(fg_score, excluded.fg_score),
-                            gear_json = excluded.gear_json,
-                            minis_json = excluded.minis_json,
-                            details_json = CASE WHEN excluded.fg_score >= fg_score THEN excluded.details_json ELSE details_json END,
-                            force_details_json = CASE
-                                WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
-                                ELSE force_details_json
-                            END,
-                            timestamp = MAX(COALESCE(timestamp, 0), COALESCE(excluded.timestamp, 0))
-                        """,
-                        (
-                            (
-                                row["song_name"],
-                                _normalize_team_buff_value(row["team_buff"]),
-                                row["loadout_hash"],
-                                _safe_int(row["score"], 0),
-                                _safe_int(row["fg_score"], 0),
-                                row["gear_json"],
-                                row["minis_json"],
-                                row["details_json"],
-                                row["force_details_json"],
-                                row["timestamp"],
-                            )
-                            for row in cur
-                        ),
-                    )
-                    stats.legacy_fg_migrated = int(conn.total_changes - before)
-
-        if move_legacy:
-            if table_exists("loadouts"):
-                legacy_base = conn.execute("SELECT COUNT(*) FROM loadouts").fetchone()[0]
-                if legacy_base:
-                    stats.legacy_base_deleted += int(legacy_base)
-                    if not dry_run:
-                        conn.execute("DELETE FROM loadouts")
-            if table_exists("fg_loadouts"):
-                legacy_fg = conn.execute("SELECT COUNT(*) FROM fg_loadouts").fetchone()[0]
-                if legacy_fg:
-                    stats.legacy_fg_deleted += int(legacy_fg)
-                    if not dry_run:
-                        conn.execute("DELETE FROM fg_loadouts")
-
-    # 4) Repair minis_json corruption + missing Stats.
-    tables = ("loadouts", "fg_loadouts", "team_buff_loadouts", "team_buff_fg_loadouts")
+    # 3) Repair minis_json corruption + missing Stats.
+    tables = ("team_buff_loadouts", "team_buff_fg_loadouts")
     for tbl in tables:
         if not table_exists(tbl):
             continue
@@ -572,23 +371,19 @@ def repair_frontend_db(
 
             minis_text_in = row["minis_json"] or ""
             minis_obj = _json_loads(minis_text_in, [])
-            minis_fixed_obj, minis_repairs = _repair_minis_node(minis_obj)
-            if minis_repairs:
-                stats.minis_fixed += minis_repairs
+            minis_fixed_obj = minis_obj
+            minis_repairs = 0
 
             # Always re-encode minis groups to:
             # - canonicalize shape (list[list[str]])
             # - rotate repeated groups so naive frontends don't show duplicate minis in multiple slots
             groups = []
             if isinstance(minis_fixed_obj, list):
-                if minis_fixed_obj and all(isinstance(x, str) for x in minis_fixed_obj):
-                    groups = [[str(x).strip()] for x in minis_fixed_obj if str(x).strip()]
-                else:
-                    groups = [
-                        [str(x).strip() for x in (g or []) if x is not None and str(x).strip()]
-                        for g in minis_fixed_obj
-                        if isinstance(g, list)
-                    ]
+                groups = [
+                    [str(x).strip() for x in (g or []) if x is not None and str(x).strip()]
+                    for g in minis_fixed_obj
+                    if isinstance(g, list)
+                ]
             minis_text_out = (
                 encode_minis_groups(groups) if groups else encode_minis_groups(decode_minis_json(minis_text_in))
             )
@@ -622,7 +417,7 @@ def repair_frontend_db(
                     force_changed = True
 
             fg_details_synced_this_row = False
-            if sync_fg_details and has_force and tbl in {"fg_loadouts", "team_buff_fg_loadouts"}:
+            if sync_fg_details and has_force and tbl == "team_buff_fg_loadouts":
                 if isinstance(force, dict) and force and isinstance(force.get("GemCounts"), dict):
                     base_stats = _extract_base_stats_from_force(force)
                     if not isinstance(base_stats, dict) or not base_stats:
@@ -732,7 +527,8 @@ def repair_frontend_db(
                     stats.stats_fixed += 1
                 else:
                     gear_names = _json_loads(row["gear_json"], [])
-                    mini_names = _representative_mini_names(minis_fixed_obj)
+                    mini_groups = decode_minis_json(minis_text_out)
+                    mini_names = representative_mini_names(mini_groups)
 
                     gem_counts = dict(details.get("GemCounts", {}) or {})
                     gem_counts["Fever Time"] = int(details.get("FT", 0) or 0)
@@ -836,7 +632,7 @@ def repair_frontend_db(
                             (minis_text_out, json.dumps(details), row["rowid"]),
                         )
 
-    # 5) Rehash + dedupe team_buff tables to collapse legacy/variant hash drift.
+    # 5) Rehash + dedupe team_buff tables to collapse variant hash drift.
     def _rehash_team_buff_table(table_name: str) -> None:
         if not table_exists(table_name):
             return
@@ -1059,11 +855,6 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Scan and report, but do not write changes.")
     parser.add_argument("--verbose", action="store_true", help="Print per-table progress.")
     parser.add_argument(
-        "--move-legacy",
-        action="store_true",
-        help="Copy legacy loadouts/fg_loadouts into tier tables (T5) and delete legacy rows.",
-    )
-    parser.add_argument(
         "--no-sync-fg-details",
         action="store_true",
         help="Disable syncing FG details_json (FT/FF/GemCounts/Stats) from force_details_json when available.",
@@ -1088,7 +879,6 @@ def main() -> None:
         db_path=db_path,
         dry_run=bool(args.dry_run),
         verbose=bool(args.verbose),
-        move_legacy=bool(args.move_legacy),
         sync_fg_details=not bool(args.no_sync_fg_details),
         normalize_force=not bool(args.no_normalize_force),
         rehash_team_buff_tables=not bool(args.skip_rehash),
@@ -1098,7 +888,6 @@ def main() -> None:
     print("=" * 60)
     print(f"DB: {db_path}")
     print(f"scanned_rows: {result.scanned_rows:,}")
-    print(f"minis_fixed: {result.minis_fixed:,}")
     print(f"minis_reordered: {result.minis_reordered:,}")
     print(f"stats_fixed: {result.stats_fixed:,}")
     print(f"stats_team_buff_fixed: {result.stats_team_buff_fixed:,}")
@@ -1108,11 +897,6 @@ def main() -> None:
     print(f"team_buff_case_fixed_rows: {result.team_buff_fixed_case:,}")
     print(f"team_buff_rehash_scanned: {result.team_buff_rehash_scanned:,}")
     print(f"team_buff_rehash_deduped: {result.team_buff_rehash_deduped:,}")
-    if args.move_legacy:
-        print(f"legacy_base_migrated: {result.legacy_base_migrated:,}")
-        print(f"legacy_fg_migrated: {result.legacy_fg_migrated:,}")
-        print(f"legacy_base_deleted: {result.legacy_base_deleted:,}")
-        print(f"legacy_fg_deleted: {result.legacy_fg_deleted:,}")
     if result.team_buff_unexpected:
         print(f"WARNING: unexpected team_buff rows remain: {result.team_buff_unexpected:,}")
         print(f"expected: {sorted(EXPECTED_TEAM_BUFFS)}")

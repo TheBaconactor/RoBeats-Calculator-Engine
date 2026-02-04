@@ -92,6 +92,157 @@ fg_selected_indices = None
 fg_selected_packed = None
 fg_selected_packed_batch = None
 
+
+# ============================================================================
+# DEBUG / TEST KERNELS
+# ============================================================================
+#
+# These kernels are intended for test-only parity validation between the CPU
+# analytical scorer and the GPU timeline computation semantics (carry_time,
+# section-1 offset, binary-search-left end index).
+#
+# They are not used in production hot paths, but share the same song timestamp
+# fields as the FG finder kernels.
+
+
+@ti.func
+def _fg_debug_pack_head_mask_range(m0: ti.u32, m1: ti.u32, m2: ti.u32, m3: ti.u32, start: ti.i32, end: ti.i32):
+    """
+    Set bits for [start, end) in the first 100 notes, packed as 4x u32.
+
+    Only intended for small head-only loops inside debug kernels (<= 100 bits).
+    """
+    head_start: ti.i32 = ti.max(0, start)
+    head_end: ti.i32 = ti.min(100, end)
+    for i in range(head_start, head_end):
+        if i < 32:
+            m0 |= ti.cast(1, ti.u32) << ti.cast(i, ti.u32)
+        elif i < 64:
+            m1 |= ti.cast(1, ti.u32) << ti.cast(i - 32, ti.u32)
+        elif i < 96:
+            m2 |= ti.cast(1, ti.u32) << ti.cast(i - 64, ti.u32)
+        else:
+            m3 |= ti.cast(1, ti.u32) << ti.cast(i - 96, ti.u32)
+    return m0, m1, m2, m3
+
+
+@ti.kernel
+def fg_debug_timeline_forced_counts_kernel(
+    total_notes: ti.i32,
+    raw_fever_fill: ti.f32,
+    fever_duration: ti.f32,
+    forced_counts: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    n_sections: ti.i32,
+    out_mask_u32: ti.types.ndarray(dtype=ti.u32, ndim=1),
+    out_counts_i32: ti.types.ndarray(dtype=ti.i32, ndim=1),
+):
+    """
+    Debug-only: compute the analytical fever head mask + body fever/normal counts from
+    forced great counts (not FP targets).
+
+    Output:
+      - out_mask_u32[0:4] = (m0, m1, m2, m3)
+      - out_counts_i32[0] = body_fever
+      - out_counts_i32[1] = body_normal
+      - out_counts_i32[2] = fever_activations
+    """
+    n: ti.i32 = ti.max(0, total_notes)
+    base_ceil: ti.i32 = ti.cast(ti.ceil(raw_fever_fill), ti.i32)
+
+    m0 = ti.cast(0, ti.u32)
+    m1 = ti.cast(0, ti.u32)
+    m2 = ti.cast(0, ti.u32)
+    m3 = ti.cast(0, ti.u32)
+    body_fever: ti.i32 = 0
+    body_normal: ti.i32 = 0
+    fever_acts: ti.i32 = 0
+
+    current_idx: ti.i32 = 0
+    sec: ti.i32 = 0
+    carry_time: ti.f32 = 0.0
+
+    # Matches CPU loop: while idx < total_notes and section < len(forced_counts) + 1
+    while current_idx < n and sec < (n_sections + 1):
+        forced: ti.i32 = 0
+        if sec < n_sections:
+            forced = forced_counts[sec]
+        if forced < 0:
+            forced = 0
+        if forced > base_ceil:
+            forced = base_ceil
+
+        # notes_needed = ceil(raw_fill + forced*0.5) with section-1 offset.
+        notes_needed: ti.i32 = ti.cast(ti.ceil(raw_fever_fill + ti.cast(forced, ti.f32) * 0.5), ti.i32)
+        if sec == 0:
+            notes_needed -= 1
+        if notes_needed < 0:
+            notes_needed = 0
+
+        section_start: ti.i32 = current_idx
+        current_idx += notes_needed
+
+        if current_idx >= n:
+            # Remaining body notes are normal.
+            rem_start: ti.i32 = ti.max(100, section_start)
+            if rem_start < n:
+                body_normal += n - rem_start
+            break
+
+        # carry_time update: based on last forced note that contributes to fill.
+        if forced > 0:
+            forced_start: ti.i32 = section_start if sec == 0 else (section_start + 1)
+            if forced_start < 0:
+                forced_start = 0
+            forced_end: ti.i32 = forced_start + forced - 1
+            # End of fill segment is current_idx-1.
+            if forced_end > (current_idx - 1):
+                forced_end = current_idx - 1
+            if forced_end >= forced_start and forced_end < n:
+                forced_t: ti.f32 = song_timestamps_great_candidate[forced_end]
+                if forced_t > carry_time:
+                    carry_time = forced_t
+
+        fever_start_time: ti.f32 = song_timestamps[current_idx]
+        if carry_time > fever_start_time:
+            fever_start_time = carry_time
+        fever_end_time: ti.f32 = fever_start_time + fever_duration
+        fever_end_idx: ti.i32 = _binary_search_left_song_timestamps(n, fever_end_time)
+
+        fever_acts += 1
+
+        # Head mask: set bits for fever notes that fall within [0, 100).
+        m0, m1, m2, m3 = _fg_debug_pack_head_mask_range(m0, m1, m2, m3, current_idx, ti.min(fever_end_idx, n))
+
+        # Body fever count: notes in [current_idx, fever_end_idx) with idx >= 100.
+        bf_start: ti.i32 = ti.max(100, current_idx)
+        bf_end: ti.i32 = ti.min(fever_end_idx, n)
+        if bf_end > bf_start:
+            body_fever += bf_end - bf_start
+
+        # Body normal for this non-fever segment: [section_start, current_idx) with idx >= 100.
+        bn_start: ti.i32 = ti.max(100, section_start)
+        bn_end: ti.i32 = ti.min(current_idx, n)
+        if bn_end > bn_start:
+            body_normal += bn_end - bn_start
+
+        current_idx = fever_end_idx
+        sec += 1
+
+    # Remaining tail after the loop: normal body.
+    tail_start: ti.i32 = ti.max(100, current_idx)
+    if tail_start < n:
+        body_normal += n - tail_start
+
+    if out_mask_u32.shape[0] >= 4:
+        out_mask_u32[0] = m0
+        out_mask_u32[1] = m1
+        out_mask_u32[2] = m2
+        out_mask_u32[3] = m3
+    if out_counts_i32.shape[0] >= 3:
+        out_counts_i32[0] = body_fever
+        out_counts_i32[1] = body_normal
+        out_counts_i32[2] = fever_acts
+
 # Warm-start hint allocation (bound from fields.py)
 fg_genome_hint_allocation = None
 
@@ -782,7 +933,7 @@ def fg_stage1_kernel(
 
         # Packed-tasks mode: when cfg_offset is negative, each FT/FF pair can reference a different
         # config window in the global cfg table. Two sub-modes:
-        # - legacy: cfg_offset<0 and cfg_read_offset<0 -> read fg_cfg_start_list/fg_cfg_len_list (precomputed ranges)
+        # - sentinel: cfg_offset<0 and cfg_read_offset<0 -> read fg_cfg_start_list/fg_cfg_len_list (precomputed ranges)
         # - fused:  cfg_offset<0 and cfg_read_offset>=0 -> compute ranges on-the-fly using (cfg_base,total_len,band_start)
         cfg_global_base: ti.i32 = cfg_offset
         cfg_read_base: ti.i32 = cfg_read_offset
@@ -2019,7 +2170,7 @@ def fg_stage1_flat_kernel_small3(
 
         # Packed-tasks mode: when cfg_offset is negative, each FT/FF pair can reference a different
         # config window in the global cfg table. Two sub-modes:
-        # - legacy: cfg_offset<0 and cfg_read_offset<0 -> read fg_cfg_start_list/fg_cfg_len_list (precomputed ranges)
+        # - sentinel: cfg_offset<0 and cfg_read_offset<0 -> read fg_cfg_start_list/fg_cfg_len_list (precomputed ranges)
         # - fused:  cfg_offset<0 and cfg_read_offset>=0 -> compute ranges on-the-fly using (cfg_base,total_len,band_start)
         cfg_global_base: ti.i32 = cfg_offset
         cfg_read_base: ti.i32 = cfg_read_offset
@@ -2378,7 +2529,7 @@ def fg_stage1_flat_kernel(
 
         # Packed-tasks mode: when cfg_offset is negative, each FT/FF pair can reference a different
         # config window in the global cfg table. Two sub-modes:
-        # - legacy: cfg_offset<0 and cfg_read_offset<0 -> read fg_cfg_start_list/fg_cfg_len_list (precomputed ranges)
+        # - sentinel: cfg_offset<0 and cfg_read_offset<0 -> read fg_cfg_start_list/fg_cfg_len_list (precomputed ranges)
         # - fused:  cfg_offset<0 and cfg_read_offset>=0 -> compute ranges on-the-fly using (cfg_base,total_len,band_start)
         cfg_global_base: ti.i32 = cfg_offset
         cfg_read_base: ti.i32 = cfg_read_offset

@@ -20,7 +20,7 @@ test_songs = [
 for song_label, pattern in test_songs:
     print(f"\n--- {song_label.upper()} (Top 10) ---")
     rows = conn.execute(
-        "SELECT song_name, score, details_json FROM loadouts WHERE song_name LIKE ? ORDER BY score DESC LIMIT 10",
+        "SELECT song_name, score, details_json FROM team_buff_loadouts WHERE song_name LIKE ? ORDER BY score DESC LIMIT 10",
         (pattern,),
     ).fetchall()
 
@@ -49,12 +49,12 @@ print("\n" + "=" * 90)
 print("SUMMARY: Checking all entries for Stats issues")
 print("=" * 90)
 
-total = conn.execute("SELECT COUNT(*) FROM loadouts").fetchone()[0]
+total = conn.execute("SELECT COUNT(*) FROM team_buff_loadouts").fetchone()[0]
 missing = 0
 empty = 0
 valid = 0
 
-rows = conn.execute("SELECT details_json FROM loadouts").fetchall()
+rows = conn.execute("SELECT details_json FROM team_buff_loadouts").fetchall()
 for row in rows:
     details = json.loads(row["details_json"]) if row["details_json"] else {}
     stats = details.get("Stats")

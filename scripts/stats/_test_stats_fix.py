@@ -31,7 +31,7 @@ conn.row_factory = sqlite3.Row
 rows = conn.execute(
     """
     SELECT song_name, score, details_json, timestamp
-    FROM loadouts 
+    FROM team_buff_loadouts 
     WHERE timestamp >= ?
     ORDER BY timestamp DESC
     LIMIT 5
@@ -44,7 +44,7 @@ if not rows:
     # Fallback: check most recent entries
     rows = conn.execute("""
         SELECT song_name, score, details_json, timestamp
-        FROM loadouts 
+        FROM team_buff_loadouts 
         ORDER BY timestamp DESC
         LIMIT 3
     """).fetchall()

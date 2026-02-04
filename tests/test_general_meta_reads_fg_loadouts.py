@@ -17,12 +17,14 @@ def test_get_all_loadouts_includes_fg_loadouts_rows(monkeypatch, tmp_path):
         ("Song A",),
     )
 
-    # Only insert into fg_loadouts (simulates older/merged DBs where the best FG rows may
-    # not be reflected in the base `loadouts` table the way we expect).
+    # Insert into team_buff_fg_loadouts (FG rows should always be visible via unified view).
     conn.execute(
         """
-        INSERT INTO fg_loadouts (song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
+        INSERT INTO team_buff_fg_loadouts (
+            song_name, team_buff, loadout_hash, score, fg_score,
+            gear_json, minis_json, details_json, force_details_json, timestamp
+        )
+        VALUES (?, 'T5', ?, ?, ?, ?, ?, ?, ?, strftime('%s','now'))
         """,
         (
             "Song A",
@@ -30,7 +32,7 @@ def test_get_all_loadouts_includes_fg_loadouts_rows(monkeypatch, tmp_path):
             100,
             999,
             json.dumps(["Hat A"]),
-            json.dumps(["Mini A"]),
+            json.dumps([["Mini A"]]),
             None,
             None,
         ),

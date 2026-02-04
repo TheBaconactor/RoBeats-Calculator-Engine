@@ -7,7 +7,7 @@ conn.row_factory = sqlite3.Row
 # Check for the "a lonely stella" song
 rows = conn.execute("""
     SELECT song_name, score, fg_score, details_json, gear_json, minis_json
-    FROM loadouts 
+    FROM team_buff_loadouts 
     WHERE song_name LIKE '%lonely stella%'
     ORDER BY fg_score DESC
     LIMIT 3

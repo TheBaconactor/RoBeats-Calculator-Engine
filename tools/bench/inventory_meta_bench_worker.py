@@ -84,7 +84,6 @@ def _main() -> int:
             "label": str(payload.get("label") or ""),
             "time_sec": float(round(elapsed, 6)),
             "seed": int(kwargs.get("seed") or 0),
-            "solver": str(kwargs.get("solver") or ""),
             "stats": {
                 "songs_total": int(stats.get("songs_total") or 0) if isinstance(stats, dict) else 0,
                 "songs_covered": int(stats.get("songs_covered") or 0) if isinstance(stats, dict) else 0,

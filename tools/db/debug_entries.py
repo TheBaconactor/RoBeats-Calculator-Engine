@@ -8,11 +8,11 @@ conn = sqlite3.connect("evolution.db")
 rows = conn.execute(
     """
     SELECT loadout_hash, score, fg_score, gear_json, force_details_json 
-    FROM loadouts 
-    WHERE song_name=? 
+    FROM team_buff_loadouts 
+    WHERE song_name=? AND team_buff=?
     ORDER BY score DESC
 """,
-    ("Feeling Alright (Hard) by Rutra",),
+    ("Feeling Alright (Hard) by Rutra", "T5"),
 ).fetchall()
 
 print("=== All loadouts for song ===")

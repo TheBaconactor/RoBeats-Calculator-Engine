@@ -1899,7 +1899,7 @@ def solve_force_greats_finder_gpu_tasks(
     expensive `genome_base_stats` upload across many small breakpoint groups.
 
     Each task must be a dict containing:
-      - counts_list: list of FP-target configs (legacy)
+      - counts_list: list of FP-target configs (explicit window mode)
         OR
       - counts_max_fp:
           - list[int] of per-section max FP (GPU-generated rectangular configs), OR
@@ -2043,7 +2043,7 @@ def solve_force_greats_finder_gpu_tasks(
                     "this indicates a misuse of upload_genome_stats=False."
                 )
 
-    # Pack tasks: upload config windows into the global cfg table (legacy) and prepare streaming
+    # Pack tasks: upload config windows into the global cfg table (explicit window mode) and prepare streaming
     # FT/FF chunks using fixed-size numpy buffers (avoid per-pair Python tuple materialization).
     uploaded_cfg_keys: set[tuple[Any, int]] = set()
     prepared_tasks: list[dict[str, Any]] = []
@@ -2559,7 +2559,7 @@ def solve_force_greats_finder_gpu_tasks(
             # - Fast path: compute per-ftff cfg windows on-the-fly inside the Stage-1 kernel by passing
             #   cfg_offset<0 and cfg_read_offset=band_start.
             # - Fallback: precompute/upload fg_cfg_start_list/fg_cfg_len_list for this band and use the
-            #   legacy cfg_offset/cfg_read_offset<0 sentinel.
+            #   cfg_offset/cfg_read_offset<0 sentinel.
             cfg_offset_i = int(-1)
             cfg_read_offset_i = int(band_start) if use_gpu_cfg_ranges else int(-1)
             if not use_gpu_cfg_ranges:

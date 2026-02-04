@@ -18,11 +18,11 @@ cursor = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name
 print("\n--- SONGS TABLE ---")
 print(cursor.fetchone()[0])
 
-cursor = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='loadouts'")
-print("\n--- LOADOUTS TABLE ---")
+cursor = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='team_buff_loadouts'")
+print("\n--- TEAM_BUFF_LOADOUTS TABLE ---")
 print(cursor.fetchone()[0])
 
-cursor = conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_loadouts_score'")
+cursor = conn.execute("SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_team_buff_loadouts_score'")
 print("\n--- INDEX ---")
 print(cursor.fetchone()[0])
 
@@ -43,14 +43,14 @@ if song:
 
 # Loadouts table example
 cursor = conn.execute("""
-    SELECT * FROM loadouts 
+    SELECT * FROM team_buff_loadouts 
     WHERE song_name LIKE '%Bopeebo (Hard)%'
     ORDER BY fg_score DESC
     LIMIT 1
 """)
 loadout = cursor.fetchone()
 if loadout:
-    print("\n--- LOADOUTS TABLE ROW ---")
+print("\n--- TEAM_BUFF_LOADOUTS TABLE ROW ---")
     print(f"song_name: {loadout['song_name']}")
     print(f"loadout_hash: {loadout['loadout_hash']}")
     print(f"score: {loadout['score']}")

@@ -23,7 +23,7 @@ print()
 conn = sqlite3.connect(db_path)
 conn.row_factory = sqlite3.Row
 
-row = conn.execute("SELECT rowid, song_name, details_json FROM loadouts LIMIT 1").fetchone()
+row = conn.execute("SELECT rowid, song_name, details_json FROM team_buff_loadouts LIMIT 1").fetchone()
 if not row:
     print("No entries in database to test with")
     conn.close()
@@ -46,13 +46,13 @@ print()
 print("Step 2: Breaking Stats (setting to empty dict)...")
 details["Stats"] = {}
 broken_details = json.dumps(details)
-conn.execute("UPDATE loadouts SET details_json = ? WHERE rowid = ?", (broken_details, rowid))
+conn.execute("UPDATE team_buff_loadouts SET details_json = ? WHERE rowid = ?", (broken_details, rowid))
 conn.commit()
 print("  Stats set to {} in database")
 print()
 
 # Step 3: Verify it's broken
-row_check = conn.execute("SELECT details_json FROM loadouts WHERE rowid = ?", (rowid,)).fetchone()
+row_check = conn.execute("SELECT details_json FROM team_buff_loadouts WHERE rowid = ?", (rowid,)).fetchone()
 check_details = json.loads(row_check["details_json"])
 check_stats = check_details.get("Stats", {})
 print(f"Step 3: Verify broken - Stats now: {check_stats}")
@@ -78,7 +78,7 @@ else:
 # Step 6: Verify repair
 conn = sqlite3.connect(db_path)
 conn.row_factory = sqlite3.Row
-row_final = conn.execute("SELECT details_json FROM loadouts WHERE rowid = ?", (rowid,)).fetchone()
+row_final = conn.execute("SELECT details_json FROM team_buff_loadouts WHERE rowid = ?", (rowid,)).fetchone()
 final_details = json.loads(row_final["details_json"])
 final_stats = final_details.get("Stats", {})
 print(f"  Repaired Stats: {final_stats}")

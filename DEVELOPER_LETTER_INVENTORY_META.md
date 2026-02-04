@@ -2,14 +2,12 @@ Subject: Help Needed: RoBeats Inventory Meta Coverage (<=100 Gear-Variant Cap)
 
 Hi [Name],
 
-I'm reaching out for your help on an optimization problem in my RoBeats MetaFinder project. Since you have never seen this codebase, I attached a self-contained report with both a plain-language explanation and real data:
-
-- `INVENTORY_META_AUDIT.md`: architecture + solver description + raw input tables (Gears.csv, Minis.csv, Stats.txt) + a real output JSON from a recent run.
+I'm reaching out for your help on an optimization problem in my RoBeats MetaFinder project. Since you have never seen this codebase, I can share a self-contained report (plain-language explanation + real data) on request.
 
 I'm currently stuck because the search space is extremely large and my current approach is not making meaningful progress. I'd like your best assessment of what is going wrong (modeling or algorithmically) and what the most promising path forward is.
 
 At a glance (problem spec)
-- Inputs: per-song peak candidates from SQLite (`loadouts` and `fg_loadouts`). Each candidate includes:
+- Inputs: per-song peak candidates from SQLite (`team_buff_loadouts` and `team_buff_fg_loadouts`). Each candidate includes:
   - 6 gear items (Hat/Neck/Face/Shirt/Back/Pant),
   - selected element (Chill/Flow/Rush/Beat/Vibe),
   - gem totals across 6 stats (PP, CM, FM, FT, FF, OV) that sum to 90 (6 slots x 15),
@@ -40,7 +38,7 @@ Glossary (terms used in the report)
 - Gem stats: PP (Perfect Points), CM (Combo Multiplier), FM (Fever Multiplier), FT (Fever Time), FF (Fever Fill Rate), OV (Element/Overflow).
 - Element: Chill/Flow/Rush/Beat/Vibe. Each song has a selected element.
 - Gear variant: a specific per-slot 15-gem allocation for a gear item plus an OV color lock (wildcard if OV==0; element-locked if OV>0).
-- Peak candidate: a DB row tied for that song's best score (from `loadouts` or `fg_loadouts`).
+- Peak candidate: a DB row tied for that song's best score (from `team_buff_loadouts` or `team_buff_fg_loadouts`).
 - Covered song: there exists at least one peak candidate for which all 6 required slot variants can be drawn from the shared inventory and sum exactly to the candidate totals.
 
 Game mechanics (as modeled by the engine)
@@ -50,7 +48,7 @@ Game mechanics (as modeled by the engine)
 - OV is special in our model:
   - OV==0 yields a colorless ("wildcard") variant reusable across elements.
   - OV>0 yields an element-colored variant that must match the song's selected element.
-- Force Greats (FG): the DB has a separate FG leaderboard (`fg_loadouts`) with `fg_score` and an optional force payload. Inventory-meta coverage treats per-song peak as max(base score, FG score) and targets reproducing the peak candidate; it does not re-simulate hit timing during coverage solving.
+- Force Greats (FG): the DB has a separate FG leaderboard (`team_buff_fg_loadouts`) with `fg_score` and an optional force payload. Inventory-meta coverage treats per-song peak as max(base score, FG score) and targets reproducing the peak candidate; it does not re-simulate hit timing during coverage solving.
 - Minis: minis contribute to scoring in the original run and are part of the DB candidate, but the inventory-meta coverage problem does not constrain minis under the 100-variant cap (they are reported, not budgeted).
 
 Thanks,

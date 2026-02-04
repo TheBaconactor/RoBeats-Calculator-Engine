@@ -27,7 +27,7 @@ print(f"  Best FG Score: {song_record['best_fg_score']:,}")
 cursor = conn.execute(
     """
     SELECT score, fg_score, gear_json, minis_json, details_json
-    FROM loadouts
+    FROM team_buff_loadouts
     WHERE song_name = ?
     ORDER BY score DESC
 """,
@@ -63,7 +63,7 @@ print(f"\nExpected (from songs table):")
 print(f"  Best Score: {song_record['best_score']:,}")
 print(f"  Best FG Score: {song_record['best_fg_score']:,}")
 
-print(f"\nActual (from loadouts table):")
+print(f"\nActual (from team_buff_loadouts table):")
 print(f"  Highest Base Score: {max_base_score:,}")
 print(f"  Highest FG Score: {max_fg_score:,}")
 

@@ -109,13 +109,13 @@ class EnvConfig:
 
     # General Performance
     perf_timing: bool  # PERF_TIMING (gated): Enable performance timing globally
-    perf_timing_unconditional: bool  # PERF_TIMING (ungated): used by legacy perf print sites
+    perf_timing_unconditional: bool  # PERF_TIMING (ungated): used by perf print sites
 
     # Genetic Algorithm
     ga_seed: Optional[str]  # GA_SEED: Seed for genetic algorithm RNG
 
     # ForceGreats
-    fg_search_radius: int  # FG_SEARCH_RADIUS: default radius (env override, legacy)
+    fg_search_radius: int  # FG_SEARCH_RADIUS: default radius (env override)
 
     # Console output / progress
     output_enabled: bool  # METAFINDER_OUTPUT / METAFINDER_VERBOSE: enable verbose console output

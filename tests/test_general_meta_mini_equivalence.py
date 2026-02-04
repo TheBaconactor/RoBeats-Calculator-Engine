@@ -42,14 +42,14 @@ def test_general_meta_merges_mini_variants_when_irrelevant_to_category():
             "song_name": "Song1",
             "score": 100,
             "gear_json": json.dumps(["Gear1"]),
-            "minis_json": json.dumps(["MiniA"]),
+            "minis_json": json.dumps([["MiniA"]]),
             "details_json": None,
         },
         {
             "song_name": "Song2",
             "score": 100,
             "gear_json": json.dumps(["Gear1"]),
-            "minis_json": json.dumps(["MiniB"]),
+            "minis_json": json.dumps([["MiniB"]]),
             "details_json": None,
         },
     ]
@@ -103,14 +103,14 @@ def test_general_meta_does_not_merge_mini_variants_when_secondary_varies():
             "song_name": "Song1",
             "score": 100,
             "gear_json": json.dumps(["Gear1"]),
-            "minis_json": json.dumps(["MiniA"]),
+            "minis_json": json.dumps([["MiniA"]]),
             "details_json": None,
         },
         {
             "song_name": "Song2",
             "score": 100,
             "gear_json": json.dumps(["Gear1"]),
-            "minis_json": json.dumps(["MiniB"]),
+            "minis_json": json.dumps([["MiniB"]]),
             "details_json": None,
         },
     ]

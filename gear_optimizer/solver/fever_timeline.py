@@ -478,7 +478,7 @@ class SongTimelineGrid:
         # Optional timeline bucketing (cache key canonicalization).
         #
         # Modes:
-        # - off: legacy behavior (no bucketing).
+        # - off: no bucketing.
         # - b / factors: canonicalize by exact (FT factor, FF factor). This is safe if
         #   factors come from lookup tables (plateaus) and equality is exact.
         # - a / signature: canonicalize by computed timeline signature (always safe,

@@ -3,10 +3,10 @@
 import sqlite3
 
 c = sqlite3.connect("evolution.db")
-print("Total entries:", c.execute("SELECT COUNT(*) FROM loadouts").fetchone()[0])
+print("Total entries:", c.execute("SELECT COUNT(*) FROM team_buff_loadouts").fetchone()[0])
 print(
     "Entries with #include signal:",
-    c.execute("SELECT COUNT(*) FROM loadouts WHERE song_name LIKE '%signal%'").fetchone()[0],
+    c.execute("SELECT COUNT(*) FROM team_buff_loadouts WHERE song_name LIKE '%signal%'").fetchone()[0],
 )
 
 # Check for the specific ones still broken
@@ -32,7 +32,7 @@ bad_rowids = [
 ]
 print(f"\nChecking {len(bad_rowids)} previously broken rowids...")
 for rid in bad_rowids:
-    row = c.execute("SELECT rowid, details_json FROM loadouts WHERE rowid=?", (rid,)).fetchone()
+    row = c.execute("SELECT rowid, details_json FROM team_buff_loadouts WHERE rowid=?", (rid,)).fetchone()
     if row:
         import json
 

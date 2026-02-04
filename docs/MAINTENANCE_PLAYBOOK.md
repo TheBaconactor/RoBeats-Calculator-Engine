@@ -18,7 +18,7 @@ Code: `gear_optimizer/core/config.py` (`get_config_path()`, `load_config()`).
 `gear_optimizer/core/env_config.py` reads `DEBUG_PROFILE` / `METAFINDER_DEBUG_PROFILE` once and exposes a typed `ENV` singleton.
 
 ### ForceGreats radius defaults
-- `FG_SEARCH_RADIUS` is treated as the **default** FG search radius (legacy env override).
+- `FG_SEARCH_RADIUS` is treated as the **default** FG search radius (env override).
 - `IterationEngine.FG_SearchRadius` (config) is used as the per-run explicit radius when set.
 
 Code: `gear_optimizer/core/env_config.py` (`ENV.fg_search_radius`), `gear_optimizer/core/constants.py` (`FG_SEARCH_RADIUS`), `gear_optimizer/core/config.py` (`read_fg_search_radius()`).

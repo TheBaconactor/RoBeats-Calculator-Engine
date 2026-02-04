@@ -76,10 +76,10 @@ else:
 # 5. Check if it actually exists in DB (direct query)
 conn = get_db_connection(TEST_DB_PATH)
 try:
-    row = conn.execute("SELECT * FROM loadouts WHERE score=500").fetchone()
+    row = conn.execute("SELECT * FROM team_buff_loadouts WHERE score=500").fetchone()
     if row:
         print(
-            f"Target IS present in the database (verify persistence worked). Rows: {conn.execute('SELECT count(*) FROM loadouts WHERE song_name=?', (SONG_NAME,)).fetchone()[0]}"
+            f"Target IS present in the database (verify persistence worked). Rows: {conn.execute('SELECT count(*) FROM team_buff_loadouts WHERE song_name=?', (SONG_NAME,)).fetchone()[0]}"
         )
     else:
         print("Target is NOT present in the database (persistence failed).")

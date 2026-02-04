@@ -209,7 +209,7 @@ def optimize_gems_batch_gpu(
     genome_stats_np[:] = 0
 
     # [pp, cm, fm, p_val, s_val, ft, ff]
-    # In this legacy mode, we assume constant pp/cm/fm/ft/ff for the whole batch
+    # In this mode, we assume constant pp/cm/fm/ft/ff for the whole batch
     # (except p/s which can vary per item).
     # FT/FF stats are not used in solve_batch_kernel (passed as 0 usually),
     # but we should fill them to avoid garbage.

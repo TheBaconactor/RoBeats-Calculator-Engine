@@ -12,10 +12,10 @@ conn.row_factory = sqlite3.Row
 
 song_name = "Ice Angel (Easy)"
 cursor = conn.cursor()
-cursor.execute("SELECT DISTINCT song_name FROM loadouts")
+cursor.execute("SELECT DISTINCT song_name FROM team_buff_loadouts")
 rows = cursor.fetchall()
 print(f"Unique songs in DB: {[r['song_name'] for r in rows]}")
-cursor.execute("SELECT * FROM loadouts")
+cursor.execute("SELECT * FROM team_buff_loadouts")
 rows = cursor.fetchall()
 
 print(f"Database Path: {db_path}")

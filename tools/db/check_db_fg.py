@@ -3,8 +3,14 @@ import json
 
 conn = sqlite3.connect("evolution.db")
 rows = conn.execute(
-    "SELECT score, fg_score, timestamp, gear_json, force_details_json FROM loadouts WHERE song_name=? ORDER BY fg_score DESC LIMIT 5",
-    ("Feeling Alright (Hard) by Rutra",),
+    """
+    SELECT score, fg_score, timestamp, gear_json, force_details_json
+    FROM team_buff_fg_loadouts
+    WHERE song_name=? AND team_buff=?
+    ORDER BY fg_score DESC
+    LIMIT 5
+    """,
+    ("Feeling Alright (Hard) by Rutra", "T5"),
 ).fetchall()
 
 for i, r in enumerate(rows):

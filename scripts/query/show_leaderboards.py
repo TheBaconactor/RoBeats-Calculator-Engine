@@ -24,15 +24,15 @@ def show_leaderboards():
     print(f"=== LEADERBOARD: {SONG_NAME} ===\n")
 
     # --- BASE SCORE LEADERBOARD ---
-    print(">>> BY BASE SCORE (Top 50 from 'loadouts' table)")
+    print(">>> BY BASE SCORE (Top 50 from 'team_buff_loadouts' table)")
     print(f"{'Rank':<5} {'Base Score':<12} {'FG Score':<12} {'Gear Summary'}")
     print("-" * 80)
 
-    # Note: 'loadouts' is now Base Score focused
+    # Note: team_buff_loadouts is Base Score focused
     cursor.execute(
         """
         SELECT score, fg_score, gear_json 
-        FROM loadouts 
+        FROM team_buff_loadouts 
         WHERE song_name = ? 
         ORDER BY score DESC 
         LIMIT 50
@@ -48,15 +48,15 @@ def show_leaderboards():
     print("\n")
 
     # --- FORCE GREATS SCORE LEADERBOARD ---
-    print(">>> BY FORCE GREATS SCORE (Top 50 from 'fg_loadouts' table)")
+    print(">>> BY FORCE GREATS SCORE (Top 50 from 'team_buff_fg_loadouts' table)")
     print(f"{'Rank':<5} {'FG Score':<12} {'Base Score':<12} {'Config Status'}")
     print("-" * 80)
 
-    # Note: 'fg_loadouts' is FG Score focused
+    # Note: team_buff_fg_loadouts is FG Score focused
     cursor.execute(
         """
         SELECT score, fg_score, force_details_json 
-        FROM fg_loadouts 
+        FROM team_buff_fg_loadouts 
         WHERE song_name = ? 
         ORDER BY fg_score DESC 
         LIMIT 50
@@ -83,7 +83,7 @@ def show_leaderboards():
                     if config and sum(config.values()) > 0:
                         config_status = "Valid Config"
                     else:
-                        config_status = "Invalid/Zero (Legacy?)"
+                        config_status = "Invalid/Zero"
             except:
                 config_status = "Error Parsing"
 

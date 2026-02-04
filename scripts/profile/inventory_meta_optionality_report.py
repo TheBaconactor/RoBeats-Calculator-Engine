@@ -83,7 +83,6 @@ def main() -> int:
 
     t0 = time.perf_counter()
     res = run_inventory_meta_coverage(
-        solver="gpu_full",
         inventory_cap=int(args.inventory_cap),
         restarts=int(args.restarts),
         seed=int(args.seed),

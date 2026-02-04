@@ -706,7 +706,7 @@ def process_force_greats_gpu_finder(
         cached_force = entry.get("force")
         expected_sel = expected_selected_element(entry, meta_primary_color)
 
-        # Keep legacy cache reuse behavior for non-finder only. Finder recomputes for correctness.
+        # Keep cache reuse behavior for non-finder only. Finder recomputes for correctness.
         if cached_force and (entry.get("fg_score") or cached_force.get("Score")) and (not force_greats_finder):
             # Preserve base score when reusing cached FG
             base_score = entry.get("base_score") or entry.get("score", 0)
@@ -1706,7 +1706,7 @@ def process_force_greats_gpu_finder(
                 group_futures = []
                 # NOTE: we intentionally do NOT materialize a full "master_configs" list here.
                 # We track config windows for cfg_idx decoding instead (cfg_windows) to keep
-                # CPU overhead low. Keep a placeholder list only for legacy/log compatibility.
+                # CPU overhead low. Keep a placeholder list only for log compatibility.
                 master_configs: list = []
 
                 if gpu_client is not None:

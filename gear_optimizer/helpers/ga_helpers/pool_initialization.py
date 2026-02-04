@@ -39,7 +39,7 @@ def initialize_pools(all_gears, all_minis, p_color, slots, s_color=None):
             - mini_pool: List of valid minis (matching song colors)
             - total_before: Total gear count before pruning
             - total_after: Total gear count after pruning
-            - Empty list (legacy compatibility, whitelisting removed)
+            - Empty list (whitelisting removed)
     """
     # Color stats to check for mini primary/secondary determination
     color_stats = ["Rush", "Flow", "Chill", "Beat", "Vibe"]

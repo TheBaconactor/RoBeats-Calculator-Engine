@@ -24,7 +24,7 @@ def check_fg_diversity(song_name_filter=None):
     if not song_name_filter:
         print("Finding song with most loadouts...")
         row = conn.execute(
-            "SELECT song_name, COUNT(*) as c FROM loadouts GROUP BY song_name ORDER BY c DESC LIMIT 1"
+            "SELECT song_name, COUNT(*) as c FROM team_buff_loadouts GROUP BY song_name ORDER BY c DESC LIMIT 1"
         ).fetchone()
         if not row:
             print("No loadouts found.")
@@ -36,7 +36,7 @@ def check_fg_diversity(song_name_filter=None):
     rows = conn.execute(
         """
         SELECT rowid, score, fg_score, gear_json, minis_json, loadout_hash
-        FROM loadouts
+        FROM team_buff_loadouts
         WHERE song_name = ?
         ORDER BY fg_score DESC
         LIMIT 51

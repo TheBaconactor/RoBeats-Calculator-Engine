@@ -13,7 +13,7 @@ def _group_ftff_pairs_by_max_fp_matrix(
     """
     Group FT/FF pairs by identical per-section max-FP caps.
 
-    Ordering matches the legacy dict-insertion behavior:
+    Ordering matches deterministic dict-insertion behavior:
     - Groups are yielded in order of first appearance in `ftff_pairs`.
     - Pairs within each group preserve their original order.
     """
@@ -79,7 +79,7 @@ def _collect_ftff_pairs_from_centers(
     """
     Deterministically collect unique (ft_gems, ff_gems) pairs for a group's window.
 
-    Behavior matches the legacy set-based implementation:
+    Behavior matches the reference set-based implementation:
     - Full window when search_radius < 0 or search_radius >= total_budget
     - Otherwise, union of all (ft,ff) within +-radius of each center, clamped to budget.
 

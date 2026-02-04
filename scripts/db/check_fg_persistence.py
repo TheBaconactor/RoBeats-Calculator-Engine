@@ -43,7 +43,7 @@ def main() -> int:
             SELECT COUNT(*) as total,
                    SUM(CASE WHEN force_details_json IS NOT NULL THEN 1 ELSE 0 END) as with_config,
                    SUM(CASE WHEN fg_score > score THEN 1 ELSE 0 END) as improving
-            FROM loadouts
+            FROM team_buff_loadouts
             WHERE fg_score > 0
             """
         )
@@ -61,7 +61,7 @@ def main() -> int:
             SELECT song_name, fg_score, score,
                    CASE WHEN force_details_json IS NULL THEN 'NULL' ELSE 'present' END as config_status,
                    length(force_details_json) as config_len
-            FROM loadouts
+            FROM team_buff_loadouts
             WHERE fg_score > 0
             ORDER BY timestamp DESC
             LIMIT 5

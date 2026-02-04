@@ -4,7 +4,7 @@ import json
 conn = sqlite3.connect("evolution.db")
 rows = conn.execute("""
     SELECT score, fg_score, gear_json, minis_json, force_details_json 
-    FROM loadouts 
+    FROM team_buff_loadouts 
     WHERE song_name LIKE '%Feeling%' AND fg_score=33579863
 """).fetchall()
 

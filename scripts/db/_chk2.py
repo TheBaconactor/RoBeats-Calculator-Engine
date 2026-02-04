@@ -2,7 +2,7 @@ import sqlite3, json
 
 c = sqlite3.connect("evolution.db")
 rows = c.execute(
-    'SELECT details_json FROM loadouts WHERE song_name LIKE "%AI Bomb%" ORDER BY timestamp DESC LIMIT 5'
+    'SELECT details_json FROM team_buff_loadouts WHERE song_name LIKE "%AI Bomb%" ORDER BY timestamp DESC LIMIT 5'
 ).fetchall()
 for i, r in enumerate(rows):
     d = json.loads(r[0]) if r[0] else {}

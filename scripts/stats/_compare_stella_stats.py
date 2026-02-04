@@ -7,7 +7,7 @@ c = conn.cursor()
 # Get top stella loadout
 rows = c.execute("""
     SELECT song_name, score, fg_score, details_json 
-    FROM loadouts 
+    FROM team_buff_loadouts 
     WHERE song_name LIKE "%stella%" 
     ORDER BY score DESC 
     LIMIT 1

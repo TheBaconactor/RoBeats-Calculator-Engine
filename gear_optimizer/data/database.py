@@ -4,7 +4,7 @@ Handles all SQLite interactions for loadout persistence and retrieval.
 """
 
 import hashlib
-import ast
+import re
 import json
 import os
 import sqlite3
@@ -311,7 +311,7 @@ def update_song_counters(
 
     try:
         with conn:
-            # Ensure row exists (older DBs can have loadouts without a songs row).
+            # Ensure row exists before updating counters.
             conn.execute(
                 """
                 INSERT OR IGNORE INTO songs (name, best_score, best_fg_score, last_updated, attempt_lifetime, attempts_first)
@@ -381,7 +381,6 @@ def _compact_minis_for_db(mini_list):
     - dicts: {"Name": ...}
     - strings: "Electroman"
     - nested variant groups: [["A","B"], ["C"], ...] (takes a representative per slot)
-    - legacy corruption: "['Electroman']" or "['A', \"B\"]" (parses and takes first element)
 
     Args:
         mini_list: List of mini items (dicts or strings)
@@ -405,16 +404,10 @@ def _compact_minis_for_db(mini_list):
             return ""
         if isinstance(v, str):
             s = v.strip()
-            if not s:
-                return ""
-            # Best-effort repair for corrupted list-literal strings like "['Electroman']".
             if s.startswith("[") and s.endswith("]"):
-                try:
-                    parsed = ast.literal_eval(s)
-                    if isinstance(parsed, (list, tuple)) and parsed:
-                        return _first_name(parsed[0])
-                except Exception:
-                    return s
+                match = re.search(r"[\"']([^\"']+)[\"']", s)
+                if match:
+                    return match.group(1).strip()
             return s
         return str(v).strip()
 
@@ -782,7 +775,7 @@ def _fg_details_from_force_payload(details: Any, force_data: Any, *, fg_score: i
 def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None:
     """
     Batch insert/update loadouts for a song in a single transaction.
-    Persists base results into TeamBuff tier tables (T5) instead of legacy tables.
+    Persists base results into TeamBuff tier tables (T5).
 
     Args:
         song_name: Name of the song
@@ -1345,7 +1338,7 @@ def get_best_loadouts(
 
     Storage format:
     - gear_json: JSON array of name strings
-    - minis_json: JSON array of name strings (legacy) OR JSON array of arrays (variant groups)
+    - minis_json: JSON array of variant groups (list[list[str]])
     If gears_by_name/minis_by_name are provided, expands representative names to full stat dicts.
 
     Args:
@@ -1371,43 +1364,17 @@ def get_best_loadouts(
     conn = get_db_connection_cached(db_path)
     try:
 
-        def _table_exists(name: str) -> bool:
-            try:
-                return (
-                    conn.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-                        (name,),
-                    ).fetchone()
-                    is not None
-                )
-            except sqlite3.Error:
-                return False
-
-        use_team_buff = _table_exists("team_buff_loadouts")
-
         # 1. Fetch Top Base Score Loadouts
-        if use_team_buff:
-            cursor = conn.execute(
-                """
-                SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
-                FROM team_buff_loadouts
-                WHERE song_name = ? AND team_buff = ?
-                ORDER BY score DESC
-                LIMIT ?
-                """,
-                (song_name, team_buff, limit),
-            )
-        else:
-            cursor = conn.execute(
-                """
-                SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
-                FROM loadouts
-                WHERE song_name = ?
-                ORDER BY score DESC
-                LIMIT ?
-                """,
-                (song_name, limit),
-            )
+        cursor = conn.execute(
+            """
+            SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
+            FROM team_buff_loadouts
+            WHERE song_name = ? AND team_buff = ?
+            ORDER BY score DESC
+            LIMIT ?
+            """,
+            (song_name, team_buff, limit),
+        )
 
         results = []
         seen_hashes = set()
@@ -1422,8 +1389,7 @@ def get_best_loadouts(
             details = json.loads(row["details_json"]) if row["details_json"] else {}
 
             # Defensive: Detect corrupted/mismatched hashes to avoid seeding GA with inconsistent loadouts.
-            # This can happen if a lower-scoring write overwrote a row's payload fields (or if a legacy
-            # DB predates the current effective-hash semantics).
+            # This can happen if a lower-scoring write overwrote a row's payload fields.
             try:
                 p_color, s_color, sel_color = extract_song_colors(details)
                 if p_color or s_color:
@@ -1476,28 +1442,16 @@ def get_best_loadouts(
             process_row(row)
 
         # 2. Fetch Top Force Greats Loadouts
-        if use_team_buff and _table_exists("team_buff_fg_loadouts"):
-            cursor = conn.execute(
-                """
-                SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
-                FROM team_buff_fg_loadouts
-                WHERE song_name = ? AND team_buff = ?
-                ORDER BY fg_score DESC
-                LIMIT ?
-                """,
-                (song_name, team_buff, limit),
-            )
-        else:
-            cursor = conn.execute(
-                """
-                SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
-                FROM fg_loadouts
-                WHERE song_name = ?
-                ORDER BY fg_score DESC
-                LIMIT ?
-                """,
-                (song_name, limit),
-            )
+        cursor = conn.execute(
+            """
+            SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
+            FROM team_buff_fg_loadouts
+            WHERE song_name = ? AND team_buff = ?
+            ORDER BY fg_score DESC
+            LIMIT ?
+            """,
+            (song_name, team_buff, limit),
+        )
 
         for row in cursor:
             process_row(row)
@@ -1543,7 +1497,7 @@ def get_song_names_present_in_db(song_names: Iterable[str], db_path: Optional[st
         except sqlite3.Error:
             pass
 
-        for table in ("team_buff_loadouts", "team_buff_fg_loadouts", "loadouts", "fg_loadouts"):
+        for table in ("team_buff_loadouts", "team_buff_fg_loadouts"):
             try:
                 rows = conn.execute(
                     f"SELECT DISTINCT song_name FROM {table} WHERE song_name IN ({placeholders})",

@@ -88,7 +88,7 @@ def main() -> None:
         ranges = [range(0, int(v) + 1) for v in max_fp]
         t0 = time.perf_counter()
         cfgs = list(itertools.product(*ranges))
-        # pack to numpy and upload (mirrors legacy path cost)
+        # pack to numpy and upload (mirrors reference path cost)
         cfg_np = np.asarray(cfgs, dtype=np.int32)
         # pad to FG_MAX_SECTIONS cols
         buf = np.zeros((int(min(int(n_cfg), 4096)), int(fg_fields.FG_MAX_SECTIONS)), dtype=np.int32)

@@ -14,8 +14,6 @@ def get_all_loadouts_from_db() -> List[Dict]:
     Notes:
     - GeneralMeta treats the "peak" per song as the best achievable score for a loadout:
       `max(score, fg_score)` (i.e., either base or ForceGreats).
-    - Some historical DBs may only have improved ForceGreats rows present in `fg_loadouts`,
-      so we include rows from both `loadouts` and `fg_loadouts`.
     """
     db_path = get_evolution_db_path()
     if not os.path.exists(db_path):
@@ -51,15 +49,13 @@ def get_all_loadouts_from_db() -> List[Dict]:
                 )
 
         has_unified = (
-            conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='view' AND name='loadouts_unified'"
-            ).fetchone()
+            conn.execute("SELECT 1 FROM sqlite_master WHERE type='view' AND name='loadouts_unified'").fetchone()
             is not None
         )
         if has_unified:
             _select_all_from("loadouts_unified", where="WHERE UPPER(team_buff) = 'T5'")
         else:
-            _select_all_from("loadouts")
+            _select_all_from("team_buff_loadouts", where="WHERE UPPER(team_buff) = 'T5'")
 
         # Use unified view for FG rows so team_buff is always present
         try:

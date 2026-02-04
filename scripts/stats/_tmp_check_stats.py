@@ -5,7 +5,7 @@ conn = sqlite3.connect("evolution.db")
 conn.row_factory = sqlite3.Row
 c = conn.cursor()
 
-rows = c.execute("SELECT song_name, details_json FROM loadouts LIMIT 5").fetchall()
+rows = c.execute("SELECT song_name, details_json FROM team_buff_loadouts LIMIT 5").fetchall()
 
 for row in rows:
     song = row["song_name"]

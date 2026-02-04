@@ -54,10 +54,11 @@ def _insert_loadout(
     )
     conn.execute(
         """
-        INSERT INTO loadouts (
-            song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp
+        INSERT INTO team_buff_loadouts (
+            song_name, team_buff, loadout_hash, score, fg_score,
+            gear_json, minis_json, details_json, force_details_json, timestamp
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, 'T5', ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             song_name,
@@ -183,7 +184,6 @@ def test_seeded_inventory_reports_per_song_used_items_for_element(monkeypatch, t
     expected_variants = len(gear) * len(unique_profiles)
 
     res = run_inventory_meta_coverage(
-        solver="gpu_full",
         inventory_cap=int(expected_variants),
         seed_inventory_gear=seed_inventory_gear,
         element=selected_element,

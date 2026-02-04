@@ -364,19 +364,86 @@ def test_section_1_vs_section_2_offset():
 @pytest.mark.skipif(not load_gpu_kernel()[2], reason="GPU not available")
 def test_cpu_gpu_full_integration():
     """
-    Full integration test: CPU analytical vs GPU analytical (when implemented).
+    Full integration test: CPU analytical vs GPU analytical (timeline semantics).
 
-    This test will be enabled once the GPU analytical implementation is complete.
+    This validates the core timeline semantics that underpin the FG GPU finder:
+    - section-1 offset handling
+    - carry_time behavior using great-candidate timestamps
+    - binary-search-left end index behavior
     """
-    pytest.skip("GPU analytical implementation pending")
+    fg_kernels, fg_fields, gpu_available = load_gpu_kernel()
+    assert gpu_available
 
-    # TODO: Implement this test once GPU analytical version exists
-    # It should:
-    # 1. Upload song data to GPU
-    # 2. Run GPU analytical FG kernel
-    # 3. Download results
-    # 4. Compare to CPU analytical results
-    # 5. Verify exact match (base_score, penalties, final_score)
+    # Build a song with great-candidate timestamps that can push carry_time later than the perfect-event timestamp.
+    n_notes = 500
+    duration = 60.0
+    calc_song = create_test_song_data(n_notes, duration=duration)
+    ref_arrays = create_reference_arrays()
+    scorer = create_scorer_from_calc_song(calc_song, ref_arrays)
+
+    # Attach great-candidate timestamps (slightly delayed vs perfect-event time) to exercise carry_time.
+    ts = np.asarray(calc_song["song_data"]["timestamps"], dtype=np.float64)
+    great_ts = ts + 0.025  # 25ms delay on candidates
+    calc_song["song_data"]["fg_great_candidate_timestamps"] = great_ts
+    scorer = create_scorer_from_calc_song(calc_song, ref_arrays)
+
+    ft_stat = 80
+    ff_stat = 80
+    forced_counts = [10, 5, 2, 0]
+
+    # CPU analytical ground truth.
+    fever_mask, body_fever, body_normal, fever_acts = scorer.compute_timeline_with_forced(ft_stat, ff_stat, forced_counts)
+    m0, m1, m2, m3 = scorer.pack_fever_mask(fever_mask)
+    non_fever_base, fever_duration, _non_fever_great_to_fill, raw_fever_fill = scorer.get_fever_params(ft_stat, ff_stat)
+
+    # Upload timestamps to GPU (prefix upload into fixed-shape fields).
+    import taichi as ti
+
+    try:
+        ti.init(arch=ti.vulkan, offline_cache=False)
+    except Exception:
+        pass  # already initialized
+
+    # Ensure fields are allocated.
+    try:
+        fg_fields.ensure_ready_with_warmup()
+    except Exception:
+        # Some environments don't expose ensure_ready_with_warmup; tests that import taichi_gem will have already init'd.
+        pass
+
+    ts_f32 = np.asarray(ts, dtype=np.float32)
+    great_f32 = np.asarray(great_ts, dtype=np.float32)
+
+    fg_kernels.fg_upload_song_timestamps_prefix_kernel(int(n_notes), ts_f32)
+    fg_kernels.fg_upload_great_candidate_timestamps_prefix_kernel(int(n_notes), great_f32)
+
+    # Run GPU debug kernel for forced-count timeline (exact parity target).
+    out_mask = ti.ndarray(dtype=ti.u32, shape=(4,))
+    out_counts = ti.ndarray(dtype=ti.i32, shape=(3,))
+    forced_arr = np.asarray(forced_counts, dtype=np.int32)
+    forced_nd = ti.ndarray(dtype=ti.i32, shape=(forced_arr.shape[0],))
+    forced_nd.from_numpy(forced_arr)
+
+    fg_kernels.fg_debug_timeline_forced_counts_kernel(
+        int(n_notes),
+        float(raw_fever_fill),
+        float(fever_duration),
+        forced_nd,
+        int(len(forced_counts)),
+        out_mask,
+        out_counts,
+    )
+
+    got_mask = out_mask.to_numpy()
+    got_counts = out_counts.to_numpy()
+
+    assert int(got_mask[0]) == int(m0)
+    assert int(got_mask[1]) == int(m1)
+    assert int(got_mask[2]) == int(m2)
+    assert int(got_mask[3]) == int(m3)
+    assert int(got_counts[0]) == int(body_fever)
+    assert int(got_counts[1]) == int(body_normal)
+    assert int(got_counts[2]) == int(fever_acts)
 
 
 # =============================================================================

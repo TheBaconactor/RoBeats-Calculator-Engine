@@ -1,16 +1,15 @@
 # DB Ready for Frontend - Summary
 
-**Date:** January 24, 2026  
-**DB Schema Version:** 12  
-**Branch:** revert-cpu-opt  
-**Commit:** 45210cb
+**Date:** February 3, 2026  
+**DB Schema Version:** 16  
+**Branch:** n/a  
+**Commit:** n/a
 
 ## Changes Made
 
-### 1. Deduplication of T5 Entries ✓
-- **Problem:** T5 appeared twice in unified view (once from legacy `fg_loadouts`, once from `team_buff_fg_loadouts`)
-- **Solution:** Updated `fg_loadouts_unified` view to prioritize `team_buff_fg_loadouts` and exclude legacy entries when explicit tier data exists
-- **Result:** Reduced from 52,321 to 50,903 entries (1,418 duplicates eliminated)
+### 1. Legacy Tables Removed ✓
+- **Change:** Deprecated `loadouts` / `fg_loadouts` tables are dropped at schema v16.
+- **Result:** `fg_loadouts_unified` and `loadouts_unified` now read directly from tiered tables only.
 
 ### 2. Code Organization ✓
 - Moved all debug scripts from root to proper locations:
@@ -19,14 +18,14 @@
   - `tests/` - Test files (test_fg_persistence.py)
 
 ### 3. DB Verification ✓
-- Schema version confirmed: **v12** (up to date)
+- Schema version confirmed: **v16** (up to date)
 - Unified view tested and working correctly
 - Tier breakdown verified for sample songs
 
 ## Frontend Integration Guide
 
 ### Database Query
-Use the **`fg_loadouts_unified`** view instead of querying `fg_loadouts` or `team_buff_fg_loadouts` directly:
+Use the **`fg_loadouts_unified`** view (or query `team_buff_fg_loadouts` directly for a tiered view):
 
 ```sql
 SELECT 
@@ -119,7 +118,7 @@ python scripts/db/_check_fg_unified.py
 ## Database Location
 - **Path:** `./evolution.db` (root of repo)
 - **Size:** ~500MB+
-- **Schema:** v12
+- **Schema:** v16
 - **Safe to copy:** Yes (read-only for frontend)
 
 ---

@@ -183,4 +183,4 @@ Penalty placement for forced Greats
   first non-fever note is the transition note and does not contribute fill.
 
 Implementation Note
-- If you see any document claiming `fill_penalty(k) = ceil(k / non_fever_great_to_fill)`, treat it as legacy: the current solver uses `notes_to_fill(k) = ceil(raw_fill + 0.5k)` and derives FP targets from that.
+- If you see any document claiming `fill_penalty(k) = ceil(k / non_fever_great_to_fill)`, treat it as outdated: the current solver uses `notes_to_fill(k) = ceil(raw_fill + 0.5k)` and derives FP targets from that.

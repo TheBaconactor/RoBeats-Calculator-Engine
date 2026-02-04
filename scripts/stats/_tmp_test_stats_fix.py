@@ -23,7 +23,7 @@ conn.row_factory = sqlite3.Row
 
 rows = conn.execute("""
     SELECT song_name, score, details_json
-    FROM loadouts 
+    FROM team_buff_loadouts 
     ORDER BY rowid DESC
     LIMIT 3
 """).fetchall()

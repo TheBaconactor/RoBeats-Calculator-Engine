@@ -41,18 +41,4 @@ for tier, source in unified_tiers:
     print(f"  {tier:4s} (from {source})")
 print(f"\nTotal unique tiers in unified view: {len(unified_tiers)}/5 expected")
 
-# Check if this song also has entry in fg_loadouts (legacy)
-legacy = c.execute(
-    """
-    SELECT team_buff, score, fg_score
-    FROM fg_loadouts 
-    WHERE song_name = ?
-""",
-    (song,),
-).fetchone()
-if legacy:
-    print(f"\nLegacy fg_loadouts entry: team_buff={legacy[0]}, score={legacy[1]}, fg_score={legacy[2]}")
-else:
-    print("\nNo legacy fg_loadouts entry for this song")
-
 conn.close()

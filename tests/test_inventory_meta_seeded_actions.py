@@ -30,10 +30,11 @@ def _insert_loadout(
     )
     conn.execute(
         """
-        INSERT INTO loadouts (
-            song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp
+        INSERT INTO team_buff_loadouts (
+            song_name, team_buff, loadout_hash, score, fg_score,
+            gear_json, minis_json, details_json, force_details_json, timestamp
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, 'T5', ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             song_name,
@@ -123,7 +124,6 @@ def test_seeded_inventory_actions_prefer_owned_and_report_unused(monkeypatch, tm
     ]
 
     res = run_inventory_meta_coverage(
-        solver="gpu_full",
         inventory_cap=8,  # enough to carry the 2 "wrong" seeded variants and still cover songs
         seed_inventory_gear=seed_inventory_gear,
         seed=7,

@@ -52,10 +52,11 @@ def _insert_loadout(
     )
     conn.execute(
         """
-        INSERT INTO loadouts (
-            song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp
+        INSERT INTO team_buff_loadouts (
+            song_name, team_buff, loadout_hash, score, fg_score,
+            gear_json, minis_json, details_json, force_details_json, timestamp
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, 'T5', ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             song_name,
@@ -153,7 +154,6 @@ def test_wildcard_palette_improves_shift_workload(monkeypatch, tmp_path):
     _make_shift_workload(db_path, songs=240, seed=123)
 
     common = dict(
-        solver="gpu_full",
         # Keep the cap tight so witness quality dominates coverage.
         inventory_cap=12,
         seed=123,

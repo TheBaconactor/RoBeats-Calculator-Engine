@@ -21,10 +21,11 @@ def _insert_loadout(conn, song_name, score, gear_names, minis_groups, details):
     )
     conn.execute(
         """
-        INSERT INTO loadouts (
-            song_name, loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json, timestamp
+        INSERT INTO team_buff_loadouts (
+            song_name, team_buff, loadout_hash, score, fg_score,
+            gear_json, minis_json, details_json, force_details_json, timestamp
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, 'T5', ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             song_name,
@@ -94,7 +95,6 @@ def test_inventory_meta_coverage_caps_song_count(monkeypatch, tmp_path):
         conn.close()
 
     results = run_inventory_meta_coverage(
-        solver="gpu_full",
         inventory_cap=6,
         partitions_per_song=8,
         seed=123,
@@ -149,7 +149,6 @@ def test_inventory_meta_coverage_full_gpu_smoke(monkeypatch, tmp_path):
         conn.close()
 
     results = run_inventory_meta_coverage(
-        solver="gpu_full",
         inventory_cap=6,
         partitions_per_song=8,
         seed=1,
@@ -181,7 +180,6 @@ def test_inventory_meta_coverage_lns_runs(monkeypatch, tmp_path):
         conn.close()
 
     results = run_inventory_meta_coverage(
-        solver="gpu_full",
         inventory_cap=6,
         partitions_per_song=8,
         seed=1,
@@ -212,7 +210,6 @@ def test_inventory_meta_coverage_gpu_full_parallel_repack_matches_serial(monkeyp
         conn.close()
 
     common_args = dict(
-        solver="gpu_full",
         inventory_cap=6,
         partitions_per_song=16,
         seed=123,

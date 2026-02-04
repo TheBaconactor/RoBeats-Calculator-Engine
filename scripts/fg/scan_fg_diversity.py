@@ -21,7 +21,7 @@ def scan_all_songs():
     print(f"--- Scanning ALL songs in {os.path.basename(db_path)} ---")
 
     # Get all songs with > 1 loadout
-    songs = conn.execute("SELECT song_name, COUNT(*) as c FROM loadouts GROUP BY song_name HAVING c > 1").fetchall()
+    songs = conn.execute("SELECT song_name, COUNT(*) as c FROM team_buff_loadouts GROUP BY song_name HAVING c > 1").fetchall()
 
     issues_found = 0
 
@@ -31,7 +31,7 @@ def scan_all_songs():
         rows = conn.execute(
             """
             SELECT fg_score, loadout_hash
-            FROM loadouts
+            FROM team_buff_loadouts
             WHERE song_name = ?
             ORDER BY fg_score DESC
             LIMIT 51

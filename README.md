@@ -285,8 +285,7 @@ RoBeats-Calculator-Engine/
     ├── CHANGES_SUMMARY.md            # Change log
     ├── HELPER_EXTRACTION.md          # Refactoring notes
     ├── REFACTORING_VALIDATION.md     # Test results
-    ├── Implementation Records/       # Detailed change logs
-    └── legacy/                       # Historical refactoring guides
+    └── Implementation Records/       # Detailed change logs
 ```
 
 </details>
@@ -483,13 +482,12 @@ See `tests/` for CPU/GPU parity checks, DB correctness, and regression coverage.
 **GPU not detected**
 - Ensure Taichi with Vulkan backend is installed: `pip install taichi`
 - Check GPU availability: `python -c "import taichi as ti; ti.init(arch=ti.vulkan)"`
-- Fallback to CPU mode: Set `GPU_Mode = false` (and optionally `GPU_Native_GA = false`) in `config.ini`
 
 ---
 
 ## Credits
 
-**Original Implementation:** 5,196-line monolith (archived in docs/legacy)
+**Original Implementation:** 5,196-line monolith (archived off-repo)
 
 **Refactored Architecture (v2.0.0):** Modular design with layered architecture
 - 39 modules organized into 6 layers

@@ -68,24 +68,49 @@ entries = build_persistence_entries(
 song_name = "Ice Angel (Easy)"
 cursor = conn.cursor()
 
-# We need to insert into 'songs' and 'loadouts'
+# We need to insert into 'songs' and 'team_buff_loadouts'
 # Update songs table
 best_score = 0
 best_fg_score = 0
 
-for entry in entries:
+for idx, entry in enumerate(entries, start=1):
     score = entry["score"]
     fg_score = entry["fg_score"]
     force_json = json.dumps(entry["force"]) if entry["force"] else None
     details_json = json.dumps(entry["details"])
+    gear_names = [g.get("Name") for g in (mock_gear or []) if g.get("Name")]
+    mini_names = [m.get("Name") for m in (mock_minis or []) if m.get("Name")]
+    loadout_hash = entry.get("loadout_hash") or f"mock-{idx}"
 
     # Simple insert
     cursor.execute(
         """
-        INSERT INTO loadouts (song_name, score, fg_score, force_details_json, details_json, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO team_buff_loadouts (
+            song_name,
+            team_buff,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            force_details_json,
+            details_json,
+            timestamp
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
-        (song_name, score, fg_score, force_json, details_json, 123456789),
+        (
+            song_name,
+            "T5",
+            loadout_hash,
+            score,
+            fg_score,
+            json.dumps(gear_names),
+            json.dumps([[name] for name in mini_names]),
+            force_json,
+            details_json,
+            123456789,
+        ),
     )
 
     if score > best_score:
@@ -106,7 +131,7 @@ conn.commit()
 
 # 5. Verify
 print("\n=== VERIFICATION ===")
-cursor.execute("SELECT * FROM loadouts WHERE song_name=?", (song_name,))
+cursor.execute("SELECT * FROM team_buff_loadouts WHERE song_name=?", (song_name,))
 row = cursor.fetchone()
 if row:
     print(f"Row Score (Base): {row['score']}")

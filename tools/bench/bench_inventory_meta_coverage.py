@@ -114,7 +114,6 @@ def main() -> None:
         "seed_inventory_gear": None,
         "element": None,
         "secondary_element": None,
-        "solver": "gpu_full",
         "restarts": 1,
         "partitions_per_song": 512,
         "adaptive_rounds": 0,

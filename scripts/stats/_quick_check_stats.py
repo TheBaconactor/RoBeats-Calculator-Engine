@@ -7,7 +7,7 @@ conn.row_factory = sqlite3.Row
 # Check most recent entries
 rows = conn.execute("""
     SELECT song_name, score, details_json
-    FROM loadouts 
+    FROM team_buff_loadouts 
     ORDER BY timestamp DESC
     LIMIT 5
 """).fetchall()

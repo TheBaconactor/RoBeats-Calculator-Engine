@@ -531,7 +531,7 @@ def build_persistence_entries(
     if best_fg:
         # If we already have `loadout_entries` (DB+GA union), the best FG loadout
         # will be included in that loop with correct base_score+fg_score. Only
-        # emit a separate entry when it is missing (legacy path).
+        # emit a separate entry when it is missing (fallback path).
         best_fg_hash = None
         try:
             from ...data.database import get_loadout_hash
@@ -594,7 +594,7 @@ def build_persistence_entries(
                 eval_gear,
                 eval_minis,
                 eval_details,
-                0,  # No FG score available in this legacy path
+                0,  # No FG score available in this fallback path
                 None,
             )
 

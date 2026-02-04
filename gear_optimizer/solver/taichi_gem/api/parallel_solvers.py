@@ -775,7 +775,7 @@ def solve_genomes_parallel_merged(
     # Initialize per-genome results once for the whole merged batch.
     kernels.init_genome_results_kernel(n_total_genomes)
 
-    # Use any one payload's flags for legacy kernel args (the kernel reads song_flags by slot).
+    # Use any one payload's flags for shared kernel args (the kernel reads song_flags by slot).
     any_flags = next(iter(slot_to_flags.values()))
 
     # Stream work items into MAX_WORK_ITEMS chunks.

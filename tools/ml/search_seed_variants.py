@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import subprocess
+import os
 import sys
 import warnings
 from dataclasses import dataclass
@@ -13,7 +13,13 @@ from typing import Dict, List, Tuple
 import torch
 import torch.nn as nn
 
+from gear_optimizer.data.database import get_db_connection
+from inventory_optimizer import export_inventory_meta_json, run_inventory_meta_coverage
+from inventory_optimizer.db import fetch_candidates_for_peak, fetch_song_peak
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 @dataclass(frozen=True)
@@ -133,11 +139,32 @@ def _sample_allowlist(song_names: List[str], *, count: int, seed: int) -> List[s
     return rng.sample(list(song_names), count)
 
 
+def _collect_candidates_for_songs(
+    db_path: Path, song_names: List[str]
+) -> Tuple[Dict[str, list], List[str]]:
+    candidates_by_song: Dict[str, list] = {}
+    missing: List[str] = []
+
+    conn = get_db_connection(str(db_path))
+    try:
+        for name in song_names:
+            peak, base_peak, fg_peak = fetch_song_peak(conn, name)
+            cands = fetch_candidates_for_peak(conn, name, peak, base_peak, fg_peak)
+            if cands:
+                candidates_by_song[str(name)] = cands
+            else:
+                missing.append(str(name))
+    finally:
+        conn.close()
+
+    return candidates_by_song, missing
+
+
 def _run_solver(
     *,
     db_path: Path,
     seed_path: Path,
-    allowlist_path: Path,
+    allowlist: List[str],
     out_path: Path,
     inventory_cap: int,
     k: int,
@@ -147,40 +174,28 @@ def _run_solver(
     seed_inventory_mode: str,
     seed: int,
 ) -> int:
-    cmd = [
-        sys.executable,
-        str(REPO_ROOT / "inventory_meta_coverage_main.py"),
-        "--db-path",
-        str(db_path),
-        "--solver",
-        "gpu_full",
-        "--inventory-cap",
-        str(int(inventory_cap)),
-        "--partitions-per-song",
-        str(int(k)),
-        "--adaptive-rounds",
-        "0",
-        "--adaptive-keep-per-song",
-        "0",
-        "--seed",
-        str(int(seed)),
-        "--restarts",
-        str(int(restarts)),
-        "--lns-time-sec",
-        str(float(lns_time_sec)),
-        "--lns-attempts",
-        str(int(lns_attempts)),
-        "--seed-inventory-variants",
-        str(seed_path),
-        "--seed-inventory-mode",
-        str(seed_inventory_mode),
-        "--song-allowlist-file",
-        str(allowlist_path),
-        "--output",
-        str(out_path),
-    ]
-    subprocess.run(cmd, check=True)
-    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    os.environ["EVOLUTION_DB_PATH"] = str(db_path)
+    candidates_by_song, missing = _collect_candidates_for_songs(db_path, allowlist)
+    if missing:
+        print(f"[eval] missing candidates for {len(missing)} song(s)")
+    if not candidates_by_song:
+        raise SystemExit("No candidates found for eval allowlist.")
+
+    payload = run_inventory_meta_coverage(
+        candidates_by_song_override=candidates_by_song,
+        inventory_cap=int(inventory_cap),
+        partitions_per_song=int(k),
+        adaptive_rounds=0,
+        adaptive_keep_per_song=0,
+        seed=int(seed),
+        restarts=int(restarts),
+        lns_time_sec=float(lns_time_sec),
+        lns_attempts=int(lns_attempts),
+        seed_inventory_variants_path=str(seed_path),
+        seed_inventory_mode=str(seed_inventory_mode),
+        profile=False,
+    )
+    export_inventory_meta_json(payload, str(out_path))
     stats = payload.get("stats") or {}
     return int(stats.get("songs_covered") or 0)
 
@@ -198,38 +213,21 @@ def _run_full_solver(
     seed_inventory_mode: str,
     seed: int,
 ) -> int:
-    cmd = [
-        sys.executable,
-        str(REPO_ROOT / "inventory_meta_coverage_main.py"),
-        "--db-path",
-        str(db_path),
-        "--solver",
-        "gpu_full",
-        "--inventory-cap",
-        str(int(inventory_cap)),
-        "--partitions-per-song",
-        str(int(k)),
-        "--adaptive-rounds",
-        "0",
-        "--adaptive-keep-per-song",
-        "0",
-        "--seed",
-        str(int(seed)),
-        "--restarts",
-        str(int(restarts)),
-        "--lns-time-sec",
-        str(float(lns_time_sec)),
-        "--lns-attempts",
-        str(int(lns_attempts)),
-        "--seed-inventory-variants",
-        str(seed_path),
-        "--seed-inventory-mode",
-        str(seed_inventory_mode),
-        "--output",
-        str(out_path),
-    ]
-    subprocess.run(cmd, check=True)
-    payload = json.loads(out_path.read_text(encoding="utf-8"))
+    os.environ["EVOLUTION_DB_PATH"] = str(db_path)
+    payload = run_inventory_meta_coverage(
+        inventory_cap=int(inventory_cap),
+        partitions_per_song=int(k),
+        adaptive_rounds=0,
+        adaptive_keep_per_song=0,
+        seed=int(seed),
+        restarts=int(restarts),
+        lns_time_sec=float(lns_time_sec),
+        lns_attempts=int(lns_attempts),
+        seed_inventory_variants_path=str(seed_path),
+        seed_inventory_mode=str(seed_inventory_mode),
+        profile=False,
+    )
+    export_inventory_meta_json(payload, str(out_path))
     stats = payload.get("stats") or {}
     return int(stats.get("songs_covered") or 0)
 
@@ -272,7 +270,7 @@ def main() -> None:
         help="Recompute aggregation per candidate (slower but more diverse).",
     )
     ap.add_argument("--skip-eval", action="store_true", help="Only emit candidates; do not run GPU eval.")
-    ap.add_argument("--eval-song-count", type=int, default=256, help="Songs per eval allowlist (default: 256).")
+    ap.add_argument("--eval-song-count", type=int, default=256, help="Songs per eval subset (default: 256).")
     ap.add_argument("--eval-k", type=int, default=128, help="Eval partitions per song (default: 128).")
     ap.add_argument("--eval-restarts", type=int, default=3, help="Eval restarts (default: 3).")
     ap.add_argument("--eval-lns-time-sec", type=float, default=0.0, help="Eval LNS time (default: 0).")
@@ -385,14 +383,12 @@ def main() -> None:
 
         if not bool(args.skip_eval):
             allowlist = _sample_allowlist(song_names, count=int(args.eval_song_count), seed=int(args.eval_seed) + i)
-            allow_path = cand_dir / f"allow_{i:03d}.json"
-            allow_path.write_text(json.dumps(allowlist, indent=0), encoding="utf-8")
             sol_path = cand_dir / f"eval_{i:03d}.json"
 
             covered = _run_solver(
                 db_path=Path(args.db_path),
                 seed_path=seed_path,
-                allowlist_path=allow_path,
+                allowlist=allowlist,
                 out_path=sol_path,
                 inventory_cap=int(args.inventory_cap),
                 k=int(args.eval_k),

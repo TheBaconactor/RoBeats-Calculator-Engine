@@ -87,7 +87,7 @@ def build_base_stats_from_config(cfg_dict):
         if valid_color_key:
             base_stats[valid_color_key] += buff_data["Elem"]
         elif team_color:
-            # Match legacy behavior in csv_parser.get_fixed_stats().
+            # Match csv_parser.get_fixed_stats() fallback behavior.
             base_stats["Perfect Points"] += buff_data["PP"]
 
     return base_stats

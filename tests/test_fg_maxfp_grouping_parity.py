@@ -3,7 +3,7 @@ import numpy as np
 from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import _group_ftff_pairs_by_max_fp_matrix
 
 
-def _legacy_group(ftff_pairs: list[tuple[int, int]], max_fp_matrix: np.ndarray, *, n_sections: int) -> list[dict]:
+def _reference_group(ftff_pairs: list[tuple[int, int]], max_fp_matrix: np.ndarray, *, n_sections: int) -> list[dict]:
     all_groups: dict[tuple[int, ...], dict] = {}
     for i_pair, (ft_g, ff_g) in enumerate(ftff_pairs):
         row = max_fp_matrix[i_pair]
@@ -33,7 +33,7 @@ def _normalize(groups: list[dict]) -> list[dict]:
     return out
 
 
-def test_group_ftff_pairs_by_max_fp_matrix_matches_legacy():
+def test_group_ftff_pairs_by_max_fp_matrix_matches_reference():
     rng = np.random.default_rng(12345)
 
     for n_pairs in (0, 1, 7, 200):
@@ -44,7 +44,7 @@ def test_group_ftff_pairs_by_max_fp_matrix_matches_legacy():
         for n_sections in (0, 1, 2, 4, 8, 16):
             max_fp = rng.integers(-3, 20, size=(n_pairs, max(1, n_sections)), dtype=np.int16)
 
-            exp = _legacy_group(ftff_pairs, max_fp, n_sections=n_sections) if n_sections > 0 else []
+            exp = _reference_group(ftff_pairs, max_fp, n_sections=n_sections) if n_sections > 0 else []
 
             got = _group_ftff_pairs_by_max_fp_matrix(ftff_pairs, max_fp, n_sections=n_sections)
             assert _normalize(got) == _normalize(exp)

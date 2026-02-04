@@ -13,13 +13,9 @@ def _table_or_view_exists(conn: sqlite3.Connection, name: str) -> bool:
 
 
 def _pick_source_view(conn: sqlite3.Connection) -> str:
-    # Preferred modern schema (tier tables via unified view).
     if _table_or_view_exists(conn, "fg_loadouts_unified"):
         return "fg_loadouts_unified"
-    # Legacy fallback.
-    if _table_or_view_exists(conn, "fg_loadouts"):
-        return "fg_loadouts"
-    raise RuntimeError("No fg_loadouts source found (expected fg_loadouts_unified or fg_loadouts).")
+    raise RuntimeError("No FG source found (expected fg_loadouts_unified).")
 
 
 def _coerce_int(v: object, default: int = 0) -> int:

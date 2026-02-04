@@ -9,12 +9,12 @@ from gear_optimizer.data.database import get_evolution_db_path
 conn = sqlite3.connect(get_evolution_db_path())
 
 # Get total count
-cur = conn.execute("SELECT COUNT(*) FROM loadouts")
+cur = conn.execute("SELECT COUNT(*) FROM team_buff_loadouts")
 print(f"Total loadouts: {cur.fetchone()[0]}")
 
 # Get a random FG entry to check structure
 cur = conn.execute("""SELECT song_name, score, fg_score, details_json, force_details_json 
-                       FROM loadouts WHERE fg_score > 0 LIMIT 1""")
+                       FROM team_buff_loadouts WHERE fg_score > 0 LIMIT 1""")
 row = cur.fetchone()
 if row:
     print(f"Song: {row[0]}")

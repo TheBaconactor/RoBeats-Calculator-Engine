@@ -39,7 +39,7 @@ conn = sqlite3.connect("evolution.db")
 conn.row_factory = sqlite3.Row
 
 print("Finding broken entries...")
-rows = conn.execute("SELECT rowid, gear_json, minis_json, details_json FROM loadouts").fetchall()
+rows = conn.execute("SELECT rowid, gear_json, minis_json, details_json FROM team_buff_loadouts").fetchall()
 
 broken = []
 for row in rows:
@@ -78,7 +78,7 @@ for row in broken:
     details["Stats"] = computed
 
     # Update
-    conn.execute("UPDATE loadouts SET details_json = ? WHERE rowid = ?", (json.dumps(details), row["rowid"]))
+    conn.execute("UPDATE team_buff_loadouts SET details_json = ? WHERE rowid = ?", (json.dumps(details), row["rowid"]))
     repaired += 1
 
     if repaired <= 3:
@@ -91,7 +91,7 @@ print("Committed!")
 
 # Verify
 print("\nVerifying repairs...")
-verify = conn.execute("SELECT rowid, details_json FROM loadouts WHERE rowid IN (16207, 16213)").fetchall()
+verify = conn.execute("SELECT rowid, details_json FROM team_buff_loadouts WHERE rowid IN (16207, 16213)").fetchall()
 for row in verify:
     d = json.loads(row[1])
     stats = d.get("Stats", {})

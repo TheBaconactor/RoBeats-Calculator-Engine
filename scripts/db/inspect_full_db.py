@@ -29,7 +29,7 @@ def inspect_db():
         print("")
 
     # 2. Tables Data
-    tables = ["songs", "loadouts"]
+    tables = ["songs", "team_buff_loadouts", "team_buff_fg_loadouts"]
     for t in tables:
         print(f"=== DATA SAMPLE: {t} ===")
         try:

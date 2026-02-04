@@ -13,16 +13,19 @@ test_db = tempfile.mktemp(suffix=".db")
 print(f"Creating test database: {test_db}")
 
 conn = sqlite3.connect(test_db)
-conn.execute("""
-    CREATE TABLE IF NOT EXISTS loadouts (
+conn.execute(
+    """
+    CREATE TABLE IF NOT EXISTS team_buff_loadouts (
         song_name TEXT,
+        team_buff TEXT,
         gear_json TEXT,
         minis_json TEXT,
         details_json TEXT,
         score INTEGER,
         fg_score INTEGER
     )
-""")
+    """
+)
 
 # Insert test entries with various Stats issues
 test_entries = [
@@ -36,8 +39,11 @@ test_entries = [
 
 for song, gear, minis, details, score, fg_score in test_entries:
     conn.execute(
-        "INSERT INTO loadouts (song_name, gear_json, minis_json, details_json, score, fg_score) VALUES (?, ?, ?, ?, ?, ?)",
-        (song, gear, minis, details, score, fg_score),
+        """
+        INSERT INTO team_buff_loadouts (song_name, team_buff, gear_json, minis_json, details_json, score, fg_score)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (song, "T5", gear, minis, details, score, fg_score),
     )
 
 conn.commit()

@@ -1435,7 +1435,7 @@ def build_fg_combo_booster_candidates(
     gpu_eval_cap = max(1, min(int(max_extra_evals), int(gpu_eval_cap)))
 
     # Default to the improved multi-axis generator; users can set `FG_COMBO_BOOSTER_MODE=classic`
-    # if they want the legacy behavior for comparisons.
+    # if they want the reference behavior for comparisons.
     booster_mode = str(os.environ.get("FG_COMBO_BOOSTER_MODE", "multi_axis") or "").strip().lower()
     if booster_mode in {"multi_axis", "multi-axis", "v2", "diverse"}:
         genomes = generate_fg_combo_booster_genomes_multi_axis(

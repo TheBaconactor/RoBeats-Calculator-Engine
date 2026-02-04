@@ -9,7 +9,7 @@ from gear_optimizer.data.database import get_evolution_db_path
 db_path = get_evolution_db_path()
 conn = sqlite3.connect(db_path)
 cur = conn.execute(
-    "SELECT song_name, score, fg_score, gear_json, force_details_json FROM loadouts ORDER BY fg_score DESC"
+    "SELECT song_name, score, fg_score, gear_json, force_details_json FROM team_buff_loadouts ORDER BY fg_score DESC"
 )
 rows = cur.fetchall()
 print(f"Total entries: {len(rows)}")

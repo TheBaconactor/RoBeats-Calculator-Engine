@@ -3,7 +3,7 @@ import random
 from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import _collect_ftff_pairs_from_centers
 
 
-def _legacy_pairs(centers: set[tuple[int, int]], *, search_radius: int, total_budget: int) -> list[tuple[int, int]]:
+def _reference_pairs(centers: set[tuple[int, int]], *, search_radius: int, total_budget: int) -> list[tuple[int, int]]:
     total_budget = int(total_budget)
     search_radius = int(search_radius)
     needed_pairs_set: set[tuple[int, int]] = set()
@@ -29,7 +29,7 @@ def _legacy_pairs(centers: set[tuple[int, int]], *, search_radius: int, total_bu
     return sorted(needed_pairs_set)
 
 
-def test_ftff_pairs_fast_matches_legacy():
+def test_ftff_pairs_fast_matches_reference():
     rng = random.Random(12345)
 
     for total_budget in (0, 10, 90):
@@ -44,15 +44,15 @@ def test_ftff_pairs_fast_matches_legacy():
                 got = _collect_ftff_pairs_from_centers(
                     centers, search_radius=search_radius, total_budget=total_budget, use_fast=True
                 )
-                exp = _legacy_pairs(centers, search_radius=search_radius, total_budget=total_budget)
+                exp = _reference_pairs(centers, search_radius=search_radius, total_budget=total_budget)
                 assert got == exp
 
                 # Sanity: strictly sorted and unique.
                 assert got == sorted(set(got))
 
 
-def test_ftff_pairs_slow_matches_legacy():
+def test_ftff_pairs_slow_matches_reference():
     centers = {(0, 0), (1, 2), (10, 0), (5, 5)}
     got = _collect_ftff_pairs_from_centers(centers, search_radius=3, total_budget=20, use_fast=False)
-    exp = _legacy_pairs(centers, search_radius=3, total_budget=20)
+    exp = _reference_pairs(centers, search_radius=3, total_budget=20)
     assert got == exp

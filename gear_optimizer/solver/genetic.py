@@ -1503,7 +1503,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 ) -> "np.ndarray":
     """
     Run the GPU-native GA for multiple runs using either:
-    - prebuilt CPU populations (legacy), or
+    - prebuilt CPU populations, or
     - GPU-generated initial populations (preferred).
 
     This entrypoint is designed for the GPU-native in-flight pipeline:

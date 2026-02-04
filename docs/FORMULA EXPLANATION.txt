@@ -10,7 +10,7 @@ In the game source, the fill per hit is derived from the song's hit count (the n
 
 song_key_hit_count = Total Notes - Long Notes
 
-Conceptually (see the legacy decompile in `OLD LEGACY SOURCE GAME CODE/.../Avatar/GearStats.lua`):
+Conceptually (see the historical decompile in `OLD LEGACY SOURCE GAME CODE/.../Avatar/GearStats.lua`):
 
 fill_per_perfect = 1 / (song_key_hit_count * fill_base_perfect)
 fill_per_great   = 1 / (song_key_hit_count * fill_base_great)

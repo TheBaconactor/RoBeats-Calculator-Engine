@@ -1021,7 +1021,7 @@ def run_force_greats_hill_climb(
             center_ff + search_radius,
         )
 
-    # Build FG config list in deterministic order (matches the legacy nested loops)
+    # Build FG config list in deterministic order (matches the nested-loop ordering)
     counts_list = []
 
     # Per-section caps requested by user

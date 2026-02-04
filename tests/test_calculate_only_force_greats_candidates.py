@@ -111,7 +111,7 @@ def test_calculate_only_includes_current_loadout_for_fg(monkeypatch, tmp_path):
     )
 
     # Use a tiny synthetic song file in the modern tab-separated format to avoid
-    # legacy header edge cases (e.g. empty-string metadata fields).
+    # header edge cases (e.g. empty-string metadata fields).
     fp = tmp_path / "calc_only_song.txt"
     fp.write_text(
         "\n".join(

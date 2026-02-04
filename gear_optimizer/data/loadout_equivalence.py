@@ -2,7 +2,7 @@
 Loadout equivalence + mini variant grouping.
 
 This module centralizes logic for:
-- Parsing minis_json (legacy list[str] vs new list[list[str]])
+- Parsing minis_json (list[list[str]])
 - Computing a song-context "effective" mini signature (ignores irrelevant element stats)
 - Computing a song-context loadout hash from gear names + effective mini signatures
 - Merging minis_json across equivalent loadouts (union variant names per effective mini)
@@ -74,14 +74,13 @@ def extract_song_colors(details: Any) -> tuple[str, str, str]:
     """
     Extract (primary_color, secondary_color, selected_color) from a details dict.
 
-    Supports multiple historical key spellings.
     Returns empty strings when missing.
     """
     if not isinstance(details, dict):
         return ("", "", "")
 
-    primary = str(details.get("PrimaryColor") or details.get("Primary Color") or "")
-    secondary = str(details.get("SecondaryColor") or details.get("Secondary Color") or "")
+    primary = str(details.get("PrimaryColor") or "")
+    secondary = str(details.get("SecondaryColor") or "")
     selected = get_selected_element(details, "")
     if not selected:
         selected = primary
@@ -91,9 +90,6 @@ def extract_song_colors(details: Any) -> tuple[str, str, str]:
 def decode_minis_json(minis_json: Optional[str]) -> list[list[str]]:
     """
     Decode minis_json into canonical list[list[str]] form.
-
-    - Legacy: ["MiniA","MiniB"] -> [["MiniA"],["MiniB"]]
-    - New: [["MiniA","MiniA2"],["MiniB"]] -> same
     """
     if not minis_json:
         return []
@@ -108,17 +104,12 @@ def decode_minis_json(minis_json: Optional[str]) -> list[list[str]]:
 
     groups: list[list[str]] = []
     for item in decoded:
-        if isinstance(item, str):
-            name = item.strip()
-            groups.append([name] if name else [])
-        elif isinstance(item, (list, tuple)):
-            names = [str(x).strip() for x in item if x is not None]
-            names = [n for n in names if n]
+        if not isinstance(item, (list, tuple)):
+            continue
+        names = [str(x).strip() for x in item if x is not None]
+        names = [n for n in names if n]
+        if names:
             groups.append(names)
-        else:
-            # Unknown shape; best-effort stringify and keep it as a singleton.
-            s = str(item).strip()
-            groups.append([s] if s else [])
 
     # Drop empties, sort+dedupe per group deterministically.
     out: list[list[str]] = []

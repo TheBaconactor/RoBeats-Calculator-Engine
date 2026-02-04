@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import ast
 import copy
+import re
 from dataclasses import dataclass
 from math import ceil
 
@@ -33,34 +33,25 @@ def _truthy_cfg(v: object) -> bool:
     return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _unwrap_list_literal(s: str) -> list[str] | None:
-    """
-    Best-effort recovery for legacy minis corruption where names were persisted as strings like:
-      "['Electroman']"  (Python repr) or '["Electroman"]' (JSON-ish)
-    """
-    s = str(s or "").strip()
-    if len(s) < 2:
-        return None
-    if (s[0] not in "[(") or (s[-1] not in "])"):
-        return None
-    try:
-        parsed = ast.literal_eval(s)
-    except Exception:
-        return None
-    if not isinstance(parsed, (list, tuple)):
-        return None
-    out: list[str] = []
-    for item in parsed:
-        if isinstance(item, (list, tuple)):
-            for sub in item:
-                sub_s = str(sub or "").strip()
-                if sub_s:
-                    out.append(sub_s)
-        else:
-            item_s = str(item or "").strip()
-            if item_s:
-                out.append(item_s)
-    return out or None
+_MINI_LITERAL_RE = re.compile(r"""['"]([^'"]+)['"]""")
+
+
+def _mini_names_from_text(text: str) -> list[str]:
+    s = text.strip()
+    if not s:
+        return []
+    if s.startswith("[") and s.endswith("]"):
+        matches = [m.group(1).strip() for m in _MINI_LITERAL_RE.finditer(s)]
+        matches = [m for m in matches if m]
+        if matches:
+            return matches
+        inner = s[1:-1].strip()
+        if inner:
+            parts = [p.strip().strip("'\"") for p in inner.split(",")]
+            cleaned = [p for p in parts if p]
+            if cleaned:
+                return cleaned
+    return [s]
 
 
 def _flat_item_names(items: object) -> list[str]:
@@ -90,7 +81,6 @@ def _mini_groups_from_any(minis: object) -> list[list[str]]:
         # - "Name" (str)
         # - {"Name": "..."} (dict)
         # - ["A", "B"] (variant group)
-        # - ["['A']"] (corrupted repr)
         if isinstance(slot, (list, tuple)):
             names: list[str] = []
             for raw in slot:
@@ -100,17 +90,14 @@ def _mini_groups_from_any(minis: object) -> list[list[str]]:
                         names.append(s)
                     continue
                 if isinstance(raw, str):
-                    repaired = _unwrap_list_literal(raw)
-                    if repaired:
-                        names.extend(repaired)
-                    else:
-                        s = raw.strip()
-                        if s:
-                            names.append(s)
+                    for name in _mini_names_from_text(raw):
+                        if name:
+                            names.append(name)
                     continue
                 s = _norm_text(raw)
-                if s:
-                    names.append(s)
+                for name in _mini_names_from_text(s):
+                    if name:
+                        names.append(name)
             names = sorted(set(n for n in names if n))
             if names:
                 groups.append(names)
@@ -118,25 +105,21 @@ def _mini_groups_from_any(minis: object) -> list[list[str]]:
 
         if isinstance(slot, dict):
             s = _norm_text(slot.get("Name", slot.get("name", "")))
-            if s:
-                groups.append([s])
+            names = _mini_names_from_text(s)
+            if names:
+                groups.append(sorted(set(n for n in names if n)))
             continue
 
         if isinstance(slot, str):
-            repaired = _unwrap_list_literal(slot)
-            if repaired:
-                names = sorted(set(n for n in repaired if n))
-                if names:
-                    groups.append(names)
-            else:
-                s = slot.strip()
-                if s:
-                    groups.append([s])
+            names = _mini_names_from_text(slot)
+            if names:
+                groups.append(sorted(set(n for n in names if n)))
             continue
 
         s = _norm_text(slot)
-        if s:
-            groups.append([s])
+        names = _mini_names_from_text(s)
+        if names:
+            groups.append(sorted(set(n for n in names if n)))
     return groups
 
 

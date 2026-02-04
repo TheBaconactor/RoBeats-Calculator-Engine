@@ -50,7 +50,7 @@ def test_run_general_meta_emits_team_buff_winners(monkeypatch):
                 "score": 100,
                 "fg_score": 0,
                 "gear_json": json.dumps(baseline_gears),
-                "minis_json": json.dumps(["Mini A"]),
+                "minis_json": json.dumps([["Mini A"]]),
                 "details_json": None,
             },
             {
@@ -58,7 +58,7 @@ def test_run_general_meta_emits_team_buff_winners(monkeypatch):
                 "score": 100,
                 "fg_score": 0,
                 "gear_json": json.dumps(baseline_gears),
-                "minis_json": json.dumps(["Mini A"]),
+                "minis_json": json.dumps([["Mini A"]]),
                 "details_json": None,
             },
         ],
@@ -74,7 +74,7 @@ def test_run_general_meta_emits_team_buff_winners(monkeypatch):
                     "score": 111,
                     "fg_score": 0,
                     "gear_json": json.dumps(tier_gears),
-                    "minis_json": json.dumps(["Mini T1"]),
+                    "minis_json": json.dumps([["Mini T1"]]),
                     "details_json": None,
                 },
                 {
@@ -83,7 +83,7 @@ def test_run_general_meta_emits_team_buff_winners(monkeypatch):
                     "score": 111,
                     "fg_score": 0,
                     "gear_json": json.dumps(tier_gears),
-                    "minis_json": json.dumps(["Mini T1"]),
+                    "minis_json": json.dumps([["Mini T1"]]),
                     "details_json": None,
                 },
             ]

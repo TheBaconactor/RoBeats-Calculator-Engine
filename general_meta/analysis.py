@@ -109,9 +109,7 @@ def _decode_db_minis(minis_json_blob: Optional[str]) -> tuple[tuple[str, ...], t
     - representative mini names (sorted; multiplicity preserved)
     - a canonical "variant key" that preserves per-mini variant groups
 
-    Supports both:
-    - legacy `["MiniA","MiniB"]`
-    - new `[[\"MiniA\",\"MiniA2\"],[\"MiniB\"]]`
+    Expects canonical `[[\"MiniA\",\"MiniA2\"],[\"MiniB\"]]` shape.
     """
     groups = decode_minis_json(minis_json_blob)
     reps = representative_mini_names(groups)

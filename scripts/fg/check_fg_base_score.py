@@ -15,7 +15,7 @@ song_name = "Ice Angel (Easy) by Yooh"
 cursor = conn.execute(
     """
     SELECT score, fg_score, force_details_json
-    FROM loadouts
+    FROM team_buff_loadouts
     WHERE song_name = ? AND score = 16148872
 """,
     (song_name,),

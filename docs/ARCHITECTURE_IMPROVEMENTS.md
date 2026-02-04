@@ -863,7 +863,6 @@ def benchmark():
 | `ARCHITECTURE.md` | System architecture and layer diagrams |
 | `DATABASE_SCHEMA.md` | SQLite schema (dual-table architecture) |
 | `CHANGES_SUMMARY.md` | Changelog and version updates |
-| `CODEBASE_CLEANUP_PLAN.md` | Refactoring roadmap |
 | `FEVER_TIMELINE_MATH.md` | Fever mechanics mathematics |
 | `TAICHI_PORT_ROADMAP.md` | GPU kernel migration plan |
 | `OPTIMIZATION_ANALYSIS.md` | Performance optimization details |
@@ -884,12 +883,6 @@ def benchmark():
 | `FG_PRECISION_UPDATE.md` | Precision improvement tracking |
 | `GPU_BUG_FIXES.md` | GPU-specific bug fixes |
 | `GREAT_PENALTY_IMPLEMENTATION.md` | Great timing penalty implementation |
-
-### Legacy Documentation (`/docs/legacy`)
-- Historical refactoring guides and status documents
-- Phase completion records
-
----
 
 ## Artifacts & Profiling
 
@@ -999,7 +992,7 @@ artifacts/
 | **Scripts** | 56 | Across 7 focused subdirectories |
 | **Tools** | 22 | Across 6 maintained utility subdirectories |
 | **Test Files** | 44 | Comprehensive suite with GPU isolation |
-| **Documentation** | 18+ | Plus 6 implementation records + legacy docs |
+| **Documentation** | 18+ | Plus 6 implementation records |
 | **Data Files** | 2,169 | Song data across 4 difficulty levels |
 | **Config Files** | 7+ | Main + profiling variants |
 | **Core Dependencies** | 8 | NumPy, Numba, Taichi, psutil, requests, python-dotenv, cachetools |
@@ -1114,7 +1107,7 @@ def minimal_config():
 
 ### 12. Documentation Consolidation
 
-**Current State:** 18+ docs spread across `/docs`, implementation records, and legacy.
+**Current State:** 18+ docs spread across `/docs` and implementation records.
 
 **Proposal:** Reorganize with clear hierarchy:
 

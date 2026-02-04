@@ -195,7 +195,6 @@ def _run_worker_from_stdin() -> int:
             "label": str(payload.get("label") or ""),
             "time_sec": float(round(elapsed, 6)),
             "seed": int(kwargs.get("seed") or 0),
-            "solver": str(kwargs.get("solver") or ""),
             "stats": {
                 "songs_total": int(stats.get("songs_total") or 0) if isinstance(stats, dict) else 0,
                 "songs_total_unfiltered": int(stats.get("songs_total_unfiltered") or 0)
@@ -342,7 +341,6 @@ def build_base_kwargs(*, seed: int, inventory_cap: int, cfg: dict) -> dict:
     - single peak per song
     """
     base = {
-        "solver": "gpu_full",
         "inventory_cap": int(inventory_cap),
         "seed": int(seed),
         "seed_inventory_gear": None,
@@ -354,7 +352,7 @@ def build_base_kwargs(*, seed: int, inventory_cap: int, cfg: dict) -> dict:
         # (It tends to bias the All-elements case into islands unless explicitly tuned.)
         "gpu_full_wildcard_palette_size": 0,
         "gpu_full_wildcard_palette_min_count": 2,
-        "gpu_full_wildcard_palette_scan": 8,
+        "gpu_full_wildcard_palette_scan": 0,
         "gpu_full_wildcard_palette_tail_slots": 3,
         "gpu_full_synergy_weight": 0,
         "gpu_full_new_gear_penalty": 0,
@@ -395,7 +393,6 @@ def make_benchmark_config_sig(*, mode: str, seed: int, inventory_cap: int, cfg: 
         "mode": str(mode),
         "seed": int(seed),
         "inventory_cap": int(inventory_cap),
-        "solver": "gpu_full",
         "params": {
             "partitions_per_song": int(cfg["partitions_per_song"]),
             "lns_time_sec": float(cfg["lns_time_sec"]),

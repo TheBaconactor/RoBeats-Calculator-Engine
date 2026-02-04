@@ -82,7 +82,6 @@ def _apply_set_overrides(cfg: configparser.ConfigParser, overrides: Iterable[str
 @dataclass(frozen=True)
 class InventoryMetaCoverageSettings:
     # Run
-    solver: str = "gpu_full"
     inventory_cap: int = 100
     seed: int = 1
     restarts: int = 1
@@ -171,7 +170,6 @@ class InventoryMetaCoverageSettings:
 
     def to_run_kwargs(self) -> Dict[str, Any]:
         return {
-            "solver": "gpu_full",  # hard-enforced (GPU-only policy + standardization)
             "inventory_cap": int(self.inventory_cap),
             "element": self.element,
             "secondary_element": self.secondary_element,
@@ -250,7 +248,6 @@ class InventoryMetaCoverageSettings:
                 "secondary_element": self.secondary_element,
                 "song_limit": self.song_limit,
                 "profile": bool(self.profile),
-                "solver": "gpu_full",
             },
             "witness_pool": {
                 "partitions_per_song": int(self.partitions_per_song),

@@ -13,59 +13,29 @@ from .models import SongCandidate
 TEAM_BUFF_DEFAULT: str = "T5"
 
 
-def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
-    try:
-        return (
-            conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-                (name,),
-            ).fetchone()
-            is not None
-        )
-    except sqlite3.Error:
-        return False
-
-
-def _table_nonempty(conn: sqlite3.Connection, name: str, *, where: str = "", params: Tuple[Any, ...] = ()) -> bool:
-    try:
-        row = conn.execute(f"SELECT 1 FROM {name} {where} LIMIT 1", params).fetchone()
-    except sqlite3.Error:
-        return False
-    return row is not None
-
-
-def _resolve_tables(conn: sqlite3.Connection) -> Tuple[str, str, Optional[str]]:
+def _resolve_tables(_conn: sqlite3.Connection) -> Tuple[str, str, str]:
     """
     Choose which DB tables to treat as the base/FG leaderboards.
 
-    Preference: `team_buff_*` (filtered to TEAM_BUFF_DEFAULT) when present and non-empty,
-    otherwise fall back to legacy `loadouts` / `fg_loadouts`.
+    Uses `team_buff_*` (filtered to TEAM_BUFF_DEFAULT).
     """
-    if _table_exists(conn, "team_buff_loadouts") and _table_nonempty(
-        conn, "team_buff_loadouts", where="WHERE team_buff = ?", params=(TEAM_BUFF_DEFAULT,)
-    ):
-        fg_table = "team_buff_fg_loadouts" if _table_exists(conn, "team_buff_fg_loadouts") else "fg_loadouts"
-        return "team_buff_loadouts", fg_table, TEAM_BUFF_DEFAULT
-    return "loadouts", "fg_loadouts", None
+    return "team_buff_loadouts", "team_buff_fg_loadouts", TEAM_BUFF_DEFAULT
 
 
 def _is_fg_table(name: str) -> bool:
-    return str(name or "") in {"fg_loadouts", "team_buff_fg_loadouts"}
+    return str(name or "") == "team_buff_fg_loadouts"
 
 
 def _is_base_table(name: str) -> bool:
-    return str(name or "") in {"loadouts", "team_buff_loadouts"}
+    return str(name or "") == "team_buff_loadouts"
 
 
 def fetch_song_names(conn: sqlite3.Connection) -> List[str]:
     names: set[str] = set()
     base_table, fg_table, team_buff = _resolve_tables(conn)
     for table in (base_table, fg_table):
-        where = ""
-        params: Tuple[Any, ...] = ()
-        if team_buff is not None and table.startswith("team_buff_"):
-            where = "WHERE team_buff = ?"
-            params = (team_buff,)
+        where = "WHERE team_buff = ?"
+        params: Tuple[Any, ...] = (team_buff,)
         try:
             rows = conn.execute(f"SELECT DISTINCT song_name FROM {table} {where}", params).fetchall()
         except sqlite3.Error:
@@ -85,15 +55,9 @@ def fetch_song_names_limited(conn: sqlite3.Connection, limit: int) -> List[str]:
     if limit <= 0:
         return []
     base_table, fg_table, team_buff = _resolve_tables(conn)
-    tb_filter_base = ""
-    tb_filter_fg = ""
-    params: List[Any] = []
-    if team_buff is not None and base_table.startswith("team_buff_"):
-        tb_filter_base = "WHERE team_buff = ?"
-        params.append(team_buff)
-    if team_buff is not None and fg_table.startswith("team_buff_"):
-        tb_filter_fg = "WHERE team_buff = ?"
-        params.append(team_buff)
+    tb_filter_base = "WHERE team_buff = ?"
+    tb_filter_fg = "WHERE team_buff = ?"
+    params: List[Any] = [team_buff, team_buff]
 
     query = f"""
             SELECT song_name
@@ -107,10 +71,7 @@ def fetch_song_names_limited(conn: sqlite3.Connection, limit: int) -> List[str]:
             LIMIT ?
             """
     try:
-        rows = conn.execute(
-            query,
-            tuple(params + [limit]),
-        ).fetchall()
+        rows = conn.execute(query, tuple(params + [limit])).fetchall()
     except sqlite3.Error:
         return []
 
@@ -128,29 +89,17 @@ def fetch_song_names_limited(conn: sqlite3.Connection, limit: int) -> List[str]:
 def fetch_song_peak(conn: sqlite3.Connection, song_name: str) -> Tuple[int, int, int]:
     base_table, fg_table, team_buff = _resolve_tables(conn)
     try:
-        if team_buff is not None and base_table.startswith("team_buff_"):
-            base_peak = conn.execute(
-                f"SELECT MAX(score) FROM {base_table} WHERE song_name = ? AND team_buff = ?",
-                (song_name, team_buff),
-            ).fetchone()[0]
-        else:
-            base_peak = conn.execute(
-                f"SELECT MAX(score) FROM {base_table} WHERE song_name = ?",
-                (song_name,),
-            ).fetchone()[0]
+        base_peak = conn.execute(
+            f"SELECT MAX(score) FROM {base_table} WHERE song_name = ? AND team_buff = ?",
+            (song_name, team_buff),
+        ).fetchone()[0]
     except sqlite3.Error:
         base_peak = 0
     try:
-        if team_buff is not None and fg_table.startswith("team_buff_"):
-            fg_peak = conn.execute(
-                f"SELECT MAX(fg_score) FROM {fg_table} WHERE song_name = ? AND team_buff = ?",
-                (song_name, team_buff),
-            ).fetchone()[0]
-        else:
-            fg_peak = conn.execute(
-                f"SELECT MAX(fg_score) FROM {fg_table} WHERE song_name = ?",
-                (song_name,),
-            ).fetchone()[0]
+        fg_peak = conn.execute(
+            f"SELECT MAX(fg_score) FROM {fg_table} WHERE song_name = ? AND team_buff = ?",
+            (song_name, team_buff),
+        ).fetchone()[0]
     except sqlite3.Error:
         fg_peak = 0
 
@@ -172,48 +121,28 @@ def fetch_candidates_for_peak(
 
     if peak == base_peak:
         try:
-            if team_buff is not None and base_table.startswith("team_buff_"):
-                cursor = conn.execute(
-                    f"""
-                        SELECT rowid AS rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
-                        FROM {base_table}
-                        WHERE song_name = ? AND team_buff = ? AND score = ?
-                        """,
-                    (song_name, team_buff, peak),
-                )
-            else:
-                cursor = conn.execute(
-                    f"""
-                        SELECT rowid AS rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
-                        FROM {base_table}
-                        WHERE song_name = ? AND score = ?
-                        """,
-                    (song_name, peak),
-                )
+            cursor = conn.execute(
+                f"""
+                    SELECT rowid AS rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
+                    FROM {base_table}
+                    WHERE song_name = ? AND team_buff = ? AND score = ?
+                    """,
+                (song_name, team_buff, peak),
+            )
             rows.extend([(base_table, row) for row in cursor])
         except sqlite3.Error:
             pass
 
     if peak == fg_peak:
         try:
-            if team_buff is not None and fg_table.startswith("team_buff_"):
-                cursor = conn.execute(
-                    f"""
-                        SELECT rowid AS rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
-                        FROM {fg_table}
-                        WHERE song_name = ? AND team_buff = ? AND fg_score = ?
-                        """,
-                    (song_name, team_buff, peak),
-                )
-            else:
-                cursor = conn.execute(
-                    f"""
-                        SELECT rowid AS rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
-                        FROM {fg_table}
-                        WHERE song_name = ? AND fg_score = ?
-                        """,
-                    (song_name, peak),
-                )
+            cursor = conn.execute(
+                f"""
+                    SELECT rowid AS rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
+                    FROM {fg_table}
+                    WHERE song_name = ? AND team_buff = ? AND fg_score = ?
+                    """,
+                (song_name, team_buff, peak),
+            )
             rows.extend([(fg_table, row) for row in cursor])
         except sqlite3.Error:
             pass
@@ -234,98 +163,52 @@ def fetch_peak_candidates_allow_missing(conn: sqlite3.Connection) -> Tuple[Dict[
     base_peak: Dict[str, int] = {}
     fg_peak: Dict[str, int] = {}
 
-    if team_buff is None:
-        for row in conn.execute(
-            """
-            WITH base AS (
-                SELECT song_name, MAX(score) AS base_peak
-                FROM loadouts
-                GROUP BY song_name
-            ),
-            fg AS (
-                SELECT song_name, MAX(fg_score) AS fg_peak
-                FROM fg_loadouts
-                GROUP BY song_name
-            ),
-            songs AS (
-                SELECT song_name FROM loadouts
-                UNION
-                SELECT song_name FROM fg_loadouts
-            )
-            SELECT
-                songs.song_name AS song_name,
-                COALESCE(base.base_peak, 0) AS base_peak,
-                COALESCE(fg.fg_peak, 0) AS fg_peak
-            FROM songs
-            LEFT JOIN base ON base.song_name = songs.song_name
-            LEFT JOIN fg ON fg.song_name = songs.song_name
-            """
-        ):
-            name = str(row["song_name"] or "")
-            bp = int(row["base_peak"] or 0)
-            fp = int(row["fg_peak"] or 0)
-            base_peak[name] = bp
-            fg_peak[name] = fp
-            peak_map[name] = max(bp, fp)
+    base_filter = "WHERE team_buff = ?"
+    fg_filter = "WHERE team_buff = ?"
+    params = [team_buff, team_buff, team_buff, team_buff]
 
-        if not peak_map:
-            return {}, []
+    for row in conn.execute(
+        f"""
+        WITH base AS (
+            SELECT song_name, MAX(score) AS base_peak
+            FROM {base_table}
+            {base_filter}
+            GROUP BY song_name
+        ),
+        fg AS (
+            SELECT song_name, MAX(fg_score) AS fg_peak
+            FROM {fg_table}
+            {fg_filter}
+            GROUP BY song_name
+        ),
+        songs AS (
+            SELECT song_name FROM {base_table}
+            {base_filter}
+            UNION
+            SELECT song_name FROM {fg_table}
+            {fg_filter}
+        )
+        SELECT
+            songs.song_name AS song_name,
+            COALESCE(base.base_peak, 0) AS base_peak,
+            COALESCE(fg.fg_peak, 0) AS fg_peak
+        FROM songs
+        LEFT JOIN base ON base.song_name = songs.song_name
+        LEFT JOIN fg ON fg.song_name = songs.song_name
+        """,
+        tuple(params),
+    ):
+        name = str(row["song_name"] or "")
+        bp = int(row["base_peak"] or 0)
+        fp = int(row["fg_peak"] or 0)
+        base_peak[name] = bp
+        fg_peak[name] = fp
+        peak_map[name] = max(bp, fp)
 
-        try:
-            for row in conn.execute(
-                """
-                WITH base AS (
-                    SELECT song_name, MAX(score) AS base_peak
-                    FROM loadouts
-                    GROUP BY song_name
-                )
-                SELECT l.rowid AS rowid, l.song_name, l.score, l.fg_score, l.gear_json, l.minis_json, l.details_json, l.force_details_json
-                FROM loadouts l
-                JOIN base ON base.song_name = l.song_name AND base.base_peak = l.score
-                """
-            ):
-                song = str(row["song_name"] or "")
-                if peak_map.get(song, 0) != base_peak.get(song, 0):
-                    continue
-                cand = parse_candidate_row(song, "loadouts", row)
-                if cand is None:
-                    continue
-                candidates_by_song.setdefault(song, []).append(cand)
-        except sqlite3.Error:
-            pass
+    if not peak_map:
+        return {}, []
 
-        try:
-            for row in conn.execute(
-                """
-                WITH fg AS (
-                    SELECT song_name, MAX(fg_score) AS fg_peak
-                    FROM fg_loadouts
-                    GROUP BY song_name
-                )
-                SELECT f.rowid AS rowid, f.song_name, f.score, f.fg_score, f.gear_json, f.minis_json, f.details_json, f.force_details_json
-                FROM fg_loadouts f
-                JOIN fg ON fg.song_name = f.song_name AND fg.fg_peak = f.fg_score
-                """
-            ):
-                song = str(row["song_name"] or "")
-                if peak_map.get(song, 0) != fg_peak.get(song, 0):
-                    continue
-                cand = parse_candidate_row(song, "fg_loadouts", row)
-                if cand is None:
-                    continue
-                candidates_by_song.setdefault(song, []).append(cand)
-        except sqlite3.Error:
-            pass
-    else:
-        base_filter = "WHERE team_buff = ?"
-        fg_filter = "WHERE team_buff = ?" if fg_table.startswith("team_buff_") else ""
-        params: List[Any] = [team_buff]
-        if fg_filter:
-            params.append(team_buff)
-        params.append(team_buff)
-        if fg_filter:
-            params.append(team_buff)
-
+    try:
         for row in conn.execute(
             f"""
             WITH base AS (
@@ -333,97 +216,49 @@ def fetch_peak_candidates_allow_missing(conn: sqlite3.Connection) -> Tuple[Dict[
                 FROM {base_table}
                 {base_filter}
                 GROUP BY song_name
-            ),
-            fg AS (
+            )
+            SELECT l.rowid AS rowid, l.song_name, l.score, l.fg_score, l.gear_json, l.minis_json, l.details_json, l.force_details_json
+            FROM {base_table} l
+            JOIN base ON base.song_name = l.song_name AND base.base_peak = l.score
+            WHERE l.team_buff = ?
+            """,
+            (team_buff, team_buff),
+        ):
+            song = str(row["song_name"] or "")
+            if peak_map.get(song, 0) != base_peak.get(song, 0):
+                continue
+            cand = parse_candidate_row(song, base_table, row)
+            if cand is None:
+                continue
+            candidates_by_song.setdefault(song, []).append(cand)
+    except sqlite3.Error:
+        pass
+
+    try:
+        for row in conn.execute(
+            f"""
+            WITH fg AS (
                 SELECT song_name, MAX(fg_score) AS fg_peak
                 FROM {fg_table}
                 {fg_filter}
                 GROUP BY song_name
-            ),
-            songs AS (
-                SELECT song_name FROM {base_table}
-                {base_filter}
-                UNION
-                SELECT song_name FROM {fg_table}
-                {fg_filter}
             )
-            SELECT
-                songs.song_name AS song_name,
-                COALESCE(base.base_peak, 0) AS base_peak,
-                COALESCE(fg.fg_peak, 0) AS fg_peak
-            FROM songs
-            LEFT JOIN base ON base.song_name = songs.song_name
-            LEFT JOIN fg ON fg.song_name = songs.song_name
+            SELECT f.rowid AS rowid, f.song_name, f.score, f.fg_score, f.gear_json, f.minis_json, f.details_json, f.force_details_json
+            FROM {fg_table} f
+            JOIN fg ON fg.song_name = f.song_name AND fg.fg_peak = f.fg_score
+            WHERE f.team_buff = ?
             """,
-            tuple(params),
+            (team_buff, team_buff),
         ):
-            name = str(row["song_name"] or "")
-            bp = int(row["base_peak"] or 0)
-            fp = int(row["fg_peak"] or 0)
-            base_peak[name] = bp
-            fg_peak[name] = fp
-            peak_map[name] = max(bp, fp)
-
-        if not peak_map:
-            return {}, []
-
-        try:
-            for row in conn.execute(
-                f"""
-                WITH base AS (
-                    SELECT song_name, MAX(score) AS base_peak
-                    FROM {base_table}
-                    {base_filter}
-                    GROUP BY song_name
-                )
-                SELECT l.rowid AS rowid, l.song_name, l.score, l.fg_score, l.gear_json, l.minis_json, l.details_json, l.force_details_json
-                FROM {base_table} l
-                JOIN base ON base.song_name = l.song_name AND base.base_peak = l.score
-                WHERE l.team_buff = ?
-                """,
-                (team_buff, team_buff),
-            ):
-                song = str(row["song_name"] or "")
-                if peak_map.get(song, 0) != base_peak.get(song, 0):
-                    continue
-                cand = parse_candidate_row(song, base_table, row)
-                if cand is None:
-                    continue
-                candidates_by_song.setdefault(song, []).append(cand)
-        except sqlite3.Error:
-            pass
-
-        try:
-            where = "WHERE f.team_buff = ?" if fg_table.startswith("team_buff_") else ""
-            fg_params: List[Any] = []
-            if fg_filter:
-                fg_params.append(team_buff)
-            if where:
-                fg_params.append(team_buff)
-            for row in conn.execute(
-                f"""
-                WITH fg AS (
-                    SELECT song_name, MAX(fg_score) AS fg_peak
-                    FROM {fg_table}
-                    {fg_filter}
-                    GROUP BY song_name
-                )
-                SELECT f.rowid AS rowid, f.song_name, f.score, f.fg_score, f.gear_json, f.minis_json, f.details_json, f.force_details_json
-                FROM {fg_table} f
-                JOIN fg ON fg.song_name = f.song_name AND fg.fg_peak = f.fg_score
-                {where}
-                """,
-                tuple(fg_params),
-            ):
-                song = str(row["song_name"] or "")
-                if peak_map.get(song, 0) != fg_peak.get(song, 0):
-                    continue
-                cand = parse_candidate_row(song, fg_table, row)
-                if cand is None:
-                    continue
-                candidates_by_song.setdefault(song, []).append(cand)
-        except sqlite3.Error:
-            pass
+            song = str(row["song_name"] or "")
+            if peak_map.get(song, 0) != fg_peak.get(song, 0):
+                continue
+            cand = parse_candidate_row(song, fg_table, row)
+            if cand is None:
+                continue
+            candidates_by_song.setdefault(song, []).append(cand)
+    except sqlite3.Error:
+        pass
 
     missing = [name for name in sorted(peak_map.keys()) if name not in candidates_by_song]
 
@@ -463,85 +298,48 @@ def fetch_candidates_within_delta_allow_missing(
     peak_map: Dict[str, int] = {}
     base_peak: Dict[str, int] = {}
     fg_peak: Dict[str, int] = {}
-    if team_buff is None:
-        for row in conn.execute(
-            """
-            WITH base AS (
-                SELECT song_name, MAX(score) AS base_peak
-                FROM loadouts
-                GROUP BY song_name
-            ),
-            fg AS (
-                SELECT song_name, MAX(fg_score) AS fg_peak
-                FROM fg_loadouts
-                GROUP BY song_name
-            ),
-            songs AS (
-                SELECT song_name FROM loadouts
-                UNION
-                SELECT song_name FROM fg_loadouts
-            )
-            SELECT
-                songs.song_name AS song_name,
-                COALESCE(base.base_peak, 0) AS base_peak,
-                COALESCE(fg.fg_peak, 0) AS fg_peak
-            FROM songs
-            LEFT JOIN base ON base.song_name = songs.song_name
-            LEFT JOIN fg ON fg.song_name = songs.song_name
-            """
-        ):
-            name = str(row["song_name"] or "")
-            bp = int(row["base_peak"] or 0)
-            fp = int(row["fg_peak"] or 0)
-            base_peak[name] = bp
-            fg_peak[name] = fp
-            peak_map[name] = max(bp, fp)
-    else:
-        base_filter = "WHERE team_buff = ?"
-        fg_filter = "WHERE team_buff = ?" if fg_table.startswith("team_buff_") else ""
-        params: List[Any] = [team_buff]
-        if fg_filter:
-            params.append(team_buff)
-        params.append(team_buff)
-        if fg_filter:
-            params.append(team_buff)
-        for row in conn.execute(
-            f"""
-            WITH base AS (
-                SELECT song_name, MAX(score) AS base_peak
-                FROM {base_table}
-                {base_filter}
-                GROUP BY song_name
-            ),
-            fg AS (
-                SELECT song_name, MAX(fg_score) AS fg_peak
-                FROM {fg_table}
-                {fg_filter}
-                GROUP BY song_name
-            ),
-            songs AS (
-                SELECT song_name FROM {base_table}
-                {base_filter}
-                UNION
-                SELECT song_name FROM {fg_table}
-                {fg_filter}
-            )
-            SELECT
-                songs.song_name AS song_name,
-                COALESCE(base.base_peak, 0) AS base_peak,
-                COALESCE(fg.fg_peak, 0) AS fg_peak
-            FROM songs
-            LEFT JOIN base ON base.song_name = songs.song_name
-            LEFT JOIN fg ON fg.song_name = songs.song_name
-            """,
-            tuple(params),
-        ):
-            name = str(row["song_name"] or "")
-            bp = int(row["base_peak"] or 0)
-            fp = int(row["fg_peak"] or 0)
-            base_peak[name] = bp
-            fg_peak[name] = fp
-            peak_map[name] = max(bp, fp)
+
+    base_filter = "WHERE team_buff = ?"
+    fg_filter = "WHERE team_buff = ?"
+    params = [team_buff, team_buff, team_buff, team_buff]
+
+    for row in conn.execute(
+        f"""
+        WITH base AS (
+            SELECT song_name, MAX(score) AS base_peak
+            FROM {base_table}
+            {base_filter}
+            GROUP BY song_name
+        ),
+        fg AS (
+            SELECT song_name, MAX(fg_score) AS fg_peak
+            FROM {fg_table}
+            {fg_filter}
+            GROUP BY song_name
+        ),
+        songs AS (
+            SELECT song_name FROM {base_table}
+            {base_filter}
+            UNION
+            SELECT song_name FROM {fg_table}
+            {fg_filter}
+        )
+        SELECT
+            songs.song_name AS song_name,
+            COALESCE(base.base_peak, 0) AS base_peak,
+            COALESCE(fg.fg_peak, 0) AS fg_peak
+        FROM songs
+        LEFT JOIN base ON base.song_name = songs.song_name
+        LEFT JOIN fg ON fg.song_name = songs.song_name
+        """,
+        tuple(params),
+    ):
+        name = str(row["song_name"] or "")
+        bp = int(row["base_peak"] or 0)
+        fp = int(row["fg_peak"] or 0)
+        base_peak[name] = bp
+        fg_peak[name] = fp
+        peak_map[name] = max(bp, fp)
 
     if not peak_map:
         return {}, []
@@ -550,119 +348,60 @@ def fetch_candidates_within_delta_allow_missing(
     n = int(limit_per_song)
 
     try:
-        if team_buff is None:
-            query = """
-                WITH peaks AS (
-                    WITH base AS (
-                        SELECT song_name, MAX(score) AS base_peak
-                        FROM loadouts
-                        GROUP BY song_name
-                    ),
-                    fg AS (
-                        SELECT song_name, MAX(fg_score) AS fg_peak
-                        FROM fg_loadouts
-                        GROUP BY song_name
-                    ),
-                    songs AS (
-                        SELECT song_name FROM loadouts
-                        UNION
-                        SELECT song_name FROM fg_loadouts
-                    )
-                    SELECT
-                        songs.song_name AS song_name,
-                        CASE
-                            WHEN COALESCE(base.base_peak, 0) > COALESCE(fg.fg_peak, 0) THEN COALESCE(base.base_peak, 0)
-                            ELSE COALESCE(fg.fg_peak, 0)
-                        END AS peak
-                    FROM songs
-                    LEFT JOIN base ON base.song_name = songs.song_name
-                    LEFT JOIN fg ON fg.song_name = songs.song_name
+        peaks_params: List[Any] = [team_buff, team_buff, team_buff, team_buff, team_buff, delta, n]
+        query = f"""
+            WITH peaks AS (
+                WITH base AS (
+                    SELECT song_name, MAX(score) AS base_peak
+                    FROM {base_table}
+                    {base_filter}
+                    GROUP BY song_name
                 ),
-                ranked AS (
-                    SELECT
-                        l.rowid AS rowid,
-                        l.song_name AS song_name,
-                        l.score AS score,
-                        l.fg_score AS fg_score,
-                        l.gear_json AS gear_json,
-                        l.minis_json AS minis_json,
-                        l.details_json AS details_json,
-                        l.force_details_json AS force_details_json,
-                        ROW_NUMBER() OVER (PARTITION BY l.song_name ORDER BY l.score DESC, l.rowid ASC) AS rn
-                    FROM loadouts l
-                    JOIN peaks p ON p.song_name = l.song_name
-                    WHERE l.score >= (p.peak - ?)
-                )
-                SELECT rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
-                FROM ranked
-                WHERE rn <= ?
-                """
-            qparams: Tuple[Any, ...] = (delta, n)
-        else:
-            base_filter = "WHERE team_buff = ?"
-            fg_filter = "WHERE team_buff = ?" if fg_table.startswith("team_buff_") else ""
-            peaks_params: List[Any] = [team_buff]
-            if fg_filter:
-                peaks_params.append(team_buff)
-            peaks_params.append(team_buff)
-            if fg_filter:
-                peaks_params.append(team_buff)
-            peaks_params.append(team_buff)  # ranked l.team_buff
-            peaks_params.extend([delta, n])
-            query = f"""
-                WITH peaks AS (
-                    WITH base AS (
-                        SELECT song_name, MAX(score) AS base_peak
-                        FROM {base_table}
-                        {base_filter}
-                        GROUP BY song_name
-                    ),
-                    fg AS (
-                        SELECT song_name, MAX(fg_score) AS fg_peak
-                        FROM {fg_table}
-                        {fg_filter}
-                        GROUP BY song_name
-                    ),
-                    songs AS (
-                        SELECT song_name FROM {base_table}
-                        {base_filter}
-                        UNION
-                        SELECT song_name FROM {fg_table}
-                        {fg_filter}
-                    )
-                    SELECT
-                        songs.song_name AS song_name,
-                        CASE
-                            WHEN COALESCE(base.base_peak, 0) > COALESCE(fg.fg_peak, 0) THEN COALESCE(base.base_peak, 0)
-                            ELSE COALESCE(fg.fg_peak, 0)
-                        END AS peak
-                    FROM songs
-                    LEFT JOIN base ON base.song_name = songs.song_name
-                    LEFT JOIN fg ON fg.song_name = songs.song_name
+                fg AS (
+                    SELECT song_name, MAX(fg_score) AS fg_peak
+                    FROM {fg_table}
+                    {fg_filter}
+                    GROUP BY song_name
                 ),
-                ranked AS (
-                    SELECT
-                        l.rowid AS rowid,
-                        l.song_name AS song_name,
-                        l.score AS score,
-                        l.fg_score AS fg_score,
-                        l.gear_json AS gear_json,
-                        l.minis_json AS minis_json,
-                        l.details_json AS details_json,
-                        l.force_details_json AS force_details_json,
-                        ROW_NUMBER() OVER (PARTITION BY l.song_name ORDER BY l.score DESC, l.rowid ASC) AS rn
-                    FROM {base_table} l
-                    JOIN peaks p ON p.song_name = l.song_name
-                    WHERE l.team_buff = ? AND l.score >= (p.peak - ?)
+                songs AS (
+                    SELECT song_name FROM {base_table}
+                    {base_filter}
+                    UNION
+                    SELECT song_name FROM {fg_table}
+                    {fg_filter}
                 )
-                SELECT rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
-                FROM ranked
-                WHERE rn <= ?
-                """
-            qparams = tuple(peaks_params)
-        for row in conn.execute(query, qparams):
+                SELECT
+                    songs.song_name AS song_name,
+                    CASE
+                        WHEN COALESCE(base.base_peak, 0) > COALESCE(fg.fg_peak, 0) THEN COALESCE(base.base_peak, 0)
+                        ELSE COALESCE(fg.fg_peak, 0)
+                    END AS peak
+                FROM songs
+                LEFT JOIN base ON base.song_name = songs.song_name
+                LEFT JOIN fg ON fg.song_name = songs.song_name
+            ),
+            ranked AS (
+                SELECT
+                    l.rowid AS rowid,
+                    l.song_name AS song_name,
+                    l.score AS score,
+                    l.fg_score AS fg_score,
+                    l.gear_json AS gear_json,
+                    l.minis_json AS minis_json,
+                    l.details_json AS details_json,
+                    l.force_details_json AS force_details_json,
+                    ROW_NUMBER() OVER (PARTITION BY l.song_name ORDER BY l.score DESC, l.rowid ASC) AS rn
+                FROM {base_table} l
+                JOIN peaks p ON p.song_name = l.song_name
+                WHERE l.team_buff = ? AND l.score >= (p.peak - ?)
+            )
+            SELECT rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
+            FROM ranked
+            WHERE rn <= ?
+            """
+        for row in conn.execute(query, tuple(peaks_params)):
             song = str(row["song_name"] or "")
-            cand = parse_candidate_row(song, base_table if team_buff is not None else "loadouts", row)
+            cand = parse_candidate_row(song, base_table, row)
             if cand is None:
                 continue
             candidates_by_song.setdefault(song, []).append(cand)
@@ -670,125 +409,60 @@ def fetch_candidates_within_delta_allow_missing(
         pass
 
     try:
-        if team_buff is None:
-            query = """
-                WITH peaks AS (
-                    WITH base AS (
-                        SELECT song_name, MAX(score) AS base_peak
-                        FROM loadouts
-                        GROUP BY song_name
-                    ),
-                    fg AS (
-                        SELECT song_name, MAX(fg_score) AS fg_peak
-                        FROM fg_loadouts
-                        GROUP BY song_name
-                    ),
-                    songs AS (
-                        SELECT song_name FROM loadouts
-                        UNION
-                        SELECT song_name FROM fg_loadouts
-                    )
-                    SELECT
-                        songs.song_name AS song_name,
-                        CASE
-                            WHEN COALESCE(base.base_peak, 0) > COALESCE(fg.fg_peak, 0) THEN COALESCE(base.base_peak, 0)
-                            ELSE COALESCE(fg.fg_peak, 0)
-                        END AS peak
-                    FROM songs
-                    LEFT JOIN base ON base.song_name = songs.song_name
-                    LEFT JOIN fg ON fg.song_name = songs.song_name
+        peaks_params = [team_buff, team_buff, team_buff, team_buff, team_buff, delta, n]
+        query = f"""
+            WITH peaks AS (
+                WITH base AS (
+                    SELECT song_name, MAX(score) AS base_peak
+                    FROM {base_table}
+                    {base_filter}
+                    GROUP BY song_name
                 ),
-                ranked AS (
-                    SELECT
-                        f.rowid AS rowid,
-                        f.song_name AS song_name,
-                        f.score AS score,
-                        f.fg_score AS fg_score,
-                        f.gear_json AS gear_json,
-                        f.minis_json AS minis_json,
-                        f.details_json AS details_json,
-                        f.force_details_json AS force_details_json,
-                        ROW_NUMBER() OVER (PARTITION BY f.song_name ORDER BY f.fg_score DESC, f.rowid ASC) AS rn
-                    FROM fg_loadouts f
-                    JOIN peaks p ON p.song_name = f.song_name
-                    WHERE f.fg_score >= (p.peak - ?)
+                fg AS (
+                    SELECT song_name, MAX(fg_score) AS fg_peak
+                    FROM {fg_table}
+                    {fg_filter}
+                    GROUP BY song_name
+                ),
+                songs AS (
+                    SELECT song_name FROM {base_table}
+                    {base_filter}
+                    UNION
+                    SELECT song_name FROM {fg_table}
+                    {fg_filter}
                 )
-                SELECT rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
-                FROM ranked
-                WHERE rn <= ?
-                """
-            qparams: Tuple[Any, ...] = (delta, n)
-        else:
-            base_filter = "WHERE team_buff = ?"
-            fg_filter = "WHERE team_buff = ?" if fg_table.startswith("team_buff_") else ""
-            where = (
-                "WHERE f.team_buff = ? AND f.fg_score >= (p.peak - ?)"
-                if fg_table.startswith("team_buff_")
-                else "WHERE f.fg_score >= (p.peak - ?)"
+                SELECT
+                    songs.song_name AS song_name,
+                    CASE
+                        WHEN COALESCE(base.base_peak, 0) > COALESCE(fg.fg_peak, 0) THEN COALESCE(base.base_peak, 0)
+                        ELSE COALESCE(fg.fg_peak, 0)
+                    END AS peak
+                FROM songs
+                LEFT JOIN base ON base.song_name = songs.song_name
+                LEFT JOIN fg ON fg.song_name = songs.song_name
+            ),
+            ranked AS (
+                SELECT
+                    f.rowid AS rowid,
+                    f.song_name AS song_name,
+                    f.score AS score,
+                    f.fg_score AS fg_score,
+                    f.gear_json AS gear_json,
+                    f.minis_json AS minis_json,
+                    f.details_json AS details_json,
+                    f.force_details_json AS force_details_json,
+                    ROW_NUMBER() OVER (PARTITION BY f.song_name ORDER BY f.fg_score DESC, f.rowid ASC) AS rn
+                FROM {fg_table} f
+                JOIN peaks p ON p.song_name = f.song_name
+                WHERE f.team_buff = ? AND f.fg_score >= (p.peak - ?)
             )
-            peaks_params: List[Any] = [team_buff]
-            if fg_filter:
-                peaks_params.append(team_buff)
-            peaks_params.append(team_buff)
-            if fg_filter:
-                peaks_params.append(team_buff)
-            if fg_table.startswith("team_buff_"):
-                peaks_params.append(team_buff)  # ranked f.team_buff
-            peaks_params.extend([delta, n])
-            query = f"""
-                WITH peaks AS (
-                    WITH base AS (
-                        SELECT song_name, MAX(score) AS base_peak
-                        FROM {base_table}
-                        {base_filter}
-                        GROUP BY song_name
-                    ),
-                    fg AS (
-                        SELECT song_name, MAX(fg_score) AS fg_peak
-                        FROM {fg_table}
-                        {fg_filter}
-                        GROUP BY song_name
-                    ),
-                    songs AS (
-                        SELECT song_name FROM {base_table}
-                        {base_filter}
-                        UNION
-                        SELECT song_name FROM {fg_table}
-                        {fg_filter}
-                    )
-                    SELECT
-                        songs.song_name AS song_name,
-                        CASE
-                            WHEN COALESCE(base.base_peak, 0) > COALESCE(fg.fg_peak, 0) THEN COALESCE(base.base_peak, 0)
-                            ELSE COALESCE(fg.fg_peak, 0)
-                        END AS peak
-                    FROM songs
-                    LEFT JOIN base ON base.song_name = songs.song_name
-                    LEFT JOIN fg ON fg.song_name = songs.song_name
-                ),
-                ranked AS (
-                    SELECT
-                        f.rowid AS rowid,
-                        f.song_name AS song_name,
-                        f.score AS score,
-                        f.fg_score AS fg_score,
-                        f.gear_json AS gear_json,
-                        f.minis_json AS minis_json,
-                        f.details_json AS details_json,
-                        f.force_details_json AS force_details_json,
-                        ROW_NUMBER() OVER (PARTITION BY f.song_name ORDER BY f.fg_score DESC, f.rowid ASC) AS rn
-                    FROM {fg_table} f
-                    JOIN peaks p ON p.song_name = f.song_name
-                    {where}
-                )
-                SELECT rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
-                FROM ranked
-                WHERE rn <= ?
-                """
-            qparams = tuple(peaks_params)
-        for row in conn.execute(query, qparams):
+            SELECT rowid, song_name, score, fg_score, gear_json, minis_json, details_json, force_details_json
+            FROM ranked
+            WHERE rn <= ?
+            """
+        for row in conn.execute(query, tuple(peaks_params)):
             song = str(row["song_name"] or "")
-            cand = parse_candidate_row(song, fg_table if team_buff is not None else "fg_loadouts", row)
+            cand = parse_candidate_row(song, fg_table, row)
             if cand is None:
                 continue
             candidates_by_song.setdefault(song, []).append(cand)

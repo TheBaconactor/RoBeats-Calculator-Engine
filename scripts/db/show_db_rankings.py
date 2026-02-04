@@ -20,7 +20,7 @@ def show_rankings(song_name):
     print(f"Querying: {song_name}...\n")
 
     # Get all loadouts
-    cursor.execute("SELECT score, fg_score, loadout_hash FROM loadouts WHERE song_name = ?", (song_name,))
+    cursor.execute("SELECT score, fg_score, loadout_hash FROM team_buff_loadouts WHERE song_name = ?", (song_name,))
     rows = cursor.fetchall()
 
     if not rows:

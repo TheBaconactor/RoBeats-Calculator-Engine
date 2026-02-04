@@ -6,7 +6,7 @@ import json
 conn = sqlite3.connect("evolution.db")
 conn.row_factory = sqlite3.Row
 
-rows = conn.execute("SELECT rowid, song_name, details_json FROM loadouts").fetchall()
+rows = conn.execute("SELECT rowid, song_name, details_json FROM team_buff_loadouts").fetchall()
 
 bad = []
 for r in rows:

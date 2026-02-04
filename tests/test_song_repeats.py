@@ -44,7 +44,7 @@ def test_prepare_tasks_song_repeats_expands_queue():
     assert len(set(seeds)) == 3
 
 
-def test_prepare_tasks_song_repeats_one_keeps_legacy_shape():
+def test_prepare_tasks_song_repeats_one_keeps_single_shape():
     app = GearOptimizerApp.__new__(GearOptimizerApp)
     cfg = _build_cfg(1)
 

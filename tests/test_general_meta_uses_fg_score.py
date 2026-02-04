@@ -19,7 +19,7 @@ def test_general_meta_counts_top1_by_effective_fg_score():
             "score": 100,
             "fg_score": 500,
             "gear_json": json.dumps(target_gears),
-            "minis_json": json.dumps(target_minis),
+            "minis_json": json.dumps([[m] for m in target_minis]),
             "details_json": None,
         },
         {
@@ -27,7 +27,7 @@ def test_general_meta_counts_top1_by_effective_fg_score():
             "score": 300,
             "fg_score": 300,
             "gear_json": json.dumps(["Hat X"]),
-            "minis_json": json.dumps(["Mini X"]),
+            "minis_json": json.dumps([["Mini X"]]),
             "details_json": None,
         },
         {
@@ -35,7 +35,7 @@ def test_general_meta_counts_top1_by_effective_fg_score():
             "score": 400,
             "fg_score": 400,
             "gear_json": json.dumps(target_gears),
-            "minis_json": json.dumps(target_minis),
+            "minis_json": json.dumps([[m] for m in target_minis]),
             "details_json": None,
         },
         {
@@ -43,7 +43,7 @@ def test_general_meta_counts_top1_by_effective_fg_score():
             "score": 350,
             "fg_score": 350,
             "gear_json": json.dumps(["Hat Y"]),
-            "minis_json": json.dumps(["Mini Y"]),
+            "minis_json": json.dumps([["Mini Y"]]),
             "details_json": None,
         },
     ]

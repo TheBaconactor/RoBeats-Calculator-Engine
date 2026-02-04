@@ -15,13 +15,13 @@ try:
     print(f"Inspecting DB: {os.environ.get('EVOLUTION_DB_PATH', 'Default')}")
 
     # Check count
-    count = conn.execute("SELECT count(*) FROM loadouts WHERE song_name = ?", (SONG_NAME,)).fetchone()[0]
+    count = conn.execute("SELECT count(*) FROM team_buff_loadouts WHERE song_name = ?", (SONG_NAME,)).fetchone()[0]
     print(f"Total Loadouts for '{SONG_NAME}': {count}")
 
     if count > 0:
         # Get all entries
         df = pd.read_sql_query(
-            "SELECT score, fg_score, loadout_hash FROM loadouts WHERE song_name = ? ORDER BY score DESC",
+            "SELECT score, fg_score, loadout_hash FROM team_buff_loadouts WHERE song_name = ? ORDER BY score DESC",
             conn,
             params=(SONG_NAME,),
         )

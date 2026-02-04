@@ -34,7 +34,7 @@ base_stats = {
 # Get a broken entry
 conn = sqlite3.connect("evolution.db")
 conn.row_factory = sqlite3.Row
-row = conn.execute("SELECT * FROM loadouts WHERE rowid=16207").fetchone()
+row = conn.execute("SELECT * FROM team_buff_loadouts WHERE rowid=16207").fetchone()
 
 print("=" * 60)
 print("Debugging rowid 16207")

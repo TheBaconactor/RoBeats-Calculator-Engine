@@ -151,7 +151,6 @@ def main() -> None:
     init_db()
 
     base_kwargs = dict(
-        solver="gpu_full",
         restarts=1,
         inventory_cap=int(args.inventory_cap),
         partitions_per_song=int(args.partitions_per_song),

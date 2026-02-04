@@ -1,6 +1,5 @@
 """
 CSV parsing functions for loading gear, minis, and stats data.
-Handles both modern and legacy CSV formats.
 """
 
 import csv
@@ -73,7 +72,6 @@ def _first_val(row_map, keys):
 def parse_gear_rows(filepath):
     """
     Parse Gears.csv into a list of gear dicts.
-    Supports both modern and legacy CSV formats.
 
     Args:
         filepath: Path to Gears.csv file
@@ -95,70 +93,41 @@ def parse_gear_rows(filepath):
         header_lower = [h.lower() for h in header]
 
         modern_format = "type" in header_lower and any(name in header_lower for name in ("gear name", "name", "gear"))
+        if not modern_format:
+            WARN_ONCE.warn("gear-csv", f"Unsupported format in {filepath}; expected modern headers.")
+            return gear_list
 
-        if modern_format:
-            for row in rows[1:]:
-                if not any((c or "").strip() for c in row):
-                    continue
-                row_map = _build_row_map(row, header_lower)
-                name = _first_val(row_map, ("gear name", "name", "gear"))
-                if not name:
-                    continue
-                slot = _first_val(row_map, ("type", "slot", "category")) or "Hat"
-                stats = {
-                    "Name": name,
-                    "type": slot,
-                    "Chill": safe_int(_first_val(row_map, ("chill",))),
-                    "Flow": safe_int(_first_val(row_map, ("flow",))),
-                    "Rush": safe_int(_first_val(row_map, ("rush",))),
-                    "Beat": safe_int(_first_val(row_map, ("beat",))),
-                    "Vibe": safe_int(_first_val(row_map, ("vibe",))),
-                    "Perfect Points": safe_int(_first_val(row_map, ("ppoint", "perfect points", "pp", "ppoints"))),
-                    "Combo Multiplier": safe_int(_first_val(row_map, ("cmult", "cbmlt", "combo multiplier", "combo"))),
-                    "Fever Multiplier": safe_int(_first_val(row_map, ("fmult", "fmlt", "fever multiplier"))),
-                }
-                # IMPORTANT: Perfect Time (often stored as "PTime") is a
-                # completely different mechanic from Fever Time and must
-                # NEVER be treated as Fever Time. Do not fall back to
-                # any "ptime" column here; only true Fever Time fields
-                # ("time" / "fever time" / "ft") are allowed.
-                time_val = _first_val(row_map, ("time", "fever time", "ft"))
-                stats["Fever Time"] = safe_int(time_val)
-                stats["Fever Fill Rate"] = safe_int(
-                    _first_val(row_map, ("fill", "fvfil", "fever fill rate", "fever fill"))
-                )
-                gear_list.append(stats)
-        else:
-            # Legacy format
-            current_category = "Hat"
-            known_slots = ["Neck", "Face", "Shirt", "Back", "Pants"]
-            for row in rows[1:]:
-                if not row:
-                    continue
-                potential_cat = row[0].strip()
-                if potential_cat in known_slots:
-                    current_category = potential_cat
-                    continue
-                if len(row) < 11:
-                    continue
-                name = row[0].strip()
-                if not name:
-                    continue
-                stats = {
-                    "Name": name,
-                    "type": current_category,
-                    "Chill": safe_int(row[1]),
-                    "Flow": safe_int(row[2]),
-                    "Rush": safe_int(row[3]),
-                    "Beat": safe_int(row[4]),
-                    "Vibe": safe_int(row[5]),
-                    "Perfect Points": safe_int(row[6]),
-                    "Combo Multiplier": safe_int(row[7]),
-                    "Fever Multiplier": safe_int(row[8]),
-                    "Fever Time": safe_int(row[9]),
-                    "Fever Fill Rate": safe_int(row[10]),
-                }
-                gear_list.append(stats)
+        for row in rows[1:]:
+            if not any((c or "").strip() for c in row):
+                continue
+            row_map = _build_row_map(row, header_lower)
+            name = _first_val(row_map, ("gear name", "name", "gear"))
+            if not name:
+                continue
+            slot = _first_val(row_map, ("type", "slot", "category")) or "Hat"
+            stats = {
+                "Name": name,
+                "type": slot,
+                "Chill": safe_int(_first_val(row_map, ("chill",))),
+                "Flow": safe_int(_first_val(row_map, ("flow",))),
+                "Rush": safe_int(_first_val(row_map, ("rush",))),
+                "Beat": safe_int(_first_val(row_map, ("beat",))),
+                "Vibe": safe_int(_first_val(row_map, ("vibe",))),
+                "Perfect Points": safe_int(_first_val(row_map, ("ppoint", "perfect points", "pp", "ppoints"))),
+                "Combo Multiplier": safe_int(_first_val(row_map, ("cmult", "cbmlt", "combo multiplier", "combo"))),
+                "Fever Multiplier": safe_int(_first_val(row_map, ("fmult", "fmlt", "fever multiplier"))),
+            }
+            # IMPORTANT: Perfect Time (often stored as "PTime") is a
+            # completely different mechanic from Fever Time and must
+            # NEVER be treated as Fever Time. Do not fall back to
+            # any "ptime" column here; only true Fever Time fields
+            # ("time" / "fever time" / "ft") are allowed.
+            time_val = _first_val(row_map, ("time", "fever time", "ft"))
+            stats["Fever Time"] = safe_int(time_val)
+            stats["Fever Fill Rate"] = safe_int(
+                _first_val(row_map, ("fill", "fvfil", "fever fill rate", "fever fill"))
+            )
+            gear_list.append(stats)
     except Exception as exc:
         WARN_ONCE.warn("gear-csv", f"Failed to parse gear CSV {filepath}: {exc}")
     return gear_list
@@ -167,7 +136,6 @@ def parse_gear_rows(filepath):
 def parse_mini_rows(filepath):
     """
     Parse Minis.csv into a list of mini dicts.
-    Supports both modern and legacy CSV formats.
 
     Args:
         filepath: Path to Minis.csv file
@@ -189,54 +157,33 @@ def parse_mini_rows(filepath):
         header_lower = [h.lower() for h in header]
 
         modern_format = "type" in header_lower and any(name in header_lower for name in ("mini name", "name", "mini"))
+        if not modern_format:
+            WARN_ONCE.warn("mini-csv", f"Unsupported format in {filepath}; expected modern headers.")
+            return minis_list
 
-        if modern_format:
-            for row in rows[1:]:
-                if not any((c or "").strip() for c in row):
-                    continue
-                row_map = _build_row_map(row, header_lower)
-                name = _first_val(row_map, ("mini name", "name", "mini"))
-                if not name or name == "(Empty)":
-                    continue
-                mini_type = _first_val(row_map, ("type",)) or "Mini"
-                stats = {
-                    "Name": name,
-                    "type": mini_type,
-                    "Chill": safe_int(_first_val(row_map, ("chill",))),
-                    "Flow": safe_int(_first_val(row_map, ("flow",))),
-                    "Rush": safe_int(_first_val(row_map, ("rush",))),
-                    "Beat": safe_int(_first_val(row_map, ("beat",))),
-                    "Vibe": safe_int(_first_val(row_map, ("vibe",))),
-                    "Perfect Points": safe_int(_first_val(row_map, ("ppoint", "perfect points", "pp", "ppoints"))),
-                    "Combo Multiplier": safe_int(_first_val(row_map, ("cbmlt", "cmult", "combo multiplier", "combo"))),
-                    "Fever Multiplier": safe_int(_first_val(row_map, ("fmult", "fmlt", "fvmlt", "fever multiplier"))),
-                    "Fever Time": safe_int(_first_val(row_map, ("fvtim", "time", "ft", "fever time"))),
-                    "Fever Fill Rate": safe_int(_first_val(row_map, ("fvfil", "fill", "ff", "fever fill"))),
-                }
-                minis_list.append(stats)
-        else:
-            # Legacy format
-            for row in rows[1:]:
-                if len(row) < 12:
-                    continue
-                name = row[1].strip()
-                if not name or name == "(Empty)":
-                    continue
-                stats = {
-                    "Name": name,
-                    "type": "Mini",
-                    "Chill": safe_int(row[2]),
-                    "Flow": safe_int(row[3]),
-                    "Rush": safe_int(row[4]),
-                    "Beat": safe_int(row[5]),
-                    "Vibe": safe_int(row[6]),
-                    "Perfect Points": safe_int(row[7]) if len(row) > 7 else 0,
-                    "Combo Multiplier": safe_int(row[8]) if len(row) > 8 else 0,
-                    "Fever Multiplier": safe_int(row[9]) if len(row) > 9 else 0,
-                    "Fever Time": safe_int(row[10]) if len(row) > 10 else 0,
-                    "Fever Fill Rate": safe_int(row[11]) if len(row) > 11 else 0,
-                }
-                minis_list.append(stats)
+        for row in rows[1:]:
+            if not any((c or "").strip() for c in row):
+                continue
+            row_map = _build_row_map(row, header_lower)
+            name = _first_val(row_map, ("mini name", "name", "mini"))
+            if not name or name == "(Empty)":
+                continue
+            mini_type = _first_val(row_map, ("type",)) or "Mini"
+            stats = {
+                "Name": name,
+                "type": mini_type,
+                "Chill": safe_int(_first_val(row_map, ("chill",))),
+                "Flow": safe_int(_first_val(row_map, ("flow",))),
+                "Rush": safe_int(_first_val(row_map, ("rush",))),
+                "Beat": safe_int(_first_val(row_map, ("beat",))),
+                "Vibe": safe_int(_first_val(row_map, ("vibe",))),
+                "Perfect Points": safe_int(_first_val(row_map, ("ppoint", "perfect points", "pp", "ppoints"))),
+                "Combo Multiplier": safe_int(_first_val(row_map, ("cbmlt", "cmult", "combo multiplier", "combo"))),
+                "Fever Multiplier": safe_int(_first_val(row_map, ("fmult", "fmlt", "fvmlt", "fever multiplier"))),
+                "Fever Time": safe_int(_first_val(row_map, ("fvtim", "time", "ft", "fever time"))),
+                "Fever Fill Rate": safe_int(_first_val(row_map, ("fvfil", "fill", "ff", "fever fill"))),
+            }
+            minis_list.append(stats)
     except Exception as exc:
         WARN_ONCE.warn("mini-csv", f"Failed to parse minis CSV {filepath}: {exc}")
     return minis_list

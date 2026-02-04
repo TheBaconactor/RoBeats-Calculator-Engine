@@ -1,5 +1,5 @@
 """
-Regression test: Verify bitpacked head-fever masks are bit-identical to the legacy i8 mask.
+Regression test: Verify bitpacked head-fever masks are bit-identical to the i8 mask.
 
 This specifically guards the optimization where we:
 - pack grid_fever_masks[ft,ff,:] into 4x u32 words (grid_fever_masks_bits)
@@ -95,7 +95,7 @@ def test_mask_bits_parity():
             cnt_fever = gf.grid_count_body_fever[song_slot, ft, ff]
             cnt_normal = gf.grid_count_body_normal[song_slot, ft, ff]
 
-            # Legacy: per-note i8 lookup in head loop
+            # Reference: per-note i8 lookup in head loop
             s_old = gk.calc_score_with_grid(
                 ti.cast(base_value, ti.f32),
                 ti.cast(combo_mul, ti.f32),

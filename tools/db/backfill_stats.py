@@ -49,7 +49,7 @@ def main():
     conn.row_factory = sqlite3.Row
 
     total_updated = 0
-    for table in ("loadouts", "fg_loadouts"):
+    for table in ("team_buff_loadouts", "team_buff_fg_loadouts"):
         print(f"\nFetching entries from {table}...")
         cur = conn.execute(f"""
             SELECT rowid, song_name, gear_json, minis_json, details_json
@@ -66,16 +66,9 @@ def main():
 
             details = json.loads(row["details_json"]) if row["details_json"] else {}
             gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
-            mini_names_raw = json.loads(row["minis_json"]) if row["minis_json"] else []
-
-            # Handle variant group format: [["MiniA", "MiniA2"], ["MiniB"]] -> ["MiniA", "MiniB"]
+            mini_groups = json.loads(row["minis_json"]) if row["minis_json"] else []
             # Extract first name from each group (representative)
-            mini_names = []
-            for item in mini_names_raw:
-                if isinstance(item, list) and item:
-                    mini_names.append(item[0])  # Take first variant as representative
-                elif isinstance(item, str):
-                    mini_names.append(item)  # Legacy flat format
+            mini_names = [item[0] for item in mini_groups if isinstance(item, list) and item]
 
             gem_counts = dict(details.get("GemCounts", {}) or {})
             # DB stores FT/FF gem allocations at the top level (not inside GemCounts).
@@ -107,7 +100,7 @@ def main():
         total_updated += updated
     conn.close()
 
-    print(f"\nDone! Updated {total_updated} entries across loadouts + fg_loadouts.")
+    print(f"\nDone! Updated {total_updated} entries across team_buff_loadouts + team_buff_fg_loadouts.")
 
 
 if __name__ == "__main__":

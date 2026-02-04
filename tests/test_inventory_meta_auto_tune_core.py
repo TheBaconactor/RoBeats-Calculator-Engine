@@ -44,7 +44,6 @@ def test_auto_tune_chooses_best_override_and_records_seeds(tmp_path: Path) -> No
             "time_sec": 0.01,
             "wall_time_sec": 0.02,
             "seed": int(kwargs.get("seed") or 0),
-            "solver": str(kwargs.get("solver") or ""),
             "stats": {
                 "songs_total": 500 if label == "All" else 100,
                 "songs_covered": int(covered),

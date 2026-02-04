@@ -96,7 +96,7 @@ def main() -> int:
     con = sqlite3.connect(args.db)
     cur = con.cursor()
     row = cur.execute(
-        "select details_json from loadouts where song_name=? order by score desc limit 1",
+        "select details_json from team_buff_loadouts where song_name=? order by score desc limit 1",
         (song_name,),
     ).fetchone()
     if not row:
