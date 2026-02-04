@@ -77,7 +77,7 @@ class GpuServiceClient:
         self._fg_coalesce_enabled = env_flag("FG_COALESCE_BREAKPOINTS_BATCH", "1")
         try:
             self._fg_coalesce_max_payloads = int(
-                os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "128") or "128"
+                os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "192") or "192"
             )
         except Exception:
             self._fg_coalesce_max_payloads = 128
