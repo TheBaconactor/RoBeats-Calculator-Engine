@@ -51,6 +51,7 @@ grid_fever_activations = None  # (MAX_SONG_SLOTS, 161, 161) i8 - fever activatio
 
 # Song data for timeline computation
 song_timestamps = None  # (MAX_SONG_NOTES,) f32
+fever_end_idx_song = None  # (MAX_SONG_NOTES, 161) i32
 song_total_notes = None  # scalar i32
 song_long_notes = None  # scalar i32
 song_last_note_time = None  # scalar f32

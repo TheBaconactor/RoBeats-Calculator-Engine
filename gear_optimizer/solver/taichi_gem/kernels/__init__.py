@@ -112,6 +112,7 @@ from .kernels_scoring import (
 from .kernels_solvers_batch import (
     solve_batch_kernel,
     solve_genomes_with_ftff_kernel,
+    solve_genomes_with_ftff_block_kernel,
     solve_ftff_parallel_kernel,
     copy_genome_result_stats_to_download_staging_kernel,
 )
@@ -156,6 +157,7 @@ from .ga_eval import (
 
 # Import timeline kernel
 from .kernels_timeline import (
+    precompute_fever_end_idx_kernel,
     compute_timeline_grid_kernel,
     compute_timeline_grid_signatures_kernel,
 )
@@ -243,6 +245,7 @@ __all__ = [
     # Batch solver kernels
     "solve_batch_kernel",
     "solve_genomes_with_ftff_kernel",
+    "solve_genomes_with_ftff_block_kernel",
     "solve_ftff_parallel_kernel",
     "copy_genome_result_stats_to_download_staging_kernel",
     # GA evaluation kernels
@@ -284,6 +287,7 @@ __all__ = [
     # Timeline kernels
     "binary_search_left_from",
     "binary_search_left",
+    "precompute_fever_end_idx_kernel",
     "compute_timeline_grid_kernel",
     "compute_timeline_grid_signatures_kernel",
 ]

@@ -213,17 +213,15 @@ def ga_generate_initial_populations_kernel(
                 m1 = kernels_helpers.ga_initial_populations[run_id, g, 7]
                 m2 = kernels_helpers.ga_initial_populations[run_id, g, 8]
 
-                tries = 0
-                while m1 == m0 and tries < 10:
-                    state = kernels_helpers._xorshift32(state)
-                    m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                    tries += 1
+                for _ in range(10):
+                    if m1 == m0:
+                        state = kernels_helpers._xorshift32(state)
+                        m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
-                tries = 0
-                while (m2 == m0 or m2 == m1) and tries < 10:
-                    state = kernels_helpers._xorshift32(state)
-                    m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                    tries += 1
+                for _ in range(10):
+                    if m2 == m0 or m2 == m1:
+                        state = kernels_helpers._xorshift32(state)
+                        m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
                 kernels_helpers.ga_initial_populations[run_id, g, 6] = m0
                 kernels_helpers.ga_initial_populations[run_id, g, 7] = m1
@@ -365,18 +363,16 @@ def ga_crossover_mutate_kernel(
 
         if mini_pool_count > 1:
             # Repair m1 if duplicate of m0
-            tries = 0
-            while m1 == m0 and tries < 10:
-                state = kernels_helpers._xorshift32(state)
-                m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                tries += 1
+            for _ in range(10):
+                if m1 == m0:
+                    state = kernels_helpers._xorshift32(state)
+                    m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
             # Repair m2 if duplicate of m0 or m1
-            tries = 0
-            while (m2 == m0 or m2 == m1) and tries < 10:
-                state = kernels_helpers._xorshift32(state)
-                m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                tries += 1
+            for _ in range(10):
+                if m2 == m0 or m2 == m1:
+                    state = kernels_helpers._xorshift32(state)
+                    m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
             kernels_helpers.population_next_indices[g, 6] = m0
             kernels_helpers.population_next_indices[g, 7] = m1
@@ -721,17 +717,15 @@ def ga_select_crossover_mutate_kernel(
         mini_pool_count = kernels_helpers.slot_count[6]
 
         if mini_pool_count > 1:
-            tries = 0
-            while m1 == m0 and tries < 10:
-                state = kernels_helpers._xorshift32(state)
-                m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                tries += 1
+            for _ in range(10):
+                if m1 == m0:
+                    state = kernels_helpers._xorshift32(state)
+                    m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
-            tries = 0
-            while (m2 == m0 or m2 == m1) and tries < 10:
-                state = kernels_helpers._xorshift32(state)
-                m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                tries += 1
+            for _ in range(10):
+                if m2 == m0 or m2 == m1:
+                    state = kernels_helpers._xorshift32(state)
+                    m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
             kernels_helpers.population_next_indices[g, 6] = m0
             kernels_helpers.population_next_indices[g, 7] = m1
@@ -892,17 +886,15 @@ def ga_next_generation_full_kernel(
             mini_pool_count = kernels_helpers.slot_count[6]
 
             if mini_pool_count > 1:
-                tries = 0
-                while m1 == m0 and tries < 10:
-                    state = kernels_helpers._xorshift32(state)
-                    m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                    tries += 1
+                for _ in range(10):
+                    if m1 == m0:
+                        state = kernels_helpers._xorshift32(state)
+                        m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
-                tries = 0
-                while (m2 == m0 or m2 == m1) and tries < 10:
-                    state = kernels_helpers._xorshift32(state)
-                    m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                    tries += 1
+                for _ in range(10):
+                    if m2 == m0 or m2 == m1:
+                        state = kernels_helpers._xorshift32(state)
+                        m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
                 kernels_helpers.population_next_indices[g, 6] = m0
                 kernels_helpers.population_next_indices[g, 7] = m1
@@ -930,17 +922,15 @@ def ga_next_generation_full_kernel(
                     mini_pool_count = kernels_helpers.slot_count[6]
 
                     if mini_pool_count > 1:
-                        tries = 0
-                        while m1 == m0 and tries < 10:
-                            state = kernels_helpers._xorshift32(state)
-                            m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                            tries += 1
+                        for _ in range(10):
+                            if m1 == m0:
+                                state = kernels_helpers._xorshift32(state)
+                                m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
-                        tries = 0
-                        while (m2 == m0 or m2 == m1) and tries < 10:
-                            state = kernels_helpers._xorshift32(state)
-                            m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                            tries += 1
+                        for _ in range(10):
+                            if m2 == m0 or m2 == m1:
+                                state = kernels_helpers._xorshift32(state)
+                                m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
                         kernels_helpers.population_next_indices[g, 6] = m0
                         kernels_helpers.population_next_indices[g, 7] = m1
@@ -1124,17 +1114,15 @@ def ga_next_generation_full_islands_kernel(
         mini_pool_count = kernels_helpers.slot_count[6]
 
         if mini_pool_count > 1:
-            tries = 0
-            while m1 == m0 and tries < 10:
-                state = kernels_helpers._xorshift32(state)
-                m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                tries += 1
+            for _ in range(10):
+                if m1 == m0:
+                    state = kernels_helpers._xorshift32(state)
+                    m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
-            tries = 0
-            while (m2 == m0 or m2 == m1) and tries < 10:
-                state = kernels_helpers._xorshift32(state)
-                m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                tries += 1
+            for _ in range(10):
+                if m2 == m0 or m2 == m1:
+                    state = kernels_helpers._xorshift32(state)
+                    m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
             kernels_helpers.population_next_indices[g, 6] = m0
             kernels_helpers.population_next_indices[g, 7] = m1
@@ -1159,17 +1147,15 @@ def ga_next_generation_full_islands_kernel(
                 mini_pool_count = kernels_helpers.slot_count[6]
 
                 if mini_pool_count > 1:
-                    tries = 0
-                    while m1 == m0 and tries < 10:
-                        state = kernels_helpers._xorshift32(state)
-                        m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                        tries += 1
+                    for _ in range(10):
+                        if m1 == m0:
+                            state = kernels_helpers._xorshift32(state)
+                            m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
-                    tries = 0
-                    while (m2 == m0 or m2 == m1) and tries < 10:
-                        state = kernels_helpers._xorshift32(state)
-                        m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                        tries += 1
+                    for _ in range(10):
+                        if m2 == m0 or m2 == m1:
+                            state = kernels_helpers._xorshift32(state)
+                            m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
                     kernels_helpers.population_next_indices[g, 6] = m0
                     kernels_helpers.population_next_indices[g, 7] = m1
@@ -1356,17 +1342,15 @@ def ga_next_generation_full_runs_kernel(
         mini_pool_count = kernels_helpers.slot_count[6]
 
         if mini_pool_count > 1:
-            tries = 0
-            while m1 == m0 and tries < 10:
-                state = kernels_helpers._xorshift32(state)
-                m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                tries += 1
+            for _ in range(10):
+                if m1 == m0:
+                    state = kernels_helpers._xorshift32(state)
+                    m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
-            tries = 0
-            while (m2 == m0 or m2 == m1) and tries < 10:
-                state = kernels_helpers._xorshift32(state)
-                m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                tries += 1
+            for _ in range(10):
+                if m2 == m0 or m2 == m1:
+                    state = kernels_helpers._xorshift32(state)
+                    m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
             kernels_helpers.population_next_indices[g, 6] = m0
             kernels_helpers.population_next_indices[g, 7] = m1
@@ -1391,17 +1375,15 @@ def ga_next_generation_full_runs_kernel(
                 mini_pool_count = kernels_helpers.slot_count[6]
 
                 if mini_pool_count > 1:
-                    tries = 0
-                    while m1 == m0 and tries < 10:
-                        state = kernels_helpers._xorshift32(state)
-                        m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                        tries += 1
+                    for _ in range(10):
+                        if m1 == m0:
+                            state = kernels_helpers._xorshift32(state)
+                            m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
-                    tries = 0
-                    while (m2 == m0 or m2 == m1) and tries < 10:
-                        state = kernels_helpers._xorshift32(state)
-                        m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-                        tries += 1
+                    for _ in range(10):
+                        if m2 == m0 or m2 == m1:
+                            state = kernels_helpers._xorshift32(state)
+                            m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
 
                     kernels_helpers.population_next_indices[g, 6] = m0
                     kernels_helpers.population_next_indices[g, 7] = m1

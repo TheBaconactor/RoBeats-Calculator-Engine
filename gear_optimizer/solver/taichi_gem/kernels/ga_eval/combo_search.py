@@ -8,6 +8,7 @@ Includes:
 import sys
 
 import taichi as ti
+from taichi.lang import simt
 from taichi.lang.simt import subgroup
 
 from .. import kernels_helpers
@@ -143,20 +144,23 @@ def ga_find_best_combo_key_kernel(
                 if old < score:
                     kernels_helpers.chunk_best_idx[genome_idx] = combo_idx
     else:
-        # Vulkan: subgroup reduction + write per-wave best into scratch (no atomics).
+        # Vulkan: block-per-genome reduction (atomic-free).
         block_dim = ti.cast(kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM, ti.i32)
-        n_tiles = (combo_count + block_dim - 1) // block_dim
-        total_threads = n_genomes * n_tiles * block_dim
+        waves = ti.cast(kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE, ti.i32)
+        shared_waves = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.u64)
+        total_threads = n_genomes * block_dim
 
         for tid in range(total_threads):
-            tile_linear = tid // block_dim
-            lane = tid - (tile_linear * block_dim)
-            genome_idx = tile_linear // n_tiles
-            tile_in_genome = tile_linear - (genome_idx * n_tiles)
-            local_c = (tile_in_genome * block_dim) + lane
+            genome_idx = tid // block_dim
+            lane = tid - (genome_idx * block_dim)
 
-            key = ti.u64(0)
-            if local_c < combo_count:
+            if lane < waves:
+                shared_waves[lane] = ti.u64(0)
+            simt.block.sync()
+
+            local_best = ti.u64(0)
+            local_c: ti.i32 = lane
+            while local_c < combo_count:
                 combo_idx: ti.i32 = combo_offset + local_c
                 if combo_idx < n_combos:
                     ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
@@ -225,9 +229,24 @@ def ga_find_best_combo_key_kernel(
                             score: ti.i32 = res_vec[0]
                             if score >= 0:
                                 key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
+                                if key > local_best:
+                                    local_best = key
 
-            best = subgroup.reduce_max(key)
+                local_c += block_dim
+
+            best = subgroup.reduce_max(local_best)
             if subgroup.elect() and best != ti.u64(0):
                 wave_slot = lane >> 5  # lane//32, valid for wave32 and wave64 (wave64 uses even slots)
-                out_i = (tile_in_genome * kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE) + wave_slot
-                kernels_helpers.chunk_best_key_waves[genome_idx, out_i] = best
+                shared_waves[wave_slot] = best
+            simt.block.sync()
+
+            if lane == 0:
+                block_best = shared_waves[0]
+                for i in range(1, kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE):
+                    v = shared_waves[i]
+                    if v > block_best:
+                        block_best = v
+                if block_best != ti.u64(0):
+                    prev = kernels_helpers.chunk_best_key[genome_idx]
+                    if block_best > prev:
+                        kernels_helpers.chunk_best_key[genome_idx] = block_best

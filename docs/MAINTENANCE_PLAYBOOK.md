@@ -104,10 +104,8 @@ These knobs **do not change the search space or scoring math**; they only affect
 - `FG_SMALL_WORK_MAX_WORK_ITEMS` (default `20000`): max `n_genomes * n_ftff` eligible for single‑band.
 - `FG_SMALL_WORK_MAX_CFG_LEN` (default `4096`): max cfg window length eligible for single‑band.
 
-You can also sweep the existing knobs for occupancy:
+You can also sweep the existing knobs for throughput:
 - `FG_TARGET_THREADS_PER_KERNEL`: increases/decreases Stage‑1 `cfg_chunk` target (larger = fewer bands).
-- `FG_STAGE1_CFG_TILE`: configs per thread inside Stage‑1 flat kernels.
-- `FG_STAGE1_NO_ATOMICS=1`: force the sequential Stage‑1 kernel (no atomics) on Vulkan for benchmarking; may be slower but avoids atomic contention.
 
 ## FG job coalescing (safe, queue overhead only)
 These knobs **do not change the search space or scoring math**; they only coalesce FG batch requests in-process:

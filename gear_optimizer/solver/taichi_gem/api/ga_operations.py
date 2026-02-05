@@ -570,11 +570,6 @@ def ga_evaluate_population(
 
     for offset in range(0, n_combos, combo_chunk):
         chunk_len = int(min(combo_chunk, n_combos - offset))
-        if not fields.IS_METAL:
-            # Two-stage reduction scratch (Vulkan): clear per-chunk scratch before writing.
-            n_tiles = (chunk_len + int(fields.GA_FTFF_REDUCE_BLOCK_DIM) - 1) // int(fields.GA_FTFF_REDUCE_BLOCK_DIM)
-            kernels.ga_clear_chunk_best_key_waves_kernel(int(n_genomes), int(n_tiles))
-
         kernels.ga_find_best_combo_warmstart_kernel(
             n_genomes,
             n_combos,
@@ -598,8 +593,6 @@ def ga_evaluate_population(
             use_hints_i,
             int(prune_plateaus_i),
         )
-        if not fields.IS_METAL:
-            kernels.ga_merge_chunk_best_key_waves_to_global_kernel(int(n_genomes), int(n_tiles))
 
     # NOTE: Result materialization (re-evaluating the winning combo to get correct
     # gem allocations, updating ga_scores, storing hints, and updating global best)

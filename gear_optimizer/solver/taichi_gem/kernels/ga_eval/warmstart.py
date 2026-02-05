@@ -8,6 +8,7 @@ Includes:
 import sys
 
 import taichi as ti
+from taichi.lang import simt
 from taichi.lang.simt import subgroup
 
 from .. import kernels_helpers
@@ -311,23 +312,24 @@ def ga_find_best_combo_warmstart_kernel(
                 if old < score:
                     kernels_helpers.chunk_best_idx[genome_idx] = combo_idx
     else:
-        # Vulkan: subgroup (wave) reduction + one atomic per subgroup.
-        #
-        # We intentionally flatten work so each block covers exactly one genome tile:
-        # all threads in each subgroup share the same genome_idx, making subgroup reductions safe.
-        n_tiles = (combo_count + _GA_FTFF_REDUCE_BLOCK_DIM - 1) // _GA_FTFF_REDUCE_BLOCK_DIM
-        total_threads = n_genomes * n_tiles * _GA_FTFF_REDUCE_BLOCK_DIM
+        # Vulkan: block-per-genome reduction (atomic-free).
+        block_dim = ti.cast(_GA_FTFF_REDUCE_BLOCK_DIM, ti.i32)
+        waves = ti.cast(kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE, ti.i32)
+        shared_waves = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.u64)
+        total_threads = n_genomes * block_dim
 
         ti.loop_config(block_dim=_GA_FTFF_REDUCE_BLOCK_DIM)
         for tid in range(total_threads):
-            tile_linear = tid // _GA_FTFF_REDUCE_BLOCK_DIM
-            lane = tid - (tile_linear * _GA_FTFF_REDUCE_BLOCK_DIM)
-            genome_idx = tile_linear // n_tiles
-            tile_in_genome = tile_linear - (genome_idx * n_tiles)
-            local_c = (tile_in_genome * _GA_FTFF_REDUCE_BLOCK_DIM) + lane
+            genome_idx = tid // block_dim
+            lane = tid - (genome_idx * block_dim)
 
-            key = ti.u64(0)
-            if local_c < combo_count:
+            if lane < waves:
+                shared_waves[lane] = ti.u64(0)
+            simt.block.sync()
+
+            local_best = ti.u64(0)
+            local_c: ti.i32 = lane
+            while local_c < combo_count:
                 combo_idx: ti.i32 = combo_offset + local_c
                 key = _compute_combo_key_warmstart(
                     genome_idx,
@@ -353,12 +355,23 @@ def ga_find_best_combo_warmstart_kernel(
                     use_hints,
                     prune_plateaus,
                 )
+                if key > local_best:
+                    local_best = key
+                local_c += block_dim
 
-            best = subgroup.reduce_max(key)
+            best = subgroup.reduce_max(local_best)
             if subgroup.elect() and best != ti.u64(0):
-                # Two-stage reduction (Vulkan):
-                # - Stage A: write per-wave best key into scratch (no atomics)
-                # - Stage B: merge scratch -> chunk_best_key in a separate kernel
                 wave_slot = lane >> 5  # lane//32, valid for wave32 and wave64 (wave64 uses even slots)
-                out_i = (tile_in_genome * kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE) + wave_slot
-                kernels_helpers.chunk_best_key_waves[genome_idx, out_i] = best
+                shared_waves[wave_slot] = best
+            simt.block.sync()
+
+            if lane == 0:
+                block_best = shared_waves[0]
+                for i in range(1, kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE):
+                    v = shared_waves[i]
+                    if v > block_best:
+                        block_best = v
+                if block_best != ti.u64(0):
+                    prev = kernels_helpers.chunk_best_key[genome_idx]
+                    if block_best > prev:
+                        kernels_helpers.chunk_best_key[genome_idx] = block_best

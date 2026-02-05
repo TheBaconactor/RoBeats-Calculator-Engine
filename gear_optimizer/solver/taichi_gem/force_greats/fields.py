@@ -509,7 +509,6 @@ def warmup_kernels() -> None:
     # Minimal warmup parameters
     n_genomes = 1
     n_ftff = 1
-    n_work_items = 1
     n_cfg = 1
     cfg_offset = 0
     total_notes = 10
@@ -562,46 +561,23 @@ def warmup_kernels() -> None:
             0,  # color flags
             0,  # song_slot
             0,  # pair_caps_from_timeline
+            1,  # is_first_chunk
         )
     else:
-        # Warm both Stage-1 flat variants to avoid first-call JIT when section counts differ.
-        fg_kernels.fg_stage1_flat_kernel_small3(
-            n_work_items,
-            n_cfg,
-            cfg_offset,
-            0,  # cfg_read_offset
+        # Warm Stage-1 (Vulkan): serial-per-owner (atomic-free + deterministic).
+        fg_kernels.fg_stage1_kernel(
+            n_genomes,
             total_notes,
             long_notes,
             last_note_time,
             total_budget,
             gem_scale_fever,
-            n_sections,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,
-            0,  # color flags
-            0,  # song_slot
-            0,  # pair_caps_from_timeline
-        )
-        fg_kernels.fg_stage1_flat_kernel(
-            n_work_items,
             n_cfg,
+            n_sections,
+            n_ftff,
             cfg_offset,
             0,  # cfg_read_offset
-            total_notes,
-            long_notes,
-            last_note_time,
-            total_budget,
-            gem_scale_fever,
-            n_sections,
+            0,  # color flags (12x)
             0,
             0,
             0,
@@ -613,9 +589,9 @@ def warmup_kernels() -> None:
             0,
             0,
             0,
-            0,  # color flags
             0,  # song_slot
             0,  # pair_caps_from_timeline
+            1,  # is_first_chunk
         )
 
     # Warmup Stage-2 recompute kernels (used by runtime to avoid Stage-1 aux races).

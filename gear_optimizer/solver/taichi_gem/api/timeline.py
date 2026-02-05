@@ -141,6 +141,12 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     _maybe_sync(for_timing=True)
     _t0 = time.perf_counter()
 
+    # Precompute fever end indices for O(1) timeline lookups
+    kernels.precompute_fever_end_idx_kernel(
+        int(total_notes),
+        float(last_note_time),
+    )
+
     # Launch GPU kernel to compute all 161×161 timelines for this song slot
     kernels.compute_timeline_grid_kernel(
         total_notes,

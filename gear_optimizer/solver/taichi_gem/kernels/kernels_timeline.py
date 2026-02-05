@@ -2,6 +2,7 @@
 Taichi Kernels - Timeline Computation.
 
 This module contains kernels for fever timeline precomputation:
+- precompute_fever_end_idx_kernel: Precompute fever end indices per (note, FT)
 - binary_search_left_from: Binary search with lower bound
 - binary_search_left: Binary search for leftmost index
 - compute_timeline_grid_kernel: Parallel 161×161 timeline grid computation
@@ -22,6 +23,32 @@ from .kernels_helpers import (
 
 # Import kernels_helpers to access fields at runtime (they're bound by fields.bind_fields())
 from . import kernels_helpers
+
+
+@ti.kernel
+def precompute_fever_end_idx_kernel(total_notes: ti.i32, last_note_time: ti.f32):
+    """
+    Precompute fever end indices for each (note_idx, ft_idx) using song timestamps.
+
+    This replaces per-section binary searches in timeline simulation with O(1)
+    table lookups (reduces divergent branches on GPU).
+    """
+    n_stat: ti.i32 = 161
+    n: ti.i32 = ti.max(total_notes, 0)
+    fever_time_cas: ti.f32 = last_note_time * 0.15 + 0.15  # FEVER_TIME_SCALE + FEVER_TIME_OFFSET
+
+    for flat in range(n * n_stat):
+        note_idx: ti.i32 = flat // n_stat
+        ft_idx: ti.i32 = flat - (note_idx * n_stat)
+
+        ft_factor: ti.f32 = kernels_helpers.ref_ft_field[ft_idx]
+        fever_time: ti.f32 = fever_time_cas * ft_factor
+
+        start_time: ti.f32 = kernels_helpers.song_timestamps[note_idx]
+        end_time: ti.f32 = start_time + fever_time
+        kernels_helpers.fever_end_idx_song[note_idx, ft_idx] = kernels_helpers.binary_search_left(
+            kernels_helpers.song_timestamps, n, end_time
+        )
 
 
 @ti.func
@@ -154,9 +181,7 @@ def compute_timeline_grid_kernel(
                 end_time = start_time + real_fever_time
 
                 # Binary search for first note >= end_time
-                fever_end_idx = kernels_helpers.binary_search_left(
-                    kernels_helpers.song_timestamps, total_notes, end_time
-                )
+                fever_end_idx = ti.min(kernels_helpers.fever_end_idx_song[current_note, ft_idx], total_notes)
 
                 # Mark fever notes in bitmask (for first MAX_HEAD notes)
                 for note_i in range(current_note, fever_end_idx):
@@ -201,9 +226,7 @@ def compute_timeline_grid_kernel(
             if current_note > 0:
                 start_time = kernels_helpers.song_timestamps[current_note]
                 end_time = start_time + real_fever_time
-                fever_end_idx = kernels_helpers.binary_search_left(
-                    kernels_helpers.song_timestamps, total_notes, end_time
-                )
+                fever_end_idx = ti.min(kernels_helpers.fever_end_idx_song[current_note, ft_idx], total_notes)
 
                 # Count fever body notes
                 for ni in range(current_note, fever_end_idx):

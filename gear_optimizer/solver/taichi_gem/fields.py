@@ -109,6 +109,8 @@ grid_fever_activations: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i8 - fever
 
 # Song data for GPU timeline computation
 song_timestamps: ti.Field = None  # (MAX_SONG_NOTES,) f32
+# Precomputed fever end indices per note/FT (binary-search-free timeline simulation)
+fever_end_idx_song: ti.Field = None  # (MAX_SONG_NOTES, GRID_SIZE) i32
 
 # Per-work-item fever masks
 fever_masks: ti.Field = None  # (MAX_WORK_ITEMS, MAX_HEAD_NOTES) - i8
@@ -303,7 +305,7 @@ def reset_fields_state() -> None:
     global grid_count_body_fever, grid_count_body_normal, grid_head_len, grid_fever_masks, grid_fever_masks_bits
     global grid_sig0, grid_sig1
     global grid_gap, grid_fever_activations
-    global song_timestamps
+    global song_timestamps, fever_end_idx_song
     global fever_masks, work_budgets, work_count_fever, work_count_normal
     global work_ft_gems, work_ff_gems, work_head_len, work_genome_id, work_items
     global bp_pair_ft, bp_pair_ff, bp_result_mask
@@ -363,6 +365,7 @@ def reset_fields_state() -> None:
 
     # Song timeline
     song_timestamps = None
+    fever_end_idx_song = None
 
     # Work items
     fever_masks = None
@@ -763,7 +766,7 @@ def allocate_grid_fields():
     global grid_count_body_fever, grid_count_body_normal, grid_head_len, grid_fever_masks, grid_fever_masks_bits
     global grid_sig0, grid_sig1
     global grid_gap, grid_fever_activations
-    global song_timestamps
+    global song_timestamps, fever_end_idx_song
     global _grid_fields_allocated
 
     if _grid_fields_allocated:
@@ -787,6 +790,8 @@ def allocate_grid_fields():
     # ensure_fields_allocated for non-grid kernels).
     if song_timestamps is None:
         song_timestamps = ti.field(dtype=ti.f32, shape=MAX_SONG_NOTES)
+    if fever_end_idx_song is None:
+        fever_end_idx_song = ti.field(dtype=ti.i32, shape=(MAX_SONG_NOTES, GRID_SIZE))
 
     _grid_fields_allocated = True
     print(f"[Taichi] Allocated grid fields: {MAX_SONG_SLOTS}×{GRID_SIZE}×{GRID_SIZE} timeline grid slots")
@@ -839,6 +844,7 @@ def bind_fields(kernels_module):
 
     # Song data for timeline
     target.song_timestamps = song_timestamps
+    target.fever_end_idx_song = fever_end_idx_song
 
     # Work item data
     target.fever_masks = fever_masks

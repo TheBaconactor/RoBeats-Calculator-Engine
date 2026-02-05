@@ -210,7 +210,9 @@ def _simulate_timeline_signature(
             fever_activations += 1
             start_time = kernels_helpers.song_timestamps[current_note]
             end_time = start_time + real_fever_time
-            fever_end_idx = kernels_helpers.binary_search_left(kernels_helpers.song_timestamps, total_notes, end_time)
+            # NOTE: Requires precompute_fever_end_idx_kernel() to have populated
+            # kernels_helpers.fever_end_idx_song for the current song/last_note_time.
+            fever_end_idx = ti.min(kernels_helpers.fever_end_idx_song[current_note, ft_idx], total_notes)
 
             # Mark fever notes in bitmask (first 64 only for hash)
             for note_i in range(current_note, fever_end_idx):

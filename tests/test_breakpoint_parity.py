@@ -51,7 +51,7 @@ def collect_breakpoints_gpu(scorer, num_sections, section_caps=None):
     This is the proposed replacement for collect_analytical_breakpoints.
     """
     try:
-        from gear_optimizer.solver.taichi_gem.kernels import kernels_breakpoints
+        from gear_optimizer.solver.taichi_gem.kernels import kernels_breakpoints, kernels_timeline
         from gear_optimizer.solver.taichi_gem import runtime, fields
         import taichi as ti
         import itertools
@@ -59,7 +59,7 @@ def collect_breakpoints_gpu(scorer, num_sections, section_caps=None):
         # Ensure Taichi is initialized
         if not runtime.is_initialized():
             runtime.init_taichi()
-        fields.ensure_fields_allocated()
+        fields.ensure_grid_fields_allocated()
 
         # Get section analysis (same as CPU version)
         analysis = scorer.get_section_analysis(80, 80)
@@ -93,6 +93,9 @@ def collect_breakpoints_gpu(scorer, num_sections, section_caps=None):
         # kernels_helpers.ref_ft_field/ref_ff_field (bound via fields.bind_fields).
         fields.ref_ft_field.from_numpy(np.asarray(scorer.ref_ft, dtype=np.float32))
         fields.ref_ff_field.from_numpy(np.asarray(scorer.ref_ff, dtype=np.float32))
+
+        # Precompute fever end indices for binary-search-free timeline simulation.
+        kernels_timeline.precompute_fever_end_idx_kernel(int(scorer.total_notes), float(scorer.last_note_time))
 
         # Prepare FT/FF pairs for GPU kernel
         # Use representative FT=80 and sample FF values (same as CPU version)

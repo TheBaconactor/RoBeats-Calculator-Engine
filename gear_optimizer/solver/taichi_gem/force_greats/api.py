@@ -211,7 +211,6 @@ _fg_forced_counts_staging_pool: dict[int, Any] | None = None
 _FG_SMALL_WORK_SINGLE_BAND = _env_truthy("FG_SMALL_WORK_SINGLE_BAND", "1")
 _FG_SMALL_WORK_MAX_WORK_ITEMS = _env_int("FG_SMALL_WORK_MAX_WORK_ITEMS", 20000)
 _FG_SMALL_WORK_MAX_CFG_LEN = _env_int("FG_SMALL_WORK_MAX_CFG_LEN", _FG_FORCED_COUNTS_STAGING_ROWS_DEFAULT)
-_FG_STAGE1_NO_ATOMICS = _env_truthy("FG_STAGE1_NO_ATOMICS", "0")
 
 _fg_cfg_defaults_uploaded = False
 _fg_cfg_defaults_buf: dict[str, np.ndarray] | None = None
@@ -848,6 +847,20 @@ def _ftff_pairs_sig(ftff_pairs: Any, n: int) -> tuple:
         return ("seq", n)
 
 
+def _has_duplicate_ftff_pairs_from_buf(ft_buf: np.ndarray, ff_buf: np.ndarray, n: int) -> bool:
+    try:
+        seen: set[tuple[int, int]] = set()
+        n_i = int(n)
+        for i in range(n_i):
+            key = (int(ft_buf[i]), int(ff_buf[i]))
+            if key in seen:
+                return True
+            seen.add(key)
+    except Exception:
+        return False
+    return False
+
+
 def _get_genome_stats_buf() -> np.ndarray:
     """Get or allocate a persistent buffer for genome stats (N, 7)."""
     global _fg_genome_stats_buf
@@ -1191,12 +1204,12 @@ def _solve_force_greats_finder_gpu_impl(
         _record_upload("ff_list", _t_ft2 - _t_ft1, _bytes_of_array(ff_buf))
         _fg_last_ftff_key = ftff_key
 
-    # Reset outputs and init stage1
+    # Stage 1 policy:
+    # Use the serial-per-owner Stage-1 kernel (atomic-free + deterministic).
+
+    # Reset outputs and init stage1.
     fg_kernels.fg_reset_best_kernel(n_genomes)
-    if gem_fields.IS_METAL:
-        fg_kernels.fg_stage1_init_kernel(n_genomes, n_ftff)
-    else:
-        fg_kernels.fg_stage1_init_packed_kernel(n_genomes, n_ftff)
+    fg_kernels.fg_stage1_init_kernel(n_genomes, n_ftff)
     maybe_sync(sync_fn=ti.sync, force_sync=_FORCE_SYNC, sync_for_timing=_SYNC_FOR_TIMING, for_timing=True)
 
     # Mark end of upload phase
@@ -1210,13 +1223,7 @@ def _solve_force_greats_finder_gpu_impl(
     if n_work_items > fg_fields.FG_MAX_FLAT_WORK_ITEMS:
         raise ValueError(f"Too many flat work items: {n_work_items} > {fg_fields.FG_MAX_FLAT_WORK_ITEMS}")
 
-    # Build flat work items ON GPU (cached by (n_genomes, n_ftff)).
-    # This avoids uploading two 4M-element arrays from CPU on every call.
-    global _fg_flat_work_key
-    flat_key = (n_genomes, n_ftff)
-    if _fg_flat_work_key != flat_key:
-        fg_kernels.fg_build_flat_work_kernel(int(n_genomes), int(n_ftff))
-        _fg_flat_work_key = flat_key
+    # Serial Stage 1 does not use the flat work arrays.
 
     # Pair caps (once per call). The flat kernel always clamps by fg_pair_caps,
     # so we must ensure it is initialized even when the caller does not supply
@@ -1259,18 +1266,9 @@ def _solve_force_greats_finder_gpu_impl(
     # Adaptive cfg_chunk: pick a thread budget per kernel launch to avoid TDR while keeping
     # kernels large enough to amortize launch overhead on fast GPUs.
     #
-    # NOTE: The Vulkan stage1 flat kernel uses cfg-tiling: one thread handles up to FG_STAGE1_CFG_TILE configs.
-    # So "threads per kernel" is ~n_work_items * ceil(cfg_chunk / tile), not n_work_items * cfg_chunk.
-    #
     # TDR (Timeout Detection and Recovery) triggers after ~2s on Windows if GPU is unresponsive.
     # With heavy per-thread work (gem optimization + penalty loops), we need to limit work per launch.
-    TARGET_THREADS_PER_KERNEL = _get_target_threads_per_kernel(int(n_work_items))
-    try:
-        stage1_cfg_tile = int(getattr(fg_kernels, "FG_STAGE1_CFG_TILE", 1))
-    except Exception:
-        stage1_cfg_tile = 1
-    if stage1_cfg_tile <= 0:
-        stage1_cfg_tile = 1
+    TARGET_CFG_EVALS_PER_KERNEL = _get_target_threads_per_kernel(int(n_work_items))
 
     if cfg_chunk is None or int(cfg_chunk) <= 0:
         # Auto-calculate based on work items
@@ -1280,9 +1278,10 @@ def _solve_force_greats_finder_gpu_impl(
             # A safe bet is ~16-32 configs per kernel launch.
             cfg_chunk = 16
         else:
-            # Flattened kernel parallelizes over cfg tiles (each thread handles up to stage1_cfg_tile configs).
-            target_tiles = max(1, TARGET_THREADS_PER_KERNEL // max(1, n_work_items))
-            cfg_chunk = max(256, int(target_tiles * stage1_cfg_tile))
+            # Serial-per-owner Stage 1: one thread per (genome, ftff), loop configs inside the thread.
+            # Keep total cfg evals per launch bounded for stability on Windows.
+            target_cfg_per_owner = max(1, TARGET_CFG_EVALS_PER_KERNEL // max(1, n_work_items))
+            cfg_chunk = max(256, int(target_cfg_per_owner))
     else:
         cfg_chunk = int(cfg_chunk)
 
@@ -1298,11 +1297,10 @@ def _solve_force_greats_finder_gpu_impl(
     n_chunks = (n_cfg_total + cfg_chunk - 1) // cfg_chunk
 
     if _perf:
-        approx_tiles = (cfg_chunk + stage1_cfg_tile - 1) // stage1_cfg_tile
+        cfg_evals_per_kernel = int(n_work_items) * int(cfg_chunk)
         print(
-            f"[PERF] FG adaptive chunking: n_work={n_work_items} cfg_chunk={cfg_chunk} "
-            f"n_cfg={n_cfg_total} n_chunks={n_chunks} threads_per_kernel~={n_work_items * approx_tiles:,} "
-            f"(tiles={approx_tiles}, tile={stage1_cfg_tile})"
+            f"[PERF] FG adaptive chunking (serial stage1): n_work={n_work_items} cfg_chunk={cfg_chunk} "
+            f"n_cfg={n_cfg_total} n_chunks={n_chunks} cfg_evals_per_kernel~={cfg_evals_per_kernel:,}"
         )
 
     # Pre-fetch buffer reference
@@ -1448,96 +1446,36 @@ def _solve_force_greats_finder_gpu_impl(
             _record_upload("forced_counts_staging(chunk)", _dt, _bytes_of_array(buf[: int(staging_rows), :]))
             fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), int(global_cfg_offset), staging)
 
-        # Call Kernel based on platform / atomics policy.
-        # On Metal (macOS), 64-bit atomics for the flat kernel are not supported.
-        # Optionally force the atomic-free sequential kernel on Vulkan via FG_STAGE1_NO_ATOMICS=1.
+        # Stage 1: serial-per-owner (atomic-free + deterministic).
         # Add base_cfg_offset for global cfg indexing across multiple GPU calls.
-        use_no_atomic = bool(gem_fields.IS_METAL or _FG_STAGE1_NO_ATOMICS)
-        if use_no_atomic:
-            fg_kernels.fg_stage1_kernel(
-                int(n_genomes),
-                int(total_notes),
-                int(long_notes),
-                float(last_note_time),
-                int(total_budget),
-                int(gem_scale_fever),
-                int(n_cfg),
-                int(n_sections),
-                int(n_ftff),
-                int(global_cfg_offset),
-                int(global_cfg_offset),
-                int(is_p_ft),
-                int(is_s_ft),
-                int(is_p_ff),
-                int(is_s_ff),
-                int(is_p_pp),
-                int(is_s_pp),
-                int(is_p_cm),
-                int(is_s_cm),
-                int(is_p_fm),
-                int(is_s_fm),
-                int(is_p_ov),
-                int(is_s_ov),
-                int(song_slot),
-                int(1 if pair_caps_from_timeline else 0),
-            )
-        else:
-            # FLATTENED kernel (GPU-friendly: one thread per (work_item, cfg_tile)).
-            # Specialize the local state for small section counts (common path) to reduce register pressure.
-            if int(n_sections) <= 3:
-                fg_kernels.fg_stage1_flat_kernel_small3(
-                    int(n_work_items),
-                    int(n_cfg),
-                    int(global_cfg_offset),
-                    int(global_cfg_offset),
-                    int(total_notes),
-                    int(long_notes),
-                    float(last_note_time),
-                    int(total_budget),
-                    int(gem_scale_fever),
-                    int(n_sections),
-                    int(is_p_ft),
-                    int(is_s_ft),
-                    int(is_p_ff),
-                    int(is_s_ff),
-                    int(is_p_pp),
-                    int(is_s_pp),
-                    int(is_p_cm),
-                    int(is_s_cm),
-                    int(is_p_fm),
-                    int(is_s_fm),
-                    int(is_p_ov),
-                    int(is_s_ov),
-                    int(song_slot),
-                    int(1 if pair_caps_from_timeline else 0),
-                )
-            else:
-                fg_kernels.fg_stage1_flat_kernel(
-                    int(n_work_items),
-                    int(n_cfg),
-                    int(global_cfg_offset),
-                    int(global_cfg_offset),
-                    int(total_notes),
-                    int(long_notes),
-                    float(last_note_time),
-                    int(total_budget),
-                    int(gem_scale_fever),
-                    int(n_sections),
-                    int(is_p_ft),
-                    int(is_s_ft),
-                    int(is_p_ff),
-                    int(is_s_ff),
-                    int(is_p_pp),
-                    int(is_s_pp),
-                    int(is_p_cm),
-                    int(is_s_cm),
-                    int(is_p_fm),
-                    int(is_s_fm),
-                    int(is_p_ov),
-                    int(is_s_ov),
-                    int(song_slot),
-                    int(1 if pair_caps_from_timeline else 0),
-                )
+        fg_kernels.fg_stage1_kernel(
+            int(n_genomes),
+            int(total_notes),
+            int(long_notes),
+            float(last_note_time),
+            int(total_budget),
+            int(gem_scale_fever),
+            int(n_cfg),
+            int(n_sections),
+            int(n_ftff),
+            int(global_cfg_offset),
+            int(global_cfg_offset),
+            int(is_p_ft),
+            int(is_s_ft),
+            int(is_p_ff),
+            int(is_s_ff),
+            int(is_p_pp),
+            int(is_s_pp),
+            int(is_p_cm),
+            int(is_s_cm),
+            int(is_p_fm),
+            int(is_s_fm),
+            int(is_p_ov),
+            int(is_s_ov),
+            int(song_slot),
+            int(1 if pair_caps_from_timeline else 0),
+            int(1 if int(cfg_offset) == 0 else 0),
+        )
         # Optional per-chunk sync for TDR-prone systems (disabled by default)
         if _SYNC_PER_CHUNK:
             ti.sync()
@@ -1916,8 +1854,8 @@ def solve_force_greats_finder_gpu_tasks(
     if not fg_tasks:
         return
 
-    use_gpu_cfg_ranges = (
-        str(os.environ.get("FG_GPU_CFG_RANGES", "1") or "").strip().lower() in (TRUTHY_ENV_VALUES | {""})
+    use_gpu_cfg_ranges = str(os.environ.get("FG_GPU_CFG_RANGES", "1") or "").strip().lower() in (
+        TRUTHY_ENV_VALUES | {""}
     )
 
     # Packed mega-job mode:
@@ -2404,15 +2342,12 @@ def solve_force_greats_finder_gpu_tasks(
     if n_work_items_est <= 0:
         return
     target_threads = _get_target_threads_per_kernel(int(n_work_items_est))
-    try:
-        stage1_cfg_tile = int(getattr(fg_kernels, "FG_STAGE1_CFG_TILE", 1))
-    except Exception:
-        stage1_cfg_tile = 1
-    if stage1_cfg_tile <= 0:
-        stage1_cfg_tile = 1
     if cfg_chunk is None or int(cfg_chunk) <= 0:
-        target_tiles = max(1, int(target_threads) // max(1, n_work_items_est))
-        cfg_chunk = max(256, int(target_tiles * stage1_cfg_tile))
+        if gem_fields.IS_METAL:
+            cfg_chunk = 16
+        else:
+            target_cfg_per_owner = max(1, int(target_threads) // max(1, n_work_items_est))
+            cfg_chunk = max(256, int(target_cfg_per_owner))
     cfg_chunk = int(cfg_chunk)
     # `max_cfg_len` is computed from CPU-visible config windows/matrices.
     #
@@ -2509,16 +2444,7 @@ def solve_force_greats_finder_gpu_tasks(
 
         # Reset per-call outputs and init stage1.
         fg_kernels.fg_reset_best_kernel(int(n_genomes))
-        if gem_fields.IS_METAL:
-            fg_kernels.fg_stage1_init_kernel(int(n_genomes), int(n_ftff))
-        else:
-            fg_kernels.fg_stage1_init_packed_kernel(int(n_genomes), int(n_ftff))
-
-        # Ensure flat work is built for this (n_genomes, n_ftff).
-        flat_key = (int(n_genomes), int(n_ftff))
-        if _fg_flat_work_key != flat_key:
-            fg_kernels.fg_build_flat_work_kernel(int(n_genomes), int(n_ftff))
-            _fg_flat_work_key = flat_key
+        fg_kernels.fg_stage1_init_kernel(int(n_genomes), int(n_ftff))
 
         # Stage 1: run in cfg bands to avoid long-running kernels on Windows.
         #
@@ -2568,91 +2494,35 @@ def solve_force_greats_finder_gpu_tasks(
                 cfg_len_buf[: int(n_ftff)] = np.minimum(np.maximum(remaining, 0), int(band_len))
                 fg_kernels.fg_upload_cfg_ranges_kernel(int(n_ftff), cfg_start_buf, cfg_len_buf)
 
-            # Use cfg_offset<0 to enable per-ftff cfg windows in the kernel.
-            use_no_atomic = bool(gem_fields.IS_METAL or _FG_STAGE1_NO_ATOMICS)
-            if use_no_atomic:
-                fg_kernels.fg_stage1_kernel(
-                    int(n_genomes),
-                    int(total_notes),
-                    int(long_notes),
-                    float(last_note_time),
-                    int(total_budget),
-                    int(gem_scale_fever),
-                    int(band_len),
-                    int(n_sections),
-                    int(n_ftff),
-                    int(cfg_offset_i),
-                    int(cfg_read_offset_i),
-                    int(is_p_ft),
-                    int(is_s_ft),
-                    int(is_p_ff),
-                    int(is_s_ff),
-                    int(is_p_pp),
-                    int(is_s_pp),
-                    int(is_p_cm),
-                    int(is_s_cm),
-                    int(is_p_fm),
-                    int(is_s_fm),
-                    int(is_p_ov),
-                    int(is_s_ov),
-                    int(song_slot),
-                    int(1 if pair_caps_from_timeline else 0),
-                )
-            else:
-                if int(n_sections) <= 3:
-                    fg_kernels.fg_stage1_flat_kernel_small3(
-                        int(n_work_items),
-                        int(band_len),
-                        int(cfg_offset_i),
-                        int(cfg_read_offset_i),
-                        int(total_notes),
-                        int(long_notes),
-                        float(last_note_time),
-                        int(total_budget),
-                        int(gem_scale_fever),
-                        int(n_sections),
-                        int(is_p_ft),
-                        int(is_s_ft),
-                        int(is_p_ff),
-                        int(is_s_ff),
-                        int(is_p_pp),
-                        int(is_s_pp),
-                        int(is_p_cm),
-                        int(is_s_cm),
-                        int(is_p_fm),
-                        int(is_s_fm),
-                        int(is_p_ov),
-                        int(is_s_ov),
-                        int(song_slot),
-                        int(1 if pair_caps_from_timeline else 0),
-                    )
-                else:
-                    fg_kernels.fg_stage1_flat_kernel(
-                        int(n_work_items),
-                        int(band_len),
-                        int(cfg_offset_i),
-                        int(cfg_read_offset_i),
-                        int(total_notes),
-                        int(long_notes),
-                        float(last_note_time),
-                        int(total_budget),
-                        int(gem_scale_fever),
-                        int(n_sections),
-                        int(is_p_ft),
-                        int(is_s_ft),
-                        int(is_p_ff),
-                        int(is_s_ff),
-                        int(is_p_pp),
-                        int(is_s_pp),
-                        int(is_p_cm),
-                        int(is_s_cm),
-                        int(is_p_fm),
-                        int(is_s_fm),
-                        int(is_p_ov),
-                        int(is_s_ov),
-                        int(song_slot),
-                        int(1 if pair_caps_from_timeline else 0),
-                    )
+            # Use cfg_offset<0 to enable per-ftff cfg windows in the Stage-1 kernel.
+            fg_kernels.fg_stage1_kernel(
+                int(n_genomes),
+                int(total_notes),
+                int(long_notes),
+                float(last_note_time),
+                int(total_budget),
+                int(gem_scale_fever),
+                int(band_len),
+                int(n_sections),
+                int(n_ftff),
+                int(cfg_offset_i),
+                int(cfg_read_offset_i),
+                int(is_p_ft),
+                int(is_s_ft),
+                int(is_p_ff),
+                int(is_s_ff),
+                int(is_p_pp),
+                int(is_s_pp),
+                int(is_p_cm),
+                int(is_s_cm),
+                int(is_p_fm),
+                int(is_s_fm),
+                int(is_p_ov),
+                int(is_s_ov),
+                int(song_slot),
+                int(1 if pair_caps_from_timeline else 0),
+                int(1 if int(band_idx) == 0 else 0),
+            )
 
         # Ordering is preserved on-device; only force a host sync when timing/tracing.
         did_sync_stage1 = bool(_PERF_TIMING or _FORCE_SYNC or _SYNC_FOR_TIMING or _FG_TRANSFER_TRACE)

@@ -27,6 +27,7 @@ from .initialization import (
     _SYNC_FOR_TIMING,
     _upload_song_flags,
     _ensure_parallel_staging,
+    _ensure_ftff_combo_tables,
 )
 from .timeline import precompute_timeline_gpu, _upload_timeline_grid
 from .ga_operations import (
@@ -169,9 +170,11 @@ def solve_genomes_with_ftff(
         fields.genome_base_stats.from_numpy(stats_buf)
         _t_kernel = None
 
-    # Launch kernel
-    kernels.solve_genomes_with_ftff_kernel(
+    # Launch kernel (atomic-free + faster): one workgroup per genome, reduce in shared memory.
+    n_combos = _ensure_ftff_combo_tables(int(total_budget))
+    kernels.solve_genomes_with_ftff_block_kernel(
         n_genomes,
+        int(n_combos),
         total_budget,
         gem_scale_fever,
         is_p_ft,
