@@ -42,6 +42,7 @@ FG_SELECTED_PACKED_COLS = 12 + FG_MAX_SECTIONS
 # Flattened parallelization: MAX_GENOMES * FG_MAX_FTFF threads
 # Each thread processes ONE config at a time (chunked)
 FG_MAX_FLAT_WORK_ITEMS = MAX_GENOMES * FG_MAX_FTFF  # MAX_GENOMES * FG_MAX_FTFF
+FG_STAGE1_WAVE_SLOTS_MAX = 8  # max waves for FG_STAGE1_BLOCK_DIM<=256 (used by wave-staging kernels)
 
 
 # ============================================================================
@@ -100,6 +101,8 @@ fg_best_packed: ti.Field | None = None  # (MAX_GENOMES, FG_PACKED_COLS) i32
 # NEW: Packed 64-bit field for atomic (score, cfg_idx) updates - fixes race condition
 # Format: (score << 32) | (cfg_idx & 0xFFFFFFFF) - score in upper 32 bits for correct atomic_max ordering
 fg_stage1_packed: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF) i64
+# Vulkan block-per-owner staging (no shared memory): per-work-item best packed key per wave slot.
+fg_stage1_wave_best: ti.Field | None = None  # (FG_MAX_FLAT_WORK_ITEMS, FG_STAGE1_WAVE_SLOTS_MAX) u64
 
 # FG finder intermediate outputs (per genome × ftff) - for two-stage reduction
 fg_stage1_final_score: ti.Field | None = None  # (MAX_GENOMES, FG_MAX_FTFF) i32
@@ -180,7 +183,7 @@ def reset_fields_state() -> None:
     global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx
     global fg_best_ft, fg_best_ff, fg_best_g_pp, fg_best_g_cm, fg_best_g_fm, fg_best_g_ov
     global fg_best_score_penalty, fg_best_fill_penalty, fg_best_cfg_counts, fg_best_packed
-    global fg_stage1_packed
+    global fg_stage1_packed, fg_stage1_wave_best
     global fg_stage1_final_score, fg_stage1_base_score, fg_stage1_cfg_idx
     global fg_stage1_g_pp, fg_stage1_g_cm, fg_stage1_g_fm, fg_stage1_g_ov
     global fg_stage1_score_penalty, fg_stage1_fill_penalty
@@ -216,6 +219,7 @@ def reset_fields_state() -> None:
     fg_best_packed = None
 
     fg_stage1_packed = None
+    fg_stage1_wave_best = None
     fg_stage1_final_score = None
     fg_stage1_base_score = None
     fg_stage1_cfg_idx = None
@@ -314,6 +318,7 @@ def bind_fields(kernels_module) -> None:
     kernels_module.fg_stage1_score_penalty = fg_stage1_score_penalty
     kernels_module.fg_stage1_fill_penalty = fg_stage1_fill_penalty
     kernels_module.fg_stage1_packed = fg_stage1_packed
+    kernels_module.fg_stage1_wave_best = fg_stage1_wave_best
 
     # Flat work items
     kernels_module.fg_flat_work_genome = fg_flat_work_genome
@@ -363,7 +368,7 @@ def allocate_fields() -> None:
     global fg_stage1_final_score, fg_stage1_base_score, fg_stage1_cfg_idx
     global fg_stage1_g_pp, fg_stage1_g_cm, fg_stage1_g_fm, fg_stage1_g_ov
     global fg_stage1_score_penalty, fg_stage1_fill_penalty
-    global fg_stage1_packed
+    global fg_stage1_packed, fg_stage1_wave_best
     global fg_flat_work_genome, fg_flat_work_ftff
     global _fields_allocated
 
@@ -413,6 +418,8 @@ def allocate_fields() -> None:
 
     # Packed 64-bit field for atomic (score, cfg_idx) updates
     fg_stage1_packed = ti.field(dtype=ti.i64, shape=(MAX_GENOMES, FG_MAX_FTFF))
+    fg_stage1_wave_best = ti.field(dtype=ti.u64, shape=(FG_MAX_FLAT_WORK_ITEMS, FG_STAGE1_WAVE_SLOTS_MAX))
+    fg_stage1_wave_best = ti.field(dtype=ti.u64, shape=(FG_MAX_FLAT_WORK_ITEMS, FG_STAGE1_WAVE_SLOTS_MAX))
 
     # Flat work item indices (GPU-friendly)
     fg_flat_work_genome = ti.field(dtype=ti.i32, shape=FG_MAX_FLAT_WORK_ITEMS)
@@ -564,19 +571,21 @@ def warmup_kernels() -> None:
             1,  # is_first_chunk
         )
     else:
-        # Warm Stage-1 (Vulkan): serial-per-owner (atomic-free + deterministic).
-        fg_kernels.fg_stage1_kernel(
-            n_genomes,
+        # Warm Stage-1 (Vulkan): wave-staged block-per-owner kernels (atomic-free).
+        n_work_items = n_genomes * n_ftff
+        fg_kernels.fg_build_flat_work_kernel(n_genomes, n_ftff)
+        fg_kernels.fg_stage1_clear_wave_best_kernel(n_work_items)
+        fg_kernels.fg_stage1_waves_kernel(
+            n_work_items,
+            n_cfg,
+            cfg_offset,
+            0,  # cfg_read_offset
             total_notes,
             long_notes,
             last_note_time,
             total_budget,
             gem_scale_fever,
-            n_cfg,
             n_sections,
-            n_ftff,
-            cfg_offset,
-            0,  # cfg_read_offset
             0,  # color flags (12x)
             0,
             0,
@@ -591,8 +600,8 @@ def warmup_kernels() -> None:
             0,
             0,  # song_slot
             0,  # pair_caps_from_timeline
-            1,  # is_first_chunk
         )
+        fg_kernels.fg_stage1_reduce_waves_kernel(n_work_items, 1)
 
     # Warmup Stage-2 recompute kernels (used by runtime to avoid Stage-1 aux races).
     fg_kernels.fg_stage2_recompute_kernel(

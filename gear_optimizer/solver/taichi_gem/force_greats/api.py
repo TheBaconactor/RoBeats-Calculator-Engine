@@ -1204,12 +1204,13 @@ def _solve_force_greats_finder_gpu_impl(
         _record_upload("ff_list", _t_ft2 - _t_ft1, _bytes_of_array(ff_buf))
         _fg_last_ftff_key = ftff_key
 
-    # Stage 1 policy:
-    # Use the serial-per-owner Stage-1 kernel (atomic-free + deterministic).
-
     # Reset outputs and init stage1.
     fg_kernels.fg_reset_best_kernel(n_genomes)
-    fg_kernels.fg_stage1_init_kernel(n_genomes, n_ftff)
+    if gem_fields.IS_METAL:
+        fg_kernels.fg_stage1_init_kernel(n_genomes, n_ftff)
+    else:
+        # Vulkan: initialize only the packed winner field (Stage 2 recomputes aux outputs).
+        fg_kernels.fg_stage1_init_packed_kernel(n_genomes, n_ftff)
     maybe_sync(sync_fn=ti.sync, force_sync=_FORCE_SYNC, sync_for_timing=_SYNC_FOR_TIMING, for_timing=True)
 
     # Mark end of upload phase
@@ -1223,7 +1224,13 @@ def _solve_force_greats_finder_gpu_impl(
     if n_work_items > fg_fields.FG_MAX_FLAT_WORK_ITEMS:
         raise ValueError(f"Too many flat work items: {n_work_items} > {fg_fields.FG_MAX_FLAT_WORK_ITEMS}")
 
-    # Serial Stage 1 does not use the flat work arrays.
+    # Build flat work items ON GPU (cached by (n_genomes, n_ftff)) for the Vulkan Stage-1 wave kernels.
+    if not gem_fields.IS_METAL:
+        global _fg_flat_work_key
+        flat_key = (n_genomes, n_ftff)
+        if _fg_flat_work_key != flat_key:
+            fg_kernels.fg_build_flat_work_kernel(int(n_genomes), int(n_ftff))
+            _fg_flat_work_key = flat_key
 
     # Pair caps (once per call). The flat kernel always clamps by fg_pair_caps,
     # so we must ensure it is initialized even when the caller does not supply
@@ -1269,6 +1276,12 @@ def _solve_force_greats_finder_gpu_impl(
     # TDR (Timeout Detection and Recovery) triggers after ~2s on Windows if GPU is unresponsive.
     # With heavy per-thread work (gem optimization + penalty loops), we need to limit work per launch.
     TARGET_CFG_EVALS_PER_KERNEL = _get_target_threads_per_kernel(int(n_work_items))
+    try:
+        stage1_block_dim = int(getattr(fg_kernels, "FG_STAGE1_BLOCK_DIM", 64))
+    except Exception:
+        stage1_block_dim = 64
+    if stage1_block_dim <= 0:
+        stage1_block_dim = 64
 
     if cfg_chunk is None or int(cfg_chunk) <= 0:
         # Auto-calculate based on work items
@@ -1278,10 +1291,10 @@ def _solve_force_greats_finder_gpu_impl(
             # A safe bet is ~16-32 configs per kernel launch.
             cfg_chunk = 16
         else:
-            # Serial-per-owner Stage 1: one thread per (genome, ftff), loop configs inside the thread.
-            # Keep total cfg evals per launch bounded for stability on Windows.
-            target_cfg_per_owner = max(1, TARGET_CFG_EVALS_PER_KERNEL // max(1, n_work_items))
-            cfg_chunk = max(256, int(target_cfg_per_owner))
+            # Vulkan Stage 1: one workgroup per (genome, ftff). Each thread loops cfg indices
+            # with stride=block_dim. Choose cfg_chunk so per-thread work stays bounded.
+            target_cfg_per_thread = max(1, TARGET_CFG_EVALS_PER_KERNEL // max(1, n_work_items * stage1_block_dim))
+            cfg_chunk = max(256, int(target_cfg_per_thread) * int(stage1_block_dim))
     else:
         cfg_chunk = int(cfg_chunk)
 
@@ -1299,7 +1312,7 @@ def _solve_force_greats_finder_gpu_impl(
     if _perf:
         cfg_evals_per_kernel = int(n_work_items) * int(cfg_chunk)
         print(
-            f"[PERF] FG adaptive chunking (serial stage1): n_work={n_work_items} cfg_chunk={cfg_chunk} "
+            f"[PERF] FG adaptive chunking (wave stage1): n_work={n_work_items} cfg_chunk={cfg_chunk} "
             f"n_cfg={n_cfg_total} n_chunks={n_chunks} cfg_evals_per_kernel~={cfg_evals_per_kernel:,}"
         )
 
@@ -1446,36 +1459,69 @@ def _solve_force_greats_finder_gpu_impl(
             _record_upload("forced_counts_staging(chunk)", _dt, _bytes_of_array(buf[: int(staging_rows), :]))
             fg_kernels.fg_upload_forced_counts_kernel(int(n_cfg), int(global_cfg_offset), staging)
 
-        # Stage 1: serial-per-owner (atomic-free + deterministic).
+        # Stage 1:
+        # - Metal: serial-per-owner kernel (no 64-bit atomics).
+        # - Vulkan: block-per-owner with subgroup reductions + wave-staging (atomic-free).
         # Add base_cfg_offset for global cfg indexing across multiple GPU calls.
-        fg_kernels.fg_stage1_kernel(
-            int(n_genomes),
-            int(total_notes),
-            int(long_notes),
-            float(last_note_time),
-            int(total_budget),
-            int(gem_scale_fever),
-            int(n_cfg),
-            int(n_sections),
-            int(n_ftff),
-            int(global_cfg_offset),
-            int(global_cfg_offset),
-            int(is_p_ft),
-            int(is_s_ft),
-            int(is_p_ff),
-            int(is_s_ff),
-            int(is_p_pp),
-            int(is_s_pp),
-            int(is_p_cm),
-            int(is_s_cm),
-            int(is_p_fm),
-            int(is_s_fm),
-            int(is_p_ov),
-            int(is_s_ov),
-            int(song_slot),
-            int(1 if pair_caps_from_timeline else 0),
-            int(1 if int(cfg_offset) == 0 else 0),
-        )
+        is_first_chunk = int(1 if int(cfg_offset) == 0 else 0)
+        if gem_fields.IS_METAL:
+            fg_kernels.fg_stage1_kernel(
+                int(n_genomes),
+                int(total_notes),
+                int(long_notes),
+                float(last_note_time),
+                int(total_budget),
+                int(gem_scale_fever),
+                int(n_cfg),
+                int(n_sections),
+                int(n_ftff),
+                int(global_cfg_offset),
+                int(global_cfg_offset),
+                int(is_p_ft),
+                int(is_s_ft),
+                int(is_p_ff),
+                int(is_s_ff),
+                int(is_p_pp),
+                int(is_s_pp),
+                int(is_p_cm),
+                int(is_s_cm),
+                int(is_p_fm),
+                int(is_s_fm),
+                int(is_p_ov),
+                int(is_s_ov),
+                int(song_slot),
+                int(1 if pair_caps_from_timeline else 0),
+                int(is_first_chunk),
+            )
+        else:
+            fg_kernels.fg_stage1_clear_wave_best_kernel(int(n_work_items))
+            fg_kernels.fg_stage1_waves_kernel(
+                int(n_work_items),
+                int(n_cfg),
+                int(global_cfg_offset),
+                int(global_cfg_offset),
+                int(total_notes),
+                int(long_notes),
+                float(last_note_time),
+                int(total_budget),
+                int(gem_scale_fever),
+                int(n_sections),
+                int(is_p_ft),
+                int(is_s_ft),
+                int(is_p_ff),
+                int(is_s_ff),
+                int(is_p_pp),
+                int(is_s_pp),
+                int(is_p_cm),
+                int(is_s_cm),
+                int(is_p_fm),
+                int(is_s_fm),
+                int(is_p_ov),
+                int(is_s_ov),
+                int(song_slot),
+                int(1 if pair_caps_from_timeline else 0),
+            )
+            fg_kernels.fg_stage1_reduce_waves_kernel(int(n_work_items), int(is_first_chunk))
         # Optional per-chunk sync for TDR-prone systems (disabled by default)
         if _SYNC_PER_CHUNK:
             ti.sync()
@@ -2342,12 +2388,18 @@ def solve_force_greats_finder_gpu_tasks(
     if n_work_items_est <= 0:
         return
     target_threads = _get_target_threads_per_kernel(int(n_work_items_est))
+    try:
+        stage1_block_dim = int(getattr(fg_kernels, "FG_STAGE1_BLOCK_DIM", 64))
+    except Exception:
+        stage1_block_dim = 64
+    if stage1_block_dim <= 0:
+        stage1_block_dim = 64
     if cfg_chunk is None or int(cfg_chunk) <= 0:
         if gem_fields.IS_METAL:
             cfg_chunk = 16
         else:
-            target_cfg_per_owner = max(1, int(target_threads) // max(1, n_work_items_est))
-            cfg_chunk = max(256, int(target_cfg_per_owner))
+            target_cfg_per_thread = max(1, int(target_threads) // max(1, n_work_items_est * stage1_block_dim))
+            cfg_chunk = max(256, int(target_cfg_per_thread) * int(stage1_block_dim))
     cfg_chunk = int(cfg_chunk)
     # `max_cfg_len` is computed from CPU-visible config windows/matrices.
     #
@@ -2444,7 +2496,18 @@ def solve_force_greats_finder_gpu_tasks(
 
         # Reset per-call outputs and init stage1.
         fg_kernels.fg_reset_best_kernel(int(n_genomes))
-        fg_kernels.fg_stage1_init_kernel(int(n_genomes), int(n_ftff))
+        if gem_fields.IS_METAL:
+            fg_kernels.fg_stage1_init_kernel(int(n_genomes), int(n_ftff))
+        else:
+            fg_kernels.fg_stage1_init_packed_kernel(int(n_genomes), int(n_ftff))
+
+        # Ensure flat work is built for this (n_genomes, n_ftff) (used by Vulkan Stage-1 wave kernels).
+        if not gem_fields.IS_METAL:
+            global _fg_flat_work_key
+            flat_key = (int(n_genomes), int(n_ftff))
+            if _fg_flat_work_key != flat_key:
+                fg_kernels.fg_build_flat_work_kernel(int(n_genomes), int(n_ftff))
+                _fg_flat_work_key = flat_key
 
         # Stage 1: run in cfg bands to avoid long-running kernels on Windows.
         #
@@ -2495,34 +2558,65 @@ def solve_force_greats_finder_gpu_tasks(
                 fg_kernels.fg_upload_cfg_ranges_kernel(int(n_ftff), cfg_start_buf, cfg_len_buf)
 
             # Use cfg_offset<0 to enable per-ftff cfg windows in the Stage-1 kernel.
-            fg_kernels.fg_stage1_kernel(
-                int(n_genomes),
-                int(total_notes),
-                int(long_notes),
-                float(last_note_time),
-                int(total_budget),
-                int(gem_scale_fever),
-                int(band_len),
-                int(n_sections),
-                int(n_ftff),
-                int(cfg_offset_i),
-                int(cfg_read_offset_i),
-                int(is_p_ft),
-                int(is_s_ft),
-                int(is_p_ff),
-                int(is_s_ff),
-                int(is_p_pp),
-                int(is_s_pp),
-                int(is_p_cm),
-                int(is_s_cm),
-                int(is_p_fm),
-                int(is_s_fm),
-                int(is_p_ov),
-                int(is_s_ov),
-                int(song_slot),
-                int(1 if pair_caps_from_timeline else 0),
-                int(1 if int(band_idx) == 0 else 0),
-            )
+            is_first_chunk = int(1 if int(band_idx) == 0 else 0)
+            if gem_fields.IS_METAL:
+                fg_kernels.fg_stage1_kernel(
+                    int(n_genomes),
+                    int(total_notes),
+                    int(long_notes),
+                    float(last_note_time),
+                    int(total_budget),
+                    int(gem_scale_fever),
+                    int(band_len),
+                    int(n_sections),
+                    int(n_ftff),
+                    int(cfg_offset_i),
+                    int(cfg_read_offset_i),
+                    int(is_p_ft),
+                    int(is_s_ft),
+                    int(is_p_ff),
+                    int(is_s_ff),
+                    int(is_p_pp),
+                    int(is_s_pp),
+                    int(is_p_cm),
+                    int(is_s_cm),
+                    int(is_p_fm),
+                    int(is_s_fm),
+                    int(is_p_ov),
+                    int(is_s_ov),
+                    int(song_slot),
+                    int(1 if pair_caps_from_timeline else 0),
+                    int(is_first_chunk),
+                )
+            else:
+                fg_kernels.fg_stage1_clear_wave_best_kernel(int(n_work_items))
+                fg_kernels.fg_stage1_waves_kernel(
+                    int(n_work_items),
+                    int(band_len),
+                    int(cfg_offset_i),
+                    int(cfg_read_offset_i),
+                    int(total_notes),
+                    int(long_notes),
+                    float(last_note_time),
+                    int(total_budget),
+                    int(gem_scale_fever),
+                    int(n_sections),
+                    int(is_p_ft),
+                    int(is_s_ft),
+                    int(is_p_ff),
+                    int(is_s_ff),
+                    int(is_p_pp),
+                    int(is_s_pp),
+                    int(is_p_cm),
+                    int(is_s_cm),
+                    int(is_p_fm),
+                    int(is_s_fm),
+                    int(is_p_ov),
+                    int(is_s_ov),
+                    int(song_slot),
+                    int(1 if pair_caps_from_timeline else 0),
+                )
+                fg_kernels.fg_stage1_reduce_waves_kernel(int(n_work_items), int(is_first_chunk))
 
         # Ordering is preserved on-device; only force a host sync when timing/tracing.
         did_sync_stage1 = bool(_PERF_TIMING or _FORCE_SYNC or _SYNC_FOR_TIMING or _FG_TRANSFER_TRACE)
