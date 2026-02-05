@@ -21,7 +21,14 @@ from ..fields import MAX_GENOMES, MAX_SONG_SLOTS
 FG_MAX_SECTIONS = 16
 FG_MAX_STAT = 160  # Maximum FT/FF stat index
 FG_MAX_CONFIGS = 1048576
-FG_MAX_FTFF = 1024
+_FG_MAX_FTFF_DEFAULT = 1024
+try:
+    _fg_max_ftff_env = int(os.environ.get("FG_MAX_FTFF", _FG_MAX_FTFF_DEFAULT) or _FG_MAX_FTFF_DEFAULT)
+except Exception:
+    _fg_max_ftff_env = _FG_MAX_FTFF_DEFAULT
+# Clamp to a conservative range to avoid pathological allocations on low-memory GPUs.
+_fg_max_ftff_env = max(256, min(int(_fg_max_ftff_env), 4096))
+FG_MAX_FTFF = int(_fg_max_ftff_env)
 FG_MAX_SONG_NOTES = 200000  # safety cap for timestamps uploaded to GPU
 FG_DOWNLOAD_TOPK_MAX = 256  # Max selected rows for reduced global_best download (keep + candidates)
 try:
@@ -34,7 +41,7 @@ FG_SELECTED_PACKED_COLS = 12 + FG_MAX_SECTIONS
 
 # Flattened parallelization: MAX_GENOMES * FG_MAX_FTFF threads
 # Each thread processes ONE config at a time (chunked)
-FG_MAX_FLAT_WORK_ITEMS = MAX_GENOMES * FG_MAX_FTFF  # 4096 * 256 = 1M work items max
+FG_MAX_FLAT_WORK_ITEMS = MAX_GENOMES * FG_MAX_FTFF  # MAX_GENOMES * FG_MAX_FTFF
 
 
 # ============================================================================

@@ -715,6 +715,9 @@ def process_force_greats_gpu_finder(
     t_collect_sec = 0.0
     t_cfg_build_sec = 0.0
     t_gpu_calls_sec = 0.0
+    # Async paths submit quickly and wait later; track waits explicitly so "gpu_calls" doesn't hide latency.
+    t_gpu_wait_sec = 0.0
+    t_gpu_download_wait_sec = 0.0
     t_cache_check_sec = 0.0
     t_genome_build_sec = 0.0
     t_result_apply_sec = 0.0
@@ -999,9 +1002,7 @@ def process_force_greats_gpu_finder(
         if search_radius >= TOTAL_GEM_BUDGET:
             search_radius = TOTAL_GEM_BUDGET
 
-        fast_pairs = (
-            str(os.environ.get("FG_FTFF_PAIRS_FAST", "1") or "").strip().lower() in (TRUTHY_ENV_VALUES | {""})
-        )
+        fast_pairs = str(os.environ.get("FG_FTFF_PAIRS_FAST", "1") or "").strip().lower() in (TRUTHY_ENV_VALUES | {""})
         ftff_pairs = _collect_ftff_pairs_from_centers(
             centers,
             search_radius=int(search_radius),
@@ -1952,9 +1953,24 @@ def process_force_greats_gpu_finder(
                     continue
 
                 for fut in group_futures:
+                    _t_wait0 = time.perf_counter() if perf else 0.0
                     fut.result()
+                    if perf:
+                        try:
+                            t_gpu_wait_sec += time.perf_counter() - _t_wait0
+                        except Exception:
+                            pass
 
-                global_results = download_future.result() if hasattr(download_future, "result") else None
+                if hasattr(download_future, "result"):
+                    _t_dl0 = time.perf_counter() if perf else 0.0
+                    global_results = download_future.result()
+                    if perf:
+                        try:
+                            t_gpu_download_wait_sec += time.perf_counter() - _t_dl0
+                        except Exception:
+                            pass
+                else:
+                    global_results = None
                 if global_results is None:
                     global_results = _submit_fg_download_global_best(
                         n_pending,
@@ -2064,10 +2080,25 @@ def process_force_greats_gpu_finder(
                         download_keep_mask=download_keep_mask,
                     )
                     for fut in fg_async_futures:
+                        _t_wait0 = time.perf_counter() if perf else 0.0
                         fut.result()
+                        if perf:
+                            try:
+                                t_gpu_wait_sec += time.perf_counter() - _t_wait0
+                            except Exception:
+                                pass
                     fg_async_futures.clear()
 
-                    gpu_results = download_future.result() if hasattr(download_future, "result") else None
+                    if hasattr(download_future, "result"):
+                        _t_dl0 = time.perf_counter() if perf else 0.0
+                        gpu_results = download_future.result()
+                        if perf:
+                            try:
+                                t_gpu_download_wait_sec += time.perf_counter() - _t_dl0
+                            except Exception:
+                                pass
+                    else:
+                        gpu_results = None
                     if gpu_results is None:
                         gpu_results = _submit_fg_download_global_best(
                             n_pending,
@@ -2199,7 +2230,13 @@ def process_force_greats_gpu_finder(
         for ctx in deferred_gpu_applies:
             futs = ctx.get("futures") or []
             for fut in futs:
+                _t_wait0 = time.perf_counter() if perf else 0.0
                 fut.result()
+                if perf:
+                    try:
+                        t_gpu_wait_sec += time.perf_counter() - _t_wait0
+                    except Exception:
+                        pass
 
             n_pending = int(ctx.get("n_pending") or 0)
             if n_pending <= 0:
@@ -2208,7 +2245,13 @@ def process_force_greats_gpu_finder(
             download_future = ctx.get("download_future")
             gpu_results = None
             if download_future is not None and hasattr(download_future, "result"):
+                _t_dl0 = time.perf_counter() if perf else 0.0
                 gpu_results_raw = download_future.result()
+                if perf:
+                    try:
+                        t_gpu_download_wait_sec += time.perf_counter() - _t_dl0
+                    except Exception:
+                        pass
                 if isinstance(gpu_results_raw, list):
                     try:
                         download_index = int(ctx.get("download_index") or 0)
@@ -2354,7 +2397,9 @@ def process_force_greats_gpu_finder(
             print(
                 "[PERF] ForceGreatsFinder(GPU): "
                 f"collect={t_collect_sec:.3f}s cfg_build={t_cfg_build_sec:.3f}s "
-                f"gpu_calls={t_gpu_calls_sec:.3f}s n_gpu_calls={n_gpu_calls} "
+                f"gpu_total={float(t_gpu_calls_sec + t_gpu_wait_sec + t_gpu_download_wait_sec):.3f}s "
+                f"(submit={t_gpu_calls_sec:.3f}s wait={t_gpu_wait_sec:.3f}s dl_wait={t_gpu_download_wait_sec:.3f}s) "
+                f"n_gpu_calls={n_gpu_calls} "
                 f"db_reuse={db_cached_reuse} no_eval_skips={no_eval_skips} "
                 f"groups={len(groups)} unique_sigs={unique_sig_count}"
             )
