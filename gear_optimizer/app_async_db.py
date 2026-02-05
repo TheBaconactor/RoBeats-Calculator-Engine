@@ -381,9 +381,8 @@ class AsyncDbSaver:
 
                     # Optional: Populate TeamBuff-tier tables (T1/T5/T10/T15/NONE) in async mode.
                     # This is intentionally after base persistence so it never blocks GPU work.
-                    tiers_enabled = (
-                        str(os.environ.get("POST_TEAM_BUFF_TIERS", "1") or "").strip().lower()
-                        in (TRUTHY_ENV_VALUES | {""})
+                    tiers_enabled = str(os.environ.get("POST_TEAM_BUFF_TIERS", "1") or "").strip().lower() in (
+                        TRUTHY_ENV_VALUES | {""}
                     )
                     if tiers_enabled and entries and file_path:
                         try:
@@ -411,12 +410,15 @@ class AsyncDbSaver:
                             except Exception:
                                 pass
 
+                            # Exclude T5 from tier recomputation: base runs already persist T5 directly.
+                            # Recomputing T5 can slightly diverge from runtime scores and desync songs.best_score.
                             batches = build_team_buff_tier_db_batches(
                                 entries=entries,
                                 calc_song=calc_song,
                                 ref_arrays=ref_arrays,
                                 cfg_dict=cfg_dict,
                                 limit=int(_team_buff_tier_limit()),
+                                tiers=("NONE", "T1", "T10", "T15"),
                             )
                             for tier, tier_entries in (batches or {}).items():
                                 if not tier_entries:
