@@ -251,6 +251,8 @@ genome_hint_allocation: ti.Field = None  # Vector field [pp, cm, fm, ov] - warm-
 chunk_best_key: ti.Field = None  # (MAX_GENOMES,) u64 packed key for safe per-chunk reduction
 chunk_best_key_tiles: ti.Field = None  # (MAX_GENOMES, CHUNK_BEST_KEY_TILES) u64 packed keys (contention reduction)
 chunk_best_key_waves: ti.Field = None  # (MAX_GENOMES, GA_FTFF_REDUCE_SCRATCH_COLS) u64 scratch (per-wave best keys)
+chunk_genome_start: ti.Field = None  # (MAX_GENOMES,) i32 start index for per-genome work-item ranges
+chunk_genome_len: ti.Field = None  # (MAX_GENOMES,) i32 length for per-genome work-item ranges
 ftff_combo_ft: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FT gems per combo
 ftff_combo_ff: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FF gems per combo
 
@@ -326,6 +328,8 @@ def reset_fields_state() -> None:
         chunk_best_key, \
         chunk_best_key_tiles, \
         chunk_best_key_waves, \
+        chunk_genome_start, \
+        chunk_genome_len, \
         chunk_best_score, \
         chunk_best_idx, \
         chunk_best_results
@@ -461,6 +465,8 @@ def reset_fields_state() -> None:
     chunk_best_key = None
     chunk_best_key_tiles = None
     chunk_best_key_waves = None
+    chunk_genome_start = None
+    chunk_genome_len = None
     chunk_best_score = None
     chunk_best_idx = None
     chunk_best_results = None
@@ -586,6 +592,8 @@ def allocate_fields():
         chunk_best_key, \
         chunk_best_key_tiles, \
         chunk_best_key_waves, \
+        chunk_genome_start, \
+        chunk_genome_len, \
         chunk_best_score, \
         chunk_best_idx, \
         chunk_best_results
@@ -675,6 +683,9 @@ def allocate_fields():
     else:
         chunk_best_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
         chunk_best_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    # Per-genome work-item ranges for atomic-free reductions (used by Vulkan paths).
+    chunk_genome_start = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    chunk_genome_len = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     # FT/FF combo tables for GPU-parallel evaluation (indexed by combo_id)
     ftff_combo_ft = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
     ftff_combo_ff = ti.field(dtype=ti.i32, shape=MAX_FTFF_COMBOS)
@@ -883,6 +894,8 @@ def bind_fields(kernels_module):
     else:
         target.chunk_best_score = chunk_best_score
         target.chunk_best_idx = chunk_best_idx
+    target.chunk_genome_start = chunk_genome_start
+    target.chunk_genome_len = chunk_genome_len
     target.ftff_combo_ft = ftff_combo_ft
     target.ftff_combo_ff = ftff_combo_ff
     target.chunk_best_results = chunk_best_results

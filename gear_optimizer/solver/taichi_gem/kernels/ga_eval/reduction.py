@@ -133,6 +133,36 @@ def reduce_chunk_to_best_key_kernel(n_work_items: ti.i32):
 
 
 @ti.kernel
+def reduce_chunk_to_best_key_ranges_kernel(n_genomes: ti.i32):
+    """
+    Atomic-free GPU-side reduction using per-genome work-item ranges.
+
+    Each genome owns a contiguous slice of work items in the current chunk
+    (defined by chunk_genome_start/chunk_genome_len). This kernel scans those
+    ranges and writes the best packed key into chunk_best_key[g].
+    """
+    if ti.static(IS_METAL):
+        # Metal path uses chunk_best_score/chunk_best_idx atomics; no u64 key exists.
+        for _ in range(1):
+            pass
+    else:
+        ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+        for g in range(n_genomes):
+            start = kernels_helpers.chunk_genome_start[g]
+            count = kernels_helpers.chunk_genome_len[g]
+            best = ti.u64(0)
+            if count > 0 and start >= 0:
+                end = start + count
+                for i in range(start, end):
+                    score = kernels_helpers.result_stats[i][0]
+                    if score >= 0:
+                        key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(i, ti.u64)
+                        if key > best:
+                            best = key
+            kernels_helpers.chunk_best_key[g] = best
+
+
+@ti.kernel
 def merge_chunk_best_to_genomes_kernel(n_genomes: ti.i32):
     """
     Merge this chunk's best candidates into genome_result_stats (one thread per genome).

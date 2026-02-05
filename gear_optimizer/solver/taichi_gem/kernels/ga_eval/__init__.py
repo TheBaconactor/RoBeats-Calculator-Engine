@@ -30,6 +30,7 @@ from .reduction import (
     init_genome_results_kernel,
     merge_chunk_best_to_genomes_kernel,
     reduce_chunk_to_best_key_kernel,
+    reduce_chunk_to_best_key_ranges_kernel,
 )
 from .warmstart import ga_find_best_combo_warmstart_kernel
 from .write_results import (
@@ -42,6 +43,7 @@ __all__ = [
     "init_genome_results_kernel",
     "init_chunk_best_key_kernel",
     "reduce_chunk_to_best_key_kernel",
+    "reduce_chunk_to_best_key_ranges_kernel",
     "merge_chunk_best_to_genomes_kernel",
     "ga_clear_chunk_best_key_waves_kernel",
     "ga_merge_chunk_best_key_waves_to_global_kernel",

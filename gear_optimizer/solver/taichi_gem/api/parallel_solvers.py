@@ -371,6 +371,8 @@ def solve_genomes_parallel(
     # (genome, ft) loop, which can create CPU stalls and visible GPU idle gaps.
     chunk_size = MAX_WORK_ITEMS
     work_items_np = staging["work_items"]
+    chunk_genome_start = staging["chunk_genome_start"]
+    chunk_genome_len = staging["chunk_genome_len"]
     ff_seq = np.arange(int(total_budget) + 1, dtype=np.int32)
 
     # Initialize genome results ONCE before any chunks
@@ -380,6 +382,13 @@ def solve_genomes_parallel(
     generated_any = False
     last_kernel_t0: float | None = None
     last_kernel_work_n = 0
+    is_metal = bool(getattr(fields, "IS_METAL", False))
+
+    def _reset_chunk_ranges() -> None:
+        chunk_genome_start[:n_genomes] = -1
+        chunk_genome_len[:n_genomes] = 0
+
+    _reset_chunk_ranges()
 
     def _flush_chunk() -> None:
         nonlocal chunk_n, generated_any, last_kernel_t0, last_kernel_work_n
@@ -422,11 +431,17 @@ def solve_genomes_parallel(
         )
 
         # GPU-side reduction: safe best-per-genome aggregation for this chunk
+        fields.chunk_genome_start.from_numpy(chunk_genome_start)
+        fields.chunk_genome_len.from_numpy(chunk_genome_len)
         kernels.init_chunk_best_key_kernel(n_genomes)
-        kernels.reduce_chunk_to_best_key_kernel(chunk_n)
+        if is_metal:
+            kernels.reduce_chunk_to_best_key_kernel(chunk_n)
+        else:
+            kernels.reduce_chunk_to_best_key_ranges_kernel(n_genomes)
         kernels.merge_chunk_best_to_genomes_kernel(n_genomes)
 
         chunk_n = 0
+        _reset_chunk_ranges()
 
     for genome_idx in range(n_genomes):
         max_ft = int(max_ft_list[genome_idx])
@@ -456,6 +471,10 @@ def solve_genomes_parallel(
                 work_items_np[pos0:pos1, 4] = ff_slice
                 work_items_np[pos0:pos1, 6] = int(genome_idx)
                 work_items_np[pos0:pos1, 7] = int(song_slot)
+
+                if chunk_genome_len[genome_idx] == 0:
+                    chunk_genome_start[genome_idx] = pos0
+                chunk_genome_len[genome_idx] += take
 
                 chunk_n = pos1
                 ff_start += int(take)
@@ -722,6 +741,8 @@ def solve_genomes_parallel_merged(
     staging = _ensure_parallel_staging()
     genome_stats_np = staging["genome_base_stats"]
     work_items_np = staging["work_items"]
+    chunk_genome_start = staging["chunk_genome_start"]
+    chunk_genome_len = staging["chunk_genome_len"]
 
     # Build merged genome_base_stats and precompute per-slot grids/flags.
     genome_offset = 0
@@ -777,6 +798,13 @@ def solve_genomes_parallel_merged(
 
     # Initialize per-genome results once for the whole merged batch.
     kernels.init_genome_results_kernel(n_total_genomes)
+    is_metal = bool(getattr(fields, "IS_METAL", False))
+
+    def _reset_chunk_ranges() -> None:
+        chunk_genome_start[:n_total_genomes] = -1
+        chunk_genome_len[:n_total_genomes] = 0
+
+    _reset_chunk_ranges()
 
     # Use any one payload's flags for shared kernel args (the kernel reads song_flags by slot).
     any_flags = next(iter(slot_to_flags.values()))
@@ -830,11 +858,17 @@ def solve_genomes_parallel_merged(
                         any_flags[10],
                         any_flags[11],
                     )
+                    fields.chunk_genome_start.from_numpy(chunk_genome_start)
+                    fields.chunk_genome_len.from_numpy(chunk_genome_len)
                     kernels.init_chunk_best_key_kernel(n_total_genomes)
-                    kernels.reduce_chunk_to_best_key_kernel(cur)
+                    if is_metal:
+                        kernels.reduce_chunk_to_best_key_kernel(cur)
+                    else:
+                        kernels.reduce_chunk_to_best_key_ranges_kernel(n_total_genomes)
                     kernels.merge_chunk_best_to_genomes_kernel(n_total_genomes)
                     chunks += 1
                     cur = 0
+                    _reset_chunk_ranges()
 
                 # Vectorized packing
                 # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id, song_slot]
@@ -850,6 +884,10 @@ def solve_genomes_parallel_merged(
                 work_items_np[cur:end, 6] = gid
                 # song_slot: constant
                 work_items_np[cur:end, 7] = slot
+
+                if chunk_genome_len[gid] == 0:
+                    chunk_genome_start[gid] = cur
+                chunk_genome_len[gid] += cnt
 
                 cur += cnt
                 total_work += cnt
@@ -874,8 +912,13 @@ def solve_genomes_parallel_merged(
             any_flags[10],
             any_flags[11],
         )
+        fields.chunk_genome_start.from_numpy(chunk_genome_start)
+        fields.chunk_genome_len.from_numpy(chunk_genome_len)
         kernels.init_chunk_best_key_kernel(n_total_genomes)
-        kernels.reduce_chunk_to_best_key_kernel(cur)
+        if is_metal:
+            kernels.reduce_chunk_to_best_key_kernel(cur)
+        else:
+            kernels.reduce_chunk_to_best_key_ranges_kernel(n_total_genomes)
         kernels.merge_chunk_best_to_genomes_kernel(n_total_genomes)
         chunks += 1
 

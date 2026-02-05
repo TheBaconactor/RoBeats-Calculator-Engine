@@ -245,6 +245,9 @@ def _ensure_parallel_staging():
         # Per-work-item buffers (reused per chunk)
         # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id, song_slot]
         "work_items": np.zeros((MAX_WORK_ITEMS, 8), dtype=np.int32),
+        # Per-genome work-item ranges for atomic-free reductions
+        "chunk_genome_start": np.zeros((MAX_GENOMES,), dtype=np.int32),
+        "chunk_genome_len": np.zeros((MAX_GENOMES,), dtype=np.int32),
     }
     return _PARALLEL_STAGING
 

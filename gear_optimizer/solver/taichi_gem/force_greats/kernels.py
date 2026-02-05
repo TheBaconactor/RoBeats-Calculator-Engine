@@ -826,8 +826,14 @@ def fg_compute_cfg_total_len_kernel(n_pairs: ti.i32, n_sections: ti.i32):
 def fg_reduce_cfg_total_len_max_kernel(n_pairs: ti.i32):
     """Compute max(fg_cfg_total_len_list[:n_pairs]) into fg_cfg_total_len_max[None]."""
     fg_cfg_total_len_max[None] = 0
-    for i in range(n_pairs):
-        ti.atomic_max(fg_cfg_total_len_max[None], fg_cfg_total_len_list[i])
+    # Atomic-free reduction: single-thread scan (n_pairs <= FG_MAX_FTFF).
+    for _ in range(1):
+        best: ti.i32 = 0
+        for i in range(n_pairs):
+            v: ti.i32 = fg_cfg_total_len_list[i]
+            if v > best:
+                best = v
+        fg_cfg_total_len_max[None] = best
 
 
 @ti.kernel
