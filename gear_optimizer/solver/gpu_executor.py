@@ -1482,7 +1482,9 @@ class GpuExecutor:
         """
         Coalesce multiple SOLVE_GENOMES_FROM_REGISTRY requests by concatenating small population batches.
 
-        This is conservative and only merges requests that share the same per-song inputs by object identity.
+        This is conservative and only merges requests with semantically identical per-song inputs.
+        Object identity checks are not reliable across IPC boundaries, so compatibility must be
+        decided by value equality for arrays/dicts plus exact scalar flag equality.
         """
         import numpy as np
 
@@ -1494,50 +1496,117 @@ class GpuExecutor:
         )
         from .taichi_gem import fields as gem_fields
 
-        def _key(req: "GpuRequest") -> tuple[Any, ...] | None:
+        scalar_fields = (
+            "song_slot",
+            "total_budget",
+            "gem_scale_fever",
+            "is_p_ft",
+            "is_s_ft",
+            "is_p_ff",
+            "is_s_ff",
+            "is_p_pp",
+            "is_s_pp",
+            "is_p_cm",
+            "is_s_cm",
+            "is_p_fm",
+            "is_s_fm",
+            "is_p_ov",
+            "is_s_ov",
+        )
+
+        def _array_equal(a: Any, b: Any) -> bool:
+            if a is b:
+                return True
+            try:
+                aa = np.asarray(a)
+                bb = np.asarray(b)
+            except Exception:
+                return False
+            if aa.shape != bb.shape or aa.dtype != bb.dtype:
+                return False
+            try:
+                return bool(np.array_equal(aa, bb))
+            except Exception:
+                return False
+
+        def _object_equal(a: Any, b: Any) -> bool:
+            if a is b:
+                return True
+            if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+                return _array_equal(a, b)
+            if isinstance(a, dict) and isinstance(b, dict):
+                if len(a) != len(b):
+                    return False
+                if set(a.keys()) != set(b.keys()):
+                    return False
+                for k in a.keys():
+                    if not _object_equal(a[k], b[k]):
+                        return False
+                return True
+            if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+                if len(a) != len(b):
+                    return False
+                for av, bv in zip(a, b):
+                    if not _object_equal(av, bv):
+                        return False
+                return True
+            try:
+                return bool(a == b)
+            except Exception:
+                return False
+
+        def _scalar_key(p: dict[str, Any]) -> tuple[int, ...]:
+            vals: list[int] = []
+            for field in scalar_fields:
+                default = 90 if field == "total_budget" else 3 if field == "gem_scale_fever" else 0
+                vals.append(int(p.get(field, default) or default))
+            return tuple(vals)
+
+        def _registry_payload_compatible(a: dict[str, Any], b: dict[str, Any]) -> bool:
+            if _scalar_key(a) != _scalar_key(b):
+                return False
+            if not _object_equal(a.get("timeline_grid"), b.get("timeline_grid")):
+                return False
+            if not _object_equal(a.get("ref_arrays"), b.get("ref_arrays")):
+                return False
+            if not _array_equal(a.get("item_stats"), b.get("item_stats")):
+                return False
+            if not _array_equal(a.get("slot_start"), b.get("slot_start")):
+                return False
+            if not _array_equal(a.get("slot_count"), b.get("slot_count")):
+                return False
+            if not _array_equal(a.get("base_fixed_stats"), b.get("base_fixed_stats")):
+                return False
+            return True
+
+        groups: list[list[GpuRequest]] = []
+        anchors: list[dict[str, Any]] = []
+        for req in requests:
             p = self._payload_dict(req)
             pop = p.get("population_indices")
             if pop is None:
-                return None
-            try:
-                return (
-                    int(p.get("song_slot", 0) or 0),
-                    int(p.get("total_budget", 90) or 90),
-                    int(p.get("gem_scale_fever", 3) or 3),
-                    int(p.get("is_p_ft", 0) or 0),
-                    int(p.get("is_s_ft", 0) or 0),
-                    int(p.get("is_p_ff", 0) or 0),
-                    int(p.get("is_s_ff", 0) or 0),
-                    int(p.get("is_p_pp", 0) or 0),
-                    int(p.get("is_s_pp", 0) or 0),
-                    int(p.get("is_p_cm", 0) or 0),
-                    int(p.get("is_s_cm", 0) or 0),
-                    int(p.get("is_p_fm", 0) or 0),
-                    int(p.get("is_s_fm", 0) or 0),
-                    int(p.get("is_p_ov", 0) or 0),
-                    int(p.get("is_s_ov", 0) or 0),
-                    id(p.get("timeline_grid")),
-                    id(p.get("ref_arrays")),
-                    id(p.get("item_stats")),
-                    id(p.get("slot_start")),
-                    id(p.get("slot_count")),
-                    id(p.get("base_fixed_stats")),
-                )
-            except Exception:
-                return None
-
-        groups: dict[tuple[Any, ...], list[GpuRequest]] = {}
-        for req in requests:
-            k = _key(req)
-            groups.setdefault(k if k is not None else ("__solo__", req.request_id), []).append(req)
+                groups.append([req])
+                anchors.append({})
+                continue
+            placed = False
+            for gi, anchor in enumerate(anchors):
+                if not anchor:
+                    continue
+                if _registry_payload_compatible(anchor, p):
+                    groups[gi].append(req)
+                    placed = True
+                    break
+            if not placed:
+                groups.append([req])
+                anchors.append(p)
 
         out: list[GpuResponse] = []
         max_genomes = int(getattr(gem_fields, "MAX_GENOMES", 4096) or 4096)
 
-        for k, group in groups.items():
+        for group in groups:
             if not group:
                 continue
-            if len(group) == 1 or (isinstance(k, tuple) and k and k[0] == "__solo__"):
+            if len(group) == 1:
                 out.append(self._execute_request(group[0]))
                 continue
 
