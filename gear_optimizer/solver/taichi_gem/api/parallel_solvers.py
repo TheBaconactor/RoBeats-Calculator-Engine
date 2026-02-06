@@ -640,8 +640,8 @@ def solve_genomes_from_registry(
         int(song_slot),
     )
 
-    # Download results
-    results_np = fields.genome_result_stats.to_numpy()[:n_genomes]
+    # Download only the active result prefix (uses staging field when available).
+    results_np = ga_download_results(int(n_genomes))
 
     results = []
     for i in range(n_genomes):
@@ -933,8 +933,8 @@ def solve_genomes_parallel_merged(
             f"work_items={total_work} chunks={chunks}"
         )
 
-    # Download O(total_genomes) results once and demux.
-    results_np = fields.genome_result_stats.to_numpy()[:n_total_genomes]
+    # Download O(total_genomes) results once and demux (staging-aware).
+    results_np = ga_download_results(int(n_total_genomes))
     out: list[list[tuple]] = []
     for start, end in genome_ranges:
         req = []

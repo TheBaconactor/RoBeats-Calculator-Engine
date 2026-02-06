@@ -31,8 +31,10 @@ Usage in main loop:
 from __future__ import annotations
 
 import time
-from typing import Optional
+from typing import Any, Optional
 from collections import deque
+
+from .timeline import precompute_timeline_gpu
 
 # Use 5 slots by default (slots 1-5, leaving slot 0 as fallback)
 DEFAULT_NUM_SLOTS = 5
@@ -61,17 +63,17 @@ class GPUPrefetchManager:
         self._free_slots: deque[int] = deque(range(1, num_slots + 1))
 
         # Map song_key -> slot_id for cached slots
-        self._prefetched: dict[str, int] = {}
+        self._prefetched: dict[tuple[Any, ...], int] = {}
 
         # Track slot -> song_key for release
-        self._slot_to_key: dict[int, str] = {}
+        self._slot_to_key: dict[int, tuple[Any, ...]] = {}
 
         # Stats
         self._prefetch_count = 0
         self._cache_hits = 0
         self._total_prefetch_ms = 0.0
 
-    def _make_song_key(self, calc_song: dict) -> str:
+    def _make_song_key(self, calc_song: dict) -> tuple[Any, ...]:
         """Create a stable key for a song timeline variant.
 
         Includes lightweight timestamp signature + HumanHitSim parameters so we
@@ -104,8 +106,15 @@ class GPUPrefetchManager:
         human_great_mode = str(meta.get("HumanHitSimGreatMode", "")).strip().lower()
 
         return (
-            f"{song_name}|{difficulty}|{note_count}|{first_ms}|{last_ms}|"
-            f"{human_seed}|{human_apply_to}|{human_dist}|{human_great_mode}"
+            song_name,
+            difficulty,
+            int(note_count),
+            int(first_ms),
+            int(last_ms),
+            int(human_seed),
+            human_apply_to,
+            human_dist,
+            human_great_mode,
         )
 
     def prefetch(self, calc_song: dict, ref_arrays: dict) -> Optional[int]:
@@ -137,8 +146,6 @@ class GPUPrefetchManager:
         # Prefetch timeline to this slot
         t0 = time.perf_counter()
         try:
-            from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
-
             precompute_timeline_gpu(calc_song, ref_arrays, song_slot=slot_id)
         except Exception as e:
             # On error, return slot to pool and use fallback
