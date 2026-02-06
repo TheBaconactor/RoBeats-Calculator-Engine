@@ -177,14 +177,14 @@ def _ensure_ftff_combo_tables(total_budget: int) -> int:
     ft = np.zeros((fields.MAX_FTFF_COMBOS,), dtype=np.int32)
     ff = np.zeros((fields.MAX_FTFF_COMBOS,), dtype=np.int32)
 
-    idx = 0
-    for ft_gems in range(total_budget + 1):
-        for ff_gems in range(total_budget - ft_gems + 1):
-            ft[idx] = ft_gems
-            ff[idx] = ff_gems
-            idx += 1
+    # Vectorized triangular enumeration preserving legacy order:
+    # ft=0,ff=0..B ; ft=1,ff=0..B-1 ; ... ; ft=B,ff=0
+    dim = int(total_budget) + 1
+    tri_i, tri_j = np.triu_indices(dim)
+    n_combos = int(tri_i.shape[0])
+    ft[:n_combos] = tri_i.astype(np.int32, copy=False)
+    ff[:n_combos] = (tri_j - tri_i).astype(np.int32, copy=False)
 
-    n_combos = idx
     fields.ftff_combo_ft.from_numpy(ft)
     fields.ftff_combo_ff.from_numpy(ff)
     _FTFF_COMBO_CACHE["budget"] = total_budget

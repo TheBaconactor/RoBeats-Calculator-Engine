@@ -136,9 +136,13 @@ def ga_upload_population_indices(population_indices_np: np.ndarray, *, n_slots: 
     if int(n_slots) > fields.MAX_SLOTS:
         raise ValueError(f"Too many slots: {n_slots} > {fields.MAX_SLOTS}")
 
-    pop_buf = np.zeros((fields.MAX_GENOMES, fields.MAX_SLOTS), dtype=np.int32)
-    pop_buf[:n_genomes, : int(n_slots)] = np.asarray(population_indices_np[:, : int(n_slots)], dtype=np.int32)
-    fields.population_indices.from_numpy(pop_buf)
+    src = np.ascontiguousarray(population_indices_np[:n_genomes, : int(n_slots)], dtype=np.int32)
+    try:
+        kernels.ga_copy_population_indices_from_ndarray_kernel(int(n_genomes), int(n_slots), src)
+    except Exception:
+        pop_buf = np.zeros((fields.MAX_GENOMES, fields.MAX_SLOTS), dtype=np.int32)
+        pop_buf[:n_genomes, : int(n_slots)] = src
+        fields.population_indices.from_numpy(pop_buf)
     return n_genomes
 
 

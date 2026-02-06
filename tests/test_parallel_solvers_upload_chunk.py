@@ -91,3 +91,21 @@ def test_combo_indices_for_limits_uses_cache_and_filters():
     assert np.all(combo_ft[idx] <= 2)
     assert np.all(combo_ff[idx] <= 1)
     assert np.all((4 - combo_ft[idx] - combo_ff[idx]) >= 0)
+
+
+@pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
+def test_results_from_stats_returns_tuple_rows():
+    from gear_optimizer.solver.taichi_gem.api import parallel_solvers as ps
+
+    arr = np.array(
+        [
+            [10, 1, 2, 3, 4, 5, 6],
+            [20, 7, 8, 9, 10, 11, 12],
+            [30, 13, 14, 15, 16, 17, 18],
+        ],
+        dtype=np.int32,
+    )
+
+    out = ps._results_from_stats(arr, 2)
+
+    assert out == [(10, 1, 2, 3, 4, 5, 6), (20, 7, 8, 9, 10, 11, 12)]

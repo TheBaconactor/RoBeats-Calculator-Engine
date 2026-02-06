@@ -271,6 +271,23 @@ def ga_upload_item_stats_and_slots_kernel(
 
 
 @ti.kernel
+def ga_copy_population_indices_from_ndarray_kernel(
+    n_genomes: ti.i32,
+    n_slots: ti.i32,
+    population_src: ti.types.ndarray(dtype=ti.i32, ndim=2),
+):
+    """
+    Copy a variable-length population buffer into GPU `population_indices`.
+
+    This avoids full MAX_GENOMES x MAX_SLOTS host padding and upload when only a
+    small active population slice is needed.
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for g, s in ti.ndrange(n_genomes, n_slots):
+        kernels_helpers.population_indices[g, s] = population_src[g, s]
+
+
+@ti.kernel
 def ga_select_parents_tournament_kernel(n_genomes: ti.i32, tournament_k: ti.i32):
     """
     Tournament selection on GPU.

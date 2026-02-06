@@ -118,21 +118,11 @@ def _upload_work_items_chunk(work_items_np: np.ndarray, n_items: int) -> None:
 
 
 def _results_from_stats(results_np: np.ndarray, n_genomes: int) -> list[tuple[int, int, int, int, int, int, int]]:
-    results: list[tuple[int, int, int, int, int, int, int]] = []
-    for i in range(n_genomes):
-        row = results_np[i]
-        results.append(
-            (
-                int(row[0]),  # score
-                int(row[1]),  # ft
-                int(row[2]),  # ff
-                int(row[3]),  # pp
-                int(row[4]),  # cm
-                int(row[5]),  # fm
-                int(row[6]),  # ov
-            )
-        )
-    return results
+    n = max(0, int(n_genomes))
+    if n <= 0:
+        return []
+    rows = np.asarray(results_np[:n, :7], dtype=np.int32)
+    return [tuple(row) for row in rows.tolist()]
 
 
 def solve_genomes_with_ftff(
@@ -435,7 +425,7 @@ def solve_genomes_parallel(
     cache_key = (n_genomes, stats_hash)
 
     if _GENOME_STATS_HASH_CACHE != cache_key:
-        fields.genome_base_stats.from_numpy(genome_stats_np)
+        fields.genome_base_stats.from_numpy(genome_stats_np[:n_genomes])
         _GENOME_STATS_HASH_CACHE = cache_key
 
     # Generate work items directly into the fixed staging buffer to avoid per-call
@@ -871,7 +861,7 @@ def solve_genomes_parallel_merged(
         return [[] for _ in payloads]
 
     # Upload merged genome stats and per-slot flags once.
-    fields.genome_base_stats.from_numpy(genome_stats_np)
+    fields.genome_base_stats.from_numpy(genome_stats_np[:n_total_genomes])
     _upload_song_flags(slot_to_flags)
 
     # Initialize per-genome results once for the whole merged batch.
