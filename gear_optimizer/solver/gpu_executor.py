@@ -1800,35 +1800,52 @@ class GpuExecutor:
         """
         from .taichi_gem.api import solve_genomes_parallel_merged
 
-        # If callers provide explicit `song_slot` allocations (in-flight pipeline),
-        # don't merge: merged solver assigns slots 0..N-1 and would defeat slot-local
-        # caching / VRAM residency.
-        def _nonzero_slot(req: GpuRequest) -> bool:
+        # Normalize per-request song slot for merged execution:
+        # - None/0/invalid -> treat as unspecified and let merged solver assign a free slot
+        # - >0 -> preserve explicit caller-provided slot for timeline residency
+        def _normalized_slot(payload: dict | None) -> int | None:
             try:
-                payload = req.payload or {}
-                return int(payload.get("song_slot", 0) or 0) != 0
+                if not isinstance(payload, dict):
+                    return None
+                raw = payload.get("song_slot", None)
+                if raw is None:
+                    return None
+                slot = int(raw)
+                if slot <= 0:
+                    return None
+                return int(slot)
             except Exception:
-                return False
+                return None
 
-        if any(_nonzero_slot(r) for r in requests):
-            out: list[GpuResponse] = []
-            for req in requests:
-                try:
-                    slot = 0
-                    try:
-                        slot = int((req.payload or {}).get("song_slot", 0) or 0)
-                    except Exception:
-                        slot = 0
-                    out.append(self._execute_solve_genomes(req, song_slot=slot))
-                except Exception as e2:
-                    out.append(
-                        GpuResponse(
-                            request_id=req.request_id,
-                            success=False,
-                            error=f"{type(e2).__name__}: {e2}",
-                        )
-                    )
-            return out
+        # Partition a compatibility group into sub-batches:
+        # - bounded by max_slots
+        # - explicit positive song_slot values must be unique per merged call
+        # Unspecified slots are safe to merge because merged solver will assign free slots.
+        def _partition_group_for_merge(group: list[GpuRequest], max_slots: int) -> list[list[GpuRequest]]:
+            pending = list(group)
+            out_groups: list[list[GpuRequest]] = []
+            while pending:
+                used_explicit_slots: set[int] = set()
+                sub: list[GpuRequest] = []
+                next_pending: list[GpuRequest] = []
+                for req in pending:
+                    payload = req.payload if isinstance(req.payload, dict) else {}
+                    slot = _normalized_slot(payload)
+                    if len(sub) >= int(max_slots):
+                        next_pending.append(req)
+                        continue
+                    if slot is not None and slot in used_explicit_slots:
+                        next_pending.append(req)
+                        continue
+                    if slot is not None:
+                        used_explicit_slots.add(int(slot))
+                    sub.append(req)
+                if not sub:
+                    sub = [pending[0]]
+                    next_pending = pending[1:]
+                out_groups.append(sub)
+                pending = next_pending
+            return out_groups
 
         # Partition into compatible batches (same budget/scales; ref arrays are checked by content in merged solver).
         groups: dict[tuple[int, int], list[GpuRequest]] = {}
@@ -1847,23 +1864,36 @@ class GpuExecutor:
                 max_slots = int(getattr(_gem_fields, "MAX_SONG_SLOTS", 8) or 8)
             except Exception:
                 max_slots = 8
-            for start in range(0, len(group), max_slots):
-                sub = group[start : start + max_slots]
+            sub_groups = _partition_group_for_merge(group, max_slots=max_slots)
+            for sub in sub_groups:
                 try:
                     t_pack0 = perf_counter()
                     if log_batches and len(sub) > 1:
                         print(
                             f"[GpuExecutor][BATCH] requests={len(sub)} budget={int(sub[0].payload.get('total_budget', 90))} scale={int(sub[0].payload.get('gem_scale_fever', 3))}"
                         )
+
+                    merged_payloads: list[dict[str, Any]] = []
+                    for req in sub:
+                        payload = dict(req.payload or {})
+                        # `song_slot=0` is a sentinel meaning "no reserved slot".
+                        # Remove it so merged solver can auto-assign unique slots.
+                        slot = _normalized_slot(payload)
+                        if slot is None:
+                            payload.pop("song_slot", None)
+                        else:
+                            payload["song_slot"] = int(slot)
+                        merged_payloads.append(payload)
+
                     # Require calc_song dict inputs for true batching; otherwise fall back.
-                    if any(not isinstance(r.payload.get("timeline_grid"), dict) for r in sub):
+                    if any(not isinstance(p.get("timeline_grid"), dict) for p in merged_payloads):
                         raise ValueError("non-dict timeline_grid in batch")
 
-                    total_budget = int(sub[0].payload.get("total_budget", 90))
-                    gem_scale_fever = int(sub[0].payload.get("gem_scale_fever", 3))
+                    total_budget = int(merged_payloads[0].get("total_budget", 90))
+                    gem_scale_fever = int(merged_payloads[0].get("gem_scale_fever", 3))
                     t_kernel0 = perf_counter()
                     merged_results = solve_genomes_parallel_merged(
-                        [r.payload for r in sub],
+                        merged_payloads,
                         total_budget=total_budget,
                         gem_scale_fever=gem_scale_fever,
                     )
