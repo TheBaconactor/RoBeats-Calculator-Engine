@@ -34,6 +34,58 @@ from .gpu_executor import (
 )
 
 
+_WIN_TIMER_LOCK = threading.Lock()
+_WIN_TIMER_USERS = 0
+_WIN_TIMER_ACTIVE = False
+
+
+def _acquire_windows_timer_period_1ms() -> bool:
+    """
+    Request 1ms Windows timer granularity for low-latency coalescing.
+
+    Scoped by reference counting so multiple clients can coexist safely.
+    """
+    if os.name != "nt":
+        return False
+    global _WIN_TIMER_USERS, _WIN_TIMER_ACTIVE
+    with _WIN_TIMER_LOCK:
+        _WIN_TIMER_USERS += 1
+        if _WIN_TIMER_ACTIVE:
+            return True
+        try:
+            import ctypes
+
+            mmres = int(ctypes.windll.winmm.timeBeginPeriod(1))
+            if mmres == 0:
+                _WIN_TIMER_ACTIVE = True
+                return True
+        except Exception:
+            pass
+        _WIN_TIMER_USERS = max(0, int(_WIN_TIMER_USERS) - 1)
+        return False
+
+
+def _release_windows_timer_period_1ms() -> None:
+    if os.name != "nt":
+        return
+    global _WIN_TIMER_USERS, _WIN_TIMER_ACTIVE
+    with _WIN_TIMER_LOCK:
+        if _WIN_TIMER_USERS <= 0:
+            return
+        _WIN_TIMER_USERS -= 1
+        if _WIN_TIMER_USERS > 0:
+            return
+        if not _WIN_TIMER_ACTIVE:
+            return
+        try:
+            import ctypes
+
+            ctypes.windll.winmm.timeEndPeriod(1)
+        except Exception:
+            pass
+        _WIN_TIMER_ACTIVE = False
+
+
 @dataclass(frozen=True)
 class GpuJobHandle:
     """A submitted GPU job and its Future."""
@@ -98,6 +150,7 @@ class GpuServiceClient:
         self._fg_coalesce_lock = threading.Lock()
         self._fg_coalesce_event = threading.Event()
         self._fg_coalesce_thread: Optional[threading.Thread] = None
+        self._fg_high_res_timer_enabled = False
 
     @property
     def executor(self) -> GpuExecutor:
@@ -137,6 +190,10 @@ class GpuServiceClient:
         self._rx_thread.start()
 
         if self._fg_coalesce_enabled and self._in_process_queues and self._fg_coalesce_thread is None:
+            # On Windows the default timer quantum can stretch 1ms waits to ~15ms.
+            # Request 1ms period for short coalescing windows.
+            if int(self._fg_coalesce_max_wait_ms) <= 4:
+                self._fg_high_res_timer_enabled = bool(_acquire_windows_timer_period_1ms())
             self._fg_coalesce_thread = threading.Thread(
                 target=self._fg_coalesce_loop,
                 name=f"GpuServiceClientFgCoalesce[{self._worker_id}]",
@@ -170,6 +227,9 @@ class GpuServiceClient:
         if self._fg_coalesce_thread is not None:
             self._fg_coalesce_thread.join(timeout=max(0.0, float(timeout)))
         self._fg_coalesce_thread = None
+        if self._fg_high_res_timer_enabled:
+            _release_windows_timer_period_1ms()
+            self._fg_high_res_timer_enabled = False
 
         if self._profile_enabled and self._profile_print:
             try:
