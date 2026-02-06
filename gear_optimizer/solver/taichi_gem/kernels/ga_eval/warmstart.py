@@ -16,8 +16,6 @@ from ..kernels_scoring import local_search_from_hint, optimize_core_device
 
 # Platform detection for atomic operations
 IS_METAL = sys.platform == "darwin"
-_GA_FTFF_REDUCE_BLOCK_DIM = 256  # Power-of-two block for shared-memory max reduction (Vulkan path).
-_GA_FTFF_REDUCE_WAVE_STRIDE = _GA_FTFF_REDUCE_BLOCK_DIM // 32  # lane//32 indexing (wave32/wave64-safe)
 MAX_STAT = 160  # gear_optimizer.core.constants.MAX_STAT_INDEX
 
 
@@ -328,16 +326,16 @@ def ga_find_best_combo_warmstart_kernel(
                     kernels_helpers.chunk_best_idx[genome_idx] = combo_idx
     else:
         # Vulkan: block-per-genome reduction (atomic-free).
-        block_dim = ti.cast(_GA_FTFF_REDUCE_BLOCK_DIM, ti.i32)
-        wave_slots_max = ti.cast(_GA_FTFF_REDUCE_WAVE_STRIDE, ti.i32)
-        shared_waves_key = simt.block.SharedArray((_GA_FTFF_REDUCE_WAVE_STRIDE,), ti.u64)
-        shared_waves_pp = simt.block.SharedArray((_GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
-        shared_waves_cm = simt.block.SharedArray((_GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
-        shared_waves_fm = simt.block.SharedArray((_GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
-        shared_waves_ov = simt.block.SharedArray((_GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
+        block_dim = ti.cast(kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM, ti.i32)
+        wave_slots_max = ti.cast(kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE, ti.i32)
+        shared_waves_key = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.u64)
+        shared_waves_pp = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
+        shared_waves_cm = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
+        shared_waves_fm = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
+        shared_waves_ov = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
         total_threads = n_genomes * block_dim
 
-        ti.loop_config(block_dim=_GA_FTFF_REDUCE_BLOCK_DIM)
+        ti.loop_config(block_dim=kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM)
         for tid in range(total_threads):
             genome_idx = tid // block_dim
             lane = tid - (genome_idx * block_dim)
@@ -431,12 +429,11 @@ def ga_find_best_combo_warmstart_kernel(
             if lane == 0:
                 block_best = shared_waves_key[0]
                 block_best_wave: ti.i32 = 0
-                for i in ti.static(range(1, _GA_FTFF_REDUCE_WAVE_STRIDE)):
-                    if i < wave_slots_max:
-                        v = shared_waves_key[i]
-                        if v > block_best:
-                            block_best = v
-                            block_best_wave = i
+                for i in ti.static(range(1, kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE)):
+                    v = shared_waves_key[i]
+                    if v > block_best:
+                        block_best = v
+                        block_best_wave = i
                 if block_best != ti.u64(0):
                     prev = kernels_helpers.chunk_best_key[genome_idx]
                     if block_best > prev:

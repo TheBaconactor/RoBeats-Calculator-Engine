@@ -90,6 +90,47 @@ def _pack_counts_sig(
     return bf | bn | hl | fa | gp
 
 
+@ti.func
+def _mask_range_u32(lo: ti.i32, hi: ti.i32) -> ti.u32:
+    lo_c = ti.max(0, ti.min(32, lo))
+    hi_c = ti.max(0, ti.min(32, hi))
+    span = hi_c - lo_c
+    out = ti.u32(0)
+    if span > 0:
+        if span >= 32:
+            out = ti.u32(0xFFFFFFFF)
+        else:
+            out = (ti.u32(1) << ti.u32(span)) - ti.u32(1)
+        out = out << ti.u32(lo_c)
+    return out
+
+
+@ti.func
+def _or_head_mask_range(m0: ti.u32, m1: ti.u32, m2: ti.u32, m3: ti.u32, start: ti.i32, end: ti.i32) -> ti.types.vector(
+    4, ti.u32
+):
+    s = ti.max(0, start)
+    e = ti.min(100, end)
+    if e > s:
+        if s < 32:
+            lo0 = s
+            hi0 = ti.min(e, 32)
+            m0 |= _mask_range_u32(lo0, hi0)
+        if e > 32 and s < 64:
+            lo1 = ti.max(0, s - 32)
+            hi1 = ti.min(32, e - 32)
+            m1 |= _mask_range_u32(lo1, hi1)
+        if e > 64 and s < 96:
+            lo2 = ti.max(0, s - 64)
+            hi2 = ti.min(32, e - 64)
+            m2 |= _mask_range_u32(lo2, hi2)
+        if e > 96:
+            lo3 = ti.max(0, s - 96)
+            hi3 = ti.min(32, e - 96)
+            m3 |= _mask_range_u32(lo3, hi3)
+    return ti.Vector([m0, m1, m2, m3])
+
+
 @ti.kernel
 def compute_timeline_grid_kernel(
     total_notes: ti.i32,
@@ -187,15 +228,11 @@ def compute_timeline_grid_kernel(
 
                 # Mark fever notes in bitmask (only first MAX_HEAD notes are represented).
                 head_fever_end = ti.min(fever_end_idx, MAX_HEAD)
-                for note_i in range(current_note, head_fever_end):
-                    if note_i < 32:
-                        m0 |= ti.u32(1) << ti.u32(note_i)
-                    elif note_i < 64:
-                        m1 |= ti.u32(1) << ti.u32(note_i - 32)
-                    elif note_i < 96:
-                        m2 |= ti.u32(1) << ti.u32(note_i - 64)
-                    else:
-                        m3 |= ti.u32(1) << ti.u32(note_i - 96)
+                masks = _or_head_mask_range(m0, m1, m2, m3, current_note, head_fever_end)
+                m0 = masks[0]
+                m1 = masks[1]
+                m2 = masks[2]
+                m3 = masks[3]
 
                 # Count fever body notes (notes >= MAX_HEAD) without per-note looping.
                 body_fever_start = ti.max(current_note, MAX_HEAD)

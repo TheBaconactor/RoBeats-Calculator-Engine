@@ -289,11 +289,10 @@ def ga_find_best_combo_key_kernel(
                 block_best = shared_waves_key[0]
                 block_best_wave: ti.i32 = 0
                 for i in ti.static(range(1, kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE)):
-                    if i < wave_slots_max:
-                        v = shared_waves_key[i]
-                        if v > block_best:
-                            block_best = v
-                            block_best_wave = i
+                    v = shared_waves_key[i]
+                    if v > block_best:
+                        block_best = v
+                        block_best_wave = i
                 if block_best != ti.u64(0):
                     prev = kernels_helpers.chunk_best_key[genome_idx]
                     if block_best > prev:
