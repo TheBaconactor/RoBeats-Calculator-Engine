@@ -53,6 +53,7 @@ def _compute_combo_key_warmstart(
     w_ff: ti.i32,
     use_hints: ti.template(),
     prune_plateaus: ti.template(),
+    out_gems: ti.template(),  # [pp, cm, fm, ov] for this combo when key != 0
 ) -> ti.u64:
     """
     Compute a packed max-key for a single (genome, combo) work item.
@@ -64,6 +65,10 @@ def _compute_combo_key_warmstart(
     GEM_STAT_TO_ELEMENT: ti.i32 = 3
 
     out_key = ti.u64(0)
+    out_gems[0] = 0
+    out_gems[1] = 0
+    out_gems[2] = 0
+    out_gems[3] = 0
 
     if combo_idx < n_combos:
         ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
@@ -222,6 +227,10 @@ def _compute_combo_key_warmstart(
                     score: ti.i32 = res_vec[0]
                     if score >= 0:
                         out_key = (ti.cast(score + 1, ti.u64) << 32) | ti.cast(combo_idx, ti.u64)
+                        out_gems[0] = res_vec[1]
+                        out_gems[1] = res_vec[2]
+                        out_gems[2] = res_vec[3]
+                        out_gems[3] = res_vec[4]
 
     return out_key
 
@@ -256,6 +265,9 @@ def ga_find_best_combo_warmstart_kernel(
     When use_hints=1, uses local_search_from_hint() with the genome's stored hint.
     When use_hints=0, falls back to full optimize_core_device() (cold start).
 
+    Vulkan path also caches winning [pp, cm, fm, ov] gem allocations into
+    chunk_best_results so materialization kernels can avoid re-running scoring.
+
     This enables fast evaluation after Gen 0 by reusing previous generation's
     best allocations as starting points for local refinement.
 
@@ -282,6 +294,7 @@ def ga_find_best_combo_warmstart_kernel(
         ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
         for genome_idx, local_c in ti.ndrange(n_genomes, combo_count):
             combo_idx: ti.i32 = combo_offset + local_c
+            scratch = ti.Vector.zero(ti.i32, 4)
             key = _compute_combo_key_warmstart(
                 genome_idx,
                 combo_idx,
@@ -305,6 +318,7 @@ def ga_find_best_combo_warmstart_kernel(
                 w_ff,
                 use_hints,
                 prune_plateaus,
+                scratch,
             )
             if key != 0:
                 score = ti.cast((key >> 32), ti.i32) - 1
@@ -315,7 +329,11 @@ def ga_find_best_combo_warmstart_kernel(
         # Vulkan: block-per-genome reduction (atomic-free).
         block_dim = ti.cast(_GA_FTFF_REDUCE_BLOCK_DIM, ti.i32)
         waves = ti.cast(kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE, ti.i32)
-        shared_waves = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.u64)
+        shared_waves_key = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.u64)
+        shared_waves_pp = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
+        shared_waves_cm = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
+        shared_waves_fm = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
+        shared_waves_ov = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
         total_threads = n_genomes * block_dim
 
         ti.loop_config(block_dim=_GA_FTFF_REDUCE_BLOCK_DIM)
@@ -324,10 +342,19 @@ def ga_find_best_combo_warmstart_kernel(
             lane = tid - (genome_idx * block_dim)
 
             if lane < waves:
-                shared_waves[lane] = ti.u64(0)
+                shared_waves_key[lane] = ti.u64(0)
+                shared_waves_pp[lane] = 0
+                shared_waves_cm[lane] = 0
+                shared_waves_fm[lane] = 0
+                shared_waves_ov[lane] = 0
             simt.block.sync()
 
             local_best = ti.u64(0)
+            local_best_pp: ti.i32 = 0
+            local_best_cm: ti.i32 = 0
+            local_best_fm: ti.i32 = 0
+            local_best_ov: ti.i32 = 0
+            scratch = ti.Vector.zero(ti.i32, 4)
             local_c: ti.i32 = lane
             while local_c < combo_count:
                 combo_idx: ti.i32 = combo_offset + local_c
@@ -354,24 +381,51 @@ def ga_find_best_combo_warmstart_kernel(
                     w_ff,
                     use_hints,
                     prune_plateaus,
+                    scratch,
                 )
                 if key > local_best:
                     local_best = key
+                    local_best_pp = scratch[0]
+                    local_best_cm = scratch[1]
+                    local_best_fm = scratch[2]
+                    local_best_ov = scratch[3]
                 local_c += block_dim
 
             best = subgroup.reduce_max(local_best)
+            win_pp: ti.i32 = 0
+            win_cm: ti.i32 = 0
+            win_fm: ti.i32 = 0
+            win_ov: ti.i32 = 0
+
+            if best != ti.u64(0):
+                is_winner: ti.i32 = ti.cast(local_best == best, ti.i32)
+                win_pp = subgroup.reduce_max(is_winner * local_best_pp)
+                win_cm = subgroup.reduce_max(is_winner * local_best_cm)
+                win_fm = subgroup.reduce_max(is_winner * local_best_fm)
+                win_ov = subgroup.reduce_max(is_winner * local_best_ov)
+
             if subgroup.elect() and best != ti.u64(0):
                 wave_slot = lane >> 5  # lane//32, valid for wave32 and wave64 (wave64 uses even slots)
-                shared_waves[wave_slot] = best
+                shared_waves_key[wave_slot] = best
+                shared_waves_pp[wave_slot] = win_pp
+                shared_waves_cm[wave_slot] = win_cm
+                shared_waves_fm[wave_slot] = win_fm
+                shared_waves_ov[wave_slot] = win_ov
             simt.block.sync()
 
             if lane == 0:
-                block_best = shared_waves[0]
+                block_best = shared_waves_key[0]
+                block_best_wave: ti.i32 = 0
                 for i in range(1, kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE):
-                    v = shared_waves[i]
+                    v = shared_waves_key[i]
                     if v > block_best:
                         block_best = v
+                        block_best_wave = i
                 if block_best != ti.u64(0):
                     prev = kernels_helpers.chunk_best_key[genome_idx]
                     if block_best > prev:
                         kernels_helpers.chunk_best_key[genome_idx] = block_best
+                        kernels_helpers.chunk_best_results[genome_idx, 0] = shared_waves_pp[block_best_wave]
+                        kernels_helpers.chunk_best_results[genome_idx, 1] = shared_waves_cm[block_best_wave]
+                        kernels_helpers.chunk_best_results[genome_idx, 2] = shared_waves_fm[block_best_wave]
+                        kernels_helpers.chunk_best_results[genome_idx, 3] = shared_waves_ov[block_best_wave]

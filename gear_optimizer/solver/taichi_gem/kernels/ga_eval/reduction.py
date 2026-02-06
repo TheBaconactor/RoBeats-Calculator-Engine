@@ -51,6 +51,10 @@ def init_chunk_best_key_kernel(n_genomes: ti.i32):
         else:
             kernels_helpers.chunk_best_score[g] = ti.cast(-2147483648, ti.i32)
             kernels_helpers.chunk_best_idx[g] = -1
+        kernels_helpers.chunk_best_results[g, 0] = 0
+        kernels_helpers.chunk_best_results[g, 1] = 0
+        kernels_helpers.chunk_best_results[g, 2] = 0
+        kernels_helpers.chunk_best_results[g, 3] = 0
 
 
 @ti.kernel

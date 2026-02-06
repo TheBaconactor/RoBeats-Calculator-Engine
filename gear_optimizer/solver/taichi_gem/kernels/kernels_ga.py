@@ -579,6 +579,10 @@ def ga_aggregate_and_init_best_kernel(
         else:
             kernels_helpers.chunk_best_score[g] = ti.cast(-2147483648, ti.i32)
             kernels_helpers.chunk_best_idx[g] = -1
+        kernels_helpers.chunk_best_results[g, 0] = 0
+        kernels_helpers.chunk_best_results[g, 1] = 0
+        kernels_helpers.chunk_best_results[g, 2] = 0
+        kernels_helpers.chunk_best_results[g, 3] = 0
 
         pp = kernels_helpers.base_fixed_stats[0]
         cm = kernels_helpers.base_fixed_stats[1]
