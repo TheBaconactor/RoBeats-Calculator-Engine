@@ -10,6 +10,7 @@ import time
 import numpy as np
 import taichi as ti
 
+from gear_optimizer.core.env_config import env_flag
 from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
 from ..fields import (
     GRID_SIZE,
@@ -148,11 +149,13 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     )
 
     # Launch GPU kernel to compute all 161×161 timelines for this song slot
+    write_unpacked_masks = 1 if env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS", "1") else 0
     kernels.compute_timeline_grid_kernel(
         total_notes,
         long_notes,
         last_note_time,
         song_slot,  # Grid slot for batch coalescing
+        int(write_unpacked_masks),
     )
 
     _maybe_sync(for_timing=True)

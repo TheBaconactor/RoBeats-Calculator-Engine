@@ -69,6 +69,7 @@ WARN_ONCE = WarnOnce()
 
 # Global counter for deterministic garbage collection
 _SONG_GC_COUNTER = 0
+_SONG_GC_GEN2_INTERVAL = max(1, int(os.environ.get("SONG_GC_GEN2_INTERVAL", "25") or "25"))
 
 # Performance timing flag (set via env var)
 PERF_TIMING_ENABLED = bool(getattr(ENV, "perf_timing_unconditional", False))
@@ -118,8 +119,17 @@ def clone_calc_song(calc_song: dict) -> dict:
 def _build_base_calc_song_from_file(fp: str) -> dict:
     song_data = read_song_file(fp)
 
-    song_timestamps_np = np.asarray(song_data.get("timestamps") or [], dtype=np.float64)
-    song_note_types_np = np.asarray(song_data.get("note_types") or [], dtype=np.int16)
+    timestamps_raw = song_data.get("timestamps")
+    note_types_raw = song_data.get("note_types")
+    if isinstance(timestamps_raw, np.ndarray):
+        song_timestamps_np = timestamps_raw.astype(np.float64, copy=False)
+    else:
+        song_timestamps_np = np.asarray(timestamps_raw if timestamps_raw is not None else [], dtype=np.float64)
+
+    if isinstance(note_types_raw, np.ndarray):
+        song_note_types_np = note_types_raw.astype(np.int16, copy=False)
+    else:
+        song_note_types_np = np.asarray(note_types_raw if note_types_raw is not None else [], dtype=np.int16)
     if song_note_types_np.shape[0] != song_timestamps_np.shape[0]:
         song_note_types_np = np.ones(song_timestamps_np.shape[0], dtype=np.int16)
 
@@ -226,8 +236,8 @@ def read_song_file(fp):
             "Fever Time": "",
             "Long Notes": "",
         },
-        "timestamps": [],
-        "note_types": [],
+        "timestamps": np.empty((0,), dtype=np.float64),
+        "note_types": np.empty((0,), dtype=np.int16),
     }
     if not fp:
         return data
@@ -260,10 +270,10 @@ def read_song_file(fp):
             if nd.size:
                 nd = nd.reshape(1, -1) if nd.ndim == 1 else nd
                 if nd.shape[1] >= 4:
-                    data["timestamps"] = nd[:, 0].tolist()
+                    data["timestamps"] = np.asarray(nd[:, 0], dtype=np.float64)
                     # Column 4 is the note type: 1=normal, 2=held head, 3=held tail.
                     # Keep as int so we can apply held-tail timing rules when needed.
-                    data["note_types"] = nd[:, 3].astype(int).tolist()
+                    data["note_types"] = nd[:, 3].astype(np.int16, copy=False)
         return data
     except Exception as exc:
         WARN_ONCE.warn("song-file", f"Failed to read song file {fp}: {exc}")
@@ -1064,14 +1074,11 @@ def process_song_task(args) -> SongResultPayload:
                 # Log buffer close failures (was silently suppressed)
                 logging.debug(f"[StringIO] Failed to close buffer: {e}")
 
-        # Force garbage collection (deterministic: every 5 songs for gen-2)
-        # CRITICAL FIX: Use deterministic counter instead of random (was non-deterministic)
+        # Deterministic periodic full GC to cap long-run memory growth.
         global _SONG_GC_COUNTER
         _SONG_GC_COUNTER += 1
-        if _SONG_GC_COUNTER % 5 == 0:  # Every 5 songs: full collection
+        if _SONG_GC_COUNTER % _SONG_GC_GEN2_INTERVAL == 0:
             gc.collect(generation=2)
-        else:  # Other songs: quick collection
-            gc.collect(generation=0)
 
         # Memory leak tracking: Log after cleanup
         log_memory_usage(f"After cleanup: {found_song_name}")

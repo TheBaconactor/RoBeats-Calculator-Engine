@@ -70,6 +70,7 @@ def _require_gpu_api():
         raise RuntimeError(f"GPU-native GA requires taichi_gem api/fields: {exc}") from exc
     return gpu_api
 
+
 # Cached env config for GA_FORCE_COLD_START (avoids repeated env lookups)
 _GA_FORCE_COLD_START: bool = os.environ.get("GA_FORCE_COLD_START", "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -600,18 +601,27 @@ def decode_gpu_native_ga_runs_payload(
         g_cm = results_mat[:, 4]
         g_fm = results_mat[:, 5]
         g_ov = results_mat[:, 6]
+        scores_list = scores_vec.tolist()
+        g_ft_list = g_ft.tolist()
+        g_ff_list = g_ff.tolist()
+        g_pp_list = g_pp.tolist()
+        g_cm_list = g_cm.tolist()
+        g_fm_list = g_fm.tolist()
+        g_ov_list = g_ov.tolist()
+        sel_run_idx_list = sel_run_idx.tolist()
+        sel_rows_list = sel_rows.tolist()
 
         for i in range(n_cand):
-            score_val = int(scores_vec[i])
+            score_val = int(scores_list[i])
             ids_row = genome_ids_mat[i]
             genome = registry.decode_genome(ids_row)
 
-            g_ft_i = int(g_ft[i])
-            g_ff_i = int(g_ff[i])
-            g_pp_i = int(g_pp[i])
-            g_cm_i = int(g_cm[i])
-            g_fm_i = int(g_fm[i])
-            g_ov_i = int(g_ov[i])
+            g_ft_i = int(g_ft_list[i])
+            g_ff_i = int(g_ff_list[i])
+            g_pp_i = int(g_pp_list[i])
+            g_cm_i = int(g_cm_list[i])
+            g_fm_i = int(g_fm_list[i])
+            g_ov_i = int(g_ov_list[i])
 
             data_obj = {
                 "Score": score_val,
@@ -625,8 +635,8 @@ def decode_gpu_native_ga_runs_payload(
                 },
                 "Selected Element": sel_color,
                 "BaseScore": score_val,
-                "_ga_gpu_run_idx": int(sel_run_idx[i]),
-                "_ga_gpu_row_idx": int(sel_rows[i]),
+                "_ga_gpu_run_idx": int(sel_run_idx_list[i]),
+                "_ga_gpu_row_idx": int(sel_rows_list[i]),
             }
 
             if include_stats and stat_names is not None and base_stats_arr is not None and item_stats_sum is not None:
@@ -931,8 +941,8 @@ def decode_gpu_native_ga_runs_payload(
     # Lexsort tie-breakers need the key in reverse order (element0 has highest priority).
     key_cols_desc = [-(canon_ids_mat[:, i].astype(np.int64, copy=False)) for i in range(8, -1, -1)]
 
-    base_order = np.lexsort(tuple(key_cols_desc + [-fg_proxy_i64, -scores_i64]))
-    fg_order = np.lexsort(tuple(key_cols_desc + [-scores_i64, -fg_proxy_i64]))
+    base_order = [int(i) for i in np.lexsort(tuple(key_cols_desc + [-fg_proxy_i64, -scores_i64])).tolist()]
+    fg_order = [int(i) for i in np.lexsort(tuple(key_cols_desc + [-scores_i64, -fg_proxy_i64])).tolist()]
 
     limit = int(fg_candidate_limit)
     top_base_keep = min(limit, int(LOADOUTS_PER_SONG_LIMIT))
@@ -943,14 +953,17 @@ def decode_gpu_native_ga_runs_payload(
     selected_mask = np.zeros((n_stub,), dtype=bool)
     seen_centers: set[tuple[int, int]] = set()
     seen_minis: set[tuple[int, int, int]] = set()
+    centers_ft_list = centers_ft.tolist()
+    centers_ff_list = centers_ff.tolist()
+    mini_triplets = canon_ids_mat[:, 6:9].astype(np.int32, copy=False).tolist()
 
     def _add(i: int) -> bool:
-        if selected_mask[int(i)]:
+        if selected_mask[i]:
             return False
-        selected_mask[int(i)] = True
-        selected_stub_indices.append(int(i))
-        seen_centers.add((int(centers_ft[int(i)]), int(centers_ff[int(i)])))
-        mi = canon_ids_mat[int(i), 6:9]
+        selected_mask[i] = True
+        selected_stub_indices.append(i)
+        seen_centers.add((int(centers_ft_list[i]), int(centers_ff_list[i])))
+        mi = mini_triplets[i]
         seen_minis.add((int(mi[0]), int(mi[1]), int(mi[2])))
         return True
 
@@ -958,42 +971,42 @@ def decode_gpu_native_ga_runs_payload(
     for i in base_order:
         if len(selected_stub_indices) >= top_base_keep:
             break
-        _add(int(i))
+        _add(i)
 
     # 2) Base-score fill (exploitation).
     for i in base_order:
         if len(selected_stub_indices) >= base_budget:
             break
-        _add(int(i))
+        _add(i)
 
     # 3) FG-proxy fill; prefer new FT/FF centers first.
     for i in fg_order:
         if len(selected_stub_indices) >= fg_budget_end:
             break
-        c = (int(centers_ft[int(i)]), int(centers_ff[int(i)]))
+        c = (int(centers_ft_list[i]), int(centers_ff_list[i]))
         if c in seen_centers:
             continue
-        _add(int(i))
+        _add(i)
     for i in fg_order:
         if len(selected_stub_indices) >= fg_budget_end:
             break
-        _add(int(i))
+        _add(i)
 
     # 4) Mini-team diversity fill.
     for i in base_order:
         if len(selected_stub_indices) >= limit:
             break
-        mi = canon_ids_mat[int(i), 6:9]
+        mi = mini_triplets[i]
         mk = (int(mi[0]), int(mi[1]), int(mi[2]))
         if mk in seen_minis:
             continue
-        _add(int(i))
+        _add(i)
 
     # 5) Final fill by base score.
     for i in base_order:
         if len(selected_stub_indices) >= limit:
             break
-        _add(int(i))
+        _add(i)
 
     select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
     proxy_ms = 0.0

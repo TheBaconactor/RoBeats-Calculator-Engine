@@ -94,8 +94,16 @@ def _build_calc_song_from_file(*, fp: str, found_song_name: str, cfg, cfg_dict: 
     cached = _song_file_cache_get(fp)
     if cached is None:
         song_data = read_song_file(fp)
-        song_timestamps_np = np.array(song_data.get("timestamps") or [], dtype=np.float64)
-        song_note_types_np = np.array(song_data.get("note_types") or [], dtype=np.int16)
+        timestamps_raw = song_data.get("timestamps")
+        note_types_raw = song_data.get("note_types")
+        if isinstance(timestamps_raw, np.ndarray):
+            song_timestamps_np = timestamps_raw.astype(np.float64, copy=False)
+        else:
+            song_timestamps_np = np.array(timestamps_raw if timestamps_raw is not None else [], dtype=np.float64)
+        if isinstance(note_types_raw, np.ndarray):
+            song_note_types_np = note_types_raw.astype(np.int16, copy=False)
+        else:
+            song_note_types_np = np.array(note_types_raw if note_types_raw is not None else [], dtype=np.int16)
         if song_note_types_np.shape[0] != song_timestamps_np.shape[0]:
             song_note_types_np = np.ones(song_timestamps_np.shape[0], dtype=np.int16)
         meta0 = song_data.get("song_details") or {}

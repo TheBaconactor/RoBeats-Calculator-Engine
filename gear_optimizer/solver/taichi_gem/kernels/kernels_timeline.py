@@ -96,6 +96,7 @@ def compute_timeline_grid_kernel(
     long_notes: ti.i32,
     last_note_time: ti.f32,
     song_slot: ti.i32,  # Grid slot to write to (0-7)
+    write_unpacked_masks: ti.i32,
 ):
     """
     Compute all 161×161 fever timeline entries on GPU.
@@ -124,6 +125,7 @@ def compute_timeline_grid_kernel(
         long_notes: Number of long notes (sustained notes)
         last_note_time: Timestamp of last note in seconds
         song_slot: Grid slot to write to (0-7 for batch coalescing)
+        write_unpacked_masks: 1=write grid_fever_masks (compat), 0=skip unpacked mask writes
     """
     ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
 
@@ -134,21 +136,18 @@ def compute_timeline_grid_kernel(
     # Precompute song-invariant values (game formula constants from constants.py)
     # Fever fill formula: non_fever_notes * FEVER_FILL_BASE_RATE * ff_factor
     non_fever_cas = ti.cast(total_notes - long_notes, ti.f32) * 0.333  # constants.FEVER_FILL_BASE_RATE
-    # Fever time formula: song_duration * FEVER_TIME_SCALE * ft_factor + FEVER_TIME_OFFSET
-    fever_time_cas = last_note_time * 0.15 + 0.15  # constants.FEVER_TIME_SCALE + FEVER_TIME_OFFSET
+    # `last_note_time` is kept in the kernel signature for API stability.
 
     for idx in range(GRID_DIM * GRID_DIM):
         ft_idx = idx // GRID_DIM
         ff_idx = idx % GRID_DIM
 
         # Lookup multipliers from reference tables
-        ft_factor = kernels_helpers.ref_ft_field[ft_idx]
         ff_factor = kernels_helpers.ref_ff_field[ff_idx]
 
-        # Compute fill and time parameters
+        # Compute fill parameter
         non_fever_base_f = non_fever_cas * ff_factor
         non_fever_base = ti.i32(ti.ceil(non_fever_base_f))
-        real_fever_time = fever_time_cas * ft_factor
 
         # Initialize fever mask bits (4 × u32 = 128 bits for first 100 notes)
         m0: ti.u32 = 0
@@ -160,79 +159,50 @@ def compute_timeline_grid_kernel(
         fever_section = 0
         fever_activations: ti.i32 = 0
         last_fever_end_idx: ti.i32 = 0
+        body_fever: ti.i32 = 0
+        body_normal: ti.i32 = 0
+        head_len: ti.i32 = ti.min(total_notes, MAX_HEAD)
 
-        # Simulate fever timeline
+        # Single-pass simulation: build mask bits and body note counts together.
         while current_note < total_notes:
             fever_section += 1
 
             # Non-fever section: first section -1, later sections use base
             notes_to_fill = non_fever_base - 1 if fever_section == 1 else non_fever_base
-
             end_normal_idx = ti.min(current_note + notes_to_fill, total_notes)
-            current_note = end_normal_idx
 
+            # Count normal body notes (notes >= MAX_HEAD) without per-note looping.
+            body_normal_start = ti.max(current_note, MAX_HEAD)
+            if end_normal_idx > body_normal_start:
+                body_normal += end_normal_idx - body_normal_start
+
+            current_note = end_normal_idx
             if current_note >= total_notes:
                 break
 
             if current_note > 0:
                 # Fever activates
                 fever_activations += 1
-                start_time = kernels_helpers.song_timestamps[current_note]
-                end_time = start_time + real_fever_time
-
-                # Binary search for first note >= end_time
                 fever_end_idx = ti.min(kernels_helpers.fever_end_idx_song[current_note, ft_idx], total_notes)
 
-                # Mark fever notes in bitmask (for first MAX_HEAD notes)
-                for note_i in range(current_note, fever_end_idx):
+                # Mark fever notes in bitmask (only first MAX_HEAD notes are represented).
+                head_fever_end = ti.min(fever_end_idx, MAX_HEAD)
+                for note_i in range(current_note, head_fever_end):
                     if note_i < 32:
                         m0 |= ti.u32(1) << ti.u32(note_i)
                     elif note_i < 64:
                         m1 |= ti.u32(1) << ti.u32(note_i - 32)
                     elif note_i < 96:
                         m2 |= ti.u32(1) << ti.u32(note_i - 64)
-                    elif note_i < MAX_HEAD:
+                    else:
                         m3 |= ti.u32(1) << ti.u32(note_i - 96)
 
+                # Count fever body notes (notes >= MAX_HEAD) without per-note looping.
+                body_fever_start = ti.max(current_note, MAX_HEAD)
+                if fever_end_idx > body_fever_start:
+                    body_fever += fever_end_idx - body_fever_start
+
                 last_fever_end_idx = fever_end_idx
-                current_note = fever_end_idx
-            else:
-                break
-
-        # Count body fever/normal (notes 100+)
-        head_len = ti.min(total_notes, MAX_HEAD)
-
-        # Re-simulate to count body notes (notes >= MAX_HEAD)
-        # (The bitmask only covers first 100 notes)
-        current_note = 0
-        fever_section = 0
-        body_fever = 0
-        body_normal = 0
-
-        while current_note < total_notes:
-            fever_section += 1
-            notes_to_fill = non_fever_base - 1 if fever_section == 1 else non_fever_base
-            end_normal_idx = ti.min(current_note + notes_to_fill, total_notes)
-
-            # Count normal body notes in this section
-            for ni in range(current_note, end_normal_idx):
-                if ni >= MAX_HEAD:
-                    body_normal += 1
-
-            current_note = end_normal_idx
-            if current_note >= total_notes:
-                break
-
-            if current_note > 0:
-                start_time = kernels_helpers.song_timestamps[current_note]
-                end_time = start_time + real_fever_time
-                fever_end_idx = ti.min(kernels_helpers.fever_end_idx_song[current_note, ft_idx], total_notes)
-
-                # Count fever body notes
-                for ni in range(current_note, fever_end_idx):
-                    if ni >= MAX_HEAD:
-                        body_fever += 1
-
                 current_note = fever_end_idx
             else:
                 break
@@ -259,18 +229,19 @@ def compute_timeline_grid_kernel(
             gap,
         )
 
-        # Also write unpacked mask for compatibility
-        for i in range(MAX_HEAD):
-            is_fever: ti.i8 = 0
-            if i < 32:
-                is_fever = ti.cast((m0 >> ti.u32(i)) & 1, ti.i8)
-            elif i < 64:
-                is_fever = ti.cast((m1 >> ti.u32(i - 32)) & 1, ti.i8)
-            elif i < 96:
-                is_fever = ti.cast((m2 >> ti.u32(i - 64)) & 1, ti.i8)
-            else:
-                is_fever = ti.cast((m3 >> ti.u32(i - 96)) & 1, ti.i8)
-            kernels_helpers.grid_fever_masks[song_slot, ft_idx, ff_idx, i] = is_fever
+        # Optionally write unpacked masks for legacy/debug consumers.
+        if write_unpacked_masks != 0:
+            for i in range(MAX_HEAD):
+                is_fever: ti.i8 = 0
+                if i < 32:
+                    is_fever = ti.cast((m0 >> ti.u32(i)) & 1, ti.i8)
+                elif i < 64:
+                    is_fever = ti.cast((m1 >> ti.u32(i - 32)) & 1, ti.i8)
+                elif i < 96:
+                    is_fever = ti.cast((m2 >> ti.u32(i - 64)) & 1, ti.i8)
+                else:
+                    is_fever = ti.cast((m3 >> ti.u32(i - 96)) & 1, ti.i8)
+                kernels_helpers.grid_fever_masks[song_slot, ft_idx, ff_idx, i] = is_fever
 
 
 @ti.kernel

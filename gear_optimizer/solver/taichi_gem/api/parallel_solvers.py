@@ -33,6 +33,7 @@ from .timeline import precompute_timeline_gpu, _upload_timeline_grid
 from .ga_operations import (
     ga_upload_population_indices,
     ga_evaluate_population,
+    ga_download_results,
 )
 
 _profiler = get_gpu_profiler()
@@ -494,7 +495,7 @@ def solve_genomes_parallel(
     _maybe_sync(for_timing=False)  # Single sync before download
     _t_download = time.perf_counter()
     # [score, ft, ff, pp, cm, fm, ov]
-    results_np = fields.genome_result_stats.to_numpy()[:n_genomes]
+    results_np = ga_download_results(int(n_genomes))
     if _profiler.enabled:
         try:
             download_bytes = int(results_np.nbytes)

@@ -32,6 +32,18 @@ from .loadout_equivalence import (
     representative_mini_names,
 )
 
+try:
+    import orjson as _orjson
+except Exception:  # pragma: no cover - optional dependency
+    _orjson = None
+
+
+def _json_dumps_compact(value: Any) -> str:
+    """Serialize JSON using compact separators, with optional orjson acceleration."""
+    if _orjson is not None:
+        return _orjson.dumps(value).decode("utf-8")
+    return json.dumps(value, separators=(",", ":"))
+
 
 def get_evolution_db_path() -> str:
     """
@@ -982,8 +994,13 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
     # Deduplicate (score + hash) within this batch.
     _t_dedup0 = time.perf_counter()
     dedup_groups: Dict[tuple[int, str], list[Dict[str, Any]]] = {}
+    effective_cache_by_entry_id: Dict[int, Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]] = {}
     for entry in entries:
-        eff = _effective_hash_for_entry(entry)
+        entry_id = int(id(entry))
+        eff = effective_cache_by_entry_id.get(entry_id)
+        if entry_id not in effective_cache_by_entry_id:
+            eff = _effective_hash_for_entry(entry)
+            effective_cache_by_entry_id[entry_id] = eff
         if eff is None:
             h = _loadout_hash_from_names(
                 _compact_gear_for_db(entry.get("gear", [])), _compact_minis_for_db(entry.get("minis", []))
@@ -1023,7 +1040,12 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
 
         entry_to_effective: Dict[int, Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]] = {}
         for i, entry in enumerate(deduplicated_entries):
-            entry_to_effective[i] = _effective_hash_for_entry(entry)
+            entry_id = int(id(entry))
+            eff = effective_cache_by_entry_id.get(entry_id)
+            if entry_id not in effective_cache_by_entry_id:
+                eff = _effective_hash_for_entry(entry)
+                effective_cache_by_entry_id[entry_id] = eff
+            entry_to_effective[i] = eff
 
         for i, entry in enumerate(deduplicated_entries):
             score = _coerce_int(entry.get("score", 0))
@@ -1070,11 +1092,11 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
                 mini_names = representative_mini_names(groups)
             else:
                 loadout_hash = _loadout_hash_from_names(gear_names, mini_names)
-                minis_json = json.dumps([[n] for n in mini_names], separators=(",", ":"))
+                minis_json = _json_dumps_compact([[n] for n in mini_names])
 
-            gear_json = json.dumps(gear_names, separators=(",", ":"))
-            details_json = json.dumps(details, separators=(",", ":")) if details else None
-            force_json = json.dumps(force_data, separators=(",", ":")) if force_data else None
+            gear_json = _json_dumps_compact(gear_names)
+            details_json = _json_dumps_compact(details) if details else None
+            force_json = _json_dumps_compact(force_data) if force_data else None
 
             loadouts_params.append(
                 (
@@ -1093,9 +1115,7 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
             if force_data is not None and fg_score > score:
                 fg_details = _fg_details_from_force_payload(details, force_data, fg_score=fg_score)
                 fg_details_json = (
-                    json.dumps(fg_details, separators=(",", ":"))
-                    if isinstance(fg_details, dict) and fg_details
-                    else details_json
+                    _json_dumps_compact(fg_details) if isinstance(fg_details, dict) and fg_details else details_json
                 )
                 fg_loadouts_params.append(
                     (
@@ -1234,7 +1254,9 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
                     raise RuntimeError(msg)
                 warnings.warn(msg, RuntimeWarning, stacklevel=2)
 
-            def _verify_table_row(*, table: str, loadout_hash: str, expected_score: int, expected_fg_score: int) -> None:
+            def _verify_table_row(
+                *, table: str, loadout_hash: str, expected_score: int, expected_fg_score: int
+            ) -> None:
                 row = conn.execute(
                     f"SELECT score, fg_score, gear_json, minis_json, details_json FROM {table} "
                     "WHERE song_name = ? AND team_buff = ? AND loadout_hash = ?",
@@ -1358,12 +1380,16 @@ def get_best_loadouts(
     song_name = str(song_name or "").strip()
 
     team_buff = str(team_buff or "").strip().upper() or "T5"
-    strict_seed_hash = str(os.environ.get("DB_STRICT_SEED_HASH", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    strict_seed_hash = str(os.environ.get("DB_STRICT_SEED_HASH", "0") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
     # PERF: use a cached per-thread connection for read-heavy call sites.
     conn = get_db_connection_cached(db_path)
     try:
-
         # 1. Fetch Top Base Score Loadouts
         cursor = conn.execute(
             """
@@ -1388,30 +1414,30 @@ def get_best_loadouts(
             mini_names = representative_mini_names(mini_groups)
             details = json.loads(row["details_json"]) if row["details_json"] else {}
 
-            # Defensive: Detect corrupted/mismatched hashes to avoid seeding GA with inconsistent loadouts.
-            # This can happen if a lower-scoring write overwrote a row's payload fields.
-            try:
-                p_color, s_color, sel_color = extract_song_colors(details)
-                if p_color or s_color:
-                    lookup = minis_by_name or get_minis_by_name_cached()
-                    mini_sigs = [
-                        effective_mini_signature_for_name(n, lookup, p_color, s_color, sel_color) for n in mini_names
-                    ]
-                    expected = effective_loadout_hash_from_names(gear_names, mini_sigs)
-                else:
-                    expected = _loadout_hash_from_names(gear_names, mini_names)
-                if expected and str(expected) != str(row["loadout_hash"]):
-                    warnings.warn(
-                        f"[DB] Loadout hash mismatch (seed): song={song_name!r} team_buff={team_buff!r} "
-                        f"stored={row['loadout_hash']} expected={expected}",
-                        RuntimeWarning,
-                        stacklevel=2,
-                    )
-                    if strict_seed_hash:
+            # Optional strict verifier: detect corrupted/mismatched hashes before seeding.
+            if strict_seed_hash:
+                try:
+                    p_color, s_color, sel_color = extract_song_colors(details)
+                    if p_color or s_color:
+                        lookup = minis_by_name or get_minis_by_name_cached()
+                        mini_sigs = [
+                            effective_mini_signature_for_name(n, lookup, p_color, s_color, sel_color)
+                            for n in mini_names
+                        ]
+                        expected = effective_loadout_hash_from_names(gear_names, mini_sigs)
+                    else:
+                        expected = _loadout_hash_from_names(gear_names, mini_names)
+                    if expected and str(expected) != str(row["loadout_hash"]):
+                        warnings.warn(
+                            f"[DB] Loadout hash mismatch (seed): song={song_name!r} team_buff={team_buff!r} "
+                            f"stored={row['loadout_hash']} expected={expected}",
+                            RuntimeWarning,
+                            stacklevel=2,
+                        )
                         return
-            except Exception:
-                # Best-effort only; never break seeding on verifier errors.
-                pass
+                except Exception:
+                    # Best-effort only; never break seeding on verifier errors.
+                    pass
             force_block = json.loads(row["force_details_json"]) if row["force_details_json"] else None
 
             # Expand names to full dicts if lookup provided
@@ -1547,7 +1573,7 @@ def upsert_pending_fg_job(song_name: str, candidates: List[Dict[str, Any]]) -> N
         delete_pending_fg_job(song_name)
         return
 
-    payload = json.dumps(candidates, separators=(",", ":"))
+    payload = _json_dumps_compact(candidates)
     db_path = get_evolution_db_path()
     conn = get_db_connection(db_path)
     try:

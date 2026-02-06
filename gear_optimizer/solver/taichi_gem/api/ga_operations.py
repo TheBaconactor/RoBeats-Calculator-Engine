@@ -1040,8 +1040,41 @@ def ga_download_results(n_genomes: int) -> np.ndarray:
     """
     ensure_ready()
     n_genomes = int(n_genomes)
-    out = fields.genome_result_stats.to_numpy()
-    return np.asarray(out[:n_genomes], dtype=np.int32)
+    if n_genomes <= 0:
+        return np.empty((0, 7), dtype=np.int32)
+
+    results_np = None
+    try:
+        full_shape = getattr(fields.genome_result_stats, "shape", None)
+        full_elems = int(full_shape[0]) * 7 if full_shape is not None else 0
+
+        staging_candidates = [
+            fields.genome_result_stats_download_staging_256,
+            fields.genome_result_stats_download_staging_1024,
+        ]
+        best = None
+        for fld in staging_candidates:
+            if fld is None:
+                continue
+            shape = getattr(fld, "shape", None)
+            if not shape or len(shape) < 1:
+                continue
+            if n_genomes <= int(shape[0]):
+                elems = int(shape[0]) * 7
+                if best is None or elems < best[0]:
+                    best = (elems, fld)
+
+        if best is not None and full_elems > int(best[0]):
+            _elems, staging_fld = best
+            kernels.copy_genome_result_stats_to_download_staging_kernel(staging_fld, n_genomes)
+            results_np = staging_fld.to_numpy()[:n_genomes]
+    except Exception:
+        results_np = None
+
+    if results_np is None:
+        out = fields.genome_result_stats.to_numpy()
+        results_np = out[:n_genomes]
+    return np.asarray(results_np, dtype=np.int32)
 
 
 def ga_download_run_payload(

@@ -50,60 +50,66 @@ def _calc_head_scores_2_bits(
 ) -> ti.types.vector(2, ti.i32):
     s_a: ti.i32 = 0
     s_b: ti.i32 = 0
+    fever_delta_a = fever_mul_a - 1.0
+    fever_delta_b = fever_mul_b - 1.0
 
     n0 = ti.min(head_len, 32)
+    t: ti.f32 = 1.0
     for i in range(n0):
-        t = ti.cast(i + 1, ti.f32)
         is_fever_f = ti.cast((m0 >> ti.u32(i)) & ti.u32(1), ti.f32)
 
         ramp_a = base_a + (t * factor_a)
-        mul_a = 1.0 + (fever_mul_a - 1.0) * is_fever_f
+        mul_a = 1.0 + fever_delta_a * is_fever_f
         s_a += ti.cast(ramp_a * mul_a, ti.i32)
 
         ramp_b = base_b + (t * factor_b)
-        mul_b = 1.0 + (fever_mul_b - 1.0) * is_fever_f
+        mul_b = 1.0 + fever_delta_b * is_fever_f
         s_b += ti.cast(ramp_b * mul_b, ti.i32)
+        t += 1.0
 
     if head_len > 32:
         n1 = ti.min(head_len, 64)
+        t = 33.0
         for i in range(32, n1):
-            t = ti.cast(i + 1, ti.f32)
             is_fever_f = ti.cast((m1 >> ti.u32(i - 32)) & ti.u32(1), ti.f32)
 
             ramp_a = base_a + (t * factor_a)
-            mul_a = 1.0 + (fever_mul_a - 1.0) * is_fever_f
+            mul_a = 1.0 + fever_delta_a * is_fever_f
             s_a += ti.cast(ramp_a * mul_a, ti.i32)
 
             ramp_b = base_b + (t * factor_b)
-            mul_b = 1.0 + (fever_mul_b - 1.0) * is_fever_f
+            mul_b = 1.0 + fever_delta_b * is_fever_f
             s_b += ti.cast(ramp_b * mul_b, ti.i32)
+            t += 1.0
 
     if head_len > 64:
         n2 = ti.min(head_len, 96)
+        t = 65.0
         for i in range(64, n2):
-            t = ti.cast(i + 1, ti.f32)
             is_fever_f = ti.cast((m2 >> ti.u32(i - 64)) & ti.u32(1), ti.f32)
 
             ramp_a = base_a + (t * factor_a)
-            mul_a = 1.0 + (fever_mul_a - 1.0) * is_fever_f
+            mul_a = 1.0 + fever_delta_a * is_fever_f
             s_a += ti.cast(ramp_a * mul_a, ti.i32)
 
             ramp_b = base_b + (t * factor_b)
-            mul_b = 1.0 + (fever_mul_b - 1.0) * is_fever_f
+            mul_b = 1.0 + fever_delta_b * is_fever_f
             s_b += ti.cast(ramp_b * mul_b, ti.i32)
+            t += 1.0
 
     if head_len > 96:
+        t = 97.0
         for i in range(96, head_len):
-            t = ti.cast(i + 1, ti.f32)
             is_fever_f = ti.cast((m3 >> ti.u32(i - 96)) & ti.u32(1), ti.f32)
 
             ramp_a = base_a + (t * factor_a)
-            mul_a = 1.0 + (fever_mul_a - 1.0) * is_fever_f
+            mul_a = 1.0 + fever_delta_a * is_fever_f
             s_a += ti.cast(ramp_a * mul_a, ti.i32)
 
             ramp_b = base_b + (t * factor_b)
-            mul_b = 1.0 + (fever_mul_b - 1.0) * is_fever_f
+            mul_b = 1.0 + fever_delta_b * is_fever_f
             s_b += ti.cast(ramp_b * mul_b, ti.i32)
+            t += 1.0
 
     return ti.Vector([s_a, s_b])
 
@@ -128,76 +134,83 @@ def _calc_head_scores_3_bits(
     s_ov: ti.i32 = 0
     s_cm: ti.i32 = 0
     s_fm: ti.i32 = 0
+    fever_delta_ov = fever_mul_ov - 1.0
+    fever_delta_cm = fever_mul_cm - 1.0
+    fever_delta_fm = fever_mul_fm - 1.0
 
     n0 = ti.min(head_len, 32)
+    t: ti.f32 = 1.0
     for i in range(n0):
-        t = ti.cast(i + 1, ti.f32)
         is_fever_f = ti.cast((m0 >> ti.u32(i)) & ti.u32(1), ti.f32)
 
         ramp_ov = base_ov + (t * factor_ov)
-        mul_ov = 1.0 + (fever_mul_ov - 1.0) * is_fever_f
+        mul_ov = 1.0 + fever_delta_ov * is_fever_f
         s_ov += ti.cast(ramp_ov * mul_ov, ti.i32)
 
         ramp_cm = base_cm + (t * factor_cm)
-        mul_cm = 1.0 + (fever_mul_cm - 1.0) * is_fever_f
+        mul_cm = 1.0 + fever_delta_cm * is_fever_f
         s_cm += ti.cast(ramp_cm * mul_cm, ti.i32)
 
         ramp_fm = base_fm + (t * factor_fm)
-        mul_fm = 1.0 + (fever_mul_fm - 1.0) * is_fever_f
+        mul_fm = 1.0 + fever_delta_fm * is_fever_f
         s_fm += ti.cast(ramp_fm * mul_fm, ti.i32)
+        t += 1.0
 
     if head_len > 32:
         n1 = ti.min(head_len, 64)
+        t = 33.0
         for i in range(32, n1):
-            t = ti.cast(i + 1, ti.f32)
             is_fever_f = ti.cast((m1 >> ti.u32(i - 32)) & ti.u32(1), ti.f32)
 
             ramp_ov = base_ov + (t * factor_ov)
-            mul_ov = 1.0 + (fever_mul_ov - 1.0) * is_fever_f
+            mul_ov = 1.0 + fever_delta_ov * is_fever_f
             s_ov += ti.cast(ramp_ov * mul_ov, ti.i32)
 
             ramp_cm = base_cm + (t * factor_cm)
-            mul_cm = 1.0 + (fever_mul_cm - 1.0) * is_fever_f
+            mul_cm = 1.0 + fever_delta_cm * is_fever_f
             s_cm += ti.cast(ramp_cm * mul_cm, ti.i32)
 
             ramp_fm = base_fm + (t * factor_fm)
-            mul_fm = 1.0 + (fever_mul_fm - 1.0) * is_fever_f
+            mul_fm = 1.0 + fever_delta_fm * is_fever_f
             s_fm += ti.cast(ramp_fm * mul_fm, ti.i32)
+            t += 1.0
 
     if head_len > 64:
         n2 = ti.min(head_len, 96)
+        t = 65.0
         for i in range(64, n2):
-            t = ti.cast(i + 1, ti.f32)
             is_fever_f = ti.cast((m2 >> ti.u32(i - 64)) & ti.u32(1), ti.f32)
 
             ramp_ov = base_ov + (t * factor_ov)
-            mul_ov = 1.0 + (fever_mul_ov - 1.0) * is_fever_f
+            mul_ov = 1.0 + fever_delta_ov * is_fever_f
             s_ov += ti.cast(ramp_ov * mul_ov, ti.i32)
 
             ramp_cm = base_cm + (t * factor_cm)
-            mul_cm = 1.0 + (fever_mul_cm - 1.0) * is_fever_f
+            mul_cm = 1.0 + fever_delta_cm * is_fever_f
             s_cm += ti.cast(ramp_cm * mul_cm, ti.i32)
 
             ramp_fm = base_fm + (t * factor_fm)
-            mul_fm = 1.0 + (fever_mul_fm - 1.0) * is_fever_f
+            mul_fm = 1.0 + fever_delta_fm * is_fever_f
             s_fm += ti.cast(ramp_fm * mul_fm, ti.i32)
+            t += 1.0
 
     if head_len > 96:
+        t = 97.0
         for i in range(96, head_len):
-            t = ti.cast(i + 1, ti.f32)
             is_fever_f = ti.cast((m3 >> ti.u32(i - 96)) & ti.u32(1), ti.f32)
 
             ramp_ov = base_ov + (t * factor_ov)
-            mul_ov = 1.0 + (fever_mul_ov - 1.0) * is_fever_f
+            mul_ov = 1.0 + fever_delta_ov * is_fever_f
             s_ov += ti.cast(ramp_ov * mul_ov, ti.i32)
 
             ramp_cm = base_cm + (t * factor_cm)
-            mul_cm = 1.0 + (fever_mul_cm - 1.0) * is_fever_f
+            mul_cm = 1.0 + fever_delta_cm * is_fever_f
             s_cm += ti.cast(ramp_cm * mul_cm, ti.i32)
 
             ramp_fm = base_fm + (t * factor_fm)
-            mul_fm = 1.0 + (fever_mul_fm - 1.0) * is_fever_f
+            mul_fm = 1.0 + fever_delta_fm * is_fever_f
             s_fm += ti.cast(ramp_fm * mul_fm, ti.i32)
+            t += 1.0
 
     return ti.Vector([s_ov, s_cm, s_fm])
 
@@ -227,13 +240,15 @@ def _calc_head_score_masks(
         Head score as float
     """
     head_score = ti.i32(0)
+    t: ti.f32 = 1.0
     for i in range(head_len):
-        ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
+        ramp_val = base_value + (t * factor)
         if kernels_helpers.fever_masks[work_idx, i] != 0:
             # All values are non-negative; truncation toward zero matches floor and is faster.
             head_score += ti.cast(ramp_val * fever_mul, ti.i32)
         else:
             head_score += ti.cast(ramp_val, ti.i32)
+        t += 1.0
     return ti.cast(head_score, ti.f32)
 
 
@@ -265,13 +280,15 @@ def _calc_head_score_grid(
         Head score as float
     """
     head_score = ti.i32(0)
+    t: ti.f32 = 1.0
     for i in range(head_len):
-        ramp_val = base_value + (ti.cast(i + 1, ti.f32) * factor)
+        ramp_val = base_value + (t * factor)
         if kernels_helpers.grid_fever_masks[song_slot, ft_idx, ff_idx, i] != 0:
             # All values are non-negative; truncation toward zero matches floor and is faster.
             head_score += ti.cast(ramp_val * fever_mul, ti.i32)
         else:
             head_score += ti.cast(ramp_val, ti.i32)
+        t += 1.0
     return ti.cast(head_score, ti.f32)
 
 

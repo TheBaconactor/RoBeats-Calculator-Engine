@@ -158,6 +158,24 @@ def ga_find_best_combo_key_kernel(
                 shared_waves[lane] = ti.u64(0)
             simt.block.sync()
 
+            stats = kernels_helpers.genome_base_stats[genome_idx]
+            base_pp: ti.i32 = stats[0]
+            base_cm: ti.i32 = stats[1]
+            base_fm: ti.i32 = stats[2]
+            base_p_val: ti.i32 = stats[3]
+            base_s_val: ti.i32 = stats[4]
+            base_ft_stat: ti.i32 = stats[5]
+            base_ff_stat: ti.i32 = stats[6]
+
+            remaining_ft: ti.i32 = MAX_STAT - base_ft_stat
+            remaining_ff: ti.i32 = MAX_STAT - base_ff_stat
+            max_ft_gems: ti.i32 = remaining_ft // gem_scale_fever if remaining_ft > 0 else 0
+            max_ff_gems: ti.i32 = remaining_ff // gem_scale_fever if remaining_ff > 0 else 0
+            if max_ft_gems > total_budget:
+                max_ft_gems = total_budget
+            if max_ff_gems > total_budget:
+                max_ff_gems = total_budget
+
             local_best = ti.u64(0)
             local_c: ti.i32 = lane
             while local_c < combo_count:
@@ -166,24 +184,6 @@ def ga_find_best_combo_key_kernel(
                     ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
                     ff: ti.i32 = kernels_helpers.ftff_combo_ff[combo_idx]
                     if ft + ff <= total_budget:
-                        stats = kernels_helpers.genome_base_stats[genome_idx]
-                        base_pp: ti.i32 = stats[0]
-                        base_cm: ti.i32 = stats[1]
-                        base_fm: ti.i32 = stats[2]
-                        base_p_val: ti.i32 = stats[3]
-                        base_s_val: ti.i32 = stats[4]
-                        base_ft_stat: ti.i32 = stats[5]
-                        base_ff_stat: ti.i32 = stats[6]
-
-                        remaining_ft: ti.i32 = MAX_STAT - base_ft_stat
-                        remaining_ff: ti.i32 = MAX_STAT - base_ff_stat
-                        max_ft_gems: ti.i32 = remaining_ft // gem_scale_fever if remaining_ft > 0 else 0
-                        max_ff_gems: ti.i32 = remaining_ff // gem_scale_fever if remaining_ff > 0 else 0
-                        if max_ft_gems > total_budget:
-                            max_ft_gems = total_budget
-                        if max_ff_gems > total_budget:
-                            max_ff_gems = total_budget
-
                         if ft <= max_ft_gems and ff <= ti.min(total_budget - ft, max_ff_gems):
                             ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
                             ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)

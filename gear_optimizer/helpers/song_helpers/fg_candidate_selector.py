@@ -97,6 +97,31 @@ def _fg_proxy(candidate: dict, *, primary_color: str, secondary_color: str) -> i
     return int(score)
 
 
+def _fg_proxy_from_items(items: list[dict], *, primary_color: str, secondary_color: str) -> int:
+    """FG proxy variant that reuses already split gear+mini item lists."""
+
+    def _i(item: dict, key: str) -> int:
+        try:
+            return int((item or {}).get(key, 0) or 0)
+        except Exception:
+            return 0
+
+    score = 0
+    for it in items:
+        if not isinstance(it, dict) or not it:
+            continue
+        score += _i(it, "Fever Multiplier") * 4
+        score += _i(it, "Fever Fill Rate") * 4
+        score += _i(it, "Fever Time") * 3
+        score += _i(it, "Combo Multiplier") * 2
+        score += _i(it, "Perfect Points")
+        if primary_color:
+            score += _i(it, primary_color) * 2
+        if secondary_color and secondary_color != primary_color:
+            score += _i(it, secondary_color)
+    return int(score)
+
+
 @dataclass(frozen=True)
 class _CandMeta:
     cand: dict
@@ -479,34 +504,44 @@ def select_fg_candidates(
 
     # 1) Deduplicate by (gear slots, mini set) key; keep the best base-score copy.
     best_by_key: dict[tuple[str, ...], dict] = {}
+    best_score_by_key: dict[tuple[str, ...], int] = {}
+    split_cache_by_key: dict[tuple[str, ...], tuple[list[dict], list[dict], tuple[str, ...]]] = {}
     for cand in candidates:
         if not isinstance(cand, dict):
             continue
-        k = _gear_mini_key(cand)
-        prev = best_by_key.get(k)
-        if prev is None:
+        gear, minis = _split_gear_minis(cand)
+        gear_names = tuple(_item_name(it) for it in gear)
+        mini_key = tuple(sorted(_item_name(it) for it in minis))
+        k = gear_names + mini_key
+        score = _base_score(cand)
+        prev_score = best_score_by_key.get(k)
+        if prev_score is None or score > prev_score:
             best_by_key[k] = cand
-            continue
-        if _base_score(cand) > _base_score(prev):
-            best_by_key[k] = cand
+            best_score_by_key[k] = score
+            split_cache_by_key[k] = (gear, minis, mini_key)
 
-    uniq = list(best_by_key.values())
+    uniq_items = list(best_by_key.items())
+    uniq = [cand for _k, cand in uniq_items]
     if len(uniq) <= limit:
         uniq.sort(key=_base_score, reverse=True)
         return uniq
 
     metas: list[_CandMeta] = []
-    for cand in uniq:
+    for key, cand in uniq_items:
         try:
             fg_priority = int(cand.get("_fg_priority", 0) or 0)
         except Exception:
             fg_priority = 0
+        gear, minis, mini_key = split_cache_by_key.get(key, ([], [], tuple()))
+        fg_proxy = _fg_proxy_from_items(
+            list(gear) + list(minis), primary_color=primary_color, secondary_color=secondary_color
+        )
         meta = _CandMeta(
             cand=cand,
-            key=_gear_mini_key(cand),
+            key=key,
             base=_base_score(cand),
-            fg_proxy=_fg_proxy(cand, primary_color=primary_color, secondary_color=secondary_color),
-            mini_key=_mini_key(cand),
+            fg_proxy=fg_proxy,
+            mini_key=mini_key,
             center=_center_key(cand),
             fg_priority=fg_priority,
         )
