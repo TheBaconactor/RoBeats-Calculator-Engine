@@ -56,12 +56,12 @@
             │                            │
             ▼                            ▼
 ┌───────────────────────┐    ┌───────────────────────┐
-│  MEMORY MANAGEMENT    │    │  POST-PROCESSOR       │
-│  (memory.py)          │    │  (post_processor.py)  │
+│  MEMORY MANAGEMENT    │    │  EXTERNAL SERVICES    │
+│  (memory.py)          │    │  (discord_reporter.py)│
 │                       │    │                       │
-│  - Watchdog thread    │    │  - Print results      │
-│  - RSS monitoring     │    │  - Build payloads     │
-│  - Resume tracking    │    │  - Persist DB         │
+│  - Watchdog thread    │    │  - Webhook sender     │
+│  - RSS monitoring     │    │  - Stats formatter    │
+│  - Resume tracking    │    │  - Log reporter       │
 └───────────────────────┘    └───────────────────────┘
             │
             ▼
@@ -99,6 +99,7 @@ Level 3 (Depend on Levels 1-2):
 
 Level 4 (Depend on Levels 1-3):
   └─ solver/genetic.py     [constants, models, utils, database, scoring]
+  └─ data/discord_reporter.py [config]
 
 Level 5 (Orchestration):
   └─ pipeline/song_processor.py [ALL]
@@ -277,7 +278,7 @@ Layer 2: Song Processing
 
 Layer 3: Main Loop
   └─ Continue processing other songs on failure
-  └─ Report errors to logs
+  └─ Report errors to Discord
   └─ Log to file
 
 Layer 4: Memory Guard
@@ -360,7 +361,7 @@ StatusFilePath = /path/to/status.json
 ## Future Improvements
 
 1. **Type Hints**: Add throughout for better IDE support
-2. **Async I/O**: For file I/O
+2. **Async I/O**: For Discord webhook and file I/O
 3. **Plugin System**: Extensible mutation/crossover strategies
 4. **Web UI**: Real-time optimization monitoring
 5. **Distributed**: Run GA across multiple machines
