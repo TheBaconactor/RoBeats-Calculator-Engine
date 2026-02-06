@@ -527,6 +527,10 @@ def batch_evaluate_genomes(
         from ..taichi_gem_solver import solve_genomes_parallel, solve_genomes_with_ftff
 
         flags = plan.flags
+        try:
+            worker_song_slot = int((plan.calc_song or {}).get("_gpu_song_slot", 0) or 0)
+        except Exception:
+            worker_song_slot = 0
 
         try:
             if is_gpu_worker_mode():
@@ -568,6 +572,7 @@ def batch_evaluate_genomes(
                         plan.ref_arrays,
                         total_budget=TOTAL_GEM_BUDGET,
                         gem_scale_fever=GEM_SCALE_FEVER,
+                        song_slot=int(worker_song_slot),
                     )
                 else:
                     gpu_results = submit_gpu_solve_genomes(
@@ -588,6 +593,7 @@ def batch_evaluate_genomes(
                         plan.ref_arrays,
                         total_budget=TOTAL_GEM_BUDGET,
                         gem_scale_fever=GEM_SCALE_FEVER,
+                        song_slot=int(worker_song_slot),
                     )
             else:
                 # In-process path:
