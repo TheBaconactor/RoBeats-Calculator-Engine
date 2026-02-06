@@ -14,7 +14,7 @@ import taichi as ti
 from taichi.lang import simt
 
 from ..kernels import kernels_helpers
-from ..kernels.kernels_scoring import _calc_body_score_i32, _calc_head_scores_2_bits, _calc_head_scores_3_bits
+from ..kernels.kernels_scoring import optimize_core_device_preloaded_bits
 from .fields import FG_DOWNLOAD_BATCH_MAX, FG_DOWNLOAD_TOPK_MAX, FG_MAX_SECTIONS, FG_MAX_STAT, FG_STAGE1_WAVE_SLOTS_MAX
 
 # Reuse the shared kernel block dim to keep launch config consistent with other kernels.
@@ -30,6 +30,7 @@ song_timestamps_great_candidate = None
 fg_fever_end_idx_song = None
 fg_fever_end_idx_great_candidate = None
 fg_forced_counts = None
+fg_section_forced_caps = None
 fg_pair_caps = None
 fg_ft_list = None
 fg_ff_list = None
@@ -267,17 +268,14 @@ while _fg_block_pow * 2 <= FG_STAGE1_BLOCK_DIM:
     _fg_block_pow *= 2
 FG_STAGE1_BLOCK_DIM = max(32, min(_fg_block_pow, 256))
 
-# Per-section forced-count hard caps used by the CPU cap-grid path.
-# Must match `gear_optimizer.helpers.fg_utils.MAX_SECTION_CAPS`.
-_FG_SECTION_FORCED_CAPS = (50, 30, 15, 10, 8, 6, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4)
-
 
 @ti.func
 def _fg_section_forced_cap(sec: ti.i32) -> ti.i32:
-    cap: ti.i32 = 4
-    for i in ti.static(range(len(_FG_SECTION_FORCED_CAPS))):
-        if sec == ti.i32(i):
-            cap = ti.i32(_FG_SECTION_FORCED_CAPS[i])
+    cap: ti.i32 = 0
+    if 0 <= sec < FG_MAX_SECTIONS:
+        cap = fg_section_forced_caps[sec]
+        if cap < 0:
+            cap = 0
     return cap
 
 
@@ -305,12 +303,14 @@ def _fg_decode_fp_targets_vec(local_cfg_idx: ti.i32, ftff_idx: ti.i32, n_section
 
 
 @ti.func
-def _fg_decode_fp_targets_vec3(local_cfg_idx: ti.i32, ftff_idx: ti.i32, n_sections: ti.i32):
-    """Decode helper for the n_sections<=3 fast path."""
-    out = ti.Vector.zero(ti.i32, 3)
+def _fg_decode_fp_targets_vec4(local_cfg_idx: ti.i32, ftff_idx: ti.i32, n_sections: ti.i32):
+    """
+    Decode FP targets into a 4-section vector for the common small-section fast path.
+    """
+    out = ti.Vector.zero(ti.i32, 4)
     rem: ti.i32 = local_cfg_idx
-    for rev in ti.static(range(3)):
-        s: ti.i32 = ti.i32(2 - rev)
+    for rev in ti.static(range(4)):
+        s: ti.i32 = ti.i32(3 - rev)
         if s < n_sections:
             base: ti.i32 = fg_cfg_max_fp[ftff_idx, s] + 1
             if base <= 0:
@@ -426,236 +426,52 @@ def _optimize_core_bits(
     count_normal: ti.i32,
 ) -> ti.types.vector(10, ti.i32):
     """
-    Greedy gem allocation optimizer (bitmask head scoring).
+    Shared bitpacked optimizer wrapper.
 
     Returns vector:
       [score, pp, cm, fm, p_val, s_val, g_pp, g_cm, g_fm, g_ov]
     """
     GEM_SCALE_NORMAL: ti.i32 = 2
     GEM_SCALE_FEVER: ti.i32 = 3
-    ELEMENTAL_GEM_SCALE: ti.i32 = 6
-    GEM_STAT_TO_ELEMENT: ti.i32 = 3
     MAX_STAT: ti.i32 = 160
-    PP_TIE_LOOKAHEAD_MAX: ti.i32 = 8
 
-    gems_pp: ti.i32 = 0
-    gems_cm: ti.i32 = 0
-    gems_fm: ti.i32 = 0
-    gems_ov: ti.i32 = 0
-    remaining: ti.i32 = budget
-    allow_pp: ti.i32 = is_p_pp | is_s_pp
-
-    # Precompute elemental deltas (avoid repeated multiplies in the inner loop).
-    pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_pp
-    pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_pp
-    cm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_cm
-    cm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_cm
-    fm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_fm
-    fm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_fm
-    ov_p_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_p_ov
-    ov_s_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_s_ov
-
-    pp: ti.i32 = cur_pp
-    cm: ti.i32 = cur_cm
-    fm: ti.i32 = cur_fm
-    p_val: ti.i32 = cur_p_val
-    s_val: ti.i32 = cur_s_val
-
-    # Precompute current multipliers once; update incrementally when the corresponding stat changes.
-    c_mul_cur: ti.f32 = kernels_helpers.lookup_ref_cm(cm)
-    f_mul_cur: ti.f32 = kernels_helpers.lookup_ref_fm(fm)
-    pp_factor_cur: ti.f32 = kernels_helpers.lookup_ref_pp(pp)
-
-    best_final_score: ti.i32 = 0
-
-    while remaining > 0:
-        fill_bonus: ti.i32 = (remaining - 1) * ELEMENTAL_GEM_SCALE
-        fill_p: ti.i32 = fill_bonus * is_p_ov
-        fill_s: ti.i32 = fill_bonus * is_s_ov
-        base_p: ti.i32 = p_val + fill_p
-        base_s: ti.i32 = s_val + fill_s
-
-        # Defaults: unchanged from current (used by apply and PP lookahead).
-        c_mul_next: ti.f32 = c_mul_cur
-        f_mul_next: ti.f32 = f_mul_cur
-        pp_factor_next: ti.f32 = pp_factor_cur
-        best_score: ti.i32 = -1
-        best_opt: ti.i32 = 3
-        pp_score: ti.i32 = -1
-
-        do_pp: ti.i32 = 1 if (allow_pp != 0 and pp < MAX_STAT) else 0
-        do_cm: ti.i32 = 1 if (cm < MAX_STAT and (cm <= 50 or is_p_cm or is_s_cm)) else 0
-        do_fm: ti.i32 = 1 if (fm < MAX_STAT) else 0
-
-        t_p_ov: ti.i32 = base_p + ov_p_delta
-        t_s_ov: ti.i32 = base_s + ov_s_delta
-        base_ov: ti.f32 = ti.cast((t_p_ov * 2) + t_s_ov, ti.f32) + pp_factor_cur
-        factor_ov: ti.f32 = kernels_helpers._calc_head_factor(base_ov, c_mul_cur)
-
-        if do_cm != 0 and do_fm != 0:
-            t_p_cm: ti.i32 = base_p + cm_p_delta
-            t_s_cm: ti.i32 = base_s + cm_s_delta
-            base_cm: ti.f32 = ti.cast((t_p_cm * 2) + t_s_cm, ti.f32) + pp_factor_cur
-            c_mul_cm: ti.f32 = kernels_helpers.lookup_ref_cm(cm + GEM_SCALE_NORMAL)
-            factor_cm: ti.f32 = kernels_helpers._calc_head_factor(base_cm, c_mul_cm)
-
-            t_p_fm: ti.i32 = base_p + fm_p_delta
-            t_s_fm: ti.i32 = base_s + fm_s_delta
-            base_fm: ti.f32 = ti.cast((t_p_fm * 2) + t_s_fm, ti.f32) + pp_factor_cur
-            factor_fm: ti.f32 = kernels_helpers._calc_head_factor(base_fm, c_mul_cur)
-            f_mul_fm: ti.f32 = kernels_helpers.lookup_ref_fm(fm + GEM_SCALE_FEVER)
-
-            head3 = _calc_head_scores_3_bits(
-                head_len,
-                m0,
-                m1,
-                m2,
-                m3,
-                base_ov,
-                factor_ov,
-                f_mul_cur,
-                base_cm,
-                factor_cm,
-                f_mul_cur,
-                base_fm,
-                factor_fm,
-                f_mul_fm,
-            )
-            score_ov: ti.i32 = _calc_body_score_i32(base_ov, c_mul_cur, f_mul_cur, count_fever, count_normal) + head3[0]
-            score_cm: ti.i32 = _calc_body_score_i32(base_cm, c_mul_cm, f_mul_cur, count_fever, count_normal) + head3[1]
-            score_fm: ti.i32 = _calc_body_score_i32(base_fm, c_mul_cur, f_mul_fm, count_fever, count_normal) + head3[2]
-
-            best_score = score_ov
-            best_opt = 3
-            if score_cm > best_score:
-                best_score = score_cm
-                best_opt = 1
-                c_mul_next = c_mul_cm
-            if score_fm > best_score:
-                best_score = score_fm
-                best_opt = 2
-                f_mul_next = f_mul_fm
-        elif do_cm != 0:
-            t_p_cm = base_p + cm_p_delta
-            t_s_cm = base_s + cm_s_delta
-            base_cm = ti.cast((t_p_cm * 2) + t_s_cm, ti.f32) + pp_factor_cur
-            c_mul_cm = kernels_helpers.lookup_ref_cm(cm + GEM_SCALE_NORMAL)
-            factor_cm = kernels_helpers._calc_head_factor(base_cm, c_mul_cm)
-
-            head2 = _calc_head_scores_2_bits(
-                head_len, m0, m1, m2, m3, base_ov, factor_ov, f_mul_cur, base_cm, factor_cm, f_mul_cur
-            )
-            score_ov = _calc_body_score_i32(base_ov, c_mul_cur, f_mul_cur, count_fever, count_normal) + head2[0]
-            score_cm = _calc_body_score_i32(base_cm, c_mul_cm, f_mul_cur, count_fever, count_normal) + head2[1]
-
-            best_score = score_ov
-            best_opt = 3
-            if score_cm > best_score:
-                best_score = score_cm
-                best_opt = 1
-                c_mul_next = c_mul_cm
-        elif do_fm != 0:
-            t_p_fm = base_p + fm_p_delta
-            t_s_fm = base_s + fm_s_delta
-            base_fm = ti.cast((t_p_fm * 2) + t_s_fm, ti.f32) + pp_factor_cur
-            factor_fm = kernels_helpers._calc_head_factor(base_fm, c_mul_cur)
-            f_mul_fm = kernels_helpers.lookup_ref_fm(fm + GEM_SCALE_FEVER)
-
-            head2 = _calc_head_scores_2_bits(
-                head_len, m0, m1, m2, m3, base_ov, factor_ov, f_mul_cur, base_fm, factor_fm, f_mul_fm
-            )
-            score_ov = _calc_body_score_i32(base_ov, c_mul_cur, f_mul_cur, count_fever, count_normal) + head2[0]
-            score_fm = _calc_body_score_i32(base_fm, c_mul_cur, f_mul_fm, count_fever, count_normal) + head2[1]
-
-            best_score = score_ov
-            best_opt = 3
-            if score_fm > best_score:
-                best_score = score_fm
-                best_opt = 2
-                f_mul_next = f_mul_fm
-        else:
-            best_score = kernels_helpers.calc_score_with_grid_bits(
-                base_ov, c_mul_cur, f_mul_cur, m0, m1, m2, m3, head_len, count_fever, count_normal
-            )
-            best_opt = 3
-
-        if do_pp != 0:
-            t_p_pp: ti.i32 = base_p + pp_p_delta
-            t_s_pp: ti.i32 = base_s + pp_s_delta
-            pp_factor_pp: ti.f32 = kernels_helpers.lookup_ref_pp(pp + GEM_SCALE_NORMAL)
-            pp_factor_next = pp_factor_pp
-            base_pp: ti.f32 = ti.cast((t_p_pp * 2) + t_s_pp, ti.f32) + pp_factor_pp
-            pp_score = kernels_helpers.calc_score_with_grid_bits(
-                base_pp, c_mul_cur, f_mul_cur, m0, m1, m2, m3, head_len, count_fever, count_normal
-            )
-            if pp_score > best_score:
-                best_score = pp_score
-                best_opt = 0
-
-        # PP lookahead: if OV wins a tie now, but a few PP gems would become a real
-        # improvement soon, start investing in PP.
-        if allow_pp != 0 and best_opt == 3 and pp_score == best_score and remaining > 1:
-            max_k: ti.i32 = remaining
-            if max_k > PP_TIE_LOOKAHEAD_MAX:
-                max_k = PP_TIE_LOOKAHEAD_MAX
-            k: ti.i32 = 2
-            while k <= max_k:
-                fill_p_k: ti.i32 = (remaining - k) * ov_p_delta
-                fill_s_k: ti.i32 = (remaining - k) * ov_s_delta
-                t_p = p_val + (k * pp_p_delta) + fill_p_k
-                t_s = s_val + (k * pp_s_delta) + fill_s_k
-                pp_factor_k: ti.f32 = kernels_helpers.lookup_ref_pp(pp + (k * GEM_SCALE_NORMAL))
-                base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_k
-                score_k: ti.i32 = kernels_helpers.calc_score_with_grid_bits(
-                    base, c_mul_cur, f_mul_cur, m0, m1, m2, m3, head_len, count_fever, count_normal
-                )
-                if score_k > best_score:
-                    best_opt = 0
-                    pp_factor_next = kernels_helpers.lookup_ref_pp(pp + GEM_SCALE_NORMAL)
-                    break
-                k += 1
-
-        # Apply best option
-        if best_opt == 0:
-            pp += GEM_SCALE_NORMAL
-            p_val += pp_p_delta
-            s_val += pp_s_delta
-            gems_pp += 1
-            pp_factor_cur = pp_factor_next
-        elif best_opt == 1:
-            cm += GEM_SCALE_NORMAL
-            p_val += cm_p_delta
-            s_val += cm_s_delta
-            gems_cm += 1
-            c_mul_cur = c_mul_next
-        elif best_opt == 2:
-            fm += GEM_SCALE_FEVER
-            p_val += fm_p_delta
-            s_val += fm_s_delta
-            gems_fm += 1
-            f_mul_cur = f_mul_next
-        else:
-            p_val += ov_p_delta
-            s_val += ov_s_delta
-            gems_ov += 1
-
-        remaining -= 1
-        best_final_score = best_score
-
-    return ti.Vector(
-        [
-            best_final_score,
-            pp,
-            cm,
-            fm,
-            p_val,
-            s_val,
-            gems_pp,
-            gems_cm,
-            gems_fm,
-            gems_ov,
-        ]
+    res = optimize_core_device_preloaded_bits(
+        budget,
+        cur_pp,
+        cur_cm,
+        cur_fm,
+        cur_p_val,
+        cur_s_val,
+        is_p_pp,
+        is_s_pp,
+        is_p_cm,
+        is_s_cm,
+        is_p_fm,
+        is_s_fm,
+        is_p_ov,
+        is_s_ov,
+        m0,
+        m1,
+        m2,
+        m3,
+        head_len,
+        count_fever,
+        count_normal,
     )
+
+    best_final_score: ti.i32 = res[0]
+    gems_pp: ti.i32 = res[1]
+    gems_cm: ti.i32 = res[2]
+    gems_fm: ti.i32 = res[3]
+    gems_ov: ti.i32 = res[4]
+    p_val: ti.i32 = res[5]
+    s_val: ti.i32 = res[6]
+
+    pp: ti.i32 = ti.min(MAX_STAT, cur_pp + (gems_pp * GEM_SCALE_NORMAL))
+    cm: ti.i32 = ti.min(MAX_STAT, cur_cm + (gems_cm * GEM_SCALE_NORMAL))
+    fm: ti.i32 = ti.min(MAX_STAT, cur_fm + (gems_fm * GEM_SCALE_FEVER))
+
+    return ti.Vector([best_final_score, pp, cm, fm, p_val, s_val, gems_pp, gems_cm, gems_fm, gems_ov])
 
 
 @ti.func
@@ -1031,6 +847,7 @@ def fg_stage1_clear_wave_best_kernel(n_work_items: ti.i32):
 
 @ti.kernel
 def fg_stage1_waves_kernel(
+    use_small_sections: ti.template(),
     n_work_items: ti.i32,
     n_cfg: ti.i32,
     cfg_offset: ti.i32,
@@ -1145,12 +962,16 @@ def fg_stage1_waves_kernel(
                     cfg_idx += FG_STAGE1_BLOCK_DIM
                     continue
                 global_cfg_idx: ti.i32 = cfg_global_base + cfg_idx
-                fp_targets_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+                fp_targets_vec4 = ti.Vector.zero(ti.i32, 4)
+                fp_targets_vec16 = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
                 if cfg_mode != 0:
                     local_cfg_idx: ti.i32 = global_cfg_idx - cfg_base
                     if local_cfg_idx < 0:
                         local_cfg_idx = 0
-                    fp_targets_vec = _fg_decode_fp_targets_vec(local_cfg_idx, ftff_idx, n_sections)
+                    if ti.static(use_small_sections):
+                        fp_targets_vec4 = _fg_decode_fp_targets_vec4(local_cfg_idx, ftff_idx, n_sections)
+                    else:
+                        fp_targets_vec16 = _fg_decode_fp_targets_vec(local_cfg_idx, ftff_idx, n_sections)
 
                 m0 = ti.cast(0, ti.u32)
                 m1 = ti.cast(0, ti.u32)
@@ -1158,9 +979,10 @@ def fg_stage1_waves_kernel(
                 m3 = ti.cast(0, ti.u32)
                 body_fever: ti.i32 = 0
 
-                start_idx = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
-                forced_applied = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
-                fill_notes = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+                start_idx4 = ti.Vector.zero(ti.i32, 4)
+                forced_applied4 = ti.Vector.zero(ti.i32, 4)
+                start_idx16 = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
+                forced_applied16 = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
 
                 current_idx: ti.i32 = 0
                 sec: ti.i32 = 0
@@ -1174,7 +996,11 @@ def fg_stage1_waves_kernel(
                     fp_target: ti.i32 = 0
                     if sec < n_sections:
                         if cfg_mode != 0:
-                            fp_target = fp_targets_vec[sec]
+                            if ti.static(use_small_sections):
+                                if sec < 4:
+                                    fp_target = fp_targets_vec4[sec]
+                            else:
+                                fp_target = fp_targets_vec16[sec]
                         else:
                             fp_target = fg_forced_counts[cfg_read_base + cfg_idx, sec]
                         if fp_target < 0:
@@ -1216,10 +1042,14 @@ def fg_stage1_waves_kernel(
                                 carry_time = forced_t
                                 carry_idx = forced_end
 
-                    if sec < n_sections and sec < FG_MAX_SECTIONS:
-                        start_idx[sec] = section_start
-                        forced_applied[sec] = forced_app
-                        fill_notes[sec] = fp_calc
+                    if ti.static(use_small_sections):
+                        if sec < n_sections and sec < 4:
+                            start_idx4[sec] = section_start
+                            forced_applied4[sec] = forced_app
+                    else:
+                        if sec < n_sections and sec < FG_MAX_SECTIONS:
+                            start_idx16[sec] = section_start
+                            forced_applied16[sec] = forced_app
 
                     current_idx = end_normal
                     if current_idx >= total_notes:
@@ -1319,29 +1149,55 @@ def fg_stage1_waves_kernel(
                 great_penalty_base_f: ti.f32 = ti.cast(great_penalty_base_head, ti.f32)
 
                 score_penalty_total: ti.i32 = 0
-                for s in range(ti.min(n_sections, FG_MAX_SECTIONS)):
-                    forced_n: ti.i32 = forced_applied[s]
-                    if forced_n > 0:
-                        start = start_idx[s] + ti.cast(s > 0, ti.i32)
-                        head_cap: ti.i32 = 100 - start
-                        if head_cap < 0:
-                            head_cap = 0
-                        head_n: ti.i32 = forced_n
-                        if head_n > head_cap:
-                            head_n = head_cap
-                        body_n: ti.i32 = forced_n - head_n
+                if ti.static(use_small_sections):
+                    for s in ti.static(range(4)):
+                        if s < n_sections:
+                            forced_n: ti.i32 = forced_applied4[s]
+                            if forced_n > 0:
+                                start = start_idx4[s] + ti.cast(s > 0, ti.i32)
+                                head_cap: ti.i32 = 100 - start
+                                if head_cap < 0:
+                                    head_cap = 0
+                                head_n: ti.i32 = forced_n
+                                if head_n > head_cap:
+                                    head_n = head_cap
+                                body_n: ti.i32 = forced_n - head_n
 
-                        score_penalty_total += body_n * body_penalty
-                        for k in range(head_n):
-                            note_idx = start + k
-                            if note_idx == 99:
-                                score_penalty_total += body_penalty
-                            else:
-                                scaling: ti.f32 = 1.0 + combo_span_scaled * ti.cast(note_idx + 1, ti.f32)
-                                perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
-                                great_val: ti.i32 = ti.cast(ti.floor(great_penalty_base_f * scaling), ti.i32)
-                                pen: ti.i32 = ti.max(0, perfect_val - great_val)
-                                score_penalty_total += pen
+                                score_penalty_total += body_n * body_penalty
+                                for k in range(head_n):
+                                    note_idx = start + k
+                                    if note_idx == 99:
+                                        score_penalty_total += body_penalty
+                                    else:
+                                        scaling: ti.f32 = 1.0 + combo_span_scaled * ti.cast(note_idx + 1, ti.f32)
+                                        perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
+                                        great_val: ti.i32 = ti.cast(ti.floor(great_penalty_base_f * scaling), ti.i32)
+                                        pen: ti.i32 = ti.max(0, perfect_val - great_val)
+                                        score_penalty_total += pen
+                else:
+                    for s in range(ti.min(n_sections, FG_MAX_SECTIONS)):
+                        forced_n: ti.i32 = forced_applied16[s]
+                        if forced_n > 0:
+                            start = start_idx16[s] + ti.cast(s > 0, ti.i32)
+                            head_cap: ti.i32 = 100 - start
+                            if head_cap < 0:
+                                head_cap = 0
+                            head_n: ti.i32 = forced_n
+                            if head_n > head_cap:
+                                head_n = head_cap
+                            body_n: ti.i32 = forced_n - head_n
+
+                            score_penalty_total += body_n * body_penalty
+                            for k in range(head_n):
+                                note_idx = start + k
+                                if note_idx == 99:
+                                    score_penalty_total += body_penalty
+                                else:
+                                    scaling: ti.f32 = 1.0 + combo_span_scaled * ti.cast(note_idx + 1, ti.f32)
+                                    perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
+                                    great_val: ti.i32 = ti.cast(ti.floor(great_penalty_base_f * scaling), ti.i32)
+                                    pen: ti.i32 = ti.max(0, perfect_val - great_val)
+                                    score_penalty_total += pen
 
                 final_score: ti.i32 = base_score - score_penalty_total
                 if final_score < 0:
@@ -1435,6 +1291,7 @@ def fg_stage1_flat_kernel(
     """
     fg_stage1_clear_wave_best_kernel(int(n_work_items))
     fg_stage1_waves_kernel(
+        bool(int(n_sections) <= 4),
         int(n_work_items),
         int(n_cfg),
         int(cfg_offset),
@@ -1559,7 +1416,7 @@ def fg_stage1_kernel(
         ff_factor: ti.f32 = kernels_helpers.lookup_ref_ff(ff_idx)
 
         fever_acts: ti.i32 = 0
-        if pair_caps_from_timeline != 0:
+        if pair_caps_from_timeline != 0 and song_slot >= 0:
             fever_acts = ti.cast(kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx], ti.i32)
             if fever_acts < 0:
                 fever_acts = 0
@@ -1846,7 +1703,6 @@ def fg_stage1_kernel(
             fg_stage1_packed[g, ftff_idx] = ti.cast(-1, ti.i64) << 32
 
 
-@ti.kernel
 def fg_stage2_recompute_kernel(
     n_genomes: ti.i32,
     n_ftff: ti.i32,
@@ -1872,289 +1728,35 @@ def fg_stage2_recompute_kernel(
     pair_caps_from_timeline: ti.i32,
 ):
     """
-    Stage 2 recompute (no global-best update):
-      - pick best (ftff, cfg) from fg_stage1_packed
-      - recompute auxiliary outputs for that selection
+    Stage 2 recompute (no global-best update).
 
-    This avoids races where Stage-1 tiles update packed winners atomically but
-    write aux fields non-atomically.
+    Delegates to the fused stage-2 kernel with an invalid song_slot sentinel so
+    global-best accumulation is skipped while keeping one recompute implementation.
     """
-    GEM_STAT_TO_ELEMENT: ti.i32 = 3
-    MAX_STAT: ti.i32 = 160
-
-    head_len: ti.i32 = ti.min(total_notes, 100)
-    non_fever_cas: ti.f32 = ti.max(0.0, (ti.cast(total_notes - long_notes, ti.f32) * 0.333))
-
-    for gid in range(n_genomes):
-        best_packed: ti.i64 = ti.cast(-1, ti.i64) << 32
-        best_ftff: ti.i32 = 0
-
-        for f in range(n_ftff):
-            packed = fg_stage1_packed[gid, f]
-            if packed > best_packed:
-                best_packed = packed
-                best_ftff = f
-
-        best_final: ti.i32 = ti.cast(best_packed >> 32, ti.i32)
-        if best_final < 0:
-            continue
-
-        inverted_cfg: ti.i32 = ti.cast(best_packed & 0x7FFFFFFF, ti.i32)
-        best_cfg: ti.i32 = 0x7FFFFFFF - inverted_cfg
-
-        ft_gems: ti.i32 = fg_ft_list[best_ftff]
-        ff_gems: ti.i32 = fg_ff_list[best_ftff]
-        if ft_gems + ff_gems > total_budget:
-            continue
-
-        # Load genome base stats: [pp, cm, fm, p_val, s_val, ft, ff]
-        base_stats = kernels_helpers.genome_base_stats[gid]
-        base_pp: ti.i32 = base_stats[0]
-        base_cm: ti.i32 = base_stats[1]
-        base_fm: ti.i32 = base_stats[2]
-        base_p_val: ti.i32 = base_stats[3]
-        base_s_val: ti.i32 = base_stats[4]
-        base_ft_stat: ti.i32 = base_stats[5]
-        base_ff_stat: ti.i32 = base_stats[6]
-
-        ft_stat_val: ti.i32 = base_ft_stat + (ft_gems * gem_scale_fever)
-        ff_stat_val: ti.i32 = base_ff_stat + (ff_gems * gem_scale_fever)
-        ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
-        ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
-        ff_factor: ti.f32 = kernels_helpers.lookup_ref_ff(ff_idx)
-
-        fever_acts: ti.i32 = 0
-        if pair_caps_from_timeline != 0:
-            fever_acts = ti.cast(kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx], ti.i32)
-            if fever_acts < 0:
-                fever_acts = 0
-
-        non_fever_base_f: ti.f32 = non_fever_cas * ff_factor
-        non_fever_base: ti.i32 = ti.cast(ti.ceil(non_fever_base_f), ti.i32)
-
-        cfg_mode: ti.i32 = fg_cfg_mode_list[best_ftff]
-        cfg_base: ti.i32 = fg_cfg_base_list[best_ftff]
-        fp_targets_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
-        if cfg_mode != 0:
-            local_cfg_idx: ti.i32 = best_cfg - cfg_base
-            if local_cfg_idx < 0:
-                local_cfg_idx = 0
-            fp_targets_vec = _fg_decode_fp_targets_vec(local_cfg_idx, best_ftff, n_sections)
-        cfg_counts_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
-        if cfg_mode != 0:
-            cfg_counts_vec = fp_targets_vec
-        else:
-            if best_cfg >= 0:
-                for s in ti.static(range(FG_MAX_SECTIONS)):
-                    if s < n_sections:
-                        cfg_counts_vec[s] = fg_forced_counts[best_cfg, s]
-
-        m0 = ti.cast(0, ti.u32)
-        m1 = ti.cast(0, ti.u32)
-        m2 = ti.cast(0, ti.u32)
-        m3 = ti.cast(0, ti.u32)
-        body_fever: ti.i32 = 0
-
-        start_idx_vec = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
-        forced_applied = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
-        fill_notes = ti.Vector.zero(ti.i32, FG_MAX_SECTIONS)
-
-        budget: ti.i32 = total_budget - ft_gems - ff_gems
-        if budget < 0:
-            continue
-
-        p_val: ti.i32 = (
-            base_p_val + (ft_gems * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff_gems * GEM_STAT_TO_ELEMENT * is_p_ff)
-        )
-        s_val: ti.i32 = (
-            base_s_val + (ft_gems * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff_gems * GEM_STAT_TO_ELEMENT * is_s_ff)
-        )
-
-        current_idx: ti.i32 = 0
-        sec: ti.i32 = 0
-        carry_time: ti.f32 = 0.0
-        carry_idx: ti.i32 = 0
-        while current_idx < total_notes:
-            base_notes_s: ti.i32 = non_fever_base - 1 if sec == 0 else non_fever_base
-            if base_notes_s < 0:
-                base_notes_s = 0
-
-            fp_target: ti.i32 = 0
-            if sec < n_sections:
-                if cfg_mode != 0:
-                    fp_target = fp_targets_vec[sec]
-                else:
-                    fp_target = fg_forced_counts[best_cfg, sec]
-                if fp_target < 0:
-                    fp_target = 0
-
-                # Clamp by per-pair dynamic cap (stored as forced-count caps)
-                if sec < FG_MAX_SECTIONS:
-                    pair_cap_forced: ti.i32 = 0
-                    if pair_caps_from_timeline != 0:
-                        if sec < fever_acts:
-                            pair_cap_forced = _fg_section_forced_cap(sec)
-                        else:
-                            pair_cap_forced = 0
-                    else:
-                        pair_cap_forced = fg_pair_caps[ft_idx, ff_idx, sec]
-                    if pair_cap_forced < 0:
-                        pair_cap_forced = 0
-                    notes_with_cap = ti.ceil(non_fever_base_f + ti.cast(pair_cap_forced, ti.f32) * 0.5)
-                    fp_cap: ti.i32 = ti.cast(notes_with_cap, ti.i32) - non_fever_base
-                    fp_target = ti.min(fp_target, fp_cap)
-
-            forced_val: ti.i32 = _forced_from_fp_target(non_fever_base_f, non_fever_base, fp_target, non_fever_base)
-            fp_calc: ti.i32 = fp_target
-
-            notes_to_fill: ti.i32 = base_notes_s + fp_calc
-            section_start: ti.i32 = current_idx
-            end_normal: ti.i32 = ti.min(total_notes, section_start + notes_to_fill)
-            actual_notes: ti.i32 = ti.max(0, end_normal - section_start)
-            forced_app: ti.i32 = ti.min(forced_val, actual_notes)
-
-            if forced_app > 0:
-                forced_start: ti.i32 = section_start + (1 - ti.cast(sec == 0, ti.i32))
-                forced_end: ti.i32 = forced_start + forced_app - 1
-                forced_end = ti.min(forced_end, end_normal - 1)
-                if forced_end >= forced_start and forced_end < total_notes:
-                    forced_t: ti.f32 = song_timestamps_great_candidate[forced_end]
-                    if forced_t > carry_time:
-                        carry_time = forced_t
-                        carry_idx = forced_end
-
-            if sec < n_sections and sec < FG_MAX_SECTIONS:
-                start_idx_vec[sec] = section_start
-                forced_applied[sec] = forced_app
-                fill_notes[sec] = fp_calc
-
-            current_idx = end_normal
-            if current_idx >= total_notes:
-                break
-
-            fever_end_idx: ti.i32 = _fg_fever_end_idx_from_tables(
-                current_idx, carry_time, carry_idx, ft_idx, total_notes
-            )
-            if fever_end_idx <= current_idx:
-                fever_end_idx = ti.min(total_notes, current_idx + 1)
-
-            if current_idx < head_len:
-                head_end = ti.min(head_len, fever_end_idx)
-                masks = _or_head_mask_range(m0, m1, m2, m3, current_idx, head_end)
-                m0 = masks[0]
-                m1 = masks[1]
-                m2 = masks[2]
-                m3 = masks[3]
-
-            if fever_end_idx > head_len:
-                body_start = head_len if current_idx < head_len else current_idx
-                if fever_end_idx > body_start:
-                    body_fever += fever_end_idx - body_start
-
-            current_idx = fever_end_idx
-            sec += 1
-
-        body_len = ti.max(total_notes - head_len, 0)
-        body_normal: ti.i32 = ti.max(body_len - body_fever, 0)
-
-        opt = _optimize_core_bits(
-            budget,
-            base_pp,
-            base_cm,
-            base_fm,
-            p_val,
-            s_val,
-            is_p_pp,
-            is_s_pp,
-            is_p_cm,
-            is_s_cm,
-            is_p_fm,
-            is_s_fm,
-            is_p_ov,
-            is_s_ov,
-            m0,
-            m1,
-            m2,
-            m3,
-            head_len,
-            body_fever,
-            body_normal,
-        )
-
-        base_score: ti.i32 = opt[0]
-        final_pp: ti.i32 = opt[1]
-        final_cm: ti.i32 = opt[2]
-        final_p_val: ti.i32 = opt[4]
-        final_s_val: ti.i32 = opt[5]
-        gems_pp: ti.i32 = opt[6]
-        gems_cm: ti.i32 = opt[7]
-        gems_fm: ti.i32 = opt[8]
-        gems_ov: ti.i32 = opt[9]
-
-        pp_factor: ti.f32 = kernels_helpers.lookup_ref_pp(final_pp)
-        combo_mul: ti.f32 = kernels_helpers.lookup_ref_cm(final_cm)
-        combo_span_scaled: ti.f32 = (combo_mul - 1.0) * 0.01
-
-        base_value: ti.f32 = ti.cast((final_p_val * 2) + final_s_val, ti.f32) + pp_factor
-        combo_value: ti.i32 = ti.cast(ti.floor(base_value * combo_mul), ti.i32)
-
-        great_penalty_base_head: ti.i32 = (
-            ti.cast(ti.floor(ti.cast(final_p_val * 2, ti.f32) * (2.0 / 3.0)), ti.i32)
-            + ti.cast(ti.floor(ti.cast(final_s_val, ti.f32) * (2.0 / 3.0)), ti.i32)
-            + 150
-        )
-        great_penalty_base_raw: ti.f32 = (
-            (ti.cast(final_p_val * 2, ti.f32) * (2.0 / 3.0)) + (ti.cast(final_s_val, ti.f32) * (2.0 / 3.0)) + 150.0
-        )
-        great_combo_value: ti.i32 = ti.cast(ti.floor(great_penalty_base_raw * combo_mul), ti.i32)
-        body_penalty: ti.i32 = ti.max(0, combo_value - great_combo_value)
-        great_penalty_base_f: ti.f32 = ti.cast(great_penalty_base_head, ti.f32)
-
-        score_penalty_total: ti.i32 = 0
-        fill_penalty_total: ti.i32 = 0
-
-        for s in ti.static(range(FG_MAX_SECTIONS)):
-            if s < n_sections:
-                fp_notes: ti.i32 = fill_notes[s]
-                fill_penalty_total += fp_notes * combo_value
-
-                forced_n: ti.i32 = forced_applied[s]
-                if forced_n > 0:
-                    start = start_idx_vec[s] + (1 if s > 0 else 0)
-                    head_cap: ti.i32 = 100 - start
-                    if head_cap < 0:
-                        head_cap = 0
-                    head_n: ti.i32 = forced_n
-                    if head_n > head_cap:
-                        head_n = head_cap
-                    body_n: ti.i32 = forced_n - head_n
-
-                    score_penalty_total += body_n * body_penalty
-
-                    for k in range(head_n):
-                        note_idx = start + k
-                        if note_idx == 99:
-                            score_penalty_total += body_penalty
-                        else:
-                            scaling: ti.f32 = 1.0 + combo_span_scaled * ti.cast(note_idx + 1, ti.f32)
-                            perfect_val: ti.i32 = ti.cast(ti.floor(base_value * scaling), ti.i32)
-                            great_val: ti.i32 = ti.cast(ti.floor(great_penalty_base_f * scaling), ti.i32)
-                            score_penalty_total += ti.max(0, perfect_val - great_val)
-
-        # Write per-call best (consistent with best_packed)
-        fg_best_final_score[gid] = best_final
-        fg_best_base_score[gid] = base_score
-        fg_best_cfg_idx[gid] = best_cfg
-        fg_best_ft[gid] = ft_gems
-        fg_best_ff[gid] = ff_gems
-        fg_best_g_pp[gid] = gems_pp
-        fg_best_g_cm[gid] = gems_cm
-        fg_best_g_fm[gid] = gems_fm
-        fg_best_g_ov[gid] = gems_ov
-        fg_best_score_penalty[gid] = score_penalty_total
-        fg_best_fill_penalty[gid] = fill_penalty_total
-        for s in ti.static(range(FG_MAX_SECTIONS)):
-            fg_best_cfg_counts[gid, s] = cfg_counts_vec[s]
+    fg_stage2_recompute_and_update_global_best_kernel(
+        n_genomes,
+        n_ftff,
+        total_notes,
+        long_notes,
+        last_note_time,
+        total_budget,
+        gem_scale_fever,
+        n_sections,
+        is_p_ft,
+        is_s_ft,
+        is_p_ff,
+        is_s_ff,
+        is_p_pp,
+        is_s_pp,
+        is_p_cm,
+        is_s_cm,
+        is_p_fm,
+        is_s_fm,
+        is_p_ov,
+        is_s_ov,
+        -1,
+        pair_caps_from_timeline,
+    )
 
 
 @ti.kernel
@@ -2465,40 +2067,41 @@ def fg_stage2_recompute_and_update_global_best_kernel(
         fg_best_score_penalty[gid] = score_penalty_total
         fg_best_fill_penalty[gid] = fill_penalty_total
 
-        # Update global best for this song_slot (same tie-break as other FG global-best updates)
-        old_score = fg_global_best_final_score[song_slot, gid]
-        old_cfg = fg_global_best_cfg_idx[song_slot, gid]
-        old_ft = fg_global_best_ft[song_slot, gid]
-        old_ff = fg_global_best_ff[song_slot, gid]
+        # Update global best only when accumulation is enabled (song_slot >= 0).
+        if song_slot >= 0:
+            old_score = fg_global_best_final_score[song_slot, gid]
+            old_cfg = fg_global_best_cfg_idx[song_slot, gid]
+            old_ft = fg_global_best_ft[song_slot, gid]
+            old_ff = fg_global_best_ff[song_slot, gid]
 
-        better = False
-        if best_final > old_score:
-            better = True
-        elif best_final == old_score:
-            if old_cfg < 0 and best_cfg >= 0:
+            better = False
+            if best_final > old_score:
                 better = True
-            elif best_cfg >= 0 and best_cfg < old_cfg:
-                better = True
-            elif best_cfg == old_cfg:
-                if ft_gems < old_ft:
+            elif best_final == old_score:
+                if old_cfg < 0 and best_cfg >= 0:
                     better = True
-                elif ft_gems == old_ft and ff_gems < old_ff:
+                elif best_cfg >= 0 and best_cfg < old_cfg:
                     better = True
+                elif best_cfg == old_cfg:
+                    if ft_gems < old_ft:
+                        better = True
+                    elif ft_gems == old_ft and ff_gems < old_ff:
+                        better = True
 
-        if better:
-            fg_global_best_final_score[song_slot, gid] = best_final
-            fg_global_best_base_score[song_slot, gid] = base_score
-            fg_global_best_cfg_idx[song_slot, gid] = best_cfg
-            fg_global_best_ft[song_slot, gid] = ft_gems
-            fg_global_best_ff[song_slot, gid] = ff_gems
-            fg_global_best_g_pp[song_slot, gid] = gems_pp
-            fg_global_best_g_cm[song_slot, gid] = gems_cm
-            fg_global_best_g_fm[song_slot, gid] = gems_fm
-            fg_global_best_g_ov[song_slot, gid] = gems_ov
-            fg_global_best_score_penalty[song_slot, gid] = score_penalty_total
-            fg_global_best_fill_penalty[song_slot, gid] = fill_penalty_total
-            for s in ti.static(range(FG_MAX_SECTIONS)):
-                fg_global_best_cfg_counts[song_slot, gid, s] = cfg_counts_vec[s]
+            if better:
+                fg_global_best_final_score[song_slot, gid] = best_final
+                fg_global_best_base_score[song_slot, gid] = base_score
+                fg_global_best_cfg_idx[song_slot, gid] = best_cfg
+                fg_global_best_ft[song_slot, gid] = ft_gems
+                fg_global_best_ff[song_slot, gid] = ff_gems
+                fg_global_best_g_pp[song_slot, gid] = gems_pp
+                fg_global_best_g_cm[song_slot, gid] = gems_cm
+                fg_global_best_g_fm[song_slot, gid] = gems_fm
+                fg_global_best_g_ov[song_slot, gid] = gems_ov
+                fg_global_best_score_penalty[song_slot, gid] = score_penalty_total
+                fg_global_best_fill_penalty[song_slot, gid] = fill_penalty_total
+                for s in ti.static(range(FG_MAX_SECTIONS)):
+                    fg_global_best_cfg_counts[song_slot, gid, s] = cfg_counts_vec[s]
 
 
 @ti.kernel

@@ -9,10 +9,11 @@ reference tables + base genome stats fields for scoring.
 from __future__ import annotations
 
 import os
+import numpy as np
 import taichi as ti
 
 from ..runtime import init_taichi_vulkan, is_initialized
-from ..fields import MAX_GENOMES, MAX_SONG_SLOTS
+from ..fields import IS_METAL, MAX_GENOMES, MAX_SONG_SLOTS
 
 # ============================================================================
 # CONSTANTS
@@ -38,6 +39,7 @@ except Exception:
 FG_DOWNLOAD_BATCH_MAX = max(1, min(int(_fg_download_batch_env), 256))
 FG_PACKED_COLS = 11 + FG_MAX_SECTIONS
 FG_SELECTED_PACKED_COLS = 12 + FG_MAX_SECTIONS
+_FG_SECTION_FORCED_CAPS_DEFAULT = (50, 30, 15, 10, 8, 6, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4)
 
 # Flattened parallelization: MAX_GENOMES * FG_MAX_FTFF threads
 # Each thread processes ONE config at a time (chunked)
@@ -61,6 +63,7 @@ fg_fever_end_idx_great_candidate: ti.Field | None = None  # (FG_MAX_SONG_NOTES, 
 # FG finder inputs (GPU-resident)
 # Stores fill-penalty targets (fp) per section (not raw forced counts).
 fg_forced_counts: ti.Field | None = None  # (FG_MAX_CONFIGS, FG_MAX_SECTIONS) i32
+fg_section_forced_caps: ti.Field | None = None  # (FG_MAX_SECTIONS,) i32
 fg_pair_caps: ti.Field | None = None  # (FG_MAX_STAT+1, FG_MAX_STAT+1, FG_MAX_SECTIONS) i32
 fg_ft_list: ti.Field | None = None  # (FG_MAX_FTFF,) i32
 fg_ff_list: ti.Field | None = None  # (FG_MAX_FTFF,) i32
@@ -172,6 +175,7 @@ def reset_fields_state() -> None:
     global fg_fever_end_idx_song, fg_fever_end_idx_great_candidate
     global \
         fg_forced_counts, \
+        fg_section_forced_caps, \
         fg_pair_caps, \
         fg_ft_list, \
         fg_ff_list, \
@@ -194,6 +198,7 @@ def reset_fields_state() -> None:
     fg_fever_end_idx_song = None
     fg_fever_end_idx_great_candidate = None
     fg_forced_counts = None
+    fg_section_forced_caps = None
     fg_pair_caps = None
     fg_ft_list = None
     fg_ff_list = None
@@ -283,6 +288,7 @@ def bind_fields(kernels_module) -> None:
     kernels_module.fg_fever_end_idx_song = fg_fever_end_idx_song
     kernels_module.fg_fever_end_idx_great_candidate = fg_fever_end_idx_great_candidate
     kernels_module.fg_forced_counts = fg_forced_counts
+    kernels_module.fg_section_forced_caps = fg_section_forced_caps
     kernels_module.fg_pair_caps = fg_pair_caps
     kernels_module.fg_ft_list = fg_ft_list
     kernels_module.fg_ff_list = fg_ff_list
@@ -354,6 +360,7 @@ def allocate_fields() -> None:
     global fg_fever_end_idx_song, fg_fever_end_idx_great_candidate
     global \
         fg_forced_counts, \
+        fg_section_forced_caps, \
         fg_pair_caps, \
         fg_ft_list, \
         fg_ff_list, \
@@ -380,7 +387,11 @@ def allocate_fields() -> None:
     fg_fever_end_idx_song = ti.field(dtype=ti.i32, shape=(FG_MAX_SONG_NOTES, FG_MAX_STAT + 1))
     fg_fever_end_idx_great_candidate = ti.field(dtype=ti.i32, shape=(FG_MAX_SONG_NOTES, FG_MAX_STAT + 1))
 
-    fg_forced_counts = ti.field(dtype=ti.i32, shape=(FG_MAX_CONFIGS, FG_MAX_SECTIONS))
+    fg_forced_counts = ti.field(dtype=ti.i16, shape=(FG_MAX_CONFIGS, FG_MAX_SECTIONS))
+    fg_section_forced_caps = ti.field(dtype=ti.i32, shape=FG_MAX_SECTIONS)
+    caps_np = np.zeros((FG_MAX_SECTIONS,), dtype=np.int32)
+    caps_np[: len(_FG_SECTION_FORCED_CAPS_DEFAULT)] = np.asarray(_FG_SECTION_FORCED_CAPS_DEFAULT, dtype=np.int32)
+    fg_section_forced_caps.from_numpy(caps_np)
     fg_pair_caps = ti.field(dtype=ti.i32, shape=(FG_MAX_STAT + 1, FG_MAX_STAT + 1, FG_MAX_SECTIONS))
     fg_ft_list = ti.field(dtype=ti.i32, shape=FG_MAX_FTFF)
     fg_ff_list = ti.field(dtype=ti.i32, shape=FG_MAX_FTFF)
@@ -406,15 +417,27 @@ def allocate_fields() -> None:
     fg_best_cfg_counts = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_SECTIONS))
     fg_best_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_PACKED_COLS))
 
-    fg_stage1_final_score = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
-    fg_stage1_base_score = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
-    fg_stage1_cfg_idx = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
-    fg_stage1_g_pp = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
-    fg_stage1_g_cm = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
-    fg_stage1_g_fm = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
-    fg_stage1_g_ov = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
-    fg_stage1_score_penalty = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
-    fg_stage1_fill_penalty = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
+    if IS_METAL:
+        fg_stage1_final_score = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
+        fg_stage1_base_score = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
+        fg_stage1_cfg_idx = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
+        fg_stage1_g_pp = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
+        fg_stage1_g_cm = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
+        fg_stage1_g_fm = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
+        fg_stage1_g_ov = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
+        fg_stage1_score_penalty = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
+        fg_stage1_fill_penalty = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
+    else:
+        # Vulkan path writes/reads packed stage-1 winners only.
+        fg_stage1_final_score = None
+        fg_stage1_base_score = None
+        fg_stage1_cfg_idx = None
+        fg_stage1_g_pp = None
+        fg_stage1_g_cm = None
+        fg_stage1_g_fm = None
+        fg_stage1_g_ov = None
+        fg_stage1_score_penalty = None
+        fg_stage1_fill_penalty = None
 
     # Packed 64-bit field for atomic (score, cfg_idx) updates
     fg_stage1_packed = ti.field(dtype=ti.i64, shape=(MAX_GENOMES, FG_MAX_FTFF))
@@ -528,9 +551,10 @@ def warmup_kernels() -> None:
     fg_kernels.fg_reset_best_kernel(n_genomes)
 
     # Warmup stage1 init kernel
-    fg_kernels.fg_stage1_init_kernel(n_genomes, n_ftff)
-    # Vulkan runtime uses the minimal packed-only init; precompile it too.
-    if not IS_METAL:
+    if IS_METAL:
+        fg_kernels.fg_stage1_init_kernel(n_genomes, n_ftff)
+    else:
+        # Vulkan runtime uses the minimal packed-only init; precompile it.
         fg_kernels.fg_stage1_init_packed_kernel(n_genomes, n_ftff)
         fg_kernels.fg_reduce_cfg_total_len_max_kernel(n_ftff)
 
@@ -575,6 +599,7 @@ def warmup_kernels() -> None:
         fg_kernels.fg_build_flat_work_kernel(n_genomes, n_ftff)
         fg_kernels.fg_stage1_clear_wave_best_kernel(n_work_items)
         fg_kernels.fg_stage1_waves_kernel(
+            bool(int(n_sections) <= 4),
             n_work_items,
             n_cfg,
             cfg_offset,

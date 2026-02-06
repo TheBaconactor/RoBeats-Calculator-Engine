@@ -229,19 +229,8 @@ def compute_timeline_grid_kernel(
             gap,
         )
 
-        # Optionally write unpacked masks for legacy/debug consumers.
-        if write_unpacked_masks != 0:
-            for i in range(MAX_HEAD):
-                is_fever: ti.i8 = 0
-                if i < 32:
-                    is_fever = ti.cast((m0 >> ti.u32(i)) & 1, ti.i8)
-                elif i < 64:
-                    is_fever = ti.cast((m1 >> ti.u32(i - 32)) & 1, ti.i8)
-                elif i < 96:
-                    is_fever = ti.cast((m2 >> ti.u32(i - 64)) & 1, ti.i8)
-                else:
-                    is_fever = ti.cast((m3 >> ti.u32(i - 96)) & 1, ti.i8)
-                kernels_helpers.grid_fever_masks[song_slot, ft_idx, ff_idx, i] = is_fever
+        # Unpacked grid_fever_masks writes are intentionally skipped in production.
+        # Bitpacked `grid_fever_masks_bits` is the canonical timeline representation.
 
 
 @ti.kernel

@@ -16,6 +16,20 @@ import importlib.util
 
 import numpy as np
 
+_TRUTHY_ENV = {"1", "true", "yes", "on"}
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return str(os.environ.get(name, default) or "").strip().lower() in _TRUTHY_ENV
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.environ.get(name, str(default)) or str(default)).strip())
+    except Exception:
+        return int(default)
+
+
 # Support deterministic testing via GA_SEED environment variable
 _GA_SEED = os.environ.get("GA_SEED")
 if _GA_SEED is not None:
@@ -72,7 +86,13 @@ def _require_gpu_api():
 
 
 # Cached env config for GA_FORCE_COLD_START (avoids repeated env lookups)
-_GA_FORCE_COLD_START: bool = os.environ.get("GA_FORCE_COLD_START", "").strip().lower() in {"1", "true", "yes", "on"}
+_GA_FORCE_COLD_START = _env_flag("GA_FORCE_COLD_START", "")
+_PERF_TIMING = _env_flag("PERF_TIMING", "0")
+_GPU_NATIVE_GA_LOG_ISLAND_MODEL = _env_flag("GPU_NATIVE_GA_LOG_ISLAND_MODEL", "0")
+_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS = _env_int("GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0)
+_GPU_NATIVE_GA_VULKAN_RETRIES = _env_int("GPU_NATIVE_GA_VULKAN_RETRIES", 1)
+_GPU_NATIVE_GA_BATCH_RUNS = _env_int("GPU_NATIVE_GA_BATCH_RUNS", 0)
+_GPU_NATIVE_GA_LOG_PROGRESS = _env_flag("GPU_NATIVE_GA_LOG_PROGRESS", "0")
 
 
 def _build_base_stats_array(base_stats_fixed: dict, cfg_data: dict) -> tuple:
@@ -398,7 +418,7 @@ def decode_gpu_native_ga_runs_payload(
             eff_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT) or FG_CANDIDATE_LIMIT)
         eff_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(eff_limit)))
 
-        perf = str(os.environ.get("PERF_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+        perf = _PERF_TIMING
         t_total = time.perf_counter() if perf else 0.0
 
         try:
@@ -601,27 +621,19 @@ def decode_gpu_native_ga_runs_payload(
         g_cm = results_mat[:, 4]
         g_fm = results_mat[:, 5]
         g_ov = results_mat[:, 6]
-        scores_list = scores_vec.tolist()
-        g_ft_list = g_ft.tolist()
-        g_ff_list = g_ff.tolist()
-        g_pp_list = g_pp.tolist()
-        g_cm_list = g_cm.tolist()
-        g_fm_list = g_fm.tolist()
-        g_ov_list = g_ov.tolist()
-        sel_run_idx_list = sel_run_idx.tolist()
-        sel_rows_list = sel_rows.tolist()
+        decode_genome = registry.decode_genome
 
         for i in range(n_cand):
-            score_val = int(scores_list[i])
+            score_val = int(scores_vec[i])
             ids_row = genome_ids_mat[i]
-            genome = registry.decode_genome(ids_row)
+            genome = decode_genome(ids_row)
 
-            g_ft_i = int(g_ft_list[i])
-            g_ff_i = int(g_ff_list[i])
-            g_pp_i = int(g_pp_list[i])
-            g_cm_i = int(g_cm_list[i])
-            g_fm_i = int(g_fm_list[i])
-            g_ov_i = int(g_ov_list[i])
+            g_ft_i = int(g_ft[i])
+            g_ff_i = int(g_ff[i])
+            g_pp_i = int(g_pp[i])
+            g_cm_i = int(g_cm[i])
+            g_fm_i = int(g_fm[i])
+            g_ov_i = int(g_ov[i])
 
             data_obj = {
                 "Score": score_val,
@@ -635,8 +647,8 @@ def decode_gpu_native_ga_runs_payload(
                 },
                 "Selected Element": sel_color,
                 "BaseScore": score_val,
-                "_ga_gpu_run_idx": int(sel_run_idx_list[i]),
-                "_ga_gpu_row_idx": int(sel_rows_list[i]),
+                "_ga_gpu_run_idx": int(sel_run_idx[i]),
+                "_ga_gpu_row_idx": int(sel_rows[i]),
             }
 
             if include_stats and stat_names is not None and base_stats_arr is not None and item_stats_sum is not None:
@@ -714,7 +726,7 @@ def decode_gpu_native_ga_runs_payload(
         fg_candidate_limit = int(cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT) or FG_CANDIDATE_LIMIT)
     fg_candidate_limit = max(LOADOUTS_PER_SONG_LIMIT, min(5000, int(fg_candidate_limit)))
 
-    perf = str(os.environ.get("PERF_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    perf = _PERF_TIMING
     t_total = time.perf_counter() if perf else 0.0
 
     best_global_score = -1
@@ -1090,11 +1102,12 @@ def decode_gpu_native_ga_runs_payload(
     final_stats_mat = base_stats_arr + item_stats_sum + gem_contributions
 
     unique_evaluated: list[dict] = []
+    decode_genome = registry.decode_genome
     decode_names = getattr(registry, "decode_names", None)
     for i in range(n_cand):
         score_val = int(scores_vec[i])
         ids_row = genome_ids_mat[i]
-        genome = registry.decode_genome(ids_row)
+        genome = decode_genome(ids_row)
         if callable(decode_names):
             names = decode_names(ids_row)
             gear_names = names[:6]
@@ -1147,14 +1160,6 @@ def decode_gpu_native_ga_runs_payload(
             "GearNames": gear_names,
             "MiniNames": mini_names,
             "Data": data_obj,
-            "Details": {
-                "FeverGems": g_ft_i,
-                "FeverFillGems": g_ff_i,
-                "PP": g_pp_i,
-                "CM": g_cm_i,
-                "FM": g_fm_i,
-                "OV": g_ov_i,
-            },
         }
         unique_evaluated.append(cand_data)
 
@@ -1331,7 +1336,7 @@ def _run_gpu_native_ga(
     island_starts = [i * island_size for i in range(num_islands)]
     island_starts.append(n_genomes)  # Sentinel for last island end
 
-    if os.environ.get("GPU_NATIVE_GA_LOG_ISLAND_MODEL", "0").strip().lower() in {"1", "true", "yes", "on"}:
+    if _GPU_NATIVE_GA_LOG_ISLAND_MODEL:
         print(f"  >> Island Model: {num_islands} islands, ~{island_size} genomes each")
 
     # Track population snapshot - only downloaded when best improves or during migrations
@@ -1597,13 +1602,13 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     gpu_fields.configure_ga_run_buffers(max_runs=num_runs, max_genomes=n_genomes)
 
     # Optional stability toggles (mirrors solve_coevolution_genetic GPU-native path)
-    reset_every_runs_env = os.environ.get("GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", "0")
+    reset_every_runs_env = str(_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS)
     try:
         reset_every_runs = int(reset_every_runs_env)
     except Exception:
         reset_every_runs = 0
 
-    max_retries_env = os.environ.get("GPU_NATIVE_GA_VULKAN_RETRIES", "1")
+    max_retries_env = str(_GPU_NATIVE_GA_VULKAN_RETRIES)
     try:
         max_retries = int(max_retries_env)
     except Exception:
@@ -1679,7 +1684,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     if max_runs_by_genomes < 1:
         max_runs_by_genomes = 1
 
-    batch_runs_env = os.environ.get("GPU_NATIVE_GA_BATCH_RUNS", "0").strip()
+    batch_runs_env = str(_GPU_NATIVE_GA_BATCH_RUNS).strip()
     try:
         batch_runs_override = int(batch_runs_env)
     except Exception:
@@ -1693,7 +1698,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     payload_segments: list[np.ndarray] = []
 
-    perf = str(os.environ.get("PERF_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+    perf = _PERF_TIMING
     phase_timing = perf and env_flag("GPU_NATIVE_GA_PHASE_TIMING", "0")
     if phase_timing:
         import taichi as ti
@@ -2336,13 +2341,13 @@ def solve_coevolution_genetic(
         # overhead (ti.reset() + ti.init() + field allocation) and can dominate
         # throughput when processing large queues. Enable only if you still hit
         # Vulkan backend instability.
-        reset_every_runs_env = os.environ.get("GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", "0")
+        reset_every_runs_env = str(_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS)
         try:
             reset_every_runs = int(reset_every_runs_env)
         except Exception:
             reset_every_runs = 0
 
-        max_retries_env = os.environ.get("GPU_NATIVE_GA_VULKAN_RETRIES", "1")
+        max_retries_env = str(_GPU_NATIVE_GA_VULKAN_RETRIES)
         try:
             max_retries = int(max_retries_env)
         except Exception:
@@ -2386,7 +2391,7 @@ def solve_coevolution_genetic(
                 )
                 segment_pop_generated = True
 
-            if os.environ.get("GPU_NATIVE_GA_LOG_PROGRESS", "0").strip().lower() in {"1", "true", "yes", "on"}:
+            if _GPU_NATIVE_GA_LOG_PROGRESS:
                 print(f"  >> GPU GA Run {run_idx + 1}/{num_runs}...")
 
             if reset_every_runs > 0 and run_idx > 0 and (run_idx % reset_every_runs) == 0:

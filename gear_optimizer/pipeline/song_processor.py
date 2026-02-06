@@ -87,15 +87,30 @@ _gpu_profiler = get_gpu_profiler()
 # - HumanHitSim.Seed=0 requires re-applying the sim each repeat (unique seed),
 #   so we cache the *base* calc_song and clone it per run before applying HitSim.
 # ---------------------------------------------------------------------------
+_CFG_HASH_CACHE: dict[int, tuple[int, str]] = {}
+_CFG_HASH_CACHE_LOCK = threading.Lock()
+
+
 def _stable_cfg_hash(cfg_dict: dict | None) -> str:
     if not isinstance(cfg_dict, dict) or not cfg_dict:
         return "cfg0"
+    cfg_id = int(id(cfg_dict))
+    cfg_len = int(len(cfg_dict))
+    with _CFG_HASH_CACHE_LOCK:
+        cached = _CFG_HASH_CACHE.get(cfg_id)
+        if cached is not None and int(cached[0]) == cfg_len:
+            return str(cached[1])
     try:
         payload = json.dumps(cfg_dict, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     except Exception:
         payload = repr(sorted(cfg_dict.items(), key=lambda kv: str(kv[0])))
     h = hashlib.sha1(payload.encode("utf-8", errors="replace")).hexdigest()
-    return h[:16]
+    out = h[:16]
+    with _CFG_HASH_CACHE_LOCK:
+        _CFG_HASH_CACHE[cfg_id] = (cfg_len, out)
+        if len(_CFG_HASH_CACHE) > 32:
+            _CFG_HASH_CACHE.clear()
+    return out
 
 
 _BASE_CALC_SONG_CACHE_MAX = max(1, int(os.environ.get("BASE_CALC_SONG_CACHE_MAX", "64") or "64"))

@@ -72,14 +72,43 @@ _ITEM_STATS_CACHE: dict = {"sig": None, "n_items": None, "array_id": None, "slot
 _BASE_FIXED_STATS_CACHE: tuple | None = None
 # Cache state for island boundaries (simple tuple comparison)
 _ISLAND_BOUNDARIES_CACHE: tuple | None = None
+_ISLAND_ELITES_CACHE: tuple | None = None
+_ISLAND_ELITES_UPLOAD_BUFFER: np.ndarray | None = None
 
 
 def reset_ga_upload_caches() -> None:
     """Reset upload caches after ti.reset() or when switching songs."""
     global _ITEM_STATS_CACHE, _BASE_FIXED_STATS_CACHE, _ISLAND_BOUNDARIES_CACHE
+    global _ISLAND_ELITES_CACHE, _ISLAND_ELITES_UPLOAD_BUFFER
     _ITEM_STATS_CACHE = {"sig": None, "n_items": None, "array_id": None, "slot_start_id": None, "slot_count_id": None}
     _BASE_FIXED_STATS_CACHE = None
     _ISLAND_BOUNDARIES_CACHE = None
+    _ISLAND_ELITES_CACHE = None
+    _ISLAND_ELITES_UPLOAD_BUFFER = None
+
+
+def _upload_island_elites(elite_indices: np.ndarray, n_elites: int) -> None:
+    """Upload manual elite indices into GPU-resident `island_elite_indices`."""
+    global _ISLAND_ELITES_CACHE, _ISLAND_ELITES_UPLOAD_BUFFER
+
+    n_elites = int(n_elites)
+    if n_elites <= 0:
+        return
+    elite_arr = np.asarray(elite_indices[:n_elites], dtype=np.int32)
+    key = tuple(int(x) for x in elite_arr.tolist())
+    if _ISLAND_ELITES_CACHE == key:
+        return
+
+    buf = _ISLAND_ELITES_UPLOAD_BUFFER
+    if buf is None or int(buf.shape[0]) != int(fields.MAX_GENOMES):
+        buf = np.zeros((fields.MAX_GENOMES,), dtype=np.int32)
+        _ISLAND_ELITES_UPLOAD_BUFFER = buf
+
+    buf[:n_elites] = elite_arr
+    if n_elites < int(fields.MAX_GENOMES):
+        buf[n_elites:] = 0
+    fields.island_elite_indices.from_numpy(buf)
+    _ISLAND_ELITES_CACHE = key
 
 
 # ============================================================================
@@ -785,20 +814,27 @@ def ga_next_generation(
     else:
         mr_fp = np.uint32(int(mr * 4294967295.0))
 
-    # Step 1+2: FUSED Selection + Crossover + Mutation (was 2 kernels, now 1)
-    kernels.ga_select_crossover_mutate_kernel(n_genomes, n_slots, tournament_k, mr_fp)
-
-    # Step 3: Elitism - copy elite genomes to front of next generation
+    n_elites = 0
     if elite_count > 0:
         if elite_indices is None:
-            # Default: use first elite_count genomes as elites
-            elite_indices = np.arange(elite_count, dtype=np.int32)
+            elite_arr = np.arange(elite_count, dtype=np.int32)
         else:
-            elite_indices = np.asarray(elite_indices[:elite_count], dtype=np.int32)
-        kernels.ga_copy_elites_kernel(len(elite_indices), n_slots, elite_indices)
+            elite_arr = np.asarray(elite_indices[:elite_count], dtype=np.int32)
+        n_elites = int(min(n_genomes, int(elite_arr.shape[0])))
+        if n_elites > 0:
+            _upload_island_elites(elite_arr, n_elites)
 
-    # Step 4: Swap buffers (next -> current)
-    kernels.ga_swap_populations_kernel(n_genomes, n_slots)
+    # Use the fused next-generation kernel so legacy selection/crossover kernels
+    # are no longer on the hot path.
+    kernels.ga_next_generation_full_kernel(
+        int(n_genomes),
+        int(n_slots),
+        int(n_elites),
+        int(tournament_k),
+        mr_fp,
+        np.uint32(0),  # no immigrants in legacy API
+    )
+    kernels.ga_swap_and_inherit_hints_kernel(int(n_genomes), int(n_slots))
 
 
 def ga_next_generation_gpu_elites(
@@ -848,15 +884,16 @@ def ga_next_generation_gpu_elites(
     else:
         mr_fp = np.uint32(int(mr * 4294967295.0))
 
-    # Step 1+2: FUSED Selection + Crossover + Mutation
-    kernels.ga_select_crossover_mutate_kernel(n_genomes, n_slots, tournament_k, mr_fp)
-
-    # Step 3: Elitism - copy elite genomes from GPU-resident island_elite_indices
-    if n_elites > 0:
-        kernels.ga_copy_island_elites_kernel(n_elites, n_slots)
-
-    # Step 4: Swap buffers (next -> current)
-    kernels.ga_swap_populations_kernel(n_genomes, n_slots)
+    # Use fused kernel path (selection+crossover+mutation+elitism), then swap.
+    kernels.ga_next_generation_full_kernel(
+        int(n_genomes),
+        int(n_slots),
+        int(n_elites),
+        int(tournament_k),
+        mr_fp,
+        np.uint32(0),  # no immigrants in this API
+    )
+    kernels.ga_swap_and_inherit_hints_kernel(int(n_genomes), int(n_slots))
 
 
 def ga_next_generation_fused(
@@ -919,13 +956,19 @@ def ga_next_generation_fused(
     else:
         ir_fp = np.uint32(int(ir * 4294967295.0))
 
-    # FUSED: Selection + Crossover + Mutation + Elitism (+ optional immigrants) (all in one kernel)
-    kernels.ga_next_generation_full_islands_kernel(
-        n_genomes,
-        n_slots,
-        n_islands,
-        elites_per_island,
-        tournament_k,
+    # Precompute island elites once, then run fused next-gen using GPU-resident elite indices.
+    elites_per_island_eff = max(1, int(elites_per_island))
+    n_elites = min(int(n_genomes), int(n_islands) * int(elites_per_island_eff))
+    kernels.ga_find_island_elites_kernel(
+        int(n_genomes),
+        int(n_islands),
+        int(elites_per_island_eff),
+    )
+    kernels.ga_next_generation_full_kernel(
+        int(n_genomes),
+        int(n_slots),
+        int(n_elites),
+        int(tournament_k),
         mr_fp,
         ir_fp,
     )

@@ -46,6 +46,15 @@ def _json_dumps_compact(value: Any) -> str:
     return json.dumps(value, separators=(",", ":"))
 
 
+def _json_loads(value: Any) -> Any:
+    """Deserialize JSON with optional orjson acceleration."""
+    if value is None or value == "":
+        return None
+    if _orjson is not None:
+        return _orjson.loads(value)
+    return json.loads(value)
+
+
 def get_evolution_db_path() -> str:
     """
     Return the configured evolution DB location (env override supported).
@@ -858,15 +867,16 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
         if force_data is not None and fg_score > score and (best_fg_max is None or fg_score > best_fg_max):
             best_fg_max = fg_score
 
-    # Persist the base run as TeamBuff T5 (default auto mode).
-    save_team_buff_loadouts_batch(song_name, "T5", entries)
-
-    if best_score_max is None and not best_fg_max:
-        return
-
     db_path = get_evolution_db_path()
     conn = get_db_connection(db_path)
     try:
+        # Persist the base run as TeamBuff T5 (default auto mode) in the same transaction.
+        save_team_buff_loadouts_batch(song_name, "T5", entries, conn=conn, commit=False)
+
+        if best_score_max is None and not best_fg_max:
+            conn.commit()
+            return
+
         if best_score_max is not None:
             conn.execute(
                 """
@@ -899,7 +909,14 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
         conn.close()
 
 
-def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[Dict[str, Any]]) -> None:
+def save_team_buff_loadouts_batch(
+    song_name: str,
+    team_buff: str,
+    entries: List[Dict[str, Any]],
+    *,
+    conn: Optional[sqlite3.Connection] = None,
+    commit: bool = True,
+) -> None:
     """
     Batch insert/update tiered leaderboards for a song in a single transaction.
 
@@ -1011,7 +1028,7 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
             ).fetchall()
             for row in rows:
                 try:
-                    details_row = json.loads(row["details_json"]) if row["details_json"] else {}
+                    details_row = _json_loads(row["details_json"]) if row["details_json"] else {}
                 except Exception:
                     continue
                 p_color, s_color, sel_color = extract_song_colors(details_row)
@@ -1020,11 +1037,27 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
                     warn_fallback(
                         "db.song_color_fallback",
                         "using existing DB details colors as fallback for effective mini hashing",
-                        context={"song_name": song_name, "team_buff": team_buff, "primary": p_color, "secondary": s_color},
+                        context={
+                            "song_name": song_name,
+                            "team_buff": team_buff,
+                            "primary": p_color,
+                            "secondary": s_color,
+                        },
                     )
                     break
         except sqlite3.Error:
             pass
+
+    mini_sig_cache: Dict[tuple[str, str, str, str], tuple[Any, ...]] = {}
+
+    def _mini_signature_cached(name: str, p_color: str, s_color: str, sel_color: str) -> tuple[Any, ...]:
+        key = (str(name or ""), str(p_color or ""), str(s_color or ""), str(sel_color or ""))
+        sig = mini_sig_cache.get(key)
+        if sig is not None:
+            return sig
+        sig = effective_mini_signature_for_name(name, minis_by_name, p_color, s_color, sel_color)
+        mini_sig_cache[key] = sig
+        return sig
 
     def _effective_hash_for_entry(entry: Dict[str, Any]) -> Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]:
         gear_names_local = _compact_gear_for_db(entry.get("gear", []))
@@ -1039,9 +1072,7 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
             return None
         if not sel_color:
             sel_color = p_color or s_color
-        mini_sigs_local = [
-            effective_mini_signature_for_name(n, minis_by_name, p_color, s_color, sel_color) for n in mini_names_local
-        ]
+        mini_sigs_local = [_mini_signature_cached(n, p_color, s_color, sel_color) for n in mini_names_local]
         return (
             effective_loadout_hash_from_names(gear_names_local, mini_sigs_local),
             mini_sigs_local,
@@ -1089,8 +1120,10 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
 
     _log_timing("dedup_entries", time.perf_counter() - _t_dedup0)
 
-    db_path = get_evolution_db_path()
-    conn = get_db_connection(db_path)
+    own_conn = conn is None
+    if conn is None:
+        db_path = get_evolution_db_path()
+        conn = get_db_connection(db_path)
 
     try:
         try:
@@ -1355,10 +1388,10 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
 
                 # Hash consistency check: ensure persisted (gear/minis/details) re-hash back to the stored hash.
                 try:
-                    gear_names_row = json.loads(row["gear_json"]) if row["gear_json"] else []
+                    gear_names_row = _json_loads(row["gear_json"]) if row["gear_json"] else []
                     mini_groups_row = decode_minis_json(row["minis_json"])
                     mini_names_row = representative_mini_names(mini_groups_row)
-                    details_row = json.loads(row["details_json"]) if row["details_json"] else {}
+                    details_row = _json_loads(row["details_json"]) if row["details_json"] else {}
                     p_color, s_color, sel_color = extract_song_colors(details_row)
                     if p_color or s_color:
                         mini_sigs_row = [
@@ -1399,21 +1432,25 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
                     f"error={type(exc).__name__}: {exc}"
                 )
 
-        _t_commit0 = time.perf_counter()
-        conn.commit()
-        _log_timing("commit", time.perf_counter() - _t_commit0)
+        if commit:
+            _t_commit0 = time.perf_counter()
+            conn.commit()
+            _log_timing("commit", time.perf_counter() - _t_commit0)
     except sqlite3.Error as e:
         print(f"[DB] Error saving TeamBuff batch loadouts: {e}")
         try:
             conn.rollback()
         except sqlite3.Error:
             pass
+        if not own_conn:
+            raise
     finally:
-        try:
-            conn.execute("PRAGMA synchronous=FULL;")
-        except sqlite3.Error:
-            pass
-        conn.close()
+        if own_conn:
+            try:
+                conn.execute("PRAGMA synchronous=FULL;")
+            except sqlite3.Error:
+                pass
+            conn.close()
         _log_timing("total", time.perf_counter() - _t0)
 
 
@@ -1478,10 +1515,10 @@ def get_best_loadouts(
             if row["loadout_hash"] in seen_hashes:
                 return
 
-            gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
+            gear_names = _json_loads(row["gear_json"]) if row["gear_json"] else []
             mini_groups = decode_minis_json(row["minis_json"])
             mini_names = representative_mini_names(mini_groups)
-            details = json.loads(row["details_json"]) if row["details_json"] else {}
+            details = _json_loads(row["details_json"]) if row["details_json"] else {}
 
             # Optional strict verifier: detect corrupted/mismatched hashes before seeding.
             if strict_seed_hash:
@@ -1507,7 +1544,7 @@ def get_best_loadouts(
                 except Exception:
                     # Best-effort only; never break seeding on verifier errors.
                     pass
-            force_block = json.loads(row["force_details_json"]) if row["force_details_json"] else None
+            force_block = _json_loads(row["force_details_json"]) if row["force_details_json"] else None
 
             # Expand names to full dicts if lookup provided
             if gears_by_name:
@@ -1724,7 +1761,7 @@ def list_pending_fg_jobs(limit: int = 0) -> List[Dict[str, Any]]:
                 continue
 
             try:
-                candidates = json.loads(cand_json) if cand_json else []
+                candidates = _json_loads(cand_json) if cand_json else []
             except Exception:
                 candidates = []
 

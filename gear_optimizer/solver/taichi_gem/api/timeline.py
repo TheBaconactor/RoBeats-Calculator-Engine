@@ -149,7 +149,9 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     )
 
     # Launch GPU kernel to compute all 161×161 timelines for this song slot
-    write_unpacked_masks = 1 if env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS", "1") else 0
+    write_unpacked_masks = 1 if env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS", "0") else 0
+    if write_unpacked_masks != 0:
+        fields.ensure_grid_unpacked_masks_allocated()
     kernels.compute_timeline_grid_kernel(
         total_notes,
         long_notes,
@@ -203,6 +205,15 @@ def _upload_grid_slot0_masks_kernel(
         fields.grid_fever_masks_bits[0, i, j, k] = masks_bits[i, j, k]
 
 
+@ti.kernel
+def _upload_grid_slot0_mask_bits_kernel(
+    n: ti.i32,
+    masks_bits: ti.types.ndarray(dtype=ti.u32, ndim=3),
+) -> None:
+    for i, j, k in ti.ndrange(n, n, 4):
+        fields.grid_fever_masks_bits[0, i, j, k] = masks_bits[i, j, k]
+
+
 def _upload_timeline_grid(timeline_grid):
     """Upload timeline grid to GPU fields (with caching)."""
     global _grid_uploaded
@@ -226,6 +237,10 @@ def _upload_timeline_grid(timeline_grid):
     # This avoids 2.6M Python loop iterations!
     _t_extract = time.perf_counter()
 
+    write_unpacked_masks = env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS", "0")
+    if write_unpacked_masks:
+        fields.ensure_grid_unpacked_masks_allocated()
+
     # Avoid allocating giant (MAX_SONG_SLOTS, ...) CPU staging arrays when users
     # increase `GPU_SONG_SLOTS` for VRAM timeline caching. For large slot counts
     # we only stage slot 0 on CPU and upload it via small Taichi kernels.
@@ -234,7 +249,7 @@ def _upload_timeline_grid(timeline_grid):
         cbf_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
         cbn_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
         hl_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
-        masks_np = np.zeros((GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES), dtype=np.int32)
+        masks_np = np.zeros((GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES), dtype=np.int32) if write_unpacked_masks else None
         masks_bits_np = np.zeros((GRID_SIZE, GRID_SIZE, 4), dtype=np.uint32)
         gap_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
         fevact_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
@@ -243,7 +258,11 @@ def _upload_timeline_grid(timeline_grid):
         cbf_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int16)
         cbn_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int16)
         hl_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int8)
-        masks_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES), dtype=np.int8)
+        masks_np = (
+            np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES), dtype=np.int8)
+            if write_unpacked_masks
+            else None
+        )
         masks_bits_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, 4), dtype=np.uint32)
         gap_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int16)
         fevact_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int8)
@@ -272,10 +291,12 @@ def _upload_timeline_grid(timeline_grid):
                 head_len = min(len(fever_mask_head), MAX_HEAD_NOTES)
                 if kernel_upload:
                     hl_np[ft_idx, ff_idx] = head_len
-                    masks_np[ft_idx, ff_idx, :head_len] = fever_mask_head[:head_len].astype(np.int32)
+                    if masks_np is not None:
+                        masks_np[ft_idx, ff_idx, :head_len] = fever_mask_head[:head_len].astype(np.int32)
                 else:
                     hl_np[song_slot, ft_idx, ff_idx] = head_len
-                    masks_np[song_slot, ft_idx, ff_idx, :head_len] = fever_mask_head[:head_len].astype(np.int8)
+                    if masks_np is not None:
+                        masks_np[song_slot, ft_idx, ff_idx, :head_len] = fever_mask_head[:head_len].astype(np.int8)
 
                 # OPTIMIZED: Vectorized bit packing using NumPy
                 # Convert bool array to bit positions, then pack
@@ -295,12 +316,16 @@ def _upload_timeline_grid(timeline_grid):
     _t_gpu_upload = time.perf_counter()
     if kernel_upload:
         _upload_grid_slot0_counts_kernel(GRID_SIZE, cbf_np, cbn_np, hl_np, gap_np, fevact_np)
-        _upload_grid_slot0_masks_kernel(GRID_SIZE, masks_np, masks_bits_np)
+        if masks_np is not None:
+            _upload_grid_slot0_masks_kernel(GRID_SIZE, masks_np, masks_bits_np)
+        else:
+            _upload_grid_slot0_mask_bits_kernel(GRID_SIZE, masks_bits_np)
     else:
         fields.grid_count_body_fever.from_numpy(cbf_np)
         fields.grid_count_body_normal.from_numpy(cbn_np)
         fields.grid_head_len.from_numpy(hl_np)
-        fields.grid_fever_masks.from_numpy(masks_np)
+        if masks_np is not None:
+            fields.grid_fever_masks.from_numpy(masks_np)
         fields.grid_fever_masks_bits.from_numpy(masks_bits_np)
         fields.grid_gap.from_numpy(gap_np)
         fields.grid_fever_activations.from_numpy(fevact_np)
@@ -321,7 +346,7 @@ def _upload_timeline_grid(timeline_grid):
             cbf_np.nbytes
             + cbn_np.nbytes
             + hl_np.nbytes
-            + masks_np.nbytes
+            + (masks_np.nbytes if masks_np is not None else 0)
             + masks_bits_np.nbytes
             + gap_np.nbytes
             + fevact_np.nbytes

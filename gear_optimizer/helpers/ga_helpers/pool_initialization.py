@@ -15,6 +15,34 @@ to improve code modularity and maintainability. These functions handle:
 
 from ...core.utils import prune_dominated_gear
 
+_PRUNED_GEAR_POOL_CACHE: dict[tuple[int, int, tuple[str, ...]], tuple[dict[str, list[dict]], int, int]] = {}
+
+
+def _get_pruned_gear_pool(all_gears, slots):
+    slots_key = tuple(str(s) for s in slots)
+    cache_key = (int(id(all_gears)), int(len(all_gears or [])), slots_key)
+    cached = _PRUNED_GEAR_POOL_CACHE.get(cache_key)
+    if cached is not None:
+        gear_pool_cached, total_before, total_after = cached
+        return gear_pool_cached, int(total_before), int(total_after), True
+
+    gear_pool = {s: [] for s in slots_key}
+    for g in all_gears:
+        slot_name = g.get("type")
+        if slot_name in gear_pool:
+            gear_pool[slot_name].append(g)
+
+    total_before = sum(len(gear_pool[s]) for s in slots_key)
+    for s in slots_key:
+        gear_pool[s] = prune_dominated_gear(gear_pool[s])
+    total_after = sum(len(gear_pool[s]) for s in slots_key)
+
+    _PRUNED_GEAR_POOL_CACHE[cache_key] = (gear_pool, total_before, total_after)
+    if len(_PRUNED_GEAR_POOL_CACHE) > 8:
+        _PRUNED_GEAR_POOL_CACHE.clear()
+        _PRUNED_GEAR_POOL_CACHE[cache_key] = (gear_pool, total_before, total_after)
+    return gear_pool, int(total_before), int(total_after), False
+
 
 def initialize_pools(all_gears, all_minis, p_color, slots, s_color=None):
     """
@@ -80,19 +108,10 @@ def initialize_pools(all_gears, all_minis, p_color, slots, s_color=None):
         print("No valid minis found (Primary Color check).")
         return None, [], 0, 0, []
 
-    # Initialize gear pools by slot
-    gear_pool = {s: [] for s in slots}
-    for g in all_gears:
-        if g["type"] in gear_pool:
-            gear_pool[g["type"]].append(g)
+    # Initialize/prune gear pools once per gear dataset (song-independent).
+    gear_pool, total_before, total_after, from_cache = _get_pruned_gear_pool(all_gears, slots)
 
-    # Apply dominance pruning per slot to remove strictly inferior gear
-    total_before = sum(len(gear_pool[s]) for s in slots)
-    for s in slots:
-        gear_pool[s] = prune_dominated_gear(gear_pool[s])
-    total_after = sum(len(gear_pool[s]) for s in slots)
-
-    if total_before > total_after:
+    if total_before > total_after and not from_cache:
         print(f"[Dominance Pruning] Removed {total_before - total_after} dominated gear items.")
 
     return gear_pool, mini_pool, total_before, total_after, []  # No more whitelisted minis

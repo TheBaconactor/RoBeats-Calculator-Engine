@@ -158,6 +158,7 @@ def optimize_gems_batch_gpu(
         return all_results
 
     ensure_ready(ref_arrays)
+    fields.ensure_legacy_work_fields_allocated()
 
     # ========================================================================
     # DYNAMIC GENOME MAPPING (Fix for Batch Coalescing)

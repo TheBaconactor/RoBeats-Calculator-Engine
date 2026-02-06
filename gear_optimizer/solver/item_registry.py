@@ -27,6 +27,31 @@ STAT_INDICES = {
 
 MINI_SLOT_INDICES = [6, 7, 8]  # Minis occupy slots 6, 7, 8
 
+# Cache gear-side registry state (song-invariant). Mini pools are still rebuilt per song.
+_GEAR_REGISTRY_CACHE: dict[
+    tuple[tuple[str, ...], tuple[str, ...], tuple[tuple[str, int], ...], tuple[str, ...]],
+    tuple[dict[int, dict], dict[tuple[int, str], int], list[int], list[int], int],
+] = {}
+
+
+def _fixed_gear_key(slots: list[str], fixed_gear: Optional[list[dict]]) -> tuple[str, ...]:
+    if not fixed_gear:
+        return ()
+    out: list[str] = []
+    for i, _slot_name in enumerate(slots):
+        item = fixed_gear[i] if i < len(fixed_gear) else None
+        if isinstance(item, dict):
+            out.append(str(item.get("Name", "") or ""))
+        elif item:
+            out.append(str(item))
+        else:
+            out.append("")
+    return tuple(out)
+
+
+def _gear_pool_signature(gear_pool: dict[str, list[dict]], slots: list[str]) -> tuple[tuple[str, int], ...]:
+    return tuple((str(slot_name), int(len(gear_pool.get(slot_name, []) or []))) for slot_name in slots)
+
 
 class ItemRegistry:
     """
@@ -70,32 +95,53 @@ class ItemRegistry:
         self.slot_start = [0] * 9  # First valid ID for each slot
         self.slot_count = [0] * 9  # Number of items in each slot
 
-        # Build registry
-        next_id = 1  # Start from 1 (0 is reserved)
+        # Build/reuse gear-side registry state.
+        slots_key = tuple(str(s) for s in slots)
+        cache_key = (
+            slots_key,
+            _fixed_gear_key(slots, fixed_gear),
+            _gear_pool_signature(gear_pool, slots),
+            (str(int(id(gear_pool))),),
+        )
+        cached = _GEAR_REGISTRY_CACHE.get(cache_key)
 
-        # Process gear slots (0-5)
-        for slot_idx, slot_name in enumerate(slots):
-            items = gear_pool.get(slot_name, [])
+        if cached is None:
+            id_to_item_base: dict[int, dict] = {0: {}}
+            item_to_id_base: dict[tuple[int, str], int] = {}
+            slot_start_base = [0] * 9
+            slot_count_base = [0] * 9
+            next_id_base = 1
 
-            # If fixed_gear provided, only include that item
-            if fixed_gear is not None and slot_idx < len(fixed_gear):
-                fixed_item = fixed_gear[slot_idx]
-                if fixed_item and fixed_item.get("Name"):
-                    items = [fixed_item]
+            for slot_idx, slot_name in enumerate(slots):
+                items = gear_pool.get(slot_name, [])
+                if fixed_gear is not None and slot_idx < len(fixed_gear):
+                    fixed_item = fixed_gear[slot_idx]
+                    if fixed_item and fixed_item.get("Name"):
+                        items = [fixed_item]
 
-            self.slot_start[slot_idx] = next_id
-            self.slot_count[slot_idx] = len(items)
+                slot_start_base[slot_idx] = next_id_base
+                slot_count_base[slot_idx] = len(items)
 
-            for item in items:
-                name = item.get("Name", "")
-                if not name:
-                    continue
+                for item in items:
+                    name = item.get("Name", "")
+                    if not name:
+                        continue
+                    item_id = next_id_base
+                    next_id_base += 1
+                    id_to_item_base[item_id] = item
+                    item_to_id_base[(slot_idx, name)] = item_id
 
-                item_id = next_id
-                next_id += 1
+            cached = (id_to_item_base, item_to_id_base, slot_start_base, slot_count_base, next_id_base)
+            _GEAR_REGISTRY_CACHE[cache_key] = cached
+            if len(_GEAR_REGISTRY_CACHE) > 24:
+                _GEAR_REGISTRY_CACHE.clear()
+                _GEAR_REGISTRY_CACHE[cache_key] = cached
 
-                self.id_to_item[item_id] = item
-                self.item_to_id[(slot_idx, name)] = item_id
+        id_to_item_base, item_to_id_base, slot_start_base, slot_count_base, next_id = cached
+        self.id_to_item = dict(id_to_item_base)
+        self.item_to_id = dict(item_to_id_base)
+        self.slot_start = list(slot_start_base)
+        self.slot_count = list(slot_count_base)
 
         # Process mini slots (6-8) - they share the same pool
         mini_items = mini_pool

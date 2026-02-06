@@ -30,16 +30,17 @@ from . import kernels as fg_kernels
 # ============================================================================
 # When enabled, dict construction is offloaded to background thread
 # while GPU can continue with other work.
-_USE_ASYNC_FG = os.environ.get("USE_ASYNC_FG", "1") == "1"
+_ENV_GET = os.environ.get
+_USE_ASYNC_FG = _ENV_GET("USE_ASYNC_FG", "1") == "1"
 
 
 def _env_truthy(name: str, default: str = "0") -> bool:
-    return str(os.environ.get(name, default) or "").strip().lower() in TRUTHY_ENV_VALUES
+    return str(_ENV_GET(name, default) or "").strip().lower() in TRUTHY_ENV_VALUES
 
 
 def _env_int(name: str, default: int) -> int:
     try:
-        return int(os.environ.get(name, default) or default)
+        return int(_ENV_GET(name, default) or default)
     except Exception:
         return int(default)
 
@@ -48,10 +49,10 @@ def _env_int(name: str, default: int) -> int:
 # SYNC POLICY
 # ============================================================================
 # See `gear_optimizer.solver.taichi_gem.api` for rationale.
-_SYNC_FOR_TIMING = os.environ.get("GPU_SYNC_FOR_TIMING", "0") == "1"
-_FORCE_SYNC = os.environ.get("GPU_FORCE_SYNC", "0") == "1"
+_SYNC_FOR_TIMING = _ENV_GET("GPU_SYNC_FOR_TIMING", "0") == "1"
+_FORCE_SYNC = _ENV_GET("GPU_FORCE_SYNC", "0") == "1"
 # Per-chunk sync fallback for TDR-prone Windows systems (default OFF for performance)
-_SYNC_PER_CHUNK = os.environ.get("FG_SYNC_PER_CHUNK", "0") == "1"
+_SYNC_PER_CHUNK = _ENV_GET("FG_SYNC_PER_CHUNK", "0") == "1"
 
 # ============================================================================
 # ADAPTIVE CHUNKING POLICY
@@ -66,7 +67,7 @@ def _get_target_threads_per_kernel(n_work_items: int) -> int:
     while remaining conservative enough to avoid watchdog/TDR issues on Windows.
     """
     try:
-        env = str(os.environ.get("FG_TARGET_THREADS_PER_KERNEL", "") or "").strip()
+        env = str(_ENV_GET("FG_TARGET_THREADS_PER_KERNEL", "") or "").strip()
     except Exception:
         env = ""
     if env:
@@ -100,10 +101,20 @@ def _get_target_threads_per_kernel(n_work_items: int) -> int:
 
 
 # Enable detailed FG GPU timing output
-_PERF_TIMING = os.environ.get("PERF_TIMING", "0") == "1"
-_FG_TRANSFER_TRACE = str(os.environ.get("FG_TRANSFER_TRACE", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
-_FG_TASK_TRACE = str(os.environ.get("FG_TASK_TRACE", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+_PERF_TIMING = _ENV_GET("PERF_TIMING", "0") == "1"
+_FG_TRANSFER_TRACE = str(_ENV_GET("FG_TRANSFER_TRACE", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
+_FG_TASK_TRACE = str(_ENV_GET("FG_TASK_TRACE", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
 _FG_TASK_CALL_SEQ = 0
+_GPU_PROFILER_ENABLED = _PERF_TIMING or str(_ENV_GET("GPU_PROFILER", "0") or "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+_GPU_PROFILER_CACHE = None
+_GPU_PROFILER_READY = False
+_FG_GPU_CFG_RANGES = str(_ENV_GET("FG_GPU_CFG_RANGES", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
+_FG_IMPLICIT_CONFIGS = str(_ENV_GET("FG_IMPLICIT_CONFIGS", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _get_gpu_profiler():
@@ -112,23 +123,25 @@ def _get_gpu_profiler():
 
     Enabled when either PERF_TIMING or GPU_PROFILER is on.
     """
-    if not (
-        _PERF_TIMING or str(os.environ.get("GPU_PROFILER", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
-    ):
+    global _GPU_PROFILER_CACHE, _GPU_PROFILER_READY
+    if not _GPU_PROFILER_ENABLED:
         return None
+    if _GPU_PROFILER_READY:
+        return _GPU_PROFILER_CACHE
     try:
         from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
 
         p = get_gpu_profiler()
-        return p if getattr(p, "enabled", False) else None
+        _GPU_PROFILER_CACHE = p if getattr(p, "enabled", False) else None
     except Exception:
-        return None
+        _GPU_PROFILER_CACHE = None
+    _GPU_PROFILER_READY = True
+    return _GPU_PROFILER_CACHE
 
 
 def _bytes_of_array(arr: Any) -> int:
     try:
-        a = np.asarray(arr)
-        return int(a.nbytes)
+        return int(getattr(arr, "nbytes", 0) or 0)
     except Exception:
         return 0
 
@@ -171,7 +184,7 @@ def _record_kernel_wall(name: str, dt_sec: float, *, genome_count: int = 0) -> N
 # Recovery: Taichi/Vulkan backend can occasionally fault on Windows (driver reset,
 # device lost, or internal assertion failures). Retry with a hard Taichi reset.
 try:
-    _FG_VULKAN_RETRIES = int(os.environ.get("FG_VULKAN_RETRIES", "1"))
+    _FG_VULKAN_RETRIES = int(_ENV_GET("FG_VULKAN_RETRIES", "1"))
 except Exception:
     _FG_VULKAN_RETRIES = 1
 
@@ -341,6 +354,7 @@ def reset_force_greats_api_state() -> None:
     global _fg_forced_resident_key, _fg_forced_resident_n_cfg_total, _fg_forced_resident_base_offset
     global _fg_pair_caps_state, _fg_pair_caps_default_buf, _fg_pair_caps_custom_key
     global _fg_last_ftff_key
+    global _GPU_PROFILER_CACHE, _GPU_PROFILER_READY
 
     _fg_last_song_key = None
     _fg_song_upload_buf = None
@@ -365,6 +379,8 @@ def reset_force_greats_api_state() -> None:
     _fg_pair_caps_state = None
     _fg_pair_caps_default_buf = None
     _fg_pair_caps_custom_key = None
+    _GPU_PROFILER_CACHE = None
+    _GPU_PROFILER_READY = False
 
 
 def _get_forced_counts_staging_tiers() -> tuple[int, ...]:
@@ -372,7 +388,7 @@ def _get_forced_counts_staging_tiers() -> tuple[int, ...]:
     if _fg_forced_counts_staging_tiers is not None:
         return _fg_forced_counts_staging_tiers
 
-    raw = str(os.environ.get("FG_FORCED_COUNTS_STAGING_TIERS", "") or "").strip()
+    raw = str(_ENV_GET("FG_FORCED_COUNTS_STAGING_TIERS", "") or "").strip()
     tiers: list[int] = []
     if raw:
         for tok in raw.split(","):
@@ -1496,6 +1512,7 @@ def _solve_force_greats_finder_gpu_impl(
         else:
             fg_kernels.fg_stage1_clear_wave_best_kernel(int(n_work_items))
             fg_kernels.fg_stage1_waves_kernel(
+                bool(int(n_sections) <= 4),
                 int(n_work_items),
                 int(n_cfg),
                 int(global_cfg_offset),
@@ -1900,9 +1917,7 @@ def solve_force_greats_finder_gpu_tasks(
     if not fg_tasks:
         return
 
-    use_gpu_cfg_ranges = str(os.environ.get("FG_GPU_CFG_RANGES", "1") or "").strip().lower() in (
-        TRUTHY_ENV_VALUES | {""}
-    )
+    use_gpu_cfg_ranges = _FG_GPU_CFG_RANGES
 
     # Packed mega-job mode:
     # - Upload all config windows into the global config table once (at their base_cfg_offset)
@@ -1915,7 +1930,7 @@ def solve_force_greats_finder_gpu_tasks(
     # Ensure shared Taichi runtime + base fields + reference arrays are ready.
     gem_api.ensure_ready(ref_arrays)
     fg_fields.ensure_ready_with_warmup()
-    implicit_cfgs = str(os.environ.get("FG_IMPLICIT_CONFIGS", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
+    implicit_cfgs = _FG_IMPLICIT_CONFIGS
 
     try:
         max_ftff = int(getattr(fg_fields, "FG_MAX_FTFF", 0) or 0)
@@ -2607,6 +2622,7 @@ def solve_force_greats_finder_gpu_tasks(
             else:
                 fg_kernels.fg_stage1_clear_wave_best_kernel(int(n_work_items))
                 fg_kernels.fg_stage1_waves_kernel(
+                    bool(int(n_sections) <= 4),
                     int(n_work_items),
                     int(band_len),
                     int(cfg_offset_i),

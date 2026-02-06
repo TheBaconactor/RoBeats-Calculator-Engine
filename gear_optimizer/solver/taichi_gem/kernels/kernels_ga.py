@@ -23,6 +23,28 @@ IS_METAL = sys.platform == "darwin"
 from . import kernels_helpers
 
 
+@ti.func
+def _repair_mini_uniqueness(
+    m0: ti.i32,
+    m1: ti.i32,
+    m2: ti.i32,
+    mini_pool_start: ti.i32,
+    mini_pool_count: ti.i32,
+    state: ti.u32,
+):
+    if mini_pool_count > 1:
+        for _ in range(10):
+            if m1 == m0:
+                state = kernels_helpers._xorshift32(state)
+                m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+
+        for _ in range(10):
+            if m2 == m0 or m2 == m1:
+                state = kernels_helpers._xorshift32(state)
+                m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+    return m0, m1, m2, state
+
+
 @ti.kernel
 def ga_seed_rng_kernel(n_genomes: ti.i32, seed: ti.u32):
     """
@@ -212,16 +234,14 @@ def ga_generate_initial_populations_kernel(
                 m0 = kernels_helpers.ga_initial_populations[run_id, g, 6]
                 m1 = kernels_helpers.ga_initial_populations[run_id, g, 7]
                 m2 = kernels_helpers.ga_initial_populations[run_id, g, 8]
-
-                for _ in range(10):
-                    if m1 == m0:
-                        state = kernels_helpers._xorshift32(state)
-                        m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-
-                for _ in range(10):
-                    if m2 == m0 or m2 == m1:
-                        state = kernels_helpers._xorshift32(state)
-                        m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+                m0, m1, m2, state = _repair_mini_uniqueness(
+                    m0,
+                    m1,
+                    m2,
+                    mini_pool_start,
+                    mini_pool_count,
+                    state,
+                )
 
                 kernels_helpers.ga_initial_populations[run_id, g, 6] = m0
                 kernels_helpers.ga_initial_populations[run_id, g, 7] = m1
@@ -362,17 +382,14 @@ def ga_crossover_mutate_kernel(
         mini_pool_count = kernels_helpers.slot_count[6]
 
         if mini_pool_count > 1:
-            # Repair m1 if duplicate of m0
-            for _ in range(10):
-                if m1 == m0:
-                    state = kernels_helpers._xorshift32(state)
-                    m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-
-            # Repair m2 if duplicate of m0 or m1
-            for _ in range(10):
-                if m2 == m0 or m2 == m1:
-                    state = kernels_helpers._xorshift32(state)
-                    m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+            m0, m1, m2, state = _repair_mini_uniqueness(
+                m0,
+                m1,
+                m2,
+                mini_pool_start,
+                mini_pool_count,
+                state,
+            )
 
             kernels_helpers.population_next_indices[g, 6] = m0
             kernels_helpers.population_next_indices[g, 7] = m1
@@ -721,15 +738,14 @@ def ga_select_crossover_mutate_kernel(
         mini_pool_count = kernels_helpers.slot_count[6]
 
         if mini_pool_count > 1:
-            for _ in range(10):
-                if m1 == m0:
-                    state = kernels_helpers._xorshift32(state)
-                    m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-
-            for _ in range(10):
-                if m2 == m0 or m2 == m1:
-                    state = kernels_helpers._xorshift32(state)
-                    m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+            m0, m1, m2, state = _repair_mini_uniqueness(
+                m0,
+                m1,
+                m2,
+                mini_pool_start,
+                mini_pool_count,
+                state,
+            )
 
             kernels_helpers.population_next_indices[g, 6] = m0
             kernels_helpers.population_next_indices[g, 7] = m1
@@ -890,15 +906,14 @@ def ga_next_generation_full_kernel(
             mini_pool_count = kernels_helpers.slot_count[6]
 
             if mini_pool_count > 1:
-                for _ in range(10):
-                    if m1 == m0:
-                        state = kernels_helpers._xorshift32(state)
-                        m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-
-                for _ in range(10):
-                    if m2 == m0 or m2 == m1:
-                        state = kernels_helpers._xorshift32(state)
-                        m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+                m0, m1, m2, state = _repair_mini_uniqueness(
+                    m0,
+                    m1,
+                    m2,
+                    mini_pool_start,
+                    mini_pool_count,
+                    state,
+                )
 
                 kernels_helpers.population_next_indices[g, 6] = m0
                 kernels_helpers.population_next_indices[g, 7] = m1
@@ -926,15 +941,14 @@ def ga_next_generation_full_kernel(
                     mini_pool_count = kernels_helpers.slot_count[6]
 
                     if mini_pool_count > 1:
-                        for _ in range(10):
-                            if m1 == m0:
-                                state = kernels_helpers._xorshift32(state)
-                                m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-
-                        for _ in range(10):
-                            if m2 == m0 or m2 == m1:
-                                state = kernels_helpers._xorshift32(state)
-                                m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+                        m0, m1, m2, state = _repair_mini_uniqueness(
+                            m0,
+                            m1,
+                            m2,
+                            mini_pool_start,
+                            mini_pool_count,
+                            state,
+                        )
 
                         kernels_helpers.population_next_indices[g, 6] = m0
                         kernels_helpers.population_next_indices[g, 7] = m1
@@ -1118,15 +1132,14 @@ def ga_next_generation_full_islands_kernel(
         mini_pool_count = kernels_helpers.slot_count[6]
 
         if mini_pool_count > 1:
-            for _ in range(10):
-                if m1 == m0:
-                    state = kernels_helpers._xorshift32(state)
-                    m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-
-            for _ in range(10):
-                if m2 == m0 or m2 == m1:
-                    state = kernels_helpers._xorshift32(state)
-                    m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+            m0, m1, m2, state = _repair_mini_uniqueness(
+                m0,
+                m1,
+                m2,
+                mini_pool_start,
+                mini_pool_count,
+                state,
+            )
 
             kernels_helpers.population_next_indices[g, 6] = m0
             kernels_helpers.population_next_indices[g, 7] = m1
@@ -1151,15 +1164,14 @@ def ga_next_generation_full_islands_kernel(
                 mini_pool_count = kernels_helpers.slot_count[6]
 
                 if mini_pool_count > 1:
-                    for _ in range(10):
-                        if m1 == m0:
-                            state = kernels_helpers._xorshift32(state)
-                            m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-
-                    for _ in range(10):
-                        if m2 == m0 or m2 == m1:
-                            state = kernels_helpers._xorshift32(state)
-                            m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+                    m0, m1, m2, state = _repair_mini_uniqueness(
+                        m0,
+                        m1,
+                        m2,
+                        mini_pool_start,
+                        mini_pool_count,
+                        state,
+                    )
 
                     kernels_helpers.population_next_indices[g, 6] = m0
                     kernels_helpers.population_next_indices[g, 7] = m1
@@ -1346,15 +1358,14 @@ def ga_next_generation_full_runs_kernel(
         mini_pool_count = kernels_helpers.slot_count[6]
 
         if mini_pool_count > 1:
-            for _ in range(10):
-                if m1 == m0:
-                    state = kernels_helpers._xorshift32(state)
-                    m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-
-            for _ in range(10):
-                if m2 == m0 or m2 == m1:
-                    state = kernels_helpers._xorshift32(state)
-                    m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+            m0, m1, m2, state = _repair_mini_uniqueness(
+                m0,
+                m1,
+                m2,
+                mini_pool_start,
+                mini_pool_count,
+                state,
+            )
 
             kernels_helpers.population_next_indices[g, 6] = m0
             kernels_helpers.population_next_indices[g, 7] = m1
@@ -1379,15 +1390,14 @@ def ga_next_generation_full_runs_kernel(
                 mini_pool_count = kernels_helpers.slot_count[6]
 
                 if mini_pool_count > 1:
-                    for _ in range(10):
-                        if m1 == m0:
-                            state = kernels_helpers._xorshift32(state)
-                            m1 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
-
-                    for _ in range(10):
-                        if m2 == m0 or m2 == m1:
-                            state = kernels_helpers._xorshift32(state)
-                            m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+                    m0, m1, m2, state = _repair_mini_uniqueness(
+                        m0,
+                        m1,
+                        m2,
+                        mini_pool_start,
+                        mini_pool_count,
+                        state,
+                    )
 
                     kernels_helpers.population_next_indices[g, 6] = m0
                     kernels_helpers.population_next_indices[g, 7] = m1

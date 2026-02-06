@@ -402,19 +402,24 @@ def ga_write_best_and_update_global_kernel(
         kernels_helpers.genome_hint_allocation[genome_idx][2] = fm_gems
         kernels_helpers.genome_hint_allocation[genome_idx][3] = ov_gems
 
-    # Deterministic global-best update (single thread) to keep score/ids/results aligned.
-    for _ in range(1):
+    # Parallel reduction to avoid a serial O(n_genomes) tail on every generation.
+    kernels_helpers.ga_global_best_scan_key[0] = ti.u64(0)
+
+    for g in range(n_genomes):
+        score: ti.i32 = kernels_helpers.ga_scores[g]
+        if score >= 0:
+            inv_g: ti.u64 = ti.u64(0xFFFFFFFF) - ti.cast(g, ti.u64)
+            key: ti.u64 = (ti.cast(score + 1, ti.u64) << ti.u64(32)) | inv_g
+            ti.atomic_max(kernels_helpers.ga_global_best_scan_key[0], key)
+
+    # Deterministic materialization from the winning packed key.
+    key = kernels_helpers.ga_global_best_scan_key[0]
+    if key != ti.u64(0):
+        best_score: ti.i32 = ti.cast(key >> ti.u64(32), ti.i32) - 1
         prev_best: ti.i32 = kernels_helpers.ga_global_best_score[0]
-        best_score: ti.i32 = prev_best
-        best_g: ti.i32 = -1
-
-        for g in range(n_genomes):
-            score: ti.i32 = kernels_helpers.ga_scores[g]
-            if score > best_score:
-                best_score = score
-                best_g = g
-
-        if best_g >= 0:
+        if best_score > prev_best:
+            inv_g_u32: ti.u32 = ti.cast(key & ti.u64(0xFFFFFFFF), ti.u32)
+            best_g: ti.i32 = ti.cast(ti.u32(0xFFFFFFFF) - inv_g_u32, ti.i32)
             kernels_helpers.ga_global_best_score[0] = best_score
             for s in range(n_slots):
                 kernels_helpers.ga_global_best_genome[s] = kernels_helpers.population_indices[best_g, s]

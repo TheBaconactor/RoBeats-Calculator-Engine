@@ -279,17 +279,24 @@ def _calc_head_score_grid(
     Returns:
         Head score as float
     """
-    head_score = ti.i32(0)
-    t: ti.f32 = 1.0
-    for i in range(head_len):
-        ramp_val = base_value + (t * factor)
-        if kernels_helpers.grid_fever_masks[song_slot, ft_idx, ff_idx, i] != 0:
-            # All values are non-negative; truncation toward zero matches floor and is faster.
-            head_score += ti.cast(ramp_val * fever_mul, ti.i32)
-        else:
-            head_score += ti.cast(ramp_val, ti.i32)
-        t += 1.0
-    return ti.cast(head_score, ti.f32)
+    m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
+    m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
+    m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
+    m3 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
+    scores = _calc_head_scores_2_bits(
+        head_len,
+        m0,
+        m1,
+        m2,
+        m3,
+        base_value,
+        factor,
+        fever_mul,
+        base_value,
+        factor,
+        fever_mul,
+    )
+    return ti.cast(scores[0], ti.f32)
 
 
 @ti.func
@@ -634,7 +641,7 @@ def local_search_from_hint(
 
 
 @ti.func
-def optimize_core_device(
+def _optimize_core_device_impl(
     work_idx: ti.i32,
     budget: ti.i32,
     cur_pp: ti.i32,
@@ -657,6 +664,11 @@ def optimize_core_device(
     song_slot: ti.i32,
     ft_idx: ti.i32,
     ff_idx: ti.i32,
+    pre_m0: ti.u32,
+    pre_m1: ti.u32,
+    pre_m2: ti.u32,
+    pre_m3: ti.u32,
+    use_preloaded_bits: ti.i32,
 ) -> ti.types.vector(7, ti.i32):
     """
     CRITICAL FUNCTION - GPU port of optimize_core_jit (scoring_core.py:99-278).
@@ -697,7 +709,12 @@ def optimize_core_device(
     m1: ti.u32 = ti.u32(0)
     m2: ti.u32 = ti.u32(0)
     m3: ti.u32 = ti.u32(0)
-    if mode != 0:
+    if use_preloaded_bits != 0:
+        m0 = pre_m0
+        m1 = pre_m1
+        m2 = pre_m2
+        m3 = pre_m3
+    elif mode != 0:
         # Cache bitpacked head mask once per work item to avoid repeated global loads.
         m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
         m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
@@ -970,3 +987,114 @@ def optimize_core_device(
         best_final_score = best_score
 
     return ti.Vector([best_final_score, gems_pp, gems_cm, gems_fm, gems_ov, p_val, s_val])
+
+
+@ti.func
+def optimize_core_device(
+    work_idx: ti.i32,
+    budget: ti.i32,
+    cur_pp: ti.i32,
+    cur_cm: ti.i32,
+    cur_fm: ti.i32,
+    cur_p_val: ti.i32,
+    cur_s_val: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+    head_len: ti.i32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+    mode: ti.i32,
+    song_slot: ti.i32,
+    ft_idx: ti.i32,
+    ff_idx: ti.i32,
+) -> ti.types.vector(7, ti.i32):
+    return _optimize_core_device_impl(
+        work_idx,
+        budget,
+        cur_pp,
+        cur_cm,
+        cur_fm,
+        cur_p_val,
+        cur_s_val,
+        is_p_pp,
+        is_s_pp,
+        is_p_cm,
+        is_s_cm,
+        is_p_fm,
+        is_s_fm,
+        is_p_ov,
+        is_s_ov,
+        head_len,
+        count_fever,
+        count_normal,
+        mode,
+        song_slot,
+        ft_idx,
+        ff_idx,
+        ti.u32(0),
+        ti.u32(0),
+        ti.u32(0),
+        ti.u32(0),
+        0,
+    )
+
+
+@ti.func
+def optimize_core_device_preloaded_bits(
+    budget: ti.i32,
+    cur_pp: ti.i32,
+    cur_cm: ti.i32,
+    cur_fm: ti.i32,
+    cur_p_val: ti.i32,
+    cur_s_val: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+    m0: ti.u32,
+    m1: ti.u32,
+    m2: ti.u32,
+    m3: ti.u32,
+    head_len: ti.i32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+) -> ti.types.vector(7, ti.i32):
+    return _optimize_core_device_impl(
+        0,
+        budget,
+        cur_pp,
+        cur_cm,
+        cur_fm,
+        cur_p_val,
+        cur_s_val,
+        is_p_pp,
+        is_s_pp,
+        is_p_cm,
+        is_s_cm,
+        is_p_fm,
+        is_s_fm,
+        is_p_ov,
+        is_s_ov,
+        head_len,
+        count_fever,
+        count_normal,
+        1,
+        0,
+        0,
+        0,
+        m0,
+        m1,
+        m2,
+        m3,
+        1,
+    )

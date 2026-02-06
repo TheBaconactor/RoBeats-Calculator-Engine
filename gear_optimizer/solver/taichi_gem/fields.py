@@ -39,6 +39,10 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _clamp_song_slots(n: int) -> int:
     # Slot 0 is always reserved; keep at least one additional slot for prefetch/batching.
     if n < 2:
@@ -56,6 +60,12 @@ MAX_TOTAL_BUDGET = 90  # Max supported total_budget for FT/FF combo tables
 MAX_FTFF_COMBOS = (MAX_TOTAL_BUDGET + 1) * (MAX_TOTAL_BUDGET + 2) // 2  # 4186 when MAX_TOTAL_BUDGET=90
 MAX_BP_PAIRS = 256  # Breakpoint kernel scan pairs
 CHUNK_BEST_KEY_TILES = 8  # Reduce atomic contention in GA warm-start reduction
+
+# Optional allocations:
+# - Legacy work-item buffers are needed only for legacy chunk/work-item solver APIs.
+# - Unpacked timeline masks are optional; bitpacked masks are the production path.
+ALLOCATE_LEGACY_WORK_FIELDS_DEFAULT = _env_flag("GPU_ALLOCATE_LEGACY_WORK_FIELDS", "0")
+WRITE_UNPACKED_GRID_MASKS_DEFAULT = _env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS", "0")
 
 # FT/FF combo reduction scratch sizing (Vulkan path).
 # Used to support a two-stage reduction that avoids highly contended atomics:
@@ -159,6 +169,7 @@ ga_parent_b: ti.Field = None  # (MAX_GENOMES,) int32 selected parent index B
 ga_global_best_score: ti.Field = None  # (1,) i32 - best score across all generations
 ga_global_best_genome: ti.Field = None  # (MAX_SLOTS,) i32 - item IDs of best genome
 ga_global_best_results: ti.Field = None  # (7,) i32 - [score, ft, ff, pp, cm, fm, ov] for best genome
+ga_global_best_scan_key: ti.Field = None  # (1,) u64 - reduction key ((score+1)<<32)|inv_genome_idx
 ga_global_best_packed: ti.Field = None  # (17,) i32 - packed [score, genome_ids(9), results(7)] for single download
 # Packed GA download payload (reduce CPU<->GPU transfers): row 0 = global best, rows 1..n = per-genome snapshot.
 ga_run_payload_packed: ti.Field = None  # (MAX_GENOMES+1, 17) i32 - [score, slot_ids(9), result(7)]
@@ -270,6 +281,7 @@ chunk_best_results: ti.Field = None  # (MAX_GENOMES, 4) i32 - [pp, cm, fm, ov] f
 
 _fields_allocated = False
 _grid_fields_allocated = False
+_legacy_work_fields_allocated = False
 _last_uploaded_grid_id = None  # Cache to skip redundant grid uploads
 
 
@@ -301,7 +313,7 @@ def reset_fields_state() -> None:
     All field objects become invalid after a Taichi runtime reset; we clear the
     globals so `ensure_fields_allocated()` can safely re-allocate and re-bind.
     """
-    global _fields_allocated, _grid_fields_allocated, _last_uploaded_grid_id
+    global _fields_allocated, _grid_fields_allocated, _legacy_work_fields_allocated, _last_uploaded_grid_id
 
     global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
     global grid_count_body_fever, grid_count_body_normal, grid_head_len, grid_fever_masks, grid_fever_masks_bits
@@ -334,7 +346,8 @@ def reset_fields_state() -> None:
         chunk_best_idx, \
         chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
-    global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_packed
+    global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_scan_key
+    global ga_global_best_packed
     global ga_runs_payload_packed
     global ga_run_payload_packed
     global \
@@ -415,6 +428,7 @@ def reset_fields_state() -> None:
     ga_global_best_score = None
     ga_global_best_genome = None
     ga_global_best_results = None
+    ga_global_best_scan_key = None
     ga_global_best_packed = None
     ga_runs_payload_packed = None
     ga_run_payload_packed = None
@@ -475,6 +489,7 @@ def reset_fields_state() -> None:
 
     _fields_allocated = False
     _grid_fields_allocated = False
+    _legacy_work_fields_allocated = False
     _last_uploaded_grid_id = None
 
 
@@ -583,7 +598,7 @@ def allocate_fields():
     global slot_start, slot_count
     global song_flags
     global result_scores, result_pp, result_cm, result_fm, result_ov
-    global result_p_val, result_s_val, result_stats, _fields_allocated
+    global result_p_val, result_s_val, result_stats, _fields_allocated, _legacy_work_fields_allocated
     global genome_result_scores, genome_result_ft, genome_result_ff
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
@@ -598,7 +613,8 @@ def allocate_fields():
         chunk_best_idx, \
         chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
-    global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_packed
+    global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_scan_key
+    global ga_global_best_packed
     global ga_runs_payload_packed
     global ga_run_payload_packed
     global \
@@ -628,10 +644,21 @@ def allocate_fields():
     bp_pair_ff = ti.field(dtype=ti.i32, shape=MAX_BP_PAIRS)
     bp_result_mask = ti.field(dtype=ti.i32, shape=(16, 64))
 
-    # Work item inputs (Vector field for single-shot upload)
-    # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id, song_slot]
-    fever_masks = ti.field(dtype=ti.i8, shape=(MAX_WORK_ITEMS, MAX_HEAD_NOTES))
-    work_items = ti.Vector.field(n=8, dtype=ti.i32, shape=MAX_WORK_ITEMS)
+    need_legacy_work_fields = bool(IS_METAL or ALLOCATE_LEGACY_WORK_FIELDS_DEFAULT)
+    # Legacy work-item buffers are only needed by legacy chunk/work-item solver APIs.
+    # GPU-native GA/FG paths do not touch them.
+    if need_legacy_work_fields:
+        fever_masks = ti.field(dtype=ti.i8, shape=(MAX_WORK_ITEMS, MAX_HEAD_NOTES))
+        work_items = ti.Vector.field(n=8, dtype=ti.i32, shape=MAX_WORK_ITEMS)
+        result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_WORK_ITEMS)
+        _legacy_work_fields_allocated = True
+    else:
+        # Keep tiny placeholder fields so kernels that still reference legacy buffers
+        # can compile without allocating full MAX_WORK_ITEMS storage.
+        fever_masks = ti.field(dtype=ti.i8, shape=(1, MAX_HEAD_NOTES))
+        work_items = ti.Vector.field(n=8, dtype=ti.i32, shape=1)
+        result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=1)
+        _legacy_work_fields_allocated = False
 
     # Per-genome base stats (lookup by work_genome_id in kernel)
     # [pp, cm, fm, p_val, s_val, ft, ff]
@@ -659,10 +686,6 @@ def allocate_fields():
     # Per-slot song flags for batch coalescing
     # [is_p_ft, is_s_ft, is_p_ff, is_s_ff, is_p_pp, is_s_pp, is_p_cm, is_s_cm, is_p_fm, is_s_fm, is_p_ov, is_s_ov]
     song_flags = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, 12))
-
-    # Per-work-item results (Vector field for single-shot download)
-    # [score, pp, cm, fm, ov, p_val, s_val]
-    result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_WORK_ITEMS)
 
     # Per-genome results (for FT/FF iteration kernel)
     # [score, ft, ff, pp, cm, fm, ov]
@@ -696,6 +719,7 @@ def allocate_fields():
     ga_global_best_score = ti.field(dtype=ti.i32, shape=1)
     ga_global_best_genome = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
     ga_global_best_results = ti.field(dtype=ti.i32, shape=7)  # [score, ft, ff, pp, cm, fm, ov]
+    ga_global_best_scan_key = ti.field(dtype=ti.u64, shape=1)
     ga_global_best_packed = ti.field(dtype=ti.i32, shape=17)  # [score, genome_ids(9), results(7)]
     ga_run_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES + 1, 1 + MAX_SLOTS + 7))
     ga_runs_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GA_RUNS, MAX_GA_RUN_GENOMES + 1, 1 + MAX_SLOTS + 7))
@@ -762,9 +786,49 @@ def allocate_fields():
     island_elite_count = ti.field(dtype=ti.i32, shape=1)  # Output: total elites found
 
     _fields_allocated = True
-    print(
-        f"[Taichi] Allocated GPU fields: {MAX_WORK_ITEMS} work items, {MAX_HEAD_NOTES} head notes, {MAX_GENOMES} genomes"
-    )
+    legacy_suffix = " + legacy work buffers" if _legacy_work_fields_allocated else " (legacy work buffers skipped)"
+    print(f"[Taichi] Allocated GPU fields: {MAX_GENOMES} genomes{legacy_suffix}")
+
+
+def ensure_legacy_work_fields_allocated() -> None:
+    """
+    Allocate legacy work-item buffers on demand.
+
+    These large fields are required only by legacy chunk/work-item solver APIs.
+    The GPU-native GA/FG production path does not use them.
+    """
+    global fever_masks, work_items, result_stats, _legacy_work_fields_allocated
+
+    ensure_fields_allocated()
+    if (
+        _legacy_work_fields_allocated
+        and fever_masks is not None
+        and work_items is not None
+        and result_stats is not None
+    ):
+        return
+
+    fever_masks = ti.field(dtype=ti.i8, shape=(MAX_WORK_ITEMS, MAX_HEAD_NOTES))
+    work_items = ti.Vector.field(n=8, dtype=ti.i32, shape=MAX_WORK_ITEMS)
+    result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_WORK_ITEMS)
+    _legacy_work_fields_allocated = True
+
+    # Rebind newly allocated fields to kernel globals.
+    from . import kernels
+
+    bind_fields(kernels)
+    if IS_METAL:
+        from . import kernels_metal
+
+        kernels_metal.work_items = work_items
+        kernels_metal.result_stats = result_stats
+        kernels_metal.genome_result_stats = genome_result_stats
+        kernels_metal.genome_base_stats = genome_base_stats
+        kernels_metal.ga_scores = ga_scores
+        kernels_metal.ftff_combo_ft = ftff_combo_ft
+        kernels_metal.ftff_combo_ff = ftff_combo_ff
+        kernels_metal.genome_hint_allocation = genome_hint_allocation
+    print(f"[Taichi] Allocated legacy work buffers: {MAX_WORK_ITEMS} work items × {MAX_HEAD_NOTES} head notes")
 
 
 def allocate_grid_fields():
@@ -788,7 +852,10 @@ def allocate_grid_fields():
     grid_count_body_fever = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_count_body_normal = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_head_len = ti.field(dtype=ti.i8, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
-    grid_fever_masks = ti.field(dtype=ti.i8, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES))
+    if WRITE_UNPACKED_GRID_MASKS_DEFAULT:
+        grid_fever_masks = ti.field(dtype=ti.i8, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES))
+    else:
+        grid_fever_masks = None
     grid_fever_masks_bits = ti.field(dtype=ti.u32, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, 4))
     grid_sig0 = ti.field(dtype=ti.u64, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_sig1 = ti.field(dtype=ti.u64, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
@@ -806,6 +873,26 @@ def allocate_grid_fields():
 
     _grid_fields_allocated = True
     print(f"[Taichi] Allocated grid fields: {MAX_SONG_SLOTS}×{GRID_SIZE}×{GRID_SIZE} timeline grid slots")
+
+
+def ensure_grid_unpacked_masks_allocated() -> None:
+    """
+    Allocate unpacked timeline masks on demand.
+
+    Production kernels use `grid_fever_masks_bits`. Unpacked masks are only for
+    compatibility/debug paths and are disabled by default to save VRAM.
+    """
+    global grid_fever_masks
+
+    ensure_grid_fields_allocated()
+    if grid_fever_masks is not None:
+        return
+
+    grid_fever_masks = ti.field(dtype=ti.i8, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES))
+    from . import kernels
+
+    bind_fields(kernels)
+    print(f"[Taichi] Allocated unpacked timeline masks: {MAX_SONG_SLOTS}×{GRID_SIZE}×{GRID_SIZE}×{MAX_HEAD_NOTES}")
 
 
 # ============================================================================
@@ -904,6 +991,7 @@ def bind_fields(kernels_module):
     target.ga_global_best_score = ga_global_best_score
     target.ga_global_best_genome = ga_global_best_genome
     target.ga_global_best_results = ga_global_best_results
+    target.ga_global_best_scan_key = ga_global_best_scan_key
     target.ga_global_best_packed = ga_global_best_packed
     target.ga_runs_payload_packed = ga_runs_payload_packed
     target.ga_run_payload_packed = ga_run_payload_packed
@@ -950,6 +1038,7 @@ def ensure_fields_allocated():
     This is the main entry point for ensuring the GPU is ready.
     Initializes Taichi if needed, allocates fields, and binds them to kernels.
     """
+    global fever_masks, work_items, result_stats, _legacy_work_fields_allocated
     if not is_initialized():
         init_taichi_vulkan()
 
@@ -972,6 +1061,14 @@ def ensure_fields_allocated():
         # Grid fields are bound later in ensure_grid_fields_allocated()
         if IS_METAL:
             from . import kernels_metal
+
+            if not _legacy_work_fields_allocated:
+                # Metal path still relies on legacy work-item kernels.
+                fever_masks = ti.field(dtype=ti.i8, shape=(MAX_WORK_ITEMS, MAX_HEAD_NOTES))
+                work_items = ti.Vector.field(n=8, dtype=ti.i32, shape=MAX_WORK_ITEMS)
+                result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_WORK_ITEMS)
+                _legacy_work_fields_allocated = True
+                bind_fields(kernels)
 
             kernels_metal.chunk_best_score = chunk_best_score
             kernels_metal.chunk_best_idx = chunk_best_idx

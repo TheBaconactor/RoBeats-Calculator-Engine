@@ -41,6 +41,8 @@ from gear_optimizer.core.env_config import ENV, TRUTHY_ENV_VALUES, env_flag
 from gear_optimizer.core.fallback_monitor import warn_fallback
 from gear_optimizer.core.types import JsonDict
 
+_ENV_GET = os.environ.get
+
 
 class GpuRequestType(Enum):
     """Types of GPU requests that can be submitted."""
@@ -726,6 +728,12 @@ class GpuExecutor:
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
         }
+        env_refresh_counter = 0
+        cached_batch_wait_ms = int(getattr(ENV, "gpu_executor_batch_wait_ms", 10) or 10)
+        cached_batch_max = int(getattr(ENV, "gpu_executor_max_batch", 8) or 8)
+        cached_batch_wait_overridden = False
+        cached_batch_max_overridden = False
+        cached_fg_burst_window_ms = 6
 
         while self._running:
             batch: list[GpuRequest] = []
@@ -734,36 +742,45 @@ class GpuExecutor:
                 # Gather batch of pending requests.
                 # Prefer runtime env overrides so batch sizing can be tuned without a restart.
                 # (ENV is a cached snapshot read at import time.)
-                batch_wait_ms = int(getattr(ENV, "gpu_executor_batch_wait_ms", 10) or 10)
-                batch_max = int(getattr(ENV, "gpu_executor_max_batch", 8) or 8)
-                batch_wait_overridden = False
-                try:
-                    raw = os.environ.get("GPU_EXECUTOR_BATCH_WAIT_MS")
-                    if raw is not None and str(raw).strip() != "":
-                        batch_wait_ms = int(str(raw).strip())
-                        batch_wait_overridden = True
-                except Exception:
-                    pass
-                try:
-                    raw = os.environ.get("GPU_EXECUTOR_MAX_BATCH")
-                    if raw is not None and str(raw).strip() != "":
-                        batch_max = int(str(raw).strip())
-                except Exception:
-                    pass
-                fg_burst_window_ms = 6
-                try:
-                    raw = os.environ.get("GPU_EXECUTOR_FG_BURST_WINDOW_MS")
-                    if raw is not None and str(raw).strip() != "":
-                        fg_burst_window_ms = int(str(raw).strip())
-                except Exception:
-                    fg_burst_window_ms = 6
-                fg_burst_window_ms = max(0, int(fg_burst_window_ms))
+                if env_refresh_counter == 0:
+                    cached_batch_wait_ms = int(getattr(ENV, "gpu_executor_batch_wait_ms", 10) or 10)
+                    cached_batch_max = int(getattr(ENV, "gpu_executor_max_batch", 8) or 8)
+                    cached_batch_wait_overridden = False
+                    cached_batch_max_overridden = False
+                    try:
+                        raw = _ENV_GET("GPU_EXECUTOR_BATCH_WAIT_MS")
+                        if raw is not None and str(raw).strip() != "":
+                            cached_batch_wait_ms = int(str(raw).strip())
+                            cached_batch_wait_overridden = True
+                    except Exception:
+                        pass
+                    try:
+                        raw = _ENV_GET("GPU_EXECUTOR_MAX_BATCH")
+                        if raw is not None and str(raw).strip() != "":
+                            cached_batch_max = int(str(raw).strip())
+                            cached_batch_max_overridden = True
+                    except Exception:
+                        pass
+                    try:
+                        raw = _ENV_GET("GPU_EXECUTOR_FG_BURST_WINDOW_MS")
+                        if raw is not None and str(raw).strip() != "":
+                            cached_fg_burst_window_ms = int(str(raw).strip())
+                        else:
+                            cached_fg_burst_window_ms = 6
+                    except Exception:
+                        cached_fg_burst_window_ms = 6
+                    cached_fg_burst_window_ms = max(0, int(cached_fg_burst_window_ms))
+                env_refresh_counter = (env_refresh_counter + 1) % 64
+
+                batch_wait_ms = int(cached_batch_wait_ms)
+                batch_max = int(cached_batch_max)
+                fg_burst_window_ms = int(cached_fg_burst_window_ms)
                 # In-process mode benefits from larger batches but shorter waits because
                 # producers are local and can enqueue follow-up work immediately.
                 if self._in_process_queues:
-                    if os.environ.get("GPU_EXECUTOR_MAX_BATCH") is None:
+                    if not cached_batch_max_overridden:
                         batch_max = max(int(batch_max), 32)
-                    if not batch_wait_overridden:
+                    if not cached_batch_wait_overridden:
                         batch_wait_ms = min(int(batch_wait_ms), 2)
                         if int(fg_burst_window_ms) > 0 and perf_counter() < float(fg_burst_until):
                             batch_wait_ms = 0
@@ -844,9 +861,24 @@ class GpuExecutor:
                         self._profile_shutdown_ts = perf_counter()
                     break
 
-                # Group by request type
-                solve_requests = [r for r in batch if r.request_type == GpuRequestType.SOLVE_GENOMES_PARALLEL]
-                other_requests = [r for r in batch if r.request_type != GpuRequestType.SOLVE_GENOMES_PARALLEL]
+                # Single-pass partitioning keeps request order without rescanning `batch`.
+                solve_requests: list[GpuRequest] = []
+                fg_requests: list[GpuRequest] = []
+                fg_bundle_requests: list[GpuRequest] = []
+                reg_requests: list[GpuRequest] = []
+                remaining: list[GpuRequest] = []
+                for req in batch:
+                    rt = req.request_type
+                    if rt == GpuRequestType.SOLVE_GENOMES_PARALLEL:
+                        solve_requests.append(req)
+                    elif rt == GpuRequestType.SOLVE_FORCE_GREATS_FINDER:
+                        fg_requests.append(req)
+                    elif rt == GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH:
+                        fg_bundle_requests.append(req)
+                    elif rt == GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY:
+                        reg_requests.append(req)
+                    else:
+                        remaining.append(req)
 
                 # Execute solve_genomes requests (true batched kernel execution when possible)
                 if solve_requests:
@@ -920,12 +952,6 @@ class GpuExecutor:
                         self._live_type_counts[GpuRequestType.SOLVE_GENOMES_PARALLEL] += len(solve_requests)
                         self._maybe_live_report()
 
-                # Coalesce FG task-only requests (amortize Python packing + dispatch overhead).
-                fg_requests = [r for r in other_requests if r.request_type == GpuRequestType.SOLVE_FORCE_GREATS_FINDER]
-                rest_requests = [
-                    r for r in other_requests if r.request_type != GpuRequestType.SOLVE_FORCE_GREATS_FINDER
-                ]
-
                 if fg_requests:
                     exec_start_ns = time.perf_counter_ns()
                     responses = self._coalesce_fg_task_requests(fg_requests)
@@ -959,14 +985,6 @@ class GpuExecutor:
                     self._live_type_counts[GpuRequestType.SOLVE_FORCE_GREATS_FINDER] += len(fg_requests)
                     self._maybe_live_report()
 
-                # Coalesce fused FG bundle requests (breakpoints + solve) to reduce per-request overhead.
-                fg_bundle_requests = [
-                    r for r in rest_requests if r.request_type == GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH
-                ]
-                rest_requests = [
-                    r for r in rest_requests if r.request_type != GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH
-                ]
-
                 if fg_bundle_requests:
                     exec_start_ns = time.perf_counter_ns()
                     responses = self._coalesce_fg_solve_with_breakpoints_batch_requests(fg_bundle_requests)
@@ -999,12 +1017,6 @@ class GpuExecutor:
                     self._live_exec_sec += float(dt_exec)
                     self._live_type_counts[GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH] += len(fg_bundle_requests)
                     self._maybe_live_report()
-
-                # Coalesce solve_genomes_from_registry requests (concatenate small populations).
-                reg_requests = [
-                    r for r in rest_requests if r.request_type == GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY
-                ]
-                remaining = [r for r in rest_requests if r.request_type != GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY]
 
                 if reg_requests:
                     exec_start_ns = time.perf_counter_ns()
@@ -1120,7 +1132,7 @@ class GpuExecutor:
         # Default to enabled for in-process queues; callers can opt out via env var.
         inproc_coalesce_enabled = env_flag("GPU_EXECUTOR_INPROC_COALESCE", "1")
         try:
-            inproc_after_first_ms = int(os.environ.get("GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS", "2"))
+            inproc_after_first_ms = int(_ENV_GET("GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS", "2"))
         except Exception:
             inproc_after_first_ms = 0
         inproc_after_first_ms = max(0, int(inproc_after_first_ms))
@@ -1465,7 +1477,9 @@ class GpuExecutor:
                 _append_fallback(req, "payload list length resolved to zero")
                 continue
             if n_payloads > int(max_payloads):
-                _append_fallback(req, "payload count exceeded coalesce max", extra={"payloads": n_payloads, "max": max_payloads})
+                _append_fallback(
+                    req, "payload count exceeded coalesce max", extra={"payloads": n_payloads, "max": max_payloads}
+                )
                 continue
             n_pairs = _payload_pairs(payload_list)
 
@@ -3083,9 +3097,7 @@ class GpuExecutor:
         except Exception as e:
             raise RuntimeError(f"breakpoint inputs invalid: {type(e).__name__}: {e}") from e
 
-        implicit_cfgs = str(os.environ.get("FG_IMPLICIT_CONFIGS", "1") or "").strip().lower() in (
-            TRUTHY_ENV_VALUES | {""}
-        )
+        implicit_cfgs = str(_ENV_GET("FG_IMPLICIT_CONFIGS", "1") or "").strip().lower() in (TRUTHY_ENV_VALUES | {""})
 
         fg_tasks: list[dict[str, Any]] = []
         cfg_windows: list[dict] | None = None
