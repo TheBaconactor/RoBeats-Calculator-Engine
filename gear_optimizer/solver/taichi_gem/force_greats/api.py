@@ -115,6 +115,7 @@ _GPU_PROFILER_CACHE = None
 _GPU_PROFILER_READY = False
 _FG_GPU_CFG_RANGES = str(_ENV_GET("FG_GPU_CFG_RANGES", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
 _FG_IMPLICIT_CONFIGS = str(_ENV_GET("FG_IMPLICIT_CONFIGS", "1") or "").strip().lower() in {"1", "true", "yes", "on"}
+_FG_STAGE1_SMALL_SECTIONS_FASTPATH = bool(getattr(fg_kernels, "FG_STAGE1_SMALL_SECTIONS_FASTPATH", False))
 
 
 def _get_gpu_profiler():
@@ -1512,7 +1513,7 @@ def _solve_force_greats_finder_gpu_impl(
         else:
             fg_kernels.fg_stage1_clear_wave_best_kernel(int(n_work_items))
             fg_kernels.fg_stage1_waves_kernel(
-                bool(int(n_sections) <= 4),
+                bool(_FG_STAGE1_SMALL_SECTIONS_FASTPATH and int(n_sections) <= 4),
                 int(n_work_items),
                 int(n_cfg),
                 int(global_cfg_offset),
@@ -2622,7 +2623,7 @@ def solve_force_greats_finder_gpu_tasks(
             else:
                 fg_kernels.fg_stage1_clear_wave_best_kernel(int(n_work_items))
                 fg_kernels.fg_stage1_waves_kernel(
-                    bool(int(n_sections) <= 4),
+                    bool(_FG_STAGE1_SMALL_SECTIONS_FASTPATH and int(n_sections) <= 4),
                     int(n_work_items),
                     int(band_len),
                     int(cfg_offset_i),

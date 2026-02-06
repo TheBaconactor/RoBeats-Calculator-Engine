@@ -15,6 +15,8 @@ from ..kernels_scoring import optimize_core_device
 
 # Platform detection for atomic operations
 IS_METAL = sys.platform == "darwin"
+# Small populations are faster with a serial scan than a fully contended atomic reduction.
+GA_GLOBAL_BEST_SERIAL_THRESHOLD = 512
 
 
 @ti.func
@@ -402,30 +404,46 @@ def ga_write_best_and_update_global_kernel(
         kernels_helpers.genome_hint_allocation[genome_idx][2] = fm_gems
         kernels_helpers.genome_hint_allocation[genome_idx][3] = ov_gems
 
-    # Parallel reduction to avoid a serial O(n_genomes) tail on every generation.
-    kernels_helpers.ga_global_best_scan_key[0] = ti.u64(0)
-
-    for g in range(n_genomes):
-        score: ti.i32 = kernels_helpers.ga_scores[g]
-        if score >= 0:
-            inv_g: ti.u64 = ti.u64(0xFFFFFFFF) - ti.cast(g, ti.u64)
-            key: ti.u64 = (ti.cast(score + 1, ti.u64) << ti.u64(32)) | inv_g
-            ti.atomic_max(kernels_helpers.ga_global_best_scan_key[0], key)
-
-    # Deterministic materialization from the winning packed key.
-    key = kernels_helpers.ga_global_best_scan_key[0]
-    if key != ti.u64(0):
-        best_score: ti.i32 = ti.cast(key >> ti.u64(32), ti.i32) - 1
-        prev_best: ti.i32 = kernels_helpers.ga_global_best_score[0]
-        if best_score > prev_best:
-            inv_g_u32: ti.u32 = ti.cast(key & ti.u64(0xFFFFFFFF), ti.u32)
-            best_g: ti.i32 = ti.cast(ti.u32(0xFFFFFFFF) - inv_g_u32, ti.i32)
-            kernels_helpers.ga_global_best_score[0] = best_score
+    # Adaptive global-best scan:
+    # - Small n_genomes: serial scan (lower overhead, no atomic contention)
+    # - Large n_genomes: atomic packed-key reduction
+    prev_best: ti.i32 = kernels_helpers.ga_global_best_score[0]
+    if n_genomes <= GA_GLOBAL_BEST_SERIAL_THRESHOLD:
+        best_score_serial: ti.i32 = -1
+        best_g_serial: ti.i32 = -1
+        for g in range(n_genomes):
+            score: ti.i32 = kernels_helpers.ga_scores[g]
+            if score > best_score_serial:
+                best_score_serial = score
+                best_g_serial = g
+        if best_g_serial >= 0 and best_score_serial > prev_best:
+            kernels_helpers.ga_global_best_score[0] = best_score_serial
             for s in range(n_slots):
-                kernels_helpers.ga_global_best_genome[s] = kernels_helpers.population_indices[best_g, s]
-            res = kernels_helpers.genome_result_stats[best_g]
+                kernels_helpers.ga_global_best_genome[s] = kernels_helpers.population_indices[best_g_serial, s]
+            res = kernels_helpers.genome_result_stats[best_g_serial]
             for r in ti.static(range(7)):
                 kernels_helpers.ga_global_best_results[r] = res[r]
+    else:
+        kernels_helpers.ga_global_best_scan_key[0] = ti.u64(0)
+        for g in range(n_genomes):
+            score: ti.i32 = kernels_helpers.ga_scores[g]
+            if score >= 0:
+                inv_g: ti.u64 = ti.u64(0xFFFFFFFF) - ti.cast(g, ti.u64)
+                key: ti.u64 = (ti.cast(score + 1, ti.u64) << ti.u64(32)) | inv_g
+                ti.atomic_max(kernels_helpers.ga_global_best_scan_key[0], key)
+
+        key = kernels_helpers.ga_global_best_scan_key[0]
+        if key != ti.u64(0):
+            best_score: ti.i32 = ti.cast(key >> ti.u64(32), ti.i32) - 1
+            if best_score > prev_best:
+                inv_g_u32: ti.u32 = ti.cast(key & ti.u64(0xFFFFFFFF), ti.u32)
+                best_g: ti.i32 = ti.cast(ti.u32(0xFFFFFFFF) - inv_g_u32, ti.i32)
+                kernels_helpers.ga_global_best_score[0] = best_score
+                for s in range(n_slots):
+                    kernels_helpers.ga_global_best_genome[s] = kernels_helpers.population_indices[best_g, s]
+                res = kernels_helpers.genome_result_stats[best_g]
+                for r in ti.static(range(7)):
+                    kernels_helpers.ga_global_best_results[r] = res[r]
 
 
 @ti.kernel

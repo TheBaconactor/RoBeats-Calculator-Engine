@@ -387,7 +387,7 @@ def allocate_fields() -> None:
     fg_fever_end_idx_song = ti.field(dtype=ti.i32, shape=(FG_MAX_SONG_NOTES, FG_MAX_STAT + 1))
     fg_fever_end_idx_great_candidate = ti.field(dtype=ti.i32, shape=(FG_MAX_SONG_NOTES, FG_MAX_STAT + 1))
 
-    fg_forced_counts = ti.field(dtype=ti.i16, shape=(FG_MAX_CONFIGS, FG_MAX_SECTIONS))
+    fg_forced_counts = ti.field(dtype=ti.i32, shape=(FG_MAX_CONFIGS, FG_MAX_SECTIONS))
     fg_section_forced_caps = ti.field(dtype=ti.i32, shape=FG_MAX_SECTIONS)
     caps_np = np.zeros((FG_MAX_SECTIONS,), dtype=np.int32)
     caps_np[: len(_FG_SECTION_FORCED_CAPS_DEFAULT)] = np.asarray(_FG_SECTION_FORCED_CAPS_DEFAULT, dtype=np.int32)
@@ -599,7 +599,7 @@ def warmup_kernels() -> None:
         fg_kernels.fg_build_flat_work_kernel(n_genomes, n_ftff)
         fg_kernels.fg_stage1_clear_wave_best_kernel(n_work_items)
         fg_kernels.fg_stage1_waves_kernel(
-            bool(int(n_sections) <= 4),
+            bool(getattr(fg_kernels, "FG_STAGE1_SMALL_SECTIONS_FASTPATH", False) and int(n_sections) <= 4),
             n_work_items,
             n_cfg,
             cfg_offset,

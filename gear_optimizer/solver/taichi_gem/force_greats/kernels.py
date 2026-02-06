@@ -19,6 +19,7 @@ from .fields import FG_DOWNLOAD_BATCH_MAX, FG_DOWNLOAD_TOPK_MAX, FG_MAX_SECTIONS
 
 # Reuse the shared kernel block dim to keep launch config consistent with other kernels.
 _KERNEL_BLOCK_DIM = kernels_helpers._KERNEL_BLOCK_DIM
+_TRUTHY_ENV = {"1", "true", "yes", "on"}
 
 
 # ============================================================================
@@ -267,15 +268,32 @@ _fg_block_pow = 1
 while _fg_block_pow * 2 <= FG_STAGE1_BLOCK_DIM:
     _fg_block_pow *= 2
 FG_STAGE1_BLOCK_DIM = max(32, min(_fg_block_pow, 256))
+# Default OFF: compiling two Stage-1 template variants can hurt cold-start runtime.
+FG_STAGE1_SMALL_SECTIONS_FASTPATH = (
+    str(os.environ.get("FG_STAGE1_SMALL_SECTIONS_FASTPATH", "0") or "").strip().lower() in _TRUTHY_ENV
+)
 
 
 @ti.func
 def _fg_section_forced_cap(sec: ti.i32) -> ti.i32:
-    cap: ti.i32 = 0
-    if 0 <= sec < FG_MAX_SECTIONS:
-        cap = fg_section_forced_caps[sec]
-        if cap < 0:
-            cap = 0
+    # Keep this ALU-only in the hot loop; on RDNA3 this outperforms a global field read.
+    cap: ti.i32 = 4
+    if sec == 0:
+        cap = 50
+    elif sec == 1:
+        cap = 30
+    elif sec == 2:
+        cap = 15
+    elif sec == 3:
+        cap = 10
+    elif sec == 4:
+        cap = 8
+    elif sec == 5:
+        cap = 6
+    elif sec == 6:
+        cap = 5
+    elif sec < 0 or sec >= FG_MAX_SECTIONS:
+        cap = 0
     return cap
 
 
@@ -1291,7 +1309,7 @@ def fg_stage1_flat_kernel(
     """
     fg_stage1_clear_wave_best_kernel(int(n_work_items))
     fg_stage1_waves_kernel(
-        bool(int(n_sections) <= 4),
+        bool(FG_STAGE1_SMALL_SECTIONS_FASTPATH and int(n_sections) <= 4),
         int(n_work_items),
         int(n_cfg),
         int(cfg_offset),
