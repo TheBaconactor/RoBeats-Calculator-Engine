@@ -1,30 +1,59 @@
 Param(
-  [switch]$Fix
+  [switch]$Fix,
+  [switch]$StrictFormat
 )
 
 $ErrorActionPreference = "Stop"
 
+function Invoke-NativeStep {
+  Param(
+    [Parameter(Mandatory = $true)][string]$Label,
+    [Parameter(Mandatory = $true)][string]$Executable,
+    [string[]]$Arguments = @(),
+    [switch]$Optional
+  )
+
+  & $Executable @Arguments
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0) {
+    if ($Optional) {
+      Write-Warning "$Label failed (exit $exitCode); continuing."
+      return
+    }
+    throw "$Label failed (exit $exitCode)."
+  }
+}
+
 Write-Host "== Gear Optimizer: Quality Check =="
 
 # 1. Syntax check
-python -m compileall -q gear_optimizer tests
+Invoke-NativeStep -Label "compileall" -Executable "python" -Arguments @("-m", "compileall", "-q", "gear_optimizer", "tests")
 
 # 2. Lint
 if ($Fix) {
-  python -m ruff check . --fix
-  python -m ruff format .
+  Invoke-NativeStep -Label "ruff check --fix" -Executable "python" -Arguments @("-m", "ruff", "check", ".", "--fix")
+  Invoke-NativeStep -Label "ruff format" -Executable "python" -Arguments @("-m", "ruff", "format", ".")
 } else {
-  python -m ruff check .
-  python -m ruff format --check .
+  Invoke-NativeStep -Label "ruff check" -Executable "python" -Arguments @("-m", "ruff", "check", ".")
+  $formatArgs = @("-m", "ruff", "format", "--check", ".")
+  if ($StrictFormat) {
+    Invoke-NativeStep -Label "ruff format --check" -Executable "python" -Arguments $formatArgs
+  } else {
+    Invoke-NativeStep -Label "ruff format --check" -Executable "python" -Arguments $formatArgs -Optional
+  }
 }
 
 # 3. Quick tests (use python -m pytest for reliable package imports)
 Write-Host "`n== Quick tests =="
-python -m pytest `
-  tests/test_api_stability.py `
-  tests/test_taichi_parity.py `
-  tests/test_fg_stage1_tie_metadata_consistency.py `
-  tests/test_gpu_persistence_stats_match_kernel.py `
-  -q --tb=short
+Invoke-NativeStep -Label "pytest quick suite" -Executable "python" -Arguments @(
+  "-m",
+  "pytest",
+  "tests/test_api_stability.py",
+  "tests/test_taichi_parity.py",
+  "tests/test_fg_stage1_tie_metadata_consistency.py",
+  "tests/test_gpu_persistence_stats_match_kernel.py",
+  "-q",
+  "--tb=short"
+)
 
 Write-Host "`nOK"

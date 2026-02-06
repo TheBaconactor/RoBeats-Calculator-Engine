@@ -50,7 +50,7 @@ cursor = conn.execute("""
 """)
 loadout = cursor.fetchone()
 if loadout:
-print("\n--- TEAM_BUFF_LOADOUTS TABLE ROW ---")
+    print("\n--- TEAM_BUFF_LOADOUTS TABLE ROW ---")
     print(f"song_name: {loadout['song_name']}")
     print(f"loadout_hash: {loadout['loadout_hash']}")
     print(f"score: {loadout['score']}")
