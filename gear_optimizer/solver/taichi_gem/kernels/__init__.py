@@ -114,6 +114,7 @@ from .kernels_solvers_batch import (
     solve_genomes_with_ftff_kernel,
     solve_genomes_with_ftff_block_kernel,
     solve_ftff_parallel_kernel,
+    copy_work_items_from_ndarray_kernel,
     copy_genome_result_stats_to_download_staging_kernel,
 )
 
@@ -248,6 +249,7 @@ __all__ = [
     "solve_genomes_with_ftff_kernel",
     "solve_genomes_with_ftff_block_kernel",
     "solve_ftff_parallel_kernel",
+    "copy_work_items_from_ndarray_kernel",
     "copy_genome_result_stats_to_download_staging_kernel",
     # GA evaluation kernels
     "init_genome_results_kernel",

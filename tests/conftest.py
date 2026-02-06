@@ -108,15 +108,26 @@ def _taichi_module_isolation(request):
     except Exception:
         test_path = ""
 
-    is_gpu_module = any(
-        token in test_path
-        for token in (
-            "test_gpu_",
-            "test_fg_",
-            "test_cpu_gpu_",
-            "test_ga_",
+    is_gpu_module = False
+    try:
+        node = getattr(request, "node", None)
+        if node is not None:
+            is_gpu_module = node.get_closest_marker("gpu") is not None
+    except Exception:
+        is_gpu_module = False
+
+    if not is_gpu_module:
+        is_gpu_module = any(
+            token in test_path
+            for token in (
+                "test_gpu_",
+                "test_fg_",
+                "test_cpu_gpu_",
+                "test_ga_",
+                "test_taichi_",
+                "test_parity_",
+            )
         )
-    )
 
     if not is_gpu_module:
         yield

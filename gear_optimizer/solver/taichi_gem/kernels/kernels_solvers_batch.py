@@ -30,6 +30,19 @@ GA_FTFF_BLOCK_WAVES = (GA_FTFF_BLOCK_DIM + 31) // 32
 
 
 @ti.kernel
+def copy_work_items_from_ndarray_kernel(n_items: ti.i32, src: ti.types.ndarray(dtype=ti.i32, ndim=2)):
+    """
+    Copy a variable-length host work-item buffer into the resident work_items field.
+
+    This avoids full-field from_numpy() uploads when only the first `n_items` rows
+    are valid in a chunk.
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for i, j in ti.ndrange(n_items, 8):
+        kernels_helpers.work_items[i][j] = src[i, j]
+
+
+@ti.kernel
 def solve_batch_kernel(
     n_items: ti.i32,
     is_p_ft: ti.i32,

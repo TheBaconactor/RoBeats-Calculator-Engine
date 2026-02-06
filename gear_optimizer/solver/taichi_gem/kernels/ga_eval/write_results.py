@@ -240,6 +240,14 @@ def ga_write_best_results_from_key_kernel(
             ]
         )
         kernels_helpers.ga_scores[genome_idx] = score
+        if ti.static(not IS_METAL):
+            # Normalize packed best-key score bits to the materialized score/combination pair.
+            # This keeps key/result invariants stable for diagnostics and downstream checks.
+            corrected_key: ti.u64 = (ti.cast(score + 1, ti.u64) << ti.u64(32)) | ti.cast(combo_idx, ti.u64)
+            kernels_helpers.chunk_best_key[genome_idx] = corrected_key
+            kernels_helpers.chunk_best_key_tiles[genome_idx, 0] = corrected_key
+            for t in ti.static(range(1, kernels_helpers.CHUNK_BEST_KEY_TILES)):
+                kernels_helpers.chunk_best_key_tiles[genome_idx, t] = ti.u64(0)
 
 
 @ti.kernel
@@ -379,6 +387,12 @@ def ga_write_best_and_update_global_kernel(
 
         kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([score, ft, ff, pp_gems, cm_gems, fm_gems, ov_gems])
         kernels_helpers.ga_scores[genome_idx] = score
+        if ti.static(not IS_METAL):
+            corrected_key: ti.u64 = (ti.cast(score + 1, ti.u64) << ti.u64(32)) | ti.cast(combo_idx, ti.u64)
+            kernels_helpers.chunk_best_key[genome_idx] = corrected_key
+            kernels_helpers.chunk_best_key_tiles[genome_idx, 0] = corrected_key
+            for t in ti.static(range(1, kernels_helpers.CHUNK_BEST_KEY_TILES)):
+                kernels_helpers.chunk_best_key_tiles[genome_idx, t] = ti.u64(0)
 
         kernels_helpers.genome_hint_allocation[genome_idx][0] = pp_gems
         kernels_helpers.genome_hint_allocation[genome_idx][1] = cm_gems
@@ -544,6 +558,12 @@ def ga_write_best_and_store_hints_kernel(
 
         kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([score, ft, ff, pp_gems, cm_gems, fm_gems, ov_gems])
         kernels_helpers.ga_scores[genome_idx] = score
+        if ti.static(not IS_METAL):
+            corrected_key: ti.u64 = (ti.cast(score + 1, ti.u64) << ti.u64(32)) | ti.cast(combo_idx, ti.u64)
+            kernels_helpers.chunk_best_key[genome_idx] = corrected_key
+            kernels_helpers.chunk_best_key_tiles[genome_idx, 0] = corrected_key
+            for t in ti.static(range(1, kernels_helpers.CHUNK_BEST_KEY_TILES)):
+                kernels_helpers.chunk_best_key_tiles[genome_idx, t] = ti.u64(0)
 
         kernels_helpers.genome_hint_allocation[genome_idx][0] = pp_gems
         kernels_helpers.genome_hint_allocation[genome_idx][1] = cm_gems

@@ -46,6 +46,19 @@ _GENOME_STATS_HASH_CACHE = None
 kernels = get_kernels()
 
 
+def _upload_work_items_chunk(work_items_np: np.ndarray, n_items: int) -> None:
+    n_items_i = int(n_items)
+    if n_items_i <= 0:
+        return
+    if n_items_i > int(work_items_np.shape[0]):
+        raise ValueError(f"work_items chunk overflow: n_items={n_items_i} > shape0={int(work_items_np.shape[0])}")
+    try:
+        kernels.copy_work_items_from_ndarray_kernel(n_items_i, work_items_np[:n_items_i])
+    except Exception:
+        # Conservative fallback for backends where ndarray upload kernel is unavailable.
+        fields.work_items.from_numpy(work_items_np)
+
+
 def _results_from_stats(results_np: np.ndarray, n_genomes: int) -> list[tuple[int, int, int, int, int, int, int]]:
     results: list[tuple[int, int, int, int, int, int, int]] = []
     for i in range(n_genomes):
@@ -401,15 +414,15 @@ def solve_genomes_parallel(
 
         if _profiler.enabled:
             _t_upload = time.perf_counter()
-            fields.work_items.from_numpy(work_items_np)
+            _upload_work_items_chunk(work_items_np, int(chunk_n))
             try:
-                upload_bytes = int(work_items_np.nbytes)
+                upload_bytes = int(work_items_np[: int(chunk_n)].nbytes)
             except Exception:
                 upload_bytes = 0
             _profiler.record_upload(time.perf_counter() - _t_upload, bytes_count=upload_bytes)
             _t_kernel = time.perf_counter()
         else:
-            fields.work_items.from_numpy(work_items_np)
+            _upload_work_items_chunk(work_items_np, int(chunk_n))
             _t_kernel = 0.0
         last_kernel_t0 = float(_t_kernel) if _t_kernel else None
         last_kernel_work_n = int(chunk_n)
@@ -844,7 +857,7 @@ def solve_genomes_parallel_merged(
 
                 # Flush if chunk would overflow
                 if cur + cnt > MAX_WORK_ITEMS:
-                    fields.work_items.from_numpy(work_items_np[:cur])
+                    _upload_work_items_chunk(work_items_np, int(cur))
                     kernels.solve_ftff_parallel_kernel(
                         cur,
                         total_budget,
@@ -898,7 +911,7 @@ def solve_genomes_parallel_merged(
 
     # Final partial chunk
     if cur > 0:
-        fields.work_items.from_numpy(work_items_np)
+        _upload_work_items_chunk(work_items_np, int(cur))
         kernels.solve_ftff_parallel_kernel(
             cur,
             total_budget,
