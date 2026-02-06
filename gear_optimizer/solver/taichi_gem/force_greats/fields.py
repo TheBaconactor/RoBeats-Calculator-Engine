@@ -325,6 +325,8 @@ def bind_fields(kernels_module) -> None:
     kernels_module.fg_stage1_fill_penalty = fg_stage1_fill_penalty
     kernels_module.fg_stage1_packed = fg_stage1_packed
     kernels_module.fg_stage1_wave_best = fg_stage1_wave_best
+    kernels_module.FG_STAGE1_HAS_AUX_FIELDS = fg_stage1_final_score is not None
+    kernels_module.FG_STAGE1_HAS_CFG_IDX_FIELD = fg_stage1_cfg_idx is not None
 
     # Flat work items
     kernels_module.fg_flat_work_genome = fg_flat_work_genome
@@ -429,9 +431,10 @@ def allocate_fields() -> None:
         fg_stage1_fill_penalty = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
     else:
         # Vulkan path writes/reads packed stage-1 winners only.
+        # Keep cfg_idx for compatibility paths/tests that inspect decoded tie-break metadata.
         fg_stage1_final_score = None
         fg_stage1_base_score = None
-        fg_stage1_cfg_idx = None
+        fg_stage1_cfg_idx = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
         fg_stage1_g_pp = None
         fg_stage1_g_cm = None
         fg_stage1_g_fm = None

@@ -75,6 +75,9 @@ fg_flat_work_ftff = None
 fg_stage1_packed = None
 # Per-work-item staging for atomic-free Stage-1 reductions (u64 packed keys per wave slot).
 fg_stage1_wave_best = None
+# Compile-time flags set by force_greats.fields.bind_fields.
+FG_STAGE1_HAS_AUX_FIELDS = False
+FG_STAGE1_HAS_CFG_IDX_FIELD = False
 
 # Global best fields for GPU-resident accumulation (persist across group calls)
 fg_global_best_final_score = None
@@ -830,15 +833,17 @@ def fg_reset_best_kernel(n_genomes: ti.i32):
 def fg_stage1_init_kernel(n_genomes: ti.i32, n_ftff: ti.i32):
     """Initialize Stage 1 fields before reduction (supports cfg-chunk accumulation)."""
     for g, f in ti.ndrange(n_genomes, n_ftff):
-        fg_stage1_final_score[g, f] = -1
-        fg_stage1_base_score[g, f] = 0
-        fg_stage1_cfg_idx[g, f] = -1
-        fg_stage1_g_pp[g, f] = 0
-        fg_stage1_g_cm[g, f] = 0
-        fg_stage1_g_fm[g, f] = 0
-        fg_stage1_g_ov[g, f] = 0
-        fg_stage1_score_penalty[g, f] = 0
-        fg_stage1_fill_penalty[g, f] = 0
+        if ti.static(FG_STAGE1_HAS_AUX_FIELDS):
+            fg_stage1_final_score[g, f] = -1
+            fg_stage1_base_score[g, f] = 0
+            fg_stage1_g_pp[g, f] = 0
+            fg_stage1_g_cm[g, f] = 0
+            fg_stage1_g_fm[g, f] = 0
+            fg_stage1_g_ov[g, f] = 0
+            fg_stage1_score_penalty[g, f] = 0
+            fg_stage1_fill_penalty[g, f] = 0
+        if ti.static(FG_STAGE1_HAS_CFG_IDX_FIELD):
+            fg_stage1_cfg_idx[g, f] = -1
         # Initialize packed field to sentinel value (very negative score, cfg=-1)
         # Use -2^62 in upper bits for sentinel (so any real score wins)
         fg_stage1_packed[g, f] = ti.cast(-1, ti.i64) << 32
@@ -1264,16 +1269,17 @@ def fg_stage1_reduce_waves_kernel(n_work_items: ti.i32, is_first_chunk: ti.i32):
 @ti.kernel
 def fg_stage1_unpack_cfg_idx_from_packed_kernel(n_work_items: ti.i32):
     """Decode cfg_idx metadata from packed Stage-1 keys for compatibility paths."""
-    for work_idx in range(n_work_items):
-        g: ti.i32 = fg_flat_work_genome[work_idx]
-        ftff_idx: ti.i32 = fg_flat_work_ftff[work_idx]
-        packed: ti.i64 = fg_stage1_packed[g, ftff_idx]
-        cfg_idx: ti.i32 = -1
-        if packed >= 0:
-            packed_u: ti.u64 = ti.cast(packed, ti.u64)
-            inverted_idx: ti.i32 = ti.cast(packed_u & ti.u64(0x7FFFFFFF), ti.i32)
-            cfg_idx = 0x7FFFFFFF - inverted_idx
-        fg_stage1_cfg_idx[g, ftff_idx] = cfg_idx
+    if ti.static(FG_STAGE1_HAS_CFG_IDX_FIELD):
+        for work_idx in range(n_work_items):
+            g: ti.i32 = fg_flat_work_genome[work_idx]
+            ftff_idx: ti.i32 = fg_flat_work_ftff[work_idx]
+            packed: ti.i64 = fg_stage1_packed[g, ftff_idx]
+            cfg_idx: ti.i32 = -1
+            if packed >= 0:
+                packed_u: ti.u64 = ti.cast(packed, ti.u64)
+                inverted_idx: ti.i32 = ti.cast(packed_u & ti.u64(0x7FFFFFFF), ti.i32)
+                cfg_idx = 0x7FFFFFFF - inverted_idx
+            fg_stage1_cfg_idx[g, ftff_idx] = cfg_idx
 
 
 def fg_stage1_flat_kernel(

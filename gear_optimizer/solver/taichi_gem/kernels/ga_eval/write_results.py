@@ -139,8 +139,9 @@ def ga_write_best_results_from_key_kernel(
       - genome_result_stats[g] = [score, ft, ff, pp, cm, fm, ov]
       - ga_scores[g] = score
 
-    Vulkan path reads cached gem allocations from chunk_best_results (filled during
-    combo search). Metal keeps re-eval fallback because it reduces by score atomics.
+    Both backends re-evaluate the winning FT/FF combo to materialize gem allocation.
+    This guarantees `genome_result_stats` is self-consistent even if packed-key and
+    cached-allocation writes are observed at different times.
 
     Args:
         n_genomes: Number of genomes to write results for
@@ -179,78 +180,66 @@ def ga_write_best_results_from_key_kernel(
             continue
         ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
         ff: ti.i32 = kernels_helpers.ftff_combo_ff[combo_idx]
-        if ti.static(not IS_METAL):
-            pp_gems = kernels_helpers.chunk_best_results[genome_idx, 0]
-            cm_gems = kernels_helpers.chunk_best_results[genome_idx, 1]
-            fm_gems = kernels_helpers.chunk_best_results[genome_idx, 2]
-            ov_gems = kernels_helpers.chunk_best_results[genome_idx, 3]
-            score: ti.i32 = ti.cast(best_key >> ti.u64(32), ti.i32) - 1
+        stats = kernels_helpers.genome_base_stats[genome_idx]
+        base_pp: ti.i32 = stats[0]
+        base_cm: ti.i32 = stats[1]
+        base_fm: ti.i32 = stats[2]
+        base_p_val: ti.i32 = stats[3]
+        base_s_val: ti.i32 = stats[4]
+        base_ft_stat: ti.i32 = stats[5]
+        base_ff_stat: ti.i32 = stats[6]
 
-            kernels_helpers.genome_result_stats[genome_idx] = ti.Vector(
-                [score, ft, ff, pp_gems, cm_gems, fm_gems, ov_gems]
-            )
-            kernels_helpers.ga_scores[genome_idx] = score
-        else:
-            stats = kernels_helpers.genome_base_stats[genome_idx]
-            base_pp: ti.i32 = stats[0]
-            base_cm: ti.i32 = stats[1]
-            base_fm: ti.i32 = stats[2]
-            base_p_val: ti.i32 = stats[3]
-            base_s_val: ti.i32 = stats[4]
-            base_ft_stat: ti.i32 = stats[5]
-            base_ff_stat: ti.i32 = stats[6]
+        ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
+        ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
+        ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
+        ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
 
-            ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
-            ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
-            ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
-            ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
+        count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
+        count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
+        head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
 
-            count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
-            count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
-            head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
+        budget: ti.i32 = total_budget - ft - ff
+        p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
+        s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-            budget: ti.i32 = total_budget - ft - ff
-            p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
-            s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
+        res_vec = optimize_core_device(
+            0,
+            budget,
+            base_pp,
+            base_cm,
+            base_fm,
+            p_val,
+            s_val,
+            is_p_pp,
+            is_s_pp,
+            is_p_cm,
+            is_s_cm,
+            is_p_fm,
+            is_s_fm,
+            is_p_ov,
+            is_s_ov,
+            head_len,
+            count_fever,
+            count_normal,
+            1,
+            song_slot,
+            ft_idx,
+            ff_idx,
+        )
 
-            res_vec = optimize_core_device(
-                0,
-                budget,
-                base_pp,
-                base_cm,
-                base_fm,
-                p_val,
-                s_val,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                head_len,
-                count_fever,
-                count_normal,
-                1,
-                song_slot,
-                ft_idx,
-                ff_idx,
-            )
-
-            score: ti.i32 = res_vec[0]
-            kernels_helpers.genome_result_stats[genome_idx] = ti.Vector(
-                [
-                    score,
-                    ft,
-                    ff,
-                    res_vec[1],  # pp gems
-                    res_vec[2],  # cm gems
-                    res_vec[3],  # fm gems
-                    res_vec[4],  # ov gems
-                ]
-            )
-            kernels_helpers.ga_scores[genome_idx] = score
+        score: ti.i32 = res_vec[0]
+        kernels_helpers.genome_result_stats[genome_idx] = ti.Vector(
+            [
+                score,
+                ft,
+                ff,
+                res_vec[1],  # pp gems
+                res_vec[2],  # cm gems
+                res_vec[3],  # fm gems
+                res_vec[4],  # ov gems
+            ]
+        )
+        kernels_helpers.ga_scores[genome_idx] = score
 
 
 @ti.kernel
@@ -278,7 +267,7 @@ def ga_write_best_and_update_global_kernel(
 
     For each genome:
     1. Unpack best combo_idx from chunk_best_key (or chunk_best_idx on Metal)
-    2. Resolve gems for this combo (cached on Vulkan, re-eval on Metal)
+    2. Re-evaluate the winning combo to materialize a consistent score+allocation
     3. Write genome_result_stats and ga_scores
     4. Store hints for next generation (warm-start)
     5. Atomically update global best if improved
@@ -329,72 +318,64 @@ def ga_write_best_and_update_global_kernel(
         fm_gems: ti.i32 = 0
         ov_gems: ti.i32 = 0
 
-        if ti.static(not IS_METAL):
-            pp_gems = kernels_helpers.chunk_best_results[genome_idx, 0]
-            cm_gems = kernels_helpers.chunk_best_results[genome_idx, 1]
-            fm_gems = kernels_helpers.chunk_best_results[genome_idx, 2]
-            ov_gems = kernels_helpers.chunk_best_results[genome_idx, 3]
-            score = ti.cast(best_key >> ti.u64(32), ti.i32) - 1
-        else:
-            # Load genome base stats: [pp, cm, fm, p_val, s_val, ft_stat, ff_stat]
-            stats = kernels_helpers.genome_base_stats[genome_idx]
-            base_pp: ti.i32 = stats[0]
-            base_cm: ti.i32 = stats[1]
-            base_fm: ti.i32 = stats[2]
-            base_p_val: ti.i32 = stats[3]
-            base_s_val: ti.i32 = stats[4]
-            base_ft_stat: ti.i32 = stats[5]
-            base_ff_stat: ti.i32 = stats[6]
+        # Load genome base stats: [pp, cm, fm, p_val, s_val, ft_stat, ff_stat]
+        stats = kernels_helpers.genome_base_stats[genome_idx]
+        base_pp: ti.i32 = stats[0]
+        base_cm: ti.i32 = stats[1]
+        base_fm: ti.i32 = stats[2]
+        base_p_val: ti.i32 = stats[3]
+        base_s_val: ti.i32 = stats[4]
+        base_ft_stat: ti.i32 = stats[5]
+        base_ff_stat: ti.i32 = stats[6]
 
-            # Calculate stat indices for grid lookup
-            ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
-            ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
-            ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
-            ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
+        # Calculate stat indices for grid lookup
+        ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
+        ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
+        ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
+        ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
 
-            # Get song structure from grid
-            count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
-            count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
-            head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
+        # Get song structure from grid
+        count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
+        count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
+        head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
 
-            # Calculate budget for PP/CM/FM/OV gems (CRITICAL: must match the winning combo's FT/FF)
-            budget: ti.i32 = total_budget - ft - ff
+        # Calculate budget for PP/CM/FM/OV gems (CRITICAL: must match the winning combo's FT/FF)
+        budget: ti.i32 = total_budget - ft - ff
 
-            # Adjust p/s values with FT/FF elemental contributions
-            p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
-            s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
+        # Adjust p/s values with FT/FF elemental contributions
+        p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
+        s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-            # Metal keeps re-eval path because its key reduction is score-only atomics.
-            res_vec = optimize_core_device(
-                0,
-                budget,
-                base_pp,
-                base_cm,
-                base_fm,
-                p_val,
-                s_val,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                head_len,
-                count_fever,
-                count_normal,
-                1,
-                song_slot,
-                ft_idx,
-                ff_idx,
-            )
+        res_vec = optimize_core_device(
+            0,
+            budget,
+            base_pp,
+            base_cm,
+            base_fm,
+            p_val,
+            s_val,
+            is_p_pp,
+            is_s_pp,
+            is_p_cm,
+            is_s_cm,
+            is_p_fm,
+            is_s_fm,
+            is_p_ov,
+            is_s_ov,
+            head_len,
+            count_fever,
+            count_normal,
+            1,
+            song_slot,
+            ft_idx,
+            ff_idx,
+        )
 
-            score = res_vec[0]
-            pp_gems = res_vec[1]
-            cm_gems = res_vec[2]
-            fm_gems = res_vec[3]
-            ov_gems = res_vec[4]
+        score = res_vec[0]
+        pp_gems = res_vec[1]
+        cm_gems = res_vec[2]
+        fm_gems = res_vec[3]
+        ov_gems = res_vec[4]
 
         kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([score, ft, ff, pp_gems, cm_gems, fm_gems, ov_gems])
         kernels_helpers.ga_scores[genome_idx] = score
@@ -508,65 +489,58 @@ def ga_write_best_and_store_hints_kernel(
         fm_gems: ti.i32 = 0
         ov_gems: ti.i32 = 0
 
-        if ti.static(not IS_METAL):
-            pp_gems = kernels_helpers.chunk_best_results[genome_idx, 0]
-            cm_gems = kernels_helpers.chunk_best_results[genome_idx, 1]
-            fm_gems = kernels_helpers.chunk_best_results[genome_idx, 2]
-            ov_gems = kernels_helpers.chunk_best_results[genome_idx, 3]
-            score = ti.cast(best_key >> ti.u64(32), ti.i32) - 1
-        else:
-            stats = kernels_helpers.genome_base_stats[genome_idx]
-            base_pp: ti.i32 = stats[0]
-            base_cm: ti.i32 = stats[1]
-            base_fm: ti.i32 = stats[2]
-            base_p_val: ti.i32 = stats[3]
-            base_s_val: ti.i32 = stats[4]
-            base_ft_stat: ti.i32 = stats[5]
-            base_ff_stat: ti.i32 = stats[6]
+        stats = kernels_helpers.genome_base_stats[genome_idx]
+        base_pp: ti.i32 = stats[0]
+        base_cm: ti.i32 = stats[1]
+        base_fm: ti.i32 = stats[2]
+        base_p_val: ti.i32 = stats[3]
+        base_s_val: ti.i32 = stats[4]
+        base_ft_stat: ti.i32 = stats[5]
+        base_ff_stat: ti.i32 = stats[6]
 
-            ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
-            ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
-            ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
-            ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
+        ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
+        ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
+        ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
+        ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
 
-            count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
-            count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
-            head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
+        count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
+        count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
+        head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
 
-            budget: ti.i32 = total_budget - ft - ff
-            p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
-            s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
+        budget: ti.i32 = total_budget - ft - ff
+        p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
+        s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-            res_vec = optimize_core_device(
-                0,
-                budget,
-                base_pp,
-                base_cm,
-                base_fm,
-                p_val,
-                s_val,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                head_len,
-                count_fever,
-                count_normal,
-                1,
-                song_slot,
-                ft_idx,
-                ff_idx,
-            )
+        res_vec = optimize_core_device(
+            0,
+            budget,
+            base_pp,
+            base_cm,
+            base_fm,
+            p_val,
+            s_val,
+            is_p_pp,
+            is_s_pp,
+            is_p_cm,
+            is_s_cm,
+            is_p_fm,
+            is_s_fm,
+            is_p_ov,
+            is_s_ov,
+            head_len,
+            count_fever,
+            count_normal,
+            1,
+            song_slot,
+            ft_idx,
+            ff_idx,
+        )
 
-            score = res_vec[0]
-            pp_gems = res_vec[1]
-            cm_gems = res_vec[2]
-            fm_gems = res_vec[3]
-            ov_gems = res_vec[4]
+        score = res_vec[0]
+        pp_gems = res_vec[1]
+        cm_gems = res_vec[2]
+        fm_gems = res_vec[3]
+        ov_gems = res_vec[4]
 
         kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([score, ft, ff, pp_gems, cm_gems, fm_gems, ov_gems])
         kernels_helpers.ga_scores[genome_idx] = score
