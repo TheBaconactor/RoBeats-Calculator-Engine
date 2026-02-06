@@ -17,6 +17,7 @@ from collections import Counter
 from typing import Any, Dict, Iterable, List, Optional
 
 from ..core.constants import PATHS
+from ..core.fallback_monitor import warn_fallback
 from ..core.utils import get_selected_element
 from .csv_parser import load_csv_db
 
@@ -42,7 +43,13 @@ def get_minis_by_name_cached() -> Dict[str, dict]:
     try:
         minis_path = os.path.join(PATHS.data_dir, "Gear", "Minis.csv")
         minis = load_csv_db(minis_path, "mini") or {}
-    except Exception:
+    except Exception as exc:
+        warn_fallback(
+            "loadout_equivalence.minis_csv",
+            "failed to load Minis.csv; falling back to name-only mini handling",
+            context={"path": minis_path},
+            exc=exc,
+        )
         minis = {}
     _MINIS_BY_NAME_CACHE = minis
     return minis
@@ -64,7 +71,13 @@ def get_gears_by_name_cached() -> Dict[str, dict]:
     try:
         gears_path = os.path.join(PATHS.data_dir, "Gear", "Gears.csv")
         gears = load_csv_db(gears_path, "gear") or {}
-    except Exception:
+    except Exception as exc:
+        warn_fallback(
+            "loadout_equivalence.gears_csv",
+            "failed to load Gears.csv; falling back to name-only gear handling",
+            context={"path": gears_path},
+            exc=exc,
+        )
         gears = {}
     _GEARS_BY_NAME_CACHE = gears
     return gears
@@ -79,11 +92,12 @@ def extract_song_colors(details: Any) -> tuple[str, str, str]:
     if not isinstance(details, dict):
         return ("", "", "")
 
-    primary = str(details.get("PrimaryColor") or "")
-    secondary = str(details.get("SecondaryColor") or "")
-    selected = get_selected_element(details, "")
+    # Accept both compact and legacy spaced key names.
+    primary = str(details.get("PrimaryColor") or details.get("Primary Color") or "").strip()
+    secondary = str(details.get("SecondaryColor") or details.get("Secondary Color") or "").strip()
+    selected = str(get_selected_element(details, "") or "").strip()
     if not selected:
-        selected = primary
+        selected = primary or secondary
     return (primary, secondary, selected)
 
 
@@ -441,6 +455,11 @@ def merge_minis_groups_for_entry(
 
     # If we couldn't resolve signatures at all, fall back to per-name singletons.
     if not sig_counts:
+        warn_fallback(
+            "loadout_equivalence.merge_singletons",
+            "could not resolve mini signatures; falling back to singleton groups",
+            context={"new_minis": len(new_mini_names or []), "existing_groups": len(existing_groups or [])},
+        )
         return [[n] for n in sorted(set([n for n in (new_mini_names or []) if n]))]
 
     def _sig_sort_key(sig: tuple[Any, ...]) -> str:

@@ -18,6 +18,7 @@ Usage:
 import os
 from dataclasses import dataclass
 from typing import Optional
+from .fallback_monitor import warn_fallback
 
 TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 
@@ -63,10 +64,17 @@ def _env_int(key: str, default: int) -> int:
     """Parse int environment variable (best-effort, never raises)."""
     raw = os.environ.get(key, None)
     if raw is None:
+        warn_fallback("env.int.missing", "environment variable missing, using default", context={"key": key, "default": default})
         return int(default)
     try:
         return int(str(raw).strip())
-    except Exception:
+    except Exception as exc:
+        warn_fallback(
+            "env.int.invalid",
+            "invalid environment variable value, using default",
+            context={"key": key, "value": raw, "default": default},
+            exc=exc,
+        )
         return int(default)
 
 
@@ -74,10 +82,21 @@ def _env_float(key: str, default: float) -> float:
     """Parse float environment variable (best-effort, never raises)."""
     raw = os.environ.get(key, None)
     if raw is None:
+        warn_fallback(
+            "env.float.missing",
+            "environment variable missing, using default",
+            context={"key": key, "default": default},
+        )
         return float(default)
     try:
         return float(str(raw).strip())
-    except Exception:
+    except Exception as exc:
+        warn_fallback(
+            "env.float.invalid",
+            "invalid environment variable value, using default",
+            context={"key": key, "value": raw, "default": default},
+            exc=exc,
+        )
         return float(default)
 
 

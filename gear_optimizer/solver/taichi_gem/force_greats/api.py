@@ -2432,37 +2432,53 @@ def solve_force_greats_finder_gpu_tasks(
             return
 
         t_chunk0 = time.perf_counter() if _PERF_TIMING else 0.0
+        n_ftff_i = int(n_ftff)
+        ft_active = ft_buf[:n_ftff_i]
+        ff_active = ff_buf[:n_ftff_i]
+        cfg_base_active = cfg_base_buf[:n_ftff_i]
+        cfg_mode_active = cfg_mode_buf[:n_ftff_i]
+        cfg_total_len_active = cfg_total_len_buf[:n_ftff_i]
+        cfg_sections_active = int(max(0, min(int(n_sections), int(fg_fields.FG_MAX_SECTIONS))))
+        cfg_max_fp_active = cfg_max_fp_buf[:n_ftff_i, :cfg_sections_active]
+        if cfg_sections_active > 0 and not bool(cfg_max_fp_active.flags.c_contiguous):
+            cfg_max_fp_active = np.ascontiguousarray(cfg_max_fp_active, dtype=np.int32)
 
         if want_xfer_stats:
             _t_up0 = time.perf_counter()
-            fg_fields.fg_ft_list.from_numpy(ft_buf)
+            fg_kernels.fg_upload_ftff_prefix_kernel(int(n_ftff_i), ft_active, ff_active)
             _t_up1 = time.perf_counter()
-            fg_fields.fg_ff_list.from_numpy(ff_buf)
-            _t_up2 = time.perf_counter()
-            fg_fields.fg_cfg_base_list.from_numpy(cfg_base_buf)
+            fg_kernels.fg_upload_cfg_meta_prefix_kernel(int(n_ftff_i), cfg_base_active, cfg_mode_active)
             _t_up3 = time.perf_counter()
-            fg_fields.fg_cfg_mode_list.from_numpy(cfg_mode_buf)
-            _t_up4 = time.perf_counter()
-            _record_upload("ft_list(packed_tasks)", _t_up1 - _t_up0, _bytes_of_array(ft_buf))
-            _record_upload("ff_list(packed_tasks)", _t_up2 - _t_up1, _bytes_of_array(ff_buf))
-            _record_upload("cfg_base(packed_tasks)", _t_up3 - _t_up2, _bytes_of_array(cfg_base_buf))
-            _record_upload("cfg_mode(packed_tasks)", _t_up4 - _t_up3, _bytes_of_array(cfg_mode_buf))
+            ftff_dt = max(0.0, float(_t_up1 - _t_up0))
+            cfg_meta_dt = max(0.0, float(_t_up3 - _t_up1))
+            _record_upload("ft_list(packed_tasks)", ftff_dt * 0.5, _bytes_of_array(ft_active))
+            _record_upload("ff_list(packed_tasks)", ftff_dt * 0.5, _bytes_of_array(ff_active))
+            _record_upload("cfg_base(packed_tasks)", cfg_meta_dt * 0.5, _bytes_of_array(cfg_base_active))
+            _record_upload("cfg_mode(packed_tasks)", cfg_meta_dt * 0.5, _bytes_of_array(cfg_mode_active))
             if not use_gpu_max_fp:
                 _t_up5 = time.perf_counter()
-                fg_fields.fg_cfg_max_fp.from_numpy(cfg_max_fp_buf)
+                if cfg_sections_active > 0:
+                    fg_kernels.fg_upload_cfg_max_fp_prefix_kernel(
+                        int(n_ftff_i),
+                        int(cfg_sections_active),
+                        cfg_max_fp_active,
+                    )
                 _t_up6 = time.perf_counter()
-                fg_fields.fg_cfg_total_len_list.from_numpy(cfg_total_len_buf)
+                fg_kernels.fg_upload_cfg_total_len_prefix_kernel(int(n_ftff_i), cfg_total_len_active)
                 _t_up7 = time.perf_counter()
-                _record_upload("cfg_max_fp(packed_tasks)", _t_up6 - _t_up5, _bytes_of_array(cfg_max_fp_buf))
-                _record_upload("cfg_total_len(packed_tasks)", _t_up7 - _t_up6, _bytes_of_array(cfg_total_len_buf))
+                _record_upload("cfg_max_fp(packed_tasks)", _t_up6 - _t_up5, _bytes_of_array(cfg_max_fp_active))
+                _record_upload("cfg_total_len(packed_tasks)", _t_up7 - _t_up6, _bytes_of_array(cfg_total_len_active))
         else:
-            fg_fields.fg_ft_list.from_numpy(ft_buf)
-            fg_fields.fg_ff_list.from_numpy(ff_buf)
-            fg_fields.fg_cfg_base_list.from_numpy(cfg_base_buf)
-            fg_fields.fg_cfg_mode_list.from_numpy(cfg_mode_buf)
+            fg_kernels.fg_upload_ftff_prefix_kernel(int(n_ftff_i), ft_active, ff_active)
+            fg_kernels.fg_upload_cfg_meta_prefix_kernel(int(n_ftff_i), cfg_base_active, cfg_mode_active)
             if not use_gpu_max_fp:
-                fg_fields.fg_cfg_max_fp.from_numpy(cfg_max_fp_buf)
-                fg_fields.fg_cfg_total_len_list.from_numpy(cfg_total_len_buf)
+                if cfg_sections_active > 0:
+                    fg_kernels.fg_upload_cfg_max_fp_prefix_kernel(
+                        int(n_ftff_i),
+                        int(cfg_sections_active),
+                        cfg_max_fp_active,
+                    )
+                fg_kernels.fg_upload_cfg_total_len_prefix_kernel(int(n_ftff_i), cfg_total_len_active)
         _fg_cfg_defaults_uploaded = False
 
         if use_gpu_max_fp and max_fp_compute_ctx is not None:

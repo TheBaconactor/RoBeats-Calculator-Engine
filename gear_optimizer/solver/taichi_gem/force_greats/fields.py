@@ -419,7 +419,6 @@ def allocate_fields() -> None:
     # Packed 64-bit field for atomic (score, cfg_idx) updates
     fg_stage1_packed = ti.field(dtype=ti.i64, shape=(MAX_GENOMES, FG_MAX_FTFF))
     fg_stage1_wave_best = ti.field(dtype=ti.u64, shape=(FG_MAX_FLAT_WORK_ITEMS, FG_STAGE1_WAVE_SLOTS_MAX))
-    fg_stage1_wave_best = ti.field(dtype=ti.u64, shape=(FG_MAX_FLAT_WORK_ITEMS, FG_STAGE1_WAVE_SLOTS_MAX))
 
     # Flat work item indices (GPU-friendly)
     fg_flat_work_genome = ti.field(dtype=ti.i32, shape=FG_MAX_FLAT_WORK_ITEMS)

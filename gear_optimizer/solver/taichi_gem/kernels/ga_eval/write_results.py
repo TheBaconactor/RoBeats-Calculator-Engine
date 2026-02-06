@@ -11,7 +11,7 @@ import sys
 import taichi as ti
 
 from .. import kernels_helpers
-from ..kernels_scoring import calc_score_with_grid, optimize_core_device
+from ..kernels_scoring import optimize_core_device
 
 # Platform detection for atomic operations
 IS_METAL = sys.platform == "darwin"
@@ -90,13 +90,21 @@ def _score_cached_combo_from_gems(
     fever_mul = kernels_helpers.lookup_ref_fm(fm_stat)
     base_value = ti.cast((p_val * 2) + s_val, ti.f32) + pp_factor
 
-    return calc_score_with_grid(
+    # Use bitpacked masks (always written) rather than unpacked grid_fever_masks
+    # which may be skipped when GPU_TIMELINE_WRITE_UNPACKED_MASKS=0.
+    m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
+    m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
+    m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
+    m3 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
+
+    return kernels_helpers.calc_score_with_grid_bits(
         base_value,
         combo_mul,
         fever_mul,
-        song_slot,
-        ft_idx,
-        ff_idx,
+        m0,
+        m1,
+        m2,
+        m3,
         head_len,
         count_fever,
         count_normal,
@@ -174,29 +182,7 @@ def ga_write_best_results_from_key_kernel(
             cm_gems = kernels_helpers.chunk_best_results[genome_idx, 1]
             fm_gems = kernels_helpers.chunk_best_results[genome_idx, 2]
             ov_gems = kernels_helpers.chunk_best_results[genome_idx, 3]
-            score: ti.i32 = _score_cached_combo_from_gems(
-                genome_idx,
-                ft,
-                ff,
-                pp_gems,
-                cm_gems,
-                fm_gems,
-                ov_gems,
-                gem_scale_fever,
-                is_p_ft,
-                is_s_ft,
-                is_p_ff,
-                is_s_ff,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                song_slot,
-            )
+            score: ti.i32 = ti.cast(best_key >> ti.u64(32), ti.i32) - 1
 
             kernels_helpers.genome_result_stats[genome_idx] = ti.Vector(
                 [score, ft, ff, pp_gems, cm_gems, fm_gems, ov_gems]
@@ -346,29 +332,7 @@ def ga_write_best_and_update_global_kernel(
             cm_gems = kernels_helpers.chunk_best_results[genome_idx, 1]
             fm_gems = kernels_helpers.chunk_best_results[genome_idx, 2]
             ov_gems = kernels_helpers.chunk_best_results[genome_idx, 3]
-            score = _score_cached_combo_from_gems(
-                genome_idx,
-                ft,
-                ff,
-                pp_gems,
-                cm_gems,
-                fm_gems,
-                ov_gems,
-                gem_scale_fever,
-                is_p_ft,
-                is_s_ft,
-                is_p_ff,
-                is_s_ff,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                song_slot,
-            )
+            score = ti.cast(best_key >> ti.u64(32), ti.i32) - 1
         else:
             # Load genome base stats: [pp, cm, fm, p_val, s_val, ft_stat, ff_stat]
             stats = kernels_helpers.genome_base_stats[genome_idx]
@@ -526,29 +490,7 @@ def ga_write_best_and_store_hints_kernel(
             cm_gems = kernels_helpers.chunk_best_results[genome_idx, 1]
             fm_gems = kernels_helpers.chunk_best_results[genome_idx, 2]
             ov_gems = kernels_helpers.chunk_best_results[genome_idx, 3]
-            score = _score_cached_combo_from_gems(
-                genome_idx,
-                ft,
-                ff,
-                pp_gems,
-                cm_gems,
-                fm_gems,
-                ov_gems,
-                gem_scale_fever,
-                is_p_ft,
-                is_s_ft,
-                is_p_ff,
-                is_s_ff,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                song_slot,
-            )
+            score = ti.cast(best_key >> ti.u64(32), ti.i32) - 1
         else:
             stats = kernels_helpers.genome_base_stats[genome_idx]
             base_pp: ti.i32 = stats[0]

@@ -11,6 +11,7 @@ import re
 import sys
 from dataclasses import dataclass
 from typing import Any
+from .fallback_monitor import FallbackAwareConfigParser, warn_fallback
 from .constants import (
     DEFAULT_MEMORY_GUARD_PERCENT,
     STRICT_PLATFORM_MEMORY_GUARD_PERCENT,
@@ -42,11 +43,12 @@ def load_config(path: str | None = None) -> configparser.ConfigParser:
     This intentionally does not raise on missing files to preserve existing behavior in entrypoints
     that historically used `ConfigParser().read(...)` without checking the return value.
     """
-    cfg = configparser.ConfigParser()
+    cfg = FallbackAwareConfigParser()
     cfg_path = str(path or get_config_path())
     try:
         cfg.read(cfg_path, encoding="utf-8-sig")
     except Exception as exc:
+        warn_fallback("config.load.read_error", "failed to read config file", context={"path": cfg_path}, exc=exc)
         logging.debug(f"[Config] Failed to read {cfg_path}: {type(exc).__name__}: {exc}")
     return cfg
 
@@ -127,6 +129,7 @@ def load_force_greats_config(cfg):
             val = max(0, safe_int(raw, 0))
             entries.append((idx, val))
     except (ValueError, KeyError, AttributeError) as e:
+        warn_fallback("config.force_greats.section", "failed to parse [ForceGreats] section; using empty config", exc=e)
         logging.debug(f"[ForceGreats Config] Failed to parse ForceGreats section: {e}")
         return []
 
@@ -156,7 +159,13 @@ def load_force_greats_inline(cfg, *, key: str = "ForceGreatsManual"):
         return []
     try:
         raw = cfg.get("IterationEngine", key, fallback="").strip()
-    except Exception:
+    except Exception as exc:
+        warn_fallback(
+            "config.force_greats.inline.read",
+            "failed reading inline ForceGreats config; using empty config",
+            context={"key": key},
+            exc=exc,
+        )
         return []
     if not raw:
         return []
@@ -175,6 +184,12 @@ def load_force_greats_inline(cfg, *, key: str = "ForceGreatsManual"):
                 out.pop()
             return out
         except Exception as e:
+            warn_fallback(
+                "config.force_greats.inline.json",
+                "failed parsing inline ForceGreats JSON list; using empty config",
+                context={"key": key, "value": raw},
+                exc=e,
+            )
             logging.debug(f"[ForceGreats Config] Failed to parse {key} JSON list: {e}")
             return []
 
@@ -316,7 +331,13 @@ def read_fg_candidate_limit(
     """
     try:
         raw = cfg.get("IterationEngine", "FG_CandidateLimit", fallback=default)
-    except Exception:
+    except Exception as exc:
+        warn_fallback(
+            "config.fg_candidate_limit.read",
+            "failed reading FG_CandidateLimit; using default",
+            context={"default": default},
+            exc=exc,
+        )
         raw = default
     limit = safe_int(raw, default)
     limit = max(int(min_limit), min(int(max_limit), int(limit)))
@@ -334,7 +355,8 @@ def read_fg_search_radius(cfg: Any) -> int | None:
     """
     try:
         raw = str(cfg.get("IterationEngine", "FG_SearchRadius", fallback="") or "").strip()
-    except Exception:
+    except Exception as exc:
+        warn_fallback("config.fg_search_radius.read", "failed reading FG_SearchRadius; using default behavior", exc=exc)
         raw = ""
     if not raw:
         return None
@@ -433,8 +455,15 @@ def load_paths_cache():
                 if all(cached.get(k) for k in ["Easy", "Normal", "Hard", "Gears", "Stats"]):
                     return cached
         except (OSError, json.JSONDecodeError, KeyError) as e:
+            warn_fallback(
+                "config.paths_cache.read",
+                "failed loading paths cache; rediscovering paths",
+                context={"cache_file": cache_file},
+                exc=e,
+            )
             logging.debug(f"[Paths] Failed to load/validate paths_cache.json: {e}", exc_info=True)
 
     # Cache doesn't exist or is invalid - discover paths
+    warn_fallback("config.paths_cache.miss", "paths cache missing/invalid; running path discovery")
     print("[Paths] Discovering data file paths...")
     return find_and_cache_paths()

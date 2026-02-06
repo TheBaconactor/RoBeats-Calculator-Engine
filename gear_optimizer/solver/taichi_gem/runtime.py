@@ -13,6 +13,7 @@ import os
 import sys
 import threading
 import taichi as ti
+from ...core.fallback_monitor import warn_fallback
 
 # ============================================================================
 # INITIALIZATION STATE
@@ -31,7 +32,13 @@ def is_initialized() -> bool:
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.getenv(name, str(default)))
-    except Exception:
+    except Exception as exc:
+        warn_fallback(
+            "taichi_runtime.env_int",
+            "invalid integer environment variable; using default",
+            context={"key": name, "default": default},
+            exc=exc,
+        )
         return default
 
 
@@ -226,6 +233,12 @@ def init_taichi():
             ti.init(**init_kwargs)
         except Exception as e:
             # Be robust: if offline cache init fails for any reason, fall back to normal init.
+            warn_fallback(
+                "taichi_runtime.offline_cache",
+                "offline-cache init failed; retrying Taichi init without offline cache",
+                context={"backend": backend_name},
+                exc=e,
+            )
             try:
                 print(f"[Taichi] Offline cache init failed ({type(e).__name__}: {e}); retrying without offline cache.")
             except Exception:

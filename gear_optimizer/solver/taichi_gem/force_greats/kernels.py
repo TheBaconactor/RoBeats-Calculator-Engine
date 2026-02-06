@@ -14,6 +14,7 @@ import taichi as ti
 from taichi.lang import simt
 
 from ..kernels import kernels_helpers
+from ..kernels.kernels_scoring import _calc_body_score_i32, _calc_head_scores_2_bits, _calc_head_scores_3_bits
 from .fields import FG_DOWNLOAD_BATCH_MAX, FG_DOWNLOAD_TOPK_MAX, FG_MAX_SECTIONS, FG_MAX_STAT, FG_STAGE1_WAVE_SLOTS_MAX
 
 # Reuse the shared kernel block dim to keep launch config consistent with other kernels.
@@ -442,6 +443,17 @@ def _optimize_core_bits(
     gems_fm: ti.i32 = 0
     gems_ov: ti.i32 = 0
     remaining: ti.i32 = budget
+    allow_pp: ti.i32 = is_p_pp | is_s_pp
+
+    # Precompute elemental deltas (avoid repeated multiplies in the inner loop).
+    pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_pp
+    pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_pp
+    cm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_cm
+    cm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_cm
+    fm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_fm
+    fm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_fm
+    ov_p_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_p_ov
+    ov_s_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_s_ov
 
     pp: ti.i32 = cur_pp
     cm: ti.i32 = cur_cm
@@ -449,112 +461,182 @@ def _optimize_core_bits(
     p_val: ti.i32 = cur_p_val
     s_val: ti.i32 = cur_s_val
 
+    # Precompute current multipliers once; update incrementally when the corresponding stat changes.
+    c_mul_cur: ti.f32 = kernels_helpers.lookup_ref_cm(cm)
+    f_mul_cur: ti.f32 = kernels_helpers.lookup_ref_fm(fm)
+    pp_factor_cur: ti.f32 = kernels_helpers.lookup_ref_pp(pp)
+
     best_final_score: ti.i32 = 0
 
     while remaining > 0:
-        fill_budget: ti.i32 = remaining - 1
-        fill_bonus: ti.i32 = fill_budget * ELEMENTAL_GEM_SCALE if fill_budget > 0 else 0
+        fill_bonus: ti.i32 = (remaining - 1) * ELEMENTAL_GEM_SCALE
+        fill_p: ti.i32 = fill_bonus * is_p_ov
+        fill_s: ti.i32 = fill_bonus * is_s_ov
+        base_p: ti.i32 = p_val + fill_p
+        base_s: ti.i32 = s_val + fill_s
 
-        c_mul_cur: ti.f32 = kernels_helpers.lookup_ref_cm(cm)
-        f_mul_cur: ti.f32 = kernels_helpers.lookup_ref_fm(fm)
-
-        # OV wins exact ties by default
-        t_p: ti.i32 = p_val + (ELEMENTAL_GEM_SCALE * is_p_ov) + (fill_bonus * is_p_ov)
-        t_s: ti.i32 = s_val + (ELEMENTAL_GEM_SCALE * is_s_ov) + (fill_bonus * is_s_ov)
-        pp_factor: ti.f32 = kernels_helpers.lookup_ref_pp(pp)
-        base: ti.f32 = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-        best_score: ti.i32 = kernels_helpers.calc_score_with_grid_bits(
-            base, c_mul_cur, f_mul_cur, m0, m1, m2, m3, head_len, count_fever, count_normal
-        )
+        # Defaults: unchanged from current (used by apply and PP lookahead).
+        c_mul_next: ti.f32 = c_mul_cur
+        f_mul_next: ti.f32 = f_mul_cur
+        pp_factor_next: ti.f32 = pp_factor_cur
+        best_score: ti.i32 = -1
         best_opt: ti.i32 = 3
-
         pp_score: ti.i32 = -1
 
-        # PP gem
-        allow_pp: ti.i32 = is_p_pp | is_s_pp
-        if allow_pp != 0 and pp < MAX_STAT:
-            t_pp: ti.i32 = pp + GEM_SCALE_NORMAL
-            t_p = p_val + (GEM_STAT_TO_ELEMENT * is_p_pp) + (fill_bonus * is_p_ov)
-            t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_pp) + (fill_bonus * is_s_ov)
-            pp_factor = kernels_helpers.lookup_ref_pp(t_pp)
-            base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
+        do_pp: ti.i32 = 1 if (allow_pp != 0 and pp < MAX_STAT) else 0
+        do_cm: ti.i32 = 1 if (cm < MAX_STAT and (cm <= 50 or is_p_cm or is_s_cm)) else 0
+        do_fm: ti.i32 = 1 if (fm < MAX_STAT) else 0
+
+        t_p_ov: ti.i32 = base_p + ov_p_delta
+        t_s_ov: ti.i32 = base_s + ov_s_delta
+        base_ov: ti.f32 = ti.cast((t_p_ov * 2) + t_s_ov, ti.f32) + pp_factor_cur
+        factor_ov: ti.f32 = kernels_helpers._calc_head_factor(base_ov, c_mul_cur)
+
+        if do_cm != 0 and do_fm != 0:
+            t_p_cm: ti.i32 = base_p + cm_p_delta
+            t_s_cm: ti.i32 = base_s + cm_s_delta
+            base_cm: ti.f32 = ti.cast((t_p_cm * 2) + t_s_cm, ti.f32) + pp_factor_cur
+            c_mul_cm: ti.f32 = kernels_helpers.lookup_ref_cm(cm + GEM_SCALE_NORMAL)
+            factor_cm: ti.f32 = kernels_helpers._calc_head_factor(base_cm, c_mul_cm)
+
+            t_p_fm: ti.i32 = base_p + fm_p_delta
+            t_s_fm: ti.i32 = base_s + fm_s_delta
+            base_fm: ti.f32 = ti.cast((t_p_fm * 2) + t_s_fm, ti.f32) + pp_factor_cur
+            factor_fm: ti.f32 = kernels_helpers._calc_head_factor(base_fm, c_mul_cur)
+            f_mul_fm: ti.f32 = kernels_helpers.lookup_ref_fm(fm + GEM_SCALE_FEVER)
+
+            head3 = _calc_head_scores_3_bits(
+                head_len,
+                m0,
+                m1,
+                m2,
+                m3,
+                base_ov,
+                factor_ov,
+                f_mul_cur,
+                base_cm,
+                factor_cm,
+                f_mul_cur,
+                base_fm,
+                factor_fm,
+                f_mul_fm,
+            )
+            score_ov: ti.i32 = _calc_body_score_i32(base_ov, c_mul_cur, f_mul_cur, count_fever, count_normal) + head3[0]
+            score_cm: ti.i32 = _calc_body_score_i32(base_cm, c_mul_cm, f_mul_cur, count_fever, count_normal) + head3[1]
+            score_fm: ti.i32 = _calc_body_score_i32(base_fm, c_mul_cur, f_mul_fm, count_fever, count_normal) + head3[2]
+
+            best_score = score_ov
+            best_opt = 3
+            if score_cm > best_score:
+                best_score = score_cm
+                best_opt = 1
+                c_mul_next = c_mul_cm
+            if score_fm > best_score:
+                best_score = score_fm
+                best_opt = 2
+                f_mul_next = f_mul_fm
+        elif do_cm != 0:
+            t_p_cm = base_p + cm_p_delta
+            t_s_cm = base_s + cm_s_delta
+            base_cm = ti.cast((t_p_cm * 2) + t_s_cm, ti.f32) + pp_factor_cur
+            c_mul_cm = kernels_helpers.lookup_ref_cm(cm + GEM_SCALE_NORMAL)
+            factor_cm = kernels_helpers._calc_head_factor(base_cm, c_mul_cm)
+
+            head2 = _calc_head_scores_2_bits(
+                head_len, m0, m1, m2, m3, base_ov, factor_ov, f_mul_cur, base_cm, factor_cm, f_mul_cur
+            )
+            score_ov = _calc_body_score_i32(base_ov, c_mul_cur, f_mul_cur, count_fever, count_normal) + head2[0]
+            score_cm = _calc_body_score_i32(base_cm, c_mul_cm, f_mul_cur, count_fever, count_normal) + head2[1]
+
+            best_score = score_ov
+            best_opt = 3
+            if score_cm > best_score:
+                best_score = score_cm
+                best_opt = 1
+                c_mul_next = c_mul_cm
+        elif do_fm != 0:
+            t_p_fm = base_p + fm_p_delta
+            t_s_fm = base_s + fm_s_delta
+            base_fm = ti.cast((t_p_fm * 2) + t_s_fm, ti.f32) + pp_factor_cur
+            factor_fm = kernels_helpers._calc_head_factor(base_fm, c_mul_cur)
+            f_mul_fm = kernels_helpers.lookup_ref_fm(fm + GEM_SCALE_FEVER)
+
+            head2 = _calc_head_scores_2_bits(
+                head_len, m0, m1, m2, m3, base_ov, factor_ov, f_mul_cur, base_fm, factor_fm, f_mul_fm
+            )
+            score_ov = _calc_body_score_i32(base_ov, c_mul_cur, f_mul_cur, count_fever, count_normal) + head2[0]
+            score_fm = _calc_body_score_i32(base_fm, c_mul_cur, f_mul_fm, count_fever, count_normal) + head2[1]
+
+            best_score = score_ov
+            best_opt = 3
+            if score_fm > best_score:
+                best_score = score_fm
+                best_opt = 2
+                f_mul_next = f_mul_fm
+        else:
+            best_score = kernels_helpers.calc_score_with_grid_bits(
+                base_ov, c_mul_cur, f_mul_cur, m0, m1, m2, m3, head_len, count_fever, count_normal
+            )
+            best_opt = 3
+
+        if do_pp != 0:
+            t_p_pp: ti.i32 = base_p + pp_p_delta
+            t_s_pp: ti.i32 = base_s + pp_s_delta
+            pp_factor_pp: ti.f32 = kernels_helpers.lookup_ref_pp(pp + GEM_SCALE_NORMAL)
+            pp_factor_next = pp_factor_pp
+            base_pp: ti.f32 = ti.cast((t_p_pp * 2) + t_s_pp, ti.f32) + pp_factor_pp
             pp_score = kernels_helpers.calc_score_with_grid_bits(
-                base, c_mul_cur, f_mul_cur, m0, m1, m2, m3, head_len, count_fever, count_normal
+                base_pp, c_mul_cur, f_mul_cur, m0, m1, m2, m3, head_len, count_fever, count_normal
             )
             if pp_score > best_score:
                 best_score = pp_score
                 best_opt = 0
 
-        # CM gem
-        if cm < MAX_STAT and (cm <= 50 or is_p_cm != 0 or is_s_cm != 0):
-            t_cm: ti.i32 = cm + GEM_SCALE_NORMAL
-            t_p = p_val + (GEM_STAT_TO_ELEMENT * is_p_cm) + (fill_bonus * is_p_ov)
-            t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_cm) + (fill_bonus * is_s_ov)
-            pp_factor = kernels_helpers.lookup_ref_pp(pp)
-            base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-            c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(t_cm)
-            score: ti.i32 = kernels_helpers.calc_score_with_grid_bits(
-                base, c_mul, f_mul_cur, m0, m1, m2, m3, head_len, count_fever, count_normal
-            )
-            if score > best_score:
-                best_score = score
-                best_opt = 1
-
-        # FM gem
-        if fm < MAX_STAT:
-            t_fm: ti.i32 = fm + GEM_SCALE_FEVER
-            t_p = p_val + (GEM_STAT_TO_ELEMENT * is_p_fm) + (fill_bonus * is_p_ov)
-            t_s = s_val + (GEM_STAT_TO_ELEMENT * is_s_fm) + (fill_bonus * is_s_ov)
-            pp_factor = kernels_helpers.lookup_ref_pp(pp)
-            base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
-            f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(t_fm)
-            score = kernels_helpers.calc_score_with_grid_bits(
-                base, c_mul_cur, f_mul, m0, m1, m2, m3, head_len, count_fever, count_normal
-            )
-            if score > best_score:
-                best_score = score
-                best_opt = 2
-
-        # PP lookahead (optional)
+        # PP lookahead: if OV wins a tie now, but a few PP gems would become a real
+        # improvement soon, start investing in PP.
         if allow_pp != 0 and best_opt == 3 and pp_score == best_score and remaining > 1:
             max_k: ti.i32 = remaining
             if max_k > PP_TIE_LOOKAHEAD_MAX:
                 max_k = PP_TIE_LOOKAHEAD_MAX
             k: ti.i32 = 2
             while k <= max_k:
-                fill_bonus_k: ti.i32 = (remaining - k) * ELEMENTAL_GEM_SCALE
-                t_pp: ti.i32 = pp + (k * GEM_SCALE_NORMAL)
-                t_p = p_val + (k * GEM_STAT_TO_ELEMENT * is_p_pp) + (fill_bonus_k * is_p_ov)
-                t_s = s_val + (k * GEM_STAT_TO_ELEMENT * is_s_pp) + (fill_bonus_k * is_s_ov)
-                pp_factor = kernels_helpers.lookup_ref_pp(t_pp)
-                base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor
+                fill_p_k: ti.i32 = (remaining - k) * ov_p_delta
+                fill_s_k: ti.i32 = (remaining - k) * ov_s_delta
+                t_p = p_val + (k * pp_p_delta) + fill_p_k
+                t_s = s_val + (k * pp_s_delta) + fill_s_k
+                pp_factor_k: ti.f32 = kernels_helpers.lookup_ref_pp(pp + (k * GEM_SCALE_NORMAL))
+                base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_k
                 score_k: ti.i32 = kernels_helpers.calc_score_with_grid_bits(
                     base, c_mul_cur, f_mul_cur, m0, m1, m2, m3, head_len, count_fever, count_normal
                 )
                 if score_k > best_score:
                     best_opt = 0
+                    pp_factor_next = kernels_helpers.lookup_ref_pp(pp + GEM_SCALE_NORMAL)
                     break
                 k += 1
 
         # Apply best option
         if best_opt == 0:
             pp += GEM_SCALE_NORMAL
-            p_val += GEM_STAT_TO_ELEMENT * is_p_pp
-            s_val += GEM_STAT_TO_ELEMENT * is_s_pp
+            p_val += pp_p_delta
+            s_val += pp_s_delta
             gems_pp += 1
+            pp_factor_cur = pp_factor_next
         elif best_opt == 1:
             cm += GEM_SCALE_NORMAL
-            p_val += GEM_STAT_TO_ELEMENT * is_p_cm
-            s_val += GEM_STAT_TO_ELEMENT * is_s_cm
+            p_val += cm_p_delta
+            s_val += cm_s_delta
             gems_cm += 1
+            c_mul_cur = c_mul_next
         elif best_opt == 2:
             fm += GEM_SCALE_FEVER
-            p_val += GEM_STAT_TO_ELEMENT * is_p_fm
-            s_val += GEM_STAT_TO_ELEMENT * is_s_fm
+            p_val += fm_p_delta
+            s_val += fm_s_delta
             gems_fm += 1
+            f_mul_cur = f_mul_next
         else:
-            p_val += ELEMENTAL_GEM_SCALE * is_p_ov
-            s_val += ELEMENTAL_GEM_SCALE * is_s_ov
+            p_val += ov_p_delta
+            s_val += ov_s_delta
             gems_ov += 1
 
         remaining -= 1
@@ -669,6 +751,48 @@ def fg_upload_great_candidate_timestamps_prefix_kernel(n: ti.i32, timestamps: ti
     """Upload great-candidate timestamps without padding to FG_MAX_SONG_NOTES."""
     for i in range(n):
         song_timestamps_great_candidate[i] = timestamps[i]
+
+
+@ti.kernel
+def fg_upload_ftff_prefix_kernel(
+    n_pairs: ti.i32,
+    ft_list: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    ff_list: ti.types.ndarray(dtype=ti.i32, ndim=1),
+):
+    """Upload only the active FT/FF prefix used by the current packed FG chunk."""
+    for i in range(n_pairs):
+        fg_ft_list[i] = ft_list[i]
+        fg_ff_list[i] = ff_list[i]
+
+
+@ti.kernel
+def fg_upload_cfg_meta_prefix_kernel(
+    n_pairs: ti.i32,
+    cfg_base: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    cfg_mode: ti.types.ndarray(dtype=ti.i32, ndim=1),
+):
+    """Upload per-pair config metadata for the active FG chunk."""
+    for i in range(n_pairs):
+        fg_cfg_base_list[i] = cfg_base[i]
+        fg_cfg_mode_list[i] = cfg_mode[i]
+
+
+@ti.kernel
+def fg_upload_cfg_max_fp_prefix_kernel(
+    n_pairs: ti.i32,
+    n_sections: ti.i32,
+    cfg_max_fp_data: ti.types.ndarray(dtype=ti.i32, ndim=2),
+):
+    """Upload only active max-FP rows/sections for packed FG chunks."""
+    for i, s in ti.ndrange(n_pairs, n_sections):
+        fg_cfg_max_fp[i, s] = cfg_max_fp_data[i, s]
+
+
+@ti.kernel
+def fg_upload_cfg_total_len_prefix_kernel(n_pairs: ti.i32, cfg_total_len: ti.types.ndarray(dtype=ti.i32, ndim=1)):
+    """Upload only active per-pair config lengths for packed FG chunks."""
+    for i in range(n_pairs):
+        fg_cfg_total_len_list[i] = cfg_total_len[i]
 
 
 @ti.kernel
@@ -1261,6 +1385,83 @@ def fg_stage1_reduce_waves_kernel(n_work_items: ti.i32, is_first_chunk: ti.i32):
             fg_stage1_packed[g, ftff_idx] = ti.cast(best, ti.i64)
         else:
             fg_stage1_packed[g, ftff_idx] = sentinel_i64
+
+
+@ti.kernel
+def fg_stage1_unpack_cfg_idx_from_packed_kernel(n_work_items: ti.i32):
+    """Decode cfg_idx metadata from packed Stage-1 keys for compatibility paths."""
+    for work_idx in range(n_work_items):
+        g: ti.i32 = fg_flat_work_genome[work_idx]
+        ftff_idx: ti.i32 = fg_flat_work_ftff[work_idx]
+        packed: ti.i64 = fg_stage1_packed[g, ftff_idx]
+        cfg_idx: ti.i32 = -1
+        if packed >= 0:
+            packed_u: ti.u64 = ti.cast(packed, ti.u64)
+            inverted_idx: ti.i32 = ti.cast(packed_u & ti.u64(0x7FFFFFFF), ti.i32)
+            cfg_idx = 0x7FFFFFFF - inverted_idx
+        fg_stage1_cfg_idx[g, ftff_idx] = cfg_idx
+
+
+def fg_stage1_flat_kernel(
+    n_work_items: int,
+    n_cfg: int,
+    cfg_offset: int,
+    cfg_read_offset: int,
+    total_notes: int,
+    long_notes: int,
+    last_note_time: float,
+    total_budget: int,
+    gem_scale_fever: int,
+    n_sections: int,
+    is_p_ft: int,
+    is_s_ft: int,
+    is_p_ff: int,
+    is_s_ff: int,
+    is_p_pp: int,
+    is_s_pp: int,
+    is_p_cm: int,
+    is_s_cm: int,
+    is_p_fm: int,
+    is_s_fm: int,
+    is_p_ov: int,
+    is_s_ov: int,
+    song_slot: int,
+    pair_caps_from_timeline: int,
+):
+    """
+    Backward-compatible wrapper for legacy Stage-1 flat dispatch.
+
+    Executes one Stage-1 cfg chunk and merges wave winners into `fg_stage1_packed`.
+    """
+    fg_stage1_clear_wave_best_kernel(int(n_work_items))
+    fg_stage1_waves_kernel(
+        int(n_work_items),
+        int(n_cfg),
+        int(cfg_offset),
+        int(cfg_read_offset),
+        int(total_notes),
+        int(long_notes),
+        float(last_note_time),
+        int(total_budget),
+        int(gem_scale_fever),
+        int(n_sections),
+        int(is_p_ft),
+        int(is_s_ft),
+        int(is_p_ff),
+        int(is_s_ff),
+        int(is_p_pp),
+        int(is_s_pp),
+        int(is_p_cm),
+        int(is_s_cm),
+        int(is_p_fm),
+        int(is_s_fm),
+        int(is_p_ov),
+        int(is_s_ov),
+        int(song_slot),
+        int(pair_caps_from_timeline),
+    )
+    fg_stage1_reduce_waves_kernel(int(n_work_items), 0)
+    fg_stage1_unpack_cfg_idx_from_packed_kernel(int(n_work_items))
 
 
 @ti.kernel

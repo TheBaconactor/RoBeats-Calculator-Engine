@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import configparser
 import json
 import logging
 import os
@@ -8,6 +7,7 @@ import traceback
 import time
 import sys
 
+from gear_optimizer.core.fallback_monitor import FallbackAwareConfigParser
 from gear_optimizer.core.utils import cfg_from_dict
 from gear_optimizer.core.env_config import ENV
 from gear_optimizer.core.output import suppress_stdout, suppress_stderr
@@ -422,7 +422,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             if isinstance(item, dict) and item.get("_deferred_post"):
                 _t_build0 = time.perf_counter()
                 cfg_dict = item.get("cfg_dict") or {}
-                cfg = cfg_from_dict(cfg_dict) if cfg_dict else configparser.ConfigParser()
+                cfg = cfg_from_dict(cfg_dict) if cfg_dict else FallbackAwareConfigParser()
 
                 primary = str(item.get("meta_primary_color") or "")
                 secondary = str(item.get("meta_secondary_color") or "")

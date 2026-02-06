@@ -12,6 +12,7 @@ from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
 from . import cache_validation, result_application
 from .entry_utils import eval_data_from_entry, expected_selected_element
 from ....core.color_flags import build_color_flags
+from ....core.fallback_monitor import warn_fallback
 from ....core.utils import get_selected_element, stats_signature
 from ..item_utils import names_list
 from ..retention import select_retained_hashes
@@ -896,6 +897,12 @@ def process_force_greats_gpu_finder(
 
             precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
         except Exception as e:
+            warn_fallback(
+                "fg.pair_caps.timeline_precompute",
+                "timeline pair-caps precompute failed; falling back away from timeline caps",
+                context={"song_slot": int(song_slot)},
+                exc=e,
+            )
             print(f"[FG] Timeline precompute for pair-caps FAILED: {type(e).__name__}: {e}")
             pair_caps_from_timeline = False
 
@@ -905,6 +912,11 @@ def process_force_greats_gpu_finder(
         and caps_mode not in {"none", "off", "0", "false", "no"}
     ):
         # CPU fallback (rare): build the cap grid and cache it on the song payload.
+        warn_fallback(
+            "fg.pair_caps.cpu_grid",
+            "using CPU pair-caps grid fallback",
+            context={"caps_mode": caps_mode},
+        )
         try:
             from ....solver.fever_timeline import get_song_timeline_grid
             from ....helpers.fg_utils import vectorized_calculate_section_caps_grid
@@ -936,6 +948,11 @@ def process_force_greats_gpu_finder(
                 except Exception:
                     pass
         except Exception as e:
+            warn_fallback(
+                "fg.pair_caps.permissive",
+                "CPU pair-caps precompute failed; falling back to permissive cap grid",
+                exc=e,
+            )
             print(f"[FG] CPU pair-caps precompute FAILED: {type(e).__name__}: {e}")
             # Fallback to permissive caps (50) to avoid 0-clamping on GPU.
             pair_caps_grid = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1, 16), 50, dtype=np.int32)

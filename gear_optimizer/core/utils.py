@@ -3,7 +3,7 @@ Utility functions and helpers for the gear optimizer.
 Pure functions with no external dependencies.
 """
 
-import configparser
+from .fallback_monitor import FallbackAwareConfigParser
 
 # --- STAT KEYS / HELPERS ---
 STAT_KEYS = [
@@ -46,7 +46,7 @@ def cfg_from_dict(cfg_dict):
     Returns:
         ConfigParser: Reconstructed configuration object
     """
-    cfg = configparser.ConfigParser()
+    cfg = FallbackAwareConfigParser()
     for section, items in cfg_dict.items():
         if not cfg.has_section(section):
             cfg.add_section(section)

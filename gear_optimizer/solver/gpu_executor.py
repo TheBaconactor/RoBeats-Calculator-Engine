@@ -38,6 +38,7 @@ from typing import Any, Optional, Dict
 from enum import Enum
 
 from gear_optimizer.core.env_config import ENV, TRUTHY_ENV_VALUES, env_flag
+from gear_optimizer.core.fallback_monitor import warn_fallback
 from gear_optimizer.core.types import JsonDict
 
 
@@ -717,6 +718,15 @@ class GpuExecutor:
             except Exception:
                 return False
 
+        # After observing FG workload, briefly switch to zero-wait dequeue so bursts
+        # from local producers don't pay repeated batch-wait latency.
+        fg_burst_until = 0.0
+        fg_burst_request_types = {
+            GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
+            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
+        }
+
         while self._running:
             batch: list[GpuRequest] = []
             responded_ids: set[int] = set()
@@ -726,10 +736,12 @@ class GpuExecutor:
                 # (ENV is a cached snapshot read at import time.)
                 batch_wait_ms = int(getattr(ENV, "gpu_executor_batch_wait_ms", 10) or 10)
                 batch_max = int(getattr(ENV, "gpu_executor_max_batch", 8) or 8)
+                batch_wait_overridden = False
                 try:
                     raw = os.environ.get("GPU_EXECUTOR_BATCH_WAIT_MS")
                     if raw is not None and str(raw).strip() != "":
                         batch_wait_ms = int(str(raw).strip())
+                        batch_wait_overridden = True
                 except Exception:
                     pass
                 try:
@@ -738,13 +750,23 @@ class GpuExecutor:
                         batch_max = int(str(raw).strip())
                 except Exception:
                     pass
+                fg_burst_window_ms = 6
+                try:
+                    raw = os.environ.get("GPU_EXECUTOR_FG_BURST_WINDOW_MS")
+                    if raw is not None and str(raw).strip() != "":
+                        fg_burst_window_ms = int(str(raw).strip())
+                except Exception:
+                    fg_burst_window_ms = 6
+                fg_burst_window_ms = max(0, int(fg_burst_window_ms))
                 # In-process mode benefits from larger batches but shorter waits because
                 # producers are local and can enqueue follow-up work immediately.
                 if self._in_process_queues:
                     if os.environ.get("GPU_EXECUTOR_MAX_BATCH") is None:
                         batch_max = max(int(batch_max), 32)
-                    if os.environ.get("GPU_EXECUTOR_BATCH_WAIT_MS") is None:
+                    if not batch_wait_overridden:
                         batch_wait_ms = min(int(batch_wait_ms), 2)
+                        if int(fg_burst_window_ms) > 0 and perf_counter() < float(fg_burst_until):
+                            batch_wait_ms = 0
                 if batch_wait_ms < 0:
                     batch_wait_ms = 0
                 if batch_max <= 0:
@@ -774,6 +796,20 @@ class GpuExecutor:
                     types=types_str,
                 )
                 self._maybe_live_report()
+
+                if self._in_process_queues and int(fg_burst_window_ms) > 0 and batch:
+                    saw_fg_work = False
+                    for req in batch:
+                        if req.request_type == GpuRequestType.SHUTDOWN:
+                            continue
+                        if req.request_type in fg_burst_request_types:
+                            saw_fg_work = True
+                            break
+                    if saw_fg_work:
+                        fg_burst_until = max(
+                            float(fg_burst_until),
+                            perf_counter() + (float(fg_burst_window_ms) / 1000.0),
+                        )
 
                 if self._profile_enabled:
                     if float(dt_wait) >= float(self._idle_sample_threshold_sec):
@@ -1088,6 +1124,8 @@ class GpuExecutor:
         except Exception:
             inproc_after_first_ms = 0
         inproc_after_first_ms = max(0, int(inproc_after_first_ms))
+        if int(max_wait_ms) <= 0:
+            inproc_after_first_ms = 0
 
         while len(batch) < max_batch_size:
             remaining = deadline - perf_counter()
@@ -1101,7 +1139,7 @@ class GpuExecutor:
                     # repeatedly (FG tasks, registry solves, and multi-solve batches). For those, allow a
                     # short coalescing window so we can meaningfully batch/coalesce work.
                     if len(batch) == 0:
-                        timeout = max(0.001, remaining)
+                        timeout = 0.0 if int(max_wait_ms) <= 0 else max(0.001, remaining)
                     else:
                         if not inproc_coalesce_enabled:
                             timeout = 0.0
@@ -1113,7 +1151,10 @@ class GpuExecutor:
                                 if r.request_type not in coalescable_types:
                                     allow_coalesce = False
                                     break
-                            timeout = max(0.001, remaining) if allow_coalesce else 0.0
+                            if int(max_wait_ms) <= 0:
+                                timeout = 0.0
+                            else:
+                                timeout = max(0.001, remaining) if allow_coalesce else 0.0
                 else:
                     timeout = max(0.001, remaining) if len(batch) > 0 else 0.1
                 request = self._request_queue.get(timeout=timeout)
@@ -1353,6 +1394,11 @@ class GpuExecutor:
 
         # Only valid in in-process mode; fall back gracefully otherwise.
         if not self._in_process_queues:
+            warn_fallback(
+                "gpu_executor.fg_breakpoints_coalesce",
+                "coalescing unavailable (not in-process); falling back to per-request execution",
+                context={"request_count": len(requests)},
+            )
             return [self._execute_request(req) for req in requests]
 
         try:
@@ -1391,11 +1437,18 @@ class GpuExecutor:
         cur_payloads = 0
         cur_pairs = 0
 
+        def _append_fallback(req: "GpuRequest", reason: str, *, extra: dict[str, Any] | None = None) -> None:
+            context = {"request_id": int(getattr(req, "request_id", -1))}
+            if extra:
+                context.update(extra)
+            warn_fallback("gpu_executor.fg_breakpoints_request", reason, context=context)
+            fallback.append(self._execute_request(req))
+
         for req in requests:
             payload = self._payload_dict(req)
             payloads = payload.get("payloads")
             if not isinstance(payloads, (list, tuple)) or not payloads:
-                fallback.append(self._execute_request(req))
+                _append_fallback(req, "missing/empty payloads list")
                 continue
             ok = True
             for p in payloads:
@@ -1403,16 +1456,16 @@ class GpuExecutor:
                     ok = False
                     break
             if not ok:
-                fallback.append(self._execute_request(req))
+                _append_fallback(req, "payload list contains non-dict item")
                 continue
 
             payload_list = list(payloads)
             n_payloads = int(len(payload_list))
             if n_payloads <= 0:
-                fallback.append(self._execute_request(req))
+                _append_fallback(req, "payload list length resolved to zero")
                 continue
             if n_payloads > int(max_payloads):
-                fallback.append(self._execute_request(req))
+                _append_fallback(req, "payload count exceeded coalesce max", extra={"payloads": n_payloads, "max": max_payloads})
                 continue
             n_pairs = _payload_pairs(payload_list)
 
@@ -1474,7 +1527,13 @@ class GpuExecutor:
                             result=list(merged_results[int(start) : int(start) + int(n)]),
                         )
                     )
-            except Exception:
+            except Exception as exc:
+                warn_fallback(
+                    "gpu_executor.fg_breakpoints_group",
+                    "merged coalesced group failed; falling back to per-request execution",
+                    context={"group_size": len(group)},
+                    exc=exc,
+                )
                 for req, _, _, _ in group:
                     out.append(self._execute_request(req))
 

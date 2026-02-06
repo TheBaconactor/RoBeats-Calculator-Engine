@@ -78,6 +78,65 @@ def test_save_loadouts_batch_unions_equivalent_mini_variants(db_path, monkeypatc
         conn.close()
 
 
+def test_save_loadouts_batch_unions_equivalent_mini_variants_with_missing_colors(db_path, monkeypatch):
+    minis_by_name = {
+        "MiniA": {
+            "Name": "MiniA",
+            "Chill": 0,
+            "Flow": 0,
+            "Rush": 0,
+            "Beat": 0,
+            "Vibe": 55,
+            "Perfect Points": 0,
+            "Combo Multiplier": 0,
+            "Fever Multiplier": 0,
+            "Fever Time": 0,
+            "Fever Fill Rate": 0,
+        },
+        "MiniB": {
+            "Name": "MiniB",
+            "Chill": 0,
+            "Flow": 30,  # irrelevant for Vibe/Vibe context
+            "Rush": 0,
+            "Beat": 0,
+            "Vibe": 55,
+            "Perfect Points": 0,
+            "Combo Multiplier": 0,
+            "Fever Multiplier": 0,
+            "Fever Time": 0,
+            "Fever Fill Rate": 0,
+        },
+    }
+
+    monkeypatch.setattr("gear_optimizer.data.database.get_minis_by_name_cached", lambda: minis_by_name)
+
+    song = "Mini Variant Union Song (Missing Colors)"
+    details = {"PrimaryColor": "Vibe", "SecondaryColor": "Vibe", "SelectedElement": "Vibe"}
+
+    # First write establishes song-context colors.
+    save_loadouts_batch(
+        song,
+        [{"score": 100, "fg_score": 0, "gear": ["G1"], "minis": ["MiniA"], "details": details, "force": None}],
+    )
+    # Legacy/details-lite write omits colors but should still merge into the same effective hash.
+    save_loadouts_batch(
+        song,
+        [{"score": 100, "fg_score": 0, "gear": ["G1"], "minis": ["MiniB"], "details": {"legacy": True}, "force": None}],
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT minis_json FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song,),
+        ).fetchall()
+        assert len(rows) == 1
+        groups = json.loads(rows[0]["minis_json"])
+        assert groups == [["MiniA", "MiniB"]]
+    finally:
+        conn.close()
+
+
 def test_songs_best_scores_and_fg_scores_update(db_path):
     song = "Persistence Integrity Song"
 

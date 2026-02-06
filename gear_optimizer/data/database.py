@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Any
 from urllib.parse import quote
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
 from ..core.env_config import env_flag
+from ..core.fallback_monitor import warn_fallback
 from ..core.types import PersistenceEntry
 from .migrations import ensure_schema
 from .loadout_equivalence import (
@@ -193,9 +194,15 @@ def get_db_connection_cached(db_path: Optional[str] = None) -> sqlite3.Connectio
 
     try:
         conn = get_db_connection_readonly(db_path, timeout=read_timeout)
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
         # Best-effort: DB might be locked briefly during heavy write bursts.
         # Never block the GPU feed loop on a read-only seed/context fetch.
+        warn_fallback(
+            "db.readonly_connection",
+            "failed to open read-only DB connection; using thread-local in-memory fallback DB",
+            context={"db_path": db_path, "timeout_sec": read_timeout},
+            exc=exc,
+        )
         fallback = getattr(_DB_TLS, "fallback_conn", None)
         if fallback is None:
             try:
@@ -549,6 +556,11 @@ def _ensure_stats_in_details(
     """
     if not isinstance(details, dict):
         details = {}
+    warn_fallback(
+        "db.ensure_stats",
+        "details missing Stats, reconstructing stats for persistence",
+        context={"team_buff": team_buff or "", "team_color": team_color or ""},
+    )
 
     try:
         from gear_optimizer.core.stats_calculator import compute_full_stats
@@ -973,13 +985,60 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
                 out["details"] = det_out
         return out
 
+    # Keep effective mini hashing active even when some incoming entries omit colors
+    # (legacy/details-lite payloads). Song colors are stable per song, so borrowing
+    # from another entry or an existing DB row is safe and prevents duplicate rows.
+    song_color_fallback: Optional[tuple[str, str, str]] = None
+    for entry in entries:
+        p_color, s_color, sel_color = extract_song_colors(entry.get("details", {}))
+        if p_color or s_color:
+            song_color_fallback = (p_color, s_color, sel_color)
+            break
+
+    if song_color_fallback is None:
+        db_path_lookup = get_evolution_db_path()
+        try:
+            lookup_conn = get_db_connection_cached(db_path_lookup)
+            rows = lookup_conn.execute(
+                """
+                SELECT details_json
+                FROM team_buff_loadouts
+                WHERE song_name = ? AND team_buff = ? AND details_json IS NOT NULL
+                ORDER BY score DESC, timestamp DESC
+                LIMIT 25
+                """,
+                (song_name, team_buff),
+            ).fetchall()
+            for row in rows:
+                try:
+                    details_row = json.loads(row["details_json"]) if row["details_json"] else {}
+                except Exception:
+                    continue
+                p_color, s_color, sel_color = extract_song_colors(details_row)
+                if p_color or s_color:
+                    song_color_fallback = (p_color, s_color, sel_color)
+                    warn_fallback(
+                        "db.song_color_fallback",
+                        "using existing DB details colors as fallback for effective mini hashing",
+                        context={"song_name": song_name, "team_buff": team_buff, "primary": p_color, "secondary": s_color},
+                    )
+                    break
+        except sqlite3.Error:
+            pass
+
     def _effective_hash_for_entry(entry: Dict[str, Any]) -> Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]:
         gear_names_local = _compact_gear_for_db(entry.get("gear", []))
         mini_names_local = _compact_minis_for_db(entry.get("minis", []))
         details_local = entry.get("details", {})
         p_color, s_color, sel_color = extract_song_colors(details_local)
+        if (not p_color and not s_color) and song_color_fallback is not None:
+            p_color, s_color, fallback_sel = song_color_fallback
+            if not sel_color:
+                sel_color = fallback_sel or p_color or s_color
         if not p_color and not s_color:
             return None
+        if not sel_color:
+            sel_color = p_color or s_color
         mini_sigs_local = [
             effective_mini_signature_for_name(n, minis_by_name, p_color, s_color, sel_color) for n in mini_names_local
         ]
@@ -1002,6 +1061,11 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
             eff = _effective_hash_for_entry(entry)
             effective_cache_by_entry_id[entry_id] = eff
         if eff is None:
+            warn_fallback(
+                "db.hash.raw_names",
+                "missing song color metadata; using raw name hash fallback",
+                context={"song_name": song_name, "team_buff": team_buff},
+            )
             h = _loadout_hash_from_names(
                 _compact_gear_for_db(entry.get("gear", [])), _compact_minis_for_db(entry.get("minis", []))
             )
@@ -1091,6 +1155,11 @@ def save_team_buff_loadouts_batch(song_name: str, team_buff: str, entries: List[
                 minis_json = encode_minis_groups(groups)
                 mini_names = representative_mini_names(groups)
             else:
+                warn_fallback(
+                    "db.minis_json.singletons",
+                    "effective mini grouping unavailable; persisting singleton mini groups",
+                    context={"song_name": song_name, "team_buff": team_buff},
+                )
                 loadout_hash = _loadout_hash_from_names(gear_names, mini_names)
                 minis_json = _json_dumps_compact([[n] for n in mini_names])
 
