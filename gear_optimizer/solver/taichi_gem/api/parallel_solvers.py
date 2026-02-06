@@ -41,9 +41,67 @@ _profiler = get_gpu_profiler()
 # Cache for genome_base_stats uploads to avoid redundant from_numpy calls
 _GENOME_STATS_BUFFER = None
 _GENOME_STATS_HASH_CACHE = None
+_FTFF_HOST_COMBO_CACHE: dict[str, object] = {
+    "budget": None,
+    "ft": None,
+    "ff": None,
+    "budget_left": None,
+}
 
 # Get appropriate kernels for current platform (Metal-safe on macOS)
 kernels = get_kernels()
+
+
+def _get_ftff_host_combo_arrays(total_budget: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    budget_i = max(0, int(total_budget))
+    cached_budget = _FTFF_HOST_COMBO_CACHE.get("budget")
+    cached_ft = _FTFF_HOST_COMBO_CACHE.get("ft")
+    cached_ff = _FTFF_HOST_COMBO_CACHE.get("ff")
+    cached_budget_left = _FTFF_HOST_COMBO_CACHE.get("budget_left")
+    if (
+        cached_budget == budget_i
+        and isinstance(cached_ft, np.ndarray)
+        and isinstance(cached_ff, np.ndarray)
+        and isinstance(cached_budget_left, np.ndarray)
+    ):
+        return cached_ft, cached_ff, cached_budget_left
+
+    n_combos = (budget_i + 1) * (budget_i + 2) // 2
+    combo_ft = np.empty((n_combos,), dtype=np.int32)
+    combo_ff = np.empty((n_combos,), dtype=np.int32)
+
+    idx = 0
+    for ft in range(budget_i + 1):
+        cnt = budget_i - ft + 1
+        sl = slice(idx, idx + cnt)
+        combo_ft[sl] = int(ft)
+        combo_ff[sl] = np.arange(cnt, dtype=np.int32)
+        idx += cnt
+
+    combo_budget_left = (budget_i - combo_ft) - combo_ff
+
+    _FTFF_HOST_COMBO_CACHE["budget"] = budget_i
+    _FTFF_HOST_COMBO_CACHE["ft"] = combo_ft
+    _FTFF_HOST_COMBO_CACHE["ff"] = combo_ff
+    _FTFF_HOST_COMBO_CACHE["budget_left"] = combo_budget_left
+    return combo_ft, combo_ff, combo_budget_left
+
+
+def _combo_indices_for_limits(
+    combo_ft: np.ndarray,
+    combo_ff: np.ndarray,
+    *,
+    max_ft: int,
+    max_ff: int,
+    cache: dict[tuple[int, int], np.ndarray],
+) -> np.ndarray:
+    key = (int(max_ft), int(max_ff))
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    out = np.flatnonzero((combo_ft <= key[0]) & (combo_ff <= key[1]))
+    cache[key] = out
+    return out
 
 
 def _upload_work_items_chunk(work_items_np: np.ndarray, n_items: int) -> None:
@@ -389,7 +447,8 @@ def solve_genomes_parallel(
     work_items_np = staging["work_items"]
     chunk_genome_start = staging["chunk_genome_start"]
     chunk_genome_len = staging["chunk_genome_len"]
-    ff_seq = np.arange(int(total_budget) + 1, dtype=np.int32)
+    combo_ft, combo_ff, combo_budget_left = _get_ftff_host_combo_arrays(int(total_budget))
+    combo_index_cache: dict[tuple[int, int], np.ndarray] = {}
 
     # Initialize genome results ONCE before any chunks
     kernels.init_genome_results_kernel(n_genomes)
@@ -460,40 +519,42 @@ def solve_genomes_parallel(
         _reset_chunk_ranges()
 
     for genome_idx in range(n_genomes):
-        max_ft = int(max_ft_list[genome_idx])
-        max_ff = int(max_ff_list[genome_idx])
-        for ft in range(max_ft + 1):
-            remaining = int(total_budget) - int(ft)
-            if remaining < 0:
-                continue
-            ff_max = min(int(remaining), int(max_ff))
-            if ff_max < 0:
-                continue
+        valid_combo_idx = _combo_indices_for_limits(
+            combo_ft,
+            combo_ff,
+            max_ft=int(max_ft_list[genome_idx]),
+            max_ff=int(max_ff_list[genome_idx]),
+            cache=combo_index_cache,
+        )
+        valid_n = int(valid_combo_idx.shape[0])
+        if valid_n <= 0:
+            continue
 
-            ff_start = 0
-            while ff_start <= ff_max:
-                avail = int(chunk_size) - int(chunk_n)
-                if avail <= 0:
-                    _flush_chunk()
-                    avail = int(chunk_size)
-                take = min(int(avail), int(ff_max - ff_start + 1))
-                pos0 = int(chunk_n)
-                pos1 = int(chunk_n + take)
-                ff_slice = ff_seq[ff_start : ff_start + take]
+        combo_pos = 0
+        while combo_pos < valid_n:
+            avail = int(chunk_size) - int(chunk_n)
+            if avail <= 0:
+                _flush_chunk()
+                avail = int(chunk_size)
 
-                # Columns: [budget, _, _, ft, ff, _, genome_id, song_slot]
-                work_items_np[pos0:pos1, 0] = (int(total_budget) - int(ft)) - ff_slice
-                work_items_np[pos0:pos1, 3] = int(ft)
-                work_items_np[pos0:pos1, 4] = ff_slice
-                work_items_np[pos0:pos1, 6] = int(genome_idx)
-                work_items_np[pos0:pos1, 7] = int(song_slot)
+            take = min(int(avail), int(valid_n - combo_pos))
+            pos0 = int(chunk_n)
+            pos1 = int(chunk_n + take)
+            sl = valid_combo_idx[combo_pos : combo_pos + take]
 
-                if chunk_genome_len[genome_idx] == 0:
-                    chunk_genome_start[genome_idx] = pos0
-                chunk_genome_len[genome_idx] += take
+            # Columns: [budget, _, _, ft, ff, _, genome_id, song_slot]
+            work_items_np[pos0:pos1, 0] = combo_budget_left[sl]
+            work_items_np[pos0:pos1, 3] = combo_ft[sl]
+            work_items_np[pos0:pos1, 4] = combo_ff[sl]
+            work_items_np[pos0:pos1, 6] = int(genome_idx)
+            work_items_np[pos0:pos1, 7] = int(song_slot)
 
-                chunk_n = pos1
-                ff_start += int(take)
+            if chunk_genome_len[genome_idx] == 0:
+                chunk_genome_start[genome_idx] = pos0
+            chunk_genome_len[genome_idx] += take
+
+            chunk_n = pos1
+            combo_pos += int(take)
 
     # Flush final partial chunk
     _flush_chunk()
@@ -826,6 +887,9 @@ def solve_genomes_parallel_merged(
     # Use any one payload's flags for shared kernel args (the kernel reads song_flags by slot).
     any_flags = next(iter(slot_to_flags.values()))
 
+    combo_ft, combo_ff, combo_budget_left = _get_ftff_host_combo_arrays(int(total_budget))
+    combo_index_cache: dict[tuple[int, int], np.ndarray] = {}
+
     # Stream work items into MAX_WORK_ITEMS chunks.
     cur = 0
     total_work = 0
@@ -846,17 +910,21 @@ def solve_genomes_parallel_merged(
             if max_ff > total_budget:
                 max_ff = total_budget
 
-            for ft in range(max_ft + 1):
-                ff_max = total_budget - ft
-                if ff_max > max_ff:
-                    ff_max = max_ff
+            valid_combo_idx = _combo_indices_for_limits(
+                combo_ft,
+                combo_ff,
+                max_ft=int(max_ft),
+                max_ff=int(max_ff),
+                cache=combo_index_cache,
+            )
+            valid_n = int(valid_combo_idx.shape[0])
+            if valid_n <= 0:
+                continue
 
-                cnt = ff_max + 1
-                if cnt <= 0:
-                    continue
-
-                # Flush if chunk would overflow
-                if cur + cnt > MAX_WORK_ITEMS:
+            combo_pos = 0
+            while combo_pos < valid_n:
+                avail = int(MAX_WORK_ITEMS) - int(cur)
+                if avail <= 0:
                     _upload_work_items_chunk(work_items_np, int(cur))
                     kernels.solve_ftff_parallel_kernel(
                         cur,
@@ -886,28 +954,26 @@ def solve_genomes_parallel_merged(
                     chunks += 1
                     cur = 0
                     _reset_chunk_ranges()
+                    avail = int(MAX_WORK_ITEMS)
 
-                # Vectorized packing
+                take = min(int(avail), int(valid_n - combo_pos))
+                end = int(cur + take)
+                sl = valid_combo_idx[combo_pos : combo_pos + take]
+
                 # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id, song_slot]
-                end = cur + cnt
-
-                # Budget: (total - ft) - [0, 1, ... cnt-1]
-                work_items_np[cur:end, 0] = (total_budget - ft) - np.arange(cnt, dtype=np.int32)
-                # ft_gems: constant ft
-                work_items_np[cur:end, 3] = ft
-                # ff_gems: [0, 1, ... cnt-1]
-                work_items_np[cur:end, 4] = np.arange(cnt, dtype=np.int32)
-                # genome_id: constant
-                work_items_np[cur:end, 6] = gid
-                # song_slot: constant
-                work_items_np[cur:end, 7] = slot
+                work_items_np[cur:end, 0] = combo_budget_left[sl]
+                work_items_np[cur:end, 3] = combo_ft[sl]
+                work_items_np[cur:end, 4] = combo_ff[sl]
+                work_items_np[cur:end, 6] = int(gid)
+                work_items_np[cur:end, 7] = int(slot)
 
                 if chunk_genome_len[gid] == 0:
                     chunk_genome_start[gid] = cur
-                chunk_genome_len[gid] += cnt
+                chunk_genome_len[gid] += take
 
-                cur += cnt
-                total_work += cnt
+                cur = end
+                combo_pos += int(take)
+                total_work += int(take)
 
     # Final partial chunk
     if cur > 0:
