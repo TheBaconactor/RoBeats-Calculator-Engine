@@ -376,22 +376,40 @@ def _select_one_peak_candidate_per_song(song_specs: List[SongSpec]) -> List[_Cov
 
     If a song has multiple DB rows tied for the top peak (e.g., base vs FG),
     choose a deterministic candidate that tends to improve inventory reuse:
-    - Prefer gear used by many songs.
-    - Prefer lower total OV / fewer OV-positive slots (less element-locking).
+    - Prefer lower OV pressure (fewer OV-positive slots, then lower OV total).
+    - Prefer gear pairs that co-occur across many songs (stronger reuse signal).
+    - Prefer globally common gem-distribution profiles (totals + element).
     - Prefer base leaderboard over FG leaderboard, then lower rowid.
     """
     gear_freq: Dict[int, int] = {}
+    pair_freq: Dict[Tuple[int, int], int] = {}
+    profile_freq: Dict[Tuple[Tuple[int, ...], int], int] = {}
     for song in song_specs:
         for cand in song.candidates:
             for gid in cand.gear_ids:
                 gear_freq[gid] = gear_freq.get(gid, 0) + 1
+            gids = cand.gear_ids
+            for i in range(5):
+                gi = int(gids[i])
+                for j in range(i + 1, 6):
+                    gj = int(gids[j])
+                    pair = (gi, gj) if gi <= gj else (gj, gi)
+                    pair_freq[pair] = int(pair_freq.get(pair, 0) + 1)
+            profile_key = (tuple(int(x) for x in cand.candidate.gem_totals), int(cand.element_id))
+            profile_freq[profile_key] = int(profile_freq.get(profile_key, 0) + 1)
 
     selected: List[_CoverageSong] = []
     for song in song_specs:
         best: Optional[CandidateSpec] = None
         best_key: Optional[Tuple[Any, ...]] = None
         for cand in song.candidates:
-            key = _candidate_rank_key(cand, gear_freq)
+            key = _candidate_rank_key(
+                cand,
+                gear_freq,
+                pair_freq=pair_freq,
+                profile_freq=profile_freq,
+                ov_first=True,
+            )
             if best is None or key < best_key:
                 best = cand
                 best_key = key
@@ -406,6 +424,9 @@ def _candidate_rank_key(
     gear_freq: Dict[int, int],
     *,
     song_peak: Optional[int] = None,
+    pair_freq: Optional[Dict[Tuple[int, int], int]] = None,
+    profile_freq: Optional[Dict[Tuple[Tuple[int, ...], int], int]] = None,
+    ov_first: bool = False,
 ) -> Tuple[Any, ...]:
     freq_sum = sum(gear_freq.get(g, 0) for g in cand.gear_ids)
     src_rank = 0 if str(cand.candidate.source_table) in {"loadouts", "team_buff_loadouts"} else 1
@@ -418,9 +439,34 @@ def _candidate_rank_key(
     score_gap = 0 if song_peak is None else max(0, int(song_peak) - int(eff_score))
     # Minimum number of OV-positive slots needed is ceil(OV_total / 15).
     req_ov_slots = 0 if ov_total <= 0 else (ov_total + 14) // 15
-    # Primary objective for coverage is gear reuse: sharing gear IDs across songs reduces the number
-    # of distinct variants needed. OV locking matters too, but treat it as a tie-breaker.
+    pair_sum = 0
+    if pair_freq:
+        gids = cand.gear_ids
+        for i in range(5):
+            gi = int(gids[i])
+            for j in range(i + 1, 6):
+                gj = int(gids[j])
+                pair = (gi, gj) if gi <= gj else (gj, gi)
+                pair_sum += int(pair_freq.get(pair, 0))
+    profile_support = 0
+    if profile_freq:
+        profile_key = (tuple(int(x) for x in cand.candidate.gem_totals), int(cand.element_id))
+        profile_support = int(profile_freq.get(profile_key, 0))
+
     # If provided, include closeness-to-peak as a primary objective (lower gap first).
+    # Top-1 strict mode: favor lower OV pressure first, then stronger reuse signals.
+    if ov_first:
+        return (
+            score_gap,
+            req_ov_slots,
+            ov_total,
+            -pair_sum,
+            -freq_sum,
+            -profile_support,
+            src_rank,
+            cand.candidate.rowid,
+        )
+    # Multi-candidate/default path keeps the original ordering for compatibility.
     return (score_gap, -freq_sum, req_ov_slots, ov_total, src_rank, cand.candidate.rowid)
 
 
