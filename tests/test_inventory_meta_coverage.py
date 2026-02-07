@@ -7,7 +7,7 @@ from gear_optimizer.data.database import get_db_connection
 from inventory_optimizer import run_inventory_meta_coverage
 
 
-def _insert_loadout(conn, song_name, score, gear_names, minis_groups, details):
+def _insert_loadout(conn, song_name, score, gear_names, minis_groups, details, *, loadout_hash_suffix=""):
     conn.execute(
         """
         INSERT INTO songs (name, best_score, best_fg_score, last_updated)
@@ -29,7 +29,7 @@ def _insert_loadout(conn, song_name, score, gear_names, minis_groups, details):
         """,
         (
             song_name,
-            f"{song_name}-{score}",
+            f"{song_name}-{score}{str(loadout_hash_suffix or '')}",
             score,
             0,
             json.dumps(gear_names),
@@ -234,3 +234,105 @@ def test_inventory_meta_coverage_gpu_full_parallel_repack_matches_serial(monkeyp
     assert parallel["stats"]["songs_covered"] == 3
     assert serial["stats"]["gear_variants_used"] == 6
     assert parallel["stats"]["gear_variants_used"] == 6
+
+
+@pytest.mark.gpu
+def test_inventory_meta_coverage_cpsat_hypergraph_non_regression_top1(monkeypatch, tmp_path):
+    db_path = tmp_path / "evolution.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+
+    conn = get_db_connection(str(db_path))
+    try:
+        minis = [["MiniA"], ["MiniB"], ["MiniC"]]
+        gear_a = ["HatA", "NeckA", "FaceA", "ShirtA", "BackA", "PantA"]
+        gear_b = ["HatB", "NeckB", "FaceB", "ShirtB", "BackB", "PantB"]
+        gear_c = ["HatC", "NeckC", "FaceC", "ShirtC", "BackC", "PantC"]
+        _insert_loadout(conn, "SongOne", 100, gear_a, minis, _base_details("Chill"))
+        _insert_loadout(conn, "SongTwo", 100, gear_b, minis, _base_details("Chill"))
+        _insert_loadout(conn, "SongThree", 100, gear_a, minis, _base_details("Flow"))
+        _insert_loadout(conn, "SongFour", 100, gear_c, minis, _base_details("Flow"))
+        conn.commit()
+    finally:
+        conn.close()
+
+    common_args = dict(
+        inventory_cap=6,
+        partitions_per_song=8,
+        adaptive_rounds=0,
+        lns_time_sec=0.02,
+        lns_attempts=20,
+        gpu_repack_passes=1,
+        gpu_lns_destroy=1,
+        seed=123,
+        cp_sat_hypergraph_rounds=2,
+        cp_sat_hypergraph_max_songs=16,
+        cp_sat_hypergraph_patterns_per_song=12,
+        cp_sat_hypergraph_time_limit_sec=0.1,
+        cp_sat_hypergraph_num_workers=2,
+        profile=False,
+    )
+
+    baseline = run_inventory_meta_coverage(**common_args, cp_sat_hypergraph_enabled=False)
+    improved = run_inventory_meta_coverage(**common_args, cp_sat_hypergraph_enabled=True)
+
+    assert improved["stats"]["songs_covered"] >= baseline["stats"]["songs_covered"]
+    if improved["stats"]["songs_covered"] == baseline["stats"]["songs_covered"]:
+        assert improved["stats"]["gear_variants_used"] <= baseline["stats"]["gear_variants_used"]
+    cp_meta = improved["solver_stats"]["solver"].get("cp_sat_hypergraph")
+    assert isinstance(cp_meta, dict)
+    assert cp_meta.get("enabled") in {True, False}
+
+
+@pytest.mark.gpu
+def test_inventory_meta_coverage_cpsat_skips_multi_candidate_mode(monkeypatch, tmp_path):
+    db_path = tmp_path / "evolution.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+
+    conn = get_db_connection(str(db_path))
+    try:
+        minis = [["MiniA"], ["MiniB"], ["MiniC"]]
+        gear_a = ["HatA", "NeckA", "FaceA", "ShirtA", "BackA", "PantA"]
+        gear_b = ["HatB", "NeckB", "FaceB", "ShirtB", "BackB", "PantB"]
+        _insert_loadout(
+            conn,
+            "SongOne",
+            100,
+            gear_a,
+            minis,
+            _base_details("Chill"),
+            loadout_hash_suffix="-a",
+        )
+        _insert_loadout(
+            conn,
+            "SongOne",
+            100,
+            gear_b,
+            minis,
+            _base_details("Flow"),
+            loadout_hash_suffix="-b",
+        )
+        _insert_loadout(conn, "SongTwo", 100, gear_a, minis, _base_details("Chill"))
+        conn.commit()
+    finally:
+        conn.close()
+
+    results = run_inventory_meta_coverage(
+        inventory_cap=6,
+        partitions_per_song=8,
+        adaptive_rounds=0,
+        lns_time_sec=0.01,
+        lns_attempts=10,
+        seed=123,
+        gpu_full_top_candidates=2,
+        cp_sat_hypergraph_enabled=True,
+        cp_sat_hypergraph_rounds=2,
+        cp_sat_hypergraph_max_songs=8,
+        cp_sat_hypergraph_patterns_per_song=8,
+        cp_sat_hypergraph_time_limit_sec=0.05,
+        cp_sat_hypergraph_num_workers=2,
+        profile=False,
+    )
+    assert results["solver_stats"]["run_params"]["gpu_full_top_candidates"] == 2
+    cp_meta = results["solver_stats"]["solver"].get("cp_sat_hypergraph")
+    assert isinstance(cp_meta, dict)
+    assert cp_meta.get("skipped") == "top_candidates_not_one"

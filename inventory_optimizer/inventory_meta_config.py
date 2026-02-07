@@ -168,6 +168,18 @@ class InventoryMetaCoverageSettings:
     # Optional universe restriction for witness pool
     gpu_full_restricted_universe_path: str = ""
 
+    # CP-SAT hypergraph refinement (top-1 strict only)
+    cp_sat_hypergraph_enabled: bool = True
+    cp_sat_hypergraph_rounds: int = 3
+    cp_sat_hypergraph_max_songs: int = 192
+    cp_sat_hypergraph_patterns_per_song: int = 48
+    cp_sat_hypergraph_anchor_patterns: int = 16
+    cp_sat_hypergraph_seed_streams: int = 2
+    cp_sat_hypergraph_time_limit_sec: float = 0.35
+    cp_sat_hypergraph_num_workers: int = 8
+    cp_sat_hypergraph_randomized: bool = True
+    cp_sat_hypergraph_enforce_non_regression: bool = True
+
     def to_run_kwargs(self) -> Dict[str, Any]:
         return {
             "inventory_cap": int(self.inventory_cap),
@@ -231,6 +243,16 @@ class InventoryMetaCoverageSettings:
             "gpu_full_repair_max_cands_per_slot": int(self.gpu_full_repair_max_cands_per_slot),
             "gpu_full_repair_song_limit": int(self.gpu_full_repair_song_limit),
             "gpu_full_restricted_universe_path": str(self.gpu_full_restricted_universe_path or ""),
+            "cp_sat_hypergraph_enabled": bool(self.cp_sat_hypergraph_enabled),
+            "cp_sat_hypergraph_rounds": int(self.cp_sat_hypergraph_rounds),
+            "cp_sat_hypergraph_max_songs": int(self.cp_sat_hypergraph_max_songs),
+            "cp_sat_hypergraph_patterns_per_song": int(self.cp_sat_hypergraph_patterns_per_song),
+            "cp_sat_hypergraph_anchor_patterns": int(self.cp_sat_hypergraph_anchor_patterns),
+            "cp_sat_hypergraph_seed_streams": int(self.cp_sat_hypergraph_seed_streams),
+            "cp_sat_hypergraph_time_limit_sec": float(self.cp_sat_hypergraph_time_limit_sec),
+            "cp_sat_hypergraph_num_workers": int(self.cp_sat_hypergraph_num_workers),
+            "cp_sat_hypergraph_randomized": bool(self.cp_sat_hypergraph_randomized),
+            "cp_sat_hypergraph_enforce_non_regression": bool(self.cp_sat_hypergraph_enforce_non_regression),
         }
 
     def to_effective_config_dict(self, *, quality: str, config_path: str, set_overrides: List[str]) -> Dict[str, Any]:
@@ -290,6 +312,18 @@ class InventoryMetaCoverageSettings:
                 "attempts": int(self.gpu_full_repair_attempts),
                 "max_cands_per_slot": int(self.gpu_full_repair_max_cands_per_slot),
                 "song_limit": int(self.gpu_full_repair_song_limit),
+            },
+            "cp_sat_hypergraph": {
+                "enabled": bool(self.cp_sat_hypergraph_enabled),
+                "rounds": int(self.cp_sat_hypergraph_rounds),
+                "max_songs": int(self.cp_sat_hypergraph_max_songs),
+                "patterns_per_song": int(self.cp_sat_hypergraph_patterns_per_song),
+                "anchor_patterns": int(self.cp_sat_hypergraph_anchor_patterns),
+                "seed_streams": int(self.cp_sat_hypergraph_seed_streams),
+                "time_limit_sec": float(self.cp_sat_hypergraph_time_limit_sec),
+                "num_workers": int(self.cp_sat_hypergraph_num_workers),
+                "randomized": bool(self.cp_sat_hypergraph_randomized),
+                "enforce_non_regression": bool(self.cp_sat_hypergraph_enforce_non_regression),
             },
             "seed_inventory": {
                 "variants_path": str(self.seed_inventory_variants_path or ""),
@@ -487,6 +521,42 @@ def load_inventory_meta_coverage_settings(
             cfg, "Repair", "MaxCandsPerSlot", settings.gpu_full_repair_max_cands_per_slot
         ),
         gpu_full_repair_song_limit=_get_int(cfg, "Repair", "SongLimit", settings.gpu_full_repair_song_limit),
+    )
+
+    # CP-SAT Hypergraph
+    settings = replace(
+        settings,
+        cp_sat_hypergraph_enabled=_get_bool(
+            cfg, "CPSatHypergraph", "Enabled", settings.cp_sat_hypergraph_enabled
+        ),
+        cp_sat_hypergraph_rounds=_get_int(cfg, "CPSatHypergraph", "Rounds", settings.cp_sat_hypergraph_rounds),
+        cp_sat_hypergraph_max_songs=_get_int(
+            cfg, "CPSatHypergraph", "MaxSongs", settings.cp_sat_hypergraph_max_songs
+        ),
+        cp_sat_hypergraph_patterns_per_song=_get_int(
+            cfg, "CPSatHypergraph", "PatternsPerSong", settings.cp_sat_hypergraph_patterns_per_song
+        ),
+        cp_sat_hypergraph_anchor_patterns=_get_int(
+            cfg, "CPSatHypergraph", "AnchorPatterns", settings.cp_sat_hypergraph_anchor_patterns
+        ),
+        cp_sat_hypergraph_seed_streams=_get_int(
+            cfg, "CPSatHypergraph", "SeedStreams", settings.cp_sat_hypergraph_seed_streams
+        ),
+        cp_sat_hypergraph_time_limit_sec=_get_float(
+            cfg, "CPSatHypergraph", "TimeLimitSec", settings.cp_sat_hypergraph_time_limit_sec
+        ),
+        cp_sat_hypergraph_num_workers=_get_int(
+            cfg, "CPSatHypergraph", "NumWorkers", settings.cp_sat_hypergraph_num_workers
+        ),
+        cp_sat_hypergraph_randomized=_get_bool(
+            cfg, "CPSatHypergraph", "Randomized", settings.cp_sat_hypergraph_randomized
+        ),
+        cp_sat_hypergraph_enforce_non_regression=_get_bool(
+            cfg,
+            "CPSatHypergraph",
+            "EnforceNonRegression",
+            settings.cp_sat_hypergraph_enforce_non_regression,
+        ),
     )
 
     # Seed inventory

@@ -2,6 +2,7 @@
 numpy
 numba
 taichi
+ortools
 psutil
 requests
 python-dotenv

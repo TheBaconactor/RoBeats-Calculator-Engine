@@ -16,6 +16,7 @@ import psutil
 from gear_optimizer.data.database import get_evolution_db_path
 
 from .coverage_candidates import apply_element_filter, load_candidates_by_song, normalize_element_filter
+from .cpsat_hypergraph import refine_with_cpsat_hypergraph
 from .export import export_inventory_meta_json, hydrate_force_details
 from .gpu_full_solver import solve_coverage_gpu_full
 from .gpu_inventory_repair import repair_uncovered_with_inventory_gpu
@@ -2598,6 +2599,16 @@ def run_inventory_meta_coverage(
     gpu_full_repair_max_cands_per_slot: int = 16,
     gpu_full_repair_song_limit: int = 512,
     gpu_full_restricted_universe_path: str = "",
+    cp_sat_hypergraph_enabled: bool = True,
+    cp_sat_hypergraph_rounds: int = 3,
+    cp_sat_hypergraph_max_songs: int = 192,
+    cp_sat_hypergraph_patterns_per_song: int = 48,
+    cp_sat_hypergraph_anchor_patterns: int = 16,
+    cp_sat_hypergraph_seed_streams: int = 2,
+    cp_sat_hypergraph_time_limit_sec: float = 0.35,
+    cp_sat_hypergraph_num_workers: int = 8,
+    cp_sat_hypergraph_randomized: bool = True,
+    cp_sat_hypergraph_enforce_non_regression: bool = True,
 ) -> dict:
     """
     Inventory Meta coverage mode (GPU-only optimization loop):
@@ -2737,6 +2748,30 @@ def run_inventory_meta_coverage(
     gpu_full_repair_song_limit = int(gpu_full_repair_song_limit)
     if gpu_full_repair_song_limit < 0:
         raise ValueError("gpu_full_repair_song_limit must be >= 0.")
+    cp_sat_hypergraph_enabled = bool(cp_sat_hypergraph_enabled)
+    cp_sat_hypergraph_rounds = int(cp_sat_hypergraph_rounds)
+    if cp_sat_hypergraph_rounds < 0:
+        raise ValueError("cp_sat_hypergraph_rounds must be >= 0.")
+    cp_sat_hypergraph_max_songs = int(cp_sat_hypergraph_max_songs)
+    if cp_sat_hypergraph_max_songs <= 0:
+        raise ValueError("cp_sat_hypergraph_max_songs must be positive.")
+    cp_sat_hypergraph_patterns_per_song = int(cp_sat_hypergraph_patterns_per_song)
+    if cp_sat_hypergraph_patterns_per_song <= 0:
+        raise ValueError("cp_sat_hypergraph_patterns_per_song must be positive.")
+    cp_sat_hypergraph_anchor_patterns = int(cp_sat_hypergraph_anchor_patterns)
+    if cp_sat_hypergraph_anchor_patterns < 0:
+        raise ValueError("cp_sat_hypergraph_anchor_patterns must be >= 0.")
+    cp_sat_hypergraph_seed_streams = int(cp_sat_hypergraph_seed_streams)
+    if cp_sat_hypergraph_seed_streams <= 0:
+        raise ValueError("cp_sat_hypergraph_seed_streams must be positive.")
+    cp_sat_hypergraph_time_limit_sec = float(cp_sat_hypergraph_time_limit_sec)
+    if cp_sat_hypergraph_time_limit_sec <= 0.0:
+        raise ValueError("cp_sat_hypergraph_time_limit_sec must be > 0.")
+    cp_sat_hypergraph_num_workers = int(cp_sat_hypergraph_num_workers)
+    if cp_sat_hypergraph_num_workers <= 0:
+        raise ValueError("cp_sat_hypergraph_num_workers must be positive.")
+    cp_sat_hypergraph_randomized = bool(cp_sat_hypergraph_randomized)
+    cp_sat_hypergraph_enforce_non_regression = bool(cp_sat_hypergraph_enforce_non_regression)
 
     gpu_full_restricted_universe_path = str(gpu_full_restricted_universe_path or "").strip()
 
@@ -2900,6 +2935,16 @@ def run_inventory_meta_coverage(
         "gpu_full_repair_max_cands_per_slot": int(gpu_full_repair_max_cands_per_slot),
         "gpu_full_repair_song_limit": int(gpu_full_repair_song_limit),
         "gpu_full_restricted_universe_path": str(gpu_full_restricted_universe_path or ""),
+        "cp_sat_hypergraph_enabled": bool(cp_sat_hypergraph_enabled),
+        "cp_sat_hypergraph_rounds": int(cp_sat_hypergraph_rounds),
+        "cp_sat_hypergraph_max_songs": int(cp_sat_hypergraph_max_songs),
+        "cp_sat_hypergraph_patterns_per_song": int(cp_sat_hypergraph_patterns_per_song),
+        "cp_sat_hypergraph_anchor_patterns": int(cp_sat_hypergraph_anchor_patterns),
+        "cp_sat_hypergraph_seed_streams": int(cp_sat_hypergraph_seed_streams),
+        "cp_sat_hypergraph_time_limit_sec": float(cp_sat_hypergraph_time_limit_sec),
+        "cp_sat_hypergraph_num_workers": int(cp_sat_hypergraph_num_workers),
+        "cp_sat_hypergraph_randomized": bool(cp_sat_hypergraph_randomized),
+        "cp_sat_hypergraph_enforce_non_regression": bool(cp_sat_hypergraph_enforce_non_regression),
     }
 
     best_seed: Optional[int] = None
@@ -3169,6 +3214,13 @@ def run_inventory_meta_coverage(
         )
         if repair_stats is not None:
             result.setdefault("solver_stats", {}).setdefault("solver", {}).setdefault("repair", repair_stats)
+        result.setdefault("solver_stats", {}).setdefault("solver", {}).setdefault(
+            "cp_sat_hypergraph",
+            {
+                "enabled": bool(cp_sat_hypergraph_enabled),
+                "skipped": "top_candidates_not_one" if int(gpu_full_top_candidates) != 1 else "disabled",
+            },
+        )
     else:
         if gear_ids_np is None:
             raise RuntimeError("Gear IDs not initialized for materialization.")
@@ -3212,6 +3264,85 @@ def run_inventory_meta_coverage(
             )
             if isinstance(best_sol.stats, dict):
                 best_sol.stats.setdefault("repair", repair_stats)
+        cp_sat_stats = None
+        cp_sat_allowed = bool(cp_sat_hypergraph_enabled) and int(gpu_full_top_candidates) == 1
+        if cp_sat_allowed:
+            if totals_np is None or elements_np is None:
+                raise RuntimeError("CP-SAT hypergraph refinement requires totals/elements inputs.")
+            try:
+                cp_res = refine_with_cpsat_hypergraph(
+                    gear_ids_np=gear_ids_np,
+                    totals_np=totals_np,
+                    elements_np=elements_np,
+                    gear_freq_np=gear_freq_np,
+                    covered_np=np.asarray(best_sol.covered, dtype=np.int32),
+                    chosen_offsets_np=np.asarray(best_sol.chosen_offsets, dtype=np.int32),
+                    inventory_cap=int(inventory_cap),
+                    seed=int(best_seed or seed),
+                    rounds=int(cp_sat_hypergraph_rounds),
+                    max_songs=int(cp_sat_hypergraph_max_songs),
+                    patterns_per_song=int(cp_sat_hypergraph_patterns_per_song),
+                    witness_anchor_patterns=int(cp_sat_hypergraph_anchor_patterns),
+                    witness_seed_streams=int(cp_sat_hypergraph_seed_streams),
+                    witness_pattern_profile=int(gpu_full_witness_pattern_profile),
+                    wildcard_palette_size=int(gpu_full_wildcard_palette_size),
+                    wildcard_palette_min_count=int(gpu_full_wildcard_palette_min_count),
+                    wildcard_palette_scan=int(gpu_full_wildcard_palette_scan),
+                    wildcard_palette_tail_slots=int(gpu_full_wildcard_palette_tail_slots),
+                    time_limit_sec=float(cp_sat_hypergraph_time_limit_sec),
+                    num_workers=int(cp_sat_hypergraph_num_workers),
+                    randomized=bool(cp_sat_hypergraph_randomized),
+                    enforce_non_regression=bool(cp_sat_hypergraph_enforce_non_regression),
+                    seeded_raw_vids=seeded_raw_vids,
+                    seeded_mode=str(seed_inventory_mode),
+                    profile=bool(profile),
+                    log_fn=mem.log,
+                )
+                cp_sat_stats = dict(cp_res.stats)
+                base_cov_cp = int(np.asarray(best_sol.covered, dtype=np.int32).sum())
+                base_used_cp = _count_used_gear_variants(
+                    gear_ids_np,
+                    np.asarray(best_sol.covered, dtype=np.int32),
+                    np.asarray(best_sol.chosen_offsets, dtype=np.int32),
+                )
+                cand_cov_cp = int(np.asarray(cp_res.covered_np, dtype=np.int32).sum())
+                cand_used_cp = _count_used_gear_variants(
+                    gear_ids_np,
+                    np.asarray(cp_res.covered_np, dtype=np.int32),
+                    np.asarray(cp_res.chosen_offsets_np, dtype=np.int32),
+                )
+                accepted_cp = bool(
+                    (cand_cov_cp > base_cov_cp) or (cand_cov_cp == base_cov_cp and cand_used_cp < base_used_cp)
+                )
+                cp_sat_stats["acceptance"] = {
+                    "baseline": {"covered": int(base_cov_cp), "used": int(base_used_cp)},
+                    "candidate": {"covered": int(cand_cov_cp), "used": int(cand_used_cp)},
+                    "accepted": bool(accepted_cp),
+                }
+                if accepted_cp:
+                    from types import SimpleNamespace
+
+                    old_stats = dict(getattr(best_sol, "stats", {}) or {})
+                    old_stats["cp_sat_hypergraph"] = cp_sat_stats
+                    best_sol = SimpleNamespace(
+                        covered=np.asarray(cp_res.covered_np, dtype=np.int32),
+                        chosen_offsets=np.asarray(cp_res.chosen_offsets_np, dtype=np.int32),
+                        covered_count=int(cand_cov_cp),
+                        stats=old_stats,
+                    )
+                elif isinstance(getattr(best_sol, "stats", None), dict):
+                    best_sol.stats["cp_sat_hypergraph"] = cp_sat_stats
+            except Exception as e:
+                cp_sat_stats = {"enabled": bool(cp_sat_hypergraph_enabled), "error": str(e)}
+                if isinstance(getattr(best_sol, "stats", None), dict):
+                    best_sol.stats["cp_sat_hypergraph"] = cp_sat_stats
+        elif isinstance(getattr(best_sol, "stats", None), dict):
+            best_sol.stats["cp_sat_hypergraph"] = {
+                "enabled": bool(cp_sat_hypergraph_enabled),
+                "skipped": "top_candidates_not_one"
+                if int(gpu_full_top_candidates) != 1
+                else "disabled",
+            }
         result = _materialize_coverage_solution(
             selected_specs,
             gear_names=gear_names,
