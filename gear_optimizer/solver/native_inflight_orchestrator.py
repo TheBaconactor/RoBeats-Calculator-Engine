@@ -2846,62 +2846,104 @@ def _run_fg_job_sync(
 
 
 def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
+    def _safe_int(value: Any, default: int = 0) -> int:
+        try:
+            return int(value) if value is not None else int(default)
+        except Exception:
+            try:
+                return int(float(value))
+            except Exception:
+                return int(default)
+
     entries: list[dict] = []
+    loadout_entries = song.loadout_entries if isinstance(song.loadout_entries, dict) else {}
+    get_loadout_hash_fn = None
+    if loadout_entries:
+        try:
+            from gear_optimizer.data.database import get_loadout_hash as _get_loadout_hash
+
+            get_loadout_hash_fn = _get_loadout_hash
+        except Exception:
+            get_loadout_hash_fn = None
+
     for v in song.fg_variants or []:
         if not isinstance(v, dict):
             continue
         is_ga = bool(v.get("_is_ga"))
-        base_score = v.get("score", 0) or 0
-        fg_score = v.get("fg_score", 0) or 0
-        gear = v.get("gear") or []
-        minis = v.get("minis") or []
+        base_score = _safe_int(v.get("base_score", v.get("score", 0)), 0)
+        fg_score = _safe_int(v.get("fg_score", 0), 0)
+        gear_names = _compact_items(v.get("gear") or [])
+        mini_names = _compact_items(v.get("minis") or [])
         data = v.get("data") or {}
-        stats_obj = data.get("Stats", {})
-        if not stats_obj:
+        base_entry = None
+        if get_loadout_hash_fn is not None:
             try:
-                base_stats = data.get("BaseStats")
+                loadout_hash = get_loadout_hash_fn(gear_names, mini_names)
+                candidate = loadout_entries.get(loadout_hash)
+                if isinstance(candidate, dict):
+                    base_entry = candidate
             except Exception:
-                base_stats = None
-            if isinstance(base_stats, dict) and base_stats:
+                base_entry = None
+
+        if isinstance(base_entry, dict):
+            entry_base_score = _safe_int(
+                base_entry.get("base_score"),
+                _safe_int(base_entry.get("score", 0), base_score),
+            )
+            if entry_base_score > 0:
+                base_score = entry_base_score
+
+        details_obj = base_entry.get("details") if isinstance(base_entry, dict) else None
+        if isinstance(details_obj, dict) and details_obj:
+            # Keep base payload consistent with base score on deferred FG updates.
+            details = dict(details_obj)
+        else:
+            stats_obj = data.get("Stats", {})
+            if not stats_obj:
                 try:
-                    from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
-                        apply_gems_to_base_fast,
-                    )
-
-                    gem_counts = data.get("GemCounts") if isinstance(data.get("GemCounts"), dict) else {}
-                    ft_val = int(data.get("FT", gem_counts.get("Fever Time", 0)) or 0)
-                    ff_val = int(
-                        data.get("FF", gem_counts.get("Fever Fill", gem_counts.get("Fever Fill Rate", 0))) or 0
-                    )
-                    g_pp = int(gem_counts.get("Perfect Points", 0) or 0)
-                    g_cm = int(gem_counts.get("Combo Multiplier", 0) or 0)
-                    g_fm = int(gem_counts.get("Fever Multiplier", 0) or 0)
-                    g_ov = int(gem_counts.get("Element", gem_counts.get("Element Overflow", 0)) or 0)
-                    selected = get_selected_element(data, "") or ""
-                    stats_obj = apply_gems_to_base_fast(
-                        base_stats,
-                        selected,
-                        ft_val,
-                        ff_val,
-                        g_pp,
-                        g_cm,
-                        g_fm,
-                        g_ov,
-                    )
+                    base_stats = data.get("BaseStats")
                 except Exception:
-                    stats_obj = stats_obj or {}
+                    base_stats = None
+                if isinstance(base_stats, dict) and base_stats:
+                    try:
+                        from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
+                            apply_gems_to_base_fast,
+                        )
 
-        details = {
-            "FT": data.get("FT", 0),
-            "FF": data.get("FF", 0),
-            "GemCounts": data.get("GemCounts", {}),
-            "Stats": stats_obj or {},
-            "SelectedElement": get_selected_element(data, ""),
-            "PrimaryColor": song.meta_primary_color,
-            "SecondaryColor": song.meta_secondary_color,
-            "Difficulty": song.effective_difficulty,
-            "ForceGreats": data.get("ForceGreats", {}),
-        }
+                        gem_counts = data.get("GemCounts") if isinstance(data.get("GemCounts"), dict) else {}
+                        ft_val = int(data.get("FT", gem_counts.get("Fever Time", 0)) or 0)
+                        ff_val = int(
+                            data.get("FF", gem_counts.get("Fever Fill", gem_counts.get("Fever Fill Rate", 0))) or 0
+                        )
+                        g_pp = int(gem_counts.get("Perfect Points", 0) or 0)
+                        g_cm = int(gem_counts.get("Combo Multiplier", 0) or 0)
+                        g_fm = int(gem_counts.get("Fever Multiplier", 0) or 0)
+                        g_ov = int(gem_counts.get("Element", gem_counts.get("Element Overflow", 0)) or 0)
+                        selected = get_selected_element(data, "") or ""
+                        stats_obj = apply_gems_to_base_fast(
+                            base_stats,
+                            selected,
+                            ft_val,
+                            ff_val,
+                            g_pp,
+                            g_cm,
+                            g_fm,
+                            g_ov,
+                        )
+                    except Exception:
+                        stats_obj = stats_obj or {}
+
+            details = {
+                "FT": data.get("FT", 0),
+                "FF": data.get("FF", 0),
+                "GemCounts": data.get("GemCounts", {}),
+                "Stats": stats_obj or {},
+                "SelectedElement": get_selected_element(data, ""),
+                "PrimaryColor": song.meta_primary_color,
+                "SecondaryColor": song.meta_secondary_color,
+                "Difficulty": song.effective_difficulty,
+                "ForceGreats": data.get("ForceGreats", {}),
+            }
 
         force_obj = None
         try:
@@ -2915,8 +2957,8 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
             {
                 "score": int(base_score),
                 "fg_score": int(fg_score),
-                "gear": _compact_items(gear),
-                "minis": _compact_items(minis),
+                "gear": gear_names,
+                "minis": mini_names,
                 "details": details,
                 "force": force_obj,
                 "_is_ga": bool(is_ga),
