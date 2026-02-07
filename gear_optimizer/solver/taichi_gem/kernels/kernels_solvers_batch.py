@@ -304,6 +304,9 @@ def solve_genomes_with_ftff_block_kernel(
     shared_waves_cm = simt.block.SharedArray((GA_FTFF_BLOCK_WAVES,), ti.i32)
     shared_waves_fm = simt.block.SharedArray((GA_FTFF_BLOCK_WAVES,), ti.i32)
     shared_waves_ov = simt.block.SharedArray((GA_FTFF_BLOCK_WAVES,), ti.i32)
+    shared_prefix_end = simt.block.SharedArray((1,), ti.i32)
+    shared_max_ft = simt.block.SharedArray((1,), ti.i32)
+    shared_max_ff = simt.block.SharedArray((1,), ti.i32)
     total_threads = n_genomes * GA_FTFF_BLOCK_DIM
 
     for tid in range(total_threads):
@@ -330,15 +333,35 @@ def solve_genomes_with_ftff_block_kernel(
         base_ft_stat = stats[5]
         base_ff_stat = stats[6]
 
-        # Compute max FT/FF gems based on stat headroom
-        remaining_ft = MAX_STAT - base_ft_stat
-        remaining_ff = MAX_STAT - base_ff_stat
-        max_ft_gems: ti.i32 = remaining_ft // gem_scale_fever if remaining_ft > 0 else 0
-        max_ff_gems: ti.i32 = remaining_ff // gem_scale_fever if remaining_ff > 0 else 0
-        if max_ft_gems > total_budget:
-            max_ft_gems = total_budget
-        if max_ff_gems > total_budget:
-            max_ff_gems = total_budget
+        # Compute per-genome FT/FF headroom and combo prefix once, then share.
+        if lane == 0:
+            remaining_ft_0: ti.i32 = MAX_STAT - base_ft_stat
+            max_ft_gems_0: ti.i32 = remaining_ft_0 // gem_scale_fever if remaining_ft_0 > 0 else 0
+            if max_ft_gems_0 > total_budget:
+                max_ft_gems_0 = total_budget
+
+            remaining_ff_0: ti.i32 = MAX_STAT - base_ff_stat
+            max_ff_gems_0: ti.i32 = remaining_ff_0 // gem_scale_fever if remaining_ff_0 > 0 else 0
+            if max_ff_gems_0 > total_budget:
+                max_ff_gems_0 = total_budget
+
+            # combo table order: ft=0,ff=0..B ; ft=1,ff=0..B-1 ; ...
+            prefix_end_0: ti.i32 = (max_ft_gems_0 + 1) * (total_budget + 1) - (
+                (max_ft_gems_0 * (max_ft_gems_0 + 1)) // 2
+            )
+            if max_ft_gems_0 == 0:
+                prefix_end_0 = ti.min(prefix_end_0, max_ff_gems_0 + 1)
+            if prefix_end_0 > n_combos:
+                prefix_end_0 = n_combos
+
+            shared_prefix_end[0] = prefix_end_0
+            shared_max_ft[0] = max_ft_gems_0
+            shared_max_ff[0] = max_ff_gems_0
+        simt.block.sync()
+
+        max_ft_gems: ti.i32 = shared_max_ft[0]
+        max_ff_gems: ti.i32 = shared_max_ff[0]
+        limit_combo: ti.i32 = shared_prefix_end[0]
 
         local_best_key: ti.u64 = ti.u64(0)
         local_best_combo: ti.i32 = 0
@@ -349,7 +372,7 @@ def solve_genomes_with_ftff_block_kernel(
 
         # Stride combos across lanes in the block.
         combo_idx: ti.i32 = lane
-        while combo_idx < n_combos:
+        while combo_idx < limit_combo:
             ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
             ff: ti.i32 = kernels_helpers.ftff_combo_ff[combo_idx]
             valid: ti.i32 = 1

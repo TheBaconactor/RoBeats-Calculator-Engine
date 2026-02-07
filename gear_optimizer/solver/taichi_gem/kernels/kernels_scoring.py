@@ -15,9 +15,20 @@ The optimize_core_device function is the core of the gem optimizer - it evaluate
 4 gem options (PP, CM, FM, OV) at each iteration and greedily picks the best.
 """
 
+import os
+
 import taichi as ti
 
 from . import kernels_helpers
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Diagnostic toggle: allow A/B between fused and split OV/CM/FM scoring paths.
+# Default preserves existing fused behavior.
+GPU_HEAD3_FUSION = _env_flag("GPU_HEAD3_FUSION", "1")
 
 
 @ti.func
@@ -846,26 +857,47 @@ def _optimize_core_device_impl(
                 factor_fm: ti.f32 = kernels_helpers._calc_head_factor(base_fm, c_mul_cur)
                 f_mul_fm: ti.f32 = kernels_helpers.lookup_ref_fm(fm + GEM_SCALE_FEVER)
 
-                head3 = _calc_head_scores_3_bits(
-                    head_len,
-                    m0,
-                    m1,
-                    m2,
-                    m3,
-                    base_ov,
-                    factor_ov,
-                    f_mul_cur,
-                    base_cm,
-                    factor_cm,
-                    f_mul_cur,
-                    base_fm,
-                    factor_fm,
-                    f_mul_fm,
-                )
+                score_ov: ti.i32 = 0
+                score_cm: ti.i32 = 0
+                score_fm: ti.i32 = 0
+                if ti.static(GPU_HEAD3_FUSION):
+                    head3 = _calc_head_scores_3_bits(
+                        head_len,
+                        m0,
+                        m1,
+                        m2,
+                        m3,
+                        base_ov,
+                        factor_ov,
+                        f_mul_cur,
+                        base_cm,
+                        factor_cm,
+                        f_mul_cur,
+                        base_fm,
+                        factor_fm,
+                        f_mul_fm,
+                    )
 
-                score_ov = _calc_body_score_i32(base_ov, c_mul_cur, f_mul_cur, count_fever, count_normal) + head3[0]
-                score_cm = _calc_body_score_i32(base_cm, c_mul_cm, f_mul_cur, count_fever, count_normal) + head3[1]
-                score_fm = _calc_body_score_i32(base_fm, c_mul_cur, f_mul_fm, count_fever, count_normal) + head3[2]
+                    score_ov = _calc_body_score_i32(base_ov, c_mul_cur, f_mul_cur, count_fever, count_normal) + head3[0]
+                    score_cm = _calc_body_score_i32(base_cm, c_mul_cm, f_mul_cur, count_fever, count_normal) + head3[1]
+                    score_fm = _calc_body_score_i32(base_fm, c_mul_cur, f_mul_fm, count_fever, count_normal) + head3[2]
+                else:
+                    # Split evaluation for A/B profiling: lower peak live state, more total ALU work.
+                    head_ov = ti.cast(
+                        kernels_helpers._calc_head_score_bits(base_ov, factor_ov, f_mul_cur, m0, m1, m2, m3, head_len),
+                        ti.i32,
+                    )
+                    head_cm = ti.cast(
+                        kernels_helpers._calc_head_score_bits(base_cm, factor_cm, f_mul_cur, m0, m1, m2, m3, head_len),
+                        ti.i32,
+                    )
+                    head_fm = ti.cast(
+                        kernels_helpers._calc_head_score_bits(base_fm, factor_fm, f_mul_fm, m0, m1, m2, m3, head_len),
+                        ti.i32,
+                    )
+                    score_ov = _calc_body_score_i32(base_ov, c_mul_cur, f_mul_cur, count_fever, count_normal) + head_ov
+                    score_cm = _calc_body_score_i32(base_cm, c_mul_cm, f_mul_cur, count_fever, count_normal) + head_cm
+                    score_fm = _calc_body_score_i32(base_fm, c_mul_cur, f_mul_fm, count_fever, count_normal) + head_fm
 
                 best_score = score_ov
                 best_opt = 3

@@ -70,7 +70,12 @@ def _color_flags(*, p_color: str, s_color: str, selected_color: str) -> dict[str
     }
 
 
-def _build_registry(*, rng: np.random.Generator) -> tuple[ItemRegistry, dict, list[dict], dict, list[str]]:
+def _build_registry(
+    *,
+    rng: np.random.Generator,
+    item_ft_max: int,
+    item_ff_max: int,
+) -> tuple[ItemRegistry, dict, list[dict], dict, list[str]]:
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
 
     def make_item_pool(prefix: str, n: int) -> list[dict]:
@@ -85,8 +90,8 @@ def _build_registry(*, rng: np.random.Generator) -> tuple[ItemRegistry, dict, li
                         "Fever Multiplier": int(rng.integers(0, 120)),
                         # Keep FT/FF stats comfortably below 160 so FT/FF combo iteration
                         # doesn't trivially prune almost everything via headroom checks.
-                        "Fever Time": int(rng.integers(0, 40)),
-                        "Fever Fill Rate": int(rng.integers(0, 40)),
+                        "Fever Time": int(rng.integers(0, max(0, int(item_ft_max)) + 1)),
+                        "Fever Fill Rate": int(rng.integers(0, max(0, int(item_ff_max)) + 1)),
                         "Beat": int(rng.integers(0, 200)),
                         "Vibe": int(rng.integers(0, 200)),
                         "Rush": int(rng.integers(0, 200)),
@@ -114,7 +119,7 @@ def _make_ref_arrays() -> dict[str, np.ndarray]:
     }
 
 
-def _make_base_fixed_stats(*, rng: np.random.Generator) -> np.ndarray:
+def _make_base_fixed_stats(*, rng: np.random.Generator, base_ft: int, base_ff: int) -> np.ndarray:
     base = {
         "Perfect Points": int(rng.integers(100, 300)),
         "Combo Multiplier": int(rng.integers(100, 300)),
@@ -128,6 +133,10 @@ def _make_base_fixed_stats(*, rng: np.random.Generator) -> np.ndarray:
         "Flow": int(rng.integers(200, 400)),
         "Chill": int(rng.integers(200, 400)),
     }
+    if int(base_ft) >= 0:
+        base["Fever Time"] = int(base_ft)
+    if int(base_ff) >= 0:
+        base["Fever Fill Rate"] = int(base_ff)
     return np.array(
         [
             base["Perfect Points"],
@@ -171,12 +180,40 @@ def main() -> int:
     ap.add_argument("--seed", type=int, default=int(os.environ.get("BENCH_GA_SEED", "1337")))
     ap.add_argument("--use-hints", type=int, default=int(os.environ.get("BENCH_GA_USE_HINTS", "0")))
     ap.add_argument("--prune-plateaus", type=int, default=int(os.environ.get("BENCH_GA_PRUNE", "1")))
+    ap.add_argument(
+        "--base-ft",
+        type=int,
+        default=int(os.environ.get("BENCH_GA_BASE_FT", "-1")),
+        help="Override base fixed Fever Time stat (default: random). Set ~160 to force FT headroom scarcity.",
+    )
+    ap.add_argument(
+        "--base-ff",
+        type=int,
+        default=int(os.environ.get("BENCH_GA_BASE_FF", "-1")),
+        help="Override base fixed Fever Fill Rate stat (default: random). Set ~160 to force FF headroom scarcity.",
+    )
+    ap.add_argument(
+        "--item-ft-max",
+        type=int,
+        default=int(os.environ.get("BENCH_GA_ITEM_FT_MAX", "40")),
+        help="Max Fever Time stat on generated items (default: 40).",
+    )
+    ap.add_argument(
+        "--item-ff-max",
+        type=int,
+        default=int(os.environ.get("BENCH_GA_ITEM_FF_MAX", "40")),
+        help="Max Fever Fill Rate stat on generated items (default: 40).",
+    )
     args = ap.parse_args()
 
     rng = np.random.default_rng(int(args.seed))
-    registry, gear_pool, mini_pool, gpu_arrays, slots = _build_registry(rng=rng)
+    registry, gear_pool, mini_pool, gpu_arrays, slots = _build_registry(
+        rng=rng,
+        item_ft_max=int(args.item_ft_max),
+        item_ff_max=int(args.item_ff_max),
+    )
     ref_arrays = _make_ref_arrays()
-    base_fixed_stats_arr = _make_base_fixed_stats(rng=rng)
+    base_fixed_stats_arr = _make_base_fixed_stats(rng=rng, base_ft=int(args.base_ft), base_ff=int(args.base_ff))
 
     calc_song = _make_calc_song(name="BenchGAEval_BeatVibe", p_color="Beat", s_color="Vibe")
     flags = _color_flags(p_color="Beat", s_color="Vibe", selected_color="Beat")
@@ -267,7 +304,9 @@ def main() -> int:
     per_iter = elapsed / iters
     print(
         f"ga_evaluate_population: genomes={int(args.genomes)} budget={int(args.budget)} "
-        f"iters={iters} warmup={int(args.warmup)} hints={int(args.use_hints)} prune={int(args.prune_plateaus)}"
+        f"iters={iters} warmup={int(args.warmup)} hints={int(args.use_hints)} prune={int(args.prune_plateaus)} "
+        f"base_ft={int(args.base_ft)} base_ff={int(args.base_ff)} "
+        f"item_ft_max={int(args.item_ft_max)} item_ff_max={int(args.item_ff_max)}"
     )
     print(f"total_sec={elapsed:.6f} per_iter_sec={per_iter:.6f} iters_per_sec={iters / elapsed:.3f}")
     return 0

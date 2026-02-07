@@ -21,9 +21,18 @@ _COUNTS_BY_SITE: dict[str, int] = {}
 _UNSET = configparser._UNSET
 
 
+def _is_test_runtime() -> bool:
+    # Auto-enable fallback warnings in pytest runs without requiring env setup.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return True
+    return "pytest" in sys.modules
+
+
 def _is_enabled() -> bool:
-    raw = str(os.environ.get("METAFINDER_FALLBACK_WARN", "1") or "").strip().lower()
-    return raw in _TRUTHY
+    raw = os.environ.get("METAFINDER_FALLBACK_WARN")
+    if raw is not None:
+        return str(raw).strip().lower() in _TRUTHY
+    return _is_test_runtime()
 
 
 def _include_count() -> bool:
@@ -38,7 +47,8 @@ def warn_fallback(site: str, reason: str, *, context: dict[str, Any] | None = No
     Notes:
     - Warnings are intentionally emitted on every fallback event (no de-dup),
       so callers can detect "constant fallback" behavior from logs.
-    - Set `METAFINDER_FALLBACK_WARN=0` to disable.
+    - Outside tests, warnings are disabled by default unless explicitly enabled.
+    - Set `METAFINDER_FALLBACK_WARN=1` to force-enable or `=0` to disable.
     """
     if not _is_enabled():
         return

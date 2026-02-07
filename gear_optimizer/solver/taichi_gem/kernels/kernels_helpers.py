@@ -12,6 +12,8 @@ IMPORTANT: Do NOT import fields directly at module load time.
 The field variables below are placeholders that get populated by bind_fields().
 """
 
+import os
+
 import taichi as ti
 
 from ..runtime import get_block_dim
@@ -23,7 +25,14 @@ CHUNK_BEST_KEY_TILES = 8  # Must match fields.CHUNK_BEST_KEY_TILES
 
 # FT/FF combo reduction scratch (Vulkan path).
 # Must match constants in `gear_optimizer/solver/taichi_gem/fields.py`.
-GA_FTFF_REDUCE_BLOCK_DIM = 256
+try:
+    _ga_reduce_block_dim = int(os.environ.get("GA_FTFF_REDUCE_BLOCK_DIM", "256") or "256")
+except Exception:
+    _ga_reduce_block_dim = 256
+GA_FTFF_REDUCE_BLOCK_DIM = max(32, min(int(_ga_reduce_block_dim), 256))
+GA_FTFF_REDUCE_BLOCK_DIM = (GA_FTFF_REDUCE_BLOCK_DIM // 32) * 32
+if GA_FTFF_REDUCE_BLOCK_DIM <= 0:
+    GA_FTFF_REDUCE_BLOCK_DIM = 32
 GA_FTFF_REDUCE_WAVE_STRIDE = GA_FTFF_REDUCE_BLOCK_DIM // 32  # lane//32 indexing (works for wave32 and wave64)
 
 
