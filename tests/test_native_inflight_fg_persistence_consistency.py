@@ -105,6 +105,13 @@ def test_native_inflight_deferred_fg_keeps_base_details_consistent(tmp_path, mon
             "ORDER BY score DESC LIMIT 1",
             (song_name,),
         ).fetchone()
+        fg_row = conn.execute(
+            "SELECT score, fg_score, details_json, force_details_json "
+            "FROM team_buff_fg_loadouts "
+            "WHERE song_name = ? AND team_buff = 'T5' "
+            "ORDER BY fg_score DESC LIMIT 1",
+            (song_name,),
+        ).fetchone()
 
     assert row is not None
     assert int(row["score"]) == 1000
@@ -113,3 +120,52 @@ def test_native_inflight_deferred_fg_keeps_base_details_consistent(tmp_path, mon
     stored_details = json.loads(row["details_json"])
     assert stored_details.get("Stats") == base_stats
     assert int(stored_details.get("hitsim_offset_delta_ms", 0)) == 17
+
+    assert fg_row is not None
+    assert int(fg_row["score"]) == 1000
+    assert int(fg_row["fg_score"]) == 1200
+    fg_details = json.loads(fg_row["details_json"])
+    fg_force = json.loads(fg_row["force_details_json"])
+    assert fg_details.get("Stats") == fg_stats
+    assert (fg_force.get("ForceGreats") or {}).get("config") == {"NonFever1": 1}
+
+
+def test_native_inflight_fg_persist_entries_fallback_when_base_entry_missing():
+    from gear_optimizer.solver.native_inflight_orchestrator import _build_fg_persist_entries
+
+    base_stats = _stats(100)
+    fg_stats = _stats(999)
+    fake_song = SimpleNamespace(
+        fg_variants=[
+            {
+                "_is_ga": True,
+                "score": 1000,
+                "base_score": 1000,
+                "fg_score": 1200,
+                "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+                "minis": ["M1", "M2", "M3"],
+                "data": {
+                    "BaseScore": 1000,
+                    "Score": 1200,
+                    "FT": 9,
+                    "FF": 18,
+                    "GemCounts": {"Perfect Points": 1},
+                    "BaseStats": base_stats,
+                    "Stats": fg_stats,
+                    "Selected Element": "Rush",
+                    "ForceGreats": {"config": {"NonFever1": 1}},
+                },
+            }
+        ],
+        meta_primary_color="Rush",
+        meta_secondary_color="Flow",
+        effective_difficulty="Hard",
+        loadout_entries={},
+    )
+
+    fg_entries = _build_fg_persist_entries(fake_song)
+    assert fg_entries
+    assert fg_entries[0]["score"] == 1000
+    assert fg_entries[0]["fg_score"] == 1200
+    # Fallback path keeps prior behavior when base details are unavailable.
+    assert fg_entries[0]["details"]["Stats"] == fg_stats
