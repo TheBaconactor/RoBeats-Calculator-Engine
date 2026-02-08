@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import sqlite3
 from pathlib import Path
 from typing import Optional
@@ -131,7 +132,82 @@ def _load_reference_scores(db_path: Path, song_name: str) -> tuple[int, int]:
         return 0, 0
 
 
-def test_high_level_optimizer_matches_reference_db(monkeypatch):
+def _run_reference_compare(
+    *,
+    songs: list[dict],
+    cfg_dict: dict,
+    paths: dict,
+    ref_arrays: dict,
+    all_gears: list,
+    all_minis: list,
+    gears_by_name: dict,
+    minis_by_name: dict,
+    auto_buff: bool,
+    ga_depth: int,
+    ref_db_path: Path,
+    evo_db_path: Path,
+    monkeypatch,
+) -> list[dict]:
+    from gear_optimizer.pipeline.song_processor import process_song_task
+
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(evo_db_path))
+    rows: list[dict] = []
+    for item in songs:
+        song_name = item["song_name"]
+        difficulty = item["difficulty"]
+        fp = item["file_path"]
+        args = (
+            fp,
+            song_name,
+            difficulty,
+            cfg_dict,
+            paths,
+            ref_arrays,
+            all_gears,
+            all_minis,
+            gears_by_name,
+            minis_by_name,
+            True,  # use_evo_db
+            auto_buff,
+            ga_depth,
+            None,  # status_queue
+            0,  # parallel_workers
+            False,  # fg_debug
+        )
+        result = process_song_task(args)
+        payload = result.get("db_payload") if isinstance(result, dict) else {}
+        best_score = int(payload.get("score") or 0) if isinstance(payload, dict) else 0
+        best_fg_score = int(payload.get("fg_score") or 0) if isinstance(payload, dict) else 0
+        ref_best, ref_fg = _load_reference_scores(ref_db_path, song_name)
+        rows.append(
+            {
+                "song_name": song_name,
+                "difficulty": difficulty,
+                "base_score": best_score,
+                "fg_score": best_fg_score,
+                "ref_base_score": int(ref_best),
+                "ref_fg_score": int(ref_fg),
+                "base_match": abs(best_score - ref_best) <= 2,
+                "fg_match": abs(best_fg_score - ref_fg) <= 2 and ref_fg > 0,
+            }
+        )
+    return rows
+
+
+def _first_output_mismatch(rows_a: list[dict], rows_b: list[dict]) -> str:
+    if len(rows_a) != len(rows_b):
+        return f"row-count mismatch: {len(rows_a)} vs {len(rows_b)}"
+    for idx, (lhs, rhs) in enumerate(zip(rows_a, rows_b), start=1):
+        if lhs != rhs:
+            return (
+                f"first mismatch at row {idx}: "
+                f"{lhs['song_name']} -> run1(base={lhs['base_score']}, fg={lhs['fg_score']}) "
+                f"vs run2(base={rhs['base_score']}, fg={rhs['fg_score']})"
+            )
+    return ""
+
+
+def test_high_level_optimizer_matches_reference_db(monkeypatch, tmp_path):
     """
     High-level smoke test: run the optimizer (GA + FG) and verify that at least
     one song's base score and at least one song's FG score matches the reference DB.
@@ -149,8 +225,6 @@ def test_high_level_optimizer_matches_reference_db(monkeypatch):
         load_csv_db,
         resolve_stats_csv,
     )
-    from gear_optimizer.pipeline.song_processor import process_song_task
-
     paths = load_paths_cache()
     stats_txt = str(paths.get("Stats") or "")
     if not stats_txt or not Path(stats_txt).exists():
@@ -164,11 +238,12 @@ def test_high_level_optimizer_matches_reference_db(monkeypatch):
     cfg_dict.setdefault("IterationEngine", {})["GA_DBSeedMutations"] = "0"
     cfg_dict.setdefault("IterationEngine", {})["GA_MultiStart"] = "1"
     cfg_dict.setdefault("IterationEngine", {})["SongRepeats"] = "1"
+    cfg_dict.setdefault("IterationEngine", {})["InFlightSongs"] = "1"
 
     try:
-        target_count = int(os.environ.get("REF_DB_OPTIMIZER_COMPARE_COUNT", "4"))
+        target_count = int(os.environ.get("REF_DB_OPTIMIZER_COMPARE_COUNT", "20"))
     except Exception:
-        target_count = 4
+        target_count = 20
     target_count = max(1, int(target_count))
 
     ie = read_iteration_engine_settings(cfg)
@@ -189,47 +264,49 @@ def test_high_level_optimizer_matches_reference_db(monkeypatch):
     if not songs:
         pytest.skip("no reference songs found to compare")
 
-    monkeypatch.setenv("EVOLUTION_DB_PATH", str(ref_db_path))
-    monkeypatch.setenv("GA_SEED", str(int(os.environ.get("GA_SEED", "1337") or 1337)))
+    seed = int(os.environ.get("GA_SEED", "1337") or 1337)
+    monkeypatch.setenv("GA_SEED", str(seed))
 
-    base_matches = 0
-    fg_matches = 0
-    for item in songs:
-        song_name = item["song_name"]
-        difficulty = item["difficulty"]
-        fp = item["file_path"]
+    run1_db_path = tmp_path / "run1_evolution.db"
+    run2_db_path = tmp_path / "run2_evolution.db"
+    shutil.copy2(ref_db_path, run1_db_path)
+    shutil.copy2(ref_db_path, run2_db_path)
 
-        args = (
-            fp,
-            song_name,
-            difficulty,
-            cfg_dict,
-            paths,
-            ref_arrays,
-            all_gears,
-            all_minis,
-            gears_by_name,
-            minis_by_name,
-            True,  # use_evo_db
-            auto_buff,
-            ga_depth,
-            None,  # status_queue
-            0,  # parallel_workers
-            False,  # fg_debug
-        )
+    run1_rows = _run_reference_compare(
+        songs=songs,
+        cfg_dict=cfg_dict,
+        paths=paths,
+        ref_arrays=ref_arrays,
+        all_gears=all_gears,
+        all_minis=all_minis,
+        gears_by_name=gears_by_name,
+        minis_by_name=minis_by_name,
+        auto_buff=auto_buff,
+        ga_depth=ga_depth,
+        ref_db_path=ref_db_path,
+        evo_db_path=run1_db_path,
+        monkeypatch=monkeypatch,
+    )
+    run2_rows = _run_reference_compare(
+        songs=songs,
+        cfg_dict=cfg_dict,
+        paths=paths,
+        ref_arrays=ref_arrays,
+        all_gears=all_gears,
+        all_minis=all_minis,
+        gears_by_name=gears_by_name,
+        minis_by_name=minis_by_name,
+        auto_buff=auto_buff,
+        ga_depth=ga_depth,
+        ref_db_path=ref_db_path,
+        evo_db_path=run2_db_path,
+        monkeypatch=monkeypatch,
+    )
+    assert run1_rows == run2_rows, _first_output_mismatch(run1_rows, run2_rows)
 
-        result = process_song_task(args)
-        payload = result.get("db_payload") if isinstance(result, dict) else {}
-        best_score = int(payload.get("score") or 0) if isinstance(payload, dict) else 0
-        best_fg_score = int(payload.get("fg_score") or 0) if isinstance(payload, dict) else 0
-        ref_best, ref_fg = _load_reference_scores(ref_db_path, song_name)
-
-        if abs(best_score - ref_best) <= 2:
-            base_matches += 1
-        if abs(best_fg_score - ref_fg) <= 2 and ref_fg > 0:
-            fg_matches += 1
-
-    total = max(1, len(songs))
+    base_matches = sum(1 for row in run1_rows if row["base_match"])
+    fg_matches = sum(1 for row in run1_rows if row["fg_match"])
+    total = max(1, len(run1_rows))
     base_match_pct = (base_matches / total) * 100.0
     fg_match_pct = (fg_matches / total) * 100.0
 

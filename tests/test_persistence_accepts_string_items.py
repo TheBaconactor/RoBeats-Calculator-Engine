@@ -125,3 +125,59 @@ def test_build_db_payload_normalizes_force_payload_stats():
     assert stats.get("Perfect Points", 0) >= base_stats["Perfect Points"]
     assert force.get("SelectedElement") == "Vibe"
     assert force.get("Selected Element") == "Vibe"
+
+
+def test_normalize_force_payload_materializes_stats_from_base_stats():
+    from gear_optimizer.helpers.song_helpers.persistence import _normalize_force_payload
+
+    base_stats = {
+        "Perfect Points": 10,
+        "Combo Multiplier": 20,
+        "Fever Multiplier": 30,
+        "Fever Fill Rate": 40,
+        "Fever Time": 50,
+        "Chill": 0,
+        "Vibe": 0,
+        "Beat": 0,
+        "Flow": 0,
+        "Rush": 0,
+    }
+    force_in = {
+        "BaseStats": base_stats,
+        "GemCounts": {
+            "Perfect Points": 1,
+            "Combo Multiplier": 1,
+            "Fever Multiplier": 1,
+            "Element": 2,
+        },
+        "FT": 1,
+        "FF": 2,
+        "Selected Element": "Vibe",
+        "ForceGreats": {"config": {"NonFever1": 1}},
+    }
+
+    force_out = _normalize_force_payload(force_in)
+    stats = force_out.get("Stats")
+    assert isinstance(stats, dict)
+    assert stats.get("Perfect Points", 0) >= base_stats["Perfect Points"]
+    assert stats.get("Vibe", 0) >= base_stats["Vibe"]
+
+
+def test_make_build_details_fn_preserves_hitsim_offset_delta():
+    build_details = make_build_details_fn("Rush", "Flow", "Hard")
+    details = build_details(
+        {
+            "FT": 1,
+            "FF": 2,
+            "GemCounts": {},
+            "Stats": {},
+            "Selected Element": "Rush",
+            "ForceGreats": {},
+            "hitsim_offset_delta_ms": "13",
+        }
+    )
+
+    assert details["PrimaryColor"] == "Rush"
+    assert details["SecondaryColor"] == "Flow"
+    assert details["Difficulty"] == "Hard"
+    assert details["hitsim_offset_delta_ms"] == 13

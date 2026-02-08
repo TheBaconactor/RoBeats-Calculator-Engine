@@ -139,7 +139,7 @@ def test_native_inflight_fg_persist_entries_fallback_when_base_entry_missing():
         fg_variants=[
             {
                 "_is_ga": True,
-                "score": 1000,
+                "score": 950,
                 "base_score": 1000,
                 "fg_score": 1200,
                 "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
@@ -165,7 +165,12 @@ def test_native_inflight_fg_persist_entries_fallback_when_base_entry_missing():
 
     fg_entries = _build_fg_persist_entries(fake_song)
     assert fg_entries
+    # Fallback still prefers explicit base_score over the variant's score field.
     assert fg_entries[0]["score"] == 1000
     assert fg_entries[0]["fg_score"] == 1200
     # Fallback path keeps prior behavior when base details are unavailable.
     assert fg_entries[0]["details"]["Stats"] == fg_stats
+    assert (fg_entries[0]["details"].get("ForceGreats") or {}).get("config") == {"NonFever1": 1}
+    assert fg_entries[0]["details"]["PrimaryColor"] == "Rush"
+    assert fg_entries[0]["details"]["SecondaryColor"] == "Flow"
+    assert fg_entries[0]["details"]["Difficulty"] == "Hard"

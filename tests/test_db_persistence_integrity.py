@@ -412,6 +412,149 @@ def test_team_buff_fg_loadouts_details_syncs_force_gems_when_available(db_path, 
         conn.close()
 
 
+def test_base_row_conflict_updates_use_base_score_not_fg_score(db_path, monkeypatch):
+    song = "Base Row Conflict Uses Score Not FG"
+
+    # Force the two different loadouts into the same DB row to exercise ON CONFLICT update rules.
+    monkeypatch.setattr("gear_optimizer.data.database._loadout_hash_from_names", lambda _g, _m: "CONST_HASH")
+
+    save_loadouts_batch(
+        song,
+        [
+            {
+                "score": 200,
+                "fg_score": 0,
+                "gear": ["G_high"],
+                "minis": ["M_high"],
+                "details": {"tag": "high_base"},
+                "force": None,
+            },
+            {
+                "score": 100,
+                "fg_score": 300,
+                "gear": ["G_low"],
+                "minis": ["M_low"],
+                "details": {"tag": "low_base_high_fg"},
+                "force": {"score": 300, "ForceGreats": {"config": {"NonFever1": 1}}},
+            },
+        ],
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT score, fg_score, gear_json, details_json, force_details_json "
+            "FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5' AND loadout_hash='CONST_HASH'",
+            (song,),
+        ).fetchone()
+        assert row is not None
+        assert int(row["score"]) == 200
+        assert int(row["fg_score"]) == 300
+        assert json.loads(row["gear_json"]) == ["G_high"]
+        assert json.loads(row["details_json"]).get("tag") == "high_base"
+        assert json.loads(row["force_details_json"]).get("score") == 300
+    finally:
+        conn.close()
+
+
+def test_base_row_force_payload_tracks_best_fg_not_best_base(db_path, monkeypatch):
+    song = "Base Row Force Tracks Best FG"
+
+    monkeypatch.setattr("gear_optimizer.data.database._loadout_hash_from_names", lambda _g, _m: "CONST_HASH")
+
+    save_loadouts_batch(
+        song,
+        [
+            {
+                "score": 100,
+                "fg_score": 300,
+                "gear": ["G_low_base_best_fg"],
+                "minis": ["M1"],
+                "details": {"tag": "base_low"},
+                "force": {"score": 300, "ForceGreats": {"config": {"NonFever1": 1}}},
+            },
+            {
+                "score": 200,
+                "fg_score": 250,
+                "gear": ["G_high_base_worse_fg"],
+                "minis": ["M2"],
+                "details": {"tag": "base_high"},
+                "force": {"score": 250, "ForceGreats": {"config": {"NonFever1": 2}}},
+            },
+        ],
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT score, fg_score, force_details_json "
+            "FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5' AND loadout_hash='CONST_HASH'",
+            (song,),
+        ).fetchone()
+        assert row is not None
+        assert int(row["score"]) == 200
+        assert int(row["fg_score"]) == 300
+        force = json.loads(row["force_details_json"])
+        assert int(force.get("score", 0)) == 300
+        assert (force.get("ForceGreats") or {}).get("config") == {"NonFever1": 1}
+    finally:
+        conn.close()
+
+
+def test_fg_table_invariant_cleanup_removes_equal_rows(db_path):
+    song = "FG Invariant Equal Cleanup"
+
+    save_loadouts_batch(
+        song,
+        [
+            {
+                "score": 100,
+                "fg_score": 200,
+                "gear": ["G1"],
+                "minis": ["M1"],
+                "details": {"tag": "valid_fg"},
+                "force": {"score": 200, "ForceGreats": {"config": {"NonFever1": 1}}},
+            }
+        ],
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        conn.execute(
+            "UPDATE team_buff_fg_loadouts SET fg_score = score WHERE song_name=? AND team_buff='T5'",
+            (song,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Trigger invariant cleanup pass for this song.
+    save_loadouts_batch(
+        song,
+        [
+            {
+                "score": 50,
+                "fg_score": 0,
+                "gear": ["G2"],
+                "minis": ["M2"],
+                "details": {"tag": "base_only"},
+                "force": None,
+            }
+        ],
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        invalid = conn.execute(
+            "SELECT COUNT(*) FROM team_buff_fg_loadouts "
+            "WHERE song_name=? AND team_buff='T5' AND fg_score <= score",
+            (song,),
+        ).fetchone()[0]
+        assert invalid == 0
+    finally:
+        conn.close()
+
+
 def test_concurrent_save_loadouts_batch_no_corruption(db_path):
     song = "Concurrent Save Song"
 
