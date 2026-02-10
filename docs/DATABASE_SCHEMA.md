@@ -4,6 +4,7 @@
 
 The Gear Optimizer uses a SQLite database (`evolution.db`) to store song metadata and loadout configurations.
 As of **February 2026**, the database uses **TeamBuff-tiered leaderboards** to separate Base Scores (regular gameplay) from Force Greats Scores (simulation), per tier.
+It also supports **TeamColor variants** for frontend song search (`PRIMARY`, `SECONDARY`, `NONE`) across `T1/T5/T10/T15`.
 
 ## Schema Definitions
 
@@ -94,11 +95,26 @@ Unifies FG rows across:
 Unifies base rows across:
 - `team_buff_loadouts`
 
+### `loadouts_color_unified` (schema v17+)
+Unifies color-aware base rows and exposes:
+- `team_buff`: canonical tier (`T1`/`T5`/`T10`/`T15`)
+- `color_buff`: `PRIMARY` | `SECONDARY` | `NONE`
+
+`PRIMARY` rows come from canonical TeamBuff rows.
+`SECONDARY`/`NONE` rows come from synthetic persisted keys (`<TEAM_BUFF>__SECONDARY`, `<TEAM_BUFF>__NONE`).
+
+### `fg_loadouts_color_unified` (schema v17+)
+Color-aware FG unified surface with the same `team_buff` + `color_buff` semantics.
+
 ### Frontend helpers (schema v15+)
 - `frontend_best_base_loadouts`: best base row per `(song_name, team_buff)` (ranked by `score DESC`, then `fg_score`, then `timestamp`).
 - `frontend_best_fg_loadouts`: best FG row per `(song_name, team_buff)` (ranked by `fg_score DESC`, then `score`, then `timestamp`).
 - `frontend_base_top51_by_song_tier`: top 51 base rows per `(song_name, team_buff)` with derived `song_title`/`difficulty`.
 - `frontend_fg_top51_by_song_tier`: top 51 FG rows per `(song_name, team_buff)` with derived `song_title`/`difficulty`.
+
+### Frontend color helpers (schema v17+)
+- `frontend_base_top51_by_song_tier_color`: top 51 base rows per `(song_name, team_buff, color_buff)`.
+- `frontend_fg_top51_by_song_tier_color`: top 51 FG rows per `(song_name, team_buff, color_buff)`.
 
 ---
 

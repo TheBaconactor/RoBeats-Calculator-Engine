@@ -255,3 +255,71 @@ def test_team_buff_tiers_handle_stats_missing_base_team_buff_without_negative_pp
         out = batches[tier][0]
         pp = out["details"]["Stats"]["Perfect Points"]
         assert pp >= 0
+
+
+def test_team_buff_tiers_support_target_team_color_overrides():
+    from gear_optimizer.core.constants import TOTAL_ROWS
+    from gear_optimizer.helpers.song_helpers.team_buff_tiers import build_team_buff_tier_db_batches
+
+    calc_song = _mock_song(name="pytest_team_color_modes", n_notes=12)
+    ref_arrays = _ref_arrays(TOTAL_ROWS + 1)
+    cfg_dict = {"TeamContributionBuffConstant": {"TeamBuff": "T5", "TeamColor": "Rush"}}
+
+    # Baseline row already includes T5 + Primary(Rush) effect.
+    stats = {
+        "Perfect Points": 25,
+        "Combo Multiplier": 0,
+        "Fever Multiplier": 0,
+        "Fever Fill Rate": 0,
+        "Fever Time": 0,
+        "Rush": 130,  # includes +30 from T5 primary buff
+        "Flow": 10,
+        "Beat": 0,
+        "Vibe": 0,
+        "Chill": 0,
+    }
+    entry = {
+        "score": 0,
+        "fg_score": 0,
+        "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+        "minis": ["M1", "M2", "M3"],
+        "details": {"Stats": stats},
+        "force": None,
+    }
+
+    primary_batches = build_team_buff_tier_db_batches(
+        entries=[entry],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        tiers=("T5",),
+    )
+    secondary_batches = build_team_buff_tier_db_batches(
+        entries=[entry],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        tiers=("T5",),
+        target_team_color_override="Flow",
+    )
+    none_batches = build_team_buff_tier_db_batches(
+        entries=[entry],
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        cfg_dict=cfg_dict,
+        tiers=("T5",),
+        target_team_color_override="",
+    )
+
+    p = primary_batches["T5"][0]
+    s = secondary_batches["T5"][0]
+    n = none_batches["T5"][0]
+
+    assert p["score"] > s["score"] > n["score"]
+
+    s_stats = s["details"]["Stats"]
+    n_stats = n["details"]["Stats"]
+    assert s_stats["Rush"] == 100
+    assert s_stats["Flow"] == 40
+    assert n_stats["Rush"] == 100
+    assert n_stats["Flow"] == 10

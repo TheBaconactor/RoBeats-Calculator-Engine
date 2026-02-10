@@ -176,6 +176,33 @@ def _resolve_base_team_buff(cfg_dict: dict) -> str:
     return base or "T5"
 
 
+def _resolve_team_colors_for_tiering(
+    cfg_dict: dict,
+    calc_song: dict,
+    *,
+    base_team_color_override: object = None,
+    target_team_color_override: object = None,
+) -> tuple[str, str]:
+    """
+    Resolve source/target TeamColor for tier delta computation.
+
+    - source/base color: color used by persisted baseline rows.
+    - target color: color to evaluate output tiers against.
+    """
+    resolved = _resolve_team_color(cfg_dict, calc_song)
+    if base_team_color_override is None:
+        base_team_color = resolved
+    else:
+        base_team_color = _norm_text(base_team_color_override)
+
+    if target_team_color_override is None:
+        target_team_color = base_team_color
+    else:
+        target_team_color = _norm_text(target_team_color_override)
+
+    return str(base_team_color), str(target_team_color)
+
+
 def _team_buff_effect(team_buff: str, team_color: str) -> dict[str, int]:
     """
     Return the raw stat deltas applied by TeamBuff for the given color.
@@ -318,9 +345,7 @@ def _build_base_hitsim_ctx(calc_song: dict) -> dict | None:
     }
 
 
-def _base_hitsim_delta_for_stats(
-    *, stats: dict, ref_arrays: dict, ctx: dict, ff_cache: dict[int, float]
-) -> int | None:
+def _base_hitsim_delta_for_stats(*, stats: dict, ref_arrays: dict, ctx: dict, ff_cache: dict[int, float]) -> int | None:
     if not isinstance(stats, dict) or not stats:
         return None
     try:
@@ -359,9 +384,15 @@ def _base_hitsim_delta_for_stats(
     return int(sim_ms[end_normal_idx]) - int(chart_ms[end_normal_idx])
 
 
-def _team_buff_delta_map(*, base_team_buff: str, target_team_buff: str, team_color: str) -> dict[str, int]:
-    base = _team_buff_effect(base_team_buff, team_color)
-    target = _team_buff_effect(target_team_buff, team_color)
+def _team_buff_delta_map(
+    *,
+    base_team_buff: str,
+    target_team_buff: str,
+    base_team_color: str,
+    target_team_color: str,
+) -> dict[str, int]:
+    base = _team_buff_effect(base_team_buff, base_team_color)
+    target = _team_buff_effect(target_team_buff, target_team_color)
     keys = set(base.keys()) | set(target.keys())
     out: dict[str, int] = {}
     for k in keys:
@@ -671,6 +702,8 @@ def compute_team_buff_tier_leaderboards(
     cfg_dict: dict,
     limit: int = 51,
     tiers: tuple[str, ...] = ("NONE", "T1", "T5", "T10", "T15"),
+    base_team_color_override: object = None,
+    target_team_color_override: object = None,
 ) -> dict:
     """
     Re-score persisted entries under TeamBuff tiers and return per-tier leaderboards.
@@ -688,10 +721,15 @@ def compute_team_buff_tier_leaderboards(
     primary_color = _norm_text(meta0.get("Primary Color", ""))
     secondary_color = _norm_text(meta0.get("Secondary Color", ""))
 
-    team_color = _resolve_team_color(cfg_dict, calc_song)
+    base_team_color, target_team_color = _resolve_team_colors_for_tiering(
+        cfg_dict,
+        calc_song,
+        base_team_color_override=base_team_color_override,
+        target_team_color_override=target_team_color_override,
+    )
     base_team_buff = _resolve_base_team_buff(cfg_dict)
 
-    base_effect = _team_buff_effect(base_team_buff, team_color)
+    base_effect = _team_buff_effect(base_team_buff, base_team_color)
     tier_list = tuple(t for t in tiers if _norm_team_buff(t))
 
     # Per-entry timeline cache (tier changes do not affect FT/FF, so timeline is stable per entry).
@@ -796,7 +834,7 @@ def compute_team_buff_tier_leaderboards(
     # Compute tiered scores for all retained entries.
     tiers_out: dict[str, dict] = {}
     for tier in tier_list:
-        target_effect = _team_buff_effect(tier, team_color)
+        target_effect = _team_buff_effect(tier, target_team_color)
 
         delta_pp = int(target_effect.get("Perfect Points", 0) - base_effect.get("Perfect Points", 0))
         delta_primary = (
@@ -868,7 +906,9 @@ def compute_team_buff_tier_leaderboards(
     return {
         "meta": {
             "candidate_count": int(len(per_entry)),
-            "team_color": team_color,
+            "team_color": target_team_color,
+            "base_team_color": base_team_color,
+            "target_team_color": target_team_color,
             "base_team_buff": base_team_buff,
             "primary_color": primary_color,
             "secondary_color": secondary_color,
@@ -885,6 +925,8 @@ def build_team_buff_tier_db_batches(
     cfg_dict: dict,
     limit: int = 51,
     tiers: tuple[str, ...] = ("NONE", "T1", "T5", "T10", "T15"),
+    base_team_color_override: object = None,
+    target_team_color_override: object = None,
 ) -> dict[str, list[dict]]:
     """
     Return DB-ready entry batches per tier.
@@ -902,11 +944,18 @@ def build_team_buff_tier_db_batches(
         cfg_dict=cfg_dict,
         limit=limit,
         tiers=tiers,
+        base_team_color_override=base_team_color_override,
+        target_team_color_override=target_team_color_override,
     )
 
-    team_color = _resolve_team_color(cfg_dict, calc_song)
+    base_team_color, target_team_color = _resolve_team_colors_for_tiering(
+        cfg_dict,
+        calc_song,
+        base_team_color_override=base_team_color_override,
+        target_team_color_override=target_team_color_override,
+    )
     base_team_buff = _resolve_base_team_buff(cfg_dict)
-    base_effect = _team_buff_effect(base_team_buff, team_color)
+    base_effect = _team_buff_effect(base_team_buff, base_team_color)
     base_hitsim_ctx = _build_base_hitsim_ctx(calc_song)
     base_ff_cache: dict[int, float] = {}
     fg_delta_cache: dict[tuple[int, int, tuple[int, ...]], int] = {}
@@ -927,7 +976,10 @@ def build_team_buff_tier_db_batches(
     batches: dict[str, list[dict]] = {}
     for tier, tier_payload in (payload.get("tiers") or {}).items():
         delta_map = _team_buff_delta_map(
-            base_team_buff=base_team_buff, target_team_buff=str(tier), team_color=team_color
+            base_team_buff=base_team_buff,
+            target_team_buff=str(tier),
+            base_team_color=base_team_color,
+            target_team_color=target_team_color,
         )
         base_top = tier_payload.get("base_top51") or []
         fg_top = tier_payload.get("fg_top51") or []

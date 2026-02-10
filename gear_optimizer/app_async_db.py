@@ -19,6 +19,13 @@ _TEAM_BUFF_REF_ARRAYS_CACHE: dict | None = None
 _TEAM_BUFF_BASE_CALC_SONG_LOCK = threading.Lock()
 _TEAM_BUFF_BASE_CALC_SONG_CACHE: "OrderedDict[str, dict]" = OrderedDict()
 _TEAM_BUFF_BASE_CALC_SONG_CACHE_DEFAULT = 16
+_TEAM_BUFF_COLOR_TIERS = ("T1", "T5", "T10", "T15")
+_TEAM_COLOR_VARIANT_SECONDARY = "SECONDARY"
+_TEAM_COLOR_VARIANT_NONE = "NONE"
+
+
+def _compose_team_buff_color_key(team_buff: str, color_variant: str) -> str:
+    return f"{str(team_buff or '').strip().upper()}__{str(color_variant or '').strip().upper()}"
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
@@ -424,6 +431,37 @@ class AsyncDbSaver:
                                 if not tier_entries:
                                     continue
                                 save_team_buff_loadouts_batch(db_key, str(tier), tier_entries)
+
+                            color_tiers_enabled = str(
+                                os.environ.get("POST_TEAM_BUFF_COLOR_TIERS", "1") or ""
+                            ).strip().lower() in (TRUTHY_ENV_VALUES | {""})
+                            if color_tiers_enabled:
+                                meta0 = calc_song.get("metadata", {}) or {}
+                                primary_color = str(meta0.get("Primary Color", "") or "").strip()
+                                secondary_color = str(meta0.get("Secondary Color", "") or "").strip()
+
+                                color_variants: list[tuple[str, str]] = [(_TEAM_COLOR_VARIANT_NONE, "")]
+                                if secondary_color and secondary_color.lower() != primary_color.lower():
+                                    color_variants.append((_TEAM_COLOR_VARIANT_SECONDARY, secondary_color))
+
+                                for color_variant, target_color in color_variants:
+                                    color_batches = build_team_buff_tier_db_batches(
+                                        entries=entries,
+                                        calc_song=calc_song,
+                                        ref_arrays=ref_arrays,
+                                        cfg_dict=cfg_dict,
+                                        limit=int(_team_buff_tier_limit()),
+                                        tiers=_TEAM_BUFF_COLOR_TIERS,
+                                        target_team_color_override=target_color,
+                                    )
+                                    for tier, tier_entries in (color_batches or {}).items():
+                                        if not tier_entries:
+                                            continue
+                                        save_team_buff_loadouts_batch(
+                                            db_key,
+                                            _compose_team_buff_color_key(str(tier), color_variant),
+                                            tier_entries,
+                                        )
                         except Exception:
                             pass
                 except Exception as exc:

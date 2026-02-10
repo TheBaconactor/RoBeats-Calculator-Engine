@@ -14,7 +14,7 @@ Migration = Callable[[sqlite3.Connection], None]
 # NOTE: `evolution.db` in the wild may already have `PRAGMA user_version=8` even though
 # the physical schema matches v6 (v6 is a data-level migration only). Keep v7/v8 as
 # no-ops so older DBs can advance and newer DBs won't be rejected.
-LATEST_SCHEMA_VERSION = 16
+LATEST_SCHEMA_VERSION = 17
 
 
 def _migration_1_init_schema(conn: sqlite3.Connection) -> None:
@@ -536,6 +536,385 @@ def _migration_16_drop_deprecated_tables(conn: sqlite3.Connection) -> None:
     _migration_15_add_loadouts_unified_and_frontend_best_views(conn)
 
 
+def _migration_17_add_team_color_frontend_views(conn: sqlite3.Connection) -> None:
+    """
+    Keep canonical TeamBuff views stable and add color-aware frontend surfaces.
+
+    Canonical views continue to expose only:
+      - NONE, T1, T5, T10, T15
+
+    Color-aware views expose:
+      - PRIMARY  (canonical rows)
+      - SECONDARY / NONE (rows persisted with synthetic team_buff keys like `T5__SECONDARY`)
+    """
+
+    # Canonical unified views (exclude synthetic TeamColor keys).
+    conn.execute("DROP VIEW IF EXISTS fg_loadouts_unified;")
+    conn.execute(
+        """
+        CREATE VIEW fg_loadouts_unified AS
+        SELECT
+            song_name,
+            UPPER(team_buff) AS team_buff,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            'team_buff_fg_loadouts' AS source_table
+        FROM team_buff_fg_loadouts
+        WHERE UPPER(team_buff) IN ('NONE', 'T1', 'T5', 'T10', 'T15');
+        """
+    )
+
+    conn.execute("DROP VIEW IF EXISTS loadouts_unified;")
+    conn.execute(
+        """
+        CREATE VIEW loadouts_unified AS
+        SELECT
+            song_name,
+            UPPER(team_buff) AS team_buff,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            'team_buff_loadouts' AS source_table
+        FROM team_buff_loadouts
+        WHERE UPPER(team_buff) IN ('NONE', 'T1', 'T5', 'T10', 'T15');
+        """
+    )
+
+    conn.execute("DROP VIEW IF EXISTS frontend_best_base_loadouts;")
+    conn.execute(
+        """
+        CREATE VIEW frontend_best_base_loadouts AS
+        SELECT
+            song_name,
+            team_buff,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            source_table
+        FROM (
+            SELECT
+                lu.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY lu.song_name, lu.team_buff
+                    ORDER BY lu.score DESC, lu.fg_score DESC, lu.timestamp DESC
+                ) AS rn
+            FROM loadouts_unified lu
+        )
+        WHERE rn = 1;
+        """
+    )
+
+    conn.execute("DROP VIEW IF EXISTS frontend_best_fg_loadouts;")
+    conn.execute(
+        """
+        CREATE VIEW frontend_best_fg_loadouts AS
+        SELECT
+            song_name,
+            UPPER(team_buff) AS team_buff,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            source_table
+        FROM (
+            SELECT
+                fu.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY fu.song_name, UPPER(fu.team_buff)
+                    ORDER BY fu.fg_score DESC, fu.score DESC, fu.timestamp DESC
+                ) AS rn
+            FROM fg_loadouts_unified fu
+        )
+        WHERE rn = 1;
+        """
+    )
+
+    conn.execute("DROP VIEW IF EXISTS frontend_base_top51_by_song_tier;")
+    conn.execute(
+        """
+        CREATE VIEW frontend_base_top51_by_song_tier AS
+        WITH ranked AS (
+            SELECT
+                lu.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY lu.song_name, lu.team_buff
+                    ORDER BY lu.score DESC, lu.fg_score DESC, lu.timestamp DESC
+                ) AS rank
+            FROM loadouts_unified lu
+        )
+        SELECT
+            song_name,
+            CASE
+                WHEN instr(song_name, ' (Easy) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Easy) by ') - 1))
+                WHEN instr(song_name, ' (Hard) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Hard) by ') - 1))
+                WHEN instr(song_name, ' (Normal) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Normal) by ') - 1))
+                WHEN instr(song_name, ' by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' by ') - 1))
+                ELSE song_name
+            END AS song_title,
+            CASE
+                WHEN instr(song_name, ' (Easy) by ') > 0 THEN 'Easy'
+                WHEN instr(song_name, ' (Hard) by ') > 0 THEN 'Hard'
+                WHEN instr(song_name, ' (Normal) by ') > 0 THEN 'Normal'
+                ELSE 'Normal'
+            END AS difficulty,
+            team_buff,
+            rank,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            source_table
+        FROM ranked
+        WHERE rank <= 51;
+        """
+    )
+
+    conn.execute("DROP VIEW IF EXISTS frontend_fg_top51_by_song_tier;")
+    conn.execute(
+        """
+        CREATE VIEW frontend_fg_top51_by_song_tier AS
+        WITH ranked AS (
+            SELECT
+                fu.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY fu.song_name, UPPER(fu.team_buff)
+                    ORDER BY fu.fg_score DESC, fu.score DESC, fu.timestamp DESC
+                ) AS rank
+            FROM fg_loadouts_unified fu
+            WHERE fg_score > 0
+        )
+        SELECT
+            song_name,
+            CASE
+                WHEN instr(song_name, ' (Easy) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Easy) by ') - 1))
+                WHEN instr(song_name, ' (Hard) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Hard) by ') - 1))
+                WHEN instr(song_name, ' (Normal) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Normal) by ') - 1))
+                WHEN instr(song_name, ' by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' by ') - 1))
+                ELSE song_name
+            END AS song_title,
+            CASE
+                WHEN instr(song_name, ' (Easy) by ') > 0 THEN 'Easy'
+                WHEN instr(song_name, ' (Hard) by ') > 0 THEN 'Hard'
+                WHEN instr(song_name, ' (Normal) by ') > 0 THEN 'Normal'
+                ELSE 'Normal'
+            END AS difficulty,
+            UPPER(team_buff) AS team_buff,
+            rank,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            source_table
+        FROM ranked
+        WHERE rank <= 51;
+        """
+    )
+
+    # Color-aware unified views (T1/T5/T10/T15 x PRIMARY/SECONDARY/NONE).
+    conn.execute("DROP VIEW IF EXISTS loadouts_color_unified;")
+    conn.execute(
+        """
+        CREATE VIEW loadouts_color_unified AS
+        SELECT
+            song_name,
+            UPPER(team_buff) AS team_buff,
+            'PRIMARY' AS color_buff,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            'team_buff_loadouts' AS source_table
+        FROM team_buff_loadouts
+        WHERE UPPER(team_buff) IN ('T1', 'T5', 'T10', 'T15')
+
+        UNION ALL
+
+        SELECT
+            song_name,
+            UPPER(substr(team_buff, 1, instr(team_buff, '__') - 1)) AS team_buff,
+            UPPER(substr(team_buff, instr(team_buff, '__') + 2)) AS color_buff,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            'team_buff_loadouts' AS source_table
+        FROM team_buff_loadouts
+        WHERE instr(team_buff, '__') > 0
+          AND UPPER(substr(team_buff, 1, instr(team_buff, '__') - 1)) IN ('T1', 'T5', 'T10', 'T15')
+          AND UPPER(substr(team_buff, instr(team_buff, '__') + 2)) IN ('SECONDARY', 'NONE');
+        """
+    )
+
+    conn.execute("DROP VIEW IF EXISTS fg_loadouts_color_unified;")
+    conn.execute(
+        """
+        CREATE VIEW fg_loadouts_color_unified AS
+        SELECT
+            song_name,
+            UPPER(team_buff) AS team_buff,
+            'PRIMARY' AS color_buff,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            'team_buff_fg_loadouts' AS source_table
+        FROM team_buff_fg_loadouts
+        WHERE UPPER(team_buff) IN ('T1', 'T5', 'T10', 'T15')
+
+        UNION ALL
+
+        SELECT
+            song_name,
+            UPPER(substr(team_buff, 1, instr(team_buff, '__') - 1)) AS team_buff,
+            UPPER(substr(team_buff, instr(team_buff, '__') + 2)) AS color_buff,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            'team_buff_fg_loadouts' AS source_table
+        FROM team_buff_fg_loadouts
+        WHERE instr(team_buff, '__') > 0
+          AND UPPER(substr(team_buff, 1, instr(team_buff, '__') - 1)) IN ('T1', 'T5', 'T10', 'T15')
+          AND UPPER(substr(team_buff, instr(team_buff, '__') + 2)) IN ('SECONDARY', 'NONE');
+        """
+    )
+
+    conn.execute("DROP VIEW IF EXISTS frontend_base_top51_by_song_tier_color;")
+    conn.execute(
+        """
+        CREATE VIEW frontend_base_top51_by_song_tier_color AS
+        WITH ranked AS (
+            SELECT
+                lu.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY lu.song_name, lu.team_buff, lu.color_buff
+                    ORDER BY lu.score DESC, lu.fg_score DESC, lu.timestamp DESC
+                ) AS rank
+            FROM loadouts_color_unified lu
+        )
+        SELECT
+            song_name,
+            CASE
+                WHEN instr(song_name, ' (Easy) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Easy) by ') - 1))
+                WHEN instr(song_name, ' (Hard) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Hard) by ') - 1))
+                WHEN instr(song_name, ' (Normal) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Normal) by ') - 1))
+                WHEN instr(song_name, ' by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' by ') - 1))
+                ELSE song_name
+            END AS song_title,
+            CASE
+                WHEN instr(song_name, ' (Easy) by ') > 0 THEN 'Easy'
+                WHEN instr(song_name, ' (Hard) by ') > 0 THEN 'Hard'
+                WHEN instr(song_name, ' (Normal) by ') > 0 THEN 'Normal'
+                ELSE 'Normal'
+            END AS difficulty,
+            team_buff,
+            color_buff,
+            rank,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            source_table
+        FROM ranked
+        WHERE rank <= 51;
+        """
+    )
+
+    conn.execute("DROP VIEW IF EXISTS frontend_fg_top51_by_song_tier_color;")
+    conn.execute(
+        """
+        CREATE VIEW frontend_fg_top51_by_song_tier_color AS
+        WITH ranked AS (
+            SELECT
+                fu.*,
+                ROW_NUMBER() OVER (
+                    PARTITION BY fu.song_name, fu.team_buff, fu.color_buff
+                    ORDER BY fu.fg_score DESC, fu.score DESC, fu.timestamp DESC
+                ) AS rank
+            FROM fg_loadouts_color_unified fu
+            WHERE fu.fg_score > 0
+        )
+        SELECT
+            song_name,
+            CASE
+                WHEN instr(song_name, ' (Easy) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Easy) by ') - 1))
+                WHEN instr(song_name, ' (Hard) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Hard) by ') - 1))
+                WHEN instr(song_name, ' (Normal) by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' (Normal) by ') - 1))
+                WHEN instr(song_name, ' by ') > 0 THEN trim(substr(song_name, 1, instr(song_name, ' by ') - 1))
+                ELSE song_name
+            END AS song_title,
+            CASE
+                WHEN instr(song_name, ' (Easy) by ') > 0 THEN 'Easy'
+                WHEN instr(song_name, ' (Hard) by ') > 0 THEN 'Hard'
+                WHEN instr(song_name, ' (Normal) by ') > 0 THEN 'Normal'
+                ELSE 'Normal'
+            END AS difficulty,
+            team_buff,
+            color_buff,
+            rank,
+            loadout_hash,
+            score,
+            fg_score,
+            gear_json,
+            minis_json,
+            details_json,
+            force_details_json,
+            timestamp,
+            source_table
+        FROM ranked
+        WHERE rank <= 51;
+        """
+    )
+
+
 _MIGRATIONS: Dict[int, Migration] = {
     1: _migration_1_init_schema,
     2: _migration_2_add_pending_fg_jobs,
@@ -553,6 +932,7 @@ _MIGRATIONS: Dict[int, Migration] = {
     14: _migration_14_add_frontend_fg_top51_view,
     15: _migration_15_add_loadouts_unified_and_frontend_best_views,
     16: _migration_16_drop_deprecated_tables,
+    17: _migration_17_add_team_color_frontend_views,
 }
 
 
