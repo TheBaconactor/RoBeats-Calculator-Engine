@@ -5,8 +5,8 @@ This pipeline is designed to keep the GPU continuously busy in GPU_Native_GA mod
 - Preparing the next songs' CPU-only data while the GPU runs the current song.
 - Executing GPU-native GA on the Taichi/Vulkan owner thread (GpuExecutor) via an in-process
   request queue (no per-song process overhead, minimal transfers).
-- Scheduling ForceGreatsFinder work via backlog-based batching, with bounded GA/FG overlap
-  and CPU grouping/prep performed off the GPU thread and GPU kernels submitted via the executor.
+- Scheduling ForceGreatsFinder work via backlog or continuous credit-based interleaving,
+  with CPU grouping/prep performed off the GPU thread and GPU kernels submitted via the executor.
 """
 
 from __future__ import annotations
@@ -334,6 +334,323 @@ def _lru_put(cache: OrderedDict, key: tuple, value: Any, *, maxsize: int) -> Non
             cache.popitem(last=False)
     except Exception:
         pass
+
+
+def _read_fg_backlog_threshold(cfg0: Any) -> int:
+    """
+    Read effective FG backlog threshold with legacy compatibility.
+
+    Preferred key: `IterationEngine.FG_BacklogThreshold`
+    Legacy alias: `IterationEngine.FG_InterleaveEvery`
+    Env overrides: `INFLIGHT_FG_BACKLOG_THRESHOLD`, `FG_BACKLOG_THRESHOLD`
+    """
+    threshold = 12
+    try:
+        if cfg0 is not None:
+            if cfg0.has_option("IterationEngine", "FG_BacklogThreshold"):
+                threshold = safe_int(
+                    cfg0.get("IterationEngine", "FG_BacklogThreshold", fallback=12),
+                    12,
+                )
+            elif cfg0.has_option("IterationEngine", "FG_InterleaveEvery"):
+                threshold = safe_int(
+                    cfg0.get("IterationEngine", "FG_InterleaveEvery", fallback=12),
+                    12,
+                )
+    except Exception:
+        threshold = 12
+
+    raw = os.environ.get("INFLIGHT_FG_BACKLOG_THRESHOLD")
+    if raw is None or str(raw).strip() == "":
+        raw = os.environ.get("FG_BACKLOG_THRESHOLD")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            threshold = int(raw)
+        except Exception:
+            pass
+    return max(1, int(threshold))
+
+
+def _loadout_entries_have_db_source(loadout_entries: dict | None) -> bool:
+    if not isinstance(loadout_entries, dict) or not loadout_entries:
+        return False
+    for entry in loadout_entries.values():
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("_source", "") or "").strip().lower() == "db":
+            return True
+    return False
+
+
+def _read_fg_scheduler_mode(cfg0: Any) -> str:
+    """
+    FG scheduler mode for in-flight native pipeline.
+
+    Supported values:
+    - `continuous` (default): GA and FG interleave continuously via GA-credit fairness.
+    - `backlog`: legacy backlog/drain behavior.
+    """
+    mode = "continuous"
+    try:
+        if cfg0 is not None and cfg0.has_option("IterationEngine", "InFlight_FGScheduler"):
+            raw = str(cfg0.get("IterationEngine", "InFlight_FGScheduler", fallback=mode) or "").strip().lower()
+            if raw:
+                mode = raw
+    except Exception:
+        mode = "continuous"
+
+    raw = os.environ.get("INFLIGHT_FG_SCHEDULER")
+    if raw is not None and str(raw).strip() != "":
+        mode = str(raw).strip().lower()
+
+    if mode in {"backlog", "backlog_only", "drain"}:
+        return "backlog"
+    return "continuous"
+
+
+def _read_fg_ga_credit_budget(cfg0: Any, *, default_budget: int) -> tuple[int, bool]:
+    """
+    GA-credit budget used by continuous FG scheduler.
+
+    Returns: (budget, explicit)
+    - budget: effective positive integer
+    - explicit: True when user explicitly set the budget (config/env), False when defaulted
+    """
+    budget = max(1, int(default_budget))
+    explicit = False
+
+    try:
+        if cfg0 is not None:
+            if cfg0.has_option("IterationEngine", "InFlight_FGGACreditBudget"):
+                budget = safe_int(
+                    cfg0.get("IterationEngine", "InFlight_FGGACreditBudget", fallback=str(budget)),
+                    budget,
+                )
+                explicit = True
+            elif cfg0.has_option("IterationEngine", "InFlight_GACreditBudget"):
+                budget = safe_int(
+                    cfg0.get("IterationEngine", "InFlight_GACreditBudget", fallback=str(budget)),
+                    budget,
+                )
+                explicit = True
+    except Exception:
+        pass
+
+    raw = os.environ.get("INFLIGHT_FG_GA_CREDIT_BUDGET")
+    if raw is None or str(raw).strip() == "":
+        raw = os.environ.get("INFLIGHT_GA_CREDIT_BUDGET")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            budget = int(raw)
+            explicit = True
+        except Exception:
+            pass
+
+    return max(1, int(budget)), bool(explicit)
+
+
+def _read_continuous_ga_dispatch_burst(cfg0: Any, *, default_burst: int = 2) -> int:
+    """
+    Max GA submissions per scheduler cycle when continuous GA/FG interleaving is active.
+
+    Lower values reduce GA burstiness and give FG more frequent chances to submit,
+    which smooths GPU utilization without changing GA/FG scoring behavior.
+    """
+    burst = max(1, int(default_burst))
+    try:
+        if cfg0 is not None and cfg0.has_option("IterationEngine", "InFlight_ContinuousGABurst"):
+            burst = safe_int(
+                cfg0.get("IterationEngine", "InFlight_ContinuousGABurst", fallback=str(burst)),
+                burst,
+            )
+    except Exception:
+        pass
+
+    raw = os.environ.get("INFLIGHT_CONTINUOUS_GA_BURST")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            burst = int(raw)
+        except Exception:
+            pass
+
+    return max(1, min(int(burst), 32))
+
+
+def _read_continuous_fg_adaptive_submit(cfg0: Any) -> tuple[bool, int]:
+    """
+    Adaptive FG submit policy for continuous mode.
+
+    Returns:
+    - enabled: whether adaptive FG submit burst sizing is enabled
+    - max_burst: upper bound for adaptive FG submit burst size
+    """
+    enabled = True
+    max_burst = 3
+
+    try:
+        if cfg0 is not None:
+            if cfg0.has_option("IterationEngine", "InFlight_FGAdaptiveSubmit"):
+                enabled = cfg0.getboolean("IterationEngine", "InFlight_FGAdaptiveSubmit", fallback=True)
+            if cfg0.has_option("IterationEngine", "InFlight_FGAdaptiveMaxBurst"):
+                max_burst = safe_int(
+                    cfg0.get("IterationEngine", "InFlight_FGAdaptiveMaxBurst", fallback=str(max_burst)),
+                    max_burst,
+                )
+    except Exception:
+        pass
+
+    raw = os.environ.get("INFLIGHT_FG_ADAPTIVE_SUBMIT")
+    if raw is not None and str(raw).strip() != "":
+        enabled = _truthy(raw)
+
+    raw = os.environ.get("INFLIGHT_FG_ADAPTIVE_MAX_BURST")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            max_burst = int(raw)
+        except Exception:
+            pass
+
+    return bool(enabled), max(1, min(int(max_burst), 16))
+
+
+def _read_fg_slot_reserve(
+    cfg0: Any,
+    *,
+    fg_enabled: bool,
+    inflight_limit: int,
+    song_slot_limit: int,
+) -> int:
+    """
+    Reserve a dedicated song-slot partition for FG work.
+
+    This prevents GA from consuming all song slots and creating slot-pressure oscillation
+    when FG submissions need to acquire slots.
+    """
+    if (not fg_enabled) or int(inflight_limit) <= 1 or int(song_slot_limit) <= 1:
+        return 0
+
+    reserve = 1
+    reserve_ratio = 0.20
+    absolute_explicit = False
+
+    try:
+        if cfg0 is not None:
+            if cfg0.has_option("IterationEngine", "InFlight_FGSlotReserve"):
+                reserve = safe_int(cfg0.get("IterationEngine", "InFlight_FGSlotReserve", fallback="1"), 1)
+                absolute_explicit = True
+            elif cfg0.has_option("IterationEngine", "InFlight_FGSlotReserveRatio"):
+                reserve_ratio = safe_float(
+                    cfg0.get("IterationEngine", "InFlight_FGSlotReserveRatio", fallback=str(reserve_ratio)),
+                    reserve_ratio,
+                )
+    except Exception:
+        pass
+
+    raw = os.environ.get("INFLIGHT_FG_SLOT_RESERVE")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            reserve = int(raw)
+            absolute_explicit = True
+        except Exception:
+            pass
+
+    raw = os.environ.get("INFLIGHT_FG_SLOT_RESERVE_RATIO")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            reserve_ratio = float(raw)
+        except Exception:
+            pass
+
+    reserve_cap = max(1, min(max(1, int(song_slot_limit) - 1), max(1, int(inflight_limit))))
+    if absolute_explicit:
+        if int(reserve) <= 0:
+            return 0
+        return max(1, min(int(reserve), int(reserve_cap)))
+
+    reserve_ratio = max(0.0, min(float(reserve_ratio), 0.90))
+    ratio_slots = int(round(float(song_slot_limit) * float(reserve_ratio)))
+    reserve = max(int(reserve), int(ratio_slots))
+    return max(1, min(int(reserve), int(reserve_cap)))
+
+
+def _continuous_fg_should_start(
+    *,
+    pending_fg_count: int,
+    ga_credit: int,
+    oldest_wait_s: float,
+    blocked_on_slot: bool,
+    no_ga_remaining: bool,
+    fg_drain_at_end: bool,
+    aging_trigger_s: float,
+    aging_hard_s: float,
+) -> bool:
+    if int(pending_fg_count) <= 0:
+        return False
+    if bool(no_ga_remaining):
+        return bool(fg_drain_at_end)
+    if bool(blocked_on_slot):
+        return True
+    if float(aging_hard_s) > 0.0 and float(oldest_wait_s) >= float(aging_hard_s):
+        return True
+    if float(aging_trigger_s) > 0.0 and float(oldest_wait_s) >= float(aging_trigger_s):
+        return True
+    return int(ga_credit) <= 0
+
+
+def _continuous_fg_submit_budget(
+    *,
+    pending_fg_count: int,
+    fg_inflight_count: int,
+    fg_workers: int,
+    fg_batch_max: int,
+    no_ga_remaining: bool,
+    fg_drain_at_end: bool,
+    blocked_on_slot: bool,
+    oldest_wait_s: float,
+    aging_trigger_s: float,
+    aging_hard_s: float,
+    ga_inflight_count: int,
+    ga_queue_limit: int,
+    adaptive_submit: bool,
+    adaptive_max_burst: int,
+) -> int:
+    capacity = max(0, min(int(fg_workers) - int(fg_inflight_count), int(fg_batch_max), int(pending_fg_count)))
+    if capacity <= 0:
+        return 0
+
+    if bool(no_ga_remaining):
+        return capacity if bool(fg_drain_at_end) else 0
+
+    budget = 1
+    max_burst = max(1, int(adaptive_max_burst))
+
+    if bool(blocked_on_slot):
+        budget = max(int(budget), min(int(capacity), int(max_burst)))
+
+    if float(aging_hard_s) > 0.0 and float(oldest_wait_s) >= float(aging_hard_s):
+        budget = max(int(budget), min(int(capacity), int(max_burst)))
+    elif float(aging_trigger_s) > 0.0 and float(oldest_wait_s) >= float(aging_trigger_s):
+        trigger_burst = 2 if bool(adaptive_submit) else 1
+        budget = max(int(budget), min(int(capacity), int(trigger_burst)))
+
+    if bool(adaptive_submit):
+        ga_util = 0.0
+        if int(ga_queue_limit) > 0:
+            try:
+                ga_util = float(ga_inflight_count) / float(ga_queue_limit)
+            except Exception:
+                ga_util = 0.0
+        ga_util = max(0.0, min(1.0, float(ga_util)))
+
+        backlog_total = max(0, int(pending_fg_count) + int(fg_inflight_count))
+        half_burst = max(2, int((int(max_burst) + 1) // 2))
+
+        if ga_util <= 0.50 and backlog_total >= int(half_burst):
+            budget = max(int(budget), min(int(capacity), int(half_burst)))
+        if ga_util <= 0.25 and backlog_total >= int(max(4, int(max_burst) * 2)):
+            budget = max(int(budget), min(int(capacity), int(max_burst)))
+
+    return max(0, min(int(capacity), int(budget)))
 
 
 class _PostSender:
@@ -962,24 +1279,7 @@ def run_native_inflight_song_pipeline(
     prep_buffer_mult = max(1, min(int(prep_buffer_mult), 16))
     prep_limit = max(1, int(inflight_limit) * int(prep_buffer_mult))
 
-    fg_backlog_threshold = 12
-    try:
-        if cfg0 is not None:
-            fg_backlog_threshold = safe_int(
-                cfg0.get("IterationEngine", "FG_BacklogThreshold", fallback=12),
-                12,
-            )
-    except Exception:
-        fg_backlog_threshold = 12
-    raw = os.environ.get("INFLIGHT_FG_BACKLOG_THRESHOLD")
-    if raw is None or str(raw).strip() == "":
-        raw = os.environ.get("FG_BACKLOG_THRESHOLD")
-    if raw is not None and str(raw).strip() != "":
-        try:
-            fg_backlog_threshold = int(raw)
-        except Exception:
-            pass
-    fg_backlog_threshold = max(1, int(fg_backlog_threshold))
+    fg_backlog_threshold = _read_fg_backlog_threshold(cfg0)
 
     # While FG backlog drain is active, allow a bounded amount of GA overlap so the executor
     # stays fed between FG submissions.
@@ -1042,14 +1342,10 @@ def run_native_inflight_song_pipeline(
 
     # ForceGreats scheduling strategy (in-flight pipeline).
     #
-    # BACKLOG-ONLY POLICY:
-    # - "continuous" FG scheduling is intentionally not supported because it contends with GA on a single
-    #   GPU executor and makes throughput harder to reason about.
-    #
-    # backlog: accumulate pending FG jobs; once the backlog reaches `FG_BacklogThreshold`, drain FG and
-    # throttle GA submissions to `InFlight_FG_GAOverlap` (0 preserves hard GA pause behavior).
-    fg_scheduler_norm = "backlog"
-    fg_batch_scheduler = True
+    # continuous (default): interleave GA/FG continuously via GA-credit fairness.
+    # backlog: legacy backlog/drain mode.
+    fg_scheduler_norm = _read_fg_scheduler_mode(cfg0)
+    fg_batch_scheduler = fg_scheduler_norm == "backlog"
 
     # `FG_DrainAtEnd` controls whether we drain pending FG jobs when GA work completes.
     #
@@ -1076,12 +1372,32 @@ def run_native_inflight_song_pipeline(
     if raw_env is not None and str(raw_env).strip() != "":
         fg_drain_at_end = _truthy(raw_env)
         fg_drain_src = f"env({raw_env})"
+
+    fg_ga_credit_budget_cfg, fg_ga_credit_explicit = _read_fg_ga_credit_budget(
+        cfg0,
+        default_budget=int(fg_backlog_threshold),
+    )
+    continuous_ga_dispatch_burst = _read_continuous_ga_dispatch_burst(cfg0, default_burst=2)
+    fg_adaptive_submit_enabled, fg_adaptive_submit_max_burst = _read_continuous_fg_adaptive_submit(cfg0)
+
     try:
-        msg = f"[InFlight][FG] scheduler={fg_scheduler_norm} drain_at_end={bool(fg_drain_at_end)} source={fg_drain_src}"
+        msg = (
+            f"[InFlight][FG] scheduler={fg_scheduler_norm} drain_at_end={bool(fg_drain_at_end)} "
+            f"source={fg_drain_src}"
+        )
         if fg_batch_scheduler:
             msg += (
                 f" (FG_BacklogThreshold={fg_backlog_threshold}, "
                 f"InFlight_FG_GAOverlap={int(fg_backlog_ga_overlap)}, "
+                f"InFlight_FGAgingTriggerMs={int(fg_aging_trigger_s * 1000.0)}, "
+                f"InFlight_FGAgingHardMs={int(fg_aging_hard_s * 1000.0)})"
+            )
+        else:
+            msg += (
+                f" (GA_CreditBudget={int(fg_ga_credit_budget_cfg)}, "
+                f"GA_DispatchBurst={int(continuous_ga_dispatch_burst)}, "
+                f"FG_AdaptiveSubmit={int(bool(fg_adaptive_submit_enabled))}, "
+                f"FG_AdaptiveMaxBurst={int(fg_adaptive_submit_max_burst)}, "
                 f"InFlight_FGAgingTriggerMs={int(fg_aging_trigger_s * 1000.0)}, "
                 f"InFlight_FGAgingHardMs={int(fg_aging_hard_s * 1000.0)})"
             )
@@ -1118,18 +1434,13 @@ def run_native_inflight_song_pipeline(
     except Exception:
         fg_enabled = False
 
-    # Reserve at least one song slot for FG so GA doesn't consume the entire slot pool.
-    # Without this, FG jobs that need a slot can force GA to stall on slot acquisition.
-    #
-    # This has a surprisingly large impact on throughput stability when:
-    # - `GPU_SONG_SLOTS` is modest (default 24 => usable_slots=23)
-    # - `InFlight_GA_QueueMult` is >= 2 (queue limit would otherwise cap at usable_slots)
-    fg_slot_reserve = 0
-    try:
-        if fg_enabled and int(inflight_limit) > 1 and int(song_slot_limit) > 1:
-            fg_slot_reserve = 1
-    except Exception:
-        fg_slot_reserve = 0
+    # Reserve a dedicated FG slot partition so GA cannot consume every slot.
+    fg_slot_reserve = _read_fg_slot_reserve(
+        cfg0,
+        fg_enabled=bool(fg_enabled),
+        inflight_limit=int(inflight_limit),
+        song_slot_limit=int(song_slot_limit),
+    )
     if fg_slot_reserve:
         ga_queue_limit = min(int(ga_queue_limit), max(1, int(song_slot_limit) - int(fg_slot_reserve)))
 
@@ -1406,6 +1717,9 @@ def run_native_inflight_song_pipeline(
     fg_futures: deque[tuple[_NativeSong, concurrent.futures.Future, float]] = deque()
     fg_backlog_pause_ga = bool(fg_batch_scheduler)
     fg_backlog_active = False
+    fg_continuous_mode = not bool(fg_batch_scheduler)
+    fg_ga_credit_budget = max(1, int(fg_ga_credit_budget_cfg))
+    fg_ga_credit = int(fg_ga_credit_budget)
 
     # FG batching controls (throughput-oriented, no quality impact).
     # Work-conserving default: never stall FG submission just to "wait to batch".
@@ -1456,12 +1770,69 @@ def run_native_inflight_song_pipeline(
     if fg_prep_workers <= 0:
         fg_prep_workers = _default_worker_threads(inflight_limit=inflight_limit, kind="fg_prep")
     fg_prep_executor = concurrent.futures.ThreadPoolExecutor(max_workers=fg_prep_workers, thread_name_prefix="FGPrep")
+
+    db_prefetch_workers = 0
+    if cfg0 is not None:
+        try:
+            db_prefetch_workers = safe_int(cfg0.get("IterationEngine", "InFlight_DBPrefetchWorkers", fallback="0"), 0)
+        except Exception:
+            db_prefetch_workers = 0
+    raw = os.environ.get("INFLIGHT_DB_PREFETCH_WORKERS")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            db_prefetch_workers = int(raw)
+        except Exception:
+            pass
+    if db_prefetch_workers <= 0:
+        db_prefetch_workers = max(1, min(int(fg_prep_workers), 4))
+    db_prefetch_executor = concurrent.futures.ThreadPoolExecutor(
+        max_workers=int(db_prefetch_workers),
+        thread_name_prefix="FGDBPrefetch",
+    )
+
     fg_prep_inflight: deque[_NativeSong] = deque()
     fg_jit_warmup_submitted = False
 
     last_slot_block_t: float | None = None
     ga_queue_debug = _truthy(os.environ.get("INFLIGHT_GA_QUEUE_DEBUG", "0"))
     last_ga_queue_limit_effective: int | None = None
+    completion_event = threading.Event()
+    completion_future_ids: set[int] = set()
+    completion_lock = threading.Lock()
+
+    def _register_completion_future(fut: concurrent.futures.Future | None) -> None:
+        if fut is None:
+            return
+        try:
+            fut_id = int(id(fut))
+        except Exception:
+            return
+        try:
+            with completion_lock:
+                if fut_id in completion_future_ids:
+                    return
+                completion_future_ids.add(fut_id)
+        except Exception:
+            return
+
+        def _on_done(_fut: concurrent.futures.Future, *, _fut_id: int = fut_id) -> None:
+            try:
+                completion_event.set()
+            except Exception:
+                pass
+            try:
+                with completion_lock:
+                    completion_future_ids.discard(_fut_id)
+            except Exception:
+                pass
+
+        try:
+            fut.add_done_callback(_on_done)
+        except Exception:
+            try:
+                completion_event.set()
+            except Exception:
+                pass
 
     def _effective_ga_queue_limit() -> int:
         if not inflight_ga_dynamic_queue:
@@ -1628,6 +1999,21 @@ def run_native_inflight_song_pipeline(
             return min(int(overlap), 1)
         return int(overlap)
 
+    def _continuous_note_ga_submit() -> None:
+        nonlocal fg_ga_credit
+        if not fg_continuous_mode:
+            return
+        if pending_fg:
+            fg_ga_credit = max(-int(fg_ga_credit_budget), int(fg_ga_credit) - 1)
+        else:
+            fg_ga_credit = int(fg_ga_credit_budget)
+
+    def _continuous_note_fg_submit() -> None:
+        nonlocal fg_ga_credit
+        if not fg_continuous_mode:
+            return
+        fg_ga_credit = int(fg_ga_credit_budget)
+
     try:
         last_progress = time.monotonic()
         last_stall_report = last_progress
@@ -1651,6 +2037,13 @@ def run_native_inflight_song_pipeline(
             stage_emit_sec = float(os.environ.get("INFLIGHT_STAGE_PROFILE_EMIT_SEC", "0") or "0")
         except Exception:
             stage_emit_sec = 0.0
+
+        event_wait_timeout_s = 0.25
+        try:
+            event_wait_timeout_s = float(os.environ.get("INFLIGHT_EVENT_WAIT_TIMEOUT_SEC", "0.25") or "0.25")
+        except Exception:
+            event_wait_timeout_s = 0.25
+        event_wait_timeout_s = max(0.001, min(float(event_wait_timeout_s), 5.0))
 
         profile_max_songs = 0
         try:
@@ -1883,6 +2276,7 @@ def run_native_inflight_song_pipeline(
                 except Exception:
                     pass
 
+            ga_dispatch_count = 0
             while True:
                 # Submit GA jobs whenever we have prepared work and GPU queue capacity.
                 # We allow `ga_inflight` to exceed `inflight_limit` to create a backlog
@@ -1901,6 +2295,22 @@ def run_native_inflight_song_pipeline(
                 backlog_hard_pause = bool(fg_backlog_pause_ga and fg_backlog_active and int(fg_overlap_effective) <= 0)
                 if backlog_hard_pause:
                     break
+                if fg_continuous_mode and pending_fg:
+                    try:
+                        fg_oldest_wait_s = _oldest_pending_fg_wait_s(time.monotonic())
+                    except Exception:
+                        fg_oldest_wait_s = 0.0
+                    if _continuous_fg_should_start(
+                        pending_fg_count=len(pending_fg),
+                        ga_credit=int(fg_ga_credit),
+                        oldest_wait_s=float(fg_oldest_wait_s),
+                        blocked_on_slot=bool(blocked_on_slot_acquire),
+                        no_ga_remaining=False,
+                        fg_drain_at_end=bool(fg_drain_at_end),
+                        aging_trigger_s=float(fg_aging_trigger_s),
+                        aging_hard_s=float(fg_aging_hard_s),
+                    ):
+                        break
                 ga_queue_limit_effective = _effective_ga_queue_limit()
                 ga_overlap_limit: int | None = None
                 if fg_backlog_pause_ga and fg_backlog_active and int(fg_overlap_effective) > 0:
@@ -1996,8 +2406,11 @@ def run_native_inflight_song_pipeline(
                         continue
 
                     song.ga_future = handle.future
+                    _register_completion_future(song.ga_future)
                     ga_inflight.append(song)
                     did_work = True
+                    _continuous_note_ga_submit()
+                    ga_dispatch_count += 1
 
                     # Prefetch DB loadouts early so FG prep after GA decode doesn't stall
                     # waiting on SQLite reads (keeps the GPU fed during song boundaries).
@@ -2012,15 +2425,25 @@ def run_native_inflight_song_pipeline(
                                 song.cfg_data.get("fg_candidate_limit", FG_CANDIDATE_LIMIT),
                                 FG_CANDIDATE_LIMIT,
                             )
-                            song.db_loadouts_future = fg_prep_executor.submit(
+                            song.db_loadouts_future = db_prefetch_executor.submit(
                                 _prefetch_db_loadouts_sync,
                                 song.db_key,
                                 limit=int(prefetch_limit),
                                 gears_by_name=song.gears_by_name,
                                 minis_by_name=song.minis_by_name,
                             )
+                            _register_completion_future(song.db_loadouts_future)
                         except Exception:
                             song.db_loadouts_future = None
+
+                    # Continuous scheduler: cap GA micro-bursts so FG gets frequent dispatch
+                    # opportunities instead of waiting for large GA-only phases to complete.
+                    if (
+                        fg_continuous_mode
+                        and pending_fg
+                        and int(ga_dispatch_count) >= int(continuous_ga_dispatch_burst)
+                    ):
+                        break
                     continue
 
                 # CPU prep: keep a staging buffer of prepared jobs so the GPU queue
@@ -2034,7 +2457,9 @@ def run_native_inflight_song_pipeline(
                         did_work = True
                         continue
                     try:
-                        prep_inflight.append((nxt, prep_executor.submit(_prepare_song, nxt), time.perf_counter()))
+                        prep_future = prep_executor.submit(_prepare_song, nxt)
+                        _register_completion_future(prep_future)
+                        prep_inflight.append((nxt, prep_future, time.perf_counter()))
                     except Exception as exc:
                         _post(
                             build_error_payload(
@@ -2152,6 +2577,7 @@ def run_native_inflight_song_pipeline(
 
                 setattr(song, "_decode_submit_t0", time.perf_counter())
                 song.decode_future = decode_executor.submit(_decode_ga_payload_sync, song, runs_payload)
+                _register_completion_future(song.decode_future)
                 decode_inflight.append(song)
 
             # Finalize decoded GA results (lightweight formatting + enqueue for post/FG).
@@ -2235,6 +2661,7 @@ def run_native_inflight_song_pipeline(
                             song.fg_prep_future = fg_prep_executor.submit(
                                 _prepare_fg_job_sync, song, gpu_client=gpu_client
                             )
+                            _register_completion_future(song.fg_prep_future)
                             fg_prep_inflight.append(song)
                         except Exception:
                             song.fg_prep_future = None
@@ -2397,6 +2824,8 @@ def run_native_inflight_song_pipeline(
                     print("[InFlight][FG] backlog_drained; resuming GA.")
                 except Exception:
                     pass
+            if fg_continuous_mode and (not pending_fg):
+                fg_ga_credit = int(fg_ga_credit_budget)
 
             no_ga_remaining = (
                 (not pending_tasks)
@@ -2454,12 +2883,27 @@ def run_native_inflight_song_pipeline(
             # - once backlog trigger is active, start FG immediately (GA may continue with bounded overlap)
             # - at end-of-run, drain remaining FG iff `FG_DrainAtEnd=true`.
             submit_budget = 0
+            drain_mode = False
             fg_overlap_effective = int(fg_backlog_ga_overlap)
             if fg_backlog_pause_ga and fg_backlog_active:
                 fg_overlap_effective = _effective_fg_ga_overlap(fg_oldest_wait_s)
-            should_start_fg = bool(pending_fg) and (
-                bool(fg_backlog_active) or (bool(no_ga_remaining) and bool(fg_drain_at_end))
-            )
+
+            if fg_continuous_mode:
+                should_start_fg = _continuous_fg_should_start(
+                    pending_fg_count=len(pending_fg),
+                    ga_credit=int(fg_ga_credit),
+                    oldest_wait_s=float(fg_oldest_wait_s),
+                    blocked_on_slot=bool(blocked_on_slot_acquire),
+                    no_ga_remaining=bool(no_ga_remaining),
+                    fg_drain_at_end=bool(fg_drain_at_end),
+                    aging_trigger_s=float(fg_aging_trigger_s),
+                    aging_hard_s=float(fg_aging_hard_s),
+                )
+            else:
+                should_start_fg = bool(pending_fg) and (
+                    bool(fg_backlog_active) or (bool(no_ga_remaining) and bool(fg_drain_at_end))
+                )
+            ga_queue_limit_effective = _effective_ga_queue_limit()
 
             if should_start_fg:
                 if fg_decision_debug:
@@ -2471,7 +2915,16 @@ def run_native_inflight_song_pipeline(
                             if no_ga_remaining:
                                 reasons.append("drain_end")
                         else:
-                            reasons.append("backlog")
+                            if no_ga_remaining:
+                                reasons.append("drain_end")
+                            if blocked_on_slot_acquire:
+                                reasons.append("slot_pressure")
+                            if fg_oldest_wait_s >= float(fg_aging_hard_s) and float(fg_aging_hard_s) > 0.0:
+                                reasons.append("aging_hard")
+                            elif fg_oldest_wait_s >= float(fg_aging_trigger_s) and float(fg_aging_trigger_s) > 0.0:
+                                reasons.append("aging_trigger")
+                            if int(fg_ga_credit) <= 0:
+                                reasons.append("credit")
 
                         print(
                             "[InFlight][FGDecision] start "
@@ -2505,6 +2958,23 @@ def run_native_inflight_song_pipeline(
                         fg_token_bucket = max(0.0, float(fg_token_bucket) - float(submit_budget))
                     if submit_budget > 0:
                         fg_last_batch_t = float(now)
+                else:
+                    submit_budget = _continuous_fg_submit_budget(
+                        pending_fg_count=len(pending_fg),
+                        fg_inflight_count=len(fg_futures),
+                        fg_workers=int(fg_workers),
+                        fg_batch_max=int(fg_batch_max),
+                        no_ga_remaining=bool(no_ga_remaining),
+                        fg_drain_at_end=bool(fg_drain_at_end),
+                        blocked_on_slot=bool(blocked_on_slot_acquire),
+                        oldest_wait_s=float(fg_oldest_wait_s),
+                        aging_trigger_s=float(fg_aging_trigger_s),
+                        aging_hard_s=float(fg_aging_hard_s),
+                        ga_inflight_count=len(ga_inflight),
+                        ga_queue_limit=int(ga_queue_limit_effective),
+                        adaptive_submit=bool(fg_adaptive_submit_enabled),
+                        adaptive_max_burst=int(fg_adaptive_submit_max_burst),
+                    )
 
                 if submit_budget > 0 and len(fg_futures) < fg_workers:
                     # Process pending FG jobs (up to worker + batch budget).
@@ -2545,19 +3015,22 @@ def run_native_inflight_song_pipeline(
                         except Exception:
                             pass
                         t_submit = time.perf_counter()
+                        fg_future = fg_executor.submit(
+                            _run_fg_job_sync,
+                            fg_song,
+                            gpu_client=gpu_client,
+                            post_sender=post_sender,
+                            progress_cb=progress_cb,
+                        )
+                        _register_completion_future(fg_future)
                         fg_futures.append(
                             (
                                 fg_song,
-                                fg_executor.submit(
-                                    _run_fg_job_sync,
-                                    fg_song,
-                                    gpu_client=gpu_client,
-                                    post_sender=post_sender,
-                                    progress_cb=progress_cb,
-                                ),
+                                fg_future,
                                 t_submit,
                             )
                         )
+                        _continuous_note_fg_submit()
                         did_work = True
                         submit_budget -= 1
 
@@ -2626,6 +3099,8 @@ def run_native_inflight_song_pipeline(
                 for song in ga_inflight:
                     if song.ga_future is not None:
                         wait_futures.append(song.ga_future)
+                    if song.db_loadouts_future is not None:
+                        wait_futures.append(song.db_loadouts_future)
                 for _task, fut, _t0 in prep_inflight:
                     if fut is not None:
                         wait_futures.append(fut)
@@ -2635,17 +3110,27 @@ def run_native_inflight_song_pipeline(
                 for song in fg_prep_inflight:
                     if song.fg_prep_future is not None:
                         wait_futures.append(song.fg_prep_future)
+                    if song.db_loadouts_future is not None:
+                        wait_futures.append(song.db_loadouts_future)
+                for song in pending_fg:
+                    if song.db_loadouts_future is not None:
+                        wait_futures.append(song.db_loadouts_future)
                 for _song, fut, _t0 in fg_futures:
                     wait_futures.append(fut)
                 if wait_futures:
                     t_wait = time.perf_counter()
                     has_gpu = bool(ga_inflight) or bool(fg_futures)
                     has_cpu = bool(prep_inflight) or bool(decode_inflight) or bool(fg_prep_inflight)
-                    concurrent.futures.wait(
-                        wait_futures,
-                        timeout=0.02,
-                        return_when=concurrent.futures.FIRST_COMPLETED,
-                    )
+                    for fut in wait_futures:
+                        _register_completion_future(fut)
+                    already_done = False
+                    try:
+                        already_done = any(f.done() for f in wait_futures)
+                    except Exception:
+                        already_done = False
+                    if not already_done:
+                        completion_event.wait(timeout=float(event_wait_timeout_s))
+                    completion_event.clear()
                     dt_wait = time.perf_counter() - t_wait
                     stage_profiler.record("main_wait", dt_wait)
                     if (not has_gpu) and has_cpu:
@@ -2674,6 +3159,12 @@ def run_native_inflight_song_pipeline(
             if shutdown_debug:
                 print("[InFlight][SHUTDOWN] decode_executor.shutdown")
             decode_executor.shutdown(wait=True, cancel_futures=True)
+        except Exception:
+            pass
+        try:
+            if shutdown_debug:
+                print("[InFlight][SHUTDOWN] db_prefetch_executor.shutdown")
+            db_prefetch_executor.shutdown(wait=True, cancel_futures=True)
         except Exception:
             pass
         try:
@@ -2733,7 +3224,51 @@ def _run_fg_job_sync(
     if song.loadout_entries is None:
         _prepare_fg_job_sync(song, gpu_client=gpu_client)
 
+    # Late non-blocking DB prefetch consume:
+    # - If FG prep skipped DB rows because prefetch was still in-flight, harvest now if ready.
+    # - Never block FG worker threads on SQLite here.
+    if song.db_loadouts_full is None and song.db_loadouts_future is not None:
+        fut = song.db_loadouts_future
+        try:
+            if fut.done():
+                try:
+                    db_rows = fut.result(timeout=0)
+                    if isinstance(db_rows, list):
+                        song.db_loadouts_full = db_rows
+                except Exception:
+                    song.db_loadouts_full = None
+            else:
+                # Best effort: avoid keeping stale prefetch work around if FG is already running.
+                try:
+                    fut.cancel()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        finally:
+            song.db_loadouts_future = None
+
     build_details = make_build_details_fn(song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty)
+
+    if isinstance(song.db_loadouts_full, list):
+        song.fg_db_loadouts_full_count = len(song.db_loadouts_full)
+    else:
+        song.fg_db_loadouts_full_count = 0
+
+    # If FG prep built GA-only entries while DB prefetch was pending, merge DB rows now
+    # without issuing any new synchronous DB query.
+    if song.db_loadouts_full is not None and not _loadout_entries_have_db_source(song.loadout_entries):
+        song.loadout_entries = build_loadout_entries(
+            song.db_key,
+            bool(song.use_evo_db),
+            song.ga_candidates or [],
+            int(song.fg_candidate_limit or 0),
+            song.gears_by_name,
+            song.minis_by_name,
+            build_details,
+            db_loadouts_full=song.db_loadouts_full,
+            allow_db_query=False,
+        )
 
     # Always-on (ForceGreatsFinder): evaluate a capped set of 1–2-position combos around
     # GA seeds to improve FG coverage when deeper GA runs crowd out fever-heavy variants.
@@ -2782,6 +3317,7 @@ def _run_fg_job_sync(
                     song.minis_by_name,
                     build_details,
                     db_loadouts_full=song.db_loadouts_full,
+                    allow_db_query=False,
                 )
     except Exception:
         pass

@@ -20,6 +20,7 @@ def build_loadout_entries(
     minis_by_name,
     build_details_fn,
     db_loadouts_full=None,
+    allow_db_query=True,
 ):
     """
     Build union of DB + GA loadouts.
@@ -33,6 +34,7 @@ def build_loadout_entries(
         minis_by_name: Dictionary of minis by name
         build_details_fn: Function to build details dict from data dict
         db_loadouts_full: Optional pre-fetched DB loadouts (skips DB query when provided)
+        allow_db_query: Whether to query DB when `db_loadouts_full` is not provided
 
     Returns:
         dict: Dictionary of loadout entries by hash
@@ -64,7 +66,7 @@ def build_loadout_entries(
     if use_evo_db:
         if db_loadouts_full is not None:
             db_loadouts = db_loadouts_full
-        else:
+        elif bool(allow_db_query):
             try:
                 db_loadouts = get_best_loadouts(
                     found_song_name,

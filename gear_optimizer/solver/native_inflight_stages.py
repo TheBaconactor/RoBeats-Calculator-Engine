@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
+from collections import OrderedDict
 from typing import Any, Optional
 
 import numpy as np
@@ -21,6 +23,66 @@ from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
 from gear_optimizer.solver.genetic import decode_gpu_native_ga_runs_payload
 
 _FG_JIT_WARMED = False
+_FG_DB_LOADOUTS_CACHE: "OrderedDict[str, tuple[int, list[dict]]]" = OrderedDict()
+_FG_DB_LOADOUTS_CACHE_LOCK = threading.Lock()
+
+
+def _fg_db_cache_max() -> int:
+    try:
+        raw = os.environ.get("INFLIGHT_FG_DB_CACHE_MAX")
+        if raw is not None and str(raw).strip() != "":
+            return max(0, int(raw))
+    except Exception:
+        pass
+    return 256
+
+
+def _fg_db_cache_get(song_name: str, *, limit: int) -> list[dict] | None:
+    key = str(song_name or "").strip()
+    if not key:
+        return None
+    try:
+        with _FG_DB_LOADOUTS_CACHE_LOCK:
+            entry = _FG_DB_LOADOUTS_CACHE.get(key)
+            if entry is None:
+                return None
+            cached_limit, rows = entry
+            if int(cached_limit) < int(limit):
+                return None
+            _FG_DB_LOADOUTS_CACHE.move_to_end(key)
+            return list(rows[: int(limit)])
+    except Exception:
+        return None
+
+
+def _fg_db_cache_put(song_name: str, *, limit: int, rows: list[dict]) -> None:
+    key = str(song_name or "").strip()
+    if not key:
+        return
+    if not isinstance(rows, list):
+        return
+    try:
+        limit_i = max(0, int(limit))
+    except Exception:
+        limit_i = 0
+    try:
+        with _FG_DB_LOADOUTS_CACHE_LOCK:
+            prev = _FG_DB_LOADOUTS_CACHE.get(key)
+            if prev is not None:
+                prev_limit, _prev_rows = prev
+                # Keep the wider payload for this song key when possible.
+                if int(prev_limit) > int(limit_i):
+                    return
+            _FG_DB_LOADOUTS_CACHE[key] = (int(limit_i), list(rows))
+            _FG_DB_LOADOUTS_CACHE.move_to_end(key)
+            max_n = int(_fg_db_cache_max())
+            if max_n <= 0:
+                _FG_DB_LOADOUTS_CACHE.clear()
+                return
+            while len(_FG_DB_LOADOUTS_CACHE) > max_n:
+                _FG_DB_LOADOUTS_CACHE.popitem(last=False)
+    except Exception:
+        return
 
 
 def _truthy(raw: Any) -> bool:
@@ -246,9 +308,21 @@ def _prefetch_db_loadouts_sync(
     minis_by_name: dict,
 ) -> list[dict]:
     try:
+        limit_i = max(0, int(limit))
+    except Exception:
+        limit_i = 0
+    cached = _fg_db_cache_get(song_name, limit=limit_i)
+    if cached is not None:
+        return cached
+
+    try:
         from gear_optimizer.data.database import get_best_loadouts
 
-        return get_best_loadouts(song_name, limit=int(limit), gears_by_name=gears_by_name, minis_by_name=minis_by_name)
+        rows = get_best_loadouts(song_name, limit=limit_i, gears_by_name=gears_by_name, minis_by_name=minis_by_name)
+        if isinstance(rows, list):
+            _fg_db_cache_put(song_name, limit=limit_i, rows=rows)
+            return rows
+        return []
     except Exception:
         return []
 
@@ -307,6 +381,7 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
     # If the DB read is still in progress, proceed with GA candidates only.
     # This prevents FG worker threads from stalling on DB I/O and starving the GPU.
     db_loadouts_full = song.db_loadouts_full
+    prefetch_pending = False
     if db_loadouts_full is None and song.db_loadouts_future is not None:
         try:
             fut = song.db_loadouts_future
@@ -315,17 +390,20 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
                 try:
                     db_loadouts_full = fut.result(timeout=0)
                     song.db_loadouts_full = db_loadouts_full
+                    if isinstance(db_loadouts_full, list):
+                        _fg_db_cache_put(song.db_key, limit=int(fg_candidate_limit), rows=db_loadouts_full)
                 except Exception:
                     db_loadouts_full = None
+                finally:
+                    song.db_loadouts_future = None
             else:
                 # DB prefetch still running - proceed without it to keep GPU fed
                 if perf:
                     print("[PERF][FGPrep] db_prefetch not ready, proceeding without DB loadouts")
+                prefetch_pending = True
                 db_loadouts_full = None
         except Exception:
             db_loadouts_full = None
-        finally:
-            song.db_loadouts_future = None
     t_db = time.perf_counter() if perf else 0.0
 
     build_details = make_build_details_fn(song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty)
@@ -338,10 +416,12 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
         song.minis_by_name,
         build_details,
         db_loadouts_full=db_loadouts_full,
+        # If prefetch is still in-flight, avoid a duplicate synchronous DB read.
+        allow_db_query=not bool(prefetch_pending),
     )
     t_build = time.perf_counter() if perf else 0.0
 
-    song.fg_db_loadouts_full_count = 0
+    song.fg_db_loadouts_full_count = len(db_loadouts_full) if isinstance(db_loadouts_full, list) else 0
 
     # Native in-flight optimization: submit the combo-booster GPU eval early (during FG prep)
     try:

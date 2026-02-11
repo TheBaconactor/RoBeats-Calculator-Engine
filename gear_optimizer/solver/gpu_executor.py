@@ -61,6 +61,7 @@ class GpuRequestType(Enum):
     FG_COMPUTE_BREAKPOINTS = "fg_compute_breakpoints"
     FG_SOLVE_WITH_BREAKPOINTS = "fg_solve_with_breakpoints"
     FG_SOLVE_WITH_BREAKPOINTS_BATCH = "fg_solve_with_breakpoints_batch"
+    GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS = "ga_fg_fused_solve_with_breakpoints"
     SHUTDOWN = "shutdown"
 
 
@@ -256,6 +257,7 @@ class GpuExecutor:
             GpuRequestType.FG_COMPUTE_BREAKPOINTS: self._execute_fg_compute_breakpoints,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS: self._execute_fg_solve_with_breakpoints,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH: self._execute_fg_solve_with_breakpoints_batch,
+            GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS: self._execute_ga_fg_fused_solve_with_breakpoints,
         }
 
     def _record_pack(self, request_type: GpuRequestType, dt_sec: float) -> None:
@@ -727,6 +729,7 @@ class GpuExecutor:
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
+            GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
         }
         env_refresh_counter = 0
         cached_batch_wait_ms = int(getattr(ENV, "gpu_executor_batch_wait_ms", 10) or 10)
@@ -863,18 +866,24 @@ class GpuExecutor:
 
                 # Single-pass partitioning keeps request order without rescanning `batch`.
                 solve_requests: list[GpuRequest] = []
+                ga_native_requests: list[GpuRequest] = []
                 fg_requests: list[GpuRequest] = []
                 fg_bundle_requests: list[GpuRequest] = []
+                fg_ga_fused_requests: list[GpuRequest] = []
                 reg_requests: list[GpuRequest] = []
                 remaining: list[GpuRequest] = []
                 for req in batch:
                     rt = req.request_type
                     if rt == GpuRequestType.SOLVE_GENOMES_PARALLEL:
                         solve_requests.append(req)
+                    elif rt == GpuRequestType.GPU_NATIVE_GA_RUN:
+                        ga_native_requests.append(req)
                     elif rt == GpuRequestType.SOLVE_FORCE_GREATS_FINDER:
                         fg_requests.append(req)
                     elif rt == GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH:
                         fg_bundle_requests.append(req)
+                    elif rt == GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS:
+                        fg_ga_fused_requests.append(req)
                     elif rt == GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY:
                         reg_requests.append(req)
                     else:
@@ -952,6 +961,39 @@ class GpuExecutor:
                         self._live_type_counts[GpuRequestType.SOLVE_GENOMES_PARALLEL] += len(solve_requests)
                         self._maybe_live_report()
 
+                if ga_native_requests:
+                    exec_start_ns = time.perf_counter_ns()
+                    responses = self._execute_gpu_native_ga_run_batch(ga_native_requests)
+                    exec_end_ns = time.perf_counter_ns()
+                    dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
+                    self._exec_sec += dt_exec
+                    per_req = dt_exec / max(1, len(ga_native_requests))
+                    for _ in ga_native_requests:
+                        self._req_type_counts[GpuRequestType.GPU_NATIVE_GA_RUN] += 1
+                        self._req_type_exec_sec[GpuRequestType.GPU_NATIVE_GA_RUN] += per_req
+                        self._last_work_req_type = GpuRequestType.GPU_NATIVE_GA_RUN
+
+                    for req, resp in zip(ga_native_requests, responses):
+                        if resp is None:
+                            resp = GpuResponse(
+                                request_id=req.request_id,
+                                success=False,
+                                error="GpuExecutor GA-native batch returned no response (internal error)",
+                            )
+                        self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
+                        if _try_put_response(req, resp):
+                            responded_ids.add(int(req.request_id))
+                        self._requests_processed += 1
+                    self._trace_event(
+                        event="exec",
+                        exec_sec=float(dt_exec),
+                        batch_size=len(ga_native_requests),
+                        types=f"{GpuRequestType.GPU_NATIVE_GA_RUN.value}:{len(ga_native_requests)}",
+                    )
+                    self._live_exec_sec += float(dt_exec)
+                    self._live_type_counts[GpuRequestType.GPU_NATIVE_GA_RUN] += len(ga_native_requests)
+                    self._maybe_live_report()
+
                 if fg_requests:
                     exec_start_ns = time.perf_counter_ns()
                     responses = self._coalesce_fg_task_requests(fg_requests)
@@ -1016,6 +1058,41 @@ class GpuExecutor:
                     )
                     self._live_exec_sec += float(dt_exec)
                     self._live_type_counts[GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH] += len(fg_bundle_requests)
+                    self._maybe_live_report()
+
+                if fg_ga_fused_requests:
+                    exec_start_ns = time.perf_counter_ns()
+                    responses = self._coalesce_ga_fg_fused_requests(fg_ga_fused_requests)
+                    exec_end_ns = time.perf_counter_ns()
+                    dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
+                    self._exec_sec += dt_exec
+                    per_req = dt_exec / max(1, len(fg_ga_fused_requests))
+                    for _ in fg_ga_fused_requests:
+                        self._req_type_counts[GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS] += 1
+                        self._req_type_exec_sec[GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS] += per_req
+                        self._last_work_req_type = GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS
+
+                    for req, resp in zip(fg_ga_fused_requests, responses):
+                        if resp is None:
+                            resp = GpuResponse(
+                                request_id=req.request_id,
+                                success=False,
+                                error="GpuExecutor fused GA->FG batch returned no response (internal error)",
+                            )
+                        self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
+                        if _try_put_response(req, resp):
+                            responded_ids.add(int(req.request_id))
+                        self._requests_processed += 1
+                    self._trace_event(
+                        event="exec",
+                        exec_sec=float(dt_exec),
+                        batch_size=len(fg_ga_fused_requests),
+                        types=f"{GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS.value}:{len(fg_ga_fused_requests)}",
+                    )
+                    self._live_exec_sec += float(dt_exec)
+                    self._live_type_counts[GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS] += len(
+                        fg_ga_fused_requests
+                    )
                     self._maybe_live_report()
 
                 if reg_requests:
@@ -1123,11 +1200,13 @@ class GpuExecutor:
         deadline = perf_counter() + (max_wait_ms / 1000.0)
         coalescable_types = {
             GpuRequestType.SOLVE_GENOMES_PARALLEL,
+            GpuRequestType.GPU_NATIVE_GA_RUN,
             GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
             # FG bundle requests: cheap to enqueue, expensive to dispatch repeatedly.
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
+            GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
         }
         # Default to enabled for in-process queues; callers can opt out via env var.
         inproc_coalesce_enabled = env_flag("GPU_EXECUTOR_INPROC_COALESCE", "1")
@@ -1549,6 +1628,56 @@ class GpuExecutor:
                     exc=exc,
                 )
                 for req, _, _, _ in group:
+                    out.append(self._execute_request(req))
+
+        by_id = {r.request_id: r for r in out if r is not None}
+        return [by_id.get(req.request_id) for req in requests]
+
+    def _coalesce_ga_fg_fused_requests(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
+        """
+        Coalesce GA->FG fused requests by routing through the FG breakpoint batch handler.
+
+        Each request payload matches `FG_SOLVE_WITH_BREAKPOINTS` input. We pack request payloads
+        into one synthetic `FG_SOLVE_WITH_BREAKPOINTS_BATCH` call and then split outputs.
+        """
+        if not requests:
+            return []
+        if not self._in_process_queues or len(requests) <= 1:
+            return [self._execute_request(req) for req in requests]
+
+        payloads: list[dict[str, Any]] = []
+        reqs: list[GpuRequest] = []
+        fallback_ids: set[int] = set()
+        for req in requests:
+            payload = self._payload_dict(req)
+            if isinstance(payload, dict):
+                payloads.append(payload)
+                reqs.append(req)
+            else:
+                fallback_ids.add(int(req.request_id))
+
+        out: list[GpuResponse] = []
+        if payloads:
+            merged_req = GpuRequest(
+                request_type=GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
+                request_id=-1,
+                worker_id=-1,
+                payload={"payloads": payloads},
+            )
+            merged_resp = self._execute_fg_solve_with_breakpoints_batch(merged_req)
+            if getattr(merged_resp, "success", False) and isinstance(getattr(merged_resp, "result", None), list):
+                merged_results = list(merged_resp.result)
+                if int(len(merged_results)) == int(len(reqs)):
+                    for req, result in zip(reqs, merged_results):
+                        out.append(GpuResponse(request_id=req.request_id, success=True, result=result))
+                else:
+                    fallback_ids.update(int(req.request_id) for req in reqs)
+            else:
+                fallback_ids.update(int(req.request_id) for req in reqs)
+
+        if fallback_ids:
+            for req in requests:
+                if int(req.request_id) in fallback_ids:
                     out.append(self._execute_request(req))
 
         by_id = {r.request_id: r for r in out if r is not None}
@@ -2309,6 +2438,27 @@ class GpuExecutor:
             success=True,
             result=None,
         )
+
+    def _execute_gpu_native_ga_run_batch(self, requests: list[GpuRequest]) -> list[GpuResponse]:
+        """
+        Execute multiple GPU_NATIVE_GA_RUN requests on the owner thread.
+
+        This keeps request dispatch in one executor pass and reduces per-request routing overhead.
+        """
+        if not requests:
+            return []
+        if len(requests) == 1:
+            return [self._execute_gpu_native_ga_run(requests[0])]
+        return [self._execute_gpu_native_ga_run(req) for req in requests]
+
+    def _execute_ga_fg_fused_solve_with_breakpoints(self, request: GpuRequest) -> GpuResponse:
+        """
+        Fused GA->FG request.
+
+        Payload contract matches `FG_SOLVE_WITH_BREAKPOINTS`; this type exists so callers can
+        explicitly mark the GA->FG fast path and the executor can batch/coalesce it separately.
+        """
+        return self._execute_fg_solve_with_breakpoints(request)
 
     def _execute_gpu_native_ga_run(self, request: GpuRequest) -> GpuResponse:
         """

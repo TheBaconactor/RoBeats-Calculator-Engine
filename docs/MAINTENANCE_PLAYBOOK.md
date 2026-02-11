@@ -114,6 +114,13 @@ These knobs **do not change the search space or scoring math**; they only coales
 - `FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS` (default `128`): max payloads per coalesced request.
 - `FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS` (default `4`): max wait time before flushing a coalesced batch.
 
+## In-flight GA+FG throughput architecture (integrated)
+
+For the GA+FG integrated scheduler updates (continuous GA burst control, FG slot partitioning,
+adaptive FG submit burst, fused FG request policy, and reproducible A/B protocol), see:
+
+- `docs/INFLIGHT_GA_FG_THROUGHPUT.md`
+
 ## Recent modularization points (where to edit)
 - **Env access**: `gear_optimizer/core/env_config.py` (single source of truth for env knobs)
 - **Result payload contract**: `gear_optimizer/core/result_payloads.py`

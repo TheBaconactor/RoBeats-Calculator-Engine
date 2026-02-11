@@ -37,7 +37,45 @@ def _truthy_env(name: str, default: str = "0") -> bool:
 
 _GPU_STRICT = _truthy_env("GPU_STRICT", "1")
 _FG_GA_CANDIDATE_TABLE_ENABLED = _truthy_env("FG_GA_CANDIDATE_TABLE_ENABLED", "1")
-_FG_FUSE_BREAKPOINTS_SOLVE = _truthy_env("FG_FUSE_BREAKPOINTS_SOLVE", "1")
+
+
+def _should_use_fused_breakpoints_solve(*, in_process: bool, has_gpu_client: bool) -> bool:
+    """
+    Decide whether to use fused FG breakpoint+solve requests.
+
+    Policy:
+    - Native in-process runs default to fused mode (`INFLIGHT_FORCE_FUSED_FG=1` by default).
+    - Set `INFLIGHT_FORCE_FUSED_FG=0` to fall back to legacy `FG_FUSE_BREAKPOINTS_SOLVE`.
+    """
+    if (not bool(in_process)) or (not bool(has_gpu_client)):
+        return False
+
+    raw_force = os.environ.get("INFLIGHT_FORCE_FUSED_FG")
+    if raw_force is None or str(raw_force).strip() == "":
+        force_fused = True
+    else:
+        force_fused = str(raw_force).strip().lower() in TRUTHY_ENV_VALUES
+
+    if force_fused:
+        return True
+    return _truthy_env("FG_FUSE_BREAKPOINTS_SOLVE", "1")
+
+
+def _default_fused_payloads_per_request() -> int:
+    """
+    Choose a throughput-friendly default fused payload batch size.
+    """
+    workers = 0
+    try:
+        workers = int(os.environ.get("INFLIGHT_FG_WORKERS", "0") or "0")
+    except Exception:
+        workers = 0
+
+    if workers >= 4:
+        return 128
+    if workers >= 2:
+        return 96
+    return 64
 
 
 def _chart_signature_key(calc_song: dict) -> tuple:
@@ -965,16 +1003,29 @@ def process_force_greats_gpu_finder(
     # all FG work first (helps keep the GPU queue full, especially across song boundaries).
     defer_group_apply = gpu_client is not None and per_pair_breakpoints
     deferred_gpu_applies: list[dict] = []
+    fused_breakpoints_solve = _should_use_fused_breakpoints_solve(
+        in_process=bool(in_process),
+        has_gpu_client=bool(gpu_client is not None),
+    )
 
     fused_payloads_per_request = 1
     fused_payload_batch: list[dict] = []
     fused_ctx_batch: list[dict] = []
 
-    if gpu_client is not None and in_process and _FG_FUSE_BREAKPOINTS_SOLVE:
+    if fused_breakpoints_solve:
         try:
-            fused_payloads_per_request = max(1, int(os.environ.get("FG_FUSED_PAYLOADS_PER_REQUEST", "64")))
+            fused_payloads_per_request = max(
+                1,
+                int(
+                    os.environ.get(
+                        "FG_FUSED_PAYLOADS_PER_REQUEST",
+                        str(_default_fused_payloads_per_request()),
+                    )
+                    or str(_default_fused_payloads_per_request())
+                ),
+            )
         except Exception:
-            fused_payloads_per_request = 64
+            fused_payloads_per_request = _default_fused_payloads_per_request()
         fused_payloads_per_request = max(1, int(fused_payloads_per_request))
 
     def _flush_fused_payload_batch() -> None:
@@ -1187,7 +1238,7 @@ def process_force_greats_gpu_finder(
                 # Keep the minimum slightly higher in-process where submit overhead is low.
                 fused_floor = (
                     128
-                    if (in_process and gpu_client is not None and _FG_FUSE_BREAKPOINTS_SOLVE and use_gpu_breakpoints)
+                    if (bool(fused_breakpoints_solve) and use_gpu_breakpoints)
                     else 0
                 )
                 min_batch = max(fused_floor, 32) if in_process else 16
@@ -1514,7 +1565,7 @@ def process_force_greats_gpu_finder(
 
                 max_fp_matrix = None
                 if (
-                    _FG_FUSE_BREAKPOINTS_SOLVE
+                    bool(fused_breakpoints_solve)
                     and gpu_client is not None
                     and in_process
                     and use_gpu_breakpoints
@@ -1627,7 +1678,9 @@ def process_force_greats_gpu_finder(
                             # fused request (cached per song_slot).
                             with gpu_client.submit_lock:
                                 timeline_precompute_queued = True
-                                fused_future = gpu_client.submit_fg_solve_with_breakpoints(fused_payload).future
+                                fused_future = gpu_client.submit_ga_fg_fused_solve_with_breakpoints(
+                                    fused_payload
+                                ).future
                             n_gpu_calls += 1
 
                             # Mark uploaded (fused request always performs exactly one solve for this chunk).
