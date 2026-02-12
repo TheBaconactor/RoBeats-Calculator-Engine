@@ -9,6 +9,7 @@ import re
 import shutil
 import secrets
 import sys
+import zlib
 import threading
 import time
 
@@ -1373,6 +1374,17 @@ class GearOptimizerApp:
         tasks = []
         parallel_workers = 1
 
+        # When GA_SEED is set, users expect reproducible A/B comparisons.
+        # Historically we still generated per-repeat seeds via `secrets.randbits`,
+        # which made runs non-reproducible even in "deterministic mode".
+        ga_seed_base: int | None = None
+        raw_ga_seed = os.environ.get("GA_SEED")
+        if raw_ga_seed is not None and str(raw_ga_seed).strip() != "":
+            try:
+                ga_seed_base = int(str(raw_ga_seed).strip()) & 0xFFFFFFFF
+            except Exception:
+                ga_seed_base = None
+
         song_repeats = 1
         try:
             song_repeats = safe_int(cfg.get("IterationEngine", "SongRepeats", fallback="1"), 1)
@@ -1387,35 +1399,79 @@ class GearOptimizerApp:
         song_repeats = max(1, min(int(song_repeats), 100))
         used_ga_seeds: set[int] = set()
 
+        def _stable_ga_seed_for_song_repeat(song_name: str, repeat_index: int) -> int:
+            # Stable 32-bit seed, independent of PYTHONHASHSEED and run ordering.
+            base = int(ga_seed_base or 0) & 0xFFFFFFFF
+            name_crc = int(zlib.crc32(str(song_name).encode("utf-8", errors="replace")) & 0xFFFFFFFF)
+            idx = int(repeat_index) & 0xFFFFFFFF
+            seed = (base + name_crc + (idx * 0x9E3779B1)) & 0xFFFFFFFF
+            return int(seed or 1)
+
         for fp, found_song_name, task_diff in song_queue:
             if song_repeats <= 1:
                 print(f"[QUEUE] {found_song_name}")
-                tasks.append(
-                    (
-                        fp,
-                        found_song_name,
-                        task_diff,
-                        cfg_dict,
-                        paths,
-                        ref_arrays,
-                        all_gears,
-                        all_minis,
-                        gears_by_name,
-                        minis_by_name,
-                        use_evo_db,
-                        auto_buff,
-                        ga_depth,
-                        status_queue,
-                        parallel_workers,
-                        fg_debug,
+
+                if ga_seed_base is not None:
+                    ga_seed = _stable_ga_seed_for_song_repeat(str(found_song_name), 1)
+                    while ga_seed in used_ga_seeds:
+                        ga_seed = int((ga_seed + 1) & 0xFFFFFFFF) or 1
+                    used_ga_seeds.add(ga_seed)
+                    # Use repeat_ctx even when SongRepeats=1 so per-song GA can seed deterministically.
+                    repeat_ctx = {"repeat_index": 1, "repeat_total": 1, "ga_seed": int(ga_seed)}
+                    tasks.append(
+                        (
+                            fp,
+                            found_song_name,
+                            task_diff,
+                            cfg_dict,
+                            paths,
+                            ref_arrays,
+                            all_gears,
+                            all_minis,
+                            gears_by_name,
+                            minis_by_name,
+                            use_evo_db,
+                            auto_buff,
+                            ga_depth,
+                            status_queue,
+                            parallel_workers,
+                            fg_debug,
+                            repeat_ctx,
+                        )
                     )
-                )
+                else:
+                    tasks.append(
+                        (
+                            fp,
+                            found_song_name,
+                            task_diff,
+                            cfg_dict,
+                            paths,
+                            ref_arrays,
+                            all_gears,
+                            all_minis,
+                            gears_by_name,
+                            minis_by_name,
+                            use_evo_db,
+                            auto_buff,
+                            ga_depth,
+                            status_queue,
+                            parallel_workers,
+                            fg_debug,
+                        )
+                    )
                 continue
 
             for repeat_index in range(1, song_repeats + 1):
-                ga_seed = int(secrets.randbits(32) or 1)
-                while ga_seed in used_ga_seeds:
+                if ga_seed_base is not None:
+                    ga_seed = _stable_ga_seed_for_song_repeat(str(found_song_name), int(repeat_index))
+                    while ga_seed in used_ga_seeds:
+                        # Extremely unlikely, but keep the uniqueness guarantee across the queue.
+                        ga_seed = int((ga_seed + 1) & 0xFFFFFFFF) or 1
+                else:
                     ga_seed = int(secrets.randbits(32) or 1)
+                    while ga_seed in used_ga_seeds:
+                        ga_seed = int(secrets.randbits(32) or 1)
                 used_ga_seeds.add(ga_seed)
 
                 repeat_ctx = {
