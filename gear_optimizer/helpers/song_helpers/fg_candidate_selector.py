@@ -26,18 +26,6 @@ def _split_gear_minis(candidate: dict) -> tuple[list[dict], list[dict]]:
     return gear, minis
 
 
-def _gear_mini_key(candidate: dict) -> tuple[str, ...]:
-    gear, minis = _split_gear_minis(candidate)
-    gear_names = tuple(_item_name(it) for it in gear)
-    mini_names = tuple(sorted(_item_name(it) for it in minis))
-    return gear_names + mini_names
-
-
-def _mini_key(candidate: dict) -> tuple[str, ...]:
-    _gear, minis = _split_gear_minis(candidate)
-    return tuple(sorted(_item_name(it) for it in minis))
-
-
 def _center_key(candidate: dict) -> tuple[int, int]:
     data = candidate.get("Data")
     if not isinstance(data, dict):
@@ -64,37 +52,6 @@ def _base_score(candidate: dict) -> int:
         return int(v or 0)
     except Exception:
         return 0
-
-
-def _fg_proxy(candidate: dict, *, primary_color: str, secondary_color: str) -> int:
-    """
-    Lightweight proxy for FG potential.
-
-    This is intentionally simple and uses readily-available stats; it is NOT an FG score.
-    """
-    gear, minis = _split_gear_minis(candidate)
-    items = list(gear) + list(minis)
-
-    def _i(item: dict, key: str) -> int:
-        try:
-            return int((item or {}).get(key, 0) or 0)
-        except Exception:
-            return 0
-
-    score = 0
-    for it in items:
-        if not isinstance(it, dict) or not it:
-            continue
-        score += _i(it, "Fever Multiplier") * 4
-        score += _i(it, "Fever Fill Rate") * 4
-        score += _i(it, "Fever Time") * 3
-        score += _i(it, "Combo Multiplier") * 2
-        score += _i(it, "Perfect Points")
-        if primary_color:
-            score += _i(it, primary_color) * 2
-        if secondary_color and secondary_color != primary_color:
-            score += _i(it, secondary_color)
-    return int(score)
 
 
 def _fg_proxy_from_items(items: list[dict], *, primary_color: str, secondary_color: str) -> int:

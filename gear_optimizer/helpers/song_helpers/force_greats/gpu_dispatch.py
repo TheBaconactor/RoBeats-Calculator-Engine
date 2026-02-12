@@ -273,6 +273,84 @@ def _entry_base_score(entry: dict) -> int:
         return 0
 
 
+def _stats_int(stats: dict | None, key: str) -> int:
+    try:
+        return int((stats or {}).get(key, 0) or 0)
+    except Exception:
+        return 0
+
+
+def _fg_proxy_from_base_stats(stats: dict | None, primary_color: str, secondary_color: str) -> int:
+    score = 0
+    score += _stats_int(stats, "Fever Multiplier") * 4
+    score += _stats_int(stats, "Fever Fill Rate") * 4
+    score += _stats_int(stats, "Fever Time") * 3
+    score += _stats_int(stats, "Combo Multiplier") * 2
+    score += _stats_int(stats, "Perfect Points")
+    if primary_color:
+        score += _stats_int(stats, primary_color) * 2
+    if secondary_color and secondary_color != primary_color:
+        score += _stats_int(stats, secondary_color)
+    return int(score)
+
+
+def _build_topk_keep_signature_set(
+    *,
+    items: list[tuple[str, dict]],
+    entry_sig: dict[int, str],
+    group_base_scores: dict,
+    group_fg_proxy_scores: dict,
+    base_keep_n: int,
+    fg_proxy_keep_n: int,
+    max_keep_total: int,
+) -> set[str]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def _add(sig: object) -> bool:
+        s = str(sig or "")
+        if not s or s in seen:
+            return False
+        seen.add(s)
+        ordered.append(s)
+        return True
+
+    if int(base_keep_n) > 0 and items:
+        top_base = sorted(items, key=lambda kv: (_entry_base_score(kv[1]), str(kv[0])), reverse=True)[: int(base_keep_n)]
+        for _hash, entry in top_base:
+            sig0 = entry_sig.get(int(id(entry)))
+            _add(sig0)
+
+    if int(fg_proxy_keep_n) > 0 and isinstance(group_fg_proxy_scores, dict):
+        proxy_rows: list[tuple[str, int, int]] = []
+        for key, sig_map in (group_fg_proxy_scores or {}).items():
+            if not isinstance(sig_map, dict):
+                continue
+            base_map = group_base_scores.get(key, {}) if isinstance(group_base_scores, dict) else {}
+            for sig, proxy_val in sig_map.items():
+                try:
+                    proxy_i = int(proxy_val or 0)
+                except Exception:
+                    proxy_i = 0
+                try:
+                    base_i = int(base_map.get(sig, 0) or 0) if isinstance(base_map, dict) else 0
+                except Exception:
+                    base_i = 0
+                proxy_rows.append((str(sig or ""), proxy_i, base_i))
+
+        proxy_rows.sort(key=lambda row: (-int(row[1]), -int(row[2]), row[0]))
+        added_proxy = 0
+        for sig, _proxy_i, _base_i in proxy_rows:
+            if _add(sig):
+                added_proxy += 1
+                if added_proxy >= int(fg_proxy_keep_n):
+                    break
+
+    if int(max_keep_total) > 0 and len(ordered) > int(max_keep_total):
+        ordered = ordered[: int(max_keep_total)]
+    return set(ordered)
+
+
 def _entry_fg_score(entry: dict) -> int:
     try:
         return int(entry.get("fg_score", 0) or 0)
@@ -301,6 +379,32 @@ def _is_valid_fg_config(cfg: dict) -> bool:
 
 def _entry_has_valid_fg_config(entry: dict) -> bool:
     return _is_valid_fg_config(_entry_fg_config_dict(entry))
+
+
+def _pending_entries_have_fg_improvement(pending: list) -> bool:
+    for item in pending or []:
+        entry = None
+        if isinstance(item, (tuple, list)) and item:
+            entry = item[0]
+        elif isinstance(item, dict):
+            entry = item
+        if not isinstance(entry, dict):
+            continue
+        if _entry_has_valid_fg_config(entry) and _entry_fg_score(entry) > _entry_base_score(entry):
+            return True
+    return False
+
+
+def _selected_count(selected_indices: object) -> int:
+    if selected_indices is None:
+        return 0
+    try:
+        return int(len(selected_indices))
+    except Exception:
+        try:
+            return int(getattr(selected_indices, "shape", (0,))[0] or 0)
+        except Exception:
+            return 0
 
 
 def process_force_greats_gpu_finder(
@@ -368,6 +472,7 @@ def process_force_greats_gpu_finder(
     # - Increase FG_DOWNLOAD_TOPK_K if you want to see more than the default top 51.
     _topk_env = str(os.environ.get("FG_DOWNLOAD_TOPK", "1") or "").strip().lower()
     download_topk_enabled = _topk_env in {"1", "true", "yes", "on"}
+    topk_retry_on_empty = _truthy_env("FG_DOWNLOAD_TOPK_RETRY_ON_EMPTY", "1")
     try:
         download_topk_k = int(os.environ.get("FG_DOWNLOAD_TOPK_K", str(LOADOUTS_PER_SONG_LIMIT)))
     except Exception:
@@ -745,6 +850,7 @@ def process_force_greats_gpu_finder(
     groups = {}
     group_reps = {}  # key -> sig -> representative base_stats dict
     group_base_scores = {}  # key -> sig -> base score for this signature
+    group_fg_proxy_scores = {}  # key -> sig -> FG-proxy score for this signature
     group_centers = {}  # key -> set of (center_ft, center_ff)
     group_ga_coords = {}  # key -> sig -> (ga_run_idx, ga_row_idx)
     # entry_obj_id -> stats signature (used for top-K download keep-mask)
@@ -841,6 +947,17 @@ def process_force_greats_gpu_finder(
         group_centers.setdefault(key, set()).add((int(center_ft), int(center_ff)))
         group_reps.setdefault(key, {}).setdefault(sig, base_stats)
         try:
+            proxy_i = _fg_proxy_from_base_stats(base_stats, str(p_color or ""), str(s_color or ""))
+        except Exception:
+            proxy_i = 0
+        try:
+            sig_proxy = group_fg_proxy_scores.setdefault(key, {})
+            prev_proxy = sig_proxy.get(sig)
+            if prev_proxy is None or int(proxy_i) > int(prev_proxy):
+                sig_proxy[sig] = int(proxy_i)
+        except Exception:
+            pass
+        try:
             ga_run_idx = eval_data.get("_ga_gpu_run_idx")
             ga_row_idx = eval_data.get("_ga_gpu_row_idx")
             if ga_run_idx is not None and ga_row_idx is not None:
@@ -860,25 +977,43 @@ def process_force_greats_gpu_finder(
     if perf:
         t_collect_sec = time.perf_counter() - _t_collect0
 
-    # Keep-mask for top-K downloads: always include top-base signatures so we can
-    # materialize FG details for retained (base) entries without downloading everything.
+    # Keep-mask for top-K downloads:
+    # - always include top-base signatures (retention stability), and
+    # - include a bounded slice of high FG-proxy signatures to avoid dropping
+    #   lower-base/high-FG candidates from materialization.
     keep_sigs: set[str] = set()
     if download_topk_enabled:
         try:
             items0 = list(loadout_entries.items()) if isinstance(loadout_entries, dict) else []
         except Exception:
             items0 = []
+        base_keep_n = int(LOADOUTS_PER_SONG_LIMIT)
+        try:
+            fg_proxy_keep_n = int(os.environ.get("FG_DOWNLOAD_KEEP_PROXY_SIGS", str(LOADOUTS_PER_SONG_LIMIT)) or 0)
+        except Exception:
+            fg_proxy_keep_n = int(LOADOUTS_PER_SONG_LIMIT)
+        fg_proxy_keep_n = max(0, int(fg_proxy_keep_n))
 
-        top_base0 = sorted(items0, key=lambda kv: _entry_base_score(kv[1]), reverse=True)[
-            : int(LOADOUTS_PER_SONG_LIMIT)
-        ]
-        for _h0, e0 in top_base0:
-            try:
-                sig0 = entry_sig.get(int(id(e0)))
-            except Exception:
-                sig0 = None
-            if sig0:
-                keep_sigs.add(str(sig0))
+        try:
+            topk_cap = int(getattr(fg_fields, "FG_DOWNLOAD_TOPK_MAX", 256) or 256)
+        except Exception:
+            topk_cap = 256
+        default_keep_cap = max(0, int(topk_cap) - min(int(topk_cap), int(download_topk_k)))
+        try:
+            max_keep_total = int(os.environ.get("FG_DOWNLOAD_KEEP_SIGS_MAX", str(default_keep_cap)) or 0)
+        except Exception:
+            max_keep_total = int(default_keep_cap)
+        max_keep_total = max(0, int(max_keep_total))
+
+        keep_sigs = _build_topk_keep_signature_set(
+            items=items0,
+            entry_sig=entry_sig,
+            group_base_scores=group_base_scores,
+            group_fg_proxy_scores=group_fg_proxy_scores,
+            base_keep_n=base_keep_n,
+            fg_proxy_keep_n=fg_proxy_keep_n,
+            max_keep_total=max_keep_total,
+        )
 
     hitsim_apply_to = _hitsim_apply_to(calc_song)
     chart_key = _chart_signature_key(calc_song)
@@ -2302,6 +2437,35 @@ def process_force_greats_gpu_finder(
                 result_g_ov=result_g_ov,
             )
 
+            if (
+                bool(download_topk_enabled)
+                and bool(topk_retry_on_empty)
+                and selected_indices is not None
+                and int(_selected_count(selected_indices)) < int(n_pending)
+                and not _pending_entries_have_fg_improvement(apply_pending)
+            ):
+                full_results = _submit_fg_download_global_best(n_pending, blocking=True)
+                _apply_gpu_results_to_entries(
+                    pending_sigs=pending_sigs,
+                    pending=pending,
+                    sig_map=sig_map,
+                    sel_color=str(sel_color),
+                    n_sections=int(n_sections),
+                    max_per_section=int(max_per_section),
+                    counts_list=[],
+                    fg_scorer=fg_scorer,
+                    result_final=full_results.get("final_score"),
+                    result_base=full_results.get("base_score"),
+                    result_cfg_idx=full_results.get("cfg_idx"),
+                    result_cfg_counts=full_results.get("cfg_counts"),
+                    result_ft=full_results.get("FT"),
+                    result_ff=full_results.get("FF"),
+                    result_g_pp=full_results.get("g_pp"),
+                    result_g_cm=full_results.get("g_cm"),
+                    result_g_fm=full_results.get("g_fm"),
+                    result_g_ov=full_results.get("g_ov"),
+                )
+
     if fused_payload_batch:
         _flush_fused_payload_batch()
 
@@ -2416,6 +2580,35 @@ def process_force_greats_gpu_finder(
                 result_g_fm=gpu_results["g_fm"],
                 result_g_ov=gpu_results["g_ov"],
             )
+
+            if (
+                bool(topk_retry_on_empty)
+                and ctx.get("download_topk") is not None
+                and selected_indices is not None
+                and int(_selected_count(selected_indices)) < int(n_pending)
+                and not _pending_entries_have_fg_improvement(apply_pending)
+            ):
+                full_results = _submit_fg_download_global_best(n_pending, blocking=True)
+                _apply_gpu_results_to_entries(
+                    pending_sigs=ctx.get("pending_sigs") or [],
+                    pending=ctx.get("pending") or [],
+                    sig_map=ctx.get("sig_map") or {},
+                    sel_color=str(ctx.get("sel_color") or ""),
+                    n_sections=int(ctx.get("n_sections") or 0),
+                    max_per_section=int(ctx.get("max_per_section") or 0),
+                    counts_list=[],
+                    fg_scorer=ctx.get("fg_scorer"),
+                    result_final=full_results.get("final_score"),
+                    result_base=full_results.get("base_score"),
+                    result_cfg_idx=full_results.get("cfg_idx"),
+                    result_cfg_counts=full_results.get("cfg_counts"),
+                    result_ft=full_results.get("FT"),
+                    result_ff=full_results.get("FF"),
+                    result_g_pp=full_results.get("g_pp"),
+                    result_g_cm=full_results.get("g_cm"),
+                    result_g_fm=full_results.get("g_fm"),
+                    result_g_ov=full_results.get("g_ov"),
+                )
 
     # ------------------------------------------------------------------
     # Build `fg_variants` only for the retained set (DB/UI retention).

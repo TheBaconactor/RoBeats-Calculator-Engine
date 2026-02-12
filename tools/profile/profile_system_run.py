@@ -15,8 +15,10 @@ This is intended to answer questions like:
 from __future__ import annotations
 
 import argparse
+import configparser
 import csv
 import datetime as _dt
+import importlib.util
 import json
 import os
 import platform
@@ -54,6 +56,8 @@ class RunPaths:
     cpu_jsonl: Path
     typeperf_csv: Path
     getcounter_csv: Path
+    stage_profile_json: Path
+    profile_events_jsonl: Path
     summary_json: Path
 
 
@@ -1635,6 +1639,7 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
     wait_sec_series: list[float] = []
     wait_rows: list[dict[str, Any]] = []
     exec_raw_intervals: list[tuple[float, float, str]] = []
+    exec_batch_req_series: list[float] = []
     fg_exec_events = 0
     fg_exec_total_sec = 0.0
     fg_intervals: list[tuple[float, float]] = []
@@ -1645,7 +1650,29 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
         "solve_force_greats_finder_gpu",
         "fg_reset_global_best",
         "fg_download_global_best",
+        "fg_solve_with_breakpoints",
+        "fg_solve_with_breakpoints_batch",
+        "ga_fg_fused_solve_with_breakpoints",
     }
+
+    def _batch_req_count(types: str) -> int:
+        total = 0
+        for tok in str(types or "").split(";"):
+            tok = tok.strip()
+            if not tok:
+                continue
+            if ":" in tok:
+                name, count_raw = tok.split(":", 1)
+                try:
+                    count = int(str(count_raw or "").strip())
+                except Exception:
+                    count = 1
+            else:
+                name = tok
+                count = 1
+            if str(name or "").strip():
+                total += max(1, int(count))
+        return int(total)
 
     def _types_has_fg(types: str) -> bool:
         types = (types or "").strip()
@@ -1713,6 +1740,9 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
                     end_ts = float(wall_ts)
                     start_ts = float(end_ts - exec_sec)
                     exec_raw_intervals.append((start_ts, end_ts, str(types)))
+                req_count = _batch_req_count(types)
+                if req_count > 0:
+                    exec_batch_req_series.append(float(req_count))
 
                 if not _types_has_fg(types):
                     continue
@@ -1914,6 +1944,7 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
         "idle_coalesce_gap_top": _top_windows(coalesce_windows),
         "exec_gap_sec": _series_stats(exec_gaps),
         "exec_gap_top": exec_gap_top,
+        "exec_batch_reqs": _series_stats(exec_batch_req_series) if exec_batch_req_series else {"count": 0},
         "fg_exec_events": int(fg_exec_events),
         "fg_exec_total_sec": float(fg_exec_total_sec),
         "fg_span_sec": float(fg_span_sec),
@@ -2265,9 +2296,381 @@ def _parse_cpu_jsonl(cpu_path: Path) -> dict[str, Any]:
     }
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        try:
+            return int(str(value).strip())
+        except Exception:
+            return int(default)
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        try:
+            return float(str(value).strip())
+        except Exception:
+            return float(default)
+
+
+def _cfg_get_bool(cfg: configparser.ConfigParser, section: str, key: str, default: bool = False) -> bool:
+    try:
+        return cfg.getboolean(section, key, fallback=default)
+    except Exception:
+        raw = ""
+        try:
+            raw = str(cfg.get(section, key, fallback=str(int(default))) or "").strip().lower()
+        except Exception:
+            raw = str(int(default))
+        return raw in {"1", "true", "yes", "on"}
+
+
+def _cfg_get_int(cfg: configparser.ConfigParser, section: str, key: str, default: int = 0) -> int:
+    try:
+        return int(str(cfg.get(section, key, fallback=str(default)) or str(default)).strip())
+    except Exception:
+        return int(default)
+
+
+def _cfg_get_text(cfg: configparser.ConfigParser, section: str, key: str, default: str = "") -> str:
+    try:
+        return str(cfg.get(section, key, fallback=default) or default)
+    except Exception:
+        return str(default)
+
+
+def _collect_effective_settings(child_env: dict[str, str]) -> dict[str, Any]:
+    cfg_path_raw = str(child_env.get("METAFINDER_CONFIG_PATH", "") or "").strip()
+    cfg_path = Path(cfg_path_raw) if cfg_path_raw else Path("config.ini")
+
+    cfg = configparser.ConfigParser()
+    cfg_loaded = False
+    cfg_error = ""
+    try:
+        if cfg_path.exists():
+            cfg.read(cfg_path, encoding="utf-8")
+            cfg_loaded = True
+        elif Path("config.ini").exists():
+            cfg_path = Path("config.ini")
+            cfg.read(cfg_path, encoding="utf-8")
+            cfg_loaded = True
+        else:
+            cfg_error = "config_not_found"
+    except Exception as exc:
+        cfg_error = f"{type(exc).__name__}: {exc}"
+
+    iteration = {
+        "GA_SearchDepth": _cfg_get_int(cfg, "IterationEngine", "GA_SearchDepth", 50),
+        "GA_MultiStart": _cfg_get_int(cfg, "IterationEngine", "GA_MultiStart", 1),
+        "GA_DBSeedProbability": _safe_float(_cfg_get_text(cfg, "IterationEngine", "GA_DBSeedProbability", "0.0"), 0.0),
+        "SongRepeats": _cfg_get_int(cfg, "IterationEngine", "SongRepeats", 1),
+        "InFlightSongs": _cfg_get_int(cfg, "IterationEngine", "InFlightSongs", 1),
+        "FG_CandidateLimit": _cfg_get_int(cfg, "IterationEngine", "FG_CandidateLimit", 51),
+        "FG_SearchRadius": _cfg_get_int(cfg, "IterationEngine", "FG_SearchRadius", 1),
+        "UseEvolutionDB": _cfg_get_bool(cfg, "IterationEngine", "UseEvolutionDB", True),
+    }
+    human_hit_sim = {
+        "Enabled": _cfg_get_bool(cfg, "HumanHitSim", "Enabled", False),
+        "ApplyTo": _cfg_get_text(cfg, "HumanHitSim", "ApplyTo", "none"),
+        "Seed": _cfg_get_int(cfg, "HumanHitSim", "Seed", 0),
+        "Distribution": _cfg_get_text(cfg, "HumanHitSim", "Distribution", "normal"),
+        "GreatMode": _cfg_get_text(cfg, "HumanHitSim", "GreatMode", "none"),
+    }
+
+    tracked_env = (
+        "METAFINDER_CONFIG_PATH",
+        "EVOLUTION_DB_PATH",
+        "GA_SEED",
+        "SONG_REPEATS",
+        "FG_SEARCH_RADIUS",
+        "SONG_QUEUE_LIMIT",
+        "DEBUG_PROFILE",
+        "METAFINDER_DEBUG_PROFILE",
+        "PERF_TIMING",
+        "GPU_EXECUTOR_PROFILE",
+        "INFLIGHT_STAGE_PROFILE",
+        "INFLIGHT_STAGE_PROFILE_PATH",
+        "METAFINDER_PROFILE_EVENTS",
+        "METAFINDER_PROFILE_EVENTS_PATH",
+        "METAFINDER_PROFILE_RUN_ID",
+    )
+    env_overrides: dict[str, str] = {}
+    for key in tracked_env:
+        value = str(child_env.get(key, "") or "").strip()
+        if value != "":
+            env_overrides[str(key)] = value
+
+    return {
+        "config_path": str(cfg_path),
+        "config_loaded": bool(cfg_loaded),
+        "config_error": str(cfg_error),
+        "IterationEngine": iteration,
+        "HumanHitSim": human_hit_sim,
+        "env_overrides": env_overrides,
+    }
+
+
+def _parse_stage_profile_json(stage_profile_path: Path) -> dict[str, Any]:
+    if not stage_profile_path.exists():
+        return {"ok": False, "error": "missing_stage_profile"}
+    try:
+        with stage_profile_path.open("r", encoding="utf-8") as f:
+            obj = json.load(f)
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+    if not isinstance(obj, dict):
+        return {"ok": False, "error": "invalid_payload"}
+    stages = obj.get("stages")
+    songs = obj.get("songs")
+    if not isinstance(stages, dict):
+        stages = {}
+    if not isinstance(songs, dict):
+        songs = {}
+    return {
+        "ok": True,
+        "path": str(stage_profile_path),
+        "total_wall_s": _safe_float(obj.get("total_wall_s", 0.0), 0.0),
+        "stages": stages,
+        "songs": songs,
+        "song_count": int(len(songs)),
+        "stage_count": int(len(stages)),
+    }
+
+
+def _parse_profile_events_jsonl(profile_events_path: Path) -> dict[str, Any]:
+    if not profile_events_path.exists():
+        return {"ok": False, "error": "missing_profile_events"}
+
+    samples = 0
+    component_counts: dict[str, int] = defaultdict(int)
+    event_counts: dict[str, int] = defaultdict(int)
+    first_ts_wall = None
+    last_ts_wall = None
+    pending_fg_points: list[tuple[float, float]] = []
+    backlog_points: list[tuple[float, float]] = []
+
+    try:
+        with profile_events_path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = str(line or "").strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(obj, dict):
+                    continue
+
+                samples += 1
+                component = str(obj.get("component", "") or "").strip()
+                event = str(obj.get("event", "") or "").strip()
+                if component:
+                    component_counts[component] = int(component_counts.get(component, 0)) + 1
+                if event:
+                    event_counts[event] = int(event_counts.get(event, 0)) + 1
+
+                ts_wall = _safe_float(obj.get("ts_wall", 0.0), 0.0)
+                if ts_wall > 0:
+                    if first_ts_wall is None or ts_wall < float(first_ts_wall):
+                        first_ts_wall = float(ts_wall)
+                    if last_ts_wall is None or ts_wall > float(last_ts_wall):
+                        last_ts_wall = float(ts_wall)
+
+                metrics = obj.get("metrics")
+                if not isinstance(metrics, dict):
+                    continue
+                pending_fg = _safe_int(metrics.get("pending_fg", -1), -1)
+                fg_futures = max(0, _safe_int(metrics.get("fg_futures", 0), 0))
+                pending_all = _safe_int(metrics.get("pending", -1), -1)
+
+                if pending_fg >= 0 and ts_wall > 0:
+                    pending_fg_points.append((float(ts_wall), float(pending_fg)))
+                    backlog_points.append((float(ts_wall), float(pending_fg + fg_futures)))
+                elif pending_all >= 0 and ts_wall > 0 and component == "app":
+                    backlog_points.append((float(ts_wall), float(pending_all)))
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    if samples <= 0:
+        return {"ok": False, "error": "no_samples"}
+
+    pending_fg_vals = [float(v) for _ts, v in pending_fg_points]
+    backlog_points_sorted = sorted(backlog_points, key=lambda t: t[0])
+    backlog_vals = [float(v) for _ts, v in backlog_points_sorted]
+    backlog_growth = 0.0
+    backlog_window_sec = 0.0
+    backlog_active_sec = 0.0
+    backlog_positive_ratio = 0.0
+    if len(backlog_points_sorted) >= 2:
+        backlog_growth = float(backlog_points_sorted[-1][1] - backlog_points_sorted[0][1])
+        backlog_window_sec = max(0.0, float(backlog_points_sorted[-1][0] - backlog_points_sorted[0][0]))
+        deltas: list[float] = []
+        for i in range(len(backlog_points_sorted) - 1):
+            a_ts, a_v = backlog_points_sorted[i]
+            b_ts, b_v = backlog_points_sorted[i + 1]
+            dt = max(0.0, float(b_ts - a_ts))
+            if float(a_v) > 0.0 or float(b_v) > 0.0:
+                backlog_active_sec += dt
+            deltas.append(float(b_v - a_v))
+        if deltas:
+            backlog_positive_ratio = float(sum(1 for d in deltas if d > 0.0) / len(deltas))
+
+    top_events = sorted(event_counts.items(), key=lambda kv: kv[1], reverse=True)[:20]
+    return {
+        "ok": True,
+        "path": str(profile_events_path),
+        "samples": int(samples),
+        "first_ts_wall": float(first_ts_wall) if first_ts_wall is not None else None,
+        "last_ts_wall": float(last_ts_wall) if last_ts_wall is not None else None,
+        "component_counts": {k: int(v) for k, v in sorted(component_counts.items(), key=lambda kv: kv[0])},
+        "event_counts_top": [{"event": str(k), "count": int(v)} for k, v in top_events],
+        "pending_fg": {
+            "count": int(len(pending_fg_vals)),
+            "stats": _series_stats(pending_fg_vals) if pending_fg_vals else {"count": 0},
+        },
+        "backlog": {
+            "count": int(len(backlog_vals)),
+            "stats": _series_stats(backlog_vals) if backlog_vals else {"count": 0},
+            "growth": float(backlog_growth),
+            "window_sec": float(backlog_window_sec),
+            "active_sec": float(backlog_active_sec),
+            "positive_delta_ratio": float(backlog_positive_ratio),
+        },
+    }
+
+
+def _load_analyze_run_module() -> Any | None:
+    module_path = Path(__file__).resolve().parent / "analyze_run.py"
+    if not module_path.exists():
+        return None
+    try:
+        spec = importlib.util.spec_from_file_location("tools_profile_analyze_run", str(module_path))
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    except Exception:
+        return None
+
+
+def _build_summary_v2(
+    *,
+    summary: dict[str, Any],
+    schema_version: int,
+    run_id: str,
+    effective_settings: dict[str, Any],
+    analyzer_result: dict[str, Any] | None,
+) -> dict[str, Any]:
+    trace = summary.get("gpu_executor_trace_summary") or {}
+    perf = summary.get("perf_stdout_summary") or {}
+    stage = summary.get("inflight_stage_profile") or {}
+    events = summary.get("profile_events_summary") or {}
+    gpu_summary = summary.get("gpu_summary") or {}
+    phase = summary.get("gpu_phase_summary") or {}
+    anomalies = list((analyzer_result or {}).get("anomalies") or [])
+
+    idle_no_work_p95_ms = _safe_float((trace.get("idle_no_work_gap_sec") or {}).get("p95", 0.0), 0.0) * 1000.0
+    idle_coalesce_p95_ms = _safe_float((trace.get("idle_coalesce_gap_sec") or {}).get("p95", 0.0), 0.0) * 1000.0
+    gpu_target_util_mean = _safe_float((gpu_summary.get("target_engine_util_pct_max") or {}).get("mean", 0.0), 0.0)
+
+    return {
+        "schema_version": int(schema_version),
+        "run_meta": {
+            "run_id": str(run_id),
+            "cmd": list(summary.get("cmd") or []),
+            "exit_code": summary.get("exit_code"),
+            "started_at_epoch_sec": summary.get("started_at_epoch_sec"),
+            "ended_at_epoch_sec": summary.get("ended_at_epoch_sec"),
+            "elapsed_sec": summary.get("elapsed_sec"),
+        },
+        "effective_settings": effective_settings,
+        "kpis": {
+            "elapsed_sec": _safe_float(summary.get("elapsed_sec", 0.0), 0.0),
+            "fg_exec_events": _safe_int(trace.get("fg_exec_events", 0), 0),
+            "fg_exec_total_sec": _safe_float(trace.get("fg_exec_total_sec", 0.0), 0.0),
+            "fg_span_sec": _safe_float(trace.get("fg_span_sec", 0.0), 0.0),
+            "idle_no_work_p95_ms": float(idle_no_work_p95_ms),
+            "idle_coalesce_p95_ms": float(idle_coalesce_p95_ms),
+            "gpu_target_util_mean_pct": float(gpu_target_util_mean),
+            "gpu_phase_fg_weighted_mean_pct": phase.get("fg_weighted_mean"),
+            "fg_task_pairs": _safe_int((perf.get("fg_task_trace") or {}).get("count_paired", 0), 0),
+        },
+        "resource": {
+            "cpu_summary": summary.get("cpu_summary") or {},
+            "gpu_summary": gpu_summary,
+            "gpu_phase_summary": phase,
+        },
+        "pipeline": {
+            "perf_stdout_summary": perf,
+            "inflight_stage_profile": stage,
+            "profile_events_summary": events,
+        },
+        "fg": {
+            "gpu_executor_trace": {
+                "fg_exec_events": _safe_int(trace.get("fg_exec_events", 0), 0),
+                "fg_exec_total_sec": _safe_float(trace.get("fg_exec_total_sec", 0.0), 0.0),
+                "fg_gap_sec": trace.get("fg_gap_sec") or {"count": 0},
+                "fg_intervals_count": int(len(trace.get("fg_intervals") or [])),
+            },
+            "gpu_request_type_summary": summary.get("gpu_request_type_summary") or {},
+            "fg_task_trace": (perf.get("fg_task_trace") or {}),
+        },
+        "anomalies": {
+            "count": int(len(anomalies)),
+            "top": anomalies[:5],
+            "all": anomalies,
+            "thresholds": (analyzer_result or {}).get("thresholds") or {},
+        },
+        "evidence": {
+            "paths": summary.get("paths") or {},
+            "gpu_exec_gap_top": (trace.get("exec_gap_top") or [])[:5],
+            "idle_no_work_gap_top": (trace.get("idle_no_work_gap_top") or [])[:5],
+            "idle_coalesce_gap_top": (trace.get("idle_coalesce_gap_top") or [])[:5],
+            "anomaly_evidence": [a.get("evidence") for a in anomalies[:5]],
+        },
+    }
+
+
+def _print_anomaly_table(anomalies: list[dict[str, Any]], *, limit: int = 5) -> None:
+    if not anomalies:
+        print("[profile_system_run] No bottlenecks detected by analyzer.")
+        return
+    print("[profile_system_run] Top bottlenecks:")
+    print("  rank  id                             severity  confidence  evidence")
+    for idx, item in enumerate(anomalies[: max(1, int(limit))], start=1):
+        aid = str(item.get("id", "unknown"))[:30]
+        sev = _safe_float(item.get("severity", 0.0), 0.0)
+        conf = _safe_float(item.get("confidence", 0.0), 0.0)
+        evidence = str(item.get("evidence_path", "") or "")
+        if len(evidence) > 70:
+            evidence = evidence[:67] + "..."
+        print(f"  {idx:>4}  {aid:<30}  {sev:>8.3f}  {conf:>10.3f}  {evidence}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Profile a MetaFinder run with system CPU/GPU sampling.")
     parser.add_argument("--out", type=str, default="", help="Output directory (default: artifacts/profile/run_<ts>)")
+    parser.add_argument(
+        "--deep",
+        action="store_true",
+        help="Enable full deep-run observability bundle (debug gate + perf + stage profile + profile events).",
+    )
+    parser.add_argument(
+        "--summary-schema-version",
+        type=int,
+        default=2,
+        help="Summary schema version to emit under summary_v2 (default: 2).",
+    )
+    parser.add_argument(
+        "--analyze",
+        action="store_true",
+        help="Run bottleneck analyzer and print top ranked findings.",
+    )
     parser.add_argument("--interval", type=float, default=0.5, help="Sampling interval (seconds)")
     parser.add_argument("--typeperf-interval", type=float, default=1.0, help="GPU sampling interval for typeperf")
     parser.add_argument(
@@ -2324,8 +2727,12 @@ def main(argv: list[str] | None = None) -> int:
         cpu_jsonl=out_dir / "cpu.jsonl",
         typeperf_csv=out_dir / "gpu_typeperf.csv",
         getcounter_csv=out_dir / "gpu_getcounter.csv",
+        stage_profile_json=out_dir / "inflight_stage_profile.json",
+        profile_events_jsonl=out_dir / "profile_events.jsonl",
         summary_json=out_dir / "summary.json",
     )
+
+    default_run_id = str(paths.out_dir.name or f"run_{_utc_ts()}").strip()
 
     try:
         typeperf_interval_sec_effective = max(1, int(round(float(ns.typeperf_interval) or 0.0)))
@@ -2333,20 +2740,21 @@ def main(argv: list[str] | None = None) -> int:
         typeperf_interval_sec_effective = 1
 
     child_env = os.environ.copy()
-    if ns.enable_perf_defaults:
+    bundle_enabled = bool(ns.enable_perf_defaults or ns.deep)
+    if bundle_enabled:
+        child_env.setdefault("DEBUG_PROFILE", "1")
+        child_env.setdefault("METAFINDER_DEBUG_PROFILE", "1")
         child_env.setdefault("PERF_TIMING", "1")
         child_env.setdefault("GPU_EXECUTOR_PROFILE", "1")
+        child_env.setdefault("INFLIGHT_STAGE_PROFILE", "1")
+        child_env.setdefault("INFLIGHT_STAGE_PROFILE_PATH", str(paths.stage_profile_json))
         child_env.setdefault("FG_TASK_TRACE", "1")
+    if ns.deep:
+        child_env.setdefault("METAFINDER_PROFILE_EVENTS", "1")
+        child_env.setdefault("METAFINDER_PROFILE_EVENTS_PATH", str(paths.profile_events_jsonl))
+        child_env.setdefault("METAFINDER_PROFILE_RUN_ID", default_run_id)
 
-    # If requested (or implied by perf defaults), capture a per-request trace from the GPU executor.
-    trace_path: Path | None = None
-    if ns.enable_gpu_executor_trace or ns.enable_perf_defaults:
-        if not str(child_env.get("GPU_EXECUTOR_TRACE_PATH", "") or "").strip():
-            trace_path = paths.out_dir / "gpu_executor_trace.csv"
-            child_env["GPU_EXECUTOR_TRACE_PATH"] = str(trace_path)
-        else:
-            trace_path = Path(str(child_env["GPU_EXECUTOR_TRACE_PATH"]))
-
+    # Explicit assignments from CLI are applied last.
     for assignment in ns.set_env:
         if "=" not in assignment:
             continue
@@ -2355,6 +2763,26 @@ def main(argv: list[str] | None = None) -> int:
         if not k:
             continue
         child_env[k] = v
+
+    # If requested (or implied by deep/perf bundle), capture a per-request trace from the GPU executor.
+    trace_path: Path | None = None
+    if ns.enable_gpu_executor_trace or bundle_enabled:
+        trace_env = str(child_env.get("GPU_EXECUTOR_TRACE_PATH", "") or "").strip()
+        if trace_env:
+            trace_path = Path(trace_env)
+        else:
+            trace_path = paths.out_dir / "gpu_executor_trace.csv"
+            child_env["GPU_EXECUTOR_TRACE_PATH"] = str(trace_path)
+
+    stage_profile_path = Path(str(child_env.get("INFLIGHT_STAGE_PROFILE_PATH", "") or "").strip() or paths.stage_profile_json)
+    events_path = Path(
+        str(
+            child_env.get("METAFINDER_PROFILE_EVENTS_PATH")
+            or child_env.get("PROFILE_EVENTS_PATH")
+            or paths.profile_events_jsonl
+        ).strip()
+    )
+    run_id = str(child_env.get("METAFINDER_PROFILE_RUN_ID", "") or child_env.get("PROFILE_RUN_ID", "") or default_run_id)
 
     with paths.stdout_log.open("w", encoding="utf-8", buffering=1) as log_f:
         t_wall0 = time.time()
@@ -2366,8 +2794,9 @@ def main(argv: list[str] | None = None) -> int:
             text=True,
             shell=False,
         )
+        proc_pid = int(proc.pid)
 
-        sampler = _CpuSampler(proc.pid, paths.cpu_jsonl, float(ns.interval))
+        sampler = _CpuSampler(proc_pid, paths.cpu_jsonl, float(ns.interval))
         sampler.start()
         typeperf_proc = None
         typeperf_started_at = None
@@ -2391,7 +2820,7 @@ def main(argv: list[str] | None = None) -> int:
                 typeperf_proc, typeperf_started_at, typeperf_target_pid_in_header = _start_typeperf_with_pid_retry(
                     paths.typeperf_csv,
                     interval_sec=float(typeperf_interval_sec_effective),
-                    target_pid=int(proc.pid),
+                    target_pid=int(proc_pid),
                     proc=proc,
                 )
         except Exception:
@@ -2403,7 +2832,7 @@ def main(argv: list[str] | None = None) -> int:
                 getcounter_proc = _start_getcounter_with_pid_retry(
                     paths.getcounter_csv,
                     interval_sec=float(ns.getcounter_interval),
-                    target_pid=int(proc.pid),
+                    target_pid=int(proc_pid),
                     proc=proc,
                 )
         except Exception:
@@ -2450,21 +2879,25 @@ def main(argv: list[str] | None = None) -> int:
             "gpu_typeperf_csv": str(paths.typeperf_csv),
             "gpu_getcounter_csv": str(paths.getcounter_csv),
             "gpu_executor_trace_csv": str(trace_path) if trace_path is not None else "",
+            "inflight_stage_profile_json": str(stage_profile_path),
+            "profile_events_jsonl": str(events_path),
         },
+        "run_id": str(run_id),
         "cpu_summary": _parse_cpu_jsonl(paths.cpu_jsonl),
         "gpu_summary": _parse_typeperf_csv(
             paths.typeperf_csv,
-            target_pid=int(proc.pid),
+            target_pid=int(proc_pid),
             luid_name_map=display_adapters,
         ),
         "gpu_executor_trace_summary": _parse_gpu_executor_trace(trace_path)
         if trace_path is not None
-        else {"ok": False},
+        else {"ok": False, "error": "missing_trace"},
         "host": {
             "platform": platform.platform(),
             "python": sys.version,
             "cpu_count_logical": int(os.cpu_count() or 0),
         },
+        "effective_settings": _collect_effective_settings(child_env),
     }
 
     # Optional: FG-phase GPU utilization breakdown using typeperf (GPU Engine util)
@@ -2474,7 +2907,7 @@ def main(argv: list[str] | None = None) -> int:
         intervals = trace_summary.get("fg_intervals") or []
         if intervals and typeperf_started_at is not None and paths.typeperf_csv.exists():
             # Prefer true wall-clock timestamps from typeperf (more accurate than approximating from start+interval).
-            util_ts = _load_typeperf_pid_util_timeseries(paths.typeperf_csv, target_pid=int(proc.pid))
+            util_ts = _load_typeperf_pid_util_timeseries(paths.typeperf_csv, target_pid=int(proc_pid))
             series_kind = "target_pid_engine_util_pct_max"
             if not util_ts:
                 util_ts = _load_typeperf_global_util_timeseries(paths.typeperf_csv)
@@ -2488,7 +2921,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             else:
                 # Fallback: approximate sampling times when we can't parse timestamps.
-                util_series = _load_typeperf_pid_util_series(paths.typeperf_csv, target_pid=int(proc.pid))
+                util_series = _load_typeperf_pid_util_series(paths.typeperf_csv, target_pid=int(proc_pid))
                 if not util_series:
                     util_series = _load_typeperf_global_util_series(paths.typeperf_csv)
                     series_kind = "global_engine_util_pct_max"
@@ -2512,7 +2945,7 @@ def main(argv: list[str] | None = None) -> int:
             if not by_label:
                 summary["gpu_request_type_summary"] = {"ok": False, "error": "missing_or_empty_trace"}
             else:
-                util_ts = _load_typeperf_pid_util_timeseries(paths.typeperf_csv, target_pid=int(proc.pid))
+                util_ts = _load_typeperf_pid_util_timeseries(paths.typeperf_csv, target_pid=int(proc_pid))
                 series_kind = "target_pid_engine_util_pct_max"
                 if not util_ts:
                     util_ts = _load_typeperf_global_util_timeseries(paths.typeperf_csv)
@@ -2532,7 +2965,7 @@ def main(argv: list[str] | None = None) -> int:
                         by_type[str(label)] = st
                 else:
                     # Fallback: approximate sample times when we can't parse timestamps.
-                    util_series = _load_typeperf_pid_util_series(paths.typeperf_csv, target_pid=int(proc.pid))
+                    util_series = _load_typeperf_pid_util_series(paths.typeperf_csv, target_pid=int(proc_pid))
                     if not util_series:
                         util_series = _load_typeperf_global_util_series(paths.typeperf_csv)
                         series_kind = "global_engine_util_pct_max"
@@ -2565,8 +2998,42 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         summary["perf_stdout_summary"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
 
+    # Optional: in-flight stage profiling JSON emitted by the run.
+    try:
+        summary["inflight_stage_profile"] = _parse_stage_profile_json(stage_profile_path)
+    except Exception as exc:
+        summary["inflight_stage_profile"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    # Optional: deep-run structured profile events.
+    try:
+        summary["profile_events_summary"] = _parse_profile_events_jsonl(events_path)
+    except Exception as exc:
+        summary["profile_events_summary"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    analyzer_result: dict[str, Any] | None = None
+    analyze_mod = _load_analyze_run_module()
+    if analyze_mod is not None and hasattr(analyze_mod, "analyze_summary"):
+        try:
+            analyzer_result = analyze_mod.analyze_summary(summary, events_path=events_path)
+        except Exception as exc:
+            analyzer_result = {"ok": False, "error": f"{type(exc).__name__}: {exc}", "anomalies": []}
+    elif ns.analyze:
+        print("[profile_system_run] Analyzer unavailable: tools/profile/analyze_run.py missing or invalid.")
+
+    if ns.summary_schema_version >= 2:
+        summary["summary_v2"] = _build_summary_v2(
+            summary=summary,
+            schema_version=int(ns.summary_schema_version),
+            run_id=str(run_id),
+            effective_settings=summary.get("effective_settings") or {},
+            analyzer_result=analyzer_result,
+        )
+
     with paths.summary_json.open("w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, sort_keys=True)
+
+    if ns.analyze and analyzer_result is not None:
+        _print_anomaly_table(list(analyzer_result.get("anomalies") or []), limit=5)
 
     print(f"[profile_system_run] Wrote: {paths.summary_json}")
     return 0 if exit_code == 0 else int(exit_code or 1)

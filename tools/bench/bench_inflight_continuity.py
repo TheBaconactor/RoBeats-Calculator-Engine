@@ -9,7 +9,7 @@ from pathlib import Path
 
 
 GPU_EXECUTOR_PROFILE_RE = re.compile(
-    r"^\[GpuExecutor\]\[PROFILE\]\s+wait=(?P<wait>[0-9.]+)s\s+exec=(?P<exec>[0-9.]+)s\s+util=(?P<util>[0-9.]+)%.*$"
+    r"^\[GpuExecutor\]\[PROFILE\]\s+wait=(?P<wait>[0-9.]+)s\s+exec=(?P<exec>[0-9.]+)s\s+(?:busy|util)=(?P<util>[0-9.]+)%.*$"
 )
 
 

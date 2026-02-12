@@ -41,6 +41,7 @@ from gear_optimizer.core.memory import (
     restart_process_for_memory_guard,
     MEMORY_GUARD_RESUME_FILE,
 )
+from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.pipeline.song_processor import safe_process_song_task, scan_song_header
 from gear_optimizer.data.csv_parser import (
     load_all_gears_list,
@@ -492,6 +493,11 @@ class GearOptimizerApp:
             db_display_name = os.path.basename(get_evolution_db_path())
             self._print_banner()
             print(f"[Run] Gear Optimizer started. DB file: {db_display_name}")
+            emit_profile_event(
+                component="app",
+                event="run_start",
+                metrics={"db_file": str(db_display_name)},
+            )
 
             init_db()
 
@@ -586,6 +592,11 @@ class GearOptimizerApp:
                 print(f"[Run] Queued {len(song_queue)} song(s) for processing.")
             except Exception:
                 pass
+            emit_profile_event(
+                component="app",
+                event="queue_built",
+                metrics={"queued_songs": int(queued_songs)},
+            )
 
             memory_resume_tracker = MemoryGuardResumeTracker(MEMORY_GUARD_RESUME_FILE)
             memory_resume_tracker.prime(song_queue, build_memory_guard_resume_context(*self._get_filter_params(cfg)))
@@ -612,6 +623,14 @@ class GearOptimizerApp:
                 fg_debug,
             )
             queued_tasks = len(tasks)
+            emit_profile_event(
+                component="app",
+                event="tasks_prepared",
+                metrics={
+                    "queued_songs": int(queued_songs),
+                    "queued_tasks": int(queued_tasks),
+                },
+            )
 
             parallel_workers = 1
 
@@ -680,6 +699,16 @@ class GearOptimizerApp:
                     )
                 except Exception:
                     pass
+            emit_profile_event(
+                component="app",
+                event="run_end",
+                metrics={
+                    "elapsed_sec": float(elapsed),
+                    "queued_songs": int(queued_songs),
+                    "queued_tasks": int(queued_tasks),
+                    "graceful_stop": int(bool(graceful_stop or self._stop_requested.is_set())),
+                },
+            )
             gc.collect()
 
         if graceful_stop or self._stop_requested.is_set():
@@ -2707,6 +2736,16 @@ class GearOptimizerApp:
                 break
 
             print(f"[{completed}/{total}] Completed: {task_label}")
+            emit_profile_event(
+                component="app",
+                event="task_completed",
+                song_key=str(task_key) if task_key else None,
+                metrics={
+                    "completed": int(completed),
+                    "total": int(total),
+                    "failed": int(failed),
+                },
+            )
             processed = int(completed - completed_offset)
             if processed > 0:
                 try:
@@ -2719,6 +2758,20 @@ class GearOptimizerApp:
                         print(f"[Throughput] {per_h:.1f} tasks/hour (avg {avg_s:.2f}s/task, ETA {eta_s / 60.0:.1f}m)")
                     else:
                         print(f"[Throughput] {per_h:.1f} tasks/hour (avg {avg_s:.2f}s/task)")
+                    emit_profile_event(
+                        component="app",
+                        event="throughput_snapshot",
+                        metrics={
+                            "processed": int(processed),
+                            "completed": int(completed),
+                            "total": int(total),
+                            "failed": int(failed),
+                            "tasks_per_hour": float(per_h),
+                            "avg_task_sec": float(avg_s),
+                            "remaining": int(rem),
+                            "eta_sec": float(eta_s),
+                        },
+                    )
                 except Exception:
                     pass
             print("=" * 60)

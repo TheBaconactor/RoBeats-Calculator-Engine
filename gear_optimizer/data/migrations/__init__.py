@@ -7,7 +7,7 @@ We use `PRAGMA user_version` as the single source of truth for schema state.
 from __future__ import annotations
 
 import sqlite3
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict
 
 Migration = Callable[[sqlite3.Connection], None]
 

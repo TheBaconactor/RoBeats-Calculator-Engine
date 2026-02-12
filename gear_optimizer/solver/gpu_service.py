@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 from gear_optimizer.core.env_config import ENV, env_flag
+from gear_optimizer.core.profile_events import emit_profile_event
 
 from .gpu_executor import (
     GpuExecutor,
@@ -317,6 +318,23 @@ class GpuServiceClient:
                         sample_list[j] = float(latency)
         except Exception:
             return
+        key_label = ""
+        try:
+            if isinstance(key, GpuRequestType):
+                key_label = str(key.value)
+            else:
+                key_label = str(key)
+        except Exception:
+            key_label = ""
+        emit_profile_event(
+            component="gpu_service",
+            event="latency_sample",
+            metrics={
+                "key": key_label,
+                "latency_sec": float(latency),
+                "sample_count": int(counts.get(key, 0) or 0),
+            },
+        )
 
     def submit_precompute_timeline(
         self,

@@ -39,6 +39,7 @@ from enum import Enum
 
 from gear_optimizer.core.env_config import ENV, TRUTHY_ENV_VALUES, env_flag
 from gear_optimizer.core.fallback_monitor import warn_fallback
+from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.types import JsonDict
 
 _ENV_GET = os.environ.get
@@ -634,22 +635,34 @@ class GpuExecutor:
         batch_size: int = 0,
         types: str = "",
     ) -> None:
-        fp = self._trace_fp
-        if fp is None:
-            return
         if self._trace_start_perf is None:
             self._trace_start_perf = perf_counter()
         if self._trace_start_wall is None:
             self._trace_start_wall = time.time()
         rel_ts = perf_counter() - float(self._trace_start_perf)
         wall_ts = time.time()
+        fp = self._trace_fp
         try:
-            fp.write(
-                f"{wall_ts:.6f},{rel_ts:.6f},{event},{float(wait_sec):.6f},{float(exec_sec):.6f},{int(batch_size)},"
-                f"{types},{int(bool(self._in_process_queues))}\n"
-            )
+            if fp is not None:
+                fp.write(
+                    f"{wall_ts:.6f},{rel_ts:.6f},{event},{float(wait_sec):.6f},{float(exec_sec):.6f},{int(batch_size)},"
+                    f"{types},{int(bool(self._in_process_queues))}\n"
+                )
         except Exception:
             pass
+        emit_profile_event(
+            component="gpu_executor",
+            event=f"trace::{str(event or '').strip().lower()}",
+            metrics={
+                "rel_ts": float(rel_ts),
+                "wait_sec": float(wait_sec),
+                "exec_sec": float(exec_sec),
+                "batch_size": int(batch_size),
+                "types": str(types or ""),
+                "in_process": int(bool(self._in_process_queues)),
+            },
+            ts_wall=float(wall_ts),
+        )
 
     def _maybe_live_report(self) -> None:
         if not self._live_enabled:

@@ -19,14 +19,12 @@ def _cfg_with_iteration_engine(**pairs: str) -> configparser.ConfigParser:
 
 def test_read_fg_scheduler_mode_defaults_to_continuous(monkeypatch):
     monkeypatch.delenv("INFLIGHT_FG_SCHEDULER", raising=False)
-    cfg = _cfg_with_iteration_engine()
-    assert _read_fg_scheduler_mode(cfg) == "continuous"
+    assert _read_fg_scheduler_mode() == "continuous"
 
 
-def test_read_fg_scheduler_mode_accepts_backlog_aliases(monkeypatch):
-    monkeypatch.delenv("INFLIGHT_FG_SCHEDULER", raising=False)
-    cfg = _cfg_with_iteration_engine(InFlight_FGScheduler="drain")
-    assert _read_fg_scheduler_mode(cfg) == "backlog"
+def test_read_fg_scheduler_mode_is_fixed_to_continuous(monkeypatch):
+    monkeypatch.setenv("INFLIGHT_FG_SCHEDULER", "backlog")
+    assert _read_fg_scheduler_mode() == "continuous"
 
 
 def test_read_fg_ga_credit_budget_default_and_overrides(monkeypatch):
@@ -34,6 +32,11 @@ def test_read_fg_ga_credit_budget_default_and_overrides(monkeypatch):
     monkeypatch.delenv("INFLIGHT_GA_CREDIT_BUDGET", raising=False)
 
     cfg = _cfg_with_iteration_engine()
+    budget, explicit = _read_fg_ga_credit_budget(cfg, default_budget=24)
+    assert budget == 24
+    assert explicit is False
+
+    monkeypatch.setenv("INFLIGHT_GA_CREDIT_BUDGET", "88")
     budget, explicit = _read_fg_ga_credit_budget(cfg, default_budget=24)
     assert budget == 24
     assert explicit is False

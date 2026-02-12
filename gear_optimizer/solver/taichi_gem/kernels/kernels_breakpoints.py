@@ -158,14 +158,12 @@ def _simulate_timeline_signature(
     MAX_SECTIONS: ti.i32 = 16
 
     # Lookup multipliers
-    ft_factor = kernels_helpers.ref_ft_field[ft_idx]
     ff_factor = kernels_helpers.ref_ff_field[ff_idx]
 
     # Compute fill and time parameters (game formula constants from constants.py)
     non_fever_cas = ti.cast(total_notes - long_notes, ti.f32) * 0.333  # FEVER_FILL_BASE_RATE
     non_fever_base_f = non_fever_cas * ff_factor
     non_fever_base = ti.i32(ti.ceil(non_fever_base_f))
-    real_fever_time = (last_note_time * 0.15 + 0.15) * ft_factor  # FEVER_TIME_SCALE + FEVER_TIME_OFFSET
 
     # Initialize fever mask bits
     m0: ti.u32 = 0
@@ -208,8 +206,6 @@ def _simulate_timeline_signature(
 
         if current_note > 0:
             fever_activations += 1
-            start_time = kernels_helpers.song_timestamps[current_note]
-            end_time = start_time + real_fever_time
             # NOTE: Requires precompute_fever_end_idx_kernel() to have populated
             # kernels_helpers.fever_end_idx_song for the current song/last_note_time.
             fever_end_idx = ti.min(kernels_helpers.fever_end_idx_song[current_note, ft_idx], total_notes)
