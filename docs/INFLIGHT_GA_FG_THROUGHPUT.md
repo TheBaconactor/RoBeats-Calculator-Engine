@@ -157,3 +157,50 @@ Note:
 
 - `songs_*_underrun_any_tier` is non-zero by design because `songs` tracks canonical (T5) song leaderboards,
   while `team_buff_loadouts` includes multiple team-buff tiers that can exceed T5 values.
+
+## FG_CandidateLimit quality-drop declaration (February 13, 2026)
+
+Goal:
+
+- Determine whether lowering `FG_CandidateLimit` from `200` to `100` causes a *real* quality drop, using a reproducible A/B protocol with statistical decision gates.
+
+Tools:
+
+- A/B harness: `tools/bench/ab_fg_candidate_limit_quality.py` (writes `analysis_report.json` per cohort)
+- Decision engine: `tools/bench/declare_fg_quality_drop.py` (consumes one or more `analysis_report.json` files and declares one of: `REAL_QUALITY_DROP_FOR_B`, `NO_REAL_QUALITY_DROP_FOR_B`, `INCONCLUSIVE`)
+
+Controls used for this declaration runset:
+
+- workload: `SONG_QUEUE_LIMIT=50`
+- determinism: fixed `GA_SEED` per cohort, `HumanHitSim.Seed=12345`, `PYTHONHASHSEED=0`
+- pipeline: sequential (`InFlightSongs=0` + `ALLOW_SEQUENTIAL_PIPELINE=1`)
+- audit safety: `FG_DOWNLOAD_TOPK=0` (avoid reduced-download artifacts during quality audits)
+
+Runset summary:
+
+- 5 GA seeds, 5 reps each (25 paired A/B runs total, 50 songs each)
+- Variants:
+  - A: `FG_CandidateLimit=200`
+  - B: `FG_CandidateLimit=100`
+
+Declaration artifact:
+
+- `artifacts/analysis/fg_quality_drop_decision_20260213_expanded2/quality_drop_declaration.json`
+
+Result:
+
+- Declaration: `NO_REAL_QUALITY_DROP_FOR_B`
+- Evidence (pair-level total FG-gain delta A-B):
+  - pairs: `25` (pos=7, neg=18, zero=0)
+  - one-sided `p_no_drop=0.021643`
+  - mean delta CI95: `[-74205.08, -6733.96]` (fully below 0)
+
+Re-run (fresh declaration):
+
+1) Produce cohort reports:
+
+- `python tools/bench/ab_fg_candidate_limit_quality.py --config config.ini --song-limit 50 --reps 5 --a 200 --b 100 --ga-seed 1337 --song-repeats 1 --hitsim-seed 12345 --allow-sequential --inflight-songs 0 --fg-download-topk 0 --outdir artifacts/analysis/ab_fg_candidate_limit_superreliable_seed1337`
+
+2) Declare using the decision engine:
+
+- `python tools/bench/declare_fg_quality_drop.py --a 200 --b 100 --source-report artifacts/analysis/ab_fg_candidate_limit_superreliable_seed1337/analysis_report.json --outdir artifacts/analysis/fg_quality_drop_decision_<ts>`
