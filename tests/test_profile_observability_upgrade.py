@@ -22,6 +22,20 @@ def _write_trace_csv(path: Path) -> None:
     )
 
 
+def _write_trace_csv_rich(path: Path) -> None:
+    path.write_text(
+        "\n".join(
+            [
+                "wall_ts,rel_ts,event,wait_sec,exec_sec,batch_size,types,in_process,planner_mode,queue_depth_hint,pressure_hint,work_units,dominant_type,dominant_share_pct,diversity_pct,avg_submit_age_ms",
+                "100.000000,0.000000,wait,0.040000,0.000000,0,,1,throughput,12,1.500,0.000,,0.00,0.00,2.500",
+                "100.050000,0.050000,exec,0.000000,0.020000,3,solve_genomes_parallel:2;solve_force_greats_finder_gpu:1,1,throughput,10,1.250,88.000,solve_genomes_parallel,66.67,35.00,4.000",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def _write_stage_profile_json(path: Path) -> None:
     payload = {
         "total_wall_s": 20.0,
@@ -87,6 +101,17 @@ def test_fg_trace_classifies_breakpoint_batch_labels(tmp_path):
     assert out["ok"] is True
     assert out["fg_exec_events"] == 1
     assert len(out["fg_intervals"]) == 1
+
+
+def test_fg_trace_parses_rich_workload_columns(tmp_path):
+    trace_path = tmp_path / "gpu_executor_trace_rich.csv"
+    _write_trace_csv_rich(trace_path)
+    out = psr._parse_gpu_executor_trace(trace_path)
+
+    assert out["ok"] is True
+    assert (out.get("work_units") or {}).get("count", 0) >= 1
+    assert (out.get("queue_depth_hint") or {}).get("mean", 0) >= 10
+    assert (out.get("planner_mode_counts") or {}).get("throughput", 0) >= 1
 
 
 def test_deep_mode_sets_debug_profile_bundle(tmp_path):

@@ -1640,6 +1640,13 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
     wait_rows: list[dict[str, Any]] = []
     exec_raw_intervals: list[tuple[float, float, str]] = []
     exec_batch_req_series: list[float] = []
+    queue_depth_hint_series: list[float] = []
+    pressure_hint_series: list[float] = []
+    work_units_series: list[float] = []
+    diversity_pct_series: list[float] = []
+    dominant_share_pct_series: list[float] = []
+    submit_age_ms_series: list[float] = []
+    planner_mode_counts: dict[str, int] = defaultdict(int)
     fg_exec_events = 0
     fg_exec_total_sec = 0.0
     fg_intervals: list[tuple[float, float]] = []
@@ -1689,6 +1696,18 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
                 return True
         return False
 
+    def _append_float(row: dict[str, Any], key: str, dst: list[float], *, non_negative: bool = False) -> None:
+        raw = row.get(key)
+        if raw is None or str(raw).strip() == "":
+            return
+        try:
+            value = float(raw)
+        except Exception:
+            return
+        if non_negative:
+            value = max(0.0, float(value))
+        dst.append(float(value))
+
     try:
         with trace_path.open("r", encoding="utf-8", newline="") as f:
             reader = csv.DictReader(f)
@@ -1696,6 +1715,15 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
                 if not row:
                     continue
                 samples += 1
+                planner_mode = str(row.get("planner_mode") or "").strip()
+                if planner_mode:
+                    planner_mode_counts[planner_mode] += 1
+                _append_float(row, "queue_depth_hint", queue_depth_hint_series, non_negative=False)
+                _append_float(row, "pressure_hint", pressure_hint_series, non_negative=True)
+                _append_float(row, "work_units", work_units_series, non_negative=True)
+                _append_float(row, "diversity_pct", diversity_pct_series, non_negative=True)
+                _append_float(row, "dominant_share_pct", dominant_share_pct_series, non_negative=True)
+                _append_float(row, "avg_submit_age_ms", submit_age_ms_series, non_negative=True)
                 event = (row.get("event") or "").strip().lower()
                 if event == "wait":
                     wait_events += 1
@@ -1883,6 +1911,15 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
             "idle_coalesce_gap_top": _top_windows(coalesce_windows),
             "exec_gap_sec": _series_stats(exec_gaps),
             "exec_gap_top": exec_gap_top,
+            "planner_mode_counts": {str(k): int(v) for k, v in sorted(planner_mode_counts.items(), key=lambda kv: kv[0])},
+            "queue_depth_hint": _series_stats(queue_depth_hint_series) if queue_depth_hint_series else {"count": 0},
+            "pressure_hint": _series_stats(pressure_hint_series) if pressure_hint_series else {"count": 0},
+            "work_units": _series_stats(work_units_series) if work_units_series else {"count": 0},
+            "diversity_pct": _series_stats(diversity_pct_series) if diversity_pct_series else {"count": 0},
+            "dominant_share_pct": (
+                _series_stats(dominant_share_pct_series) if dominant_share_pct_series else {"count": 0}
+            ),
+            "submit_age_ms": _series_stats(submit_age_ms_series) if submit_age_ms_series else {"count": 0},
             "fg_exec_events": int(fg_exec_events),
             "fg_exec_total_sec": float(fg_exec_total_sec),
             "fg_intervals": [],
@@ -1945,6 +1982,13 @@ def _parse_gpu_executor_trace(trace_path: Path) -> dict[str, Any]:
         "exec_gap_sec": _series_stats(exec_gaps),
         "exec_gap_top": exec_gap_top,
         "exec_batch_reqs": _series_stats(exec_batch_req_series) if exec_batch_req_series else {"count": 0},
+        "planner_mode_counts": {str(k): int(v) for k, v in sorted(planner_mode_counts.items(), key=lambda kv: kv[0])},
+        "queue_depth_hint": _series_stats(queue_depth_hint_series) if queue_depth_hint_series else {"count": 0},
+        "pressure_hint": _series_stats(pressure_hint_series) if pressure_hint_series else {"count": 0},
+        "work_units": _series_stats(work_units_series) if work_units_series else {"count": 0},
+        "diversity_pct": _series_stats(diversity_pct_series) if diversity_pct_series else {"count": 0},
+        "dominant_share_pct": _series_stats(dominant_share_pct_series) if dominant_share_pct_series else {"count": 0},
+        "submit_age_ms": _series_stats(submit_age_ms_series) if submit_age_ms_series else {"count": 0},
         "fg_exec_events": int(fg_exec_events),
         "fg_exec_total_sec": float(fg_exec_total_sec),
         "fg_span_sec": float(fg_span_sec),

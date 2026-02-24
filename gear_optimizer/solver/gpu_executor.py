@@ -30,8 +30,9 @@ import atexit
 import traceback
 import time
 import random
+import math
 from pathlib import Path
-from collections import defaultdict, OrderedDict
+from collections import defaultdict, OrderedDict, deque
 from time import perf_counter
 from dataclasses import dataclass
 from typing import Any, Optional, Dict
@@ -87,6 +88,17 @@ class GpuResponse:
     success: bool
     result: Any = None
     error: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class _BatchPlan:
+    """Batch gather decision metadata for one executor loop."""
+
+    wait_ms: int
+    max_batch: int
+    mode: str
+    queue_depth_hint: int
+    pressure_hint: float
 
 
 # Global state for worker processes
@@ -162,6 +174,29 @@ class GpuExecutor:
 
     _instance = None
     _lock = threading.Lock()
+    _FG_REQUEST_TYPES = frozenset(
+        {
+            GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
+            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
+            GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
+            GpuRequestType.FG_RESET_GLOBAL_BEST,
+            GpuRequestType.FG_DOWNLOAD_GLOBAL_BEST,
+            GpuRequestType.FG_COMPUTE_BREAKPOINTS,
+            GpuRequestType.PROCESS_FORCE_GREATS,
+        }
+    )
+    _COALESCABLE_REQUEST_TYPES = frozenset(
+        {
+            GpuRequestType.SOLVE_GENOMES_PARALLEL,
+            GpuRequestType.GPU_NATIVE_GA_RUN,
+            GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
+            GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
+            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
+            GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
+        }
+    )
 
     def __new__(cls):
         """Singleton pattern."""
@@ -241,6 +276,29 @@ class GpuExecutor:
         self._live_wait_sec = 0.0
         self._live_exec_sec = 0.0
         self._live_type_counts = defaultdict(int)
+        self._last_batch_plan_mode = "balanced"
+
+        # Workload-level observability (profiling-only in this phase).
+        self._workload_profile_enabled = bool(self._profile_enabled or env_flag("GPU_EXECUTOR_WORKLOAD_PROFILE", "0"))
+        try:
+            interval_raw = float(
+                str(_ENV_GET("GPU_EXECUTOR_WORKLOAD_PROFILE_INTERVAL_SEC", "2.0") or "2.0").strip()
+            )
+        except Exception:
+            interval_raw = 2.0
+        self._workload_profile_interval_sec = max(0.2, float(interval_raw))
+        self._workload_profile_last_emit_ts: Optional[float] = None
+        self._workload_events_emitted = 0
+        self._workload_batch_seq = 0
+        self._workload_recent_batches: deque[dict[str, Any]] = deque(maxlen=256)
+        self._workload_mode_counts = defaultdict(int)
+        self._workload_mode_wait_sec = defaultdict(float)
+        self._workload_mode_exec_sec = defaultdict(float)
+        self._workload_queue_depth_samples: deque[float] = deque(maxlen=4096)
+        self._workload_age_ms_samples: deque[float] = deque(maxlen=4096)
+        self._workload_units_samples: deque[float] = deque(maxlen=4096)
+        self._workload_diversity_samples: deque[float] = deque(maxlen=4096)
+        self._workload_pressure_samples: deque[float] = deque(maxlen=4096)
 
         # Dispatch table (reduces branching in the hot loop and centralizes request routing).
         self._dispatch = {
@@ -344,6 +402,292 @@ class GpuExecutor:
         except Exception:
             return
 
+    @staticmethod
+    def _size_hint(value: Any) -> int:
+        if value is None:
+            return 0
+        try:
+            shape = getattr(value, "shape", None)
+            if shape is not None and len(shape) > 0:
+                return max(0, int(shape[0]))
+        except Exception:
+            pass
+        try:
+            return max(0, int(len(value)))
+        except Exception:
+            return 0
+
+    def _safe_qsize(self) -> int:
+        q = self._request_queue
+        if q is None:
+            return -1
+        try:
+            size = q.qsize()
+        except (NotImplementedError, AttributeError):
+            return -1
+        except Exception:
+            return -1
+        try:
+            return max(0, int(size))
+        except Exception:
+            return -1
+
+    def _estimate_request_work_units(self, request: "GpuRequest") -> float:
+        req_type = getattr(request, "request_type", None)
+        payload = self._payload_dict(request)
+
+        if req_type == GpuRequestType.SOLVE_GENOMES_PARALLEL:
+            n = self._size_hint(payload.get("genome_stats_list"))
+            return float(max(1, n))
+
+        if req_type == GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY:
+            n = self._size_hint(payload.get("population_indices"))
+            return float(max(1, n))
+
+        if req_type == GpuRequestType.OPTIMIZE_GEMS_BATCH:
+            n = self._size_hint(payload.get("batch_input"))
+            return float(max(1, n))
+
+        if req_type == GpuRequestType.GPU_NATIVE_GA_RUN:
+            n_genomes = int(payload.get("n_genomes", 0) or 0)
+            if n_genomes <= 0:
+                n_genomes = self._size_hint(payload.get("initial_populations"))
+            n_generations = max(1, int(payload.get("n_generations", 1) or 1))
+            runs = max(1, int(payload.get("num_runs", 1) or 1))
+            return float(max(1, n_genomes) * n_generations * runs)
+
+        if req_type == GpuRequestType.SOLVE_FORCE_GREATS_FINDER:
+            kwargs = payload.get("kwargs")
+            if not isinstance(kwargs, dict):
+                return 1.0
+            fg_tasks = kwargs.get("fg_tasks")
+            if isinstance(fg_tasks, (list, tuple)) and fg_tasks:
+                pair_total = 0
+                for task in fg_tasks:
+                    if isinstance(task, dict):
+                        pair_total += max(1, self._size_hint(task.get("ftff_pairs")))
+                n_genomes = int(kwargs.get("n_genomes_override", 0) or 0)
+                if n_genomes <= 0:
+                    args = payload.get("args")
+                    if isinstance(args, (list, tuple)) and args:
+                        n_genomes = self._size_hint(args[0])
+                n_genomes = max(1, n_genomes)
+                return float(max(1, pair_total) * n_genomes)
+            ftff_chunks = kwargs.get("ftff_chunks")
+            if isinstance(ftff_chunks, (list, tuple)) and ftff_chunks:
+                return float(max(1, len(ftff_chunks)))
+            return 1.0
+
+        if req_type == GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH:
+            payloads = payload.get("payloads")
+            if not isinstance(payloads, (list, tuple)):
+                return 1.0
+            pair_total = 0
+            for item in payloads:
+                if isinstance(item, dict):
+                    pair_total += max(1, self._size_hint(item.get("ftff_pairs")))
+                else:
+                    pair_total += 1
+            return float(max(1, pair_total))
+
+        if req_type in (GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS, GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS):
+            return float(max(1, self._size_hint(payload.get("ftff_pairs"))))
+
+        if req_type in (GpuRequestType.LOAD_REF_ARRAYS, GpuRequestType.PRECOMPUTE_TIMELINE):
+            return 0.25
+
+        if req_type == GpuRequestType.SHUTDOWN:
+            return 0.0
+
+        return 1.0
+
+    def _summarize_batch(self, batch: list["GpuRequest"], *, plan: _BatchPlan, wait_sec: float) -> dict[str, Any]:
+        non_shutdown = [req for req in (batch or []) if req.request_type != GpuRequestType.SHUTDOWN]
+        by_type = defaultdict(int)
+        coalescable_count = 0
+        fg_count = 0
+        units_total = 0.0
+        age_ms: list[float] = []
+
+        for req in non_shutdown:
+            rt = req.request_type
+            by_type[rt] += 1
+            if rt in self._COALESCABLE_REQUEST_TYPES:
+                coalescable_count += 1
+            if rt in self._FG_REQUEST_TYPES:
+                fg_count += 1
+            units_total += float(self._estimate_request_work_units(req))
+
+            try:
+                submit_ns = int(getattr(req, "submit_perf_ns", 0) or 0)
+                dequeue_ns = int(getattr(req, "dequeue_perf_ns", 0) or 0)
+                if submit_ns > 0 and dequeue_ns > submit_ns:
+                    age_ms.append(max(0.0, float(dequeue_ns - submit_ns) / 1e6))
+            except Exception:
+                continue
+
+        total = int(len(non_shutdown))
+        distinct = int(len(by_type))
+        dominant_type = ""
+        dominant_count = 0
+        if by_type:
+            dominant_rt, dominant_count = max(by_type.items(), key=lambda kv: kv[1])
+            dominant_type = str(dominant_rt.value)
+
+        dominant_share_pct = (float(dominant_count) / float(total) * 100.0) if total > 0 else 0.0
+        diversity_pct = 0.0
+        if total > 0 and distinct > 1:
+            entropy = 0.0
+            for count in by_type.values():
+                p = float(count) / float(total)
+                if p > 0.0:
+                    entropy -= p * math.log(p, 2)
+            max_entropy = math.log(float(distinct), 2)
+            if max_entropy > 0.0:
+                diversity_pct = float(entropy / max_entropy * 100.0)
+
+        oldest_age_ms = float(max(age_ms)) if age_ms else 0.0
+        avg_age_ms = (float(sum(age_ms)) / float(len(age_ms))) if age_ms else 0.0
+
+        type_compact = ";".join(f"{rt.value}:{int(n)}" for rt, n in sorted(by_type.items(), key=lambda kv: kv[0].value))
+        return {
+            "batch_id": int(self._workload_batch_seq),
+            "mode": str(plan.mode),
+            "wait_ms": float(max(0.0, float(wait_sec) * 1000.0)),
+            "batch_wait_ms_target": int(plan.wait_ms),
+            "batch_max_target": int(plan.max_batch),
+            "queue_depth_hint": int(plan.queue_depth_hint),
+            "pressure_hint": float(plan.pressure_hint),
+            "size": int(total),
+            "distinct_types": int(distinct),
+            "coalescable_count": int(coalescable_count),
+            "fg_count": int(fg_count),
+            "dominant_type": str(dominant_type),
+            "dominant_share_pct": float(dominant_share_pct),
+            "diversity_pct": float(diversity_pct),
+            "work_units": float(max(0.0, units_total)),
+            "avg_work_units_per_req": (float(units_total) / float(total)) if total > 0 else 0.0,
+            "oldest_submit_age_ms": float(oldest_age_ms),
+            "avg_submit_age_ms": float(avg_age_ms),
+            "types": str(type_compact),
+        }
+
+    def _record_workload_batch(self, metrics: dict[str, Any]) -> None:
+        if not metrics:
+            return
+        self._workload_recent_batches.append(dict(metrics))
+        self._workload_mode_counts[str(metrics.get("mode") or "unknown")] += 1
+        self._workload_mode_wait_sec[str(metrics.get("mode") or "unknown")] += (
+            float(metrics.get("wait_ms", 0.0) or 0.0) / 1000.0
+        )
+        self._workload_mode_exec_sec[str(metrics.get("mode") or "unknown")] += float(metrics.get("exec_sec", 0.0) or 0.0)
+        self._workload_queue_depth_samples.append(float(metrics.get("queue_depth_hint", 0.0) or 0.0))
+        self._workload_age_ms_samples.append(float(metrics.get("avg_submit_age_ms", 0.0) or 0.0))
+        self._workload_units_samples.append(float(metrics.get("work_units", 0.0) or 0.0))
+        self._workload_diversity_samples.append(float(metrics.get("diversity_pct", 0.0) or 0.0))
+        self._workload_pressure_samples.append(float(metrics.get("pressure_hint", 0.0) or 0.0))
+        self._last_batch_plan_mode = str(metrics.get("mode") or self._last_batch_plan_mode)
+
+        if self._workload_profile_enabled:
+            batch_id = int(metrics.get("batch_id", 0) or 0)
+            pressure = float(metrics.get("pressure_hint", 0.0) or 0.0)
+            mode = str(metrics.get("mode") or "")
+            should_emit = batch_id <= 12 or (batch_id % 64 == 0) or pressure >= 1.0 or mode in {
+                "fg_recovery",
+                "throughput",
+            }
+            if should_emit:
+                emit_profile_event(
+                    component="gpu_executor",
+                    event="workload::batch",
+                    metrics={
+                        "batch_id": int(batch_id),
+                        "mode": str(mode),
+                        "size": int(metrics.get("size", 0) or 0),
+                        "types": str(metrics.get("types", "")),
+                        "dominant_type": str(metrics.get("dominant_type", "")),
+                        "dominant_share_pct": float(metrics.get("dominant_share_pct", 0.0) or 0.0),
+                        "diversity_pct": float(metrics.get("diversity_pct", 0.0) or 0.0),
+                        "work_units": float(metrics.get("work_units", 0.0) or 0.0),
+                        "queue_depth_hint": int(metrics.get("queue_depth_hint", -1) or -1),
+                        "avg_submit_age_ms": float(metrics.get("avg_submit_age_ms", 0.0) or 0.0),
+                        "wait_ms": float(metrics.get("wait_ms", 0.0) or 0.0),
+                        "exec_ms": float(metrics.get("exec_sec", 0.0) or 0.0) * 1000.0,
+                    },
+                )
+                self._workload_events_emitted += 1
+            self._maybe_emit_workload_profile()
+
+    @staticmethod
+    def _p95(values: list[float] | deque[float]) -> float:
+        if not values:
+            return 0.0
+        data = sorted(float(v) for v in values)
+        idx = int(round(0.95 * (len(data) - 1)))
+        idx = max(0, min(idx, len(data) - 1))
+        return float(data[idx])
+
+    def _maybe_emit_workload_profile(self, *, force: bool = False) -> None:
+        if not self._workload_profile_enabled:
+            return
+        now = perf_counter()
+        if not force:
+            if self._workload_profile_last_emit_ts is None:
+                self._workload_profile_last_emit_ts = now
+                return
+            if (now - float(self._workload_profile_last_emit_ts)) < float(self._workload_profile_interval_sec):
+                return
+
+        window = list(self._workload_recent_batches)
+        if not window:
+            self._workload_profile_last_emit_ts = now
+            return
+
+        n = float(len(window))
+        total_wait = float(sum(float(item.get("wait_ms", 0.0) or 0.0) for item in window))
+        total_exec_ms = float(sum(float(item.get("exec_sec", 0.0) or 0.0) for item in window) * 1000.0)
+        total = total_wait + total_exec_ms
+        busy_pct = (total_exec_ms / total * 100.0) if total > 0 else 0.0
+        avg_batch = float(sum(float(item.get("size", 0.0) or 0.0) for item in window) / n)
+        avg_units = float(sum(float(item.get("work_units", 0.0) or 0.0) for item in window) / n)
+        avg_diversity = float(sum(float(item.get("diversity_pct", 0.0) or 0.0) for item in window) / n)
+        avg_qdepth = float(sum(float(item.get("queue_depth_hint", 0.0) or 0.0) for item in window) / n)
+        fg_share = float(
+            sum(float(item.get("fg_count", 0.0) or 0.0) for item in window)
+            / max(1.0, sum(float(item.get("size", 0.0) or 0.0) for item in window))
+            * 100.0
+        )
+        mode_counts = defaultdict(int)
+        for item in window:
+            mode_counts[str(item.get("mode") or "unknown")] += 1
+        top_modes = sorted(mode_counts.items(), key=lambda kv: kv[1], reverse=True)[:3]
+        mode_str = ",".join(f"{k}:{int(v)}" for k, v in top_modes)
+
+        emit_profile_event(
+            component="gpu_executor",
+            event="workload::window",
+            metrics={
+                "batches": int(len(window)),
+                "busy_pct": float(busy_pct),
+                "avg_batch": float(avg_batch),
+                "avg_work_units": float(avg_units),
+                "avg_diversity_pct": float(avg_diversity),
+                "avg_queue_depth_hint": float(avg_qdepth),
+                "fg_share_pct": float(fg_share),
+                "mode_top": str(mode_str),
+            },
+        )
+        self._workload_events_emitted += 1
+        self._workload_profile_last_emit_ts = now
+
+        if self._profile_enabled:
+            print(
+                "[GpuExecutor][WORKLOAD] "
+                f"window_batches={len(window)} busy={busy_pct:.1f}% avg_batch={avg_batch:.2f} "
+                f"avg_units={avg_units:.1f} fg_share={fg_share:.1f}% qdepth~={avg_qdepth:.1f} "
+                f"diversity={avg_diversity:.1f}% modes=[{mode_str}]"
+            )
+
     def _handle_solve_genomes_parallel(self, request: GpuRequest) -> GpuResponse:
         payload = request.payload or {}
         try:
@@ -435,7 +779,11 @@ class GpuExecutor:
                 Path(trace_path).parent.mkdir(parents=True, exist_ok=True)
                 self._trace_fp = open(trace_path, "a", encoding="utf-8", buffering=1)
                 if self._trace_fp.tell() == 0:
-                    self._trace_fp.write("wall_ts,rel_ts,event,wait_sec,exec_sec,batch_size,types,in_process\n")
+                    self._trace_fp.write(
+                        "wall_ts,rel_ts,event,wait_sec,exec_sec,batch_size,types,in_process,"
+                        "planner_mode,queue_depth_hint,pressure_hint,work_units,dominant_type,"
+                        "dominant_share_pct,diversity_pct,avg_submit_age_ms\n"
+                    )
             except Exception:
                 self._trace_fp = None
 
@@ -589,6 +937,57 @@ class GpuExecutor:
                     print(f"[GpuExecutor][IDLE] transitions=[{', '.join(parts)}]")
             except Exception:
                 pass
+            try:
+                self._maybe_emit_workload_profile(force=True)
+            except Exception:
+                pass
+            try:
+                if self._workload_recent_batches:
+                    window = list(self._workload_recent_batches)
+                    n = float(len(window))
+                    avg_units = float(sum(float(b.get("work_units", 0.0) or 0.0) for b in window) / n)
+                    avg_div = float(sum(float(b.get("diversity_pct", 0.0) or 0.0) for b in window) / n)
+                    avg_q = float(sum(float(b.get("queue_depth_hint", 0.0) or 0.0) for b in window) / n)
+                    avg_age_ms = float(sum(float(b.get("avg_submit_age_ms", 0.0) or 0.0) for b in window) / n)
+                    p95_age_ms = self._p95(self._workload_age_ms_samples)
+                    p95_units = self._p95(self._workload_units_samples)
+                    p95_div = self._p95(self._workload_diversity_samples)
+                    p95_q = self._p95(self._workload_queue_depth_samples)
+                    mode_top = sorted(self._workload_mode_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
+                    mode_str = ", ".join(f"{name}:{int(count)}" for name, count in mode_top)
+                    print(
+                        "[GpuExecutor][WORKLOAD][SUMMARY] "
+                        f"batches={len(window)} avg_units={avg_units:.1f} p95_units={p95_units:.1f} "
+                        f"avg_diversity={avg_div:.1f}% p95_diversity={p95_div:.1f}% "
+                        f"avg_qdepth={avg_q:.1f} p95_qdepth={p95_q:.1f} "
+                        f"avg_submit_age={avg_age_ms:.2f}ms p95_submit_age={p95_age_ms:.2f}ms "
+                        f"events={self._workload_events_emitted} modes=[{mode_str}]"
+                    )
+                    emit_profile_event(
+                        component="gpu_executor",
+                        event="workload::summary",
+                        metrics={
+                            "batches": int(len(window)),
+                            "avg_work_units": float(avg_units),
+                            "p95_work_units": float(p95_units),
+                            "avg_diversity_pct": float(avg_div),
+                            "p95_diversity_pct": float(p95_div),
+                            "avg_queue_depth_hint": float(avg_q),
+                            "p95_queue_depth_hint": float(p95_q),
+                            "avg_submit_age_ms": float(avg_age_ms),
+                            "p95_submit_age_ms": float(p95_age_ms),
+                            "events_emitted": int(self._workload_events_emitted),
+                            "last_mode": str(self._last_batch_plan_mode),
+                        },
+                    )
+            except Exception:
+                pass
+
+        if self._workload_profile_enabled and (not self._profile_enabled):
+            try:
+                self._maybe_emit_workload_profile(force=True)
+            except Exception:
+                pass
 
         if os.environ.get("TAICHI_KERNEL_PROFILER_PRINT", "0").strip().lower() in {"1", "true", "yes", "on"}:
             try:
@@ -634,6 +1033,14 @@ class GpuExecutor:
         exec_sec: float = 0.0,
         batch_size: int = 0,
         types: str = "",
+        planner_mode: str = "",
+        queue_depth_hint: int = -1,
+        pressure_hint: float = 0.0,
+        work_units: float = 0.0,
+        dominant_type: str = "",
+        dominant_share_pct: float = 0.0,
+        diversity_pct: float = 0.0,
+        avg_submit_age_ms: float = 0.0,
     ) -> None:
         if self._trace_start_perf is None:
             self._trace_start_perf = perf_counter()
@@ -646,7 +1053,9 @@ class GpuExecutor:
             if fp is not None:
                 fp.write(
                     f"{wall_ts:.6f},{rel_ts:.6f},{event},{float(wait_sec):.6f},{float(exec_sec):.6f},{int(batch_size)},"
-                    f"{types},{int(bool(self._in_process_queues))}\n"
+                    f"{types},{int(bool(self._in_process_queues))},{str(planner_mode)},{int(queue_depth_hint)},"
+                    f"{float(pressure_hint):.3f},{float(work_units):.3f},{str(dominant_type)},"
+                    f"{float(dominant_share_pct):.2f},{float(diversity_pct):.2f},{float(avg_submit_age_ms):.3f}\n"
                 )
         except Exception:
             pass
@@ -660,6 +1069,14 @@ class GpuExecutor:
                 "batch_size": int(batch_size),
                 "types": str(types or ""),
                 "in_process": int(bool(self._in_process_queues)),
+                "planner_mode": str(planner_mode or ""),
+                "queue_depth_hint": int(queue_depth_hint),
+                "pressure_hint": float(pressure_hint),
+                "work_units": float(work_units),
+                "dominant_type": str(dominant_type or ""),
+                "dominant_share_pct": float(dominant_share_pct),
+                "diversity_pct": float(diversity_pct),
+                "avg_submit_age_ms": float(avg_submit_age_ms),
             },
             ts_wall=float(wall_ts),
         )
@@ -754,6 +1171,8 @@ class GpuExecutor:
         while self._running:
             batch: list[GpuRequest] = []
             responded_ids: set[int] = set()
+            batch_metrics: dict[str, Any] = {}
+            trace_shared_kwargs: dict[str, Any] = {}
             try:
                 # Gather batch of pending requests.
                 # Prefer runtime env overrides so batch sizing can be tuned without a restart.
@@ -804,6 +1223,22 @@ class GpuExecutor:
                     batch_wait_ms = 0
                 if batch_max <= 0:
                     batch_max = 1
+                queue_depth_hint = self._safe_qsize()
+                pressure_hint = (
+                    (float(queue_depth_hint) / float(batch_max))
+                    if queue_depth_hint >= 0 and int(batch_max) > 0
+                    else 0.0
+                )
+                planner_mode = "fg_burst" if (int(fg_burst_window_ms) > 0 and perf_counter() < float(fg_burst_until)) else (
+                    "inproc" if self._in_process_queues else "static"
+                )
+                batch_plan = _BatchPlan(
+                    wait_ms=int(batch_wait_ms),
+                    max_batch=int(batch_max),
+                    mode=str(planner_mode),
+                    queue_depth_hint=int(queue_depth_hint),
+                    pressure_hint=float(max(0.0, pressure_hint)),
+                )
 
                 if self._profile_enabled and self._profile_loop_start_ts is None:
                     self._profile_loop_start_ts = perf_counter()
@@ -813,6 +1248,19 @@ class GpuExecutor:
                 dt_wait = perf_counter() - t_wait0
                 self._wait_sec += dt_wait
                 self._live_wait_sec += float(dt_wait)
+
+                self._workload_batch_seq += 1
+                batch_metrics = self._summarize_batch(batch, plan=batch_plan, wait_sec=float(dt_wait))
+                trace_shared_kwargs = {
+                    "planner_mode": str(batch_metrics.get("mode", "")),
+                    "queue_depth_hint": int(batch_metrics.get("queue_depth_hint", -1)),
+                    "pressure_hint": float(batch_metrics.get("pressure_hint", 0.0)),
+                    "work_units": float(batch_metrics.get("work_units", 0.0)),
+                    "dominant_type": str(batch_metrics.get("dominant_type", "")),
+                    "dominant_share_pct": float(batch_metrics.get("dominant_share_pct", 0.0)),
+                    "diversity_pct": float(batch_metrics.get("diversity_pct", 0.0)),
+                    "avg_submit_age_ms": float(batch_metrics.get("avg_submit_age_ms", 0.0)),
+                }
 
                 type_counts = defaultdict(int)
                 for r in batch or []:
@@ -827,6 +1275,7 @@ class GpuExecutor:
                     wait_sec=float(dt_wait),
                     batch_size=len(batch or []),
                     types=types_str,
+                    **trace_shared_kwargs,
                 )
                 self._maybe_live_report()
 
@@ -869,13 +1318,19 @@ class GpuExecutor:
                     self._batch_size_sum += bs
 
                 if not batch:
+                    batch_metrics["exec_sec"] = 0.0
+                    self._record_workload_batch(batch_metrics)
                     continue
 
                 # Check for shutdown
                 if any(r.request_type == GpuRequestType.SHUTDOWN for r in batch):
                     if self._profile_enabled:
                         self._profile_shutdown_ts = perf_counter()
+                    batch_metrics["exec_sec"] = 0.0
+                    self._record_workload_batch(batch_metrics)
                     break
+
+                batch_exec_t0 = perf_counter()
 
                 # Single-pass partitioning keeps request order without rescanning `batch`.
                 solve_requests: list[GpuRequest] = []
@@ -934,6 +1389,7 @@ class GpuExecutor:
                             exec_sec=float(dt_exec),
                             batch_size=len(solve_requests),
                             types=f"{GpuRequestType.SOLVE_GENOMES_PARALLEL.value}:{len(solve_requests)}",
+                            **trace_shared_kwargs,
                         )
                         self._live_exec_sec += float(dt_exec)
                         self._live_type_counts[GpuRequestType.SOLVE_GENOMES_PARALLEL] += len(solve_requests)
@@ -969,6 +1425,7 @@ class GpuExecutor:
                             exec_sec=float(dt_exec),
                             batch_size=len(solve_requests),
                             types=f"{GpuRequestType.SOLVE_GENOMES_PARALLEL.value}:{len(solve_requests)}",
+                            **trace_shared_kwargs,
                         )
                         self._live_exec_sec += float(dt_exec)
                         self._live_type_counts[GpuRequestType.SOLVE_GENOMES_PARALLEL] += len(solve_requests)
@@ -1002,6 +1459,7 @@ class GpuExecutor:
                         exec_sec=float(dt_exec),
                         batch_size=len(ga_native_requests),
                         types=f"{GpuRequestType.GPU_NATIVE_GA_RUN.value}:{len(ga_native_requests)}",
+                        **trace_shared_kwargs,
                     )
                     self._live_exec_sec += float(dt_exec)
                     self._live_type_counts[GpuRequestType.GPU_NATIVE_GA_RUN] += len(ga_native_requests)
@@ -1035,6 +1493,7 @@ class GpuExecutor:
                         exec_sec=float(dt_exec),
                         batch_size=len(fg_requests),
                         types=f"{GpuRequestType.SOLVE_FORCE_GREATS_FINDER.value}:{len(fg_requests)}",
+                        **trace_shared_kwargs,
                     )
                     self._live_exec_sec += float(dt_exec)
                     self._live_type_counts[GpuRequestType.SOLVE_FORCE_GREATS_FINDER] += len(fg_requests)
@@ -1068,6 +1527,7 @@ class GpuExecutor:
                         exec_sec=float(dt_exec),
                         batch_size=len(fg_bundle_requests),
                         types=f"{GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH.value}:{len(fg_bundle_requests)}",
+                        **trace_shared_kwargs,
                     )
                     self._live_exec_sec += float(dt_exec)
                     self._live_type_counts[GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH] += len(fg_bundle_requests)
@@ -1101,6 +1561,7 @@ class GpuExecutor:
                         exec_sec=float(dt_exec),
                         batch_size=len(fg_ga_fused_requests),
                         types=f"{GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS.value}:{len(fg_ga_fused_requests)}",
+                        **trace_shared_kwargs,
                     )
                     self._live_exec_sec += float(dt_exec)
                     self._live_type_counts[GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS] += len(
@@ -1136,6 +1597,7 @@ class GpuExecutor:
                         exec_sec=float(dt_exec),
                         batch_size=len(reg_requests),
                         types=f"{GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY.value}:{len(reg_requests)}",
+                        **trace_shared_kwargs,
                     )
                     self._live_exec_sec += float(dt_exec)
                     self._live_type_counts[GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY] += len(reg_requests)
@@ -1167,6 +1629,7 @@ class GpuExecutor:
                         exec_sec=float(dt_exec),
                         batch_size=1,
                         types=f"{req.request_type.value}:1",
+                        **trace_shared_kwargs,
                     )
                     self._live_exec_sec += float(dt_exec)
                     self._live_type_counts[req.request_type] += 1
@@ -1174,6 +1637,8 @@ class GpuExecutor:
 
                 if self._profile_enabled:
                     self._profile_last_work_end_ts = perf_counter()
+                batch_metrics["exec_sec"] = max(0.0, float(perf_counter() - batch_exec_t0))
+                self._record_workload_batch(batch_metrics)
 
             except Exception as e:
                 # The executor loop must never "drop" a batch on exception; otherwise callers can
@@ -1197,6 +1662,13 @@ class GpuExecutor:
                     traceback.print_exc()
                 except Exception:
                     pass
+                try:
+                    if batch_metrics and float(batch_metrics.get("exec_sec", 0.0) or 0.0) <= 0.0:
+                        batch_metrics["exec_sec"] = 0.0
+                        batch_metrics["error"] = str(err)
+                        self._record_workload_batch(batch_metrics)
+                except Exception:
+                    pass
 
     def _gather_batch(self, max_wait_ms: int = 10, max_batch_size: int = 8) -> list:
         """
@@ -1211,16 +1683,7 @@ class GpuExecutor:
         """
         batch = []
         deadline = perf_counter() + (max_wait_ms / 1000.0)
-        coalescable_types = {
-            GpuRequestType.SOLVE_GENOMES_PARALLEL,
-            GpuRequestType.GPU_NATIVE_GA_RUN,
-            GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
-            GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
-            # FG bundle requests: cheap to enqueue, expensive to dispatch repeatedly.
-            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
-            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
-            GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
-        }
+        coalescable_types = self._COALESCABLE_REQUEST_TYPES
         # Default to enabled for in-process queues; callers can opt out via env var.
         inproc_coalesce_enabled = env_flag("GPU_EXECUTOR_INPROC_COALESCE", "1")
         try:
@@ -3651,6 +4114,18 @@ class GpuExecutor:
                 "utilization_pct": (self._exec_sec / total * 100.0) if total > 0 else 0.0,
                 "batches_observed": self._batches_observed,
                 "avg_batch_size": (self._batch_size_sum / self._batches_observed) if self._batches_observed else 0.0,
+                "workload_events_emitted": int(self._workload_events_emitted),
+                "last_batch_mode": str(self._last_batch_plan_mode),
+                "avg_work_units": (
+                    float(sum(self._workload_units_samples)) / float(len(self._workload_units_samples))
+                    if self._workload_units_samples
+                    else 0.0
+                ),
+                "avg_submit_age_ms": (
+                    float(sum(self._workload_age_ms_samples)) / float(len(self._workload_age_ms_samples))
+                    if self._workload_age_ms_samples
+                    else 0.0
+                ),
             }
         return out
 
