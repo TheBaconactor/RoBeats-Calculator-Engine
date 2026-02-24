@@ -1252,6 +1252,8 @@ def save_team_buff_loadouts_batch(
                     details_json = CASE WHEN excluded.score >= score THEN excluded.details_json ELSE details_json END,
                     force_details_json = CASE
                         WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
+                        WHEN excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL
+                            THEN excluded.force_details_json
                         ELSE force_details_json
                     END,
                     timestamp = strftime('%s', 'now')
@@ -1277,6 +1279,8 @@ def save_team_buff_loadouts_batch(
                     details_json = CASE WHEN excluded.fg_score >= fg_score THEN excluded.details_json ELSE details_json END,
                     force_details_json = CASE
                         WHEN excluded.fg_score > fg_score THEN excluded.force_details_json
+                        WHEN excluded.fg_score = fg_score AND excluded.force_details_json IS NOT NULL
+                            THEN excluded.force_details_json
                         ELSE force_details_json
                     END,
                     timestamp = strftime('%s', 'now')

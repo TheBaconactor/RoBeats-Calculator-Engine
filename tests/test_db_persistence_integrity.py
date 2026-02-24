@@ -340,6 +340,75 @@ def test_fg_loadouts_keeps_details_for_best_fg_score(db_path):
         conn.close()
 
 
+def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_has_hitsim_delta(db_path):
+    song = "FG Tie Force Payload Refresh Song"
+    gear = ["G1"]
+    minis = ["M1"]
+
+    save_loadouts_batch(
+        song,
+        [
+            {
+                "score": 100,
+                "fg_score": 200,
+                "gear": gear,
+                "minis": minis,
+                "details": {"tag": "first"},
+                "force": {"score": 200, "ForceGreats": {"config": {"NonFever1": 1}}},
+            }
+        ],
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        row0 = conn.execute(
+            "SELECT force_details_json FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song,),
+        ).fetchone()
+        assert row0 is not None
+        force0 = json.loads(row0["force_details_json"])
+        assert (force0.get("ForceGreats") or {}).get("hitsim_offset_delta_ms") is None
+    finally:
+        conn.close()
+
+    save_loadouts_batch(
+        song,
+        [
+            {
+                "score": 100,
+                "fg_score": 200,
+                "gear": gear,
+                "minis": minis,
+                "details": {"tag": "second"},
+                "force": {
+                    "score": 200,
+                    "ForceGreats": {"config": {"NonFever1": 1}, "hitsim_offset_delta_ms": 37},
+                },
+            }
+        ],
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        row = conn.execute(
+            "SELECT force_details_json FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song,),
+        ).fetchone()
+        assert row is not None
+        force = json.loads(row["force_details_json"])
+        assert (force.get("ForceGreats") or {}).get("hitsim_offset_delta_ms") == 37
+
+        base_row = conn.execute(
+            "SELECT force_details_json FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
+            (song,),
+        ).fetchone()
+        assert base_row is not None
+        base_force = json.loads(base_row["force_details_json"])
+        assert (base_force.get("ForceGreats") or {}).get("hitsim_offset_delta_ms") == 37
+    finally:
+        conn.close()
+
+
 def test_team_buff_fg_loadouts_details_syncs_force_gems_when_available(db_path, monkeypatch):
     monkeypatch.setattr("gear_optimizer.data.database.get_minis_by_name_cached", lambda: {})
 

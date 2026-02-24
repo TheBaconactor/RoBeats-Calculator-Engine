@@ -186,6 +186,73 @@ def _attach_hitsim_delta_for_base(best_data: dict | None, calc_song: dict | None
         return
 
 
+def _nonfever_counts_from_config_for_hitsim(config: object) -> tuple[int, ...]:
+    if not isinstance(config, dict) or not config:
+        return ()
+    pairs: list[tuple[int, int]] = []
+    for key, val in config.items():
+        if not isinstance(key, str) or not key.startswith("NonFever"):
+            continue
+        try:
+            idx = int(key.replace("NonFever", "").strip()) - 1
+        except Exception:
+            continue
+        pairs.append((idx, max(0, safe_int(val, 0))))
+    if not pairs:
+        return ()
+    pairs.sort(key=lambda x: x[0])
+    max_idx = pairs[-1][0]
+    if max_idx < 0:
+        return ()
+    out = [0] * (max_idx + 1)
+    for idx, cnt in pairs:
+        if 0 <= idx < len(out):
+            out[idx] = int(cnt)
+    if sum(out) <= 0:
+        return ()
+    return tuple(int(v) for v in out)
+
+
+def _materialize_fg_stats_for_hitsim(fg_data: dict) -> dict:
+    if not isinstance(fg_data, dict):
+        return {}
+
+    stats = fg_data.get("Stats")
+    if isinstance(stats, dict) and stats:
+        return stats
+
+    base_stats = fg_data.get("BaseStats")
+    if not isinstance(base_stats, dict) or not base_stats:
+        return {}
+
+    gem_counts = fg_data.get("GemCounts")
+    if not isinstance(gem_counts, dict):
+        gem_counts = {}
+
+    try:
+        from gear_optimizer.helpers.song_helpers.force_greats.result_application import apply_gems_to_base_fast
+
+        ft_val = safe_int(fg_data.get("FT", gem_counts.get("Fever Time", 0)), 0)
+        ff_val = safe_int(fg_data.get("FF", gem_counts.get("Fever Fill", gem_counts.get("Fever Fill Rate", 0))), 0)
+        g_pp = safe_int(gem_counts.get("Perfect Points", 0), 0)
+        g_cm = safe_int(gem_counts.get("Combo Multiplier", 0), 0)
+        g_fm = safe_int(gem_counts.get("Fever Multiplier", 0), 0)
+        g_ov = safe_int(
+            gem_counts.get("Element", gem_counts.get("Element Overflow", gem_counts.get("ElementOverflow", 0))),
+            0,
+        )
+        selected = str(get_selected_element(fg_data, "") or "").strip()
+        computed = apply_gems_to_base_fast(base_stats, selected, ft_val, ff_val, g_pp, g_cm, g_fm, g_ov)
+    except Exception:
+        computed = None
+
+    if not isinstance(computed, dict) or not computed:
+        return {}
+
+    fg_data["Stats"] = dict(computed)
+    return fg_data["Stats"]
+
+
 def _attach_hitsim_delta_for_fg_variant(
     fg_variants: list[dict] | None,
     calc_song: dict | None,
@@ -193,52 +260,71 @@ def _attach_hitsim_delta_for_fg_variant(
 ) -> None:
     if not fg_variants or not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
         return
-    best_variant = None
-    best_fg_score = -1
-    for v in fg_variants or []:
-        if not isinstance(v, dict):
-            continue
-        if not bool(v.get("_is_ga", True)):
-            continue
-        try:
-            fg_score = int(v.get("fg_score", 0) or 0)
-        except Exception:
-            fg_score = 0
-        try:
-            base_score = int(v.get("score", 0) or 0)
-        except Exception:
-            base_score = 0
-        if fg_score <= base_score:
-            continue
-        if fg_score > best_fg_score:
-            best_fg_score = fg_score
-            best_variant = v
-
-    if best_variant is None:
-        return
-    fg_data = best_variant.get("data") or {}
-    if not isinstance(fg_data, dict):
-        return
-    fg_meta = fg_data.get("ForceGreats") or {}
-    if isinstance(fg_meta, dict) and "hitsim_offset_delta_ms" in fg_meta:
-        try:
-            if fg_meta.get("hitsim_offset_delta_ms") is not None:
-                return
-        except Exception:
-            return
 
     try:
         from gear_optimizer.solver.scoring.force_greats import summarize_hitsim_offset_delta_ms_for_fg_variant
-
-        delta_ms = summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song, fg_data, ref_arrays)
-        if delta_ms is None:
-            return
-        fg_meta_out = dict(fg_meta) if isinstance(fg_meta, dict) else {}
-        fg_meta_out["hitsim_offset_delta_ms"] = int(delta_ms)
-        fg_data["ForceGreats"] = fg_meta_out
-        best_variant["data"] = fg_data
     except Exception:
         return
+
+    delta_cache: dict[tuple[int, int, tuple[int, ...]], int] = {}
+    for variant in fg_variants or []:
+        if not isinstance(variant, dict):
+            continue
+
+        fg_score = safe_int(variant.get("fg_score", 0), 0)
+        base_score = safe_int(variant.get("score", 0), 0)
+        if fg_score <= base_score:
+            continue
+
+        fg_data = variant.get("data") or {}
+        if not isinstance(fg_data, dict):
+            continue
+        fg_meta = fg_data.get("ForceGreats") or {}
+        if not isinstance(fg_meta, dict):
+            continue
+        if fg_meta.get("hitsim_offset_delta_ms") is not None:
+            continue
+
+        forced_counts = _nonfever_counts_from_config_for_hitsim(fg_meta.get("config") or {})
+        if not forced_counts:
+            continue
+
+        stats = fg_data.get("Stats") or {}
+        if not isinstance(stats, dict) or not stats:
+            stats = _materialize_fg_stats_for_hitsim(fg_data)
+        if not isinstance(stats, dict) or not stats:
+            continue
+
+        ff_stat = safe_int(stats.get("Fever Fill Rate", 0), 0)
+        ft_stat = safe_int(stats.get("Fever Time", 0), 0)
+        cache_key = (int(ff_stat), int(ft_stat), tuple(int(x) for x in forced_counts))
+
+        delta_ms = delta_cache.get(cache_key)
+        if delta_ms is None:
+            try:
+                computed = summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song, fg_data, ref_arrays)
+            except Exception:
+                computed = None
+            if computed is None:
+                continue
+            delta_ms = int(computed)
+            delta_cache[cache_key] = int(delta_ms)
+
+        fg_meta_out = dict(fg_meta)
+        fg_meta_out["hitsim_offset_delta_ms"] = int(delta_ms)
+        fg_data["ForceGreats"] = fg_meta_out
+
+        details_obj = fg_data.get("details")
+        if isinstance(details_obj, dict):
+            fg_det = details_obj.get("ForceGreats")
+            if isinstance(fg_det, dict) and fg_det.get("hitsim_offset_delta_ms") is None:
+                fg_det_out = dict(fg_det)
+                fg_det_out["hitsim_offset_delta_ms"] = int(delta_ms)
+                details_out = dict(details_obj)
+                details_out["ForceGreats"] = fg_det_out
+                fg_data["details"] = details_out
+
+        variant["data"] = fg_data
 
 
 def _default_worker_threads(*, inflight_limit: int, kind: str) -> int:

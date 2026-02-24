@@ -229,6 +229,177 @@ def scan_song_header(fp):
         return None
 
 
+def _nonfever_counts_from_config(config: object) -> tuple[int, ...]:
+    if not isinstance(config, dict) or not config:
+        return ()
+    pairs: list[tuple[int, int]] = []
+    for key, val in config.items():
+        if not isinstance(key, str) or not key.startswith("NonFever"):
+            continue
+        try:
+            idx = int(key.replace("NonFever", "").strip()) - 1
+        except Exception:
+            continue
+        try:
+            cnt = int(val or 0)
+        except Exception:
+            cnt = 0
+        pairs.append((idx, max(0, cnt)))
+    if not pairs:
+        return ()
+    pairs.sort(key=lambda x: x[0])
+    max_idx = pairs[-1][0]
+    if max_idx < 0:
+        return ()
+    out = [0] * (max_idx + 1)
+    for idx, cnt in pairs:
+        if 0 <= idx < len(out):
+            out[idx] = int(cnt)
+    if sum(out) <= 0:
+        return ()
+    return tuple(int(v) for v in out)
+
+
+def _safe_int_from_any(value: object, default: int = 0) -> int:
+    try:
+        return int(value) if value is not None else int(default)
+    except Exception:
+        try:
+            return int(float(value))
+        except Exception:
+            return int(default)
+
+
+def _materialize_fg_stats_if_missing(fg_data: dict) -> dict:
+    if not isinstance(fg_data, dict):
+        return {}
+
+    stats = fg_data.get("Stats")
+    if isinstance(stats, dict) and stats:
+        return stats
+
+    base_stats = fg_data.get("BaseStats")
+    if not isinstance(base_stats, dict) or not base_stats:
+        return {}
+
+    gem_counts = fg_data.get("GemCounts")
+    if not isinstance(gem_counts, dict):
+        gem_counts = {}
+
+    ft_val = _safe_int_from_any(fg_data.get("FT", gem_counts.get("Fever Time", 0)), 0)
+    ff_val = _safe_int_from_any(
+        fg_data.get("FF", gem_counts.get("Fever Fill", gem_counts.get("Fever Fill Rate", 0))),
+        0,
+    )
+    g_pp = _safe_int_from_any(gem_counts.get("Perfect Points", 0), 0)
+    g_cm = _safe_int_from_any(gem_counts.get("Combo Multiplier", 0), 0)
+    g_fm = _safe_int_from_any(gem_counts.get("Fever Multiplier", 0), 0)
+    g_ov = _safe_int_from_any(
+        gem_counts.get("Element", gem_counts.get("Element Overflow", gem_counts.get("ElementOverflow", 0))),
+        0,
+    )
+    selected_element = str(fg_data.get("SelectedElement") or fg_data.get("Selected Element") or "").strip()
+
+    try:
+        from ..helpers.song_helpers.force_greats.result_application import apply_gems_to_base_fast
+
+        computed = apply_gems_to_base_fast(base_stats, selected_element, ft_val, ff_val, g_pp, g_cm, g_fm, g_ov)
+    except Exception:
+        computed = None
+
+    if not isinstance(computed, dict) or not computed:
+        return {}
+
+    fg_data["Stats"] = dict(computed)
+    return fg_data["Stats"]
+
+
+def _attach_hitsim_delta_for_fg_variants(calc_song: dict, fg_variants: list[dict], ref_arrays: dict) -> None:
+    """
+    Populate `ForceGreats.hitsim_offset_delta_ms` for all improved FG variants.
+
+    This keeps persisted T5 FG rows consistent with tier-postprocessed rows and frontend
+    leaderboard expectations.
+    """
+    if not fg_variants:
+        return
+    if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+        return
+
+    try:
+        from ..solver.scoring.force_greats import summarize_hitsim_offset_delta_ms_for_fg_variant
+    except Exception:
+        return
+
+    delta_cache: dict[tuple[int, int, tuple[int, ...]], int] = {}
+    for variant in fg_variants:
+        if not isinstance(variant, dict):
+            continue
+
+        try:
+            fg_score = int(variant.get("fg_score", 0) or 0)
+        except Exception:
+            fg_score = 0
+        try:
+            base_score = int(variant.get("score", 0) or 0)
+        except Exception:
+            base_score = 0
+        if fg_score <= base_score:
+            continue
+
+        fg_data = variant.get("data") or {}
+        if not isinstance(fg_data, dict):
+            continue
+        fg_meta = fg_data.get("ForceGreats") or {}
+        if not isinstance(fg_meta, dict):
+            continue
+        if fg_meta.get("hitsim_offset_delta_ms") is not None:
+            continue
+
+        stats = fg_data.get("Stats") or {}
+        if not isinstance(stats, dict) or not stats:
+            stats = _materialize_fg_stats_if_missing(fg_data)
+        if not isinstance(stats, dict) or not stats:
+            continue
+        counts = _nonfever_counts_from_config(fg_meta.get("config") or {})
+        if not counts:
+            continue
+        try:
+            ff_stat = int(stats.get("Fever Fill Rate", 0) or 0)
+        except Exception:
+            ff_stat = 0
+        try:
+            ft_stat = int(stats.get("Fever Time", 0) or 0)
+        except Exception:
+            ft_stat = 0
+        cache_key = (int(ff_stat), int(ft_stat), tuple(int(x) for x in counts))
+
+        delta_ms = delta_cache.get(cache_key)
+        if delta_ms is None:
+            try:
+                computed = summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song, fg_data, ref_arrays)
+            except Exception:
+                computed = None
+            if computed is None:
+                continue
+            delta_ms = int(computed)
+            delta_cache[cache_key] = int(delta_ms)
+
+        fg_meta_out = dict(fg_meta)
+        fg_meta_out["hitsim_offset_delta_ms"] = int(delta_ms)
+        fg_data["ForceGreats"] = fg_meta_out
+
+        details_obj = fg_data.get("details")
+        if isinstance(details_obj, dict):
+            fg_det = details_obj.get("ForceGreats")
+            if isinstance(fg_det, dict) and fg_det.get("hitsim_offset_delta_ms") is None:
+                fg_det_out = dict(fg_det)
+                fg_det_out["hitsim_offset_delta_ms"] = int(delta_ms)
+                details_out = dict(details_obj)
+                details_out["ForceGreats"] = fg_det_out
+                fg_data["details"] = details_out
+
+
 def read_song_file(fp):
     """
     Read complete song file including metadata and note timestamps.
@@ -764,50 +935,10 @@ def process_song_task(args) -> SongResultPayload:
                 n_loadouts = len(loadout_entries) if loadout_entries else 0
                 print(f"[PERF] ForceGreats: {fg_time_sec:.2f}s ({n_loadouts} loadouts, finder={force_greats_finder})")
 
-        # ------------------------------------------------------------------
-        # HumanHitSim timing summary (FG best-improving candidate, GA-origin).
-        # Attach to the FG payload so it can be logged/persisted without per-note spam.
-        # ------------------------------------------------------------------
+        # HumanHitSim timing summary for FG variants.
+        # Keep this on all improved variants so T5 + tiered leaderboards stay consistent.
         try:
-            if fg_variants:
-                from ..solver.scoring.force_greats import summarize_hitsim_offset_delta_ms_for_fg_variant
-
-                best_fg_variant = None
-                best_fg_score = -1
-                for v in fg_variants or []:
-                    if not isinstance(v, dict):
-                        continue
-                    if not bool(v.get("_is_ga", True)):
-                        continue
-                    try:
-                        fg_score_v = int(v.get("fg_score", 0) or 0)
-                    except Exception:
-                        fg_score_v = 0
-                    try:
-                        base_score_v = int(v.get("score", 0) or 0)
-                    except Exception:
-                        base_score_v = 0
-                    if fg_score_v <= base_score_v:
-                        continue
-                    if fg_score_v > best_fg_score:
-                        best_fg_score = fg_score_v
-                        best_fg_variant = v
-
-                if best_fg_variant is not None:
-                    fg_data = best_fg_variant.get("data") or {}
-                    if isinstance(fg_data, dict):
-                        fg_meta = fg_data.get("ForceGreats") or {}
-                        already = isinstance(fg_meta, dict) and ("hitsim_offset_delta_ms" in fg_meta)
-                        if not already:
-                            delta_ms = summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song, fg_data, ref_arrays)
-                            if delta_ms is not None:
-                                try:
-                                    fg_meta_out = fg_data.get("ForceGreats") or {}
-                                    if isinstance(fg_meta_out, dict):
-                                        fg_meta_out["hitsim_offset_delta_ms"] = int(delta_ms)
-                                        fg_data["ForceGreats"] = fg_meta_out
-                                except Exception:
-                                    pass
+            _attach_hitsim_delta_for_fg_variants(calc_song, fg_variants, ref_arrays)
         except Exception:
             pass
 
