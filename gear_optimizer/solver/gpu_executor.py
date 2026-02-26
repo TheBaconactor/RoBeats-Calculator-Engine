@@ -31,6 +31,7 @@ import traceback
 import time
 import random
 import math
+import hashlib
 from pathlib import Path
 from collections import defaultdict, OrderedDict, deque
 from time import perf_counter
@@ -246,6 +247,16 @@ class GpuExecutor:
         self._req_type_counts = defaultdict(int)
         self._req_type_exec_sec = defaultdict(float)
         self._req_type_pack_sec = defaultdict(float)
+        # Exec-wall decomposition:
+        # - host: Python-side batching/coalescing/packing on GPU-owner thread
+        # - gpu_*: in-process GPU profiler deltas (kernel/upload/download) measured during that exec window
+        self._req_type_host_sec = defaultdict(float)
+        self._req_type_gpu_kernel_sec = defaultdict(float)
+        self._req_type_gpu_upload_sec = defaultdict(float)
+        self._req_type_gpu_download_sec = defaultdict(float)
+        self._exec_breakdown_enabled = bool(
+            self._profile_enabled or ENV.gpu_profiler or env_flag("GPU_EXECUTOR_EXEC_BREAKDOWN", "0")
+        )
         self._pack_sec = 0.0
         self._batch_size_counts = defaultdict(int)
         self._batches_observed = 0
@@ -337,6 +348,73 @@ class GpuExecutor:
             return
         self._pack_sec += dt
         self._req_type_pack_sec[request_type] += dt
+
+    def _gpu_prof_snapshot(self) -> tuple[float, float, float]:
+        """
+        Best-effort snapshot of cumulative in-process GPU profiler totals.
+
+        Returns:
+            (kernel_sec, upload_sec, download_sec)
+        """
+        if not self._exec_breakdown_enabled:
+            return (0.0, 0.0, 0.0)
+        try:
+            from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
+
+            prof = get_gpu_profiler()
+            summary = prof.summary()
+            return (
+                float(summary.get("total_kernel_sec", 0.0) or 0.0),
+                float(summary.get("total_upload_sec", 0.0) or 0.0),
+                float(summary.get("total_download_sec", 0.0) or 0.0),
+            )
+        except Exception:
+            return (0.0, 0.0, 0.0)
+
+    def _record_exec_breakdown(
+        self,
+        request_type: GpuRequestType,
+        *,
+        exec_wall_sec: float,
+        prof_before: tuple[float, float, float] | None,
+    ) -> None:
+        """
+        Attribute one executor exec window to host-vs-GPU buckets.
+
+        `exec_wall_sec` is the full owner-thread wall time for the request/coalesced batch.
+        GPU deltas are read from `gpu_profiler`; the residual is attributed to host work.
+        """
+        try:
+            wall = max(0.0, float(exec_wall_sec))
+        except Exception:
+            return
+        if wall <= 0.0:
+            return
+
+        kernel = 0.0
+        upload = 0.0
+        download = 0.0
+        if prof_before is not None:
+            try:
+                prof_after = self._gpu_prof_snapshot()
+                kernel = max(0.0, float(prof_after[0]) - float(prof_before[0]))
+                upload = max(0.0, float(prof_after[1]) - float(prof_before[1]))
+                download = max(0.0, float(prof_after[2]) - float(prof_before[2]))
+            except Exception:
+                kernel = 0.0
+                upload = 0.0
+                download = 0.0
+
+        gpu_total = max(0.0, kernel + upload + download)
+        host = max(0.0, wall - gpu_total)
+
+        try:
+            self._req_type_host_sec[request_type] += float(host)
+            self._req_type_gpu_kernel_sec[request_type] += float(kernel)
+            self._req_type_gpu_upload_sec[request_type] += float(upload)
+            self._req_type_gpu_download_sec[request_type] += float(download)
+        except Exception:
+            return
 
     def _record_latency(
         self,
@@ -734,6 +812,10 @@ class GpuExecutor:
         try:
             self._req_type_counts.clear()
             self._req_type_exec_sec.clear()
+            self._req_type_host_sec.clear()
+            self._req_type_gpu_kernel_sec.clear()
+            self._req_type_gpu_upload_sec.clear()
+            self._req_type_gpu_download_sec.clear()
             self._batch_size_counts.clear()
         except Exception:
             pass
@@ -940,6 +1022,23 @@ class GpuExecutor:
                                 f"in_exec_avg={in_exec_avg * 1000:.1f}ms p95={in_exec_p95 * 1000:.1f}ms"
                             )
                         print(f"[GpuExecutor][LATENCY] {'; '.join(parts)}")
+            except Exception:
+                pass
+            try:
+                if self._req_type_exec_sec:
+                    breakdown_parts = []
+                    top_exec = sorted(self._req_type_exec_sec.items(), key=lambda kv: kv[1], reverse=True)[:6]
+                    for req_type, total_exec in top_exec:
+                        host_s = float(self._req_type_host_sec.get(req_type, 0.0) or 0.0)
+                        kernel_s = float(self._req_type_gpu_kernel_sec.get(req_type, 0.0) or 0.0)
+                        upload_s = float(self._req_type_gpu_upload_sec.get(req_type, 0.0) or 0.0)
+                        download_s = float(self._req_type_gpu_download_sec.get(req_type, 0.0) or 0.0)
+                        breakdown_parts.append(
+                            f"{req_type.value}:exec={float(total_exec):.2f}s host~={host_s:.2f}s "
+                            f"gpu_kernel~={kernel_s:.2f}s up~={upload_s:.2f}s down~={download_s:.2f}s"
+                        )
+                    if breakdown_parts:
+                        print(f"[GpuExecutor][BREAKDOWN] {'; '.join(breakdown_parts)}")
             except Exception:
                 pass
             try:
@@ -1379,10 +1478,16 @@ class GpuExecutor:
                 # Execute solve_genomes requests (true batched kernel execution when possible)
                 if solve_requests:
                     if len(solve_requests) > 1 and not ENV.gpu_use_ftff_solver:
+                        prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
                         exec_start_ns = time.perf_counter_ns()
                         responses = self._execute_solve_batch(solve_requests)
                         exec_end_ns = time.perf_counter_ns()
                         dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
+                        self._record_exec_breakdown(
+                            GpuRequestType.SOLVE_GENOMES_PARALLEL,
+                            exec_wall_sec=float(dt_exec),
+                            prof_before=prof_before,
+                        )
                         # Attribute exec time proportionally (for profiling only)
                         per_req = dt_exec / max(1, len(solve_requests))
                         self._exec_sec += dt_exec
@@ -1415,12 +1520,18 @@ class GpuExecutor:
                         self._maybe_live_report()
                     else:
                         # FTFF solver mode (or single request): execute each request independently.
+                        prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
                         exec_start_ns = time.perf_counter_ns()
                         responses = []
                         for req in solve_requests:
                             responses.append(self._execute_request(req))
                         exec_end_ns = time.perf_counter_ns()
                         dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
+                        self._record_exec_breakdown(
+                            GpuRequestType.SOLVE_GENOMES_PARALLEL,
+                            exec_wall_sec=float(dt_exec),
+                            prof_before=prof_before,
+                        )
                         self._exec_sec += dt_exec
                         per_req = dt_exec / max(1, len(solve_requests))
                         for _ in solve_requests:
@@ -1451,10 +1562,16 @@ class GpuExecutor:
                         self._maybe_live_report()
 
                 if ga_native_requests:
+                    prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
                     exec_start_ns = time.perf_counter_ns()
                     responses = self._execute_gpu_native_ga_run_batch(ga_native_requests)
                     exec_end_ns = time.perf_counter_ns()
                     dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
+                    self._record_exec_breakdown(
+                        GpuRequestType.GPU_NATIVE_GA_RUN,
+                        exec_wall_sec=float(dt_exec),
+                        prof_before=prof_before,
+                    )
                     self._exec_sec += dt_exec
                     per_req = dt_exec / max(1, len(ga_native_requests))
                     for _ in ga_native_requests:
@@ -1485,10 +1602,16 @@ class GpuExecutor:
                     self._maybe_live_report()
 
                 if fg_requests:
+                    prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
                     exec_start_ns = time.perf_counter_ns()
                     responses = self._coalesce_fg_task_requests(fg_requests)
                     exec_end_ns = time.perf_counter_ns()
                     dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
+                    self._record_exec_breakdown(
+                        GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+                        exec_wall_sec=float(dt_exec),
+                        prof_before=prof_before,
+                    )
                     self._exec_sec += dt_exec
                     per_req = dt_exec / max(1, len(fg_requests))
                     for _ in fg_requests:
@@ -1519,10 +1642,16 @@ class GpuExecutor:
                     self._maybe_live_report()
 
                 if fg_bundle_requests:
+                    prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
                     exec_start_ns = time.perf_counter_ns()
                     responses = self._coalesce_fg_solve_with_breakpoints_batch_requests(fg_bundle_requests)
                     exec_end_ns = time.perf_counter_ns()
                     dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
+                    self._record_exec_breakdown(
+                        GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
+                        exec_wall_sec=float(dt_exec),
+                        prof_before=prof_before,
+                    )
                     self._exec_sec += dt_exec
                     per_req = dt_exec / max(1, len(fg_bundle_requests))
                     for _ in fg_bundle_requests:
@@ -1553,10 +1682,16 @@ class GpuExecutor:
                     self._maybe_live_report()
 
                 if fg_ga_fused_requests:
+                    prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
                     exec_start_ns = time.perf_counter_ns()
                     responses = self._coalesce_ga_fg_fused_requests(fg_ga_fused_requests)
                     exec_end_ns = time.perf_counter_ns()
                     dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
+                    self._record_exec_breakdown(
+                        GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
+                        exec_wall_sec=float(dt_exec),
+                        prof_before=prof_before,
+                    )
                     self._exec_sec += dt_exec
                     per_req = dt_exec / max(1, len(fg_ga_fused_requests))
                     for _ in fg_ga_fused_requests:
@@ -1589,10 +1724,16 @@ class GpuExecutor:
                     self._maybe_live_report()
 
                 if reg_requests:
+                    prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
                     exec_start_ns = time.perf_counter_ns()
                     responses = self._coalesce_solve_genomes_from_registry(reg_requests)
                     exec_end_ns = time.perf_counter_ns()
                     dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
+                    self._record_exec_breakdown(
+                        GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
+                        exec_wall_sec=float(dt_exec),
+                        prof_before=prof_before,
+                    )
                     self._exec_sec += dt_exec
                     per_req = dt_exec / max(1, len(reg_requests))
                     for _ in reg_requests:
@@ -1624,10 +1765,16 @@ class GpuExecutor:
 
                 # Process remaining request types individually
                 for req in remaining:
+                    prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
                     exec_start_ns = time.perf_counter_ns()
                     response = self._execute_request(req)
                     exec_end_ns = time.perf_counter_ns()
                     dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
+                    self._record_exec_breakdown(
+                        req.request_type,
+                        exec_wall_sec=float(dt_exec),
+                        prof_before=prof_before,
+                    )
                     self._exec_sec += dt_exec
                     self._req_type_counts[req.request_type] += 1
                     self._req_type_exec_sec[req.request_type] += dt_exec
@@ -2222,46 +2369,67 @@ class GpuExecutor:
             "is_s_ov",
         )
 
-        def _array_equal(a: Any, b: Any) -> bool:
-            if a is b:
-                return True
-            try:
-                aa = np.asarray(a)
-                bb = np.asarray(b)
-            except Exception:
-                return False
-            if aa.shape != bb.shape or aa.dtype != bb.dtype:
-                return False
-            try:
-                return bool(np.array_equal(aa, bb))
-            except Exception:
-                return False
+        array_sig_cache: dict[tuple[int, int, tuple[int, ...], tuple[int, ...], str], bytes] = {}
+        object_sig_cache: dict[int, Any] = {}
 
-        def _object_equal(a: Any, b: Any) -> bool:
-            if a is b:
-                return True
-            if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
-                return _array_equal(a, b)
-            if isinstance(a, dict) and isinstance(b, dict):
-                if len(a) != len(b):
-                    return False
-                if set(a.keys()) != set(b.keys()):
-                    return False
-                for k in a.keys():
-                    if not _object_equal(a[k], b[k]):
-                        return False
-                return True
-            if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
-                if len(a) != len(b):
-                    return False
-                for av, bv in zip(a, b):
-                    if not _object_equal(av, bv):
-                        return False
-                return True
+        def _array_sig(v: Any) -> tuple[Any, ...]:
+            if v is None:
+                return ("none",)
             try:
-                return bool(a == b)
+                arr = np.asarray(v)
             except Exception:
-                return False
+                return ("repr", type(v).__name__, repr(v))
+            if arr.ndim == 0:
+                try:
+                    return ("scalar", str(arr.dtype), repr(arr.item()))
+                except Exception:
+                    return ("scalar", str(arr.dtype), repr(arr))
+            try:
+                arr_ptr = int(arr.__array_interface__["data"][0])
+            except Exception:
+                arr_ptr = int(id(arr))
+            # Include strides so distinct views sharing the same pointer/shape/dtype
+            # (e.g. square transpose) cannot collide.
+            try:
+                strides = tuple(int(x) for x in (arr.strides or ()))
+            except Exception:
+                strides = ()
+            key = (int(id(arr)), int(arr_ptr), tuple(int(x) for x in arr.shape), strides, str(arr.dtype))
+            digest = array_sig_cache.get(key)
+            if digest is None:
+                try:
+                    arr_c = arr if arr.flags["C_CONTIGUOUS"] else np.ascontiguousarray(arr)
+                    h = hashlib.blake2b(digest_size=16)
+                    h.update(memoryview(arr_c).cast("B"))
+                    digest = h.digest()
+                except Exception:
+                    digest = bytes(str(id(arr)), "utf-8")
+                array_sig_cache[key] = digest
+            return ("arr", key[2], key[3], key[4], digest)
+
+        def _object_sig(v: Any) -> Any:
+            if v is None or isinstance(v, (int, float, bool, str, bytes)):
+                return v
+            if isinstance(v, np.ndarray):
+                return _array_sig(v)
+            oid = int(id(v))
+            cached = object_sig_cache.get(oid)
+            if cached is not None:
+                return cached
+            if isinstance(v, dict):
+                sig = (
+                    "dict",
+                    tuple((str(k), _object_sig(v.get(k))) for k in sorted(v.keys(), key=lambda x: str(x))),
+                )
+                object_sig_cache[oid] = sig
+                return sig
+            if isinstance(v, (list, tuple)):
+                sig = (type(v).__name__, tuple(_object_sig(x) for x in v))
+                object_sig_cache[oid] = sig
+                return sig
+            sig = ("obj", type(v).__name__, repr(v))
+            object_sig_cache[oid] = sig
+            return sig
 
         def _scalar_key(p: dict[str, Any]) -> tuple[int, ...]:
             vals: list[int] = []
@@ -2270,43 +2438,53 @@ class GpuExecutor:
                 vals.append(int(p.get(field, default) or default))
             return tuple(vals)
 
-        def _registry_payload_compatible(a: dict[str, Any], b: dict[str, Any]) -> bool:
-            if _scalar_key(a) != _scalar_key(b):
-                return False
-            if not _object_equal(a.get("timeline_grid"), b.get("timeline_grid")):
-                return False
-            if not _object_equal(a.get("ref_arrays"), b.get("ref_arrays")):
-                return False
-            if not _array_equal(a.get("item_stats"), b.get("item_stats")):
-                return False
-            if not _array_equal(a.get("slot_start"), b.get("slot_start")):
-                return False
-            if not _array_equal(a.get("slot_count"), b.get("slot_count")):
-                return False
-            if not _array_equal(a.get("base_fixed_stats"), b.get("base_fixed_stats")):
-                return False
-            return True
+        def _timeline_sig(v: Any) -> Any:
+            if not isinstance(v, dict):
+                return _object_sig(v)
+            song_data = v.get("song_data")
+            if not isinstance(song_data, dict):
+                return _object_sig(v)
+            return (
+                "timeline",
+                _object_sig(v.get("metadata")),
+                _array_sig(song_data.get("timestamps")),
+                _array_sig(song_data.get("chart_timestamps")),
+                _array_sig(song_data.get("note_types")),
+            )
 
+        def _ref_sig(v: Any) -> Any:
+            if isinstance(v, dict):
+                sig = self._ref_arrays_sig(v)
+                if sig is not None:
+                    return ("ref", bytes(sig))
+            return _object_sig(v)
+
+        def _registry_payload_sig(p: dict[str, Any]) -> tuple[Any, ...]:
+            return (
+                _scalar_key(p),
+                _timeline_sig(p.get("timeline_grid")),
+                _ref_sig(p.get("ref_arrays")),
+                _array_sig(p.get("item_stats")),
+                _array_sig(p.get("slot_start")),
+                _array_sig(p.get("slot_count")),
+                _array_sig(p.get("base_fixed_stats")),
+            )
+
+        groups_by_sig: "OrderedDict[tuple[Any, ...], list[GpuRequest]]" = OrderedDict()
         groups: list[list[GpuRequest]] = []
-        anchors: list[dict[str, Any]] = []
         for req in requests:
             p = self._payload_dict(req)
             pop = p.get("population_indices")
             if pop is None:
                 groups.append([req])
-                anchors.append({})
                 continue
-            placed = False
-            for gi, anchor in enumerate(anchors):
-                if not anchor:
-                    continue
-                if _registry_payload_compatible(anchor, p):
-                    groups[gi].append(req)
-                    placed = True
-                    break
-            if not placed:
+            try:
+                sig = _registry_payload_sig(p)
+            except Exception:
                 groups.append([req])
-                anchors.append(p)
+                continue
+            groups_by_sig.setdefault(sig, []).append(req)
+        groups.extend(list(groups_by_sig.values()))
 
         out: list[GpuResponse] = []
         max_genomes = int(getattr(gem_fields, "MAX_GENOMES", 4096) or 4096)
@@ -3992,10 +4170,8 @@ class GpuExecutor:
 
         solve_force_greats_finder_gpu_tasks(
             genome_stats_list,
-            np.asarray(timestamps_np, dtype=np.float32),
-            None
-            if great_candidate_timestamps_np is None
-            else np.asarray(great_candidate_timestamps_np, dtype=np.float32),
+            timestamps_np,
+            great_candidate_timestamps_np,
             int(long_notes),
             float(last_note_time),
             fg_tasks=fg_tasks,
@@ -4189,6 +4365,15 @@ class GpuExecutor:
                     if self._workload_age_ms_samples
                     else 0.0
                 ),
+                "exec_breakdown_sec_by_type": {
+                    str(req_type.value): {
+                        "host_sec": float(self._req_type_host_sec.get(req_type, 0.0) or 0.0),
+                        "gpu_kernel_sec": float(self._req_type_gpu_kernel_sec.get(req_type, 0.0) or 0.0),
+                        "gpu_upload_sec": float(self._req_type_gpu_upload_sec.get(req_type, 0.0) or 0.0),
+                        "gpu_download_sec": float(self._req_type_gpu_download_sec.get(req_type, 0.0) or 0.0),
+                    }
+                    for req_type in self._req_type_counts.keys()
+                },
             }
         return out
 

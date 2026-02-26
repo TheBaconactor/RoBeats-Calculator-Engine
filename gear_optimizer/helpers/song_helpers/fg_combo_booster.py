@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
+import weakref
 import zlib
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Optional, Iterable
 
@@ -25,6 +28,10 @@ FG_COMBO_BOOSTER_POSITIONS_PER_SEED = 2
 # Default to full evaluation to avoid sacrificing FG coverage/accuracy.
 # Users can override via `FG_COMBO_BOOSTER_GPU_EVALS` if they explicitly want speed.
 FG_COMBO_BOOSTER_DEFAULT_GPU_EVALS = FG_COMBO_BOOSTER_MAX_EVALS
+_SLOT_ITEMS_CACHE_LOCK = threading.Lock()
+_SLOT_ITEMS_CACHE: "weakref.WeakKeyDictionary[object, OrderedDict[tuple, dict[int, list[dict]]]]" = (
+    weakref.WeakKeyDictionary()
+)
 
 
 def _genome_key(genome: list[dict]) -> tuple[str, ...]:
@@ -67,6 +74,104 @@ def _env_int(name: str, default: int) -> int:
         return int(s)
     except Exception:
         return int(default)
+
+
+def _env_bool(name: str, default: str = "1") -> bool:
+    return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _slot_items_cache_max() -> int:
+    return max(0, _env_int("FG_COMBO_BOOSTER_SLOT_CACHE_MAX", 32))
+
+
+def _slot_items_cache_get(registry, key: tuple) -> dict[int, list[dict]] | None:
+    if not _env_bool("FG_COMBO_BOOSTER_SLOT_CACHE", "1"):
+        return None
+    try:
+        with _SLOT_ITEMS_CACHE_LOCK:
+            reg_cache = _SLOT_ITEMS_CACHE.get(registry)
+            if reg_cache is None:
+                return None
+            cached = reg_cache.get(key)
+            if cached is None:
+                return None
+            reg_cache.move_to_end(key)
+            return cached
+    except Exception:
+        return None
+
+
+def _slot_items_cache_put(registry, key: tuple, value: dict[int, list[dict]]) -> None:
+    if not _env_bool("FG_COMBO_BOOSTER_SLOT_CACHE", "1"):
+        return
+    try:
+        with _SLOT_ITEMS_CACHE_LOCK:
+            reg_cache = _SLOT_ITEMS_CACHE.get(registry)
+            if reg_cache is None:
+                reg_cache = OrderedDict()
+                _SLOT_ITEMS_CACHE[registry] = reg_cache
+            reg_cache[key] = value
+            reg_cache.move_to_end(key)
+            max_n = int(_slot_items_cache_max())
+            if max_n <= 0:
+                reg_cache.clear()
+                return
+            while len(reg_cache) > max_n:
+                reg_cache.popitem(last=False)
+    except Exception:
+        return
+
+
+def _cached_interesting_items_by_slot(
+    registry,
+    *,
+    primary_color: str,
+    secondary_color: str,
+    top_k: int,
+) -> dict[int, list[dict]]:
+    key = ("classic", str(primary_color or ""), str(secondary_color or ""), int(top_k))
+    cached = _slot_items_cache_get(registry, key)
+    if cached is not None:
+        return cached
+    out = _build_interesting_items_by_slot(
+        registry,
+        primary_color=str(primary_color or ""),
+        secondary_color=str(secondary_color or ""),
+        top_k=int(top_k),
+    )
+    _slot_items_cache_put(registry, key, out)
+    return out
+
+
+def _cached_interesting_items_by_slot_multi_axis(
+    registry,
+    *,
+    primary_color: str,
+    secondary_color: str,
+    top_k: int,
+    items_per_slot: int,
+) -> dict[int, list[dict]]:
+    key = ("multi_axis", str(primary_color or ""), str(secondary_color or ""), int(top_k), int(items_per_slot))
+    cached = _slot_items_cache_get(registry, key)
+    if cached is not None:
+        return cached
+    out = _build_interesting_items_by_slot_multi_axis(
+        registry,
+        primary_color=str(primary_color or ""),
+        secondary_color=str(secondary_color or ""),
+        top_k=int(top_k),
+        items_per_slot=int(items_per_slot),
+    )
+    _slot_items_cache_put(registry, key, out)
+    return out
+
+
+def _clear_fg_combo_booster_slot_cache_for_tests() -> None:
+    try:
+        with _SLOT_ITEMS_CACHE_LOCK:
+            _SLOT_ITEMS_CACHE.clear()
+    except Exception:
+        return
 
 
 def _base_score(candidate: dict) -> int:
@@ -619,7 +724,7 @@ def generate_fg_combo_booster_genomes(
         positions_per_seed = FG_COMBO_BOOSTER_POSITIONS_PER_SEED
     positions_per_seed = max(1, min(2, positions_per_seed))
 
-    items_by_slot = _build_interesting_items_by_slot(
+    items_by_slot = _cached_interesting_items_by_slot(
         registry,
         primary_color=str(primary_color or ""),
         secondary_color=str(secondary_color or ""),
@@ -733,7 +838,7 @@ def generate_fg_combo_booster_genomes_multi_axis(
     top_k = max(2, min(32, int(top_k)))
 
     items_per_slot = _env_int("FG_MULTI_AXIS_ITEMS_PER_SLOT", max(16, top_k * 2))
-    items_by_slot = _build_interesting_items_by_slot_multi_axis(
+    items_by_slot = _cached_interesting_items_by_slot_multi_axis(
         registry,
         primary_color=str(primary_color or ""),
         secondary_color=str(secondary_color or ""),

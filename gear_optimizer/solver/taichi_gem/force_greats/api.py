@@ -503,11 +503,21 @@ def fg_download_global_best(
         Dict with numpy arrays for all result fields (same format as return_raw=True).
         When `topk` is enabled, also includes `selected_indices` (genome indices into the global_best buffers).
     """
-    # Ensure all GPU work is complete (sync cost is often the "wall time" people see
-    # as a utilization drop between bursts).
+    # Avoid unconditional host sync in the hot path:
+    # - `to_numpy()` already synchronizes when needed.
+    # - keep explicit sync only when timing/trace/debug asks for it.
     _t0 = time.perf_counter()
-    ti.sync()
-    _sync_sec = time.perf_counter() - _t0
+    did_sync = bool(_FORCE_SYNC or _SYNC_FOR_TIMING or _FG_TRANSFER_TRACE)
+    if did_sync:
+        maybe_sync(
+            sync_fn=ti.sync,
+            force_sync=bool(_FORCE_SYNC or _FG_TRANSFER_TRACE),
+            sync_for_timing=_SYNC_FOR_TIMING,
+            for_timing=True,
+        )
+        _sync_sec = time.perf_counter() - _t0
+    else:
+        _sync_sec = 0.0
     n = int(n_genomes)
     slot = int(session_slot)
     if slot < 0 or slot >= int(getattr(gem_fields, "MAX_SONG_SLOTS", 1) or 1):
@@ -722,8 +732,17 @@ def fg_download_packed_topk_batch(n_payloads: int) -> list[dict[str, np.ndarray]
         raise ValueError(f"n_payloads exceeds FG_DOWNLOAD_BATCH_MAX: {n_payloads} > {max_batch}")
 
     _t0 = time.perf_counter()
-    ti.sync()
-    _sync_sec = time.perf_counter() - _t0
+    did_sync = bool(_FORCE_SYNC or _SYNC_FOR_TIMING or _FG_TRANSFER_TRACE)
+    if did_sync:
+        maybe_sync(
+            sync_fn=ti.sync,
+            force_sync=bool(_FORCE_SYNC or _FG_TRANSFER_TRACE),
+            sync_for_timing=_SYNC_FOR_TIMING,
+            for_timing=True,
+        )
+        _sync_sec = time.perf_counter() - _t0
+    else:
+        _sync_sec = 0.0
 
     _t1 = time.perf_counter()
     sel_packed_all = fg_fields.fg_selected_packed_batch.to_numpy()
