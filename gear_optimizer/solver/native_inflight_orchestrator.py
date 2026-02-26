@@ -38,7 +38,11 @@ from gear_optimizer.helpers.song_helpers.fg_combo_booster import (
     hydrate_fg_candidate_stats,
 )
 from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
-from gear_optimizer.helpers.song_helpers.loadout_builder import build_loadout_entries
+from gear_optimizer.helpers.song_helpers.loadout_builder import (
+    build_loadout_entries,
+    merge_db_loadouts_into_entries,
+    refresh_ga_candidate_entries,
+)
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn, evaluate_record_update
 from gear_optimizer.helpers.song_helpers.song_config import setup_song_config
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
@@ -82,6 +86,81 @@ _CACHE_STATS = {
 }
 _CACHE_STATS_LOCK = threading.Lock()
 _CACHE_STATS_LAST_EMIT = 0.0
+_DB_CONTEXT_CACHE_LOCK = threading.Lock()
+_DB_CONTEXT_CACHE: "OrderedDict[tuple[str, bool], tuple[float, Optional[dict], int, int, int]]" = OrderedDict()
+
+
+def _db_context_cache_max() -> int:
+    try:
+        raw = os.environ.get("INFLIGHT_DB_CONTEXT_CACHE_MAX")
+        if raw is not None and str(raw).strip() != "":
+            return max(0, int(raw))
+    except Exception:
+        pass
+    return 1024
+
+
+def _db_context_cache_ttl_s() -> float:
+    try:
+        raw = os.environ.get("INFLIGHT_DB_CONTEXT_CACHE_TTL_SEC")
+        if raw is not None and str(raw).strip() != "":
+            return max(0.0, float(raw))
+    except Exception:
+        pass
+    return 1.0
+
+
+def _db_context_cache_get(db_key: str, use_evo_db: bool) -> tuple[Optional[dict], int, int, int] | None:
+    key = (str(db_key or "").strip(), bool(use_evo_db))
+    if not key[0] or not key[1]:
+        return None
+    ttl_s = float(_db_context_cache_ttl_s())
+    try:
+        with _DB_CONTEXT_CACHE_LOCK:
+            entry = _DB_CONTEXT_CACHE.get(key)
+            if entry is None:
+                return None
+            ts, prev_record, db_best_fg_score, attempt_lifetime, prev_attempts_first = entry
+            if ttl_s > 0.0 and (time.monotonic() - float(ts)) > ttl_s:
+                _DB_CONTEXT_CACHE.pop(key, None)
+                return None
+            _DB_CONTEXT_CACHE.move_to_end(key)
+            rec = _compact_prev_record(prev_record) if isinstance(prev_record, dict) else None
+            return rec, int(db_best_fg_score), int(attempt_lifetime), int(prev_attempts_first)
+    except Exception:
+        return None
+
+
+def _db_context_cache_put(
+    db_key: str,
+    use_evo_db: bool,
+    prev_record: Optional[dict],
+    db_best_fg_score: int,
+    attempt_lifetime: int,
+    prev_attempts_first: int,
+) -> None:
+    key = (str(db_key or "").strip(), bool(use_evo_db))
+    if not key[0] or not key[1]:
+        return
+    try:
+        record_copy = _compact_prev_record(prev_record) if isinstance(prev_record, dict) else None
+        with _DB_CONTEXT_CACHE_LOCK:
+            _DB_CONTEXT_CACHE[key] = (
+                float(time.monotonic()),
+                record_copy,
+                int(db_best_fg_score or 0),
+                int(attempt_lifetime or 0),
+                int(prev_attempts_first or 0),
+            )
+            _DB_CONTEXT_CACHE.move_to_end(key)
+            max_n = int(_db_context_cache_max())
+            if max_n <= 0:
+                _DB_CONTEXT_CACHE.clear()
+                return
+            while len(_DB_CONTEXT_CACHE) > max_n:
+                _DB_CONTEXT_CACHE.popitem(last=False)
+    except Exception:
+        return
 
 
 def _cache_stats_enabled() -> bool:
@@ -921,34 +1000,34 @@ def _prepare_song(task: tuple) -> _NativeSong:
 
     db_key = build_db_key(found_song_name, calc_song)
 
-    # Load database context (prev_record, known_loadouts)
+    # Load DB seed record only; full known-loadout hydration is deferred/prefetched
+    # in FG prep to avoid redundant per-song DB reads during prepare.
     allow_db_seed = True
-    prev_record, known_loadouts = load_database_context(db_key, bool(use_evo_db), gears_by_name, minis_by_name)
-    db_best_fg_score, attempt_lifetime, prev_attempts_first = _summarize_db_context(
-        prev_record,
-        known_loadouts,
-        db_key=db_key,
-        use_evo_db=bool(use_evo_db),
-    )
-
-    # Defensive: ensure `db_best_fg_score` is sourced from the authoritative `songs` row.
-    # Some pipeline modes can load a score-limited subset of loadouts, which can hide the true best FG.
-    if bool(use_evo_db):
-        try:
-            from gear_optimizer.data.database import get_db_connection_cached
-
-            conn = get_db_connection_cached()
-            row = conn.execute(
-                "SELECT best_fg_score FROM songs WHERE name = ?",
-                (str(db_key or "").strip(),),
-            ).fetchone()
-            if row is not None:
-                try:
-                    db_best_fg_score = int(row[0] or 0)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+    cached_db_ctx = _db_context_cache_get(db_key, bool(use_evo_db))
+    if cached_db_ctx is not None:
+        prev_record, db_best_fg_score, attempt_lifetime, prev_attempts_first = cached_db_ctx
+    else:
+        prev_record, _known_loadouts = load_database_context(
+            db_key,
+            bool(use_evo_db),
+            gears_by_name,
+            minis_by_name,
+            load_known_loadouts=False,
+        )
+        db_best_fg_score, attempt_lifetime, prev_attempts_first = _summarize_db_context(
+            prev_record,
+            None,
+            db_key=db_key,
+            use_evo_db=bool(use_evo_db),
+        )
+        _db_context_cache_put(
+            db_key,
+            bool(use_evo_db),
+            prev_record,
+            int(db_best_fg_score),
+            int(attempt_lifetime),
+            int(prev_attempts_first),
+        )
 
     p_color = calc_song.get("metadata", {}).get("Primary Color", "Rush")
     s_color = calc_song.get("metadata", {}).get("Secondary Color", "")
@@ -1373,10 +1452,7 @@ def run_native_inflight_song_pipeline(
     fg_adaptive_submit_enabled, fg_adaptive_submit_max_burst = _read_continuous_fg_adaptive_submit(cfg0)
 
     try:
-        msg = (
-            f"[InFlight][FG] scheduler={fg_scheduler_norm} drain_at_end={bool(fg_drain_at_end)} "
-            f"source={fg_drain_src}"
-        )
+        msg = f"[InFlight][FG] scheduler={fg_scheduler_norm} drain_at_end={bool(fg_drain_at_end)} source={fg_drain_src}"
         msg += (
             f" (GA_CreditBudget={int(fg_ga_credit_budget_cfg)}, "
             f"GA_DispatchBurst={int(continuous_ga_dispatch_burst)}, "
@@ -3041,19 +3117,11 @@ def _run_fg_job_sync(
         song.fg_db_loadouts_full_count = 0
 
     # If FG prep built GA-only entries while DB prefetch was pending, merge DB rows now
-    # without issuing any new synchronous DB query.
+    # without rebuilding the full GA union.
     if song.db_loadouts_full is not None and not _loadout_entries_have_db_source(song.loadout_entries):
-        song.loadout_entries = build_loadout_entries(
-            song.db_key,
-            bool(song.use_evo_db),
-            song.ga_candidates or [],
-            int(song.fg_candidate_limit or 0),
-            song.gears_by_name,
-            song.minis_by_name,
-            build_details,
-            db_loadouts_full=song.db_loadouts_full,
-            allow_db_query=False,
-        )
+        if not isinstance(song.loadout_entries, dict):
+            song.loadout_entries = {}
+        merge_db_loadouts_into_entries(song.loadout_entries, song.db_loadouts_full)
 
     # Always-on (ForceGreatsFinder): evaluate a capped set of 1–2-position combos around
     # GA seeds to improve FG coverage when deeper GA runs crowd out fever-heavy variants.
@@ -3093,17 +3161,11 @@ def _run_fg_job_sync(
                     selected_color=str(song.cfg_data.get("selected_color", "") or ""),
                     cfg_data=song.cfg_data,
                 )
-                song.loadout_entries = build_loadout_entries(
-                    song.db_key,
-                    bool(song.use_evo_db),
-                    song.ga_candidates,
-                    int(song.fg_candidate_limit or 0),
-                    song.gears_by_name,
-                    song.minis_by_name,
-                    build_details,
-                    db_loadouts_full=song.db_loadouts_full,
-                    allow_db_query=False,
-                )
+                if not isinstance(song.loadout_entries, dict):
+                    song.loadout_entries = {}
+                if song.db_loadouts_full is not None and not _loadout_entries_have_db_source(song.loadout_entries):
+                    merge_db_loadouts_into_entries(song.loadout_entries, song.db_loadouts_full)
+                refresh_ga_candidate_entries(song.loadout_entries, song.ga_candidates, build_details)
     except Exception:
         pass
 

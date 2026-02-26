@@ -316,7 +316,9 @@ def _build_topk_keep_signature_set(
         return True
 
     if int(base_keep_n) > 0 and items:
-        top_base = sorted(items, key=lambda kv: (_entry_base_score(kv[1]), str(kv[0])), reverse=True)[: int(base_keep_n)]
+        top_base = sorted(items, key=lambda kv: (_entry_base_score(kv[1]), str(kv[0])), reverse=True)[
+            : int(base_keep_n)
+        ]
         for _hash, entry in top_base:
             sig0 = entry_sig.get(int(id(entry)))
             _add(sig0)
@@ -728,6 +730,28 @@ def process_force_greats_gpu_finder(
             return
         for i in range(0, len(pairs), chunk_size):
             yield pairs[i : i + chunk_size]
+
+    def _pack_pairs_int32(pairs):
+        """
+        Normalize pair collections as contiguous (n, 2) int32 arrays.
+
+        Returns None when packing fails or shape is invalid.
+        """
+        if pairs is None:
+            return None
+        try:
+            arr = np.asarray(pairs, dtype=np.int32)
+            if arr.ndim != 2:
+                arr = np.asarray(list(pairs), dtype=np.int32)
+            if arr.ndim != 2 or int(arr.shape[1]) < 2:
+                return None
+            if int(arr.shape[1]) != 2:
+                arr = arr[:, :2]
+            if not arr.flags["C_CONTIGUOUS"]:
+                arr = np.ascontiguousarray(arr)
+            return arr
+        except Exception:
+            return None
 
     need_reset = False
     timeline_precompute_queued = False
@@ -1212,6 +1236,7 @@ def process_force_greats_gpu_finder(
             total_budget=int(TOTAL_GEM_BUDGET),
             use_fast=bool(fast_pairs),
         )
+        ftff_pairs_packed = _pack_pairs_int32(ftff_pairs)
 
         counts_list = None
         if not per_pair_breakpoints:
@@ -1269,6 +1294,29 @@ def process_force_greats_gpu_finder(
         is_s_ff = flags["is_s_ff"]
         is_p_ov = flags["is_p_ov"]
         is_s_ov = flags["is_s_ov"]
+        fused_solve_kwargs_static = {
+            "n_sections": int(n_sections),
+            "is_p_ft": is_p_ft,
+            "is_s_ft": is_s_ft,
+            "is_p_ff": is_p_ff,
+            "is_s_ff": is_s_ff,
+            "is_p_pp": is_p_pp,
+            "is_s_pp": is_s_pp,
+            "is_p_cm": is_p_cm,
+            "is_s_cm": is_s_cm,
+            "is_p_fm": is_p_fm,
+            "is_s_fm": is_s_fm,
+            "is_p_ov": is_p_ov,
+            "is_s_ov": is_s_ov,
+            "ref_arrays": ref_arrays,
+            "total_budget": TOTAL_GEM_BUDGET,
+            "gem_scale_fever": GEM_SCALE_FEVER,
+            "pair_caps_grid": pair_caps_grid,
+            "pair_caps_from_timeline": bool(pair_caps_from_timeline),
+            "song_slot": int(song_slot),
+            "return_raw": True,
+            "accumulate_global": True,
+        }
 
         sig_list = list(sig_map.keys())
 
@@ -1371,11 +1419,7 @@ def process_force_greats_gpu_finder(
                 # adaptive chunking split configs, rather than starving the GPU with 3-6 genomes.
                 #
                 # Keep the minimum slightly higher in-process where submit overhead is low.
-                fused_floor = (
-                    128
-                    if (bool(fused_breakpoints_solve) and use_gpu_breakpoints)
-                    else 0
-                )
+                fused_floor = 128 if (bool(fused_breakpoints_solve) and use_gpu_breakpoints) else 0
                 min_batch = max(fused_floor, 32) if in_process else 16
                 max_genomes_per_batch = max(min_batch, min(int(max_genomes_per_batch), int(max_by_threads)))
 
@@ -1584,7 +1628,13 @@ def process_force_greats_gpu_finder(
 
             if per_pair_breakpoints:
                 _t_cfg1 = time.perf_counter() if perf else 0.0
-                base_stats_pairs = {(bs.get("Fever Time", 0), bs.get("Fever Fill Rate", 0)) for bs in pending}
+                base_stats_pairs = {
+                    (int(bs.get("Fever Time", 0) or 0), int(bs.get("Fever Fill Rate", 0) or 0)) for bs in pending
+                }
+                base_pairs_list = sorted(base_stats_pairs)
+                base_pairs_packed = _pack_pairs_int32(base_pairs_list)
+                ftff_pairs_submit = ftff_pairs_packed if ftff_pairs_packed is not None else ftff_pairs
+                base_pairs_submit = base_pairs_packed if base_pairs_packed is not None else base_pairs_list
 
                 # Read merge thresholds from env (same as before)
                 try:
@@ -1597,7 +1647,10 @@ def process_force_greats_gpu_finder(
 
                 breakpoint_batch_size = 20
                 try:
-                    n_ftff_pairs = int(len(ftff_pairs))
+                    if ftff_pairs_packed is not None:
+                        n_ftff_pairs = int(ftff_pairs_packed.shape[0])
+                    else:
+                        n_ftff_pairs = int(len(ftff_pairs))
                 except Exception:
                     n_ftff_pairs = 0
                 if n_ftff_pairs >= 200:
@@ -1617,8 +1670,7 @@ def process_force_greats_gpu_finder(
                     if non_fever_base_by_ff is None or fp_cap_table is None:
                         return None
 
-                    base_pairs_list = sorted({(int(a), int(b)) for (a, b) in base_stats_pairs})
-                    if (not base_pairs_list) or _is_empty_pairs(ftff_pairs):
+                    if (not base_pairs_list) or _is_empty_pairs(ftff_pairs_submit):
                         return None
 
                     if gpu_client is not None:
@@ -1635,25 +1687,10 @@ def process_force_greats_gpu_finder(
                                     timeline_precompute_queued = True
                             except Exception:
                                 timeline_precompute_queued = True
-                        # Packing hotspot: avoid converting large pair lists to Python tuples.
-                        # Prefer contiguous (n,2) int32 arrays so the GPU-owner thread can slice quickly.
-                        try:
-                            import numpy as _np
-
-                            ftff_pairs_packed = _np.asarray(ftff_pairs, dtype=_np.int32)
-                            if ftff_pairs_packed.ndim != 2 or int(ftff_pairs_packed.shape[1]) < 2:
-                                ftff_pairs_packed = ftff_pairs
-
-                            base_pairs_packed = _np.asarray(base_pairs_list, dtype=_np.int32)
-                            if base_pairs_packed.ndim != 2 or int(base_pairs_packed.shape[1]) < 2:
-                                base_pairs_packed = base_pairs_list
-                        except Exception:
-                            ftff_pairs_packed = ftff_pairs
-                            base_pairs_packed = base_pairs_list
 
                         fut = gpu_client.submit_fg_compute_breakpoints(
-                            ftff_pairs=ftff_pairs_packed,
-                            base_stats_pairs=base_pairs_packed,
+                            ftff_pairs=ftff_pairs_submit,
+                            base_stats_pairs=base_pairs_submit,
                             n_sections=int(n_sections),
                             song_slot=int(song_slot),
                             gem_scale_fever=int(GEM_SCALE_FEVER),
@@ -1664,7 +1701,6 @@ def process_force_greats_gpu_finder(
 
                     # Direct (non-executor) GPU path: call the kernel in-process.
                     try:
-                        import numpy as _np
                         from gear_optimizer.solver.taichi_gem.kernels import kernels_breakpoints
                         from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
 
@@ -1675,11 +1711,18 @@ def process_force_greats_gpu_finder(
                                 pass
                             timeline_precompute_queued = True
 
-                        pair_ft = _np.asarray([int(p[0]) for p in ftff_pairs], dtype=_np.int32)
-                        pair_ff = _np.asarray([int(p[1]) for p in ftff_pairs], dtype=_np.int32)
-                        base_ft = _np.asarray([int(p[0]) for p in base_pairs_list], dtype=_np.int32)
-                        base_ff = _np.asarray([int(p[1]) for p in base_pairs_list], dtype=_np.int32)
-                        out0 = _np.zeros((int(pair_ft.shape[0]), int(n_sections)), dtype=_np.int16)
+                        pair_arr = ftff_pairs_packed if ftff_pairs_packed is not None else _pack_pairs_int32(ftff_pairs)
+                        base_arr = (
+                            base_pairs_packed if base_pairs_packed is not None else _pack_pairs_int32(base_pairs_list)
+                        )
+                        if pair_arr is None or base_arr is None:
+                            return None
+
+                        pair_ft = np.ascontiguousarray(pair_arr[:, 0], dtype=np.int32)
+                        pair_ff = np.ascontiguousarray(pair_arr[:, 1], dtype=np.int32)
+                        base_ft = np.ascontiguousarray(base_arr[:, 0], dtype=np.int32)
+                        base_ff = np.ascontiguousarray(base_arr[:, 1], dtype=np.int32)
+                        out0 = np.zeros((int(pair_ft.shape[0]), int(n_sections)), dtype=np.int16)
                         kernels_breakpoints.fg_compute_max_fp_by_pair_kernel(
                             int(pair_ft.shape[0]),
                             int(base_ft.shape[0]),
@@ -1690,8 +1733,8 @@ def process_force_greats_gpu_finder(
                             pair_ff,
                             base_ft,
                             base_ff,
-                            _np.asarray(non_fever_base_by_ff, dtype=_np.int16),
-                            _np.asarray(fp_cap_table, dtype=_np.int16),
+                            np.asarray(non_fever_base_by_ff, dtype=np.int16),
+                            np.asarray(fp_cap_table, dtype=np.int16),
                             out0,
                         )
                         return out0
@@ -1706,48 +1749,13 @@ def process_force_greats_gpu_finder(
                     and use_gpu_breakpoints
                     and (non_fever_base_by_ff is not None)
                     and (fp_cap_table is not None)
-                    and (not _is_empty_pairs(ftff_pairs))
+                    and (not _is_empty_pairs(ftff_pairs_submit))
                 ):
                     # Fused path: keep max-FP matrix off the host and solve in one executor request.
-                    try:
-                        base_pairs_list = sorted({(int(a), int(b)) for (a, b) in base_stats_pairs})
-                    except Exception:
-                        base_pairs_list = []
                     if base_pairs_list:
                         try:
-                            import numpy as _np
-
-                            ftff_pairs_packed = _np.asarray(ftff_pairs, dtype=_np.int32)
-                            base_pairs_packed = _np.asarray(base_pairs_list, dtype=_np.int32)
-                            if ftff_pairs_packed.ndim != 2 or int(ftff_pairs_packed.shape[1]) < 2:
-                                ftff_pairs_packed = _np.asarray(list(ftff_pairs), dtype=_np.int32)
-                            if base_pairs_packed.ndim != 2 or int(base_pairs_packed.shape[1]) < 2:
-                                base_pairs_packed = _np.asarray(list(base_pairs_list), dtype=_np.int32)
-
                             # Optional GA->FG staging happens inside the fused request to avoid a separate boundary.
-                            solve_kwargs = dict(
-                                n_sections=n_sections,
-                                is_p_ft=is_p_ft,
-                                is_s_ft=is_s_ft,
-                                is_p_ff=is_p_ff,
-                                is_s_ff=is_s_ff,
-                                is_p_pp=is_p_pp,
-                                is_s_pp=is_s_pp,
-                                is_p_cm=is_p_cm,
-                                is_s_cm=is_s_cm,
-                                is_p_fm=is_p_fm,
-                                is_s_fm=is_s_fm,
-                                is_p_ov=is_p_ov,
-                                is_s_ov=is_s_ov,
-                                ref_arrays=ref_arrays,
-                                total_budget=TOTAL_GEM_BUDGET,
-                                gem_scale_fever=GEM_SCALE_FEVER,
-                                pair_caps_grid=pair_caps_grid,
-                                pair_caps_from_timeline=bool(pair_caps_from_timeline),
-                                song_slot=int(song_slot),
-                                return_raw=True,
-                                accumulate_global=True,
-                            )
+                            solve_kwargs = dict(fused_solve_kwargs_static)
                             if genome_stats_preuploaded and coords_arr is not None:
                                 solve_kwargs["upload_genome_stats"] = False
                                 solve_kwargs["genome_stats_preuploaded"] = True
@@ -1756,8 +1764,8 @@ def process_force_greats_gpu_finder(
                                 solve_kwargs["upload_genome_stats"] = True
 
                             fused_payload = {
-                                "ftff_pairs": ftff_pairs_packed,
-                                "base_stats_pairs": base_pairs_packed,
+                                "ftff_pairs": ftff_pairs_submit,
+                                "base_stats_pairs": base_pairs_submit,
                                 "n_sections": int(n_sections),
                                 "song_slot": int(song_slot),
                                 "gem_scale_fever": int(GEM_SCALE_FEVER),
@@ -2470,6 +2478,11 @@ def process_force_greats_gpu_finder(
         _flush_fused_payload_batch()
 
     if deferred_gpu_applies:
+        # Deferred contexts from fused batch-pack requests often share the same future.
+        # Cache resolved future payloads and dedupe wait/error checks to reduce host overhead.
+        _download_future_result_cache = {}
+        _done_checked_futures = set()
+        _waited_futures = set()
         for ctx in deferred_gpu_applies:
             futs = ctx.get("futures") or []
             n_pending = int(ctx.get("n_pending") or 0)
@@ -2479,18 +2492,27 @@ def process_force_greats_gpu_finder(
             download_future = ctx.get("download_future")
             gpu_results = None
             if download_future is not None and hasattr(download_future, "result"):
-                _t_dl0 = time.perf_counter() if perf else 0.0
-                gpu_results_raw = download_future.result()
-                if perf:
-                    try:
-                        t_gpu_download_wait_sec += time.perf_counter() - _t_dl0
-                    except Exception:
-                        pass
+                fut_key = id(download_future)
+                if fut_key in _download_future_result_cache:
+                    gpu_results_raw = _download_future_result_cache[fut_key]
+                else:
+                    _t_dl0 = time.perf_counter() if perf else 0.0
+                    gpu_results_raw = download_future.result()
+                    _download_future_result_cache[fut_key] = gpu_results_raw
+                    if perf:
+                        try:
+                            t_gpu_download_wait_sec += time.perf_counter() - _t_dl0
+                        except Exception:
+                            pass
                 for fut in futs:
                     if fut is download_future:
                         continue
+                    other_key = id(fut)
+                    if other_key in _done_checked_futures:
+                        continue
                     if hasattr(fut, "done") and fut.done():
                         _ = fut.exception()
+                        _done_checked_futures.add(other_key)
                 if isinstance(gpu_results_raw, list):
                     try:
                         download_index = int(ctx.get("download_index") or 0)
@@ -2503,8 +2525,12 @@ def process_force_greats_gpu_finder(
                     gpu_results = gpu_results_raw
             if not isinstance(gpu_results, dict):
                 for fut in futs:
+                    fut_key = id(fut)
+                    if fut_key in _waited_futures:
+                        continue
                     _t_wait0 = time.perf_counter() if perf else 0.0
                     fut.result()
+                    _waited_futures.add(fut_key)
                     if perf:
                         try:
                             t_gpu_wait_sec += time.perf_counter() - _t_wait0

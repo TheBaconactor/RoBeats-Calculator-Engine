@@ -226,20 +226,6 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             db_best_fg_floor = int(payload.get("db_best_fg_score") or 0)
         except Exception:
             db_best_fg_floor = 0
-        if db_best_fg_floor <= 0:
-            try:
-                if payload.get("use_evo_db", True):
-                    from gear_optimizer.data.database import get_db_connection_cached
-
-                    conn = get_db_connection_cached()
-                    row = conn.execute(
-                        "SELECT best_fg_score FROM songs WHERE name = ?",
-                        (str(payload.get("song", song) or "").strip(),),
-                    ).fetchone()
-                    if row is not None:
-                        db_best_fg_floor = int(row[0] or 0)
-            except Exception:
-                db_best_fg_floor = 0
 
         if best_fg > db_best_fg_floor:
             db_best_fg_floor = best_fg
@@ -448,27 +434,14 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     prev_best_score = 0
 
                 prev_best_fg = 0
-                # Prefer authoritative best FG score from DB (`songs.best_fg_score`).
-                # Payloads can omit/miscompute this (e.g., loadout-limited caches), which would
-                # make the console show FG=0 even when the DB has valid FG records.
                 try:
-                    if item.get("use_evo_db", True):
-                        db_key_for_query = str(item.get("db_key") or item.get("song") or "").strip()
-                        from gear_optimizer.data.database import get_db_connection_cached
-
-                        conn = get_db_connection_cached()
-                        row = conn.execute(
-                            "SELECT best_fg_score FROM songs WHERE name = ?",
-                            (db_key_for_query,),
-                        ).fetchone()
-                        if row is not None:
-                            prev_best_fg = int(row[0] or 0)
+                    prev_best_fg = int(item.get("db_best_fg_score", 0) or 0)
                 except Exception:
                     prev_best_fg = 0
 
                 if prev_best_fg <= 0:
                     try:
-                        prev_best_fg = int(item.get("db_best_fg_score", 0) or 0)
+                        prev_best_fg = int((prev_record or {}).get("fg_score", 0) or 0)
                     except Exception:
                         prev_best_fg = 0
 

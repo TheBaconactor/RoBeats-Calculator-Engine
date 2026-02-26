@@ -1618,13 +1618,15 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         msg = str(exc)
         return ("failed to create semaphore" in msg) or ("RHI Error" in msg and "semaphore" in msg)
 
-    # Load refs + timeline for this song slot
-    load_ref_arrays(ref_arrays)
-    precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
+    def _restore_song_gpu_state() -> None:
+        # Rebuild Taichi/GA static state for this song slot after hard resets.
+        load_ref_arrays(ref_arrays)
+        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
+        gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
+        gpu_api.ga_upload_base_fixed_stats(base_fixed_stats_arr)
 
-    # Upload static per-song GA data once (minimize CPU->GPU transfers)
-    gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
-    gpu_api.ga_upload_base_fixed_stats(base_fixed_stats_arr)
+    # Load refs/timeline + upload static per-song GA data once.
+    _restore_song_gpu_state()
 
     # Optional heuristic top-K table for GPU initial population generation.
     init_heuristic_k = int(init_heuristic_k)
@@ -1723,34 +1725,44 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         except Exception:
             return
 
+    def _stage_segment_initial_populations(*, run_start: int, seg_runs: int, segment_pop_arr) -> None:
+        if segment_pop_arr is not None:
+            gpu_api.ga_upload_initial_populations(
+                segment_pop_arr,
+                n_runs=int(seg_runs),
+                n_genomes=int(n_genomes),
+                n_slots=int(n_slots),
+            )
+            return
+
+        # Generate initial populations on GPU for this segment (seeded per segment to avoid repeats).
+        seg_seed = int(seed_base) ^ (int(run_start) * 747796405)
+        gpu_api.ga_generate_initial_populations(
+            run_idx_start=0,
+            n_runs=int(seg_runs),
+            n_genomes=int(n_genomes),
+            n_slots=int(n_slots),
+            seed=int(seg_seed),
+            heuristic_prob=0.0,
+            heuristic_k=int(init_heuristic_k),
+            seed_prob=float(db_seed_prob or 0.0),
+            seed_copies=int(db_seed_copies if db_seed_ids is not None else 0),
+            seed_mutations=int(db_seed_mutations if db_seed_ids is not None else 0),
+            heuristic_copies=int(init_heuristic_copies),
+            seed_ids=db_seed_ids,
+        )
+
     run_start_global = 0
     while run_start_global < num_runs:
         seg_len = min(int(gpu_fields.MAX_GA_RUNS), num_runs - run_start_global)
+        segment_pop = None
         if initial_populations is not None:
             segment_pop = np.asarray(initial_populations[run_start_global : run_start_global + seg_len], dtype=np.int32)
-            gpu_api.ga_upload_initial_populations(
-                segment_pop,
-                n_runs=int(seg_len),
-                n_genomes=int(n_genomes),
-                n_slots=int(n_slots),
-            )
-        else:
-            # Generate initial populations on GPU for this segment (seeded per segment to avoid repeats).
-            seg_seed = int(seed_base) ^ (int(run_start_global) * 747796405)
-            gpu_api.ga_generate_initial_populations(
-                run_idx_start=0,
-                n_runs=int(seg_len),
-                n_genomes=int(n_genomes),
-                n_slots=int(n_slots),
-                seed=int(seg_seed),
-                heuristic_prob=0.0,
-                heuristic_k=int(init_heuristic_k),
-                seed_prob=float(db_seed_prob or 0.0),
-                seed_copies=int(db_seed_copies if db_seed_ids is not None else 0),
-                seed_mutations=int(db_seed_mutations if db_seed_ids is not None else 0),
-                heuristic_copies=int(init_heuristic_copies),
-                seed_ids=db_seed_ids,
-            )
+        _stage_segment_initial_populations(
+            run_start=int(run_start_global),
+            seg_runs=int(seg_len),
+            segment_pop_arr=segment_pop,
+        )
 
         # Initialize per-run best rows for this segment (used by batched execution).
         gpu_api.ga_init_runs_best(run_idx_start=0, n_runs=int(seg_len), n_slots=int(n_slots))
@@ -1765,33 +1777,12 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
             if reset_every_runs > 0 and global_run_idx > 0 and (global_run_idx % reset_every_runs) == 0:
                 gpu_api.hard_reset_taichi(reason=f"periodic Vulkan reset at run {global_run_idx + 1}/{num_runs}")
-                load_ref_arrays(ref_arrays)
-                precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
-                gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
-                gpu_api.ga_upload_base_fixed_stats(base_fixed_stats_arr)
-                if initial_populations is not None:
-                    gpu_api.ga_upload_initial_populations(
-                        segment_pop,
-                        n_runs=int(seg_len),
-                        n_genomes=int(n_genomes),
-                        n_slots=int(n_slots),
-                    )
-                else:
-                    seg_seed = int(seed_base) ^ (int(run_start_global) * 747796405)
-                    gpu_api.ga_generate_initial_populations(
-                        run_idx_start=0,
-                        n_runs=int(seg_len),
-                        n_genomes=int(n_genomes),
-                        n_slots=int(n_slots),
-                        seed=int(seg_seed),
-                        heuristic_prob=0.0,
-                        heuristic_k=int(init_heuristic_k),
-                        seed_prob=float(db_seed_prob or 0.0),
-                        seed_copies=int(db_seed_copies if db_seed_ids is not None else 0),
-                        seed_mutations=int(db_seed_mutations if db_seed_ids is not None else 0),
-                        heuristic_copies=int(init_heuristic_copies),
-                        seed_ids=db_seed_ids,
-                    )
+                _restore_song_gpu_state()
+                _stage_segment_initial_populations(
+                    run_start=int(run_start_global),
+                    seg_runs=int(seg_len),
+                    segment_pop_arr=segment_pop,
+                )
                 gpu_api.ga_init_runs_best(run_idx_start=0, n_runs=int(seg_len), n_slots=int(n_slots))
 
             batch_len = min(batch_runs, seg_len - local_run_idx)
@@ -2007,15 +1998,11 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                         break
                     try:
                         gpu_api.hard_reset_taichi(reason=str(e).splitlines()[0][:200])
-                        load_ref_arrays(ref_arrays)
-                        precompute_timeline_gpu(calc_song, ref_arrays, song_slot=song_slot)
-                        gpu_api.ga_upload_item_stats(item_stats, slot_start, slot_count)
-                        gpu_api.ga_upload_base_fixed_stats(base_fixed_stats_arr)
-                        gpu_api.ga_upload_initial_populations(
-                            segment_pop,
-                            n_runs=int(seg_len),
-                            n_genomes=int(n_genomes),
-                            n_slots=int(n_slots),
+                        _restore_song_gpu_state()
+                        _stage_segment_initial_populations(
+                            run_start=int(run_start_global),
+                            seg_runs=int(seg_len),
+                            segment_pop_arr=segment_pop,
                         )
                         gpu_api.ga_init_runs_best(run_idx_start=0, n_runs=int(seg_len), n_slots=int(n_slots))
                     except Exception:

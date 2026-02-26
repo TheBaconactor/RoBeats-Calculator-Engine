@@ -209,6 +209,17 @@ class GpuExecutor:
 
     def __init__(self):
         if self._initialized:
+            # Tests may monkeypatch singleton instance methods directly; clear those
+            # overrides on re-access so they do not leak between test cases.
+            for patched_name in (
+                "_coalesce_fg_solve_with_breakpoints_batch_requests",
+                "_execute_request",
+                "_execute_fg_solve_with_breakpoints_batch",
+            ):
+                try:
+                    self.__dict__.pop(patched_name, None)
+                except Exception:
+                    pass
             return
 
         self._request_queue: Optional[multiprocessing.Queue] = None
@@ -281,9 +292,7 @@ class GpuExecutor:
         # Workload-level observability (profiling-only in this phase).
         self._workload_profile_enabled = bool(self._profile_enabled or env_flag("GPU_EXECUTOR_WORKLOAD_PROFILE", "0"))
         try:
-            interval_raw = float(
-                str(_ENV_GET("GPU_EXECUTOR_WORKLOAD_PROFILE_INTERVAL_SEC", "2.0") or "2.0").strip()
-            )
+            interval_raw = float(str(_ENV_GET("GPU_EXECUTOR_WORKLOAD_PROFILE_INTERVAL_SEC", "2.0") or "2.0").strip())
         except Exception:
             interval_raw = 2.0
         self._workload_profile_interval_sec = max(0.2, float(interval_raw))
@@ -580,7 +589,9 @@ class GpuExecutor:
         self._workload_mode_wait_sec[str(metrics.get("mode") or "unknown")] += (
             float(metrics.get("wait_ms", 0.0) or 0.0) / 1000.0
         )
-        self._workload_mode_exec_sec[str(metrics.get("mode") or "unknown")] += float(metrics.get("exec_sec", 0.0) or 0.0)
+        self._workload_mode_exec_sec[str(metrics.get("mode") or "unknown")] += float(
+            metrics.get("exec_sec", 0.0) or 0.0
+        )
         self._workload_queue_depth_samples.append(float(metrics.get("queue_depth_hint", 0.0) or 0.0))
         self._workload_age_ms_samples.append(float(metrics.get("avg_submit_age_ms", 0.0) or 0.0))
         self._workload_units_samples.append(float(metrics.get("work_units", 0.0) or 0.0))
@@ -592,10 +603,16 @@ class GpuExecutor:
             batch_id = int(metrics.get("batch_id", 0) or 0)
             pressure = float(metrics.get("pressure_hint", 0.0) or 0.0)
             mode = str(metrics.get("mode") or "")
-            should_emit = batch_id <= 12 or (batch_id % 64 == 0) or pressure >= 1.0 or mode in {
-                "fg_recovery",
-                "throughput",
-            }
+            should_emit = (
+                batch_id <= 12
+                or (batch_id % 64 == 0)
+                or pressure >= 1.0
+                or mode
+                in {
+                    "fg_recovery",
+                    "throughput",
+                }
+            )
             if should_emit:
                 emit_profile_event(
                     component="gpu_executor",
@@ -1229,8 +1246,10 @@ class GpuExecutor:
                     if queue_depth_hint >= 0 and int(batch_max) > 0
                     else 0.0
                 )
-                planner_mode = "fg_burst" if (int(fg_burst_window_ms) > 0 and perf_counter() < float(fg_burst_until)) else (
-                    "inproc" if self._in_process_queues else "static"
+                planner_mode = (
+                    "fg_burst"
+                    if (int(fg_burst_window_ms) > 0 and perf_counter() < float(fg_burst_until))
+                    else ("inproc" if self._in_process_queues else "static")
                 )
                 batch_plan = _BatchPlan(
                     wait_ms=int(batch_wait_ms),
@@ -1969,14 +1988,14 @@ class GpuExecutor:
             return [self._execute_request(req) for req in requests]
 
         try:
-            max_payloads = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "64") or "64")
+            max_payloads = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "16") or "16")
         except Exception:
-            max_payloads = 64
+            max_payloads = 16
         max_payloads = max(1, min(int(max_payloads), 512))
         try:
-            max_pairs = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAIRS", "0") or "0")
+            max_pairs = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAIRS", "32768") or "32768")
         except Exception:
-            max_pairs = 0
+            max_pairs = 32768
         max_pairs = max(0, int(max_pairs))
         if max_pairs > 0:
             import numpy as np
@@ -2121,35 +2140,43 @@ class GpuExecutor:
         if not self._in_process_queues or len(requests) <= 1:
             return [self._execute_request(req) for req in requests]
 
-        payloads: list[dict[str, Any]] = []
-        reqs: list[GpuRequest] = []
+        synthetic_batch_requests: list[GpuRequest] = []
         fallback_ids: set[int] = set()
         for req in requests:
-            payload = self._payload_dict(req)
-            if isinstance(payload, dict):
-                payloads.append(payload)
-                reqs.append(req)
-            else:
+            payload = req.payload
+            if not isinstance(payload, dict):
                 fallback_ids.add(int(req.request_id))
+                continue
+            synthetic_batch_requests.append(
+                GpuRequest(
+                    request_type=GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
+                    request_id=int(req.request_id),
+                    worker_id=int(req.worker_id),
+                    payload={"payloads": [payload]},
+                )
+            )
 
         out: list[GpuResponse] = []
-        if payloads:
-            merged_req = GpuRequest(
-                request_type=GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
-                request_id=-1,
-                worker_id=-1,
-                payload={"payloads": payloads},
-            )
-            merged_resp = self._execute_fg_solve_with_breakpoints_batch(merged_req)
-            if getattr(merged_resp, "success", False) and isinstance(getattr(merged_resp, "result", None), list):
-                merged_results = list(merged_resp.result)
-                if int(len(merged_results)) == int(len(reqs)):
-                    for req, result in zip(reqs, merged_results):
-                        out.append(GpuResponse(request_id=req.request_id, success=True, result=result))
-                else:
-                    fallback_ids.update(int(req.request_id) for req in reqs)
-            else:
-                fallback_ids.update(int(req.request_id) for req in reqs)
+        if synthetic_batch_requests:
+            batch_responses = self._coalesce_fg_solve_with_breakpoints_batch_requests(synthetic_batch_requests)
+            for req, resp in zip(synthetic_batch_requests, batch_responses):
+                if resp is None:
+                    fallback_ids.add(int(req.request_id))
+                    continue
+                if not bool(getattr(resp, "success", False)):
+                    fallback_ids.add(int(req.request_id))
+                    continue
+                result = getattr(resp, "result", None)
+                if not isinstance(result, list) or len(result) != 1:
+                    fallback_ids.add(int(req.request_id))
+                    continue
+                out.append(
+                    GpuResponse(
+                        request_id=int(req.request_id),
+                        success=True,
+                        result=result[0],
+                    )
+                )
 
         if fallback_ids:
             for req in requests:
@@ -3578,6 +3605,11 @@ class GpuExecutor:
                 from .taichi_gem.force_greats.api import fg_download_packed_topk_batch
 
                 results: list[Any] = []
+                # Hidden host-side bottleneck: when payloads share the same top-K selection
+                # inputs (base_scores/keep_mask), repeatedly uploading them for every payload
+                # adds avoidable transfer overhead and GPU idle gaps. Reuse uploads across
+                # consecutive payloads in this batch when identity + shape context matches.
+                last_selection_upload_key: tuple[Any, ...] | None = None
                 for chunk_start in range(0, int(len(payloads)), int(max_batch)):
                     chunk = list(payloads[chunk_start : chunk_start + int(max_batch)])
                     if not chunk:
@@ -3585,7 +3617,34 @@ class GpuExecutor:
 
                     decode_ctx: list[dict[str, Any]] = []
                     for i, p in enumerate(chunk):
-                        ctx = self._run_fg_solve_with_breakpoints_payload(p, batch_pack_idx=int(i))
+                        payload_for_run = p
+                        try:
+                            n_sel = 0
+                            gs = p.get("genome_stats_list")
+                            if gs is not None:
+                                n_sel = int(len(gs))
+                            else:
+                                solve_kwargs_i = p.get("solve_kwargs") or {}
+                                if isinstance(solve_kwargs_i, dict):
+                                    n_sel = int(solve_kwargs_i.get("n_genomes_override", 0) or 0)
+                            selection_upload_key = (
+                                int(n_sel),
+                                int(p.get("fg_download_topk", 0) or 0),
+                                int(id(p.get("fg_download_base_scores"))),
+                                int(id(p.get("fg_download_keep_mask"))),
+                            )
+                            if (
+                                last_selection_upload_key is not None
+                                and selection_upload_key == last_selection_upload_key
+                            ):
+                                payload_for_run = dict(p)
+                                payload_for_run["fg_selection_inputs_preuploaded"] = True
+                            else:
+                                last_selection_upload_key = selection_upload_key
+                        except Exception:
+                            payload_for_run = p
+
+                        ctx = self._run_fg_solve_with_breakpoints_payload(payload_for_run, batch_pack_idx=int(i))
                         if not isinstance(ctx, dict) or not ctx.get("_packed_batch"):
                             raise RuntimeError("FG batch-pack expected packed ctx dict")
                         decode_ctx.append(ctx)
@@ -3757,7 +3816,9 @@ class GpuExecutor:
 
         fg_tasks: list[dict[str, Any]] = []
         cfg_windows: list[dict] | None = None
-        use_gpu_max_fp_compute = env_flag("FG_MAX_FP_GPU_COMPUTE", "0")
+        # Default ON: keeping per-pair max-FP computation on-GPU avoids an expensive
+        # host download+re-upload cycle that often appears as unexplained idle time.
+        use_gpu_max_fp_compute = env_flag("FG_MAX_FP_GPU_COMPUTE", "1")
         if implicit_cfgs:
             if use_gpu_max_fp_compute:
                 # Per-pair max-FP caps (no CPU grouping). The packed-task solver can consume
@@ -3947,6 +4008,7 @@ class GpuExecutor:
         if batch_pack_idx is not None and download_topk is not None and download_base_scores is not None:
             from .taichi_gem.force_greats.api import fg_pack_global_best_topk_to_batch
 
+            skip_selection_upload = bool(payload.get("fg_selection_inputs_preuploaded", False))
             fg_pack_global_best_topk_to_batch(
                 int(n_genomes),
                 session_slot=int(song_slot),
@@ -3954,6 +4016,7 @@ class GpuExecutor:
                 base_scores=download_base_scores,
                 keep_mask=download_keep_mask,
                 batch_idx=int(batch_pack_idx),
+                upload_selection_inputs=not bool(skip_selection_upload),
             )
             return {
                 "_packed_batch": True,

@@ -645,6 +645,7 @@ def fg_pack_global_best_topk_to_batch(
     base_scores: np.ndarray,
     keep_mask: np.ndarray | None,
     batch_idx: int,
+    upload_selection_inputs: bool = True,
 ) -> None:
     """
     Pack a top-K subset of `fg_global_best_*` into `fg_selected_packed_batch[batch_idx]`.
@@ -664,38 +665,39 @@ def fg_pack_global_best_topk_to_batch(
     if n <= 0:
         return
 
-    base_np = np.asarray(base_scores, dtype=np.int32)
-    if int(base_np.shape[0]) != n:
-        raise ValueError(f"base_scores length mismatch: {int(base_np.shape[0])} != {n}")
-    if not base_np.flags["C_CONTIGUOUS"]:
-        base_np = np.ascontiguousarray(base_np, dtype=np.int32)
+    if upload_selection_inputs:
+        base_np = np.asarray(base_scores, dtype=np.int32)
+        if int(base_np.shape[0]) != n:
+            raise ValueError(f"base_scores length mismatch: {int(base_np.shape[0])} != {n}")
+        if not base_np.flags["C_CONTIGUOUS"]:
+            base_np = np.ascontiguousarray(base_np, dtype=np.int32)
 
-    if keep_mask is None:
-        keep_np = np.zeros((n,), dtype=np.int32)
-    else:
-        keep_np = np.asarray(keep_mask, dtype=np.int32)
-        if int(keep_np.shape[0]) != n:
-            raise ValueError(f"keep_mask length mismatch: {int(keep_np.shape[0])} != {n}")
-        if not keep_np.flags["C_CONTIGUOUS"]:
-            keep_np = np.ascontiguousarray(keep_np, dtype=np.int32)
+        if keep_mask is None:
+            keep_np = np.zeros((n,), dtype=np.int32)
+        else:
+            keep_np = np.asarray(keep_mask, dtype=np.int32)
+            if int(keep_np.shape[0]) != n:
+                raise ValueError(f"keep_mask length mismatch: {int(keep_np.shape[0])} != {n}")
+            if not keep_np.flags["C_CONTIGUOUS"]:
+                keep_np = np.ascontiguousarray(keep_np, dtype=np.int32)
 
-    global _fg_download_topk_base_buf, _fg_download_topk_keep_buf
-    try:
-        max_g = int(getattr(fg_fields, "MAX_GENOMES", 0) or 0)
-    except Exception:
-        max_g = 0
-    if max_g <= 0:
-        max_g = int(n)
+        global _fg_download_topk_base_buf, _fg_download_topk_keep_buf
+        try:
+            max_g = int(getattr(fg_fields, "MAX_GENOMES", 0) or 0)
+        except Exception:
+            max_g = 0
+        if max_g <= 0:
+            max_g = int(n)
 
-    if _fg_download_topk_base_buf is None or int(_fg_download_topk_base_buf.shape[0]) != int(max_g):
-        _fg_download_topk_base_buf = np.zeros((int(max_g),), dtype=np.int32)
-    if _fg_download_topk_keep_buf is None or int(_fg_download_topk_keep_buf.shape[0]) != int(max_g):
-        _fg_download_topk_keep_buf = np.zeros((int(max_g),), dtype=np.int32)
+        if _fg_download_topk_base_buf is None or int(_fg_download_topk_base_buf.shape[0]) != int(max_g):
+            _fg_download_topk_base_buf = np.zeros((int(max_g),), dtype=np.int32)
+        if _fg_download_topk_keep_buf is None or int(_fg_download_topk_keep_buf.shape[0]) != int(max_g):
+            _fg_download_topk_keep_buf = np.zeros((int(max_g),), dtype=np.int32)
 
-    _fg_download_topk_base_buf[:n] = base_np[:n]
-    _fg_download_topk_keep_buf[:n] = keep_np[:n]
-    fg_fields.fg_input_base_score.from_numpy(_fg_download_topk_base_buf)
-    fg_fields.fg_keep_mask.from_numpy(_fg_download_topk_keep_buf)
+        _fg_download_topk_base_buf[:n] = base_np[:n]
+        _fg_download_topk_keep_buf[:n] = keep_np[:n]
+        fg_fields.fg_input_base_score.from_numpy(_fg_download_topk_base_buf)
+        fg_fields.fg_keep_mask.from_numpy(_fg_download_topk_keep_buf)
 
     fg_kernels.fg_select_global_best_topk_kernel(int(slot), int(n), int(k))
     n_pack = int(getattr(fg_fields, "FG_DOWNLOAD_TOPK_MAX", 256) or 256)

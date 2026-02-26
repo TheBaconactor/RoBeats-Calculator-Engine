@@ -27,6 +27,10 @@ _WAL_MAINT_LOCK = threading.Lock()
 _LAST_WAL_MAINT_TS = 0.0
 
 
+def _db_context_verbose() -> bool:
+    return env_flag("DB_CONTEXT_VERBOSE", "0")
+
+
 class _LazyJsonDict(dict):
     """
     Lazy JSON decoder that still satisfies isinstance(x, dict).
@@ -167,18 +171,19 @@ def load_database_context(
         except Exception:
             pid = None
 
-        # Always print DB path + exact lookup key to make seeding issues obvious.
-        # (repr shows hidden whitespace / mismatched suffixes that would otherwise be invisible.)
-        try:
-            if pid is not None:
-                print(f"[DB pid={pid}] Using DB: {get_evolution_db_path()} | lookup key: {found_song_name!r}")
-            else:
-                print(f"[DB] Using DB: {get_evolution_db_path()} | lookup key: {found_song_name!r}")
-        except Exception:
-            if pid is not None:
-                print(f"[DB pid={pid}] Using DB: (unknown) | lookup key: {found_song_name!r}")
-            else:
-                print(f"[DB] Using DB: (unknown) | lookup key: {found_song_name!r}")
+        if _db_context_verbose():
+            # Always print DB path + exact lookup key to make seeding issues obvious.
+            # (repr shows hidden whitespace / mismatched suffixes that would otherwise be invisible.)
+            try:
+                if pid is not None:
+                    print(f"[DB pid={pid}] Using DB: {get_evolution_db_path()} | lookup key: {found_song_name!r}")
+                else:
+                    print(f"[DB] Using DB: {get_evolution_db_path()} | lookup key: {found_song_name!r}")
+            except Exception:
+                if pid is not None:
+                    print(f"[DB pid={pid}] Using DB: (unknown) | lookup key: {found_song_name!r}")
+                else:
+                    print(f"[DB] Using DB: (unknown) | lookup key: {found_song_name!r}")
 
         # Load previous best for seeding
         best_loadouts = get_best_loadouts(
@@ -202,8 +207,9 @@ def load_database_context(
             except Exception:
                 prev_best_fg = 0
 
-            tag = f"[DB pid={pid}]" if pid is not None else "[DB]"
-            print(f"{tag} Found previous best (Base: {prev_base}, FG: {prev_best_fg})")
+            if _db_context_verbose():
+                tag = f"[DB pid={pid}]" if pid is not None else "[DB]"
+                print(f"{tag} Found previous best (Base: {prev_base}, FG: {prev_best_fg})")
         else:
             # If we expected a DB seed but didn't find one, show nearby candidates.
             # This catches cases where the song key differs by suffix/spacing.

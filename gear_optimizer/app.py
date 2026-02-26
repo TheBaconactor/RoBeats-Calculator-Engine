@@ -12,12 +12,13 @@ import sys
 import zlib
 import threading
 import time
+import typing
 
 import numpy as np
 
 # Import from refactored modules
 from gear_optimizer.core.constants import PATHS, SCRIPT_DIR, BIN_DIR, TOTAL_ROWS, GA_POPULATION_SIZE
-from gear_optimizer.core.env_config import ENV
+from gear_optimizer.core.env_config import ENV, TRUTHY_ENV_VALUES
 from gear_optimizer.core.output import suppress_stdout, restore_stdout, suppress_stderr, restore_stderr
 from gear_optimizer.core.config import (
     compute_memory_guard_limit,
@@ -29,7 +30,6 @@ from gear_optimizer.data.database import (
     init_db,
     get_evolution_db_path,
     get_song_names_present_in_db,
-    prioritize_song_queue_missing_db,
     get_song_counters,
     get_best_loadouts,
 )
@@ -439,6 +439,64 @@ class GearOptimizerApp:
     def _install_signal_handlers(self) -> None:
         return self._stop_control.install_signal_handlers()
 
+    @staticmethod
+    def _cfg_truthy(cfg, section: str, key: str, *, fallback: bool = False) -> bool:
+        try:
+            return bool(cfg.getboolean(section, key, fallback=fallback))
+        except Exception:
+            try:
+                raw = str(cfg.get(section, key, fallback=str(int(bool(fallback)))) or "").strip().lower()
+                return raw in TRUTHY_ENV_VALUES
+            except Exception:
+                return bool(fallback)
+
+    def _profiling_mode_enabled(self, cfg=None) -> bool:
+        # Fast path from centralized env snapshot.
+        if bool(getattr(ENV, "debug_profile", False)) or bool(getattr(ENV, "perf_timing_unconditional", False)):
+            return True
+
+        # Direct env checks (covers runs that don't go through main.py env normalization).
+        truthy_keys = (
+            "DEBUG_PROFILE",
+            "METAFINDER_DEBUG_PROFILE",
+            "PERF_TIMING",
+            "GPU_EXECUTOR_PROFILE",
+            "GPU_PROFILER",
+            "GPU_BATCH_LOG",
+            "GPU_SERVICE_PROFILE",
+            "GPU_SERVICE_PROFILE_PRINT",
+            "GPU_SYNC_FOR_TIMING",
+            "GPU_FORCE_SYNC",
+            "INFLIGHT_STAGE_PROFILE",
+            "TAICHI_KERNEL_PROFILER",
+            "TAICHI_KERNEL_PROFILER_PRINT",
+            "METAFINDER_PROFILE_EVENTS",
+            "PROFILE_EVENTS",
+            "FG_TASK_TRACE",
+        )
+        for key in truthy_keys:
+            if str(os.environ.get(key, "") or "").strip().lower() in TRUTHY_ENV_VALUES:
+                return True
+
+        path_keys = (
+            "GPU_EXECUTOR_TRACE_PATH",
+            "INFLIGHT_STAGE_PROFILE_PATH",
+            "METAFINDER_PROFILE_EVENTS_PATH",
+            "PROFILE_EVENTS_PATH",
+        )
+        for key in path_keys:
+            if str(os.environ.get(key, "") or "").strip():
+                return True
+
+        # Config-level profile toggles (important for non-main entrypoints).
+        if cfg is not None:
+            if self._cfg_truthy(cfg, "Debug", "DebugProfile", fallback=False):
+                return True
+            if self._cfg_truthy(cfg, "IterationEngine", "DebugProfile", fallback=False):
+                return True
+
+        return False
+
     def run(self):
         multiprocessing.freeze_support()
         self._install_signal_handlers()
@@ -535,6 +593,15 @@ class GearOptimizerApp:
             ga_depth = safe_int(cfg.get("IterationEngine", "GA_SearchDepth", fallback=50))
             use_evo_db = cfg.getboolean("IterationEngine", "UseEvolutionDB", fallback=True)
             loop_forever = cfg.getboolean("IterationEngine", "LoopForever", fallback=False)
+            if self._profiling_mode_enabled(cfg):
+                if loop_forever:
+                    print("[Profiling] LoopForever=true ignored; forcing LoopForever=false.")
+                    emit_profile_event(
+                        component="app",
+                        event="profiling_forced_loop_forever_off",
+                        metrics={"requested_loop_forever": 1},
+                    )
+                loop_forever = False
             eval_cpu_limit = safe_int(cfg.get("IterationEngine", "EvalCPUCores", fallback=0))
             self._apply_inflight_overrides(cfg)
             self._maybe_apply_inflight_ram_mode(cfg)
@@ -842,7 +909,22 @@ class GearOptimizerApp:
                     break
             return int(limit)
 
+        _presence_lookup_cache: dict[tuple[str, ...], set[str]] = {}
+
+        def _lookup_song_presence(song_names: typing.Iterable[str]) -> set[str]:
+            names = tuple(sorted({str(name or "").strip() for name in (song_names or []) if str(name or "").strip()}))
+            if not names:
+                return set()
+            cached = _presence_lookup_cache.get(names)
+            if cached is not None:
+                return cached
+            present = get_song_names_present_in_db(names)
+            _presence_lookup_cache[names] = present
+            return present
+
         resume_seed_queue: list[tuple[str, str, str]] = []
+        resume_names_present: set[str] = set()
+        resume_names_present_loaded = False
         ignore_resume = False
         try:
             ignore_resume = cfg.getboolean("IterationEngine", "IgnoreResumeQueue", fallback=False)
@@ -857,7 +939,14 @@ class GearOptimizerApp:
                 print(f"[MemoryGuard] Resuming {len(resume_seed_queue)} song(s) from previous interrupted run.")
                 if use_evo_db:
                     try:
-                        resume_seed_queue = prioritize_song_queue_missing_db(resume_seed_queue)
+                        resume_names_present = _lookup_song_presence((item[1] for item in resume_seed_queue))
+                        resume_names_present_loaded = True
+                        if resume_names_present:
+                            resume_missing: list[tuple[str, str, str]] = []
+                            resume_existing: list[tuple[str, str, str]] = []
+                            for item in resume_seed_queue:
+                                (resume_existing if item[1] in resume_names_present else resume_missing).append(item)
+                            resume_seed_queue = resume_missing + resume_existing
                     except Exception as exc:
                         logging.warning(
                             f"[DB] Failed to prioritize resume queue: {type(exc).__name__}: {exc}",
@@ -945,9 +1034,18 @@ class GearOptimizerApp:
         except Exception:
             pass
 
+        song_names_present_in_db: set[str] = set()
+        song_names_present_loaded = False
         if use_evo_db:
             try:
-                song_queue = prioritize_song_queue_missing_db(song_queue)
+                song_names_present_in_db = _lookup_song_presence((item[1] for item in song_queue))
+                song_names_present_loaded = True
+                if song_names_present_in_db:
+                    missing: list[tuple[str, str, str]] = []
+                    existing: list[tuple[str, str, str]] = []
+                    for item in song_queue:
+                        (existing if item[1] in song_names_present_in_db else missing).append(item)
+                    song_queue = missing + existing
             except Exception as exc:
                 logging.warning(f"[DB] Failed to prioritize song queue: {type(exc).__name__}: {exc}")
 
@@ -957,6 +1055,7 @@ class GearOptimizerApp:
         if apply_limit:
             song_queue_limit = _read_song_queue_limit()
             if song_queue_limit and song_queue_limit > 0 and len(song_queue) > song_queue_limit:
+
                 def _queue_sort_key(item: tuple[str, str, str]) -> tuple[str, str, str]:
                     return (
                         str(item[1] or "").casefold(),
@@ -968,10 +1067,7 @@ class GearOptimizerApp:
                 # Without this, sorting the entire queue before truncation can drop newly
                 # added songs from the limited slice.
                 if use_evo_db:
-                    try:
-                        present = get_song_names_present_in_db((item[1] for item in song_queue))
-                    except Exception:
-                        present = set()
+                    present = song_names_present_in_db if song_names_present_loaded else set()
                     if present:
                         missing: list[tuple[str, str, str]] = []
                         existing: list[tuple[str, str, str]] = []
@@ -999,7 +1095,10 @@ class GearOptimizerApp:
         if resume_seed_queue and use_evo_db:
             new_missing: list[tuple[str, str, str]] = []
             try:
-                present = get_song_names_present_in_db((item[1] for item in song_queue))
+                if song_names_present_loaded:
+                    present = song_names_present_in_db
+                else:
+                    present = _lookup_song_presence((item[1] for item in song_queue))
                 resume_paths = {os.path.abspath(str(item[0] or "")).casefold() for item in (resume_seed_queue or [])}
                 for item in song_queue:
                     try:
@@ -1820,26 +1919,22 @@ class GearOptimizerApp:
         if self._stop_requested_now():
             return
         inflight_songs = 0
-        gpu_mode_cfg = True
         try:
             cfg_dict0 = tasks[0][3] if tasks else {}
             ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
             if isinstance(ie, dict):
                 inflight_songs = safe_int(ie.get("inflightsongs", 0), 0)
-                gpu_mode_cfg = True
         except Exception:
             inflight_songs = 0
-            gpu_mode_cfg = True
 
         logical_cpus = os.cpu_count() or 1
         available_cpus = logical_cpus
         if eval_cpu_limit and eval_cpu_limit > 0:
             available_cpus = max(1, min(logical_cpus, eval_cpu_limit))
 
-        if gpu_mode_cfg:
-            max_workers = 1
-        else:
-            max_workers = max(1, min(len(tasks), max(1, available_cpus - 1)))
+        # GPU-only policy: run songs in a single process and use in-flight scheduling
+        # for parallelism instead of per-song process pools.
+        max_workers = 1
 
         if available_cpus != logical_cpus:
             print(f"EvalCPUCores cap applied: using {available_cpus} of {logical_cpus} cores.")
@@ -2108,6 +2203,13 @@ class GearOptimizerApp:
 
                 preload_idx = 5  # Start preloading from index 5
                 preloaded_by_path = {}
+                try:
+                    preloaded_ready_cache_max = max(
+                        8,
+                        safe_int(os.environ.get("SEQUENTIAL_PRELOAD_READY_CACHE_MAX", "256"), 256),
+                    )
+                except Exception:
+                    preloaded_ready_cache_max = 256
 
                 # GPU prefetch manager for ahead-of-time timeline computation
                 _gpu_prefetch_mgr, gpu_prefetch_enabled = self._init_gpu_prefetch_manager(use_gpu_preload)
@@ -2142,13 +2244,16 @@ class GearOptimizerApp:
                                 preloaded = preloader.get_if_ready()
                                 if preloaded is None:
                                     break
-                                preloaded_by_path[os.path.abspath(str(preloaded.file_path))] = preloaded
+                                preloaded_key = os.path.abspath(str(preloaded.file_path))
+                                preloaded_by_path[preloaded_key] = preloaded
+                                if len(preloaded_by_path) > int(preloaded_ready_cache_max):
+                                    preloaded_by_path.pop(next(iter(preloaded_by_path)), None)
                         except Exception:
                             pass
 
                     # Prefer preloaded calc_song for this song (skips disk I/O + parsing).
                     task_args = t
-                    preloaded_current = preloaded_by_path.get(song_path_key)
+                    preloaded_current = preloaded_by_path.pop(song_path_key, None)
                     if preloaded_current is not None and preloaded_current.calc_song and not preloaded_current.error:
                         cloned = self._clone_calc_song_for_run(preloaded_current.calc_song)
                         task_args = t + (cloned, True)
@@ -2268,6 +2373,13 @@ class GearOptimizerApp:
         def _safe_sequential_gen(task_list):
             preload_idx = 5  # Start preloading from index 5
             preloaded_by_path = {}
+            try:
+                preloaded_ready_cache_max = max(
+                    8,
+                    safe_int(os.environ.get("SEQUENTIAL_PRELOAD_READY_CACHE_MAX", "256"), 256),
+                )
+            except Exception:
+                preloaded_ready_cache_max = 256
 
             # GPU prefetch manager for ahead-of-time timeline computation
             _gpu_prefetch_mgr, gpu_prefetch_enabled = self._init_gpu_prefetch_manager(use_gpu_preload)
@@ -2291,13 +2403,16 @@ class GearOptimizerApp:
                             preloaded = preloader.get_if_ready()
                             if preloaded is None:
                                 break
-                            preloaded_by_path[os.path.abspath(str(preloaded.file_path))] = preloaded
+                            preloaded_key = os.path.abspath(str(preloaded.file_path))
+                            preloaded_by_path[preloaded_key] = preloaded
+                            if len(preloaded_by_path) > int(preloaded_ready_cache_max):
+                                preloaded_by_path.pop(next(iter(preloaded_by_path)), None)
                     except Exception:
                         pass
 
                 # Prefer preloaded calc_song for this song (skips disk I/O + parsing).
                 task_args = t
-                preloaded_current = preloaded_by_path.get(song_path_key)
+                preloaded_current = preloaded_by_path.pop(song_path_key, None)
                 if preloaded_current is not None and preloaded_current.calc_song and not preloaded_current.error:
                     cloned = self._clone_calc_song_for_run(preloaded_current.calc_song)
                     task_args = t + (cloned,)

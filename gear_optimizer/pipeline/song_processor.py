@@ -12,13 +12,11 @@ Contains the main process_song_task function that coordinates:
 REFACTORED: Helper functions extracted to .helpers.song_helpers for maintainability.
 """
 
-import concurrent.futures
 import contextlib
 import gc
 import hashlib
 import json
 import logging
-import multiprocessing
 import os
 import sys
 import threading
@@ -73,9 +71,36 @@ _SONG_GC_GEN2_INTERVAL = max(1, int(os.environ.get("SONG_GC_GEN2_INTERVAL", "25"
 
 # Performance timing flag (set via env var)
 PERF_TIMING_ENABLED = bool(getattr(ENV, "perf_timing_unconditional", False))
+_CAPTURE_SONG_LOG_PAYLOAD = str(os.environ.get("SONG_CAPTURE_LOG_PAYLOAD", "0") or "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 # GPU profiler for songs/hour tracking
 _gpu_profiler = get_gpu_profiler()
+
+
+class _NullLogBuffer:
+    """File-like sink that discards writes and avoids per-song StringIO growth."""
+
+    __slots__ = ()
+
+    def write(self, data):
+        try:
+            return len(data)
+        except Exception:
+            return 0
+
+    def flush(self):
+        return None
+
+    def getvalue(self):
+        return ""
+
+    def close(self):
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -428,28 +453,33 @@ def read_song_file(fp):
     if not fp:
         return data
     try:
-        with open(fp, "r", encoding="utf-8-sig") as f:
-            lines = f.read().splitlines()
-        marker = next((i for i, line in enumerate(lines) if line.strip() == "Song Data"), -1)
-        if marker == -1:
-            return data
-        for line in lines[:marker]:
-            if not line.strip():
-                continue
-            parts = line.split("\t", 1)
-            if len(parts) == 2:
-                key = parts[0].strip()
-                if key in data["song_details"]:
-                    data["song_details"][key] = parts[1].strip() or "0"
-
+        found_song_data = False
         note_lines = []
-        for line in lines[marker + 1 :]:
-            s = line.strip()
-            if not s:
-                continue
-            c = s[0]
-            if ("0" <= c <= "9") or c == ".":
-                note_lines.append(line)
+        with open(fp, "r", encoding="utf-8-sig") as f:
+            for raw_line in f:
+                line = raw_line.rstrip("\r\n")
+                stripped = line.strip()
+                if not found_song_data:
+                    if stripped == "Song Data":
+                        found_song_data = True
+                        continue
+                    if not stripped:
+                        continue
+                    parts = line.split("\t", 1)
+                    if len(parts) == 2:
+                        key = parts[0].strip()
+                        if key in data["song_details"]:
+                            data["song_details"][key] = parts[1].strip() or "0"
+                    continue
+
+                if not stripped:
+                    continue
+                c = stripped[0]
+                if ("0" <= c <= "9") or c == ".":
+                    note_lines.append(line)
+
+        if not found_song_data:
+            return data
 
         if note_lines:
             nd = np.loadtxt(StringIO("\n".join(note_lines)), delimiter=None)
@@ -513,7 +543,7 @@ def process_song_task(args) -> SongResultPayload:
         auto_buff,
         ga_depth,
         status_queue,
-        parallel_workers,
+        _parallel_workers,
         fg_debug,
     ) = args_list[:16]
 
@@ -553,22 +583,14 @@ def process_song_task(args) -> SongResultPayload:
             queue_label = f"{found_song_name} (Run {idx}/{total})"
 
     # Initialize variables at function start to avoid 'in locals()' pattern issues
-    local_executor = None
     loadout_entries = None
     known_loadouts = None
     persist_entries = None
     buf_content = ""  # Capture buffer content before closing
 
-    # Optional local pool for single-song runs to saturate available cores.
-    if parallel_workers:
-        worker_count = min(parallel_workers, os.cpu_count() or 1)
-        if worker_count > 1:
-            local_executor = concurrent.futures.ProcessPoolExecutor(
-                max_workers=worker_count,
-                mp_context=multiprocessing.get_context("spawn"),
-            )
-
-    buf = StringIO()
+    # Capture logs only when explicitly requested; otherwise sink output without growing
+    # per-song buffers that are discarded by the coordinator.
+    buf = StringIO() if _CAPTURE_SONG_LOG_PAYLOAD else _NullLogBuffer()
     output_enabled = bool(getattr(ENV, "output_enabled", False))
     tee = Tee(sys.stdout, buf) if output_enabled else Tee(buf)
     redirect_ctx = contextlib.redirect_stdout(tee)
@@ -804,7 +826,7 @@ def process_song_task(args) -> SongResultPayload:
                 db_seed=db_seed,
                 ga_settings=ga_settings,
                 status_cb=lambda m: emit(m),
-                executor=local_executor,
+                executor=None,
                 known_loadouts=known_loadouts,
                 song_slot=_gpu_song_slot,  # Use prefetched GPU slot
                 ga_seed=ga_seed,
@@ -1017,8 +1039,9 @@ def process_song_task(args) -> SongResultPayload:
                     out["force"] = force_copy
                 return out
 
-            # BUG FIX: Capture buffer content BEFORE finally block closes it
-            buf_content = buf.getvalue() if buf else ""
+            if _CAPTURE_SONG_LOG_PAYLOAD:
+                # Capture buffer content before finally block closes it.
+                buf_content = buf.getvalue() if buf else ""
 
             try:
                 record_info = evaluate_record_update(
@@ -1145,8 +1168,9 @@ def process_song_task(args) -> SongResultPayload:
                 "force": None,
             }
 
-        # BUG FIX: Capture buffer content BEFORE finally block closes it
-        buf_content = buf.getvalue() if buf else ""
+        if _CAPTURE_SONG_LOG_PAYLOAD:
+            # Capture buffer content before finally block closes it.
+            buf_content = buf.getvalue() if buf else ""
 
         result_payload = {
             "song": found_song_name,
@@ -1194,10 +1218,6 @@ def process_song_task(args) -> SongResultPayload:
                         "total_sec": float(getattr(_song_gpu_timing, "total_sec", 0.0) or 0.0),
                     }
                 )
-
-        if local_executor:
-            local_executor.shutdown()
-            local_executor = None  # Break reference
 
         # Prevent memory leak from unbounded cache growth across thousands of songs
         FEVER_TIMELINE_CACHE.clear()
