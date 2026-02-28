@@ -68,6 +68,7 @@ from ..helpers.song_helpers.fg_combo_booster import (
     hydrate_fg_candidate_stats,
 )
 from .item_registry import ItemRegistry
+from .convergence_trace import build_convergence_trace_writer
 
 # Optional: GPU-native GA dependencies are probed without importing Taichi eagerly.
 try:
@@ -1320,6 +1321,13 @@ def _run_gpu_native_ga(
             seed = 42
     gpu_api.ga_seed_rng(n_genomes, seed=int(seed))
 
+    trace_writer, trace_every = build_convergence_trace_writer(
+        calc_song=calc_song,
+        cfg_data=cfg_data,
+        ga_seed=ga_seed if ga_seed is not None else seed,
+    )
+    trace_t0 = time.perf_counter() if trace_writer is not None else 0.0
+
     # CPU-side best tracking (faster than GPU-side for this use case)
     best_score = -1
     best_genome_ids = None
@@ -1397,6 +1405,19 @@ def _run_gpu_native_ga(
             is_s_ov=is_s_ov,
             song_slot=song_slot,
         )
+
+        if trace_writer is not None and (int(gen) % int(trace_every) == 0):
+            try:
+                trace_best_score, _trace_best_genome, trace_best_results = gpu_api.ga_download_global_best()
+                trace_writer.append(
+                    generation_idx=int(gen),
+                    elapsed_s=float(time.perf_counter() - trace_t0),
+                    best_score=int(trace_best_score),
+                    best_results=trace_best_results,
+                    extra={"path": "single_run"},
+                )
+            except Exception:
+                pass
 
         # --- MIGRATION PHASE (every GPU_GA_GENS_PER_MIGRATION generations) ---
         # Now fully GPU-side: no CPU downloads/uploads needed!
@@ -1537,6 +1558,12 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     cfg_data = dict(cfg_data or {})
     color_flags = dict(color_flags or {})
+    trace_writer, trace_every = build_convergence_trace_writer(
+        calc_song=calc_song,
+        cfg_data=cfg_data,
+        ga_seed=ga_seed,
+    )
+    trace_t0 = time.perf_counter() if trace_writer is not None else 0.0
 
     seed_base = 42
     if ga_seed is not None:
@@ -1812,6 +1839,9 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                         seed=int((int(seed_base) + int(global_run_idx)) & 0xFFFFFFFF),
                     )
 
+                    if trace_writer is not None:
+                        gpu_api.ga_init_global_best()
+
                     gen_use_hints = 0  # Force cold start on Gen 0
                     n_total = int(batch_len) * int(n_genomes)
 
@@ -1869,6 +1899,8 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             is_s_ov=is_s_ov,
                             song_slot=int(song_slot),
                         )
+                        if trace_writer is not None:
+                            gpu_api.ga_update_global_best(int(n_total), n_slots=int(n_slots))
                         _sync()
                         if t0:
                             _log_phase(
@@ -1880,6 +1912,23 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 use_hints=int(gen_use_hints),
                                 combos=int(n_combos),
                             )
+
+                        if trace_writer is not None and (int(gen) % int(trace_every) == 0):
+                            try:
+                                trace_best_score, _trace_best_genome, trace_best_results = gpu_api.ga_download_global_best()
+                                trace_writer.append(
+                                    generation_idx=int(gen),
+                                    elapsed_s=float(time.perf_counter() - trace_t0),
+                                    best_score=int(trace_best_score),
+                                    best_results=trace_best_results,
+                                    extra={
+                                        "path": "batch_runs",
+                                        "batch_run_start": int(global_run_idx),
+                                        "batch_runs": int(batch_len),
+                                    },
+                                )
+                            except Exception:
+                                pass
 
                         # Track best per run across generations.
                         t0 = time.perf_counter() if phase_timing else 0.0
@@ -2191,6 +2240,32 @@ def solve_coevolution_genetic(
         "user_fm": safe_int(cfg.get("UserInputStatsGems", "fever_multiplier", fallback=0)),
         "static_elem_input": safe_int(cfg.get("ElementalGems", selected_color, fallback=0)),
     }
+    try:
+        cfg_data["ga_convergence_trace_enabled"] = bool(
+            cfg.getboolean("IterationEngine", "GAConvergenceTrace", fallback=False)
+        )
+    except Exception:
+        cfg_data["ga_convergence_trace_enabled"] = False
+    try:
+        cfg_data["ga_convergence_trace_every"] = max(
+            1,
+            safe_int(cfg.get("IterationEngine", "GAConvergenceTraceEvery", fallback="1"), 1),
+        )
+    except Exception:
+        cfg_data["ga_convergence_trace_every"] = 1
+    try:
+        cfg_data["ga_convergence_trace_out_dir"] = str(
+            cfg.get("IterationEngine", "GAConvergenceTraceOutDir", fallback="artifacts/ga_trace")
+            or "artifacts/ga_trace"
+        )
+    except Exception:
+        cfg_data["ga_convergence_trace_out_dir"] = "artifacts/ga_trace"
+    try:
+        cfg_data["ga_convergence_trace_song_filter"] = str(
+            cfg.get("IterationEngine", "GAConvergenceTraceSongFilter", fallback="") or ""
+        )
+    except Exception:
+        cfg_data["ga_convergence_trace_song_filter"] = ""
     # ForceGreatsFinder runs after GA and requires Stats for downstream FG batching.
     # Keep this flag on the cfg_data object so the GPU decode step can include Stats
     # without relying on an environment variable.

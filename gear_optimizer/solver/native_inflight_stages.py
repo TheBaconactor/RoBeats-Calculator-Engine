@@ -283,7 +283,7 @@ def _warmup_fg_jit(calc_song: dict, ref_arrays: dict) -> None:
 
 def _decode_ga_payload_sync(song: Any, runs_payload: np.ndarray) -> tuple[dict, list, list, list[dict]]:
     cpu_t0 = _thread_cpu_time_s()
-    out = decode_gpu_native_ga_runs_payload(
+    best_data, best_gear, best_minis, ga_candidates = decode_gpu_native_ga_runs_payload(
         runs_payload=runs_payload,
         registry=song.registry,
         cfg_data=song.cfg_data,
@@ -293,6 +293,38 @@ def _decode_ga_payload_sync(song: Any, runs_payload: np.ndarray) -> tuple[dict, 
             FG_CANDIDATE_LIMIT,
         ),
     )
+
+    # Optional post-GA HumanHitSim refinement for ApplyTo=ALL.
+    # Runs on the decoded GA winner only and updates the in-flight song context in-place.
+    try:
+        from gear_optimizer.solver.hit_simulation import refine_human_hit_sim_after_ga
+
+        refine_info = refine_human_hit_sim_after_ga(
+            song.calc_song,
+            cfg_dict=song.cfg_dict or {},
+            best_data=best_data if isinstance(best_data, dict) else {},
+            ref_arrays=song.ref_arrays if isinstance(song.ref_arrays, dict) else {},
+            ga_seed=getattr(song, "ga_seed", None),
+        )
+        if isinstance(refine_info, dict) and isinstance(best_data, dict):
+            refined_score = safe_int(refine_info.get("best_score", 0), 0)
+            best_data["Score"] = int(refined_score)
+            best_data["BaseScore"] = int(refined_score)
+            if isinstance(ga_candidates, list):
+                ga_candidates = list(ga_candidates)
+                ga_candidates.append(
+                    {
+                        "Score": int(refined_score),
+                        "BaseScore": int(refined_score),
+                        "Gear": list(best_gear or []),
+                        "Minis": list(best_minis or []),
+                        "Data": best_data,
+                    }
+                )
+    except Exception:
+        pass
+
+    out = (best_data, best_gear, best_minis, ga_candidates)
     try:
         setattr(song, "_cpu_decode_s", max(0.0, _thread_cpu_time_s() - float(cpu_t0)))
     except Exception:

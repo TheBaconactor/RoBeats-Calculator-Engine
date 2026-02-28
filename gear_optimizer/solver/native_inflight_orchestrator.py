@@ -1105,6 +1105,32 @@ def _prepare_song(task: tuple) -> _NativeSong:
         "user_fm": safe_int(cfg.get("UserInputStatsGems", "fever_multiplier", fallback=0), 0),
         "static_elem_input": safe_int(cfg.get("ElementalGems", selected_color, fallback=0), 0),
     }
+    try:
+        cfg_data["ga_convergence_trace_enabled"] = bool(
+            cfg.getboolean("IterationEngine", "GAConvergenceTrace", fallback=False)
+        )
+    except Exception:
+        cfg_data["ga_convergence_trace_enabled"] = False
+    try:
+        cfg_data["ga_convergence_trace_every"] = max(
+            1,
+            safe_int(cfg.get("IterationEngine", "GAConvergenceTraceEvery", fallback="1"), 1),
+        )
+    except Exception:
+        cfg_data["ga_convergence_trace_every"] = 1
+    try:
+        cfg_data["ga_convergence_trace_out_dir"] = str(
+            cfg.get("IterationEngine", "GAConvergenceTraceOutDir", fallback="artifacts/ga_trace")
+            or "artifacts/ga_trace"
+        )
+    except Exception:
+        cfg_data["ga_convergence_trace_out_dir"] = "artifacts/ga_trace"
+    try:
+        cfg_data["ga_convergence_trace_song_filter"] = str(
+            cfg.get("IterationEngine", "GAConvergenceTraceSongFilter", fallback="") or ""
+        )
+    except Exception:
+        cfg_data["ga_convergence_trace_song_filter"] = ""
 
     # ForceGreatsFinder runs after GA and needs per-candidate Stats/BaseStats for signature grouping.
     # The GPU-native GA decode step is allowed to omit Stats for performance; explicitly require
@@ -1635,6 +1661,38 @@ def run_native_inflight_song_pipeline(
     post_sender = _PostSender(post_queue, stop_requested=stop_requested) if post_queue is not None else None
     fg_decision_debug = _truthy(os.environ.get("INFLIGHT_FG_DECISION_DEBUG", "0"))
     fg_submit_debug = _truthy(os.environ.get("INFLIGHT_FG_SUBMIT_DEBUG", "0"))
+
+    # Progress UI "New" counter should reflect *session-best* improvements, not the stale DB snapshot
+    # that in-flight tasks can start with (DB persistence is async, and many repeats can overlap).
+    progress_best_lock = threading.Lock()
+    progress_best: dict[str, tuple[int, int]] = {}
+
+    def _progress_best_snapshot(db_key: str) -> tuple[int, int]:
+        key = str(db_key or "").strip()
+        if not key:
+            return (0, 0)
+        with progress_best_lock:
+            return progress_best.get(key, (0, 0))
+
+    def _progress_best_update(db_key: str, *, best_score: int | None = None, best_fg: int | None = None) -> None:
+        key = str(db_key or "").strip()
+        if not key:
+            return
+        try:
+            score_new = int(best_score) if best_score is not None else None
+        except Exception:
+            score_new = None
+        try:
+            fg_new = int(best_fg) if best_fg is not None else None
+        except Exception:
+            fg_new = None
+        with progress_best_lock:
+            score0, fg0 = progress_best.get(key, (0, 0))
+            if score_new is not None and score_new > int(score0):
+                score0 = int(score_new)
+            if fg_new is not None and fg_new > int(fg0):
+                fg0 = int(fg_new)
+            progress_best[key] = (int(score0), int(fg0))
 
     def _emit_progress(*, completed_delta: int = 0, failed_delta: int = 0, record_info: dict | None = None) -> None:
         if progress_cb is None:
@@ -2169,6 +2227,15 @@ def run_native_inflight_song_pipeline(
                         song=task_key,
                     )
                     prepared.append(prepared_song)
+                    try:
+                        prev_best_score = safe_int((prepared_song.prev_record or {}).get("score", 0), 0)
+                    except Exception:
+                        prev_best_score = 0
+                    _progress_best_update(
+                        prepared_song.db_key,
+                        best_score=int(prev_best_score),
+                        best_fg=int(getattr(prepared_song, "db_best_fg_score", 0) or 0),
+                    )
                     if prepared and not fg_jit_warmup_submitted:
                         try:
                             fg_prep_executor.submit(_warmup_fg_jit, prepared[0].calc_song, prepared[0].ref_arrays)
@@ -2595,12 +2662,15 @@ def run_native_inflight_song_pipeline(
 
                 record_info = None
                 try:
+                    prev_best_score, prev_best_fg = _progress_best_snapshot(song.db_key)
                     record_info = evaluate_record_update(
                         song.best_data or {},
-                        song.prev_record,
-                        song.fg_variants or [],
-                        db_best_fg_score=song.db_best_fg_score,
+                        {"score": int(prev_best_score)},
+                        [],
+                        db_best_fg_score=int(prev_best_fg),
                     )
+                    if isinstance(record_info, dict) and record_info.get("is_better"):
+                        _progress_best_update(song.db_key, best_score=int(record_info.get("score", 0) or 0))
                 except Exception:
                     record_info = None
                 song.record_info = record_info
@@ -2658,7 +2728,8 @@ def run_native_inflight_song_pipeline(
                     memory_resume_tracker.mark_completed(song.song_name)
                 try:
                     record_info = dict(record_info or {})
-                    record_info.setdefault("song", song.song_name or song.task_key)
+                    # Prefer the task key so repeats show "(Run i/N)" and don't look like a single song run.
+                    record_info.setdefault("song", song.task_key or song.song_name)
                     record_info.setdefault("status", "DONE")
                 except Exception:
                     pass
@@ -2850,6 +2921,8 @@ def run_native_inflight_song_pipeline(
                             gpu_client=gpu_client,
                             post_sender=post_sender,
                             progress_cb=progress_cb,
+                            progress_best=progress_best,
+                            progress_best_lock=progress_best_lock,
                         )
                         _register_completion_future(fg_future)
                         fg_futures.append(
@@ -3072,6 +3145,8 @@ def _run_fg_job_sync(
     gpu_client: GpuServiceClient,
     post_sender: Optional[_PostSender] = None,
     progress_cb=None,
+    progress_best: dict[str, tuple[int, int]] | None = None,
+    progress_best_lock: Any | None = None,
 ) -> None:
     cpu_t0 = _thread_cpu_time_s()
     if song.fg_prep_future is not None:
@@ -3195,11 +3270,33 @@ def _run_fg_job_sync(
     if progress_cb is not None:
         fg_record_info = None
         try:
+            prev_best_score = 0
+            prev_best_fg = 0
+            try:
+                prev_best_score = safe_int((song.prev_record or {}).get("score", 0), 0)
+            except Exception:
+                prev_best_score = 0
+            try:
+                prev_best_fg = safe_int(getattr(song, "db_best_fg_score", 0), 0)
+            except Exception:
+                prev_best_fg = 0
+
+            key = str(getattr(song, "db_key", "") or "").strip()
+            if progress_best is not None and progress_best_lock is not None and key:
+                try:
+                    with progress_best_lock:
+                        best_pair = progress_best.get(key)
+                    if isinstance(best_pair, tuple) and len(best_pair) == 2:
+                        prev_best_score = safe_int(best_pair[0], prev_best_score)
+                        prev_best_fg = safe_int(best_pair[1], prev_best_fg)
+                except Exception:
+                    pass
+
             fg_record_info = evaluate_record_update(
                 song.best_data or {},
-                song.prev_record,
+                {"score": int(prev_best_score)},
                 song.fg_variants or [],
-                db_best_fg_score=song.db_best_fg_score,
+                db_best_fg_score=int(prev_best_fg),
             )
         except Exception:
             fg_record_info = None
@@ -3207,6 +3304,21 @@ def _run_fg_job_sync(
             fg_record_info = dict(fg_record_info)
             # Only count FG improvements in this stage (independent of base GA updates).
             fg_record_info["record_update"] = bool(fg_record_info.get("is_fg_better"))
+            if fg_record_info.get("is_fg_better") and progress_best is not None and progress_best_lock is not None:
+                try:
+                    best_fg_new = safe_int(fg_record_info.get("best_fg_score_run", 0), 0)
+                except Exception:
+                    best_fg_new = 0
+                if best_fg_new > 0:
+                    key = str(getattr(song, "db_key", "") or "").strip()
+                    if key:
+                        try:
+                            with progress_best_lock:
+                                score0, fg0 = progress_best.get(key, (int(prev_best_score), int(prev_best_fg)))
+                                if int(best_fg_new) > int(fg0):
+                                    progress_best[key] = (int(score0), int(best_fg_new))
+                        except Exception:
+                            pass
             try:
                 progress_cb(completed_delta=0, failed_delta=0, record_info=fg_record_info)
             except Exception:

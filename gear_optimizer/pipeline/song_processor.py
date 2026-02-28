@@ -879,6 +879,30 @@ def process_song_task(args) -> SongResultPayload:
                     }
                 ]
 
+        # Optional post-GA HumanHitSim refinement (ApplyTo=ALL).
+        # This runs only on the final GA winner and updates persisted base score when improved.
+        if (enable_gear or enable_mini) and isinstance(best_data, dict) and best_data:
+            try:
+                from ..solver.hit_simulation import refine_human_hit_sim_after_ga
+
+                _t_refine0 = time.perf_counter()
+                refine_info = refine_human_hit_sim_after_ga(
+                    calc_song,
+                    cfg_dict=cfg_dict or {},
+                    best_data=best_data,
+                    ref_arrays=ref_arrays,
+                    ga_seed=ga_seed,
+                )
+                if isinstance(refine_info, dict):
+                    stage_timing["cpu_human_hit_sim_refine_sec"] = time.perf_counter() - _t_refine0
+                    print(
+                        "[HumanHitSim] Post-GA refinement "
+                        f"(trials={refine_info.get('trials')}, prev={refine_info.get('prev_score')}, "
+                        f"best={refine_info.get('best_score')}, seed={refine_info.get('best_seed')})"
+                    )
+            except Exception:
+                pass
+
         # Cap GA candidates for downstream processing.
         # Ranked by Score (base score) for DB seeding. We keep a wider funnel so
         # ForceGreatsFinder can evaluate more unique loadouts even on a cold start
