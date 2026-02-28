@@ -491,3 +491,147 @@ def test_hitsim_seed_zero_is_deterministic_when_refinement_enabled_for_apply_all
     assert isinstance(info2, dict)
     assert int(calc_song["metadata"]["HumanHitSimSeed"]) == int(info["seed"])
     assert bool(calc_song["metadata"]["HumanHitSimSeedIsRandom"]) is False
+
+
+def test_refine_human_hit_sim_after_ga_matches_bruteforce_baseline_for_same_trials():
+    """
+    Refinement's fast evaluation path must pick the same best seed/score as a
+    brute-force loop that simulates full timestamps and calls evaluate_stats_score.
+    """
+    ref_arrays = _build_ref_arrays()
+    cfg = {
+        "HumanHitSim": {
+            "Enabled": "true",
+            "ApplyTo": "ALL",
+            "Distribution": "uniform",
+            "GreatMode": "full",
+            "RefineAfterGA": "true",
+            "RefineTrials": "16",
+            # Avoid dependence on song CRC/ga_seed in the test.
+            "RefineSeedBase": "424242",
+        }
+    }
+    calc_song = _build_dense_calc_song()
+    best_data = _build_best_data(calc_song, ref_arrays)
+    # Prevent score clamping from hiding mismatches in tie cases.
+    best_data["Score"] = 0
+    best_data["BaseScore"] = 0
+
+    out = refine_human_hit_sim_after_ga(
+        calc_song,
+        cfg_dict=cfg,
+        best_data=best_data,
+        ref_arrays=ref_arrays,
+        ga_seed=123,
+    )
+    assert isinstance(out, dict)
+    got_seed = int(out["best_seed"])
+    got_score = int(out["best_score"])
+
+    # Brute-force reference over the same seed range.
+    chart_ts = np.asarray(calc_song["song_data"]["chart_timestamps"], dtype=np.float64)
+    note_types = np.asarray(calc_song["song_data"]["note_types"], dtype=np.int16)
+
+    seed_base = int(cfg["HumanHitSim"]["RefineSeedBase"])
+    trials = int(cfg["HumanHitSim"]["RefineTrials"])
+    best_seed = int(seed_base)
+    best_score = -1
+    for i in range(trials):
+        seed = (seed_base + i) & 0xFFFFFFFF
+        if seed == 0:
+            seed = 1
+        sim_ts, _sim_gc, _dbg = simulate_perfect_hit_timestamps_with_great_candidates(
+            chart_ts, note_types, seed=int(seed), distribution="uniform", great_mode="full"
+        )
+        sc = int(
+            evaluate_stats_score(
+                best_data["Stats"],
+                calc_song,
+                ref_arrays,
+                song_timestamps=np.asarray(sim_ts, dtype=np.float64),
+            )
+        )
+        if sc > best_score:
+            best_score = sc
+            best_seed = int(seed)
+
+    assert got_score == int(best_score)
+    assert got_seed == int(best_seed)
+
+
+def test_compute_fever_timeline_signature_matches_reference_randomized():
+    rng = np.random.default_rng(12345)
+    for _ in range(100):
+        n = int(rng.integers(1, 250))
+        # Monotonic event_ms with occasional chords (0 delta).
+        deltas = rng.integers(0, 60, size=n, endpoint=False, dtype=np.int32)
+        event_ms = np.cumsum(deltas, dtype=np.int64).astype(np.int32, copy=False)
+        ts = event_ms.astype(np.float64) * 0.001
+
+        total_notes = int(n)
+        long_notes = int(rng.integers(0, min(10, total_notes + 1)))
+        last_note = float(ts[-1]) if total_notes else 0.0
+        fever_fill_rate = float(rng.uniform(0.15, 0.75))
+        fever_time_stat = float(rng.uniform(1.2, 3.5))
+
+        non_fever_cas = (total_notes - long_notes) * FEVER_FILL_BASE_RATE
+        non_fever_base = int(np.ceil(non_fever_cas * fever_fill_rate))
+        fever_time_cas = (last_note * FEVER_TIME_SCALE) + FEVER_TIME_OFFSET
+        real_fever_time = float(fever_time_cas * fever_time_stat)
+        real_fever_time_ms = int(np.ceil(real_fever_time * 1000.0 - 1e-9))
+        if real_fever_time_ms < 0:
+            real_fever_time_ms = 0
+
+        sig, head_formula, body_fever_formula, body_normal_formula = compute_fever_timeline_signature(
+            event_ms,
+            non_fever_base=int(non_fever_base),
+            real_fever_time_ms=int(real_fever_time_ms),
+        )
+
+        mask = np.zeros(total_notes, dtype=np.bool_)
+        head_ref, body_fever_ref, body_normal_ref, _, _ = calculate_fever_timeline_indices(
+            ts,
+            total_notes,
+            float(fever_fill_rate),
+            float(fever_time_stat),
+            int(long_notes),
+            float(last_note),
+            mask,
+        )
+        head_ref_u8 = np.asarray(head_ref, dtype=np.uint8)
+        sig_ref = (
+            int(head_ref_u8.shape[0]),
+            int(body_fever_ref),
+            int(body_normal_ref),
+            bytes(np.packbits(head_ref_u8, bitorder="little").tobytes()),
+        )
+
+        assert sig == sig_ref
+        assert np.array_equal(np.asarray(head_formula, dtype=np.bool_), np.asarray(head_ref, dtype=np.bool_))
+        assert int(body_fever_formula) == int(body_fever_ref)
+        assert int(body_normal_formula) == int(body_normal_ref)
+
+
+def test_generate_perfect_hit_times_ms_matches_full_simulator_many_seeds():
+    rng = np.random.default_rng(999)
+    # Build a chart with chords + tails.
+    ts = np.array([0.000, 0.050, 0.100, 0.100, 0.120, 0.240, 0.241, 0.300, 0.300, 0.600], dtype=np.float64)
+    note_types = np.array([1, 1, 1, 1, 3, 1, 1, 1, 3, 1], dtype=np.int16)
+    prepared = prepare_perfect_hit_simulation(
+        ts,
+        note_types,
+        perfect_lower_ms=-20,
+        perfect_upper_ms=40,
+        held_tail_type=3,
+        held_tail_time_multiplier=2,
+        quantize_ms=True,
+    )
+
+    for _ in range(25):
+        seed = int(rng.integers(1, 2**32 - 1, endpoint=True))
+        event_ms_fast = np.asarray(generate_perfect_hit_times_ms(prepared, seed=seed), dtype=np.int32)
+        out_sec, _, _ = simulate_perfect_hit_timestamps_with_great_candidates(
+            ts, note_types, seed=seed, distribution="uniform", great_mode="full"
+        )
+        event_ms_full = np.floor(np.asarray(out_sec, dtype=np.float64) * 1000.0 + 1e-6).astype(np.int32)
+        assert np.array_equal(event_ms_fast, event_ms_full)
