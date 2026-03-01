@@ -30,7 +30,10 @@
 ## One-Offs / Debugging
 
 - `scripts/`: ad-hoc utilities, organized by category (`scripts/profile/`, `scripts/db/`, `scripts/fg/`, `scripts/query/`, `scripts/data/`, `scripts/debug/`, `scripts/regression/`)
-- `tools/`: heavier utilities/benchmarks, organized by category (`tools/bench/`, `tools/profile/`, `tools/db/`, `tools/verify/`, `tools/data/`, `tools/meta/`, `tools/dev/`)
+- `tools/`: maintained utilities/benchmarks, organized by category (`tools/bench/`, `tools/profile/`, `tools/db/`, `tools/verify/`, `tools/data/`, `tools/dev/`, `tools/ml/`)
+- Unified script discovery: `python -m tools list` (`--all` includes private/scratch scripts)
+- Unified inventory audit: `python -m tools audit`
+- Unified script execution: `python -m tools run <id> -- <args>`
 - GeneralMeta: `python general_meta_main.py`
 
 ## Refactoring Notes

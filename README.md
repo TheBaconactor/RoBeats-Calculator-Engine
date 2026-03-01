@@ -417,6 +417,24 @@ See `tests/` for CPU/GPU parity checks, DB correctness, and regression coverage.
 
 ## Development
 
+### Unified Script Runner
+
+Use the unified script runner to reduce clutter when working across both `tools/` and `scripts/`:
+
+```bash
+# List maintained scripts
+python -m tools list
+
+# Show inventory + clutter hotspots (private/scratch counts)
+python -m tools audit
+
+# Run a script by id (tool ids are shown by `list`)
+python -m tools run tools:db/check_db
+python -m tools run scripts:query/query_top_loadouts -- --help
+```
+
+By default, private/scratch scripts (for example `_tmp_*`, underscore-prefixed files, and nested `tests/` scripts) are hidden from `list`. Include them explicitly with `--all`.
+
 ### Code Quality Metrics
 
 - ✅ **Architecture:** Clean layered design, zero circular dependencies
@@ -516,5 +534,7 @@ This project is for personal use. All rights reserved.
 ## Contributing
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for system design details.
+
+Use `python -m tools list` to discover centralized tooling entry points.
 
 Run `powershell -ExecutionPolicy Bypass -File tools/dev/quality_check.ps1` to verify code quality before submitting changes.
