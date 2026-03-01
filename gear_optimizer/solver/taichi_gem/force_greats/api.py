@@ -1021,9 +1021,10 @@ def _fg_upload_song_timestamps(timestamps_np: np.ndarray) -> int:
 
     # Stable content-hash fallback: allow reuse even when host pointer changes (e.g., IPC/unpickle).
     try:
-        h = hashlib.blake2b(digest_size=12)
-        h.update(memoryview(ts).cast("B"))
-        content_key = (int(n), h.digest())
+        # Prefer SHA1 here: on this repo's target CPUs, OpenSSL's SHA1 is significantly faster than blake2b
+        # for large buffers (timestamps can be 100k-200k floats).
+        digest = hashlib.sha1(memoryview(ts).cast("B")).digest()[:12]
+        content_key = (int(n), digest)
     except Exception:
         content_key = None
 
@@ -1099,9 +1100,8 @@ def _fg_upload_great_candidate_timestamps(candidate_np: np.ndarray, n: int) -> N
         return
 
     try:
-        h = hashlib.blake2b(digest_size=12)
-        h.update(memoryview(candidate).cast("B"))
-        content_key = (int(n), h.digest())
+        digest = hashlib.sha1(memoryview(candidate).cast("B")).digest()[:12]
+        content_key = (int(n), digest)
     except Exception:
         content_key = None
 

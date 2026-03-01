@@ -218,6 +218,12 @@ def optimize_gems_batch_gpu(
     # Use small host staging buffers sized to the active batch. We upload via ndarray kernels
     # to avoid full-field transfers of MAX_WORK_ITEMS legacy buffers.
     work_items_np, fever_masks_np, genome_stats_np = _ensure_optimize_batch_staging(int(n))
+    # Ensure deterministic mask values for any copied prefix columns.
+    #
+    # We copy `n_cols` columns for all rows; zeroing the host prefix ensures we never transfer
+    # uninitialized bytes (even when head_len is 0 for some items).
+    fever_masks_np.fill(0)
+    max_head_len = 0
 
     for i, item in enumerate(batch_input):
         # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
@@ -234,6 +240,8 @@ def optimize_gems_batch_gpu(
             work_items_np[i, 5] = int(hl)
             if hl > 0:
                 fever_masks_np[i, :hl] = mask_arr[:hl]
+                if hl > max_head_len:
+                    max_head_len = hl
         else:
             work_items_np[i, 5] = 0
 
@@ -274,7 +282,8 @@ def optimize_gems_batch_gpu(
     # Upload the active prefix via ndarray kernels (avoid full-field legacy buffer transfers).
     try:
         kernels.copy_work_items_from_ndarray_kernel(int(n), work_items_np)
-        kernels.copy_fever_masks_from_ndarray_kernel(int(n), int(MAX_HEAD_NOTES), fever_masks_np)
+        if max_head_len > 0:
+            kernels.copy_fever_masks_from_ndarray_kernel(int(n), int(max_head_len), fever_masks_np)
     except Exception:
         # Fallback: allocate full padded host buffers and use from_numpy (slow, but preserves compatibility).
         staging_full = _ensure_batch_staging()
