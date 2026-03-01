@@ -458,6 +458,9 @@ def build_persistence_entries(
     ga_candidates,
     loadout_entries,
     build_details_fn,
+    *,
+    calc_song: dict | None = None,
+    ref_arrays: dict | None = None,
 ):
     """
     Build all persistence entries.
@@ -475,6 +478,9 @@ def build_persistence_entries(
 
     persist_entries = []
     seen_hashes: set[str] = set()
+    # PERF: Base HitSim delta depends only on the stats' Fever Fill Rate and the song's
+    # simulated timing (HumanHitSim.ApplyTo=ALL). Cache per FFR stat value.
+    _hitsim_base_delta_cache: dict[int, int] = {}
 
     def _loadout_hash(gear_items, mini_items) -> str:
         try:
@@ -589,6 +595,43 @@ def build_persistence_entries(
             eval_gear = eval_result.get("Gear", [])
             eval_minis = eval_result.get("Minis", [])
             eval_details = build_details_fn(eval_data)
+
+            # If we're in a context that has the full HitSim inputs, ensure the base delta is present
+            # even on this GA-candidates fallback path (used by native in-flight deferred posts).
+            if (
+                calc_song is not None
+                and ref_arrays is not None
+                and isinstance(eval_details, dict)
+                and eval_details.get("hitsim_offset_delta_ms") is None
+            ):
+                meta0 = (calc_song.get("metadata") or {}) if isinstance(calc_song, dict) else {}
+                apply_to = str(meta0.get("HumanHitSimApplyTo", "") or "").strip().upper()
+                if not (meta0.get("HumanHitSimApplied") and apply_to == "ALL"):
+                    stats_obj = None
+                else:
+                    stats_obj = eval_details.get("Stats")
+                if isinstance(stats_obj, dict) and stats_obj:
+                    try:
+                        ff_stat = int(stats_obj.get("Fever Fill Rate", 0) or 0)
+                    except Exception:
+                        ff_stat = 0
+                    delta_ms = _hitsim_base_delta_cache.get(int(ff_stat))
+                    if delta_ms is None:
+                        try:
+                            from ...solver.scoring.force_greats import summarize_hitsim_offset_delta_ms_for_base
+
+                            computed = summarize_hitsim_offset_delta_ms_for_base(
+                                calc_song, {"Stats": stats_obj}, ref_arrays
+                            )
+                        except Exception:
+                            computed = None
+                        if computed is not None:
+                            delta_ms = int(computed)
+                            _hitsim_base_delta_cache[int(ff_stat)] = int(delta_ms)
+                    if delta_ms is not None:
+                        eval_details = dict(eval_details)
+                        eval_details["hitsim_offset_delta_ms"] = int(delta_ms)
+
             _append_entry(
                 eval_score,
                 eval_gear,
@@ -655,6 +698,42 @@ def build_persistence_entries(
                     details_obj = build_details_fn(entry.get("eval_data") or {})
                 except Exception:
                     details_obj = details_obj or {}
+
+            # Frontend expects this present for *all* retained base rows (top51), not just top1.
+            # Compute lazily for the final retained set so we don't do extra work for pruned rows.
+            if (
+                calc_song is not None
+                and ref_arrays is not None
+                and isinstance(details_obj, dict)
+                and details_obj.get("hitsim_offset_delta_ms") is None
+            ):
+                meta0 = (calc_song.get("metadata") or {}) if isinstance(calc_song, dict) else {}
+                apply_to = str(meta0.get("HumanHitSimApplyTo", "") or "").strip().upper()
+                if not (meta0.get("HumanHitSimApplied") and apply_to == "ALL"):
+                    stats_obj = None
+                else:
+                    stats_obj = details_obj.get("Stats")
+                if isinstance(stats_obj, dict) and stats_obj:
+                    try:
+                        ff_stat = int(stats_obj.get("Fever Fill Rate", 0) or 0)
+                    except Exception:
+                        ff_stat = 0
+                    delta_ms = _hitsim_base_delta_cache.get(int(ff_stat))
+                    if delta_ms is None:
+                        try:
+                            from ...solver.scoring.force_greats import summarize_hitsim_offset_delta_ms_for_base
+
+                            computed = summarize_hitsim_offset_delta_ms_for_base(
+                                calc_song, {"Stats": stats_obj}, ref_arrays
+                            )
+                        except Exception:
+                            computed = None
+                        if computed is not None:
+                            delta_ms = int(computed)
+                            _hitsim_base_delta_cache[int(ff_stat)] = int(delta_ms)
+                    if delta_ms is not None:
+                        details_obj = dict(details_obj)
+                        details_obj["hitsim_offset_delta_ms"] = int(delta_ms)
 
             _append_entry(
                 entry.get("base_score") or entry.get("score", 0),

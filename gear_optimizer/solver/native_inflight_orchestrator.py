@@ -2675,6 +2675,94 @@ def run_native_inflight_song_pipeline(
                     record_info = None
                 song.record_info = record_info
 
+                # Backfill base HitSim delta for the deferred-post payload (best_data + GA candidates).
+                #
+                # Why here?
+                # - In native in-flight mode we don't ship `calc_song`/`ref_arrays` across the post-process queue.
+                # - TeamBuff tier postprocess intentionally excludes T5, so T5's base rows must already contain
+                #   `details_json.hitsim_offset_delta_ms` or the frontend will see nulls for top51.
+                # - Compute using the in-process `calc_song` (has the true per-run HitSim seed/timestamps).
+                best_data_for_post = song.best_data or {}
+                best_data_post = dict(best_data_for_post) if isinstance(best_data_for_post, dict) else {}
+                ga_candidates_post: list[dict] = []
+                for cand in song.ga_candidates or []:
+                    if not isinstance(cand, dict):
+                        continue
+                    data0 = cand.get("Data") or {}
+                    ga_candidates_post.append(
+                        {
+                            "Score": cand.get("Score", 0),
+                            "BaseScore": cand.get("BaseScore", cand.get("Score", 0)),
+                            "Gear": _compact_items(cand.get("Gear")),
+                            "Minis": _compact_items(cand.get("Minis")),
+                            # Copy so we don't race with FG prep mutating candidate dicts.
+                            "Data": dict(data0) if isinstance(data0, dict) else {},
+                            "_fg_priority": cand.get("_fg_priority", 0),
+                        }
+                    )
+
+                hitsim_meta = song.calc_song.get("metadata") if isinstance(song.calc_song, dict) else None
+                hitsim_enabled = False
+                hitsim_seed = None
+                try:
+                    hitsim_enabled = (
+                        bool(hitsim_meta and hitsim_meta.get("HumanHitSimApplied"))
+                        and str((hitsim_meta or {}).get("HumanHitSimApplyTo", "") or "").strip().upper() == "ALL"
+                    )
+                except Exception:
+                    hitsim_enabled = False
+                try:
+                    if isinstance(hitsim_meta, dict):
+                        hitsim_seed = int((hitsim_meta or {}).get("HumanHitSimSeed", 0) or 0)
+                    else:
+                        hitsim_seed = None
+                except Exception:
+                    hitsim_seed = None
+                if hitsim_seed is not None and int(hitsim_seed) <= 0:
+                    hitsim_seed = None
+
+                delta_cache_by_ff: dict[int, int] = {}
+                if hitsim_enabled and isinstance(song.calc_song, dict) and isinstance(song.ref_arrays, dict):
+                    try:
+                        from gear_optimizer.solver.scoring.force_greats import summarize_hitsim_offset_delta_ms_for_base
+                    except Exception:
+                        summarize_hitsim_offset_delta_ms_for_base = None
+
+                    if summarize_hitsim_offset_delta_ms_for_base is not None:
+
+                        def _maybe_attach(entry_data: dict) -> None:
+                            if not isinstance(entry_data, dict):
+                                return
+                            if entry_data.get("hitsim_offset_delta_ms") is not None:
+                                return
+                            stats0 = entry_data.get("Stats")
+                            if not isinstance(stats0, dict) or not stats0:
+                                return
+                            try:
+                                ff0 = int(stats0.get("Fever Fill Rate", 0) or 0)
+                            except Exception:
+                                ff0 = 0
+                            delta0 = delta_cache_by_ff.get(int(ff0))
+                            if delta0 is None:
+                                try:
+                                    computed = summarize_hitsim_offset_delta_ms_for_base(
+                                        song.calc_song,
+                                        {"Stats": stats0},
+                                        song.ref_arrays,
+                                    )
+                                except Exception:
+                                    computed = None
+                                if computed is not None:
+                                    delta0 = int(computed)
+                                    delta_cache_by_ff[int(ff0)] = int(delta0)
+                            if delta0 is not None:
+                                entry_data["hitsim_offset_delta_ms"] = int(delta0)
+
+                        # Best-data backfill
+                        _maybe_attach(best_data_post)
+                        for cand in ga_candidates_post:
+                            _maybe_attach(cand.get("Data") or {})
+
                 _post(
                     {
                         "_deferred_post": True,
@@ -2688,11 +2776,12 @@ def run_native_inflight_song_pipeline(
                         "difficulty": song.effective_difficulty,
                         "use_evo_db": bool(song.use_evo_db),
                         "cfg_dict": song.cfg_dict,
+                        "hitsim_seed": hitsim_seed,
                         # Avoid pickling large song/ref objects across the post-process queue
                         # unless FG debug output explicitly needs them.
                         "ref_arrays": song.ref_arrays if song.fg_debug else None,
                         "calc_song": song.calc_song if song.fg_debug else None,
-                        "best_data": song.best_data or {},
+                        "best_data": best_data_post,
                         "best_gear": _compact_items(best_gear),
                         "best_minis": _compact_items(best_minis),
                         "current_gear": _compact_items(song.current_gear_list),
@@ -2700,17 +2789,7 @@ def run_native_inflight_song_pipeline(
                         "enable_gear": bool(song.enable_gear),
                         "enable_mini": bool(song.enable_mini),
                         "fg_variants": [],
-                        "ga_candidates": [
-                            {
-                                "Score": c.get("Score", 0),
-                                "BaseScore": c.get("BaseScore", c.get("Score", 0)),
-                                "Gear": _compact_items(c.get("Gear")),
-                                "Minis": _compact_items(c.get("Minis")),
-                                "Data": c.get("Data") or {},
-                                "_fg_priority": c.get("_fg_priority", 0),
-                            }
-                            for c in (song.ga_candidates or [])
-                        ],
+                        "ga_candidates": ga_candidates_post,
                         "loadout_entries": None,
                         "prev_record": _compact_prev_record(song.prev_record),
                         "attempt_lifetime": int(song.attempt_lifetime or 0),

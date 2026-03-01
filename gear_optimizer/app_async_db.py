@@ -319,6 +319,16 @@ class AsyncDbSaver:
                     file_path = meta.get("file_path")
                     cfg_dict = meta.get("cfg_dict") or {}
                     ref_arrays = meta.get("ref_arrays")
+                    hitsim_seed = meta.get("hitsim_seed")
+                    try:
+                        hitsim_seed = int(hitsim_seed) if hitsim_seed is not None else None
+                    except Exception:
+                        hitsim_seed = None
+                    if hitsim_seed is not None and int(hitsim_seed) <= 0:
+                        hitsim_seed = None
+                    # Allow reusing a single calc_song/ref_arrays for both base backfill + tier postprocess.
+                    team_buff_calc_song = None
+                    team_buff_ref_arrays = ref_arrays
 
                     prev_life, prev_attempts, prev_best_score, prev_best_fg = get_song_counters(db_key)
 
@@ -377,6 +387,110 @@ class AsyncDbSaver:
                             details["attempts_first"] = attempts_first
                             e["details"] = details
 
+                    # Backfill base HitSim delta for all persisted base rows (top51).
+                    #
+                    # Why:
+                    # - The frontend expects `details_json.hitsim_offset_delta_ms` for every retained base row.
+                    # - TeamBuff tier postprocess intentionally excludes T5 recomputation, so missing values
+                    #   in the base entries would otherwise remain null (common in native in-flight mode).
+                    #
+                    # NOTE: This computes the delta from `details["Stats"]` (FFR) + a per-run calc_song
+                    # (HumanHitSim applied). It does not modify scores.
+                    try:
+                        needs_hitsim = False
+                        for e in entries or []:
+                            if not isinstance(e, dict):
+                                continue
+                            det0 = e.get("details")
+                            if isinstance(det0, dict) and det0.get("hitsim_offset_delta_ms") is None:
+                                needs_hitsim = True
+                                break
+
+                        human_cfg = cfg_dict.get("HumanHitSim") if isinstance(cfg_dict, dict) else None
+                        enabled_raw = None
+                        apply_to = ""
+                        try:
+                            if isinstance(human_cfg, dict):
+                                enabled_raw = human_cfg.get("Enabled", human_cfg.get("enabled"))
+                                apply_to = str(human_cfg.get("ApplyTo", human_cfg.get("applyto", "")) or "")
+                        except Exception:
+                            enabled_raw = None
+                            apply_to = ""
+                        enabled_all = str(enabled_raw or "").strip().lower() in TRUTHY_ENV_VALUES
+                        apply_to_all = str(apply_to or "").strip().upper() == "ALL"
+
+                        if needs_hitsim and enabled_all and apply_to_all and file_path:
+                            from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song
+                            from gear_optimizer.solver.hit_simulation import apply_human_hit_sim
+                            from gear_optimizer.solver.scoring.force_greats import (
+                                summarize_hitsim_offset_delta_ms_for_base,
+                            )
+
+                            if ref_arrays is None:
+                                ref_arrays = _get_team_buff_ref_arrays_cached()
+
+                            base_calc_song = _get_team_buff_base_calc_song_cached(str(file_path), cfg_dict)
+                            if base_calc_song is None:
+                                base_calc_song = get_base_calc_song(str(file_path), cfg_dict)
+                            calc_song = clone_calc_song(base_calc_song)
+                            # Preserve per-run HitSim seed semantics when config uses Seed=0.
+                            if hitsim_seed is not None:
+                                try:
+                                    meta0 = calc_song.get("metadata") if isinstance(calc_song, dict) else None
+                                    if not isinstance(meta0, dict):
+                                        meta0 = {}
+                                    meta1 = dict(meta0)
+                                    meta1["HumanHitSimPlanned"] = True
+                                    meta1["HumanHitSimSeed"] = int(hitsim_seed)
+                                    calc_song["metadata"] = meta1
+                                except Exception:
+                                    pass
+                            try:
+                                apply_human_hit_sim(calc_song, cfg_dict=cfg_dict)
+                            except Exception:
+                                calc_song = calc_song
+                            team_buff_calc_song = calc_song
+                            team_buff_ref_arrays = ref_arrays
+
+                            meta0 = calc_song.get("metadata", {}) or {}
+                            apply_to0 = str(meta0.get("HumanHitSimApplyTo", "") or "").strip().upper()
+                            if meta0.get("HumanHitSimApplied") and apply_to0 == "ALL":
+                                delta_cache_by_ff: dict[int, int] = {}
+                                for e in entries or []:
+                                    if not isinstance(e, dict):
+                                        continue
+                                    det0 = e.get("details")
+                                    if not isinstance(det0, dict):
+                                        continue
+                                    if det0.get("hitsim_offset_delta_ms") is not None:
+                                        continue
+                                    stats0 = det0.get("Stats")
+                                    if not isinstance(stats0, dict) or not stats0:
+                                        continue
+                                    try:
+                                        ff0 = int(stats0.get("Fever Fill Rate", 0) or 0)
+                                    except Exception:
+                                        ff0 = 0
+                                    delta0 = delta_cache_by_ff.get(int(ff0))
+                                    if delta0 is None:
+                                        try:
+                                            computed = summarize_hitsim_offset_delta_ms_for_base(
+                                                calc_song,
+                                                {"Stats": stats0},
+                                                ref_arrays or {},
+                                            )
+                                        except Exception:
+                                            computed = None
+                                        if computed is not None:
+                                            delta0 = int(computed)
+                                            delta_cache_by_ff[int(ff0)] = int(delta0)
+                                    if delta0 is not None:
+                                        det_out = dict(det0)
+                                        det_out["hitsim_offset_delta_ms"] = int(delta0)
+                                        e["details"] = det_out
+                    except Exception:
+                        pass
+
                     if entries:
                         save_loadouts_batch(db_key, entries)
 
@@ -399,23 +513,39 @@ class AsyncDbSaver:
                             )
                             from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song
 
+                            if team_buff_ref_arrays is not None:
+                                ref_arrays = team_buff_ref_arrays
                             if ref_arrays is None:
                                 ref_arrays = _get_team_buff_ref_arrays_cached()
                             if not ref_arrays:
                                 raise RuntimeError("TeamBuff tier postprocess missing ref_arrays")
 
-                            base_calc_song = _get_team_buff_base_calc_song_cached(str(file_path), cfg_dict)
-                            if base_calc_song is None:
-                                # Fallback (no caching).
-                                base_calc_song = get_base_calc_song(str(file_path), cfg_dict)
-                            calc_song = clone_calc_song(base_calc_song)
-                            # Match per-run timestamp semantics when HumanHitSim is enabled.
-                            try:
-                                from gear_optimizer.solver.hit_simulation import apply_human_hit_sim
+                            if team_buff_calc_song is not None:
+                                calc_song = team_buff_calc_song
+                            else:
+                                base_calc_song = _get_team_buff_base_calc_song_cached(str(file_path), cfg_dict)
+                                if base_calc_song is None:
+                                    # Fallback (no caching).
+                                    base_calc_song = get_base_calc_song(str(file_path), cfg_dict)
+                                calc_song = clone_calc_song(base_calc_song)
+                                # Match per-run timestamp semantics when HumanHitSim is enabled.
+                                try:
+                                    from gear_optimizer.solver.hit_simulation import apply_human_hit_sim
 
-                                apply_human_hit_sim(calc_song, cfg_dict=cfg_dict)
-                            except Exception:
-                                pass
+                                    if hitsim_seed is not None:
+                                        try:
+                                            meta0 = calc_song.get("metadata") if isinstance(calc_song, dict) else None
+                                            if not isinstance(meta0, dict):
+                                                meta0 = {}
+                                            meta1 = dict(meta0)
+                                            meta1["HumanHitSimPlanned"] = True
+                                            meta1["HumanHitSimSeed"] = int(hitsim_seed)
+                                            calc_song["metadata"] = meta1
+                                        except Exception:
+                                            pass
+                                    apply_human_hit_sim(calc_song, cfg_dict=cfg_dict)
+                                except Exception:
+                                    pass
 
                             # Exclude T5 from tier recomputation: base runs already persist T5 directly.
                             # Recomputing T5 can slightly diverge from runtime scores and desync songs.best_score.

@@ -1148,6 +1148,8 @@ def process_song_task(args) -> SongResultPayload:
                 ga_candidates,
                 loadout_entries,
                 build_details,
+                calc_song=calc_song,
+                ref_arrays=ref_arrays,
             )
             persist_build_time_sec = time.perf_counter() - _t_persist0
 

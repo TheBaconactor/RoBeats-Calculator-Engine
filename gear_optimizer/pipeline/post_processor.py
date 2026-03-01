@@ -501,6 +501,8 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     item.get("ga_candidates") or [],
                     item.get("loadout_entries"),
                     build_details,
+                    calc_song=item.get("calc_song"),
+                    ref_arrays=item.get("ref_arrays"),
                 )
                 _log_timing("build_persistence_entries", time.perf_counter() - _t_persist0, song=item.get("song"))
                 profiler.record("build_persistence_entries", time.process_time() - cpu_t0)
@@ -596,6 +598,23 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     if valid_entries:
                         cpu_t0 = time.process_time()
                         _t_db0 = time.perf_counter()
+                        hitsim_seed = item.get("hitsim_seed")
+                        if hitsim_seed is None:
+                            try:
+                                calc_song0 = item.get("calc_song") or {}
+                                meta0 = calc_song0.get("metadata") if isinstance(calc_song0, dict) else None
+                                hitsim_seed = (
+                                    int((meta0 or {}).get("HumanHitSimSeed", 0) or 0)
+                                    if isinstance(meta0, dict)
+                                    else None
+                                )
+                            except Exception:
+                                hitsim_seed = None
+                        try:
+                            if hitsim_seed is not None and int(hitsim_seed) <= 0:
+                                hitsim_seed = None
+                        except Exception:
+                            hitsim_seed = None
                         # Offload SQLite work + counter updates so this post-process loop
                         # keeps draining `result_queue` (prevents GPU starvation via backpressure).
                         async_db.submit(
@@ -607,6 +626,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                                 "file_path": item.get("file_path"),
                                 "cfg_dict": item.get("cfg_dict") or {},
                                 "ref_arrays": item.get("ref_arrays"),
+                                "hitsim_seed": hitsim_seed,
                             },
                         )
                         _log_timing("save_loadouts_batch_enqueue", time.perf_counter() - _t_db0, song=song_name)
@@ -615,6 +635,23 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         print(f"[DB] Skipped save for {song_name}: no valid entries")
                         # Still count this as a processed run for per-song attempt counters.
                         try:
+                            hitsim_seed = item.get("hitsim_seed")
+                            if hitsim_seed is None:
+                                try:
+                                    calc_song0 = item.get("calc_song") or {}
+                                    meta0 = calc_song0.get("metadata") if isinstance(calc_song0, dict) else None
+                                    hitsim_seed = (
+                                        int((meta0 or {}).get("HumanHitSimSeed", 0) or 0)
+                                        if isinstance(meta0, dict)
+                                        else None
+                                    )
+                                except Exception:
+                                    hitsim_seed = None
+                            try:
+                                if hitsim_seed is not None and int(hitsim_seed) <= 0:
+                                    hitsim_seed = None
+                            except Exception:
+                                hitsim_seed = None
                             async_db.submit(
                                 song_name,
                                 [],
@@ -624,6 +661,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                                     "file_path": item.get("file_path"),
                                     "cfg_dict": item.get("cfg_dict") or {},
                                     "ref_arrays": item.get("ref_arrays"),
+                                    "hitsim_seed": hitsim_seed,
                                 },
                             )
                         except Exception:
