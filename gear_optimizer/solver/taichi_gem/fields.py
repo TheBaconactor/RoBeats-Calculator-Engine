@@ -253,15 +253,6 @@ result_p_val: ti.Field = None
 result_s_val: ti.Field = None
 result_stats: ti.Field = None  # Vector field [score, pp, cm, fm, ov, p, s]
 
-# Download staging for legacy work-item `result_stats` (bounded Vulkan `to_numpy()` transfers).
-#
-# When legacy work buffers are enabled, `result_stats` is allocated at MAX_WORK_ITEMS (4M).
-# On Vulkan, `to_numpy()` transfers the full field shape, so a bounded staging buffer avoids
-# transferring the padded tail for small batches (e.g., optimize_gems_batch_gpu).
-result_stats_download_staging_4096: ti.Field = None  # (4096,) vec7 i32
-result_stats_download_staging_65536: ti.Field = None  # (65536,) vec7 i32
-result_stats_download_staging_262144: ti.Field = None  # (262144,) vec7 i32
-
 # Per-genome outputs (for FT/FF iteration kernel)
 genome_result_scores: ti.Field = None
 genome_result_ft: ti.Field = None
@@ -349,7 +340,6 @@ def reset_fields_state() -> None:
     global song_flags
     global result_scores, result_pp, result_cm, result_fm, result_ov
     global result_p_val, result_s_val, result_stats
-    global result_stats_download_staging_4096, result_stats_download_staging_65536, result_stats_download_staging_262144
     global genome_result_scores, genome_result_ft, genome_result_ff
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
@@ -484,9 +474,6 @@ def reset_fields_state() -> None:
     result_p_val = None
     result_s_val = None
     result_stats = None
-    result_stats_download_staging_4096 = None
-    result_stats_download_staging_65536 = None
-    result_stats_download_staging_262144 = None
 
     genome_result_scores = None
     genome_result_ft = None
@@ -622,7 +609,6 @@ def allocate_fields():
     global song_flags
     global result_scores, result_pp, result_cm, result_fm, result_ov
     global result_p_val, result_s_val, result_stats, _fields_allocated, _legacy_work_fields_allocated
-    global result_stats_download_staging_4096, result_stats_download_staging_65536, result_stats_download_staging_262144
     global genome_result_scores, genome_result_ft, genome_result_ff
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
@@ -669,18 +655,20 @@ def allocate_fields():
     bp_pair_ff = ti.field(dtype=ti.i32, shape=MAX_BP_PAIRS)
     bp_result_mask = ti.field(dtype=ti.i32, shape=(16, 64))
 
-    need_legacy_work_fields = bool(IS_METAL or ALLOCATE_LEGACY_WORK_FIELDS_DEFAULT)
-    # Legacy work-item buffers are only needed by legacy chunk/work-item solver APIs.
-    # GPU-native GA/FG paths do not touch them.
-    if need_legacy_work_fields:
-        fever_masks = ti.field(dtype=ti.i8, shape=(MAX_WORK_ITEMS, MAX_HEAD_NOTES))
+    need_work_item_fields = bool(IS_METAL or ALLOCATE_LEGACY_WORK_FIELDS_DEFAULT)
+    # Work-item buffers are only needed by work-item based kernels (solve_genomes_parallel,
+    # GA batch evaluation helpers). The FT/FF-on-GPU solver path does not use per-work-item masks.
+    #
+    # Keep a tiny placeholder `fever_masks` field so kernels that still reference it (mode=0)
+    # can compile without allocating MAX_WORK_ITEMS×MAX_HEAD_NOTES storage.
+    fever_masks = ti.field(dtype=ti.i8, shape=(1, MAX_HEAD_NOTES))
+    if need_work_item_fields:
         work_items = ti.Vector.field(n=8, dtype=ti.i32, shape=MAX_WORK_ITEMS)
         result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_WORK_ITEMS)
         _legacy_work_fields_allocated = True
     else:
-        # Keep tiny placeholder fields so kernels that still reference legacy buffers
+        # Keep tiny placeholder fields so kernels that still reference work-item buffers
         # can compile without allocating full MAX_WORK_ITEMS storage.
-        fever_masks = ti.field(dtype=ti.i8, shape=(1, MAX_HEAD_NOTES))
         work_items = ti.Vector.field(n=8, dtype=ti.i32, shape=1)
         result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=1)
         _legacy_work_fields_allocated = False
@@ -813,63 +801,60 @@ def allocate_fields():
     island_elite_count = ti.field(dtype=ti.i32, shape=1)  # Output: total elites found
 
     _fields_allocated = True
-    legacy_suffix = " + legacy work buffers" if _legacy_work_fields_allocated else " (legacy work buffers skipped)"
-    print(f"[Taichi] Allocated GPU fields: {MAX_GENOMES} genomes{legacy_suffix}")
+    work_suffix = " + work-item buffers" if _legacy_work_fields_allocated else " (work-item buffers skipped)"
+    print(f"[Taichi] Allocated GPU fields: {MAX_GENOMES} genomes{work_suffix}")
+
+
+def ensure_work_item_fields_allocated() -> None:
+    """
+    Allocate large work-item buffers on demand.
+
+    These fields back work-item based kernels like `solve_genomes_parallel` and some
+    GA evaluation helpers. The default production path (FT/FF-on-GPU) does not need them,
+    so we keep them opt-in to reduce baseline VRAM usage.
+    """
+    global work_items, result_stats, _legacy_work_fields_allocated
+
+    ensure_fields_allocated()
+    try:
+        if (
+            _legacy_work_fields_allocated
+            and work_items is not None
+            and result_stats is not None
+            and int(getattr(work_items, "shape", (0,))[0]) == int(MAX_WORK_ITEMS)
+            and int(getattr(result_stats, "shape", (0,))[0]) == int(MAX_WORK_ITEMS)
+        ):
+            return
+    except Exception:
+        # Fallback to re-alloc below.
+        pass
+
+    work_items = ti.Vector.field(n=8, dtype=ti.i32, shape=MAX_WORK_ITEMS)
+    result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_WORK_ITEMS)
+    _legacy_work_fields_allocated = True
+
+    # Rebind newly allocated fields to kernel globals.
+    from . import kernels
+
+    bind_fields(kernels)
+    if IS_METAL:
+        from . import kernels_metal
+
+        kernels_metal.work_items = work_items
+        kernels_metal.result_stats = result_stats
+        kernels_metal.genome_result_stats = genome_result_stats
+        kernels_metal.genome_base_stats = genome_base_stats
+        kernels_metal.ga_scores = ga_scores
+        kernels_metal.ftff_combo_ft = ftff_combo_ft
+        kernels_metal.ftff_combo_ff = ftff_combo_ff
+        kernels_metal.genome_hint_allocation = genome_hint_allocation
+
+    print(f"[Taichi] Allocated work-item buffers: {MAX_WORK_ITEMS} work items")
 
 
 def ensure_legacy_work_fields_allocated() -> None:
-    """
-    Allocate legacy work-item buffers on demand.
-
-    These large fields are required only by legacy chunk/work-item solver APIs.
-    The GPU-native GA/FG production path does not use them.
-    """
-    global fever_masks, work_items, result_stats, _legacy_work_fields_allocated
-    global result_stats_download_staging_4096, result_stats_download_staging_65536, result_stats_download_staging_262144
-
-    ensure_fields_allocated()
-    has_legacy = (
-        _legacy_work_fields_allocated
-        and fever_masks is not None
-        and work_items is not None
-        and result_stats is not None
-    )
-    has_staging = (
-        result_stats_download_staging_4096 is not None
-        and result_stats_download_staging_65536 is not None
-        and result_stats_download_staging_262144 is not None
-    )
-    if has_legacy and has_staging:
-        return
-
-    if not has_legacy:
-        fever_masks = ti.field(dtype=ti.i8, shape=(MAX_WORK_ITEMS, MAX_HEAD_NOTES))
-        work_items = ti.Vector.field(n=8, dtype=ti.i32, shape=MAX_WORK_ITEMS)
-        result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=MAX_WORK_ITEMS)
-        _legacy_work_fields_allocated = True
-
-        # Rebind newly allocated fields to kernel globals.
-        from . import kernels
-
-        bind_fields(kernels)
-        if IS_METAL:
-            from . import kernels_metal
-
-            kernels_metal.work_items = work_items
-            kernels_metal.result_stats = result_stats
-            kernels_metal.genome_result_stats = genome_result_stats
-            kernels_metal.genome_base_stats = genome_base_stats
-            kernels_metal.ga_scores = ga_scores
-            kernels_metal.ftff_combo_ft = ftff_combo_ft
-            kernels_metal.ftff_combo_ff = ftff_combo_ff
-            kernels_metal.genome_hint_allocation = genome_hint_allocation
-        print(f"[Taichi] Allocated legacy work buffers: {MAX_WORK_ITEMS} work items × {MAX_HEAD_NOTES} head notes")
-
-    if not has_staging:
-        # Bounded download staging buffers for legacy work-item results (`result_stats`).
-        result_stats_download_staging_4096 = ti.Vector.field(n=7, dtype=ti.i32, shape=4096)
-        result_stats_download_staging_65536 = ti.Vector.field(n=7, dtype=ti.i32, shape=65536)
-        result_stats_download_staging_262144 = ti.Vector.field(n=7, dtype=ti.i32, shape=262144)
+    """Backwards-compatible alias; prefer `ensure_work_item_fields_allocated()`."""
+    ensure_work_item_fields_allocated()
 
 
 def allocate_grid_fields():

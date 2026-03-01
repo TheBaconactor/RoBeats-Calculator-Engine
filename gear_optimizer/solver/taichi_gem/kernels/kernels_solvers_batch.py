@@ -2,7 +2,6 @@
 Taichi Kernels - Batch Solver Strategies.
 
 This module contains batch solving kernels:
-- solve_batch_kernel: Process work items in parallel
 - solve_genomes_with_ftff_kernel: Iterate FT/FF combos per genome (GPU-internal)
 - solve_ftff_parallel_kernel: Parallelize across (genome, FT, FF) combinations
 
@@ -40,107 +39,6 @@ def copy_work_items_from_ndarray_kernel(n_items: ti.i32, src: ti.types.ndarray(d
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for i, j in ti.ndrange(n_items, 8):
         kernels_helpers.work_items[i][j] = src[i, j]
-
-
-@ti.kernel
-def copy_fever_masks_from_ndarray_kernel(
-    n_items: ti.i32,
-    n_cols: ti.i32,
-    src: ti.types.ndarray(dtype=ti.i8, ndim=2),
-):
-    """
-    Copy a variable-length host fever-mask buffer into the resident fever_masks field.
-
-    Mirrors copy_work_items_from_ndarray_kernel, but for (n_items, MAX_HEAD_NOTES) i8 fever masks.
-    """
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    for i, j in ti.ndrange(n_items, n_cols):
-        kernels_helpers.fever_masks[i, j] = src[i, j]
-
-
-@ti.kernel
-def solve_batch_kernel(
-    n_items: ti.i32,
-    is_p_ft: ti.i32,
-    is_s_ft: ti.i32,
-    is_p_ff: ti.i32,
-    is_s_ff: ti.i32,
-    is_p_pp: ti.i32,
-    is_s_pp: ti.i32,
-    is_p_cm: ti.i32,
-    is_s_cm: ti.i32,
-    is_p_fm: ti.i32,
-    is_s_fm: ti.i32,
-    is_p_ov: ti.i32,
-    is_s_ov: ti.i32,
-):
-    """
-    Main kernel - processes all work items in parallel.
-
-    Each work item represents one (FT_gems, FF_gems) timeline combination
-    for one genome. The kernel parallelizes across all work items.
-
-    Unpacks from Vector fields.
-
-    Args:
-        n_items: Number of work items to process
-        is_*: Color contribution flags (0/1) for primary/secondary
-    """
-    # Honor TAICHI_BLOCK_DIM (work-group size) for Vulkan kernels.
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    GEM_STAT_TO_ELEMENT: ti.i32 = 3
-
-    for i in range(n_items):
-        # Unpack work item
-        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
-        item = kernels_helpers.work_items[i]
-        budget = item[0]
-        count_fever = item[1]
-        count_normal = item[2]
-        ft_gems = item[3]
-        ff_gems = item[4]
-        head_len = item[5]
-        genome_id = item[6]
-
-        # Look up per-genome base stats
-        # [pp, cm, fm, p_val, s_val, ft, ff]
-        stats = kernels_helpers.genome_base_stats[genome_id]
-        base_pp = stats[0]
-        base_cm = stats[1]
-        base_fm = stats[2]
-        base_p_val = stats[3]
-        base_s_val = stats[4]
-
-        # Adjust elemental stats
-        p_val = base_p_val + (ft_gems * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff_gems * GEM_STAT_TO_ELEMENT * is_p_ff)
-        s_val = base_s_val + (ft_gems * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff_gems * GEM_STAT_TO_ELEMENT * is_s_ff)
-
-        score_vec = optimize_core_device(
-            i,
-            budget,
-            base_pp,
-            base_cm,
-            base_fm,
-            p_val,
-            s_val,
-            is_p_pp,
-            is_s_pp,
-            is_p_cm,
-            is_s_cm,
-            is_p_fm,
-            is_s_fm,
-            is_p_ov,
-            is_s_ov,
-            head_len,
-            count_fever,
-            count_normal,
-            0,
-            0,
-            0,
-            0,
-        )
-        # [score, pp, cm, fm, ov, p_val, s_val]
-        kernels_helpers.result_stats[i] = score_vec
 
 
 @ti.kernel
@@ -638,17 +536,3 @@ def copy_genome_result_stats_to_download_staging_kernel(out_stats: ti.template()
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for g in range(n_genomes):
         out_stats[g] = kernels_helpers.genome_result_stats[g]
-
-
-@ti.kernel
-def copy_result_stats_to_download_staging_kernel(out_stats: ti.template(), n_items: ti.i32):
-    """
-    Copy the populated slice of legacy work-item `result_stats` into a smaller staging field.
-
-    On Vulkan, `to_numpy()` transfers the full field shape, so downloading the padded
-    MAX_WORK_ITEMS (4M) result buffer can dominate throughput when only a small
-    number of items are active.
-    """
-    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    for i in range(n_items):
-        out_stats[i] = kernels_helpers.result_stats[i]

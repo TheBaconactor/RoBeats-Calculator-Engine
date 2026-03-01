@@ -52,7 +52,6 @@ class GpuRequestType(Enum):
 
     SOLVE_GENOMES_PARALLEL = "solve_genomes_parallel"
     SOLVE_GENOMES_FROM_REGISTRY = "solve_genomes_from_registry"
-    OPTIMIZE_GEMS_BATCH = "optimize_gems_batch_gpu"
     LOAD_REF_ARRAYS = "load_ref_arrays"
     PRECOMPUTE_TIMELINE = "precompute_timeline_gpu"
     SOLVE_FORCE_GREATS_FINDER = "solve_force_greats_finder_gpu"
@@ -501,7 +500,6 @@ class GpuExecutor:
         self._dispatch = {
             GpuRequestType.SOLVE_GENOMES_PARALLEL: self._handle_solve_genomes_parallel,
             GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY: self._handle_solve_genomes_from_registry,
-            GpuRequestType.OPTIMIZE_GEMS_BATCH: self._execute_optimize_gems_batch,
             GpuRequestType.LOAD_REF_ARRAYS: self._execute_load_refs,
             GpuRequestType.PRECOMPUTE_TIMELINE: self._execute_precompute_timeline,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER: self._execute_solve_force_greats_finder,
@@ -706,10 +704,6 @@ class GpuExecutor:
 
         if req_type == GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY:
             n = self._size_hint(payload.get("population_indices"))
-            return float(max(1, n))
-
-        if req_type == GpuRequestType.OPTIMIZE_GEMS_BATCH:
-            n = self._size_hint(payload.get("batch_input"))
             return float(max(1, n))
 
         if req_type == GpuRequestType.GPU_NATIVE_GA_RUN:
@@ -4584,39 +4578,6 @@ class GpuExecutor:
                 result["cfg_counts"] = cfg_counts
         return result
 
-    def _execute_optimize_gems_batch(self, request: GpuRequest) -> GpuResponse:
-        """Execute optimize_gems_batch_gpu on GPU."""
-        from .taichi_gem.api import optimize_gems_batch_gpu
-
-        payload = request.payload
-        results = optimize_gems_batch_gpu(
-            payload["batch_input"],
-            payload["cur_pp"],
-            payload["cur_cm"],
-            payload["cur_fm"],
-            payload["base_p_val"],
-            payload["base_s_val"],
-            payload["is_p_ft"],
-            payload["is_s_ft"],
-            payload["is_p_ff"],
-            payload["is_s_ff"],
-            payload["is_p_pp"],
-            payload["is_s_pp"],
-            payload["is_p_cm"],
-            payload["is_s_cm"],
-            payload["is_p_fm"],
-            payload["is_s_fm"],
-            payload["is_p_ov"],
-            payload["is_s_ov"],
-            payload["ref_arrays"],
-        )
-
-        return GpuResponse(
-            request_id=request.request_id,
-            success=True,
-            result=results,
-        )
-
     def _execute_load_refs(self, request: GpuRequest) -> GpuResponse:
         """Load reference arrays."""
         from .taichi_gem.api import load_ref_arrays
@@ -5067,101 +5028,6 @@ def submit_gpu_solve_genomes_from_registry(
         n_expected = 0
     if isinstance(result, list) and n_expected and len(result) != n_expected:
         raise RuntimeError(f"GPU executor returned {len(result)} results for {n_expected} genomes")
-    return result
-
-
-def submit_gpu_optimize_gems_batch(
-    batch_input: list,
-    cur_pp: int,
-    cur_cm: int,
-    cur_fm: int,
-    base_p_val: int,
-    base_s_val: int,
-    is_p_ft: int,
-    is_s_ft: int,
-    is_p_ff: int,
-    is_s_ff: int,
-    is_p_pp: int,
-    is_s_pp: int,
-    is_p_cm: int,
-    is_s_cm: int,
-    is_p_fm: int,
-    is_s_fm: int,
-    is_p_ov: int,
-    is_s_ov: int,
-    ref_arrays: dict,
-    timeout: float = 60.0,
-) -> list:
-    """
-    Submit optimize_gems_batch_gpu request via IPC (for worker processes).
-
-    Mirrors `gear_optimizer.solver.taichi_gem.api.optimize_gems_batch_gpu`.
-    """
-    global _REQUEST_COUNTER
-
-    if not _WORKER_MODE:
-        raise RuntimeError("submit_gpu_optimize_gems_batch called but not in worker mode")
-
-    _REQUEST_COUNTER += 1
-    request_id = _REQUEST_COUNTER
-
-    request = GpuRequest(
-        request_type=GpuRequestType.OPTIMIZE_GEMS_BATCH,
-        request_id=request_id,
-        worker_id=_WORKER_ID,
-        payload={
-            "batch_input": batch_input,
-            "cur_pp": int(cur_pp),
-            "cur_cm": int(cur_cm),
-            "cur_fm": int(cur_fm),
-            "base_p_val": int(base_p_val),
-            "base_s_val": int(base_s_val),
-            "is_p_ft": int(is_p_ft),
-            "is_s_ft": int(is_s_ft),
-            "is_p_ff": int(is_p_ff),
-            "is_s_ff": int(is_s_ff),
-            "is_p_pp": int(is_p_pp),
-            "is_s_pp": int(is_s_pp),
-            "is_p_cm": int(is_p_cm),
-            "is_s_cm": int(is_s_cm),
-            "is_p_fm": int(is_p_fm),
-            "is_s_fm": int(is_s_fm),
-            "is_p_ov": int(is_p_ov),
-            "is_s_ov": int(is_s_ov),
-            "ref_arrays": ref_arrays,
-        },
-        submit_perf_ns=time.perf_counter_ns(),
-    )
-
-    _REQUEST_QUEUE.put(request)
-
-    start = time.monotonic()
-    while True:
-        _prune_pending_responses()
-        if request_id in _PENDING_RESPONSES:
-            response, _ts = _PENDING_RESPONSES.pop(request_id)
-            break
-
-        remaining = timeout - (time.monotonic() - start)
-        if remaining <= 0:
-            raise RuntimeError(f"GPU executor timeout after {timeout}s")
-
-        try:
-            response: GpuResponse = _RESPONSE_QUEUE.get(timeout=remaining)
-        except queue.Empty:
-            raise RuntimeError(f"GPU executor timeout after {timeout}s")
-
-        if response.request_id != request_id:
-            _store_pending_response(response)
-            continue
-        break
-
-    if not response.success:
-        raise RuntimeError(f"GPU executor error: {response.error}")
-
-    result = response.result
-    if isinstance(result, list) and len(result) != len(batch_input):
-        raise RuntimeError(f"GPU executor returned {len(result)} results for {len(batch_input)} items")
     return result
 
 

@@ -42,7 +42,7 @@ from ..scoring_core import (
     optimize_core_jit,
 )
 
-from .gpu_solver import _get_gpu_solver, _GPU_LOCK, FORCE_GREATS_ALGO_VERSION, FG_CACHE
+from .gpu_solver import _GPU_LOCK, FORCE_GREATS_ALGO_VERSION, FG_CACHE
 from .stats_scoring import build_great_penalty_table, _force_greats_counts_to_dict, _song_cache_key
 from .stats_ops import apply_gems_to_base_stats
 
@@ -682,9 +682,8 @@ def evaluate_fg_with_gem_iteration(
 
     start_ft, end_ft, start_ff, end_ff = _normalize_ft_ff_search_ranges(search_ranges)
 
-    # Collect candidates first (so we can do a single GPU batch call when enabled)
-    candidates = []  # preserves (ft, ff) iteration order
-    batch_input = []
+    # Collect candidates first (preserve deterministic (ft, ff) iteration order).
+    candidates = []
 
     for ft_gems, ff_gems, current_budget in _iter_ft_ff_budget_pairs(
         start_ft,
@@ -752,58 +751,11 @@ def evaluate_fg_with_gem_iteration(
             )
         )
 
-        if use_gpu:
-            batch_input.append(
-                {
-                    "budget": current_budget,
-                    "fever_mask_head": fever_mask_head,
-                    "count_body_fever": count_body_fever,
-                    "count_body_normal": count_body_normal,
-                    "ft_gems": ft_gems,
-                    "ff_gems": ff_gems,
-                }
-            )
-
-    # Optional GPU batch optimization (CPU reference path still supported when use_gpu=False)
-    gpu_results = None
-    if use_gpu and batch_input:
-        _, batch_solver = _get_gpu_solver()
-        if batch_solver is None:
-            raise RuntimeError("FG GPU batch solver unavailable but GPU execution was requested.")
-        try:
-            with _GPU_LOCK:
-                gpu_results = batch_solver(
-                    batch_input,
-                    base_pp,
-                    base_cm,
-                    base_fm,
-                    base_p_val=base_p_val_for_gpu,
-                    base_s_val=base_s_val_for_gpu,
-                    is_p_ft=is_p_ft,
-                    is_s_ft=is_s_ft,
-                    is_p_ff=is_p_ff,
-                    is_s_ff=is_s_ff,
-                    is_p_pp=is_p_pp,
-                    is_s_pp=is_s_pp,
-                    is_p_cm=is_p_cm,
-                    is_s_cm=is_s_cm,
-                    is_p_fm=is_p_fm,
-                    is_s_fm=is_s_fm,
-                    is_p_ov=is_p_ov,
-                    is_s_ov=is_s_ov,
-                    ref_arrays=ref_arrays,
-                )
-        except Exception as e:
-            raise RuntimeError(f"FG GPU batch solver failed: {type(e).__name__}: {e}") from e
-
-        if gpu_results is None:
-            raise RuntimeError("FG GPU batch solver returned no results.")
-
     best_result = None
     best_score = -1
 
-    # Evaluate each candidate (CPU reference or GPU) in deterministic order.
-    for idx, cand in enumerate(candidates):
+    # Evaluate each candidate in deterministic order (CPU reference path).
+    for cand in candidates:
         (
             ft_gems,
             ff_gems,
@@ -817,56 +769,44 @@ def evaluate_fg_with_gem_iteration(
             cur_s_val,
         ) = cand
 
-        if gpu_results is not None:
-            res = gpu_results[idx]
-            gems_pp = int(res[6])
-            gems_cm = int(res[7])
-            gems_fm = int(res[8])
-            gems_ov = int(res[9])
-            final_p_val = int(res[4])
-            final_s_val = int(res[5])
-            final_pp = base_pp + gems_pp * GEM_SCALE_NORMAL
-            final_cm = base_cm + gems_cm * GEM_SCALE_NORMAL
-            final_fm = base_fm + gems_fm * GEM_SCALE_FEVER
-        else:
-            (
-                final_pp,
-                final_cm,
-                final_fm,
-                final_p_val,
-                final_s_val,
-                gems_pp,
-                gems_cm,
-                gems_fm,
-                gems_ov,
-            ) = optimize_core_jit(
-                current_budget,
-                base_pp,
-                base_cm,
-                base_fm,
-                cur_p_val,
-                cur_s_val,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                ref_pp,
-                ref_cm,
-                ref_fm,
-                fever_mask_head,
-                count_body_fever,
-                count_body_normal,
-                GEM_SCALE_NORMAL,
-                GEM_SCALE_FEVER,
-                GEM_STAT_TO_ELEMENT_SCALE,
-                ELEMENTAL_GEM_SCALE,
-                TOTAL_ROWS,
-                MAX_STAT_INDEX,
-            )
+        (
+            final_pp,
+            final_cm,
+            final_fm,
+            final_p_val,
+            final_s_val,
+            gems_pp,
+            gems_cm,
+            gems_fm,
+            gems_ov,
+        ) = optimize_core_jit(
+            current_budget,
+            base_pp,
+            base_cm,
+            base_fm,
+            cur_p_val,
+            cur_s_val,
+            is_p_pp,
+            is_s_pp,
+            is_p_cm,
+            is_s_cm,
+            is_p_fm,
+            is_s_fm,
+            is_p_ov,
+            is_s_ov,
+            ref_pp,
+            ref_cm,
+            ref_fm,
+            fever_mask_head,
+            count_body_fever,
+            count_body_normal,
+            GEM_SCALE_NORMAL,
+            GEM_SCALE_FEVER,
+            GEM_STAT_TO_ELEMENT_SCALE,
+            ELEMENTAL_GEM_SCALE,
+            TOTAL_ROWS,
+            MAX_STAT_INDEX,
+        )
 
         pp_factor = lookup_reference_py(final_pp, ref_pp, TOTAL_ROWS)
         combo_mul = lookup_reference_py(final_cm, ref_cm, TOTAL_ROWS)

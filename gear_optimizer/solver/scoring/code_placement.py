@@ -60,7 +60,7 @@ SCORING_PLACEMENT_HINTS: tuple[ScoringPlacementHint, ...] = (
         concern="shared GPU solver singleton/caches and synchronization lock",
         owner="gpu_solver",
         paths=("gear_optimizer/solver/scoring/gpu_solver.py",),
-        entrypoints=("_get_gpu_solver", "_GPU_LOCK", "GEM_SOLVER_CACHE"),
+        entrypoints=("_GPU_LOCK", "GEM_SOLVER_CACHE"),
         why="Avoids fragmented cache/lock ownership across modules.",
     ),
     ScoringPlacementHint(

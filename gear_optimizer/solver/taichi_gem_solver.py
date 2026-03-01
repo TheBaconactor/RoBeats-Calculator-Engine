@@ -49,102 +49,6 @@ def load_ref_arrays(*args, **kwargs):
     return _impl(*args, **kwargs)
 
 
-def optimize_gems_gpu(*args, **kwargs):
-    from .gpu_executor import is_gpu_worker_mode
-
-    if is_gpu_worker_mode():
-        from .gpu_executor import submit_gpu_optimize_gems_batch
-
-        # Keep compatibility with the historical positional API.
-        if args:
-            (
-                budget,
-                fever_mask_head,
-                count_body_fever,
-                count_body_normal,
-                cur_pp,
-                cur_cm,
-                cur_fm,
-                cur_p_val,
-                cur_s_val,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                ref_arrays,
-            ) = args
-        else:
-            budget = kwargs["budget"]
-            fever_mask_head = kwargs["fever_mask_head"]
-            count_body_fever = kwargs["count_body_fever"]
-            count_body_normal = kwargs["count_body_normal"]
-            cur_pp = kwargs["cur_pp"]
-            cur_cm = kwargs["cur_cm"]
-            cur_fm = kwargs["cur_fm"]
-            cur_p_val = kwargs["cur_p_val"]
-            cur_s_val = kwargs["cur_s_val"]
-            is_p_pp = kwargs["is_p_pp"]
-            is_s_pp = kwargs["is_s_pp"]
-            is_p_cm = kwargs["is_p_cm"]
-            is_s_cm = kwargs["is_s_cm"]
-            is_p_fm = kwargs["is_p_fm"]
-            is_s_fm = kwargs["is_s_fm"]
-            is_p_ov = kwargs["is_p_ov"]
-            is_s_ov = kwargs["is_s_ov"]
-            ref_arrays = kwargs["ref_arrays"]
-
-        batch_input = [
-            {
-                "budget": int(budget),
-                "fever_mask_head": fever_mask_head,
-                "count_body_fever": int(count_body_fever),
-                "count_body_normal": int(count_body_normal),
-                "ft_gems": 0,
-                "ff_gems": 0,
-            }
-        ]
-
-        results = submit_gpu_optimize_gems_batch(
-            batch_input,
-            int(cur_pp),
-            int(cur_cm),
-            int(cur_fm),
-            base_p_val=int(cur_p_val),
-            base_s_val=int(cur_s_val),
-            is_p_ft=0,
-            is_s_ft=0,
-            is_p_ff=0,
-            is_s_ff=0,
-            is_p_pp=int(is_p_pp),
-            is_s_pp=int(is_s_pp),
-            is_p_cm=int(is_p_cm),
-            is_s_cm=int(is_s_cm),
-            is_p_fm=int(is_p_fm),
-            is_s_fm=int(is_s_fm),
-            is_p_ov=int(is_p_ov),
-            is_s_ov=int(is_s_ov),
-            ref_arrays=ref_arrays,
-        )
-        return results[0] if results else None
-    from .taichi_gem.api import optimize_gems_gpu as _impl
-
-    return _impl(*args, **kwargs)
-
-
-def optimize_gems_batch_gpu(*args, **kwargs):
-    from .gpu_executor import is_gpu_worker_mode, submit_gpu_optimize_gems_batch
-
-    if is_gpu_worker_mode():
-        return submit_gpu_optimize_gems_batch(*args, **kwargs)
-    from .taichi_gem.api import optimize_gems_batch_gpu as _impl
-
-    return _impl(*args, **kwargs)
-
-
 def solve_genomes_with_ftff(*args, **kwargs):
     from .gpu_executor import is_gpu_worker_mode
 
@@ -185,8 +89,6 @@ def solve_force_greats_finder_gpu(*args, **kwargs):
 __all__ = [
     "init_taichi_vulkan",
     "load_ref_arrays",
-    "optimize_gems_gpu",
-    "optimize_gems_batch_gpu",
     "solve_genomes_with_ftff",
     "solve_genomes_parallel",
 ]

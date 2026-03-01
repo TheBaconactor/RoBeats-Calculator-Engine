@@ -62,7 +62,6 @@ def _ref_arrays_sig(ref_arrays: dict) -> bytes:
 # NUMPY STAGING BUFFERS (avoid huge per-call allocations / CPU zeroing)
 # ============================================================================
 
-_BATCH_STAGING = None
 _PARALLEL_STAGING = None
 _SONG_FLAGS_HOST = None
 
@@ -214,20 +213,6 @@ def _maybe_sync(*, for_timing: bool = False) -> None:
     maybe_sync(sync_fn=ti.sync, force_sync=_FORCE_SYNC, sync_for_timing=_SYNC_FOR_TIMING, for_timing=for_timing)
 
 
-def _ensure_batch_staging():
-    global _BATCH_STAGING
-    if _BATCH_STAGING is not None:
-        return _BATCH_STAGING
-    _BATCH_STAGING = {
-        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id, song_slot]
-        "work_items": np.zeros((MAX_WORK_ITEMS, 8), dtype=np.int32),
-        "fever_masks": np.zeros((MAX_WORK_ITEMS, MAX_HEAD_NOTES), dtype=np.int8),
-        # [pp, cm, fm, p_val, s_val, ft, ff]
-        "genome_base_stats": np.zeros((MAX_GENOMES, 7), dtype=np.int16),
-    }
-    return _BATCH_STAGING
-
-
 def _ensure_parallel_staging():
     """
     Allocate and reuse staging buffers for solve_genomes_parallel().
@@ -312,7 +297,9 @@ def load_ref_arrays(ref_arrays: dict):
     """
     Upload reference arrays to GPU fields.
 
-    Must be called once before using optimize_gems_batch_gpu().
+    Must be called once before using solve_genomes_*() or GA/FG kernels that depend on
+    the lookup tables (unless you call `ensure_ready(ref_arrays=...)`, which will
+    upload them automatically).
     Typically called when switching songs or on first use.
 
     Args:

@@ -355,7 +355,7 @@ def solve_genomes_parallel(
 
     # Ensure grid fields are available; timeline data must be available in `song_slot`.
     ensure_ready(ref_arrays)
-    fields.ensure_legacy_work_fields_allocated()
+    fields.ensure_work_item_fields_allocated()
 
     # If we were given a lightweight calc_song dict, compute the 161×161 grid on GPU
     # directly into this song slot (avoids pickling CPU timeline objects in parallel mode).
@@ -773,7 +773,7 @@ def solve_genomes_parallel_merged(
             raise ValueError("Merged solve requires compatible ref_arrays across payloads")
 
     ensure_ready(ref0)
-    fields.ensure_legacy_work_fields_allocated()
+    fields.ensure_work_item_fields_allocated()
     log_batches = ENV.gpu_batch_log
 
     # Assign slots:

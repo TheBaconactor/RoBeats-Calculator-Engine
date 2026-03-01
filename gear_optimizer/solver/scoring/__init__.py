@@ -17,7 +17,6 @@ Placement guidance:
 
 # Import from gpu_solver
 from .gpu_solver import (
-    _get_gpu_solver,
     _GPU_LOCK,
     GEM_SOLVER_CACHE,
     FEVER_TIMELINE_CACHE,
@@ -64,7 +63,6 @@ from .code_placement import SCORING_PLACEMENT_HINTS, find_scoring_hints, iter_sc
 # Export all public names for backward compatibility
 __all__ = [
     # GPU solver
-    "_get_gpu_solver",
     "_GPU_LOCK",
     "GEM_SOLVER_CACHE",
     "FEVER_TIMELINE_CACHE",

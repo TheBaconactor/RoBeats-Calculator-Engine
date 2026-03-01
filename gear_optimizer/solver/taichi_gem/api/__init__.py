@@ -1,12 +1,11 @@
 """
 Taichi API Package - Python wrapper functions for GPU gem optimization.
 
-This package splits the monolithic api.py (1,754 lines) into 6 focused modules:
+This package splits the monolithic api.py (1,754 lines) into focused modules:
 1. initialization.py - Reference arrays, staging buffers, GPU initialization
-2. single_batch.py - Single-item and batch gem optimization
-3. timeline.py - GPU timeline precomputation and grid upload
-4. parallel_solvers.py - Maximum parallelism genome solvers
-5. ga_operations.py - GPU-native genetic algorithm operators
+2. timeline.py - GPU timeline precomputation and grid upload
+3. parallel_solvers.py - Genome solvers (FT/FF-on-GPU + parallel variants)
+4. ga_operations.py - GPU-native genetic algorithm operators
 
 This __init__.py provides backward-compatible imports so existing code continues to work.
 """
@@ -18,20 +17,10 @@ try:
         load_ref_arrays,
         is_refs_loaded,
         hard_reset_taichi,
-        _ensure_batch_staging,
         _ensure_parallel_staging,
         _upload_song_flags,
         _ensure_ftff_combo_tables,
         _maybe_sync,
-    )
-except ImportError:
-    pass
-
-# Import from single_batch
-try:
-    from .single_batch import (
-        optimize_gems_gpu,
-        optimize_gems_batch_gpu,
     )
 except ImportError:
     pass
@@ -123,14 +112,10 @@ __all__ = [
     "load_ref_arrays",
     "is_refs_loaded",
     "hard_reset_taichi",
-    "_ensure_batch_staging",
     "_ensure_parallel_staging",
     "_upload_song_flags",
     "_ensure_ftff_combo_tables",
     "_maybe_sync",
-    # Single & batch
-    "optimize_gems_gpu",
-    "optimize_gems_batch_gpu",
     # Timeline
     "precompute_timeline_gpu",
     "_upload_timeline_grid",

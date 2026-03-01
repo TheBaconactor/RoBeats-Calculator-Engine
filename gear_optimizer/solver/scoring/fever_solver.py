@@ -23,6 +23,7 @@ from ...core.constants import (
     GEM_STAT_TO_ELEMENT_SCALE,
     ELEMENTAL_GEM_SCALE,
 )
+from ...core.env_config import ENV
 from ...core.color_flags import build_color_flags
 from ...core.utils import safe_int
 
@@ -36,7 +37,7 @@ from ..scoring_core import (
     optimize_core_jit,
 )
 
-from .gpu_solver import _get_gpu_solver, _GPU_LOCK
+from .gpu_solver import _GPU_LOCK
 from .stats_scoring import evaluate_stats_score
 from .stats_ops import apply_gems_to_base_stats
 
@@ -171,18 +172,15 @@ def solve_best_fever_combination(
         static_elem_input = safe_int(cfg.get("ElementalGems", selected_color, fallback=0))
         use_gpu = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=False) if hasattr(cfg, "getboolean") else False
 
-    base_stats = initial_stats.copy()
-
-    # OPTIMIZATION: timestamps are already a NumPy array (set in __main__)
-    song_timestamps = calc_song["song_data"]["timestamps"]
-    total_notes = len(song_timestamps)
-    long_notes = int(calc_song["metadata"].get("Long Notes", 0))
-    last_note = float(calc_song["metadata"].get("Last Note Time", 0))
     p_color = calc_song["metadata"].get("Primary Color", "")
     s_color = calc_song["metadata"].get("Secondary Color", "")
+    base_stats = initial_stats.copy()
 
-    # Reuse mask buffer across FT/FF permutations to avoid repeated allocations.
-    fever_mask_buffer = np.zeros(total_notes, dtype=np.bool_)
+    # GPU-only policy: production behavior must rely on GPU/Taichi/Vulkan.
+    # Keep the CPU reference path available only when override_cfg explicitly disables GPU.
+    if not override_cfg and not use_gpu:
+        print("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
+        use_gpu = True
 
     # Normalize ref arrays to float32 so CPU and GPU paths use identical numeric behavior
     # regardless of input dtype (tests may pass float64 arrays).
@@ -217,6 +215,13 @@ def solve_best_fever_combination(
     ref_fm = ref_arrays["Fever Multiplier"]
 
     if skip_optimizer:
+        # CPU reference evaluation (no gem optimization).
+        song_timestamps = calc_song["song_data"]["timestamps"]
+        long_notes = int(calc_song["metadata"].get("Long Notes", 0))
+        last_note = float(calc_song["metadata"].get("Last Note Time", 0))
+        total_notes = len(song_timestamps)
+
+        fever_mask_buffer = np.zeros(total_notes, dtype=np.bool_)
         score = evaluate_stats_score(
             base_stats,
             calc_song,
@@ -290,112 +295,106 @@ def solve_best_fever_combination(
     cur_cm = base_stats["Combo Multiplier"]
     cur_fm = base_stats["Fever Multiplier"]
 
-    # 1. Precompute Timelines (Rules Layer)
-    # This generates all valid fever scenarios without doing gem optimization yet.
-    timelines = precompute_fever_timelines(
-        base_stats,
-        calc_song,
-        ref_arrays,
-        TOTAL_GEM_BUDGET,
-        max_ft_gems,
-        max_ff_gems,
-        fever_mask_buffer,
-    )
-
-    # 2. Optimize Gems for each Timeline
-    best_gpu_final = None  # (final_pp, final_cm, final_fm, final_p_val, final_s_val) from GPU solver
+    # GPU path: use the grid-based FT/FF solver (default), eliminating CPU timeline enumeration
+    # and per-work-item fever mask transfers.
     if use_gpu:
-        # GPU BATCH PATH: Process all timelines in parallel on GPU
-        _, batch_solver = _get_gpu_solver()
-        if batch_solver is None:
-            raise RuntimeError("GPU batch solver unavailable but GPU execution was requested.")
+        from ..gpu_executor import is_gpu_worker_mode, submit_gpu_solve_genomes
+        from ..taichi_gem_solver import solve_genomes_parallel, solve_genomes_with_ftff
 
-        # Compute color contribution flags for FT/FF gems
-        # FT gems add Beat, FF gems add Vibe
+        # Compute color contribution flags for FT/FF gems (FT gems add Beat, FF gems add Vibe).
         is_p_ft = flags["is_p_ft"]
         is_s_ft = flags["is_s_ft"]
         is_p_ff = flags["is_p_ff"]
         is_s_ff = flags["is_s_ff"]
 
-        # Base color values (before FT/FF gems)
-        base_p_val = base_stats.get(p_color, 0)
-        base_s_val = base_stats.get(s_color, 0)
+        # Base color values (before any FT/FF gems).
+        base_p_val = int(base_stats.get(p_color, 0) or 0) if p_color else 0
+        base_s_val = int(base_stats.get(s_color, 0) or 0) if s_color else 0
 
-        # Prepare batch input - each timeline becomes one batch element
-        batch_input = []
-        for t_data in timelines:
-            ft = t_data["ft_gems"]
-            ff = t_data["ff_gems"]
-            timeline = t_data["timeline"]
-            current_budget = t_data["remaining_budget"]
-            fever_mask_head = timeline[0]
-            count_body_fever = timeline[1]
-            count_body_normal = timeline[2]
+        genome_stats_np = np.empty((1, 7), dtype=np.int16)
+        genome_stats_np[0, 0] = int(cur_pp)
+        genome_stats_np[0, 1] = int(cur_cm)
+        genome_stats_np[0, 2] = int(cur_fm)
+        genome_stats_np[0, 3] = int(base_p_val)
+        genome_stats_np[0, 4] = int(base_s_val)
+        genome_stats_np[0, 5] = int(base_stats.get("Fever Time", 0) or 0)
+        genome_stats_np[0, 6] = int(base_stats.get("Fever Fill Rate", 0) or 0)
 
-            batch_input.append(
-                {
-                    "budget": current_budget,
-                    "fever_mask_head": fever_mask_head,
-                    "count_body_fever": count_body_fever,
-                    "count_body_normal": count_body_normal,
-                    "ft_gems": ft,
-                    "ff_gems": ff,
-                }
-            )
-
-        # SINGLE GPU kernel launch for ALL timelines - GPU-resident!
-        # Direct call with lock for minimal overhead (scheduler queue was too slow)
         try:
+            song_slot = int((calc_song or {}).get("_gpu_song_slot", 0) or 0)
+        except Exception:
+            song_slot = 0
+
+        if is_gpu_worker_mode():
+            gpu_results = submit_gpu_solve_genomes(
+                genome_stats_np,
+                calc_song,
+                int(is_p_ft),
+                int(is_s_ft),
+                int(is_p_ff),
+                int(is_s_ff),
+                int(is_p_pp),
+                int(is_s_pp),
+                int(is_p_cm),
+                int(is_s_cm),
+                int(is_p_fm),
+                int(is_s_fm),
+                int(is_p_ov),
+                int(is_s_ov),
+                ref_arrays,
+                total_budget=int(TOTAL_GEM_BUDGET),
+                gem_scale_fever=int(GEM_SCALE_FEVER),
+                song_slot=int(song_slot),
+            )
+        else:
+            solve_fn = solve_genomes_with_ftff if bool(ENV.gpu_use_ftff_solver) else solve_genomes_parallel
             with _GPU_LOCK:
-                batch_results = batch_solver(
-                    batch_input,
-                    cur_pp,
-                    cur_cm,
-                    cur_fm,
-                    base_p_val=base_p_val,
-                    base_s_val=base_s_val,
-                    is_p_ft=is_p_ft,
-                    is_s_ft=is_s_ft,
-                    is_p_ff=is_p_ff,
-                    is_s_ff=is_s_ff,
-                    is_p_pp=is_p_pp,
-                    is_s_pp=is_s_pp,
-                    is_p_cm=is_p_cm,
-                    is_s_cm=is_s_cm,
-                    is_p_fm=is_p_fm,
-                    is_s_fm=is_s_fm,
-                    is_p_ov=is_p_ov,
-                    is_s_ov=is_s_ov,
-                    ref_arrays=ref_arrays,
+                gpu_results = solve_fn(
+                    genome_stats_np,
+                    calc_song,
+                    int(is_p_ft),
+                    int(is_s_ft),
+                    int(is_p_ff),
+                    int(is_s_ff),
+                    int(is_p_pp),
+                    int(is_s_pp),
+                    int(is_p_cm),
+                    int(is_s_cm),
+                    int(is_p_fm),
+                    int(is_s_fm),
+                    int(is_p_ov),
+                    int(is_s_ov),
+                    ref_arrays,
+                    total_budget=int(TOTAL_GEM_BUDGET),
+                    gem_scale_fever=int(GEM_SCALE_FEVER),
+                    song_slot=int(song_slot),
                 )
-        except Exception as exc:
-            raise RuntimeError(f"GPU batch solver failed: {type(exc).__name__}: {exc}") from exc
 
-        if batch_results is None:
-            raise RuntimeError("GPU batch solver returned no results.")
+        if not gpu_results:
+            raise RuntimeError("GPU solver returned no results.")
 
-        # Find best result (only CPU work: simple max)
-        for t_data, result in zip(timelines, batch_results):
-            ft = t_data["ft_gems"]
-            ff = t_data["ff_gems"]
-            # Result: (score, pp, cm, fm, p_val, s_val, gems_pp, gems_cm, gems_fm, gems_ov)
-            total_score = result[0]
-            final_pp = result[1]
-            final_cm = result[2]
-            final_fm = result[3]
-            final_p_val = result[4]
-            final_s_val = result[5]
-            g_pp = result[6]
-            g_cm = result[7]
-            g_fm = result[8]
-            g_ov = result[9]
-
-            if total_score > best_score:
-                best_score = total_score
-                best_tuple = (total_score, ft, ff, g_pp, g_cm, g_fm, g_ov)
-                best_gpu_final = (final_pp, final_cm, final_fm, final_p_val, final_s_val)
+        score, ft, ff, g_pp, g_cm, g_fm, g_ov = gpu_results[0]
+        best_score = int(score)
+        best_tuple = (best_score, int(ft), int(ff), int(g_pp), int(g_cm), int(g_fm), int(g_ov))
 
     if not use_gpu:
+        # CPU reference path: enumerate all fever timelines, then optimize PP/CM/FM/OV per timeline.
+        song_timestamps = calc_song["song_data"]["timestamps"]
+        total_notes = len(song_timestamps)
+        fever_mask_buffer = np.zeros(total_notes, dtype=np.bool_)
+
+        # 1. Precompute Timelines (Rules Layer)
+        # This generates all valid fever scenarios without doing gem optimization yet.
+        timelines = precompute_fever_timelines(
+            base_stats,
+            calc_song,
+            ref_arrays,
+            TOTAL_GEM_BUDGET,
+            max_ft_gems,
+            max_ff_gems,
+            fever_mask_buffer,
+        )
+
         # CPU PATH: Sequential processing
         for t_data in timelines:
             ft = t_data["ft_gems"]
@@ -482,22 +481,6 @@ def solve_best_fever_combination(
             g_ov,
             add_missing_element_key=False,
         )
-        # GPU batch solver already computes the authoritative final stat indices and
-        # primary/secondary element values used during scoring. Align the returned
-        # Stats payload with those GPU-derived values to avoid "score vs Stats"
-        # mismatches in consumers (frontend/export/debug).
-        if use_gpu and isinstance(best_gpu_final, tuple) and len(best_gpu_final) == 5:
-            try:
-                f_pp, f_cm, f_fm, f_p, f_s = best_gpu_final
-                final_stats["Perfect Points"] = int(f_pp)
-                final_stats["Combo Multiplier"] = int(f_cm)
-                final_stats["Fever Multiplier"] = int(f_fm)
-                if p_color:
-                    final_stats[p_color] = int(f_p)
-                if s_color:
-                    final_stats[s_color] = int(f_s)
-            except Exception:
-                pass
 
         gem_counts = {
             "Perfect Points": g_pp,

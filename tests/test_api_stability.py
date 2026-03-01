@@ -19,8 +19,6 @@ def test_taichi_gem_solver_exports():
     expected = [
         "init_taichi_vulkan",
         "load_ref_arrays",
-        "optimize_gems_gpu",
-        "optimize_gems_batch_gpu",
         "solve_genomes_with_ftff",
         "solve_genomes_parallel",
     ]
@@ -40,8 +38,6 @@ def test_all_list():
     expected = {
         "init_taichi_vulkan",
         "load_ref_arrays",
-        "optimize_gems_gpu",
-        "optimize_gems_batch_gpu",
         "solve_genomes_with_ftff",
         "solve_genomes_parallel",
     }
@@ -67,8 +63,8 @@ def test_subpackage_structure():
     assert hasattr(fields, "GRID_SIZE"), "Missing GRID_SIZE in fields"
 
     # Check kernels
-    assert hasattr(kernels, "solve_batch_kernel"), "Missing solve_batch_kernel in kernels"
     assert hasattr(kernels, "solve_genomes_with_ftff_kernel"), "Missing solve_genomes_with_ftff_kernel in kernels"
+    assert hasattr(kernels, "solve_ftff_parallel_kernel"), "Missing solve_ftff_parallel_kernel in kernels"
 
     # Check api
     assert hasattr(api, "ensure_ready"), "Missing ensure_ready in api"
