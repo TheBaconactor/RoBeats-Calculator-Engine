@@ -24,6 +24,14 @@ def _upsert_entry(
     force_obj: Any = None,
     eval_data: dict[str, Any] | None = None,
 ) -> str:
+    """
+    Insert or replace a loadout entry using score+source precedence rules.
+
+    Canonical behavior:
+    - Keep only one entry per loadout hash.
+    - Prefer entries with `eval_data` (fresh GA context) over DB-only records.
+    - Otherwise keep the higher base score.
+    """
     h = get_loadout_hash(gear_items, mini_items)
     existing = loadout_entries.get(h)
     # Prefer the entry with actual eval_data (from GA) over DB-only details
@@ -47,6 +55,7 @@ def _upsert_entry(
 
 
 def merge_db_loadouts_into_entries(loadout_entries: dict, db_loadouts: list[dict] | None) -> dict:
+    """Merge DB records into the working loadout map using `_upsert_entry` precedence."""
     for rec in db_loadouts or []:
         if not isinstance(rec, dict):
             continue
@@ -64,6 +73,11 @@ def merge_db_loadouts_into_entries(loadout_entries: dict, db_loadouts: list[dict
 
 
 def refresh_ga_candidate_entries(loadout_entries: dict, ga_candidates: list[dict], build_details_fn) -> dict:
+    """
+    Refresh GA-sourced entries in place and drop stale GA hashes.
+
+    DB-sourced entries remain untouched unless a GA candidate for the same hash supersedes them.
+    """
     desired_ga_entries: dict[str, dict[str, Any]] = {}
     for eval_result in ga_candidates or []:
         if not isinstance(eval_result, dict):

@@ -1,6 +1,9 @@
 """
-Gear Optimizer Package
-Modular genetic algorithm-based gear and mini optimization system
+RoBeats MetaFinder optimizer package.
+
+For in-code ownership guidance (to reduce duplicated implementations), inspect:
+    - `gear_optimizer.core.PLACEMENT_HINTS`
+    - `gear_optimizer.core.find_hints("query")`
 """
 
 __version__ = "2.0.0"

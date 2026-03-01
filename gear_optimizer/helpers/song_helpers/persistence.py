@@ -4,6 +4,10 @@ Song Helpers - Persistence - Database payload and persistence entry building.
 This module provides persistence operations:
 - build_db_payload: Build database persistence payload
 - build_persistence_entries: Build all persistence entries
+
+Extension rule:
+- If persistence shape or record-improvement logic changes, update this module first
+  and reuse these helpers from orchestrators to avoid duplicated save semantics.
 """
 
 from collections.abc import Callable
@@ -14,6 +18,7 @@ from .retention import select_retained_hashes
 
 
 def _safe_int_force(value: object, default: int = 0) -> int:
+    """Best-effort integer coercion used for DB payload normalization."""
     try:
         return int(value) if value is not None else int(default)
     except Exception:
@@ -24,6 +29,12 @@ def _safe_int_force(value: object, default: int = 0) -> int:
 
 
 def _normalize_force_payload(force_obj: object) -> dict:
+    """
+    Normalize persisted FG payload shape.
+
+    Ensures selected element aliases are present and reconstructs `Stats` from
+    `BaseStats` + gem counts when needed.
+    """
     if not isinstance(force_obj, dict) or not force_obj:
         return {}
 
@@ -230,10 +241,6 @@ def build_db_payload(
     # Fall back to Score if BaseScore not present (backwards compatibility).
     score = best_data.get("BaseScore") or best_data.get("Score", 0)
 
-    prev_score = prev_record.get("score") if prev_record else None
-    is_first = prev_record is None
-    is_better = (prev_score is None) or (score > prev_score)
-
     def extract_names(record):
         """Extract names from record, handling both dict and string formats."""
 
@@ -302,29 +309,15 @@ def build_db_payload(
             }
         )
 
-    # Determine if FG improved
-    best_fg_score_run = 0
-    if current_run_fg_candidates:
-        best_cand = max(current_run_fg_candidates, key=lambda x: x.get("score", 0))
-        best_fg_score_run = best_cand.get("score", 0)
-
-    # Use the max FG score from DB (any loadout) if provided, else fallback to prev_record
-    prev_fg_score = (
-        db_best_fg_score if db_best_fg_score is not None else (prev_record.get("fg_score") if prev_record else 0)
-    )
-    prev_fg_score = prev_fg_score or 0  # Ensure it's not None
-    is_fg_better = best_fg_score_run > prev_fg_score
-
-    record_info = {
-        "record_update": bool(is_better or is_fg_better),
-        "is_first": bool(is_first),
-        "is_better": bool(is_better),
-        "is_fg_better": bool(is_fg_better),
-        "score": _safe_int_force(score, 0),
-        "prev_score": _safe_int_force(prev_score, 0) if prev_score is not None else None,
-        "best_fg_score_run": _safe_int_force(best_fg_score_run, 0),
-        "prev_fg_score": _safe_int_force(prev_fg_score, 0),
-    }
+    # Centralized record comparison to keep all callers aligned.
+    record_info = evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score=db_best_fg_score)
+    score = _safe_int_force(record_info.get("score", score), 0)
+    prev_score = record_info.get("prev_score")
+    is_first = bool(record_info.get("is_first"))
+    is_better = bool(record_info.get("is_better"))
+    is_fg_better = bool(record_info.get("is_fg_better"))
+    best_fg_score_run = _safe_int_force(record_info.get("best_fg_score_run", 0), 0)
+    prev_fg_score = _safe_int_force(record_info.get("prev_fg_score", 0), 0)
 
     if is_first:
         print(" >> NEW RECORD! (First entry for this song/context). Saving to Evolution Database...")

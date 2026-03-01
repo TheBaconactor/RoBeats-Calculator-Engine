@@ -10,6 +10,11 @@ This package splits the monolithic song_helpers.py (1,327 lines) into 6 focused 
 6. results_printer.py - Results display
 
 This __init__.py provides backward-compatible imports so existing code continues to work.
+
+Where to add new code:
+- Loadout union/refresh behavior -> `loadout_builder.py`
+- Record-improvement and save payload rules -> `persistence.py`
+- FG candidate shaping and retry logic -> `force_greats.py`
 """
 
 # Import from database_context

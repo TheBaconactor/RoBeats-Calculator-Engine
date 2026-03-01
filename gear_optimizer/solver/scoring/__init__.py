@@ -9,6 +9,10 @@ This package splits the monolithic scoring.py (2,056 lines) into 5 focused modul
 5. genome_evaluation.py - Batch genome evaluation for GA
 
 This __init__.py provides backward-compatible imports so existing code continues to work.
+
+Placement guidance:
+- Use `find_scoring_hints("query")` to locate canonical modules before adding logic.
+- Avoid duplicating gem search or FG scoring in pipeline/orchestrator code.
 """
 
 # Import from gpu_solver
@@ -55,6 +59,7 @@ from .genome_evaluation import (
 
 # Import from fg_utils (helper)
 from ...helpers.fg_utils import generate_dynamic_fg_configs
+from .code_placement import SCORING_PLACEMENT_HINTS, find_scoring_hints, iter_scoring_hints
 
 # Export all public names for backward compatibility
 __all__ = [
@@ -85,7 +90,10 @@ __all__ = [
     # Genome evaluation
     "worker_coevolution_evaluate",
     "batch_evaluate_genomes",
+    # Placement guidance
+    "SCORING_PLACEMENT_HINTS",
+    "find_scoring_hints",
+    "iter_scoring_hints",
     # Helpers
     "generate_dynamic_fg_configs",
 ]
-__all__: list[str] = []

@@ -28,6 +28,26 @@ def apply_gems_to_base_stats(
     *,
     add_missing_element_key: bool = True,
 ) -> dict[str, Any]:
+    """
+    Recompose final stats from base stats and solved gem counts.
+
+    This is the canonical pure helper for rebuilding `Stats` payloads after gem decisions.
+    Keep this function side-effect free so persistence and scoring paths can share it.
+
+    Args:
+        base: Base stats before gem allocation.
+        sel_color: Selected elemental color receiving overflow gems.
+        ft: Fever Time gem count.
+        ff: Fever Fill Rate gem count.
+        g_pp: Perfect Points gem count.
+        g_cm: Combo Multiplier gem count.
+        g_fm: Fever Multiplier gem count.
+        g_ov: Elemental overflow gem count.
+        add_missing_element_key: If True, create `sel_color` key when missing.
+
+    Returns:
+        A new stats dictionary with gem effects applied.
+    """
     out = dict(base or {})
     out["Perfect Points"] = out.get("Perfect Points", 0) + int(g_pp) * GEM_SCALE_NORMAL
     out["Combo Multiplier"] = out.get("Combo Multiplier", 0) + int(g_cm) * GEM_SCALE_NORMAL
