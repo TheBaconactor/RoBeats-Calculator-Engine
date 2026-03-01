@@ -745,16 +745,51 @@ def fg_download_packed_topk_batch(n_payloads: int) -> list[dict[str, np.ndarray]
         _sync_sec = 0.0
 
     _t1 = time.perf_counter()
-    sel_packed_all = fg_fields.fg_selected_packed_batch.to_numpy()
+    sel_packed_all = None
+    sel_packed_transfer_bytes = 0
+    used_staging = "full"
+    try:
+        staging_candidates = [
+            ("staging_1", getattr(fg_fields, "fg_selected_packed_batch_download_staging_1", None)),
+            ("staging_8", getattr(fg_fields, "fg_selected_packed_batch_download_staging_8", None)),
+            ("staging_32", getattr(fg_fields, "fg_selected_packed_batch_download_staging_32", None)),
+            ("staging_128", getattr(fg_fields, "fg_selected_packed_batch_download_staging_128", None)),
+        ]
+        best = None
+        for name, fld in staging_candidates:
+            if fld is None:
+                continue
+            try:
+                cap = int(getattr(fld, "shape", (0,))[0] or 0)
+            except Exception:
+                cap = 0
+            if cap > 0 and int(n_payloads) <= int(cap):
+                best = (name, fld)
+                break
+
+        if best is not None:
+            used_staging, fld = best
+            fg_kernels.fg_copy_selected_packed_batch_to_download_staging_kernel(fld, int(n_payloads))
+            sel_packed_full = fld.to_numpy()
+            sel_packed_transfer_bytes = int(getattr(sel_packed_full, "nbytes", 0) or 0)
+            sel_packed_all = sel_packed_full[: int(n_payloads), :, :]
+        else:
+            sel_packed_full = fg_fields.fg_selected_packed_batch.to_numpy()
+            sel_packed_transfer_bytes = int(getattr(sel_packed_full, "nbytes", 0) or 0)
+            sel_packed_all = sel_packed_full[: int(n_payloads), :, :]
+    except Exception:
+        sel_packed_full = fg_fields.fg_selected_packed_batch.to_numpy()
+        sel_packed_transfer_bytes = int(getattr(sel_packed_full, "nbytes", 0) or 0)
+        sel_packed_all = sel_packed_full[: int(n_payloads), :, :]
     _dl_sec = time.perf_counter() - _t1
 
     _record_kernel_wall("packed_topk_batch_sync", _sync_sec)
-    _record_download("packed_topk_batch", _dl_sec, int(getattr(sel_packed_all, "nbytes", 0) or 0))
+    _record_download("packed_topk_batch", _dl_sec, int(sel_packed_transfer_bytes))
     if _FG_TRANSFER_TRACE:
         try:
             print(
                 f"[FG][XFER] packed_topk_batch: sync={_sync_sec * 1000:.2f}ms download={_dl_sec * 1000:.2f}ms "
-                f"payloads={n_payloads} bytes={int(getattr(sel_packed_all, 'nbytes', 0) or 0)}"
+                f"payloads={n_payloads} bytes={int(sel_packed_transfer_bytes)} staging={used_staging}"
             )
         except Exception:
             pass
@@ -2141,15 +2176,36 @@ def solve_force_greats_finder_gpu_tasks(
             continue
         if per_pair_max_fp_gpu:
             try:
-                base_pairs = np.asarray(counts_max_fp_compute.get("base_stats_pairs"), dtype=np.int32)
-                non_fever_base_by_ff = np.ascontiguousarray(
-                    np.asarray(counts_max_fp_compute.get("non_fever_base_by_ff"), dtype=np.int16),
-                    dtype=np.int16,
-                )
-                fp_cap_table = np.ascontiguousarray(
-                    np.asarray(counts_max_fp_compute.get("fp_cap_table"), dtype=np.int16),
-                    dtype=np.int16,
-                )
+                # Fast path: caller can pass pre-split base FT/FF vectors to avoid
+                # repeated host slicing of `(n,2)` base stat pairs.
+                base_ft = counts_max_fp_compute.get("base_ft")
+                base_ff = counts_max_fp_compute.get("base_ff")
+                if base_ft is None or base_ff is None:
+                    base_pairs = np.asarray(counts_max_fp_compute.get("base_stats_pairs"), dtype=np.int32)
+                    if base_pairs.ndim != 2 or int(base_pairs.shape[1]) < 2:
+                        continue
+                    base_ft = base_pairs[:, 0]
+                    base_ff = base_pairs[:, 1]
+
+                base_ft = np.asarray(base_ft, dtype=np.int32)
+                base_ff = np.asarray(base_ff, dtype=np.int32)
+                if base_ft.ndim != 1 or base_ff.ndim != 1:
+                    continue
+                if int(base_ft.shape[0]) <= 0 or int(base_ft.shape[0]) != int(base_ff.shape[0]):
+                    continue
+                if not bool(base_ft.flags["C_CONTIGUOUS"]):
+                    base_ft = np.ascontiguousarray(base_ft, dtype=np.int32)
+                if not bool(base_ff.flags["C_CONTIGUOUS"]):
+                    base_ff = np.ascontiguousarray(base_ff, dtype=np.int32)
+
+                non_fever_base_by_ff = np.asarray(counts_max_fp_compute.get("non_fever_base_by_ff"), dtype=np.int16)
+                if not bool(non_fever_base_by_ff.flags["C_CONTIGUOUS"]):
+                    non_fever_base_by_ff = np.ascontiguousarray(non_fever_base_by_ff, dtype=np.int16)
+
+                fp_cap_table = np.asarray(counts_max_fp_compute.get("fp_cap_table"), dtype=np.int16)
+                if not bool(fp_cap_table.flags["C_CONTIGUOUS"]):
+                    fp_cap_table = np.ascontiguousarray(fp_cap_table, dtype=np.int16)
+
                 compute_n_sections = int(counts_max_fp_compute.get("n_sections", n_sections) or n_sections)
                 compute_song_slot = int(counts_max_fp_compute.get("song_slot", song_slot) or song_slot)
                 compute_gem_scale = int(
@@ -2157,14 +2213,10 @@ def solve_force_greats_finder_gpu_tasks(
                 )
             except Exception:
                 continue
-            if base_pairs.ndim != 2 or int(base_pairs.shape[1]) < 2:
-                continue
             if non_fever_base_by_ff.ndim != 1 or int(non_fever_base_by_ff.shape[0]) < 161:
                 continue
             if fp_cap_table.ndim != 2 or int(fp_cap_table.shape[0]) < 161 or int(fp_cap_table.shape[1]) < 51:
                 continue
-            base_ft = np.ascontiguousarray(base_pairs[:, 0], dtype=np.int32)
-            base_ff = np.ascontiguousarray(base_pairs[:, 1], dtype=np.int32)
             # IMPORTANT: packed-task streaming uses `total_pairs` to size the work estimate.
             # If we don't count pairs here, the function returns early and never runs Stage-1/2,
             # leaving cfg_max_fp/cfg_total_len as zeros -> cfg_idx=-1 -> 0 FG variants.

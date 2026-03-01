@@ -2330,6 +2330,22 @@ def fg_pack_selected_global_best_batch_kernel(session_slot: ti.i32, n_selected: 
 
 
 @ti.kernel
+def fg_copy_selected_packed_batch_to_download_staging_kernel(out_packed: ti.template(), n_payloads: ti.i32):
+    """
+    Copy the populated prefix of `fg_selected_packed_batch` into a smaller staging field.
+
+    On Vulkan, `to_numpy()` transfers the full field shape, so downloading the padded
+    FG_DOWNLOAD_BATCH_MAX buffer can dominate throughput when only a small number of
+    payloads are active in a fused executor bundle.
+    """
+    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
+    total_cols = 12 + FG_MAX_SECTIONS
+    for batch_idx, j in ti.ndrange(n_payloads, FG_DOWNLOAD_TOPK_MAX):
+        for c in range(total_cols):
+            out_packed[batch_idx, j, c] = fg_selected_packed_batch[batch_idx, j, c]
+
+
+@ti.kernel
 def fg_reset_global_best_kernel(session_slot: ti.i32, n_genomes: ti.i32):
     """
     Reset global best fields to sentinel values before multi-group processing.

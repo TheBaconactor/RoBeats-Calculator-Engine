@@ -151,6 +151,11 @@ fg_selected_packed: ti.Field | None = None  # (FG_DOWNLOAD_TOPK_MAX, 12 + FG_MAX
 fg_selected_packed_batch: ti.Field | None = (
     None  # (FG_DOWNLOAD_BATCH_MAX, FG_DOWNLOAD_TOPK_MAX, 12 + FG_MAX_SECTIONS) i32
 )
+# Download staging buffers (reduce padded Vulkan `to_numpy()` transfers).
+fg_selected_packed_batch_download_staging_1: ti.Field | None = None
+fg_selected_packed_batch_download_staging_8: ti.Field | None = None
+fg_selected_packed_batch_download_staging_32: ti.Field | None = None
+fg_selected_packed_batch_download_staging_128: ti.Field | None = None
 
 # Warm-start hints for FG gem allocation (local search optimization)
 # Stores: [pp_gems, cm_gems, fm_gems, ov_gems] from previous best allocation
@@ -249,7 +254,11 @@ def reset_fields_state() -> None:
         fg_selected_count, \
         fg_selected_indices, \
         fg_selected_packed, \
-        fg_selected_packed_batch
+        fg_selected_packed_batch, \
+        fg_selected_packed_batch_download_staging_1, \
+        fg_selected_packed_batch_download_staging_8, \
+        fg_selected_packed_batch_download_staging_32, \
+        fg_selected_packed_batch_download_staging_128
     global fg_genome_hint_allocation
     fg_global_best_final_score = None
     fg_global_best_base_score = None
@@ -271,6 +280,10 @@ def reset_fields_state() -> None:
     fg_selected_indices = None
     fg_selected_packed = None
     fg_selected_packed_batch = None
+    fg_selected_packed_batch_download_staging_1 = None
+    fg_selected_packed_batch_download_staging_8 = None
+    fg_selected_packed_batch_download_staging_32 = None
+    fg_selected_packed_batch_download_staging_128 = None
     fg_genome_hint_allocation = None
 
     _fields_allocated = False
@@ -461,7 +474,11 @@ def allocate_fields() -> None:
         fg_selected_count, \
         fg_selected_indices, \
         fg_selected_packed, \
-        fg_selected_packed_batch
+        fg_selected_packed_batch, \
+        fg_selected_packed_batch_download_staging_1, \
+        fg_selected_packed_batch_download_staging_8, \
+        fg_selected_packed_batch_download_staging_32, \
+        fg_selected_packed_batch_download_staging_128
     fg_global_best_final_score = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, MAX_GENOMES))
     fg_global_best_base_score = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, MAX_GENOMES))
     fg_global_best_cfg_idx = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, MAX_GENOMES))
@@ -484,6 +501,35 @@ def allocate_fields() -> None:
     fg_selected_packed_batch = ti.field(
         dtype=ti.i32,
         shape=(FG_DOWNLOAD_BATCH_MAX, FG_DOWNLOAD_TOPK_MAX, FG_SELECTED_PACKED_COLS),
+    )
+    # Download staging tiers (allocate only the tiers we can actually use).
+    fg_selected_packed_batch_download_staging_1 = ti.field(
+        dtype=ti.i32,
+        shape=(1, FG_DOWNLOAD_TOPK_MAX, FG_SELECTED_PACKED_COLS),
+    )
+    fg_selected_packed_batch_download_staging_8 = (
+        ti.field(
+            dtype=ti.i32,
+            shape=(8, FG_DOWNLOAD_TOPK_MAX, FG_SELECTED_PACKED_COLS),
+        )
+        if FG_DOWNLOAD_BATCH_MAX >= 8
+        else None
+    )
+    fg_selected_packed_batch_download_staging_32 = (
+        ti.field(
+            dtype=ti.i32,
+            shape=(32, FG_DOWNLOAD_TOPK_MAX, FG_SELECTED_PACKED_COLS),
+        )
+        if FG_DOWNLOAD_BATCH_MAX >= 32
+        else None
+    )
+    fg_selected_packed_batch_download_staging_128 = (
+        ti.field(
+            dtype=ti.i32,
+            shape=(128, FG_DOWNLOAD_TOPK_MAX, FG_SELECTED_PACKED_COLS),
+        )
+        if FG_DOWNLOAD_BATCH_MAX >= 128
+        else None
     )
 
     # Warm-start hints for FG gem allocation
@@ -690,6 +736,13 @@ def warmup_kernels() -> None:
     fg_kernels.fg_select_global_best_topk_kernel(0, n_genomes, 1)
     fg_kernels.fg_pack_selected_global_best_kernel(0, 1)
     fg_kernels.fg_pack_selected_global_best_batch_kernel(0, 1, 0)
+    try:
+        fg_kernels.fg_copy_selected_packed_batch_to_download_staging_kernel(
+            fg_selected_packed_batch_download_staging_1,
+            1,
+        )
+    except Exception:
+        pass
 
     # Sync to ensure JIT is complete
     ti.sync()
