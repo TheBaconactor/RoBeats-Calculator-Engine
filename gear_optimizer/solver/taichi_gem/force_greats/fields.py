@@ -156,6 +156,12 @@ fg_selected_packed_batch_download_staging_1: ti.Field | None = None
 fg_selected_packed_batch_download_staging_8: ti.Field | None = None
 fg_selected_packed_batch_download_staging_32: ti.Field | None = None
 fg_selected_packed_batch_download_staging_128: ti.Field | None = None
+# Download staging buffers for `fg_best_packed` (reduce padded Vulkan `to_numpy()` transfers).
+fg_best_packed_download_staging_256: ti.Field | None = None
+fg_best_packed_download_staging_1024: ti.Field | None = None
+# Download staging buffers for `fg_global_best_packed` (reduce padded Vulkan `to_numpy()` transfers).
+fg_global_best_packed_download_staging_256: ti.Field | None = None
+fg_global_best_packed_download_staging_1024: ti.Field | None = None
 
 # Warm-start hints for FG gem allocation (local search optimization)
 # Stores: [pp_gems, cm_gems, fm_gems, ov_gems] from previous best allocation
@@ -192,6 +198,9 @@ def reset_fields_state() -> None:
     global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx
     global fg_best_ft, fg_best_ff, fg_best_g_pp, fg_best_g_cm, fg_best_g_fm, fg_best_g_ov
     global fg_best_score_penalty, fg_best_fill_penalty, fg_best_cfg_counts, fg_best_packed
+    global fg_best_packed_download_staging_256, fg_best_packed_download_staging_1024
+    global fg_best_packed_download_staging_256, fg_best_packed_download_staging_1024
+    global fg_global_best_packed_download_staging_256, fg_global_best_packed_download_staging_1024
     global fg_stage1_packed, fg_stage1_wave_best
     global fg_stage1_final_score, fg_stage1_base_score, fg_stage1_cfg_idx
     global fg_stage1_g_pp, fg_stage1_g_cm, fg_stage1_g_fm, fg_stage1_g_ov
@@ -227,6 +236,10 @@ def reset_fields_state() -> None:
     fg_best_fill_penalty = None
     fg_best_cfg_counts = None
     fg_best_packed = None
+    fg_best_packed_download_staging_256 = None
+    fg_best_packed_download_staging_1024 = None
+    fg_global_best_packed_download_staging_256 = None
+    fg_global_best_packed_download_staging_1024 = None
 
     fg_stage1_packed = None
     fg_stage1_wave_best = None
@@ -431,6 +444,10 @@ def allocate_fields() -> None:
     fg_best_fill_penalty = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_best_cfg_counts = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_SECTIONS))
     fg_best_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_PACKED_COLS))
+    fg_best_packed_download_staging_256 = ti.field(dtype=ti.i32, shape=(256, FG_PACKED_COLS))
+    fg_best_packed_download_staging_1024 = (
+        ti.field(dtype=ti.i32, shape=(1024, FG_PACKED_COLS)) if int(MAX_GENOMES) >= 1024 else None
+    )
 
     if IS_METAL:
         fg_stage1_final_score = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
@@ -492,6 +509,10 @@ def allocate_fields() -> None:
     fg_global_best_fill_penalty = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, MAX_GENOMES))
     fg_global_best_cfg_counts = ti.field(dtype=ti.i32, shape=(MAX_SONG_SLOTS, MAX_GENOMES, FG_MAX_SECTIONS))
     fg_global_best_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_PACKED_COLS))
+    fg_global_best_packed_download_staging_256 = ti.field(dtype=ti.i32, shape=(256, FG_PACKED_COLS))
+    fg_global_best_packed_download_staging_1024 = (
+        ti.field(dtype=ti.i32, shape=(1024, FG_PACKED_COLS)) if int(MAX_GENOMES) >= 1024 else None
+    )
 
     fg_input_base_score = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     fg_keep_mask = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
@@ -739,6 +760,20 @@ def warmup_kernels() -> None:
     try:
         fg_kernels.fg_copy_selected_packed_batch_to_download_staging_kernel(
             fg_selected_packed_batch_download_staging_1,
+            1,
+        )
+    except Exception:
+        pass
+    try:
+        fg_kernels.fg_copy_best_packed_to_download_staging_kernel(
+            fg_best_packed_download_staging_256,
+            1,
+        )
+    except Exception:
+        pass
+    try:
+        fg_kernels.fg_copy_global_best_packed_to_download_staging_kernel(
+            fg_global_best_packed_download_staging_256,
             1,
         )
     except Exception:

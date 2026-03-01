@@ -10,6 +10,7 @@ This module is called from the scoring pipeline and must remain API-stable.
 from __future__ import annotations
 
 import os
+import hashlib
 import time
 from typing import Any
 
@@ -197,8 +198,15 @@ except Exception:
 # Upload cache keys. Endpoints-only keys caused collisions in tests (different songs
 # can share length/first/last but differ internally). Include the backing buffer
 # pointer plus a few sampled timestamps to keep this check O(1) and robust.
-_fg_last_song_key = None  # (ptr, n, first, last, mid, q1, q3)
-_fg_last_great_key = None  # (ptr, n, first, last, mid, q1, q3)
+#
+# For cross-process (IPC) workloads, arrays can be unpickled into fresh buffers
+# each request; pointer-only keys would miss and force repeated uploads. We keep a
+# second, stable (content-hash) key as a fallback so identical timestamp content
+# can reuse already-uploaded GPU fields even when the host buffer address changes.
+_fg_last_song_ptr_key = None  # (ptr, n, first, last, mid, q1, q3)
+_fg_last_song_key = None  # (n, blake2b_digest)
+_fg_last_great_ptr_key = None  # (ptr, n, first, last, mid, q1, q3)
+_fg_last_great_key = None  # (n, blake2b_digest)
 _fg_last_fever_end_tables_key = None  # (song_key, great_key, last_note_time)
 _fg_song_upload_buf: np.ndarray | None = None
 _fg_great_upload_buf: np.ndarray | None = None
@@ -299,7 +307,7 @@ _fg_forced_resident_base_offset: int | None = None
 # greats. When no pair caps grid is provided, default to "no cap" (int32 max).
 _fg_pair_caps_state: str | None = None  # "default" | "custom"
 _fg_pair_caps_default_buf: np.ndarray | None = None
-_fg_pair_caps_custom_key: tuple[int, int, int, int] | None = None  # (ptr, h, w, sections)
+_fg_pair_caps_custom_key: tuple[Any, ...] | None = None  # (ptr, h, w, sections, digest)
 
 
 def _forced_configs_sig(fg_configs: list, n_sections: int) -> tuple:
@@ -344,7 +352,8 @@ def _forced_configs_sig(fg_configs: list, n_sections: int) -> tuple:
 
 def reset_force_greats_api_state() -> None:
     """Reset module-level upload caches after `ti.reset()`."""
-    global _fg_last_song_key, _fg_last_great_key
+    global _fg_last_song_ptr_key, _fg_last_song_key
+    global _fg_last_great_ptr_key, _fg_last_great_key
     global _fg_last_fever_end_tables_key
     global _fg_song_upload_buf, _fg_great_upload_buf, _fg_forced_upload_buf, _fg_ftff_upload_buf
     global _fg_forced_counts_staging_tiers, _fg_forced_counts_staging_pool
@@ -357,8 +366,10 @@ def reset_force_greats_api_state() -> None:
     global _fg_last_ftff_key
     global _GPU_PROFILER_CACHE, _GPU_PROFILER_READY
 
+    _fg_last_song_ptr_key = None
     _fg_last_song_key = None
     _fg_song_upload_buf = None
+    _fg_last_great_ptr_key = None
     _fg_last_great_key = None
     _fg_last_fever_end_tables_key = None
     _fg_great_upload_buf = None
@@ -619,14 +630,14 @@ def fg_download_global_best(
     # Default: download all rows
     fg_kernels.fg_pack_global_best_kernel(int(slot), n)
     _t1 = time.perf_counter()
-    packed = fg_fields.fg_global_best_packed.to_numpy()[:n, :]
+    packed, transfer_bytes, dl_mode = _fg_download_global_best_packed_prefix(int(n))
     _dl_sec = time.perf_counter() - _t1
     _record_kernel_wall("global_best_sync", _sync_sec, genome_count=n)
-    _record_download("global_best_packed", _dl_sec, int(getattr(packed, "nbytes", 0) or 0))
+    _record_download("global_best_packed", _dl_sec, int(transfer_bytes))
     if _FG_TRANSFER_TRACE:
         try:
             print(
-                f"[FG][XFER] global_best: sync={_sync_sec * 1000:.2f}ms download={_dl_sec * 1000:.2f}ms bytes={int(getattr(packed, 'nbytes', 0) or 0)}"
+                f"[FG][XFER] global_best({dl_mode}): sync={_sync_sec * 1000:.2f}ms download={_dl_sec * 1000:.2f}ms bytes={int(transfer_bytes)}"
             )
         except Exception:
             pass
@@ -858,19 +869,56 @@ def _ensure_pair_caps_uploaded(pair_caps_grid: np.ndarray | None) -> None:
     arr = np.asarray(pair_caps_grid, dtype=np.int32)
     if arr.shape != expected_shape:
         raise ValueError(f"pair_caps_grid must be shape {expected_shape}, got {arr.shape}")
+    if not arr.flags["C_CONTIGUOUS"]:
+        arr = np.ascontiguousarray(arr, dtype=np.int32)
     try:
         ptr = int(arr.__array_interface__["data"][0])
     except Exception:
         ptr = 0
-    key = (ptr, int(arr.shape[0]), int(arr.shape[1]), int(arr.shape[2]))
-    if _fg_pair_caps_state == "custom" and _fg_pair_caps_custom_key == key:
-        return
+    ptr_key = (ptr, int(arr.shape[0]), int(arr.shape[1]), int(arr.shape[2]))
+    prev = _fg_pair_caps_custom_key if _fg_pair_caps_state == "custom" else None
+    if prev is not None and len(prev) >= 4:
+        try:
+            if (
+                int(prev[0]) == int(ptr_key[0])
+                and int(prev[1]) == int(ptr_key[1])
+                and int(prev[2]) == int(ptr_key[2])
+                and int(prev[3]) == int(ptr_key[3])
+            ):
+                return
+        except Exception:
+            pass
+
+    # Stable content key: avoid redundant re-uploads when pair_caps_grid is rebuilt (new pointer) with identical values.
+    digest = None
+    if prev is not None and len(prev) >= 5:
+        try:
+            prev_digest = prev[4]
+        except Exception:
+            prev_digest = None
+        if prev_digest is not None:
+            try:
+                h = hashlib.blake2b(digest_size=12)
+                h.update(memoryview(arr).cast("B"))
+                digest = h.digest()
+                if digest == prev_digest:
+                    _fg_pair_caps_custom_key = (ptr_key[0], ptr_key[1], ptr_key[2], ptr_key[3], digest)
+                    return
+            except Exception:
+                digest = None
     _t0 = time.perf_counter()
     fg_fields.fg_pair_caps.from_numpy(arr)
     _dt = time.perf_counter() - _t0
     _record_upload("pair_caps_custom", _dt, _bytes_of_array(arr))
     _fg_pair_caps_state = "custom"
-    _fg_pair_caps_custom_key = key
+    if digest is None:
+        try:
+            h = hashlib.blake2b(digest_size=12)
+            h.update(memoryview(arr).cast("B"))
+            digest = h.digest()
+        except Exception:
+            digest = None
+    _fg_pair_caps_custom_key = (ptr_key[0], ptr_key[1], ptr_key[2], ptr_key[3], digest)
 
 
 def _ftff_pairs_sig(ftff_pairs: Any, n: int) -> tuple:
@@ -889,17 +937,17 @@ def _ftff_pairs_sig(ftff_pairs: Any, n: int) -> tuple:
     if n <= 0:
         return (0,)
 
-    # Numpy fast path: use data pointer + a few samples.
+    # Numpy fast path: stable hash of the active (n,2) prefix.
     try:
         if isinstance(ftff_pairs, np.ndarray):
-            arr = ftff_pairs
-            ptr = int(arr.__array_interface__["data"][0])
-            # Normalize view to at least (n,2) without copying if possible.
+            arr = np.asarray(ftff_pairs, dtype=np.int32)
             if arr.ndim == 2 and arr.shape[0] >= n and arr.shape[1] >= 2:
-                first = (int(arr[0, 0]), int(arr[0, 1]))
-                mid = (int(arr[n // 2, 0]), int(arr[n // 2, 1])) if n > 1 else first
-                last = (int(arr[n - 1, 0]), int(arr[n - 1, 1]))
-                return ("np", n, ptr, first, mid, last)
+                view = arr[:n, :2]
+                if not view.flags["C_CONTIGUOUS"]:
+                    view = np.ascontiguousarray(view, dtype=np.int32)
+                h = hashlib.blake2b(digest_size=12)
+                h.update(memoryview(view).cast("B"))
+                return ("np_hash", int(n), h.digest())
     except Exception:
         pass
 
@@ -944,39 +992,51 @@ def _get_genome_stats_buf() -> np.ndarray:
 
 
 def _fg_upload_song_timestamps(timestamps_np: np.ndarray) -> int:
-    """Upload song timestamps to GPU (cached by (len, first, last))."""
-    global _fg_last_song_key, _fg_song_upload_buf
-
-    n = int(len(timestamps_np))
-    if n <= 0:
-        return 0
-    if n > fg_fields.FG_MAX_SONG_NOTES:
-        raise ValueError(f"Song too long for FG GPU timestamps: {n} > {fg_fields.FG_MAX_SONG_NOTES}")
-
-    # Cache key must disambiguate different charts with identical endpoints.
-    # Use backing pointer + a few sampled points (O(1), robust in practice).
-    try:
-        ptr = int(timestamps_np.__array_interface__["data"][0])
-    except Exception:
-        ptr = 0
-    first = float(timestamps_np[0])
-    last = float(timestamps_np[-1])
-    mid = float(timestamps_np[n // 2]) if n > 1 else first
-    q1 = float(timestamps_np[n // 4]) if n > 3 else mid
-    q3 = float(timestamps_np[(3 * n) // 4]) if n > 3 else mid
-    key = (ptr, n, first, last, mid, q1, q3)
-    if _fg_last_song_key == key:
-        return n
+    """Upload song timestamps to GPU (cached by content, with a pointer fast-path)."""
+    global _fg_last_song_ptr_key, _fg_last_song_key, _fg_song_upload_buf
 
     ts = np.asarray(timestamps_np, dtype=np.float32)
     if not ts.flags["C_CONTIGUOUS"]:
         ts = np.ascontiguousarray(ts, dtype=np.float32)
 
+    n = int(len(ts))
+    if n <= 0:
+        return 0
+    if n > fg_fields.FG_MAX_SONG_NOTES:
+        raise ValueError(f"Song too long for FG GPU timestamps: {n} > {fg_fields.FG_MAX_SONG_NOTES}")
+
+    # Fast path: cache by backing pointer + sampled points (O(1)).
+    try:
+        ptr = int(ts.__array_interface__["data"][0])
+    except Exception:
+        ptr = 0
+    first = float(ts[0])
+    last = float(ts[-1])
+    mid = float(ts[n // 2]) if n > 1 else first
+    q1 = float(ts[n // 4]) if n > 3 else mid
+    q3 = float(ts[(3 * n) // 4]) if n > 3 else mid
+    ptr_key = (ptr, n, first, last, mid, q1, q3)
+    if _fg_last_song_ptr_key == ptr_key:
+        return n
+
+    # Stable content-hash fallback: allow reuse even when host pointer changes (e.g., IPC/unpickle).
+    try:
+        h = hashlib.blake2b(digest_size=12)
+        h.update(memoryview(ts).cast("B"))
+        content_key = (int(n), h.digest())
+    except Exception:
+        content_key = None
+
+    if content_key is not None and _fg_last_song_key == content_key:
+        _fg_last_song_ptr_key = ptr_key
+        return n
+
     _t0 = time.perf_counter()
     fg_kernels.fg_upload_song_timestamps_prefix_kernel(int(n), ts)
     _dt = time.perf_counter() - _t0
     _record_upload("song_timestamps", _dt, _bytes_of_array(ts))
-    _fg_last_song_key = key
+    _fg_last_song_ptr_key = ptr_key
+    _fg_last_song_key = content_key
     return n
 
 
@@ -1013,38 +1073,166 @@ def _ensure_fever_end_tables(total_notes: int, last_note_time: float) -> None:
 
 
 def _fg_upload_great_candidate_timestamps(candidate_np: np.ndarray, n: int) -> None:
-    """Upload great-candidate timestamps to GPU (cached by (len, first, last))."""
-    global _fg_last_great_key, _fg_great_upload_buf
+    """Upload great-candidate timestamps to GPU (cached by content, with a pointer fast-path)."""
+    global _fg_last_great_ptr_key, _fg_last_great_key, _fg_great_upload_buf
 
     if n <= 0:
         return
-    if int(len(candidate_np)) != n:
-        raise ValueError(f"great_candidate_timestamps length mismatch: {len(candidate_np)} != {n}")
+    candidate = np.asarray(candidate_np, dtype=np.float32)
+    if not candidate.flags["C_CONTIGUOUS"]:
+        candidate = np.ascontiguousarray(candidate, dtype=np.float32)
+    if int(len(candidate)) != n:
+        raise ValueError(f"great_candidate_timestamps length mismatch: {len(candidate)} != {n}")
 
     try:
-        ptr = int(candidate_np.__array_interface__["data"][0])
+        ptr = int(candidate.__array_interface__["data"][0])
     except Exception:
         ptr = 0
-    first = float(candidate_np[0])
-    last = float(candidate_np[-1])
-    mid = float(candidate_np[n // 2]) if n > 1 else first
-    q1 = float(candidate_np[n // 4]) if n > 3 else mid
-    q3 = float(candidate_np[(3 * n) // 4]) if n > 3 else mid
-    key = (ptr, n, first, last, mid, q1, q3)
-    if _fg_last_great_key == key:
+    first = float(candidate[0])
+    last = float(candidate[-1])
+    mid = float(candidate[n // 2]) if n > 1 else first
+    q1 = float(candidate[n // 4]) if n > 3 else mid
+    q3 = float(candidate[(3 * n) // 4]) if n > 3 else mid
+    ptr_key = (ptr, n, first, last, mid, q1, q3)
+    if _fg_last_great_ptr_key == ptr_key:
         _fg_use_great_candidate_field()
         return
 
-    ts = np.asarray(candidate_np, dtype=np.float32)
-    if not ts.flags["C_CONTIGUOUS"]:
-        ts = np.ascontiguousarray(ts, dtype=np.float32)
+    try:
+        h = hashlib.blake2b(digest_size=12)
+        h.update(memoryview(candidate).cast("B"))
+        content_key = (int(n), h.digest())
+    except Exception:
+        content_key = None
+
+    if content_key is not None and _fg_last_great_key == content_key:
+        _fg_last_great_ptr_key = ptr_key
+        _fg_use_great_candidate_field()
+        return
 
     _t0 = time.perf_counter()
-    fg_kernels.fg_upload_great_candidate_timestamps_prefix_kernel(int(n), ts)
+    fg_kernels.fg_upload_great_candidate_timestamps_prefix_kernel(int(n), candidate)
     _dt = time.perf_counter() - _t0
-    _record_upload("great_candidate_timestamps", _dt, _bytes_of_array(ts))
-    _fg_last_great_key = key
+    _record_upload("great_candidate_timestamps", _dt, _bytes_of_array(candidate))
+    _fg_last_great_ptr_key = ptr_key
+    _fg_last_great_key = content_key
     _fg_use_great_candidate_field()
+
+
+def _fg_download_best_packed_prefix(n_genomes: int) -> tuple[np.ndarray, int, str]:
+    """
+    Download the active prefix of `fg_best_packed`, using bounded staging when available.
+
+    On Vulkan, `to_numpy()` transfers the full field shape, so downloading the padded
+    MAX_GENOMES buffer can dominate when n_genomes is small.
+
+    Returns:
+        (view, transfer_bytes, mode)
+    """
+    n = int(n_genomes)
+    if n <= 0:
+        return np.empty((0, int(getattr(fg_fields, "FG_PACKED_COLS", 0) or 0)), dtype=np.int32), 0, "empty"
+
+    mode = "full"
+    out = None
+    try:
+        full_shape = getattr(fg_fields.fg_best_packed, "shape", None)
+        full_elems = int(full_shape[0]) * int(full_shape[1]) if full_shape is not None else 0
+
+        staging_candidates = [
+            ("staging_256", getattr(fg_fields, "fg_best_packed_download_staging_256", None)),
+            ("staging_1024", getattr(fg_fields, "fg_best_packed_download_staging_1024", None)),
+        ]
+        best = None
+        for name, fld in staging_candidates:
+            if fld is None:
+                continue
+            shape = getattr(fld, "shape", None)
+            if not shape or len(shape) < 2:
+                continue
+            if n <= int(shape[0]):
+                elems = int(shape[0]) * int(shape[1])
+                if best is None or elems < best[0]:
+                    best = (elems, name, fld)
+
+        if best is not None and full_elems > int(best[0]):
+            _elems, name, fld = best
+            mode = str(name)
+            fg_kernels.fg_copy_best_packed_to_download_staging_kernel(fld, int(n))
+            out = fld.to_numpy()
+    except Exception:
+        out = None
+
+    if out is None:
+        out = fg_fields.fg_best_packed.to_numpy()
+
+    try:
+        transfer_bytes = int(getattr(out, "nbytes", 0) or 0)
+    except Exception:
+        transfer_bytes = 0
+
+    view = out[:n, :]
+    if view.dtype == np.int32 and view.flags["C_CONTIGUOUS"]:
+        return view, transfer_bytes, mode
+    return np.ascontiguousarray(view, dtype=np.int32), transfer_bytes, mode
+
+
+def _fg_download_global_best_packed_prefix(n_genomes: int) -> tuple[np.ndarray, int, str]:
+    """
+    Download the active prefix of `fg_global_best_packed`, using bounded staging when available.
+
+    On Vulkan, `to_numpy()` transfers the full field shape, so downloading the padded
+    MAX_GENOMES buffer can dominate when n_genomes is small.
+
+    Returns:
+        (view, transfer_bytes, mode)
+    """
+    n = int(n_genomes)
+    if n <= 0:
+        return np.empty((0, int(getattr(fg_fields, "FG_PACKED_COLS", 0) or 0)), dtype=np.int32), 0, "empty"
+
+    mode = "full"
+    out = None
+    try:
+        full_shape = getattr(fg_fields.fg_global_best_packed, "shape", None)
+        full_elems = int(full_shape[0]) * int(full_shape[1]) if full_shape is not None else 0
+
+        staging_candidates = [
+            ("staging_256", getattr(fg_fields, "fg_global_best_packed_download_staging_256", None)),
+            ("staging_1024", getattr(fg_fields, "fg_global_best_packed_download_staging_1024", None)),
+        ]
+        best = None
+        for name, fld in staging_candidates:
+            if fld is None:
+                continue
+            shape = getattr(fld, "shape", None)
+            if not shape or len(shape) < 2:
+                continue
+            if n <= int(shape[0]):
+                elems = int(shape[0]) * int(shape[1])
+                if best is None or elems < best[0]:
+                    best = (elems, name, fld)
+
+        if best is not None and full_elems > int(best[0]):
+            _elems, name, fld = best
+            mode = str(name)
+            fg_kernels.fg_copy_global_best_packed_to_download_staging_kernel(fld, int(n))
+            out = fld.to_numpy()
+    except Exception:
+        out = None
+
+    if out is None:
+        out = fg_fields.fg_global_best_packed.to_numpy()
+
+    try:
+        transfer_bytes = int(getattr(out, "nbytes", 0) or 0)
+    except Exception:
+        transfer_bytes = 0
+
+    view = out[:n, :]
+    if view.dtype == np.int32 and view.flags["C_CONTIGUOUS"]:
+        return view, transfer_bytes, mode
+    return np.ascontiguousarray(view, dtype=np.int32), transfer_bytes, mode
 
 
 def _solve_force_greats_finder_gpu_impl(
@@ -1705,14 +1893,12 @@ def _solve_force_greats_finder_gpu_impl(
 
     # Download results (1 transfer instead of 11!)
     _t0 = time.perf_counter()
-    packed_results = fg_fields.fg_best_packed.to_numpy()[:n_genomes, :]
+    packed_results, transfer_bytes, dl_mode = _fg_download_best_packed_prefix(int(n_genomes))
     _dt = time.perf_counter() - _t0
-    _record_download("best_packed", _dt, int(getattr(packed_results, "nbytes", 0) or 0))
+    _record_download("best_packed", _dt, int(transfer_bytes))
     if _FG_TRANSFER_TRACE:
         try:
-            print(
-                f"[FG][XFER] best_packed: download={_dt * 1000:.2f}ms bytes={int(getattr(packed_results, 'nbytes', 0) or 0)}"
-            )
+            print(f"[FG][XFER] best_packed: download={_dt * 1000:.2f}ms bytes={int(transfer_bytes)} staging={dl_mode}")
         except Exception:
             pass
 

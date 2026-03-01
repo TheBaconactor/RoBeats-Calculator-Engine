@@ -179,6 +179,8 @@ ga_global_best_scan_key: ti.Field = None  # (1,) u64 - reduction key ((score+1)<
 ga_global_best_packed: ti.Field = None  # (17,) i32 - packed [score, genome_ids(9), results(7)] for single download
 # Packed GA download payload (reduce CPU<->GPU transfers): row 0 = global best, rows 1..n = per-genome snapshot.
 ga_run_payload_packed: ti.Field = None  # (MAX_GENOMES+1, 17) i32 - [score, slot_ids(9), result(7)]
+# Download staging buffer for `ga_run_payload_packed` (reduce padded Vulkan `to_numpy()` transfers).
+ga_run_payload_download_staging_256: ti.Field = None  # (<=257, 17) i32
 # Multi-start GA snapshot buffer (stores packed payload per run to avoid per-run downloads).
 MAX_GA_RUNS = 128  # Stores up to this many GA runs before a flush/download.
 MAX_GA_RUN_GENOMES = 1024  # Must be >= GA_POPULATION_SIZE (250).
@@ -250,6 +252,15 @@ result_ov: ti.Field = None
 result_p_val: ti.Field = None
 result_s_val: ti.Field = None
 result_stats: ti.Field = None  # Vector field [score, pp, cm, fm, ov, p, s]
+
+# Download staging for legacy work-item `result_stats` (bounded Vulkan `to_numpy()` transfers).
+#
+# When legacy work buffers are enabled, `result_stats` is allocated at MAX_WORK_ITEMS (4M).
+# On Vulkan, `to_numpy()` transfers the full field shape, so a bounded staging buffer avoids
+# transferring the padded tail for small batches (e.g., optimize_gems_batch_gpu).
+result_stats_download_staging_4096: ti.Field = None  # (4096,) vec7 i32
+result_stats_download_staging_65536: ti.Field = None  # (65536,) vec7 i32
+result_stats_download_staging_262144: ti.Field = None  # (262144,) vec7 i32
 
 # Per-genome outputs (for FT/FF iteration kernel)
 genome_result_scores: ti.Field = None
@@ -338,6 +349,7 @@ def reset_fields_state() -> None:
     global song_flags
     global result_scores, result_pp, result_cm, result_fm, result_ov
     global result_p_val, result_s_val, result_stats
+    global result_stats_download_staging_4096, result_stats_download_staging_65536, result_stats_download_staging_262144
     global genome_result_scores, genome_result_ft, genome_result_ff
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
@@ -356,6 +368,7 @@ def reset_fields_state() -> None:
     global ga_global_best_packed
     global ga_runs_payload_packed
     global ga_run_payload_packed
+    global ga_run_payload_download_staging_256
     global \
         ga_runs_payload_download_staging_16, \
         ga_runs_payload_download_staging_64, \
@@ -438,6 +451,7 @@ def reset_fields_state() -> None:
     ga_global_best_packed = None
     ga_runs_payload_packed = None
     ga_run_payload_packed = None
+    ga_run_payload_download_staging_256 = None
     ga_runs_payload_download_staging_16 = None
     ga_runs_payload_download_staging_64 = None
     ga_runs_payload_download_staging_128 = None
@@ -470,6 +484,9 @@ def reset_fields_state() -> None:
     result_p_val = None
     result_s_val = None
     result_stats = None
+    result_stats_download_staging_4096 = None
+    result_stats_download_staging_65536 = None
+    result_stats_download_staging_262144 = None
 
     genome_result_scores = None
     genome_result_ft = None
@@ -605,6 +622,7 @@ def allocate_fields():
     global song_flags
     global result_scores, result_pp, result_cm, result_fm, result_ov
     global result_p_val, result_s_val, result_stats, _fields_allocated, _legacy_work_fields_allocated
+    global result_stats_download_staging_4096, result_stats_download_staging_65536, result_stats_download_staging_262144
     global genome_result_scores, genome_result_ft, genome_result_ff
     global genome_result_pp, genome_result_cm, genome_result_fm, genome_result_ov, genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
@@ -623,6 +641,7 @@ def allocate_fields():
     global ga_global_best_packed
     global ga_runs_payload_packed
     global ga_run_payload_packed
+    global ga_run_payload_download_staging_256
     global \
         ga_runs_payload_download_staging_16, \
         ga_runs_payload_download_staging_64, \
@@ -665,6 +684,11 @@ def allocate_fields():
         work_items = ti.Vector.field(n=8, dtype=ti.i32, shape=1)
         result_stats = ti.Vector.field(n=7, dtype=ti.i32, shape=1)
         _legacy_work_fields_allocated = False
+
+    # Bounded download staging buffers for legacy work-item results (`result_stats`).
+    result_stats_download_staging_4096 = ti.Vector.field(n=7, dtype=ti.i32, shape=4096)
+    result_stats_download_staging_65536 = ti.Vector.field(n=7, dtype=ti.i32, shape=65536)
+    result_stats_download_staging_262144 = ti.Vector.field(n=7, dtype=ti.i32, shape=262144)
 
     # Per-genome base stats (lookup by work_genome_id in kernel)
     # [pp, cm, fm, p_val, s_val, ft, ff]
@@ -727,12 +751,14 @@ def allocate_fields():
     ga_global_best_results = ti.field(dtype=ti.i32, shape=7)  # [score, ft, ff, pp, cm, fm, ov]
     ga_global_best_scan_key = ti.field(dtype=ti.u64, shape=1)
     ga_global_best_packed = ti.field(dtype=ti.i32, shape=17)  # [score, genome_ids(9), results(7)]
-    ga_run_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES + 1, 1 + MAX_SLOTS + 7))
-    ga_runs_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GA_RUNS, MAX_GA_RUN_GENOMES + 1, 1 + MAX_SLOTS + 7))
+    _payload_cols = 1 + MAX_SLOTS + 7
+    ga_run_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GENOMES + 1, _payload_cols))
+    _run_staging_genomes = min(int(MAX_GENOMES), int(GA_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES))
+    ga_run_payload_download_staging_256 = ti.field(dtype=ti.i32, shape=(_run_staging_genomes + 1, _payload_cols))
+    ga_runs_payload_packed = ti.field(dtype=ti.i32, shape=(MAX_GA_RUNS, MAX_GA_RUN_GENOMES + 1, _payload_cols))
     # NOTE: these staging buffers are intentionally smaller than ga_runs_payload_packed so we can
     # download only the populated slice for typical GA_POPULATION_SIZE workloads.
     _staging_genomes = min(int(MAX_GA_RUN_GENOMES), int(GA_RUNS_PAYLOAD_DOWNLOAD_STAGING_MAX_GENOMES))
-    _payload_cols = 1 + MAX_SLOTS + 7
     ga_runs_payload_download_staging_16 = ti.field(
         dtype=ti.i32,
         shape=(min(int(MAX_GA_RUNS), 16), _staging_genomes + 1, _payload_cols),

@@ -2155,6 +2155,36 @@ def fg_pack_results_kernel(n_genomes: ti.i32):
 
 
 @ti.kernel
+def fg_copy_best_packed_to_download_staging_kernel(out_packed: ti.template(), n_genomes: ti.i32):
+    """
+    Copy the populated prefix of `fg_best_packed` into a smaller staging field.
+
+    On Vulkan, `to_numpy()` transfers the full field shape, so downloading the padded
+    MAX_GENOMES buffer can add avoidable sync/transfer overhead when only a small
+    number of genomes are active (e.g., GA_POPULATION_SIZE=250).
+    """
+    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
+    total_cols = 11 + FG_MAX_SECTIONS
+    for g, c in ti.ndrange(n_genomes, total_cols):
+        out_packed[g, c] = fg_best_packed[g, c]
+
+
+@ti.kernel
+def fg_copy_global_best_packed_to_download_staging_kernel(out_packed: ti.template(), n_genomes: ti.i32):
+    """
+    Copy the populated prefix of `fg_global_best_packed` into a smaller staging field.
+
+    On Vulkan, `to_numpy()` transfers the full field shape, so downloading the padded
+    MAX_GENOMES buffer can add avoidable sync/transfer overhead when only a small
+    number of genomes are active (e.g., GA_POPULATION_SIZE=250).
+    """
+    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
+    total_cols = 11 + FG_MAX_SECTIONS
+    for g, c in ti.ndrange(n_genomes, total_cols):
+        out_packed[g, c] = fg_global_best_packed[g, c]
+
+
+@ti.kernel
 def fg_pack_global_best_kernel(session_slot: ti.i32, n_genomes: ti.i32):
     """
     Pack all global-best fields + cfg_counts into a single contiguous array for efficient CPU download.

@@ -116,7 +116,9 @@ from .kernels_solvers_batch import (
     solve_genomes_with_ftff_block_kernel,
     solve_ftff_parallel_kernel,
     copy_work_items_from_ndarray_kernel,
+    copy_fever_masks_from_ndarray_kernel,
     copy_genome_result_stats_to_download_staging_kernel,
+    copy_result_stats_to_download_staging_kernel,
 )
 
 # Import GA evaluation & reduction kernels
@@ -138,6 +140,7 @@ from .ga_eval import (
     ga_pack_and_store_run_payload_segmented_kernel,
     ga_pack_fg_candidates_table_segmented_kernel,
     ga_pack_run_payload_kernel,
+    ga_copy_run_payload_to_download_staging_kernel,
     ga_copy_runs_payload_to_download_staging_kernel,
     ga_copy_fg_candidates_table_to_download_staging_kernel,
     ga_select_fg_candidates_coords_kernel,
@@ -252,7 +255,9 @@ __all__ = [
     "solve_genomes_with_ftff_block_kernel",
     "solve_ftff_parallel_kernel",
     "copy_work_items_from_ndarray_kernel",
+    "copy_fever_masks_from_ndarray_kernel",
     "copy_genome_result_stats_to_download_staging_kernel",
+    "copy_result_stats_to_download_staging_kernel",
     # GA evaluation kernels
     "init_genome_results_kernel",
     "init_chunk_best_key_kernel",
@@ -271,6 +276,7 @@ __all__ = [
     "ga_pack_and_store_run_payload_segmented_kernel",
     "ga_pack_fg_candidates_table_segmented_kernel",
     "ga_pack_run_payload_kernel",
+    "ga_copy_run_payload_to_download_staging_kernel",
     "ga_copy_runs_payload_to_download_staging_kernel",
     "ga_copy_fg_candidates_table_to_download_staging_kernel",
     "ga_select_fg_candidates_coords_kernel",

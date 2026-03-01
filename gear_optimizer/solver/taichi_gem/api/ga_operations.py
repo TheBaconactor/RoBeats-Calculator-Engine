@@ -1137,7 +1137,35 @@ def ga_download_run_payload(
     n_genomes = int(n_genomes)
     n_slots = int(n_slots)
     kernels.ga_pack_run_payload_kernel(n_genomes, n_slots)
-    packed = fields.ga_run_payload_packed.to_numpy()
+    packed_full = None
+    try:
+        cols = 1 + n_slots + 7
+        rows = n_genomes + 1
+        staging = getattr(fields, "ga_run_payload_download_staging_256", None)
+        if staging is not None:
+            shape = getattr(staging, "shape", None)
+            if shape and len(shape) >= 2 and rows <= int(shape[0]):
+                try:
+                    full_shape = getattr(fields.ga_run_payload_packed, "shape", None)
+                    full_elems = int(full_shape[0]) * int(full_shape[1]) if full_shape is not None else 0
+                except Exception:
+                    full_elems = 0
+                try:
+                    staging_elems = int(shape[0]) * int(shape[1])
+                except Exception:
+                    staging_elems = 0
+                if full_elems <= 0 or staging_elems <= 0 or full_elems > staging_elems:
+                    kernels.ga_copy_run_payload_to_download_staging_kernel(staging, int(n_genomes), int(n_slots))
+                    packed_full = staging.to_numpy()
+    except Exception:
+        packed_full = None
+
+    if packed_full is None:
+        packed_full = fields.ga_run_payload_packed.to_numpy()
+
+    cols = 1 + n_slots + 7
+    rows = n_genomes + 1
+    packed = packed_full[:rows, :cols]
 
     best_score = int(packed[0, 0])
     best_genome_ids = np.asarray(packed[0, 1 : 1 + n_slots], dtype=np.int32).copy()

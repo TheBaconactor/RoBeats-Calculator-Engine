@@ -75,6 +75,31 @@ def ga_pack_run_payload_kernel(n_genomes: ti.i32, n_slots: ti.i32):
 
 
 @ti.kernel
+def ga_copy_run_payload_to_download_staging_kernel(
+    out_payload: ti.template(),
+    n_genomes: ti.i32,
+    n_slots: ti.i32,
+):
+    """
+    Copy the populated slice of `ga_run_payload_packed` into a smaller staging field.
+
+    Vulkan `to_numpy()` transfers the full field shape, so downloading the padded
+    `(MAX_GENOMES+1, 17)` buffer can dominate throughput when the active population
+    is small (e.g., GA_POPULATION_SIZE=250). This kernel enables a bounded staging
+    download.
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    cols = 1 + n_slots + 7
+    rows = n_genomes + 1
+    for row in range(rows):
+        for c in ti.static(range(17)):
+            if c < cols:
+                out_payload[row, c] = kernels_helpers.ga_run_payload_packed[row, c]
+            else:
+                out_payload[row, c] = 0
+
+
+@ti.kernel
 def ga_pack_and_store_run_payload_kernel(run_idx: ti.i32, n_genomes: ti.i32, n_slots: ti.i32):
     """
     Pack a GA snapshot directly into the multi-run buffer `ga_runs_payload_packed`.

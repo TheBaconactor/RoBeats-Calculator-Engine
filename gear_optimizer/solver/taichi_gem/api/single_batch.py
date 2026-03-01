@@ -19,6 +19,53 @@ from .initialization import ensure_ready, _ensure_batch_staging
 # Get appropriate kernels for current platform (Metal-safe on macOS)
 kernels = get_kernels()
 
+_OPT_BATCH_WORK_ITEMS_STAGING: np.ndarray | None = None  # (>=n, 8) int32
+_OPT_BATCH_FEVER_MASKS_STAGING: np.ndarray | None = None  # (>=n, MAX_HEAD_NOTES) int8
+_OPT_BATCH_GENOME_BASE_STATS_STAGING: np.ndarray | None = None  # (MAX_GENOMES, 7) int16
+
+
+def _ensure_optimize_batch_staging(n_items: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Allocate and reuse small host staging buffers for optimize_gems_batch_gpu().
+
+    The legacy `_ensure_batch_staging()` allocates MAX_WORK_ITEMS host buffers so it can
+    use full-field from_numpy() uploads, but that is extremely expensive on Vulkan.
+    We prefer variable-length ndarray upload kernels and only allocate as much host
+    storage as the caller actually needs.
+    """
+    global _OPT_BATCH_WORK_ITEMS_STAGING, _OPT_BATCH_FEVER_MASKS_STAGING, _OPT_BATCH_GENOME_BASE_STATS_STAGING
+
+    n = int(n_items)
+    if n <= 0:
+        work = np.empty((0, 8), dtype=np.int32)
+        masks = np.empty((0, int(MAX_HEAD_NOTES)), dtype=np.int8)
+    else:
+        cur = (
+            int(_OPT_BATCH_WORK_ITEMS_STAGING.shape[0]) if isinstance(_OPT_BATCH_WORK_ITEMS_STAGING, np.ndarray) else 0
+        )
+        if cur < n:
+            cap = max(n, 1024 if cur <= 0 else (cur * 2))
+            cap = min(cap, int(MAX_WORK_ITEMS))
+            _OPT_BATCH_WORK_ITEMS_STAGING = np.empty((cap, 8), dtype=np.int32)
+        cur_m = (
+            int(_OPT_BATCH_FEVER_MASKS_STAGING.shape[0])
+            if isinstance(_OPT_BATCH_FEVER_MASKS_STAGING, np.ndarray)
+            else 0
+        )
+        if cur_m < n:
+            cap_m = max(n, 1024 if cur_m <= 0 else (cur_m * 2))
+            cap_m = min(cap_m, int(MAX_WORK_ITEMS))
+            _OPT_BATCH_FEVER_MASKS_STAGING = np.empty((cap_m, int(MAX_HEAD_NOTES)), dtype=np.int8)
+        work = _OPT_BATCH_WORK_ITEMS_STAGING[:n, :]
+        masks = _OPT_BATCH_FEVER_MASKS_STAGING[:n, :]
+
+    if _OPT_BATCH_GENOME_BASE_STATS_STAGING is None or int(_OPT_BATCH_GENOME_BASE_STATS_STAGING.shape[0]) != int(
+        MAX_GENOMES
+    ):
+        _OPT_BATCH_GENOME_BASE_STATS_STAGING = np.empty((int(MAX_GENOMES), 7), dtype=np.int16)
+
+    return work, masks, _OPT_BATCH_GENOME_BASE_STATS_STAGING
+
 
 # ============================================================================
 # SINGLE-ITEM OPTIMIZATION
@@ -168,27 +215,27 @@ def optimize_gems_batch_gpu(
     unique_stats_map = {}  # (p, s) -> genome_id
     next_genome_id = 0
 
-    staging = _ensure_batch_staging()
-    work_items_np = staging["work_items"]
-    fever_masks_np = staging["fever_masks"]
-
-    # Clear only the active prefix. (Avoid full zeroing of MAX_WORK_ITEMS each call.)
-    work_items_np[:n, :] = 0
-    fever_masks_np[:n, :] = 0
+    # Use small host staging buffers sized to the active batch. We upload via ndarray kernels
+    # to avoid full-field transfers of MAX_WORK_ITEMS legacy buffers.
+    work_items_np, fever_masks_np, genome_stats_np = _ensure_optimize_batch_staging(int(n))
 
     for i, item in enumerate(batch_input):
         # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
-        work_items_np[i, 0] = item["budget"]
-        work_items_np[i, 1] = item["count_body_fever"]
-        work_items_np[i, 2] = item["count_body_normal"]
-        work_items_np[i, 3] = item.get("ft_gems", 0)
-        work_items_np[i, 4] = item.get("ff_gems", 0)
+        work_items_np[i, 0] = int(item["budget"])
+        work_items_np[i, 1] = int(item["count_body_fever"])
+        work_items_np[i, 2] = int(item["count_body_normal"])
+        work_items_np[i, 3] = int(item.get("ft_gems", 0) or 0)
+        work_items_np[i, 4] = int(item.get("ff_gems", 0) or 0)
 
         mask = item.get("fever_mask_head")
         if mask is not None:
-            hl = min(len(mask), MAX_HEAD_NOTES)
-            work_items_np[i, 5] = hl
-            fever_masks_np[i, :hl] = mask[:hl].astype(np.int8)
+            mask_arr = np.asarray(mask, dtype=np.int8)
+            hl = min(int(mask_arr.shape[0]), int(MAX_HEAD_NOTES))
+            work_items_np[i, 5] = int(hl)
+            if hl > 0:
+                fever_masks_np[i, :hl] = mask_arr[:hl]
+        else:
+            work_items_np[i, 5] = 0
 
         # Check for overrides
         p = item.get("_base_p_val", base_p_val)
@@ -200,15 +247,13 @@ def optimize_gems_batch_gpu(
             next_genome_id += 1
 
         work_items_np[i, 6] = unique_stats_map[stats_key]
+        work_items_np[i, 7] = 0  # song_slot (unused by solve_batch_kernel)
 
     # Ensure we don't exceed max genomes (unlikely for reasonable batches)
     if next_genome_id > MAX_GENOMES:
         raise RuntimeError(f"Too many unique base stat combinations in batch ({next_genome_id} > {MAX_GENOMES})")
 
     # Upload per-genome stats
-    genome_stats_np = staging["genome_base_stats"]
-    genome_stats_np[:] = 0
-
     # [pp, cm, fm, p_val, s_val, ft, ff]
     # In this mode, we assume constant pp/cm/fm/ft/ff for the whole batch
     # (except p/s which can vary per item).
@@ -226,9 +271,19 @@ def optimize_gems_batch_gpu(
 
     fields.genome_base_stats.from_numpy(genome_stats_np)
 
-    # BULK transfer
-    fields.work_items.from_numpy(work_items_np)
-    fields.fever_masks.from_numpy(fever_masks_np)
+    # Upload the active prefix via ndarray kernels (avoid full-field legacy buffer transfers).
+    try:
+        kernels.copy_work_items_from_ndarray_kernel(int(n), work_items_np)
+        kernels.copy_fever_masks_from_ndarray_kernel(int(n), int(MAX_HEAD_NOTES), fever_masks_np)
+    except Exception:
+        # Fallback: allocate full padded host buffers and use from_numpy (slow, but preserves compatibility).
+        staging_full = _ensure_batch_staging()
+        work_full = staging_full["work_items"]
+        masks_full = staging_full["fever_masks"]
+        work_full[:n, :] = work_items_np[:n, :]
+        masks_full[:n, :] = fever_masks_np[:n, :]
+        fields.work_items.from_numpy(work_full)
+        fields.fever_masks.from_numpy(masks_full)
 
     # Launch kernel
     kernels.solve_batch_kernel(
@@ -250,22 +305,39 @@ def optimize_gems_batch_gpu(
 
     # Download results
     # [score, pp, cm, fm, ov, p_val, s_val]
-    results_np = fields.result_stats.to_numpy()[:n]
+    results_np = None
+    try:
+        full_shape = getattr(fields.result_stats, "shape", None)
+        full_elems = int(full_shape[0]) * 7 if full_shape is not None else 0
 
-    results = [
-        (
-            int(row[0]),
-            int(row[1]),
-            int(row[2]),
-            int(row[3]),
-            int(row[5]),
-            int(row[6]),  # p_val, s_val
-            int(row[1]),
-            int(row[2]),
-            int(row[3]),
-            int(row[4]),
-        )  # repeats for generic tuple format
-        for row in results_np
-    ]
+        staging_candidates = [
+            ("staging_4096", getattr(fields, "result_stats_download_staging_4096", None)),
+            ("staging_65536", getattr(fields, "result_stats_download_staging_65536", None)),
+            ("staging_262144", getattr(fields, "result_stats_download_staging_262144", None)),
+        ]
+        best = None
+        for name, fld in staging_candidates:
+            if fld is None:
+                continue
+            shape = getattr(fld, "shape", None)
+            if not shape or len(shape) < 1:
+                continue
+            if n <= int(shape[0]):
+                elems = int(shape[0]) * 7
+                if best is None or elems < best[0]:
+                    best = (elems, name, fld)
+
+        if best is not None and full_elems > int(best[0]):
+            _elems, _name, staging_fld = best
+            kernels.copy_result_stats_to_download_staging_kernel(staging_fld, int(n))
+            results_np = staging_fld.to_numpy()[:n]
+    except Exception:
+        results_np = None
+
+    if results_np is None:
+        results_np = fields.result_stats.to_numpy()[:n]
+
+    rows_list = np.asarray(results_np[:n, :7], dtype=np.int32).tolist()
+    results = [(r[0], r[1], r[2], r[3], r[5], r[6], r[1], r[2], r[3], r[4]) for r in rows_list]
 
     return results

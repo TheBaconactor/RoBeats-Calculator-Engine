@@ -1034,6 +1034,8 @@ class GpuExecutor:
         self._last_init_error = None
         self._ready_event.clear()
         self._last_ref_arrays_sig = None
+        # Scratch buffer for registry request coalescing (avoid per-chunk np.empty allocations).
+        self._registry_coalesce_staging: Any | None = None
         self._registry_payload_cache.clear()
 
         # Optional: emit per-interval utilization and/or write a CSV trace.
@@ -2827,7 +2829,14 @@ class GpuExecutor:
                 if not chunk:
                     break
 
-                staging = np.empty((int(n_total), 9), dtype=np.int32)
+                # Reuse a persistent scratch buffer to reduce allocator churn in hot coalescing loops.
+                staging_buf = self._registry_coalesce_staging
+                if staging_buf is None or int(staging_buf.shape[0]) < int(n_total) or int(staging_buf.shape[1]) != 9:
+                    # Keep it at least `max_genomes` rows so typical batches don't reallocate.
+                    staging_rows = max(int(n_total), int(max_genomes))
+                    staging_buf = np.empty((int(staging_rows), 9), dtype=np.int32)
+                    self._registry_coalesce_staging = staging_buf
+                staging = staging_buf[: int(n_total), :]
                 spans: list[tuple[int, int]] = []
                 cur = 0
                 ok = True

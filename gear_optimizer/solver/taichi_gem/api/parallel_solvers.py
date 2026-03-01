@@ -171,7 +171,6 @@ def solve_genomes_with_ftff(
         List of (score, ft, ff, pp, cm, fm, ov) tuples per genome
     """
     ensure_ready(ref_arrays)
-    fields.ensure_legacy_work_fields_allocated()
     if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
         precompute_timeline_gpu(timeline_grid, ref_arrays, song_slot=int(song_slot))
     else:
@@ -405,9 +404,7 @@ def solve_genomes_parallel(
     if isinstance(genome_stats_list, np.ndarray):
         src = np.asarray(genome_stats_list, dtype=np.int16)
         if src.ndim != 2 or int(src.shape[1]) < 7:
-            raise ValueError(
-                f"genome_stats_list ndarray must have shape (n, >=7), got {getattr(src, 'shape', None)!r}"
-            )
+            raise ValueError(f"genome_stats_list ndarray must have shape (n, >=7), got {getattr(src, 'shape', None)!r}")
         genome_stats_np[:n_genomes, :7] = src[:n_genomes, :7]
     else:
         for i, stats in enumerate(genome_stats_list):

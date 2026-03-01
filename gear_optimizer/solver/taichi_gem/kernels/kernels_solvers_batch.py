@@ -43,6 +43,22 @@ def copy_work_items_from_ndarray_kernel(n_items: ti.i32, src: ti.types.ndarray(d
 
 
 @ti.kernel
+def copy_fever_masks_from_ndarray_kernel(
+    n_items: ti.i32,
+    n_cols: ti.i32,
+    src: ti.types.ndarray(dtype=ti.i8, ndim=2),
+):
+    """
+    Copy a variable-length host fever-mask buffer into the resident fever_masks field.
+
+    Mirrors copy_work_items_from_ndarray_kernel, but for (n_items, MAX_HEAD_NOTES) i8 fever masks.
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for i, j in ti.ndrange(n_items, n_cols):
+        kernels_helpers.fever_masks[i, j] = src[i, j]
+
+
+@ti.kernel
 def solve_batch_kernel(
     n_items: ti.i32,
     is_p_ft: ti.i32,
@@ -387,21 +403,15 @@ def solve_genomes_with_ftff_block_kernel(
                 ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
                 ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
 
-                count_fever: ti.i32 = ti.cast(
-                    kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx], ti.i32
-                )
+                count_fever: ti.i32 = ti.cast(kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx], ti.i32)
                 count_normal: ti.i32 = ti.cast(
                     kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx], ti.i32
                 )
                 head_len: ti.i32 = ti.cast(kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx], ti.i32)
 
                 budget: ti.i32 = total_budget - ft - ff
-                p_val: ti.i32 = (
-                    base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
-                )
-                s_val: ti.i32 = (
-                    base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
-                )
+                p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
+                s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
                 res_vec = optimize_core_device(
                     0,
@@ -628,3 +638,17 @@ def copy_genome_result_stats_to_download_staging_kernel(out_stats: ti.template()
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for g in range(n_genomes):
         out_stats[g] = kernels_helpers.genome_result_stats[g]
+
+
+@ti.kernel
+def copy_result_stats_to_download_staging_kernel(out_stats: ti.template(), n_items: ti.i32):
+    """
+    Copy the populated slice of legacy work-item `result_stats` into a smaller staging field.
+
+    On Vulkan, `to_numpy()` transfers the full field shape, so downloading the padded
+    MAX_WORK_ITEMS (4M) result buffer can dominate throughput when only a small
+    number of items are active.
+    """
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for i in range(n_items):
+        out_stats[i] = kernels_helpers.result_stats[i]
