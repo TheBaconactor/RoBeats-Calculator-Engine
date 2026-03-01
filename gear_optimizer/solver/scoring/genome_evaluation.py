@@ -32,6 +32,7 @@ from ...core.utils import stats_signature
 
 from .gpu_solver import _GPU_LOCK, GEM_SOLVER_CACHE
 from .fever_solver import solve_best_fever_combination
+from .stats_ops import apply_gems_to_base_stats
 
 
 @dataclass
@@ -325,19 +326,16 @@ def finalize_gpu_batch_eval_plan(plan: GpuBatchEvalPlan, gpu_results: Optional[l
                     continue
 
                 stats = plan.all_stats[i]
-                final_stats = stats.copy()
-                final_stats["Fever Time"] = final_stats.get("Fever Time", 0) + g_ft * GEM_SCALE_FEVER
-                final_stats["Fever Fill Rate"] = final_stats.get("Fever Fill Rate", 0) + g_ff * GEM_SCALE_FEVER
-                final_stats["Perfect Points"] = final_stats.get("Perfect Points", 0) + g_pp * GEM_SCALE_NORMAL
-                final_stats["Combo Multiplier"] = final_stats.get("Combo Multiplier", 0) + g_cm * GEM_SCALE_NORMAL
-                final_stats["Fever Multiplier"] = final_stats.get("Fever Multiplier", 0) + g_fm * GEM_SCALE_FEVER
-                final_stats["Chill"] = final_stats.get("Chill", 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
-                final_stats["Flow"] = final_stats.get("Flow", 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
-                final_stats["Rush"] = final_stats.get("Rush", 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
-                final_stats["Beat"] = final_stats.get("Beat", 0) + g_ft * GEM_STAT_TO_ELEMENT_SCALE
-                final_stats["Vibe"] = final_stats.get("Vibe", 0) + g_ff * GEM_STAT_TO_ELEMENT_SCALE
-                if sel_color in final_stats:
-                    final_stats[sel_color] = final_stats.get(sel_color, 0) + g_ov * ELEMENTAL_GEM_SCALE
+                final_stats = apply_gems_to_base_stats(
+                    stats,
+                    sel_color,
+                    g_ft,
+                    g_ff,
+                    g_pp,
+                    g_cm,
+                    g_fm,
+                    g_ov,
+                )
 
                 res = {
                     "Score": score,

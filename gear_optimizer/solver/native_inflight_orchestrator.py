@@ -295,41 +295,12 @@ def _nonfever_counts_from_config_for_hitsim(config: object) -> tuple[int, ...]:
 def _materialize_fg_stats_for_hitsim(fg_data: dict) -> dict:
     if not isinstance(fg_data, dict):
         return {}
-
-    stats = fg_data.get("Stats")
-    if isinstance(stats, dict) and stats:
-        return stats
-
-    base_stats = fg_data.get("BaseStats")
-    if not isinstance(base_stats, dict) or not base_stats:
-        return {}
-
-    gem_counts = fg_data.get("GemCounts")
-    if not isinstance(gem_counts, dict):
-        gem_counts = {}
-
     try:
-        from gear_optimizer.helpers.song_helpers.force_greats.result_application import apply_gems_to_base_fast
-
-        ft_val = safe_int(fg_data.get("FT", gem_counts.get("Fever Time", 0)), 0)
-        ff_val = safe_int(fg_data.get("FF", gem_counts.get("Fever Fill", gem_counts.get("Fever Fill Rate", 0))), 0)
-        g_pp = safe_int(gem_counts.get("Perfect Points", 0), 0)
-        g_cm = safe_int(gem_counts.get("Combo Multiplier", 0), 0)
-        g_fm = safe_int(gem_counts.get("Fever Multiplier", 0), 0)
-        g_ov = safe_int(
-            gem_counts.get("Element", gem_counts.get("Element Overflow", gem_counts.get("ElementOverflow", 0))),
-            0,
-        )
-        selected = str(get_selected_element(fg_data, "") or "").strip()
-        computed = apply_gems_to_base_fast(base_stats, selected, ft_val, ff_val, g_pp, g_cm, g_fm, g_ov)
+        from gear_optimizer.helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
     except Exception:
-        computed = None
-
-    if not isinstance(computed, dict) or not computed:
         return {}
-
-    fg_data["Stats"] = dict(computed)
-    return fg_data["Stats"]
+    stats = materialize_stats_from_payload(fg_data, mutate_payload=True)
+    return stats if isinstance(stats, dict) else {}
 
 
 def _attach_hitsim_delta_for_fg_variant(
@@ -3475,37 +3446,13 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
             stats_obj = data.get("Stats", {})
             if not stats_obj:
                 try:
-                    base_stats = data.get("BaseStats")
-                except Exception:
-                    base_stats = None
-                if isinstance(base_stats, dict) and base_stats:
-                    try:
-                        from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
-                            apply_gems_to_base_fast,
-                        )
+                    from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
+                        materialize_stats_from_payload,
+                    )
 
-                        gem_counts = data.get("GemCounts") if isinstance(data.get("GemCounts"), dict) else {}
-                        ft_val = int(data.get("FT", gem_counts.get("Fever Time", 0)) or 0)
-                        ff_val = int(
-                            data.get("FF", gem_counts.get("Fever Fill", gem_counts.get("Fever Fill Rate", 0))) or 0
-                        )
-                        g_pp = int(gem_counts.get("Perfect Points", 0) or 0)
-                        g_cm = int(gem_counts.get("Combo Multiplier", 0) or 0)
-                        g_fm = int(gem_counts.get("Fever Multiplier", 0) or 0)
-                        g_ov = int(gem_counts.get("Element", gem_counts.get("Element Overflow", 0)) or 0)
-                        selected = get_selected_element(data, "") or ""
-                        stats_obj = apply_gems_to_base_fast(
-                            base_stats,
-                            selected,
-                            ft_val,
-                            ff_val,
-                            g_pp,
-                            g_cm,
-                            g_fm,
-                            g_ov,
-                        )
-                    except Exception:
-                        stats_obj = stats_obj or {}
+                    stats_obj = materialize_stats_from_payload(data, mutate_payload=True) or {}
+                except Exception:
+                    stats_obj = stats_obj or {}
 
             details = {
                 "FT": data.get("FT", 0),

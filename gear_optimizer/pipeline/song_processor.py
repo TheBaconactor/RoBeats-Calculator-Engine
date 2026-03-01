@@ -285,58 +285,15 @@ def _nonfever_counts_from_config(config: object) -> tuple[int, ...]:
     return tuple(int(v) for v in out)
 
 
-def _safe_int_from_any(value: object, default: int = 0) -> int:
-    try:
-        return int(value) if value is not None else int(default)
-    except Exception:
-        try:
-            return int(float(value))
-        except Exception:
-            return int(default)
-
-
 def _materialize_fg_stats_if_missing(fg_data: dict) -> dict:
     if not isinstance(fg_data, dict):
         return {}
-
-    stats = fg_data.get("Stats")
-    if isinstance(stats, dict) and stats:
-        return stats
-
-    base_stats = fg_data.get("BaseStats")
-    if not isinstance(base_stats, dict) or not base_stats:
-        return {}
-
-    gem_counts = fg_data.get("GemCounts")
-    if not isinstance(gem_counts, dict):
-        gem_counts = {}
-
-    ft_val = _safe_int_from_any(fg_data.get("FT", gem_counts.get("Fever Time", 0)), 0)
-    ff_val = _safe_int_from_any(
-        fg_data.get("FF", gem_counts.get("Fever Fill", gem_counts.get("Fever Fill Rate", 0))),
-        0,
-    )
-    g_pp = _safe_int_from_any(gem_counts.get("Perfect Points", 0), 0)
-    g_cm = _safe_int_from_any(gem_counts.get("Combo Multiplier", 0), 0)
-    g_fm = _safe_int_from_any(gem_counts.get("Fever Multiplier", 0), 0)
-    g_ov = _safe_int_from_any(
-        gem_counts.get("Element", gem_counts.get("Element Overflow", gem_counts.get("ElementOverflow", 0))),
-        0,
-    )
-    selected_element = str(fg_data.get("SelectedElement") or fg_data.get("Selected Element") or "").strip()
-
     try:
-        from ..helpers.song_helpers.force_greats.result_application import apply_gems_to_base_fast
-
-        computed = apply_gems_to_base_fast(base_stats, selected_element, ft_val, ff_val, g_pp, g_cm, g_fm, g_ov)
+        from ..helpers.song_helpers.force_greats.result_application import materialize_stats_from_payload
     except Exception:
-        computed = None
-
-    if not isinstance(computed, dict) or not computed:
         return {}
-
-    fg_data["Stats"] = dict(computed)
-    return fg_data["Stats"]
+    stats = materialize_stats_from_payload(fg_data, mutate_payload=True)
+    return stats if isinstance(stats, dict) else {}
 
 
 def _attach_hitsim_delta_for_fg_variants(calc_song: dict, fg_variants: list[dict], ref_arrays: dict) -> None:

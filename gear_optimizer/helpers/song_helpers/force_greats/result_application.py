@@ -5,6 +5,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ....core.constants import GEM_SCALE_FEVER
+from ....core.utils import get_selected_element
 from ....solver.scoring import FG_CACHE, _force_greats_counts_to_dict
 from ....solver.scoring.force_greats import FORCE_GREATS_ALGO_VERSION
 from ....solver.scoring.stats_ops import apply_gems_to_base_stats
@@ -31,6 +32,75 @@ def apply_gems_to_base_fast(
         int(g_ov),
         add_missing_element_key=True,
     )
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None:
+            return int(default)
+        return int(value)
+    except Exception:
+        try:
+            return int(float(value))
+        except Exception:
+            return int(default)
+
+
+def materialize_stats_from_payload(
+    payload: Any,
+    *,
+    selected_element: Any = None,
+    ft_override: Any = None,
+    ff_override: Any = None,
+    mutate_payload: bool = False,
+) -> dict[str, Any]:
+    """
+    Build `Stats` from `BaseStats` + gem allocations when needed.
+
+    This helper centralizes FG payload materialization used by pipeline, inflight
+    orchestration, and DB persistence paths.
+    """
+    if not isinstance(payload, dict):
+        return {}
+
+    existing_stats = payload.get("Stats")
+    if isinstance(existing_stats, dict) and existing_stats:
+        return existing_stats
+
+    base_stats = payload.get("BaseStats")
+    if not isinstance(base_stats, dict) or not base_stats:
+        return {}
+
+    gem_counts = payload.get("GemCounts")
+    if not isinstance(gem_counts, dict):
+        gem_counts = {}
+
+    ft_val = _coerce_int(
+        ft_override if ft_override is not None else payload.get("FT", gem_counts.get("Fever Time", 0)),
+        0,
+    )
+    ff_val = _coerce_int(
+        ff_override
+        if ff_override is not None
+        else payload.get("FF", gem_counts.get("Fever Fill", gem_counts.get("Fever Fill Rate", 0))),
+        0,
+    )
+    g_pp = _coerce_int(gem_counts.get("Perfect Points", 0), 0)
+    g_cm = _coerce_int(gem_counts.get("Combo Multiplier", 0), 0)
+    g_fm = _coerce_int(gem_counts.get("Fever Multiplier", 0), 0)
+    g_ov = _coerce_int(
+        gem_counts.get("Element", gem_counts.get("Element Overflow", gem_counts.get("ElementOverflow", 0))),
+        0,
+    )
+    selected = str(selected_element if selected_element is not None else get_selected_element(payload, "")).strip()
+    computed = apply_gems_to_base_fast(base_stats, selected, ft_val, ff_val, g_pp, g_cm, g_fm, g_ov)
+
+    if not (isinstance(computed, dict) and computed):
+        return {}
+    if mutate_payload:
+        payload["Stats"] = dict(computed)
+        return payload["Stats"]
+    return dict(computed)
 
 
 def fp_targets_to_forced_counts(

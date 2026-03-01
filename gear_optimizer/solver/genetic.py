@@ -58,6 +58,7 @@ from ..core.env_config import env_flag
 from ..core.utils import safe_int, safe_float
 from .base_stats import build_base_fixed_stats_array
 from .scoring import GEM_SOLVER_CACHE, FG_CACHE, FEVER_TIMELINE_CACHE
+from .scoring.stats_ops import apply_gems_to_base_stats
 from ..data.models import GASettings
 from ..helpers.ga_helpers import (
     initialize_pools,
@@ -475,21 +476,17 @@ def decode_gpu_native_ga_runs_payload(
         g_fm = int(best_global_res_arr[5])
         g_ov = int(best_global_res_arr[6])
 
-        best_stats["Perfect Points"] = best_stats.get("Perfect Points", 0) + g_pp * GEM_SCALE_NORMAL
-        best_stats["Combo Multiplier"] = best_stats.get("Combo Multiplier", 0) + g_cm * GEM_SCALE_NORMAL
-        best_stats["Fever Multiplier"] = best_stats.get("Fever Multiplier", 0) + g_fm * GEM_SCALE_FEVER
-        best_stats["Fever Time"] = best_stats.get("Fever Time", 0) + g_ft * GEM_SCALE_FEVER
-        best_stats["Fever Fill Rate"] = best_stats.get("Fever Fill Rate", 0) + g_ff * GEM_SCALE_FEVER
-
-        best_stats["Chill"] = best_stats.get("Chill", 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
-        best_stats["Flow"] = best_stats.get("Flow", 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
-        best_stats["Rush"] = best_stats.get("Rush", 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
-        best_stats["Beat"] = best_stats.get("Beat", 0) + g_ft * GEM_STAT_TO_ELEMENT_SCALE
-        best_stats["Vibe"] = best_stats.get("Vibe", 0) + g_ff * GEM_STAT_TO_ELEMENT_SCALE
-
         selected_color = str(sel_color_built or cfg_data.get("selected_color", "") or "")
-        if selected_color:
-            best_stats[selected_color] = best_stats.get(selected_color, 0) + g_ov * ELEMENTAL_GEM_SCALE
+        best_stats = apply_gems_to_base_stats(
+            best_stats,
+            selected_color,
+            g_ft,
+            g_ff,
+            g_pp,
+            g_cm,
+            g_fm,
+            g_ov,
+        )
 
         best_data = {
             "Score": int(best_global_score),
@@ -836,21 +833,17 @@ def decode_gpu_native_ga_runs_payload(
     g_fm = int(best_global_res_arr[5])
     g_ov = int(best_global_res_arr[6])
 
-    best_stats["Perfect Points"] = best_stats.get("Perfect Points", 0) + g_pp * GEM_SCALE_NORMAL
-    best_stats["Combo Multiplier"] = best_stats.get("Combo Multiplier", 0) + g_cm * GEM_SCALE_NORMAL
-    best_stats["Fever Multiplier"] = best_stats.get("Fever Multiplier", 0) + g_fm * GEM_SCALE_FEVER
-    best_stats["Fever Time"] = best_stats.get("Fever Time", 0) + g_ft * GEM_SCALE_FEVER
-    best_stats["Fever Fill Rate"] = best_stats.get("Fever Fill Rate", 0) + g_ff * GEM_SCALE_FEVER
-
-    best_stats["Chill"] = best_stats.get("Chill", 0) + g_pp * GEM_STAT_TO_ELEMENT_SCALE
-    best_stats["Flow"] = best_stats.get("Flow", 0) + g_cm * GEM_STAT_TO_ELEMENT_SCALE
-    best_stats["Rush"] = best_stats.get("Rush", 0) + g_fm * GEM_STAT_TO_ELEMENT_SCALE
-    best_stats["Beat"] = best_stats.get("Beat", 0) + g_ft * GEM_STAT_TO_ELEMENT_SCALE
-    best_stats["Vibe"] = best_stats.get("Vibe", 0) + g_ff * GEM_STAT_TO_ELEMENT_SCALE
-
     selected_color = str(cfg_data.get("selected_color", ""))
-    if selected_color:
-        best_stats[selected_color] = best_stats.get(selected_color, 0) + g_ov * ELEMENTAL_GEM_SCALE
+    best_stats = apply_gems_to_base_stats(
+        best_stats,
+        selected_color,
+        g_ft,
+        g_ff,
+        g_pp,
+        g_cm,
+        g_fm,
+        g_ov,
+    )
 
     best_data = {
         "Score": int(best_global_score),
@@ -1915,7 +1908,9 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
                         if trace_writer is not None and (int(gen) % int(trace_every) == 0):
                             try:
-                                trace_best_score, _trace_best_genome, trace_best_results = gpu_api.ga_download_global_best()
+                                trace_best_score, _trace_best_genome, trace_best_results = (
+                                    gpu_api.ga_download_global_best()
+                                )
                                 trace_writer.append(
                                     generation_idx=int(gen),
                                     elapsed_s=float(time.perf_counter() - trace_t0),

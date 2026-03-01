@@ -53,33 +53,10 @@ def _normalize_force_payload(force_obj: object) -> dict:
     if not isinstance(base_stats, dict) or not base_stats:
         return out
 
-    gem_counts = out.get("GemCounts")
-    if not isinstance(gem_counts, dict):
-        gem_counts = {}
-
-    ft_val = _safe_int_force(out.get("FT", gem_counts.get("Fever Time", 0)), 0)
-    ff_val = _safe_int_force(
-        out.get("FF", gem_counts.get("Fever Fill", gem_counts.get("Fever Fill Rate", 0))),
-        0,
-    )
-    g_pp = _safe_int_force(gem_counts.get("Perfect Points", 0), 0)
-    g_cm = _safe_int_force(gem_counts.get("Combo Multiplier", 0), 0)
-    g_fm = _safe_int_force(gem_counts.get("Fever Multiplier", 0), 0)
-    g_ov = _safe_int_force(gem_counts.get("Element", 0), 0)
-
     try:
-        from .force_greats.result_application import apply_gems_to_base_fast
+        from .force_greats.result_application import materialize_stats_from_payload
 
-        computed_stats = apply_gems_to_base_fast(
-            base_stats,
-            str(selected_element),
-            ft_val,
-            ff_val,
-            g_pp,
-            g_cm,
-            g_fm,
-            g_ov,
-        )
+        computed_stats = materialize_stats_from_payload(out, selected_element=selected_element, mutate_payload=False)
         if isinstance(computed_stats, dict) and computed_stats:
             out["Stats"] = computed_stats
             return out

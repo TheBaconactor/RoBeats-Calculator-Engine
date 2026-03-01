@@ -780,27 +780,31 @@ def _fg_details_from_force_payload(details: Any, force_data: Any, *, fg_score: i
     if isinstance(stats_obj, dict) and stats_obj:
         out["Stats"] = stats_obj
     else:
-        base_stats = payload.get("BaseStats")
-        if not (isinstance(base_stats, dict) and base_stats):
-            base_stats = force_data.get("BaseStats") if isinstance(force_data.get("BaseStats"), dict) else None
-        if isinstance(base_stats, dict) and base_stats:
-            try:
-                from gear_optimizer.helpers.song_helpers.force_greats.result_application import apply_gems_to_base_fast
+        try:
+            from gear_optimizer.helpers.song_helpers.force_greats.result_application import (
+                materialize_stats_from_payload,
+            )
 
-                ft_val = _safe_int_for_db(out.get("FT", payload.get("FT", 0)), 0)
-                ff_val = _safe_int_for_db(out.get("FF", payload.get("FF", 0)), 0)
-                g_pp = _safe_int_for_db(gem_counts.get("Perfect Points", 0), 0)
-                g_cm = _safe_int_for_db(gem_counts.get("Combo Multiplier", 0), 0)
-                g_fm = _safe_int_for_db(gem_counts.get("Fever Multiplier", 0), 0)
-                g_ov = _safe_int_for_db(
-                    gem_counts.get("Element", gem_counts.get("Element Overflow", gem_counts.get("ElementOverflow", 0))),
-                    0,
-                )
-                computed = apply_gems_to_base_fast(base_stats, selected_element, ft_val, ff_val, g_pp, g_cm, g_fm, g_ov)
-                if isinstance(computed, dict) and computed:
-                    out["Stats"] = computed
-            except Exception:
-                pass
+            materialization_payload = dict(payload)
+            if not (
+                isinstance(materialization_payload.get("BaseStats"), dict) and materialization_payload.get("BaseStats")
+            ):
+                fallback_base = force_data.get("BaseStats")
+                if isinstance(fallback_base, dict) and fallback_base:
+                    materialization_payload["BaseStats"] = fallback_base
+            materialization_payload["FT"] = _safe_int_for_db(out.get("FT", payload.get("FT", 0)), 0)
+            materialization_payload["FF"] = _safe_int_for_db(out.get("FF", payload.get("FF", 0)), 0)
+            materialization_payload["GemCounts"] = gem_counts
+
+            computed = materialize_stats_from_payload(
+                materialization_payload,
+                selected_element=selected_element,
+                mutate_payload=False,
+            )
+            if isinstance(computed, dict) and computed:
+                out["Stats"] = computed
+        except Exception:
+            pass
 
     return out
 
