@@ -1,6 +1,8 @@
 import numpy as np
 import pytest
 
+from gear_optimizer.core.fallback_monitor import FallbackViolation
+
 
 def _has_taichi() -> bool:
     try:
@@ -40,7 +42,7 @@ def test_upload_work_items_chunk_uses_prefix_kernel(monkeypatch):
 
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
-def test_upload_work_items_chunk_falls_back_to_from_numpy(monkeypatch):
+def test_upload_work_items_chunk_fail_fast_when_prefix_kernel_unavailable(monkeypatch):
     from gear_optimizer.solver.taichi_gem.api import parallel_solvers as ps
 
     def _bad_kernel(_n_items: int, _src):
@@ -57,9 +59,10 @@ def test_upload_work_items_chunk_falls_back_to_from_numpy(monkeypatch):
     monkeypatch.setattr(ps.fields, "work_items", _Fallback(), raising=False)
 
     arr = np.zeros((16, 8), dtype=np.int32)
-    ps._upload_work_items_chunk(arr, 5)
+    with pytest.raises(FallbackViolation, match="gpu.parallel_solvers.work_items_upload_kernel"):
+        ps._upload_work_items_chunk(arr, 5)
 
-    assert observed["shape"] == (16, 8)
+    assert observed["shape"] is None
 
 
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")

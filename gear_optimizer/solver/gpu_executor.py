@@ -111,6 +111,11 @@ _REQUEST_COUNTER = 0
 _PENDING_RESPONSES: OrderedDict[int, tuple["GpuResponse", float]] = OrderedDict()
 _PENDING_TTL_SEC = max(0.0, float(getattr(ENV, "gpu_executor_pending_ttl_sec", 300.0) or 0.0))
 _PENDING_MAX = max(0, int(getattr(ENV, "gpu_executor_pending_max", 2048) or 0))
+_REGISTRY_STATIC_HANDLE_COUNTER = 0
+_REGISTRY_STATIC_HANDLE_CACHE_MAX = max(
+    16, int(_ENV_GET("GPU_EXECUTOR_REGISTRY_HANDLE_CACHE_MAX", "256") or "256")
+)
+_REGISTRY_STATIC_HANDLE_CACHE: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
 
 
 def _prune_pending_responses(now: float | None = None) -> None:
@@ -136,13 +141,82 @@ def _store_pending_response(response: "GpuResponse") -> None:
     _prune_pending_responses(now)
 
 
+def _registry_base_fixed_stats_sig(arr: Any) -> tuple[Any, ...]:
+    """
+    Build a compact content signature for small base-fixed arrays.
+
+    This keeps handle reuse robust even when callers rebuild small numpy arrays
+    with identical values between requests.
+    """
+    try:
+        import numpy as np
+
+        a = np.asarray(arr, dtype=np.int32)
+        if a.ndim == 0:
+            return ("scalar", int(a))
+        h = hashlib.blake2b(digest_size=8)
+        h.update(memoryview(np.ascontiguousarray(a)).cast("B"))
+        return ("arr", tuple(int(x) for x in a.shape), str(a.dtype), h.digest())
+    except Exception:
+        return ("obj", id(arr))
+
+
+def _registry_static_handle_entry(
+    *,
+    item_stats: Any,
+    slot_start: Any,
+    slot_count: Any,
+    base_fixed_stats: Any,
+    timeline_grid: Any,
+    ref_arrays: Any,
+) -> dict[str, Any]:
+    """
+    Get or create a worker-local handle entry for registry static payload parts.
+
+    The entry retains strong references for identity-based keys to prevent ID reuse
+    collisions while the handle is alive.
+    """
+    global _REGISTRY_STATIC_HANDLE_COUNTER
+
+    key = (
+        int(id(item_stats)),
+        int(id(slot_start)),
+        int(id(slot_count)),
+        _registry_base_fixed_stats_sig(base_fixed_stats),
+        int(id(timeline_grid)),
+        int(id(ref_arrays)),
+    )
+    cached = _REGISTRY_STATIC_HANDLE_CACHE.get(key)
+    if cached is not None:
+        _REGISTRY_STATIC_HANDLE_CACHE.move_to_end(key)
+        return cached
+
+    _REGISTRY_STATIC_HANDLE_COUNTER += 1
+    entry = {
+        "handle": int(_REGISTRY_STATIC_HANDLE_COUNTER),
+        "registered": False,
+        "item_stats_ref": item_stats,
+        "slot_start_ref": slot_start,
+        "slot_count_ref": slot_count,
+        "timeline_grid_ref": timeline_grid,
+        "ref_arrays_ref": ref_arrays,
+    }
+    _REGISTRY_STATIC_HANDLE_CACHE[key] = entry
+    _REGISTRY_STATIC_HANDLE_CACHE.move_to_end(key)
+    while len(_REGISTRY_STATIC_HANDLE_CACHE) > _REGISTRY_STATIC_HANDLE_CACHE_MAX:
+        _REGISTRY_STATIC_HANDLE_CACHE.popitem(last=False)
+    return entry
+
+
 def set_gpu_worker_mode(worker_id: int, request_queue, response_queue):
     """Configure this process as a GPU worker (called after fork/spawn)."""
     global _WORKER_MODE, _WORKER_ID, _REQUEST_QUEUE, _RESPONSE_QUEUE
+    global _REGISTRY_STATIC_HANDLE_CACHE
     _WORKER_MODE = True
     _WORKER_ID = worker_id
     _REQUEST_QUEUE = request_queue
     _RESPONSE_QUEUE = response_queue
+    _REGISTRY_STATIC_HANDLE_CACHE = OrderedDict()
 
 
 def is_gpu_worker_mode() -> bool:
@@ -158,11 +232,13 @@ def is_in_process_gpu_request_queue() -> bool:
 def clear_gpu_worker_mode():
     """Clear worker mode (for testing or process reuse)."""
     global _WORKER_MODE, _WORKER_ID, _REQUEST_QUEUE, _RESPONSE_QUEUE, _PENDING_RESPONSES
+    global _REGISTRY_STATIC_HANDLE_CACHE
     _WORKER_MODE = False
     _WORKER_ID = None
     _REQUEST_QUEUE = None
     _RESPONSE_QUEUE = None
     _PENDING_RESPONSES = OrderedDict()
+    _REGISTRY_STATIC_HANDLE_CACHE = OrderedDict()
 
 
 class GpuExecutor:
@@ -236,6 +312,13 @@ class GpuExecutor:
         # Ref-array upload caching: avoid redundant `load_ref_arrays()` calls when inputs are identical.
         # This saves host work and can avoid implicit syncs inside Taichi APIs.
         self._last_ref_arrays_sig: bytes | None = None
+        # Per-worker registry static-payload cache. Worker requests can send a compact
+        # handle after first registration to avoid repeatedly pickling large immutable
+        # arrays/dicts (item stats, timeline grid, ref arrays, base fixed stats).
+        self._registry_payload_cache: OrderedDict[tuple[int, int], dict[str, Any]] = OrderedDict()
+        self._registry_payload_cache_max = max(
+            64, int(_ENV_GET("GPU_EXECUTOR_REGISTRY_PAYLOAD_CACHE_MAX", "1024") or "1024")
+        )
 
         # Stats
         self._requests_processed = 0
@@ -856,6 +939,8 @@ class GpuExecutor:
         self._taichi_ready = False
         self._last_init_error = None
         self._ready_event.clear()
+        self._last_ref_arrays_sig = None
+        self._registry_payload_cache.clear()
 
         # Optional: emit per-interval utilization and/or write a CSV trace.
         self._live_enabled = str(os.environ.get("GPU_EXECUTOR_LIVE", "0")).strip().lower() in {"1", "true", "yes", "on"}
@@ -1923,6 +2008,62 @@ class GpuExecutor:
         payload = getattr(req, "payload", None)
         return payload if isinstance(payload, dict) else {}
 
+    def _cache_registry_payload_static(self, worker_id: int, handle: int, static_payload: dict[str, Any]) -> None:
+        key = (int(worker_id), int(handle))
+        self._registry_payload_cache[key] = dict(static_payload)
+        self._registry_payload_cache.move_to_end(key)
+        while len(self._registry_payload_cache) > int(self._registry_payload_cache_max):
+            self._registry_payload_cache.popitem(last=False)
+
+    def _resolve_registry_payload(self, request: "GpuRequest") -> tuple[dict[str, Any], str | None]:
+        """
+        Resolve registry-solve payloads that optionally use worker-side static handles.
+
+        Workers may send only dynamic fields (population indices + flags) plus
+        `registry_payload_handle` after first registration to avoid repeated IPC
+        transfer of immutable arrays/dicts.
+        """
+        payload = self._payload_dict(request)
+        handle_raw = payload.get("registry_payload_handle")
+        if handle_raw is None:
+            return payload, None
+
+        try:
+            handle = int(handle_raw)
+        except Exception:
+            return payload, f"Invalid registry payload handle: {handle_raw!r}"
+
+        worker_id = int(getattr(request, "worker_id", 0) or 0)
+        cache_key = (worker_id, handle)
+        inline = bool(payload.get("registry_payload_inline", False))
+        static_keys = (
+            "item_stats",
+            "slot_start",
+            "slot_count",
+            "base_fixed_stats",
+            "timeline_grid",
+            "ref_arrays",
+        )
+
+        static_payload: dict[str, Any] | None = None
+        if inline:
+            missing = [k for k in static_keys if k not in payload]
+            if missing:
+                return payload, f"Invalid inline registry payload (missing {','.join(missing)})"
+            static_payload = {k: payload[k] for k in static_keys}
+            self._cache_registry_payload_static(worker_id, handle, static_payload)
+        else:
+            static_payload = self._registry_payload_cache.get(cache_key)
+            if static_payload is None:
+                return payload, f"Unknown registry payload handle={handle} for worker_id={worker_id}"
+            self._registry_payload_cache.move_to_end(cache_key)
+
+        resolved = dict(payload)
+        for key in static_keys:
+            if key not in resolved and static_payload is not None:
+                resolved[key] = static_payload[key]
+        return resolved, None
+
     def _coalesce_fg_task_requests(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
         """
         Coalesce multiple SOLVE_FORCE_GREATS_FINDER requests into a single GPU call when they are task-only.
@@ -2289,10 +2430,18 @@ class GpuExecutor:
 
         synthetic_batch_requests: list[GpuRequest] = []
         fallback_ids: set[int] = set()
+        fallback_reason_by_id: dict[int, str] = {}
+
+        def _mark_fallback(req_id: int, reason: str) -> None:
+            rid = int(req_id)
+            fallback_ids.add(rid)
+            if rid not in fallback_reason_by_id:
+                fallback_reason_by_id[rid] = str(reason)
+
         for req in requests:
             payload = req.payload
             if not isinstance(payload, dict):
-                fallback_ids.add(int(req.request_id))
+                _mark_fallback(int(req.request_id), "invalid request payload type")
                 continue
             synthetic_batch_requests.append(
                 GpuRequest(
@@ -2308,14 +2457,14 @@ class GpuExecutor:
             batch_responses = self._coalesce_fg_solve_with_breakpoints_batch_requests(synthetic_batch_requests)
             for req, resp in zip(synthetic_batch_requests, batch_responses):
                 if resp is None:
-                    fallback_ids.add(int(req.request_id))
+                    _mark_fallback(int(req.request_id), "missing coalesced response")
                     continue
                 if not bool(getattr(resp, "success", False)):
-                    fallback_ids.add(int(req.request_id))
+                    _mark_fallback(int(req.request_id), "coalesced response unsuccessful")
                     continue
                 result = getattr(resp, "result", None)
                 if not isinstance(result, list) or len(result) != 1:
-                    fallback_ids.add(int(req.request_id))
+                    _mark_fallback(int(req.request_id), "unexpected coalesced result shape")
                     continue
                 out.append(
                     GpuResponse(
@@ -2328,6 +2477,14 @@ class GpuExecutor:
         if fallback_ids:
             for req in requests:
                 if int(req.request_id) in fallback_ids:
+                    warn_fallback(
+                        "gpu_executor.ga_fg_fused_coalesce.request",
+                        "coalesced fused request fallback to per-request execution",
+                        context={
+                            "request_id": int(req.request_id),
+                            "reason": fallback_reason_by_id.get(int(req.request_id), "unknown"),
+                        },
+                    )
                     out.append(self._execute_request(req))
 
         by_id = {r.request_id: r for r in out if r is not None}
@@ -2479,7 +2636,14 @@ class GpuExecutor:
                 groups.append([req])
                 continue
             try:
-                sig = _registry_payload_sig(p)
+                handle_raw = p.get("registry_payload_handle")
+                if handle_raw is not None:
+                    sig = (
+                        _scalar_key(p),
+                        ("handle", int(getattr(req, "worker_id", 0) or 0), int(handle_raw)),
+                    )
+                else:
+                    sig = _registry_payload_sig(p)
             except Exception:
                 groups.append([req])
                 continue
@@ -2488,6 +2652,17 @@ class GpuExecutor:
 
         out: list[GpuResponse] = []
         max_genomes = int(getattr(gem_fields, "MAX_GENOMES", 4096) or 4096)
+        resolved_payload_cache: dict[int, dict[str, Any]] = {}
+
+        def _resolved_payload(req: GpuRequest) -> tuple[dict[str, Any], str | None]:
+            rid = int(getattr(req, "request_id", 0) or 0)
+            cached = resolved_payload_cache.get(rid)
+            if cached is not None:
+                return cached, None
+            resolved, err = self._resolve_registry_payload(req)
+            if err is None:
+                resolved_payload_cache[rid] = resolved
+            return resolved, err
 
         for group in groups:
             if not group:
@@ -2496,7 +2671,17 @@ class GpuExecutor:
                 out.append(self._execute_request(group[0]))
                 continue
 
-            p0 = self._payload_dict(group[0])
+            p0, err0 = _resolved_payload(group[0])
+            if err0:
+                for req in group:
+                    out.append(
+                        GpuResponse(
+                            request_id=req.request_id,
+                            success=False,
+                            error=err0,
+                        )
+                    )
+                continue
             song_slot = int(p0.get("song_slot", 0) or 0)
             total_budget = int(p0.get("total_budget", 90) or 90)
             gem_scale_fever = int(p0.get("gem_scale_fever", 3) or 3)
@@ -2518,7 +2703,17 @@ class GpuExecutor:
                 chunk: list[GpuRequest] = []
                 n_total = 0
                 while i < len(group):
-                    p = self._payload_dict(group[i])
+                    p, perr = _resolved_payload(group[i])
+                    if perr:
+                        out.append(
+                            GpuResponse(
+                                request_id=group[i].request_id,
+                                success=False,
+                                error=perr,
+                            )
+                        )
+                        i += 1
+                        continue
                     pop_arr = np.asarray(p.get("population_indices"), dtype=np.int32)
                     if pop_arr.ndim != 2 or int(pop_arr.shape[1]) != 9:
                         break
@@ -2544,7 +2739,10 @@ class GpuExecutor:
                 ok = True
                 t_pack0 = perf_counter()
                 for req in chunk:
-                    p = self._payload_dict(req)
+                    p, perr = _resolved_payload(req)
+                    if perr:
+                        ok = False
+                        break
                     pop_arr = np.asarray(p.get("population_indices"), dtype=np.int32)
                     n = int(pop_arr.shape[0])
                     if pop_arr.ndim != 2 or int(pop_arr.shape[1]) != 9 or n <= 0:
@@ -2555,6 +2753,11 @@ class GpuExecutor:
                     cur += n
 
                 if not ok or cur <= 0:
+                    warn_fallback(
+                        "gpu_executor.registry_coalesce.chunk",
+                        "registry coalescing chunk pack failed; falling back to per-request execution",
+                        context={"chunk_size": int(len(chunk)), "cur": int(cur)},
+                    )
                     for req in chunk:
                         out.append(self._execute_request(req))
                     continue
@@ -2718,12 +2921,18 @@ class GpuExecutor:
                                 result=res,
                             )
                         )
-                except Exception:
+                except Exception as exc:
                     # Count the time spent trying to pack/merge even if we fall back.
                     try:
                         self._record_pack(GpuRequestType.SOLVE_GENOMES_PARALLEL, perf_counter() - t_pack0)
                     except Exception:
                         pass
+                    warn_fallback(
+                        "gpu_executor.solve_batch.merge",
+                        "merged solve_genomes_parallel batch failed; falling back to per-request execution",
+                        context={"batch_size": int(len(sub))},
+                        exc=exc,
+                    )
                     # Conservative fallback: process each request individually.
                     for req in sub:
                         try:
@@ -2852,7 +3061,13 @@ class GpuExecutor:
             solve_genomes_from_registry,
         )
 
-        payload = request.payload or {}
+        payload, resolve_err = self._resolve_registry_payload(request)
+        if resolve_err:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error=resolve_err,
+            )
 
         if "ref_arrays" in payload:
             ref_arrays = payload["ref_arrays"]
@@ -4643,21 +4858,23 @@ def submit_gpu_solve_genomes_from_registry(
 
     if not _WORKER_MODE:
         raise RuntimeError("submit_gpu_solve_genomes_from_registry called but not in worker mode")
+    entry = _registry_static_handle_entry(
+        item_stats=item_stats,
+        slot_start=slot_start,
+        slot_count=slot_count,
+        base_fixed_stats=base_fixed_stats,
+        timeline_grid=timeline_grid,
+        ref_arrays=ref_arrays,
+    )
+    handle = int(entry.get("handle", 0) or 0)
+    if handle <= 0:
+        raise RuntimeError("Failed to allocate registry payload handle")
 
-    _REQUEST_COUNTER += 1
-    request_id = _REQUEST_COUNTER
-
-    request = GpuRequest(
-        request_type=GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
-        request_id=request_id,
-        worker_id=_WORKER_ID,
-        payload={
+    def _build_payload(*, inline_static: bool) -> dict[str, Any]:
+        payload: dict[str, Any] = {
             "population_indices": population_indices,
-            "item_stats": item_stats,
-            "slot_start": slot_start,
-            "slot_count": slot_count,
-            "base_fixed_stats": base_fixed_stats,
-            "timeline_grid": timeline_grid,
+            "registry_payload_handle": int(handle),
+            "registry_payload_inline": bool(inline_static),
             "is_p_ft": int(is_p_ft),
             "is_s_ft": int(is_s_ft),
             "is_p_ff": int(is_p_ff),
@@ -4670,40 +4887,72 @@ def submit_gpu_solve_genomes_from_registry(
             "is_s_fm": int(is_s_fm),
             "is_p_ov": int(is_p_ov),
             "is_s_ov": int(is_s_ov),
-            "ref_arrays": ref_arrays,
             "total_budget": int(total_budget),
             "gem_scale_fever": int(gem_scale_fever),
             "song_slot": int(song_slot),
-        },
-        submit_perf_ns=time.perf_counter_ns(),
-    )
+        }
+        if inline_static:
+            payload.update(
+                {
+                    "item_stats": item_stats,
+                    "slot_start": slot_start,
+                    "slot_count": slot_count,
+                    "base_fixed_stats": base_fixed_stats,
+                    "timeline_grid": timeline_grid,
+                    "ref_arrays": ref_arrays,
+                }
+            )
+        return payload
 
-    _REQUEST_QUEUE.put(request)
+    def _submit_once(payload: dict[str, Any]) -> GpuResponse:
+        nonlocal timeout
+        global _REQUEST_COUNTER
+        _REQUEST_COUNTER += 1
+        request_id = _REQUEST_COUNTER
+        request = GpuRequest(
+            request_type=GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
+            request_id=request_id,
+            worker_id=_WORKER_ID,
+            payload=payload,
+            submit_perf_ns=time.perf_counter_ns(),
+        )
+        _REQUEST_QUEUE.put(request)
 
-    start = time.monotonic()
-    while True:
-        _prune_pending_responses()
-        if request_id in _PENDING_RESPONSES:
-            response, _ts = _PENDING_RESPONSES.pop(request_id)
-            break
+        start = time.monotonic()
+        while True:
+            _prune_pending_responses()
+            if request_id in _PENDING_RESPONSES:
+                response, _ts = _PENDING_RESPONSES.pop(request_id)
+                return response
 
-        remaining = timeout - (time.monotonic() - start)
-        if remaining <= 0:
-            raise RuntimeError(f"GPU executor timeout after {timeout}s")
+            remaining = timeout - (time.monotonic() - start)
+            if remaining <= 0:
+                raise RuntimeError(f"GPU executor timeout after {timeout}s")
 
-        try:
-            response: GpuResponse = _RESPONSE_QUEUE.get(timeout=remaining)
-        except queue.Empty:
-            raise RuntimeError(f"GPU executor timeout after {timeout}s")
+            try:
+                response = _RESPONSE_QUEUE.get(timeout=remaining)
+            except queue.Empty:
+                raise RuntimeError(f"GPU executor timeout after {timeout}s")
 
-        if response.request_id != request_id:
-            _store_pending_response(response)
-            continue
-        break
+            if response.request_id != request_id:
+                _store_pending_response(response)
+                continue
+            return response
+
+    inline_static = not bool(entry.get("registered", False))
+    response = _submit_once(_build_payload(inline_static=inline_static))
+
+    # Executor can restart and lose handle cache; re-register inline once.
+    if (not response.success) and (not inline_static):
+        err_text = str(getattr(response, "error", "") or "")
+        if "Unknown registry payload handle" in err_text:
+            entry["registered"] = False
+            response = _submit_once(_build_payload(inline_static=True))
 
     if not response.success:
         raise RuntimeError(f"GPU executor error: {response.error}")
 
+    entry["registered"] = True
     result = response.result
     try:
         n_expected = int(getattr(population_indices, "shape", [len(population_indices)])[0])

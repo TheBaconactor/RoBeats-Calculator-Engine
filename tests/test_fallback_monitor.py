@@ -1,5 +1,9 @@
 from pathlib import Path
 
+import pytest
+
+from gear_optimizer.core.fallback_monitor import FallbackViolation, warn_fallback
+
 
 def test_config_missing_option_emits_fallback_warning(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("METAFINDER_FALLBACK_WARN", "1")
@@ -52,3 +56,20 @@ def test_env_invalid_int_emits_fallback_warning(monkeypatch, capsys):
     assert value == 7
     assert "[FALLBACK][env.int.invalid]" in captured
     assert "METAFINDER_TEST_BAD_INT" in captured
+
+
+def test_warn_fallback_allowlisted_site_does_not_raise_in_strict_mode(monkeypatch):
+    monkeypatch.setenv("METAFINDER_FALLBACK_WARN", "1")
+    monkeypatch.setenv("METAFINDER_FALLBACK_STRICT", "1")
+    monkeypatch.setenv("METAFINDER_FALLBACK_ALLOW", "config.,env.")
+
+    warn_fallback("config.get.missing", "config fallback")
+
+
+def test_warn_fallback_non_allowlisted_site_raises_in_strict_mode(monkeypatch):
+    monkeypatch.setenv("METAFINDER_FALLBACK_WARN", "1")
+    monkeypatch.setenv("METAFINDER_FALLBACK_STRICT", "1")
+    monkeypatch.setenv("METAFINDER_FALLBACK_ALLOW", "config.,env.")
+
+    with pytest.raises(FallbackViolation, match="gpu.strict.site"):
+        warn_fallback("gpu.strict.site", "runtime fallback")

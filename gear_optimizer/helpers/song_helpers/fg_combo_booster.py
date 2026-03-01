@@ -1378,7 +1378,7 @@ def evaluate_fg_combo_booster_genomes(
             except Exception:
                 n_sig = 0
             try:
-                n_stats = int(len(plan.genome_stats_list or []))
+                n_stats = int(len(plan.genome_stats_list)) if plan.genome_stats_list is not None else 0
             except Exception:
                 n_stats = 0
             print(

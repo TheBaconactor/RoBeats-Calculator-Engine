@@ -14,6 +14,7 @@ import time
 import numpy as np
 
 from gear_optimizer.core.env_config import ENV
+from gear_optimizer.core.fallback_monitor import warn_fallback
 from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
 
 from .. import fields
@@ -112,8 +113,13 @@ def _upload_work_items_chunk(work_items_np: np.ndarray, n_items: int) -> None:
         raise ValueError(f"work_items chunk overflow: n_items={n_items_i} > shape0={int(work_items_np.shape[0])}")
     try:
         kernels.copy_work_items_from_ndarray_kernel(n_items_i, work_items_np[:n_items_i])
-    except Exception:
-        # Conservative fallback for backends where ndarray upload kernel is unavailable.
+    except Exception as exc:
+        warn_fallback(
+            "gpu.parallel_solvers.work_items_upload_kernel",
+            "ndarray upload kernel unavailable; using full-field upload fallback",
+            context={"n_items": int(n_items_i), "shape0": int(work_items_np.shape[0])},
+            exc=exc,
+        )
         fields.work_items.from_numpy(work_items_np)
 
 
@@ -395,27 +401,30 @@ def solve_genomes_parallel(
     staging = _ensure_parallel_staging()
     genome_stats_np = staging["genome_base_stats"]
 
-    # Also track max allowed FT/FF per genome for work item generation
-    max_ft_list = []
-    max_ff_list = []
+    # Tensorized fast path: pass contiguous ndarray through with no dict unpacking.
+    if isinstance(genome_stats_list, np.ndarray):
+        src = np.asarray(genome_stats_list, dtype=np.int16)
+        if src.ndim != 2 or int(src.shape[1]) < 7:
+            raise ValueError(
+                f"genome_stats_list ndarray must have shape (n, >=7), got {getattr(src, 'shape', None)!r}"
+            )
+        genome_stats_np[:n_genomes, :7] = src[:n_genomes, :7]
+    else:
+        for i, stats in enumerate(genome_stats_list):
+            # [pp, cm, fm, p_val, s_val, ft, ff]
+            genome_stats_np[i, 0] = stats["base_pp"]
+            genome_stats_np[i, 1] = stats["base_cm"]
+            genome_stats_np[i, 2] = stats["base_fm"]
+            genome_stats_np[i, 3] = stats["base_p_val"]
+            genome_stats_np[i, 4] = stats["base_s_val"]
+            genome_stats_np[i, 5] = stats["base_ft_stat"]
+            genome_stats_np[i, 6] = stats["base_ff_stat"]
 
-    for i, stats in enumerate(genome_stats_list):
-        # [pp, cm, fm, p_val, s_val, ft, ff]
-        genome_stats_np[i, 0] = stats["base_pp"]
-        genome_stats_np[i, 1] = stats["base_cm"]
-        genome_stats_np[i, 2] = stats["base_fm"]
-        genome_stats_np[i, 3] = stats["base_p_val"]
-        genome_stats_np[i, 4] = stats["base_s_val"]
-        genome_stats_np[i, 5] = stats["base_ft_stat"]
-        genome_stats_np[i, 6] = stats["base_ff_stat"]
-
-        # Compute max FT/FF gems
-        remaining_ft = 160 - stats["base_ft_stat"]
-        remaining_ff = 160 - stats["base_ff_stat"]
-        max_ft = remaining_ft // gem_scale_fever if remaining_ft > 0 else 0
-        max_ff = remaining_ff // gem_scale_fever if remaining_ff > 0 else 0
-        max_ft_list.append(min(total_budget, max_ft))
-        max_ff_list.append(min(total_budget, max_ff))
+    gs_active = genome_stats_np[:n_genomes, :7].astype(np.int32, copy=False)
+    remaining_ft = np.maximum(0, 160 - gs_active[:, 5])
+    remaining_ff = np.maximum(0, 160 - gs_active[:, 6])
+    max_ft_list = np.minimum(int(total_budget), remaining_ft // int(gem_scale_fever))
+    max_ff_list = np.minimum(int(total_budget), remaining_ff // int(gem_scale_fever))
 
     # OPTIMIZATION: Skip upload if genome stats unchanged (saves ~1-2s per run)
     # Hash only the portion of the buffer that's actually used
@@ -805,6 +814,7 @@ def solve_genomes_parallel_merged(
 
     slot_to_flags: dict[int, tuple[int, ...]] = {}
     genome_ranges: list[tuple[int, int]] = []
+    payload_max_limits: list[tuple[np.ndarray, np.ndarray]] = []
 
     staging = _ensure_parallel_staging()
     genome_stats_np = staging["genome_base_stats"]
@@ -838,20 +848,39 @@ def solve_genomes_parallel_merged(
         )
         slot_to_flags[slot] = flags12
 
-        g_list = payload.get("genome_stats_list") or []
+        g_list = payload.get("genome_stats_list")
+        if g_list is None:
+            g_list = []
         n_g = len(g_list)
         if genome_offset + n_g > MAX_GENOMES:
             raise ValueError(f"Merged genomes exceed MAX_GENOMES: {genome_offset + n_g} > {MAX_GENOMES}")
 
-        for i, stats in enumerate(g_list):
-            dst = genome_offset + i
-            genome_stats_np[dst, 0] = stats["base_pp"]
-            genome_stats_np[dst, 1] = stats["base_cm"]
-            genome_stats_np[dst, 2] = stats["base_fm"]
-            genome_stats_np[dst, 3] = stats["base_p_val"]
-            genome_stats_np[dst, 4] = stats["base_s_val"]
-            genome_stats_np[dst, 5] = stats["base_ft_stat"]
-            genome_stats_np[dst, 6] = stats["base_ff_stat"]
+        if isinstance(g_list, np.ndarray):
+            src = np.asarray(g_list, dtype=np.int16)
+            if src.ndim != 2 or int(src.shape[1]) < 7:
+                raise ValueError(
+                    f"Merged solve: genome_stats_list ndarray must have shape (n, >=7), got {getattr(src, 'shape', None)!r}"
+                )
+            gs_local = src[:n_g, :7]
+            genome_stats_np[genome_offset : genome_offset + n_g, :7] = gs_local
+        else:
+            gs_local = np.empty((n_g, 7), dtype=np.int16)
+            for i, stats in enumerate(g_list):
+                gs_local[i, 0] = stats["base_pp"]
+                gs_local[i, 1] = stats["base_cm"]
+                gs_local[i, 2] = stats["base_fm"]
+                gs_local[i, 3] = stats["base_p_val"]
+                gs_local[i, 4] = stats["base_s_val"]
+                gs_local[i, 5] = stats["base_ft_stat"]
+                gs_local[i, 6] = stats["base_ff_stat"]
+            genome_stats_np[genome_offset : genome_offset + n_g, :7] = gs_local
+
+        gs_local_i32 = np.asarray(gs_local, dtype=np.int32)
+        remaining_ft = np.maximum(0, 160 - gs_local_i32[:, 5])
+        remaining_ff = np.maximum(0, 160 - gs_local_i32[:, 6])
+        max_ft_local = np.minimum(int(total_budget), remaining_ft // int(gem_scale_fever))
+        max_ff_local = np.minimum(int(total_budget), remaining_ff // int(gem_scale_fever))
+        payload_max_limits.append((max_ft_local, max_ff_local))
 
         genome_ranges.append((genome_offset, genome_offset + n_g))
         genome_offset += n_g
@@ -886,19 +915,12 @@ def solve_genomes_parallel_merged(
     chunks = 0
     for payload_idx, payload in enumerate(payloads):
         slot = slot_ids[payload_idx]
-        g_list = payload.get("genome_stats_list") or []
         base_gid = genome_ranges[payload_idx][0]
-        for local_idx, stats in enumerate(g_list):
+        max_ft_local, max_ff_local = payload_max_limits[payload_idx]
+        for local_idx in range(int(max_ft_local.shape[0])):
             gid = base_gid + local_idx
-
-            remaining_ft = 160 - int(stats["base_ft_stat"])
-            remaining_ff = 160 - int(stats["base_ff_stat"])
-            max_ft = (remaining_ft // gem_scale_fever) if remaining_ft > 0 else 0
-            max_ff = (remaining_ff // gem_scale_fever) if remaining_ff > 0 else 0
-            if max_ft > total_budget:
-                max_ft = total_budget
-            if max_ff > total_budget:
-                max_ff = total_budget
+            max_ft = int(max_ft_local[local_idx])
+            max_ff = int(max_ff_local[local_idx])
 
             valid_combo_idx = _combo_indices_for_limits(
                 combo_ft,

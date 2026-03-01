@@ -1164,10 +1164,11 @@ def _solve_force_greats_finder_gpu_impl(
         # For in-process batched FG tasks (GpuExecutor), callers can intentionally
         # set `upload_genome_stats=False` for subsequent tasks when they know the
         # field is still valid (no intervening GPU entrypoints).
+        stats_active = stats_buf[:n_genomes, :7]
         _t_up0 = time.perf_counter()
-        gem_fields.genome_base_stats.from_numpy(stats_buf)
+        gem_fields.genome_base_stats.from_numpy(stats_active)
         _t_up1 = time.perf_counter()
-        _record_upload("genome_base_stats", _t_up1 - _t_up0, _bytes_of_array(stats_buf))
+        _record_upload("genome_base_stats", _t_up1 - _t_up0, _bytes_of_array(stats_active))
 
         try:
             if isinstance(genome_stats_list, np.ndarray):
@@ -2027,10 +2028,15 @@ def solve_force_greats_finder_gpu_tasks(
                 stats_buf[i, 4] = int(st.get("base_s_val", 0))
                 stats_buf[i, 5] = int(st.get("base_ft_stat", 0))
                 stats_buf[i, 6] = int(st.get("base_ff_stat", 0))
+        stats_active = stats_buf[:n_genomes, :7]
         _t_up0 = time.perf_counter() if want_xfer_stats else 0.0
-        gem_fields.genome_base_stats.from_numpy(stats_buf)
+        gem_fields.genome_base_stats.from_numpy(stats_active)
         if _t_up0:
-            _record_upload("genome_base_stats(packed_tasks)", time.perf_counter() - _t_up0, _bytes_of_array(stats_buf))
+            _record_upload(
+                "genome_base_stats(packed_tasks)",
+                time.perf_counter() - _t_up0,
+                _bytes_of_array(stats_active),
+            )
         try:
             if isinstance(genome_stats_list, np.ndarray):
                 ptr = int(genome_stats_list.__array_interface__["data"][0])

@@ -1,3 +1,6 @@
+import pytest
+
+from gear_optimizer.core.fallback_monitor import FallbackViolation
 from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequest, GpuRequestType, GpuResponse
 
 
@@ -47,7 +50,7 @@ def test_fused_requests_route_through_bounded_batch_coalescer() -> None:
     assert [r.result for r in out] == [{"rid": 101}, {"rid": 102}, {"rid": 103}]
 
 
-def test_fused_requests_fallback_for_invalid_payload() -> None:
+def test_fused_requests_fail_fast_for_invalid_payload() -> None:
     ex = _mk_executor()
     fallback_ids: list[int] = []
 
@@ -83,6 +86,6 @@ def test_fused_requests_fallback_for_invalid_payload() -> None:
         ),
     ]
 
-    out = ex._coalesce_ga_fg_fused_requests(reqs)
-    assert [r.result for r in out] == [{"rid": 201}, {"fallback": 202}]
-    assert fallback_ids == [202]
+    with pytest.raises(FallbackViolation, match="gpu_executor.ga_fg_fused_coalesce.request"):
+        ex._coalesce_ga_fg_fused_requests(reqs)
+    assert fallback_ids == []

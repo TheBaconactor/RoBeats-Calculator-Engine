@@ -13,8 +13,9 @@ Key optimizations:
 """
 
 from dataclasses import dataclass
-from typing import Optional, Callable
+from typing import Any, Callable, Optional
 
+import numpy as np
 
 from ..base_stats import build_base_fixed_stats_array
 from ...core.constants import (
@@ -64,7 +65,7 @@ class GpuBatchEvalPlan:
     unique_members: list
 
     # GPU request payload parts
-    genome_stats_list: list
+    genome_stats_list: Any
     flags: dict
 
 
@@ -190,8 +191,9 @@ def prepare_gpu_batch_eval_plan(
     user_fm = cfg_data["user_fm"]
     static_elem_input = cfg_data["static_elem_input"]
 
-    genome_stats_list = []
-    for _unique_idx, (sig, stats) in enumerate(unique_stats):
+    n_unique = len(unique_stats)
+    genome_stats_np = np.empty((n_unique, 7), dtype=np.int16)
+    for unique_idx, (_sig, stats) in enumerate(unique_stats):
         base_pp = stats.get("Perfect Points", 0) - user_pp * GEM_SCALE_NORMAL
         base_cm = stats.get("Combo Multiplier", 0) - user_cm * GEM_SCALE_NORMAL
         base_fm = stats.get("Fever Multiplier", 0) - user_fm * GEM_SCALE_FEVER
@@ -225,17 +227,13 @@ def prepare_gpu_batch_eval_plan(
         base_p_val = color_vals.get(p_color, 0)
         base_s_val = color_vals.get(s_color, 0)
 
-        genome_stats_list.append(
-            {
-                "base_pp": int(base_pp),
-                "base_cm": int(base_cm),
-                "base_fm": int(base_fm),
-                "base_p_val": int(base_p_val),
-                "base_s_val": int(base_s_val),
-                "base_ft_stat": int(base_ft_stat),
-                "base_ff_stat": int(base_ff_stat),
-            }
-        )
+        genome_stats_np[unique_idx, 0] = int(base_pp)
+        genome_stats_np[unique_idx, 1] = int(base_cm)
+        genome_stats_np[unique_idx, 2] = int(base_fm)
+        genome_stats_np[unique_idx, 3] = int(base_p_val)
+        genome_stats_np[unique_idx, 4] = int(base_s_val)
+        genome_stats_np[unique_idx, 5] = int(base_ft_stat)
+        genome_stats_np[unique_idx, 6] = int(base_ff_stat)
 
     flags = build_color_flags(p_color, s_color, sel_color)
 
@@ -257,7 +255,7 @@ def prepare_gpu_batch_eval_plan(
         sig_to_result=sig_to_result,
         unique_stats=unique_stats,
         unique_members=unique_members,
-        genome_stats_list=genome_stats_list,
+        genome_stats_list=genome_stats_np,
         flags=flags,
     )
     return plan, None
