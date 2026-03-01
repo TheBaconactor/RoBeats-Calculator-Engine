@@ -1007,10 +1007,19 @@ def save_team_buff_loadouts_batch(
                 out["details"] = det_out
         return out
 
+    entry_color_cache: Dict[int, tuple[str, str, str]] = {}
+
     def _extract_entry_colors(entry: Dict[str, Any]) -> tuple[str, str, str]:
+        entry_id = int(id(entry))
+        cached = entry_color_cache.get(entry_id)
+        if cached is not None:
+            return cached
+
         p_color, s_color, sel_color = extract_song_colors(entry.get("details", {}))
         if p_color or s_color:
-            return (p_color, s_color, sel_color)
+            out = (p_color, s_color, sel_color)
+            entry_color_cache[entry_id] = out
+            return out
 
         force_data = entry.get("force")
         if isinstance(force_data, dict):
@@ -1018,13 +1027,19 @@ def save_team_buff_loadouts_batch(
             if isinstance(nested, dict):
                 p2, s2, sel2 = extract_song_colors(nested)
                 if p2 or s2:
-                    return (p2, s2, sel2 or sel_color)
+                    out = (p2, s2, sel2 or sel_color)
+                    entry_color_cache[entry_id] = out
+                    return out
 
             p2, s2, sel2 = extract_song_colors(force_data)
             if p2 or s2:
-                return (p2, s2, sel2 or sel_color)
+                out = (p2, s2, sel2 or sel_color)
+                entry_color_cache[entry_id] = out
+                return out
 
-        return (p_color, s_color, sel_color)
+        out = (p_color, s_color, sel_color)
+        entry_color_cache[entry_id] = out
+        return out
 
     # Keep effective mini hashing active even when some incoming entries omit colors
     # (legacy/details-lite payloads). Song colors are stable per song, so borrowing
