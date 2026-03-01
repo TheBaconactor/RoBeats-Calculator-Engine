@@ -569,6 +569,7 @@ def _ensure_stats_in_details(
         "db.ensure_stats",
         "details missing Stats, reconstructing stats for persistence",
         context={"team_buff": team_buff or "", "team_color": team_color or ""},
+        fatal=False,
     )
 
     try:
@@ -1006,12 +1007,31 @@ def save_team_buff_loadouts_batch(
                 out["details"] = det_out
         return out
 
+    def _extract_entry_colors(entry: Dict[str, Any]) -> tuple[str, str, str]:
+        p_color, s_color, sel_color = extract_song_colors(entry.get("details", {}))
+        if p_color or s_color:
+            return (p_color, s_color, sel_color)
+
+        force_data = entry.get("force")
+        if isinstance(force_data, dict):
+            nested = force_data.get("details")
+            if isinstance(nested, dict):
+                p2, s2, sel2 = extract_song_colors(nested)
+                if p2 or s2:
+                    return (p2, s2, sel2 or sel_color)
+
+            p2, s2, sel2 = extract_song_colors(force_data)
+            if p2 or s2:
+                return (p2, s2, sel2 or sel_color)
+
+        return (p_color, s_color, sel_color)
+
     # Keep effective mini hashing active even when some incoming entries omit colors
     # (legacy/details-lite payloads). Song colors are stable per song, so borrowing
     # from another entry or an existing DB row is safe and prevents duplicate rows.
     song_color_fallback: Optional[tuple[str, str, str]] = None
     for entry in entries:
-        p_color, s_color, sel_color = extract_song_colors(entry.get("details", {}))
+        p_color, s_color, sel_color = _extract_entry_colors(entry)
         if p_color or s_color:
             song_color_fallback = (p_color, s_color, sel_color)
             break
@@ -1047,6 +1067,7 @@ def save_team_buff_loadouts_batch(
                             "primary": p_color,
                             "secondary": s_color,
                         },
+                        fatal=False,
                     )
                     break
         except sqlite3.Error:
@@ -1066,8 +1087,7 @@ def save_team_buff_loadouts_batch(
     def _effective_hash_for_entry(entry: Dict[str, Any]) -> Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]:
         gear_names_local = _compact_gear_for_db(entry.get("gear", []))
         mini_names_local = _compact_minis_for_db(entry.get("minis", []))
-        details_local = entry.get("details", {})
-        p_color, s_color, sel_color = extract_song_colors(details_local)
+        p_color, s_color, sel_color = _extract_entry_colors(entry)
         if (not p_color and not s_color) and song_color_fallback is not None:
             p_color, s_color, fallback_sel = song_color_fallback
             if not sel_color:
@@ -1100,6 +1120,7 @@ def save_team_buff_loadouts_batch(
                 "db.hash.raw_names",
                 "missing song color metadata; using raw name hash fallback",
                 context={"song_name": song_name, "team_buff": team_buff},
+                fatal=False,
             )
             h = _loadout_hash_from_names(
                 _compact_gear_for_db(entry.get("gear", [])), _compact_minis_for_db(entry.get("minis", []))
@@ -1156,6 +1177,25 @@ def save_team_buff_loadouts_batch(
             details = entry.get("details", {})
             force_data = entry.get("force")
 
+            eff = entry_to_effective.get(i)
+            if eff is not None and isinstance(details, dict):
+                (_loadout_hash_eff, _mini_sigs_eff, p_color_eff, s_color_eff, sel_color_eff) = eff
+                if (
+                    (p_color_eff or s_color_eff)
+                    and not (details.get("PrimaryColor") or details.get("Primary Color"))
+                    and not (details.get("SecondaryColor") or details.get("Secondary Color"))
+                ):
+                    details_out = dict(details)
+                    if p_color_eff:
+                        details_out["PrimaryColor"] = p_color_eff
+                    if s_color_eff:
+                        details_out["SecondaryColor"] = s_color_eff
+                    if sel_color_eff and not (
+                        details_out.get("SelectedElement") or details_out.get("Selected Element")
+                    ):
+                        details_out["SelectedElement"] = sel_color_eff
+                    details = details_out
+
             # Defensive: ensure Stats are populated in details
             # If Stats is missing or empty, compute it from loadout components
             current_stats = details.get("Stats") if isinstance(details, dict) else None
@@ -1179,7 +1219,6 @@ def save_team_buff_loadouts_batch(
             gear_names = _compact_gear_for_db(gear)
             mini_names = _compact_minis_for_db(minis)
 
-            eff = entry_to_effective.get(i)
             if eff is not None:
                 (loadout_hash, _mini_sigs, p_color, s_color, sel_color) = eff
                 groups = canonical_minis_groups_from_names(
@@ -1196,6 +1235,7 @@ def save_team_buff_loadouts_batch(
                     "db.minis_json.singletons",
                     "effective mini grouping unavailable; persisting singleton mini groups",
                     context={"song_name": song_name, "team_buff": team_buff},
+                    fatal=False,
                 )
                 loadout_hash = _loadout_hash_from_names(gear_names, mini_names)
                 minis_json = _json_dumps_compact([[n] for n in mini_names])
