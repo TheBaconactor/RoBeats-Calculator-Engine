@@ -114,6 +114,8 @@ def test_db_roundtrip_force_greats_manual_score_is_self_consistent():
         "FT": int(res.get("FT", 0)),
         "FF": int(res.get("FF", 0)),
         "Selected Element": str(res.get("Selected Element", "")),
+        "PrimaryColor": str(calc_song["metadata"].get("Primary Color", "")),
+        "SecondaryColor": str(calc_song["metadata"].get("Secondary Color", "")),
     }
     force_data = {"ForceGreats": {"mode": "manual", "config": fg_eval["config_dict"]}}
 
