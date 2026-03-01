@@ -5,7 +5,7 @@ This benchmarks the modern GPU solver APIs:
 1. solve_genomes_with_ftff: GPU-resident FT/FF iteration
 2. solve_genomes_parallel: CPU work-item generation + GPU reduction
 
-The legacy optimize_gems_batch_gpu() API has been removed.
+The legacy batch gem solver API has been removed.
 """
 
 from __future__ import annotations

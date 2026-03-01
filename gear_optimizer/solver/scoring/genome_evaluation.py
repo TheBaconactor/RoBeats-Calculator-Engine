@@ -609,7 +609,7 @@ def batch_evaluate_genomes(
 
                 if registry is not None:
                     # GPU-resident aggregation path: encode representative genomes and aggregate stats on GPU.
-                    from ..taichi_gem.api import (
+                    from ..taichi_gem_solver import (
                         ga_upload_base_fixed_stats,
                         ga_upload_item_stats,
                         solve_genomes_from_registry,

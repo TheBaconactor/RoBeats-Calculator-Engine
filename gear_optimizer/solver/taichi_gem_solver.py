@@ -69,6 +69,44 @@ def solve_genomes_parallel(*args, **kwargs):
     return _impl(*args, **kwargs)
 
 
+# ---------------------------------------------------------------------------
+# Internal helpers (intentionally not part of the stable import surface)
+# ---------------------------------------------------------------------------
+
+
+def ga_upload_item_stats(*args, **kwargs):
+    """Upload ItemRegistry stats arrays for GPU-resident aggregation paths."""
+    from .gpu_executor import is_gpu_worker_mode
+
+    if is_gpu_worker_mode():
+        raise RuntimeError("ga_upload_item_stats is not supported in GPU worker mode")
+    from .taichi_gem.api import ga_upload_item_stats as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def ga_upload_base_fixed_stats(*args, **kwargs):
+    """Upload base fixed stats array for GPU-resident aggregation paths."""
+    from .gpu_executor import is_gpu_worker_mode
+
+    if is_gpu_worker_mode():
+        raise RuntimeError("ga_upload_base_fixed_stats is not supported in GPU worker mode")
+    from .taichi_gem.api import ga_upload_base_fixed_stats as _impl
+
+    return _impl(*args, **kwargs)
+
+
+def solve_genomes_from_registry(*args, **kwargs):
+    """Solve gem allocation using GPU-resident stat aggregation via population indices."""
+    from .gpu_executor import is_gpu_worker_mode
+
+    if is_gpu_worker_mode():
+        raise RuntimeError("solve_genomes_from_registry is not supported in GPU worker mode")
+    from .taichi_gem.api import solve_genomes_from_registry as _impl
+
+    return _impl(*args, **kwargs)
+
+
 # Compatibility convenience: some code may have imported FG solver from the facade.
 # We intentionally keep it out of __all__ (since it's not part of the stable surface),
 # but it remains available as an attribute.
