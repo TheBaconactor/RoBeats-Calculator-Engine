@@ -39,7 +39,6 @@ from gear_optimizer.helpers.song_helpers.fg_combo_booster import (
 )
 from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
 from gear_optimizer.helpers.song_helpers.loadout_builder import (
-    build_loadout_entries,
     merge_db_loadouts_into_entries,
     refresh_ga_candidate_entries,
 )

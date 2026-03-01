@@ -924,7 +924,6 @@ class GearOptimizerApp:
 
         resume_seed_queue: list[tuple[str, str, str]] = []
         resume_names_present: set[str] = set()
-        resume_names_present_loaded = False
         ignore_resume = False
         try:
             ignore_resume = cfg.getboolean("IterationEngine", "IgnoreResumeQueue", fallback=False)
@@ -940,7 +939,6 @@ class GearOptimizerApp:
                 if use_evo_db:
                     try:
                         resume_names_present = _lookup_song_presence((item[1] for item in resume_seed_queue))
-                        resume_names_present_loaded = True
                         if resume_names_present:
                             resume_missing: list[tuple[str, str, str]] = []
                             resume_existing: list[tuple[str, str, str]] = []

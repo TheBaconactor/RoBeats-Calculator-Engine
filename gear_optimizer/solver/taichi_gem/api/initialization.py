@@ -21,7 +21,6 @@ from ..runtime import reset_taichi as _reset_taichi_runtime
 from ..fields import (
     GRID_SIZE,
     MAX_WORK_ITEMS,
-    MAX_HEAD_NOTES,
     MAX_GENOMES,
     ensure_fields_allocated,
     ensure_grid_fields_allocated,

@@ -193,12 +193,10 @@ def reset_fields_state() -> None:
         fg_cfg_start_list, \
         fg_cfg_len_list, \
         fg_cfg_total_len_list
-    global fg_cfg_total_len_list
     global fg_cfg_base_list, fg_cfg_mode_list, fg_cfg_max_fp
     global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx
     global fg_best_ft, fg_best_ff, fg_best_g_pp, fg_best_g_cm, fg_best_g_fm, fg_best_g_ov
     global fg_best_score_penalty, fg_best_fill_penalty, fg_best_cfg_counts, fg_best_packed
-    global fg_best_packed_download_staging_256, fg_best_packed_download_staging_1024
     global fg_best_packed_download_staging_256, fg_best_packed_download_staging_1024
     global fg_global_best_packed_download_staging_256, fg_global_best_packed_download_staging_1024
     global fg_stage1_packed, fg_stage1_wave_best
@@ -400,11 +398,13 @@ def allocate_fields() -> None:
     global fg_best_final_score, fg_best_base_score, fg_best_cfg_idx, fg_best_ft, fg_best_ff
     global fg_best_g_pp, fg_best_g_cm, fg_best_g_fm, fg_best_g_ov
     global fg_best_score_penalty, fg_best_fill_penalty, fg_best_cfg_counts, fg_best_packed
+    global fg_best_packed_download_staging_256, fg_best_packed_download_staging_1024
     global fg_stage1_final_score, fg_stage1_base_score, fg_stage1_cfg_idx
     global fg_stage1_g_pp, fg_stage1_g_cm, fg_stage1_g_fm, fg_stage1_g_ov
     global fg_stage1_score_penalty, fg_stage1_fill_penalty
     global fg_stage1_packed, fg_stage1_wave_best
     global fg_flat_work_genome, fg_flat_work_ftff
+    global fg_global_best_packed_download_staging_256, fg_global_best_packed_download_staging_1024
     global _fields_allocated
 
     if _fields_allocated:

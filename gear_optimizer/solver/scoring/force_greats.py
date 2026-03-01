@@ -42,7 +42,7 @@ from ..scoring_core import (
     optimize_core_jit,
 )
 
-from .gpu_solver import _GPU_LOCK, FORCE_GREATS_ALGO_VERSION, FG_CACHE
+from .gpu_solver import FORCE_GREATS_ALGO_VERSION, FG_CACHE
 from .stats_scoring import build_great_penalty_table, _force_greats_counts_to_dict, _song_cache_key
 from .stats_ops import apply_gems_to_base_stats
 
@@ -656,10 +656,6 @@ def evaluate_fg_with_gem_iteration(
     is_s_cm = flags["is_s_cm"]
     is_p_fm = flags["is_p_fm"]
     is_s_fm = flags["is_s_fm"]
-    is_p_ft = flags["is_p_ft"]
-    is_s_ft = flags["is_s_ft"]
-    is_p_ff = flags["is_p_ff"]
-    is_s_ff = flags["is_s_ff"]
     is_p_ov = flags["is_p_ov"]
     is_s_ov = flags["is_s_ov"]
 
@@ -671,10 +667,6 @@ def evaluate_fg_with_gem_iteration(
     base_ft_stat = base_stats.get("Fever Time", 0)
     base_beat = base_stats.get("Beat", 0)
     base_vibe = base_stats.get("Vibe", 0)
-
-    # Base elemental values for GPU solver (kernel adds FT/FF elemental contributions)
-    base_p_val_for_gpu = base_stats.get(p_color, 0)
-    base_s_val_for_gpu = base_stats.get(s_color, 0)
 
     non_fever_cas = max(0.0, (total_notes - long_notes) * 0.333)
     force_counts = list(forced_counts or [])

@@ -3,12 +3,11 @@ from __future__ import annotations
 import random
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
 from .gpu_witness_pool import build_witness_offsets_gpu
-from .keys import OV_INDEX
 from .wildcard_palette import learn_wildcard_palette
 
 try:
