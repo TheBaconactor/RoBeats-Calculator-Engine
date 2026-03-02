@@ -650,6 +650,79 @@ def _read_fg_slot_reserve(
     return max(1, min(int(reserve), int(reserve_cap)))
 
 
+def _read_inflight_event_wait_timeout_s() -> float:
+    """
+    Base scheduler wait timeout when waiting for in-flight futures to complete.
+
+    Keep this modest to avoid long producer wake-up delays that can starve the
+    GPU owner thread between GA/FG stage transitions.
+    """
+    timeout_s = 0.05
+    raw = os.environ.get("INFLIGHT_EVENT_WAIT_TIMEOUT_SEC")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            timeout_s = float(raw)
+        except Exception:
+            pass
+    return max(0.001, min(float(timeout_s), 5.0))
+
+
+def _read_inflight_event_wait_gpu_cap_s() -> float:
+    """
+    Optional tighter cap for wait timeout while GPU work is active.
+
+    A small cap reduces GA->FG handoff latency jitter under Windows scheduler/timer noise.
+    Set to 0 to disable this cap.
+    """
+    timeout_s = 0.01
+    raw = os.environ.get("INFLIGHT_EVENT_WAIT_GPU_CAP_SEC")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            timeout_s = float(raw)
+        except Exception:
+            pass
+    return max(0.0, min(float(timeout_s), 1.0))
+
+
+def _read_inflight_event_wait_short_spin_s() -> float:
+    """
+    Short-window polling threshold for completion-event waits.
+
+    For very small waits, poll with zero-timeout checks to avoid coarse timed-wait
+    quantization from stretching sub-ms/ms windows into multi-ms idle bubbles.
+    """
+    short_spin_ms = 3.0
+    raw = os.environ.get("INFLIGHT_EVENT_WAIT_SHORT_SPIN_MS")
+    if raw is not None and str(raw).strip() != "":
+        try:
+            short_spin_ms = float(raw)
+        except Exception:
+            pass
+    return max(0.0, min(float(short_spin_ms) / 1000.0, 0.050))
+
+
+def _wait_for_completion_event(
+    completion_event: threading.Event,
+    *,
+    timeout_s: float,
+    short_spin_s: float,
+) -> bool:
+    wait_timeout = max(0.0, float(timeout_s))
+    if wait_timeout <= 0.0:
+        return bool(completion_event.wait(timeout=0.0))
+
+    if wait_timeout > max(0.0, float(short_spin_s)):
+        return bool(completion_event.wait(timeout=wait_timeout))
+
+    deadline = time.perf_counter() + wait_timeout
+    while True:
+        if completion_event.wait(timeout=0.0):
+            return True
+        if time.perf_counter() >= deadline:
+            return False
+        time.sleep(0)
+
+
 def _continuous_fg_should_start(
     *,
     pending_fg_count: int,
@@ -2037,12 +2110,9 @@ def run_native_inflight_song_pipeline(
         except Exception:
             stage_emit_sec = 0.0
 
-        event_wait_timeout_s = 0.25
-        try:
-            event_wait_timeout_s = float(os.environ.get("INFLIGHT_EVENT_WAIT_TIMEOUT_SEC", "0.25") or "0.25")
-        except Exception:
-            event_wait_timeout_s = 0.25
-        event_wait_timeout_s = max(0.001, min(float(event_wait_timeout_s), 5.0))
+        event_wait_timeout_s = float(_read_inflight_event_wait_timeout_s())
+        event_wait_gpu_cap_s = float(_read_inflight_event_wait_gpu_cap_s())
+        event_wait_short_spin_s = float(_read_inflight_event_wait_short_spin_s())
 
         profile_max_songs = 0
         try:
@@ -3106,14 +3176,27 @@ def run_native_inflight_song_pipeline(
                     has_cpu = bool(prep_inflight) or bool(decode_inflight) or bool(fg_prep_inflight)
                     for fut in wait_futures:
                         _register_completion_future(fut)
+                    # Clear before probing `.done()` to avoid losing a completion signal that
+                    # can fire between an `already_done` check and a later `clear()`.
+                    # (That race can inject avoidable scheduler sleeps and GPU idle gaps.)
+                    try:
+                        completion_event.clear()
+                    except Exception:
+                        pass
                     already_done = False
                     try:
                         already_done = any(f.done() for f in wait_futures)
                     except Exception:
                         already_done = False
                     if not already_done:
-                        completion_event.wait(timeout=float(event_wait_timeout_s))
-                    completion_event.clear()
+                        wait_timeout_s = float(event_wait_timeout_s)
+                        if has_gpu and float(event_wait_gpu_cap_s) > 0.0:
+                            wait_timeout_s = min(float(wait_timeout_s), float(event_wait_gpu_cap_s))
+                        _wait_for_completion_event(
+                            completion_event,
+                            timeout_s=float(wait_timeout_s),
+                            short_spin_s=float(event_wait_short_spin_s),
+                        )
                     dt_wait = time.perf_counter() - t_wait
                     stage_profiler.record("main_wait", dt_wait)
                     if (not has_gpu) and has_cpu:

@@ -1,5 +1,6 @@
 import configparser
 
+import gear_optimizer.solver.native_inflight_orchestrator as native_orch
 from gear_optimizer.solver.native_inflight_orchestrator import (
     _continuous_fg_submit_budget,
     _continuous_fg_should_start,
@@ -8,6 +9,10 @@ from gear_optimizer.solver.native_inflight_orchestrator import (
     _read_fg_ga_credit_budget,
     _read_fg_scheduler_mode,
     _read_fg_slot_reserve,
+    _read_inflight_event_wait_gpu_cap_s,
+    _read_inflight_event_wait_short_spin_s,
+    _read_inflight_event_wait_timeout_s,
+    _wait_for_completion_event,
 )
 
 
@@ -247,3 +252,63 @@ def test_continuous_fg_submit_budget_honors_end_of_run_drain():
         )
         is False
     )
+
+
+def test_read_inflight_event_wait_settings_defaults_and_overrides(monkeypatch):
+    monkeypatch.delenv("INFLIGHT_EVENT_WAIT_TIMEOUT_SEC", raising=False)
+    monkeypatch.delenv("INFLIGHT_EVENT_WAIT_GPU_CAP_SEC", raising=False)
+    monkeypatch.delenv("INFLIGHT_EVENT_WAIT_SHORT_SPIN_MS", raising=False)
+
+    assert abs(_read_inflight_event_wait_timeout_s() - 0.05) < 1e-9
+    assert abs(_read_inflight_event_wait_gpu_cap_s() - 0.01) < 1e-9
+    assert abs(_read_inflight_event_wait_short_spin_s() - 0.003) < 1e-9
+
+    monkeypatch.setenv("INFLIGHT_EVENT_WAIT_TIMEOUT_SEC", "9.0")
+    monkeypatch.setenv("INFLIGHT_EVENT_WAIT_GPU_CAP_SEC", "-1")
+    monkeypatch.setenv("INFLIGHT_EVENT_WAIT_SHORT_SPIN_MS", "100")
+
+    assert abs(_read_inflight_event_wait_timeout_s() - 5.0) < 1e-9
+    assert abs(_read_inflight_event_wait_gpu_cap_s() - 0.0) < 1e-9
+    assert abs(_read_inflight_event_wait_short_spin_s() - 0.05) < 1e-9
+
+
+def test_wait_for_completion_event_short_timeout_uses_zero_timeout_poll(monkeypatch):
+    class _RecordingEvent:
+        def __init__(self):
+            self.waits: list[float] = []
+
+        def wait(self, timeout=None):
+            self.waits.append(float(timeout))
+            return False
+
+    event = _RecordingEvent()
+    perf_values = iter((0.0000, 0.0000, 0.0040))
+
+    def _fake_perf_counter():
+        try:
+            return next(perf_values)
+        except StopIteration:
+            return 0.0040
+
+    monkeypatch.setattr(native_orch.time, "perf_counter", _fake_perf_counter)
+    monkeypatch.setattr(native_orch.time, "sleep", lambda _t: None)
+
+    done = _wait_for_completion_event(event, timeout_s=0.003, short_spin_s=0.005)
+    assert done is False
+    assert event.waits
+    assert all(abs(w - 0.0) < 1e-12 for w in event.waits)
+
+
+def test_wait_for_completion_event_long_timeout_uses_direct_wait():
+    class _RecordingEvent:
+        def __init__(self):
+            self.waits: list[float] = []
+
+        def wait(self, timeout=None):
+            self.waits.append(float(timeout))
+            return False
+
+    event = _RecordingEvent()
+    done = _wait_for_completion_event(event, timeout_s=0.02, short_spin_s=0.003)
+    assert done is False
+    assert event.waits == [0.02]
