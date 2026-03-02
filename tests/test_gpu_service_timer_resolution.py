@@ -1,4 +1,5 @@
 import queue
+from concurrent.futures import Future
 
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 
@@ -42,3 +43,34 @@ def test_fg_coalesce_timer_period_lifecycle(monkeypatch):
 
     assert calls["release"] == 1
     assert client._fg_high_res_timer_enabled is False
+
+
+def test_fg_coalesce_loop_uses_sub_ms_remaining_window(monkeypatch):
+    client = GpuServiceClient(executor=_DummyExecutor())
+    client._running = True
+    client._in_process_queues = True
+    client._fg_coalesce_enabled = True
+    client._fg_coalesce_max_wait_ms = 1
+    client._fg_coalesce_payloads = [{"payload": 1}]
+    client._fg_coalesce_slices = [(Future(), 0, 1, 0.0)]
+    client._fg_coalesce_first_ts = 0.0
+
+    waits: list[float] = []
+
+    class _RecordingEvent:
+        def wait(self, timeout=None):
+            waits.append(float(timeout))
+            client._running = False
+            return False
+
+        def clear(self):
+            return None
+
+    client._fg_coalesce_event = _RecordingEvent()
+
+    monkeypatch.setattr("gear_optimizer.solver.gpu_service.time.perf_counter", lambda: 0.00095)
+
+    client._fg_coalesce_loop()
+
+    assert len(waits) == 1
+    assert 0.0 <= waits[0] < 0.001

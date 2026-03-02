@@ -554,7 +554,10 @@ class GpuServiceClient:
                     if max_wait <= 0.0 or (now - float(self._fg_coalesce_first_ts)) >= max_wait:
                         batch = self._pop_fg_coalesce_locked()
                     else:
-                        wait_sec = max(0.001, max_wait - (now - float(self._fg_coalesce_first_ts)))
+                        # Keep the coalescing window precise in in-process mode.
+                        # A hard 1ms floor here can inflate a sub-ms remaining window
+                        # into ~1ms+, introducing avoidable GPU idle bubbles.
+                        wait_sec = max(0.0, max_wait - (now - float(self._fg_coalesce_first_ts)))
                 else:
                     self._fg_coalesce_event.clear()
 

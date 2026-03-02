@@ -2114,7 +2114,7 @@ class GpuExecutor:
                     # repeatedly (FG tasks, registry solves, and multi-solve batches). For those, allow a
                     # short coalescing window so we can meaningfully batch/coalesce work.
                     if len(batch) == 0:
-                        timeout = 0.0 if int(max_wait_ms) <= 0 else max(0.001, remaining)
+                        timeout = 0.0 if int(max_wait_ms) <= 0 else max(0.0, float(remaining))
                     else:
                         if not inproc_coalesce_enabled:
                             timeout = 0.0
@@ -2129,7 +2129,9 @@ class GpuExecutor:
                             if int(max_wait_ms) <= 0:
                                 timeout = 0.0
                             else:
-                                timeout = max(0.001, remaining) if allow_coalesce else 0.0
+                                # Avoid a hard 1ms floor in in-process mode. The floor can inject
+                                # avoidable sub-ms → 1ms bubbles between back-to-back GPU batches.
+                                timeout = max(0.0, float(remaining)) if allow_coalesce else 0.0
                 else:
                     timeout = max(0.001, remaining) if len(batch) > 0 else 0.1
                 request = self._request_queue.get(timeout=timeout)
