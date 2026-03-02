@@ -664,7 +664,18 @@ def solve_genomes_from_registry(
         raise ValueError(f"Too many genomes: {n_genomes} > {MAX_GENOMES}")
 
     # Upload population indices (only ~150KB vs building/uploading genome_stats)
-    ga_upload_population_indices(population_indices, n_slots=9)
+    if _profiler.enabled:
+        _t_upload = time.perf_counter()
+        n_uploaded = int(ga_upload_population_indices(population_indices, n_slots=9) or 0)
+        _maybe_sync(for_timing=True)
+        _profiler.record_upload(
+            time.perf_counter() - _t_upload,
+            bytes_count=int(max(0, n_uploaded) * 9 * 4),
+        )
+        _t_kernel = time.perf_counter()
+    else:
+        ga_upload_population_indices(population_indices, n_slots=9)
+        _t_kernel = None
 
     # GPU-native eval:
     # - Fused aggregate + best-key init
@@ -710,25 +721,22 @@ def solve_genomes_from_registry(
         int(song_slot),
     )
 
+    if _profiler.enabled and _SYNC_FOR_TIMING and _t_kernel is not None:
+        _maybe_sync(for_timing=True)
+        _profiler.record_kernel(time.perf_counter() - float(_t_kernel), genome_count=int(n_genomes))
+
     # Download only the active result prefix (uses staging field when available).
+    _maybe_sync(for_timing=False)  # Single sync before download (respects sync policy)
+    _t_download = time.perf_counter()
     results_np = ga_download_results(int(n_genomes))
+    if _profiler.enabled:
+        try:
+            download_bytes = int(results_np.nbytes)
+        except Exception:
+            download_bytes = 0
+        _profiler.record_download(time.perf_counter() - _t_download, bytes_count=download_bytes)
 
-    results = []
-    for i in range(n_genomes):
-        row = results_np[i]
-        results.append(
-            (
-                int(row[0]),  # score
-                int(row[1]),  # ft
-                int(row[2]),  # ff
-                int(row[3]),  # pp
-                int(row[4]),  # cm
-                int(row[5]),  # fm
-                int(row[6]),  # ov
-            )
-        )
-
-    return results
+    return _results_from_stats(results_np, n_genomes)
 
 
 def solve_genomes_parallel_merged(
