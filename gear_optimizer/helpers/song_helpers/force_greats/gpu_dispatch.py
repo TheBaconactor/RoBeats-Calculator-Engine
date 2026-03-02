@@ -1675,28 +1675,43 @@ def process_force_greats_gpu_finder(
 
                     if gpu_client is not None:
                         # Ensure the timeline grid for this song_slot is ready (grid_gap/grid_fever_activations).
+                        #
+                        # IMPORTANT: never block (`.result()`) while holding `submit_lock`. That lock is global
+                        # across in-flight songs and can stall unrelated producers, starving the GPU queue and
+                        # creating visible utilization dips.
                         nonlocal timeline_precompute_queued
-                        if not timeline_precompute_queued:
-                            try:
-                                with gpu_client.submit_lock:
-                                    gpu_client.submit_precompute_timeline(
-                                        calc_song=calc_song,
-                                        ref_arrays=ref_arrays,
-                                        song_slot=int(song_slot),
-                                    ).future.result()
-                                    timeline_precompute_queued = True
-                            except Exception:
-                                timeline_precompute_queued = True
-
-                        fut = gpu_client.submit_fg_compute_breakpoints(
-                            ftff_pairs=ftff_pairs_submit,
-                            base_stats_pairs=base_pairs_submit,
-                            n_sections=int(n_sections),
-                            song_slot=int(song_slot),
-                            gem_scale_fever=int(GEM_SCALE_FEVER),
-                            non_fever_base_by_ff=non_fever_base_by_ff,
-                            fp_cap_table=fp_cap_table,
-                        ).future
+                        fut = None
+                        try:
+                            with gpu_client.submit_lock:
+                                if not timeline_precompute_queued:
+                                    try:
+                                        gpu_client.submit_precompute_timeline(
+                                            calc_song=calc_song,
+                                            ref_arrays=ref_arrays,
+                                            song_slot=int(song_slot),
+                                        )
+                                    finally:
+                                        timeline_precompute_queued = True
+                                fut = gpu_client.submit_fg_compute_breakpoints(
+                                    ftff_pairs=ftff_pairs_submit,
+                                    base_stats_pairs=base_pairs_submit,
+                                    n_sections=int(n_sections),
+                                    song_slot=int(song_slot),
+                                    gem_scale_fever=int(GEM_SCALE_FEVER),
+                                    non_fever_base_by_ff=non_fever_base_by_ff,
+                                    fp_cap_table=fp_cap_table,
+                                ).future
+                        except Exception:
+                            timeline_precompute_queued = True
+                            fut = gpu_client.submit_fg_compute_breakpoints(
+                                ftff_pairs=ftff_pairs_submit,
+                                base_stats_pairs=base_pairs_submit,
+                                n_sections=int(n_sections),
+                                song_slot=int(song_slot),
+                                gem_scale_fever=int(GEM_SCALE_FEVER),
+                                non_fever_base_by_ff=non_fever_base_by_ff,
+                                fp_cap_table=fp_cap_table,
+                            ).future
                         return fut.result() if blocking else fut
 
                     # Direct (non-executor) GPU path: call the kernel in-process.

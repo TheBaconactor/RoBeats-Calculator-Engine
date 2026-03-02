@@ -1604,10 +1604,13 @@ class GpuExecutor:
             except Exception:
                 return False
 
-        # After observing FG workload, briefly switch to zero-wait dequeue so bursts
-        # from local producers don't pay repeated batch-wait latency.
+        # After observing bursty workload, briefly switch to zero-wait dequeue so local
+        # producers don't pay repeated batch-wait latency. This is especially important
+        # in in-process mode where tiny timed waits can quantize into multi-ms bubbles
+        # under Windows scheduler jitter.
         fg_burst_until = 0.0
         fg_burst_request_types = {
+            GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
@@ -1733,19 +1736,14 @@ class GpuExecutor:
                 )
                 self._maybe_live_report()
 
+                saw_fg_work = False
                 if self._in_process_queues and int(fg_burst_window_ms) > 0 and batch:
-                    saw_fg_work = False
                     for req in batch:
                         if req.request_type == GpuRequestType.SHUTDOWN:
                             continue
                         if req.request_type in fg_burst_request_types:
                             saw_fg_work = True
                             break
-                    if saw_fg_work:
-                        fg_burst_until = max(
-                            float(fg_burst_until),
-                            perf_counter() + (float(fg_burst_window_ms) / 1000.0),
-                        )
 
                 if self._profile_enabled:
                     if float(dt_wait) >= float(self._idle_sample_threshold_sec):
@@ -2139,6 +2137,14 @@ class GpuExecutor:
 
                 if self._profile_enabled:
                     self._profile_last_work_end_ts = perf_counter()
+                if saw_fg_work and self._in_process_queues and int(fg_burst_window_ms) > 0:
+                    # Start the burst window *after* finishing the batch. The previous behavior anchored
+                    # the window at gather time, which can expire during long GPU kernels and fail to
+                    # suppress the very next coalesce-wait (the bubble we care about).
+                    fg_burst_until = max(
+                        float(fg_burst_until),
+                        perf_counter() + (float(fg_burst_window_ms) / 1000.0),
+                    )
                 batch_metrics["exec_sec"] = max(0.0, float(perf_counter() - batch_exec_t0))
                 self._record_workload_batch(batch_metrics)
 

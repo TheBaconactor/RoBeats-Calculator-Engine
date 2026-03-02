@@ -1685,6 +1685,22 @@ def run_native_inflight_song_pipeline(
     except Exception:
         pass
 
+    # Windows: short timed waits (0-10ms) can quantize into ~15.6ms bubbles when the system timer
+    # period is left at the default. Native in-flight mode is explicitly throughput-focused and
+    # benefits significantly from 1ms timer granularity in the GPU owner thread/coalescer.
+    #
+    # Keep this override opt-out: users can set `GPU_ALLOW_SYSTEM_TIMER_OVERRIDE=0` to disable.
+    try:
+        if os.name == "nt" and os.environ.get("GPU_ALLOW_SYSTEM_TIMER_OVERRIDE") is None:
+            os.environ["GPU_ALLOW_SYSTEM_TIMER_OVERRIDE"] = "1"
+            if _truthy(os.environ.get("PERF_TIMING", "0")):
+                print(
+                    "[InFlight][Perf] Enabled 1ms Windows timer period for GPU batching "
+                    "(set GPU_ALLOW_SYSTEM_TIMER_OVERRIDE=0 to disable)."
+                )
+    except Exception:
+        pass
+
     gpu_executor = get_gpu_executor()
     gpu_executor.start(in_process=True)
     gpu_client = GpuServiceClient(gpu_executor)
