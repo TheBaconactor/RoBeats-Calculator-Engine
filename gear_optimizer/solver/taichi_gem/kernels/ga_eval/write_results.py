@@ -140,7 +140,7 @@ def ga_write_best_results_from_key_kernel(
       - ga_scores[g] = score
 
     Both backends re-evaluate the winning FT/FF combo to materialize gem allocation.
-    This guarantees `genome_result_stats` is self-consistent even if packed-key and
+    This keeps `genome_result_stats` self-consistent even if packed-key and
     cached-allocation writes are observed at different times.
 
     Args:
@@ -151,8 +151,6 @@ def ga_write_best_results_from_key_kernel(
         song_slot: Grid slot for batch coalescing
     """
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    GEM_STAT_TO_ELEMENT: ti.i32 = 3
-    MAX_STAT: ti.i32 = 160
 
     for genome_idx in range(n_genomes):
         combo_idx = 0
@@ -161,10 +159,6 @@ def ga_write_best_results_from_key_kernel(
 
         if ti.static(not IS_METAL):
             best_key = kernels_helpers.chunk_best_key[genome_idx]
-            for t in ti.static(range(kernels_helpers.CHUNK_BEST_KEY_TILES)):
-                k = kernels_helpers.chunk_best_key_tiles[genome_idx, t]
-                if k > best_key:
-                    best_key = k
             if best_key != 0:
                 combo_idx = ti.cast(best_key & ti.u64(0xFFFFFFFF), ti.i32)
                 valid = True
@@ -178,8 +172,11 @@ def ga_write_best_results_from_key_kernel(
             kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([-1, 0, 0, 0, 0, 0, 0])
             kernels_helpers.ga_scores[genome_idx] = -1
             continue
+
         ft: ti.i32 = kernels_helpers.ftff_combo_ft[combo_idx]
         ff: ti.i32 = kernels_helpers.ftff_combo_ff[combo_idx]
+        GEM_STAT_TO_ELEMENT: ti.i32 = 3
+        MAX_STAT: ti.i32 = 160
         stats = kernels_helpers.genome_base_stats[genome_idx]
         base_pp: ti.i32 = stats[0]
         base_cm: ti.i32 = stats[1]
@@ -228,15 +225,20 @@ def ga_write_best_results_from_key_kernel(
         )
 
         score: ti.i32 = res_vec[0]
+        pp_gems: ti.i32 = res_vec[1]
+        cm_gems: ti.i32 = res_vec[2]
+        fm_gems: ti.i32 = res_vec[3]
+        ov_gems: ti.i32 = res_vec[4]
+
         kernels_helpers.genome_result_stats[genome_idx] = ti.Vector(
             [
                 score,
                 ft,
                 ff,
-                res_vec[1],  # pp gems
-                res_vec[2],  # cm gems
-                res_vec[3],  # fm gems
-                res_vec[4],  # ov gems
+                pp_gems,
+                cm_gems,
+                fm_gems,
+                ov_gems,
             ]
         )
         kernels_helpers.ga_scores[genome_idx] = score
@@ -289,8 +291,6 @@ def ga_write_best_and_update_global_kernel(
         song_slot: Grid slot for batch coalescing
     """
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    GEM_STAT_TO_ELEMENT: ti.i32 = 3
-    MAX_STAT: ti.i32 = 160
 
     for genome_idx in range(n_genomes):
         combo_idx = 0
@@ -299,10 +299,6 @@ def ga_write_best_and_update_global_kernel(
 
         if ti.static(not IS_METAL):
             best_key = kernels_helpers.chunk_best_key[genome_idx]
-            for t in ti.static(range(kernels_helpers.CHUNK_BEST_KEY_TILES)):
-                k = kernels_helpers.chunk_best_key_tiles[genome_idx, t]
-                if k > best_key:
-                    best_key = k
             if best_key != 0:
                 combo_idx = ti.cast(best_key & ti.u64(0xFFFFFFFF), ti.i32)
                 valid = True
@@ -326,6 +322,8 @@ def ga_write_best_and_update_global_kernel(
         fm_gems: ti.i32 = 0
         ov_gems: ti.i32 = 0
 
+        GEM_STAT_TO_ELEMENT: ti.i32 = 3
+        MAX_STAT: ti.i32 = 160
         # Load genome base stats: [pp, cm, fm, p_val, s_val, ft_stat, ff_stat]
         stats = kernels_helpers.genome_base_stats[genome_idx]
         base_pp: ti.i32 = stats[0]
@@ -467,8 +465,6 @@ def ga_write_best_and_store_hints_kernel(
     a segment of the population arrays and global best is computed during packing.
     """
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-    GEM_STAT_TO_ELEMENT: ti.i32 = 3
-    MAX_STAT: ti.i32 = 160
 
     for genome_idx in range(n_genomes):
         combo_idx = 0
@@ -477,10 +473,6 @@ def ga_write_best_and_store_hints_kernel(
 
         if ti.static(not IS_METAL):
             best_key = kernels_helpers.chunk_best_key[genome_idx]
-            for t in ti.static(range(kernels_helpers.CHUNK_BEST_KEY_TILES)):
-                k = kernels_helpers.chunk_best_key_tiles[genome_idx, t]
-                if k > best_key:
-                    best_key = k
             if best_key != 0:
                 combo_idx = ti.cast(best_key & ti.u64(0xFFFFFFFF), ti.i32)
                 valid = True
@@ -503,6 +495,8 @@ def ga_write_best_and_store_hints_kernel(
         fm_gems: ti.i32 = 0
         ov_gems: ti.i32 = 0
 
+        GEM_STAT_TO_ELEMENT: ti.i32 = 3
+        MAX_STAT: ti.i32 = 160
         stats = kernels_helpers.genome_base_stats[genome_idx]
         base_pp: ti.i32 = stats[0]
         base_cm: ti.i32 = stats[1]
