@@ -46,6 +46,72 @@ from gear_optimizer.core.types import JsonDict
 
 _ENV_GET = os.environ.get
 
+_WIN_TIMER_LOCK = threading.Lock()
+_WIN_TIMER_USERS = 0
+_WIN_TIMER_ACTIVE = False
+
+
+def _system_timer_override_allowed() -> bool:
+    """
+    Guard system-wide WinMM timer period changes behind an explicit opt-in.
+
+    `timeBeginPeriod(1)` affects the entire OS timer resolution while active in this process.
+    Keep this disabled by default to avoid unexpected system-wide side effects.
+    """
+    raw = str(os.environ.get("GPU_ALLOW_SYSTEM_TIMER_OVERRIDE", "0") or "").strip().lower()
+    return raw in TRUTHY_ENV_VALUES
+
+
+def _acquire_windows_timer_period_1ms() -> bool:
+    """
+    Request 1ms Windows timer granularity for low-latency executor batching.
+
+    The GPU executor uses short in-process `queue.get(timeout=...)` waits (often 0-2ms).
+    Without a 1ms timer period, Windows can quantize those waits to ~15.6ms, creating
+    avoidable GPU idle bubbles between back-to-back batches.
+
+    Scoped by reference counting so multiple executors can coexist safely.
+    """
+    if os.name != "nt":
+        return False
+    global _WIN_TIMER_USERS, _WIN_TIMER_ACTIVE
+    with _WIN_TIMER_LOCK:
+        _WIN_TIMER_USERS += 1
+        if _WIN_TIMER_ACTIVE:
+            return True
+        try:
+            import ctypes
+
+            mmres = int(ctypes.windll.winmm.timeBeginPeriod(1))
+            if mmres == 0:
+                _WIN_TIMER_ACTIVE = True
+                return True
+        except Exception:
+            pass
+        _WIN_TIMER_USERS = max(0, int(_WIN_TIMER_USERS) - 1)
+        return False
+
+
+def _release_windows_timer_period_1ms() -> None:
+    if os.name != "nt":
+        return
+    global _WIN_TIMER_USERS, _WIN_TIMER_ACTIVE
+    with _WIN_TIMER_LOCK:
+        if _WIN_TIMER_USERS <= 0:
+            return
+        _WIN_TIMER_USERS -= 1
+        if _WIN_TIMER_USERS > 0:
+            return
+        if not _WIN_TIMER_ACTIVE:
+            return
+        try:
+            import ctypes
+
+            ctypes.windll.winmm.timeEndPeriod(1)
+        except Exception:
+            pass
+        _WIN_TIMER_ACTIVE = False
+
 
 class GpuRequestType(Enum):
     """Types of GPU requests that can be submitted."""
@@ -543,6 +609,12 @@ class GpuExecutor:
         self._workload_units_samples: deque[float] = deque(maxlen=4096)
         self._workload_diversity_samples: deque[float] = deque(maxlen=4096)
         self._workload_pressure_samples: deque[float] = deque(maxlen=4096)
+        self._high_res_timer_enabled = False
+        try:
+            short_wait_spin_ms = float(str(_ENV_GET("GPU_EXECUTOR_SHORT_WAIT_SPIN_MS", "3.0") or "3.0").strip())
+        except Exception:
+            short_wait_spin_ms = 3.0
+        self._short_wait_spin_sec = max(0.0, float(short_wait_spin_ms) / 1000.0)
 
         # Dispatch table (reduces branching in the hot loop and centralizes request routing).
         self._dispatch = {
@@ -1111,6 +1183,25 @@ class GpuExecutor:
                 self._trace_fp = None
 
         self._in_process_queues = bool(in_process)
+        self._high_res_timer_enabled = False
+        if self._in_process_queues and os.name == "nt" and _system_timer_override_allowed():
+            # The executor's gather loop uses small timeout waits (0-2ms by default in inproc mode).
+            # On Windows, keep 1ms timer resolution so these waits aren't quantized to ~15ms.
+            try:
+                raw_wait = os.environ.get("GPU_EXECUTOR_BATCH_WAIT_MS")
+                if raw_wait is None or str(raw_wait).strip() == "":
+                    base_wait_ms = int(getattr(ENV, "gpu_executor_batch_wait_ms", 10) or 10)
+                    batch_wait_ms = min(int(base_wait_ms), 2)
+                else:
+                    batch_wait_ms = int(str(raw_wait).strip())
+            except Exception:
+                batch_wait_ms = 2
+            try:
+                after_first_ms = int(os.environ.get("GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS", "2") or "2")
+            except Exception:
+                after_first_ms = 2
+            if (0 < int(batch_wait_ms) <= 4) or (0 < int(after_first_ms) <= 4):
+                self._high_res_timer_enabled = bool(_acquire_windows_timer_period_1ms())
         self._request_queue = queue.Queue() if self._in_process_queues else multiprocessing.Queue()
         self._running = True
 
@@ -1142,6 +1233,9 @@ class GpuExecutor:
             self._executor_thread.join(timeout=10.0)
 
         self._running = False
+        if self._high_res_timer_enabled:
+            _release_windows_timer_period_1ms()
+            self._high_res_timer_enabled = False
         if self._trace_fp is not None:
             try:
                 self._trace_fp.close()
@@ -2078,6 +2172,27 @@ class GpuExecutor:
                 except Exception:
                     pass
 
+    def _queue_get(self, timeout: float):
+        wait_timeout = max(0.0, float(timeout))
+        if wait_timeout <= 0.0:
+            return self._request_queue.get(timeout=0.0)
+
+        if not self._in_process_queues or wait_timeout > float(self._short_wait_spin_sec):
+            return self._request_queue.get(timeout=wait_timeout)
+
+        get_nowait = getattr(self._request_queue, "get_nowait", None)
+        if not callable(get_nowait):
+            return self._request_queue.get(timeout=wait_timeout)
+
+        deadline = perf_counter() + wait_timeout
+        while True:
+            try:
+                return get_nowait()
+            except queue.Empty:
+                if perf_counter() >= deadline:
+                    raise
+                time.sleep(0)
+
     def _gather_batch(self, max_wait_ms: int = 10, max_batch_size: int = 8) -> list:
         """
         Gather pending requests into a batch for coalesced execution.
@@ -2134,7 +2249,7 @@ class GpuExecutor:
                                 timeout = max(0.0, float(remaining)) if allow_coalesce else 0.0
                 else:
                     timeout = max(0.001, remaining) if len(batch) > 0 else 0.1
-                request = self._request_queue.get(timeout=timeout)
+                request = self._queue_get(timeout)
                 try:
                     request.dequeue_perf_ns = time.perf_counter_ns()
                 except Exception:

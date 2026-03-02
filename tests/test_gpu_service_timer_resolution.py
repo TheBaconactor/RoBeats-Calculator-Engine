@@ -1,4 +1,5 @@
 import queue
+import os
 from concurrent.futures import Future
 
 from gear_optimizer.solver.gpu_service import GpuServiceClient
@@ -18,6 +19,9 @@ class _DummyExecutor:
 
 
 def test_fg_coalesce_timer_period_lifecycle(monkeypatch):
+    if os.name != "nt":
+        return
+
     calls = {"acquire": 0, "release": 0}
 
     def _fake_acquire() -> bool:
@@ -29,6 +33,7 @@ def test_fg_coalesce_timer_period_lifecycle(monkeypatch):
 
     monkeypatch.setattr("gear_optimizer.solver.gpu_service._acquire_windows_timer_period_1ms", _fake_acquire)
     monkeypatch.setattr("gear_optimizer.solver.gpu_service._release_windows_timer_period_1ms", _fake_release)
+    monkeypatch.setenv("GPU_ALLOW_SYSTEM_TIMER_OVERRIDE", "1")
 
     client = GpuServiceClient(executor=_DummyExecutor())
     client._fg_coalesce_enabled = True
@@ -43,6 +48,37 @@ def test_fg_coalesce_timer_period_lifecycle(monkeypatch):
 
     assert calls["release"] == 1
     assert client._fg_high_res_timer_enabled is False
+
+
+def test_fg_coalesce_timer_period_requires_opt_in(monkeypatch):
+    if os.name != "nt":
+        return
+
+    calls = {"acquire": 0, "release": 0}
+
+    def _fake_acquire() -> bool:
+        calls["acquire"] += 1
+        return True
+
+    def _fake_release() -> None:
+        calls["release"] += 1
+
+    monkeypatch.setattr("gear_optimizer.solver.gpu_service._acquire_windows_timer_period_1ms", _fake_acquire)
+    monkeypatch.setattr("gear_optimizer.solver.gpu_service._release_windows_timer_period_1ms", _fake_release)
+    monkeypatch.delenv("GPU_ALLOW_SYSTEM_TIMER_OVERRIDE", raising=False)
+
+    client = GpuServiceClient(executor=_DummyExecutor())
+    client._fg_coalesce_enabled = True
+    client._fg_coalesce_max_wait_ms = 1
+
+    client.start(start_executor=False, in_process_queues=True)
+    try:
+        assert calls["acquire"] == 0
+        assert client._fg_high_res_timer_enabled is False
+    finally:
+        client.close(timeout=0.2)
+
+    assert calls["release"] == 0
 
 
 def test_fg_coalesce_loop_uses_sub_ms_remaining_window(monkeypatch):
@@ -68,9 +104,17 @@ def test_fg_coalesce_loop_uses_sub_ms_remaining_window(monkeypatch):
 
     client._fg_coalesce_event = _RecordingEvent()
 
-    monkeypatch.setattr("gear_optimizer.solver.gpu_service.time.perf_counter", lambda: 0.00095)
+    perf_values = iter((0.00095, 0.00095, 0.00110))
+
+    def _fake_perf_counter():
+        try:
+            return next(perf_values)
+        except StopIteration:
+            return 0.00110
+
+    monkeypatch.setattr("gear_optimizer.solver.gpu_service.time.perf_counter", _fake_perf_counter)
 
     client._fg_coalesce_loop()
 
     assert len(waits) == 1
-    assert 0.0 <= waits[0] < 0.001
+    assert waits[0] == 0.0

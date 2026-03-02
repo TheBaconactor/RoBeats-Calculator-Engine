@@ -19,11 +19,11 @@ import threading
 import time
 import random
 from concurrent.futures import Future
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from dataclasses import dataclass
 from typing import Any, Optional
 
-from gear_optimizer.core.env_config import ENV, env_flag
+from gear_optimizer.core.env_config import ENV, TRUTHY_ENV_VALUES, env_flag
 from gear_optimizer.core.profile_events import emit_profile_event
 
 from .gpu_executor import (
@@ -32,12 +32,24 @@ from .gpu_executor import (
     GpuRequestType,
     GpuResponse,
     get_gpu_executor,
+    _registry_base_fixed_stats_sig,
 )
 
 
 _WIN_TIMER_LOCK = threading.Lock()
 _WIN_TIMER_USERS = 0
 _WIN_TIMER_ACTIVE = False
+
+
+def _system_timer_override_allowed() -> bool:
+    """
+    Guard system-wide WinMM timer period changes behind an explicit opt-in.
+
+    `timeBeginPeriod(1)` affects the entire OS timer resolution while active in this process.
+    Keep this disabled by default to avoid unexpected system-wide side effects.
+    """
+    raw = str(os.environ.get("GPU_ALLOW_SYSTEM_TIMER_OVERRIDE", "0") or "").strip().lower()
+    return raw in TRUTHY_ENV_VALUES
 
 
 def _acquire_windows_timer_period_1ms() -> bool:
@@ -152,6 +164,31 @@ class GpuServiceClient:
         self._fg_coalesce_event = threading.Event()
         self._fg_coalesce_thread: Optional[threading.Thread] = None
         self._fg_high_res_timer_enabled = False
+        try:
+            short_wait_spin_ms = float(str(os.environ.get("GPU_SERVICE_SHORT_WAIT_SPIN_MS", "3.0") or "3.0").strip())
+        except Exception:
+            short_wait_spin_ms = 3.0
+        self._short_wait_spin_sec = max(0.0, float(short_wait_spin_ms) / 1000.0)
+
+        self._registry_static_handle_counter = 0
+        self._registry_static_handle_cache: "OrderedDict[tuple[Any, ...], dict[str, Any]]" = OrderedDict()
+        try:
+            self._registry_static_handle_cache_max = int(
+                os.environ.get("GPU_SERVICE_REGISTRY_STATIC_CACHE_MAX", "512") or "512"
+            )
+        except Exception:
+            self._registry_static_handle_cache_max = 512
+        self._registry_static_handle_cache_max = max(32, int(self._registry_static_handle_cache_max))
+
+        self._solve_static_handle_counter = 0
+        self._solve_static_handle_cache: "OrderedDict[tuple[Any, ...], dict[str, Any]]" = OrderedDict()
+        try:
+            self._solve_static_handle_cache_max = int(
+                os.environ.get("GPU_SERVICE_SOLVE_STATIC_CACHE_MAX", "512") or "512"
+            )
+        except Exception:
+            self._solve_static_handle_cache_max = 512
+        self._solve_static_handle_cache_max = max(32, int(self._solve_static_handle_cache_max))
 
     @property
     def executor(self) -> GpuExecutor:
@@ -193,7 +230,7 @@ class GpuServiceClient:
         if self._fg_coalesce_enabled and self._in_process_queues and self._fg_coalesce_thread is None:
             # On Windows the default timer quantum can stretch 1ms waits to ~15ms.
             # Request 1ms period for short coalescing windows.
-            if int(self._fg_coalesce_max_wait_ms) <= 4:
+            if int(self._fg_coalesce_max_wait_ms) <= 4 and _system_timer_override_allowed():
                 self._fg_high_res_timer_enabled = bool(_acquire_windows_timer_period_1ms())
             self._fg_coalesce_thread = threading.Thread(
                 target=self._fg_coalesce_loop,
@@ -348,11 +385,132 @@ class GpuServiceClient:
             {"calc_song": calc_song, "ref_arrays": ref_arrays, "song_slot": int(song_slot)},
         )
 
+    def _registry_static_handle_entry(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        if not isinstance(payload, dict):
+            return None
+        required = ("item_stats", "slot_start", "slot_count", "base_fixed_stats", "timeline_grid", "ref_arrays")
+        for key in required:
+            if key not in payload:
+                return None
+        item_stats = payload.get("item_stats")
+        slot_start = payload.get("slot_start")
+        slot_count = payload.get("slot_count")
+        base_fixed_stats = payload.get("base_fixed_stats")
+        timeline_grid = payload.get("timeline_grid")
+        ref_arrays = payload.get("ref_arrays")
+        key = (
+            int(id(item_stats)),
+            int(id(slot_start)),
+            int(id(slot_count)),
+            _registry_base_fixed_stats_sig(base_fixed_stats),
+            int(id(timeline_grid)),
+            int(id(ref_arrays)),
+        )
+        cached = self._registry_static_handle_cache.get(key)
+        if cached is not None:
+            self._registry_static_handle_cache.move_to_end(key)
+            return cached
+
+        self._registry_static_handle_counter += 1
+        entry = {
+            "handle": int(self._registry_static_handle_counter),
+            "registered": False,
+            "item_stats_ref": item_stats,
+            "slot_start_ref": slot_start,
+            "slot_count_ref": slot_count,
+            "base_fixed_stats_ref": base_fixed_stats,
+            "timeline_grid_ref": timeline_grid,
+            "ref_arrays_ref": ref_arrays,
+        }
+        self._registry_static_handle_cache[key] = entry
+        self._registry_static_handle_cache.move_to_end(key)
+        while len(self._registry_static_handle_cache) > int(self._registry_static_handle_cache_max):
+            self._registry_static_handle_cache.popitem(last=False)
+        return entry
+
+    def _solve_static_handle_entry(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        if not isinstance(payload, dict):
+            return None
+        if "timeline_grid" not in payload or "ref_arrays" not in payload:
+            return None
+        timeline_grid = payload.get("timeline_grid")
+        ref_arrays = payload.get("ref_arrays")
+        key = (int(id(timeline_grid)), int(id(ref_arrays)))
+        cached = self._solve_static_handle_cache.get(key)
+        if cached is not None:
+            self._solve_static_handle_cache.move_to_end(key)
+            return cached
+
+        self._solve_static_handle_counter += 1
+        entry = {
+            "handle": int(self._solve_static_handle_counter),
+            "registered": False,
+            "timeline_grid_ref": timeline_grid,
+            "ref_arrays_ref": ref_arrays,
+        }
+        self._solve_static_handle_cache[key] = entry
+        self._solve_static_handle_cache.move_to_end(key)
+        while len(self._solve_static_handle_cache) > int(self._solve_static_handle_cache_max):
+            self._solve_static_handle_cache.popitem(last=False)
+        return entry
+
+    @staticmethod
+    def _attach_handle_failure_reset(fut: Future, entry: dict[str, Any]) -> None:
+        if not isinstance(entry, dict):
+            return
+
+        def _on_done(f: Future) -> None:
+            try:
+                _ = f.result()
+            except Exception:
+                entry["registered"] = False
+
+        try:
+            fut.add_done_callback(_on_done)
+        except Exception:
+            pass
+
     def submit_solve_genomes(self, payload: dict[str, Any]) -> GpuJobHandle:
-        return self.submit(GpuRequestType.SOLVE_GENOMES_PARALLEL, dict(payload or {}))
+        request_payload = dict(payload or {})
+        entry = self._solve_static_handle_entry(request_payload)
+        if entry is None:
+            return self.submit(GpuRequestType.SOLVE_GENOMES_PARALLEL, request_payload)
+
+        handle = int(entry.get("handle", 0) or 0)
+        inline_static = not bool(entry.get("registered", False))
+        request_payload["solve_static_handle"] = int(handle)
+        request_payload["solve_static_inline"] = bool(inline_static)
+        if not inline_static:
+            request_payload.pop("timeline_grid", None)
+            request_payload.pop("ref_arrays", None)
+
+        job = self.submit(GpuRequestType.SOLVE_GENOMES_PARALLEL, request_payload)
+        entry["registered"] = True
+        self._attach_handle_failure_reset(job.future, entry)
+        return job
 
     def submit_solve_genomes_from_registry(self, payload: dict[str, Any]) -> GpuJobHandle:
-        return self.submit(GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY, dict(payload or {}))
+        request_payload = dict(payload or {})
+        entry = self._registry_static_handle_entry(request_payload)
+        if entry is None:
+            return self.submit(GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY, request_payload)
+
+        handle = int(entry.get("handle", 0) or 0)
+        inline_static = not bool(entry.get("registered", False))
+        request_payload["registry_payload_handle"] = int(handle)
+        request_payload["registry_payload_inline"] = bool(inline_static)
+        if not inline_static:
+            request_payload.pop("item_stats", None)
+            request_payload.pop("slot_start", None)
+            request_payload.pop("slot_count", None)
+            request_payload.pop("base_fixed_stats", None)
+            request_payload.pop("timeline_grid", None)
+            request_payload.pop("ref_arrays", None)
+
+        job = self.submit(GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY, request_payload)
+        entry["registered"] = True
+        self._attach_handle_failure_reset(job.future, entry)
+        return job
 
     def submit_gpu_native_ga_run(self, payload: dict[str, Any]) -> GpuJobHandle:
         return self.submit(GpuRequestType.GPU_NATIVE_GA_RUN, dict(payload or {}))
@@ -541,6 +699,22 @@ class GpuServiceClient:
 
         job.future.add_done_callback(_on_done)
 
+    def _coalesce_event_wait(self, timeout: float) -> bool:
+        wait_timeout = max(0.0, float(timeout))
+        if wait_timeout <= 0.0:
+            return bool(self._fg_coalesce_event.wait(timeout=0.0))
+
+        if wait_timeout > float(self._short_wait_spin_sec):
+            return bool(self._fg_coalesce_event.wait(timeout=wait_timeout))
+
+        deadline = time.perf_counter() + wait_timeout
+        while True:
+            if self._fg_coalesce_event.wait(timeout=0.0):
+                return True
+            if time.perf_counter() >= deadline:
+                return False
+            time.sleep(0)
+
     def _fg_coalesce_loop(self) -> None:
         while self._running and self._fg_coalesce_enabled and self._in_process_queues:
             batch = None
@@ -567,7 +741,7 @@ class GpuServiceClient:
                 continue
 
             try:
-                self._fg_coalesce_event.wait(timeout=wait_sec)
+                self._coalesce_event_wait(wait_sec)
             except Exception:
                 pass
 
