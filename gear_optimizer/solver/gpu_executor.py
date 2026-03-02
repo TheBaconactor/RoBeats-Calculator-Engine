@@ -1482,6 +1482,24 @@ class GpuExecutor:
                 except Exception:
                     pass
 
+        # Warm up GPU-native GA kernels up-front to avoid the first GA request paying
+        # multi-second Taichi JIT latency. This also helps stabilize external GPU
+        # utilization graphs that otherwise show an early low-util \"hiccup\".
+        if getattr(ENV, "gpu_executor_warmup_ga", False):
+            try:
+                t0 = perf_counter()
+                from .taichi_gem.api import ga_operations as ga_ops
+
+                ga_ops.warmup_ga_kernels()
+                dt_ms = (perf_counter() - t0) * 1000.0
+                if ENV.perf_timing:
+                    print(f"[GpuExecutor] Warmed GA kernels in {dt_ms:.1f}ms")
+            except Exception as e:
+                try:
+                    print(f"[GpuExecutor] GA warmup failed: {type(e).__name__}: {e}")
+                except Exception:
+                    pass
+
         def _try_put_response(req: GpuRequest, resp: GpuResponse) -> bool:
             try:
                 q = self._response_queues.get(req.worker_id)

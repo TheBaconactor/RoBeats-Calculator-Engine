@@ -64,7 +64,9 @@ def _env_int(key: str, default: int) -> int:
     """Parse int environment variable (best-effort, never raises)."""
     raw = os.environ.get(key, None)
     if raw is None:
-        warn_fallback("env.int.missing", "environment variable missing, using default", context={"key": key, "default": default})
+        warn_fallback(
+            "env.int.missing", "environment variable missing, using default", context={"key": key, "default": default}
+        )
         return int(default)
     try:
         return int(str(raw).strip())
@@ -118,6 +120,7 @@ class EnvConfig:
     gpu_force_sync: bool  # GPU_FORCE_SYNC: Force GPU synchronization
     gpu_executor_profile: bool  # GPU_EXECUTOR_PROFILE: Enable GPU executor profiling
     gpu_executor_warmup_fg: bool  # GPU_EXECUTOR_WARMUP_FG: Pre-warm FG Taichi kernels at executor startup
+    gpu_executor_warmup_ga: bool  # GPU_EXECUTOR_WARMUP_GA: Pre-warm GA Taichi kernels at executor startup
     gpu_profiler: bool  # GPU_PROFILER: Enable GPU profiler
     gpu_batch_log: bool  # GPU_BATCH_LOG: Log GPU batch operations
     gpu_service_profile: bool  # GPU_SERVICE_PROFILE: Track GpuServiceClient request latencies
@@ -169,6 +172,7 @@ class EnvConfig:
             gpu_force_sync=debug_profile and _env_bool("GPU_FORCE_SYNC"),
             gpu_executor_profile=debug_profile and _env_bool("GPU_EXECUTOR_PROFILE"),
             gpu_executor_warmup_fg=_env_bool("GPU_EXECUTOR_WARMUP_FG", "1"),
+            gpu_executor_warmup_ga=_env_bool("GPU_EXECUTOR_WARMUP_GA", "1"),
             gpu_profiler=debug_profile and _env_bool("GPU_PROFILER"),
             gpu_batch_log=debug_profile and _env_bool("GPU_BATCH_LOG"),
             gpu_service_profile=debug_profile and _env_bool("GPU_SERVICE_PROFILE"),

@@ -1725,3 +1725,127 @@ def ga_island_migration_runs(
     if n_total > fields.MAX_GENOMES:
         raise ValueError(f"Batch too large for MAX_GENOMES: {n_total} > {fields.MAX_GENOMES}")
     kernels.ga_island_migration_runs_kernel(n_runs, n_genomes_per_run, n_islands, migrate_count, n_slots)
+
+
+_GA_KERNELS_WARMED = False
+
+
+def warmup_ga_kernels() -> None:
+    """
+    Best-effort Taichi JIT warmup for GPU-native GA kernels.
+
+    Goal: avoid the first real GA request paying multi-second compilation latency on Vulkan,
+    which shows up as a \"GPU idle\" gap in high-level monitoring and can create bursty
+    utilization graphs.
+
+    Notes:
+    - Uses tiny dummy inputs (correctness is irrelevant; outputs are discarded).
+    - Idempotent: safe to call multiple times.
+    """
+    global _GA_KERNELS_WARMED
+    if _GA_KERNELS_WARMED:
+        return
+
+    ensure_ready()
+
+    # Minimal sizes that still exercise the full GA pipeline (evaluate -> next-gen -> pack -> select).
+    n_slots = 9
+    n_runs = 1
+    n_genomes_per_run = min(64, int(getattr(fields, "MAX_GA_RUN_GENOMES", 250) or 250))
+    if n_genomes_per_run < 1:
+        n_genomes_per_run = 1
+    n_total = int(n_runs) * int(n_genomes_per_run)
+    if n_total > int(fields.MAX_GENOMES):
+        n_genomes_per_run = max(1, int(fields.MAX_GENOMES))
+        n_total = int(n_runs) * int(n_genomes_per_run)
+
+    # Small but non-zero budget so combo tables are populated and the FT/FF kernels are exercised.
+    total_budget = 1
+    gem_scale_fever = 3
+    song_slot = 0
+
+    # Ensure per-slot item ranges are valid (avoid divide-by-zero in mutation/immigrant ops).
+    item_stats_np = np.zeros((1, fields.ITEM_STAT_DIM), dtype=np.int32)
+    slot_start_np = np.zeros((fields.MAX_SLOTS,), dtype=np.int32)
+    slot_count_np = np.ones((fields.MAX_SLOTS,), dtype=np.int32)
+    ga_upload_item_stats(item_stats_np, slot_start_np, slot_count_np)
+    ga_upload_base_fixed_stats(np.zeros((fields.ITEM_STAT_DIM,), dtype=np.int32))
+
+    # Upload a trivial island boundary table so island-based kernels have valid ranges.
+    n_islands = 2
+    if n_islands > int(getattr(fields, "MAX_ISLANDS", n_islands) or n_islands):
+        n_islands = int(getattr(fields, "MAX_ISLANDS", 1) or 1)
+    if n_islands < 1:
+        n_islands = 1
+    # Boundaries: [0, mid, end] for 2 islands (or [0,end] for 1 island)
+    if n_islands == 1:
+        boundaries = np.array([0, int(n_total)], dtype=np.int32)
+    else:
+        mid = int(n_total // 2)
+        boundaries = np.array([0, mid, int(n_total)], dtype=np.int32)
+    ga_upload_island_boundaries(boundaries)
+
+    # Stage a single-run initial population and seed RNG.
+    pops = np.zeros((n_runs, n_genomes_per_run, n_slots), dtype=np.int32)
+    ga_upload_initial_populations(pops, n_runs=n_runs, n_genomes=n_genomes_per_run, n_slots=n_slots)
+    ga_load_initial_populations_batch(
+        run_idx_start=0, n_runs=n_runs, n_genomes_per_run=n_genomes_per_run, n_slots=n_slots
+    )
+    ga_seed_rng_runs(n_runs=n_runs, n_genomes_per_run=n_genomes_per_run, seed=12345)
+
+    # Initialize + run a minimal 1-generation evaluation.
+    ga_init_runs_best(run_idx_start=0, n_runs=n_runs, n_slots=n_slots)
+    ga_evaluate_population(
+        n_total,
+        n_slots=n_slots,
+        total_budget=total_budget,
+        gem_scale_fever=gem_scale_fever,
+        song_slot=song_slot,
+        use_hints=0,
+    )
+    ga_write_best_and_store_hints(
+        n_total,
+        total_budget,
+        gem_scale_fever,
+        song_slot=song_slot,
+    )
+    ga_update_runs_best(run_idx_start=0, n_runs=n_runs, n_genomes_per_run=n_genomes_per_run, n_slots=n_slots)
+
+    # Warm migration + fused next-gen kernels (typical path in GPU-native GA).
+    ga_island_migration_runs(
+        n_runs=n_runs,
+        n_genomes_per_run=n_genomes_per_run,
+        n_islands=n_islands,
+        migrate_count=1,
+        n_slots=n_slots,
+    )
+    ga_next_generation_fused_runs(
+        n_runs=n_runs,
+        n_genomes_per_run=n_genomes_per_run,
+        n_slots=n_slots,
+        mutation_rate=0.0,
+        immigrant_rate=0.0,
+        tournament_k=1,
+        n_islands=n_islands,
+        elites_per_island=1,
+    )
+
+    # Warm GA->FG packing + GPU-side selection/download kernels.
+    ga_pack_fg_candidates_table_segmented(
+        table_slot=song_slot,
+        run_idx_start=0,
+        n_runs=n_runs,
+        n_genomes_per_run=n_genomes_per_run,
+        n_slots=n_slots,
+    )
+    # limit=1 keeps the staging download small while still exercising the kernels.
+    _ = ga_download_fg_selected_payload(
+        table_slot=song_slot,
+        n_runs=n_runs,
+        limit=1,
+        top_base_keep=1,
+        base_budget=1,
+        fg_budget_end=1,
+    )
+
+    _GA_KERNELS_WARMED = True
