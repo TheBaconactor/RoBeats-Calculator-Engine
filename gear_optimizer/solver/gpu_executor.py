@@ -3487,6 +3487,80 @@ class GpuExecutor:
                 error="Invalid payload for SOLVE_FORCE_GREATS_FINDER (expected kwargs dict)",
             )
 
+        # ------------------------------------------------------------------
+        # Executor-managed dependencies (avoid multi-request submit sequences).
+        #
+        # These keys are consumed here and MUST NOT be forwarded into the Taichi API.
+        # ------------------------------------------------------------------
+        ensure_timeline_precompute = bool(kwargs.pop("ensure_timeline_precompute", False))
+        calc_song = kwargs.pop("calc_song", None)
+        ga_stage_coords = kwargs.pop("ga_stage_coords", None)
+        ga_stage_table_slot = kwargs.pop("ga_stage_table_slot", None)
+        ga_stage_n_slots = kwargs.pop("ga_stage_n_slots", 9)
+
+        # Optional: precompute the timeline grid as part of this same request so callers
+        # don't need a separate PRECOMPUTE_TIMELINE request that can interleave across songs.
+        if ensure_timeline_precompute:
+            ref_arrays0 = kwargs.get("ref_arrays")
+            try:
+                song_slot0 = int(kwargs.get("song_slot", 0) or 0)
+            except Exception:
+                song_slot0 = 0
+            if not isinstance(calc_song, dict) or not isinstance(ref_arrays0, dict):
+                return GpuResponse(
+                    request_id=request.request_id,
+                    success=False,
+                    error="SOLVE_FORCE_GREATS_FINDER ensure_timeline_precompute requires calc_song/ref_arrays dicts",
+                )
+            try:
+                from .taichi_gem.api.timeline import precompute_timeline_gpu
+
+                precompute_timeline_gpu(calc_song, ref_arrays0, song_slot=int(song_slot0))
+            except Exception as e:
+                return GpuResponse(
+                    request_id=request.request_id,
+                    success=False,
+                    error=f"SOLVE_FORCE_GREATS_FINDER timeline precompute failed: {type(e).__name__}: {e}",
+                )
+
+        # Optional: stage genome_base_stats from GPU-native GA -> FG candidate table within
+        # the same request to avoid a GA_STAGE_FG_GENOME_BASE_STATS boundary.
+        if ga_stage_coords is not None:
+            if not self._in_process_queues:
+                return GpuResponse(
+                    request_id=request.request_id,
+                    success=False,
+                    error="SOLVE_FORCE_GREATS_FINDER GA staging requires in-process queues",
+                )
+            try:
+                from .taichi_gem.api import ga_stage_genome_base_stats_from_fg_candidates_table
+
+                try:
+                    table_slot = (
+                        int(ga_stage_table_slot)
+                        if ga_stage_table_slot is not None
+                        else int(kwargs.get("song_slot", 0) or 0)
+                    )
+                except Exception:
+                    table_slot = int(kwargs.get("song_slot", 0) or 0)
+                n_staged = ga_stage_genome_base_stats_from_fg_candidates_table(
+                    table_slot=int(table_slot),
+                    coords=ga_stage_coords,
+                    n_slots=int(ga_stage_n_slots or 9),
+                )
+                if int(n_staged) <= 0:
+                    return GpuResponse(
+                        request_id=request.request_id,
+                        success=False,
+                        error="SOLVE_FORCE_GREATS_FINDER GA staging produced n_staged<=0",
+                    )
+            except Exception as e:
+                return GpuResponse(
+                    request_id=request.request_id,
+                    success=False,
+                    error=f"SOLVE_FORCE_GREATS_FINDER GA staging failed: {type(e).__name__}: {e}",
+                )
+
         fg_tasks = kwargs.pop("fg_tasks", None)
         if fg_tasks is not None:
             if not isinstance(fg_tasks, (list, tuple)):
@@ -3913,6 +3987,28 @@ class GpuExecutor:
         import numpy as np
 
         payload = request.payload or {}
+
+        ensure_timeline_precompute = bool(payload.get("ensure_timeline_precompute", False))
+        if ensure_timeline_precompute:
+            calc_song = payload.get("calc_song")
+            ref_arrays = payload.get("ref_arrays")
+            song_slot0 = int(payload.get("song_slot", 0) or 0)
+            if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
+                return GpuResponse(
+                    request_id=request.request_id,
+                    success=False,
+                    error="FG_COMPUTE_BREAKPOINTS ensure_timeline_precompute requires calc_song/ref_arrays dicts",
+                )
+            try:
+                from .taichi_gem.api.timeline import precompute_timeline_gpu
+
+                precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot0))
+            except Exception as e:
+                return GpuResponse(
+                    request_id=request.request_id,
+                    success=False,
+                    error=f"FG_COMPUTE_BREAKPOINTS timeline precompute failed: {type(e).__name__}: {e}",
+                )
 
         # NOTE: `ftff_pairs`/`base_stats_pairs` may be numpy arrays; never use `or []` which
         # triggers `ValueError: The truth value of an array with more than one element...`.

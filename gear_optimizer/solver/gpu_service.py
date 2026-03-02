@@ -540,19 +540,27 @@ class GpuServiceClient:
         gem_scale_fever: int = 3,
         non_fever_base_by_ff=None,
         fp_cap_table=None,
+        ensure_timeline_precompute: bool = False,
+        calc_song: Optional[dict[str, Any]] = None,
+        ref_arrays: Optional[dict[str, Any]] = None,
     ) -> GpuJobHandle:
         # Accept either Python sequences or pre-packed numpy arrays to avoid per-item tuple packing in hot paths.
+        request_payload: dict[str, Any] = {
+            "ftff_pairs": ftff_pairs,
+            "base_stats_pairs": base_stats_pairs,
+            "n_sections": int(n_sections),
+            "song_slot": int(song_slot),
+            "gem_scale_fever": int(gem_scale_fever),
+            "non_fever_base_by_ff": non_fever_base_by_ff,
+            "fp_cap_table": fp_cap_table,
+        }
+        if ensure_timeline_precompute:
+            request_payload["ensure_timeline_precompute"] = True
+            request_payload["calc_song"] = calc_song
+            request_payload["ref_arrays"] = ref_arrays
         return self.submit(
             GpuRequestType.FG_COMPUTE_BREAKPOINTS,
-            {
-                "ftff_pairs": ftff_pairs,
-                "base_stats_pairs": base_stats_pairs,
-                "n_sections": int(n_sections),
-                "song_slot": int(song_slot),
-                "gem_scale_fever": int(gem_scale_fever),
-                "non_fever_base_by_ff": non_fever_base_by_ff,
-                "fp_cap_table": fp_cap_table,
-            },
+            request_payload,
         )
 
     def submit_fg_solve_with_breakpoints(self, payload: dict[str, Any]) -> GpuJobHandle:

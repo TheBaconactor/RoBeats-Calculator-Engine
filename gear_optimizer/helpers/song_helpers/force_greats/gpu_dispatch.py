@@ -537,46 +537,62 @@ def process_force_greats_gpu_finder(
 
     def _submit_solve_force_greats_finder(*args, blocking: bool = True, **kwargs):
         nonlocal timeline_precompute_queued
+        if gpu_client is not None:
+            # Executor-managed dependencies: keep the FG solve self-contained so we don't
+            # need a multi-request submit sequence under `submit_lock` (cross-song choke point).
+            need_timeline_precompute = bool(kwargs.get("pair_caps_from_timeline")) and (not timeline_precompute_queued)
+            if need_timeline_precompute:
+                kwargs["ensure_timeline_precompute"] = True
+                kwargs["calc_song"] = calc_song
+                timeline_precompute_queued = True
+
+            if kwargs.get("ga_stage_coords") is not None and kwargs.get("ga_stage_table_slot") is None:
+                try:
+                    kwargs["ga_stage_table_slot"] = int(kwargs.get("song_slot", song_slot) or song_slot)
+                except Exception:
+                    kwargs["ga_stage_table_slot"] = int(song_slot)
+
+            fut = gpu_client.submit_solve_force_greats_finder(*args, **kwargs).future
+            return fut.result() if blocking else fut
+
+        # Direct (non-service) GPU path: keep control keys out of the Taichi API surface
+        # and do any required staging locally.
         ga_stage_coords = kwargs.pop("ga_stage_coords", None)
         ga_stage_table_slot = kwargs.pop("ga_stage_table_slot", None)
-        if gpu_client is not None:
-            # Ensure the timeline grid for this song_slot is computed before the first FG solve
-            # when using GPU-resident pair caps. Serialize submit ordering to prevent cross-thread
-            # interleaving between the precompute and FG solve requests.
-            need_timeline_precompute = bool(kwargs.get("pair_caps_from_timeline")) and (not timeline_precompute_queued)
-            need_ga_stage = ga_stage_coords is not None
+        kwargs.pop("ensure_timeline_precompute", None)
+        kwargs.pop("calc_song", None)
+        kwargs.pop("ga_stage_n_slots", None)
 
-            if need_timeline_precompute or need_ga_stage:
+        need_timeline_precompute = bool(kwargs.get("pair_caps_from_timeline")) and (not timeline_precompute_queued)
+        if need_timeline_precompute:
+            try:
+                from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
+
+                slot0 = int(kwargs.get("song_slot", song_slot) or song_slot)
+                precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(slot0))
+            except Exception:
+                pass
+            timeline_precompute_queued = True
+
+        if ga_stage_coords is not None:
+            try:
+                from ....solver.taichi_gem import api as _taichi_api
+
                 try:
-                    raw_slot = kwargs.get("song_slot", song_slot)
-                    slot = int(raw_slot) if raw_slot is not None else int(song_slot)
+                    slot0 = (
+                        int(ga_stage_table_slot)
+                        if ga_stage_table_slot is not None
+                        else int(kwargs.get("song_slot", song_slot) or song_slot)
+                    )
                 except Exception:
-                    slot = int(song_slot)
-                if ga_stage_table_slot is not None:
-                    try:
-                        slot = int(ga_stage_table_slot)
-                    except Exception:
-                        pass
-
-                with gpu_client.submit_lock:
-                    if need_timeline_precompute:
-                        try:
-                            gpu_client.submit_precompute_timeline(
-                                calc_song=calc_song,
-                                ref_arrays=ref_arrays,
-                                song_slot=int(slot),
-                            )
-                        finally:
-                            timeline_precompute_queued = True
-                    if need_ga_stage:
-                        gpu_client.submit_ga_stage_fg_genome_base_stats(
-                            table_slot=int(slot),
-                            coords=ga_stage_coords,
-                        )
-                    fut = gpu_client.submit_solve_force_greats_finder(*args, **kwargs).future
-            else:
-                fut = gpu_client.submit_solve_force_greats_finder(*args, **kwargs).future
-            return fut.result() if blocking else fut
+                    slot0 = int(kwargs.get("song_slot", song_slot) or song_slot)
+                _taichi_api.ga_stage_genome_base_stats_from_fg_candidates_table(
+                    int(slot0),
+                    np.asarray(ga_stage_coords, dtype=np.int32),
+                    n_slots=9,
+                )
+            except Exception:
+                pass
         return solve_force_greats_finder_gpu(*args, **kwargs)
 
     # ---------------------------------------------------------------------
@@ -1195,9 +1211,8 @@ def process_force_greats_gpu_finder(
         if gpu_client is None:
             raise RuntimeError("fused payload batch requires gpu_client")
 
-        with gpu_client.submit_lock:
-            timeline_precompute_queued = True
-            fut = gpu_client.submit_fg_solve_with_breakpoints_batch(fused_payload_batch).future
+        timeline_precompute_queued = True
+        fut = gpu_client.submit_fg_solve_with_breakpoints_batch(fused_payload_batch).future
 
         for i, ctx in enumerate(fused_ctx_batch):
             ctx["download_future"] = fut
@@ -1676,42 +1691,26 @@ def process_force_greats_gpu_finder(
                     if gpu_client is not None:
                         # Ensure the timeline grid for this song_slot is ready (grid_gap/grid_fever_activations).
                         #
-                        # IMPORTANT: never block (`.result()`) while holding `submit_lock`. That lock is global
-                        # across in-flight songs and can stall unrelated producers, starving the GPU queue and
-                        # creating visible utilization dips.
+                        # NOTE: keep this a single executor request via `ensure_timeline_precompute`.
+                        # Multi-request submit sequences under `submit_lock` are a cross-song choke point and
+                        # can stall unrelated producers, starving the GPU queue and creating visible dips.
                         nonlocal timeline_precompute_queued
-                        fut = None
-                        try:
-                            with gpu_client.submit_lock:
-                                if not timeline_precompute_queued:
-                                    try:
-                                        gpu_client.submit_precompute_timeline(
-                                            calc_song=calc_song,
-                                            ref_arrays=ref_arrays,
-                                            song_slot=int(song_slot),
-                                        )
-                                    finally:
-                                        timeline_precompute_queued = True
-                                fut = gpu_client.submit_fg_compute_breakpoints(
-                                    ftff_pairs=ftff_pairs_submit,
-                                    base_stats_pairs=base_pairs_submit,
-                                    n_sections=int(n_sections),
-                                    song_slot=int(song_slot),
-                                    gem_scale_fever=int(GEM_SCALE_FEVER),
-                                    non_fever_base_by_ff=non_fever_base_by_ff,
-                                    fp_cap_table=fp_cap_table,
-                                ).future
-                        except Exception:
+                        ensure_timeline = not timeline_precompute_queued
+                        if ensure_timeline:
                             timeline_precompute_queued = True
-                            fut = gpu_client.submit_fg_compute_breakpoints(
-                                ftff_pairs=ftff_pairs_submit,
-                                base_stats_pairs=base_pairs_submit,
-                                n_sections=int(n_sections),
-                                song_slot=int(song_slot),
-                                gem_scale_fever=int(GEM_SCALE_FEVER),
-                                non_fever_base_by_ff=non_fever_base_by_ff,
-                                fp_cap_table=fp_cap_table,
-                            ).future
+
+                        fut = gpu_client.submit_fg_compute_breakpoints(
+                            ftff_pairs=ftff_pairs_submit,
+                            base_stats_pairs=base_pairs_submit,
+                            n_sections=int(n_sections),
+                            song_slot=int(song_slot),
+                            gem_scale_fever=int(GEM_SCALE_FEVER),
+                            non_fever_base_by_ff=non_fever_base_by_ff,
+                            fp_cap_table=fp_cap_table,
+                            ensure_timeline_precompute=bool(ensure_timeline),
+                            calc_song=calc_song if ensure_timeline else None,
+                            ref_arrays=ref_arrays if ensure_timeline else None,
+                        ).future
                         return fut.result() if blocking else fut
 
                     # Direct (non-executor) GPU path: call the kernel in-process.
@@ -1834,11 +1833,8 @@ def process_force_greats_gpu_finder(
 
                             # Prevent interleaving with other GPU submits; timeline precompute is handled inside the
                             # fused request (cached per song_slot).
-                            with gpu_client.submit_lock:
-                                timeline_precompute_queued = True
-                                fused_future = gpu_client.submit_ga_fg_fused_solve_with_breakpoints(
-                                    fused_payload
-                                ).future
+                            timeline_precompute_queued = True
+                            fused_future = gpu_client.submit_ga_fg_fused_solve_with_breakpoints(fused_payload).future
                             n_gpu_calls += 1
 
                             # Mark uploaded (fused request always performs exactly one solve for this chunk).
