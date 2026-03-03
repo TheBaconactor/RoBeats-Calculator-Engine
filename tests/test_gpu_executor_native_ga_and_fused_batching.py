@@ -32,6 +32,37 @@ def test_execute_gpu_native_ga_run_batch_preserves_order(monkeypatch):
     assert all(r.success for r in out)
 
 
+def test_execute_gpu_native_ga_run_batch_splits_large_chunks(monkeypatch):
+    executor = GpuExecutor()
+    monkeypatch.setenv("GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS", "2")
+    monkeypatch.setenv("GPU_NATIVE_GA_BATCH_COALESCE_MAX_WORK_UNITS", "1000000")
+
+    seen_chunks: list[list[int]] = []
+
+    def _fake_chunk(reqs):
+        chunk_ids = [int(req.request_id) for req in reqs]
+        seen_chunks.append(chunk_ids)
+        return [
+            GpuResponse(request_id=int(req.request_id), success=True, result={"rid": int(req.request_id)})
+            for req in reqs
+        ]
+
+    monkeypatch.setattr(executor, "_execute_gpu_native_ga_run_chunk", _fake_chunk)
+
+    reqs = [
+        _req(111, GpuRequestType.GPU_NATIVE_GA_RUN, {"song_slot": 1}),
+        _req(112, GpuRequestType.GPU_NATIVE_GA_RUN, {"song_slot": 2}),
+        _req(113, GpuRequestType.GPU_NATIVE_GA_RUN, {"song_slot": 3}),
+        _req(114, GpuRequestType.GPU_NATIVE_GA_RUN, {"song_slot": 4}),
+        _req(115, GpuRequestType.GPU_NATIVE_GA_RUN, {"song_slot": 5}),
+    ]
+    out = executor._execute_gpu_native_ga_run_batch(reqs)
+
+    assert seen_chunks == [[111, 112], [113, 114], [115]]
+    assert [r.request_id for r in out] == [111, 112, 113, 114, 115]
+    assert all(r.success for r in out)
+
+
 def test_coalesce_ga_fg_fused_requests_uses_batch_handler(monkeypatch):
     executor = GpuExecutor()
     executor._in_process_queues = True
@@ -82,3 +113,72 @@ def test_coalesce_ga_fg_fused_requests_falls_back_when_not_inprocess(monkeypatch
 
     assert calls == [301, 302]
     assert [r.request_id for r in out] == [301, 302]
+
+
+def test_coalesce_fg_breakpoints_splits_oversized_request(monkeypatch):
+    executor = GpuExecutor()
+    executor._in_process_queues = True
+    monkeypatch.setenv("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "16")
+
+    seen_chunk_sizes: list[int] = []
+
+    def _fake_batch(req: GpuRequest) -> GpuResponse:
+        payloads = (req.payload or {}).get("payloads") or []
+        seen_chunk_sizes.append(len(payloads))
+        return GpuResponse(
+            request_id=int(req.request_id),
+            success=True,
+            result=[{"chunk": len(seen_chunk_sizes), "idx": i} for i in range(len(payloads))],
+        )
+
+    monkeypatch.setattr(executor, "_execute_fg_solve_with_breakpoints_batch", _fake_batch)
+
+    req = _req(
+        401,
+        GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
+        {"payloads": [{"payload_idx": i} for i in range(19)]},
+    )
+    out = executor._coalesce_fg_solve_with_breakpoints_batch_requests([req])
+
+    assert seen_chunk_sizes == [16, 3]
+    assert len(out) == 1
+    assert out[0].request_id == 401
+    assert out[0].success is True
+    assert isinstance(out[0].result, list)
+    assert len(out[0].result) == 19
+
+
+def test_coalesce_fg_breakpoints_splits_when_pairs_exceed_cap(monkeypatch):
+    executor = GpuExecutor()
+    executor._in_process_queues = True
+    monkeypatch.setenv("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "16")
+    monkeypatch.setenv("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAIRS", "20")
+
+    seen_chunk_shapes: list[tuple[int, int]] = []
+
+    def _fake_batch(req: GpuRequest) -> GpuResponse:
+        payloads = (req.payload or {}).get("payloads") or []
+        pair_total = sum(len((p or {}).get("ftff_pairs") or []) for p in payloads)
+        seen_chunk_shapes.append((len(payloads), int(pair_total)))
+        return GpuResponse(
+            request_id=int(req.request_id),
+            success=True,
+            result=[{"pairs": int(pair_total), "idx": i} for i in range(len(payloads))],
+        )
+
+    monkeypatch.setattr(executor, "_execute_fg_solve_with_breakpoints_batch", _fake_batch)
+
+    payloads = [
+        {"ftff_pairs": [[0, 0] for _ in range(12)]},
+        {"ftff_pairs": [[1, 1] for _ in range(12)]},
+        {"ftff_pairs": [[2, 2] for _ in range(12)]},
+    ]
+    req = _req(501, GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH, {"payloads": payloads})
+    out = executor._coalesce_fg_solve_with_breakpoints_batch_requests([req])
+
+    assert seen_chunk_shapes == [(1, 12), (1, 12), (1, 12)]
+    assert len(out) == 1
+    assert out[0].request_id == 501
+    assert out[0].success is True
+    assert isinstance(out[0].result, list)
+    assert len(out[0].result) == 3

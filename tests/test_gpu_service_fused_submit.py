@@ -33,3 +33,11 @@ def test_submit_ga_fg_fused_solve_with_breakpoints_routes_new_request_type():
         assert result == {"ok": 1}
     finally:
         client.close(timeout=0.5)
+
+
+def test_fg_coalesce_payload_cap_is_clamped_to_executor_limit(monkeypatch):
+    executor = _DummyExecutor()
+    monkeypatch.setenv("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "192")
+    monkeypatch.setenv("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "16")
+    client = GpuServiceClient(executor=executor)
+    assert client._fg_coalesce_max_payloads == 16

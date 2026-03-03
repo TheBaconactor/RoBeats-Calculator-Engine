@@ -151,10 +151,16 @@ class GpuServiceClient:
         except Exception:
             self._fg_coalesce_max_payloads = 128
         try:
+            executor_max_payloads = int(os.environ.get("FG_BREAKPOINTS_BATCH_COALESCE_MAX_PAYLOADS", "16") or "16")
+        except Exception:
+            executor_max_payloads = 16
+        executor_max_payloads = max(1, min(int(executor_max_payloads), 512))
+        try:
             self._fg_coalesce_max_wait_ms = int(os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_WAIT_MS", "1") or "1")
         except Exception:
             self._fg_coalesce_max_wait_ms = 1
         self._fg_coalesce_max_payloads = max(1, int(self._fg_coalesce_max_payloads))
+        self._fg_coalesce_max_payloads = min(int(self._fg_coalesce_max_payloads), int(executor_max_payloads))
         self._fg_coalesce_max_wait_ms = max(0, int(self._fg_coalesce_max_wait_ms))
         self._fg_coalesce_payloads: list[dict[str, Any]] = []
         # (future, start, count, submit_ts)

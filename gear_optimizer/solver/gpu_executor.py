@@ -1669,7 +1669,7 @@ class GpuExecutor:
                 # producers are local and can enqueue follow-up work immediately.
                 if self._in_process_queues:
                     if not cached_batch_max_overridden:
-                        batch_max = max(int(batch_max), 32)
+                        batch_max = max(int(batch_max), 8)
                     if not cached_batch_wait_overridden:
                         batch_wait_ms = min(int(batch_wait_ms), 2)
                         if int(fg_burst_window_ms) > 0 and perf_counter() < float(fg_burst_until):
@@ -2633,7 +2633,34 @@ class GpuExecutor:
                     continue
             return total
 
+        def _split_payload_list(payload_list: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+            chunks: list[list[dict[str, Any]]] = []
+            cur_chunk: list[dict[str, Any]] = []
+            cur_pairs = 0
+
+            for payload_item in payload_list:
+                item_pairs = _payload_pairs([payload_item]) if max_pairs > 0 else 0
+                if not cur_chunk:
+                    cur_chunk = [payload_item]
+                    cur_pairs = int(item_pairs)
+                    continue
+
+                exceed_payload_cap = (len(cur_chunk) + 1) > int(max_payloads)
+                exceed_pairs_cap = bool(max_pairs > 0 and (cur_pairs + int(item_pairs)) > int(max_pairs))
+                if exceed_payload_cap or exceed_pairs_cap:
+                    chunks.append(cur_chunk)
+                    cur_chunk = [payload_item]
+                    cur_pairs = int(item_pairs)
+                else:
+                    cur_chunk.append(payload_item)
+                    cur_pairs += int(item_pairs)
+
+            if cur_chunk:
+                chunks.append(cur_chunk)
+            return chunks
+
         fallback: list[GpuResponse] = []
+        direct: list[GpuResponse] = []
         groups: list[list[tuple["GpuRequest", list[dict[str, Any]], int, int]]] = []
         cur: list[tuple["GpuRequest", list[dict[str, Any]], int, int]] = []
         cur_payloads = 0
@@ -2666,12 +2693,48 @@ class GpuExecutor:
             if n_payloads <= 0:
                 _append_fallback(req, "payload list length resolved to zero")
                 continue
-            if n_payloads > int(max_payloads):
-                _append_fallback(
-                    req, "payload count exceeded coalesce max", extra={"payloads": n_payloads, "max": max_payloads}
-                )
-                continue
             n_pairs = _payload_pairs(payload_list)
+            if n_payloads > int(max_payloads) or (max_pairs > 0 and n_pairs > int(max_pairs)):
+                try:
+                    merged_results: list[Any] = []
+                    for payload_chunk in _split_payload_list(payload_list):
+                        split_req = GpuRequest(
+                            request_type=GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
+                            request_id=int(req.request_id),
+                            worker_id=int(req.worker_id),
+                            payload={"payloads": payload_chunk},
+                        )
+                        split_resp = self._execute_fg_solve_with_breakpoints_batch(split_req)
+                        if not getattr(split_resp, "success", False):
+                            raise RuntimeError(f"split FG request failed: {getattr(split_resp, 'error', None)}")
+                        split_result = getattr(split_resp, "result", None)
+                        if not isinstance(split_result, list):
+                            raise TypeError("split FG request returned non-list result")
+                        if int(len(split_result)) != int(len(payload_chunk)):
+                            raise RuntimeError("split FG request length mismatch")
+                        merged_results.extend(split_result)
+                    direct.append(
+                        GpuResponse(
+                            request_id=int(req.request_id),
+                            success=True,
+                            result=merged_results,
+                        )
+                    )
+                except Exception as exc:
+                    warn_fallback(
+                        "gpu_executor.fg_breakpoints_request_split",
+                        "failed to split oversized payload list; falling back to per-request execution",
+                        context={
+                            "request_id": int(req.request_id),
+                            "payloads": n_payloads,
+                            "max_payloads": max_payloads,
+                            "pairs": int(n_pairs),
+                            "max_pairs": int(max_pairs),
+                        },
+                        exc=exc,
+                    )
+                    fallback.append(self._execute_request(req))
+                continue
 
             if cur and (
                 cur_payloads + n_payloads > int(max_payloads)
@@ -2690,6 +2753,7 @@ class GpuExecutor:
             groups.append(cur)
 
         out: list[GpuResponse] = []
+        out.extend(direct)
         out.extend(fallback)
 
         if not groups:
@@ -3763,6 +3827,41 @@ class GpuExecutor:
             return []
         if len(requests) == 1:
             return [self._execute_gpu_native_ga_run(requests[0])]
+
+        try:
+            max_reqs = int(os.environ.get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_REQS", "3") or "3")
+        except Exception:
+            max_reqs = 3
+        max_reqs = max(1, min(int(max_reqs), 64))
+
+        try:
+            max_work_units = float(os.environ.get("GPU_NATIVE_GA_BATCH_COALESCE_MAX_WORK_UNITS", "60000") or "60000")
+        except Exception:
+            max_work_units = 60000.0
+        if max_work_units <= 0.0:
+            max_work_units = float("inf")
+
+        out: list[GpuResponse] = []
+        chunk: list[GpuRequest] = []
+        chunk_units = 0.0
+
+        for req in requests:
+            req_units = max(1.0, float(self._estimate_request_work_units(req)))
+            if chunk and (len(chunk) >= int(max_reqs) or (chunk_units + req_units) > float(max_work_units)):
+                out.extend(self._execute_gpu_native_ga_run_chunk(chunk))
+                chunk = []
+                chunk_units = 0.0
+            chunk.append(req)
+            chunk_units += req_units
+
+        if chunk:
+            out.extend(self._execute_gpu_native_ga_run_chunk(chunk))
+
+        return out
+
+    def _execute_gpu_native_ga_run_chunk(self, requests: list[GpuRequest]) -> list[GpuResponse]:
+        if not requests:
+            return []
         return [self._execute_gpu_native_ga_run(req) for req in requests]
 
     def _execute_ga_fg_fused_solve_with_breakpoints(self, request: GpuRequest) -> GpuResponse:
