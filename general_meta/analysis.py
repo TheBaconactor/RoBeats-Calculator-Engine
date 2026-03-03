@@ -39,8 +39,7 @@ def _relevant_elements_for_category(songs: List[dict]) -> Tuple[str, ...]:
     """
     Determine which element stats can affect scoring for this category.
 
-    - For (Primary, Secondary) combo categories, this will be {Primary, Secondary}.
-    - For Primary/All categories (where secondary varies), this will be {Primary} U {all secondaries present}.
+    Returns the union of all primary/secondary elements present in the provided songs.
     """
     elements = set()
     for song in songs:

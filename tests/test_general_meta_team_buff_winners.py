@@ -91,6 +91,7 @@ def test_run_general_meta_emits_team_buff_winners(monkeypatch):
     )
 
     results = gm_app.run_general_meta(configparser.ConfigParser(), {})
+    assert "Chill/All" not in results["results"]
     combo = results["results"]["Chill/Vibe"]
 
     assert combo["team_buff_tiers"] == ["None", "T1", "T5", "T10", "T15"]
