@@ -397,6 +397,33 @@ def _pending_entries_have_fg_improvement(pending: list) -> bool:
     return False
 
 
+def _sig_map_has_fg_improvement(*, sig_map: dict, sigs: list[str]) -> bool:
+    """
+    Check whether any applied entry in `sig_map` has a valid FG improvement.
+
+    Note: in this module, `pending` often contains representative *base-stats* dicts, not entry dicts,
+    so improvement checks must look at the entry objects in `sig_map` instead of the pending reps.
+    """
+    if not isinstance(sig_map, dict) or not sigs:
+        return False
+    for sig in sigs:
+        try:
+            rows = sig_map.get(sig) or []
+        except Exception:
+            rows = []
+        for item in rows:
+            entry = None
+            if isinstance(item, (tuple, list)) and item:
+                entry = item[0]
+            elif isinstance(item, dict):
+                entry = item
+            if not isinstance(entry, dict):
+                continue
+            if _entry_has_valid_fg_config(entry) and _entry_fg_score(entry) > _entry_base_score(entry):
+                return True
+    return False
+
+
 def _selected_count(selected_indices: object) -> int:
     if selected_indices is None:
         return 0
@@ -407,6 +434,55 @@ def _selected_count(selected_indices: object) -> int:
             return int(getattr(selected_indices, "shape", (0,))[0] or 0)
         except Exception:
             return 0
+
+
+def _should_skip_full_download_no_candidates(
+    *,
+    selected_n: int,
+    keep_n: int | None,
+    download_topk: int,
+    max_selected_cap: int,
+) -> bool:
+    """
+    Decide whether a "full global-best download" retry can be safely skipped.
+
+    In reduced-download (top-k) mode, the GPU selection kernel filters candidates by:
+      - final_score > input_base_score
+      - fill_penalty > 0
+
+    When the selection yields no candidates beyond the keep-mask, a full download cannot
+    produce any valid FG improvements and only adds churn (extra GPU requests + CPU apply).
+    """
+    try:
+        selected_n_i = int(selected_n)
+    except Exception:
+        selected_n_i = 0
+    selected_n_i = max(0, int(selected_n_i))
+
+    try:
+        download_topk_i = int(download_topk)
+    except Exception:
+        download_topk_i = 0
+    if int(download_topk_i) <= 0:
+        return False
+
+    if keep_n is None:
+        return False
+    try:
+        keep_n_i = int(keep_n)
+    except Exception:
+        return False
+    keep_n_i = max(0, int(keep_n_i))
+
+    # If keep-mask saturates the fixed output capacity, top-k candidates may be truncated.
+    try:
+        max_cap = int(max_selected_cap)
+    except Exception:
+        max_cap = 0
+    if int(max_cap) > 0 and int(keep_n_i) >= int(max_cap):
+        return False
+
+    return bool(selected_n_i <= keep_n_i)
 
 
 def process_force_greats_gpu_finder(
@@ -1513,6 +1589,7 @@ def process_force_greats_gpu_finder(
             # Optional download selection inputs (per pending signature).
             download_base_scores = None
             download_keep_mask = None
+            download_keep_count = None
             if download_topk_enabled:
                 try:
                     base_buf = np.zeros((int(n_pending),), dtype=np.int32)
@@ -1524,9 +1601,14 @@ def process_force_greats_gpu_finder(
                         keep_buf[int(i_sig)] = 1 if str(sig0) in keep_sigs else 0
                     download_base_scores = base_buf
                     download_keep_mask = keep_buf
+                    try:
+                        download_keep_count = int(int(keep_buf.sum()) if keep_buf is not None else 0)
+                    except Exception:
+                        download_keep_count = None
                 except Exception:
                     download_base_scores = None
                     download_keep_mask = None
+                    download_keep_count = None
 
             if genome_stats_preuploaded:
                 genome_stats_arr = None
@@ -1821,6 +1903,9 @@ def process_force_greats_gpu_finder(
                                     else None,
                                     "download_base_scores": download_base_scores,
                                     "download_keep_mask": download_keep_mask,
+                                    "download_keep_count": int(download_keep_count)
+                                    if download_keep_count is not None
+                                    else None,
                                 }
                                 deferred_gpu_applies.append(ctx)
                                 fused_payload_batch.append(fused_payload)
@@ -2172,6 +2257,9 @@ def process_force_greats_gpu_finder(
                             else None,
                             "download_base_scores": download_base_scores,
                             "download_keep_mask": download_keep_mask,
+                            "download_keep_count": int(download_keep_count)
+                            if download_keep_count is not None
+                            else None,
                         }
                     )
                     continue
@@ -2461,7 +2549,7 @@ def process_force_greats_gpu_finder(
                 and bool(topk_retry_on_empty)
                 and selected_indices is not None
                 and int(_selected_count(selected_indices)) < int(n_pending)
-                and not _pending_entries_have_fg_improvement(apply_pending)
+                and not _sig_map_has_fg_improvement(sig_map=sig_map, sigs=apply_sigs)
             ):
                 full_results = _submit_fg_download_global_best(n_pending, blocking=True)
                 _apply_gpu_results_to_entries(
@@ -2623,29 +2711,77 @@ def process_force_greats_gpu_finder(
                 and ctx.get("download_topk") is not None
                 and selected_indices is not None
                 and int(_selected_count(selected_indices)) < int(n_pending)
-                and not _pending_entries_have_fg_improvement(apply_pending)
+                and not _sig_map_has_fg_improvement(sig_map=ctx.get("sig_map") or {}, sigs=apply_sigs)
             ):
-                full_results = _submit_fg_download_global_best(n_pending, blocking=True)
-                _apply_gpu_results_to_entries(
-                    pending_sigs=ctx.get("pending_sigs") or [],
-                    pending=ctx.get("pending") or [],
-                    sig_map=ctx.get("sig_map") or {},
-                    sel_color=str(ctx.get("sel_color") or ""),
-                    n_sections=int(ctx.get("n_sections") or 0),
-                    max_per_section=int(ctx.get("max_per_section") or 0),
-                    counts_list=[],
-                    fg_scorer=ctx.get("fg_scorer"),
-                    result_final=full_results.get("final_score"),
-                    result_base=full_results.get("base_score"),
-                    result_cfg_idx=full_results.get("cfg_idx"),
-                    result_cfg_counts=full_results.get("cfg_counts"),
-                    result_ft=full_results.get("FT"),
-                    result_ff=full_results.get("FF"),
-                    result_g_pp=full_results.get("g_pp"),
-                    result_g_cm=full_results.get("g_cm"),
-                    result_g_fm=full_results.get("g_fm"),
-                    result_g_ov=full_results.get("g_ov"),
-                )
+                # If the top-k candidate selection produced no candidates beyond the keep-mask, then the GPU
+                # selection filter indicates there are no valid FG-improving candidates (it filters on
+                # final_score > base_score AND fill_penalty > 0). In that case, a full global-best download is
+                # guaranteed to find no improvements and only adds host<->device churn (and can introduce
+                # observable queue-empty gaps).
+                selected_n = int(_selected_count(selected_indices))
+                try:
+                    download_topk_val = int(ctx.get("download_topk") or 0)
+                except Exception:
+                    download_topk_val = 0
+                keep_n = ctx.get("download_keep_count")
+                if keep_n is None:
+                    keep_mask = ctx.get("download_keep_mask")
+                    if keep_mask is not None:
+                        try:
+                            import numpy as _np
+
+                            keep_n = int(_np.count_nonzero(_np.asarray(keep_mask, dtype=_np.int32)))
+                        except Exception:
+                            keep_n = None
+                # Safety: if K is 0 (or keep-mask saturates the fixed output capacity), we cannot infer that no
+                # improving candidates exist. In those cases, keep the full download fallback.
+                try:
+                    max_sel = int(getattr(fg_fields, "FG_DOWNLOAD_TOPK_MAX", 0) or 0)
+                except Exception:
+                    max_sel = 0
+                if _should_skip_full_download_no_candidates(
+                    selected_n=int(selected_n),
+                    keep_n=keep_n,
+                    download_topk=int(download_topk_val),
+                    max_selected_cap=int(max_sel),
+                ):
+                    try:
+                        from gear_optimizer.core.profile_events import emit_profile_event
+
+                        emit_profile_event(
+                            component="force_greats",
+                            event="fg_topk_retry_skipped_no_candidates",
+                            metrics={
+                                "song_slot": int(song_slot),
+                                "n_pending": int(n_pending),
+                                "selected_n": int(selected_n),
+                                "keep_n": int(keep_n),
+                            },
+                        )
+                    except Exception:
+                        pass
+                else:
+                    full_results = _submit_fg_download_global_best(n_pending, blocking=True)
+                    _apply_gpu_results_to_entries(
+                        pending_sigs=ctx.get("pending_sigs") or [],
+                        pending=ctx.get("pending") or [],
+                        sig_map=ctx.get("sig_map") or {},
+                        sel_color=str(ctx.get("sel_color") or ""),
+                        n_sections=int(ctx.get("n_sections") or 0),
+                        max_per_section=int(ctx.get("max_per_section") or 0),
+                        counts_list=[],
+                        fg_scorer=ctx.get("fg_scorer"),
+                        result_final=full_results.get("final_score"),
+                        result_base=full_results.get("base_score"),
+                        result_cfg_idx=full_results.get("cfg_idx"),
+                        result_cfg_counts=full_results.get("cfg_counts"),
+                        result_ft=full_results.get("FT"),
+                        result_ff=full_results.get("FF"),
+                        result_g_pp=full_results.get("g_pp"),
+                        result_g_cm=full_results.get("g_cm"),
+                        result_g_fm=full_results.get("g_fm"),
+                        result_g_ov=full_results.get("g_ov"),
+                    )
 
     # ------------------------------------------------------------------
     # Build `fg_variants` only for the retained set (DB/UI retention).
