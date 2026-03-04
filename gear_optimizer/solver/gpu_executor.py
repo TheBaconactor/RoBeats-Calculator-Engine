@@ -476,6 +476,27 @@ class GpuExecutor:
             GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
         }
     )
+    # These request types should never be batched in the executor loop. In practice, batching these can create
+    # multi-second continuous GPU work that risks Windows UI freezes / TDR.
+    _NO_BATCH_REQUEST_TYPES = frozenset(
+        {
+            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
+            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
+            GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
+            GpuRequestType.GPU_NATIVE_GA_RUN,
+        }
+    )
+    _NO_BATCH_REQUEST_TYPE_VALUES = frozenset({str(rt.value) for rt in _NO_BATCH_REQUEST_TYPES})
+
+    @classmethod
+    def _is_no_batch_request_type(cls, request_type: Any) -> bool:
+        if request_type in cls._NO_BATCH_REQUEST_TYPES:
+            return True
+        try:
+            value = str(getattr(request_type, "value", request_type))
+        except Exception:
+            value = ""
+        return value in cls._NO_BATCH_REQUEST_TYPE_VALUES
 
     def __new__(cls):
         """Singleton pattern."""
