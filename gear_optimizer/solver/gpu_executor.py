@@ -511,6 +511,9 @@ class GpuExecutor:
         self._ready_event = threading.Event()
         self._last_init_error: Optional[str] = None
         self._in_process_queues = False
+        # Single-item defer buffer used by `_gather_batch()` to prevent batching "no-batch"
+        # request types behind unrelated work (stability/TDR guard on Windows).
+        self._deferred_request: Optional[GpuRequest] = None
         # Ref-array upload caching: avoid redundant `load_ref_arrays()` calls when inputs are identical.
         # This saves host work and can avoid implicit syncs inside Taichi APIs.
         self._last_ref_arrays_sig: bytes | None = None
@@ -1146,6 +1149,7 @@ class GpuExecutor:
         self._next_worker_id = 0
         self._taichi_ready = False
         self._last_init_error = None
+        self._deferred_request = None
         self._ready_event.clear()
         self._last_ref_arrays_sig = None
         # Scratch buffer for registry request coalescing (avoid per-chunk np.empty allocations).
@@ -2210,7 +2214,7 @@ class GpuExecutor:
         Returns:
             List of GpuRequest objects
         """
-        batch = []
+        batch: list[GpuRequest] = []
         deadline = perf_counter() + (max_wait_ms / 1000.0)
         coalescable_types = self._COALESCABLE_REQUEST_TYPES
         # Default to enabled for in-process queues; callers can opt out via env var.
@@ -2222,6 +2226,19 @@ class GpuExecutor:
         inproc_after_first_ms = max(0, int(inproc_after_first_ms))
         if int(max_wait_ms) <= 0:
             inproc_after_first_ms = 0
+
+        deferred = self._deferred_request
+        if deferred is not None:
+            self._deferred_request = None
+            try:
+                deferred.dequeue_perf_ns = time.perf_counter_ns()
+            except Exception:
+                pass
+            batch.append(deferred)
+            if deferred.request_type == GpuRequestType.SHUTDOWN:
+                return batch
+            if self._is_no_batch_request_type(deferred.request_type):
+                return batch
 
         while len(batch) < max_batch_size:
             remaining = deadline - perf_counter()
@@ -2260,11 +2277,24 @@ class GpuExecutor:
                     request.dequeue_perf_ns = time.perf_counter_ns()
                 except Exception:
                     pass
-                batch.append(request)
-
-                # If shutdown, return immediately
                 if request.request_type == GpuRequestType.SHUTDOWN:
+                    batch.append(request)
                     return batch
+
+                # If a heavy/no-batch request arrives after we already have work, defer it to
+                # become the first item of the next batch.
+                if batch and self._is_no_batch_request_type(request.request_type):
+                    if self._deferred_request is None:
+                        self._deferred_request = request
+                    else:
+                        # Should be unreachable; avoid dropping work.
+                        batch.append(request)
+                    break
+
+                batch.append(request)
+                if self._is_no_batch_request_type(request.request_type):
+                    break
+
                 # In in-process mode, a lot of batching opportunity exists *after* the first coalescable
                 # request arrives (producer is local and can enqueue multiple items quickly). If we spent
                 # most of `max_wait_ms` waiting for the first item, refresh the deadline so we still have
@@ -2407,6 +2437,19 @@ class GpuExecutor:
         """
         from .taichi_gem.force_greats.api import solve_force_greats_finder_gpu_tasks
 
+        task_budget = None
+        try:
+            raw_budget = os.environ.get("FG_TASK_BUDGET")
+            if raw_budget is not None and str(raw_budget).strip() != "":
+                task_budget = int(str(raw_budget).strip())
+        except Exception:
+            task_budget = None
+        if task_budget is None:
+            inflight_v3 = str(os.environ.get("INFLIGHT_V3", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+            inflight_v4 = str(os.environ.get("INFLIGHT_V4", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+            # Safety default: chunk FG task uploads in in-process mode to avoid multi-second continuous GPU work.
+            task_budget = 256 if (inflight_v3 or inflight_v4 or self._in_process_queues) else 0
+        task_budget = max(0, int(task_budget))
         def _extract_task_only(
             req: "GpuRequest",
         ) -> tuple[tuple[Any, ...], dict[str, Any], list[dict[str, Any]]] | None:
@@ -2525,15 +2568,30 @@ class GpuExecutor:
 
                 t_pack0 = perf_counter()
                 try:
-                    solve_force_greats_finder_gpu_tasks(
-                        genome_stats_list,
-                        timestamps_np,
-                        great_candidate_timestamps_np,
-                        int(long_notes),
-                        float(last_note_time),
-                        fg_tasks=merged_tasks,
-                        **kwargs_local,
-                    )
+                    if int(task_budget) > 0 and int(len(merged_tasks)) > int(task_budget):
+                        upload_this = bool(kwargs_local.get("upload_genome_stats", True))
+                        for j in range(0, int(len(merged_tasks)), int(task_budget)):
+                            kwargs_local["upload_genome_stats"] = bool(upload_this)
+                            solve_force_greats_finder_gpu_tasks(
+                                genome_stats_list,
+                                timestamps_np,
+                                great_candidate_timestamps_np,
+                                int(long_notes),
+                                float(last_note_time),
+                                fg_tasks=merged_tasks[j : j + int(task_budget)],
+                                **kwargs_local,
+                            )
+                            upload_this = False
+                    else:
+                        solve_force_greats_finder_gpu_tasks(
+                            genome_stats_list,
+                            timestamps_np,
+                            great_candidate_timestamps_np,
+                            int(long_notes),
+                            float(last_note_time),
+                            fg_tasks=merged_tasks,
+                            **kwargs_local,
+                        )
                     self._record_pack(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, perf_counter() - t_pack0)
                     for req, *_rest in items:
                         out_by_id[int(req.request_id)] = GpuResponse(

@@ -178,7 +178,60 @@ def test_gather_batch_inproc_short_wait_uses_nonblocking_poll(monkeypatch):
     batch = ex._gather_batch(max_wait_ms=1, max_batch_size=8)
     assert len(batch) == 1
     assert ex._request_queue.get_nowait_calls >= 1
-    assert not ex._request_queue.get_calls
+    assert all(float(t or 0.0) <= 0.0 for t in ex._request_queue.get_calls)
+
+
+def test_gather_batch_stops_when_no_batch_type_seen() -> None:
+    class _SeqQueue:
+        def __init__(self, items: list[GpuRequest]):
+            self.items = list(items)
+
+        def get(self, timeout=None):
+            if self.items:
+                return self.items.pop(0)
+            raise queue.Empty()
+
+    req1 = GpuRequest(
+        request_type=GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+        request_id=301,
+        worker_id=1,
+        payload={},
+    )
+    req2 = GpuRequest(
+        request_type=GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
+        request_id=302,
+        worker_id=1,
+        payload={},
+    )
+    req3 = GpuRequest(
+        request_type=GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
+        request_id=303,
+        worker_id=1,
+        payload={},
+    )
+
+    ex = GpuExecutor()
+    ex._in_process_queues = True
+    ex._request_queue = _SeqQueue([req1, req2, req3])
+
+    batch = ex._gather_batch(max_wait_ms=1, max_batch_size=8)
+    # No-batch barrier types should NOT be batched behind unrelated work; they are deferred to
+    # become the first item of the next batch.
+    assert [r.request_id for r in batch] == [301]
+    assert [r.request_type for r in batch] == [
+        GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+    ]
+    assert len(ex._request_queue.items) == 1
+
+    batch2 = ex._gather_batch(max_wait_ms=0, max_batch_size=8)
+    assert [r.request_id for r in batch2] == [302]
+    assert [r.request_type for r in batch2] == [GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS]
+    assert len(ex._request_queue.items) == 1
+
+    batch3 = ex._gather_batch(max_wait_ms=0, max_batch_size=8)
+    assert [r.request_id for r in batch3] == [303]
+    assert [r.request_type for r in batch3] == [GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS]
+    assert len(ex._request_queue.items) == 0
 
 
 def test_gpu_executor_timer_period_lifecycle(monkeypatch):

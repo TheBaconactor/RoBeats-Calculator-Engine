@@ -63,7 +63,11 @@ def _should_use_fused_breakpoints_solve(*, in_process: bool, has_gpu_client: boo
 
 def _default_fused_payloads_per_request() -> int:
     """
-    Choose a throughput-friendly default fused payload batch size.
+    Choose a stability-first default fused payload batch size.
+
+    Large `FG_SOLVE_WITH_BREAKPOINTS_BATCH` requests can create multi-second continuous GPU work
+    on Windows/Vulkan (TDR / UI freezes). Keep the default small and rely on in-flight watermarks
+    to keep the queue saturated instead of building "mega" FG requests.
     """
     workers = 0
     try:
@@ -71,11 +75,8 @@ def _default_fused_payloads_per_request() -> int:
     except Exception:
         workers = 0
 
-    if workers >= 4:
-        return 128
-    if workers >= 2:
-        return 96
-    return 64
+    # Keep the upper bound low even as worker count grows.
+    return 8 if workers >= 2 else 4
 
 
 def _chart_signature_key(calc_song: dict) -> tuple:
@@ -705,10 +706,9 @@ def process_force_greats_gpu_finder(
     if gpu_client is not None and "FG_ASYNC_TASKS_PER_REQUEST" not in os.environ:
         try:
             if in_process:
-                # In in-process (thread-queue) mode we can batch many FT/FF chunks into
-                # a single executor request so FG runs as one contiguous GPU job
-                # (reset + solve + download) with fewer request boundaries.
-                fg_async_tasks_per_request_default = 4096
+                # In in-process (thread-queue) mode, overly large task batches can create multi-second
+                # continuous GPU work (TDR / UI freezes on Windows). Keep the default conservative.
+                fg_async_tasks_per_request_default = 256
             else:
                 # IPC mode: still batch aggressively enough to reduce per-request overhead,
                 # while keeping payload sizes reasonable.
@@ -724,6 +724,14 @@ def process_force_greats_gpu_finder(
     except Exception:
         fg_async_tasks_per_request = fg_async_tasks_per_request_default
     fg_async_tasks_per_request = max(1, int(fg_async_tasks_per_request))
+    if gpu_client is not None and in_process and int(fg_async_tasks_per_request) > 512:
+        if not hasattr(process_force_greats_gpu_finder, "_fg_tasks_per_req_clamp_warned"):
+            process_force_greats_gpu_finder._fg_tasks_per_req_clamp_warned = True
+            print(
+                "[FG][WARN] FG_ASYNC_TASKS_PER_REQUEST is very high "
+                f"({int(fg_async_tasks_per_request)}); clamping to 512 to reduce TDR/freezing risk."
+            )
+        fg_async_tasks_per_request = 512
     if perf and gpu_client is not None:
         mode = "in_process" if in_process else "ipc"
         print(
@@ -1278,6 +1286,14 @@ def process_force_greats_gpu_finder(
         except Exception:
             fused_payloads_per_request = _default_fused_payloads_per_request()
         fused_payloads_per_request = max(1, int(fused_payloads_per_request))
+        if in_process and int(fused_payloads_per_request) > 8:
+            if not hasattr(process_force_greats_gpu_finder, "_fg_fused_payloads_clamp_warned"):
+                process_force_greats_gpu_finder._fg_fused_payloads_clamp_warned = True
+                print(
+                    "[FG][WARN] FG_FUSED_PAYLOADS_PER_REQUEST is very high "
+                    f"({int(fused_payloads_per_request)}); clamping to 8 to reduce TDR/freezing risk."
+                )
+            fused_payloads_per_request = 8
 
     def _flush_fused_payload_batch() -> None:
         nonlocal timeline_precompute_queued, n_gpu_calls
@@ -1288,15 +1304,63 @@ def process_force_greats_gpu_finder(
             raise RuntimeError("fused payload batch requires gpu_client")
 
         timeline_precompute_queued = True
-        fut = gpu_client.submit_fg_solve_with_breakpoints_batch(fused_payload_batch).future
+        # Guardrail: avoid giant FG_SOLVE_WITH_BREAKPOINTS_BATCH requests when per-payload FT/FF pair lists are large.
+        # A single batch can contain multiple payloads; each payload may have up to FG_BREAKPOINTS_MAX_PAIRS_PER_REQUEST
+        # pairs, so naive batching can create multi-second continuous GPU work on Windows.
+        max_pairs_total = 256
+        try:
+            max_pairs_total = int(os.environ.get("FG_BREAKPOINTS_MAX_PAIRS_PER_REQUEST", "256") or "256")
+        except Exception:
+            max_pairs_total = 256
+        # Hard cap: keep batch-level work bounded even if adaptive budgets raise the per-payload cap.
+        max_pairs_total = max(0, min(int(max_pairs_total), 256))
 
-        for i, ctx in enumerate(fused_ctx_batch):
-            ctx["download_future"] = fut
-            ctx["download_index"] = int(i)
+        def _pairs_len(payload: dict) -> int:
+            pairs = payload.get("ftff_pairs")
+            if pairs is None:
+                # Unknown/unbounded work (e.g., window-based solve). Treat as "full budget" so we don't
+                # accidentally batch many payloads into one request and risk multi-second GPU dispatch.
+                return int(max_pairs_total) if int(max_pairs_total) > 0 else 0
+            try:
+                shape = getattr(pairs, "shape", None)
+                if shape is not None and len(shape) > 0:
+                    return max(0, int(shape[0]))
+            except Exception:
+                pass
+            try:
+                return max(0, int(len(pairs)))
+            except Exception:
+                return 0
+
+        def _submit_chunk(payloads: list[dict], ctxs: list[dict]) -> None:
+            nonlocal n_gpu_calls
+            fut_local = gpu_client.submit_fg_solve_with_breakpoints_batch(payloads).future
+            for j, ctx_local in enumerate(ctxs):
+                ctx_local["download_future"] = fut_local
+                ctx_local["download_index"] = int(j)
+            n_gpu_calls += 1
+
+        if max_pairs_total <= 0:
+            _submit_chunk(list(fused_payload_batch), list(fused_ctx_batch))
+        else:
+            chunk_payloads: list[dict] = []
+            chunk_ctxs: list[dict] = []
+            chunk_pairs = 0
+            for payload, ctx in zip(fused_payload_batch, fused_ctx_batch):
+                p_len = int(_pairs_len(payload))
+                if chunk_payloads and (int(chunk_pairs) + int(p_len)) > int(max_pairs_total):
+                    _submit_chunk(chunk_payloads, chunk_ctxs)
+                    chunk_payloads = []
+                    chunk_ctxs = []
+                    chunk_pairs = 0
+                chunk_payloads.append(payload)
+                chunk_ctxs.append(ctx)
+                chunk_pairs += int(p_len)
+            if chunk_payloads:
+                _submit_chunk(chunk_payloads, chunk_ctxs)
 
         fused_payload_batch.clear()
         fused_ctx_batch.clear()
-        n_gpu_calls += 1
 
     # Process each group in GPU batches
     for (sel_color, n_sections, max_per_section), sig_map in groups.items():

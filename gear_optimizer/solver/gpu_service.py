@@ -145,7 +145,9 @@ class GpuServiceClient:
         self._profile_sample_cap = 5000
 
         # FG job coalescing (optional, in-process only).
-        self._fg_coalesce_enabled = env_flag("FG_COALESCE_BREAKPOINTS_BATCH", "1")
+        # Default to disabled: extra coalescing can create very large breakpoints batches that risk
+        # multi-second continuous GPU work on Windows (TDR / UI freezes). Enable explicitly via env.
+        self._fg_coalesce_enabled = env_flag("FG_COALESCE_BREAKPOINTS_BATCH", "0")
         try:
             self._fg_coalesce_max_payloads = int(os.environ.get("FG_COALESCE_BREAKPOINTS_MAX_PAYLOADS", "192") or "192")
         except Exception:

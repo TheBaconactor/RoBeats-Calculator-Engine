@@ -21,10 +21,10 @@ def test_should_use_fused_breakpoints_solve_allows_legacy_optout(monkeypatch):
 
 def test_default_fused_payloads_per_request_scales_with_fg_workers(monkeypatch):
     monkeypatch.setenv("INFLIGHT_FG_WORKERS", "1")
-    assert gpu_dispatch._default_fused_payloads_per_request() == 64
+    assert gpu_dispatch._default_fused_payloads_per_request() == 4
 
     monkeypatch.setenv("INFLIGHT_FG_WORKERS", "2")
-    assert gpu_dispatch._default_fused_payloads_per_request() == 96
+    assert gpu_dispatch._default_fused_payloads_per_request() == 8
 
     monkeypatch.setenv("INFLIGHT_FG_WORKERS", "4")
-    assert gpu_dispatch._default_fused_payloads_per_request() == 128
+    assert gpu_dispatch._default_fused_payloads_per_request() == 8
