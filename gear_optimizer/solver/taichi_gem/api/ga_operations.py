@@ -25,6 +25,7 @@ import numpy as np
 
 from .. import fields
 from ..fields import MAX_WORK_ITEMS
+from ..ga_chunking import compute_ga_combo_chunk
 from ..kernel_loader import get_kernels
 
 from .initialization import ensure_ready, _ensure_ftff_combo_tables
@@ -40,6 +41,36 @@ _GA_COMBO_CHUNK_MIN: int = max(64, int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK
 _GA_COMBO_CHUNK_MAX: int = max(
     _GA_COMBO_CHUNK_MIN, int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MAX", "4096") or 4096)
 )
+
+# Work-item budget for GA combo search chunking (<= MAX_WORK_ITEMS).
+#
+# Note: this is read lazily (with light caching) instead of at module import time so
+# in-flight schedulers can apply env defaults before the first GA dispatch.
+_GA_WORK_ITEM_BUDGET_RAW: str | None = None
+_GA_WORK_ITEM_BUDGET: int = int(MAX_WORK_ITEMS)
+
+
+def _ga_work_item_budget() -> int:
+    global _GA_WORK_ITEM_BUDGET_RAW, _GA_WORK_ITEM_BUDGET
+    raw = os.environ.get("GPU_NATIVE_GA_WORK_ITEM_BUDGET", None)
+    raw_norm = str(raw or "").strip()
+    if raw_norm == _GA_WORK_ITEM_BUDGET_RAW:
+        return int(_GA_WORK_ITEM_BUDGET)
+
+    _GA_WORK_ITEM_BUDGET_RAW = raw_norm
+    if raw_norm == "":
+        _GA_WORK_ITEM_BUDGET = int(MAX_WORK_ITEMS)
+        return int(_GA_WORK_ITEM_BUDGET)
+
+    try:
+        val = int(raw_norm)
+    except Exception:
+        _GA_WORK_ITEM_BUDGET = int(MAX_WORK_ITEMS)
+        return int(_GA_WORK_ITEM_BUDGET)
+
+    _GA_WORK_ITEM_BUDGET = max(64, min(int(MAX_WORK_ITEMS), int(val)))
+    return int(_GA_WORK_ITEM_BUDGET)
+
 
 # Get appropriate kernels for current platform (Metal-safe on macOS)
 kernels = get_kernels()
@@ -594,12 +625,15 @@ def ga_evaluate_population(
 
     # Precompute FT/FF combo tables once per budget (tiny upload, reused across generations).
     n_combos = _ensure_ftff_combo_tables(total_budget_i)
-    combo_chunk = n_combos
-    # Chunk very large workloads to reduce kernel wall time (helps avoid Windows TDR on Vulkan).
-    if n_genomes * n_combos > MAX_WORK_ITEMS:
-        # Pick the largest chunk that keeps the 2D kernel's total work items bounded.
-        target = MAX_WORK_ITEMS // max(1, n_genomes)
-        combo_chunk = min(n_combos, _GA_COMBO_CHUNK_MAX, max(_GA_COMBO_CHUNK_MIN, max(1, target)))
+    combo_chunk = compute_ga_combo_chunk(
+        n_genomes=n_genomes,
+        n_combos=n_combos,
+        max_work_items=max(int(_ga_work_item_budget()), int(n_genomes)),
+        chunk_min=_GA_COMBO_CHUNK_MIN,
+        chunk_max=_GA_COMBO_CHUNK_MAX,
+    )
+    if combo_chunk <= 0:
+        combo_chunk = int(n_combos)
 
     for offset in range(0, n_combos, combo_chunk):
         chunk_len = int(min(combo_chunk, n_combos - offset))
