@@ -4,6 +4,7 @@ import gear_optimizer.solver.native_inflight_orchestrator as native_orch
 from gear_optimizer.solver.native_inflight_orchestrator import (
     _continuous_fg_submit_budget,
     _continuous_fg_should_start,
+    _default_prime_target,
     _read_continuous_fg_adaptive_submit,
     _read_continuous_ga_dispatch_burst,
     _read_fg_ga_credit_budget,
@@ -221,6 +222,19 @@ def test_continuous_fg_submit_budget_honors_end_of_run_drain():
         adaptive_max_burst=3,
     )
     assert budget == 4
+
+
+def test_default_prime_target_scales_small_inflight_runs_without_exceeding_buffers():
+    assert _default_prime_target(inflight_limit=1, prep_limit=4, pending_count=20) == 4
+    assert _default_prime_target(inflight_limit=2, prep_limit=8, pending_count=20) == 4
+    assert _default_prime_target(inflight_limit=4, prep_limit=16, pending_count=20) == 8
+    assert _default_prime_target(inflight_limit=8, prep_limit=32, pending_count=20) == 8
+
+
+def test_default_prime_target_clamps_to_pending_and_prep_limits():
+    assert _default_prime_target(inflight_limit=4, prep_limit=6, pending_count=20) == 6
+    assert _default_prime_target(inflight_limit=4, prep_limit=16, pending_count=3) == 3
+    assert _default_prime_target(inflight_limit=4, prep_limit=16, pending_count=0) == 0
 
     budget_no_drain = _continuous_fg_submit_budget(
         pending_fg_count=5,

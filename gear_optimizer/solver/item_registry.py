@@ -30,7 +30,7 @@ MINI_SLOT_INDICES = [6, 7, 8]  # Minis occupy slots 6, 7, 8
 # Cache gear-side registry state (song-invariant). Mini pools are still rebuilt per song.
 _GEAR_REGISTRY_CACHE: dict[
     tuple[tuple[str, ...], tuple[str, ...], tuple[tuple[str, int], ...], tuple[str, ...]],
-    tuple[dict[int, dict], dict[tuple[int, str], int], list[int], list[int], int],
+    tuple[dict[int, dict], dict[tuple[int, str], int], list[dict[str, int]], list[int], list[int], int],
 ] = {}
 
 
@@ -90,6 +90,8 @@ class ItemRegistry:
         # Mappings
         self.id_to_item: dict[int, dict] = {0: {}}  # ID 0 = empty
         self.item_to_id: dict[tuple[int, str], int] = {}  # (slot_idx, name) -> id
+        # Fast slot-local lookup tables for hot encoding paths.
+        self._slot_name_to_id: list[dict[str, int]] = [{} for _ in range(9)]
 
         # Per-slot pool boundaries
         self.slot_start = [0] * 9  # First valid ID for each slot
@@ -108,6 +110,7 @@ class ItemRegistry:
         if cached is None:
             id_to_item_base: dict[int, dict] = {0: {}}
             item_to_id_base: dict[tuple[int, str], int] = {}
+            slot_name_to_id_base: list[dict[str, int]] = [{} for _ in range(9)]
             slot_start_base = [0] * 9
             slot_count_base = [0] * 9
             next_id_base = 1
@@ -130,16 +133,32 @@ class ItemRegistry:
                     next_id_base += 1
                     id_to_item_base[item_id] = item
                     item_to_id_base[(slot_idx, name)] = item_id
+                    slot_name_to_id_base[slot_idx][str(name)] = item_id
 
-            cached = (id_to_item_base, item_to_id_base, slot_start_base, slot_count_base, next_id_base)
+            cached = (
+                id_to_item_base,
+                item_to_id_base,
+                slot_name_to_id_base,
+                slot_start_base,
+                slot_count_base,
+                next_id_base,
+            )
             _GEAR_REGISTRY_CACHE[cache_key] = cached
             if len(_GEAR_REGISTRY_CACHE) > 24:
                 _GEAR_REGISTRY_CACHE.clear()
                 _GEAR_REGISTRY_CACHE[cache_key] = cached
 
-        id_to_item_base, item_to_id_base, slot_start_base, slot_count_base, next_id = cached
+        (
+            id_to_item_base,
+            item_to_id_base,
+            slot_name_to_id_base,
+            slot_start_base,
+            slot_count_base,
+            next_id,
+        ) = cached
         self.id_to_item = dict(id_to_item_base)
         self.item_to_id = dict(item_to_id_base)
+        self._slot_name_to_id = [dict(m) for m in slot_name_to_id_base]
         self.slot_start = list(slot_start_base)
         self.slot_count = list(slot_count_base)
 
@@ -164,6 +183,7 @@ class ItemRegistry:
             # Register for all mini slots (6, 7, 8)
             for mini_slot in MINI_SLOT_INDICES:
                 self.item_to_id[(mini_slot, name)] = item_id
+                self._slot_name_to_id[mini_slot][str(name)] = item_id
 
         # Set mini slot boundaries (all share same pool)
         for mini_slot in MINI_SLOT_INDICES:
@@ -209,20 +229,18 @@ class ItemRegistry:
             np.ndarray: (9,) int32 array of item IDs
         """
         ids = np.zeros(9, dtype=np.int32)
+        slot_name_to_id = self._slot_name_to_id
 
         for slot_idx, item in enumerate(genome[:9]):
             if not item:
-                ids[slot_idx] = 0
                 continue
 
-            name = item.get("Name", "") if isinstance(item, dict) else str(item)
-            key = (slot_idx, name)
-
-            if key in self.item_to_id:
-                ids[slot_idx] = self.item_to_id[key]
+            if isinstance(item, dict):
+                name = item.get("Name", "")
+                if name:
+                    ids[slot_idx] = slot_name_to_id[slot_idx].get(str(name), 0)
             else:
-                # Item not in registry - use ID 0 (empty)
-                ids[slot_idx] = 0
+                ids[slot_idx] = slot_name_to_id[slot_idx].get(str(item), 0)
 
         return ids
 
@@ -335,9 +353,22 @@ class ItemRegistry:
         """
         n_genomes = len(population)
         ids = np.zeros((n_genomes, 9), dtype=np.int32)
+        slot_name_to_id = self._slot_name_to_id
 
         for i, genome in enumerate(population):
-            ids[i] = self.encode_genome(genome)
+            row = ids[i]
+            limit = min(9, len(genome))
+            for slot_idx in range(limit):
+                item = genome[slot_idx]
+                if not item:
+                    continue
+
+                if isinstance(item, dict):
+                    name = item.get("Name", "")
+                    if name:
+                        row[slot_idx] = slot_name_to_id[slot_idx].get(str(name), 0)
+                else:
+                    row[slot_idx] = slot_name_to_id[slot_idx].get(str(item), 0)
 
         return ids
 

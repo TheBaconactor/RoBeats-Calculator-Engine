@@ -407,6 +407,37 @@ def _default_worker_threads(*, inflight_limit: int, kind: str) -> int:
     return max(1, min(inflight_limit, int(base)))
 
 
+def _default_prime_target(*, inflight_limit: int, prep_limit: int, pending_count: int) -> int:
+    """
+    Pick a startup prep backlog large enough to avoid the first GA/FG feed bubble.
+
+    For smaller in-flight runs, priming only `inflight_limit` songs tends to leave the
+    GPU queue shallow while prep/decode workers are still spinning up. We bias toward
+    a modest 4-8 song startup backlog, but always cap by the prep buffer and pending queue.
+    """
+    try:
+        inflight_limit = int(inflight_limit)
+    except Exception:
+        inflight_limit = 1
+    try:
+        prep_limit = int(prep_limit)
+    except Exception:
+        prep_limit = 1
+    try:
+        pending_count = int(pending_count)
+    except Exception:
+        pending_count = 0
+
+    inflight_limit = max(1, inflight_limit)
+    prep_limit = max(1, prep_limit)
+    pending_count = max(0, pending_count)
+    if pending_count <= 0:
+        return 0
+
+    target = max(inflight_limit, min(8, max(4, inflight_limit * 2)))
+    return max(1, min(target, prep_limit, pending_count))
+
+
 def _extract_repeat_ctx(task: tuple) -> dict | None:
     if not isinstance(task, (tuple, list)) or len(task) <= 16:
         return None
@@ -1989,7 +2020,8 @@ def run_native_inflight_song_pipeline(
     #
     # High-end GPUs can burn through the first GA jobs quickly; priming only 1–2 songs
     # can still leave the GPU idle while CPU prep catches up. Default to priming up to
-    # `inflight_limit`, but allow override via env var for experimentation.
+    # a modest 4-8 song backlog on smaller in-flight runs, but allow override via env
+    # var/config for experimentation.
     prime_target = 0
     if cfg0 is not None:
         try:
@@ -2003,8 +2035,13 @@ def run_native_inflight_song_pipeline(
         except Exception:
             pass
     if prime_target <= 0:
-        prime_target = inflight_limit
-    prime_target = max(1, min(int(prime_target), inflight_limit, len(pending_tasks)))
+        prime_target = _default_prime_target(
+            inflight_limit=inflight_limit,
+            prep_limit=prep_limit,
+            pending_count=len(pending_tasks),
+        )
+    else:
+        prime_target = max(0, min(int(prime_target), int(prep_limit), len(pending_tasks)))
     for _ in range(int(prime_target)):
         first = pending_tasks.popleft()
         song_name = first[1]
