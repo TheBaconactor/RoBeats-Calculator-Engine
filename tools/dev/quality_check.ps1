@@ -49,7 +49,6 @@ Invoke-NativeStep -Label "pytest quick suite" -Executable "python" -Arguments @(
   "-m",
   "pytest",
   "tests/test_repo_guardrails.py",
-  "tests/test_api_stability.py",
   "tests/test_gpu_ga_eval_race_free.py",
   "tests/test_parity_smoke.py::test_gem_solver_cpu_gpu_exact_parity_smoke",
   "tests/test_fg_stage1_tie_metadata_consistency.py",

@@ -97,23 +97,6 @@ _GPU_NATIVE_GA_BATCH_RUNS = _env_int("GPU_NATIVE_GA_BATCH_RUNS", 0)
 _GPU_NATIVE_GA_LOG_PROGRESS = _env_flag("GPU_NATIVE_GA_LOG_PROGRESS", "0")
 
 
-def _build_base_stats_array(base_stats_fixed: dict, cfg_data: dict) -> tuple:
-    """
-    Construct base stats array for GPU upload with user gem adjustments.
-
-    This helper consolidates the duplicated base stats array construction
-    logic used in both the GPU-native GA and fallback paths.
-
-    Args:
-        base_stats_fixed: Dict of fixed base stats (from config/team buffs)
-        cfg_data: Configuration dict containing user gem inputs
-
-    Returns:
-        tuple: (base_stats_arr, selected_color) where base_stats_arr is np.int32[10]
-    """
-    return build_base_fixed_stats_array(base_stats_fixed, cfg_data)
-
-
 if _GPU_NATIVE_AVAILABLE:
 
     def build_ga_init_heuristic_topk(
@@ -460,7 +443,7 @@ def decode_gpu_native_ga_runs_payload(
             "Flow",
             "Chill",
         ]
-        base_fixed_arr, sel_color_built = _build_base_stats_array(base_stats_fixed, cfg_data)
+        base_fixed_arr, sel_color_built = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
         best_stats = {stat_names[i]: int(base_fixed_arr[i]) for i in range(len(stat_names))}
         for item in best_global_genome or []:
             if not item:
@@ -552,7 +535,7 @@ def decode_gpu_native_ga_runs_payload(
         base_stats_arr = None
         sel_color_built = None
         if include_stats:
-            base_stats_arr, sel_color_built = _build_base_stats_array(base_stats_fixed, cfg_data)
+            base_stats_arr, sel_color_built = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
 
         sel_color = str(cfg_data.get("selected_color", "") or "")
         if sel_color_built:
@@ -1285,7 +1268,7 @@ def _run_gpu_native_ga(
             gpu_data["slot_count"],
         )
 
-        base_stats_arr, _ = _build_base_stats_array(base_stats_fixed, cfg_data)
+        base_stats_arr, _ = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
         gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
     else:
         if gpu_static.get("need_upload_item_stats"):
@@ -2206,7 +2189,9 @@ def solve_coevolution_genetic(
         from .gpu_executor import is_gpu_worker_mode
 
         if is_gpu_worker_mode():
-            raise RuntimeError("GPU worker mode is not supported in GPU-only GA (requires CPU GA fallback).")
+            raise RuntimeError(
+                "GPU worker mode is not supported in GPU-only GA because it depends on a removed CPU-owned path."
+            )
     except ImportError:
         pass
 
@@ -2315,7 +2300,7 @@ def solve_coevolution_genetic(
         )
 
         # Upload base fixed stats (team buffs + user gems from config)
-        base_stats_arr, _ = _build_base_stats_array(base_stats_fixed, cfg_data)
+        base_stats_arr, _ = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
         gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
 
         # 4. Upload GPU-side heuristic top-K table for initial population generation.

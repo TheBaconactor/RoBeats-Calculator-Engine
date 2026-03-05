@@ -811,7 +811,7 @@ Comprehensive test suite in `/tests`:
 |------|---------|
 | `conftest.py` | Pytest configuration, test DB setup |
 | `test_analytical_*.py` (3 files) | Force greats accuracy |
-| `test_api_stability.py` | API compatibility checks |
+| `test_repo_guardrails.py` | Import-surface and removed-symbol guardrails |
 | `test_async_fg_integrity.py` | Async FG thread safety |
 | `test_breakpoint_parity.py` | GPU-CPU parity at checkpoints |
 | `test_calculate_only_force_greats_candidates.py` | FG candidate calculation |

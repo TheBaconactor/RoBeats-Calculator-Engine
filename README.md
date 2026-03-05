@@ -158,7 +158,7 @@ RoBeats-Calculator-Engine/
 ```
 
 <details>
-<summary>Legacy: detailed tree (may be out-of-date)</summary>
+<summary>Historical: detailed tree (may be out-of-date)</summary>
 
 ```
 RoBeats-Calculator-Engine/
@@ -475,7 +475,7 @@ By default, private/scratch scripts (for example `_tmp_*`, underscore-prefixed f
 - Improved maintainability (220-290 lines per module vs 1,000-1,700)
 - Clear module boundaries and single responsibilities
 - Easier navigation and understanding
-- No transitional wrappers retained
+- Direct module boundaries only
 - Zero circular dependencies introduced
 - Foundation for future refactoring
 
