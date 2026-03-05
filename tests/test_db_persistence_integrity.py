@@ -118,10 +118,10 @@ def test_save_loadouts_batch_unions_equivalent_mini_variants_with_missing_colors
         song,
         [{"score": 100, "fg_score": 0, "gear": ["G1"], "minis": ["MiniA"], "details": details, "force": None}],
     )
-    # Legacy/details-lite write omits colors but should still merge into the same effective hash.
+    # A details-lite write omits colors but should still merge into the same effective hash.
     save_loadouts_batch(
         song,
-        [{"score": 100, "fg_score": 0, "gear": ["G1"], "minis": ["MiniB"], "details": {"legacy": True}, "force": None}],
+        [{"score": 100, "fg_score": 0, "gear": ["G1"], "minis": ["MiniB"], "details": {"marker": True}, "force": None}],
     )
 
     conn = get_db_connection(db_path)

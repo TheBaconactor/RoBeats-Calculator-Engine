@@ -227,43 +227,6 @@ def _calc_head_scores_3_bits(
 
 
 @ti.func
-def _calc_head_score_masks(
-    base_value: ti.f32,
-    factor: ti.f32,
-    fever_mul: ti.f32,
-    work_idx: ti.i32,
-    head_len: ti.i32,
-) -> ti.f32:
-    """
-    Calculate head score using per-work-item fever masks.
-
-    Iterates through first head_len notes, applying combo ramp and
-    fever multiplier where applicable.
-
-    Args:
-        base_value: Base score value
-        factor: Combo ramp factor
-        fever_mul: Fever multiplier
-        work_idx: Work item index (for fever_masks lookup)
-        head_len: Number of notes in head (<= 100)
-
-    Returns:
-        Head score as float
-    """
-    head_score = ti.i32(0)
-    t: ti.f32 = 1.0
-    for i in range(head_len):
-        ramp_val = base_value + (t * factor)
-        if kernels_helpers.fever_masks[work_idx, i] != 0:
-            # All values are non-negative; truncation toward zero matches floor and is faster.
-            head_score += ti.cast(ramp_val * fever_mul, ti.i32)
-        else:
-            head_score += ti.cast(ramp_val, ti.i32)
-        t += 1.0
-    return ti.cast(head_score, ti.f32)
-
-
-@ti.func
 def _calc_head_score_grid(
     base_value: ti.f32,
     factor: ti.f32,
@@ -311,85 +274,10 @@ def _calc_head_score_grid(
 
 
 @ti.func
-def calc_score_device(
-    base_value: ti.f32,  # Changed to f32 for performance
-    combo_mul: ti.f32,
-    fever_mul: ti.f32,
-    work_idx: ti.i32,
-    head_len: ti.i32,
-    count_fever: ti.i32,
-    count_normal: ti.i32,
-) -> ti.i32:
-    """
-    GPU port of fast_calculate_score (scoring_core.py:48-96).
-
-    Calculates total score by:
-    1. Body score: simple multiply (all notes past head at full combo)
-    2. Head score: ramped combo scaling for first head_len notes
-
-    Args:
-        base_value: (primary*2) + secondary + pp_factor
-        combo_mul: Combo multiplier from lookup
-        fever_mul: Fever multiplier from lookup
-        work_idx: Index into fever_masks for this work item
-        head_len: Number of notes in the head (<=100)
-        count_fever: Fever notes in body
-        count_normal: Normal notes in body
-
-    Returns:
-        Total score as int32
-    """
-    body_score = kernels_helpers._calc_body_score(base_value, combo_mul, fever_mul, count_fever, count_normal)
-    factor = kernels_helpers._calc_head_factor(base_value, combo_mul)
-    head_score = _calc_head_score_masks(base_value, factor, fever_mul, work_idx, head_len)
-    # Cast each component to i32 first, then add as integers for exact result
-    return ti.cast(body_score, ti.i32) + ti.cast(head_score, ti.i32)
-
-
-@ti.func
-def calc_score_with_grid(
-    base_value: ti.f32,
-    combo_mul: ti.f32,
-    fever_mul: ti.f32,
-    song_slot: ti.i32,
-    ft_idx: ti.i32,
-    ff_idx: ti.i32,
-    head_len: ti.i32,
-    count_fever: ti.i32,
-    count_normal: ti.i32,
-) -> ti.i32:
-    """
-    Score calculation using grid-stored fever masks.
-    Reads fever mask from grid_fever_masks[ft_idx, ff_idx, :].
-
-    Args:
-        base_value: (primary*2) + secondary + pp_factor
-        combo_mul: Combo multiplier
-        fever_mul: Fever multiplier
-        song_slot: Song slot in grid
-        ft_idx: FT stat index
-        ff_idx: FF stat index
-        head_len: Number of notes in head
-        count_fever: Fever notes in body
-        count_normal: Normal notes in body
-
-    Returns:
-        Total score as int32
-    """
-    body_score = kernels_helpers._calc_body_score(base_value, combo_mul, fever_mul, count_fever, count_normal)
-    factor = kernels_helpers._calc_head_factor(base_value, combo_mul)
-    head_score = _calc_head_score_grid(base_value, factor, fever_mul, song_slot, ft_idx, ff_idx, head_len)
-    # Cast each component to i32 first, then add as integers for exact result
-    return ti.cast(body_score, ti.i32) + ti.cast(head_score, ti.i32)
-
-
-@ti.func
 def calc_score_cached_device(
-    mode: ti.i32,
     base_value: ti.f32,
     combo_mul: ti.f32,
     fever_mul: ti.f32,
-    work_idx: ti.i32,
     head_len: ti.i32,
     count_fever: ti.i32,
     count_normal: ti.i32,
@@ -398,46 +286,19 @@ def calc_score_cached_device(
     m2: ti.u32,
     m3: ti.u32,
 ) -> ti.i32:
-    """
-    Score calculation with cached bitmasks.
-
-    For mode=1, callers pass the preloaded grid bitmasks (m0..m3) so we don't
-    re-read grid_fever_masks_bits from global memory for every option check.
-
-    This is a critical optimization for optimize_core_device which evaluates
-    4 gem options per iteration (16 score calculations for lookahead).
-
-    Args:
-        mode: 0=work-item masks, 1=cached grid bitmasks
-        base_value: (primary*2) + secondary + pp_factor
-        combo_mul: Combo multiplier
-        fever_mul: Fever multiplier
-        work_idx: Work item index (mode=0 only)
-        head_len: Number of notes in head
-        count_fever: Fever notes in body
-        count_normal: Normal notes in body
-        m0-m3: Cached bitpacked masks (mode=1 only)
-
-    Returns:
-        Total score as int32
-    """
-    score: ti.i32 = 0
-    if mode == 0:
-        score = calc_score_device(base_value, combo_mul, fever_mul, work_idx, head_len, count_fever, count_normal)
-    else:
-        score = kernels_helpers.calc_score_with_grid_bits(
-            base_value,
-            combo_mul,
-            fever_mul,
-            m0,
-            m1,
-            m2,
-            m3,
-            head_len,
-            count_fever,
-            count_normal,
-        )
-    return score
+    """Score calculation using cached grid bitmasks (m0..m3)."""
+    return kernels_helpers.calc_score_with_grid_bits(
+        base_value,
+        combo_mul,
+        fever_mul,
+        m0,
+        m1,
+        m2,
+        m3,
+        head_len,
+        count_fever,
+        count_normal,
+    )
 
 
 @ti.func
@@ -653,7 +514,6 @@ def local_search_from_hint(
 
 @ti.func
 def _optimize_core_device_impl(
-    work_idx: ti.i32,
     budget: ti.i32,
     cur_pp: ti.i32,
     cur_cm: ti.i32,
@@ -671,7 +531,6 @@ def _optimize_core_device_impl(
     head_len: ti.i32,
     count_fever: ti.i32,
     count_normal: ti.i32,
-    mode: ti.i32,
     song_slot: ti.i32,
     ft_idx: ti.i32,
     ff_idx: ti.i32,
@@ -696,15 +555,13 @@ def _optimize_core_device_impl(
     If OV wins a tie but PP would break the tie soon, start investing in PP.
 
     Args:
-        work_idx: Work item index (for mode=0 fever mask lookup)
         budget: Number of gems to allocate
         cur_pp, cur_cm, cur_fm: Current stat values
         cur_p_val, cur_s_val: Current primary/secondary elemental values
         is_p_*, is_s_*: Color contribution flags (0/1)
         head_len: Number of notes in head
         count_fever, count_normal: Body note counts
-        mode: 0=work-item masks, 1=grid bitmasks
-        song_slot, ft_idx, ff_idx: Grid indices (mode=1 only)
+        song_slot, ft_idx, ff_idx: Grid indices for bitmask load
 
     Returns:
         Vector of [score, gems_pp, gems_cm, gems_fm, gems_ov, p_val, s_val]
@@ -725,8 +582,8 @@ def _optimize_core_device_impl(
         m1 = pre_m1
         m2 = pre_m2
         m3 = pre_m3
-    elif mode != 0:
-        # Cache bitpacked head mask once per work item to avoid repeated global loads.
+    else:
+        # Cache bitpacked head mask once per evaluation to avoid repeated global loads.
         m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
         m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
         m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
@@ -781,56 +638,9 @@ def _optimize_core_device_impl(
         best_opt: ti.i32 = 3
         pp_score: ti.i32 = -1
 
-        if mode == 0:
-            # Baseline implementation (work-item fever masks).
-            t_p: ti.i32 = base_p + ov_p_delta
-            t_s: ti.i32 = base_s + ov_s_delta
-            base: ti.f32 = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_cur
-            best_score = calc_score_cached_device(
-                mode, base, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
-            )
-            best_opt = 3
-
-            if allow_pp != 0 and pp < MAX_STAT:
-                t_p = base_p + pp_p_delta
-                t_s = base_s + pp_s_delta
-                pp_factor_pp: ti.f32 = kernels_helpers.lookup_ref_pp(pp + GEM_SCALE_NORMAL)
-                base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_pp
-                pp_score = calc_score_cached_device(
-                    mode, base, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
-                )
-                if pp_score > best_score:
-                    best_score = pp_score
-                    best_opt = 0
-                    pp_factor_next = pp_factor_pp
-
-            if cm < MAX_STAT and (cm <= 50 or is_p_cm or is_s_cm):
-                t_p = base_p + cm_p_delta
-                t_s = base_s + cm_s_delta
-                base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_cur
-                c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm + GEM_SCALE_NORMAL)
-                score: ti.i32 = calc_score_cached_device(
-                    mode, base, c_mul, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
-                )
-                if score > best_score:
-                    best_score = score
-                    best_opt = 1
-                    c_mul_next = c_mul
-
-            if fm < MAX_STAT:
-                t_p = base_p + fm_p_delta
-                t_s = base_s + fm_s_delta
-                base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_cur
-                f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm + GEM_SCALE_FEVER)
-                score = calc_score_cached_device(
-                    mode, base, c_mul_cur, f_mul, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
-                )
-                if score > best_score:
-                    best_score = score
-                    best_opt = 2
-                    f_mul_next = f_mul
-        else:
-            # Optimized mode=1 path: always fuse OV/CM/FM head loop; PP stays separate.
+        # Optimized path: cached grid bitmasks.
+        if 1:
+            # Always fuse OV/CM/FM head loop; PP stays separate.
             # 4-way fusion (OV/PP/CM/FM) was slower on Vulkan due to register pressure.
             do_pp: ti.i32 = 1 if (allow_pp != 0 and pp < MAX_STAT) else 0
             do_cm: ti.i32 = 1 if (cm < MAX_STAT and (cm <= 50 or is_p_cm or is_s_cm)) else 0
@@ -949,7 +759,7 @@ def _optimize_core_device_impl(
                     f_mul_next = f_mul_fm
             else:
                 best_score = calc_score_cached_device(
-                    mode, base_ov, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
+                    base_ov, c_mul_cur, f_mul_cur, head_len, count_fever, count_normal, m0, m1, m2, m3
                 )
                 best_opt = 3
 
@@ -960,7 +770,7 @@ def _optimize_core_device_impl(
                 pp_factor_next = pp_factor_pp
                 base_pp: ti.f32 = ti.cast((t_p_pp * 2) + t_s_pp, ti.f32) + pp_factor_pp
                 pp_score = calc_score_cached_device(
-                    mode, base_pp, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
+                    base_pp, c_mul_cur, f_mul_cur, head_len, count_fever, count_normal, m0, m1, m2, m3
                 )
                 if pp_score > best_score:
                     best_score = pp_score
@@ -981,7 +791,7 @@ def _optimize_core_device_impl(
                 pp_factor_k: ti.f32 = kernels_helpers.lookup_ref_pp(pp + (k * GEM_SCALE_NORMAL))
                 base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_k
                 score_k: ti.i32 = calc_score_cached_device(
-                    mode, base, c_mul_cur, f_mul_cur, work_idx, head_len, count_fever, count_normal, m0, m1, m2, m3
+                    base, c_mul_cur, f_mul_cur, head_len, count_fever, count_normal, m0, m1, m2, m3
                 )
                 if score_k > best_score:
                     best_opt = 0
@@ -1023,7 +833,6 @@ def _optimize_core_device_impl(
 
 @ti.func
 def optimize_core_device(
-    work_idx: ti.i32,
     budget: ti.i32,
     cur_pp: ti.i32,
     cur_cm: ti.i32,
@@ -1041,13 +850,11 @@ def optimize_core_device(
     head_len: ti.i32,
     count_fever: ti.i32,
     count_normal: ti.i32,
-    mode: ti.i32,
     song_slot: ti.i32,
     ft_idx: ti.i32,
     ff_idx: ti.i32,
 ) -> ti.types.vector(7, ti.i32):
     return _optimize_core_device_impl(
-        work_idx,
         budget,
         cur_pp,
         cur_cm,
@@ -1065,7 +872,6 @@ def optimize_core_device(
         head_len,
         count_fever,
         count_normal,
-        mode,
         song_slot,
         ft_idx,
         ff_idx,
@@ -1102,7 +908,6 @@ def optimize_core_device_preloaded_bits(
     count_normal: ti.i32,
 ) -> ti.types.vector(7, ti.i32):
     return _optimize_core_device_impl(
-        0,
         budget,
         cur_pp,
         cur_cm,
@@ -1120,7 +925,6 @@ def optimize_core_device_preloaded_bits(
         head_len,
         count_fever,
         count_normal,
-        1,
         0,
         0,
         0,

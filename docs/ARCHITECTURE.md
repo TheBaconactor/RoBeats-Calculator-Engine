@@ -163,7 +163,7 @@ Level 5 (Orchestration):
             │
             ▼
 ┌────────────────────┐
-│ Save to Database   │  (database.save_loadout_to_db)
+│ Save to Database   │  (database.save_loadouts_batch)
 │ (Top 50 preserved) │
 └────────────────────┘
 ```
@@ -289,7 +289,7 @@ Layer 4: Memory Guard
 ### Example
 ```python
 # database.py
-def save_loadout_to_db(song_name, ...):
+def save_loadouts_batch(song_name, entries):
     try:
         conn = get_db_connection()
         conn.execute(...)

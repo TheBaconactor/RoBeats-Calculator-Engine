@@ -27,8 +27,6 @@ chunk_best_score = None  # (MAX_GENOMES,) i32 - best score per genome
 chunk_best_idx = None  # (MAX_GENOMES,) i32 - work item index for best score
 
 # Shared fields (bound at runtime)
-work_items = None
-result_stats = None
 genome_result_stats = None
 genome_base_stats = None
 ga_scores = None
@@ -43,9 +41,6 @@ grid_sig1 = None
 genome_hint_allocation = None  # Warm-start hints for local search
 
 # Kernel function references (populated by create_metal_kernels)
-init_chunk_best_key_kernel = None
-reduce_chunk_to_best_key_kernel = None
-merge_chunk_best_to_genomes_kernel = None
 ga_find_best_combo_key_kernel = None
 ga_write_best_results_from_key_kernel = None
 ga_find_best_combo_warmstart_kernel = None
@@ -61,8 +56,7 @@ def create_metal_kernels():
     The kernels are defined here (not at module load time) to ensure
     Taichi JIT compiles them with the actual field references.
     """
-    global init_chunk_best_key_kernel, reduce_chunk_to_best_key_kernel
-    global merge_chunk_best_to_genomes_kernel, ga_find_best_combo_key_kernel
+    global ga_find_best_combo_key_kernel
     global ga_write_best_results_from_key_kernel, ga_find_best_combo_warmstart_kernel
     global _kernels_created
 
@@ -71,49 +65,6 @@ def create_metal_kernels():
 
     # Import optimize_core_device and local_search_from_hint at kernel creation time
     from .kernels import optimize_core_device, local_search_from_hint
-
-    @ti.kernel
-    def _init_chunk_best_key_kernel(n_genomes: ti.i32):
-        """Initialize per-chunk best-score storage (Metal-safe 32-bit version)."""
-        ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
-        for g in range(n_genomes):
-            chunk_best_score[g] = -1
-            chunk_best_idx[g] = -1
-
-    @ti.kernel
-    def _reduce_chunk_to_best_key_kernel(n_work_items: ti.i32):
-        """Metal-safe GPU-side reduction: find best (score, index) per genome."""
-        ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
-        for i in range(n_work_items):
-            gid = work_items[i][6]
-            score = result_stats[i][0]
-            if score >= 0:
-                old = ti.atomic_max(chunk_best_score[gid], score)
-                if old < score:
-                    chunk_best_idx[gid] = i
-
-    @ti.kernel
-    def _merge_chunk_best_to_genomes_kernel(n_genomes: ti.i32):
-        """Merge this chunk's best candidates into genome_result_stats."""
-        ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
-        for g in range(n_genomes):
-            score = chunk_best_score[g]
-            i = chunk_best_idx[g]
-            if score >= 0 and i >= 0:
-                if score > genome_result_stats[g][0]:
-                    item = work_items[i]
-                    res = result_stats[i]
-                    genome_result_stats[g] = ti.Vector(
-                        [
-                            score,
-                            item[3],  # ft
-                            item[4],  # ff
-                            res[1],  # pp
-                            res[2],  # cm
-                            res[3],  # fm
-                            res[4],  # ov
-                        ]
-                    )
 
     @ti.kernel
     def _ga_find_best_combo_key_kernel(
@@ -219,7 +170,6 @@ def create_metal_kernels():
                             )
 
                             res_vec = optimize_core_device(
-                                0,
                                 budget,
                                 base_pp,
                                 base_cm,
@@ -237,7 +187,6 @@ def create_metal_kernels():
                                 head_len,
                                 count_fever,
                                 count_normal,
-                                1,
                                 song_slot,
                                 ft_idx,
                                 ff_idx,
@@ -330,7 +279,6 @@ def create_metal_kernels():
             s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
             res_vec = optimize_core_device(
-                0,
                 budget,
                 base_pp,
                 base_cm,
@@ -348,7 +296,6 @@ def create_metal_kernels():
                 head_len,
                 count_fever,
                 count_normal,
-                1,
                 song_slot,
                 ft_idx,
                 ff_idx,
@@ -585,7 +532,6 @@ def create_metal_kernels():
                                     )
                                 else:
                                     res_vec = optimize_core_device(
-                                        0,
                                         budget,
                                         base_pp,
                                         base_cm,
@@ -603,7 +549,6 @@ def create_metal_kernels():
                                         head_len,
                                         count_fever,
                                         count_normal,
-                                        1,
                                         song_slot,
                                         ft_idx,
                                         ff_idx,
@@ -640,9 +585,6 @@ def create_metal_kernels():
                         chunk_best_idx[genome_idx] = best_combo
 
     # Assign to module-level names
-    init_chunk_best_key_kernel = _init_chunk_best_key_kernel
-    reduce_chunk_to_best_key_kernel = _reduce_chunk_to_best_key_kernel
-    merge_chunk_best_to_genomes_kernel = _merge_chunk_best_to_genomes_kernel
     ga_find_best_combo_key_kernel = _ga_find_best_combo_key_kernel
     ga_write_best_results_from_key_kernel = _ga_write_best_results_from_key_kernel
     ga_find_best_combo_warmstart_kernel = _ga_find_best_combo_warmstart_kernel

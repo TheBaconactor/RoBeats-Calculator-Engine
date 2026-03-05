@@ -1,5 +1,5 @@
 """
-Taichi Kernels Package - Backward-Compatible Imports.
+Taichi Kernels Package - Public Kernel Entry Points.
 
 This package splits the monolithic kernels.py (1,757 lines) into 6 focused modules:
 1. kernels_helpers.py - Field placeholders & lookup functions
@@ -9,7 +9,7 @@ This package splits the monolithic kernels.py (1,757 lines) into 6 focused modul
 5. ga_eval/ (kernels_ga_eval.py) - GA evaluation & reduction kernels
 6. kernels_timeline.py - Timeline computation kernel
 
-This __init__.py provides backward-compatible imports so existing code continues to work.
+This module re-exports kernel entry points used by the Taichi gem solver runtime.
 """
 
 # Import all field placeholders from helpers
@@ -29,10 +29,7 @@ from .kernels_helpers import (
     song_total_notes,
     song_long_notes,
     song_last_note_time,
-    fever_masks,
-    work_items,
     genome_base_stats,
-    song_flags,
     population_indices,
     population_next_indices,
     item_stats,
@@ -43,7 +40,6 @@ from .kernels_helpers import (
     ga_parent_b,
     slot_start,
     slot_count,
-    result_stats,
     genome_result_stats,
     genome_hint_allocation,  # Warm-start hints for local search optimization
     chunk_best_key,
@@ -100,10 +96,7 @@ from .kernels_ga import (
 
 # Import scoring functions and optimize_core_device
 from .kernels_scoring import (
-    _calc_head_score_masks,
     _calc_head_score_grid,
-    calc_score_device,
-    calc_score_with_grid,
     calc_score_cached_device,
     optimize_core_device,
     local_search_from_hint,  # Warm-start local search function
@@ -113,20 +106,11 @@ from .kernels_scoring import (
 from .kernels_solvers_batch import (
     solve_genomes_with_ftff_kernel,
     solve_genomes_with_ftff_block_kernel,
-    solve_ftff_parallel_kernel,
-    copy_work_items_from_ndarray_kernel,
     copy_genome_result_stats_to_download_staging_kernel,
 )
 
 # Import GA evaluation & reduction kernels
 from .ga_eval import (
-    init_genome_results_kernel,
-    init_chunk_best_key_kernel,
-    reduce_chunk_to_best_key_kernel,
-    reduce_chunk_to_best_key_ranges_kernel,
-    merge_chunk_best_to_genomes_kernel,
-    ga_clear_chunk_best_key_waves_kernel,
-    ga_merge_chunk_best_key_waves_to_global_kernel,
     ga_find_best_combo_key_kernel,
     ga_write_best_results_from_key_kernel,
     # GPU-side global best tracking
@@ -165,7 +149,7 @@ from .kernels_timeline import (
     compute_timeline_grid_signatures_kernel,
 )
 
-# Export all public names for backward compatibility
+# Public API
 __all__ = [
     # Constants
     "_KERNEL_BLOCK_DIM",
@@ -184,10 +168,7 @@ __all__ = [
     "song_total_notes",
     "song_long_notes",
     "song_last_note_time",
-    "fever_masks",
-    "work_items",
     "genome_base_stats",
-    "song_flags",
     "population_indices",
     "population_next_indices",
     "item_stats",
@@ -198,7 +179,6 @@ __all__ = [
     "ga_parent_b",
     "slot_start",
     "slot_count",
-    "result_stats",
     "genome_result_stats",
     "chunk_best_key",
     "ftff_combo_ft",
@@ -238,28 +218,16 @@ __all__ = [
     # Scoring functions
     "_calc_body_score",
     "_calc_head_factor",
-    "_calc_head_score_masks",
     "_calc_head_score_grid",
     "_calc_head_score_bits",
-    "calc_score_device",
-    "calc_score_with_grid",
     "calc_score_with_grid_bits",
     "calc_score_cached_device",
     "optimize_core_device",
     # Batch solver kernels
     "solve_genomes_with_ftff_kernel",
     "solve_genomes_with_ftff_block_kernel",
-    "solve_ftff_parallel_kernel",
-    "copy_work_items_from_ndarray_kernel",
     "copy_genome_result_stats_to_download_staging_kernel",
     # GA evaluation kernels
-    "init_genome_results_kernel",
-    "init_chunk_best_key_kernel",
-    "reduce_chunk_to_best_key_kernel",
-    "reduce_chunk_to_best_key_ranges_kernel",
-    "merge_chunk_best_to_genomes_kernel",
-    "ga_clear_chunk_best_key_waves_kernel",
-    "ga_merge_chunk_best_key_waves_to_global_kernel",
     "ga_find_best_combo_key_kernel",
     "ga_write_best_results_from_key_kernel",
     # GPU-side global best tracking

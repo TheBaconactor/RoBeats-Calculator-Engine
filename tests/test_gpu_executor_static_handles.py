@@ -211,7 +211,7 @@ def test_executor_resolve_solve_payload_caches_static_parts():
     ex = GpuExecutor()
 
     req_inline = GpuRequest(
-        request_type=GpuRequestType.SOLVE_GENOMES_PARALLEL,
+        request_type=GpuRequestType.SOLVE_GENOMES_WITH_FTFF,
         request_id=1,
         worker_id=11,
         payload={
@@ -227,7 +227,7 @@ def test_executor_resolve_solve_payload_caches_static_parts():
     assert "ref_arrays" in resolved
 
     req_handle = GpuRequest(
-        request_type=GpuRequestType.SOLVE_GENOMES_PARALLEL,
+        request_type=GpuRequestType.SOLVE_GENOMES_WITH_FTFF,
         request_id=2,
         worker_id=11,
         payload={

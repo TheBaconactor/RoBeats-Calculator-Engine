@@ -127,7 +127,6 @@ class EnvConfig:
     gpu_service_profile_print: bool  # GPU_SERVICE_PROFILE_PRINT: Print latency summary on close
     gpu_timeline_only: bool  # GPU_TIMELINE_ONLY: Force GPU timeline (avoid CPU precompute_all)
     gpu_strict: bool  # GPU_STRICT: Fail fast on any CPU fallback
-    gpu_use_ftff_solver: bool  # GPU_USE_FTFF_SOLVER: Use FT/FF-on-GPU kernel for genome solves
 
     # General Performance
     perf_timing: bool  # PERF_TIMING (gated): Enable performance timing globally
@@ -179,7 +178,6 @@ class EnvConfig:
             gpu_service_profile_print=debug_profile and _env_bool("GPU_SERVICE_PROFILE_PRINT"),
             gpu_timeline_only=_env_bool("GPU_TIMELINE_ONLY", "1"),
             gpu_strict=_env_bool("GPU_STRICT", "1"),
-            gpu_use_ftff_solver=_env_bool("GPU_USE_FTFF_SOLVER", "1"),
             # General Performance
             perf_timing=debug_profile and perf_timing_unconditional,
             perf_timing_unconditional=perf_timing_unconditional,

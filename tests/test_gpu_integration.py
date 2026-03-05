@@ -27,14 +27,14 @@ pytestmark = pytest.mark.gpu
 
 
 @pytest.fixture(scope="module", autouse=True)
-def _taichi_vulkan_ready():
+def _taichi_ready():
     pytest.importorskip("taichi")
     try:
-        from gear_optimizer.solver.taichi_gem.runtime import init_taichi_vulkan
+        from gear_optimizer.solver.taichi_gem.runtime import init_taichi
 
-        init_taichi_vulkan()
+        init_taichi()
     except Exception as exc:
-        pytest.skip(f"Taichi Vulkan init failed: {exc}")
+        pytest.skip(f"Taichi init failed: {exc}")
 
 
 def create_mock_song(primary_color="Beat", secondary_color="Flow"):

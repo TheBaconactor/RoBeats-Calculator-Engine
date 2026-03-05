@@ -206,10 +206,6 @@ def compute_fever_timeline_signature(
     return signature, fever_mask_head, int(count_body_fever), int(count_body_normal)
 
 
-# Back-compat for in-progress experiment callers/tests.
-_timeline_signature_for_fixed_stats = compute_fever_timeline_signature
-
-
 def prepare_perfect_hit_simulation(
     timestamps_sec: np.ndarray,
     note_types: np.ndarray | None,
@@ -288,10 +284,6 @@ def prepare_perfect_hit_simulation(
         "group_low": group_low,
         "group_high": group_high,
     }
-
-
-# Back-compat for in-progress experiment callers/tests.
-_prepare_perfect_hit_simulation = prepare_perfect_hit_simulation
 
 
 def generate_perfect_hit_times_ms(prepared: dict, *, seed: int) -> np.ndarray:

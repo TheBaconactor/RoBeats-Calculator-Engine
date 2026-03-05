@@ -214,8 +214,7 @@ def build_db_payload(
     Returns:
         dict: Database payload
     """
-    # Use BaseScore if available (true base score).
-    # Fall back to Score if BaseScore not present (backwards compatibility).
+    # Prefer BaseScore when present; otherwise fall back to Score.
     score = best_data.get("BaseScore") or best_data.get("Score", 0)
 
     def extract_names(record):
@@ -554,9 +553,9 @@ def build_persistence_entries(
         )
 
     # GA candidates (capped to DB limit)
-    # NOTE: GA candidates are now handled in the loadout_entries loop below,
-    # which includes their FG scores. This section is kept for backwards compatibility
-    # with older code that may not populate loadout_entries.
+    # NOTE: GA candidates are normally handled in the loadout_entries loop below,
+    # which includes their FG scores. This section only covers callers that do not
+    # provide loadout_entries.
     if ga_candidates and loadout_entries is None:
         for eval_result in ga_candidates:
             eval_data = eval_result.get("Data") or {}

@@ -301,7 +301,7 @@ class AnalyticalFGScorer:
 
     def pack_fever_mask(self, fever_mask: np.ndarray) -> Tuple[int, int, int, int]:
         """
-        Pack boolean fever mask into 4 x u32 for GPU kernel compatibility.
+        Pack boolean fever mask into 4 x u32 for GPU kernel scoring.
 
         Returns (m0, m1, m2, m3) where each is a 32-bit packed bitmask.
         """

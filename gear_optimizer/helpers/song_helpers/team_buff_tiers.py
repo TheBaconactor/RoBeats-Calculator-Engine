@@ -452,7 +452,7 @@ def _apply_force_delta(force_obj: object, *, delta: dict[str, int], fg_score: in
     if not isinstance(force_obj, dict) or not force_obj:
         return force_obj
 
-    # Legacy format: `{score, gear, minis, details: {...}}`
+    # Nested force payload format: `{score, gear, minis, details: {...}}`
     if isinstance(force_obj.get("details"), dict):
         if not delta:
             # Still update the score if present to prevent stale payloads.

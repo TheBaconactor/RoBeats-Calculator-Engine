@@ -7,7 +7,7 @@ This package splits the monolithic api.py (1,754 lines) into focused modules:
 3. parallel_solvers.py - Genome solvers (FT/FF-on-GPU + parallel variants)
 4. ga_operations.py - GPU-native genetic algorithm operators
 
-This __init__.py provides backward-compatible imports so existing code continues to work.
+This __init__.py defines the public Taichi gem solver API surface.
 """
 
 # Import from initialization
@@ -17,8 +17,6 @@ try:
         load_ref_arrays,
         is_refs_loaded,
         hard_reset_taichi,
-        _ensure_parallel_staging,
-        _upload_song_flags,
         _ensure_ftff_combo_tables,
         _maybe_sync,
     )
@@ -38,8 +36,6 @@ except ImportError:
 try:
     from .parallel_solvers import (
         solve_genomes_with_ftff,
-        solve_genomes_parallel,
-        solve_genomes_parallel_merged,
         solve_genomes_from_registry,
     )
 except ImportError:
@@ -105,15 +101,13 @@ try:
 except ImportError:
     pass
 
-# Export all public names for backward compatibility
+# Public API
 __all__ = [
     # Initialization
     "ensure_ready",
     "load_ref_arrays",
     "is_refs_loaded",
     "hard_reset_taichi",
-    "_ensure_parallel_staging",
-    "_upload_song_flags",
     "_ensure_ftff_combo_tables",
     "_maybe_sync",
     # Timeline
@@ -121,8 +115,6 @@ __all__ = [
     "_upload_timeline_grid",
     # Parallel solvers
     "solve_genomes_with_ftff",
-    "solve_genomes_parallel",
-    "solve_genomes_parallel_merged",
     "solve_genomes_from_registry",
     # Fixed score
     "score_fixed_stats_gpu",

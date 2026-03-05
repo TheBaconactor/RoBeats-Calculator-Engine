@@ -487,7 +487,7 @@ def _read_fg_scheduler_mode() -> str:
     """
     In-flight scheduler is intentionally fixed to continuous mode.
 
-    We removed legacy backlog/drain scheduler options to keep runtime behavior
+    We removed backlog/drain scheduler options to keep runtime behavior
     deterministic and easier to reason about.
     """
     return "continuous"

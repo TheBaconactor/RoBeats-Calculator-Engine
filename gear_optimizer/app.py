@@ -402,7 +402,6 @@ class GearOptimizerApp:
         self.setup_logging()
         self._async_db_saver = AsyncDbSaver()
         self._stop_control = StopController(bin_dir=BIN_DIR)
-        # Back-compat: keep these names for existing control flow checks.
         self._stop_requested = self._stop_control.stop_requested_event
         self._force_exit_requested = self._stop_control.force_exit_requested_event
         self._output_enabled = bool(getattr(ENV, "output_enabled", False))

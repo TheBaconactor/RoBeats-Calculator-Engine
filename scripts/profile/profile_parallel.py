@@ -21,7 +21,7 @@ import numpy as np
 
 def run_sequential_benchmark(n_batches=5):
     """Benchmark direct GPU calls (no IPC)."""
-    from gear_optimizer.solver.taichi_gem.api import solve_genomes_parallel
+    from gear_optimizer.solver.taichi_gem.api import solve_genomes_with_ftff
     from gear_optimizer.solver.fever_timeline import SongTimelineGrid
 
     ref_arrays = {
@@ -54,12 +54,12 @@ def run_sequential_benchmark(n_batches=5):
     grid = SongTimelineGrid(calc_song, ref_arrays)
 
     # Warmup
-    _ = solve_genomes_parallel(genome_stats[:10], grid, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, ref_arrays)
+    _ = solve_genomes_with_ftff(genome_stats[:10], grid, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, ref_arrays)
 
     times = []
     for i in range(n_batches):
         t0 = time.perf_counter()
-        _ = solve_genomes_parallel(genome_stats, grid, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, ref_arrays)
+        _ = solve_genomes_with_ftff(genome_stats, grid, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, ref_arrays)
         times.append(time.perf_counter() - t0)
 
     return times

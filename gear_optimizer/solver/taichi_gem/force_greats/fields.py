@@ -12,7 +12,7 @@ import os
 import numpy as np
 import taichi as ti
 
-from ..runtime import init_taichi_vulkan, is_initialized
+from ..runtime import init_taichi, is_initialized
 from ..fields import IS_METAL, MAX_GENOMES, MAX_SONG_SLOTS
 
 # ============================================================================
@@ -461,7 +461,7 @@ def allocate_fields() -> None:
         fg_stage1_fill_penalty = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
     else:
         # Vulkan path writes/reads packed stage-1 winners only.
-        # Keep cfg_idx for compatibility paths/tests that inspect decoded tie-break metadata.
+        # Keep cfg_idx because downstream result packing reads decoded tie-break metadata.
         fg_stage1_final_score = None
         fg_stage1_base_score = None
         fg_stage1_cfg_idx = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, FG_MAX_FTFF))
@@ -571,7 +571,7 @@ def ensure_fields_allocated() -> None:
     gem_fields.ensure_fields_allocated()
 
     if not is_initialized():
-        init_taichi_vulkan()
+        init_taichi()
 
     if not _fields_allocated:
         allocate_fields()

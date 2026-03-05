@@ -50,7 +50,7 @@ Write path: `gear_optimizer/data/database.py` (`save_loadouts_batch()`).
 ### GPU IPC request payloads
 GPU executor request payloads are dicts keyed by request type.
 Type reference (partial, extended as needed):
-- `gear_optimizer/core/types.py` (`SolveGenomesParallelPayload`, `SolveGenomesFromRegistryPayload`, `SolveForceGreatsFinderPayload`)
+- `gear_optimizer/core/types.py` (`SolveGenomesWithFtffPayload`, `SolveGenomesFromRegistryPayload`, `SolveForceGreatsFinderPayload`)
 
 Executor: `gear_optimizer/solver/gpu_executor.py`.
 
@@ -129,17 +129,17 @@ adaptive FG submit burst, fused FG request policy, and reproducible A/B protocol
   - `gear_optimizer/app_stop_control.py` (stop/signal control)
 - **In-flight stages**: `gear_optimizer/solver/native_inflight_stages.py` (decode + FG prep + stage profiling)
 
-## Repo guardrails (avoid legacy regressions)
+## Repo guardrails (avoid removed-path regressions)
 
 ### Guardrail tests
-- Legacy symbol gate + import-surface gate live in: `tests/test_repo_guardrails.py`
+- Removed-symbol gate + import-surface gate live in: `tests/test_repo_guardrails.py`
 - Included in the dev quality check: `tools/dev/quality_check.ps1`
 
 ### Deprecation/removal checklist (when adding a new GPU path)
 1. Rewire production call sites first (scoring + executor submit paths). Avoid landing a "new path" that isn't used.
 2. Update maintained tooling (`tools/bench/`, `tools/verify/`) to use the new surface, not the old helpers.
 3. Add/adjust parity tests that cover the new implementation (CPU reference vs GPU, plus at least one integration).
-4. Delete the legacy implementation (requests/types/kernels/fields), and extend the guardrail forbidden-symbol list if needed.
+4. Delete the superseded implementation (requests/types/kernels/fields), and extend the guardrail forbidden-symbol list if needed.
 5. Run at least:
    - `python -m ruff check .`
    - `python -m pytest -m "not gpu" tests/`

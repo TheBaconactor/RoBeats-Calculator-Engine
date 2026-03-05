@@ -116,7 +116,6 @@ def ga_find_best_combo_key_kernel(
             s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
             res_vec = optimize_core_device(
-                0,
                 budget,
                 base_pp,
                 base_cm,
@@ -134,7 +133,6 @@ def ga_find_best_combo_key_kernel(
                 head_len,
                 count_fever,
                 count_normal,
-                1,
                 song_slot,
                 ft_idx,
                 ff_idx,
@@ -249,7 +247,6 @@ def ga_find_best_combo_key_kernel(
                         )
 
                         res_vec = optimize_core_device(
-                            0,
                             budget,
                             base_pp,
                             base_cm,
@@ -267,7 +264,6 @@ def ga_find_best_combo_key_kernel(
                             head_len,
                             count_fever,
                             count_normal,
-                            1,
                             song_slot,
                             ft_idx,
                             ff_idx,

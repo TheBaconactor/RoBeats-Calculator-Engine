@@ -1,7 +1,7 @@
 """
 GPU fixed-score evaluation for a fully specified stats snapshot.
 
-The existing Taichi solvers (solve_genomes_parallel, etc.) are gem optimizers. For
+The Taichi genome solvers (solve_genomes_with_ftff / solve_genomes_from_registry) are gem optimizers. For
 verification and DB integrity checks we also need a "score only" path that:
 - uses the same GPU precomputed timeline grid/masks, and
 - evaluates a fixed (FT, FF) pair + fixed PP/CM/FM factors without allocating gems.

@@ -5,14 +5,14 @@ def compute_ga_combo_chunk(
     n_genomes: int,
     n_combos: int,
     *,
-    max_work_items: int,
+    max_evals: int,
     chunk_min: int,
     chunk_max: int,
 ) -> int:
     """
     Compute the FT/FF combo chunk size for GA evaluation kernels.
 
-    Goal: bound 2D kernel work items (n_genomes * combo_chunk) to avoid overly-long
+    Goal: bound 2D kernel evaluations (n_genomes * combo_chunk) to avoid overly-long
     dispatches on Windows/Vulkan (TDR/UI freeze risk), while allowing larger chunks
     when safe for throughput.
     """
@@ -31,10 +31,10 @@ def compute_ga_combo_chunk(
         return 0
 
     try:
-        max_work_items_i = int(max_work_items)
+        max_evals_i = int(max_evals)
     except Exception:
-        max_work_items_i = 1
-    max_work_items_i = max(1, int(max_work_items_i))
+        max_evals_i = 1
+    max_evals_i = max(1, int(max_evals_i))
 
     try:
         chunk_min_i = int(chunk_min)
@@ -48,14 +48,14 @@ def compute_ga_combo_chunk(
         chunk_max_i = int(chunk_min_i)
     chunk_max_i = max(int(chunk_min_i), int(chunk_max_i))
 
-    if int(n_genomes_i) * int(n_combos_i) <= int(max_work_items_i):
+    if int(n_genomes_i) * int(n_combos_i) <= int(max_evals_i):
         return int(n_combos_i)
 
-    target = max(1, int(max_work_items_i) // int(n_genomes_i))
+    target = max(1, int(max_evals_i) // int(n_genomes_i))
     chunk = min(int(n_combos_i), int(chunk_max_i), max(int(chunk_min_i), int(target)))
 
-    # Enforce the work-item budget even if chunk_min is larger than the budget-based target.
-    if int(n_genomes_i) * int(chunk) > int(max_work_items_i):
-        chunk = min(int(n_combos_i), max(1, int(max_work_items_i) // int(n_genomes_i)))
+    # Enforce the budget even if chunk_min is larger than the budget-based target.
+    if int(n_genomes_i) * int(chunk) > int(max_evals_i):
+        chunk = min(int(n_combos_i), max(1, int(max_evals_i) // int(n_genomes_i)))
 
     return int(chunk)

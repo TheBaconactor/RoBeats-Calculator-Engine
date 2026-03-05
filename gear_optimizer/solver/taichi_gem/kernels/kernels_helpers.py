@@ -21,7 +21,6 @@ from ..runtime import get_block_dim
 # Resolve once at import time so Taichi sees a plain constant in `ti.loop_config`.
 # (Calling Python functions inside kernels triggers Taichi AST warnings.)
 _KERNEL_BLOCK_DIM = get_block_dim()
-CHUNK_BEST_KEY_TILES = 8  # Must match fields.CHUNK_BEST_KEY_TILES
 
 # FT/FF combo reduction scratch (Vulkan path).
 # Must match constants in `gear_optimizer/solver/taichi_gem/fields.py`.
@@ -65,17 +64,9 @@ song_total_notes = None  # scalar i32
 song_long_notes = None  # scalar i32
 song_last_note_time = None  # scalar f32
 
-# Work item data
-fever_masks = None
-work_items = None
-# [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id]
-
 # Genome base stats
 genome_base_stats = None
 # [pp, cm, fm, p_val, s_val, ft, ff]
-
-# Per-slot song flags (batch coalescing)
-song_flags = None  # (MAX_SONG_SLOTS, 12) i32
 
 # GPU-native GA / stat aggregation fields
 population_indices = None
@@ -91,21 +82,13 @@ ga_parent_b = None
 slot_start = None  # (MAX_SLOTS,) per-slot first valid item_id
 slot_count = None  # (MAX_SLOTS,) per-slot item count
 
-# Results
-result_stats = None
-# [score, pp, cm, fm, ov, p_val, s_val]
-
 # Genome results
 genome_result_stats = None
 # [score, ft, ff, pp, cm, fm, ov]
 genome_hint_allocation = None  # [pp_gems, cm_gems, fm_gems, ov_gems] - warm-start hints
 chunk_best_key = None  # u64 packed key per genome for safe reduction
-chunk_best_key_tiles = None  # (MAX_GENOMES, CHUNK_BEST_KEY_TILES) u64 packed keys (contention reduction)
-chunk_best_key_waves = None  # (MAX_GENOMES, GA_FTFF_REDUCE_SCRATCH_COLS) u64 scratch (per-wave best keys)
-chunk_genome_start = None  # (MAX_GENOMES,) i32 start index for per-genome work-item ranges
-chunk_genome_len = None  # (MAX_GENOMES,) i32 length for per-genome work-item ranges
 chunk_best_score = None  # (MAX_GENOMES,) i32 best score per genome (Metal)
-chunk_best_idx = None  # (MAX_GENOMES,) i32 work item index (Metal)
+chunk_best_idx = None  # (MAX_GENOMES,) i32 winning combo index (Metal)
 ftff_combo_ft = None  # (MAX_FTFF_COMBOS,) i32
 ftff_combo_ff = None  # (MAX_FTFF_COMBOS,) i32
 chunk_best_results = None  # (MAX_GENOMES, 4) i32 - cached [pp, cm, fm, ov] from winning combo

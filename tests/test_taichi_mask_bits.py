@@ -25,7 +25,7 @@ def test_mask_bits_parity():
     import taichi as ti
 
     from gear_optimizer.solver.fever_timeline import SongTimelineGrid
-    from gear_optimizer.solver.taichi_gem.runtime import init_taichi_vulkan
+    from gear_optimizer.solver.taichi_gem.runtime import init_taichi
     from gear_optimizer.solver.taichi_gem.api import ensure_ready
     from gear_optimizer.solver.taichi_gem import fields as gf
     from gear_optimizer.solver.taichi_gem import kernels as gk
@@ -33,9 +33,9 @@ def test_mask_bits_parity():
 
     # Init Taichi + allocate grid fields
     try:
-        init_taichi_vulkan()
+        init_taichi()
     except Exception as exc:
-        pytest.skip(f"Taichi Vulkan init failed: {exc}")
+        pytest.skip(f"Taichi init failed: {exc}")
     ensure_ready()
 
     # Build a deterministic mock song and reference arrays so the timeline grid is stable

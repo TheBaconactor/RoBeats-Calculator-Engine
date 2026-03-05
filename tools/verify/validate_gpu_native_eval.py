@@ -1,5 +1,5 @@
 """
-Validation utility: compare GPU-native GA evaluation vs the proven solve_genomes_parallel() path.
+Validation utility: compare GPU-native GA evaluation vs the proven solve_genomes_with_ftff() path.
 
 Goal:
   Catch scoring mismatches (score inflation/deflation) caused by:
@@ -97,7 +97,7 @@ def _flags_for_song(calc_song: dict, selected_color: str) -> dict[str, int]:
     }
 
 
-def _aggregate_genome_stats_for_solve_parallel(
+def _aggregate_genome_stats_for_solve_with_ftff(
     genome: list[dict],
     *,
     base_stats_fixed: dict,
@@ -235,7 +235,7 @@ def main() -> int:
 
     cfg_data = {
         "selected_color": selected_color,
-        "use_gpu": True,  # reference path uses solve_genomes_parallel
+        "use_gpu": True,  # reference path uses solve_genomes_with_ftff
         "user_ft": safe_int(cfg.get("UserInputStatsGems", "fever_time", fallback=0)),
         "user_ff": safe_int(cfg.get("UserInputStatsGems", "fever_fill", fallback=0)),
         "user_pp": safe_int(cfg.get("UserInputStatsGems", "perfect_points", fallback=0)),
@@ -246,15 +246,15 @@ def main() -> int:
 
     flags = _flags_for_song(calc_song, selected_color)
 
-    # Reference: solve_genomes_parallel (known-good kernel path)
+    # Reference: solve_genomes_with_ftff (known-good kernel path)
     gpu_api.load_ref_arrays(ref_arrays)
     genome_stats_list = [
-        _aggregate_genome_stats_for_solve_parallel(
+        _aggregate_genome_stats_for_solve_with_ftff(
             g, base_stats_fixed=fixed_stats, cfg_data=cfg_data, calc_song=calc_song
         )
         for g in population
     ]
-    ref_results = gpu_api.solve_genomes_parallel(
+    ref_results = gpu_api.solve_genomes_with_ftff(
         genome_stats_list,
         calc_song,
         flags["is_p_ft"],
@@ -404,7 +404,7 @@ def main() -> int:
         print(f"FAIL: {mismatches}/{len(population)} mismatches (worst abs delta={worst_delta})")
         return 1
 
-    print(f"OK: {len(population)}/{len(population)} match (solve_genomes_parallel == GPU-native)")
+    print(f"OK: {len(population)}/{len(population)} match (solve_genomes_with_ftff == GPU-native)")
     return 0
 
 

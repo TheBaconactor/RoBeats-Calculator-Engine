@@ -520,7 +520,12 @@ def batch_evaluate_genomes(
             submit_gpu_solve_genomes_from_registry,
         )
         from ..fever_timeline import get_song_timeline_grid
-        from ..taichi_gem_solver import solve_genomes_parallel, solve_genomes_with_ftff
+        from ..taichi_gem.api import (
+            ga_upload_base_fixed_stats,
+            ga_upload_item_stats,
+            solve_genomes_from_registry,
+            solve_genomes_with_ftff,
+        )
 
         flags = plan.flags
         try:
@@ -596,7 +601,6 @@ def batch_evaluate_genomes(
                 # - Default: reuse cached per-song CPU timeline grid (then upload to GPU).
                 # - GPU_TIMELINE_ONLY=1: always use GPU timeline precompute path by passing calc_song dict.
                 prefer_gpu_timeline = bool(ENV.gpu_timeline_only)
-                prefer_ftff_solver = bool(ENV.gpu_use_ftff_solver)
                 song_slot = 0
                 if prefer_gpu_timeline:
                     try:
@@ -609,12 +613,6 @@ def batch_evaluate_genomes(
 
                 if registry is not None:
                     # GPU-resident aggregation path: encode representative genomes and aggregate stats on GPU.
-                    from ..taichi_gem_solver import (
-                        ga_upload_base_fixed_stats,
-                        ga_upload_item_stats,
-                        solve_genomes_from_registry,
-                    )
-
                     representative_genomes = [
                         plan.uncached_genomes[plan.unique_members[unique_idx][0]]
                         for unique_idx in range(len(plan.unique_stats))
@@ -659,8 +657,7 @@ def batch_evaluate_genomes(
                         )
                 else:
                     with _GPU_LOCK:
-                        solve_fn = solve_genomes_with_ftff if prefer_ftff_solver else solve_genomes_parallel
-                        gpu_results = solve_fn(
+                        gpu_results = solve_genomes_with_ftff(
                             plan.genome_stats_list,
                             plan.calc_song if prefer_gpu_timeline else grid,
                             int(flags.get("is_p_ft", 0)),

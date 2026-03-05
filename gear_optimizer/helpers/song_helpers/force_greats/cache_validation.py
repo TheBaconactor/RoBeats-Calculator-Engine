@@ -8,13 +8,7 @@ from ....core.utils import get_selected_element
 def is_cached_force_valid_for_finder(cached_force_obj, expected_selected_element, center_ft, center_ff) -> bool:
     if not isinstance(cached_force_obj, dict):
         return False
-    details = cached_force_obj
-    # Backward compatibility: older DBs stored `{..., "details": {...}}`.
-    if isinstance(cached_force_obj.get("details"), dict):
-        details = cached_force_obj.get("details") or {}
-    if not isinstance(details, dict):
-        return False
-    fg_meta = details.get("ForceGreats") or {}
+    fg_meta = (cached_force_obj.get("ForceGreats") or {}) if isinstance(cached_force_obj, dict) else {}
     if not isinstance(fg_meta, dict) or not fg_meta:
         return False
     if not fg_meta.get("config"):
@@ -30,7 +24,7 @@ def is_cached_force_valid_for_finder(cached_force_obj, expected_selected_element
             return False
     except Exception:
         return False
-    cached_sel = get_selected_element(details, "")
+    cached_sel = get_selected_element(cached_force_obj, "")
     if expected_selected_element and cached_sel and cached_sel != expected_selected_element:
         return False
     return True
@@ -44,17 +38,12 @@ def is_cached_force_valid(cached_force_obj, expected_selected_element) -> bool:
     """
     if not isinstance(cached_force_obj, dict):
         return False
-    details = cached_force_obj
-    if isinstance(cached_force_obj.get("details"), dict):
-        details = cached_force_obj.get("details") or {}
-    if not isinstance(details, dict):
-        return False
-    fg_meta = details.get("ForceGreats") or {}
+    fg_meta = cached_force_obj.get("ForceGreats") or {}
     if not isinstance(fg_meta, dict) or not fg_meta:
         return False
     if not fg_meta.get("config"):
         return False
-    cached_sel = get_selected_element(details, "")
+    cached_sel = get_selected_element(cached_force_obj, "")
     if expected_selected_element and cached_sel and cached_sel != expected_selected_element:
         return False
     return True

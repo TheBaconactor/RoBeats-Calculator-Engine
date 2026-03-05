@@ -33,9 +33,8 @@ GA and FG are one product outcome.
 4. Fused FG breakpoint+solve promotion for in-process runs
 - File: `gear_optimizer/helpers/song_helpers/force_greats/gpu_dispatch.py`
 - Added:
-  - `INFLIGHT_FORCE_FUSED_FG` (default force-on in in-process native inflight)
   - dynamic default for `FG_FUSED_PAYLOADS_PER_REQUEST` (`64/96/128` by FG worker count)
-- Fused path remains opt-out via `INFLIGHT_FORCE_FUSED_FG=0` (then legacy `FG_FUSE_BREAKPOINTS_SOLVE` behavior applies).
+- In-process runs always use the fused breakpoint+solve request path.
 
 ## Regression coverage
 
@@ -70,13 +69,12 @@ Control settings used:
 - separate DB per run
 - stage profile enabled for integrated FG accounting
 
-Baseline knobs (legacy-like behavior):
+Baseline knobs (single-submit control behavior):
 
 - `INFLIGHT_CONTINUOUS_GA_BURST=32`
 - `INFLIGHT_FG_SLOT_RESERVE=1`
 - `INFLIGHT_FG_ADAPTIVE_SUBMIT=0`
 - `INFLIGHT_FG_ADAPTIVE_MAX_BURST=1`
-- `INFLIGHT_FORCE_FUSED_FG=0`
 - `FG_FUSED_PAYLOADS_PER_REQUEST=64`
 
 Candidate knobs (new architecture):
@@ -85,7 +83,6 @@ Candidate knobs (new architecture):
 - `INFLIGHT_FG_SLOT_RESERVE_RATIO=0.20`
 - `INFLIGHT_FG_ADAPTIVE_SUBMIT=1`
 - `INFLIGHT_FG_ADAPTIVE_MAX_BURST=3`
-- `INFLIGHT_FORCE_FUSED_FG=1`
 - `FG_FUSED_PAYLOADS_PER_REQUEST` unset (dynamic default)
 
 ## Latest measured result (February 9, 2026)

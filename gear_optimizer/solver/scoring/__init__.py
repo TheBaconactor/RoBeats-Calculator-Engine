@@ -8,7 +8,7 @@ This package splits the monolithic scoring.py (2,056 lines) into 5 focused modul
 4. force_greats.py - Force greats timeline, evaluation, and hill climb
 5. genome_evaluation.py - Batch genome evaluation for GA
 
-This __init__.py provides backward-compatible imports so existing code continues to work.
+This __init__.py defines the public scoring API surface.
 
 Placement guidance:
 - Use `find_scoring_hints("query")` to locate canonical modules before adding logic.
@@ -60,7 +60,7 @@ from .genome_evaluation import (
 from ...helpers.fg_utils import generate_dynamic_fg_configs
 from .code_placement import SCORING_PLACEMENT_HINTS, find_scoring_hints, iter_scoring_hints
 
-# Export all public names for backward compatibility
+# Public API
 __all__ = [
     # GPU solver
     "_GPU_LOCK",

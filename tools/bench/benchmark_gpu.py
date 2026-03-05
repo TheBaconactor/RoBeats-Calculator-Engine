@@ -1,11 +1,8 @@
 """
-GPU Benchmark - Measures throughput of Taichi Vulkan genome gem solvers.
+GPU Benchmark - Measures throughput of Taichi genome gem solvers.
 
 This benchmarks the modern GPU solver APIs:
 1. solve_genomes_with_ftff: GPU-resident FT/FF iteration
-2. solve_genomes_parallel: CPU work-item generation + GPU reduction
-
-The legacy batch gem solver API has been removed.
 """
 
 from __future__ import annotations
@@ -29,12 +26,8 @@ from gear_optimizer.core.constants import (
     TOTAL_ROWS,
 )
 from gear_optimizer.solver.scoring_core import optimize_core_jit
-from gear_optimizer.solver.taichi_gem_solver import (
-    init_taichi_vulkan,
-    load_ref_arrays,
-    solve_genomes_parallel,
-    solve_genomes_with_ftff,
-)
+from gear_optimizer.solver.taichi_gem.api import load_ref_arrays, solve_genomes_with_ftff
+from gear_optimizer.solver.taichi_gem.runtime import init_taichi
 
 
 def create_ref_arrays() -> dict:
@@ -223,15 +216,15 @@ def benchmark_gpu_solve(
 
 def main() -> None:
     print("=" * 70)
-    print("TAICHI VULKAN GEM SOLVER BENCHMARK (solve_genomes_*) - RX 7900 XTX")
+    print("TAICHI GEM SOLVER BENCHMARK (solve_genomes_with_ftff)")
     print("=" * 70)
     print()
 
     ref_arrays = create_ref_arrays()
     calc_song = create_calc_song()
 
-    print("Initializing Taichi Vulkan...")
-    init_taichi_vulkan()
+    print("Initializing Taichi...")
+    init_taichi()
     load_ref_arrays(ref_arrays)
     print()
 
@@ -267,42 +260,35 @@ def main() -> None:
         (4096, 6, "Max batch (4096)"),
     ]
 
-    best = {"ftff": (0.0, ""), "parallel": (0.0, "")}
+    best_thr = (0.0, "")
 
     for n_genomes, n_batches, label in genome_configs:
-        for solve_fn, solve_label, best_key in (
-            (solve_genomes_with_ftff, "solve_genomes_with_ftff", "ftff"),
-            (solve_genomes_parallel, "solve_genomes_parallel", "parallel"),
-        ):
-            try:
-                elapsed, throughput = benchmark_gpu_solve(
-                    solve_fn, ref_arrays, calc_song, flags, n_genomes, n_batches
-                )
-                speedup = throughput / cpu_throughput if cpu_throughput else float("inf")
+        try:
+            elapsed, throughput = benchmark_gpu_solve(
+                solve_genomes_with_ftff, ref_arrays, calc_song, flags, n_genomes, n_batches
+            )
+            speedup = throughput / cpu_throughput if cpu_throughput else float("inf")
 
-                if throughput > best[best_key][0]:
-                    best[best_key] = (throughput, label)
+            if throughput > best_thr[0]:
+                best_thr = (throughput, label)
 
-                print(f"\n  {label} [{solve_label}]:")
-                print(f"    Genomes: {int(n_genomes):,} | Batches: {int(n_batches)}")
-                print(f"    Time: {elapsed:.3f}s")
-                print(f"    Throughput: {throughput:,.0f} genomes/sec")
-                print(f"    Speedup vs CPU baseline: {speedup:.1f}x")
-            except Exception as e:
-                print(f"\n  {label} [{solve_label}]: FAILED - {e}")
+            print(f"\n  {label} [solve_genomes_with_ftff]:")
+            print(f"    Genomes: {int(n_genomes):,} | Batches: {int(n_batches)}")
+            print(f"    Time: {elapsed:.3f}s")
+            print(f"    Throughput: {throughput:,.0f} genomes/sec")
+            print(f"    Speedup vs CPU baseline: {speedup:.1f}x")
+        except Exception as e:
+            print(f"\n  {label} [solve_genomes_with_ftff]: FAILED - {e}")
 
     print()
     print("=" * 70)
     print("SUMMARY")
     print("=" * 70)
     print(f"  CPU throughput:      {cpu_throughput:>11,.0f} items/sec")
-    ftff_thr, ftff_cfg = best["ftff"]
-    par_thr, par_cfg = best["parallel"]
-    print(f"  Best FTFF throughput:{ftff_thr:>11,.0f} genomes/sec | {ftff_cfg}")
-    print(f"  Best PAR throughput: {par_thr:>11,.0f} genomes/sec | {par_cfg}")
-    max_thr = max(float(ftff_thr), float(par_thr))
+    best_gpu_thr, best_gpu_cfg = best_thr
+    print(f"  Best GPU throughput: {best_gpu_thr:>11,.0f} genomes/sec | {best_gpu_cfg}")
     if cpu_throughput:
-        print(f"  MAX SPEEDUP:         {max_thr / cpu_throughput:>11.1f}x")
+        print(f"  MAX SPEEDUP:         {best_gpu_thr / cpu_throughput:>11.1f}x")
     print("=" * 70)
 
 

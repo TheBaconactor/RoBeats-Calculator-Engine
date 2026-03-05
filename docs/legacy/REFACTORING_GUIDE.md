@@ -135,7 +135,7 @@ get_db_connection(db_path=None) -> sqlite3.Connection
 init_db() -> None
 
 # Loadout persistence
-save_loadout_to_db(song_name, score, fg_score, gear, minis, details, force_data) -> None
+save_loadouts_batch(song_name, entries) -> None
 save_loadouts_batch(song_name, entries) -> None
 get_best_loadouts(song_name, limit=50, ...) -> list
 

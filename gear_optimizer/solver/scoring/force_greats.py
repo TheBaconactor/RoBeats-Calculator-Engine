@@ -987,7 +987,7 @@ def run_force_greats_hill_climb(
     # --------------------------------------------------------------------
     if use_gpu:
         try:
-            from ..taichi_gem_solver import solve_force_greats_finder_gpu
+            from ..taichi_gem.force_greats.api import solve_force_greats_finder_gpu
 
             song_data = calc_song.get("song_data", {}) or {}
             timestamps = song_data.get("fg_timestamps", song_data.get("timestamps"))
@@ -1281,7 +1281,7 @@ def apply_force_greats_to_result(
                 use_gpu=use_gpu,
             )
         else:
-            # Legacy/Manual path - does NOT re-optimize gems, so uses original stats (with gems)
+            # Manual path - does NOT re-optimize gems, so uses original stats (with gems)
             # Evaluate penalty on existing configuration
             fg_result = evaluate_force_greats(stats, calc_song, ref_arrays, manual_counts)
 

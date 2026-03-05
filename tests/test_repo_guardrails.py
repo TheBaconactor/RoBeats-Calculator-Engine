@@ -1,14 +1,15 @@
 """
 Repo guardrails.
 
-These tests exist to prevent "legacy" GPU paths from quietly reappearing and to keep
-production scoring code importing through the intended facade modules.
+These tests exist to prevent removed GPU paths from quietly reappearing and to keep
+production scoring code importing through the intended public GPU modules.
 
 Rationale:
-- Legacy GPU APIs (old batch gem solver) were expensive (host transfers + VRAM) and
+- Removed GPU APIs (old batch gem solver) were expensive (host transfers + VRAM) and
   easy to accidentally re-wire back into production.
 - Scoring orchestration should not import `taichi_gem` internals directly; it should
-  go through `gear_optimizer.solver.taichi_gem_solver` (facade) and/or the GPU executor.
+  go through `gear_optimizer.solver.taichi_gem.api`, `gear_optimizer.solver.taichi_gem.force_greats.api`,
+  and/or the GPU executor.
 """
 
 from __future__ import annotations
@@ -42,8 +43,8 @@ def _iter_python_files(root: Path, rel_dirs: list[str]):
             yield p
 
 
-def test_no_legacy_gpu_symbols_present() -> None:
-    # Keep this list scoped to the removed legacy batch gem solver surface.
+def test_no_removed_gpu_symbols_present() -> None:
+    # Keep this list scoped to the removed batch gem solver surface.
     forbidden = (
         "optimize_gems_gpu",
         "optimize_gems_batch_gpu",
@@ -68,11 +69,20 @@ def test_no_legacy_gpu_symbols_present() -> None:
             rel = path.relative_to(_REPO_ROOT)
             offenders.append(f"{rel}: {', '.join(hits)}")
 
-    assert not offenders, "Legacy GPU symbols were reintroduced:\n" + "\n".join(offenders)
+    assert not offenders, "Removed GPU symbols were reintroduced:\n" + "\n".join(offenders)
 
 
 def _is_disallowed_taichi_gem_import(module: str) -> bool:
-    # Disallow deep/internal imports; allow the public facade `...taichi_gem_solver`.
+    allowed = {
+        "gear_optimizer.solver.taichi_gem.api",
+        "gear_optimizer.solver.taichi_gem.force_greats.api",
+        "gear_optimizer.solver.taichi_gem.runtime",
+        "taichi_gem.api",
+        "taichi_gem.force_greats.api",
+        "taichi_gem.runtime",
+    }
+    if module in allowed:
+        return False
     if module == "gear_optimizer.solver.taichi_gem" or module.startswith("gear_optimizer.solver.taichi_gem."):
         return True
     if module == "taichi_gem" or module.startswith("taichi_gem."):
@@ -103,7 +113,6 @@ def test_scoring_does_not_import_taichi_gem_internals() -> None:
                     offenders.append(f"{rel}:{node.lineno} from {node.module} import ...")
 
     assert not offenders, (
-        "Scoring code must import GPU functionality via taichi_gem_solver/gpu_executor, "
+        "Scoring code must import GPU functionality via taichi_gem.api/force_greats.api/gpu_executor, "
         "not taichi_gem internals:\n" + "\n".join(offenders)
     )
-

@@ -199,7 +199,6 @@ def _compute_combo_key_warmstart(
                         )
                     else:
                         res_vec = optimize_core_device(
-                            0,
                             budget,
                             base_pp,
                             base_cm,
@@ -217,7 +216,6 @@ def _compute_combo_key_warmstart(
                             head_len,
                             count_fever,
                             count_normal,
-                            1,
                             song_slot,
                             ft_idx,
                             ff_idx,
@@ -395,7 +393,6 @@ def _compute_combo_key_warmstart_precomputed(
                     )
                 else:
                     res_vec = optimize_core_device(
-                        0,
                         budget,
                         base_pp,
                         base_cm,
@@ -413,7 +410,6 @@ def _compute_combo_key_warmstart_precomputed(
                         head_len,
                         count_fever,
                         count_normal,
-                        1,
                         song_slot,
                         ft_idx,
                         ff_idx,

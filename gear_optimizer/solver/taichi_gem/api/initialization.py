@@ -3,8 +3,7 @@ API Initialization - Reference Arrays, Staging Buffers, and GPU Initialization.
 
 This module provides initialization and setup functions:
 - Reference array loading and signature calculation
-- Staging buffer management (batch, mega, parallel)
-- Song flags and FT/FF combo table upload
+- FT/FF combo table upload
 - Centralized ensure_ready() initialization
 """
 
@@ -15,13 +14,11 @@ import taichi as ti
 import numpy as np
 
 from gear_optimizer.core.env_config import ENV
-from ..runtime import init_taichi_vulkan, is_initialized
+from ..runtime import init_taichi, is_initialized
 from .. import fields
 from ..runtime import reset_taichi as _reset_taichi_runtime
 from ..fields import (
     GRID_SIZE,
-    MAX_WORK_ITEMS,
-    MAX_GENOMES,
     ensure_fields_allocated,
     ensure_grid_fields_allocated,
     is_fields_allocated,
@@ -61,8 +58,6 @@ def _ref_arrays_sig(ref_arrays: dict) -> bytes:
 # NUMPY STAGING BUFFERS (avoid huge per-call allocations / CPU zeroing)
 # ============================================================================
 
-_PARALLEL_STAGING = None
-_SONG_FLAGS_HOST = None
 
 # Cache for genome_base_stats uploads to avoid redundant from_numpy calls
 # Stores (n_genomes, hash_bytes) of last uploaded stats
@@ -125,30 +120,6 @@ def hard_reset_taichi(*, reason: str | None = None) -> None:
         pass
 
 
-def _ensure_song_flags_host():
-    global _SONG_FLAGS_HOST
-    if _SONG_FLAGS_HOST is not None:
-        return _SONG_FLAGS_HOST
-    _SONG_FLAGS_HOST = np.zeros((fields.MAX_SONG_SLOTS, 12), dtype=np.int32)
-    return _SONG_FLAGS_HOST
-
-
-def _upload_song_flags(slot_to_flags: dict[int, tuple[int, ...]]) -> None:
-    """
-    Upload per-slot song flags used by `solve_ftff_parallel_kernel`.
-
-    slot_to_flags entries must be 12-int tuples in this order:
-      [is_p_ft, is_s_ft, is_p_ff, is_s_ff, is_p_pp, is_s_pp,
-       is_p_cm, is_s_cm, is_p_fm, is_s_fm, is_p_ov, is_s_ov]
-    """
-    host = _ensure_song_flags_host()
-    for slot, flags12 in slot_to_flags.items():
-        if len(flags12) != 12:
-            raise ValueError(f"song_flags for slot {slot} must be 12 ints, got {len(flags12)}")
-        host[int(slot), :] = np.asarray(flags12, dtype=np.int32)
-    fields.song_flags.from_numpy(host)
-
-
 def _ensure_ftff_combo_tables(total_budget: int) -> int:
     """
     Ensure the FT/FF combo lookup tables are resident on GPU.
@@ -175,7 +146,7 @@ def _ensure_ftff_combo_tables(total_budget: int) -> int:
     ft = np.zeros((fields.MAX_FTFF_COMBOS,), dtype=np.int32)
     ff = np.zeros((fields.MAX_FTFF_COMBOS,), dtype=np.int32)
 
-    # Vectorized triangular enumeration preserving legacy order:
+    # Vectorized triangular enumeration preserving the original triangular order:
     # ft=0,ff=0..B ; ft=1,ff=0..B-1 ; ... ; ft=B,ff=0
     dim = int(total_budget) + 1
     tri_i, tri_j = np.triu_indices(dim)
@@ -212,30 +183,6 @@ def _maybe_sync(*, for_timing: bool = False) -> None:
     maybe_sync(sync_fn=ti.sync, force_sync=_FORCE_SYNC, sync_for_timing=_SYNC_FOR_TIMING, for_timing=for_timing)
 
 
-def _ensure_parallel_staging():
-    """
-    Allocate and reuse staging buffers for solve_genomes_parallel().
-
-    These buffers avoid per-call np.zeros() allocations which are expensive
-    due to memory allocation + CPU zeroing overhead.
-    """
-    global _PARALLEL_STAGING
-    if _PARALLEL_STAGING is not None:
-        return _PARALLEL_STAGING
-    _PARALLEL_STAGING = {
-        # Per-genome stats (uploaded once per call)
-        # [pp, cm, fm, p_val, s_val, ft, ff]
-        "genome_base_stats": np.zeros((MAX_GENOMES, 7), dtype=np.int16),
-        # Per-work-item buffers (reused per chunk)
-        # [budget, count_fever, count_normal, ft_gems, ff_gems, head_len, genome_id, song_slot]
-        "work_items": np.zeros((MAX_WORK_ITEMS, 8), dtype=np.int32),
-        # Per-genome work-item ranges for atomic-free reductions
-        "chunk_genome_start": np.zeros((MAX_GENOMES,), dtype=np.int32),
-        "chunk_genome_len": np.zeros((MAX_GENOMES,), dtype=np.int32),
-    }
-    return _PARALLEL_STAGING
-
-
 def is_refs_loaded() -> bool:
     """Check if reference arrays have been loaded."""
     return _ref_loaded
@@ -262,7 +209,7 @@ def ensure_ready(ref_arrays=None, *, timeline_grid=None):
 
     # 1. Taichi initialization
     if not is_initialized():
-        init_taichi_vulkan()
+        init_taichi()
 
     # 2. Field allocation (includes bind_fields to kernels)
     if not is_fields_allocated():

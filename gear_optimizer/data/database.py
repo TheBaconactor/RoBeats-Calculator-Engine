@@ -544,21 +544,6 @@ def _get_overflow_from_details(details):
     return gem_counts.get("Element", 0)
 
 
-def save_loadout_to_db(song_name, score, fg_score, gear, minis, details, force_data=None):
-    """
-    Save a single loadout (Legacy wrapper, directs to batch).
-    """
-    entry = {
-        "score": score,
-        "fg_score": fg_score,
-        "gear": gear,
-        "minis": minis,
-        "details": details,
-        "force": force_data,
-    }
-    save_loadouts_batch(song_name, [entry])
-
-
 def _ensure_stats_in_details(
     details: dict,
     gear: list,
@@ -1056,7 +1041,7 @@ def save_team_buff_loadouts_batch(
         return out
 
     # Keep effective mini hashing active even when some incoming entries omit colors
-    # (legacy/details-lite payloads). Song colors are stable per song, so borrowing
+    # Some payloads omit colors. Song colors are stable per song, so borrowing
     # from another entry or an existing DB row is safe and prevents duplicate rows.
     song_color_fallback: Optional[tuple[str, str, str]] = None
     for entry in entries:

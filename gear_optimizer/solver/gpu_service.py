@@ -482,7 +482,7 @@ class GpuServiceClient:
         request_payload = dict(payload or {})
         entry = self._solve_static_handle_entry(request_payload)
         if entry is None:
-            return self.submit(GpuRequestType.SOLVE_GENOMES_PARALLEL, request_payload)
+            return self.submit(GpuRequestType.SOLVE_GENOMES_WITH_FTFF, request_payload)
 
         handle = int(entry.get("handle", 0) or 0)
         inline_static = not bool(entry.get("registered", False))
@@ -492,7 +492,7 @@ class GpuServiceClient:
             request_payload.pop("timeline_grid", None)
             request_payload.pop("ref_arrays", None)
 
-        job = self.submit(GpuRequestType.SOLVE_GENOMES_PARALLEL, request_payload)
+        job = self.submit(GpuRequestType.SOLVE_GENOMES_WITH_FTFF, request_payload)
         entry["registered"] = True
         self._attach_handle_failure_reset(job.future, entry)
         return job

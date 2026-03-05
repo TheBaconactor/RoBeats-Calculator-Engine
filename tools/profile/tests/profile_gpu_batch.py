@@ -14,8 +14,8 @@ import os
 import time
 import random
 
-# IMPORTANT: Taichi init config is captured when `gear_optimizer.solver.taichi_gem_solver`
-# is first imported. We set defaults here before any GPU path is invoked.
+# IMPORTANT: Taichi init config is captured when the Taichi runtime is first imported.
+# We set defaults here before any GPU path is invoked.
 if "--no-kernel-profiler" in sys.argv:
     os.environ.setdefault("TAICHI_KERNEL_PROFILER", "0")
 else:
@@ -194,7 +194,7 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
         GEM_STAT_TO_ELEMENT_SCALE,
         ELEMENTAL_GEM_SCALE,
     )
-    from gear_optimizer.solver.taichi_gem_solver import solve_genomes_parallel
+    from gear_optimizer.solver.taichi_gem.api import solve_genomes_with_ftff
     import taichi as ti
 
     population = [create_random_genome() for _ in range(population_size)]
@@ -291,7 +291,7 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
     phase3c_time = time.perf_counter() - t0
     print(f"Phase 3c (Build genome_stats_list): {phase3c_time:.4f}s")
 
-    # Phase 4: GPU Kernel (solve_genomes_parallel V3) + internal breakdown
+    # Phase 4: GPU Kernel (solve_genomes_with_ftff) + internal breakdown
     is_p_pp = 1 if "Chill" == p_color else 0
     is_s_pp = 1 if "Chill" == s_color else 0
     is_p_cm = 1 if "Flow" == p_color else 0
@@ -311,7 +311,7 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
     gpu_prof.start_song("profile_gpu_batch")
 
     t0 = time.perf_counter()
-    _ = solve_genomes_parallel(
+    _ = solve_genomes_with_ftff(
         genome_stats_list,
         grid,
         is_p_ft,
@@ -331,7 +331,7 @@ def profile_detailed_breakdown(population_size, base_stats_fixed, cfg_data, calc
         gem_scale_fever=GEM_SCALE_FEVER,
     )
     phase4_time = time.perf_counter() - t0
-    print(f"Phase 4 (solve_genomes_parallel total): {phase4_time:.4f}s")
+    print(f"Phase 4 (solve_genomes_with_ftff total): {phase4_time:.4f}s")
 
     gpu_prof.end_song()
     gpu_prof.report(verbose=True)

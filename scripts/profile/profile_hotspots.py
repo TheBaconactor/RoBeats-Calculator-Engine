@@ -32,7 +32,7 @@ import numpy as np
 def profile_solve_genomes():
     """Profile the core GPU solver path."""
     from gear_optimizer.solver.taichi_gem.api import (
-        solve_genomes_parallel,
+        solve_genomes_with_ftff,
     )
     from gear_optimizer.solver.fever_timeline import SongTimelineGrid
     from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
@@ -99,7 +99,7 @@ def profile_solve_genomes():
     print("Warmup run...")
     profiler.start_song("warmup")
     t0 = time.perf_counter()
-    _ = solve_genomes_parallel(
+    _ = solve_genomes_with_ftff(
         genome_stats_list[:10],  # Small warmup
         grid,
         is_p_ft,
@@ -129,7 +129,7 @@ def profile_solve_genomes():
     for run in range(5):
         profiler.start_song(f"run_{run}")
         t0 = time.perf_counter()
-        results = solve_genomes_parallel(
+        results = solve_genomes_with_ftff(
             genome_stats_list,
             grid,
             is_p_ft,

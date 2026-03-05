@@ -75,7 +75,7 @@ main.py                    200 lines  ⏳ To create
 ### Phase 2: Data Layer (3-4 hours)
 - [ ] Create `database.py`
   - [ ] Move all functions from lines 933-1323
-  - [ ] Includes: `get_db_connection()`, `init_db()`, `save_loadout_to_db()`, etc.
+  - [ ] Includes: `get_db_connection()`, `init_db()`, `save_loadouts_batch()`, etc.
   - [ ] Move global `DB_FILE` path logic
 
 - [ ] Create `csv_parser.py`

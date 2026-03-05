@@ -93,14 +93,8 @@ def _run_fg_once(
     return_calc_song: bool = False,
 ) -> int | tuple[int, dict]:
     from gear_optimizer.helpers.song_helpers.force_greats.core import process_force_greats
-    from gear_optimizer.helpers.song_helpers.force_greats import gpu_dispatch as _gpu_dispatch
     from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequestType
     from gear_optimizer.solver.gpu_service import GpuServiceClient
-
-    # IMPORTANT: `_FG_FUSE_BREAKPOINTS_SOLVE` is read at module import time.
-    # Patch the module-level flag so this test actually exercises the multi-request
-    # `SOLVE_FORCE_GREATS_FINDER` (fg_tasks) path we are guarding.
-    _gpu_dispatch._FG_FUSE_BREAKPOINTS_SOLVE = False
 
     monkeypatch.setenv("FG_ASYNC_TASKS_PER_REQUEST", str(int(tasks_per_request_env)))
     monkeypatch.setenv("FG_ASYNC_MAX_INFLIGHT", "16")
@@ -165,7 +159,7 @@ def test_fg_inprocess_multi_request_default_allows_multiple_requests(monkeypatch
     Default behavior should submit at least one FG solve request.
     """
     # Radius 35 => 36*36=1296 FT/FF pairs (budget constraint doesn't bind here),
-    # which can be emitted as one coalesced request or multiple legacy requests
+    # which can be emitted as one coalesced request or multiple smaller requests
     # depending on active in-process batching/fused policy.
     n = _run_fg_once(monkeypatch=monkeypatch, tasks_per_request_env=2, fg_search_radius=35)
     assert n >= 1

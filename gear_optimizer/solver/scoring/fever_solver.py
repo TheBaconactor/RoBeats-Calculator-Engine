@@ -5,10 +5,10 @@ This module provides the main gem solver pipeline:
 - precompute_fever_timelines: Precompute valid fever timelines for all FT/FF gem combinations
 - solve_best_fever_combination: Main gem solver - optimizes gem allocation for maximum score
 
-Coordinates between:
-- Rules Layer (fever_timeline.py): Timeline calculation, SongTimelineGrid
-- Compute Layer (scoring_core.py): Score calculation, gem optimization
-- GPU Layer (taichi_gem_solver): GPU-accelerated batch optimization
+    Coordinates between:
+    - Rules Layer (fever_timeline.py): Timeline calculation, SongTimelineGrid
+    - Compute Layer (scoring_core.py): Score calculation, gem optimization
+    - GPU Layer (taichi_gem.api): GPU-accelerated batch optimization
 """
 
 import numpy as np
@@ -49,7 +49,6 @@ def precompute_fever_timelines(
     budget,
     max_ft_gems,
     max_ff_gems,
-    fever_mask_buffer,
 ):
     """
     Precompute valid fever timelines for all reachable FT/FF gem combinations.
@@ -64,8 +63,6 @@ def precompute_fever_timelines(
         budget: Total gem budget
         max_ft_gems: Max allowed Fever Time gems
         max_ff_gems: Max allowed Fever Fill Rate gems
-        fever_mask_buffer: Unused (kept for API compatibility)
-
     Returns:
         list: List of dicts, each containing:
             - ft_gems: Number of FT gems
@@ -299,7 +296,7 @@ def solve_best_fever_combination(
     # and per-work-item fever mask transfers.
     if use_gpu:
         from ..gpu_executor import is_gpu_worker_mode, submit_gpu_solve_genomes
-        from ..taichi_gem_solver import solve_genomes_parallel, solve_genomes_with_ftff
+        from ..taichi_gem.api import solve_genomes_with_ftff
 
         # Compute color contribution flags for FT/FF gems (FT gems add Beat, FF gems add Vibe).
         is_p_ft = flags["is_p_ft"]
@@ -347,9 +344,8 @@ def solve_best_fever_combination(
                 song_slot=int(song_slot),
             )
         else:
-            solve_fn = solve_genomes_with_ftff if bool(ENV.gpu_use_ftff_solver) else solve_genomes_parallel
             with _GPU_LOCK:
-                gpu_results = solve_fn(
+                gpu_results = solve_genomes_with_ftff(
                     genome_stats_np,
                     calc_song,
                     int(is_p_ft),
@@ -381,7 +377,6 @@ def solve_best_fever_combination(
         # CPU reference path: enumerate all fever timelines, then optimize PP/CM/FM/OV per timeline.
         song_timestamps = calc_song["song_data"]["timestamps"]
         total_notes = len(song_timestamps)
-        fever_mask_buffer = np.zeros(total_notes, dtype=np.bool_)
 
         # 1. Precompute Timelines (Rules Layer)
         # This generates all valid fever scenarios without doing gem optimization yet.
@@ -392,7 +387,6 @@ def solve_best_fever_combination(
             TOTAL_GEM_BUDGET,
             max_ft_gems,
             max_ff_gems,
-            fever_mask_buffer,
         )
 
         # CPU PATH: Sequential processing

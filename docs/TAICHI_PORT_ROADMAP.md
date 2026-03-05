@@ -1,7 +1,7 @@
 # Taichi Port Roadmap (End-to-End GPU GA)
 
 ## Current State (what’s already on GPU)
-- **Gem optimization** is on Taichi/Vulkan via `solve_genomes_parallel()` in [`gear_optimizer/solver/taichi_gem_solver.py`](../gear_optimizer/solver/taichi_gem_solver.py).
+- **Gem optimization** is on Taichi (Metal/Vulkan) via `solve_genomes_with_ftff()` in [`gear_optimizer/solver/taichi_gem/api/parallel_solvers.py`](../gear_optimizer/solver/taichi_gem/api/parallel_solvers.py).
 - The GA evaluation path (`batch_evaluate_genomes`) calls it from [`gear_optimizer/solver/scoring/genome_evaluation.py`](../gear_optimizer/solver/scoring/genome_evaluation.py).
 - The V3 path:
   - Uses a **precomputed (FT,FF) combo table** on GPU.
@@ -39,7 +39,7 @@ This makes crossover/mutation fast and GPU-native.
 Compute:
 - `genome_stats[genome_id, stat_id] = sum(item_stats[item_id, stat_id]) + base_stats_fixed[stat_id]`
 
-From this, produce the minimal inputs required by `solve_genomes_parallel()`:
+From this, produce the minimal inputs required by `solve_genomes_with_ftff()`:
 - `base_pp/base_cm/base_fm/base_ft_stat/base_ff_stat`
 - `base_p_val/base_s_val` based on song primary/secondary
 
@@ -47,7 +47,7 @@ From this, produce the minimal inputs required by `solve_genomes_parallel()`:
 ### Stage A — GPU stat aggregation kernel (low risk, immediate CPU reduction)
 Add a Taichi kernel that:
 - Inputs: `population_indices`, `item_stats`, `base_stats_fixed`
-- Outputs: `genome_base_*` arrays compatible with `solve_genomes_parallel()`
+- Outputs: `genome_base_*` arrays compatible with `solve_genomes_with_ftff()`
 
 Integration option:
 - Add an opt-in flag (e.g. `cfg_data["gpu_aggregate_stats"]=True`) in `batch_evaluate_genomes`.
@@ -57,7 +57,7 @@ Integration option:
 Persist GPU fields across generations:
 - `population_indices` lives in a Taichi field.
 - Only mutation/crossover updates (deltas) are applied each generation.
-- `solve_genomes_parallel()` can read `genome_base_*` without `from_numpy()` each time.
+- `solve_genomes_with_ftff()` can read `genome_base_*` without `from_numpy()` each time.
 
 Expected win:
 - Removes repeated host→device transfers for `genome_base_*` per generation.
@@ -89,5 +89,4 @@ At each stage, add a CPU vs GPU equivalence harness:
 - Use `TAICHI_BLOCK_DIM` tuning (default currently set to 128 for this workload).
 - Prefer **large enough workloads** (e.g., `n_genomes * n_combos`) to keep CU occupancy high.
 - Avoid frequent `to_numpy()/from_numpy()` in the inner GA loop; treat them as sync points.
-
 

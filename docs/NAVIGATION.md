@@ -13,7 +13,7 @@
 ## GPU / Taichi
 
 - GPU executor/IPC: `gear_optimizer/solver/gpu_executor.py`
-- Taichi solver facade: `gear_optimizer/solver/taichi_gem_solver.py`
+- Taichi solver API: `gear_optimizer/solver/taichi_gem/api/`
 - Taichi kernels (core): `gear_optimizer/solver/taichi_gem/kernels/`
   - GA ops (selection/crossover/mutation/elitism): `gear_optimizer/solver/taichi_gem/kernels/kernels_ga.py`
   - Scoring + gem optimization: `gear_optimizer/solver/taichi_gem/kernels/kernels_scoring.py`

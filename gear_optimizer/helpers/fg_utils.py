@@ -108,7 +108,7 @@ def vectorized_calculate_section_caps_grid(gap_grid, activations_grid, max_per_s
     return pair_caps
 
 
-def generate_dynamic_fg_configs(num_sections, non_fever_base, budget=None, gap=None, fever_activations=None):
+def generate_dynamic_fg_configs(num_sections, non_fever_base, *, gap=None, fever_activations=None):
     """
     Generate a list of FG configs with dynamic caps based on gap.
 
@@ -120,7 +120,6 @@ def generate_dynamic_fg_configs(num_sections, non_fever_base, budget=None, gap=N
     Args:
         num_sections: Number of non-fever sections
         non_fever_base: Notes in non-fever section (hard cap by available notes)
-        budget: Ignored (kept for API compatibility)
         gap: Gap value (total_notes - last_fever_end). Required for optimal capping.
         fever_activations: Count of fever windows. Sections beyond this get cap=0.
 

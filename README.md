@@ -190,7 +190,7 @@ RoBeats-Calculator-Engine/
 │   │   ├── fever_timeline.py         # Fever timeline calculation (Rules layer)
 │   │   ├── gpu_executor.py           # GPU worker process management & IPC
 │   │   ├── gpu_profiler.py           # GPU performance profiling
-│   │   ├── taichi_gem_solver.py      # Facade to Taichi gem solver (lazy load)
+│   │   ├── taichi_gem/               # Taichi gem solver runtime, APIs, and kernels
 │   │   │
 │   │   ├── scoring/                  # Scoring package (7 modules, 1,010 → 178 avg LOC)
 │   │   │   ├── batch_evaluation.py   # Batch genome evaluation with GPU/CPU
@@ -475,7 +475,7 @@ By default, private/scratch scripts (for example `_tmp_*`, underscore-prefixed f
 - Improved maintainability (220-290 lines per module vs 1,000-1,700)
 - Clear module boundaries and single responsibilities
 - Easier navigation and understanding
-- 100% backward compatibility maintained
+- No transitional wrappers retained
 - Zero circular dependencies introduced
 - Foundation for future refactoring
 

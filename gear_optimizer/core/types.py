@@ -146,11 +146,11 @@ class SongResultPayload(TypedDict, total=False):
 BoolFlags = Tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]
 
 
-class SolveGenomesParallelPayload(TypedDict, total=False):
+class SolveGenomesWithFtffPayload(TypedDict, total=False):
     """
-    Payload for `GpuRequestType.SOLVE_GENOMES_PARALLEL`.
+    Payload for `GpuRequestType.SOLVE_GENOMES_WITH_FTFF`.
 
-    This is intentionally minimal; fields are defined based on `GpuExecutor._execute_solve_genomes`.
+    This is intentionally minimal; fields are defined based on the GPU executor solve handler.
     """
 
     genome_stats_list: Any

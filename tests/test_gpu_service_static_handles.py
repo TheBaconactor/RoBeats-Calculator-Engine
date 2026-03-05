@@ -106,8 +106,8 @@ def test_submit_solve_payload_reuses_static_handle_after_first_request():
         req1 = executor._request_q.get_nowait()
         req2 = executor._request_q.get_nowait()
 
-        assert req1.request_type == GpuRequestType.SOLVE_GENOMES_PARALLEL
-        assert req2.request_type == GpuRequestType.SOLVE_GENOMES_PARALLEL
+        assert req1.request_type == GpuRequestType.SOLVE_GENOMES_WITH_FTFF
+        assert req2.request_type == GpuRequestType.SOLVE_GENOMES_WITH_FTFF
 
         pl1 = req1.payload
         pl2 = req2.payload

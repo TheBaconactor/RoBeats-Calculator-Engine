@@ -9,10 +9,12 @@ def test_batch_evaluate_worker_mode_forwards_song_slot(monkeypatch):
     fake_fever.get_song_timeline_grid = lambda *_args, **_kwargs: None
     monkeypatch.setitem(sys.modules, "gear_optimizer.solver.fever_timeline", fake_fever)
 
-    fake_solver = types.ModuleType("gear_optimizer.solver.taichi_gem_solver")
-    fake_solver.solve_genomes_parallel = lambda *_args, **_kwargs: []
+    fake_solver = types.ModuleType("gear_optimizer.solver.taichi_gem.api")
     fake_solver.solve_genomes_with_ftff = lambda *_args, **_kwargs: []
-    monkeypatch.setitem(sys.modules, "gear_optimizer.solver.taichi_gem_solver", fake_solver)
+    fake_solver.solve_genomes_from_registry = lambda *_args, **_kwargs: []
+    fake_solver.ga_upload_item_stats = lambda *_args, **_kwargs: None
+    fake_solver.ga_upload_base_fixed_stats = lambda *_args, **_kwargs: None
+    monkeypatch.setitem(sys.modules, "gear_optimizer.solver.taichi_gem.api", fake_solver)
 
     def _fake_prepare(population, base_stats_fixed, cfg_data, calc_song, ref_arrays, **_kwargs):
         plan = ge.GpuBatchEvalPlan(

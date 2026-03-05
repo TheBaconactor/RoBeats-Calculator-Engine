@@ -92,7 +92,7 @@ def print_results(
 
         # "Best FG Score Found" is the best FG-scored result we saw this run:
         # - non-zero FG config
-        # - GA-origin only when `_is_ga` is present (back-compat: assume True).
+        # - GA-origin only when `_is_ga` is present (default to True when absent).
         candidates: list[dict] = []
         for v in fg_variants or []:
             if not isinstance(v, dict):

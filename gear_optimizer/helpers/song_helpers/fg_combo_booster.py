@@ -632,7 +632,7 @@ def select_fg_combo_booster_genomes_for_eval(
     """
     Select a smaller subset of generated genomes to GPU-evaluate.
 
-    `solve_genomes_parallel` is expensive, and in-flight mode can become GPU-queue bound.
+    GPU genome evaluation can be expensive, and in-flight mode can become GPU-queue bound.
     We keep FG coverage by emphasizing fever-heavy combos while preserving mini-team
     diversity.
     """
@@ -1174,7 +1174,7 @@ def evaluate_fg_combo_booster_genomes(
         t_gpu0 = time.perf_counter()
         try:
             # Fast path: evaluate via registry->indices on GPU to avoid building/uploading
-            # the huge FT/FF worklist required by `solve_genomes_parallel`.
+            # large per-genome CPU worklists (the modern solver iterates FT/FF on-GPU).
             solver_mode = str(os.environ.get("FG_COMBO_BOOSTER_GPU_SOLVER", "auto") or "").strip().lower()
             prefer_registry = solver_mode in {"auto", "registry", "from_registry"}
             use_registry = False
@@ -1335,10 +1335,10 @@ def evaluate_fg_combo_booster_genomes(
                     )
                 else:
                     from ...solver.scoring.gpu_solver import _GPU_LOCK
-                    from ...solver.taichi_gem.api import solve_genomes_parallel as solve_genomes_parallel_ti
+                    from ...solver.taichi_gem.api import solve_genomes_with_ftff as solve_genomes_with_ftff_ti
 
                     with _GPU_LOCK:
-                        gpu_results = solve_genomes_parallel_ti(
+                        gpu_results = solve_genomes_with_ftff_ti(
                             plan.genome_stats_list,
                             calc_song,
                             int(flags.get("is_p_ft", 0)),

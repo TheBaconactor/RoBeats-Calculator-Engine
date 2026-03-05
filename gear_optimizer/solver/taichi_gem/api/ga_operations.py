@@ -24,7 +24,7 @@ import time
 import numpy as np
 
 from .. import fields
-from ..fields import MAX_WORK_ITEMS
+from ..fields import MAX_EVALS_PER_DISPATCH
 from ..ga_chunking import compute_ga_combo_chunk
 from ..kernel_loader import get_kernels
 
@@ -42,34 +42,34 @@ _GA_COMBO_CHUNK_MAX: int = max(
     _GA_COMBO_CHUNK_MIN, int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MAX", "4096") or 4096)
 )
 
-# Work-item budget for GA combo search chunking (<= MAX_WORK_ITEMS).
+# Evaluation budget for GA combo-search chunking (<= MAX_EVALS_PER_DISPATCH).
 #
 # Note: this is read lazily (with light caching) instead of at module import time so
 # in-flight schedulers can apply env defaults before the first GA dispatch.
-_GA_WORK_ITEM_BUDGET_RAW: str | None = None
-_GA_WORK_ITEM_BUDGET: int = int(MAX_WORK_ITEMS)
+_GA_EVAL_BUDGET_RAW: str | None = None
+_GA_EVAL_BUDGET: int = int(MAX_EVALS_PER_DISPATCH)
 
 
-def _ga_work_item_budget() -> int:
-    global _GA_WORK_ITEM_BUDGET_RAW, _GA_WORK_ITEM_BUDGET
-    raw = os.environ.get("GPU_NATIVE_GA_WORK_ITEM_BUDGET", None)
+def _ga_eval_budget() -> int:
+    global _GA_EVAL_BUDGET_RAW, _GA_EVAL_BUDGET
+    raw = os.environ.get("GPU_NATIVE_GA_EVAL_BUDGET", None)
     raw_norm = str(raw or "").strip()
-    if raw_norm == _GA_WORK_ITEM_BUDGET_RAW:
-        return int(_GA_WORK_ITEM_BUDGET)
+    if raw_norm == _GA_EVAL_BUDGET_RAW:
+        return int(_GA_EVAL_BUDGET)
 
-    _GA_WORK_ITEM_BUDGET_RAW = raw_norm
+    _GA_EVAL_BUDGET_RAW = raw_norm
     if raw_norm == "":
-        _GA_WORK_ITEM_BUDGET = int(MAX_WORK_ITEMS)
-        return int(_GA_WORK_ITEM_BUDGET)
+        _GA_EVAL_BUDGET = int(MAX_EVALS_PER_DISPATCH)
+        return int(_GA_EVAL_BUDGET)
 
     try:
         val = int(raw_norm)
     except Exception:
-        _GA_WORK_ITEM_BUDGET = int(MAX_WORK_ITEMS)
-        return int(_GA_WORK_ITEM_BUDGET)
+        _GA_EVAL_BUDGET = int(MAX_EVALS_PER_DISPATCH)
+        return int(_GA_EVAL_BUDGET)
 
-    _GA_WORK_ITEM_BUDGET = max(64, min(int(MAX_WORK_ITEMS), int(val)))
-    return int(_GA_WORK_ITEM_BUDGET)
+    _GA_EVAL_BUDGET = max(64, min(int(MAX_EVALS_PER_DISPATCH), int(val)))
+    return int(_GA_EVAL_BUDGET)
 
 
 # Get appropriate kernels for current platform (Metal-safe on macOS)
@@ -628,7 +628,7 @@ def ga_evaluate_population(
     combo_chunk = compute_ga_combo_chunk(
         n_genomes=n_genomes,
         n_combos=n_combos,
-        max_work_items=max(int(_ga_work_item_budget()), int(n_genomes)),
+        max_evals=max(int(_ga_eval_budget()), int(n_genomes)),
         chunk_min=_GA_COMBO_CHUNK_MIN,
         chunk_max=_GA_COMBO_CHUNK_MAX,
     )
@@ -862,7 +862,7 @@ def ga_next_generation(
         if n_elites > 0:
             _upload_island_elites(elite_arr, n_elites)
 
-    # Use the fused next-generation kernel so legacy selection/crossover kernels
+    # Use the fused next-generation kernel so the older selection/crossover kernels
     # are no longer on the hot path.
     kernels.ga_next_generation_full_kernel(
         int(n_genomes),
@@ -870,7 +870,7 @@ def ga_next_generation(
         int(n_elites),
         int(tournament_k),
         mr_fp,
-        np.uint32(0),  # no immigrants in legacy API
+        np.uint32(0),  # no immigrants in this call shape
     )
     kernels.ga_swap_and_inherit_hints_kernel(int(n_genomes), int(n_slots))
 

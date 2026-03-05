@@ -62,12 +62,9 @@ def apply_metal_patches():
     kernels_metal.create_metal_kernels()
 
     # Override the 64-bit atomic kernels with Metal-safe versions
-    base_kernels.init_chunk_best_key_kernel = kernels_metal.init_chunk_best_key_kernel
-    base_kernels.reduce_chunk_to_best_key_kernel = kernels_metal.reduce_chunk_to_best_key_kernel
-    base_kernels.merge_chunk_best_to_genomes_kernel = kernels_metal.merge_chunk_best_to_genomes_kernel
     base_kernels.ga_find_best_combo_key_kernel = kernels_metal.ga_find_best_combo_key_kernel
     base_kernels.ga_write_best_results_from_key_kernel = kernels_metal.ga_write_best_results_from_key_kernel
     base_kernels.ga_find_best_combo_warmstart_kernel = kernels_metal.ga_find_best_combo_warmstart_kernel
 
     _metal_patched = True
-    print("[Metal] Applied 32-bit atomic kernel patches for macOS compatibility")
+    print("[Metal] Applied kernel patches for macOS (Metal-safe reductions)")

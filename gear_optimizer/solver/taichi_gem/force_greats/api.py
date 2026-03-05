@@ -1675,7 +1675,7 @@ def _solve_force_greats_finder_gpu_impl(
         _fg_forced_resident_base_offset = int(base_cfg_offset)
         resident_ok = True
 
-    # Legacy cache key (n_chunks==1 only) is now redundant when resident mode is enabled.
+    # The single-chunk cache key is redundant when resident mode is enabled.
     global _fg_forced_configs_upload_key
     if resident_ok:
         _fg_forced_configs_upload_key = cfg_sig  # type: ignore[assignment]

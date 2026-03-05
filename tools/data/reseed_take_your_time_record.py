@@ -38,7 +38,7 @@ from gear_optimizer.data.csv_parser import (
 from gear_optimizer.data.database import (
     get_best_loadouts,
     get_evolution_db_path,
-    save_loadout_to_db,
+    save_loadouts_batch,
 )
 from gear_optimizer.pipeline.song_processor import read_song_file
 from gear_optimizer.solver.scoring import (
@@ -175,14 +175,18 @@ def main() -> None:
     print(f"[Seed] Song: {song_name}")
     print(f"[Seed] Evaluated score: {score:,}")
 
-    save_loadout_to_db(
-        song_name=song_name,
-        score=score,
-        fg_score=0,
-        gear=[gears_by_name[n] for n in gear_names],
-        minis=[minis_by_name[n] for n in mini_names],
-        details=details,
-        force_data=None,
+    save_loadouts_batch(
+        song_name,
+        [
+            {
+                "score": score,
+                "fg_score": 0,
+                "gear": [gears_by_name[n] for n in gear_names],
+                "minis": [minis_by_name[n] for n in mini_names],
+                "details": details,
+                "force": None,
+            }
+        ],
     )
 
     best = get_best_loadouts(song_name, limit=1, gears_by_name=gears_by_name, minis_by_name=minis_by_name)

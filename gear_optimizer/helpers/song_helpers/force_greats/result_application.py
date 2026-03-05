@@ -143,7 +143,7 @@ def apply_gpu_results_to_entries(
     *,
     pending_sigs: list[str],
     pending: list[dict[str, Any]],
-    sig_map: dict[str, list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]]],
+    sig_map: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]],
     sel_color: str,
     n_sections: int,
     max_per_section: int,
@@ -258,14 +258,7 @@ def apply_gpu_results_to_entries(
             "forced_counts": list(forced_counts) if forced_counts else [],
         }
 
-        for item in sig_map.get(sig, []):
-            # Backward-compatible: older callers used (entry, eval_data, base_stats) tuples.
-            # Newer GPU-resident paths store only (entry, eval_data) to reduce Python overhead.
-            try:
-                entry = item[0]
-                eval_data = item[1]
-            except Exception:
-                continue
+        for entry, eval_data in sig_map.get(sig, []):
             if "base_score" not in entry:
                 entry["base_score"] = entry.get("score")
 

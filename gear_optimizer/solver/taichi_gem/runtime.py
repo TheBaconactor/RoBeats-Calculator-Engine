@@ -259,10 +259,6 @@ def init_taichi():
                 pass
 
 
-# Backward-compatible alias
-init_taichi_vulkan = init_taichi
-
-
 def reset_taichi(*, reason: str | None = None) -> None:
     """
     Hard-reset Taichi runtime (frees Vulkan/Metal resources).

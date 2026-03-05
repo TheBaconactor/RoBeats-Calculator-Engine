@@ -116,7 +116,7 @@ def _release_windows_timer_period_1ms() -> None:
 class GpuRequestType(Enum):
     """Types of GPU requests that can be submitted."""
 
-    SOLVE_GENOMES_PARALLEL = "solve_genomes_parallel"
+    SOLVE_GENOMES_WITH_FTFF = "solve_genomes_with_ftff"
     SOLVE_GENOMES_FROM_REGISTRY = "solve_genomes_from_registry"
     LOAD_REF_ARRAYS = "load_ref_arrays"
     PRECOMPUTE_TIMELINE = "precompute_timeline_gpu"
@@ -376,7 +376,7 @@ def _solve_static_handle_entry(
     ref_arrays: Any,
 ) -> dict[str, Any]:
     """
-    Get or create a worker-local handle entry for solve_genomes_parallel static payload parts.
+    Get or create a worker-local handle entry for solve_genomes_with_ftff static payload parts.
 
     This avoids repeatedly pickling large `calc_song` dicts (timestamps) and `ref_arrays`
     across adjacent solve requests during GA iterations.
@@ -467,7 +467,7 @@ class GpuExecutor:
     )
     _COALESCABLE_REQUEST_TYPES = frozenset(
         {
-            GpuRequestType.SOLVE_GENOMES_PARALLEL,
+            GpuRequestType.SOLVE_GENOMES_WITH_FTFF,
             GpuRequestType.GPU_NATIVE_GA_RUN,
             GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
@@ -545,7 +545,7 @@ class GpuExecutor:
         self._registry_payload_cache_max = max(
             64, int(_ENV_GET("GPU_EXECUTOR_REGISTRY_PAYLOAD_CACHE_MAX", "1024") or "1024")
         )
-        # Per-worker static-payload cache for solve_genomes_parallel. This allows worker processes to
+        # Per-worker static-payload cache for solve_genomes_with_ftff. This allows worker processes to
         # send a compact handle after first registration to avoid repeatedly pickling large immutable
         # dicts (calc_song timelines + ref arrays) across adjacent GA iterations.
         self._solve_payload_cache: OrderedDict[tuple[int, int], dict[str, Any]] = OrderedDict()
@@ -642,7 +642,7 @@ class GpuExecutor:
 
         # Dispatch table (reduces branching in the hot loop and centralizes request routing).
         self._dispatch = {
-            GpuRequestType.SOLVE_GENOMES_PARALLEL: self._handle_solve_genomes_parallel,
+            GpuRequestType.SOLVE_GENOMES_WITH_FTFF: self._handle_solve_genomes_with_ftff,
             GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY: self._handle_solve_genomes_from_registry,
             GpuRequestType.LOAD_REF_ARRAYS: self._execute_load_refs,
             GpuRequestType.PRECOMPUTE_TIMELINE: self._execute_precompute_timeline,
@@ -842,7 +842,7 @@ class GpuExecutor:
         req_type = getattr(request, "request_type", None)
         payload = self._payload_dict(request)
 
-        if req_type == GpuRequestType.SOLVE_GENOMES_PARALLEL:
+        if req_type == GpuRequestType.SOLVE_GENOMES_WITH_FTFF:
             n = self._size_hint(payload.get("genome_stats_list"))
             return float(max(1, n))
 
@@ -1098,7 +1098,7 @@ class GpuExecutor:
                 f"diversity={avg_diversity:.1f}% modes=[{mode_str}]"
             )
 
-    def _handle_solve_genomes_parallel(self, request: GpuRequest) -> GpuResponse:
+    def _handle_solve_genomes_with_ftff(self, request: GpuRequest) -> GpuResponse:
         payload = request.payload or {}
         try:
             song_slot = int(payload.get("song_slot", 0) or 0)
@@ -1571,9 +1571,9 @@ class GpuExecutor:
         """Main GPU execution loop with batch coalescing."""
         # Initialize Taichi ONCE
         try:
-            from .taichi_gem.runtime import init_taichi_vulkan
+            from .taichi_gem.runtime import init_taichi
 
-            init_taichi_vulkan()
+            init_taichi()
             self._taichi_ready = True
             self._ready_event.set()
             print("[GpuExecutor] Taichi initialized")
@@ -1819,7 +1819,7 @@ class GpuExecutor:
                 remaining: list[GpuRequest] = []
                 for req in batch:
                     rt = req.request_type
-                    if rt == GpuRequestType.SOLVE_GENOMES_PARALLEL:
+                    if rt == GpuRequestType.SOLVE_GENOMES_WITH_FTFF:
                         solve_requests.append(req)
                     elif rt == GpuRequestType.GPU_NATIVE_GA_RUN:
                         ga_native_requests.append(req)
@@ -1834,91 +1834,48 @@ class GpuExecutor:
                     else:
                         remaining.append(req)
 
-                # Execute solve_genomes requests (true batched kernel execution when possible)
+                # Execute solve_genomes requests (FTFF solver): execute each request independently.
                 if solve_requests:
-                    if len(solve_requests) > 1 and not ENV.gpu_use_ftff_solver:
-                        prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
-                        exec_start_ns = time.perf_counter_ns()
-                        responses = self._execute_solve_batch(solve_requests)
-                        exec_end_ns = time.perf_counter_ns()
-                        dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
-                        self._record_exec_breakdown(
-                            GpuRequestType.SOLVE_GENOMES_PARALLEL,
-                            exec_wall_sec=float(dt_exec),
-                            prof_before=prof_before,
-                        )
-                        # Attribute exec time proportionally (for profiling only)
-                        per_req = dt_exec / max(1, len(solve_requests))
-                        self._exec_sec += dt_exec
-                        for _ in solve_requests:
-                            self._req_type_counts[GpuRequestType.SOLVE_GENOMES_PARALLEL] += 1
-                            self._req_type_exec_sec[GpuRequestType.SOLVE_GENOMES_PARALLEL] += per_req
-                            self._last_work_req_type = GpuRequestType.SOLVE_GENOMES_PARALLEL
+                    prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
+                    exec_start_ns = time.perf_counter_ns()
+                    responses = []
+                    for req in solve_requests:
+                        responses.append(self._execute_request(req))
+                    exec_end_ns = time.perf_counter_ns()
+                    dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
+                    self._record_exec_breakdown(
+                        GpuRequestType.SOLVE_GENOMES_WITH_FTFF,
+                        exec_wall_sec=float(dt_exec),
+                        prof_before=prof_before,
+                    )
+                    self._exec_sec += dt_exec
+                    per_req = dt_exec / max(1, len(solve_requests))
+                    for _ in solve_requests:
+                        self._req_type_counts[GpuRequestType.SOLVE_GENOMES_WITH_FTFF] += 1
+                        self._req_type_exec_sec[GpuRequestType.SOLVE_GENOMES_WITH_FTFF] += per_req
+                        self._last_work_req_type = GpuRequestType.SOLVE_GENOMES_WITH_FTFF
 
-                        # Dispatch responses back to originating workers
-                        for req, resp in zip(solve_requests, responses):
-                            if resp is None:
-                                resp = GpuResponse(
-                                    request_id=req.request_id,
-                                    success=False,
-                                    error="GpuExecutor batch returned no response (internal error)",
-                                )
-                            self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
-                            if _try_put_response(req, resp):
-                                responded_ids.add(int(req.request_id))
-                            self._requests_processed += 1
-                        self._trace_event(
-                            event="exec",
-                            exec_sec=float(dt_exec),
-                            batch_size=len(solve_requests),
-                            types=f"{GpuRequestType.SOLVE_GENOMES_PARALLEL.value}:{len(solve_requests)}",
-                            **trace_shared_kwargs,
-                        )
-                        self._live_exec_sec += float(dt_exec)
-                        self._live_type_counts[GpuRequestType.SOLVE_GENOMES_PARALLEL] += len(solve_requests)
-                        self._maybe_live_report()
-                    else:
-                        # FTFF solver mode (or single request): execute each request independently.
-                        prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
-                        exec_start_ns = time.perf_counter_ns()
-                        responses = []
-                        for req in solve_requests:
-                            responses.append(self._execute_request(req))
-                        exec_end_ns = time.perf_counter_ns()
-                        dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
-                        self._record_exec_breakdown(
-                            GpuRequestType.SOLVE_GENOMES_PARALLEL,
-                            exec_wall_sec=float(dt_exec),
-                            prof_before=prof_before,
-                        )
-                        self._exec_sec += dt_exec
-                        per_req = dt_exec / max(1, len(solve_requests))
-                        for _ in solve_requests:
-                            self._req_type_counts[GpuRequestType.SOLVE_GENOMES_PARALLEL] += 1
-                            self._req_type_exec_sec[GpuRequestType.SOLVE_GENOMES_PARALLEL] += per_req
-                            self._last_work_req_type = GpuRequestType.SOLVE_GENOMES_PARALLEL
-
-                        for req, resp in zip(solve_requests, responses):
-                            if resp is None:
-                                resp = GpuResponse(
-                                    request_id=req.request_id,
-                                    success=False,
-                                    error="GpuExecutor returned no response (internal error)",
-                                )
-                            self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
-                            if _try_put_response(req, resp):
-                                responded_ids.add(int(req.request_id))
-                            self._requests_processed += 1
-                        self._trace_event(
-                            event="exec",
-                            exec_sec=float(dt_exec),
-                            batch_size=len(solve_requests),
-                            types=f"{GpuRequestType.SOLVE_GENOMES_PARALLEL.value}:{len(solve_requests)}",
-                            **trace_shared_kwargs,
-                        )
-                        self._live_exec_sec += float(dt_exec)
-                        self._live_type_counts[GpuRequestType.SOLVE_GENOMES_PARALLEL] += len(solve_requests)
-                        self._maybe_live_report()
+                    for req, resp in zip(solve_requests, responses):
+                        if resp is None:
+                            resp = GpuResponse(
+                                request_id=req.request_id,
+                                success=False,
+                                error="GpuExecutor returned no response (internal error)",
+                            )
+                        self._record_latency(req, exec_start_ns=exec_start_ns, exec_end_ns=exec_end_ns)
+                        if _try_put_response(req, resp):
+                            responded_ids.add(int(req.request_id))
+                        self._requests_processed += 1
+                    self._trace_event(
+                        event="exec",
+                        exec_sec=float(dt_exec),
+                        batch_size=len(solve_requests),
+                        types=f"{GpuRequestType.SOLVE_GENOMES_WITH_FTFF.value}:{len(solve_requests)}",
+                        **trace_shared_kwargs,
+                    )
+                    self._live_exec_sec += float(dt_exec)
+                    self._live_type_counts[GpuRequestType.SOLVE_GENOMES_WITH_FTFF] += len(solve_requests)
+                    self._maybe_live_report()
 
                 if ga_native_requests:
                     prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
@@ -2966,7 +2923,7 @@ class GpuExecutor:
         Coalesce multiple SOLVE_GENOMES_FROM_REGISTRY requests by concatenating small population batches.
 
         This is conservative and only merges requests with semantically identical per-song inputs.
-        Object identity checks are not reliable across IPC boundaries, so compatibility must be
+        Object identity checks are not reliable across IPC boundaries, so request equivalence must be
         decided by value equality for arrays/dicts plus exact scalar flag equality.
         """
         import numpy as np
@@ -3276,213 +3233,14 @@ class GpuExecutor:
         by_id = {r.request_id: r for r in out}
         return [by_id.get(req.request_id) for req in requests]
 
-    def _execute_solve_batch(self, requests: list) -> list:
-        """
-        Execute multiple SOLVE_GENOMES_PARALLEL requests in a single batched kernel.
-
-        Each request gets assigned a song_slot (0-7) for its grid data.
-        All requests' genomes are combined into a mega-batch.
-
-        Args:
-            requests: List of GpuRequest objects (all SOLVE_GENOMES_PARALLEL)
-
-        Returns:
-            List of GpuResponse objects, one per request
-        """
-        from .taichi_gem.api import solve_genomes_parallel_merged
-
-        # Normalize per-request song slot for merged execution:
-        # - None/0/invalid -> treat as unspecified and let merged solver assign a free slot
-        # - >0 -> preserve explicit caller-provided slot for timeline residency
-        def _normalized_slot(payload: dict | None) -> int | None:
-            try:
-                if not isinstance(payload, dict):
-                    return None
-                raw = payload.get("song_slot", None)
-                if raw is None:
-                    return None
-                slot = int(raw)
-                if slot <= 0:
-                    return None
-                return int(slot)
-            except Exception:
-                return None
-
-        # Partition a compatibility group into sub-batches:
-        # - bounded by max_slots
-        # - explicit positive song_slot values must be unique per merged call
-        # Unspecified slots are safe to merge because merged solver will assign free slots.
-        def _partition_group_for_merge(group: list[GpuRequest], max_slots: int) -> list[list[GpuRequest]]:
-            pending = list(group)
-            out_groups: list[list[GpuRequest]] = []
-            while pending:
-                used_explicit_slots: set[int] = set()
-                sub: list[GpuRequest] = []
-                next_pending: list[GpuRequest] = []
-                for req in pending:
-                    payload = req.payload if isinstance(req.payload, dict) else {}
-                    slot = _normalized_slot(payload)
-                    if len(sub) >= int(max_slots):
-                        next_pending.append(req)
-                        continue
-                    if slot is not None and slot in used_explicit_slots:
-                        next_pending.append(req)
-                        continue
-                    if slot is not None:
-                        used_explicit_slots.add(int(slot))
-                    sub.append(req)
-                if not sub:
-                    sub = [pending[0]]
-                    next_pending = pending[1:]
-                out_groups.append(sub)
-                pending = next_pending
-            return out_groups
-
-        # Partition into compatible batches (same budget/scales; ref arrays are checked by content in merged solver).
-        groups: dict[tuple[int, int], list[GpuRequest]] = {}
-        for req in requests:
-            p = req.payload
-            key = (int(p.get("total_budget", 90)), int(p.get("gem_scale_fever", 3)))
-            groups.setdefault(key, []).append(req)
-
-        out: list[GpuResponse] = []
-        log_batches = ENV.gpu_batch_log
-        for key, group in groups.items():
-            # If group is too large for available slots, split further.
-            try:
-                from .taichi_gem import fields as _gem_fields
-
-                max_slots = int(getattr(_gem_fields, "MAX_SONG_SLOTS", 8) or 8)
-            except Exception:
-                max_slots = 8
-            sub_groups = _partition_group_for_merge(group, max_slots=max_slots)
-            for sub in sub_groups:
-                try:
-                    t_pack0 = perf_counter()
-                    if log_batches and len(sub) > 1:
-                        print(
-                            f"[GpuExecutor][BATCH] requests={len(sub)} budget={int(sub[0].payload.get('total_budget', 90))} scale={int(sub[0].payload.get('gem_scale_fever', 3))}"
-                        )
-
-                    merged_payloads: list[dict[str, Any]] = []
-                    for req in sub:
-                        resolved, resolve_err = self._resolve_solve_payload(req)
-                        if resolve_err:
-                            raise ValueError(resolve_err)
-                        payload = dict(resolved or {})
-                        # `song_slot=0` is a sentinel meaning "no reserved slot".
-                        # Remove it so merged solver can auto-assign unique slots.
-                        slot = _normalized_slot(payload)
-                        if slot is None:
-                            payload.pop("song_slot", None)
-                        else:
-                            payload["song_slot"] = int(slot)
-                        merged_payloads.append(payload)
-
-                    # Require calc_song dict inputs for true batching; otherwise fall back.
-                    if any(not isinstance(p.get("timeline_grid"), dict) for p in merged_payloads):
-                        raise ValueError("non-dict timeline_grid in batch")
-
-                    total_budget = int(merged_payloads[0].get("total_budget", 90))
-                    gem_scale_fever = int(merged_payloads[0].get("gem_scale_fever", 3))
-                    t_kernel0 = perf_counter()
-                    merged_results = solve_genomes_parallel_merged(
-                        merged_payloads,
-                        total_budget=total_budget,
-                        gem_scale_fever=gem_scale_fever,
-                    )
-                    dt_kernel = perf_counter() - t_kernel0
-                    dt_total = perf_counter() - t_pack0
-                    self._record_pack(GpuRequestType.SOLVE_GENOMES_PARALLEL, max(0.0, dt_total - dt_kernel))
-                    for req, res in zip(sub, merged_results):
-                        out.append(
-                            GpuResponse(
-                                request_id=req.request_id,
-                                success=True,
-                                result=res,
-                            )
-                        )
-                except Exception as exc:
-                    # Count the time spent trying to pack/merge even if we fall back.
-                    try:
-                        self._record_pack(GpuRequestType.SOLVE_GENOMES_PARALLEL, perf_counter() - t_pack0)
-                    except Exception:
-                        pass
-                    warn_fallback(
-                        "gpu_executor.solve_batch.merge",
-                        "merged solve_genomes_parallel batch failed; falling back to per-request execution",
-                        context={"batch_size": int(len(sub))},
-                        exc=exc,
-                    )
-                    # Conservative fallback: process each request individually.
-                    for req in sub:
-                        try:
-                            out.append(self._execute_solve_genomes(req, song_slot=0))
-                        except Exception as e2:
-                            out.append(
-                                GpuResponse(
-                                    request_id=req.request_id,
-                                    success=False,
-                                    error=f"{type(e2).__name__}: {e2}",
-                                )
-                            )
-
-        # Preserve original request order for caller.
-        by_id = {r.request_id: r for r in out}
-        return [by_id.get(req.request_id) for req in requests]
-
-    def _default_song_slot_for_worker(self, worker_id: int) -> int:
-        """
-        Pick a stable per-worker song_slot in [1, MAX_SONG_SLOTS-1].
-
-        Motivation: in spawn-based parallel processing, different workers submit overlapping
-        `calc_song` dict requests. If everything uses song_slot=0, the timeline cache in
-        `precompute_timeline_gpu()` thrashes (cache is keyed by (song_slot, song_key)),
-        forcing repeated recomputation and leaving the GPU underfed by avoidable work.
-        """
-        try:
-            from .taichi_gem.fields import MAX_SONG_SLOTS
-
-            max_slots = int(MAX_SONG_SLOTS)
-        except Exception:
-            max_slots = 8
-
-        if max_slots <= 1:
-            return 0
-
-        try:
-            wid = int(worker_id)
-        except Exception:
-            return 0
-
-        return 1 + (wid % (max_slots - 1))
-
-    def _execute_request(self, request: GpuRequest) -> GpuResponse:
-        """Execute a single GPU request."""
-        try:
-            handler = self._dispatch.get(request.request_type)
-            if handler is None:
-                return GpuResponse(
-                    request_id=request.request_id,
-                    success=False,
-                    error=f"Unknown request type: {request.request_type}",
-                )
-            return handler(request)
-        except Exception as e:
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error=f"{type(e).__name__}: {e}",
-            )
-
     def _execute_solve_genomes(self, request: GpuRequest, song_slot: int = 0) -> GpuResponse:
-        """Execute solve_genomes_parallel on GPU.
+        """Execute solve_genomes_with_ftff on GPU.
 
         Args:
             request: The GPU request
             song_slot: Grid slot to use for this song (0-7, default 0)
         """
-        from .taichi_gem.api import solve_genomes_parallel, solve_genomes_with_ftff, load_ref_arrays
+        from .taichi_gem.api import load_ref_arrays, solve_genomes_with_ftff
 
         payload, resolve_err = self._resolve_solve_payload(request)
         if resolve_err:
@@ -3511,8 +3269,7 @@ class GpuExecutor:
             and isinstance(payload.get("timeline_grid"), dict)
         ):
             song_slot = int(self._default_song_slot_for_worker(int(request.worker_id)))
-        solve_fn = solve_genomes_with_ftff if ENV.gpu_use_ftff_solver else solve_genomes_parallel
-        results = solve_fn(
+        results = solve_genomes_with_ftff(
             genome_stats_list=payload["genome_stats_list"],
             timeline_grid=payload["timeline_grid"],
             is_p_ft=payload["is_p_ft"],
@@ -5325,12 +5082,12 @@ def submit_gpu_solve_genomes(
     timeout: float = 60.0,
 ) -> list:
     """
-    Submit solve_genomes_parallel request via IPC (for worker processes).
+    Submit solve_genomes_with_ftff request via IPC (for worker processes).
 
     This is a blocking call that waits for the GPU executor to return results.
 
     Args:
-        Same as solve_genomes_parallel. `timeline_grid` may be either:
+        Same as solve_genomes_with_ftff. `timeline_grid` may be either:
         - a `SongTimelineGrid` instance (sequential mode), or
         - a lightweight `calc_song` dict with `metadata`/`song_data` (parallel/IPC mode),
           which will be used to precompute the full 161×161 grid on GPU.
@@ -5392,7 +5149,7 @@ def submit_gpu_solve_genomes(
         request_id = _REQUEST_COUNTER
 
         request = GpuRequest(
-            request_type=GpuRequestType.SOLVE_GENOMES_PARALLEL,
+            request_type=GpuRequestType.SOLVE_GENOMES_WITH_FTFF,
             request_id=int(request_id),
             worker_id=_WORKER_ID,
             payload=payload,

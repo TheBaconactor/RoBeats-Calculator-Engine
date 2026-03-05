@@ -496,7 +496,7 @@ def decode_gpu_native_ga_runs_payload(
             "Minis": best_minis,
             "GearNames": [g.get("Name", "None") for g in best_gear],
             "MiniNames": [m.get("Name", "None") for m in best_minis],
-            # FT/FF at root level for build_details() compatibility
+            # Keep FT/FF at the root level so build_details() can read them directly.
             "FT": g_ft,
             "FF": g_ff,
             "GemCounts": {
@@ -853,7 +853,7 @@ def decode_gpu_native_ga_runs_payload(
         "Minis": best_minis,
         "GearNames": [g.get("Name", "None") for g in best_gear],
         "MiniNames": [m.get("Name", "None") for m in best_minis],
-        # FT/FF at root level for build_details() compatibility
+        # Keep FT/FF at the root level so build_details() can read them directly.
         "FT": g_ft,
         "FF": g_ff,
         "GemCounts": {
@@ -1277,7 +1277,7 @@ def _run_gpu_native_ga(
     # and reuse here. This reduces heavy CPU->GPU transfers and mitigates Vulkan
     # resource exhaustion in long multi-start runs.
     if gpu_static is None:
-        # Backward-compatible fallback (slower): upload per run.
+        # Fallback path (slower): upload per run.
         gpu_data = registry.to_gpu_arrays()
         gpu_api.ga_upload_item_stats(
             gpu_data["item_stats"],
@@ -1687,19 +1687,17 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         num_islands = 1
 
     # Determine an auto batch size that avoids combo-chunking in ga_evaluate_population.
-    # Chunking increases kernel launch count, so we prefer keeping n_total*n_combos <= MAX_WORK_ITEMS.
+    # Chunking increases kernel launch count, so we prefer keeping n_total*n_combos <= MAX_EVALS_PER_DISPATCH.
     try:
         n_combos = int(gpu_api._ensure_ftff_combo_tables(total_budget))
     except Exception:
         n_combos = 0
     denom = int(n_genomes) * max(1, n_combos)
-    # Keep a small safety margin below MAX_WORK_ITEMS to avoid accidental oversubscription.
-    # GA evaluation now reduces atomic contention (key tiling), so we can safely run much
-    # closer to the limit without the steep slowdowns seen previously on Vulkan.
-    soft_work_items = int(gpu_fields.MAX_WORK_ITEMS) - 8192  # 8k headroom
-    if soft_work_items < 1:
-        soft_work_items = int(gpu_fields.MAX_WORK_ITEMS)
-    max_runs_by_work = int(soft_work_items // denom) if denom > 0 else 1
+    # Keep a small safety margin below MAX_EVALS_PER_DISPATCH to avoid accidental oversubscription.
+    soft_evals = int(gpu_fields.MAX_EVALS_PER_DISPATCH) - 8192  # 8k headroom
+    if soft_evals < 1:
+        soft_evals = int(gpu_fields.MAX_EVALS_PER_DISPATCH)
+    max_runs_by_work = int(soft_evals // denom) if denom > 0 else 1
     if max_runs_by_work < 1:
         max_runs_by_work = 1
     max_runs_by_genomes = int(gpu_fields.MAX_GENOMES // int(n_genomes)) if int(n_genomes) > 0 else 1

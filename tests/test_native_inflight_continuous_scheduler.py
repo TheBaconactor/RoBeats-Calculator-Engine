@@ -166,7 +166,7 @@ def test_read_fg_slot_reserve_ratio_and_absolute_override(monkeypatch):
 
 
 def test_continuous_fg_submit_budget_adaptive_behavior():
-    legacy_budget = _continuous_fg_submit_budget(
+    control_budget = _continuous_fg_submit_budget(
         pending_fg_count=8,
         fg_inflight_count=0,
         fg_workers=4,
@@ -182,7 +182,7 @@ def test_continuous_fg_submit_budget_adaptive_behavior():
         adaptive_submit=False,
         adaptive_max_burst=3,
     )
-    assert legacy_budget == 1
+    assert control_budget == 1
 
     adaptive_budget = _continuous_fg_submit_budget(
         pending_fg_count=8,

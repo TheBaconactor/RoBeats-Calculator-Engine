@@ -13,7 +13,7 @@ from gear_optimizer.core.constants import (
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
 from gear_optimizer.solver.taichi_gem.api.ga_operations import ga_upload_base_fixed_stats, ga_upload_item_stats
-from gear_optimizer.solver.taichi_gem.api.parallel_solvers import solve_genomes_from_registry, solve_genomes_parallel
+from gear_optimizer.solver.taichi_gem.api.parallel_solvers import solve_genomes_from_registry, solve_genomes_with_ftff
 
 
 def _mk_item(name: str, **stats: int) -> dict:
@@ -123,7 +123,7 @@ def test_solve_genomes_from_registry_matches_parallel_scores_with_user_gems_and_
         minis = [mini_pool[int(i)] for i in rng.choice(len(mini_pool), size=3, replace=False)]
         genomes.append(gear + minis)
 
-    # CPU-side genome_stats_list for solve_genomes_parallel (match prepare_gpu_batch_eval_plan).
+    # CPU-side genome_stats_list for solve_genomes_with_ftff (match prepare_gpu_batch_eval_plan).
     genome_stats_list: list[dict] = []
     for genome in genomes:
         stats = dict(base_stats_fixed)
@@ -201,7 +201,7 @@ def test_solve_genomes_from_registry_matches_parallel_scores_with_user_gems_and_
         ga_upload_item_stats(gpu_arrays["item_stats"], gpu_arrays["slot_start"], gpu_arrays["slot_count"])
         ga_upload_base_fixed_stats(base_fixed_stats_arr)
 
-        parallel = solve_genomes_parallel(
+        parallel = solve_genomes_with_ftff(
             genome_stats_list,
             calc_song,
             flags["is_p_ft"],

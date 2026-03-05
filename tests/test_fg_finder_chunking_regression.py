@@ -25,7 +25,7 @@ def test_solve_force_greats_finder_gpu_cfg_chunk_invariant():
     This specifically guards against a bug where Stage 1 overwrote per-(genome,ftff)
     bests when configs were uploaded in multiple chunks.
     """
-    from gear_optimizer.solver.taichi_gem_solver import solve_force_greats_finder_gpu
+    from gear_optimizer.solver.taichi_gem.force_greats.api import solve_force_greats_finder_gpu
     from gear_optimizer.core.constants import TOTAL_ROWS
 
     # Simple deterministic song

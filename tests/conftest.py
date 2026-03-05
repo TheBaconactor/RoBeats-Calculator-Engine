@@ -63,7 +63,7 @@ _configure_test_db_path()
 
 
 # -----------------------------------------------------------------------------
-# Optional pytest-benchmark compatibility
+# Optional pytest-benchmark support
 # -----------------------------------------------------------------------------
 
 try:

@@ -44,21 +44,9 @@ def _should_use_fused_breakpoints_solve(*, in_process: bool, has_gpu_client: boo
     Decide whether to use fused FG breakpoint+solve requests.
 
     Policy:
-    - Native in-process runs default to fused mode (`INFLIGHT_FORCE_FUSED_FG=1` by default).
-    - Set `INFLIGHT_FORCE_FUSED_FG=0` to fall back to legacy `FG_FUSE_BREAKPOINTS_SOLVE`.
+    - When we have an in-process GPU client, always use fused mode.
     """
-    if (not bool(in_process)) or (not bool(has_gpu_client)):
-        return False
-
-    raw_force = os.environ.get("INFLIGHT_FORCE_FUSED_FG")
-    if raw_force is None or str(raw_force).strip() == "":
-        force_fused = True
-    else:
-        force_fused = str(raw_force).strip().lower() in TRUTHY_ENV_VALUES
-
-    if force_fused:
-        return True
-    return _truthy_env("FG_FUSE_BREAKPOINTS_SOLVE", "1")
+    return bool(in_process) and bool(has_gpu_client)
 
 
 def _default_fused_payloads_per_request() -> int:
@@ -517,7 +505,7 @@ def process_force_greats_gpu_finder(
         _extract_base_stats,
         fg_baseline_params,
     )
-    from ....solver.taichi_gem_solver import solve_force_greats_finder_gpu
+    from ....solver.taichi_gem.force_greats.api import solve_force_greats_finder_gpu
 
     meta = calc_song.get("metadata", {}) or {}
     p_color = meta.get("Primary Color", "")
@@ -2101,7 +2089,7 @@ def process_force_greats_gpu_finder(
                 group_futures = []
                 # NOTE: we intentionally do NOT materialize a full "master_configs" list here.
                 # We track config windows for cfg_idx decoding instead (cfg_windows) to keep
-                # CPU overhead low. Keep a placeholder list only for log compatibility.
+                # CPU overhead low. Keep a placeholder list only to preserve the log shape.
                 master_configs: list = []
 
                 if gpu_client is not None:

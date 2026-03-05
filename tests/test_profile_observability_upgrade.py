@@ -28,7 +28,7 @@ def _write_trace_csv_rich(path: Path) -> None:
             [
                 "wall_ts,rel_ts,event,wait_sec,exec_sec,batch_size,types,in_process,planner_mode,queue_depth_hint,pressure_hint,work_units,dominant_type,dominant_share_pct,diversity_pct,avg_submit_age_ms",
                 "100.000000,0.000000,wait,0.040000,0.000000,0,,1,throughput,12,1.500,0.000,,0.00,0.00,2.500",
-                "100.050000,0.050000,exec,0.000000,0.020000,3,solve_genomes_parallel:2;solve_force_greats_finder_gpu:1,1,throughput,10,1.250,88.000,solve_genomes_parallel,66.67,35.00,4.000",
+                "100.050000,0.050000,exec,0.000000,0.020000,3,solve_genomes_with_ftff:2;solve_force_greats_finder_gpu:1,1,throughput,10,1.250,88.000,solve_genomes_with_ftff,66.67,35.00,4.000",
             ]
         )
         + "\n",

@@ -237,7 +237,7 @@ class AnalyticalFGScorer:
         return fever_mask, count_body_fever, count_body_normal
 
     def pack_fever_mask(self, fever_mask: np.ndarray) -> Tuple[int, int, int, int]:
-        """Pack boolean fever mask into 4 x u32 for GPU compatibility."""
+        """Pack boolean fever mask into 4 x u32 for GPU scoring."""
         m0, m1, m2, m3 = 0, 0, 0, 0
         for i, is_fever in enumerate(fever_mask):
             if is_fever:
