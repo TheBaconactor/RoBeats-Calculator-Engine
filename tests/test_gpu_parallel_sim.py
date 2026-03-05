@@ -2,34 +2,29 @@
 Test parallel mode simulation - multiple workers submitting GPU requests.
 """
 
-import pytest
 import multiprocessing
 import time
 import numpy as np
+import pytest
 
 
-def worker_task(worker_id, req_queue, resp_queue, genome_stats, grid_data, color_flags, ref_arrays):
+def worker_task(worker_id, req_queue, resp_queue, genome_stats, calc_song, color_flags, ref_arrays):
     """Simulate a worker submitting GPU work."""
     from gear_optimizer.solver.gpu_executor import (
         set_gpu_worker_mode,
         submit_gpu_solve_genomes,
         is_gpu_worker_mode,
     )
-    from gear_optimizer.solver.fever_timeline import SongTimelineGrid
 
     # Set worker mode
     set_gpu_worker_mode(worker_id, req_queue, resp_queue)
     assert is_gpu_worker_mode()
 
-    # Reconstruct timeline grid from serialized data
-    grid = SongTimelineGrid.__new__(SongTimelineGrid)
-    grid.__dict__.update(grid_data)
-
     # Submit GPU work via IPC
     try:
         results = submit_gpu_solve_genomes(
             genome_stats_list=genome_stats,
-            timeline_grid=grid,
+            timeline_grid=calc_song,
             is_p_ft=color_flags["is_p_ft"],
             is_s_ft=color_flags["is_s_ft"],
             is_p_ff=color_flags["is_p_ff"],
@@ -61,7 +56,6 @@ def test_multi_worker_parallel_simulation():
     4. Results are returned via IPC
     """
     from gear_optimizer.solver.gpu_executor import GpuExecutor
-    from gear_optimizer.solver.fever_timeline import SongTimelineGrid
 
     # Reset singleton
     GpuExecutor._instance = None
@@ -113,12 +107,6 @@ def test_multi_worker_parallel_simulation():
             },
         }
 
-        grid = SongTimelineGrid(calc_song, ref_arrays)
-        grid.precompute_all()
-
-        # Serialize grid data for worker
-        grid_data = grid.__dict__.copy()
-
         color_flags = {
             "is_p_ft": 0,
             "is_s_ft": 0,
@@ -148,7 +136,7 @@ def test_multi_worker_parallel_simulation():
         for i, (w_id, req_q, resp_q) in enumerate(worker_configs):
             p = mp_ctx.Process(
                 target=worker_task,
-                args=(w_id, req_q, resp_q, genome_stats, grid_data, color_flags, ref_arrays),
+                args=(w_id, req_q, resp_q, genome_stats, calc_song, color_flags, ref_arrays),
             )
             processes.append(p)
 

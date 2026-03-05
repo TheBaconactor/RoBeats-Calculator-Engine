@@ -23,6 +23,18 @@ class StopController:
         self.force_exit_requested_event = threading.Event()
         self._signal_handlers_installed = False
         self._signal_prev_handlers: dict[int, object] = {}
+        self._stop_after_raw = ""
+        self._stop_after_sec = 0.0
+        self._stop_after_deadline_monotonic: float | None = None
+        self._stop_file_env_raw = ""
+        self._stop_file_cached_path = os.path.join(self._bin_dir, "STOP")
+        self._stop_file_poll_raw = ""
+        self._stop_file_poll_sec = 0.1
+        self._stop_file_next_check_monotonic = 0.0
+        self._stop_file_present_cache = False
+        self._settings_refresh_sec = 1.0
+        self._next_settings_refresh_monotonic = 0.0
+        self._refresh_runtime_settings(force=True)
 
     def request_stop(self, reason: str, *, force: bool = False) -> None:
         """
@@ -49,25 +61,58 @@ class StopController:
             raise KeyboardInterrupt
 
     def _stop_file_path(self) -> str:
-        p = str(os.environ.get("METAFINDER_STOP_FILE", "") or "").strip()
-        if p:
-            return p
-        return os.path.join(self._bin_dir, "STOP")
+        return str(self._stop_file_cached_path)
+
+    def _refresh_runtime_settings(self, *, force: bool = False) -> None:
+        stop_after_raw = str(os.environ.get("METAFINDER_STOP_AFTER_SEC", "0") or "0").strip()
+        if force or stop_after_raw != self._stop_after_raw:
+            self._stop_after_raw = stop_after_raw
+            try:
+                stop_after_sec = float(stop_after_raw or "0")
+            except Exception:
+                stop_after_sec = 0.0
+            self._stop_after_sec = max(0.0, float(stop_after_sec))
+            if self._stop_after_sec > 0.0:
+                self._stop_after_deadline_monotonic = float(self._run_start_monotonic) + float(self._stop_after_sec)
+            else:
+                self._stop_after_deadline_monotonic = None
+
+        stop_file_raw = str(os.environ.get("METAFINDER_STOP_FILE", "") or "").strip()
+        if force or stop_file_raw != self._stop_file_env_raw:
+            self._stop_file_env_raw = stop_file_raw
+            self._stop_file_cached_path = stop_file_raw or os.path.join(self._bin_dir, "STOP")
+            self._stop_file_next_check_monotonic = 0.0
+            self._stop_file_present_cache = False
+
+        stop_file_poll_raw = str(os.environ.get("METAFINDER_STOP_FILE_POLL_SEC", "0.1") or "0.1").strip()
+        if force or stop_file_poll_raw != self._stop_file_poll_raw:
+            self._stop_file_poll_raw = stop_file_poll_raw
+            try:
+                stop_file_poll_sec = float(stop_file_poll_raw or "0.1")
+            except Exception:
+                stop_file_poll_sec = 0.1
+            self._stop_file_poll_sec = max(0.01, float(stop_file_poll_sec))
 
     def stop_requested_now(self) -> bool:
         if self.stop_requested_event.is_set():
             return True
+        now = time.monotonic()
+        if now >= float(self._next_settings_refresh_monotonic):
+            self._refresh_runtime_settings()
+            self._next_settings_refresh_monotonic = now + float(self._settings_refresh_sec)
         try:
-            stop_after = float(os.environ.get("METAFINDER_STOP_AFTER_SEC", "0") or "0")
-            if stop_after > 0.0 and (time.monotonic() - float(self._run_start_monotonic)) >= stop_after:
-                self.request_stop(f"stop-after timer reached: {stop_after:.0f}s")
+            if self._stop_after_deadline_monotonic is not None and now >= float(self._stop_after_deadline_monotonic):
+                self.request_stop(f"stop-after timer reached: {self._stop_after_sec:.0f}s")
                 return True
         except Exception:
             pass
         try:
-            stop_file = self._stop_file_path()
-            if stop_file and os.path.exists(stop_file):
-                self.request_stop(f"stop file detected: {stop_file!r}")
+            if now >= float(self._stop_file_next_check_monotonic):
+                stop_file = self._stop_file_path()
+                self._stop_file_present_cache = bool(stop_file and os.path.exists(stop_file))
+                self._stop_file_next_check_monotonic = now + float(self._stop_file_poll_sec)
+            if self._stop_file_present_cache:
+                self.request_stop(f"stop file detected: {self._stop_file_path()!r}")
                 return True
         except Exception:
             pass

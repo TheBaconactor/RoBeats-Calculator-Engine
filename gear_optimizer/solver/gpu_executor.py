@@ -1114,6 +1114,44 @@ class GpuExecutor:
             song_slot = 0
         return self._execute_solve_genomes_from_registry(request, song_slot=song_slot)
 
+    @staticmethod
+    def _default_song_slot_for_worker(worker_id: int) -> int:
+        """Map a worker id to a stable non-zero song slot for timeline reuse."""
+        try:
+            from .taichi_gem import fields as gem_fields
+
+            max_slots = int(getattr(gem_fields, "MAX_SONG_SLOTS", 1) or 1)
+        except Exception:
+            try:
+                max_slots = int(os.environ.get("GPU_SONG_SLOTS", "24") or "24")
+            except Exception:
+                max_slots = 24
+        max_slots = max(1, int(max_slots))
+        if max_slots <= 1:
+            return 0
+        return 1 + (abs(int(worker_id)) % max(1, int(max_slots) - 1))
+
+    def _execute_request(self, request: GpuRequest) -> GpuResponse:
+        """Dispatch a single request to the appropriate executor handler."""
+        req_type = getattr(request, "request_type", None)
+        if req_type == GpuRequestType.SHUTDOWN:
+            return GpuResponse(request_id=int(getattr(request, "request_id", 0) or 0), success=True, result=None)
+        handler = self._dispatch.get(req_type)
+        if handler is None:
+            return GpuResponse(
+                request_id=int(getattr(request, "request_id", 0) or 0),
+                success=False,
+                error=f"Unsupported GPU request type: {req_type!r}",
+            )
+        try:
+            return handler(request)
+        except Exception as exc:
+            return GpuResponse(
+                request_id=int(getattr(request, "request_id", 0) or 0),
+                success=False,
+                error=f"GpuExecutor error: {type(exc).__name__}: {exc}",
+            )
+
     def start(self, *, in_process: bool = False):
         """Start the GPU executor thread in the main process."""
         if self._running:

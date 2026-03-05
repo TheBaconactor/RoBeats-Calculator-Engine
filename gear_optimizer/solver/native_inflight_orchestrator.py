@@ -1938,13 +1938,35 @@ def run_native_inflight_song_pipeline(
     completion_event = threading.Event()
     completion_future_ids: set[int] = set()
     completion_lock = threading.Lock()
+    completion_registered_attr = "_metafinder_completion_registered"
+    ga_queue_limit_cache_key: tuple[bool, int, int, int, int] | None = None
+    ga_queue_limit_cache_value = int(ga_queue_limit_base)
+    stop_poll_interval_s = 0.05
+    stop_next_check_mono = 0.0
+    stop_cached_requested = False
+    memory_poll_interval_s = 0.05
+    memory_next_check_mono = 0.0
+    memory_cached_requested = False
 
     def _register_completion_future(fut: concurrent.futures.Future | None) -> None:
         if fut is None:
             return
+        marked_registered = False
+        try:
+            if bool(getattr(fut, completion_registered_attr, False)):
+                return
+            setattr(fut, completion_registered_attr, True)
+            marked_registered = True
+        except Exception:
+            pass
         try:
             fut_id = int(id(fut))
         except Exception:
+            if marked_registered:
+                try:
+                    setattr(fut, completion_registered_attr, False)
+                except Exception:
+                    pass
             return
         try:
             with completion_lock:
@@ -1952,6 +1974,11 @@ def run_native_inflight_song_pipeline(
                     return
                 completion_future_ids.add(fut_id)
         except Exception:
+            if marked_registered:
+                try:
+                    setattr(fut, completion_registered_attr, False)
+                except Exception:
+                    pass
             return
 
         def _on_done(_fut: concurrent.futures.Future, *, _fut_id: int = fut_id) -> None:
@@ -1969,28 +1996,83 @@ def run_native_inflight_song_pipeline(
             fut.add_done_callback(_on_done)
         except Exception:
             try:
+                setattr(fut, completion_registered_attr, False)
+            except Exception:
+                pass
+            try:
                 completion_event.set()
             except Exception:
                 pass
 
     def _effective_ga_queue_limit() -> int:
+        nonlocal ga_queue_limit_cache_key, ga_queue_limit_cache_value
         if not inflight_ga_dynamic_queue:
             return int(ga_queue_limit_base)
 
         extra_free = 0
+        slot_pressure_active = False
 
         if last_slot_block_t is not None and ga_queue_pressure_window_s > 0.0:
             try:
                 if (time.monotonic() - float(last_slot_block_t)) <= float(ga_queue_pressure_window_s):
+                    slot_pressure_active = True
                     extra_free = max(int(extra_free), int(ga_queue_extra_free_on_slot_pressure))
             except Exception:
                 pass
+
+        cache_key = (
+            bool(slot_pressure_active),
+            int(extra_free),
+            int(fg_slot_reserve),
+            int(song_slot_limit),
+            int(ga_queue_limit_base),
+        )
+        if cache_key == ga_queue_limit_cache_key:
+            return int(ga_queue_limit_cache_value)
 
         min_free = int(fg_slot_reserve) + int(extra_free)
         # Keep at least 1 slot usable; (song_slot_limit - min_free) must be >= 1.
         min_free = max(0, min(int(min_free), max(0, int(song_slot_limit) - 1)))
         limit_from_free = max(1, int(song_slot_limit) - int(min_free))
-        return max(1, min(int(ga_queue_limit_base), int(limit_from_free)))
+        ga_queue_limit_cache_value = max(1, min(int(ga_queue_limit_base), int(limit_from_free)))
+        ga_queue_limit_cache_key = cache_key
+        return int(ga_queue_limit_cache_value)
+
+    def _stop_requested_cached(now_mono: float | None = None) -> bool:
+        nonlocal stop_next_check_mono, stop_cached_requested
+        if stop_cached_requested:
+            return True
+        if stop_requested is None or not callable(stop_requested):
+            return False
+        now_val = float(time.monotonic() if now_mono is None else now_mono)
+        if now_val < float(stop_next_check_mono):
+            return False
+        stop_cached_requested = bool(stop_requested())
+        if stop_cached_requested:
+            return True
+        stop_next_check_mono = now_val + float(stop_poll_interval_s)
+        return False
+
+    def _memory_release_requested_cached(now_mono: float | None = None) -> bool:
+        nonlocal memory_next_check_mono, memory_cached_requested
+        if memory_cached_requested:
+            return True
+        now_val = float(time.monotonic() if now_mono is None else now_mono)
+        if now_val < float(memory_next_check_mono):
+            return False
+        memory_cached_requested = bool(memory_release_requested())
+        if memory_cached_requested:
+            return True
+        memory_next_check_mono = now_val + float(memory_poll_interval_s)
+        return False
+
+    def _has_waitable_futures() -> bool:
+        if ga_inflight or prep_inflight or decode_inflight or fg_prep_inflight or fg_futures:
+            return True
+        for song in pending_fg:
+            if song.db_loadouts_future is not None:
+                return True
+        return False
 
     def _log_abort(exc: Exception) -> None:
         try:
@@ -2190,7 +2272,8 @@ def run_native_inflight_song_pipeline(
             or fg_prep_inflight
             or fg_futures
         ):
-            if memory_release_requested():
+            now = time.monotonic()
+            if _memory_release_requested_cached(now):
                 break
 
             # Optional profiling cap: stop after N completed songs/tasks.
@@ -2214,7 +2297,7 @@ def run_native_inflight_song_pipeline(
                     except Exception:
                         pass
 
-            if stop_requested is not None and callable(stop_requested) and stop_requested():
+            if _stop_requested_cached(now):
                 if not stopping:
                     stopping = True
                     try:
@@ -2251,7 +2334,6 @@ def run_native_inflight_song_pipeline(
                         pass
 
             # Periodic throughput reporting (opt-in via env).
-            now = time.monotonic()
             if throughput_sec > 0 and (now - last_throughput) >= float(throughput_sec):
                 last_throughput = now
                 try:
@@ -3201,55 +3283,31 @@ def run_native_inflight_song_pipeline(
                         },
                     )
 
-                wait_futures: list[concurrent.futures.Future] = []
-                for song in ga_inflight:
-                    if song.ga_future is not None:
-                        wait_futures.append(song.ga_future)
-                    if song.db_loadouts_future is not None:
-                        wait_futures.append(song.db_loadouts_future)
-                for _task, fut, _t0 in prep_inflight:
-                    if fut is not None:
-                        wait_futures.append(fut)
-                for song in decode_inflight:
-                    if song.decode_future is not None:
-                        wait_futures.append(song.decode_future)
-                for song in fg_prep_inflight:
-                    if song.fg_prep_future is not None:
-                        wait_futures.append(song.fg_prep_future)
-                    if song.db_loadouts_future is not None:
-                        wait_futures.append(song.db_loadouts_future)
-                for song in pending_fg:
-                    if song.db_loadouts_future is not None:
-                        wait_futures.append(song.db_loadouts_future)
-                for _song, fut, _t0 in fg_futures:
-                    wait_futures.append(fut)
-                if wait_futures:
+                if _has_waitable_futures():
                     t_wait = time.perf_counter()
                     has_gpu = bool(ga_inflight) or bool(fg_futures)
                     has_cpu = bool(prep_inflight) or bool(decode_inflight) or bool(fg_prep_inflight)
-                    for fut in wait_futures:
-                        _register_completion_future(fut)
-                    # Clear before probing `.done()` to avoid losing a completion signal that
-                    # can fire between an `already_done` check and a later `clear()`.
-                    # (That race can inject avoidable scheduler sleeps and GPU idle gaps.)
+                    signaled = False
                     try:
-                        completion_event.clear()
+                        signaled = bool(completion_event.is_set())
+                        if signaled:
+                            completion_event.clear()
                     except Exception:
-                        pass
-                    already_done = False
-                    try:
-                        already_done = any(f.done() for f in wait_futures)
-                    except Exception:
-                        already_done = False
-                    if not already_done:
+                        signaled = False
+                    if not signaled:
                         wait_timeout_s = float(event_wait_timeout_s)
                         if has_gpu and float(event_wait_gpu_cap_s) > 0.0:
                             wait_timeout_s = min(float(wait_timeout_s), float(event_wait_gpu_cap_s))
-                        _wait_for_completion_event(
+                        signaled = _wait_for_completion_event(
                             completion_event,
                             timeout_s=float(wait_timeout_s),
                             short_spin_s=float(event_wait_short_spin_s),
                         )
+                        if signaled:
+                            try:
+                                completion_event.clear()
+                            except Exception:
+                                pass
                     dt_wait = time.perf_counter() - t_wait
                     stage_profiler.record("main_wait", dt_wait)
                     if (not has_gpu) and has_cpu:

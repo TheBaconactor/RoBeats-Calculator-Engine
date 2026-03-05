@@ -28,8 +28,6 @@ sys.path.insert(0, project_root)
 
 
 def _build_inputs(n_genomes: int = 500):
-    from gear_optimizer.solver.fever_timeline import SongTimelineGrid
-
     ref_arrays = {
         "Perfect Points": np.linspace(0, 100, 161, dtype=np.float64),
         "Combo Multiplier": np.linspace(1, 2, 161, dtype=np.float64),
@@ -51,8 +49,9 @@ def _build_inputs(n_genomes: int = 500):
         for i in range(n_genomes)
     ]
 
-    # Unique-ish song key per process so we can test worst-case (many songs) or best-case (same song).
-    # The actual timestamps are constant; the cache_key is controlled by metadata Song Name.
+    # The worker IPC path normally sends a lightweight calc_song payload and lets the
+    # GPU owner manage timeline precompute/upload. Keep this harness aligned with that
+    # production path instead of serializing a prebuilt SongTimelineGrid object.
     timestamps = np.linspace(0, 120, 800)
     calc_song = {
         "song_data": {"timestamps": timestamps},
@@ -64,11 +63,10 @@ def _build_inputs(n_genomes: int = 500):
             "Song Name": "PROFILE_SONG",
         },
     }
-    grid = SongTimelineGrid(calc_song, ref_arrays)
 
     # Color flags
     flags = (0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0)
-    return genome_stats, grid, flags, ref_arrays
+    return genome_stats, calc_song, flags, ref_arrays
 
 
 def _worker_process(worker_id, req_queue, resp_queue, n_requests: int, song_suffix: str):
@@ -76,16 +74,20 @@ def _worker_process(worker_id, req_queue, resp_queue, n_requests: int, song_suff
 
     set_gpu_worker_mode(worker_id, req_queue, resp_queue)
 
-    genome_stats, grid, flags, ref_arrays = _build_inputs()
-    # Ensure each process has a distinct cache_key if requested.
-    grid.cache_key = (str(grid.cache_key[0]) + song_suffix, *grid.cache_key[1:])
+    genome_stats, calc_song, flags, ref_arrays = _build_inputs()
+    if song_suffix:
+        calc_song = {
+            "song_data": dict(calc_song.get("song_data") or {}),
+            "metadata": dict(calc_song.get("metadata") or {}),
+        }
+        calc_song["metadata"]["Song Name"] = f"{calc_song['metadata'].get('Song Name', 'PROFILE_SONG')}{song_suffix}"
 
     is_p_ft, is_s_ft, is_p_ff, is_s_ff, is_p_pp, is_s_pp, is_p_cm, is_s_cm, is_p_fm, is_s_fm, is_p_ov, is_s_ov = flags
 
     for _ in range(n_requests):
         submit_gpu_solve_genomes(
             genome_stats,
-            grid,
+            calc_song,
             is_p_ft,
             is_s_ft,
             is_p_ff,

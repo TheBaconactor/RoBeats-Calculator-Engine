@@ -56,6 +56,7 @@ from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.data.stats_verifier import verify_and_repair_stats, print_verification_warning
 from gear_optimizer.app_stop_control import StopController
 from gear_optimizer.helpers.song_helpers.persistence import evaluate_record_update
+from gear_optimizer.robeatsmeta_api import RoBeatsMetaOptimizerApi
 
 
 # Module-level worker initializer for GPU executor (must be picklable)
@@ -397,6 +398,39 @@ class _ProgressUI:
         return f"{m:02d}:{s:02d}"
 
 
+def _stream_is_tty(stream) -> bool:
+    try:
+        isatty = getattr(stream, "isatty", None)
+        if callable(isatty):
+            return bool(isatty())
+    except Exception:
+        return False
+    return False
+
+
+def _progress_ui_enabled_default(
+    *,
+    configured_enabled: bool,
+    output_enabled: bool,
+    progress_env_present: bool,
+    stream_is_tty: bool,
+) -> bool:
+    if not bool(configured_enabled):
+        return False
+    if bool(output_enabled) and not bool(progress_env_present):
+        return False
+    if (not bool(progress_env_present)) and (not bool(stream_is_tty)):
+        return False
+    return True
+
+
+def _banner_enabled_default(*, stream_is_tty: bool, banner_env: str | None) -> bool:
+    raw = str(banner_env or "").strip().lower()
+    if not raw:
+        return bool(stream_is_tty)
+    return raw in TRUTHY_ENV_VALUES
+
+
 class GearOptimizerApp:
     def __init__(self):
         self.setup_logging()
@@ -405,9 +439,18 @@ class GearOptimizerApp:
         self._stop_requested = self._stop_control.stop_requested_event
         self._force_exit_requested = self._stop_control.force_exit_requested_event
         self._output_enabled = bool(getattr(ENV, "output_enabled", False))
-        self._progress_enabled = bool(getattr(ENV, "progress_enabled", True))
-        if self._output_enabled and "METAFINDER_PROGRESS" not in os.environ:
-            self._progress_enabled = False
+        ui_stream = getattr(sys, "__stdout__", None) or sys.stdout
+        self._stdout_is_tty = _stream_is_tty(ui_stream)
+        self._progress_enabled = _progress_ui_enabled_default(
+            configured_enabled=bool(getattr(ENV, "progress_enabled", True)),
+            output_enabled=bool(self._output_enabled),
+            progress_env_present=bool("METAFINDER_PROGRESS" in os.environ),
+            stream_is_tty=bool(self._stdout_is_tty),
+        )
+        self._banner_enabled = _banner_enabled_default(
+            stream_is_tty=bool(self._stdout_is_tty),
+            banner_env=os.environ.get("METAFINDER_BANNER"),
+        )
         self._progress_interval = float(getattr(ENV, "progress_interval_sec", 0.2))
         self._progress_bar_width = int(getattr(ENV, "progress_bar_width", 24))
         self._progress: _ProgressUI | None = None
@@ -419,10 +462,14 @@ class GearOptimizerApp:
         self._run_tasks_ref = None
         self._run_completed_ref = None
         self._run_current_song_label = ""
+        self._stop_poll_interval_sec = 0.05
+        self._stop_next_check_monotonic = 0.0
+        self._stop_cached_result = False
         # Full DB integrity verification is expensive; only run it once per process.
         self._stats_verified_once = False
         # Session-scoped counters (persist across loop restarts).
         self._session_new_records = 0
+        self._robeatsmeta_api: RoBeatsMetaOptimizerApi | None = None
 
     def setup_logging(self):
         os.makedirs(BIN_DIR, exist_ok=True)
@@ -435,7 +482,17 @@ class GearOptimizerApp:
         return self._stop_control.request_stop(reason, force=force)
 
     def _stop_requested_now(self) -> bool:
-        return self._stop_control.stop_requested_now()
+        if self._stop_cached_result:
+            return True
+        now = time.monotonic()
+        if now < float(self._stop_next_check_monotonic):
+            return False
+        stop_now = bool(self._stop_control.stop_requested_now())
+        if stop_now:
+            self._stop_cached_result = True
+            return True
+        self._stop_next_check_monotonic = now + float(self._stop_poll_interval_sec)
+        return False
 
     def _install_signal_handlers(self) -> None:
         return self._stop_control.install_signal_handlers()
@@ -495,8 +552,51 @@ class GearOptimizerApp:
                 return True
             if self._cfg_truthy(cfg, "IterationEngine", "DebugProfile", fallback=False):
                 return True
-
         return False
+
+    def _optimizer_priority_api_enabled(self) -> bool:
+        api = getattr(self, "_robeatsmeta_api", None)
+        return bool(api is not None and api.priority_queue_enabled())
+
+    def _prioritize_robeatsmeta_song_queue(
+        self,
+        song_queue: list[tuple[str, str, str]],
+    ) -> list[tuple[str, str, str]]:
+        if not song_queue or not self._optimizer_priority_api_enabled():
+            return song_queue
+        api = self._robeatsmeta_api
+        if api is None:
+            return song_queue
+        try:
+            return api.prioritize_song_queue(song_queue)
+        except Exception as exc:
+            logging.warning(f"[RoBeatsMeta] Failed to prioritize song queue: {type(exc).__name__}: {exc}")
+            return song_queue
+
+    def _reprioritize_robeatsmeta_tasks(self, tasks: list[tuple], *, start_index: int) -> None:
+        if not tasks or not self._optimizer_priority_api_enabled():
+            return
+        api = self._robeatsmeta_api
+        if api is None:
+            return
+        try:
+            api.reprioritize_pending_tasks(tasks, start_index=start_index)
+        except Exception as exc:
+            logging.warning(f"[RoBeatsMeta] Failed to reprioritize pending tasks: {type(exc).__name__}: {exc}")
+
+    def _mark_robeatsmeta_song_computed(self, result: dict | None) -> None:
+        if not isinstance(result, dict) or "_error" in result or not self._optimizer_priority_api_enabled():
+            return
+        api = self._robeatsmeta_api
+        if api is None:
+            return
+        song_name = str(result.get("song") or "").strip()
+        if not song_name:
+            return
+        try:
+            api.mark_song_computed(song_id=song_name)
+        except Exception as exc:
+            logging.warning(f"[RoBeatsMeta] Failed to mark song computed: {type(exc).__name__}: {exc}")
 
     def run(self):
         multiprocessing.freeze_support()
@@ -548,10 +648,20 @@ class GearOptimizerApp:
                 return False
 
             cfg = load_config()
+            try:
+                self._robeatsmeta_api = RoBeatsMetaOptimizerApi()
+                if self._robeatsmeta_api.apply_service_defaults(cfg):
+                    print(
+                        "[RoBeatsMeta] Service mode enabled: LoopForever=true, SongRepeats=25, Difficulty=All.",
+                    )
+            except Exception as exc:
+                self._robeatsmeta_api = None
+                logging.warning(f"[RoBeatsMeta] Failed to initialize optimizer API: {type(exc).__name__}: {exc}")
             paths = load_paths_cache()
             set_memory_watchdog_limit(compute_memory_guard_limit(cfg))
             db_display_name = os.path.basename(get_evolution_db_path())
-            self._print_banner()
+            if self._banner_enabled:
+                self._print_banner()
             print(f"[Run] Gear Optimizer started. DB file: {db_display_name}")
             emit_profile_event(
                 component="app",
@@ -1149,9 +1259,10 @@ class GearOptimizerApp:
             if song_queue_limit and song_queue_limit > 0 and len(merged_queue) > song_queue_limit:
                 merged_queue = merged_queue[: int(song_queue_limit)]
                 print(f"[Queue] SongQueueLimit={song_queue_limit}: running {len(merged_queue)} song(s) (resume+new)")
-            return merged_queue
+            return self._prioritize_robeatsmeta_song_queue(merged_queue)
 
         # Queue all discovered songs; filtering is handled by difficulty folder + optional search string.
+        song_queue = self._prioritize_robeatsmeta_song_queue(song_queue)
         if not filter_search:
             return song_queue
 
@@ -2178,6 +2289,7 @@ class GearOptimizerApp:
             post_sender = None
             pipeline_ok = False
             progress_completed = len(completed_songs)
+            self._reprioritize_robeatsmeta_tasks(tasks, start_index=0)
             if self._progress is not None:
                 self._progress.update_counts(completed=progress_completed, total=len(tasks))
             self._progress_counts_driven = True
@@ -2239,6 +2351,8 @@ class GearOptimizerApp:
                             "_song_name": song_name,
                             "song": song_name,
                         }
+                    self._mark_robeatsmeta_song_computed(res)
+                    self._reprioritize_robeatsmeta_tasks(tasks, start_index=i + 1)
                     progress_completed += 1
                     failed_delta = 1 if isinstance(res, dict) and "_error" in res else 0
                     self._progress_on_result(
@@ -2288,6 +2402,7 @@ class GearOptimizerApp:
 
         def _safe_sequential_gen(task_list):
             preload_state = self._make_sequential_preload_state(use_gpu_preload)
+            self._reprioritize_robeatsmeta_tasks(task_list, start_index=0)
 
             for i, t in enumerate(task_list):
                 if self._stop_requested_now():
@@ -2323,6 +2438,8 @@ class GearOptimizerApp:
                     res = {"_error": str(seq_err), "_error_type": type(seq_err).__name__, "_song_name": t[1]}
 
                 self._maybe_prefetch_ready_song(task_index=i, task_list=task_list, preload_state=preload_state)
+                self._mark_robeatsmeta_song_computed(res)
+                self._reprioritize_robeatsmeta_tasks(task_list, start_index=i + 1)
 
                 yield res
 

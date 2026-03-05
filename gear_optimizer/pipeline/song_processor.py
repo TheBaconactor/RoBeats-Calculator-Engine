@@ -12,6 +12,7 @@ Contains the main process_song_task function that coordinates:
 REFACTORED: Helper functions extracted to .helpers.song_helpers for maintainability.
 """
 
+import atexit
 import contextlib
 import gc
 import hashlib
@@ -22,6 +23,7 @@ import sys
 import threading
 import time
 import traceback
+from collections import OrderedDict
 from io import StringIO
 
 import numpy as np
@@ -34,6 +36,7 @@ from ..core.types import SongResultPayload
 from ..core.constants import (
     LOADOUTS_PER_SONG_LIMIT,
     FG_CANDIDATE_LIMIT,
+    PATHS,
 )
 
 from ..core.config import read_fg_candidate_limit, read_fg_search_radius
@@ -142,6 +145,13 @@ _BASE_CALC_SONG_CACHE_MAX = max(1, int(os.environ.get("BASE_CALC_SONG_CACHE_MAX"
 _BASE_CALC_SONG_CACHE: LRUCache = LRUCache(maxsize=_BASE_CALC_SONG_CACHE_MAX)
 _BASE_CALC_SONG_CACHE_LOCK = threading.Lock()
 
+_SONG_HEADER_CACHE_PATH = PATHS.bin_path("song_header_cache.json")
+_SONG_HEADER_CACHE_MAX = max(256, int(os.environ.get("SONG_HEADER_CACHE_MAX", "4096") or "4096"))
+_SONG_HEADER_CACHE_LOCK = threading.Lock()
+_SONG_HEADER_CACHE: OrderedDict[str, dict[str, object]] = OrderedDict()
+_SONG_HEADER_CACHE_LOADED = False
+_SONG_HEADER_CACHE_DIRTY = False
+
 
 def clone_calc_song(calc_song: dict) -> dict:
     """
@@ -216,6 +226,74 @@ def get_base_calc_song(fp: str, cfg_dict: dict | None = None) -> dict:
     return base
 
 
+def _prune_song_header_cache_locked() -> None:
+    while len(_SONG_HEADER_CACHE) > int(_SONG_HEADER_CACHE_MAX):
+        _SONG_HEADER_CACHE.popitem(last=False)
+
+
+def _load_song_header_cache_locked() -> None:
+    global _SONG_HEADER_CACHE_LOADED
+    if _SONG_HEADER_CACHE_LOADED:
+        return
+    _SONG_HEADER_CACHE_LOADED = True
+    try:
+        with open(_SONG_HEADER_CACHE_PATH, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
+        return
+    if not isinstance(payload, dict):
+        return
+    for key, entry in payload.items():
+        if not isinstance(key, str) or not isinstance(entry, dict):
+            continue
+        try:
+            mtime_ns = int(entry.get("mtime_ns", -1))
+            file_size = int(entry.get("size", -1))
+        except Exception:
+            continue
+        meta = entry.get("meta")
+        if meta is not None and not isinstance(meta, dict):
+            continue
+        _SONG_HEADER_CACHE[key] = {"mtime_ns": mtime_ns, "size": file_size, "meta": meta}
+    _prune_song_header_cache_locked()
+
+
+def _flush_song_header_cache() -> None:
+    global _SONG_HEADER_CACHE_DIRTY
+    with _SONG_HEADER_CACHE_LOCK:
+        if not _SONG_HEADER_CACHE_DIRTY:
+            return
+        payload = {
+            key: {
+                "mtime_ns": int(entry.get("mtime_ns", -1)),
+                "size": int(entry.get("size", -1)),
+                "meta": entry.get("meta"),
+            }
+            for key, entry in _SONG_HEADER_CACHE.items()
+        }
+        _SONG_HEADER_CACHE_DIRTY = False
+    try:
+        os.makedirs(os.path.dirname(_SONG_HEADER_CACHE_PATH), exist_ok=True)
+        tmp_path = f"{_SONG_HEADER_CACHE_PATH}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=True, separators=(",", ":"))
+        os.replace(tmp_path, _SONG_HEADER_CACHE_PATH)
+    except Exception:
+        with _SONG_HEADER_CACHE_LOCK:
+            _SONG_HEADER_CACHE_DIRTY = True
+
+
+def _reset_song_header_cache_for_tests() -> None:
+    global _SONG_HEADER_CACHE_LOADED, _SONG_HEADER_CACHE_DIRTY
+    with _SONG_HEADER_CACHE_LOCK:
+        _SONG_HEADER_CACHE.clear()
+        _SONG_HEADER_CACHE_LOADED = False
+        _SONG_HEADER_CACHE_DIRTY = False
+
+
+atexit.register(_flush_song_header_cache)
+
+
 def scan_song_header(fp):
     """
     Scan first 20 lines of song file for metadata (fast check).
@@ -226,9 +304,30 @@ def scan_song_header(fp):
     Returns:
         dict: Metadata dictionary or None if parse fails
     """
+    abs_fp = os.path.abspath(fp)
+    try:
+        st = os.stat(abs_fp)
+        mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
+        file_size = int(getattr(st, "st_size", -1))
+    except Exception:
+        mtime_ns = -1
+        file_size = -1
+
+    with _SONG_HEADER_CACHE_LOCK:
+        _load_song_header_cache_locked()
+        cached = _SONG_HEADER_CACHE.get(abs_fp)
+        if isinstance(cached, dict):
+            try:
+                if int(cached.get("mtime_ns", -2)) == int(mtime_ns) and int(cached.get("size", -2)) == int(file_size):
+                    _SONG_HEADER_CACHE.move_to_end(abs_fp)
+                    meta_cached = cached.get("meta")
+                    return dict(meta_cached) if isinstance(meta_cached, dict) else None
+            except Exception:
+                pass
+
     meta = {"Song Name": "", "Primary Color": "", "Secondary Color": "", "Difficulty": ""}
     try:
-        with open(fp, "r", encoding="utf-8-sig") as f:
+        with open(abs_fp, "r", encoding="utf-8-sig") as f:
             for _ in range(20):
                 line = f.readline()
                 if not line:
@@ -249,7 +348,14 @@ def scan_song_header(fp):
                         key = parts[0].strip()
                         if key in meta:
                             meta[key] = parts[1].strip()
-        return meta if meta["Song Name"] else None
+        result = meta if meta["Song Name"] else None
+        with _SONG_HEADER_CACHE_LOCK:
+            _SONG_HEADER_CACHE[abs_fp] = {"mtime_ns": int(mtime_ns), "size": int(file_size), "meta": result}
+            _SONG_HEADER_CACHE.move_to_end(abs_fp)
+            _prune_song_header_cache_locked()
+            global _SONG_HEADER_CACHE_DIRTY
+            _SONG_HEADER_CACHE_DIRTY = True
+        return dict(result) if isinstance(result, dict) else None
     except Exception:
         return None
 

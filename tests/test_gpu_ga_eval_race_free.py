@@ -199,15 +199,18 @@ def test_gpu_ga_eval_key_consistency_and_determinism() -> None:
                 scores = ga_download_scores(n_genomes)
                 assert np.array_equal(results[:, 0], scores)
 
-                keys = np.asarray(gpu_fields.chunk_best_key.to_numpy()[:n_genomes], dtype=np.uint64)
-                tiles = np.asarray(gpu_fields.chunk_best_key_tiles.to_numpy()[:n_genomes, :], dtype=np.uint64)
-                best_keys = np.maximum(keys, tiles.max(axis=1))
-
-                best_scores = (best_keys >> np.uint64(32)).astype(np.int64) - 1
-                best_combo = (best_keys & np.uint64(0xFFFFFFFF)).astype(np.int64)
-
-                # When no valid combo exists, key is 0 and score is -1.
-                assert np.array_equal(best_scores.astype(np.int32), results[:, 0])
+                if gpu_fields.chunk_best_key is not None:
+                    best_keys = np.asarray(gpu_fields.chunk_best_key.to_numpy()[:n_genomes], dtype=np.uint64)
+                    best_scores = (best_keys >> np.uint64(32)).astype(np.int64) - 1
+                    best_combo = (best_keys & np.uint64(0xFFFFFFFF)).astype(np.int64)
+                    # When no valid combo exists, key is 0 and score is -1.
+                    assert np.array_equal(best_scores.astype(np.int32), results[:, 0])
+                else:
+                    best_combo = np.asarray(gpu_fields.chunk_best_idx.to_numpy()[:n_genomes], dtype=np.int32)
+                    # Metal uses split score/index reduction buffers; final score is
+                    # re-materialized into ga_scores/genome_result_stats after the
+                    # winning combo index is finalized.
+                    assert np.array_equal(scores, results[:, 0])
 
                 combo_ft = np.asarray(gpu_fields.ftff_combo_ft.to_numpy(), dtype=np.int32)
                 combo_ff = np.asarray(gpu_fields.ftff_combo_ff.to_numpy(), dtype=np.int32)

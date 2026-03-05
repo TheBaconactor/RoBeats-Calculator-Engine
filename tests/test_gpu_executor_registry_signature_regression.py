@@ -11,17 +11,14 @@ def _install_fake_registry_api(monkeypatch):
 
     fake_api = types.ModuleType("gear_optimizer.solver.taichi_gem.api")
 
-    def _noop(*_args, **_kwargs):
-        return None
-
     def _solve_genomes_from_registry(*, population_indices, **_kwargs):
         calls["solve"] += 1
         n = int(np.asarray(population_indices, dtype=np.int32).shape[0])
         return [(int(i), 0, 0, 0, 0, 0, 0) for i in range(n)]
 
-    fake_api.ga_upload_base_fixed_stats = _noop
-    fake_api.ga_upload_item_stats = _noop
-    fake_api.load_ref_arrays = _noop
+    fake_api.ga_upload_base_fixed_stats = lambda *_args, **_kwargs: None
+    fake_api.ga_upload_item_stats = lambda *_args, **_kwargs: None
+    fake_api.load_ref_arrays = lambda *_args, **_kwargs: None
     fake_api.solve_genomes_from_registry = _solve_genomes_from_registry
 
     fake_parent = types.ModuleType("gear_optimizer.solver.taichi_gem")
@@ -84,7 +81,7 @@ def test_registry_coalesce_signature_distinguishes_transposed_views(monkeypatch)
         fallback_ids.append(int(req.request_id))
         return GpuResponse(request_id=int(req.request_id), success=True, result=[("fallback", int(req.request_id))])
 
-    monkeypatch.setattr(executor, "_execute_request", _fake_execute_request)
+    monkeypatch.setattr(executor, "_execute_request", _fake_execute_request, raising=False)
 
     # Same pointer/shape/dtype, different strides and value layout.
     base = np.arange(16, dtype=np.float32).reshape(4, 4)

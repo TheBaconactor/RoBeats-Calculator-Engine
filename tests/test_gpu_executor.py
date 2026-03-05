@@ -131,5 +131,44 @@ def test_gpu_executor_ipc_request():
         GpuExecutor._instance = None
 
 
+def test_gpu_executor_dispatcher_routes_known_request(monkeypatch):
+    """Test the restored single-request dispatcher uses the request-type table."""
+    from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequest, GpuRequestType, GpuResponse
+
+    executor = GpuExecutor()
+    seen = []
+
+    def _fake_handler(req):
+        seen.append((req.request_type, req.request_id))
+        return GpuResponse(request_id=int(req.request_id), success=True, result="ok")
+
+    monkeypatch.setitem(executor._dispatch, GpuRequestType.LOAD_REF_ARRAYS, _fake_handler)
+
+    response = executor._execute_request(
+        GpuRequest(
+            request_type=GpuRequestType.LOAD_REF_ARRAYS,
+            request_id=77,
+            worker_id=0,
+            payload={"ref_arrays": {}},
+        )
+    )
+
+    assert response.success is True
+    assert response.result == "ok"
+    assert seen == [(GpuRequestType.LOAD_REF_ARRAYS, 77)]
+
+
+def test_gpu_executor_default_song_slot_for_worker_is_stable_nonzero():
+    from gear_optimizer.solver.gpu_executor import GpuExecutor
+
+    slot_a = GpuExecutor._default_song_slot_for_worker(0)
+    slot_b = GpuExecutor._default_song_slot_for_worker(0)
+    slot_c = GpuExecutor._default_song_slot_for_worker(5)
+
+    assert slot_a == slot_b
+    assert slot_a >= 1
+    assert slot_c >= 1
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
