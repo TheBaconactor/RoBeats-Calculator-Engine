@@ -2073,19 +2073,7 @@ class GearOptimizerApp:
             post_proc = None
             inflight_err_captured = None
             try:
-                from gear_optimizer.pipeline.post_processor import run_post_processor
-
-                # Default to an unbounded multiprocessing queue to avoid producer backpressure.
-                post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 0), 0)
-                post_queue_maxsize = 0 if post_queue_size <= 0 else max(1, post_queue_size)
-                post_queue = multiprocessing.Queue(maxsize=post_queue_maxsize)
-                post_proc = multiprocessing.Process(
-                    target=run_post_processor,
-                    args=(post_queue, len(tasks)),
-                    daemon=True,
-                    name="SongPostProcessor",
-                )
-                post_proc.start()
+                post_queue, post_proc = self._start_post_processor(len(tasks))
 
                 from gear_optimizer.solver.native_inflight_orchestrator import run_native_inflight_song_pipeline
 
@@ -2131,22 +2119,7 @@ class GearOptimizerApp:
                     pass
             finally:
                 self._progress_counts_driven = False
-                try:
-                    if post_queue is not None:
-                        post_queue.put(None, block=True, timeout=1.0)
-                except Exception:
-                    pass
-                try:
-                    if post_proc is not None:
-                        post_proc.join(timeout=120.0)
-                except Exception:
-                    pass
-                try:
-                    if post_proc is not None and post_proc.is_alive():
-                        post_proc.terminate()
-                        post_proc.join(timeout=5.0)
-                except Exception:
-                    pass
+                self._stop_post_processor(post_queue, post_proc)
                 try:
                     if use_gpu_preload and preloader is not None:
                         preloader.stop()
@@ -2209,39 +2182,13 @@ class GearOptimizerApp:
                 self._progress.update_counts(completed=progress_completed, total=len(tasks))
             self._progress_counts_driven = True
             try:
-                from gear_optimizer.pipeline.post_processor import run_post_processor
-
-                # Default to an unbounded multiprocessing queue to avoid producer backpressure.
-                post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 0), 0)
-                post_queue_maxsize = 0 if post_queue_size <= 0 else max(1, post_queue_size)
-                post_queue = multiprocessing.Queue(maxsize=post_queue_maxsize)
-                post_proc = multiprocessing.Process(
-                    target=run_post_processor,
-                    args=(post_queue, len(tasks)),
-                    daemon=True,
-                    name="SongPostProcessor",
-                )
-                post_proc.start()
+                post_queue, post_proc = self._start_post_processor(len(tasks))
                 post_sender = _PostQueueSender(
                     post_queue,
                     post_proc=post_proc,
                     stop_requested=self._stop_requested_now,
                 )
-
-                preload_idx = 5  # Start preloading from index 5
-                preloaded_by_path = {}
-                try:
-                    preloaded_ready_cache_max = max(
-                        8,
-                        safe_int(os.environ.get("SEQUENTIAL_PRELOAD_READY_CACHE_MAX", "256"), 256),
-                    )
-                except Exception:
-                    preloaded_ready_cache_max = 256
-
-                # GPU prefetch manager for ahead-of-time timeline computation
-                _gpu_prefetch_mgr, gpu_prefetch_enabled = self._init_gpu_prefetch_manager(use_gpu_preload)
-
-                gpu_prefetched_set = set()
+                preload_state = self._make_sequential_preload_state(use_gpu_preload)
 
                 for i, t in enumerate(tasks):
                     if self._stop_requested_now():
@@ -2264,35 +2211,24 @@ class GearOptimizerApp:
                         except Exception:
                             pass
 
-                    # Drain any newly preloaded songs into a local map for reuse.
-                    if use_gpu_preload and preloader is not None:
-                        try:
-                            while True:
-                                preloaded = preloader.get_if_ready()
-                                if preloaded is None:
-                                    break
-                                preloaded_key = os.path.abspath(str(preloaded.file_path))
-                                preloaded_by_path[preloaded_key] = preloaded
-                                if len(preloaded_by_path) > int(preloaded_ready_cache_max):
-                                    preloaded_by_path.pop(next(iter(preloaded_by_path)), None)
-                        except Exception:
-                            pass
-
-                    # Prefer preloaded calc_song for this song (skips disk I/O + parsing).
-                    task_args = t
-                    preloaded_current = preloaded_by_path.pop(song_path_key, None)
-                    if preloaded_current is not None and preloaded_current.calc_song and not preloaded_current.error:
-                        cloned = self._clone_calc_song_for_run(preloaded_current.calc_song)
-                        task_args = t + (cloned, True)
-                    else:
-                        task_args = t + (True,)
-
-                    # Queue next song for CPU preloading
-                    if use_gpu_preload and preload_idx < len(tasks):
-                        next_task = tasks[preload_idx]
-                        if self._task_queue_label(next_task) not in completed_songs:
-                            self._queue_song_for_preload(preloader, next_task)
-                        preload_idx += 1
+                    self._drain_preloaded_ready(
+                        use_gpu_preload=use_gpu_preload,
+                        preloader=preloader,
+                        preload_state=preload_state,
+                    )
+                    task_args = self._build_sequential_task_args(
+                        t,
+                        song_path_key=song_path_key,
+                        preload_state=preload_state,
+                        defer_post=True,
+                    )
+                    self._queue_next_preload_task(
+                        task_list=tasks,
+                        completed_songs=completed_songs,
+                        preloader=preloader,
+                        use_gpu_preload=use_gpu_preload,
+                        preload_state=preload_state,
+                    )
 
                     try:
                         res = safe_process_song_task(task_args)
@@ -2309,39 +2245,7 @@ class GearOptimizerApp:
                         res, completed=progress_completed, total=len(tasks), failed_delta=failed_delta
                     )
 
-                    # POST-SONG GPU PREFETCH: Kick off the next song's timeline kernel
-                    # while the post-processor builds payloads/prints/saves DB.
-                    if gpu_prefetch_enabled and _gpu_prefetch_mgr is not None:
-                        try:
-                            pick = None
-                            if i + 1 < len(tasks):
-                                next_path_key = os.path.abspath(str(tasks[i + 1][0]))
-                                cand = preloaded_by_path.get(next_path_key)
-                                if cand is not None and cand.calc_song and not cand.error:
-                                    pick = cand
-
-                            if pick is None:
-                                for cand in preloaded_by_path.values():
-                                    if cand is not None and cand.calc_song and not cand.error:
-                                        pick = cand
-                                        break
-
-                            pick_key = os.path.abspath(str(getattr(pick, "file_path", ""))) if pick is not None else ""
-                            if pick is not None and pick_key and pick_key not in gpu_prefetched_set:
-                                slot = _gpu_prefetch_mgr.prefetch(pick.calc_song, pick.ref_arrays)
-                                if slot is not None:
-                                    gpu_prefetched_set.add(pick_key)
-                        except Exception:
-                            pass
-
-                        if i > 0 and i % 10 == 0:
-                            stats = _gpu_prefetch_mgr.stats()
-                            if stats["prefetch_count"] > 0:
-                                print(
-                                    f"[GPU Prefetch] Songs prefetched: {stats['prefetch_count']}, "
-                                    f"cache hits: {stats['cache_hits']}, "
-                                    f"avg time: {stats['avg_prefetch_ms']:.1f}ms"
-                                )
+                    self._maybe_prefetch_ready_song(task_index=i, task_list=tasks, preload_state=preload_state)
 
                     # Enqueue for post-processing (non-blocking relative to GPU compute).
                     if post_proc is not None and not post_proc.is_alive():
@@ -2373,22 +2277,7 @@ class GearOptimizerApp:
                                 memory_resume_tracker.mark_completed(done_name)
                 except Exception:
                     pass
-                try:
-                    if post_queue is not None:
-                        post_queue.put(None, block=True, timeout=1.0)
-                except Exception:
-                    pass
-                try:
-                    if post_proc is not None:
-                        post_proc.join(timeout=120.0)
-                except Exception:
-                    pass
-                try:
-                    if post_proc is not None and post_proc.is_alive():
-                        post_proc.terminate()
-                        post_proc.join(timeout=5.0)
-                except Exception:
-                    pass
+                self._stop_post_processor(post_queue, post_proc)
                 try:
                     if pipeline_ok and use_gpu_preload and preloader is not None:
                         preloader.stop()
@@ -2398,21 +2287,7 @@ class GearOptimizerApp:
                 return
 
         def _safe_sequential_gen(task_list):
-            preload_idx = 5  # Start preloading from index 5
-            preloaded_by_path = {}
-            try:
-                preloaded_ready_cache_max = max(
-                    8,
-                    safe_int(os.environ.get("SEQUENTIAL_PRELOAD_READY_CACHE_MAX", "256"), 256),
-                )
-            except Exception:
-                preloaded_ready_cache_max = 256
-
-            # GPU prefetch manager for ahead-of-time timeline computation
-            _gpu_prefetch_mgr, gpu_prefetch_enabled = self._init_gpu_prefetch_manager(use_gpu_preload)
-
-            # Track which songs we've GPU-prefetched
-            gpu_prefetched_set = set()
+            preload_state = self._make_sequential_preload_state(use_gpu_preload)
 
             for i, t in enumerate(task_list):
                 if self._stop_requested_now():
@@ -2423,79 +2298,40 @@ class GearOptimizerApp:
 
                 song_path_key = os.path.abspath(str(t[0]))
 
-                # Drain any newly preloaded songs into a local map for reuse.
-                if use_gpu_preload and preloader is not None:
-                    try:
-                        while True:
-                            preloaded = preloader.get_if_ready()
-                            if preloaded is None:
-                                break
-                            preloaded_key = os.path.abspath(str(preloaded.file_path))
-                            preloaded_by_path[preloaded_key] = preloaded
-                            if len(preloaded_by_path) > int(preloaded_ready_cache_max):
-                                preloaded_by_path.pop(next(iter(preloaded_by_path)), None)
-                    except Exception:
-                        pass
-
-                # Prefer preloaded calc_song for this song (skips disk I/O + parsing).
-                task_args = t
-                preloaded_current = preloaded_by_path.pop(song_path_key, None)
-                if preloaded_current is not None and preloaded_current.calc_song and not preloaded_current.error:
-                    cloned = self._clone_calc_song_for_run(preloaded_current.calc_song)
-                    task_args = t + (cloned,)
-
-                # Queue next song for CPU preloading
-                if use_gpu_preload and preload_idx < len(task_list):
-                    next_task = task_list[preload_idx]
-                    if self._task_queue_label(next_task) not in completed_songs:
-                        self._queue_song_for_preload(preloader, next_task)
-                    preload_idx += 1
+                self._drain_preloaded_ready(
+                    use_gpu_preload=use_gpu_preload,
+                    preloader=preloader,
+                    preload_state=preload_state,
+                )
+                task_args = self._build_sequential_task_args(
+                    t,
+                    song_path_key=song_path_key,
+                    preload_state=preload_state,
+                    defer_post=False,
+                )
+                self._queue_next_preload_task(
+                    task_list=task_list,
+                    completed_songs=completed_songs,
+                    preloader=preloader,
+                    use_gpu_preload=use_gpu_preload,
+                    preload_state=preload_state,
+                )
 
                 try:
                     res = safe_process_song_task(task_args)
                 except Exception as seq_err:
                     res = {"_error": str(seq_err), "_error_type": type(seq_err).__name__, "_song_name": t[1]}
 
-                # POST-SONG GPU PREFETCH: Kick off the next song's timeline kernel
-                # now so it can run while we do CPU-only result handling (DB, logs).
-                if gpu_prefetch_enabled and _gpu_prefetch_mgr is not None:
-                    try:
-                        # Pick the immediate next song if it has been preloaded; else pick any ready one.
-                        pick = None
-                        if i + 1 < len(task_list):
-                            next_path_key = os.path.abspath(str(task_list[i + 1][0]))
-                            cand = preloaded_by_path.get(next_path_key)
-                            if cand is not None and cand.calc_song and not cand.error:
-                                pick = cand
-
-                        if pick is None:
-                            for cand in preloaded_by_path.values():
-                                if cand is not None and cand.calc_song and not cand.error:
-                                    pick = cand
-                                    break
-
-                        pick_key = os.path.abspath(str(getattr(pick, "file_path", ""))) if pick is not None else ""
-                        if pick is not None and pick_key and pick_key not in gpu_prefetched_set:
-                            slot = _gpu_prefetch_mgr.prefetch(pick.calc_song, pick.ref_arrays)
-                            if slot is not None:
-                                gpu_prefetched_set.add(pick_key)
-                    except Exception:
-                        pass
-
-                    # Log prefetch stats periodically
-                    if i > 0 and i % 10 == 0:
-                        stats = _gpu_prefetch_mgr.stats()
-                        if stats["prefetch_count"] > 0:
-                            print(
-                                f"[GPU Prefetch] Songs prefetched: {stats['prefetch_count']}, "
-                                f"cache hits: {stats['cache_hits']}, "
-                                f"avg time: {stats['avg_prefetch_ms']:.1f}ms"
-                            )
+                self._maybe_prefetch_ready_song(task_index=i, task_list=task_list, preload_state=preload_state)
 
                 yield res
 
                 # After processing, release the slot for this song to free it for reuse
-                if gpu_prefetch_enabled and _gpu_prefetch_mgr is not None and song_path_key in gpu_prefetched_set:
+                if (
+                    preload_state["gpu_prefetch_enabled"]
+                    and preload_state["gpu_prefetch_mgr"] is not None
+                    and song_path_key in preload_state["gpu_prefetched_set"]
+                ):
                     try:
                         # Find and release the slot for this song
                         # The manager keeps track of song_key -> slot mapping internally
@@ -2554,6 +2390,137 @@ class GearOptimizerApp:
             preloader.queue_song(request)
         except Exception:
             pass  # Preloading failure is non-fatal
+
+    def _start_post_processor(self, total_tasks: int):
+        from gear_optimizer.pipeline.post_processor import run_post_processor
+
+        post_queue_size = safe_int(os.environ.get("POST_PIPELINE_QUEUE", 0), 0)
+        post_queue_maxsize = 0 if post_queue_size <= 0 else max(1, post_queue_size)
+        post_queue = multiprocessing.Queue(maxsize=post_queue_maxsize)
+        post_proc = multiprocessing.Process(
+            target=run_post_processor,
+            args=(post_queue, int(total_tasks)),
+            daemon=True,
+            name="SongPostProcessor",
+        )
+        post_proc.start()
+        return post_queue, post_proc
+
+    def _stop_post_processor(self, post_queue, post_proc):
+        try:
+            if post_queue is not None:
+                post_queue.put(None, block=True, timeout=1.0)
+        except Exception:
+            pass
+        try:
+            if post_proc is not None:
+                post_proc.join(timeout=120.0)
+        except Exception:
+            pass
+        try:
+            if post_proc is not None and post_proc.is_alive():
+                post_proc.terminate()
+                post_proc.join(timeout=5.0)
+        except Exception:
+            pass
+
+    def _make_sequential_preload_state(self, use_gpu_preload: bool) -> dict:
+        try:
+            preloaded_ready_cache_max = max(
+                8,
+                safe_int(os.environ.get("SEQUENTIAL_PRELOAD_READY_CACHE_MAX", "256"), 256),
+            )
+        except Exception:
+            preloaded_ready_cache_max = 256
+
+        gpu_prefetch_mgr, gpu_prefetch_enabled = self._init_gpu_prefetch_manager(use_gpu_preload)
+        return {
+            "preload_idx": 5,
+            "preloaded_by_path": {},
+            "preloaded_ready_cache_max": int(preloaded_ready_cache_max),
+            "gpu_prefetch_mgr": gpu_prefetch_mgr,
+            "gpu_prefetch_enabled": bool(gpu_prefetch_enabled),
+            "gpu_prefetched_set": set(),
+        }
+
+    def _drain_preloaded_ready(self, *, use_gpu_preload: bool, preloader, preload_state: dict) -> None:
+        if not use_gpu_preload or preloader is None:
+            return
+        preloaded_by_path = preload_state["preloaded_by_path"]
+        preloaded_ready_cache_max = int(preload_state["preloaded_ready_cache_max"])
+        try:
+            while True:
+                preloaded = preloader.get_if_ready()
+                if preloaded is None:
+                    break
+                preloaded_key = os.path.abspath(str(preloaded.file_path))
+                preloaded_by_path[preloaded_key] = preloaded
+                if len(preloaded_by_path) > preloaded_ready_cache_max:
+                    preloaded_by_path.pop(next(iter(preloaded_by_path)), None)
+        except Exception:
+            pass
+
+    def _build_sequential_task_args(self, task, *, song_path_key: str, preload_state: dict, defer_post: bool):
+        task_args = task
+        preloaded_current = preload_state["preloaded_by_path"].pop(song_path_key, None)
+        if preloaded_current is not None and preloaded_current.calc_song and not preloaded_current.error:
+            cloned = self._clone_calc_song_for_run(preloaded_current.calc_song)
+            task_args = task + (cloned,)
+            if defer_post:
+                task_args = task_args + (True,)
+        elif defer_post:
+            task_args = task + (True,)
+        return task_args
+
+    def _queue_next_preload_task(self, *, task_list, completed_songs, preloader, use_gpu_preload: bool, preload_state: dict):
+        if not use_gpu_preload:
+            return
+        preload_idx = int(preload_state["preload_idx"])
+        if preload_idx >= len(task_list):
+            return
+        next_task = task_list[preload_idx]
+        if self._task_queue_label(next_task) not in completed_songs:
+            self._queue_song_for_preload(preloader, next_task)
+        preload_state["preload_idx"] = preload_idx + 1
+
+    def _maybe_prefetch_ready_song(self, *, task_index: int, task_list, preload_state: dict) -> None:
+        gpu_prefetch_mgr = preload_state["gpu_prefetch_mgr"]
+        gpu_prefetch_enabled = bool(preload_state["gpu_prefetch_enabled"])
+        if not gpu_prefetch_enabled or gpu_prefetch_mgr is None:
+            return
+
+        preloaded_by_path = preload_state["preloaded_by_path"]
+        gpu_prefetched_set = preload_state["gpu_prefetched_set"]
+        try:
+            pick = None
+            if task_index + 1 < len(task_list):
+                next_path_key = os.path.abspath(str(task_list[task_index + 1][0]))
+                cand = preloaded_by_path.get(next_path_key)
+                if cand is not None and cand.calc_song and not cand.error:
+                    pick = cand
+
+            if pick is None:
+                for cand in preloaded_by_path.values():
+                    if cand is not None and cand.calc_song and not cand.error:
+                        pick = cand
+                        break
+
+            pick_key = os.path.abspath(str(getattr(pick, "file_path", ""))) if pick is not None else ""
+            if pick is not None and pick_key and pick_key not in gpu_prefetched_set:
+                slot = gpu_prefetch_mgr.prefetch(pick.calc_song, pick.ref_arrays)
+                if slot is not None:
+                    gpu_prefetched_set.add(pick_key)
+        except Exception:
+            pass
+
+        if task_index > 0 and task_index % 10 == 0:
+            stats = gpu_prefetch_mgr.stats()
+            if stats["prefetch_count"] > 0:
+                print(
+                    f"[GPU Prefetch] Songs prefetched: {stats['prefetch_count']}, "
+                    f"cache hits: {stats['cache_hits']}, "
+                    f"avg time: {stats['avg_prefetch_ms']:.1f}ms"
+                )
 
     def _start_song_preloader(self, tasks, completed_songs):
         from .helpers.song_preloader import get_song_preloader

@@ -56,7 +56,13 @@ from ..core.config import read_fg_candidate_limit
 from ..core.color_flags import build_color_flags
 from ..core.env_config import env_flag
 from ..core.utils import safe_int, safe_float
-from .base_stats import build_base_fixed_stats_array
+from .base_stats import (
+    COLOR_TO_STAT_INDEX,
+    STAT_NAMES,
+    build_base_fixed_stats_array,
+    build_stats_array,
+    build_stats_dict,
+)
 from .scoring import GEM_SOLVER_CACHE, FG_CACHE, FEVER_TIMELINE_CACHE
 from .scoring.stats_ops import apply_gems_to_base_stats
 from ..data.models import GASettings
@@ -85,6 +91,107 @@ def _require_gpu_api():
     except Exception as exc:
         raise RuntimeError(f"GPU-native GA requires taichi_gem api/fields: {exc}") from exc
     return gpu_api
+
+
+def _selected_color_stat_index(color: str) -> int:
+    return int(COLOR_TO_STAT_INDEX.get(str(color or ""), -1))
+
+
+def _build_gem_counts(g_pp: int, g_cm: int, g_fm: int, g_ov: int) -> dict[str, int]:
+    return {
+        "Perfect Points": int(g_pp),
+        "Combo Multiplier": int(g_cm),
+        "Fever Multiplier": int(g_fm),
+        "Element": int(g_ov),
+    }
+
+
+def _build_gem_details(g_ft: int, g_ff: int, g_pp: int, g_cm: int, g_fm: int, g_ov: int) -> dict[str, int]:
+    return {
+        "FeverGems": int(g_ft),
+        "FeverFillGems": int(g_ff),
+        "PP": int(g_pp),
+        "CM": int(g_cm),
+        "FM": int(g_fm),
+        "OV": int(g_ov),
+    }
+
+
+def _add_genome_item_stats(base_stats: dict, genome: list[dict]) -> dict:
+    merged = dict(base_stats or {})
+    for item in genome or []:
+        if not item:
+            continue
+        for k, v in item.items():
+            if k not in SKIP_ITEM_KEYS:
+                merged[k] = merged.get(k, 0) + v
+    return merged
+
+
+def _build_best_result_payload(
+    *,
+    score: int,
+    genome: list[dict],
+    stats: dict,
+    selected_color: str,
+    g_ft: int,
+    g_ff: int,
+    g_pp: int,
+    g_cm: int,
+    g_fm: int,
+    g_ov: int,
+) -> dict:
+    gear = list((genome or [])[:6])
+    minis = list((genome or [])[6:9])
+    return {
+        "Score": int(score),
+        "BaseScore": int(score),
+        "Genome": list(genome or []),
+        "Gear": gear,
+        "Minis": minis,
+        "GearNames": [g.get("Name", "None") for g in gear],
+        "MiniNames": [m.get("Name", "None") for m in minis],
+        "FT": int(g_ft),
+        "FF": int(g_ff),
+        "GemCounts": _build_gem_counts(g_pp, g_cm, g_fm, g_ov),
+        "Stats": dict(stats or {}),
+        "Selected Element": str(selected_color or ""),
+        "Details": _build_gem_details(g_ft, g_ff, g_pp, g_cm, g_fm, g_ov),
+    }
+
+
+def _build_candidate_data_obj(
+    *,
+    score: int,
+    selected_color: str,
+    g_ft: int,
+    g_ff: int,
+    g_pp: int,
+    g_cm: int,
+    g_fm: int,
+    g_ov: int,
+    stats: dict | None = None,
+    base_stats: dict | None = None,
+    run_idx: int | None = None,
+    row_idx: int | None = None,
+) -> dict:
+    data_obj = {
+        "Score": int(score),
+        "FT": int(g_ft),
+        "FF": int(g_ff),
+        "GemCounts": _build_gem_counts(g_pp, g_cm, g_fm, g_ov),
+        "Selected Element": str(selected_color or ""),
+        "BaseScore": int(score),
+    }
+    if isinstance(stats, dict):
+        data_obj["Stats"] = stats
+    if isinstance(base_stats, dict):
+        data_obj["BaseStats"] = base_stats
+    if run_idx is not None:
+        data_obj["_ga_gpu_run_idx"] = int(run_idx)
+    if row_idx is not None:
+        data_obj["_ga_gpu_row_idx"] = int(row_idx)
+    return data_obj
 
 
 # Cached env config for GA_FORCE_COLD_START (avoids repeated env lookups)
@@ -231,26 +338,11 @@ def _extract_fg_candidates_from_ga_snapshot(
     limit = n_genomes
 
     # Map selected color to stat index for overflow gem contribution
-    color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
     sel_color = cfg_data.get("selected_color", "")
-    sel_color_idx = color_to_idx.get(sel_color, -1)
+    sel_color_idx = _selected_color_stat_index(sel_color)
 
     # Build base stats array for vectorized computation
-    base_stats_arr = np.array(
-        [
-            base_stats_fixed.get("Perfect Points", 0),
-            base_stats_fixed.get("Combo Multiplier", 0),
-            base_stats_fixed.get("Fever Multiplier", 0),
-            base_stats_fixed.get("Fever Time", 0),
-            base_stats_fixed.get("Fever Fill Rate", 0),
-            base_stats_fixed.get("Beat", 0),
-            base_stats_fixed.get("Vibe", 0),
-            base_stats_fixed.get("Rush", 0),
-            base_stats_fixed.get("Flow", 0),
-            base_stats_fixed.get("Chill", 0),
-        ],
-        dtype=np.int32,
-    )
+    base_stats_arr = build_stats_array(base_stats_fixed)
 
     # VECTORIZED: Get top-K indices, item stats, and gem contributions in one call
     top_indices, item_stats_sum, gem_contributions = registry.batch_decode_stats_numpy(
@@ -265,20 +357,6 @@ def _extract_fg_candidates_from_ga_snapshot(
         elemental_gem_scale=ELEMENTAL_GEM_SCALE,
         sel_color_idx=sel_color_idx,
     )
-
-    # Stat names for dict construction (only done for final candidates)
-    stat_names = [
-        "Perfect Points",
-        "Combo Multiplier",
-        "Fever Multiplier",
-        "Fever Time",
-        "Fever Fill Rate",
-        "Beat",
-        "Vibe",
-        "Rush",
-        "Flow",
-        "Chill",
-    ]
 
     # OPTIMIZATION: Two-pass lazy evaluation
     # Pass 1: Filter unique genomes by ID tuple (fast, no decode_genome)
@@ -325,22 +403,18 @@ def _extract_fg_candidates_from_ga_snapshot(
         final_stats = base_stats_arr + item_stats_sum[i] + gem_contributions[i]
 
         # Build stats dict from numpy array (fast)
-        current_stats = {stat_names[j]: int(final_stats[j]) for j in range(10)}
-
-        data_obj = {
-            "Score": score_val,
-            "FT": g_ft,
-            "FF": g_ff,
-            "GemCounts": {
-                "Perfect Points": g_pp,
-                "Combo Multiplier": g_cm,
-                "Fever Multiplier": g_fm,
-                "Element": g_ov,
-            },
-            "Stats": current_stats,
-            "Selected Element": sel_color,
-            "BaseScore": score_val,
-        }
+        current_stats = build_stats_dict(final_stats)
+        data_obj = _build_candidate_data_obj(
+            score=score_val,
+            selected_color=sel_color,
+            g_ft=g_ft,
+            g_ff=g_ff,
+            g_pp=g_pp,
+            g_cm=g_cm,
+            g_fm=g_fm,
+            g_ov=g_ov,
+            stats=current_stats,
+        )
 
         cand_data = {
             "Score": score_val,
@@ -351,14 +425,7 @@ def _extract_fg_candidates_from_ga_snapshot(
             "GearNames": [g.get("Name", "None") for g in genome[:6]],
             "MiniNames": [m.get("Name", "None") for m in genome[6:9]],
             "Data": data_obj,
-            "Details": {
-                "FeverGems": g_ft,
-                "FeverFillGems": g_ff,
-                "PP": g_pp,
-                "CM": g_cm,
-                "FM": g_fm,
-                "OV": g_ov,
-            },
+            "Details": _build_gem_details(g_ft, g_ff, g_pp, g_cm, g_fm, g_ov),
         }
         all_evaluated.append(cand_data)
 
@@ -431,26 +498,8 @@ def decode_gpu_native_ga_runs_payload(
         #   (see solver/base_stats.py).
         # - Add item stats.
         # - Add gem allocation contributions (FT/FF/PP/CM/FM + overflow).
-        stat_names = [
-            "Perfect Points",
-            "Combo Multiplier",
-            "Fever Multiplier",
-            "Fever Time",
-            "Fever Fill Rate",
-            "Beat",
-            "Vibe",
-            "Rush",
-            "Flow",
-            "Chill",
-        ]
         base_fixed_arr, sel_color_built = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
-        best_stats = {stat_names[i]: int(base_fixed_arr[i]) for i in range(len(stat_names))}
-        for item in best_global_genome or []:
-            if not item:
-                continue
-            for k, v in item.items():
-                if k not in SKIP_ITEM_KEYS:
-                    best_stats[k] = best_stats.get(k, 0) + v
+        best_stats = _add_genome_item_stats(build_stats_dict(base_fixed_arr), best_global_genome)
 
         g_ft = int(best_global_res_arr[1])
         g_ff = int(best_global_res_arr[2])
@@ -471,34 +520,18 @@ def decode_gpu_native_ga_runs_payload(
             g_ov,
         )
 
-        best_data = {
-            "Score": int(best_global_score),
-            "BaseScore": int(best_global_score),
-            "Genome": best_global_genome,
-            "Gear": best_gear,
-            "Minis": best_minis,
-            "GearNames": [g.get("Name", "None") for g in best_gear],
-            "MiniNames": [m.get("Name", "None") for m in best_minis],
-            # Keep FT/FF at the root level so build_details() can read them directly.
-            "FT": g_ft,
-            "FF": g_ff,
-            "GemCounts": {
-                "Perfect Points": g_pp,
-                "Combo Multiplier": g_cm,
-                "Fever Multiplier": g_fm,
-                "Element": g_ov,
-            },
-            "Stats": best_stats,
-            "Selected Element": selected_color,
-            "Details": {
-                "FeverGems": g_ft,
-                "FeverFillGems": g_ff,
-                "PP": g_pp,
-                "CM": g_cm,
-                "FM": g_fm,
-                "OV": g_ov,
-            },
-        }
+        best_data = _build_best_result_payload(
+            score=int(best_global_score),
+            genome=best_global_genome,
+            stats=best_stats,
+            selected_color=selected_color,
+            g_ft=g_ft,
+            g_ff=g_ff,
+            g_pp=g_pp,
+            g_cm=g_cm,
+            g_fm=g_fm,
+            g_ov=g_ov,
+        )
 
         if selected_n <= 0:
             return best_data, list(best_gear), list(best_minis), []
@@ -541,8 +574,7 @@ def decode_gpu_native_ga_runs_payload(
         if sel_color_built:
             sel_color = str(sel_color_built)
 
-        color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
-        sel_color_idx = int(color_to_idx.get(sel_color, -1))
+        sel_color_idx = _selected_color_stat_index(sel_color)
 
         t_stats = 0.0
         final_stats_mat = None
@@ -581,18 +613,7 @@ def decode_gpu_native_ga_runs_payload(
 
             final_stats_mat = base_stats_arr + item_stats_sum + gem_contributions
 
-            stat_names = [
-                "Perfect Points",
-                "Combo Multiplier",
-                "Fever Multiplier",
-                "Fever Time",
-                "Fever Fill Rate",
-                "Beat",
-                "Vibe",
-                "Rush",
-                "Flow",
-                "Chill",
-            ]
+            stat_names = STAT_NAMES
 
         unique_evaluated: list[dict] = []
         n_cand = int(genome_ids_mat.shape[0])
@@ -616,35 +637,32 @@ def decode_gpu_native_ga_runs_payload(
             g_fm_i = int(g_fm[i])
             g_ov_i = int(g_ov[i])
 
-            data_obj = {
-                "Score": score_val,
-                "FT": g_ft_i,
-                "FF": g_ff_i,
-                "GemCounts": {
-                    "Perfect Points": g_pp_i,
-                    "Combo Multiplier": g_cm_i,
-                    "Fever Multiplier": g_fm_i,
-                    "Element": g_ov_i,
-                },
-                "Selected Element": sel_color,
-                "BaseScore": score_val,
-                "_ga_gpu_run_idx": int(sel_run_idx[i]),
-                "_ga_gpu_row_idx": int(sel_rows[i]),
-            }
+            data_obj = _build_candidate_data_obj(
+                score=score_val,
+                selected_color=sel_color,
+                g_ft=g_ft_i,
+                g_ff=g_ff_i,
+                g_pp=g_pp_i,
+                g_cm=g_cm_i,
+                g_fm=g_fm_i,
+                g_ov=g_ov_i,
+                run_idx=int(sel_run_idx[i]),
+                row_idx=int(sel_rows[i]),
+            )
 
             if include_stats and stat_names is not None and base_stats_arr is not None and item_stats_sum is not None:
                 # Always try to provide BaseStats when requested; ForceGreats batching can
                 # operate on BaseStats even if full post-gem Stats reconstruction fails.
                 try:
                     base_row_stats = base_stats_arr + item_stats_sum[i]
-                    base_stats = {stat_names[j]: int(base_row_stats[j]) for j in range(10)}
+                    base_stats = build_stats_dict(base_row_stats)
                     data_obj["BaseStats"] = base_stats
                 except Exception:
                     pass
                 try:
                     if final_stats_mat is not None:
                         row_stats = final_stats_mat[i]
-                        current_stats = {stat_names[j]: int(row_stats[j]) for j in range(10)}
+                        current_stats = build_stats_dict(row_stats)
                         data_obj["Stats"] = current_stats
                 except Exception:
                     pass
@@ -801,13 +819,7 @@ def decode_gpu_native_ga_runs_payload(
     best_minis = best_global_genome[6:9]
 
     # Compute full stats for best genome (like FG candidates).
-    best_stats = dict(base_stats_fixed or {})
-    for item in best_global_genome or []:
-        if not item:
-            continue
-        for k, v in item.items():
-            if k not in SKIP_ITEM_KEYS:
-                best_stats[k] = best_stats.get(k, 0) + v
+    best_stats = _add_genome_item_stats(dict(base_stats_fixed or {}), best_global_genome)
 
     g_ft = int(best_global_res_arr[1])
     g_ff = int(best_global_res_arr[2])
@@ -828,34 +840,18 @@ def decode_gpu_native_ga_runs_payload(
         g_ov,
     )
 
-    best_data = {
-        "Score": int(best_global_score),
-        "BaseScore": int(best_global_score),
-        "Genome": best_global_genome,
-        "Gear": best_gear,
-        "Minis": best_minis,
-        "GearNames": [g.get("Name", "None") for g in best_gear],
-        "MiniNames": [m.get("Name", "None") for m in best_minis],
-        # Keep FT/FF at the root level so build_details() can read them directly.
-        "FT": g_ft,
-        "FF": g_ff,
-        "GemCounts": {
-            "Perfect Points": g_pp,
-            "Combo Multiplier": g_cm,
-            "Fever Multiplier": g_fm,
-            "Element": g_ov,
-        },
-        "Stats": best_stats,
-        "Selected Element": selected_color,
-        "Details": {
-            "FeverGems": g_ft,
-            "FeverFillGems": g_ff,
-            "PP": g_pp,
-            "CM": g_cm,
-            "FM": g_fm,
-            "OV": g_ov,
-        },
-    }
+    best_data = _build_best_result_payload(
+        score=int(best_global_score),
+        genome=best_global_genome,
+        stats=best_stats,
+        selected_color=selected_color,
+        g_ft=g_ft,
+        g_ff=g_ff,
+        g_pp=g_pp,
+        g_cm=g_cm,
+        g_fm=g_fm,
+        g_ov=g_ov,
+    )
 
     if stub_scores.size == 0:
         return best_data, list(best_gear), list(best_minis), []
@@ -919,9 +915,12 @@ def decode_gpu_native_ga_runs_payload(
 
     primary_color = str(cfg_data.get("primary_color", "") or "")
     secondary_color = str(cfg_data.get("secondary_color", "") or "")
-    color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
-    p_idx = color_to_idx.get(primary_color, -1)
-    s_idx = color_to_idx.get(secondary_color, -1) if secondary_color and secondary_color != primary_color else -1
+    p_idx = _selected_color_stat_index(primary_color)
+    s_idx = (
+        _selected_color_stat_index(secondary_color)
+        if secondary_color and secondary_color != primary_color
+        else -1
+    )
     p_val = stats_sum[:, p_idx] if p_idx >= 0 else 0
     s_val = stats_sum[:, s_idx] if s_idx >= 0 else 0
 
@@ -1003,38 +1002,8 @@ def decode_gpu_native_ga_runs_payload(
     # Vectorized stats computation for selected candidates only.
     t_stats = time.perf_counter() if perf else 0.0
     sel_color = str(cfg_data.get("selected_color", ""))
-    color_to_idx = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
-    sel_color_idx = color_to_idx.get(sel_color, -1)
-
-    base_stats_arr = np.array(
-        [
-            base_stats_fixed.get("Perfect Points", 0),
-            base_stats_fixed.get("Combo Multiplier", 0),
-            base_stats_fixed.get("Fever Multiplier", 0),
-            base_stats_fixed.get("Fever Time", 0),
-            base_stats_fixed.get("Fever Fill Rate", 0),
-            base_stats_fixed.get("Beat", 0),
-            base_stats_fixed.get("Vibe", 0),
-            base_stats_fixed.get("Rush", 0),
-            base_stats_fixed.get("Flow", 0),
-            base_stats_fixed.get("Chill", 0),
-        ],
-        dtype=np.int32,
-    )
-
-    # Stat names for dict construction.
-    stat_names = (
-        "Perfect Points",
-        "Combo Multiplier",
-        "Fever Multiplier",
-        "Fever Time",
-        "Fever Fill Rate",
-        "Beat",
-        "Vibe",
-        "Rush",
-        "Flow",
-        "Chill",
-    )
+    sel_color_idx = _selected_color_stat_index(sel_color)
+    base_stats_arr = build_stats_array(base_stats_fixed)
 
     n_cand = len(selected_stub_indices)
     genome_ids_mat = stub_genome_ids[selected_stub_indices]
@@ -1095,11 +1064,11 @@ def decode_gpu_native_ga_runs_payload(
 
         # Build stats dict from numpy array (fast).
         row_stats = final_stats_mat[i]
-        current_stats = {stat_names[j]: int(row_stats[j]) for j in range(10)}
+        current_stats = build_stats_dict(row_stats)
         # Pre-gem base stats (before FT/FF/PP/CM/FM/OV allocation). This is useful for downstream
         # ForceGreatsFinder batching to avoid re-deriving base stats from post-gem Stats + GemCounts.
         base_row_stats = base_stats_arr + item_stats_sum[i]
-        base_stats = {stat_names[j]: int(base_row_stats[j]) for j in range(10)}
+        base_stats = build_stats_dict(base_row_stats)
 
         g_ft_i = int(g_ft[i])
         g_ff_i = int(g_ff[i])
@@ -1108,25 +1077,20 @@ def decode_gpu_native_ga_runs_payload(
         g_fm_i = int(g_fm[i])
         g_ov_i = int(g_ov[i])
 
-        data_obj = {
-            "Score": score_val,
-            "FT": g_ft_i,
-            "FF": g_ff_i,
-            "GemCounts": {
-                "Perfect Points": g_pp_i,
-                "Combo Multiplier": g_cm_i,
-                "Fever Multiplier": g_fm_i,
-                "Element": g_ov_i,
-            },
-            "Stats": current_stats,
-            "BaseStats": base_stats,
-            "Selected Element": sel_color,
-            "BaseScore": score_val,
-            # GPU-native GA candidate table coordinates (when available). This enables
-            # a GPU-resident GA->FG pipeline (stage base stats on GPU without host upload).
-            "_ga_gpu_run_idx": int(sel_run_idx[i]),
-            "_ga_gpu_row_idx": int(sel_rows[i]),
-        }
+        data_obj = _build_candidate_data_obj(
+            score=score_val,
+            selected_color=sel_color,
+            g_ft=g_ft_i,
+            g_ff=g_ff_i,
+            g_pp=g_pp_i,
+            g_cm=g_cm_i,
+            g_fm=g_fm_i,
+            g_ov=g_ov_i,
+            stats=current_stats,
+            base_stats=base_stats,
+            run_idx=int(sel_run_idx[i]),
+            row_idx=int(sel_rows[i]),
+        )
 
         cand_data = {
             "Score": score_val,

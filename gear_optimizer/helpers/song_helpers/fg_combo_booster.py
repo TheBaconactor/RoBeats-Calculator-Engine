@@ -17,7 +17,12 @@ from ...core.constants import (
 from ...core.utils import get_selected_element
 from ...solver.gpu_executor import is_gpu_worker_mode, submit_gpu_solve_genomes
 from ...solver.scoring.genome_evaluation import prepare_gpu_batch_eval_plan, finalize_gpu_batch_eval_plan
-from ...solver.base_stats import build_base_fixed_stats_list
+from ...solver.base_stats import build_base_fixed_stats_list, build_stats_dict
+from ...solver.registry_solve_request import (
+    build_registry_solve_request,
+    dispatch_registry_solve,
+    registry_batch_solve_supported,
+)
 from ...solver.scoring.stats_ops import apply_gems_to_base_stats
 from .item_utils import _item_name
 
@@ -1177,117 +1182,16 @@ def evaluate_fg_combo_booster_genomes(
             # large per-genome CPU worklists (the modern solver iterates FT/FF on-GPU).
             solver_mode = str(os.environ.get("FG_COMBO_BOOSTER_GPU_SOLVER", "auto") or "").strip().lower()
             prefer_registry = solver_mode in {"auto", "registry", "from_registry"}
-            use_registry = False
-            if (
-                prefer_registry
-                and registry is not None
-                and hasattr(registry, "encode_population")
-                and hasattr(registry, "to_gpu_arrays")
-            ):
-                use_registry = True
-
-            if use_registry:
-                rep_genomes: list[list[dict]] = []
-                for members in plan.unique_members or []:
-                    if not members:
-                        continue
-                    idx0 = int(members[0])
-                    if 0 <= idx0 < len(plan.uncached_genomes):
-                        rep_genomes.append(plan.uncached_genomes[idx0])
-
-                if rep_genomes:
-                    pop_indices = registry.encode_population(rep_genomes)  # (n_unique, 9)
-                    gpu_arrays = registry.to_gpu_arrays()
-
-                    base_fixed_stats_np, _ = build_base_fixed_stats_list(base_stats_fixed, cfg_data)
-                    if gpu_client is not None:
-                        payload = {
-                            "population_indices": pop_indices,
-                            "item_stats": gpu_arrays.get("item_stats"),
-                            "slot_start": gpu_arrays.get("slot_start"),
-                            "slot_count": gpu_arrays.get("slot_count"),
-                            "base_fixed_stats": base_fixed_stats_np,
-                            "timeline_grid": calc_song,
-                            "is_p_ft": int(flags.get("is_p_ft", 0)),
-                            "is_s_ft": int(flags.get("is_s_ft", 0)),
-                            "is_p_ff": int(flags.get("is_p_ff", 0)),
-                            "is_s_ff": int(flags.get("is_s_ff", 0)),
-                            "is_p_pp": int(flags.get("is_p_pp", 0)),
-                            "is_s_pp": int(flags.get("is_s_pp", 0)),
-                            "is_p_cm": int(flags.get("is_p_cm", 0)),
-                            "is_s_cm": int(flags.get("is_s_cm", 0)),
-                            "is_p_fm": int(flags.get("is_p_fm", 0)),
-                            "is_s_fm": int(flags.get("is_s_fm", 0)),
-                            "is_p_ov": int(flags.get("is_p_ov", 0)),
-                            "is_s_ov": int(flags.get("is_s_ov", 0)),
-                            "ref_arrays": ref_arrays,
-                            "total_budget": int(TOTAL_GEM_BUDGET),
-                            "gem_scale_fever": int(GEM_SCALE_FEVER),
-                            "song_slot": int(song_slot),
-                        }
-                        gpu_results = gpu_client.submit_solve_genomes_from_registry(payload).future.result()
-                    elif is_gpu_worker_mode():
-                        from ...solver.gpu_executor import submit_gpu_solve_genomes_from_registry
-
-                        gpu_results = submit_gpu_solve_genomes_from_registry(
-                            pop_indices,
-                            gpu_arrays.get("item_stats"),
-                            gpu_arrays.get("slot_start"),
-                            gpu_arrays.get("slot_count"),
-                            base_fixed_stats_np,
-                            calc_song,
-                            int(flags.get("is_p_ft", 0)),
-                            int(flags.get("is_s_ft", 0)),
-                            int(flags.get("is_p_ff", 0)),
-                            int(flags.get("is_s_ff", 0)),
-                            int(flags.get("is_p_pp", 0)),
-                            int(flags.get("is_s_pp", 0)),
-                            int(flags.get("is_p_cm", 0)),
-                            int(flags.get("is_s_cm", 0)),
-                            int(flags.get("is_p_fm", 0)),
-                            int(flags.get("is_s_fm", 0)),
-                            int(flags.get("is_p_ov", 0)),
-                            int(flags.get("is_s_ov", 0)),
-                            ref_arrays,
-                            total_budget=int(TOTAL_GEM_BUDGET),
-                            gem_scale_fever=int(GEM_SCALE_FEVER),
-                            song_slot=int(song_slot),
-                        )
-                    else:
-                        from ...solver.scoring.gpu_solver import _GPU_LOCK
-                        from ...solver.taichi_gem.api import (
-                            ga_upload_base_fixed_stats as ga_upload_base_fixed_stats_ti,
-                            ga_upload_item_stats as ga_upload_item_stats_ti,
-                            solve_genomes_from_registry as solve_genomes_from_registry_ti,
-                        )
-
-                        with _GPU_LOCK:
-                            ga_upload_item_stats_ti(
-                                gpu_arrays.get("item_stats"),
-                                gpu_arrays.get("slot_start"),
-                                gpu_arrays.get("slot_count"),
-                            )
-                            ga_upload_base_fixed_stats_ti(base_fixed_stats_np)
-                            gpu_results = solve_genomes_from_registry_ti(
-                                pop_indices,
-                                calc_song,
-                                int(flags.get("is_p_ft", 0)),
-                                int(flags.get("is_s_ft", 0)),
-                                int(flags.get("is_p_ff", 0)),
-                                int(flags.get("is_s_ff", 0)),
-                                int(flags.get("is_p_pp", 0)),
-                                int(flags.get("is_s_pp", 0)),
-                                int(flags.get("is_p_cm", 0)),
-                                int(flags.get("is_s_cm", 0)),
-                                int(flags.get("is_p_fm", 0)),
-                                int(flags.get("is_s_fm", 0)),
-                                int(flags.get("is_p_ov", 0)),
-                                int(flags.get("is_s_ov", 0)),
-                                ref_arrays,
-                                total_budget=int(TOTAL_GEM_BUDGET),
-                                gem_scale_fever=int(GEM_SCALE_FEVER),
-                                song_slot=int(song_slot),
-                            )
+            if prefer_registry and registry_batch_solve_supported(registry):
+                request = build_registry_solve_request(
+                    plan=plan,
+                    registry=registry,
+                    song_slot=int(song_slot),
+                    timeline_grid=calc_song,
+                    ref_arrays=ref_arrays,
+                )
+                if request is not None:
+                    gpu_results = dispatch_registry_solve(request, gpu_client=gpu_client)
 
             if gpu_results is None:
                 if gpu_client is not None:
@@ -1425,19 +1329,7 @@ def hydrate_fg_candidate_stats(
         cfg_data,
         fallback_selected_color=selected_color,
     )
-    stat_names = [
-        "Perfect Points",
-        "Combo Multiplier",
-        "Fever Multiplier",
-        "Fever Time",
-        "Fever Fill Rate",
-        "Beat",
-        "Vibe",
-        "Rush",
-        "Flow",
-        "Chill",
-    ]
-    base_fixed = {stat_names[i]: int(base_fixed_list[i]) for i in range(min(len(stat_names), len(base_fixed_list)))}
+    base_fixed = build_stats_dict(base_fixed_list)
     if fallback_sel and not selected_color:
         selected_color = str(fallback_sel)
 
@@ -1697,58 +1589,22 @@ def prepare_fg_combo_booster_candidates_job(
                 cand["_fg_source"] = "combo_booster"
         return {"evaluated": evaluated}
 
-    flags = dict(getattr(plan, "flags", None) or {})
     solver_mode = str(os.environ.get("FG_COMBO_BOOSTER_GPU_SOLVER", "auto") or "").strip().lower()
     prefer_registry = solver_mode in {"auto", "registry", "from_registry"}
-    use_registry = bool(
-        prefer_registry
-        and registry is not None
-        and hasattr(registry, "encode_population")
-        and hasattr(registry, "to_gpu_arrays")
-    )
+    use_registry = bool(prefer_registry and registry_batch_solve_supported(registry))
     if not use_registry:
         return None
-
-    rep_genomes: list[list[dict]] = []
-    for members in getattr(plan, "unique_members", None) or []:
-        if not members:
-            continue
-        idx0 = int(members[0])
-        if 0 <= idx0 < len(plan.uncached_genomes):
-            rep_genomes.append(plan.uncached_genomes[idx0])
-    if not rep_genomes:
+    request = build_registry_solve_request(
+        plan=plan,
+        registry=registry,
+        song_slot=int(song_slot),
+        timeline_grid=calc_song,
+        ref_arrays=ref_arrays,
+    )
+    if request is None:
         return None
 
-    pop_indices = registry.encode_population(rep_genomes)  # (n_unique, 9)
-    gpu_arrays = registry.to_gpu_arrays()
-    base_fixed_stats_np, _ = build_base_fixed_stats_list(base_stats_fixed, cfg_data)
-
-    payload = {
-        "population_indices": pop_indices,
-        "item_stats": gpu_arrays.get("item_stats"),
-        "slot_start": gpu_arrays.get("slot_start"),
-        "slot_count": gpu_arrays.get("slot_count"),
-        "base_fixed_stats": base_fixed_stats_np,
-        "timeline_grid": calc_song,
-        "is_p_ft": int(flags.get("is_p_ft", 0)),
-        "is_s_ft": int(flags.get("is_s_ft", 0)),
-        "is_p_ff": int(flags.get("is_p_ff", 0)),
-        "is_s_ff": int(flags.get("is_s_ff", 0)),
-        "is_p_pp": int(flags.get("is_p_pp", 0)),
-        "is_s_pp": int(flags.get("is_s_pp", 0)),
-        "is_p_cm": int(flags.get("is_p_cm", 0)),
-        "is_s_cm": int(flags.get("is_s_cm", 0)),
-        "is_p_fm": int(flags.get("is_p_fm", 0)),
-        "is_s_fm": int(flags.get("is_s_fm", 0)),
-        "is_p_ov": int(flags.get("is_p_ov", 0)),
-        "is_s_ov": int(flags.get("is_s_ov", 0)),
-        "ref_arrays": ref_arrays,
-        "total_budget": int(TOTAL_GEM_BUDGET),
-        "gem_scale_fever": int(GEM_SCALE_FEVER),
-        "song_slot": int(song_slot),
-    }
-
-    handle = gpu_client.submit_solve_genomes_from_registry(payload)
+    handle = gpu_client.submit_solve_genomes_from_registry(request.to_payload())
     return {
         "plan": plan,
         "future": handle.future,

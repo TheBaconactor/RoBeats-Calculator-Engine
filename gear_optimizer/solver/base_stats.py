@@ -21,7 +21,39 @@ from ..core.constants import (
 from ..core.utils import safe_int
 
 
-_COLOR_TO_IDX: dict[str, int] = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
+STAT_NAMES: tuple[str, ...] = (
+    "Perfect Points",
+    "Combo Multiplier",
+    "Fever Multiplier",
+    "Fever Time",
+    "Fever Fill Rate",
+    "Beat",
+    "Vibe",
+    "Rush",
+    "Flow",
+    "Chill",
+)
+
+COLOR_TO_STAT_INDEX: dict[str, int] = {"Beat": 5, "Vibe": 6, "Rush": 7, "Flow": 8, "Chill": 9}
+
+
+def build_stats_list(stats: Mapping[str, Any] | None) -> list[int]:
+    src = stats or {}
+    return [safe_int(src.get(name, 0), 0) for name in STAT_NAMES]
+
+
+def build_stats_array(stats: Mapping[str, Any] | None) -> np.ndarray:
+    return np.asarray(build_stats_list(stats), dtype=np.int32)
+
+
+def build_stats_dict(values: Any) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for idx, name in enumerate(STAT_NAMES):
+        try:
+            out[name] = int(values[idx])
+        except Exception:
+            out[name] = 0
+    return out
 
 
 def build_base_fixed_stats_list(
@@ -33,18 +65,7 @@ def build_base_fixed_stats_list(
     bs = base_stats_fixed or {}
     cfg = cfg_data or {}
 
-    base_fixed = [
-        safe_int(bs.get("Perfect Points", 0), 0),
-        safe_int(bs.get("Combo Multiplier", 0), 0),
-        safe_int(bs.get("Fever Multiplier", 0), 0),
-        safe_int(bs.get("Fever Time", 0), 0),
-        safe_int(bs.get("Fever Fill Rate", 0), 0),
-        safe_int(bs.get("Beat", 0), 0),
-        safe_int(bs.get("Vibe", 0), 0),
-        safe_int(bs.get("Rush", 0), 0),
-        safe_int(bs.get("Flow", 0), 0),
-        safe_int(bs.get("Chill", 0), 0),
-    ]
+    base_fixed = build_stats_list(bs)
 
     user_pp = safe_int(cfg.get("user_pp", 0), 0)
     user_cm = safe_int(cfg.get("user_cm", 0), 0)
@@ -68,7 +89,7 @@ def build_base_fixed_stats_list(
         base_fixed[6] -= user_ff * GEM_STAT_TO_ELEMENT_SCALE  # Vibe
 
     if static_elem_input and selected_color:
-        idx = _COLOR_TO_IDX.get(selected_color)
+        idx = COLOR_TO_STAT_INDEX.get(selected_color)
         if idx is not None:
             base_fixed[idx] -= static_elem_input * ELEMENTAL_GEM_SCALE
 
