@@ -147,15 +147,26 @@ def reduce_chunk_to_best_key_ranges_kernel(n_genomes: ti.i32):
     (defined by chunk_genome_start/chunk_genome_len). This kernel scans those
     ranges and writes the best packed key into chunk_best_key[g].
     """
-    if ti.static(IS_METAL):
-        # Metal path uses chunk_best_score/chunk_best_idx atomics; no u64 key exists.
-        for _ in range(1):
-            pass
-    else:
-        ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-        for g in range(n_genomes):
-            start = kernels_helpers.chunk_genome_start[g]
-            count = kernels_helpers.chunk_genome_len[g]
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for g in range(n_genomes):
+        start = kernels_helpers.chunk_genome_start[g]
+        count = kernels_helpers.chunk_genome_len[g]
+
+        if ti.static(IS_METAL):
+            # Metal: avoid u64 reductions (no 64-bit subgroup ops); write score+idx directly.
+            best_score: ti.i32 = ti.cast(-2147483648, ti.i32)
+            best_idx: ti.i32 = -1
+            if count > 0 and start >= 0:
+                end = start + count
+                for i in range(start, end):
+                    score = kernels_helpers.result_stats[i][0]
+                    if score >= 0:
+                        if (score > best_score) or (score == best_score and i > best_idx):
+                            best_score = score
+                            best_idx = i
+            kernels_helpers.chunk_best_score[g] = best_score
+            kernels_helpers.chunk_best_idx[g] = best_idx
+        else:
             best = ti.u64(0)
             if count > 0 and start >= 0:
                 end = start + count

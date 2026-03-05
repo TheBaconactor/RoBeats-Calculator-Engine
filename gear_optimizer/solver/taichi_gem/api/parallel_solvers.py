@@ -238,27 +238,49 @@ def solve_genomes_with_ftff(
         fields.genome_base_stats.from_numpy(stats_buf)
         _t_kernel = None
 
-    # Launch kernel (atomic-free + faster): one workgroup per genome, reduce in shared memory.
-    n_combos = _ensure_ftff_combo_tables(int(total_budget))
-    kernels.solve_genomes_with_ftff_block_kernel(
-        n_genomes,
-        int(n_combos),
-        total_budget,
-        gem_scale_fever,
-        is_p_ft,
-        is_s_ft,
-        is_p_ff,
-        is_s_ff,
-        is_p_pp,
-        is_s_pp,
-        is_p_cm,
-        is_s_cm,
-        is_p_fm,
-        is_s_fm,
-        is_p_ov,
-        is_s_ov,
-        int(song_slot),
-    )
+    # Launch kernel:
+    # - Vulkan: block-per-genome implementation (shared-memory reduction on packed u64 key)
+    # - Metal: portable per-genome loop (Metal doesn't support u64 subgroup reductions)
+    if bool(getattr(fields, "IS_METAL", False)):
+        kernels.solve_genomes_with_ftff_kernel(
+            n_genomes,
+            total_budget,
+            gem_scale_fever,
+            is_p_ft,
+            is_s_ft,
+            is_p_ff,
+            is_s_ff,
+            is_p_pp,
+            is_s_pp,
+            is_p_cm,
+            is_s_cm,
+            is_p_fm,
+            is_s_fm,
+            is_p_ov,
+            is_s_ov,
+            int(song_slot),
+        )
+    else:
+        n_combos = _ensure_ftff_combo_tables(int(total_budget))
+        kernels.solve_genomes_with_ftff_block_kernel(
+            n_genomes,
+            int(n_combos),
+            total_budget,
+            gem_scale_fever,
+            is_p_ft,
+            is_s_ft,
+            is_p_ff,
+            is_s_ff,
+            is_p_pp,
+            is_s_pp,
+            is_p_cm,
+            is_s_cm,
+            is_p_fm,
+            is_s_fm,
+            is_p_ov,
+            is_s_ov,
+            int(song_slot),
+        )
 
     if _profiler.enabled and _SYNC_FOR_TIMING and _t_kernel is not None:
         _maybe_sync(for_timing=True)
@@ -453,8 +475,6 @@ def solve_genomes_parallel(
     generated_any = False
     last_kernel_t0: float | None = None
     last_kernel_work_n = 0
-    is_metal = bool(getattr(fields, "IS_METAL", False))
-
     def _reset_chunk_ranges() -> None:
         chunk_genome_start[:n_genomes] = -1
         chunk_genome_len[:n_genomes] = 0
@@ -505,10 +525,7 @@ def solve_genomes_parallel(
         fields.chunk_genome_start.from_numpy(chunk_genome_start)
         fields.chunk_genome_len.from_numpy(chunk_genome_len)
         kernels.init_chunk_best_key_kernel(n_genomes)
-        if is_metal:
-            kernels.reduce_chunk_to_best_key_kernel(chunk_n)
-        else:
-            kernels.reduce_chunk_to_best_key_ranges_kernel(n_genomes)
+        kernels.reduce_chunk_to_best_key_ranges_kernel(n_genomes)
         kernels.merge_chunk_best_to_genomes_kernel(n_genomes)
 
         chunk_n = 0
@@ -900,8 +917,6 @@ def solve_genomes_parallel_merged(
 
     # Initialize per-genome results once for the whole merged batch.
     kernels.init_genome_results_kernel(n_total_genomes)
-    is_metal = bool(getattr(fields, "IS_METAL", False))
-
     def _reset_chunk_ranges() -> None:
         chunk_genome_start[:n_total_genomes] = -1
         chunk_genome_len[:n_total_genomes] = 0
@@ -963,10 +978,7 @@ def solve_genomes_parallel_merged(
                     fields.chunk_genome_start.from_numpy(chunk_genome_start)
                     fields.chunk_genome_len.from_numpy(chunk_genome_len)
                     kernels.init_chunk_best_key_kernel(n_total_genomes)
-                    if is_metal:
-                        kernels.reduce_chunk_to_best_key_kernel(cur)
-                    else:
-                        kernels.reduce_chunk_to_best_key_ranges_kernel(n_total_genomes)
+                    kernels.reduce_chunk_to_best_key_ranges_kernel(n_total_genomes)
                     kernels.merge_chunk_best_to_genomes_kernel(n_total_genomes)
                     chunks += 1
                     cur = 0
@@ -1015,10 +1027,7 @@ def solve_genomes_parallel_merged(
         fields.chunk_genome_start.from_numpy(chunk_genome_start)
         fields.chunk_genome_len.from_numpy(chunk_genome_len)
         kernels.init_chunk_best_key_kernel(n_total_genomes)
-        if is_metal:
-            kernels.reduce_chunk_to_best_key_kernel(cur)
-        else:
-            kernels.reduce_chunk_to_best_key_ranges_kernel(n_total_genomes)
+        kernels.reduce_chunk_to_best_key_ranges_kernel(n_total_genomes)
         kernels.merge_chunk_best_to_genomes_kernel(n_total_genomes)
         chunks += 1
 

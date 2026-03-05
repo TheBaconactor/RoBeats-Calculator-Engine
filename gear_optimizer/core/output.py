@@ -22,7 +22,11 @@ class NullWriter:
         return False
 
     def fileno(self) -> int:
-        return -1
+        # Some stdlib code (notably `multiprocessing` spawn) may attempt to inherit
+        # stdio file descriptors via `fileno()`. Returning an invalid FD (like -1)
+        # can crash process creation with "bad value(s) in fds_to_keep)". Mirror
+        # `io.IOBase.fileno()` behavior for non-FD streams by raising instead.
+        raise OSError("NullWriter has no file descriptor")
 
     def reconfigure(self, **_kwargs) -> None:
         return None

@@ -420,6 +420,8 @@ class GearOptimizerApp:
         self._run_tasks_ref = None
         self._run_completed_ref = None
         self._run_current_song_label = ""
+        # Full DB integrity verification is expensive; only run it once per process.
+        self._stats_verified_once = False
         # Session-scoped counters (persist across loop restarts).
         self._session_new_records = 0
 
@@ -571,7 +573,9 @@ class GearOptimizerApp:
             is_fresh_queue = ignore_resume or not memory_resume_exists
 
             if is_fresh_queue:
-                self._verify_stats_integrity()
+                if not self._stats_verified_once:
+                    self._verify_stats_integrity()
+                    self._stats_verified_once = True
 
             # Config reading
             ie = read_iteration_engine_settings(cfg)
@@ -639,6 +643,21 @@ class GearOptimizerApp:
                     from gear_optimizer.solver.taichi_gem import fields as gpu_fields
 
                     gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
+                except Exception:
+                    pass
+
+            # InFlightSongs uses the singleton in-process GPU executor. Start it early so
+            # Taichi init + kernel warmups overlap with CPU-heavy data/path loading.
+            # This improves first-task latency on macOS where Metal JIT can be costly.
+            try:
+                inflight_req = int(self._get_inflight_songs_requested(cfg) or 0)
+            except Exception:
+                inflight_req = 0
+            if inflight_req > 1:
+                try:
+                    from gear_optimizer.solver.gpu_executor import get_gpu_executor
+
+                    get_gpu_executor().start(in_process=True)
                 except Exception:
                     pass
 
@@ -757,7 +776,18 @@ class GearOptimizerApp:
                     total_tasks = max(0, int(total_tasks))
 
                     # "songs" is approximate when SongRepeats>1; tasks/hour is the reliable metric.
-                    completed_songs_est = min(int(queued_songs), int(completed_tasks))
+                    # Estimate repeats as queued_tasks/queued_songs (when available) to make songs/hour meaningful.
+                    repeats_est = 1
+                    try:
+                        if int(queued_songs) > 0 and int(queued_tasks) > 0:
+                            repeats_est = max(1, int(round(float(queued_tasks) / float(queued_songs))))
+                    except Exception:
+                        repeats_est = 1
+                    try:
+                        completed_songs_est = int(round(float(completed_tasks) / float(repeats_est)))
+                    except Exception:
+                        completed_songs_est = int(completed_tasks)
+                    completed_songs_est = min(int(queued_songs), max(0, int(completed_songs_est)))
 
                     songs_per_h = float(completed_songs_est) / elapsed_h if completed_songs_est > 0 else 0.0
                     tasks_per_h = float(completed_tasks) / elapsed_h if completed_tasks > 0 else 0.0

@@ -62,8 +62,22 @@ def get_evolution_db_path() -> str:
     Returns:
         str: Path to evolution database file
     """
-    env_path = os.getenv("EVOLUTION_DB_PATH", "")
-    return env_path if env_path else PATHS.evolution_db_default
+    env_path = str(os.getenv("EVOLUTION_DB_PATH", "") or "").strip()
+    if env_path:
+        return env_path
+
+    # Prefer the external DB (kept out of the repo) when it exists. This keeps the
+    # default behavior for typical clones while allowing the monorepo layout:
+    #   <parent>/RoBeats-Calculator-Engine
+    #   <parent>/ExternalDatabases/evolution.db
+    try:
+        external_db = os.path.abspath(os.path.join(PATHS.script_dir, os.pardir, "ExternalDatabases", "evolution.db"))
+        if os.path.exists(external_db):
+            return external_db
+    except Exception:
+        pass
+
+    return PATHS.evolution_db_default
 
 
 def get_db_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
