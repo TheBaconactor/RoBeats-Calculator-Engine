@@ -592,7 +592,7 @@ class RoBeatsMetaOptimizerApi:
                 path = f"{path}?{parsed.query}"
             body = json.dumps(
                 {
-                    "available": True,
+                    "available": bool(state.get("available", True)),
                     "status": str(state.get("status") or ""),
                     "current_song": str(state.get("current_song") or ""),
                     "completed": _safe_int(state.get("completed"), 0),
@@ -781,6 +781,7 @@ class RoBeatsMetaOptimizerApi:
             raw = {}
         return {
             "version": 1,
+            "available": bool(raw.get("available", False)),
             "status": str(raw.get("status") or "idle"),
             "current_song": str(raw.get("current_song") or ""),
             "completed": _safe_int(raw.get("completed"), 0),
@@ -831,6 +832,7 @@ class RoBeatsMetaOptimizerApi:
     def update_runtime_status(
         self,
         *,
+        available: bool | None = None,
         status: str | None = None,
         current_song: str | None = None,
         completed: int | None = None,
@@ -843,6 +845,10 @@ class RoBeatsMetaOptimizerApi:
             state = dict(self._runtime_status_current or {})
             if not state:
                 state = self._load_status_unlocked()
+            if available is None:
+                state["available"] = True
+            else:
+                state["available"] = bool(available)
             if status is not None:
                 state["status"] = str(status or "").strip() or state.get("status") or "idle"
             if current_song is not None:
@@ -854,6 +860,7 @@ class RoBeatsMetaOptimizerApi:
             if failed is not None:
                 state["failed"] = max(0, int(failed))
             comparable_state = {
+                "available": bool(state.get("available", True)),
                 "status": str(state.get("status") or ""),
                 "current_song": str(state.get("current_song") or ""),
                 "completed": _safe_int(state.get("completed"), 0),
@@ -870,8 +877,15 @@ class RoBeatsMetaOptimizerApi:
             self._runtime_status_pending_event.set()
             return dict(state)
 
-    def clear_runtime_status(self, *, status: str = "idle", now: int | None = None) -> dict[str, Any]:
+    def clear_runtime_status(
+        self,
+        *,
+        status: str = "idle",
+        now: int | None = None,
+        available: bool = True,
+    ) -> dict[str, Any]:
         return self.update_runtime_status(
+            available=available,
             status=status,
             current_song="",
             completed=0,
@@ -886,6 +900,7 @@ class RoBeatsMetaOptimizerApi:
                 return dict(self._runtime_status_current)
         return {
             "version": 1,
+            "available": False,
             "status": "idle",
             "current_song": "",
             "completed": 0,

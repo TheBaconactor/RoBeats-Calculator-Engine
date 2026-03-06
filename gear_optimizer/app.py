@@ -733,12 +733,12 @@ class GearOptimizerApp:
         except Exception as exc:
             logging.warning(f"[RoBeatsMeta] Failed to update runtime status: {type(exc).__name__}: {exc}")
 
-    def _clear_robeatsmeta_runtime_status(self, *, status: str = "idle") -> None:
+    def _clear_robeatsmeta_runtime_status(self, *, status: str = "idle", available: bool = True) -> None:
         api = getattr(self, "_robeatsmeta_api", None)
         if api is None:
             return
         try:
-            api.clear_runtime_status(status=status)
+            api.clear_runtime_status(status=status, available=available)
         except Exception as exc:
             logging.warning(f"[RoBeatsMeta] Failed to clear runtime status: {type(exc).__name__}: {exc}")
 
@@ -1489,7 +1489,7 @@ class GearOptimizerApp:
 
     def _stop_progress(self) -> None:
         self._runtime_status_name = "idle"
-        self._clear_robeatsmeta_runtime_status(status="idle")
+        self._clear_robeatsmeta_runtime_status(status="unavailable", available=False)
         if self._progress is None:
             return
         try:
@@ -3519,7 +3519,7 @@ class GearOptimizerApp:
 
     def _cleanup_resources(self, status_queue, status_thread, manager):
         try:
-            self._clear_robeatsmeta_runtime_status(status="idle")
+            self._clear_robeatsmeta_runtime_status(status="unavailable", available=False)
             if status_queue:
                 try:
                     status_queue.put(None)
