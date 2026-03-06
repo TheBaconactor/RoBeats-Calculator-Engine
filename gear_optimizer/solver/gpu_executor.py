@@ -550,6 +550,8 @@ class GpuExecutor:
         # dicts (calc_song timelines + ref arrays) across adjacent GA iterations.
         self._solve_payload_cache: OrderedDict[tuple[int, int], dict[str, Any]] = OrderedDict()
         self._solve_payload_cache_max = max(16, int(_ENV_GET("GPU_EXECUTOR_SOLVE_PAYLOAD_CACHE_MAX", "128") or "128"))
+        self._solve_coalesce_staging: Any | None = None
+        self._registry_coalesce_staging: Any | None = None
 
         # Stats
         self._requests_processed = 0
@@ -1211,6 +1213,8 @@ class GpuExecutor:
         self._deferred_request = None
         self._ready_event.clear()
         self._last_ref_arrays_sig = None
+        # Scratch buffers for small-batch solve coalescing (avoid per-chunk allocations).
+        self._solve_coalesce_staging: Any | None = None
         # Scratch buffer for registry request coalescing (avoid per-chunk np.empty allocations).
         self._registry_coalesce_staging: Any | None = None
         self._registry_payload_cache.clear()
@@ -1872,13 +1876,12 @@ class GpuExecutor:
                     else:
                         remaining.append(req)
 
-                # Execute solve_genomes requests (FTFF solver): execute each request independently.
+                # Execute solve_genomes requests (FTFF solver): coalesce compatible small
+                # batches so service-mode traffic does not fall back to one GPU launch/request.
                 if solve_requests:
                     prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
                     exec_start_ns = time.perf_counter_ns()
-                    responses = []
-                    for req in solve_requests:
-                        responses.append(self._execute_request(req))
+                    responses = self._coalesce_solve_genomes_with_ftff(solve_requests)
                     exec_end_ns = time.perf_counter_ns()
                     dt_exec = float(exec_end_ns - exec_start_ns) / 1e9
                     self._record_exec_breakdown(
@@ -2952,6 +2955,334 @@ class GpuExecutor:
                         },
                     )
                     out.append(self._execute_request(req))
+
+        by_id = {r.request_id: r for r in out if r is not None}
+        return [by_id.get(req.request_id) for req in requests]
+
+    def _coalesce_solve_genomes_with_ftff(self, requests: list["GpuRequest"]) -> list["GpuResponse"]:
+        """
+        Coalesce multiple SOLVE_GENOMES_WITH_FTFF requests by concatenating genome batches.
+
+        This keeps the legacy request shape alive for callers that still send per-genome stats,
+        but removes the legacy executor behavior of launching one kernel per request.
+        """
+        import numpy as np
+
+        from .taichi_gem.api import load_ref_arrays, solve_genomes_with_ftff
+        from .taichi_gem import fields as gem_fields
+
+        scalar_fields = (
+            "song_slot",
+            "total_budget",
+            "gem_scale_fever",
+            "is_p_ft",
+            "is_s_ft",
+            "is_p_ff",
+            "is_s_ff",
+            "is_p_pp",
+            "is_s_pp",
+            "is_p_cm",
+            "is_s_cm",
+            "is_p_fm",
+            "is_s_fm",
+            "is_p_ov",
+            "is_s_ov",
+        )
+
+        array_sig_cache: dict[tuple[int, int, tuple[int, ...], tuple[int, ...], str], bytes] = {}
+        object_sig_cache: dict[int, Any] = {}
+
+        def _array_sig(v: Any) -> tuple[Any, ...]:
+            if v is None:
+                return ("none",)
+            try:
+                arr = np.asarray(v)
+            except Exception:
+                return ("repr", type(v).__name__, repr(v))
+            if arr.ndim == 0:
+                try:
+                    return ("scalar", str(arr.dtype), repr(arr.item()))
+                except Exception:
+                    return ("scalar", str(arr.dtype), repr(arr))
+            try:
+                arr_ptr = int(arr.__array_interface__["data"][0])
+            except Exception:
+                arr_ptr = int(id(arr))
+            try:
+                strides = tuple(int(x) for x in (arr.strides or ()))
+            except Exception:
+                strides = ()
+            key = (int(id(arr)), int(arr_ptr), tuple(int(x) for x in arr.shape), strides, str(arr.dtype))
+            digest = array_sig_cache.get(key)
+            if digest is None:
+                try:
+                    arr_c = arr if arr.flags["C_CONTIGUOUS"] else np.ascontiguousarray(arr)
+                    h = hashlib.blake2b(digest_size=16)
+                    h.update(memoryview(arr_c).cast("B"))
+                    digest = h.digest()
+                except Exception:
+                    digest = bytes(str(id(arr)), "utf-8")
+                array_sig_cache[key] = digest
+            return ("arr", key[2], key[3], key[4], digest)
+
+        def _object_sig(v: Any) -> Any:
+            if v is None or isinstance(v, (int, float, bool, str, bytes)):
+                return v
+            if isinstance(v, np.ndarray):
+                return _array_sig(v)
+            oid = int(id(v))
+            cached = object_sig_cache.get(oid)
+            if cached is not None:
+                return cached
+            if isinstance(v, dict):
+                sig = (
+                    "dict",
+                    tuple((str(k), _object_sig(v.get(k))) for k in sorted(v.keys(), key=lambda x: str(x))),
+                )
+                object_sig_cache[oid] = sig
+                return sig
+            if isinstance(v, (list, tuple)):
+                sig = (type(v).__name__, tuple(_object_sig(x) for x in v))
+                object_sig_cache[oid] = sig
+                return sig
+            sig = ("obj", type(v).__name__, repr(v))
+            object_sig_cache[oid] = sig
+            return sig
+
+        def _scalar_key(p: dict[str, Any]) -> tuple[int, ...]:
+            vals: list[int] = []
+            for field in scalar_fields:
+                default = 90 if field == "total_budget" else 3 if field == "gem_scale_fever" else 0
+                vals.append(int(p.get(field, default) or default))
+            return tuple(vals)
+
+        def _timeline_sig(v: Any) -> Any:
+            if not isinstance(v, dict):
+                return _object_sig(v)
+            song_data = v.get("song_data")
+            if not isinstance(song_data, dict):
+                return _object_sig(v)
+            return (
+                "timeline",
+                _object_sig(v.get("metadata")),
+                _array_sig(song_data.get("timestamps")),
+                _array_sig(song_data.get("chart_timestamps")),
+                _array_sig(song_data.get("note_types")),
+            )
+
+        def _ref_sig(v: Any) -> Any:
+            if isinstance(v, dict):
+                sig = self._ref_arrays_sig(v)
+                if sig is not None:
+                    return ("ref", bytes(sig))
+            return _object_sig(v)
+
+        def _solve_payload_sig(p: dict[str, Any]) -> tuple[Any, ...]:
+            return (
+                _scalar_key(p),
+                _timeline_sig(p.get("timeline_grid")),
+                _ref_sig(p.get("ref_arrays")),
+            )
+
+        def _coerce_genome_stats_array(value: Any) -> Any:
+            try:
+                arr = np.asarray(value, dtype=np.int16)
+            except Exception:
+                arr = None
+            if arr is not None:
+                if arr.ndim == 1 and int(arr.size) % 7 == 0 and int(arr.size) > 0:
+                    arr = arr.reshape((-1, 7))
+                if arr.ndim == 2 and int(arr.shape[1]) >= 7:
+                    return arr[:, :7]
+            if not isinstance(value, (list, tuple)):
+                return None
+            n = int(len(value))
+            if n <= 0:
+                return np.empty((0, 7), dtype=np.int16)
+            rows = np.empty((n, 7), dtype=np.int16)
+            for i, stats in enumerate(value):
+                if not isinstance(stats, dict):
+                    return None
+                try:
+                    rows[i, 0] = stats["base_pp"]
+                    rows[i, 1] = stats["base_cm"]
+                    rows[i, 2] = stats["base_fm"]
+                    rows[i, 3] = stats["base_p_val"]
+                    rows[i, 4] = stats["base_s_val"]
+                    rows[i, 5] = stats["base_ft_stat"]
+                    rows[i, 6] = stats["base_ff_stat"]
+                except Exception:
+                    return None
+            return rows
+
+        groups_by_sig: "OrderedDict[tuple[Any, ...], list[GpuRequest]]" = OrderedDict()
+        groups: list[list[GpuRequest]] = []
+        for req in requests:
+            p = self._payload_dict(req)
+            genome_stats = p.get("genome_stats_list")
+            if genome_stats is None:
+                groups.append([req])
+                continue
+            try:
+                handle_raw = p.get("solve_static_handle")
+                if handle_raw is not None:
+                    sig = (
+                        _scalar_key(p),
+                        ("handle", int(getattr(req, "worker_id", 0) or 0), int(handle_raw)),
+                    )
+                else:
+                    sig = _solve_payload_sig(p)
+            except Exception:
+                groups.append([req])
+                continue
+            groups_by_sig.setdefault(sig, []).append(req)
+        groups.extend(list(groups_by_sig.values()))
+
+        out: list[GpuResponse] = []
+        max_genomes = int(getattr(gem_fields, "MAX_GENOMES", 4096) or 4096)
+        resolved_payload_cache: dict[int, dict[str, Any]] = {}
+
+        def _resolved_payload(req: GpuRequest) -> tuple[dict[str, Any], str | None]:
+            rid = int(getattr(req, "request_id", 0) or 0)
+            cached = resolved_payload_cache.get(rid)
+            if cached is not None:
+                return cached, None
+            resolved, err = self._resolve_solve_payload(req)
+            if err is None:
+                resolved_payload_cache[rid] = resolved
+            return resolved, err
+
+        for group in groups:
+            if not group:
+                continue
+            if len(group) == 1:
+                out.append(self._execute_request(group[0]))
+                continue
+
+            p0, err0 = _resolved_payload(group[0])
+            if err0:
+                for req in group:
+                    out.append(
+                        GpuResponse(
+                            request_id=req.request_id,
+                            success=False,
+                            error=err0,
+                        )
+                    )
+                continue
+
+            song_slot = int(p0.get("song_slot", 0) or 0)
+            total_budget = int(p0.get("total_budget", 90) or 90)
+            gem_scale_fever = int(p0.get("gem_scale_fever", 3) or 3)
+
+            ref_arrays = p0.get("ref_arrays")
+            sig = self._ref_arrays_sig(ref_arrays) if isinstance(ref_arrays, dict) else None
+            if sig is None or sig != self._last_ref_arrays_sig:
+                if isinstance(ref_arrays, dict):
+                    load_ref_arrays(ref_arrays)
+                self._last_ref_arrays_sig = sig
+
+            i = 0
+            while i < len(group):
+                chunk: list[GpuRequest] = []
+                n_total = 0
+                while i < len(group):
+                    p, perr = _resolved_payload(group[i])
+                    if perr:
+                        out.append(
+                            GpuResponse(
+                                request_id=group[i].request_id,
+                                success=False,
+                                error=perr,
+                            )
+                        )
+                        i += 1
+                        continue
+                    stats_arr = _coerce_genome_stats_array(p.get("genome_stats_list"))
+                    if stats_arr is None or stats_arr.ndim != 2 or int(stats_arr.shape[1]) != 7:
+                        break
+                    n = int(stats_arr.shape[0])
+                    if n <= 0:
+                        break
+                    if n_total + n > max_genomes and chunk:
+                        break
+                    if n_total + n > max_genomes and not chunk:
+                        out.append(self._execute_request(group[i]))
+                        i += 1
+                        continue
+                    chunk.append(group[i])
+                    n_total += n
+                    i += 1
+
+                if not chunk:
+                    break
+
+                staging_buf = self._solve_coalesce_staging
+                if staging_buf is None or int(staging_buf.shape[0]) < int(n_total) or int(staging_buf.shape[1]) != 7:
+                    staging_rows = max(int(n_total), int(max_genomes))
+                    staging_buf = np.empty((int(staging_rows), 7), dtype=np.int16)
+                    self._solve_coalesce_staging = staging_buf
+                staging = staging_buf[: int(n_total), :]
+                spans: list[tuple[int, int]] = []
+                cur = 0
+                ok = True
+                t_pack0 = perf_counter()
+                for req in chunk:
+                    p, perr = _resolved_payload(req)
+                    if perr:
+                        ok = False
+                        break
+                    stats_arr = _coerce_genome_stats_array(p.get("genome_stats_list"))
+                    n = 0 if stats_arr is None else int(stats_arr.shape[0])
+                    if stats_arr is None or stats_arr.ndim != 2 or int(stats_arr.shape[1]) != 7 or n <= 0:
+                        ok = False
+                        break
+                    staging[cur : cur + n, :] = stats_arr[:n, :7]
+                    spans.append((cur, cur + n))
+                    cur += n
+
+                if not ok or cur <= 0:
+                    warn_fallback(
+                        "gpu_executor.solve_ftff_coalesce.chunk",
+                        "FTFF coalescing chunk pack failed; falling back to per-request execution",
+                        context={"chunk_size": int(len(chunk)), "cur": int(cur)},
+                    )
+                    for req in chunk:
+                        out.append(self._execute_request(req))
+                    continue
+
+                try:
+                    t_kernel0 = perf_counter()
+                    merged = solve_genomes_with_ftff(
+                        genome_stats_list=staging[:cur, :],
+                        timeline_grid=p0["timeline_grid"],
+                        is_p_ft=p0["is_p_ft"],
+                        is_s_ft=p0["is_s_ft"],
+                        is_p_ff=p0["is_p_ff"],
+                        is_s_ff=p0["is_s_ff"],
+                        is_p_pp=p0["is_p_pp"],
+                        is_s_pp=p0["is_s_pp"],
+                        is_p_cm=p0["is_p_cm"],
+                        is_s_cm=p0["is_s_cm"],
+                        is_p_fm=p0["is_p_fm"],
+                        is_s_fm=p0["is_s_fm"],
+                        is_p_ov=p0["is_p_ov"],
+                        is_s_ov=p0["is_s_ov"],
+                        ref_arrays=p0["ref_arrays"],
+                        total_budget=total_budget,
+                        gem_scale_fever=gem_scale_fever,
+                        song_slot=song_slot,
+                    )
+                    dt_kernel = perf_counter() - t_kernel0
+                    dt_total = perf_counter() - t_pack0
+                    self._record_pack(GpuRequestType.SOLVE_GENOMES_WITH_FTFF, max(0.0, dt_total - dt_kernel))
+                    for req, (a, b) in zip(chunk, spans):
+                        out.append(GpuResponse(request_id=req.request_id, success=True, result=merged[a:b]))
+                except Exception as e2:
+                    self._record_pack(GpuRequestType.SOLVE_GENOMES_WITH_FTFF, perf_counter() - t_pack0)
+                    err = f"{type(e2).__name__}: {e2}"
+                    for req in chunk:
+                        out.append(GpuResponse(request_id=req.request_id, success=False, error=err))
 
         by_id = {r.request_id: r for r in out if r is not None}
         return [by_id.get(req.request_id) for req in requests]

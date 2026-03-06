@@ -562,7 +562,12 @@ class GearOptimizerApp:
 
     def _optimizer_priority_api_enabled(self) -> bool:
         api = getattr(self, "_robeatsmeta_api", None)
-        return bool(api is not None and api.backend_mode_enabled())
+        if api is None:
+            return False
+        try:
+            return bool(api.priority_queue_enabled())
+        except Exception:
+            return bool(api.backend_mode_enabled())
 
     def _prioritize_robeatsmeta_song_queue(
         self,
@@ -803,10 +808,22 @@ class GearOptimizerApp:
             cfg = load_config()
             try:
                 self._robeatsmeta_api = RoBeatsMetaOptimizerApi()
-                if self._robeatsmeta_api.apply_service_defaults(cfg):
-                    print(
-                        "[RoBeatsMeta] Service mode enabled: LoopForever=true, SongRepeats=25, InFlightSongs=30, Difficulty=All.",
-                    )
+                if self._robeatsmeta_api.backend_mode_enabled():
+                    backend_benchmark_mode = bool(self._robeatsmeta_api.benchmark_mode_enabled())
+                    if self._robeatsmeta_api.apply_service_defaults(cfg):
+                        if backend_benchmark_mode:
+                            print(
+                                "[RoBeatsMeta] Service defaults enabled (benchmark): LoopForever=false, SongRepeats=25, InFlightSongs=30, Difficulty=All.",
+                            )
+                        else:
+                            print(
+                                "[RoBeatsMeta] Service defaults enabled: LoopForever=true, SongRepeats=25, InFlightSongs=30, Difficulty=All.",
+                            )
+                    elif not self._robeatsmeta_api.service_defaults_enabled():
+                        print(
+                            "[RoBeatsMeta] Service mode enabled: keeping IterationEngine/CalculateSong config (service defaults disabled).",
+                        )
+
                     # Backend-special behavior: default to headless runtime status via API.
                     # Keep CLI progress disabled unless explicitly requested by env.
                     if "METAFINDER_PROGRESS" not in os.environ:
@@ -837,9 +854,18 @@ class GearOptimizerApp:
             ignore_resume = os.environ.get("METAFINDER_IGNORE_RESUME_QUEUE", "").lower() in ("1", "true", "yes")
             memory_resume_exists = os.path.exists(MEMORY_GUARD_RESUME_FILE)
             is_fresh_queue = ignore_resume or not memory_resume_exists
+            benchmark_mode = bool(
+                (self._robeatsmeta_api and self._robeatsmeta_api.benchmark_mode_enabled())
+                or self._truthy(os.environ.get("METAFINDER_BENCHMARK_MODE", ""))
+            )
+            skip_stats_verify = bool(self._truthy(os.environ.get("METAFINDER_SKIP_STATS_INTEGRITY_VERIFY", "")))
 
             if is_fresh_queue:
-                if not self._stats_verified_once:
+                if skip_stats_verify:
+                    if not self._stats_verified_once:
+                        print("[Benchmark] Skipping stats integrity verification.")
+                        self._stats_verified_once = True
+                elif not self._stats_verified_once:
                     self._verify_stats_integrity()
                     self._stats_verified_once = True
 

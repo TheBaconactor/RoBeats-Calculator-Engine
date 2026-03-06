@@ -23,6 +23,13 @@ _DEFAULT_INFLIGHT_SONGS = 30
 _DEFAULT_MAX_PENDING_VISITS = 10
 
 
+def _env_bool_override(name: str) -> bool | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return str(raw or "").strip().lower() in _TRUTHY
+
+
 def _runtime_timestamp(now: int | float | None = None) -> int:
     if now is None:
         return int(time.time_ns() // 1_000_000)
@@ -235,21 +242,35 @@ class RoBeatsMetaOptimizerApi:
 
     @classmethod
     def service_mode_enabled(cls, *, song_meta_index_path: str | os.PathLike[str] | None = None) -> bool:
-        if _env_truthy("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", default=False):
-            return True
+        forced = _env_bool_override("ROBEATSMETA_OPTIMIZER_SERVICE_MODE")
+        if forced is not None:
+            return bool(forced)
         return cls._backend_compatible_detected(song_meta_index_path=song_meta_index_path)
 
     @classmethod
+    def benchmark_mode_enabled(cls) -> bool:
+        return _env_truthy("ROBEATSMETA_OPTIMIZER_BENCHMARK_MODE")
+
+    @classmethod
     def priority_queue_enabled(cls) -> bool:
-        if _env_truthy("ROBEATSMETA_OPTIMIZER_PRIORITY_QUEUE", default=False):
-            return True
+        forced = _env_bool_override("ROBEATSMETA_OPTIMIZER_PRIORITY_QUEUE")
+        if forced is not None:
+            return bool(forced)
         return cls.service_mode_enabled()
 
     def backend_mode_enabled(self) -> bool:
         return bool(getattr(self, "_backend_mode_enabled", False))
 
+    def service_defaults_enabled(self) -> bool:
+        if not self.backend_mode_enabled():
+            return False
+        forced = _env_bool_override("ROBEATSMETA_OPTIMIZER_SERVICE_DEFAULTS")
+        if forced is not None:
+            return bool(forced)
+        return True
+
     def apply_service_defaults(self, cfg: Any) -> bool:
-        if not self.backend_mode_enabled() or cfg is None:
+        if not self.backend_mode_enabled() or cfg is None or not self.service_defaults_enabled():
             return False
 
         if not cfg.has_section("IterationEngine"):
@@ -259,7 +280,7 @@ class RoBeatsMetaOptimizerApi:
 
         # Backend-special behavior: keep the optimizer in continuous service mode and
         # evaluate full song families so live backend overlays can update during runtime.
-        cfg.set("IterationEngine", "LoopForever", "true")
+        cfg.set("IterationEngine", "LoopForever", "false" if self.benchmark_mode_enabled() else "true")
         cfg.set("IterationEngine", "SongRepeats", str(int(_DEFAULT_SONG_REPEATS)))
         cfg.set("IterationEngine", "UseEvolutionDB", "true")
         cfg.set("IterationEngine", "InFlightSongs", str(int(_DEFAULT_INFLIGHT_SONGS)))
