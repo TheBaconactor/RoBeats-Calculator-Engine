@@ -46,6 +46,26 @@ def test_runtime_status_roundtrip(tmp_path):
     assert cleared["updated_at"] == 456
 
 
+def test_runtime_status_starts_online_idle(tmp_path):
+    state_path = tmp_path / "priority.json"
+    status_path = tmp_path / "status.json"
+    song_meta_path = tmp_path / "song_meta_index.json"
+    song_meta_path.write_text("[]", encoding="utf-8")
+
+    api = RoBeatsMetaOptimizerApi(
+        state_path=state_path,
+        status_path=status_path,
+        song_meta_index_path=song_meta_path,
+    )
+
+    read_back = api.read_runtime_status()
+    assert read_back["available"] is True
+    assert read_back["status"] == "idle"
+    assert read_back["current_song"] == ""
+    assert read_back["completed"] == 0
+    assert read_back["total"] == 0
+
+
 def test_runtime_status_pushes_direct_to_backend(monkeypatch, tmp_path):
     state_path = tmp_path / "priority.json"
     status_path = tmp_path / "status.json"

@@ -127,7 +127,7 @@ def _apply_gpu_song_slots_default() -> None:
     os.environ.setdefault("GPU_SONG_SLOTS", str(int(target)))
 
 
-if __name__ == "__main__":
+def main() -> int:
     multiprocessing.freeze_support()
     try:
         cfg_path = _read_config_path()
@@ -137,10 +137,17 @@ if __name__ == "__main__":
         _apply_throughput_mode_env()
         from gear_optimizer.app import GearOptimizerApp
 
-        app = GearOptimizerApp()
-        app.run()
+        while True:
+            app = GearOptimizerApp()
+            if not app.run():
+                break
+        return 0
     except KeyboardInterrupt:
-        sys.exit(0)
+        return 0
     except Exception as e:
         print(f"Fatal Error: {e}")
-        sys.exit(1)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

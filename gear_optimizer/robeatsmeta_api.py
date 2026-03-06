@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import http.client
 import json
 import logging
@@ -204,6 +205,7 @@ class RoBeatsMetaOptimizerApi:
             daemon=True,
         )
         self._runtime_status_thread.start()
+        atexit.register(self._publish_runtime_status_unavailable_at_exit)
         try:
             self._runtime_status_push_timeout_sec = max(
                 0.05,
@@ -211,6 +213,20 @@ class RoBeatsMetaOptimizerApi:
             )
         except Exception:
             self._runtime_status_push_timeout_sec = 0.35
+        # Advertise liveness immediately so the website can show the optimizer bar
+        # even before the first song queue is prepared.
+        self.update_runtime_status(
+            available=True,
+            status="idle",
+            current_song="",
+            completed=0,
+            total=0,
+            failed=0,
+        )
+        try:
+            self.flush_runtime_status(timeout=1.0)
+        except Exception:
+            pass
 
     @classmethod
     def _backend_compatible_detected(cls, *, song_meta_index_path: str | os.PathLike[str] | None = None) -> bool:
@@ -610,32 +626,20 @@ class RoBeatsMetaOptimizerApi:
             if self._runtime_status_push_token:
                 headers["X-RoBeatsMeta-Optimizer-Token"] = self._runtime_status_push_token
 
-            conn_key = (scheme, host, port)
-            conn = self._runtime_status_http_conn
-            if conn is None or self._runtime_status_http_conn_key != conn_key:
-                try:
-                    if conn is not None:
-                        conn.close()
-                except Exception:
-                    pass
-                connection_cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
-                conn = connection_cls(host, port, timeout=float(self._runtime_status_push_timeout_sec))
-                self._runtime_status_http_conn = conn
-                self._runtime_status_http_conn_key = conn_key
+            headers["Connection"] = "close"
+            connection_cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
+            conn = connection_cls(host, port, timeout=float(self._runtime_status_push_timeout_sec))
             try:
                 conn.request("POST", path, body=body, headers=headers)
                 response = conn.getresponse()
                 response.read()
                 if int(response.status) < 200 or int(response.status) >= 300:
                     raise RuntimeError(f"optimizer status push HTTP {int(response.status)}")
-            except Exception:
+            finally:
                 try:
                     conn.close()
                 except Exception:
                     pass
-                self._runtime_status_http_conn = None
-                self._runtime_status_http_conn_key = None
-                raise
 
             self._runtime_status_push_failure_count = 0
             self._runtime_status_push_fail_until = 0.0
@@ -893,6 +897,50 @@ class RoBeatsMetaOptimizerApi:
             failed=0,
             now=now,
         )
+
+    def _publish_runtime_status_unavailable_at_exit(self) -> None:
+        state = {
+            "available": False,
+            "status": "unavailable",
+            "current_song": "",
+            "completed": 0,
+            "total": 0,
+            "failed": 0,
+            "updated_at": _runtime_timestamp(None),
+        }
+        try:
+            with self._runtime_status_state_lock:
+                self._runtime_status_current = dict(state)
+                self._runtime_status_pending = None
+            self._push_runtime_status_direct(state)
+        except Exception:
+            pass
+        try:
+            self._runtime_status_stop = True
+            self._runtime_status_pending_event.set()
+        except Exception:
+            pass
+
+    def stop_runtime_status_loop(self, *, timeout: float = 1.0) -> None:
+        try:
+            self._runtime_status_stop = True
+            self._runtime_status_pending_event.set()
+        except Exception:
+            pass
+        try:
+            if self._runtime_status_thread.is_alive():
+                self._runtime_status_thread.join(timeout=max(0.0, float(timeout)))
+        except Exception:
+            pass
+        try:
+            conn = self._runtime_status_http_conn
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+        finally:
+            self._runtime_status_http_conn = None
+            self._runtime_status_http_conn_key = None
 
     def read_runtime_status(self) -> dict[str, Any]:
         with self._runtime_status_state_lock:

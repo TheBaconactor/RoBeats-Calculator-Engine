@@ -1489,7 +1489,7 @@ class GearOptimizerApp:
 
     def _stop_progress(self) -> None:
         self._runtime_status_name = "idle"
-        self._clear_robeatsmeta_runtime_status(status="unavailable", available=False)
+        self._clear_robeatsmeta_runtime_status(status="idle", available=True)
         if self._progress is None:
             return
         try:
@@ -3519,7 +3519,17 @@ class GearOptimizerApp:
 
     def _cleanup_resources(self, status_queue, status_thread, manager):
         try:
-            self._clear_robeatsmeta_runtime_status(status="unavailable", available=False)
+            self._clear_robeatsmeta_runtime_status(status="idle", available=True)
+            api = getattr(self, "_robeatsmeta_api", None)
+            if api is not None:
+                try:
+                    api.flush_runtime_status(timeout=1.0)
+                except Exception:
+                    pass
+                try:
+                    api.stop_runtime_status_loop(timeout=1.0)
+                except Exception:
+                    pass
             if status_queue:
                 try:
                     status_queue.put(None)
