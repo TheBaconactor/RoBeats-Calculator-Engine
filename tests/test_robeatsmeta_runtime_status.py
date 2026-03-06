@@ -1,5 +1,4 @@
 import json
-from pathlib import Path
 
 from gear_optimizer.robeatsmeta_api import RoBeatsMetaOptimizerApi
 
@@ -26,17 +25,13 @@ def test_runtime_status_roundtrip(tmp_path):
     )
     assert api.flush_runtime_status(timeout=5.0) is True
 
-    payload = json.loads(Path(status_path).read_text(encoding="utf-8"))
-    assert payload["status"] == "running"
-    assert payload["current_song"] == "My Song (Hard) by Artist"
-    assert payload["completed"] == 12
-    assert payload["total"] == 99
-    assert payload["failed"] == 1
-    assert payload["updated_at"] == 123
-
     read_back = api.read_runtime_status()
     assert read_back["status"] == "running"
     assert read_back["current_song"] == "My Song (Hard) by Artist"
+    assert read_back["completed"] == 12
+    assert read_back["total"] == 99
+    assert read_back["failed"] == 1
+    assert read_back["updated_at"] == 123
 
     api.clear_runtime_status(now=456)
     assert api.flush_runtime_status(timeout=5.0) is True

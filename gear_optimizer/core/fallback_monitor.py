@@ -47,6 +47,23 @@ _LOG_FP = None
 _LOG_OPEN_FAILED = False
 
 
+def _sample_every() -> int:
+    raw = str(os.environ.get("METAFINDER_FALLBACK_SAMPLE_EVERY", "256") or "").strip()
+    try:
+        val = int(raw)
+    except Exception:
+        val = 256
+    return max(1, val)
+
+
+def _should_sample_event(count: int) -> bool:
+    # Always capture the first few occurrences for diagnostics, then sample.
+    c = max(1, int(count))
+    if c <= 3:
+        return True
+    return (c % _sample_every()) == 0
+
+
 class FallbackViolation(RuntimeError):
     """Raised when fallback strict mode disallows continuing on a fallback path."""
 
@@ -172,9 +189,10 @@ def warn_fallback(
     strict_all = _strict_all()
     allowlisted = _is_allowlisted(site_key)
     should_raise = bool(fatal) if fatal is not None else bool(strict and (strict_all or not allowlisted))
+    sampled = _should_sample_event(count) or bool(should_raise)
 
     ctx = dict(context or {})
-    loc = _caller_location()
+    loc = _caller_location() if sampled else ""
     ts_wall = float(time.time())
     event = {
         "ts_wall": ts_wall,
@@ -193,7 +211,7 @@ def warn_fallback(
         "location": loc,
     }
 
-    if enabled:
+    if enabled and sampled:
         parts = [f"[FALLBACK][{site_key}] {reason}"]
         if ctx:
             try:
@@ -215,25 +233,26 @@ def warn_fallback(
         except Exception:
             pass
 
-    _write_event_jsonl(event)
+    if sampled:
+        _write_event_jsonl(event)
 
-    try:
-        from .profile_events import emit_profile_event
+        try:
+            from .profile_events import emit_profile_event
 
-        emit_profile_event(
-            component="fallback",
-            event="fallback::event",
-            metrics={
-                "site": site_key,
-                "count": int(count),
-                "strict": int(strict),
-                "allowlisted": int(allowlisted),
-                "raise": int(should_raise),
-            },
-            ts_wall=ts_wall,
-        )
-    except Exception:
-        pass
+            emit_profile_event(
+                component="fallback",
+                event="fallback::event",
+                metrics={
+                    "site": site_key,
+                    "count": int(count),
+                    "strict": int(strict),
+                    "allowlisted": int(allowlisted),
+                    "raise": int(should_raise),
+                },
+                ts_wall=ts_wall,
+            )
+        except Exception:
+            pass
 
     if should_raise:
         detail = f"[FALLBACK-STRICT][{site_key}] {reason}"

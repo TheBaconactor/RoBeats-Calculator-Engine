@@ -1291,7 +1291,13 @@ def _prepare_song(task: tuple) -> _NativeSong:
 
     color_flags = build_color_flags(p_color, s_color, selected_color)
 
-    elite_count = safe_int(cfg.get("IterationEngine", "GPU_GA_EliteCount", fallback=GA_ELITISM), GA_ELITISM)
+    elite_count_raw = GA_ELITISM
+    try:
+        if hasattr(cfg, "has_option") and cfg.has_option("IterationEngine", "GPU_GA_EliteCount"):
+            elite_count_raw = cfg.get("IterationEngine", "GPU_GA_EliteCount", fallback=GA_ELITISM)
+    except Exception:
+        elite_count_raw = GA_ELITISM
+    elite_count = safe_int(elite_count_raw, GA_ELITISM)
     elite_count = max(0, int(elite_count))
 
     song = _NativeSong(

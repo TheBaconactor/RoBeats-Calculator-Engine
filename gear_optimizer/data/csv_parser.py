@@ -277,7 +277,17 @@ def get_config_gear_stats(cfg, paths, gears_db=None):
     gear_slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
     for slot in gear_slots:
         key = "Pant" if slot == "Pants" else slot
-        item_name = cfg.get("Gear", key, fallback=cfg.get("Gear", slot, fallback="")).strip().strip(" .")
+        item_name_raw = ""
+        try:
+            if hasattr(cfg, "has_option") and cfg.has_option("Gear", key):
+                item_name_raw = cfg.get("Gear", key, fallback="")
+            elif hasattr(cfg, "has_option") and cfg.has_option("Gear", slot):
+                item_name_raw = cfg.get("Gear", slot, fallback="")
+            else:
+                item_name_raw = cfg.get("Gear", key, fallback=cfg.get("Gear", slot, fallback=""))
+        except Exception:
+            item_name_raw = ""
+        item_name = str(item_name_raw or "").strip().strip(" .")
         if item_name in gears_db:
             item_data = gears_db[item_name]
             if item_data.get("type", "Hat") == slot:

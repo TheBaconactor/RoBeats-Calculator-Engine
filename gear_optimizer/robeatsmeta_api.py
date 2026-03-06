@@ -184,6 +184,12 @@ class RoBeatsMetaOptimizerApi:
         self._runtime_status_stop = False
         self._runtime_status_pending: dict[str, Any] | None = None
         self._runtime_status_current: dict[str, Any] | None = None
+        self._runtime_status_http_conn: http.client.HTTPConnection | http.client.HTTPSConnection | None = None
+        self._runtime_status_http_conn_key: tuple[str, str, int] | None = None
+        self._runtime_status_heartbeat_interval_sec = (
+            5.0 if str(self._runtime_status_push_url or "").strip() else 0.0
+        )
+        self._runtime_status_last_push_monotonic = 0.0
         self._runtime_status_current = self.read_runtime_status()
         self._runtime_status_thread = threading.Thread(
             target=self._runtime_status_loop,
@@ -251,11 +257,14 @@ class RoBeatsMetaOptimizerApi:
         if not cfg.has_section("CalculateSong"):
             cfg.add_section("CalculateSong")
 
+        # Backend-special behavior: keep the optimizer in continuous service mode and
+        # evaluate full song families so live backend overlays can update during runtime.
         cfg.set("IterationEngine", "LoopForever", "true")
         cfg.set("IterationEngine", "SongRepeats", str(int(_DEFAULT_SONG_REPEATS)))
         cfg.set("IterationEngine", "UseEvolutionDB", "true")
         cfg.set("IterationEngine", "InFlightSongs", str(int(_DEFAULT_INFLIGHT_SONGS)))
 
+        # Backend-special behavior: process all difficulties for the selected song family.
         cfg.set("CalculateSong", "Difficulty", "All")
         cfg.set("CalculateSong", "Song_Name", "")
         cfg.set("CalculateSong", "TargetPrimary", "all")
@@ -580,19 +589,32 @@ class RoBeatsMetaOptimizerApi:
             if self._runtime_status_push_token:
                 headers["X-RoBeatsMeta-Optimizer-Token"] = self._runtime_status_push_token
 
-            connection_cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
-            conn = connection_cls(host, port, timeout=float(self._runtime_status_push_timeout_sec))
+            conn_key = (scheme, host, port)
+            conn = self._runtime_status_http_conn
+            if conn is None or self._runtime_status_http_conn_key != conn_key:
+                try:
+                    if conn is not None:
+                        conn.close()
+                except Exception:
+                    pass
+                connection_cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
+                conn = connection_cls(host, port, timeout=float(self._runtime_status_push_timeout_sec))
+                self._runtime_status_http_conn = conn
+                self._runtime_status_http_conn_key = conn_key
             try:
                 conn.request("POST", path, body=body, headers=headers)
                 response = conn.getresponse()
                 response.read()
                 if int(response.status) < 200 or int(response.status) >= 300:
                     raise RuntimeError(f"optimizer status push HTTP {int(response.status)}")
-            finally:
+            except Exception:
                 try:
                     conn.close()
                 except Exception:
                     pass
+                self._runtime_status_http_conn = None
+                self._runtime_status_http_conn_key = None
+                raise
 
             self._runtime_status_push_failure_count = 0
             self._runtime_status_push_fail_until = 0.0
@@ -608,9 +630,28 @@ class RoBeatsMetaOptimizerApi:
 
     def _runtime_status_loop(self) -> None:
         while True:
-            self._runtime_status_pending_event.wait()
+            heartbeat = float(self._runtime_status_heartbeat_interval_sec or 0.0)
+            signaled = self._runtime_status_pending_event.wait(timeout=heartbeat if heartbeat > 0.0 else None)
             if self._runtime_status_stop:
                 return
+            if not signaled:
+                if heartbeat <= 0.0:
+                    continue
+                with self._runtime_status_state_lock:
+                    state = dict(self._runtime_status_current or {})
+                if not state:
+                    continue
+                # Keep heartbeat timestamps moving during long GPU-bound spans so
+                # backend/UI can observe liveness even without song/progress deltas.
+                state["updated_at"] = _safe_int(time.time() * 1000.0)
+                with self._runtime_status_state_lock:
+                    self._runtime_status_current = dict(state)
+                try:
+                    self._push_runtime_status_direct(state)
+                    self._runtime_status_last_push_monotonic = time.monotonic()
+                except Exception:
+                    pass
+                continue
             while True:
                 with self._runtime_status_state_lock:
                     state = dict(self._runtime_status_pending or {}) if self._runtime_status_pending is not None else None
@@ -621,16 +662,8 @@ class RoBeatsMetaOptimizerApi:
                         break
                     self._runtime_status_flushed_event.clear()
                 try:
-                    with _file_lock(self._status_lock_path):
-                        self._write_status_unlocked(state)
-                except Exception as exc:
-                    logging.getLogger(__name__).warning(
-                        "Failed to persist optimizer runtime status: %s: %s",
-                        type(exc).__name__,
-                        exc,
-                    )
-                try:
                     self._push_runtime_status_direct(state)
+                    self._runtime_status_last_push_monotonic = time.monotonic()
                 except Exception:
                     pass
                 with self._runtime_status_state_lock:
@@ -830,11 +863,15 @@ class RoBeatsMetaOptimizerApi:
         with self._runtime_status_state_lock:
             if self._runtime_status_current:
                 return dict(self._runtime_status_current)
-        with _file_lock(self._status_lock_path):
-            state = dict(self._load_status_unlocked())
-        with self._runtime_status_state_lock:
-            self._runtime_status_current = dict(state)
-        return state
+        return {
+            "version": 1,
+            "status": "idle",
+            "current_song": "",
+            "completed": 0,
+            "total": 0,
+            "failed": 0,
+            "updated_at": 0,
+        }
 
     def flush_runtime_status(self, *, timeout: float = 5.0) -> bool:
         return bool(self._runtime_status_flushed_event.wait(timeout=max(0.0, float(timeout))))

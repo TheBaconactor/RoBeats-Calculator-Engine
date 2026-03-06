@@ -807,6 +807,10 @@ class GearOptimizerApp:
                     print(
                         "[RoBeatsMeta] Service mode enabled: LoopForever=true, SongRepeats=25, InFlightSongs=30, Difficulty=All.",
                     )
+                    # Backend-special behavior: default to headless runtime status via API.
+                    # Keep CLI progress disabled unless explicitly requested by env.
+                    if "METAFINDER_PROGRESS" not in os.environ:
+                        self._progress_enabled = False
             except Exception as exc:
                 self._robeatsmeta_api = None
                 logging.warning(f"[RoBeatsMeta] Failed to initialize optimizer API: {type(exc).__name__}: {exc}")

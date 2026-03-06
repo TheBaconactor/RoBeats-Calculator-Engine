@@ -105,9 +105,19 @@ class GASettings:
 
         def get_option(option, fallback):
             try:
-                return cfg.get(section, option, fallback=fallback)
+                if hasattr(cfg, "has_option") and cfg.has_option(section, option):
+                    return cfg.get(section, option, fallback=fallback)
             except Exception:
-                return fallback
+                pass
+            return fallback
+
+        def get_bool_option(option, fallback):
+            try:
+                if hasattr(cfg, "has_option") and cfg.has_option(section, option):
+                    return bool(cfg.getboolean(section, option, fallback=bool(fallback)))
+            except Exception:
+                pass
+            return bool(fallback)
 
         db_seed_prob = safe_float(get_option("GA_DBSeedProbability", "0.5"), default=0.5)
         fixed_seed_copies = max(0, safe_int(get_option("GA_FixedSeedCopies", "2"), 2))
@@ -123,8 +133,8 @@ class GASettings:
                 GA_MULTI_RUNS_DEFAULT,
             ),
         )
-        deep_mining = cfg.getboolean(section, "DeepMining", fallback=True)
-        allow_3_swap = cfg.getboolean(section, "GA_Allow3Swap", fallback=True)
+        deep_mining = get_bool_option("DeepMining", True)
+        allow_3_swap = get_bool_option("GA_Allow3Swap", True)
 
         # Read rank sizes from [IterationEngine] section
         gear_rank_max = max(10, safe_int(get_option("GearRankMax", "40"), 40))
