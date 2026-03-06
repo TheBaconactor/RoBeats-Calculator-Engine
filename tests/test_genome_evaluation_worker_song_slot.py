@@ -1,6 +1,8 @@
 import sys
 import types
 
+import numpy as np
+
 
 def test_batch_evaluate_worker_mode_forwards_song_slot(monkeypatch):
     from gear_optimizer.solver.scoring import genome_evaluation as ge
@@ -40,10 +42,22 @@ def test_batch_evaluate_worker_mode_forwards_song_slot(monkeypatch):
         )
         return plan, None
 
+    class _Registry:
+        def encode_population(self, _population):
+            return np.zeros((1, 9), dtype=np.int32)
+
+        def to_gpu_arrays(self):
+            return {
+                "item_stats": np.zeros((1, 10), dtype=np.int32),
+                "slot_start": np.zeros((9,), dtype=np.int32),
+                "slot_count": np.zeros((9,), dtype=np.int32),
+            }
+
     captured = {"song_slot": None}
 
-    def _fake_submit(*_args, **kwargs):
-        captured["song_slot"] = int(kwargs.get("song_slot", 0))
+    def _fake_dispatch(request, *, gpu_client=None):
+        del gpu_client
+        captured["song_slot"] = int(request.song_slot)
         return [(1, 0, 0, 0, 0, 0, 0)]
 
     def _fake_finalize(_plan, gpu_results):
@@ -51,12 +65,11 @@ def test_batch_evaluate_worker_mode_forwards_song_slot(monkeypatch):
 
     monkeypatch.setattr(ge, "prepare_gpu_batch_eval_plan", _fake_prepare)
     monkeypatch.setattr(ge, "finalize_gpu_batch_eval_plan", _fake_finalize)
+    monkeypatch.setattr(ge, "dispatch_registry_solve", _fake_dispatch)
 
     from gear_optimizer.solver import gpu_executor as gx
 
     monkeypatch.setattr(gx, "is_gpu_worker_mode", lambda: True)
-    monkeypatch.setattr(gx, "submit_gpu_solve_genomes", _fake_submit)
-    monkeypatch.setattr(gx, "submit_gpu_solve_genomes_from_registry", lambda *_a, **_k: [])
 
     out = ge.batch_evaluate_genomes(
         population=[{}],
@@ -66,7 +79,7 @@ def test_batch_evaluate_worker_mode_forwards_song_slot(monkeypatch):
         ref_arrays={},
         genome_key_fn=None,
         evaluation_cache=None,
-        registry=None,
+        registry=_Registry(),
     )
 
     assert captured["song_slot"] == 7

@@ -29,10 +29,10 @@ from ...core.constants import SKIP_ITEM_KEYS
 from ...core.env_config import ENV
 from ...core.utils import stats_signature
 
-from .gpu_solver import _GPU_LOCK, GEM_SOLVER_CACHE
+from .gpu_solver import GEM_SOLVER_CACHE
 from .fever_solver import solve_best_fever_combination
 from .stats_ops import apply_gems_to_base_stats
-from ..registry_solve_request import build_registry_solve_request, dispatch_registry_solve
+from ..registry_solve_request import build_registry_solve_request, dispatch_registry_solve, registry_batch_solve_supported
 
 
 @dataclass
@@ -494,8 +494,10 @@ def batch_evaluate_genomes(
     Evaluate a population with caching + optional GPU acceleration.
 
     This wraps `prepare_gpu_batch_eval_plan()` + `finalize_gpu_batch_eval_plan()` and keeps the
-    GPU dispatch logic in one place (worker-mode IPC, in-process direct calls, and an optional
-    ItemRegistry fast path for GPU-side stat aggregation).
+    GPU dispatch logic in one place (worker-mode IPC + in-process registry dispatch).
+
+    GPU execution requires a registry-capable solver payload. Callers must pass an
+    ItemRegistry via `registry`.
     """
     if not population:
         return []
@@ -514,9 +516,11 @@ def batch_evaluate_genomes(
 
     gpu_results = None
     if plan.unique_stats and bool(plan.cfg_data.get("use_gpu", False)):
-        from ..gpu_executor import is_gpu_worker_mode, submit_gpu_solve_genomes
+        from ..gpu_executor import is_gpu_worker_mode
         from ..fever_timeline import get_song_timeline_grid
-        from ..taichi_gem.api import solve_genomes_with_ftff
+
+        if not registry_batch_solve_supported(registry):
+            raise RuntimeError("GPU registry solve is required for batch_evaluate_genomes; missing ItemRegistry.")
 
         flags = plan.flags
         try:
@@ -528,31 +532,15 @@ def batch_evaluate_genomes(
             if is_gpu_worker_mode():
                 # IPC route to GPU executor (parallel song processing).
                 # Pass lightweight `calc_song` dict to avoid pickling a full SongTimelineGrid.
-                if registry is not None:
-                    request = build_registry_solve_request(plan=plan, registry=registry, song_slot=int(worker_song_slot))
-                    if request is not None:
-                        gpu_results = dispatch_registry_solve(request)
-                else:
-                    gpu_results = submit_gpu_solve_genomes(
-                        plan.genome_stats_list,
-                        plan.calc_song,
-                        int(flags.get("is_p_ft", 0)),
-                        int(flags.get("is_s_ft", 0)),
-                        int(flags.get("is_p_ff", 0)),
-                        int(flags.get("is_s_ff", 0)),
-                        int(flags.get("is_p_pp", 0)),
-                        int(flags.get("is_s_pp", 0)),
-                        int(flags.get("is_p_cm", 0)),
-                        int(flags.get("is_s_cm", 0)),
-                        int(flags.get("is_p_fm", 0)),
-                        int(flags.get("is_s_fm", 0)),
-                        int(flags.get("is_p_ov", 0)),
-                        int(flags.get("is_s_ov", 0)),
-                        plan.ref_arrays,
-                        total_budget=TOTAL_GEM_BUDGET,
-                        gem_scale_fever=GEM_SCALE_FEVER,
-                        song_slot=int(worker_song_slot),
-                    )
+                request = build_registry_solve_request(
+                    plan=plan,
+                    registry=registry,
+                    song_slot=int(worker_song_slot),
+                    timeline_grid=plan.calc_song,
+                )
+                if request is None:
+                    raise RuntimeError("Failed to build registry solve request for worker-mode GPU dispatch.")
+                gpu_results = dispatch_registry_solve(request)
             else:
                 # In-process path:
                 # - Default: reuse cached per-song CPU timeline grid (then upload to GPU).
@@ -568,37 +556,15 @@ def batch_evaluate_genomes(
                     grid = get_song_timeline_grid(plan.calc_song, plan.ref_arrays)
                     grid.precompute_all()
 
-                if registry is not None:
-                    request = build_registry_solve_request(
-                        plan=plan,
-                        registry=registry,
-                        song_slot=int(song_slot),
-                        timeline_grid=plan.calc_song if prefer_gpu_timeline else grid,
-                    )
-                    if request is not None:
-                        gpu_results = dispatch_registry_solve(request)
-                else:
-                    with _GPU_LOCK:
-                        gpu_results = solve_genomes_with_ftff(
-                            plan.genome_stats_list,
-                            plan.calc_song if prefer_gpu_timeline else grid,
-                            int(flags.get("is_p_ft", 0)),
-                            int(flags.get("is_s_ft", 0)),
-                            int(flags.get("is_p_ff", 0)),
-                            int(flags.get("is_s_ff", 0)),
-                            int(flags.get("is_p_pp", 0)),
-                            int(flags.get("is_s_pp", 0)),
-                            int(flags.get("is_p_cm", 0)),
-                            int(flags.get("is_s_cm", 0)),
-                            int(flags.get("is_p_fm", 0)),
-                            int(flags.get("is_s_fm", 0)),
-                            int(flags.get("is_p_ov", 0)),
-                            int(flags.get("is_s_ov", 0)),
-                            plan.ref_arrays,
-                            total_budget=TOTAL_GEM_BUDGET,
-                            gem_scale_fever=GEM_SCALE_FEVER,
-                            song_slot=int(song_slot),
-                        )
+                request = build_registry_solve_request(
+                    plan=plan,
+                    registry=registry,
+                    song_slot=int(song_slot),
+                    timeline_grid=plan.calc_song if prefer_gpu_timeline else grid,
+                )
+                if request is None:
+                    raise RuntimeError("Failed to build registry solve request for in-process GPU dispatch.")
+                gpu_results = dispatch_registry_solve(request)
         except Exception as e:
             raise RuntimeError(f"GPU path failed: {type(e).__name__}: {e}") from e
 

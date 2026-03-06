@@ -15,7 +15,6 @@ from ...core.constants import (
     TOTAL_GEM_BUDGET,
 )
 from ...core.utils import get_selected_element
-from ...solver.gpu_executor import is_gpu_worker_mode, submit_gpu_solve_genomes
 from ...solver.scoring.genome_evaluation import prepare_gpu_batch_eval_plan, finalize_gpu_batch_eval_plan
 from ...solver.base_stats import build_base_fixed_stats_list, build_stats_dict
 from ...solver.registry_solve_request import (
@@ -1173,97 +1172,18 @@ def evaluate_fg_combo_booster_genomes(
     if plan is None:
         evaluated = list(results or [])
     else:
-        flags = dict(plan.flags or {})
-
         gpu_results = None
         t_gpu0 = time.perf_counter()
-        try:
-            # Fast path: evaluate via registry->indices on GPU to avoid building/uploading
-            # large per-genome CPU worklists (the modern solver iterates FT/FF on-GPU).
-            solver_mode = str(os.environ.get("FG_COMBO_BOOSTER_GPU_SOLVER", "auto") or "").strip().lower()
-            prefer_registry = solver_mode in {"auto", "registry", "from_registry"}
-            if prefer_registry and registry_batch_solve_supported(registry):
-                request = build_registry_solve_request(
-                    plan=plan,
-                    registry=registry,
-                    song_slot=int(song_slot),
-                    timeline_grid=calc_song,
-                    ref_arrays=ref_arrays,
-                )
-                if request is not None:
-                    gpu_results = dispatch_registry_solve(request, gpu_client=gpu_client)
-
-            if gpu_results is None:
-                if gpu_client is not None:
-                    payload = {
-                        "genome_stats_list": plan.genome_stats_list,
-                        "timeline_grid": calc_song,
-                        "is_p_ft": int(flags.get("is_p_ft", 0)),
-                        "is_s_ft": int(flags.get("is_s_ft", 0)),
-                        "is_p_ff": int(flags.get("is_p_ff", 0)),
-                        "is_s_ff": int(flags.get("is_s_ff", 0)),
-                        "is_p_pp": int(flags.get("is_p_pp", 0)),
-                        "is_s_pp": int(flags.get("is_s_pp", 0)),
-                        "is_p_cm": int(flags.get("is_p_cm", 0)),
-                        "is_s_cm": int(flags.get("is_s_cm", 0)),
-                        "is_p_fm": int(flags.get("is_p_fm", 0)),
-                        "is_s_fm": int(flags.get("is_s_fm", 0)),
-                        "is_p_ov": int(flags.get("is_p_ov", 0)),
-                        "is_s_ov": int(flags.get("is_s_ov", 0)),
-                        "ref_arrays": ref_arrays,
-                        "total_budget": int(TOTAL_GEM_BUDGET),
-                        "gem_scale_fever": int(GEM_SCALE_FEVER),
-                        "song_slot": int(song_slot),
-                    }
-                    gpu_results = gpu_client.submit_solve_genomes(payload).future.result()
-                elif is_gpu_worker_mode():
-                    gpu_results = submit_gpu_solve_genomes(
-                        plan.genome_stats_list,
-                        calc_song,
-                        int(flags.get("is_p_ft", 0)),
-                        int(flags.get("is_s_ft", 0)),
-                        int(flags.get("is_p_ff", 0)),
-                        int(flags.get("is_s_ff", 0)),
-                        int(flags.get("is_p_pp", 0)),
-                        int(flags.get("is_s_pp", 0)),
-                        int(flags.get("is_p_cm", 0)),
-                        int(flags.get("is_s_cm", 0)),
-                        int(flags.get("is_p_fm", 0)),
-                        int(flags.get("is_s_fm", 0)),
-                        int(flags.get("is_p_ov", 0)),
-                        int(flags.get("is_s_ov", 0)),
-                        ref_arrays,
-                        total_budget=int(TOTAL_GEM_BUDGET),
-                        gem_scale_fever=int(GEM_SCALE_FEVER),
-                        song_slot=int(song_slot),
-                    )
-                else:
-                    from ...solver.scoring.gpu_solver import _GPU_LOCK
-                    from ...solver.taichi_gem.api import solve_genomes_with_ftff as solve_genomes_with_ftff_ti
-
-                    with _GPU_LOCK:
-                        gpu_results = solve_genomes_with_ftff_ti(
-                            plan.genome_stats_list,
-                            calc_song,
-                            int(flags.get("is_p_ft", 0)),
-                            int(flags.get("is_s_ft", 0)),
-                            int(flags.get("is_p_ff", 0)),
-                            int(flags.get("is_s_ff", 0)),
-                            int(flags.get("is_p_pp", 0)),
-                            int(flags.get("is_s_pp", 0)),
-                            int(flags.get("is_p_cm", 0)),
-                            int(flags.get("is_s_cm", 0)),
-                            int(flags.get("is_p_fm", 0)),
-                            int(flags.get("is_s_fm", 0)),
-                            int(flags.get("is_p_ov", 0)),
-                            int(flags.get("is_s_ov", 0)),
-                            ref_arrays,
-                            total_budget=int(TOTAL_GEM_BUDGET),
-                            gem_scale_fever=int(GEM_SCALE_FEVER),
-                            song_slot=int(song_slot),
-                        )
-        except Exception:
-            gpu_results = None
+        if registry_batch_solve_supported(registry):
+            request = build_registry_solve_request(
+                plan=plan,
+                registry=registry,
+                song_slot=int(song_slot),
+                timeline_grid=calc_song,
+                ref_arrays=ref_arrays,
+            )
+            if request is not None:
+                gpu_results = dispatch_registry_solve(request, gpu_client=gpu_client)
         t_gpu1 = time.perf_counter()
 
         finalize_mode = str(os.environ.get("FG_COMBO_BOOSTER_FINALIZE_MODE", "light") or "").strip().lower()

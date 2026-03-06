@@ -36,8 +36,9 @@ from ..scoring_core import (
     lookup_reference_py,
     optimize_core_jit,
 )
+from ..base_stats import build_stats_array
+from ..registry_solve_request import RegistrySolveRequest, dispatch_registry_solve
 
-from .gpu_solver import _GPU_LOCK
 from .stats_scoring import evaluate_stats_score
 from .stats_ops import apply_gems_to_base_stats
 
@@ -295,76 +296,53 @@ def solve_best_fever_combination(
     # GPU path: use the grid-based FT/FF solver (default), eliminating CPU timeline enumeration
     # and per-work-item fever mask transfers.
     if use_gpu:
-        from ..gpu_executor import is_gpu_worker_mode, submit_gpu_solve_genomes
-        from ..taichi_gem.api import solve_genomes_with_ftff
-
         # Compute color contribution flags for FT/FF gems (FT gems add Beat, FF gems add Vibe).
         is_p_ft = flags["is_p_ft"]
         is_s_ft = flags["is_s_ft"]
         is_p_ff = flags["is_p_ff"]
         is_s_ff = flags["is_s_ff"]
 
-        # Base color values (before any FT/FF gems).
-        base_p_val = int(base_stats.get(p_color, 0) or 0) if p_color else 0
-        base_s_val = int(base_stats.get(s_color, 0) or 0) if s_color else 0
-
-        genome_stats_np = np.empty((1, 7), dtype=np.int16)
-        genome_stats_np[0, 0] = int(cur_pp)
-        genome_stats_np[0, 1] = int(cur_cm)
-        genome_stats_np[0, 2] = int(cur_fm)
-        genome_stats_np[0, 3] = int(base_p_val)
-        genome_stats_np[0, 4] = int(base_s_val)
-        genome_stats_np[0, 5] = int(base_stats.get("Fever Time", 0) or 0)
-        genome_stats_np[0, 6] = int(base_stats.get("Fever Fill Rate", 0) or 0)
-
         try:
             song_slot = int((calc_song or {}).get("_gpu_song_slot", 0) or 0)
         except Exception:
             song_slot = 0
 
-        if is_gpu_worker_mode():
-            gpu_results = submit_gpu_solve_genomes(
-                genome_stats_np,
-                calc_song,
-                int(is_p_ft),
-                int(is_s_ft),
-                int(is_p_ff),
-                int(is_s_ff),
-                int(is_p_pp),
-                int(is_s_pp),
-                int(is_p_cm),
-                int(is_s_cm),
-                int(is_p_fm),
-                int(is_s_fm),
-                int(is_p_ov),
-                int(is_s_ov),
-                ref_arrays,
-                total_budget=int(TOTAL_GEM_BUDGET),
-                gem_scale_fever=int(GEM_SCALE_FEVER),
-                song_slot=int(song_slot),
-            )
-        else:
-            with _GPU_LOCK:
-                gpu_results = solve_genomes_with_ftff(
-                    genome_stats_np,
-                    calc_song,
-                    int(is_p_ft),
-                    int(is_s_ft),
-                    int(is_p_ff),
-                    int(is_s_ff),
-                    int(is_p_pp),
-                    int(is_s_pp),
-                    int(is_p_cm),
-                    int(is_s_cm),
-                    int(is_p_fm),
-                    int(is_s_fm),
-                    int(is_p_ov),
-                    int(is_s_ov),
-                    ref_arrays,
-                    total_budget=int(TOTAL_GEM_BUDGET),
-                    gem_scale_fever=int(GEM_SCALE_FEVER),
-                    song_slot=int(song_slot),
-                )
+        # Single-genome registry payload:
+        # - Keep this path on the same registry/native dispatch used by batch evaluators.
+        # - Use empty per-slot item pools and encode all fixed stats in base_fixed_stats.
+        population_indices = np.zeros((1, 9), dtype=np.int32)
+        item_stats = np.zeros((1, 10), dtype=np.int32)
+        slot_start = np.zeros((9,), dtype=np.int32)
+        slot_count = np.zeros((9,), dtype=np.int32)
+        base_fixed_stats = build_stats_array(base_stats)
+
+        request = RegistrySolveRequest(
+            population_indices=population_indices,
+            item_stats=item_stats,
+            slot_start=slot_start,
+            slot_count=slot_count,
+            base_fixed_stats=base_fixed_stats,
+            timeline_grid=calc_song,
+            ref_arrays=ref_arrays,
+            flags={
+                "is_p_ft": int(is_p_ft),
+                "is_s_ft": int(is_s_ft),
+                "is_p_ff": int(is_p_ff),
+                "is_s_ff": int(is_s_ff),
+                "is_p_pp": int(is_p_pp),
+                "is_s_pp": int(is_s_pp),
+                "is_p_cm": int(is_p_cm),
+                "is_s_cm": int(is_s_cm),
+                "is_p_fm": int(is_p_fm),
+                "is_s_fm": int(is_s_fm),
+                "is_p_ov": int(is_p_ov),
+                "is_s_ov": int(is_s_ov),
+            },
+            total_budget=int(TOTAL_GEM_BUDGET),
+            gem_scale_fever=int(GEM_SCALE_FEVER),
+            song_slot=int(song_slot),
+        )
+        gpu_results = dispatch_registry_solve(request)
 
         if not gpu_results:
             raise RuntimeError("GPU solver returned no results.")
