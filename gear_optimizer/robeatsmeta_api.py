@@ -22,6 +22,7 @@ _DEFAULT_VISIT_TTL_SECONDS = 60 * 60 * 24
 _DEFAULT_SONG_REPEATS = 25
 _DEFAULT_INFLIGHT_SONGS = 30
 _DEFAULT_MAX_PENDING_VISITS = 10
+_VISIT_SCOPE_ENV = "ROBEATSMETA_OPTIMIZER_VISIT_SCOPE"
 
 
 def _env_bool_override(name: str) -> bool | None:
@@ -57,6 +58,13 @@ def _build_bundle_key(*, title: str = "", artist: str = "", song_id: str = "") -
     if normalized_title or normalized_artist:
         return f"{normalized_title}|{normalized_artist}"
     return f"song:{_normalize_text(song_id)}"
+
+
+def _normalize_visit_scope(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"family", "bundle", "song-family", "song_family", "all-difficulties", "all_difficulties"}:
+        return "family"
+    return "song"
 
 
 def _strip_run_suffix(value: str) -> str:
@@ -155,6 +163,7 @@ class RoBeatsMetaOptimizerApi:
         song_meta_index_path: str | os.PathLike[str] | None = None,
         status_path: str | os.PathLike[str] | None = None,
         visit_ttl_seconds: int | None = None,
+        publish_runtime_status: bool = True,
     ) -> None:
         self._state_path = Path(state_path) if state_path else self._resolve_state_path()
         self._lock_path = self._state_path.with_suffix(self._state_path.suffix + ".lock")
@@ -173,14 +182,18 @@ class RoBeatsMetaOptimizerApi:
         )
         self._song_meta_mtime_ns: int | None = None
         self._bundle_by_song_id: dict[str, SongBundleRef] = {}
+        self._song_ids_by_bundle_key: dict[str, set[str]] = {}
         self._last_task_priority_signature: tuple[tuple[str, int, int], ...] | None = None
+        self._visit_scope = _normalize_visit_scope(os.environ.get(_VISIT_SCOPE_ENV, "song"))
+        self._visit_family_mode = self._visit_scope == "family"
         try:
             self._backend_mode_enabled = bool(
                 self.service_mode_enabled(song_meta_index_path=self._song_meta_index_path)
             )
         except Exception:
             self._backend_mode_enabled = False
-        self._runtime_status_push_url = self._resolve_runtime_status_push_url()
+        self._publish_runtime_status = bool(publish_runtime_status)
+        self._runtime_status_push_url = self._resolve_runtime_status_push_url() if self._publish_runtime_status else ""
         self._runtime_status_push_token = str(os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_TOKEN", "") or "").strip()
         self._runtime_status_push_fail_until = 0.0
         self._runtime_status_push_failure_count = 0
@@ -205,7 +218,8 @@ class RoBeatsMetaOptimizerApi:
             daemon=True,
         )
         self._runtime_status_thread.start()
-        atexit.register(self._publish_runtime_status_unavailable_at_exit)
+        if self._publish_runtime_status:
+            atexit.register(self._publish_runtime_status_unavailable_at_exit)
         try:
             self._runtime_status_push_timeout_sec = max(
                 0.05,
@@ -213,20 +227,21 @@ class RoBeatsMetaOptimizerApi:
             )
         except Exception:
             self._runtime_status_push_timeout_sec = 0.35
-        # Advertise liveness immediately so the website can show the optimizer bar
-        # even before the first song queue is prepared.
-        self.update_runtime_status(
-            available=True,
-            status="idle",
-            current_song="",
-            completed=0,
-            total=0,
-            failed=0,
-        )
-        try:
-            self.flush_runtime_status(timeout=1.0)
-        except Exception:
-            pass
+        if self._publish_runtime_status:
+            # Advertise liveness immediately so the website can show the optimizer bar
+            # even before the first song queue is prepared.
+            self.update_runtime_status(
+                available=True,
+                status="idle",
+                current_song="",
+                completed=0,
+                total=0,
+                failed=0,
+            )
+            try:
+                self.flush_runtime_status(timeout=1.0)
+            except Exception:
+                pass
 
     @classmethod
     def _backend_compatible_detected(cls, *, song_meta_index_path: str | os.PathLike[str] | None = None) -> bool:
@@ -350,6 +365,37 @@ class RoBeatsMetaOptimizerApi:
                     "reason": "already_processing",
                     "bundle_key": bundle.bundle_key,
                 }
+
+            # Family mode optimization: if this family already exists in DB and the state file was
+            # reset, avoid re-queueing all difficulties immediately.
+            if self._visit_family_mode and last_computed_at <= 0:
+                try:
+                    from .data.database import get_song_names_present_in_db
+                except Exception:
+                    get_song_names_present_in_db = None
+                if get_song_names_present_in_db is not None:
+                    try:
+                        song_ids: set[str] = set()
+                        cached_ids = self._song_ids_by_bundle_key.get(str(bundle.bundle_key or "").strip())
+                        if isinstance(cached_ids, set):
+                            song_ids.update(str(s or "").strip() for s in cached_ids if str(s or "").strip())
+                        if str(bundle.song_id or "").strip():
+                            song_ids.add(str(bundle.song_id).strip())
+                        present = get_song_names_present_in_db(song_ids)
+                        if present:
+                            entry["last_computed_at"] = ts
+                            entries[bundle.bundle_key] = entry
+                            self._write_state_unlocked(state)
+                            self._last_task_priority_signature = None
+                            return {
+                                "queued": False,
+                                "reason": "fresh_compute",
+                                "bundle_key": bundle.bundle_key,
+                                "last_computed_at": ts,
+                                "db_present": True,
+                            }
+                    except Exception:
+                        pass
 
             if last_computed_at > 0 and ts - last_computed_at < self._visit_ttl_seconds:
                 entries[bundle.bundle_key] = entry
@@ -703,6 +749,14 @@ class RoBeatsMetaOptimizerApi:
         cleaned_title = str(title or "").strip()
         cleaned_artist = str(artist or "").strip()
 
+        if not self._visit_family_mode:
+            return SongBundleRef(
+                song_id=cleaned_song_id,
+                title=cleaned_title,
+                artist=cleaned_artist,
+                bundle_key=_build_bundle_key(song_id=cleaned_song_id),
+            )
+
         self._refresh_song_meta_cache()
         cached = self._bundle_by_song_id.get(cleaned_song_id)
         if cached is not None:
@@ -735,6 +789,7 @@ class RoBeatsMetaOptimizerApi:
             return
 
         bundle_by_song_id: dict[str, SongBundleRef] = {}
+        song_ids_by_bundle_key: dict[str, set[str]] = {}
         if mtime_ns >= 0:
             try:
                 payload = json.loads(path.read_text(encoding="utf-8"))
@@ -749,14 +804,17 @@ class RoBeatsMetaOptimizerApi:
                         continue
                     title = str(item.get("title") or "").strip()
                     artist = str(item.get("artist") or "").strip()
-                    bundle_by_song_id[song_id] = SongBundleRef(
+                    bundle = SongBundleRef(
                         song_id=song_id,
                         title=title,
                         artist=artist,
                         bundle_key=_build_bundle_key(title=title, artist=artist, song_id=song_id),
                     )
+                    bundle_by_song_id[song_id] = bundle
+                    song_ids_by_bundle_key.setdefault(str(bundle.bundle_key or "").strip(), set()).add(song_id)
 
         self._bundle_by_song_id = bundle_by_song_id
+        self._song_ids_by_bundle_key = song_ids_by_bundle_key
         self._song_meta_mtime_ns = mtime_ns
 
     def _load_state_unlocked(self) -> dict[str, Any]:
