@@ -462,6 +462,7 @@ class GearOptimizerApp:
         self._run_tasks_ref = None
         self._run_completed_ref = None
         self._run_current_song_label = ""
+        self._runtime_status_name = "idle"
         self._stop_poll_interval_sec = 0.05
         self._stop_next_check_monotonic = 0.0
         self._stop_cached_result = False
@@ -472,6 +473,8 @@ class GearOptimizerApp:
         self._runtime_completed_count = 0
         self._runtime_total_count = 0
         self._runtime_failed_count = 0
+        self._backend_priority_song_names: set[str] = set()
+        self._backend_priority_song_repeat_count = 50
         self._robeatsmeta_api: RoBeatsMetaOptimizerApi | None = None
 
     def setup_logging(self):
@@ -571,6 +574,12 @@ class GearOptimizerApp:
         if api is None:
             return song_queue
         try:
+            priority_names = {str(name or "").strip() for name in getattr(self, "_backend_priority_song_names", set()) if str(name or "").strip()}
+            if priority_names:
+                priority_front = [item for item in song_queue if str(item[1] or "").strip() in priority_names]
+                remainder = [item for item in song_queue if str(item[1] or "").strip() not in priority_names]
+                prioritized_remainder = api.prioritize_song_queue(remainder)
+                return priority_front + prioritized_remainder
             return api.prioritize_song_queue(song_queue)
         except Exception as exc:
             logging.warning(f"[RoBeatsMeta] Failed to prioritize song queue: {type(exc).__name__}: {exc}")
@@ -583,7 +592,12 @@ class GearOptimizerApp:
         if api is None:
             return
         try:
-            api.reprioritize_pending_tasks(tasks, start_index=start_index)
+            priority_names = {str(name or "").strip() for name in getattr(self, "_backend_priority_song_names", set()) if str(name or "").strip()}
+            safe_start = max(0, min(int(start_index), len(tasks)))
+            if priority_names:
+                while safe_start < len(tasks) and str(tasks[safe_start][1] or "").strip() in priority_names:
+                    safe_start += 1
+            api.reprioritize_pending_tasks(tasks, start_index=safe_start)
         except Exception as exc:
             logging.warning(f"[RoBeatsMeta] Failed to reprioritize pending tasks: {type(exc).__name__}: {exc}")
 
@@ -701,7 +715,7 @@ class GearOptimizerApp:
                 self._robeatsmeta_api = RoBeatsMetaOptimizerApi()
                 if self._robeatsmeta_api.apply_service_defaults(cfg):
                     print(
-                        "[RoBeatsMeta] Service mode enabled: LoopForever=true, SongRepeats=25, Difficulty=All.",
+                        "[RoBeatsMeta] Service mode enabled: LoopForever=true, SongRepeats=25, InFlightSongs=12, Difficulty=All.",
                     )
             except Exception as exc:
                 self._robeatsmeta_api = None
@@ -1075,6 +1089,8 @@ class GearOptimizerApp:
 
     def _build_song_queue(self, cfg, paths, use_evo_db):
         diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols = self._get_filter_params(cfg)
+        backend_service_mode = bool(RoBeatsMetaOptimizerApi.service_mode_enabled())
+        self._backend_priority_song_names = set()
 
         resume_context = build_memory_guard_resume_context(diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols)
 
@@ -1133,6 +1149,10 @@ class GearOptimizerApp:
                             for item in resume_seed_queue:
                                 (resume_existing if item[1] in resume_names_present else resume_missing).append(item)
                             resume_seed_queue = resume_missing + resume_existing
+                            if backend_service_mode:
+                                self._backend_priority_song_names.update(
+                                    str(item[1] or "").strip() for item in resume_missing
+                                )
                     except Exception as exc:
                         logging.warning(
                             f"[DB] Failed to prioritize resume queue: {type(exc).__name__}: {exc}",
@@ -1232,6 +1252,8 @@ class GearOptimizerApp:
                     for item in song_queue:
                         (existing if item[1] in song_names_present_in_db else missing).append(item)
                     song_queue = missing + existing
+                    if backend_service_mode:
+                        self._backend_priority_song_names.update(str(item[1] or "").strip() for item in missing)
             except Exception as exc:
                 logging.warning(f"[DB] Failed to prioritize song queue: {type(exc).__name__}: {exc}")
 
@@ -1302,6 +1324,8 @@ class GearOptimizerApp:
                     print(f"[Queue] Prepending {len(new_missing)} new missing song(s) ahead of resume queue.")
                 except Exception:
                     pass
+                if backend_service_mode:
+                    self._backend_priority_song_names.update(str(item[1] or "").strip() for item in new_missing)
 
             merged_queue = list(new_missing) + list(resume_seed_queue)
             song_queue_limit = _read_song_queue_limit()
@@ -1320,6 +1344,7 @@ class GearOptimizerApp:
 
     def _start_progress(self, total_tasks: int, *, completed: int = 0) -> None:
         self._set_runtime_progress_counts(completed=int(completed or 0), total=int(total_tasks or 0), failed=0)
+        self._runtime_status_name = "queued"
         self._update_robeatsmeta_runtime_status(
             status="queued",
             current_song="",
@@ -1342,6 +1367,7 @@ class GearOptimizerApp:
         self._progress.start()
 
     def _stop_progress(self) -> None:
+        self._runtime_status_name = "idle"
         self._clear_robeatsmeta_runtime_status(status="idle")
         if self._progress is None:
             return
@@ -1357,6 +1383,8 @@ class GearOptimizerApp:
         failed_delta: int = 0,
         record_info: dict | None = None,
     ) -> None:
+        song_label = ""
+        status_label = ""
         record_update = bool(record_info and record_info.get("record_update"))
         if record_update:
             try:
@@ -1373,56 +1401,82 @@ class GearOptimizerApp:
                 0,
                 int(self._runtime_failed_count or 0) + int(failed_delta or 0),
             )
-        if self._progress is None:
-            return
         if isinstance(record_info, dict):
             try:
-                song_label = record_info.get("song") or record_info.get("_song_name") or record_info.get("_queue_label")
-                status = record_info.get("status")
+                song_label = str(
+                    record_info.get("song") or record_info.get("_song_name") or record_info.get("_queue_label") or ""
+                ).strip()
+                status_label = str(record_info.get("status") or "").strip()
                 if song_label:
                     self._run_current_song_label = str(song_label)
-                    self._progress.set_status(str(song_label), str(status) if status is not None else None)
-                    self._update_robeatsmeta_runtime_status(
-                        status=str(status) if status is not None else "running",
-                        current_song=str(song_label),
-                        completed=int(self._runtime_completed_count or 0),
-                        total=int(self._runtime_total_count or 0),
-                        failed=int(self._runtime_failed_count or 0),
-                    )
+                    if not status_label:
+                        status_label = "running"
             except Exception:
                 pass
-        if completed_delta:
-            self._progress.add_completed(int(completed_delta))
-        if failed_delta:
-            self._progress.add_failed(int(failed_delta))
-        if record_update:
-            score = int(record_info.get("score", 0) or 0)
-            best_fg = int(record_info.get("best_fg_score_run", 0) or 0)
-            if score > 0 or best_fg > 0:
-                self._progress.add_new_record(1)
+        if not status_label:
+            if failed_delta:
+                status_label = "failed"
+            elif completed_delta:
+                status_label = "done"
+            elif self._run_current_song_label:
+                status_label = str(self._runtime_status_name or "running")
+            else:
+                status_label = "running"
+        self._runtime_status_name = str(status_label or self._runtime_status_name or "running")
+        if self._progress is not None:
+            try:
+                if song_label:
+                    self._progress.set_status(str(song_label), str(status_label))
+                elif self._run_current_song_label:
+                    self._progress.set_status(str(self._run_current_song_label), str(status_label))
+            except Exception:
+                pass
+            if completed_delta:
+                self._progress.add_completed(int(completed_delta))
+            if failed_delta:
+                self._progress.add_failed(int(failed_delta))
+            if record_update:
+                score = int(record_info.get("score", 0) or 0)
+                best_fg = int(record_info.get("best_fg_score_run", 0) or 0)
+                if score > 0 or best_fg > 0:
+                    self._progress.add_new_record(1)
+        self._update_robeatsmeta_runtime_status(
+            status=self._runtime_status_name,
+            current_song=str(song_label or self._run_current_song_label or ""),
+            completed=int(self._runtime_completed_count or 0),
+            total=int(self._runtime_total_count or 0),
+            failed=int(self._runtime_failed_count or 0),
+        )
 
     def _handle_status_message(self, msg: str) -> None:
         if not msg:
             return
-        if self._progress is not None:
-            song = None
-            status = str(msg)
-            if status.startswith("[") and "]" in status:
-                try:
-                    end = status.index("]")
-                    song = status[1:end]
-                    status = status[end + 1 :].strip()
-                except Exception:
-                    song = None
-            if not self._progress_counts_driven and status.upper().startswith("DONE"):
+        song = None
+        status = str(msg)
+        if status.startswith("[") and "]" in status:
+            try:
+                end = status.index("]")
+                song = status[1:end]
+                status = status[end + 1 :].strip()
+            except Exception:
+                song = None
+        if not self._progress_counts_driven and status.upper().startswith("DONE"):
+            self._runtime_completed_count = max(0, int(self._runtime_completed_count or 0) + 1)
+            if self._progress is not None:
                 self._progress.add_completed(1)
-            if song:
-                self._run_current_song_label = str(song)
+        if song:
+            self._run_current_song_label = str(song)
+        self._runtime_status_name = str(status or self._runtime_status_name or "running")
+        if self._progress is not None:
             self._progress.set_status(song, status)
-            self._update_robeatsmeta_runtime_status(
-                status=str(status or "running"),
-                current_song=str(song or self._run_current_song_label or ""),
-            )
+        self._update_robeatsmeta_runtime_status(
+            status=self._runtime_status_name,
+            current_song=str(song or self._run_current_song_label or ""),
+            completed=int(self._runtime_completed_count or 0),
+            total=int(self._runtime_total_count or 0),
+            failed=int(self._runtime_failed_count or 0),
+        )
+        if self._progress is not None:
             return
         try:
             print(msg, flush=True)
@@ -1668,30 +1722,32 @@ class GearOptimizerApp:
                 self._session_new_records = int(self._session_new_records) + 1
             except Exception:
                 self._session_new_records = 1
-        if self._progress is None:
-            return
         if song_label:
             try:
                 self._run_current_song_label = str(song_label)
-                self._progress.set_status(str(song_label), "FAILED" if failed_delta else "DONE")
+                if self._progress is not None:
+                    self._progress.set_status(str(song_label), "FAILED" if failed_delta else "DONE")
             except Exception:
                 pass
         if failed_delta:
             self._runtime_failed_count = int(self._runtime_failed_count or 0) + int(failed_delta or 0)
-            self._progress.add_failed(failed_delta)
+            if self._progress is not None:
+                self._progress.add_failed(failed_delta)
         if record_update:
             score = int(record_info.get("score", 0) or 0)
             best_fg = int(record_info.get("best_fg_score_run", 0) or 0)
-            if score > 0 or best_fg > 0:
+            if self._progress is not None and (score > 0 or best_fg > 0):
                 self._progress.add_new_record(1)
-        self._progress.update_counts(completed=completed, total=total)
         self._set_runtime_progress_counts(
             completed=int(completed or 0),
             total=int(total or 0),
             failed=int(self._runtime_failed_count or 0),
         )
+        self._runtime_status_name = "failed" if failed_delta else "done"
+        if self._progress is not None:
+            self._progress.update_counts(completed=completed, total=total)
         self._update_robeatsmeta_runtime_status(
-            status="failed" if failed_delta else "done",
+            status=self._runtime_status_name,
             current_song=str(song_label or self._run_current_song_label or ""),
             completed=int(self._runtime_completed_count or 0),
             total=int(self._runtime_total_count or 0),
@@ -1752,6 +1808,13 @@ class GearOptimizerApp:
             pass
         song_repeats = max(1, min(int(song_repeats), 100))
         used_ga_seeds: set[int] = set()
+        backend_service_mode = bool(RoBeatsMetaOptimizerApi.service_mode_enabled())
+        backend_priority_song_names = {
+            str(name or "").strip()
+            for name in getattr(self, "_backend_priority_song_names", set())
+            if str(name or "").strip()
+        }
+        priority_repeat_count = max(1, int(getattr(self, "_backend_priority_song_repeat_count", 50) or 50))
 
         def _stable_ga_seed_for_song_repeat(song_name: str, repeat_index: int) -> int:
             # Stable 32-bit seed, independent of PYTHONHASHSEED and run ordering.
@@ -1762,7 +1825,12 @@ class GearOptimizerApp:
             return int(seed or 1)
 
         for fp, found_song_name, task_diff in song_queue:
-            if song_repeats <= 1:
+            repeats_for_song = (
+                priority_repeat_count
+                if backend_service_mode and str(found_song_name or "").strip() in backend_priority_song_names
+                else song_repeats
+            )
+            if repeats_for_song <= 1:
                 print(f"[QUEUE] {found_song_name}")
 
                 if ga_seed_base is not None:
@@ -1816,7 +1884,7 @@ class GearOptimizerApp:
                     )
                 continue
 
-            for repeat_index in range(1, song_repeats + 1):
+            for repeat_index in range(1, repeats_for_song + 1):
                 if ga_seed_base is not None:
                     ga_seed = _stable_ga_seed_for_song_repeat(str(found_song_name), int(repeat_index))
                     while ga_seed in used_ga_seeds:
@@ -1830,11 +1898,11 @@ class GearOptimizerApp:
 
                 repeat_ctx = {
                     "repeat_index": int(repeat_index),
-                    "repeat_total": int(song_repeats),
+                    "repeat_total": int(repeats_for_song),
                     "ga_seed": int(ga_seed),
                 }
 
-                print(f"[QUEUE] {found_song_name} (Run {repeat_index}/{song_repeats})")
+                print(f"[QUEUE] {found_song_name} (Run {repeat_index}/{repeats_for_song})")
                 tasks.append(
                     (
                         fp,

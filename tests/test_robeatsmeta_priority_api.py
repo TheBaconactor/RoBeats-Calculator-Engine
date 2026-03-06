@@ -107,8 +107,38 @@ def test_service_defaults_force_continuous_all_difficulty_mode(monkeypatch, tmp_
     assert cfg.get("IterationEngine", "LoopForever") == "true"
     assert cfg.get("IterationEngine", "SongRepeats") == "25"
     assert cfg.get("IterationEngine", "UseEvolutionDB") == "true"
-    assert cfg.get("IterationEngine", "InFlightSongs") == "1"
+    assert cfg.get("IterationEngine", "InFlightSongs") == "12"
     assert cfg.get("CalculateSong", "Difficulty") == "All"
     assert cfg.get("CalculateSong", "Song_Name") == ""
     assert cfg.get("CalculateSong", "TargetPrimary") == "all"
     assert cfg.get("CalculateSong", "TargetSecondary") == "all"
+
+
+def test_app_priority_keeps_backend_new_songs_ahead_of_visit_reprioritization():
+    from gear_optimizer.app import GearOptimizerApp
+
+    class DummyApi:
+        @staticmethod
+        def priority_queue_enabled():
+            return True
+
+        @staticmethod
+        def prioritize_song_queue(song_queue):
+            return list(reversed(song_queue))
+
+    app = GearOptimizerApp.__new__(GearOptimizerApp)
+    app._robeatsmeta_api = DummyApi()
+    app._backend_priority_song_names = {"New Song (Hard) by Artist"}
+
+    queue = [
+        ("new.txt", "New Song (Hard) by Artist", "Hard"),
+        ("old1.txt", "Old Song 1", "Hard"),
+        ("old2.txt", "Old Song 2", "Hard"),
+    ]
+
+    prioritized = app._prioritize_robeatsmeta_song_queue(queue)
+    assert [item[1] for item in prioritized] == [
+        "New Song (Hard) by Artist",
+        "Old Song 2",
+        "Old Song 1",
+    ]

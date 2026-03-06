@@ -69,3 +69,31 @@ def test_prepare_tasks_song_repeats_one_keeps_single_shape():
     assert len(tasks[0]) == 16
     assert app._extract_repeat_ctx(tasks[0]) is None
     assert app._task_queue_label(tasks[0]) == "Dummy Song"
+
+
+def test_prepare_tasks_backend_priority_new_songs_use_fixed_50_repeats(monkeypatch):
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
+    app = GearOptimizerApp.__new__(GearOptimizerApp)
+    app._backend_priority_song_names = {"New Song"}
+    app._backend_priority_song_repeat_count = 50
+    cfg = _build_cfg(25)
+
+    song_queue = [("dummy.txt", "New Song", "Hard")]
+    tasks = app._prepare_tasks(
+        song_queue=song_queue,
+        cfg=cfg,
+        paths={},
+        ref_arrays={},
+        all_gears=[],
+        all_minis=[],
+        gears_by_name={},
+        minis_by_name={},
+        use_evo_db=False,
+        auto_buff="",
+        ga_depth=1,
+        status_queue=None,
+        fg_debug=False,
+    )
+
+    assert len(tasks) == 50
+    assert app._task_queue_label(tasks[-1]) == "New Song (Run 50/50)"

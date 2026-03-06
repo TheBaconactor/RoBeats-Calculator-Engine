@@ -13,6 +13,7 @@ from .core.constants import BIN_DIR, PATHS
 _TRUTHY = {"1", "true", "yes", "on"}
 _DEFAULT_VISIT_TTL_SECONDS = 60 * 60 * 24
 _DEFAULT_SONG_REPEATS = 25
+_DEFAULT_INFLIGHT_SONGS = 12
 
 
 def _env_truthy(name: str, default: bool = False) -> bool:
@@ -144,7 +145,7 @@ class RoBeatsMetaOptimizerApi:
         cfg.set("IterationEngine", "LoopForever", "true")
         cfg.set("IterationEngine", "SongRepeats", str(int(_DEFAULT_SONG_REPEATS)))
         cfg.set("IterationEngine", "UseEvolutionDB", "true")
-        cfg.set("IterationEngine", "InFlightSongs", "1")
+        cfg.set("IterationEngine", "InFlightSongs", str(int(_DEFAULT_INFLIGHT_SONGS)))
 
         cfg.set("CalculateSong", "Difficulty", "All")
         cfg.set("CalculateSong", "Song_Name", "")
