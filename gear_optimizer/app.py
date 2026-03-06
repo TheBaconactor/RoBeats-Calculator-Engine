@@ -469,6 +469,9 @@ class GearOptimizerApp:
         self._stats_verified_once = False
         # Session-scoped counters (persist across loop restarts).
         self._session_new_records = 0
+        self._runtime_completed_count = 0
+        self._runtime_total_count = 0
+        self._runtime_failed_count = 0
         self._robeatsmeta_api: RoBeatsMetaOptimizerApi | None = None
 
     def setup_logging(self):
@@ -597,6 +600,52 @@ class GearOptimizerApp:
             api.mark_song_computed(song_id=song_name)
         except Exception as exc:
             logging.warning(f"[RoBeatsMeta] Failed to mark song computed: {type(exc).__name__}: {exc}")
+
+    def _update_robeatsmeta_runtime_status(
+        self,
+        *,
+        status: str | None = None,
+        current_song: str | None = None,
+        completed: int | None = None,
+        total: int | None = None,
+        failed: int | None = None,
+    ) -> None:
+        api = getattr(self, "_robeatsmeta_api", None)
+        if api is None:
+            return
+        try:
+            api.update_runtime_status(
+                status=status,
+                current_song=current_song,
+                completed=completed,
+                total=total,
+                failed=failed,
+            )
+        except Exception as exc:
+            logging.warning(f"[RoBeatsMeta] Failed to update runtime status: {type(exc).__name__}: {exc}")
+
+    def _clear_robeatsmeta_runtime_status(self, *, status: str = "idle") -> None:
+        api = getattr(self, "_robeatsmeta_api", None)
+        if api is None:
+            return
+        try:
+            api.clear_runtime_status(status=status)
+        except Exception as exc:
+            logging.warning(f"[RoBeatsMeta] Failed to clear runtime status: {type(exc).__name__}: {exc}")
+
+    def _set_runtime_progress_counts(
+        self,
+        *,
+        completed: int | None = None,
+        total: int | None = None,
+        failed: int | None = None,
+    ) -> None:
+        if completed is not None:
+            self._runtime_completed_count = max(0, int(completed))
+        if total is not None:
+            self._runtime_total_count = max(0, int(total))
+        if failed is not None:
+            self._runtime_failed_count = max(0, int(failed))
 
     def run(self):
         multiprocessing.freeze_support()
@@ -1270,6 +1319,14 @@ class GearOptimizerApp:
         return song_queue
 
     def _start_progress(self, total_tasks: int, *, completed: int = 0) -> None:
+        self._set_runtime_progress_counts(completed=int(completed or 0), total=int(total_tasks or 0), failed=0)
+        self._update_robeatsmeta_runtime_status(
+            status="queued",
+            current_song="",
+            completed=int(completed or 0),
+            total=int(total_tasks or 0),
+            failed=0,
+        )
         if not self._progress_enabled:
             return
         stream = self._orig_stdout or getattr(sys, "__stdout__", None) or sys.stdout
@@ -1285,6 +1342,7 @@ class GearOptimizerApp:
         self._progress.start()
 
     def _stop_progress(self) -> None:
+        self._clear_robeatsmeta_runtime_status(status="idle")
         if self._progress is None:
             return
         try:
@@ -1305,6 +1363,16 @@ class GearOptimizerApp:
                 self._session_new_records = int(self._session_new_records) + 1
             except Exception:
                 self._session_new_records = 1
+        if completed_delta:
+            self._runtime_completed_count = max(
+                0,
+                int(self._runtime_completed_count or 0) + int(completed_delta or 0),
+            )
+        if failed_delta:
+            self._runtime_failed_count = max(
+                0,
+                int(self._runtime_failed_count or 0) + int(failed_delta or 0),
+            )
         if self._progress is None:
             return
         if isinstance(record_info, dict):
@@ -1314,6 +1382,13 @@ class GearOptimizerApp:
                 if song_label:
                     self._run_current_song_label = str(song_label)
                     self._progress.set_status(str(song_label), str(status) if status is not None else None)
+                    self._update_robeatsmeta_runtime_status(
+                        status=str(status) if status is not None else "running",
+                        current_song=str(song_label),
+                        completed=int(self._runtime_completed_count or 0),
+                        total=int(self._runtime_total_count or 0),
+                        failed=int(self._runtime_failed_count or 0),
+                    )
             except Exception:
                 pass
         if completed_delta:
@@ -1344,6 +1419,10 @@ class GearOptimizerApp:
             if song:
                 self._run_current_song_label = str(song)
             self._progress.set_status(song, status)
+            self._update_robeatsmeta_runtime_status(
+                status=str(status or "running"),
+                current_song=str(song or self._run_current_song_label or ""),
+            )
             return
         try:
             print(msg, flush=True)
@@ -1598,6 +1677,7 @@ class GearOptimizerApp:
             except Exception:
                 pass
         if failed_delta:
+            self._runtime_failed_count = int(self._runtime_failed_count or 0) + int(failed_delta or 0)
             self._progress.add_failed(failed_delta)
         if record_update:
             score = int(record_info.get("score", 0) or 0)
@@ -1605,6 +1685,18 @@ class GearOptimizerApp:
             if score > 0 or best_fg > 0:
                 self._progress.add_new_record(1)
         self._progress.update_counts(completed=completed, total=total)
+        self._set_runtime_progress_counts(
+            completed=int(completed or 0),
+            total=int(total or 0),
+            failed=int(self._runtime_failed_count or 0),
+        )
+        self._update_robeatsmeta_runtime_status(
+            status="failed" if failed_delta else "done",
+            current_song=str(song_label or self._run_current_song_label or ""),
+            completed=int(self._runtime_completed_count or 0),
+            total=int(self._runtime_total_count or 0),
+            failed=int(self._runtime_failed_count or 0),
+        )
 
     def _status_listener(self, q):
         while True:
@@ -2191,6 +2283,7 @@ class GearOptimizerApp:
                 self._progress_counts_driven = True
                 if self._progress is not None:
                     self._progress.update_counts(completed=len(completed_songs), total=len(tasks))
+                self._set_runtime_progress_counts(completed=len(completed_songs), total=len(tasks))
                 run_native_inflight_song_pipeline(
                     tasks,
                     in_flight_songs=int(inflight_songs),
@@ -2292,6 +2385,7 @@ class GearOptimizerApp:
             self._reprioritize_robeatsmeta_tasks(tasks, start_index=0)
             if self._progress is not None:
                 self._progress.update_counts(completed=progress_completed, total=len(tasks))
+            self._set_runtime_progress_counts(completed=progress_completed, total=len(tasks))
             self._progress_counts_driven = True
             try:
                 post_queue, post_proc = self._start_post_processor(len(tasks))
@@ -2322,6 +2416,13 @@ class GearOptimizerApp:
                             self._progress.set_status(str(task_key), "Running")
                         except Exception:
                             pass
+                    self._update_robeatsmeta_runtime_status(
+                        status="running",
+                        current_song=str(task_key),
+                        completed=int(progress_completed or 0),
+                        total=int(len(tasks) or 0),
+                        failed=int(self._runtime_failed_count or 0),
+                    )
 
                     self._drain_preloaded_ready(
                         use_gpu_preload=use_gpu_preload,
@@ -2974,6 +3075,7 @@ class GearOptimizerApp:
         t0 = float(throughput_t0) if throughput_t0 is not None else time.perf_counter()
         if self._progress is not None:
             self._progress.update_counts(completed=completed, total=total)
+        self._set_runtime_progress_counts(completed=completed, total=total, failed=failed)
         self._progress_counts_driven = True
 
         for item in results_iter:
@@ -3218,6 +3320,7 @@ class GearOptimizerApp:
 
     def _cleanup_resources(self, status_queue, status_thread, manager):
         try:
+            self._clear_robeatsmeta_runtime_status(status="idle")
             if status_queue:
                 try:
                     status_queue.put(None)

@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import logging
 import queue
 import threading
@@ -10,7 +9,7 @@ from typing import Optional
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
-from gear_optimizer.data.database import get_song_counters, save_loadouts_batch, update_song_counters
+from gear_optimizer.data.database import get_evolution_db_path, get_evolution_overlay_db_path, get_song_counters, save_loadouts_batch, update_song_counters
 
 
 _TEAM_BUFF_REF_ARRAYS_LOCK = threading.Lock()
@@ -30,6 +29,15 @@ def _compose_team_buff_color_key(team_buff: str, color_variant: str) -> str:
 
 def _truthy_env(name: str, default: str = "0") -> bool:
     return str(os.environ.get(name, default) or "").strip().lower() in TRUTHY_ENV_VALUES
+
+
+def _overlay_backend_mode_enabled() -> bool:
+    """
+    Enable overlay DB mirroring only when the optimizer is paired with the backend/live site.
+    """
+    if _truthy_env("ROBEATSMETA_OVERLAY_DB_ENABLE", "0"):
+        return True
+    return _truthy_env("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")
 
 
 def _team_buff_base_calc_song_cache_max() -> int:
@@ -329,8 +337,32 @@ class AsyncDbSaver:
                     # Allow reusing a single calc_song/ref_arrays for both base backfill + tier postprocess.
                     team_buff_calc_song = None
                     team_buff_ref_arrays = ref_arrays
+                    canonical_db_path = str(get_evolution_db_path() or "").strip()
+                    overlay_db_path = ""
+                    overlay_enabled = False
+                    try:
+                        overlay_enabled = _overlay_backend_mode_enabled()
+                        if overlay_enabled:
+                            overlay_db_path = str(get_evolution_overlay_db_path() or "").strip()
+                            overlay_enabled = bool(overlay_db_path) and overlay_db_path != canonical_db_path
+                    except Exception:
+                        overlay_db_path = ""
+                        overlay_enabled = False
 
-                    prev_life, prev_attempts, prev_best_score, prev_best_fg = get_song_counters(db_key)
+                    prev_life, prev_attempts, prev_best_score, prev_best_fg = get_song_counters(
+                        db_key,
+                        db_path=canonical_db_path or None,
+                    )
+                    if overlay_enabled:
+                        try:
+                            _ov_life, _ov_attempts, _ov_best_score, _ov_best_fg = get_song_counters(
+                                db_key,
+                                db_path=overlay_db_path,
+                            )
+                            prev_best_score = max(int(prev_best_score or 0), int(_ov_best_score or 0))
+                            prev_best_fg = max(int(prev_best_fg or 0), int(_ov_best_fg or 0))
+                        except Exception:
+                            pass
 
                     run_score = 0
                     run_best_fg = 0
@@ -491,14 +523,20 @@ class AsyncDbSaver:
                     except Exception:
                         pass
 
-                    if entries:
-                        save_loadouts_batch(db_key, entries)
+                    target_db_path = overlay_db_path if overlay_enabled else canonical_db_path
+                    if entries and target_db_path:
+                        save_loadouts_batch(db_key, entries, db_path=target_db_path)
 
                     # Update per-song counters (even if there were no entries to persist).
                     # NOTE: For deferred FG-only updates, `processed_run=False` is still meaningful:
                     # we do not increment attempt counters, but we may reset `attempts_first` when
                     # the best FG score improves.
-                    update_song_counters(db_key, processed_run=processed_run, record_improved=record_improved)
+                    update_song_counters(
+                        db_key,
+                        processed_run=processed_run,
+                        record_improved=record_improved,
+                        db_path=canonical_db_path or None,
+                    )
 
                     # Optional: Populate TeamBuff-tier tables (T1/T5/T10/T15/NONE) in async mode.
                     # This is intentionally after base persistence so it never blocks GPU work.
@@ -560,7 +598,12 @@ class AsyncDbSaver:
                             for tier, tier_entries in (batches or {}).items():
                                 if not tier_entries:
                                     continue
-                                save_team_buff_loadouts_batch(db_key, str(tier), tier_entries)
+                                save_team_buff_loadouts_batch(
+                                    db_key,
+                                    str(tier),
+                                    tier_entries,
+                                    db_path=target_db_path or None,
+                                )
 
                             color_tiers_enabled = str(
                                 os.environ.get("POST_TEAM_BUFF_COLOR_TIERS", "1") or ""
@@ -587,10 +630,12 @@ class AsyncDbSaver:
                                     for tier, tier_entries in (color_batches or {}).items():
                                         if not tier_entries:
                                             continue
+                                        tier_key = _compose_team_buff_color_key(str(tier), color_variant)
                                         save_team_buff_loadouts_batch(
                                             db_key,
-                                            _compose_team_buff_color_key(str(tier), color_variant),
+                                            tier_key,
                                             tier_entries,
+                                            db_path=target_db_path or None,
                                         )
                         except Exception:
                             pass

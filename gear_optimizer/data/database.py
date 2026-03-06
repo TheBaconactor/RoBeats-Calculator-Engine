@@ -80,6 +80,30 @@ def get_evolution_db_path() -> str:
     return PATHS.evolution_db_default
 
 
+def get_evolution_overlay_db_path() -> str:
+    """
+    Return the configured overlay DB location used for backend/live overlay writes.
+
+    This DB mirrors the canonical schema but remains separate so the website backend
+    can compare fresh optimizer output against the canonical DB without rebuilding
+    the static site artifacts.
+    """
+    for env_name in ("EVOLUTION_OVERLAY_DB_PATH", "METAFINDER_EVOLUTION_OVERLAY_DB"):
+        env_path = str(os.getenv(env_name, "") or "").strip()
+        if env_path:
+            return env_path
+
+    try:
+        external_db = os.path.abspath(
+            os.path.join(PATHS.script_dir, os.pardir, "ExternalDatabases", "evolution_overlay.db")
+        )
+        if os.path.exists(external_db):
+            return external_db
+        return external_db
+    except Exception:
+        return os.path.abspath(os.path.join(PATHS.script_dir, "evolution_overlay.db"))
+
+
 def get_db_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
     """
     Create a SQLite connection with optimized settings.
@@ -269,6 +293,7 @@ def get_song_counters(
     song_name: str,
     *,
     conn: Optional[sqlite3.Connection] = None,
+    db_path: Optional[str] = None,
 ) -> tuple[int, int, int, int]:
     """
     Fetch per-song attempt counters and best scores from `songs`.
@@ -282,7 +307,7 @@ def get_song_counters(
 
     close_conn = False
     if conn is None:
-        conn = get_db_connection_cached(get_evolution_db_path())
+        conn = get_db_connection_cached(db_path or get_evolution_db_path())
         close_conn = False
 
     try:
@@ -330,6 +355,7 @@ def update_song_counters(
     processed_run: bool,
     record_improved: bool,
     conn: Optional[sqlite3.Connection] = None,
+    db_path: Optional[str] = None,
 ) -> None:
     """
     Update per-song attempt counters.
@@ -345,7 +371,7 @@ def update_song_counters(
 
     close_conn = False
     if conn is None:
-        conn = get_db_connection(get_evolution_db_path())
+        conn = get_db_connection(db_path or get_evolution_db_path())
         close_conn = True
 
     pr = 1 if processed_run else 0
@@ -809,7 +835,12 @@ def _fg_details_from_force_payload(details: Any, force_data: Any, *, fg_score: i
     return out
 
 
-def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None:
+def save_loadouts_batch(
+    song_name: str,
+    entries: List[PersistenceEntry],
+    *,
+    db_path: Optional[str] = None,
+) -> None:
     """
     Batch insert/update loadouts for a song in a single transaction.
     Persists base results into TeamBuff tier tables (T5).
@@ -871,11 +902,18 @@ def save_loadouts_batch(song_name: str, entries: List[PersistenceEntry]) -> None
         if force_data is not None and fg_score > score and (best_fg_max is None or fg_score > best_fg_max):
             best_fg_max = fg_score
 
-    db_path = get_evolution_db_path()
-    conn = get_db_connection(db_path)
+    resolved_db_path = str(db_path or get_evolution_db_path())
+    conn = get_db_connection(resolved_db_path)
     try:
         # Persist the base run as TeamBuff T5 (default auto mode) in the same transaction.
-        save_team_buff_loadouts_batch(song_name, "T5", entries, conn=conn, commit=False)
+        save_team_buff_loadouts_batch(
+            song_name,
+            "T5",
+            entries,
+            conn=conn,
+            commit=False,
+            db_path=resolved_db_path,
+        )
 
         if best_score_max is None and not best_fg_max:
             conn.commit()
@@ -920,6 +958,7 @@ def save_team_buff_loadouts_batch(
     *,
     conn: Optional[sqlite3.Connection] = None,
     commit: bool = True,
+    db_path: Optional[str] = None,
 ) -> None:
     """
     Batch insert/update tiered leaderboards for a song in a single transaction.
@@ -1051,7 +1090,7 @@ def save_team_buff_loadouts_batch(
             break
 
     if song_color_fallback is None:
-        db_path_lookup = get_evolution_db_path()
+        db_path_lookup = str(db_path or get_evolution_db_path())
         try:
             lookup_conn = get_db_connection_cached(db_path_lookup)
             rows = lookup_conn.execute(
@@ -1161,8 +1200,10 @@ def save_team_buff_loadouts_batch(
 
     own_conn = conn is None
     if conn is None:
-        db_path = get_evolution_db_path()
-        conn = get_db_connection(db_path)
+        resolved_db_path = str(db_path or get_evolution_db_path())
+        conn = get_db_connection(resolved_db_path)
+    else:
+        resolved_db_path = str(db_path or get_evolution_db_path())
 
     try:
         try:

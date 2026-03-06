@@ -104,10 +104,13 @@ class RoBeatsMetaOptimizerApi:
         *,
         state_path: str | os.PathLike[str] | None = None,
         song_meta_index_path: str | os.PathLike[str] | None = None,
+        status_path: str | os.PathLike[str] | None = None,
         visit_ttl_seconds: int | None = None,
     ) -> None:
         self._state_path = Path(state_path) if state_path else self._resolve_state_path()
         self._lock_path = self._state_path.with_suffix(self._state_path.suffix + ".lock")
+        self._status_path = Path(status_path) if status_path else self._resolve_status_path()
+        self._status_lock_path = self._status_path.with_suffix(self._status_path.suffix + ".lock")
         self._song_meta_index_path = (
             Path(song_meta_index_path) if song_meta_index_path else self._resolve_song_meta_index_path()
         )
@@ -353,6 +356,12 @@ class RoBeatsMetaOptimizerApi:
                 return candidate
         return candidates[0]
 
+    def _resolve_status_path(self) -> Path:
+        configured = str(os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_PATH", "") or "").strip()
+        if configured:
+            return Path(configured).expanduser().resolve()
+        return Path(BIN_DIR).resolve() / "robeatsmeta_optimizer_status.json"
+
     def _resolve_bundle(self, *, song_id: str, title: str | None = None, artist: str | None = None) -> SongBundleRef:
         cleaned_song_id = str(song_id or "").strip()
         cleaned_title = str(title or "").strip()
@@ -428,12 +437,38 @@ class RoBeatsMetaOptimizerApi:
             entries = {}
         return {"version": 1, "entries": entries}
 
+    def _load_status_unlocked(self) -> dict[str, Any]:
+        try:
+            raw = json.loads(self._status_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            raw = {}
+        except Exception:
+            raw = {}
+        if not isinstance(raw, dict):
+            raw = {}
+        return {
+            "version": 1,
+            "status": str(raw.get("status") or "idle"),
+            "current_song": str(raw.get("current_song") or ""),
+            "completed": _safe_int(raw.get("completed"), 0),
+            "total": _safe_int(raw.get("total"), 0),
+            "failed": _safe_int(raw.get("failed"), 0),
+            "updated_at": _safe_int(raw.get("updated_at"), 0),
+        }
+
     def _write_state_unlocked(self, state: dict[str, Any]) -> None:
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(state, indent=2, sort_keys=True, ensure_ascii=True)
         tmp_path = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
         tmp_path.write_text(payload + "\n", encoding="utf-8")
         os.replace(tmp_path, self._state_path)
+
+    def _write_status_unlocked(self, state: dict[str, Any]) -> None:
+        self._status_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(state, indent=2, sort_keys=True, ensure_ascii=True)
+        tmp_path = self._status_path.with_suffix(self._status_path.suffix + ".tmp")
+        tmp_path.write_text(payload + "\n", encoding="utf-8")
+        os.replace(tmp_path, self._status_path)
 
     def _prune_state_unlocked(self, state: dict[str, Any], now: int) -> bool:
         entries = state.get("entries")
@@ -459,6 +494,47 @@ class RoBeatsMetaOptimizerApi:
             state["entries"] = keep
             changed = True
         return changed
+
+    def update_runtime_status(
+        self,
+        *,
+        status: str | None = None,
+        current_song: str | None = None,
+        completed: int | None = None,
+        total: int | None = None,
+        failed: int | None = None,
+        now: int | None = None,
+    ) -> dict[str, Any]:
+        ts = _safe_int(now if now is not None else time.time())
+        with _file_lock(self._status_lock_path):
+            state = self._load_status_unlocked()
+            if status is not None:
+                state["status"] = str(status or "").strip() or state.get("status") or "idle"
+            if current_song is not None:
+                state["current_song"] = str(current_song or "").strip()
+            if completed is not None:
+                state["completed"] = max(0, int(completed))
+            if total is not None:
+                state["total"] = max(0, int(total))
+            if failed is not None:
+                state["failed"] = max(0, int(failed))
+            state["updated_at"] = ts
+            self._write_status_unlocked(state)
+            return dict(state)
+
+    def clear_runtime_status(self, *, status: str = "idle", now: int | None = None) -> dict[str, Any]:
+        return self.update_runtime_status(
+            status=status,
+            current_song="",
+            completed=0,
+            total=0,
+            failed=0,
+            now=now,
+        )
+
+    def read_runtime_status(self) -> dict[str, Any]:
+        with _file_lock(self._status_lock_path):
+            return dict(self._load_status_unlocked())
 
     @staticmethod
     def _task_song_name(task: tuple) -> str:
