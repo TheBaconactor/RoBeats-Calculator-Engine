@@ -1,0 +1,117 @@
+from types import SimpleNamespace
+
+import pytest
+
+
+def test_process_force_greats_gpu_failure_raises_without_cpu_fallback(monkeypatch):
+    from gear_optimizer.helpers.song_helpers.force_greats import core
+
+    monkeypatch.setenv("FG_INPROCESS_EXECUTOR", "0")
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("gpu path failed")
+
+    def _fake_cpu(**kwargs):
+        return []
+
+    monkeypatch.setattr(core, "process_force_greats_gpu_finder", _boom)
+    monkeypatch.setattr(core, "_process_force_greats_cpu", _fake_cpu)
+
+    class _Registry:
+        @staticmethod
+        def decode_names(ids):
+            return [f"I{int(x)}" for x in ids[:9]]
+
+    ga_candidates = [
+        {
+            "BaseScore": 321,
+            "GenomeIDs": [1, 2, 3, 4, 5, 6, 9, 8, 7],
+            "Data": {
+                "BaseStats": {"Perfect Points": 5, "Rush": 7},
+                "GemCounts": {"Perfect Points": 1},
+                "FT": 1,
+                "FF": 2,
+                "Selected Element": "Rush",
+            },
+        }
+    ]
+
+    with pytest.raises(RuntimeError, match="gpu path failed"):
+        core.process_force_greats(
+            loadout_entries={},
+            manual_force_greats=False,
+            force_greats_finder=True,
+            force_greats_config=[],
+            calc_song={"metadata": {}, "song_data": {}},
+            ref_arrays={},
+            meta_primary_color="Rush",
+            build_details_fn=lambda data: {"Stats": (data or {}).get("Stats", {})},
+            db_loadouts_full_count=0,
+            use_gpu=True,
+            ga_candidates=ga_candidates,
+            ga_registry=_Registry(),
+        )
+
+
+def test_prepare_fg_job_sync_uses_db_only_entries_for_gpu_finder(monkeypatch):
+    import configparser
+
+    import gear_optimizer.solver.native_inflight_stages as stages
+
+    seen = {"ga_n": None}
+
+    def _fake_build_loadout_entries(
+        found_song_name,
+        use_evo_db,
+        ga_candidates,
+        db_loadouts_limit,
+        gears_by_name,
+        minis_by_name,
+        build_details_fn,
+        db_loadouts_full=None,
+        allow_db_query=True,
+        materialize_ga_details=True,
+        ga_registry=None,
+    ):
+        seen["ga_n"] = len(ga_candidates or [])
+        return {}
+
+    monkeypatch.setattr(stages, "build_loadout_entries", _fake_build_loadout_entries)
+
+    cfg = configparser.ConfigParser()
+    cfg["IterationEngine"] = {"FG_CandidateLimit": "51"}
+
+    song = SimpleNamespace(
+        cfg=cfg,
+        calc_song={"metadata": {}, "song_data": {}},
+        cfg_dict={},
+        ga_candidates=[
+            {
+                "Score": 100,
+                "BaseScore": 100,
+                "GenomeIDs": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+                "Data": {"BaseStats": {"Perfect Points": 1}, "Selected Element": "Rush"},
+            }
+        ],
+        meta_primary_color="Rush",
+        meta_secondary_color="Flow",
+        db_loadouts_full=None,
+        db_loadouts_future=None,
+        db_key="song-db-key",
+        use_evo_db=True,
+        gears_by_name={},
+        minis_by_name={},
+        effective_difficulty="Hard",
+        force_greats_finder=True,
+        registry=None,
+        fixed_stats={},
+        cfg_data={},
+        ref_arrays={},
+        song_slot=1,
+    )
+
+    stages._prepare_fg_job_sync(song, gpu_client=None)
+
+    assert seen["ga_n"] == 0
+    assert song.fg_direct_ga_candidates is True
+    assert len(song.ga_candidates or []) == 1

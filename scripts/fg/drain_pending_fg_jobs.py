@@ -1,7 +1,7 @@
 """
 Drain pending ForceGreats jobs saved in `pending_fg_jobs`.
 
-GPU-only: this script sets GPU_STRICT + FG_FAIL_ON_GPU_FALLBACK to avoid CPU fallback.
+GPU-only: ForceGreats GPU failures now raise directly.
 Safe for debugging; uses EVOLUTION_DB_PATH / METAFINDER_CONFIG_PATH if set.
 """
 
@@ -151,9 +151,7 @@ def main() -> int:
     parser.add_argument("--fail-fast", action="store_true", help="Stop on first error")
     args = parser.parse_args()
 
-    # Force GPU-only behavior (no CPU fallback).
-    os.environ.setdefault("GPU_STRICT", "1")
-    os.environ.setdefault("FG_FAIL_ON_GPU_FALLBACK", "1")
+    # Force GPU-only behavior.
     os.environ.setdefault("FG_INPROCESS_EXECUTOR", "1")
 
     cfg = load_config()

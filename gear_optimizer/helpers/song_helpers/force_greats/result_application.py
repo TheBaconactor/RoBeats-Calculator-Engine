@@ -269,6 +269,12 @@ def apply_gpu_results_to_entries(
             entry["force"] = raw_payload
             entry.pop("_fg_raw", None)
 
+            candidate_ref = entry.get("_candidate_ref")
+            if isinstance(candidate_ref, dict):
+                candidate_ref["fg_score"] = int(final_score)
+                candidate_ref["force"] = raw_payload
+                candidate_ref["_entry_ref"] = entry
+
             if fg_variants is not None:
                 # Keep FG variants for printing/debug without requiring materialized Stats.
                 fg_variants.append(
@@ -279,6 +285,7 @@ def apply_gpu_results_to_entries(
                         "score": base_score,
                         "fg_score": final_score,
                         "base_score": base_score,
+                        "_entry_ref": entry,
                     }
                 )
 

@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import os
 import threading
-import logging
 from typing import TYPE_CHECKING, Optional
 
 from . import cache_validation
 from .entry_utils import eval_data_from_entry, expected_selected_element
 from ..ga_entry_utils import materialize_entry_names
+from ..loadout_builder import refresh_ga_candidate_entries
 from .gpu_dispatch import process_force_greats_gpu_finder
 from ..item_utils import names_list
 from ....core.utils import stats_signature
@@ -208,7 +208,22 @@ def process_force_greats(
     fg_search_radius: int | None = None,
     perf_timing: bool = False,
     gpu_client: Optional["GpuServiceClient"] = None,
+    ga_candidates=None,
+    ga_registry=None,
 ):
+    def _ensure_ga_entries_for_cpu(loadout_entries_map):
+        if not ga_candidates:
+            return loadout_entries_map
+        loadout_entries_map = loadout_entries_map if isinstance(loadout_entries_map, dict) else {}
+        refresh_ga_candidate_entries(
+            loadout_entries_map,
+            list(ga_candidates or []),
+            build_details_fn,
+            materialize_details=False,
+            ga_registry=ga_registry,
+        )
+        return loadout_entries_map
+
     if gpu_client is None and bool(use_gpu) and bool(force_greats_finder):
         if _truthy_env("FG_INPROCESS_EXECUTOR", "1"):
             gpu_client = _get_inprocess_gpu_client()
@@ -232,10 +247,16 @@ def process_force_greats(
             fg_search_radius=fg_search_radius,
             perf_timing=perf_timing,
             gpu_client=None,
+            ga_candidates=ga_candidates,
+            ga_registry=ga_registry,
         ).future.result()
 
     manual_counts = force_greats_config if (manual_force_greats and not force_greats_finder) else []
-    print(f"[ForceGreats] Processing {len(loadout_entries)} unique loadouts (DB + GA)...")
+    try:
+        total_entries = int(len(loadout_entries or {})) + int(len(ga_candidates or []))
+    except Exception:
+        total_entries = len(loadout_entries or {})
+    print(f"[ForceGreats] Processing {total_entries} candidate loadouts (DB + GA)...")
 
     if use_gpu and force_greats_finder:
         auto_slot_assigned = False
@@ -277,35 +298,12 @@ def process_force_greats(
                 perf_timing=perf_timing,
                 gpu_client=gpu_client,
                 names_list_fn=names_list,
+                ga_candidates=ga_candidates,
+                ga_registry=ga_registry,
             )
         except Exception as e:
-            msg = f"[ForceGreats][GPU] Batch FG finder failed; falling back to CPU per-loadout: {type(e).__name__}: {e}"
-            print(msg)
-            try:
-                logging.exception(msg)
-            except Exception:
-                pass
-            if _truthy_env("GPU_STRICT", "1") or _truthy_env("FG_FAIL_ON_GPU_FALLBACK", "0"):
-                raise
-            if gpu_client is not None:
-                try:
-                    return gpu_client.submit_process_force_greats(
-                        loadout_entries,
-                        manual_force_greats,
-                        force_greats_finder,
-                        force_greats_config,
-                        calc_song,
-                        ref_arrays,
-                        meta_primary_color,
-                        build_details_fn,
-                        db_loadouts_full_count,
-                        use_gpu=use_gpu,
-                        fg_search_radius=fg_search_radius,
-                        perf_timing=perf_timing,
-                        gpu_client=None,
-                    ).future.result()
-                except Exception:
-                    pass
+            print(f"[ForceGreats][GPU] Batch FG finder failed: {type(e).__name__}: {e}")
+            raise
         finally:
             if auto_slot_assigned and isinstance(calc_song, dict):
                 try:
@@ -323,6 +321,7 @@ def process_force_greats(
                 except Exception:
                     pass
 
+    loadout_entries = _ensure_ga_entries_for_cpu(loadout_entries)
     return _process_force_greats_cpu(
         loadout_entries=loadout_entries,
         manual_counts=manual_counts,

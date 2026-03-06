@@ -1326,28 +1326,7 @@ def _run_gpu_native_ga(
             is_p_ov=is_p_ov,
             is_s_ov=is_s_ov,
             use_hints=gen_use_hints,  # 0=cold, 1=warm
-        )
-
-        # FUSED: Write best + store hints + update global best (was 3 kernels, now 1)
-        # This replaces: ga_write_best_results_from_key + ga_store_hints + ga_update_global_best
-        gpu_api.ga_write_best_and_update_global(
-            n_genomes,
-            n_slots,
-            total_budget,
-            gem_scale_fever,
-            is_p_ft=is_p_ft,
-            is_s_ft=is_s_ft,
-            is_p_ff=is_p_ff,
-            is_s_ff=is_s_ff,
-            is_p_pp=is_p_pp,
-            is_s_pp=is_s_pp,
-            is_p_cm=is_p_cm,
-            is_s_cm=is_s_cm,
-            is_p_fm=is_p_fm,
-            is_s_fm=is_s_fm,
-            is_p_ov=is_p_ov,
-            is_s_ov=is_s_ov,
-            song_slot=song_slot,
+            materialize_mode="update_global",
         )
 
         if trace_writer is not None and (int(gen) % int(trace_every) == 0):
@@ -1808,6 +1787,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             is_p_ov=is_p_ov,
                             is_s_ov=is_s_ov,
                             use_hints=gen_use_hints,
+                            materialize_mode="store_hints",
                         )
                         _sync()
                         if t0:
@@ -1821,26 +1801,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                                 combos=int(n_combos),
                             )
 
-                        # Materialize best + store hints (no global-best update; we track per-run best in payload row 0).
                         t0 = time.perf_counter() if phase_timing else 0.0
-                        gpu_api.ga_write_best_and_store_hints(
-                            n_total,
-                            total_budget,
-                            gem_scale_fever,
-                            is_p_ft=is_p_ft,
-                            is_s_ft=is_s_ft,
-                            is_p_ff=is_p_ff,
-                            is_s_ff=is_s_ff,
-                            is_p_pp=is_p_pp,
-                            is_s_pp=is_s_pp,
-                            is_p_cm=is_p_cm,
-                            is_s_cm=is_s_cm,
-                            is_p_fm=is_p_fm,
-                            is_s_fm=is_s_fm,
-                            is_p_ov=is_p_ov,
-                            is_s_ov=is_s_ov,
-                            song_slot=int(song_slot),
-                        )
                         if trace_writer is not None:
                             gpu_api.ga_update_global_best(int(n_total), n_slots=int(n_slots))
                         _sync()

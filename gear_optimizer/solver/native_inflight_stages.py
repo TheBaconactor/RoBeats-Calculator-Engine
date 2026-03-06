@@ -439,10 +439,14 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
     t_db = time.perf_counter() if perf else 0.0
 
     build_details = make_build_details_fn(song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty)
+    song.fg_direct_ga_candidates = bool(song.force_greats_finder)
+    # Keep FG prep focused on DB rows; GPU finder consumes GA candidates directly and
+    # only the retained GA subset is merged back into `song.loadout_entries` after FG.
+    loadout_ga_candidates = [] if bool(song.fg_direct_ga_candidates) else list(ga_candidates or [])
     song.loadout_entries = build_loadout_entries(
         song.db_key,
         bool(song.use_evo_db),
-        ga_candidates,
+        loadout_ga_candidates,
         fg_candidate_limit,
         song.gears_by_name,
         song.minis_by_name,

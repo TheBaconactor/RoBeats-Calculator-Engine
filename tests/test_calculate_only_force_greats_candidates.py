@@ -99,10 +99,11 @@ def test_calculate_only_includes_current_loadout_for_fg(monkeypatch, tmp_path):
         "HumanHitSim": {"Enabled": "false"},
     }
 
-    captured = {"n": None}
+    captured = {"n": None, "ga_n": None}
 
     def _fake_process_force_greats(loadout_entries, *args, **kwargs):
         captured["n"] = len(loadout_entries or {})
+        captured["ga_n"] = len(kwargs.get("ga_candidates") or [])
         return []
 
     monkeypatch.setattr(
@@ -162,4 +163,5 @@ def test_calculate_only_includes_current_loadout_for_fg(monkeypatch, tmp_path):
     )
 
     process_song_task(args)
-    assert captured["n"] == 1
+    assert captured["n"] == 0
+    assert captured["ga_n"] == 1

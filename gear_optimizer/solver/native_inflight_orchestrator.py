@@ -994,6 +994,7 @@ class _NativeSong:
     fg_db_loadouts_full_count: int = 0
     fg_prep_future: Optional[concurrent.futures.Future] = None
     fg_queued_t0: float | None = None
+    fg_direct_ga_candidates: bool = False
 
     def __post_init__(self) -> None:
         if self.ga_candidates is None:
@@ -3536,11 +3537,12 @@ def _run_fg_job_sync(
                     selected_color=str(song.cfg_data.get("selected_color", "") or ""),
                     cfg_data=song.cfg_data,
                 )
-                if not isinstance(song.loadout_entries, dict):
-                    song.loadout_entries = {}
-                if song.db_loadouts_full is not None and not _loadout_entries_have_db_source(song.loadout_entries):
-                    merge_db_loadouts_into_entries(song.loadout_entries, song.db_loadouts_full)
-                refresh_ga_candidate_entries(song.loadout_entries, song.ga_candidates, build_details)
+                if not bool(getattr(song, "fg_direct_ga_candidates", False)):
+                    if not isinstance(song.loadout_entries, dict):
+                        song.loadout_entries = {}
+                    if song.db_loadouts_full is not None and not _loadout_entries_have_db_source(song.loadout_entries):
+                        merge_db_loadouts_into_entries(song.loadout_entries, song.db_loadouts_full)
+                    refresh_ga_candidate_entries(song.loadout_entries, song.ga_candidates, build_details)
     except Exception:
         pass
 
@@ -3558,6 +3560,8 @@ def _run_fg_job_sync(
         fg_search_radius=song.fg_search_radius,
         perf_timing=_truthy(os.environ.get("PERF_TIMING", "0")),
         gpu_client=gpu_client,
+        ga_candidates=song.ga_candidates if bool(getattr(song, "fg_direct_ga_candidates", False)) else None,
+        ga_registry=song.registry if bool(getattr(song, "fg_direct_ga_candidates", False)) else None,
     )
 
     song.fg_variants = list(fg_variants or [])

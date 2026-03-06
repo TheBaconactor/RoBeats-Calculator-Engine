@@ -334,25 +334,7 @@ def solve_genomes_from_registry(
         is_p_ov=int(is_p_ov),
         is_s_ov=int(is_s_ov),
         use_hints=0,
-    )
-
-    kernels.ga_write_best_results_from_key_kernel(
-        int(n_genomes),
-        int(total_budget),
-        int(gem_scale_fever),
-        int(is_p_ft),
-        int(is_s_ft),
-        int(is_p_ff),
-        int(is_s_ff),
-        int(is_p_pp),
-        int(is_s_pp),
-        int(is_p_cm),
-        int(is_s_cm),
-        int(is_p_fm),
-        int(is_s_fm),
-        int(is_p_ov),
-        int(is_s_ov),
-        int(song_slot),
+        materialize_mode="results_only",
     )
 
     if _profiler.enabled and _SYNC_FOR_TIMING and _t_kernel is not None:

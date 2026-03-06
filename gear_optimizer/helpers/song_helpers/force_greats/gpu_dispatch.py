@@ -11,7 +11,7 @@ from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
 
 from . import cache_validation, result_application
 from .entry_utils import eval_data_from_entry, expected_selected_element
-from ..ga_entry_utils import entry_loadout_hash, materialize_entry_names
+from ..ga_entry_utils import candidate_genome_ids, entry_loadout_hash, ga_candidate_key, materialize_entry_names
 from ....core.color_flags import build_color_flags
 from ....core.fallback_monitor import warn_fallback
 from ....core.utils import get_selected_element, stats_signature
@@ -373,6 +373,69 @@ def _entry_has_valid_fg_config(entry: dict) -> bool:
     return _is_valid_fg_config(_entry_fg_config_dict(entry))
 
 
+def _build_direct_ga_entry_items(ga_candidates, *, ga_registry=None) -> list[tuple[str, dict]]:
+    items: list[tuple[str, dict]] = []
+    for idx, candidate in enumerate(ga_candidates or []):
+        if not isinstance(candidate, dict):
+            continue
+        eval_data = candidate.get("Data") or {}
+        if not isinstance(eval_data, dict) or not eval_data:
+            continue
+        genome_ids = candidate_genome_ids(candidate)
+        registry_obj = ga_registry if ga_registry is not None else candidate.get("_ga_registry")
+        entry = {
+            "gear": list(candidate.get("Gear") or []),
+            "minis": list(candidate.get("Minis") or []),
+            "score": int(candidate.get("BaseScore") or candidate.get("Score", 0) or 0),
+            "base_score": int(candidate.get("BaseScore") or candidate.get("Score", 0) or 0),
+            "details": {},
+            "fg_score": int(candidate.get("fg_score", 0) or 0),
+            "force": candidate.get("force"),
+            "eval_data": eval_data,
+            "_source": "ga",
+            "_fg_direct_ga": True,
+            "_candidate_ref": candidate,
+        }
+        try:
+            entry["selected_element"] = str(eval_data.get("Selected Element", "") or "")
+        except Exception:
+            entry["selected_element"] = ""
+        if genome_ids is not None:
+            entry["ga_genome_ids"] = list(genome_ids)
+        if registry_obj is not None:
+            entry["_ga_registry"] = registry_obj
+
+        key = None
+        if entry.get("gear") or entry.get("minis"):
+            try:
+                key = str(entry_loadout_hash(entry) or "")
+            except Exception:
+                key = None
+        if not key and genome_ids is not None:
+            key = ga_candidate_key(genome_ids)
+        if not key:
+            key = f"ga-direct:{int(idx)}"
+        items.append((str(key), entry))
+    return items
+
+
+def _merge_retained_direct_ga_entries(loadout_entries, ga_entry_items: list[tuple[str, dict]], retained_hashes: set[str]) -> None:
+    if not isinstance(loadout_entries, dict):
+        return
+
+    stale = [k for k, v in loadout_entries.items() if isinstance(v, dict) and bool(v.get("_fg_direct_ga"))]
+    for key in stale:
+        loadout_entries.pop(str(key), None)
+
+    for key, entry in ga_entry_items:
+        if str(key) not in retained_hashes:
+            continue
+        resolved_key = str(entry_loadout_hash(entry) or key)
+        loadout_entries[resolved_key] = entry
+        if resolved_key != str(key):
+            loadout_entries.pop(str(key), None)
+
+
 def _pending_entries_have_fg_improvement(pending: list) -> bool:
     for item in pending or []:
         entry = None
@@ -488,6 +551,8 @@ def process_force_greats_gpu_finder(
     perf_timing: bool = False,
     gpu_client: Optional["GpuServiceClient"] = None,
     names_list_fn=None,
+    ga_candidates=None,
+    ga_registry=None,
 ):
     fg_variants = []
     perf = bool(perf_timing)
@@ -988,9 +1053,22 @@ def process_force_greats_gpu_finder(
         process_force_greats_gpu_finder._fg_pair_breakpoint_log = True
         print("[FG] Per-FT/FF breakpoint mode enabled (GPU finder)")
 
+    direct_ga_items = _build_direct_ga_entry_items(ga_candidates, ga_registry=ga_registry)
+    try:
+        base_items = list(loadout_entries.items()) if isinstance(loadout_entries, dict) else []
+    except Exception:
+        base_items = []
+    if direct_ga_items:
+        base_items = [
+            (k, v)
+            for k, v in base_items
+            if not (isinstance(v, dict) and bool(v.get("_fg_direct_ga")))
+        ]
+    entry_items = list(base_items) + list(direct_ga_items)
+
     # Collect all candidates (no budget limit)
     _t_collect0 = time.perf_counter() if perf else 0.0
-    for entry in loadout_entries.values():
+    for _entry_key, entry in entry_items:
         cached_force = entry.get("force")
         expected_sel = expected_selected_element(entry, meta_primary_color)
 
@@ -1097,10 +1175,6 @@ def process_force_greats_gpu_finder(
     #   lower-base/high-FG candidates from materialization.
     keep_sigs: set[str] = set()
     if download_topk_enabled:
-        try:
-            items0 = list(loadout_entries.items()) if isinstance(loadout_entries, dict) else []
-        except Exception:
-            items0 = []
         base_keep_n = int(LOADOUTS_PER_SONG_LIMIT)
         try:
             fg_proxy_keep_n = int(os.environ.get("FG_DOWNLOAD_KEEP_PROXY_SIGS", str(LOADOUTS_PER_SONG_LIMIT)) or 0)
@@ -1120,7 +1194,7 @@ def process_force_greats_gpu_finder(
         max_keep_total = max(0, int(max_keep_total))
 
         keep_sigs = _build_topk_keep_signature_set(
-            items=items0,
+            items=entry_items,
             entry_sig=entry_sig,
             group_base_scores=group_base_scores,
             group_fg_proxy_scores=group_fg_proxy_scores,
@@ -2840,10 +2914,7 @@ def process_force_greats_gpu_finder(
     # ------------------------------------------------------------------
     # Build `fg_variants` only for the retained set (DB/UI retention).
     # ------------------------------------------------------------------
-    try:
-        items = list(loadout_entries.items()) if isinstance(loadout_entries, dict) else []
-    except Exception:
-        items = []
+    items = list(entry_items)
 
     retained_hashes = select_retained_hashes(
         items,
@@ -2852,6 +2923,7 @@ def process_force_greats_gpu_finder(
         fg_score_fn=_entry_fg_score,
         fg_valid_fn=_entry_has_valid_fg_config,
     )
+    _merge_retained_direct_ga_entries(loadout_entries, direct_ga_items, retained_hashes)
 
     # Build fg_variants for UI/debug.
     fg_variants.clear()
@@ -2882,6 +2954,7 @@ def process_force_greats_gpu_finder(
                 "score": base_score,
                 "fg_score": fg_score,
                 "base_score": base_score,
+                "_entry_ref": entry,
                 "_is_ga": str(entry.get("_source") or "") == "ga",
             }
         )

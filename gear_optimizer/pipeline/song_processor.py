@@ -1007,12 +1007,14 @@ def process_song_task(args) -> SongResultPayload:
         # --- APPLY FORCE GREATS TO ALL EVALUATED LOADOUTS ---
         fg_variants = []
         loadout_entries = None
+        direct_ga_candidates_for_fg = bool(force_greats_finder and gpu_mode)
         if manual_force_greats or force_greats_finder:
-            # Build union of DB + GA loadouts
+            # Keep DB rows in the shared loadout map. In GPU finder mode, GA rows flow
+            # directly into FG and only the retained subset is merged back afterward.
             loadout_entries = build_loadout_entries(
                 found_song_name,
                 use_evo_db,
-                ga_candidates,
+                [] if direct_ga_candidates_for_fg else ga_candidates,
                 fg_candidate_limit,  # Pass the larger budget to build_loadout_entries
                 gears_by_name,
                 minis_by_name,
@@ -1039,6 +1041,8 @@ def process_song_task(args) -> SongResultPayload:
                 use_gpu=gpu_mode,
                 fg_search_radius=fg_search_radius,
                 perf_timing=PERF_TIMING_ENABLED,
+                ga_candidates=ga_candidates if direct_ga_candidates_for_fg else None,
+                ga_registry=None,
             )
             fg_time_sec = time.perf_counter() - fg_start
 

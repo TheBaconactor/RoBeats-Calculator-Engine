@@ -567,6 +567,8 @@ def ga_evaluate_population(
     is_p_ov: int = 0,
     is_s_ov: int = 0,
     use_hints: int = 0,
+    materialize_mode: str = "none",
+    update_global_best: bool = False,
 ) -> None:
     """
     GPU-native population evaluation: aggregate stats + evaluate + copy scores.
@@ -661,9 +663,109 @@ def ga_evaluate_population(
             int(prune_plateaus_i),
         )
 
-    # NOTE: Result materialization (re-evaluating the winning combo to get correct
-    # gem allocations, updating ga_scores, storing hints, and updating global best)
-    # is handled by `ga_write_best_and_update_global()` in the GA loop.
+    _ga_materialize_population_results(
+        n_genomes=n_genomes,
+        n_slots=n_slots,
+        total_budget=total_budget_i,
+        gem_scale_fever=gem_scale_fever_i,
+        is_p_ft=int(is_p_ft),
+        is_s_ft=int(is_s_ft),
+        is_p_ff=int(is_p_ff),
+        is_s_ff=int(is_s_ff),
+        is_p_pp=int(is_p_pp),
+        is_s_pp=int(is_s_pp),
+        is_p_cm=int(is_p_cm),
+        is_s_cm=int(is_s_cm),
+        is_p_fm=int(is_p_fm),
+        is_s_fm=int(is_s_fm),
+        is_p_ov=int(is_p_ov),
+        is_s_ov=int(is_s_ov),
+        song_slot=song_slot_i,
+        materialize_mode=materialize_mode,
+        update_global_best=bool(update_global_best),
+    )
+
+
+def _ga_materialize_population_results(
+    *,
+    n_genomes: int,
+    n_slots: int,
+    total_budget: int,
+    gem_scale_fever: int,
+    is_p_ft: int,
+    is_s_ft: int,
+    is_p_ff: int,
+    is_s_ff: int,
+    is_p_pp: int,
+    is_s_pp: int,
+    is_p_cm: int,
+    is_s_cm: int,
+    is_p_fm: int,
+    is_s_fm: int,
+    is_p_ov: int,
+    is_s_ov: int,
+    song_slot: int,
+    materialize_mode: str,
+    update_global_best: bool = False,
+) -> None:
+    mode = str(materialize_mode or "none").strip().lower()
+    if mode in {"", "none", "off", "false", "0"}:
+        return
+
+    common_args = (
+        int(n_genomes),
+        int(total_budget),
+        int(gem_scale_fever),
+        int(is_p_ft),
+        int(is_s_ft),
+        int(is_p_ff),
+        int(is_s_ff),
+        int(is_p_pp),
+        int(is_s_pp),
+        int(is_p_cm),
+        int(is_s_cm),
+        int(is_p_fm),
+        int(is_s_fm),
+        int(is_p_ov),
+        int(is_s_ov),
+        int(song_slot),
+    )
+
+    if mode in {"results", "results_only", "write_results"}:
+        kernels.ga_write_best_results_from_key_kernel(*common_args)
+        if update_global_best:
+            kernels.ga_update_global_best_kernel(int(n_genomes), int(n_slots))
+        return
+
+    if mode in {"hints", "store_hints", "write_hints"}:
+        kernels.ga_write_best_and_store_hints_kernel(*common_args)
+        if update_global_best:
+            kernels.ga_update_global_best_kernel(int(n_genomes), int(n_slots))
+        return
+
+    if mode in {"global", "update_global", "write_global", "write_best_and_update_global"}:
+        kernels.ga_write_best_and_update_global_kernel(
+            int(n_genomes),
+            int(n_slots),
+            int(total_budget),
+            int(gem_scale_fever),
+            int(is_p_ft),
+            int(is_s_ft),
+            int(is_p_ff),
+            int(is_s_ff),
+            int(is_p_pp),
+            int(is_s_pp),
+            int(is_p_cm),
+            int(is_s_cm),
+            int(is_p_fm),
+            int(is_s_fm),
+            int(is_p_ov),
+            int(is_s_ov),
+            int(song_slot),
+        )
+        return
+
+    raise ValueError(f"Unknown GA materialize_mode: {materialize_mode!r}")
 
 
 def ga_write_best_and_update_global(
@@ -703,24 +805,25 @@ def ga_write_best_and_update_global(
         song_slot: Timeline grid slot
     """
     ensure_ready()
-    kernels.ga_write_best_and_update_global_kernel(
-        int(n_genomes),
-        int(n_slots),
-        int(total_budget),
-        int(gem_scale_fever),
-        int(is_p_ft),
-        int(is_s_ft),
-        int(is_p_ff),
-        int(is_s_ff),
-        int(is_p_pp),
-        int(is_s_pp),
-        int(is_p_cm),
-        int(is_s_cm),
-        int(is_p_fm),
-        int(is_s_fm),
-        int(is_p_ov),
-        int(is_s_ov),
-        int(song_slot),
+    _ga_materialize_population_results(
+        n_genomes=int(n_genomes),
+        n_slots=int(n_slots),
+        total_budget=int(total_budget),
+        gem_scale_fever=int(gem_scale_fever),
+        is_p_ft=int(is_p_ft),
+        is_s_ft=int(is_s_ft),
+        is_p_ff=int(is_p_ff),
+        is_s_ff=int(is_s_ff),
+        is_p_pp=int(is_p_pp),
+        is_s_pp=int(is_s_pp),
+        is_p_cm=int(is_p_cm),
+        is_s_cm=int(is_s_cm),
+        is_p_fm=int(is_p_fm),
+        is_s_fm=int(is_s_fm),
+        is_p_ov=int(is_p_ov),
+        is_s_ov=int(is_s_ov),
+        song_slot=int(song_slot),
+        materialize_mode="update_global",
     )
 
 
@@ -750,23 +853,25 @@ def ga_write_best_and_store_hints(
     a segment of the population arrays and per-run best is computed at packing time.
     """
     ensure_ready()
-    kernels.ga_write_best_and_store_hints_kernel(
-        int(n_genomes),
-        int(total_budget),
-        int(gem_scale_fever),
-        int(is_p_ft),
-        int(is_s_ft),
-        int(is_p_ff),
-        int(is_s_ff),
-        int(is_p_pp),
-        int(is_s_pp),
-        int(is_p_cm),
-        int(is_s_cm),
-        int(is_p_fm),
-        int(is_s_fm),
-        int(is_p_ov),
-        int(is_s_ov),
-        int(song_slot),
+    _ga_materialize_population_results(
+        n_genomes=int(n_genomes),
+        n_slots=0,
+        total_budget=int(total_budget),
+        gem_scale_fever=int(gem_scale_fever),
+        is_p_ft=int(is_p_ft),
+        is_s_ft=int(is_s_ft),
+        is_p_ff=int(is_p_ff),
+        is_s_ff=int(is_s_ff),
+        is_p_pp=int(is_p_pp),
+        is_s_pp=int(is_s_pp),
+        is_p_cm=int(is_p_cm),
+        is_s_cm=int(is_s_cm),
+        is_p_fm=int(is_p_fm),
+        is_s_fm=int(is_s_fm),
+        is_p_ov=int(is_p_ov),
+        is_s_ov=int(is_s_ov),
+        song_slot=int(song_slot),
+        materialize_mode="store_hints",
     )
 
 
@@ -1836,12 +1941,7 @@ def warmup_ga_kernels() -> None:
         gem_scale_fever=gem_scale_fever,
         song_slot=song_slot,
         use_hints=0,
-    )
-    ga_write_best_and_store_hints(
-        n_total,
-        total_budget,
-        gem_scale_fever,
-        song_slot=song_slot,
+        materialize_mode="store_hints",
     )
     ga_update_runs_best(run_idx_start=0, n_runs=n_runs, n_genomes_per_run=n_genomes_per_run, n_slots=n_slots)
 
