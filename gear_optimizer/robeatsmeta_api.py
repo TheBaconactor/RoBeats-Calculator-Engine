@@ -390,6 +390,30 @@ class RoBeatsMetaOptimizerApi:
             self._last_task_priority_signature = None
             return True
 
+    def recently_computed_bundle_keys(self, *, now: int | None = None) -> set[str]:
+        ts = _safe_int(now if now is not None else time.time())
+        with _file_lock(self._lock_path):
+            state = self._load_state_unlocked()
+            changed = self._prune_state_unlocked(state, ts)
+            entries = state.get("entries", {})
+            recent: set[str] = set()
+            if isinstance(entries, dict):
+                for bundle_key, raw_entry in entries.items():
+                    if not isinstance(raw_entry, dict):
+                        continue
+                    requested_at = _safe_int(raw_entry.get("last_requested_at"), 0)
+                    computed_at = _safe_int(raw_entry.get("last_computed_at"), 0)
+                    if computed_at <= 0:
+                        continue
+                    if computed_at < requested_at:
+                        continue
+                    if ts - computed_at >= self._visit_ttl_seconds:
+                        continue
+                    recent.add(str(bundle_key or "").strip())
+            if changed:
+                self._write_state_unlocked(state)
+        return {key for key in recent if key}
+
     def prioritize_song_queue(
         self,
         song_queue: Sequence[tuple[str, str, str]],

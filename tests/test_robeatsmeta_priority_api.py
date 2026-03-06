@@ -271,3 +271,38 @@ def test_app_marks_song_batch_computed_only_after_final_task(tmp_path, monkeypat
     entry_final = state_final["entries"]["alpha|artist"]
     assert marked_final is True
     assert int(entry_final.get("last_computed_at", 0)) > 0
+
+
+def test_filter_recently_computed_song_queue_skips_completed_bundles_but_keeps_pending(tmp_path, monkeypatch):
+    from gear_optimizer.app import GearOptimizerApp
+
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_PRIORITY_QUEUE", "1")
+    state_path = tmp_path / "priority_state.json"
+    status_path = tmp_path / "status.json"
+    song_meta_path = tmp_path / "song_meta_index.json"
+    payload = [
+        {"id": "Alpha (Hard) by Artist", "title": "Alpha", "artist": "Artist", "difficulty": "Hard"},
+        {"id": "Beta (Hard) by Artist", "title": "Beta", "artist": "Artist", "difficulty": "Hard"},
+    ]
+    song_meta_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    api = RoBeatsMetaOptimizerApi(
+        state_path=state_path,
+        status_path=status_path,
+        song_meta_index_path=song_meta_path,
+    )
+    now = int(time.time())
+    api.record_song_visit(song_id="Alpha (Hard) by Artist", title="Alpha", artist="Artist", now=now)
+    api.mark_song_computed(song_id="Alpha (Hard) by Artist", now=now + 1)
+    api.record_song_visit(song_id="Beta (Hard) by Artist", title="Beta", artist="Artist", now=now + 2)
+
+    app = GearOptimizerApp.__new__(GearOptimizerApp)
+    app._robeatsmeta_api = api
+
+    queue = [
+        ("alpha.txt", "Alpha (Hard) by Artist", "Hard"),
+        ("beta.txt", "Beta (Hard) by Artist", "Hard"),
+    ]
+
+    filtered = app._filter_robeatsmeta_recently_computed_song_queue(queue)
+    assert [item[1] for item in filtered] == ["Beta (Hard) by Artist"]

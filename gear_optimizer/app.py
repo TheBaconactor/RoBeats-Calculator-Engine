@@ -585,6 +585,40 @@ class GearOptimizerApp:
             logging.warning(f"[RoBeatsMeta] Failed to prioritize song queue: {type(exc).__name__}: {exc}")
             return song_queue
 
+    def _filter_robeatsmeta_recently_computed_song_queue(
+        self,
+        song_queue: list[tuple[str, str, str]],
+    ) -> list[tuple[str, str, str]]:
+        if not song_queue or not self._optimizer_priority_api_enabled():
+            return song_queue
+        api = self._robeatsmeta_api
+        if api is None:
+            return song_queue
+        try:
+            recent_bundle_keys = api.recently_computed_bundle_keys()
+        except Exception as exc:
+            logging.warning(f"[RoBeatsMeta] Failed to read recently computed bundles: {type(exc).__name__}: {exc}")
+            return song_queue
+        if not recent_bundle_keys:
+            return song_queue
+
+        filtered: list[tuple[str, str, str]] = []
+        for item in song_queue:
+            try:
+                song_name = str(item[1] or "").strip()
+            except Exception:
+                filtered.append(item)
+                continue
+            try:
+                bundle_key = api._bundle_key_for_song_id(song_name)
+            except Exception:
+                filtered.append(item)
+                continue
+            if str(bundle_key or "").strip() in recent_bundle_keys:
+                continue
+            filtered.append(item)
+        return filtered
+
     def _reprioritize_robeatsmeta_tasks(self, tasks: list[tuple], *, start_index: int) -> None:
         if not tasks or not self._optimizer_priority_api_enabled():
             return
@@ -1392,6 +1426,7 @@ class GearOptimizerApp:
 
         # Queue all discovered songs; filtering is handled by difficulty folder + optional search string.
         song_queue = self._prioritize_robeatsmeta_song_queue(song_queue)
+        song_queue = self._filter_robeatsmeta_recently_computed_song_queue(song_queue)
         if not filter_search:
             return song_queue
 
