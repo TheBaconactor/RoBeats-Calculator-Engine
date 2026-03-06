@@ -111,6 +111,66 @@ def test_record_song_visit_skips_when_same_family_is_already_processing(tmp_path
     assert result["reason"] == "already_processing"
 
 
+def test_record_song_visit_skips_when_same_family_is_already_queued(tmp_path):
+    state_path = tmp_path / "priority_state.json"
+    song_meta_path = tmp_path / "song_meta_index.json"
+    _write_song_meta_index(song_meta_path)
+
+    api = RoBeatsMetaOptimizerApi(state_path=state_path, song_meta_index_path=song_meta_path)
+    now = 1_700_000_600
+    first = api.record_song_visit(
+        song_id="Alpha (Hard) by Artist",
+        title="Alpha",
+        artist="Artist",
+        now=now,
+    )
+    second = api.record_song_visit(
+        song_id="Alpha (Easy) by Artist",
+        title="Alpha",
+        artist="Artist",
+        now=now + 1,
+    )
+
+    assert first["queued"] is True
+    assert second["queued"] is False
+    assert second["reason"] == "already_queued"
+
+
+def test_record_song_visit_respects_pending_queue_cap_without_eviction(tmp_path, monkeypatch):
+    state_path = tmp_path / "priority_state.json"
+    song_meta_path = tmp_path / "song_meta_index.json"
+    payload = [
+        {"id": f"Song {i} (Hard) by Artist", "title": f"Song {i}", "artist": "Artist", "difficulty": "Hard"}
+        for i in range(12)
+    ]
+    song_meta_path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_MAX_PENDING_VISITS", "10")
+
+    api = RoBeatsMetaOptimizerApi(state_path=state_path, song_meta_index_path=song_meta_path)
+    now = 1_700_000_700
+    for i in range(10):
+        result = api.record_song_visit(
+            song_id=f"Song {i} (Hard) by Artist",
+            title=f"Song {i}",
+            artist="Artist",
+            now=now + i,
+        )
+        assert result["queued"] is True
+
+    blocked = api.record_song_visit(
+        song_id="Song 10 (Hard) by Artist",
+        title="Song 10",
+        artist="Artist",
+        now=now + 20,
+    )
+    assert blocked["queued"] is False
+    assert blocked["reason"] == "queue_full"
+
+    raw = json.loads(state_path.read_text(encoding="utf-8"))
+    entries = raw.get("entries") or {}
+    assert len(entries) == 10
+
+
 def test_service_defaults_force_continuous_all_difficulty_mode(monkeypatch, tmp_path):
     monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
 

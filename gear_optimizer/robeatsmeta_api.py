@@ -15,6 +15,7 @@ _TRUTHY = {"1", "true", "yes", "on"}
 _DEFAULT_VISIT_TTL_SECONDS = 60 * 60 * 24
 _DEFAULT_SONG_REPEATS = 25
 _DEFAULT_INFLIGHT_SONGS = 12
+_DEFAULT_MAX_PENDING_VISITS = 10
 
 
 def _env_truthy(name: str, default: bool = False) -> bool:
@@ -127,10 +128,13 @@ class RoBeatsMetaOptimizerApi:
         if ttl_override is None:
             ttl_override = _safe_int(os.environ.get("ROBEATSMETA_OPTIMIZER_VISIT_TTL_SECONDS"), _DEFAULT_VISIT_TTL_SECONDS)
         self._visit_ttl_seconds = max(60, int(ttl_override))
+        self._max_pending_visits = max(
+            1,
+            _safe_int(os.environ.get("ROBEATSMETA_OPTIMIZER_MAX_PENDING_VISITS"), _DEFAULT_MAX_PENDING_VISITS),
+        )
         self._song_meta_mtime_ns: int | None = None
         self._bundle_by_song_id: dict[str, SongBundleRef] = {}
         self._last_task_priority_signature: tuple[tuple[str, int, int], ...] | None = None
-        self._active_bundle_key: str = ""
 
     @staticmethod
     def service_mode_enabled() -> bool:
@@ -182,8 +186,10 @@ class RoBeatsMetaOptimizerApi:
             entry = entries.get(bundle.bundle_key)
             if not isinstance(entry, dict):
                 entry = {}
+            active_bundle_key = str(state.get("active_bundle_key") or "").strip()
 
             last_computed_at = _safe_int(entry.get("last_computed_at"), 0)
+            last_requested_at = _safe_int(entry.get("last_requested_at"), 0)
             entry.update(
                 {
                     "song_id": bundle.song_id,
@@ -193,7 +199,7 @@ class RoBeatsMetaOptimizerApi:
                 }
             )
 
-            if str(self._active_bundle_key or "").strip() == str(bundle.bundle_key or "").strip():
+            if active_bundle_key == str(bundle.bundle_key or "").strip():
                 entries[bundle.bundle_key] = entry
                 if changed:
                     self._write_state_unlocked(state)
@@ -214,6 +220,34 @@ class RoBeatsMetaOptimizerApi:
                     "last_computed_at": last_computed_at,
                 }
 
+            if last_requested_at > last_computed_at:
+                entries[bundle.bundle_key] = entry
+                if changed:
+                    self._write_state_unlocked(state)
+                return {
+                    "queued": False,
+                    "reason": "already_queued",
+                    "bundle_key": bundle.bundle_key,
+                }
+
+            pending_count = 0
+            for raw_entry in entries.values():
+                if not isinstance(raw_entry, dict):
+                    continue
+                requested_at = _safe_int(raw_entry.get("last_requested_at"), 0)
+                computed_at = _safe_int(raw_entry.get("last_computed_at"), 0)
+                if requested_at > computed_at:
+                    pending_count += 1
+            if pending_count >= int(self._max_pending_visits):
+                if changed:
+                    self._write_state_unlocked(state)
+                return {
+                    "queued": False,
+                    "reason": "queue_full",
+                    "bundle_key": bundle.bundle_key,
+                    "max_pending_visits": int(self._max_pending_visits),
+                }
+
             entry["last_requested_at"] = ts
             entries[bundle.bundle_key] = entry
             self._write_state_unlocked(state)
@@ -231,7 +265,6 @@ class RoBeatsMetaOptimizerApi:
             return False
 
         ts = _safe_int(now if now is not None else time.time())
-        self._active_bundle_key = ""
         with _file_lock(self._lock_path):
             state = self._load_state_unlocked()
             changed = self._prune_state_unlocked(state, ts)
@@ -253,6 +286,8 @@ class RoBeatsMetaOptimizerApi:
                     "last_computed_at": ts,
                 }
             )
+            if str(state.get("active_bundle_key") or "").strip() == str(bundle.bundle_key or "").strip():
+                state["active_bundle_key"] = ""
             if next_entry != entry or changed:
                 entries[bundle.bundle_key] = next_entry
                 self._write_state_unlocked(state)
@@ -332,7 +367,10 @@ class RoBeatsMetaOptimizerApi:
 
     def mark_song_started(self, *, song_id: str) -> None:
         bundle = self._resolve_bundle(song_id=song_id)
-        self._active_bundle_key = str(bundle.bundle_key or "").strip()
+        with _file_lock(self._lock_path):
+            state = self._load_state_unlocked()
+            state["active_bundle_key"] = str(bundle.bundle_key or "").strip()
+            self._write_state_unlocked(state)
 
     def _pending_bundle_state(self, *, now: int | None = None) -> tuple[list[str], tuple[tuple[str, int, int], ...]]:
         ts = _safe_int(now if now is not None else time.time())
@@ -460,7 +498,8 @@ class RoBeatsMetaOptimizerApi:
         entries = raw.get("entries")
         if not isinstance(entries, dict):
             entries = {}
-        return {"version": 1, "entries": entries}
+        active_bundle_key = str(raw.get("active_bundle_key") or "").strip()
+        return {"version": 1, "entries": entries, "active_bundle_key": active_bundle_key}
 
     def _load_status_unlocked(self) -> dict[str, Any]:
         try:
