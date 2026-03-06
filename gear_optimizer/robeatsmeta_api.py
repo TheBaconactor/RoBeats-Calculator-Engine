@@ -135,8 +135,7 @@ class RoBeatsMetaOptimizerApi:
     Small file-backed bridge between the website backend and the long-running optimizer.
 
     The backend records song visits here. The optimizer polls the same state and
-    moves requested song bundles (all difficulties for the same title/artist) to
-    the front of the next work slice.
+    moves requested songs to the front of the next work slice.
     """
 
     _backend_compat_cache: dict[tuple[str, str], bool] = {}
@@ -309,14 +308,15 @@ class RoBeatsMetaOptimizerApi:
         if not cfg.has_section("CalculateSong"):
             cfg.add_section("CalculateSong")
 
-        # Backend-special behavior: keep the optimizer in continuous service mode and
-        # evaluate full song families so live backend overlays can update during runtime.
+        # Backend-special behavior: keep the optimizer in continuous service mode.
+        # Queue selection is controlled by pending song IDs from the API bridge.
         cfg.set("IterationEngine", "LoopForever", "false" if self.benchmark_mode_enabled() else "true")
         cfg.set("IterationEngine", "SongRepeats", str(int(_DEFAULT_SONG_REPEATS)))
         cfg.set("IterationEngine", "UseEvolutionDB", "true")
         cfg.set("IterationEngine", "InFlightSongs", str(int(_DEFAULT_INFLIGHT_SONGS)))
 
-        # Backend-special behavior: process all difficulties for the selected song family.
+        # Keep broad discovery here; the backend pending-song filter narrows execution
+        # to requested song IDs before task preparation.
         cfg.set("CalculateSong", "Difficulty", "All")
         cfg.set("CalculateSong", "Song_Name", "")
         cfg.set("CalculateSong", "TargetPrimary", "all")
@@ -505,6 +505,42 @@ class RoBeatsMetaOptimizerApi:
             if changed:
                 self._write_state_unlocked(state)
         return {key for key in recent if key}
+
+    def pending_song_ids(self, *, now: int | None = None) -> list[str]:
+        ts = _safe_int(now if now is not None else time.time())
+        with _file_lock(self._lock_path):
+            state = self._load_state_unlocked()
+            changed = self._prune_state_unlocked(state, ts)
+            entries = state.get("entries", {})
+            pending_rows: list[tuple[int, str]] = []
+            if isinstance(entries, dict):
+                for _bundle_key, raw_entry in entries.items():
+                    if not isinstance(raw_entry, dict):
+                        continue
+                    requested_at = _safe_int(raw_entry.get("last_requested_at"), 0)
+                    computed_at = _safe_int(raw_entry.get("last_computed_at"), 0)
+                    if requested_at <= 0:
+                        continue
+                    if ts - requested_at >= self._visit_ttl_seconds:
+                        continue
+                    if requested_at <= computed_at:
+                        continue
+                    song_id = _strip_run_suffix(str(raw_entry.get("song_id") or "").strip())
+                    if not song_id:
+                        continue
+                    pending_rows.append((requested_at, song_id))
+            if changed:
+                self._write_state_unlocked(state)
+
+        pending_rows.sort(key=lambda row: (-row[0], row[1]))
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for _requested_at, song_id in pending_rows:
+            if song_id in seen:
+                continue
+            seen.add(song_id)
+            ordered.append(song_id)
+        return ordered
 
     def prioritize_song_queue(
         self,

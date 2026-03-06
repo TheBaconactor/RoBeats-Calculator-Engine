@@ -474,7 +474,20 @@ class GearOptimizerApp:
         self._runtime_total_count = 0
         self._runtime_failed_count = 0
         self._backend_priority_song_names: set[str] = set()
-        self._backend_priority_song_repeat_count = 50
+        # Optional override for pending-visit songs. 0 means "use SongRepeats".
+        try:
+            self._backend_priority_song_repeat_count = max(
+                0,
+                int(os.environ.get("ROBEATSMETA_OPTIMIZER_PRIORITY_REPEAT_COUNT", "0") or "0"),
+            )
+        except Exception:
+            self._backend_priority_song_repeat_count = 0
+        self._song_path_index_lock = threading.Lock()
+        self._song_path_index: dict[str, list[dict[str, str]]] = {}
+        self._song_path_index_ready = False
+        self._song_path_index_roots: tuple[str, ...] = ()
+        self._song_path_index_last_force_attempt_monotonic = 0.0
+        self._song_path_index_force_cooldown_sec = 60.0
         self._robeatsmeta_api: RoBeatsMetaOptimizerApi | None = None
 
     def setup_logging(self):
@@ -707,6 +720,16 @@ class GearOptimizerApp:
             return
         try:
             api.mark_song_started(song_id=str(song_name))
+            # Keep runtime status aligned with backend queue state. Some execution
+            # paths can mark a song active before the next progress event lands.
+            # Without this, the frontend may keep showing idle while work is active.
+            api.update_runtime_status(
+                status="running",
+                current_song=str(song_name),
+                completed=int(self._runtime_completed_count or 0),
+                total=int(self._runtime_total_count or 0),
+                failed=int(self._runtime_failed_count or 0),
+            )
         except Exception as exc:
             logging.warning(f"[RoBeatsMeta] Failed to mark song started: {type(exc).__name__}: {exc}")
 
@@ -813,11 +836,11 @@ class GearOptimizerApp:
                     if self._robeatsmeta_api.apply_service_defaults(cfg):
                         if backend_benchmark_mode:
                             print(
-                                "[RoBeatsMeta] Service defaults enabled (benchmark): LoopForever=false, SongRepeats=25, InFlightSongs=30, Difficulty=All.",
+                                "[RoBeatsMeta] Service defaults enabled (benchmark): LoopForever=false, SongRepeats=25, InFlightSongs=30, Difficulty=All, QueueScope=PendingSongIds.",
                             )
                         else:
                             print(
-                                "[RoBeatsMeta] Service defaults enabled: LoopForever=true, SongRepeats=25, InFlightSongs=30, Difficulty=All.",
+                                "[RoBeatsMeta] Service defaults enabled: LoopForever=true, SongRepeats=25, InFlightSongs=30, Difficulty=All, QueueScope=PendingSongIds.",
                             )
                     elif not self._robeatsmeta_api.service_defaults_enabled():
                         print(
@@ -1207,10 +1230,162 @@ class GearOptimizerApp:
             target_secondary_colors,
         )
 
+    @staticmethod
+    def _infer_song_difficulty_from_path(root: str) -> str:
+        parent_folder = os.path.basename(str(root or "")).lower()
+        if parent_folder == "hard":
+            return "Hard"
+        if parent_folder == "normal":
+            return "Normal"
+        if parent_folder == "easy":
+            return "Easy"
+        return "Unknown"
+
+    def _song_index_roots(self) -> list[str]:
+        data_root = PATHS.data_dir
+        if os.path.exists(data_root):
+            return [data_root]
+        return [SCRIPT_DIR]
+
+    def _scan_song_paths_for_index(self, roots: typing.Sequence[str]) -> dict[str, list[dict[str, str]]]:
+        index: dict[str, list[dict[str, str]]] = {}
+        seen_paths: set[str] = set()
+        for root_dir in roots:
+            if not os.path.exists(root_dir):
+                continue
+            if self._stop_requested_now():
+                break
+            for current_root, _, files in os.walk(root_dir):
+                if self._stop_requested_now():
+                    break
+                for file_name in files:
+                    if self._stop_requested_now():
+                        break
+                    if not str(file_name or "").lower().endswith(".txt"):
+                        continue
+                    fp = os.path.join(current_root, file_name)
+                    abs_fp = os.path.abspath(fp)
+                    if abs_fp in seen_paths:
+                        continue
+                    seen_paths.add(abs_fp)
+
+                    meta = scan_song_header(fp)
+                    if not meta:
+                        continue
+                    song_name = str(meta.get("Song Name") or "").strip()
+                    if not song_name:
+                        continue
+
+                    detected_diff = self._infer_song_difficulty_from_path(current_root)
+                    index.setdefault(song_name, []).append(
+                        {
+                            "fp": fp,
+                            "abs_fp": abs_fp,
+                            "song_name": song_name,
+                            "song_name_lower": song_name.lower(),
+                            "detected_diff": detected_diff,
+                            "primary_color": str(meta.get("Primary Color") or "").strip().lower(),
+                            "secondary_color": str(meta.get("Secondary Color") or "").strip().lower(),
+                        }
+                    )
+        return index
+
+    def _ensure_song_path_index(self, *, force: bool = False) -> None:
+        roots = tuple(self._song_index_roots())
+        with self._song_path_index_lock:
+            if (
+                not force
+                and self._song_path_index_ready
+                and roots == self._song_path_index_roots
+            ):
+                return
+        index = self._scan_song_paths_for_index(roots)
+        with self._song_path_index_lock:
+            self._song_path_index = index
+            self._song_path_index_ready = True
+            self._song_path_index_roots = roots
+
+    def _build_song_queue_from_pending_ids(
+        self,
+        pending_song_ids: typing.Sequence[str],
+        *,
+        diff_lower: str,
+        filter_search: str,
+        target_primary_all: bool,
+        target_primary_colors: set[str],
+        target_secondary_all: bool,
+        target_secondary_colors: set[str],
+    ) -> tuple[list[tuple[str, str, str]], list[str]]:
+        self._ensure_song_path_index(force=False)
+        with self._song_path_index_lock:
+            index_snapshot = dict(self._song_path_index)
+
+        song_queue: list[tuple[str, str, str]] = []
+        unresolved_song_ids: list[str] = []
+        seen_paths: set[str] = set()
+        for pending_song_id in pending_song_ids:
+            song_id = str(pending_song_id or "").strip()
+            if not song_id:
+                continue
+            entries = index_snapshot.get(song_id)
+            if not isinstance(entries, list) or not entries:
+                unresolved_song_ids.append(song_id)
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                detected_diff = str(entry.get("detected_diff") or "Unknown").strip() or "Unknown"
+                if diff_lower in ("easy", "normal", "hard") and detected_diff.lower() != diff_lower:
+                    continue
+
+                primary_color = str(entry.get("primary_color") or "").strip().lower()
+                secondary_color = str(entry.get("secondary_color") or "").strip().lower()
+                if not target_primary_all and (not primary_color or primary_color not in target_primary_colors):
+                    continue
+                if not target_secondary_all and (not secondary_color or secondary_color not in target_secondary_colors):
+                    continue
+
+                song_name_lower = str(entry.get("song_name_lower") or "").strip().lower()
+                if filter_search and filter_search not in song_name_lower:
+                    continue
+
+                fp = str(entry.get("fp") or "").strip()
+                abs_fp = str(entry.get("abs_fp") or "").strip()
+                if not fp:
+                    continue
+                if abs_fp and abs_fp in seen_paths:
+                    continue
+                if abs_fp:
+                    seen_paths.add(abs_fp)
+                song_name = str(entry.get("song_name") or song_id).strip() or song_id
+                song_queue.append((fp, song_name, detected_diff))
+        return song_queue, unresolved_song_ids
+
     def _build_song_queue(self, cfg, paths, use_evo_db):
         diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols = self._get_filter_params(cfg)
         backend_service_mode = bool(getattr(getattr(self, "_robeatsmeta_api", None), "backend_mode_enabled", lambda: False)())
         self._backend_priority_song_names = set()
+
+        def _pending_backend_song_ids() -> list[str]:
+            if not backend_service_mode or not self._optimizer_priority_api_enabled():
+                return []
+            api = self._robeatsmeta_api
+            if api is None:
+                return []
+            try:
+                raw_ids = api.pending_song_ids()
+            except Exception as exc:
+                logging.warning(f"[RoBeatsMeta] Failed to read pending song ids: {type(exc).__name__}: {exc}")
+                return []
+            cleaned: list[str] = []
+            seen: set[str] = set()
+            for value in raw_ids or []:
+                song_id = str(value or "").strip()
+                if not song_id or song_id in seen:
+                    continue
+                seen.add(song_id)
+                cleaned.append(song_id)
+            return cleaned
 
         resume_context = build_memory_guard_resume_context(diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols)
 
@@ -1253,6 +1428,10 @@ class GearOptimizerApp:
             ignore_resume = cfg.getboolean("IterationEngine", "IgnoreResumeQueue", fallback=False)
         except Exception:
             ignore_resume = False
+        if backend_service_mode:
+            # Backend queue order and persistence come from the API bridge state file.
+            # Ignore memory-guard resume files to avoid replaying stale broad queues.
+            ignore_resume = True
         if self._truthy(os.environ.get("METAFINDER_IGNORE_RESUME_QUEUE", "")):
             ignore_resume = True
 
@@ -1287,71 +1466,111 @@ class GearOptimizerApp:
                         )
                     return resume_seed_queue
 
+        pending_song_ids = _pending_backend_song_ids()
+        pending_set = set(pending_song_ids)
+        pending_only_mode = bool(
+            backend_service_mode and self._truthy(os.environ.get("ROBEATSMETA_OPTIMIZER_PENDING_ONLY", ""))
+        )
         diff = cfg.get("CalculateSong", "Difficulty", fallback="Hard")
         search_dir = paths.get(diff, SCRIPT_DIR)
+        unresolved_song_ids: list[str] = []
+        song_queue: list[tuple[str, str, str]] = []
 
-        song_queue = []
-        seen_paths = set()
-
-        if diff_lower not in ("easy", "normal", "hard"):
-            data_root = PATHS.data_dir
-            dirs_to_search = [data_root] if os.path.exists(data_root) else [SCRIPT_DIR]
+        if backend_service_mode and pending_set and pending_only_mode:
+            song_queue, unresolved_song_ids = self._build_song_queue_from_pending_ids(
+                pending_song_ids,
+                diff_lower=diff_lower,
+                filter_search=filter_search,
+                target_primary_all=tp_all,
+                target_primary_colors=tp_cols,
+                target_secondary_all=ts_all,
+                target_secondary_colors=ts_cols,
+            )
+            if unresolved_song_ids:
+                now_monotonic = float(time.monotonic())
+                if (
+                    now_monotonic - float(self._song_path_index_last_force_attempt_monotonic)
+                    >= float(self._song_path_index_force_cooldown_sec)
+                ):
+                    self._song_path_index_last_force_attempt_monotonic = now_monotonic
+                    self._ensure_song_path_index(force=True)
+                    song_queue, unresolved_song_ids = self._build_song_queue_from_pending_ids(
+                        pending_song_ids,
+                        diff_lower=diff_lower,
+                        filter_search=filter_search,
+                        target_primary_all=tp_all,
+                        target_primary_colors=tp_cols,
+                        target_secondary_all=ts_all,
+                        target_secondary_colors=ts_cols,
+                    )
+                if unresolved_song_ids:
+                    logging.warning(
+                        "[RoBeatsMeta] Pending song ids not found in song path index: %s",
+                        ", ".join(unresolved_song_ids[:10]),
+                    )
         else:
-            dirs_to_search = [search_dir]
+            seen_paths = set()
+            if diff_lower not in ("easy", "normal", "hard"):
+                data_root = PATHS.data_dir
+                dirs_to_search = [data_root] if os.path.exists(data_root) else [SCRIPT_DIR]
+            else:
+                dirs_to_search = [search_dir]
 
-        for d in dirs_to_search:
-            if not os.path.exists(d):
-                continue
-            if self._stop_requested_now():
-                break
-            for root, _, files in os.walk(d):
+            for d in dirs_to_search:
+                if not os.path.exists(d):
+                    continue
                 if self._stop_requested_now():
                     break
-                for f in files:
+                for root, _, files in os.walk(d):
                     if self._stop_requested_now():
                         break
-                    if f.lower().endswith(".txt"):
-                        fp = os.path.join(root, f)
-                        abs_fp = os.path.abspath(fp)
-                        if abs_fp in seen_paths:
-                            continue
+                    for f in files:
+                        if self._stop_requested_now():
+                            break
+                        if f.lower().endswith(".txt"):
+                            fp = os.path.join(root, f)
+                            abs_fp = os.path.abspath(fp)
+                            if abs_fp in seen_paths:
+                                continue
 
-                        meta = scan_song_header(fp)
-                        if not meta:
-                            continue
+                            meta = scan_song_header(fp)
+                            if not meta:
+                                continue
 
-                        name = meta["Song Name"]
-                        name_lower = name.lower()
+                            name = meta["Song Name"]
+                            name_lower = name.lower()
+                            detected_diff = self._infer_song_difficulty_from_path(root)
 
-                        # Infer difficulty from parent folder name
-                        parent_folder = os.path.basename(root).lower()
-                        if parent_folder == "hard":
-                            detected_diff = "Hard"
-                        elif parent_folder == "normal":
-                            detected_diff = "Normal"
-                        elif parent_folder == "easy":
-                            detected_diff = "Easy"
-                        else:
-                            detected_diff = "Unknown"
+                            if diff_lower in ("easy", "normal", "hard") and detected_diff.lower() != diff_lower:
+                                continue
 
-                        if diff_lower in ("easy", "normal", "hard") and detected_diff.lower() != diff_lower:
-                            continue
+                            primary_color = (meta.get("Primary Color") or "").strip().lower()
+                            secondary_color = (meta.get("Secondary Color") or "").strip().lower()
 
-                        primary_color = (meta.get("Primary Color") or "").strip().lower()
-                        secondary_color = (meta.get("Secondary Color") or "").strip().lower()
+                            if not tp_all and (not primary_color or primary_color not in tp_cols):
+                                continue
+                            if not ts_all and (not secondary_color or secondary_color not in ts_cols):
+                                continue
 
-                        if not tp_all and (not primary_color or primary_color not in tp_cols):
-                            continue
-                        if not ts_all and (not secondary_color or secondary_color not in ts_cols):
-                            continue
+                            if filter_search and filter_search not in name_lower:
+                                continue
 
-                        if filter_search and filter_search not in name_lower:
-                            continue
+                            song_queue.append((fp, name, detected_diff))
+                            seen_paths.add(abs_fp)
 
-                        song_queue.append((fp, name, detected_diff))
-                        seen_paths.add(abs_fp)
+        if backend_service_mode:
+            if pending_set:
+                self._backend_priority_song_names.update(pending_song_ids)
+            elif pending_only_mode:
+                song_queue = []
+                try:
+                    print("[Queue] No pending song-id visits; backend service is idle.")
+                except Exception:
+                    pass
 
         if not song_queue and not resume_seed_queue:
+            if backend_service_mode:
+                return []
             print("Error: No matching songs found.")
             return []
 
@@ -1944,7 +2163,9 @@ class GearOptimizerApp:
             for name in getattr(self, "_backend_priority_song_names", set())
             if str(name or "").strip()
         }
-        priority_repeat_count = max(1, int(getattr(self, "_backend_priority_song_repeat_count", 50) or 50))
+        priority_repeat_count = max(0, int(getattr(self, "_backend_priority_song_repeat_count", 0) or 0))
+        if priority_repeat_count <= 0:
+            priority_repeat_count = int(song_repeats)
 
         def _stable_ga_seed_for_song_repeat(song_name: str, repeat_index: int) -> int:
             # Stable 32-bit seed, independent of PYTHONHASHSEED and run ordering.

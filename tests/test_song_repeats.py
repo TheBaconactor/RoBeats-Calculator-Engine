@@ -71,7 +71,7 @@ def test_prepare_tasks_song_repeats_one_keeps_single_shape():
     assert app._task_queue_label(tasks[0]) == "Dummy Song"
 
 
-def test_prepare_tasks_backend_priority_new_songs_use_fixed_50_repeats(monkeypatch, tmp_path):
+def test_prepare_tasks_backend_priority_new_songs_use_song_repeats_by_default(monkeypatch, tmp_path):
     song_meta_path = tmp_path / "song_meta_index.json"
     canonical_db = tmp_path / "canonical.db"
     song_meta_path.write_text("[]", encoding="utf-8")
@@ -81,7 +81,7 @@ def test_prepare_tasks_backend_priority_new_songs_use_fixed_50_repeats(monkeypat
     app = GearOptimizerApp.__new__(GearOptimizerApp)
     app._robeatsmeta_api = type("DummyApi", (), {"backend_mode_enabled": staticmethod(lambda: True)})()
     app._backend_priority_song_names = {"New Song"}
-    app._backend_priority_song_repeat_count = 50
+    app._backend_priority_song_repeat_count = 0
     cfg = _build_cfg(25)
 
     song_queue = [("dummy.txt", "New Song", "Hard")]
@@ -101,5 +101,39 @@ def test_prepare_tasks_backend_priority_new_songs_use_fixed_50_repeats(monkeypat
         fg_debug=False,
     )
 
-    assert len(tasks) == 50
-    assert app._task_queue_label(tasks[-1]) == "New Song (Run 50/50)"
+    assert len(tasks) == 25
+    assert app._task_queue_label(tasks[-1]) == "New Song (Run 25/25)"
+
+
+def test_prepare_tasks_backend_priority_new_songs_honors_repeat_override(monkeypatch, tmp_path):
+    song_meta_path = tmp_path / "song_meta_index.json"
+    canonical_db = tmp_path / "canonical.db"
+    song_meta_path.write_text("[]", encoding="utf-8")
+    canonical_db.write_text("", encoding="utf-8")
+    monkeypatch.setenv("ROBEATSMETA_SONG_META_INDEX_PATH", str(song_meta_path))
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(canonical_db))
+    app = GearOptimizerApp.__new__(GearOptimizerApp)
+    app._robeatsmeta_api = type("DummyApi", (), {"backend_mode_enabled": staticmethod(lambda: True)})()
+    app._backend_priority_song_names = {"New Song"}
+    app._backend_priority_song_repeat_count = 40
+    cfg = _build_cfg(25)
+
+    song_queue = [("dummy.txt", "New Song", "Hard")]
+    tasks = app._prepare_tasks(
+        song_queue=song_queue,
+        cfg=cfg,
+        paths={},
+        ref_arrays={},
+        all_gears=[],
+        all_minis=[],
+        gears_by_name={},
+        minis_by_name={},
+        use_evo_db=False,
+        auto_buff="",
+        ga_depth=1,
+        status_queue=None,
+        fg_debug=False,
+    )
+
+    assert len(tasks) == 40
+    assert app._task_queue_label(tasks[-1]) == "New Song (Run 40/40)"
