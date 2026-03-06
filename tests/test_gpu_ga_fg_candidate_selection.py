@@ -27,10 +27,16 @@ def _canon_ids_key(genome_ids: np.ndarray) -> tuple[int, ...]:
     return gear_ids + mini_ids
 
 
-def _key_by_name(cand: dict) -> tuple[str, ...]:
-    gear_names = tuple((it or {}).get("Name", "") for it in (cand.get("Gear") or []))
-    mini_names = tuple(sorted((it or {}).get("Name", "") for it in (cand.get("Minis") or [])))
-    return gear_names + mini_names
+def _candidate_key(cand: dict, registry: ItemRegistry) -> tuple[int, ...]:
+    genome_ids = cand.get("GenomeIDs")
+    if genome_ids is not None:
+        return _canon_ids_key(np.asarray(genome_ids, dtype=np.int32))
+    genome = cand.get("Genome")
+    if genome:
+        return _canon_ids_key(registry.encode_genome(genome))
+    gear = cand.get("Gear") or []
+    minis = cand.get("Minis") or []
+    return _canon_ids_key(registry.encode_genome(list(gear) + list(minis)))
 
 
 def test_gpu_ga_fg_selection_matches_cpu_candidate_selector():
@@ -216,4 +222,4 @@ def test_gpu_ga_fg_selection_matches_cpu_candidate_selector():
         secondary_color=str(secondary_color),
     )
 
-    assert [_key_by_name(c) for c in decoded] == [_key_by_name(c) for c in expected]
+    assert [_candidate_key(c, registry) for c in decoded] == [_candidate_key(c, registry) for c in expected]

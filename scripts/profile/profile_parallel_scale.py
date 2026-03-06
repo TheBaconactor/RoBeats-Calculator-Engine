@@ -14,20 +14,28 @@ Example:
 from __future__ import annotations
 
 import argparse
-import os
-import time
 import multiprocessing
+import os
 import sys
+import time
 
 import numpy as np
 
 
-# Add project root to path (so `gear_optimizer` imports work when running from /scripts)
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
 
 
+def _mk_item(name: str, **stats: int) -> dict:
+    out = {"Name": name}
+    out.update({k: int(v) for k, v in (stats or {}).items()})
+    return out
+
+
 def _build_inputs(n_genomes: int = 500):
+    from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
+    from gear_optimizer.solver.item_registry import ItemRegistry
+
     ref_arrays = {
         "Perfect Points": np.linspace(0, 100, 161, dtype=np.float64),
         "Combo Multiplier": np.linspace(1, 2, 161, dtype=np.float64),
@@ -36,45 +44,114 @@ def _build_inputs(n_genomes: int = 500):
         "Fever Time": np.linspace(0.5, 1.8, 161, dtype=np.float64),
     }
 
-    genome_stats = [
-        {
-            "base_pp": 50 + i % 20,
-            "base_cm": 50 + i % 15,
-            "base_fm": 50 + i % 10,
-            "base_p_val": 100 + i % 30,
-            "base_s_val": 50 + i % 20,
-            "base_ft_stat": 30 + i % 40,
-            "base_ff_stat": 30 + i % 40,
-        }
-        for i in range(n_genomes)
+    slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
+    gear_pool = {
+        slot: [
+            _mk_item(
+                f"{slot}_{i}",
+                **{
+                    "Perfect Points": 10 + i,
+                    "Combo Multiplier": 5 + i,
+                    "Fever Multiplier": 4 + i,
+                    "Fever Time": 3 + i,
+                    "Fever Fill Rate": 2 + i,
+                    "Beat": 8 + i,
+                    "Vibe": 4 + i,
+                    "Rush": 3 + i,
+                    "Flow": 7 + i,
+                    "Chill": 2 + i,
+                },
+            )
+            for i in range(4)
+        ]
+        for slot in slots
+    }
+    mini_pool = [
+        _mk_item(
+            f"Mini_{i}",
+            **{
+                "Perfect Points": 2 + i,
+                "Combo Multiplier": 1 + (i % 3),
+                "Fever Multiplier": 1 + (i % 2),
+                "Beat": 1 + (i % 4),
+                "Flow": 1 + (i % 3),
+            },
+        )
+        for i in range(10)
     ]
+    registry = ItemRegistry(gear_pool, mini_pool, slots)
 
-    # The worker IPC path normally sends a lightweight calc_song payload and lets the
-    # GPU owner manage timeline precompute/upload. Keep this harness aligned with that
-    # production path instead of serializing a prebuilt SongTimelineGrid object.
-    timestamps = np.linspace(0, 120, 800)
+    genomes = []
+    for i in range(n_genomes):
+        genomes.append(
+            [
+                gear_pool[slot][i % len(gear_pool[slot])] for slot in slots
+            ]
+            + [
+                mini_pool[(i + 0) % len(mini_pool)],
+                mini_pool[(i + 3) % len(mini_pool)],
+                mini_pool[(i + 6) % len(mini_pool)],
+            ]
+        )
+
+    gpu_arrays = registry.to_gpu_arrays()
+    population_indices = registry.encode_population(genomes)
+    base_fixed_stats, _ = build_base_fixed_stats_array(
+        {
+            "Perfect Points": 100,
+            "Combo Multiplier": 80,
+            "Fever Multiplier": 70,
+            "Fever Time": 60,
+            "Fever Fill Rate": 50,
+            "Beat": 90,
+            "Vibe": 30,
+            "Rush": 20,
+            "Flow": 85,
+            "Chill": 25,
+        },
+        {"selected_color": "Beat"},
+    )
+
+    timestamps = np.linspace(0, 120, 800, dtype=np.float32)
     calc_song = {
         "song_data": {"timestamps": timestamps},
         "metadata": {
             "Long Notes": 20,
             "Last Note Time": 120.0,
-            "Primary Color": "Chill",
+            "Primary Color": "Beat",
             "Secondary Color": "Flow",
             "Song Name": "PROFILE_SONG",
         },
     }
 
-    # Color flags
-    flags = (0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0)
-    return genome_stats, calc_song, flags, ref_arrays
+    flags = (1, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0)
+    return (
+        population_indices,
+        gpu_arrays["item_stats"],
+        gpu_arrays["slot_start"],
+        gpu_arrays["slot_count"],
+        base_fixed_stats,
+        calc_song,
+        flags,
+        ref_arrays,
+    )
 
 
 def _worker_process(worker_id, req_queue, resp_queue, n_requests: int, song_suffix: str):
-    from gear_optimizer.solver.gpu_executor import set_gpu_worker_mode, submit_gpu_solve_genomes
+    from gear_optimizer.solver.gpu_executor import set_gpu_worker_mode, submit_gpu_solve_genomes_from_registry
 
     set_gpu_worker_mode(worker_id, req_queue, resp_queue)
 
-    genome_stats, calc_song, flags, ref_arrays = _build_inputs()
+    (
+        population_indices,
+        item_stats,
+        slot_start,
+        slot_count,
+        base_fixed_stats,
+        calc_song,
+        flags,
+        ref_arrays,
+    ) = _build_inputs()
     if song_suffix:
         calc_song = {
             "song_data": dict(calc_song.get("song_data") or {}),
@@ -85,8 +162,12 @@ def _worker_process(worker_id, req_queue, resp_queue, n_requests: int, song_suff
     is_p_ft, is_s_ft, is_p_ff, is_s_ff, is_p_pp, is_s_pp, is_p_cm, is_s_cm, is_p_fm, is_s_fm, is_p_ov, is_s_ov = flags
 
     for _ in range(n_requests):
-        submit_gpu_solve_genomes(
-            genome_stats,
+        submit_gpu_solve_genomes_from_registry(
+            population_indices,
+            item_stats,
+            slot_start,
+            slot_count,
+            base_fixed_stats,
             calc_song,
             is_p_ft,
             is_s_ft,
@@ -117,7 +198,6 @@ def main() -> int:
 
     from gear_optimizer.solver.gpu_executor import GpuExecutor
 
-    # Always enable executor profiling for this script unless user explicitly disabled it.
     os.environ.setdefault("GPU_EXECUTOR_PROFILE", "1")
 
     GpuExecutor._instance = None

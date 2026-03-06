@@ -63,6 +63,7 @@ from ..helpers.song_helpers import (
 )
 from ..helpers.song_helpers.persistence import make_build_details_fn, evaluate_record_update
 from ..helpers.song_helpers.fg_candidate_selector import select_fg_candidates
+from ..helpers.song_helpers.ga_entry_utils import materialize_candidate_names, materialize_entry_names
 from ..helpers.song_helpers.item_utils import names_list
 
 # Global warn-once instance
@@ -1016,6 +1017,7 @@ def process_song_task(args) -> SongResultPayload:
                 gears_by_name,
                 minis_by_name,
                 build_details,
+                materialize_ga_details=False,
             )
 
             # Process force greats
@@ -1078,12 +1080,13 @@ def process_song_task(args) -> SongResultPayload:
                 for c in candidates or []:
                     if not isinstance(c, dict):
                         continue
+                    gear_names, mini_names = materialize_candidate_names(c, mutate=False)
                     out.append(
                         {
                             "Score": c.get("Score", 0),
                             "BaseScore": c.get("BaseScore", c.get("Score", 0)),
-                            "Gear": _compact_items(c.get("Gear")),
-                            "Minis": _compact_items(c.get("Minis")),
+                            "Gear": list(gear_names),
+                            "Minis": list(mini_names),
                             "Data": c.get("Data") or {},
                             "_fg_priority": c.get("_fg_priority", 0),
                         }
@@ -1097,12 +1100,13 @@ def process_song_task(args) -> SongResultPayload:
                 for k, v in entries.items():
                     if not isinstance(v, dict):
                         continue
+                    gear_names, mini_names = materialize_entry_names(v, mutate=False)
                     out[str(k)] = {
                         "score": v.get("score", 0),
                         "base_score": v.get("base_score", v.get("score", 0)),
                         "fg_score": v.get("fg_score", 0),
-                        "gear": _compact_items(v.get("gear")),
-                        "minis": _compact_items(v.get("minis")),
+                        "gear": list(gear_names),
+                        "minis": list(mini_names),
                         "details": v.get("details") or {},
                         "force": v.get("force"),
                     }

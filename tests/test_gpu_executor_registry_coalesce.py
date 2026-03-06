@@ -6,19 +6,20 @@ import numpy as np
 from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequest, GpuRequestType, GpuResponse
 
 
-def _install_fake_ftff_api(monkeypatch):
+def _install_fake_registry_api(monkeypatch):
     calls = {"solve": 0}
 
     fake_api = types.ModuleType("gear_optimizer.solver.taichi_gem.api")
 
-    def _solve_genomes_with_ftff(*, genome_stats_list, **_kwargs):
+    def _solve_genomes_from_registry(*, population_indices, **_kwargs):
         calls["solve"] += 1
-        arr = np.asarray(genome_stats_list, dtype=np.int16)
-        n = int(arr.shape[0]) if arr.ndim == 2 else 0
+        n = int(np.asarray(population_indices, dtype=np.int32).shape[0])
         return [(int(i), 0, 0, 0, 0, 0, 0) for i in range(n)]
 
+    fake_api.ga_upload_base_fixed_stats = lambda *_args, **_kwargs: None
+    fake_api.ga_upload_item_stats = lambda *_args, **_kwargs: None
     fake_api.load_ref_arrays = lambda *_args, **_kwargs: None
-    fake_api.solve_genomes_with_ftff = _solve_genomes_with_ftff
+    fake_api.solve_genomes_from_registry = _solve_genomes_from_registry
 
     fake_parent = types.ModuleType("gear_optimizer.solver.taichi_gem")
     fake_parent.__path__ = []
@@ -30,11 +31,11 @@ def _install_fake_ftff_api(monkeypatch):
     return calls
 
 
-def _make_ftff_req(request_id: int, *, genome_stats: np.ndarray, timestamps: np.ndarray) -> GpuRequest:
+def _make_registry_req(request_id: int, *, population_indices: np.ndarray, timestamps: np.ndarray) -> GpuRequest:
     payload = {
-        "genome_stats_list": genome_stats,
+        "population_indices": population_indices,
         "timeline_grid": {
-            "metadata": {"Song Name": "ftff-coalesce"},
+            "metadata": {"Song Name": "registry-coalesce"},
             "song_data": {
                 "timestamps": timestamps,
                 "chart_timestamps": None,
@@ -42,6 +43,10 @@ def _make_ftff_req(request_id: int, *, genome_stats: np.ndarray, timestamps: np.
             },
         },
         "ref_arrays": {"Perfect Points": np.arange(8, dtype=np.float64)},
+        "item_stats": np.arange(12, dtype=np.int16).reshape(3, 4),
+        "slot_start": np.arange(9, dtype=np.int32),
+        "slot_count": np.ones(9, dtype=np.int32),
+        "base_fixed_stats": np.arange(10, dtype=np.int32),
         "song_slot": 1,
         "total_budget": 90,
         "gem_scale_fever": 3,
@@ -59,22 +64,22 @@ def _make_ftff_req(request_id: int, *, genome_stats: np.ndarray, timestamps: np.
         "is_s_ov": 0,
     }
     return GpuRequest(
-        request_type=GpuRequestType.SOLVE_GENOMES_WITH_FTFF,
+        request_type=GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
         request_id=int(request_id),
         worker_id=1,
         payload=payload,
     )
 
 
-def test_ftff_coalesce_merges_matching_requests(monkeypatch):
+def test_registry_coalesce_merges_matching_requests(monkeypatch):
     executor = GpuExecutor()
-    calls = _install_fake_ftff_api(monkeypatch)
+    calls = _install_fake_registry_api(monkeypatch)
 
     timestamps = np.array([0.0, 1.0, 2.0], dtype=np.float32)
-    req_a = _make_ftff_req(1, genome_stats=np.arange(7, dtype=np.int16).reshape(1, 7), timestamps=timestamps)
-    req_b = _make_ftff_req(2, genome_stats=np.arange(14, dtype=np.int16).reshape(2, 7), timestamps=timestamps)
+    req_a = _make_registry_req(1, population_indices=np.arange(9, dtype=np.int32).reshape(1, 9), timestamps=timestamps)
+    req_b = _make_registry_req(2, population_indices=np.arange(18, dtype=np.int32).reshape(2, 9), timestamps=timestamps)
 
-    responses = executor._coalesce_solve_genomes_with_ftff([req_a, req_b])
+    responses = executor._coalesce_solve_genomes_from_registry([req_a, req_b])
 
     assert calls["solve"] == 1
     assert [int(r.request_id) for r in responses] == [1, 2]
@@ -83,9 +88,9 @@ def test_ftff_coalesce_merges_matching_requests(monkeypatch):
     assert responses[1].result[0][0] == 1
 
 
-def test_ftff_coalesce_signature_distinguishes_transposed_views(monkeypatch):
+def test_registry_coalesce_signature_distinguishes_transposed_views(monkeypatch):
     executor = GpuExecutor()
-    calls = _install_fake_ftff_api(monkeypatch)
+    calls = _install_fake_registry_api(monkeypatch)
 
     fallback_ids = []
 
@@ -96,11 +101,10 @@ def test_ftff_coalesce_signature_distinguishes_transposed_views(monkeypatch):
     monkeypatch.setattr(executor, "_execute_request", _fake_execute_request, raising=False)
 
     base = np.arange(16, dtype=np.float32).reshape(4, 4)
-    genome_stats = np.zeros((1, 7), dtype=np.int16)
-    req_a = _make_ftff_req(1, genome_stats=genome_stats, timestamps=base)
-    req_b = _make_ftff_req(2, genome_stats=genome_stats, timestamps=base.T)
+    req_a = _make_registry_req(1, population_indices=np.arange(9, dtype=np.int32).reshape(1, 9), timestamps=base)
+    req_b = _make_registry_req(2, population_indices=np.arange(9, dtype=np.int32).reshape(1, 9), timestamps=base.T)
 
-    responses = executor._coalesce_solve_genomes_with_ftff([req_a, req_b])
+    responses = executor._coalesce_solve_genomes_from_registry([req_a, req_b])
 
     assert calls["solve"] == 0
     assert fallback_ids == [1, 2]

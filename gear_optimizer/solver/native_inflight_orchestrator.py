@@ -38,6 +38,11 @@ from gear_optimizer.helpers.song_helpers.fg_combo_booster import (
     hydrate_fg_candidate_stats,
 )
 from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
+from gear_optimizer.helpers.song_helpers.ga_entry_utils import (
+    entry_loadout_hash,
+    materialize_candidate_names,
+    materialize_entry_names,
+)
 from gear_optimizer.helpers.song_helpers.loadout_builder import (
     merge_db_loadouts_into_entries,
     refresh_ga_candidate_entries,
@@ -1206,9 +1211,9 @@ def _prepare_song(task: tuple) -> _NativeSong:
     except Exception:
         cfg_data["ga_convergence_trace_song_filter"] = ""
 
-    # ForceGreatsFinder runs after GA and needs per-candidate Stats/BaseStats for signature grouping.
-    # The GPU-native GA decode step is allowed to omit Stats for performance; explicitly require
-    # Stats when FG is enabled so FG does not silently skip GA candidates (which leads to `best_fg=0`).
+    # ForceGreatsFinder runs after GA and needs per-candidate BaseStats for signature grouping.
+    # The GPU-native GA decode step keeps full post-gem Stats optional so the critical
+    # GA->FG handoff does not spend CPU rebuilding data that the FG grouping path does not use.
     cfg_data["fg_require_stats"] = bool(manual_force_greats or force_greats_finder)
 
     base_fixed_stats_arr, _ = build_base_fixed_stats_array(fixed_stats, cfg_data)
@@ -2908,12 +2913,13 @@ def run_native_inflight_song_pipeline(
                     if not isinstance(cand, dict):
                         continue
                     data0 = cand.get("Data") or {}
+                    gear_names, mini_names = materialize_candidate_names(cand, registry=song.registry, mutate=False)
                     ga_candidates_post.append(
                         {
                             "Score": cand.get("Score", 0),
                             "BaseScore": cand.get("BaseScore", cand.get("Score", 0)),
-                            "Gear": _compact_items(cand.get("Gear")),
-                            "Minis": _compact_items(cand.get("Minis")),
+                            "Gear": list(gear_names),
+                            "Minis": list(mini_names),
                             # Copy so we don't race with FG prep mutating candidate dicts.
                             "Data": dict(data0) if isinstance(data0, dict) else {},
                             "_fg_priority": cand.get("_fg_priority", 0),
@@ -3646,14 +3652,18 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
 
     entries: list[dict] = []
     loadout_entries = song.loadout_entries if isinstance(song.loadout_entries, dict) else {}
-    get_loadout_hash_fn = None
+    loadout_hash_index: dict[str, dict] = {}
     if loadout_entries:
-        try:
-            from gear_optimizer.data.database import get_loadout_hash as _get_loadout_hash
-
-            get_loadout_hash_fn = _get_loadout_hash
-        except Exception:
-            get_loadout_hash_fn = None
+        for loadout_key, entry in loadout_entries.items():
+            if isinstance(entry, dict):
+                loadout_hash_index.setdefault(str(loadout_key), entry)
+            try:
+                loadout_hash = entry_loadout_hash(entry)
+            except Exception:
+                loadout_hash = None
+            if not loadout_hash or not isinstance(entry, dict):
+                continue
+            loadout_hash_index.setdefault(str(loadout_hash), entry)
 
     for v in song.fg_variants or []:
         if not isinstance(v, dict):
@@ -3665,10 +3675,16 @@ def _build_fg_persist_entries(song: _NativeSong) -> list[dict]:
         mini_names = _compact_items(v.get("minis") or [])
         data = v.get("data") or {}
         base_entry = None
-        if get_loadout_hash_fn is not None:
+        if (not gear_names and not mini_names) and isinstance(v.get("_entry_ref"), dict):
             try:
-                loadout_hash = get_loadout_hash_fn(gear_names, mini_names)
-                candidate = loadout_entries.get(loadout_hash)
+                gear_names, mini_names = materialize_entry_names(v.get("_entry_ref"), mutate=True)
+            except Exception:
+                gear_names, mini_names = [], []
+        if gear_names or mini_names:
+            try:
+                from gear_optimizer.data.database import get_loadout_hash as _get_loadout_hash
+
+                candidate = loadout_hash_index.get(str(_get_loadout_hash(gear_names, mini_names)))
                 if isinstance(candidate, dict):
                     base_entry = candidate
             except Exception:

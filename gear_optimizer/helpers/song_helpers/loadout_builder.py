@@ -11,6 +11,7 @@ from ...data.database import (
     get_best_loadouts,
     get_loadout_hash,
 )
+from .ga_entry_utils import candidate_genome_ids, ga_candidate_key
 
 
 def _upsert_entry(
@@ -23,6 +24,10 @@ def _upsert_entry(
     fg_score_val: int = 0,
     force_obj: Any = None,
     eval_data: dict[str, Any] | None = None,
+    entry_key: str | None = None,
+    selected_element: str = "",
+    ga_genome_ids: tuple[int, ...] | None = None,
+    ga_registry: Any = None,
 ) -> str:
     """
     Insert or replace a loadout entry using score+source precedence rules.
@@ -32,7 +37,7 @@ def _upsert_entry(
     - Prefer entries with `eval_data` (fresh GA context) over DB-only records.
     - Otherwise keep the higher base score.
     """
-    h = get_loadout_hash(gear_items, mini_items)
+    h = str(entry_key or get_loadout_hash(gear_items, mini_items))
     existing = loadout_entries.get(h)
     # Prefer the entry with actual eval_data (from GA) over DB-only details
     if existing:
@@ -51,6 +56,12 @@ def _upsert_entry(
         "eval_data": eval_data,
         "_source": "ga" if eval_data is not None else "db",
     }
+    if selected_element:
+        loadout_entries[h]["selected_element"] = str(selected_element)
+    if ga_genome_ids is not None:
+        loadout_entries[h]["ga_genome_ids"] = list(ga_genome_ids)
+    if ga_registry is not None:
+        loadout_entries[h]["_ga_registry"] = ga_registry
     return str(h)
 
 
@@ -72,7 +83,14 @@ def merge_db_loadouts_into_entries(loadout_entries: dict, db_loadouts: list[dict
     return loadout_entries
 
 
-def refresh_ga_candidate_entries(loadout_entries: dict, ga_candidates: list[dict], build_details_fn) -> dict:
+def refresh_ga_candidate_entries(
+    loadout_entries: dict,
+    ga_candidates: list[dict],
+    build_details_fn,
+    *,
+    materialize_details: bool = True,
+    ga_registry: Any = None,
+) -> dict:
     """
     Refresh GA-sourced entries in place and drop stale GA hashes.
 
@@ -87,8 +105,20 @@ def refresh_ga_candidate_entries(loadout_entries: dict, ga_candidates: list[dict
         eval_score = eval_result.get("BaseScore") or eval_result.get("Score", 0)
         gear_items = eval_result.get("Gear", [])
         mini_items = eval_result.get("Minis", [])
-        eval_details = build_details_fn(eval_data) if eval_data else {}
-        h = get_loadout_hash(gear_items, mini_items)
+        genome_ids = candidate_genome_ids(eval_result)
+        registry_obj = ga_registry if ga_registry is not None else eval_result.get("_ga_registry")
+        eval_details = build_details_fn(eval_data) if (materialize_details and eval_data and build_details_fn) else {}
+        h = None
+        if gear_items or mini_items:
+            h = str(get_loadout_hash(gear_items, mini_items))
+        elif genome_ids is not None:
+            h = ga_candidate_key(genome_ids)
+        if not h:
+            continue
+        try:
+            selected_element = str((eval_data or {}).get("Selected Element", "") or "")
+        except Exception:
+            selected_element = ""
 
         new_entry = {
             "gear": gear_items,
@@ -99,7 +129,12 @@ def refresh_ga_candidate_entries(loadout_entries: dict, ga_candidates: list[dict
             "force": None,
             "eval_data": eval_data,
             "_source": "ga",
+            "selected_element": selected_element,
         }
+        if genome_ids is not None:
+            new_entry["ga_genome_ids"] = list(genome_ids)
+        if registry_obj is not None:
+            new_entry["_ga_registry"] = registry_obj
         existing = desired_ga_entries.get(h)
         if existing is None:
             desired_ga_entries[h] = new_entry
@@ -126,6 +161,10 @@ def refresh_ga_candidate_entries(loadout_entries: dict, ga_candidates: list[dict
             fg_score_val=0,
             force_obj=None,
             eval_data=entry.get("eval_data"),
+            entry_key=str(h),
+            selected_element=str(entry.get("selected_element", "") or ""),
+            ga_genome_ids=candidate_genome_ids({"GenomeIDs": entry.get("ga_genome_ids")}),
+            ga_registry=entry.get("_ga_registry"),
         )
     return loadout_entries
 
@@ -141,6 +180,8 @@ def build_loadout_entries(
     db_loadouts_full=None,
     allow_db_query=True,
     existing_entries=None,
+    materialize_ga_details=True,
+    ga_registry=None,
 ):
     """
     Build union of DB + GA loadouts.
@@ -155,6 +196,7 @@ def build_loadout_entries(
         build_details_fn: Function to build details dict from data dict
         db_loadouts_full: Optional pre-fetched DB loadouts (skips DB query when provided)
         allow_db_query: Whether to query DB when `db_loadouts_full` is not provided
+        materialize_ga_details: Whether to build GA details eagerly during loadout construction
 
     Returns:
         dict: Dictionary of loadout entries by hash
@@ -179,6 +221,12 @@ def build_loadout_entries(
     merge_db_loadouts_into_entries(loadout_entries, db_loadouts)
 
     # Current GA evaluated loadouts
-    refresh_ga_candidate_entries(loadout_entries, ga_candidates or [], build_details_fn)
+    refresh_ga_candidate_entries(
+        loadout_entries,
+        ga_candidates or [],
+        build_details_fn,
+        materialize_details=bool(materialize_ga_details),
+        ga_registry=ga_registry,
+    )
 
     return loadout_entries

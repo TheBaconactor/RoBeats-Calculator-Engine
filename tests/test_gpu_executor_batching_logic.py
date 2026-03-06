@@ -21,7 +21,7 @@ def test_gather_batch_inproc_does_not_force_one_ms_wait(monkeypatch):
             raise queue.Empty()
 
     req = GpuRequest(
-        request_type=GpuRequestType.SOLVE_GENOMES_WITH_FTFF,
+        request_type=GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
         request_id=101,
         worker_id=1,
         payload={},
@@ -71,7 +71,7 @@ def test_gather_batch_inproc_short_wait_uses_nonblocking_poll(monkeypatch):
             raise queue.Empty()
 
     req = GpuRequest(
-        request_type=GpuRequestType.SOLVE_GENOMES_WITH_FTFF,
+        request_type=GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
         request_id=202,
         worker_id=1,
         payload={},

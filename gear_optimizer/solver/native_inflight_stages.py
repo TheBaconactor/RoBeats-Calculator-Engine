@@ -450,6 +450,10 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
         db_loadouts_full=db_loadouts_full,
         # If prefetch is still in-flight, avoid a duplicate synchronous DB read.
         allow_db_query=not bool(prefetch_pending),
+        # FG grouping reads eval_data/BaseStats directly; defer details materialization
+        # until persistence/retained-output paths so CPU prep does not stall the GPU.
+        materialize_ga_details=False,
+        ga_registry=song.registry,
     )
     t_build = time.perf_counter() if perf else 0.0
 

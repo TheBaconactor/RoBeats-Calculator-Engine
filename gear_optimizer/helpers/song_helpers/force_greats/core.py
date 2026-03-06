@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Optional
 
 from . import cache_validation
 from .entry_utils import eval_data_from_entry, expected_selected_element
+from ..ga_entry_utils import materialize_entry_names
 from .gpu_dispatch import process_force_greats_gpu_finder
 from ..item_utils import names_list
 from ....core.utils import stats_signature
@@ -138,11 +139,12 @@ def _process_force_greats_cpu(
         ):
             base_score = entry.get("base_score") or entry.get("score", 0)
             cached_fg_score = entry.get("fg_score", 0) or cached_force.get("Score", 0)
+            gear_names, mini_names = materialize_entry_names(entry, mutate=True)
             fg_variants.append(
                 {
                     "data": cached_force,
-                    "gear": entry.get("gear", []),
-                    "minis": entry.get("minis", []),
+                    "gear": gear_names,
+                    "minis": mini_names,
                     "score": base_score,
                     "fg_score": cached_fg_score,
                     "_is_ga": str(entry.get("_source") or "") == "ga",
@@ -171,11 +173,12 @@ def _process_force_greats_cpu(
         if fg_variant:
             base_score = entry.get("base_score") or entry.get("score", 0)
             fg_score = fg_variant.get("Score", 0)
+            gear_names, mini_names = materialize_entry_names(entry, mutate=True)
             fg_variants.append(
                 {
                     "data": fg_variant,
-                    "gear": entry.get("gear", []),
-                    "minis": entry.get("minis", []),
+                    "gear": gear_names,
+                    "minis": mini_names,
                     "score": base_score,
                     "fg_score": fg_score,
                     "_is_ga": str(entry.get("_source") or "") == "ga",

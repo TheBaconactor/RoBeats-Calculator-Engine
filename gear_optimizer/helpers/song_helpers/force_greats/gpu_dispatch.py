@@ -11,6 +11,7 @@ from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
 
 from . import cache_validation, result_application
 from .entry_utils import eval_data_from_entry, expected_selected_element
+from ..ga_entry_utils import entry_loadout_hash, materialize_entry_names
 from ....core.color_flags import build_color_flags
 from ....core.fallback_monitor import warn_fallback
 from ....core.utils import get_selected_element, stats_signature
@@ -998,12 +999,13 @@ def process_force_greats_gpu_finder(
             # Preserve base score when reusing cached FG
             base_score = entry.get("base_score") or entry.get("score", 0)
             cached_fg_score = entry.get("fg_score", 0) or cached_force.get("Score", 0)
+            gear_names, mini_names = materialize_entry_names(entry, mutate=True)
 
             fg_variants.append(
                 {
                     "data": cached_force,
-                    "gear": entry.get("gear", []),
-                    "minis": entry.get("minis", []),
+                    "gear": gear_names,
+                    "minis": mini_names,
                     "score": base_score,  # Keep base score
                     "fg_score": cached_fg_score,  # Store FG score separately
                     "_is_ga": str(entry.get("_source") or "") == "ga",
@@ -2853,6 +2855,7 @@ def process_force_greats_gpu_finder(
 
     # Build fg_variants for UI/debug.
     fg_variants.clear()
+    seen_variant_hashes: set[str] = set()
     for h, entry in items:
         if str(h) not in retained_hashes:
             continue
@@ -2866,11 +2869,16 @@ def process_force_greats_gpu_finder(
         cfg = _entry_fg_config_dict(entry)
         if not _is_valid_fg_config(cfg):
             continue
+        gear_names, mini_names = materialize_entry_names(entry, mutate=True)
+        loadout_hash = str(entry_loadout_hash(entry) or h)
+        if loadout_hash in seen_variant_hashes:
+            continue
+        seen_variant_hashes.add(loadout_hash)
         fg_variants.append(
             {
                 "data": force_obj,
-                "gear": entry.get("gear", []),
-                "minis": entry.get("minis", []),
+                "gear": gear_names,
+                "minis": mini_names,
                 "score": base_score,
                 "fg_score": fg_score,
                 "base_score": base_score,

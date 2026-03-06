@@ -13,6 +13,7 @@ Extension rule:
 from collections.abc import Callable
 
 from ...core.utils import get_selected_element
+from .ga_entry_utils import entry_loadout_hash, materialize_candidate_names, materialize_entry_names
 from .item_utils import names_list
 from .retention import select_retained_hashes
 
@@ -162,6 +163,11 @@ def make_build_details_fn(
     keeps the persisted schema consistent.
     """
 
+    try:
+        from .force_greats.result_application import materialize_stats_from_payload
+    except Exception:
+        materialize_stats_from_payload = None
+
     def build_details(data_dict: dict) -> dict:
         if not isinstance(data_dict, dict) or not data_dict:
             return {}
@@ -170,12 +176,25 @@ def make_build_details_fn(
             hitsim_delta = int(hitsim_delta) if hitsim_delta is not None else None
         except Exception:
             hitsim_delta = None
+        selected_element = get_selected_element(data_dict, "")
+        stats_obj = data_dict.get("Stats")
+        if not (isinstance(stats_obj, dict) and stats_obj) and callable(materialize_stats_from_payload):
+            try:
+                stats_obj = materialize_stats_from_payload(
+                    data_dict,
+                    selected_element=selected_element,
+                    mutate_payload=False,
+                )
+            except Exception:
+                stats_obj = stats_obj if isinstance(stats_obj, dict) else {}
+        if not isinstance(stats_obj, dict):
+            stats_obj = {}
         return {
             "FT": data_dict.get("FT", 0),
             "FF": data_dict.get("FF", 0),
             "GemCounts": data_dict.get("GemCounts", {}),
-            "Stats": data_dict.get("Stats", {}),
-            "SelectedElement": get_selected_element(data_dict, ""),
+            "Stats": stats_obj,
+            "SelectedElement": selected_element,
             "PrimaryColor": primary_color,
             "SecondaryColor": secondary_color,
             "Difficulty": effective_difficulty,
@@ -515,8 +534,14 @@ def build_persistence_entries(
         except Exception:
             best_fg_hash = None
 
-        if isinstance(loadout_entries, dict) and best_fg_hash and best_fg_hash in loadout_entries:
-            best_fg = None
+        if isinstance(loadout_entries, dict) and best_fg_hash:
+            for entry in loadout_entries.values():
+                try:
+                    if str(entry_loadout_hash(entry) or "") == str(best_fg_hash):
+                        best_fg = None
+                        break
+                except Exception:
+                    continue
 
     if best_fg:
         best_fg_gear = best_fg.get("gear", [])
@@ -561,8 +586,7 @@ def build_persistence_entries(
             eval_data = eval_result.get("Data") or {}
             # Use BaseScore (true score) for DB storage; fall back for older payloads.
             eval_score = eval_result.get("BaseScore") or eval_result.get("Score", 0)
-            eval_gear = eval_result.get("Gear", [])
-            eval_minis = eval_result.get("Minis", [])
+            eval_gear, eval_minis = materialize_candidate_names(eval_result, mutate=True)
             eval_details = build_details_fn(eval_data)
 
             # If we're in a context that has the full HitSim inputs, ensure the base delta is present
@@ -704,10 +728,11 @@ def build_persistence_entries(
                         details_obj = dict(details_obj)
                         details_obj["hitsim_offset_delta_ms"] = int(delta_ms)
 
+            gear_names, mini_names = materialize_entry_names(entry, mutate=True)
             _append_entry(
                 entry.get("base_score") or entry.get("score", 0),
-                entry.get("gear", []),
-                entry.get("minis", []),
+                gear_names,
+                mini_names,
                 details_obj,
                 fg_score_to_save,
                 force_obj,

@@ -188,16 +188,6 @@ class GpuServiceClient:
             self._registry_static_handle_cache_max = 512
         self._registry_static_handle_cache_max = max(32, int(self._registry_static_handle_cache_max))
 
-        self._solve_static_handle_counter = 0
-        self._solve_static_handle_cache: "OrderedDict[tuple[Any, ...], dict[str, Any]]" = OrderedDict()
-        try:
-            self._solve_static_handle_cache_max = int(
-                os.environ.get("GPU_SERVICE_SOLVE_STATIC_CACHE_MAX", "512") or "512"
-            )
-        except Exception:
-            self._solve_static_handle_cache_max = 512
-        self._solve_static_handle_cache_max = max(32, int(self._solve_static_handle_cache_max))
-
     @property
     def executor(self) -> GpuExecutor:
         return self._executor
@@ -436,32 +426,6 @@ class GpuServiceClient:
             self._registry_static_handle_cache.popitem(last=False)
         return entry
 
-    def _solve_static_handle_entry(self, payload: dict[str, Any]) -> dict[str, Any] | None:
-        if not isinstance(payload, dict):
-            return None
-        if "timeline_grid" not in payload or "ref_arrays" not in payload:
-            return None
-        timeline_grid = payload.get("timeline_grid")
-        ref_arrays = payload.get("ref_arrays")
-        key = (int(id(timeline_grid)), int(id(ref_arrays)))
-        cached = self._solve_static_handle_cache.get(key)
-        if cached is not None:
-            self._solve_static_handle_cache.move_to_end(key)
-            return cached
-
-        self._solve_static_handle_counter += 1
-        entry = {
-            "handle": int(self._solve_static_handle_counter),
-            "registered": False,
-            "timeline_grid_ref": timeline_grid,
-            "ref_arrays_ref": ref_arrays,
-        }
-        self._solve_static_handle_cache[key] = entry
-        self._solve_static_handle_cache.move_to_end(key)
-        while len(self._solve_static_handle_cache) > int(self._solve_static_handle_cache_max):
-            self._solve_static_handle_cache.popitem(last=False)
-        return entry
-
     @staticmethod
     def _attach_handle_failure_reset(fut: Future, entry: dict[str, Any]) -> None:
         if not isinstance(entry, dict):
@@ -477,25 +441,6 @@ class GpuServiceClient:
             fut.add_done_callback(_on_done)
         except Exception:
             pass
-
-    def submit_solve_genomes(self, payload: dict[str, Any]) -> GpuJobHandle:
-        request_payload = dict(payload or {})
-        entry = self._solve_static_handle_entry(request_payload)
-        if entry is None:
-            return self.submit(GpuRequestType.SOLVE_GENOMES_WITH_FTFF, request_payload)
-
-        handle = int(entry.get("handle", 0) or 0)
-        inline_static = not bool(entry.get("registered", False))
-        request_payload["solve_static_handle"] = int(handle)
-        request_payload["solve_static_inline"] = bool(inline_static)
-        if not inline_static:
-            request_payload.pop("timeline_grid", None)
-            request_payload.pop("ref_arrays", None)
-
-        job = self.submit(GpuRequestType.SOLVE_GENOMES_WITH_FTFF, request_payload)
-        entry["registered"] = True
-        self._attach_handle_failure_reset(job.future, entry)
-        return job
 
     def submit_solve_genomes_from_registry(self, payload: dict[str, Any]) -> GpuJobHandle:
         request_payload = dict(payload or {})

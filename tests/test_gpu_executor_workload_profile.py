@@ -11,18 +11,18 @@ def test_summarize_batch_reports_workload_shape():
     plan = _BatchPlan(wait_ms=2, max_batch=16, mode="inproc", queue_depth_hint=12, pressure_hint=0.75)
     reqs = [
         GpuRequest(
-            request_type=GpuRequestType.SOLVE_GENOMES_WITH_FTFF,
+            request_type=GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
             request_id=1,
             worker_id=0,
-            payload={"genome_stats_list": [1] * 24},
+            payload={"population_indices": [1] * 24},
             submit_perf_ns=10_000_000,
             dequeue_perf_ns=13_000_000,
         ),
         GpuRequest(
-            request_type=GpuRequestType.SOLVE_GENOMES_WITH_FTFF,
+            request_type=GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
             request_id=2,
             worker_id=0,
-            payload={"genome_stats_list": [1] * 32},
+            payload={"population_indices": [1] * 32},
             submit_perf_ns=11_000_000,
             dequeue_perf_ns=15_500_000,
         ),
@@ -49,7 +49,7 @@ def test_summarize_batch_reports_workload_shape():
     assert metrics["batch_id"] == 7
     assert metrics["size"] == 3
     assert metrics["distinct_types"] == 2
-    assert metrics["dominant_type"] == GpuRequestType.SOLVE_GENOMES_WITH_FTFF.value
+    assert metrics["dominant_type"] == GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY.value
     assert metrics["dominant_share_pct"] > 60.0
     assert metrics["work_units"] >= 80.0
     assert metrics["avg_submit_age_ms"] > 0.0

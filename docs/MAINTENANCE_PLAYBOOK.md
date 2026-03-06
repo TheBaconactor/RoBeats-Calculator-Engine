@@ -50,7 +50,7 @@ Write path: `gear_optimizer/data/database.py` (`save_loadouts_batch()`).
 ### GPU IPC request payloads
 GPU executor request payloads are dicts keyed by request type.
 Type reference (partial, extended as needed):
-- `gear_optimizer/core/types.py` (`SolveGenomesWithFtffPayload`, `SolveGenomesFromRegistryPayload`, `SolveForceGreatsFinderPayload`)
+- `gear_optimizer/core/types.py` (`SolveGenomesFromRegistryPayload`, `SolveForceGreatsFinderPayload`)
 
 Executor: `gear_optimizer/solver/gpu_executor.py`.
 

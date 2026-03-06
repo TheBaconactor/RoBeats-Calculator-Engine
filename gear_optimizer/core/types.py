@@ -146,35 +146,6 @@ class SongResultPayload(TypedDict, total=False):
 BoolFlags = Tuple[bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool]
 
 
-class SolveGenomesWithFtffPayload(TypedDict, total=False):
-    """
-    Payload for `GpuRequestType.SOLVE_GENOMES_WITH_FTFF`.
-
-    This is intentionally minimal; fields are defined based on the GPU executor solve handler.
-    """
-
-    genome_stats_list: Any
-    timeline_grid: Any
-    ref_arrays: Any
-    song_slot: int
-    total_budget: int
-    gem_scale_fever: int
-
-    # color/stat flags (p/s x {ft,ff,pp,cm,fm,ov})
-    is_p_ft: bool
-    is_s_ft: bool
-    is_p_ff: bool
-    is_s_ff: bool
-    is_p_pp: bool
-    is_s_pp: bool
-    is_p_cm: bool
-    is_s_cm: bool
-    is_p_fm: bool
-    is_s_fm: bool
-    is_p_ov: bool
-    is_s_ov: bool
-
-
 class SolveGenomesFromRegistryPayload(TypedDict, total=False):
     """Payload for `GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY`."""
 

@@ -554,20 +554,15 @@ def decode_gpu_native_ga_runs_payload(
         # PERF/CPU NOTE:
         # - The GPU-selected payload already contains everything the in-flight pipeline needs
         #   (score + FT/FF + gem counts + selected element + (run,row) provenance).
-        # - Reconstructing full per-candidate `Stats` / `BaseStats` is expensive: it requires a large
-        #   gather+sum over `item_stats[genome_ids_mat]` plus per-candidate Python dict builds.
-        # - Keep that reconstruction OFF by default to lower CPU requirements on slower machines.
-        # - Opt in only for debugging/analysis/export tooling via GA_DECODE_INCLUDE_STATS=1.
-        include_stats = env_flag("GA_DECODE_INCLUDE_STATS", "0")
-        if not include_stats:
-            # ForceGreatsFinder needs per-candidate Stats to compute stat signatures and
-            # produce meaningful FG improvements. Candidate decoding is already limited
-            # (typically <= FG_CANDIDATE_LIMIT), so computing Stats here is acceptable.
-            include_stats = bool(cfg_data.get("fg_require_stats", False))
+        # - Reconstructing full per-candidate post-gem `Stats` is expensive.
+        # - ForceGreatsFinder grouping only needs `BaseStats`, so keep full `Stats`
+        #   reconstruction opt-in and carry only `BaseStats` on the hot path by default.
+        include_full_stats = env_flag("GA_DECODE_INCLUDE_STATS", "0")
+        include_base_stats = bool(include_full_stats or cfg_data.get("fg_require_stats", False))
 
         base_stats_arr = None
         sel_color_built = None
-        if include_stats:
+        if include_base_stats:
             base_stats_arr, sel_color_built = build_base_fixed_stats_array(base_stats_fixed, cfg_data)
 
         sel_color = str(cfg_data.get("selected_color", "") or "")
@@ -581,39 +576,39 @@ def decode_gpu_native_ga_runs_payload(
         item_stats_sum = None
         stat_names = None
 
-        if include_stats:
+        if include_base_stats:
             item_stats = registry.to_gpu_arrays()["item_stats"]  # (n_items, 10)
             t_stats = time.perf_counter() if perf else 0.0
             item_stats_sum = item_stats[genome_ids_mat].sum(axis=1)
 
-            # Gem contributions: (n_cand, 10)
-            n_cand = int(genome_ids_mat.shape[0])
-            gem_contributions = np.zeros((n_cand, 10), dtype=np.int32)
-            g_ft = results_mat[:, 1]
-            g_ff = results_mat[:, 2]
-            g_pp = results_mat[:, 3]
-            g_cm = results_mat[:, 4]
-            g_fm = results_mat[:, 5]
-            g_ov = results_mat[:, 6]
+            if include_full_stats:
+                # Gem contributions: (n_cand, 10)
+                n_cand = int(genome_ids_mat.shape[0])
+                gem_contributions = np.zeros((n_cand, 10), dtype=np.int32)
+                g_ft = results_mat[:, 1]
+                g_ff = results_mat[:, 2]
+                g_pp = results_mat[:, 3]
+                g_cm = results_mat[:, 4]
+                g_fm = results_mat[:, 5]
+                g_ov = results_mat[:, 6]
 
-            gem_contributions[:, 0] = g_pp * GEM_SCALE_NORMAL
-            gem_contributions[:, 1] = g_cm * GEM_SCALE_NORMAL
-            gem_contributions[:, 2] = g_fm * GEM_SCALE_FEVER
-            gem_contributions[:, 3] = g_ft * GEM_SCALE_FEVER
-            gem_contributions[:, 4] = g_ff * GEM_SCALE_FEVER
+                gem_contributions[:, 0] = g_pp * GEM_SCALE_NORMAL
+                gem_contributions[:, 1] = g_cm * GEM_SCALE_NORMAL
+                gem_contributions[:, 2] = g_fm * GEM_SCALE_FEVER
+                gem_contributions[:, 3] = g_ft * GEM_SCALE_FEVER
+                gem_contributions[:, 4] = g_ff * GEM_SCALE_FEVER
 
-            gem_contributions[:, 5] = g_ft * GEM_STAT_TO_ELEMENT_SCALE
-            gem_contributions[:, 6] = g_ff * GEM_STAT_TO_ELEMENT_SCALE
-            gem_contributions[:, 7] = g_fm * GEM_STAT_TO_ELEMENT_SCALE
-            gem_contributions[:, 8] = g_cm * GEM_STAT_TO_ELEMENT_SCALE
-            gem_contributions[:, 9] = g_pp * GEM_STAT_TO_ELEMENT_SCALE
+                gem_contributions[:, 5] = g_ft * GEM_STAT_TO_ELEMENT_SCALE
+                gem_contributions[:, 6] = g_ff * GEM_STAT_TO_ELEMENT_SCALE
+                gem_contributions[:, 7] = g_fm * GEM_STAT_TO_ELEMENT_SCALE
+                gem_contributions[:, 8] = g_cm * GEM_STAT_TO_ELEMENT_SCALE
+                gem_contributions[:, 9] = g_pp * GEM_STAT_TO_ELEMENT_SCALE
 
-            if 5 <= sel_color_idx <= 9:
-                gem_contributions[:, sel_color_idx] += g_ov * ELEMENTAL_GEM_SCALE
+                if 5 <= sel_color_idx <= 9:
+                    gem_contributions[:, sel_color_idx] += g_ov * ELEMENTAL_GEM_SCALE
 
-            final_stats_mat = base_stats_arr + item_stats_sum + gem_contributions
-
-            stat_names = STAT_NAMES
+                final_stats_mat = base_stats_arr + item_stats_sum + gem_contributions
+                stat_names = STAT_NAMES
 
         unique_evaluated: list[dict] = []
         n_cand = int(genome_ids_mat.shape[0])
@@ -623,12 +618,10 @@ def decode_gpu_native_ga_runs_payload(
         g_cm = results_mat[:, 4]
         g_fm = results_mat[:, 5]
         g_ov = results_mat[:, 6]
-        decode_genome = registry.decode_genome
-
         for i in range(n_cand):
             score_val = int(scores_vec[i])
             ids_row = genome_ids_mat[i]
-            genome = decode_genome(ids_row)
+            genome_ids = [int(x) for x in np.asarray(ids_row, dtype=np.int32).tolist()]
 
             g_ft_i = int(g_ft[i])
             g_ff_i = int(g_ff[i])
@@ -649,8 +642,9 @@ def decode_gpu_native_ga_runs_payload(
                 run_idx=int(sel_run_idx[i]),
                 row_idx=int(sel_rows[i]),
             )
+            data_obj["GenomeIDs"] = list(genome_ids)
 
-            if include_stats and stat_names is not None and base_stats_arr is not None and item_stats_sum is not None:
+            if include_base_stats and base_stats_arr is not None and item_stats_sum is not None:
                 # Always try to provide BaseStats when requested; ForceGreats batching can
                 # operate on BaseStats even if full post-gem Stats reconstruction fails.
                 try:
@@ -659,19 +653,20 @@ def decode_gpu_native_ga_runs_payload(
                     data_obj["BaseStats"] = base_stats
                 except Exception:
                     pass
-                try:
-                    if final_stats_mat is not None:
-                        row_stats = final_stats_mat[i]
-                        current_stats = build_stats_dict(row_stats)
-                        data_obj["Stats"] = current_stats
-                except Exception:
-                    pass
+                if include_full_stats and stat_names is not None:
+                    try:
+                        if final_stats_mat is not None:
+                            row_stats = final_stats_mat[i]
+                            current_stats = build_stats_dict(row_stats)
+                            data_obj["Stats"] = current_stats
+                    except Exception:
+                        pass
 
             cand_data = {
                 "Score": score_val,
                 "BaseScore": score_val,
-                "Gear": genome[:6],
-                "Minis": genome[6:9],
+                "GenomeIDs": list(genome_ids),
+                "_ga_registry": registry,
                 "Data": data_obj,
             }
             unique_evaluated.append(cand_data)
@@ -696,11 +691,17 @@ def decode_gpu_native_ga_runs_payload(
                 data_obj = cand_best.get("Data") or {}
                 if isinstance(data_obj, dict):
                     best_data = data_obj
-                best_gear = list(cand_best.get("Gear") or best_gear)
-                best_minis = list(cand_best.get("Minis") or best_minis)
+                cand_ids = cand_best.get("GenomeIDs")
+                if cand_ids is not None:
+                    try:
+                        cand_genome = registry.decode_genome(np.asarray(cand_ids, dtype=np.int32))
+                        best_gear = list(cand_genome[:6] or best_gear)
+                        best_minis = list(cand_genome[6:9] or best_minis)
+                    except Exception:
+                        pass
 
         if perf:
-            stats_ms = (time.perf_counter() - t_stats) * 1000.0 if (perf and include_stats) else 0.0
+            stats_ms = (time.perf_counter() - t_stats) * 1000.0 if (perf and include_base_stats) else 0.0
             total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
             print(
                 "[PERF][GADecode] "
@@ -999,15 +1000,18 @@ def decode_gpu_native_ga_runs_payload(
     select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
     proxy_ms = 0.0
 
-    # Vectorized stats computation for selected candidates only.
+    include_full_stats = env_flag("GA_DECODE_INCLUDE_STATS", "0")
+    include_base_stats = bool(include_full_stats or cfg_data.get("fg_require_stats", False))
+
+    # Vectorized stat reconstruction for selected candidates only.
     t_stats = time.perf_counter() if perf else 0.0
     sel_color = str(cfg_data.get("selected_color", ""))
     sel_color_idx = _selected_color_stat_index(sel_color)
-    base_stats_arr = build_stats_array(base_stats_fixed)
+    base_stats_arr = build_stats_array(base_stats_fixed) if include_base_stats else None
 
     n_cand = len(selected_stub_indices)
     genome_ids_mat = stub_genome_ids[selected_stub_indices]
-    item_stats_sum = item_stats[genome_ids_mat].sum(axis=1)
+    item_stats_sum = item_stats[genome_ids_mat].sum(axis=1) if include_base_stats else None
     scores_vec = stub_scores[selected_stub_indices].astype(np.int32, copy=False)
     sel_run_idx = stub_run_idx[selected_stub_indices]
     sel_rows = 1 + stub_pop_idx[selected_stub_indices]
@@ -1021,8 +1025,6 @@ def decode_gpu_native_ga_runs_payload(
     except Exception:
         results_mat = runs_payload[sel_run_idx, sel_rows, 1 + n_slots : 1 + n_slots + 7]
 
-    # Gem contributions: (n_cand, 10)
-    gem_contributions = np.zeros((n_cand, 10), dtype=np.int32)
     g_ft = results_mat[:, 1]
     g_ff = results_mat[:, 2]
     g_pp = results_mat[:, 3]
@@ -1030,45 +1032,43 @@ def decode_gpu_native_ga_runs_payload(
     g_fm = results_mat[:, 5]
     g_ov = results_mat[:, 6]
 
-    gem_contributions[:, 0] = g_pp * GEM_SCALE_NORMAL
-    gem_contributions[:, 1] = g_cm * GEM_SCALE_NORMAL
-    gem_contributions[:, 2] = g_fm * GEM_SCALE_FEVER
-    gem_contributions[:, 3] = g_ft * GEM_SCALE_FEVER
-    gem_contributions[:, 4] = g_ff * GEM_SCALE_FEVER
+    final_stats_mat = None
+    if include_full_stats and base_stats_arr is not None and item_stats_sum is not None:
+        gem_contributions = np.zeros((n_cand, 10), dtype=np.int32)
+        gem_contributions[:, 0] = g_pp * GEM_SCALE_NORMAL
+        gem_contributions[:, 1] = g_cm * GEM_SCALE_NORMAL
+        gem_contributions[:, 2] = g_fm * GEM_SCALE_FEVER
+        gem_contributions[:, 3] = g_ft * GEM_SCALE_FEVER
+        gem_contributions[:, 4] = g_ff * GEM_SCALE_FEVER
 
-    gem_contributions[:, 5] = g_ft * GEM_STAT_TO_ELEMENT_SCALE
-    gem_contributions[:, 6] = g_ff * GEM_STAT_TO_ELEMENT_SCALE
-    gem_contributions[:, 7] = g_fm * GEM_STAT_TO_ELEMENT_SCALE
-    gem_contributions[:, 8] = g_cm * GEM_STAT_TO_ELEMENT_SCALE
-    gem_contributions[:, 9] = g_pp * GEM_STAT_TO_ELEMENT_SCALE
+        gem_contributions[:, 5] = g_ft * GEM_STAT_TO_ELEMENT_SCALE
+        gem_contributions[:, 6] = g_ff * GEM_STAT_TO_ELEMENT_SCALE
+        gem_contributions[:, 7] = g_fm * GEM_STAT_TO_ELEMENT_SCALE
+        gem_contributions[:, 8] = g_cm * GEM_STAT_TO_ELEMENT_SCALE
+        gem_contributions[:, 9] = g_pp * GEM_STAT_TO_ELEMENT_SCALE
 
-    if 5 <= sel_color_idx <= 9:
-        gem_contributions[:, sel_color_idx] += g_ov * ELEMENTAL_GEM_SCALE
+        if 5 <= sel_color_idx <= 9:
+            gem_contributions[:, sel_color_idx] += g_ov * ELEMENTAL_GEM_SCALE
 
-    final_stats_mat = base_stats_arr + item_stats_sum + gem_contributions
+        final_stats_mat = base_stats_arr + item_stats_sum + gem_contributions
 
     unique_evaluated: list[dict] = []
-    decode_genome = registry.decode_genome
-    decode_names = getattr(registry, "decode_names", None)
     for i in range(n_cand):
         score_val = int(scores_vec[i])
         ids_row = genome_ids_mat[i]
-        genome = decode_genome(ids_row)
-        if callable(decode_names):
-            names = decode_names(ids_row)
-            gear_names = names[:6]
-            mini_names = names[6:9]
-        else:
-            gear_names = [g.get("Name", "None") for g in genome[:6]]
-            mini_names = [m.get("Name", "None") for m in genome[6:9]]
+        genome_ids = [int(x) for x in np.asarray(ids_row, dtype=np.int32).tolist()]
 
-        # Build stats dict from numpy array (fast).
-        row_stats = final_stats_mat[i]
-        current_stats = build_stats_dict(row_stats)
+        current_stats = None
+        if include_full_stats and final_stats_mat is not None:
+            # Build stats dict from numpy array (fast).
+            row_stats = final_stats_mat[i]
+            current_stats = build_stats_dict(row_stats)
         # Pre-gem base stats (before FT/FF/PP/CM/FM/OV allocation). This is useful for downstream
         # ForceGreatsFinder batching to avoid re-deriving base stats from post-gem Stats + GemCounts.
-        base_row_stats = base_stats_arr + item_stats_sum[i]
-        base_stats = build_stats_dict(base_row_stats)
+        base_stats = None
+        if include_base_stats and base_stats_arr is not None and item_stats_sum is not None:
+            base_row_stats = base_stats_arr + item_stats_sum[i]
+            base_stats = build_stats_dict(base_row_stats)
 
         g_ft_i = int(g_ft[i])
         g_ff_i = int(g_ff[i])
@@ -1091,15 +1091,13 @@ def decode_gpu_native_ga_runs_payload(
             run_idx=int(sel_run_idx[i]),
             row_idx=int(sel_rows[i]),
         )
+        data_obj["GenomeIDs"] = list(genome_ids)
 
         cand_data = {
             "Score": score_val,
             "BaseScore": score_val,
-            "Genome": genome,
-            "Gear": genome[:6],
-            "Minis": genome[6:9],
-            "GearNames": gear_names,
-            "MiniNames": mini_names,
+            "GenomeIDs": list(genome_ids),
+            "_ga_registry": registry,
             "Data": data_obj,
         }
         unique_evaluated.append(cand_data)
@@ -1137,8 +1135,14 @@ def decode_gpu_native_ga_runs_payload(
             data_obj = cand_best.get("Data") or {}
             if isinstance(data_obj, dict):
                 best_data = data_obj
-            best_gear = list(cand_best.get("Gear") or best_gear)
-            best_minis = list(cand_best.get("Minis") or best_minis)
+            cand_ids = cand_best.get("GenomeIDs")
+            if cand_ids is not None:
+                try:
+                    cand_genome = registry.decode_genome(np.asarray(cand_ids, dtype=np.int32))
+                    best_gear = list(cand_genome[:6] or best_gear)
+                    best_minis = list(cand_genome[6:9] or best_minis)
+                except Exception:
+                    pass
 
     return best_data, list(best_gear), list(best_minis), unique_evaluated
 
@@ -2208,8 +2212,8 @@ def solve_coevolution_genetic(
         )
     except Exception:
         cfg_data["ga_convergence_trace_song_filter"] = ""
-    # ForceGreatsFinder runs after GA and requires Stats for downstream FG batching.
-    # Keep this flag on the cfg_data object so the GPU decode step can include Stats
+    # ForceGreatsFinder runs after GA and requires BaseStats for downstream FG batching.
+    # Keep this flag on cfg_data so the GPU decode step can include BaseStats
     # without relying on an environment variable.
     try:
         from ..core.config import read_iteration_engine_settings

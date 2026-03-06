@@ -52,6 +52,8 @@ def test_prepare_fg_job_sync_disables_sync_db_query_while_prefetch_pending(monke
         build_details_fn,
         db_loadouts_full=None,
         allow_db_query=True,
+        materialize_ga_details=True,
+        ga_registry=None,
     ):
         seen["allow_db_query"] = bool(allow_db_query)
         return {}

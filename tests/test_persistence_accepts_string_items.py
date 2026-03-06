@@ -1,4 +1,4 @@
-from gear_optimizer.helpers.song_helpers.persistence import build_db_payload, make_build_details_fn
+from gear_optimizer.helpers.song_helpers.persistence import build_db_payload, build_persistence_entries, make_build_details_fn
 
 
 def test_build_db_payload_accepts_string_items():
@@ -181,3 +181,73 @@ def test_make_build_details_fn_preserves_hitsim_offset_delta():
     assert details["SecondaryColor"] == "Flow"
     assert details["Difficulty"] == "Hard"
     assert details["hitsim_offset_delta_ms"] == 13
+
+
+def test_make_build_details_fn_materializes_stats_from_base_stats():
+    build_details = make_build_details_fn("Rush", "Flow", "Hard")
+    details = build_details(
+        {
+            "BaseStats": {
+                "Perfect Points": 10,
+                "Combo Multiplier": 20,
+                "Fever Multiplier": 30,
+                "Fever Time": 5,
+                "Fever Fill Rate": 6,
+                "Rush": 7,
+                "Flow": 8,
+            },
+            "GemCounts": {
+                "Perfect Points": 1,
+                "Combo Multiplier": 1,
+                "Fever Multiplier": 1,
+                "Element": 1,
+            },
+            "FT": 1,
+            "FF": 2,
+            "Selected Element": "Rush",
+        }
+    )
+
+    stats = details.get("Stats") or {}
+    assert stats["Perfect Points"] > 10
+    assert stats["Fever Time"] > 5
+    assert stats["Rush"] > 7
+
+
+def test_build_persistence_entries_materializes_lazy_ga_entry_names():
+    class _FakeRegistry:
+        @staticmethod
+        def decode_names(ids):
+            return [f"I{int(x)}" for x in ids[:9]]
+
+    build_details = make_build_details_fn("Rush", "Flow", "Hard")
+    persist_entries = build_persistence_entries(
+        {
+            "score": 999,
+            "gear": ["Top Hat"],
+            "minis": ["Mini A", "Mini B", "Mini C"],
+            "details": {"Stats": {}, "ForceGreats": {}},
+            "fg_score": 0,
+        },
+        [],
+        {
+            "ga:1,2,3,4,5,6,7,8,9": {
+                "score": 999,
+                "base_score": 999,
+                "fg_score": 0,
+                "gear": [],
+                "minis": [],
+                "details": {"Stats": {}, "ForceGreats": {}},
+                "force": None,
+                "eval_data": {"Selected Element": "Rush"},
+                "_source": "ga",
+                "ga_genome_ids": [1, 2, 3, 4, 5, 6, 7, 8, 9],
+                "_ga_registry": _FakeRegistry(),
+            }
+        },
+        build_details,
+    )
+
+    lazy_row = next((row for row in persist_entries if row.get("gear") == ["I1", "I2", "I3", "I4", "I5", "I6"]), None)
+    assert lazy_row is not None
+    assert lazy_row.get("minis") == ["I7", "I8", "I9"]
