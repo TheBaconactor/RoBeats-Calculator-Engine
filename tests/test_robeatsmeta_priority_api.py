@@ -92,6 +92,25 @@ def test_reprioritize_pending_tasks_moves_requested_song_family_to_front(tmp_pat
     assert second_visit["reason"] == "fresh_compute"
 
 
+def test_record_song_visit_skips_when_same_family_is_already_processing(tmp_path):
+    state_path = tmp_path / "priority_state.json"
+    song_meta_path = tmp_path / "song_meta_index.json"
+    _write_song_meta_index(song_meta_path)
+
+    api = RoBeatsMetaOptimizerApi(state_path=state_path, song_meta_index_path=song_meta_path)
+    api.mark_song_started(song_id="Alpha (Hard) by Artist (Run 3/25)")
+
+    result = api.record_song_visit(
+        song_id="Alpha (Normal) by Artist",
+        title="Alpha",
+        artist="Artist",
+        now=1_700_000_500,
+    )
+
+    assert result["queued"] is False
+    assert result["reason"] == "already_processing"
+
+
 def test_service_defaults_force_continuous_all_difficulty_mode(monkeypatch, tmp_path):
     monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
 

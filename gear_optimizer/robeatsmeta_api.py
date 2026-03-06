@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -33,6 +34,13 @@ def _build_bundle_key(*, title: str = "", artist: str = "", song_id: str = "") -
     if normalized_title or normalized_artist:
         return f"{normalized_title}|{normalized_artist}"
     return f"song:{_normalize_text(song_id)}"
+
+
+def _strip_run_suffix(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    return re.sub(r"\s*\(Run\s+\d+\s*/\s*\d+\)\s*$", "", text).strip()
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -122,6 +130,7 @@ class RoBeatsMetaOptimizerApi:
         self._song_meta_mtime_ns: int | None = None
         self._bundle_by_song_id: dict[str, SongBundleRef] = {}
         self._last_task_priority_signature: tuple[tuple[str, int, int], ...] | None = None
+        self._active_bundle_key: str = ""
 
     @staticmethod
     def service_mode_enabled() -> bool:
@@ -184,6 +193,16 @@ class RoBeatsMetaOptimizerApi:
                 }
             )
 
+            if str(self._active_bundle_key or "").strip() == str(bundle.bundle_key or "").strip():
+                entries[bundle.bundle_key] = entry
+                if changed:
+                    self._write_state_unlocked(state)
+                return {
+                    "queued": False,
+                    "reason": "already_processing",
+                    "bundle_key": bundle.bundle_key,
+                }
+
             if last_computed_at > 0 and ts - last_computed_at < self._visit_ttl_seconds:
                 entries[bundle.bundle_key] = entry
                 if changed:
@@ -212,6 +231,7 @@ class RoBeatsMetaOptimizerApi:
             return False
 
         ts = _safe_int(now if now is not None else time.time())
+        self._active_bundle_key = ""
         with _file_lock(self._lock_path):
             state = self._load_state_unlocked()
             changed = self._prune_state_unlocked(state, ts)
@@ -310,6 +330,10 @@ class RoBeatsMetaOptimizerApi:
         tasks[safe_start:] = reordered
         return True
 
+    def mark_song_started(self, *, song_id: str) -> None:
+        bundle = self._resolve_bundle(song_id=song_id)
+        self._active_bundle_key = str(bundle.bundle_key or "").strip()
+
     def _pending_bundle_state(self, *, now: int | None = None) -> tuple[list[str], tuple[tuple[str, int, int], ...]]:
         ts = _safe_int(now if now is not None else time.time())
         with _file_lock(self._lock_path):
@@ -364,7 +388,7 @@ class RoBeatsMetaOptimizerApi:
         return Path(BIN_DIR).resolve() / "robeatsmeta_optimizer_status.json"
 
     def _resolve_bundle(self, *, song_id: str, title: str | None = None, artist: str | None = None) -> SongBundleRef:
-        cleaned_song_id = str(song_id or "").strip()
+        cleaned_song_id = _strip_run_suffix(str(song_id or "").strip())
         cleaned_title = str(title or "").strip()
         cleaned_artist = str(artist or "").strip()
 

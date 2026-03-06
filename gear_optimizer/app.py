@@ -615,6 +615,17 @@ class GearOptimizerApp:
         except Exception as exc:
             logging.warning(f"[RoBeatsMeta] Failed to mark song computed: {type(exc).__name__}: {exc}")
 
+    def _mark_robeatsmeta_song_started(self, song_name: str | None) -> None:
+        if not song_name or not self._optimizer_priority_api_enabled():
+            return
+        api = self._robeatsmeta_api
+        if api is None:
+            return
+        try:
+            api.mark_song_started(song_id=str(song_name))
+        except Exception as exc:
+            logging.warning(f"[RoBeatsMeta] Failed to mark song started: {type(exc).__name__}: {exc}")
+
     def _update_robeatsmeta_runtime_status(
         self,
         *,
@@ -1466,6 +1477,8 @@ class GearOptimizerApp:
                 self._progress.add_completed(1)
         if song:
             self._run_current_song_label = str(song)
+            if status.strip().lower().startswith("running"):
+                self._mark_robeatsmeta_song_started(str(song))
         self._runtime_status_name = str(status or self._runtime_status_name or "running")
         if self._progress is not None:
             self._progress.set_status(song, status)
@@ -2481,6 +2494,7 @@ class GearOptimizerApp:
                     if self._progress is not None:
                         try:
                             self._run_current_song_label = str(task_key)
+                            self._mark_robeatsmeta_song_started(str(task_key))
                             self._progress.set_status(str(task_key), "Running")
                         except Exception:
                             pass
