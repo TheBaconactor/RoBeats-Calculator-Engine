@@ -12,7 +12,6 @@ to ensure fields are bound before Taichi JIT-compiles the kernels.
 """
 
 import taichi as ti
-from taichi.lang import simt
 
 from .runtime import get_block_dim
 
@@ -93,41 +92,16 @@ def create_metal_kernels():
         GEM_STAT_TO_ELEMENT: ti.i32 = 3
         MAX_STAT: ti.i32 = 160
 
-        # Atomic-free reduction:
-        # - One block per genome, lanes stride across combos within this chunk.
-        # - Reduce local bests through shared memory.
-        # - Only update the global best when this chunk beats the previous best score
-        #   (matches the old atomic_max semantics: ties do not update).
-        block_dim = ti.cast(_KERNEL_BLOCK_DIM, ti.i32)
-        total_threads = n_genomes * block_dim
-        shared_scores = simt.block.SharedArray((_KERNEL_BLOCK_DIM,), ti.i32)
-        shared_combos = simt.block.SharedArray((_KERNEL_BLOCK_DIM,), ti.i32)
-        shared_max_ft = simt.block.SharedArray((1,), ti.i32)
-        shared_max_ff = simt.block.SharedArray((1,), ti.i32)
+        for genome_idx, local_c in ti.ndrange(n_genomes, combo_count):
+            combo_idx: ti.i32 = combo_offset + local_c
+            if combo_idx >= n_combos:
+                continue
 
-        for tid in range(total_threads):
-            genome_idx = tid // block_dim
-            lane = tid - (genome_idx * block_dim)
+            ft: ti.i32 = ftff_combo_ft[combo_idx]
+            ff: ti.i32 = ftff_combo_ff[combo_idx]
 
-            # Compute max FT/FF gems once per genome (lane 0), then share.
-            if lane == 0:
-                stats0 = genome_base_stats[genome_idx]
-                base_ft_stat0: ti.i32 = stats0[5]
-                base_ff_stat0: ti.i32 = stats0[6]
-                remaining_ft0: ti.i32 = MAX_STAT - base_ft_stat0
-                remaining_ff0: ti.i32 = MAX_STAT - base_ff_stat0
-                max_ft_gems0: ti.i32 = remaining_ft0 // gem_scale_fever if remaining_ft0 > 0 else 0
-                max_ff_gems0: ti.i32 = remaining_ff0 // gem_scale_fever if remaining_ff0 > 0 else 0
-                if max_ft_gems0 > total_budget:
-                    max_ft_gems0 = total_budget
-                if max_ff_gems0 > total_budget:
-                    max_ff_gems0 = total_budget
-                shared_max_ft[0] = max_ft_gems0
-                shared_max_ff[0] = max_ff_gems0
-            simt.block.sync()
-
-            max_ft_gems: ti.i32 = shared_max_ft[0]
-            max_ff_gems: ti.i32 = shared_max_ff[0]
+            if ft + ff > total_budget:
+                continue
 
             stats = genome_base_stats[genome_idx]
             base_pp: ti.i32 = stats[0]
@@ -138,87 +112,60 @@ def create_metal_kernels():
             base_ft_stat: ti.i32 = stats[5]
             base_ff_stat: ti.i32 = stats[6]
 
-            local_best_score: ti.i32 = -1
-            local_best_combo: ti.i32 = -1
-            local_c: ti.i32 = lane
-            while local_c < combo_count:
-                combo_idx: ti.i32 = combo_offset + local_c
-                if combo_idx < n_combos:
-                    ft: ti.i32 = ftff_combo_ft[combo_idx]
-                    ff: ti.i32 = ftff_combo_ff[combo_idx]
-                    if ft + ff <= total_budget:
-                        if ft <= max_ft_gems and ff <= ti.min(total_budget - ft, max_ff_gems):
-                            ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
-                            ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
-                            ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
-                            ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
+            remaining_ft: ti.i32 = MAX_STAT - base_ft_stat
+            remaining_ff: ti.i32 = MAX_STAT - base_ff_stat
+            max_ft_gems: ti.i32 = remaining_ft // gem_scale_fever if remaining_ft > 0 else 0
+            max_ff_gems: ti.i32 = remaining_ff // gem_scale_fever if remaining_ff > 0 else 0
+            if max_ft_gems > total_budget:
+                max_ft_gems = total_budget
+            if max_ff_gems > total_budget:
+                max_ff_gems = total_budget
 
-                            count_fever: ti.i32 = grid_count_body_fever[song_slot, ft_idx, ff_idx]
-                            count_normal: ti.i32 = grid_count_body_normal[song_slot, ft_idx, ff_idx]
-                            head_len: ti.i32 = grid_head_len[song_slot, ft_idx, ff_idx]
+            if ft > max_ft_gems:
+                continue
+            if ff > ti.min(total_budget - ft, max_ff_gems):
+                continue
 
-                            budget: ti.i32 = total_budget - ft - ff
-                            p_val: ti.i32 = (
-                                base_p_val
-                                + (ft * GEM_STAT_TO_ELEMENT * is_p_ft)
-                                + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
-                            )
-                            s_val: ti.i32 = (
-                                base_s_val
-                                + (ft * GEM_STAT_TO_ELEMENT * is_s_ft)
-                                + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
-                            )
+            ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
+            ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
+            ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
+            ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
 
-                            res_vec = optimize_core_device(
-                                budget,
-                                base_pp,
-                                base_cm,
-                                base_fm,
-                                p_val,
-                                s_val,
-                                is_p_pp,
-                                is_s_pp,
-                                is_p_cm,
-                                is_s_cm,
-                                is_p_fm,
-                                is_s_fm,
-                                is_p_ov,
-                                is_s_ov,
-                                head_len,
-                                count_fever,
-                                count_normal,
-                                song_slot,
-                                ft_idx,
-                                ff_idx,
-                            )
-                            score: ti.i32 = res_vec[0]
-                            if score >= 0:
-                                if score > local_best_score or (
-                                    score == local_best_score and combo_idx > local_best_combo
-                                ):
-                                    local_best_score = score
-                                    local_best_combo = combo_idx
-                local_c += block_dim
+            count_fever: ti.i32 = grid_count_body_fever[song_slot, ft_idx, ff_idx]
+            count_normal: ti.i32 = grid_count_body_normal[song_slot, ft_idx, ff_idx]
+            head_len: ti.i32 = grid_head_len[song_slot, ft_idx, ff_idx]
 
-            shared_scores[lane] = local_best_score
-            shared_combos[lane] = local_best_combo
-            simt.block.sync()
+            budget: ti.i32 = total_budget - ft - ff
+            p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
+            s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-            if lane == 0:
-                best_score: ti.i32 = -1
-                best_combo: ti.i32 = -1
-                for i in range(_KERNEL_BLOCK_DIM):
-                    s = shared_scores[i]
-                    c = shared_combos[i]
-                    if s > best_score or (s == best_score and c > best_combo):
-                        best_score = s
-                        best_combo = c
-
-                if best_score >= 0:
-                    prev = chunk_best_score[genome_idx]
-                    if best_score > prev:
-                        chunk_best_score[genome_idx] = best_score
-                        chunk_best_idx[genome_idx] = best_combo
+            res_vec = optimize_core_device(
+                budget,
+                base_pp,
+                base_cm,
+                base_fm,
+                p_val,
+                s_val,
+                is_p_pp,
+                is_s_pp,
+                is_p_cm,
+                is_s_cm,
+                is_p_fm,
+                is_s_fm,
+                is_p_ov,
+                is_s_ov,
+                head_len,
+                count_fever,
+                count_normal,
+                song_slot,
+                ft_idx,
+                ff_idx,
+            )
+            score: ti.i32 = res_vec[0]
+            if score >= 0:
+                old = ti.atomic_max(chunk_best_score[genome_idx], score)
+                if old < score:
+                    chunk_best_idx[genome_idx] = combo_idx
 
     @ti.kernel
     def _ga_write_best_results_from_key_kernel(
@@ -339,42 +286,23 @@ def create_metal_kernels():
         use_hints: ti.i32,
         prune_plateaus: ti.i32,
     ):
-        """Metal-safe warm-start kernel (atomic-free shared-memory reduction)."""
+        """Metal-safe warm-start kernel using 32-bit atomics."""
         ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
         GEM_STAT_TO_ELEMENT: ti.i32 = 3
         MAX_STAT: ti.i32 = 160
         w_ft: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ft << 1) + is_s_ft)
         w_ff: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ff << 1) + is_s_ff)
 
-        block_dim = ti.cast(_KERNEL_BLOCK_DIM, ti.i32)
-        total_threads = n_genomes * block_dim
-        shared_scores = simt.block.SharedArray((_KERNEL_BLOCK_DIM,), ti.i32)
-        shared_combos = simt.block.SharedArray((_KERNEL_BLOCK_DIM,), ti.i32)
-        shared_max_ft = simt.block.SharedArray((1,), ti.i32)
-        shared_max_ff = simt.block.SharedArray((1,), ti.i32)
+        for genome_idx, local_c in ti.ndrange(n_genomes, combo_count):
+            combo_idx: ti.i32 = combo_offset + local_c
+            if combo_idx >= n_combos:
+                continue
 
-        for tid in range(total_threads):
-            genome_idx = tid // block_dim
-            lane = tid - (genome_idx * block_dim)
+            ft: ti.i32 = ftff_combo_ft[combo_idx]
+            ff: ti.i32 = ftff_combo_ff[combo_idx]
 
-            if lane == 0:
-                stats0 = genome_base_stats[genome_idx]
-                base_ft_stat0: ti.i32 = stats0[5]
-                base_ff_stat0: ti.i32 = stats0[6]
-                remaining_ft0: ti.i32 = MAX_STAT - base_ft_stat0
-                remaining_ff0: ti.i32 = MAX_STAT - base_ff_stat0
-                max_ft_gems0: ti.i32 = remaining_ft0 // gem_scale_fever if remaining_ft0 > 0 else 0
-                max_ff_gems0: ti.i32 = remaining_ff0 // gem_scale_fever if remaining_ff0 > 0 else 0
-                if max_ft_gems0 > total_budget:
-                    max_ft_gems0 = total_budget
-                if max_ff_gems0 > total_budget:
-                    max_ff_gems0 = total_budget
-                shared_max_ft[0] = max_ft_gems0
-                shared_max_ff[0] = max_ff_gems0
-            simt.block.sync()
-
-            max_ft_gems: ti.i32 = shared_max_ft[0]
-            max_ff_gems: ti.i32 = shared_max_ff[0]
+            if ft + ff > total_budget:
+                continue
 
             stats = genome_base_stats[genome_idx]
             base_pp: ti.i32 = stats[0]
@@ -385,204 +313,166 @@ def create_metal_kernels():
             base_ft_stat: ti.i32 = stats[5]
             base_ff_stat: ti.i32 = stats[6]
 
-            local_best_score: ti.i32 = -1
-            local_best_combo: ti.i32 = -1
+            remaining_ft: ti.i32 = MAX_STAT - base_ft_stat
+            remaining_ff: ti.i32 = MAX_STAT - base_ff_stat
+            max_ft_gems: ti.i32 = remaining_ft // gem_scale_fever if remaining_ft > 0 else 0
+            max_ff_gems: ti.i32 = remaining_ff // gem_scale_fever if remaining_ff > 0 else 0
+            if max_ft_gems > total_budget:
+                max_ft_gems = total_budget
+            if max_ff_gems > total_budget:
+                max_ff_gems = total_budget
 
-            local_c: ti.i32 = lane
-            while local_c < combo_count:
-                combo_idx: ti.i32 = combo_offset + local_c
-                if combo_idx < n_combos:
-                    ft: ti.i32 = ftff_combo_ft[combo_idx]
-                    ff: ti.i32 = ftff_combo_ff[combo_idx]
-                    if ft + ff <= total_budget:
-                        if ft <= max_ft_gems and ff <= ti.min(total_budget - ft, max_ff_gems):
-                            ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
-                            ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
-                            ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
-                            ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
+            if ft > max_ft_gems:
+                continue
+            if ff > ti.min(total_budget - ft, max_ff_gems):
+                continue
 
-                            do_eval: ti.i32 = 1
-                            if prune_plateaus != 0:
-                                sig0 = grid_sig0[song_slot, ft_idx, ff_idx]
-                                sig1 = grid_sig1[song_slot, ft_idx, ff_idx]
-                                pruned: ti.i32 = 0
+            ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
+            ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
+            ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
+            ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
 
-                                if pruned == 0 and w_ft == 0 and ft > 0:
-                                    ft2 = ft - 1
-                                    ff2 = ff
-                                    if ff2 <= ti.min(total_budget - ft2, max_ff_gems):
-                                        ft2_val = ft_stat_val - gem_scale_fever
-                                        ft2_idx = ti.min(MAX_STAT, ti.max(0, ft2_val))
-                                        if (
-                                            grid_sig0[song_slot, ft2_idx, ff_idx] == sig0
-                                            and grid_sig1[song_slot, ft2_idx, ff_idx] == sig1
-                                        ):
-                                            pruned = 1
+            if prune_plateaus != 0:
+                sig0 = grid_sig0[song_slot, ft_idx, ff_idx]
+                sig1 = grid_sig1[song_slot, ft_idx, ff_idx]
+                pruned: ti.i32 = 0
 
-                                if pruned == 0 and w_ff == 0 and ff > 0:
-                                    ft2 = ft
-                                    ff2 = ff - 1
-                                    if ff2 <= ti.min(total_budget - ft2, max_ff_gems):
-                                        ff2_val = ff_stat_val - gem_scale_fever
-                                        ff2_idx = ti.min(MAX_STAT, ti.max(0, ff2_val))
-                                        if (
-                                            grid_sig0[song_slot, ft_idx, ff2_idx] == sig0
-                                            and grid_sig1[song_slot, ft_idx, ff2_idx] == sig1
-                                        ):
-                                            pruned = 1
+                if pruned == 0 and w_ft == 0 and ft > 0:
+                    ft2 = ft - 1
+                    ff2 = ff
+                    if ff2 <= ti.min(total_budget - ft2, max_ff_gems):
+                        ft2_val = ft_stat_val - gem_scale_fever
+                        ft2_idx = ti.min(MAX_STAT, ti.max(0, ft2_val))
+                        if (
+                            grid_sig0[song_slot, ft2_idx, ff_idx] == sig0
+                            and grid_sig1[song_slot, ft2_idx, ff_idx] == sig1
+                        ):
+                            pruned = 1
 
-                                if pruned == 0 and w_ft > w_ff and ff > 0 and (ft + 1) <= max_ft_gems:
-                                    ft2 = ft + 1
-                                    ff2 = ff - 1
-                                    if ff2 <= ti.min(total_budget - ft2, max_ff_gems):
-                                        ft2_val = ft_stat_val + gem_scale_fever
-                                        ff2_val = ff_stat_val - gem_scale_fever
-                                        ft2_idx = ti.min(MAX_STAT, ti.max(0, ft2_val))
-                                        ff2_idx = ti.min(MAX_STAT, ti.max(0, ff2_val))
-                                        if (
-                                            grid_sig0[song_slot, ft2_idx, ff2_idx] == sig0
-                                            and grid_sig1[song_slot, ft2_idx, ff2_idx] == sig1
-                                        ):
-                                            pruned = 1
+                if pruned == 0 and w_ff == 0 and ff > 0:
+                    ft2 = ft
+                    ff2 = ff - 1
+                    if ff2 <= ti.min(total_budget - ft2, max_ff_gems):
+                        ff2_val = ff_stat_val - gem_scale_fever
+                        ff2_idx = ti.min(MAX_STAT, ti.max(0, ff2_val))
+                        if (
+                            grid_sig0[song_slot, ft_idx, ff2_idx] == sig0
+                            and grid_sig1[song_slot, ft_idx, ff2_idx] == sig1
+                        ):
+                            pruned = 1
 
-                                if pruned == 0 and w_ff > w_ft and ft > 0 and (ff + 1) <= max_ff_gems:
-                                    ft2 = ft - 1
-                                    ff2 = ff + 1
-                                    if ff2 <= ti.min(total_budget - ft2, max_ff_gems):
-                                        ft2_val = ft_stat_val - gem_scale_fever
-                                        ff2_val = ff_stat_val + gem_scale_fever
-                                        ft2_idx = ti.min(MAX_STAT, ti.max(0, ft2_val))
-                                        ff2_idx = ti.min(MAX_STAT, ti.max(0, ff2_val))
-                                        if (
-                                            grid_sig0[song_slot, ft2_idx, ff2_idx] == sig0
-                                            and grid_sig1[song_slot, ft2_idx, ff2_idx] == sig1
-                                        ):
-                                            pruned = 1
+                if pruned == 0 and w_ft > w_ff and ff > 0 and (ft + 1) <= max_ft_gems:
+                    ft2 = ft + 1
+                    ff2 = ff - 1
+                    if ff2 <= ti.min(total_budget - ft2, max_ff_gems):
+                        ft2_val = ft_stat_val + gem_scale_fever
+                        ff2_val = ff_stat_val - gem_scale_fever
+                        ft2_idx = ti.min(MAX_STAT, ti.max(0, ft2_val))
+                        ff2_idx = ti.min(MAX_STAT, ti.max(0, ff2_val))
+                        if (
+                            grid_sig0[song_slot, ft2_idx, ff2_idx] == sig0
+                            and grid_sig1[song_slot, ft2_idx, ff2_idx] == sig1
+                        ):
+                            pruned = 1
 
-                                if (
-                                    pruned == 0
-                                    and w_ff == w_ft
-                                    and w_ft != 0
-                                    and ft > 0
-                                    and (ff + 1) <= max_ff_gems
-                                ):
-                                    ft2 = ft - 1
-                                    ff2 = ff + 1
-                                    if ff2 <= ti.min(total_budget - ft2, max_ff_gems):
-                                        ft2_val = ft_stat_val - gem_scale_fever
-                                        ff2_val = ff_stat_val + gem_scale_fever
-                                        ft2_idx = ti.min(MAX_STAT, ti.max(0, ft2_val))
-                                        ff2_idx = ti.min(MAX_STAT, ti.max(0, ff2_val))
-                                        if (
-                                            grid_sig0[song_slot, ft2_idx, ff2_idx] == sig0
-                                            and grid_sig1[song_slot, ft2_idx, ff2_idx] == sig1
-                                        ):
-                                            pruned = 1
+                if pruned == 0 and w_ff > w_ft and ft > 0 and (ff + 1) <= max_ff_gems:
+                    ft2 = ft - 1
+                    ff2 = ff + 1
+                    if ff2 <= ti.min(total_budget - ft2, max_ff_gems):
+                        ft2_val = ft_stat_val - gem_scale_fever
+                        ff2_val = ff_stat_val + gem_scale_fever
+                        ft2_idx = ti.min(MAX_STAT, ti.max(0, ft2_val))
+                        ff2_idx = ti.min(MAX_STAT, ti.max(0, ff2_val))
+                        if (
+                            grid_sig0[song_slot, ft2_idx, ff2_idx] == sig0
+                            and grid_sig1[song_slot, ft2_idx, ff2_idx] == sig1
+                        ):
+                            pruned = 1
 
-                                if pruned != 0:
-                                    do_eval = 0
+                if pruned == 0 and w_ff == w_ft and w_ft != 0 and ft > 0 and (ff + 1) <= max_ff_gems:
+                    ft2 = ft - 1
+                    ff2 = ff + 1
+                    if ff2 <= ti.min(total_budget - ft2, max_ff_gems):
+                        ft2_val = ft_stat_val - gem_scale_fever
+                        ff2_val = ff_stat_val + gem_scale_fever
+                        ft2_idx = ti.min(MAX_STAT, ti.max(0, ft2_val))
+                        ff2_idx = ti.min(MAX_STAT, ti.max(0, ff2_val))
+                        if (
+                            grid_sig0[song_slot, ft2_idx, ff2_idx] == sig0
+                            and grid_sig1[song_slot, ft2_idx, ff2_idx] == sig1
+                        ):
+                            pruned = 1
 
-                            if do_eval != 0:
-                                count_fever: ti.i32 = grid_count_body_fever[song_slot, ft_idx, ff_idx]
-                                count_normal: ti.i32 = grid_count_body_normal[song_slot, ft_idx, ff_idx]
-                                head_len: ti.i32 = grid_head_len[song_slot, ft_idx, ff_idx]
+                if pruned != 0:
+                    continue
 
-                                budget: ti.i32 = total_budget - ft - ff
-                                p_val: ti.i32 = (
-                                    base_p_val
-                                    + (ft * GEM_STAT_TO_ELEMENT * is_p_ft)
-                                    + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
-                                )
-                                s_val: ti.i32 = (
-                                    base_s_val
-                                    + (ft * GEM_STAT_TO_ELEMENT * is_s_ft)
-                                    + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
-                                )
+            count_fever: ti.i32 = grid_count_body_fever[song_slot, ft_idx, ff_idx]
+            count_normal: ti.i32 = grid_count_body_normal[song_slot, ft_idx, ff_idx]
+            head_len: ti.i32 = grid_head_len[song_slot, ft_idx, ff_idx]
 
-                                # Taichi requires a pre-definition before use across branches.
-                                res_vec = ti.Vector([0, 0, 0, 0, 0, 0, 0])
+            budget: ti.i32 = total_budget - ft - ff
+            p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
+            s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
-                                if use_hints != 0:
-                                    hint = genome_hint_allocation[genome_idx]
-                                    res_vec = local_search_from_hint(
-                                        hint[0],
-                                        hint[1],
-                                        hint[2],
-                                        hint[3],
-                                        budget,
-                                        base_pp,
-                                        base_cm,
-                                        base_fm,
-                                        p_val,
-                                        s_val,
-                                        is_p_pp,
-                                        is_s_pp,
-                                        is_p_cm,
-                                        is_s_cm,
-                                        is_p_fm,
-                                        is_s_fm,
-                                        is_p_ov,
-                                        is_s_ov,
-                                        head_len,
-                                        count_fever,
-                                        count_normal,
-                                        song_slot,
-                                        ft_idx,
-                                        ff_idx,
-                                    )
-                                else:
-                                    res_vec = optimize_core_device(
-                                        budget,
-                                        base_pp,
-                                        base_cm,
-                                        base_fm,
-                                        p_val,
-                                        s_val,
-                                        is_p_pp,
-                                        is_s_pp,
-                                        is_p_cm,
-                                        is_s_cm,
-                                        is_p_fm,
-                                        is_s_fm,
-                                        is_p_ov,
-                                        is_s_ov,
-                                        head_len,
-                                        count_fever,
-                                        count_normal,
-                                        song_slot,
-                                        ft_idx,
-                                        ff_idx,
-                                    )
+            res_vec = ti.Vector([0, 0, 0, 0, 0, 0, 0])
 
-                                score: ti.i32 = res_vec[0]
-                                if score >= 0:
-                                    if score > local_best_score or (
-                                        score == local_best_score and combo_idx > local_best_combo
-                                    ):
-                                        local_best_score = score
-                                        local_best_combo = combo_idx
+            if use_hints != 0:
+                hint = genome_hint_allocation[genome_idx]
+                res_vec = local_search_from_hint(
+                    hint[0],
+                    hint[1],
+                    hint[2],
+                    hint[3],
+                    budget,
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    p_val,
+                    s_val,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    song_slot,
+                    ft_idx,
+                    ff_idx,
+                )
+            else:
+                res_vec = optimize_core_device(
+                    budget,
+                    base_pp,
+                    base_cm,
+                    base_fm,
+                    p_val,
+                    s_val,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    song_slot,
+                    ft_idx,
+                    ff_idx,
+                )
 
-                local_c += block_dim
-
-            shared_scores[lane] = local_best_score
-            shared_combos[lane] = local_best_combo
-            simt.block.sync()
-
-            if lane == 0:
-                best_score: ti.i32 = -1
-                best_combo: ti.i32 = -1
-                for i in range(_KERNEL_BLOCK_DIM):
-                    s = shared_scores[i]
-                    c = shared_combos[i]
-                    if s > best_score or (s == best_score and c > best_combo):
-                        best_score = s
-                        best_combo = c
-
-                if best_score >= 0:
-                    prev = chunk_best_score[genome_idx]
-                    if best_score > prev:
-                        chunk_best_score[genome_idx] = best_score
-                        chunk_best_idx[genome_idx] = best_combo
+            score: ti.i32 = res_vec[0]
+            if score >= 0:
+                old = ti.atomic_max(chunk_best_score[genome_idx], score)
+                if old < score:
+                    chunk_best_idx[genome_idx] = combo_idx
 
     # Assign to module-level names
     ga_find_best_combo_key_kernel = _ga_find_best_combo_key_kernel
