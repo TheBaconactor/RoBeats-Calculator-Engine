@@ -1,21 +1,35 @@
 from __future__ import annotations
 
+import http.client
 import json
+import logging
 import os
 import re
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
+from urllib.parse import urlsplit
 
 from .core.constants import BIN_DIR, PATHS
+from .data.database import get_evolution_db_path
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _DEFAULT_VISIT_TTL_SECONDS = 60 * 60 * 24
 _DEFAULT_SONG_REPEATS = 25
-_DEFAULT_INFLIGHT_SONGS = 12
+_DEFAULT_INFLIGHT_SONGS = 30
 _DEFAULT_MAX_PENDING_VISITS = 10
+
+
+def _runtime_timestamp(now: int | float | None = None) -> int:
+    if now is None:
+        return int(time.time_ns() // 1_000_000)
+    try:
+        return int(now)
+    except Exception:
+        return int(time.time_ns() // 1_000_000)
 
 
 def _env_truthy(name: str, default: bool = False) -> bool:
@@ -109,6 +123,23 @@ class RoBeatsMetaOptimizerApi:
     the front of the next work slice.
     """
 
+    _backend_compat_cache: dict[tuple[str, str], bool] = {}
+
+    @staticmethod
+    def _resolve_song_meta_index_path_static() -> Path:
+        configured = str(os.environ.get("ROBEATSMETA_SONG_META_INDEX_PATH", "") or "").strip()
+        if configured:
+            return Path(configured).expanduser().resolve()
+
+        candidates = [
+            Path(PATHS.script_dir).resolve().parent / "RoBeatsMeta" / "Data" / "song_meta_index.json",
+            Path(PATHS.script_dir).resolve() / "Data" / "song_meta_index.json",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return candidates[0]
+
     def __init__(
         self,
         *,
@@ -135,10 +166,72 @@ class RoBeatsMetaOptimizerApi:
         self._song_meta_mtime_ns: int | None = None
         self._bundle_by_song_id: dict[str, SongBundleRef] = {}
         self._last_task_priority_signature: tuple[tuple[str, int, int], ...] | None = None
+        try:
+            self._backend_mode_enabled = bool(
+                self.service_mode_enabled(song_meta_index_path=self._song_meta_index_path)
+            )
+        except Exception:
+            self._backend_mode_enabled = False
+        self._runtime_status_push_url = self._resolve_runtime_status_push_url()
+        self._runtime_status_push_token = str(os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_TOKEN", "") or "").strip()
+        self._runtime_status_push_fail_until = 0.0
+        self._runtime_status_push_failure_count = 0
+        self._last_runtime_status_snapshot: dict[str, Any] | None = None
+        self._runtime_status_state_lock = threading.Lock()
+        self._runtime_status_pending_event = threading.Event()
+        self._runtime_status_flushed_event = threading.Event()
+        self._runtime_status_flushed_event.set()
+        self._runtime_status_stop = False
+        self._runtime_status_pending: dict[str, Any] | None = None
+        self._runtime_status_current: dict[str, Any] | None = None
+        self._runtime_status_current = self.read_runtime_status()
+        self._runtime_status_thread = threading.Thread(
+            target=self._runtime_status_loop,
+            name="RoBeatsMetaStatusWriter",
+            daemon=True,
+        )
+        self._runtime_status_thread.start()
+        try:
+            self._runtime_status_push_timeout_sec = max(
+                0.05,
+                float(os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_TIMEOUT_SEC", "0.35") or "0.35"),
+            )
+        except Exception:
+            self._runtime_status_push_timeout_sec = 0.35
 
-    @staticmethod
-    def service_mode_enabled() -> bool:
-        return _env_truthy("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", default=False)
+    @classmethod
+    def _backend_compatible_detected(cls, *, song_meta_index_path: str | os.PathLike[str] | None = None) -> bool:
+        try:
+            index_path = (
+                Path(song_meta_index_path).expanduser().resolve()
+                if song_meta_index_path is not None
+                else cls._resolve_song_meta_index_path_static()
+            )
+        except Exception:
+            index_path = None
+
+        if index_path is None or not index_path.exists():
+            return False
+
+        try:
+            canonical_db_path = Path(get_evolution_db_path()).expanduser().resolve()
+        except Exception:
+            canonical_db_path = None
+
+        if canonical_db_path is None or not canonical_db_path.exists():
+            return False
+        key = (str(index_path), str(canonical_db_path))
+        cached = cls._backend_compat_cache.get(key)
+        if cached is not None:
+            return bool(cached)
+        cls._backend_compat_cache[key] = True
+        return True
+
+    @classmethod
+    def service_mode_enabled(cls, *, song_meta_index_path: str | os.PathLike[str] | None = None) -> bool:
+        if _env_truthy("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", default=False):
+            return True
+        return cls._backend_compatible_detected(song_meta_index_path=song_meta_index_path)
 
     @classmethod
     def priority_queue_enabled(cls) -> bool:
@@ -146,8 +239,11 @@ class RoBeatsMetaOptimizerApi:
             return True
         return cls.service_mode_enabled()
 
+    def backend_mode_enabled(self) -> bool:
+        return bool(getattr(self, "_backend_mode_enabled", False))
+
     def apply_service_defaults(self, cfg: Any) -> bool:
-        if not self.service_mode_enabled() or cfg is None:
+        if not self.backend_mode_enabled() or cfg is None:
             return False
 
         if not cfg.has_section("IterationEngine"):
@@ -406,24 +502,119 @@ class RoBeatsMetaOptimizerApi:
         return Path(BIN_DIR).resolve() / "robeatsmeta_song_priority_queue.json"
 
     def _resolve_song_meta_index_path(self) -> Path:
-        configured = str(os.environ.get("ROBEATSMETA_SONG_META_INDEX_PATH", "") or "").strip()
-        if configured:
-            return Path(configured).expanduser().resolve()
-
-        candidates = [
-            Path(PATHS.script_dir).resolve().parent / "RoBeatsMeta" / "Data" / "song_meta_index.json",
-            Path(PATHS.script_dir).resolve() / "Data" / "song_meta_index.json",
-        ]
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-        return candidates[0]
+        return self._resolve_song_meta_index_path_static()
 
     def _resolve_status_path(self) -> Path:
         configured = str(os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_PATH", "") or "").strip()
         if configured:
             return Path(configured).expanduser().resolve()
         return Path(BIN_DIR).resolve() / "robeatsmeta_optimizer_status.json"
+
+    def _resolve_runtime_status_push_url(self) -> str:
+        configured = str(os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_URL", "") or "").strip()
+        if configured:
+            return configured
+        if self.backend_mode_enabled():
+            return "http://127.0.0.1:8000/robeatsmeta/internal/optimizer/status"
+        return ""
+
+    def _push_runtime_status_direct(self, state: dict[str, Any]) -> None:
+        push_url = str(self._runtime_status_push_url or "").strip()
+        if not push_url:
+            return
+        now_ts = float(time.time())
+        if now_ts < float(self._runtime_status_push_fail_until or 0.0):
+            return
+
+        try:
+            parsed = urlsplit(push_url)
+            scheme = str(parsed.scheme or "http").strip().lower()
+            host = str(parsed.hostname or "").strip()
+            if not host:
+                return
+            port = int(parsed.port or (443 if scheme == "https" else 80))
+            path = str(parsed.path or "/").strip() or "/"
+            if parsed.query:
+                path = f"{path}?{parsed.query}"
+            body = json.dumps(
+                {
+                    "available": True,
+                    "status": str(state.get("status") or ""),
+                    "current_song": str(state.get("current_song") or ""),
+                    "completed": _safe_int(state.get("completed"), 0),
+                    "total": _safe_int(state.get("total"), 0),
+                    "failed": _safe_int(state.get("failed"), 0),
+                    "updated_at": _safe_int(state.get("updated_at"), 0),
+                },
+                ensure_ascii=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            headers = {
+                "Content-Type": "application/json",
+                "Content-Length": str(len(body)),
+            }
+            if self._runtime_status_push_token:
+                headers["X-RoBeatsMeta-Optimizer-Token"] = self._runtime_status_push_token
+
+            connection_cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
+            conn = connection_cls(host, port, timeout=float(self._runtime_status_push_timeout_sec))
+            try:
+                conn.request("POST", path, body=body, headers=headers)
+                response = conn.getresponse()
+                response.read()
+                if int(response.status) < 200 or int(response.status) >= 300:
+                    raise RuntimeError(f"optimizer status push HTTP {int(response.status)}")
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+            self._runtime_status_push_failure_count = 0
+            self._runtime_status_push_fail_until = 0.0
+        except Exception as exc:
+            self._runtime_status_push_failure_count = min(8, int(self._runtime_status_push_failure_count) + 1)
+            backoff = min(10.0, 0.5 * (2 ** max(0, self._runtime_status_push_failure_count - 1)))
+            self._runtime_status_push_fail_until = float(time.time()) + float(backoff)
+            logging.getLogger(__name__).warning(
+                "Failed to push optimizer runtime status directly: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+
+    def _runtime_status_loop(self) -> None:
+        while True:
+            self._runtime_status_pending_event.wait()
+            if self._runtime_status_stop:
+                return
+            while True:
+                with self._runtime_status_state_lock:
+                    state = dict(self._runtime_status_pending or {}) if self._runtime_status_pending is not None else None
+                    self._runtime_status_pending = None
+                    if state is None:
+                        self._runtime_status_pending_event.clear()
+                        self._runtime_status_flushed_event.set()
+                        break
+                    self._runtime_status_flushed_event.clear()
+                try:
+                    with _file_lock(self._status_lock_path):
+                        self._write_status_unlocked(state)
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "Failed to persist optimizer runtime status: %s: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
+                try:
+                    self._push_runtime_status_direct(state)
+                except Exception:
+                    pass
+                with self._runtime_status_state_lock:
+                    self._runtime_status_current = dict(state)
+                    if self._runtime_status_pending is None:
+                        self._runtime_status_pending_event.clear()
+                        self._runtime_status_flushed_event.set()
+                        break
 
     def _resolve_bundle(self, *, song_id: str, title: str | None = None, artist: str | None = None) -> SongBundleRef:
         cleaned_song_id = _strip_run_suffix(str(song_id or "").strip())
@@ -569,9 +760,11 @@ class RoBeatsMetaOptimizerApi:
         failed: int | None = None,
         now: int | None = None,
     ) -> dict[str, Any]:
-        ts = _safe_int(now if now is not None else time.time())
-        with _file_lock(self._status_lock_path):
-            state = self._load_status_unlocked()
+        ts = _runtime_timestamp(now)
+        with self._runtime_status_state_lock:
+            state = dict(self._runtime_status_current or {})
+            if not state:
+                state = self._load_status_unlocked()
             if status is not None:
                 state["status"] = str(status or "").strip() or state.get("status") or "idle"
             if current_song is not None:
@@ -582,8 +775,21 @@ class RoBeatsMetaOptimizerApi:
                 state["total"] = max(0, int(total))
             if failed is not None:
                 state["failed"] = max(0, int(failed))
+            comparable_state = {
+                "status": str(state.get("status") or ""),
+                "current_song": str(state.get("current_song") or ""),
+                "completed": _safe_int(state.get("completed"), 0),
+                "total": _safe_int(state.get("total"), 0),
+                "failed": _safe_int(state.get("failed"), 0),
+            }
+            if comparable_state == (self._last_runtime_status_snapshot or {}):
+                return dict(state)
             state["updated_at"] = ts
-            self._write_status_unlocked(state)
+            self._last_runtime_status_snapshot = dict(comparable_state)
+            self._runtime_status_current = dict(state)
+            self._runtime_status_pending = dict(state)
+            self._runtime_status_flushed_event.clear()
+            self._runtime_status_pending_event.set()
             return dict(state)
 
     def clear_runtime_status(self, *, status: str = "idle", now: int | None = None) -> dict[str, Any]:
@@ -597,8 +803,17 @@ class RoBeatsMetaOptimizerApi:
         )
 
     def read_runtime_status(self) -> dict[str, Any]:
+        with self._runtime_status_state_lock:
+            if self._runtime_status_current:
+                return dict(self._runtime_status_current)
         with _file_lock(self._status_lock_path):
-            return dict(self._load_status_unlocked())
+            state = dict(self._load_status_unlocked())
+        with self._runtime_status_state_lock:
+            self._runtime_status_current = dict(state)
+        return state
+
+    def flush_runtime_status(self, *, timeout: float = 5.0) -> bool:
+        return bool(self._runtime_status_flushed_event.wait(timeout=max(0.0, float(timeout))))
 
     @staticmethod
     def _task_song_name(task: tuple) -> str:

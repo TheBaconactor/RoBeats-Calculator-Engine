@@ -59,12 +59,14 @@ def test_save_loadouts_batch_respects_explicit_db_path(tmp_path, monkeypatch):
 def test_async_db_saver_mirrors_overlay_db_in_backend_mode(tmp_path, monkeypatch):
     canonical_db = tmp_path / "canonical.db"
     overlay_db = tmp_path / "overlay.db"
+    song_meta_path = tmp_path / "song_meta_index.json"
     song_name = "Backend Overlay Song"
 
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(canonical_db))
     monkeypatch.setenv("EVOLUTION_OVERLAY_DB_PATH", str(overlay_db))
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
+    monkeypatch.setenv("ROBEATSMETA_SONG_META_INDEX_PATH", str(song_meta_path))
     monkeypatch.setenv("POST_TEAM_BUFF_TIERS", "0")
+    song_meta_path.write_text("[]", encoding="utf-8")
 
     init_db()
 

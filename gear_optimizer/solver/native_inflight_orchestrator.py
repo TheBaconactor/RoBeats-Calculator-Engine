@@ -1367,6 +1367,7 @@ def run_native_inflight_song_pipeline(
     total_tasks: int | None = None,
     stop_requested=None,
     progress_cb=None,
+    bundle_completed_cb=None,
 ) -> None:
     if not tasks:
         return
@@ -1861,6 +1862,43 @@ def run_native_inflight_song_pipeline(
         thread_name_prefix="GADecode",
     )
     decode_inflight: deque[_NativeSong] = deque()
+
+    active_runtime_song_label = ""
+
+    def _active_runtime_song() -> str:
+        try:
+            if ga_inflight:
+                song = ga_inflight[0]
+                return str(getattr(song, "task_key", "") or getattr(song, "song_name", "")).strip()
+        except Exception:
+            pass
+        try:
+            if decode_inflight:
+                song = decode_inflight[0]
+                return str(getattr(song, "task_key", "") or getattr(song, "song_name", "")).strip()
+        except Exception:
+            pass
+        try:
+            if fg_futures:
+                song = fg_futures[0][0]
+                return str(getattr(song, "task_key", "") or getattr(song, "song_name", "")).strip()
+        except Exception:
+            pass
+        return ""
+
+    def _emit_active_runtime_song(*, force: bool = False) -> None:
+        nonlocal active_runtime_song_label
+        song_label = _active_runtime_song()
+        if not force and song_label == active_runtime_song_label:
+            return
+        active_runtime_song_label = str(song_label or "").strip()
+        if not active_runtime_song_label:
+            return
+        _emit_progress(
+            completed_delta=0,
+            failed_delta=0,
+            record_info={"song": active_runtime_song_label, "status": "RUNNING"},
+        )
 
     fg_workers_default = min(4, inflight_limit)
     fg_workers = fg_workers_default
@@ -2980,6 +3018,11 @@ def run_native_inflight_song_pipeline(
                 completed_songs.add(song.task_key)
                 if memory_resume_tracker:
                     memory_resume_tracker.mark_completed(song.song_name)
+                if bundle_completed_cb is not None:
+                    try:
+                        bundle_completed_cb(song.task_key, completed_songs)
+                    except Exception:
+                        pass
                 try:
                     record_info = dict(record_info or {})
                     # Prefer the task key so repeats show "(Run i/N)" and don't look like a single song run.
@@ -3189,6 +3232,8 @@ def run_native_inflight_song_pipeline(
                         _continuous_note_fg_submit()
                         did_work = True
                         submit_budget -= 1
+
+            _emit_active_runtime_song()
 
             if did_work:
                 last_progress = time.monotonic()

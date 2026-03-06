@@ -1,5 +1,6 @@
 import configparser
 import json
+import time
 
 from gear_optimizer.robeatsmeta_api import RoBeatsMetaOptimizerApi
 
@@ -172,11 +173,16 @@ def test_record_song_visit_respects_pending_queue_cap_without_eviction(tmp_path,
 
 
 def test_service_defaults_force_continuous_all_difficulty_mode(monkeypatch, tmp_path):
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
+    song_meta_path = tmp_path / "song_meta_index.json"
+    canonical_db = tmp_path / "canonical.db"
+    song_meta_path.write_text("[]", encoding="utf-8")
+    canonical_db.write_text("", encoding="utf-8")
+    monkeypatch.setenv("ROBEATSMETA_SONG_META_INDEX_PATH", str(song_meta_path))
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(canonical_db))
 
     api = RoBeatsMetaOptimizerApi(
         state_path=tmp_path / "priority_state.json",
-        song_meta_index_path=tmp_path / "song_meta_index.json",
+        song_meta_index_path=song_meta_path,
     )
     cfg = configparser.ConfigParser()
 
@@ -186,7 +192,7 @@ def test_service_defaults_force_continuous_all_difficulty_mode(monkeypatch, tmp_
     assert cfg.get("IterationEngine", "LoopForever") == "true"
     assert cfg.get("IterationEngine", "SongRepeats") == "25"
     assert cfg.get("IterationEngine", "UseEvolutionDB") == "true"
-    assert cfg.get("IterationEngine", "InFlightSongs") == "12"
+    assert cfg.get("IterationEngine", "InFlightSongs") == "30"
     assert cfg.get("CalculateSong", "Difficulty") == "All"
     assert cfg.get("CalculateSong", "Song_Name") == ""
     assert cfg.get("CalculateSong", "TargetPrimary") == "all"
@@ -198,7 +204,7 @@ def test_app_priority_keeps_backend_new_songs_ahead_of_visit_reprioritization():
 
     class DummyApi:
         @staticmethod
-        def priority_queue_enabled():
+        def backend_mode_enabled():
             return True
 
         @staticmethod
@@ -221,3 +227,47 @@ def test_app_priority_keeps_backend_new_songs_ahead_of_visit_reprioritization():
         "Old Song 2",
         "Old Song 1",
     ]
+
+
+def test_app_marks_song_batch_computed_only_after_final_task(tmp_path, monkeypatch):
+    from gear_optimizer.app import GearOptimizerApp
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_PRIORITY_QUEUE", "1")
+
+    state_path = tmp_path / "priority_state.json"
+    status_path = tmp_path / "status.json"
+    song_meta_path = tmp_path / "song_meta_index.json"
+    payload = [
+        {"id": "Alpha (Easy) by Artist", "title": "Alpha", "artist": "Artist", "difficulty": "Easy"},
+        {"id": "Alpha (Normal) by Artist", "title": "Alpha", "artist": "Artist", "difficulty": "Normal"},
+    ]
+    song_meta_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    api = RoBeatsMetaOptimizerApi(
+        state_path=state_path,
+        status_path=status_path,
+        song_meta_index_path=song_meta_path,
+    )
+    now = int(time.time())
+    api.record_song_visit(song_id="Alpha (Easy) by Artist", title="Alpha", artist="Artist", now=now)
+
+    app = GearOptimizerApp.__new__(GearOptimizerApp)
+    app._robeatsmeta_api = api
+    app._run_tasks_ref = [
+        ("alpha_easy.txt", "Alpha (Easy) by Artist", "Easy", {}, None, None, None, None, None, None, None, None, None, None, None, None, {"repeat_index": 1, "repeat_total": 2, "ga_seed": 1}),
+        ("alpha_normal.txt", "Alpha (Normal) by Artist", "Normal", {}, None, None, None, None, None, None, None, None, None, None, None, None, {"repeat_index": 2, "repeat_total": 2, "ga_seed": 2}),
+    ]
+    completed = {"Alpha (Easy) by Artist (Run 1/2)"}
+    app._run_completed_ref = completed
+
+    marked_mid = app._maybe_mark_robeatsmeta_song_batch_computed("Alpha (Easy) by Artist (Run 1/2)", completed)
+    state_mid = json.loads(state_path.read_text(encoding="utf-8"))
+    entry_mid = state_mid["entries"]["alpha|artist"]
+    assert marked_mid is False
+    assert entry_mid.get("last_computed_at", 0) == 0
+
+    completed.add("Alpha (Normal) by Artist (Run 2/2)")
+    marked_final = app._maybe_mark_robeatsmeta_song_batch_computed("Alpha (Normal) by Artist (Run 2/2)", completed)
+    state_final = json.loads(state_path.read_text(encoding="utf-8"))
+    entry_final = state_final["entries"]["alpha|artist"]
+    assert marked_final is True
+    assert int(entry_final.get("last_computed_at", 0)) > 0

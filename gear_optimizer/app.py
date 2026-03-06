@@ -562,7 +562,7 @@ class GearOptimizerApp:
 
     def _optimizer_priority_api_enabled(self) -> bool:
         api = getattr(self, "_robeatsmeta_api", None)
-        return bool(api is not None and api.priority_queue_enabled())
+        return bool(api is not None and api.backend_mode_enabled())
 
     def _prioritize_robeatsmeta_song_queue(
         self,
@@ -614,6 +614,51 @@ class GearOptimizerApp:
             api.mark_song_computed(song_id=song_name)
         except Exception as exc:
             logging.warning(f"[RoBeatsMeta] Failed to mark song computed: {type(exc).__name__}: {exc}")
+
+    def _maybe_mark_robeatsmeta_song_batch_computed(
+        self,
+        song_name: str | None,
+        completed_songs: set[str] | None = None,
+    ) -> bool:
+        if not song_name or not self._optimizer_priority_api_enabled():
+            return False
+        api = self._robeatsmeta_api
+        if api is None:
+            return False
+        tasks = getattr(self, "_run_tasks_ref", None)
+        if not isinstance(tasks, list) or not tasks:
+            return False
+        completed = completed_songs if isinstance(completed_songs, set) else getattr(self, "_run_completed_ref", None)
+        if not isinstance(completed, set):
+            return False
+
+        try:
+            target_bundle_key = api._bundle_key_for_song_id(str(song_name))
+        except Exception:
+            return False
+        if not str(target_bundle_key or "").strip():
+            return False
+
+        for task in tasks:
+            try:
+                task_label = self._task_queue_label(task)
+            except Exception:
+                continue
+            if not task_label or task_label in completed:
+                continue
+            try:
+                task_bundle_key = api._bundle_key_for_song_id(str(task_label))
+            except Exception:
+                continue
+            if str(task_bundle_key or "").strip() == str(target_bundle_key or "").strip():
+                return False
+
+        try:
+            api.mark_song_computed(song_id=str(song_name))
+            return True
+        except Exception as exc:
+            logging.warning(f"[RoBeatsMeta] Failed to mark song batch computed: {type(exc).__name__}: {exc}")
+            return False
 
     def _mark_robeatsmeta_song_started(self, song_name: str | None) -> None:
         if not song_name or not self._optimizer_priority_api_enabled():
@@ -726,7 +771,7 @@ class GearOptimizerApp:
                 self._robeatsmeta_api = RoBeatsMetaOptimizerApi()
                 if self._robeatsmeta_api.apply_service_defaults(cfg):
                     print(
-                        "[RoBeatsMeta] Service mode enabled: LoopForever=true, SongRepeats=25, InFlightSongs=12, Difficulty=All.",
+                        "[RoBeatsMeta] Service mode enabled: LoopForever=true, SongRepeats=25, InFlightSongs=30, Difficulty=All.",
                     )
             except Exception as exc:
                 self._robeatsmeta_api = None
@@ -1100,7 +1145,7 @@ class GearOptimizerApp:
 
     def _build_song_queue(self, cfg, paths, use_evo_db):
         diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols = self._get_filter_params(cfg)
-        backend_service_mode = bool(RoBeatsMetaOptimizerApi.service_mode_enabled())
+        backend_service_mode = bool(getattr(getattr(self, "_robeatsmeta_api", None), "backend_mode_enabled", lambda: False)())
         self._backend_priority_song_names = set()
 
         resume_context = build_memory_guard_resume_context(diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols)
@@ -1434,6 +1479,13 @@ class GearOptimizerApp:
             else:
                 status_label = "running"
         self._runtime_status_name = str(status_label or self._runtime_status_name or "running")
+        status_lower = str(self._runtime_status_name or "").strip().lower()
+        if song_label:
+            try:
+                if status_lower.startswith("running"):
+                    self._mark_robeatsmeta_song_started(str(song_label))
+            except Exception:
+                pass
         if self._progress is not None:
             try:
                 if song_label:
@@ -1821,7 +1873,7 @@ class GearOptimizerApp:
             pass
         song_repeats = max(1, min(int(song_repeats), 100))
         used_ga_seeds: set[int] = set()
-        backend_service_mode = bool(RoBeatsMetaOptimizerApi.service_mode_enabled())
+        backend_service_mode = bool(getattr(getattr(self, "_robeatsmeta_api", None), "backend_mode_enabled", lambda: False)())
         backend_priority_song_names = {
             str(name or "").strip()
             for name in getattr(self, "_backend_priority_song_names", set())
@@ -2374,6 +2426,7 @@ class GearOptimizerApp:
                     total_tasks=len(tasks),
                     stop_requested=self._stop_requested_now,
                     progress_cb=self._progress_event,
+                    bundle_completed_cb=self._maybe_mark_robeatsmeta_song_batch_computed,
                 )
                 inflight_ok = True
             except Exception as inflight_err:
@@ -2534,7 +2587,6 @@ class GearOptimizerApp:
                             "_song_name": song_name,
                             "song": song_name,
                         }
-                    self._mark_robeatsmeta_song_computed(res)
                     self._reprioritize_robeatsmeta_tasks(tasks, start_index=i + 1)
                     progress_completed += 1
                     failed_delta = 1 if isinstance(res, dict) and "_error" in res else 0
@@ -2621,7 +2673,6 @@ class GearOptimizerApp:
                     res = {"_error": str(seq_err), "_error_type": type(seq_err).__name__, "_song_name": t[1]}
 
                 self._maybe_prefetch_ready_song(task_index=i, task_list=task_list, preload_state=preload_state)
-                self._mark_robeatsmeta_song_computed(res)
                 self._reprioritize_robeatsmeta_tasks(task_list, start_index=i + 1)
 
                 yield res
@@ -3219,6 +3270,7 @@ class GearOptimizerApp:
                 completed_songs.add(task_key)
             if memory_resume_tracker and song_name:
                 memory_resume_tracker.mark_completed(song_name)
+            self._maybe_mark_robeatsmeta_song_batch_computed(str(task_label or song_name or ""), completed_songs)
 
             self._progress_on_result(res, completed=completed, total=total)
 

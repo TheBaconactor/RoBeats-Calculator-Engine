@@ -820,7 +820,7 @@ def process_song_task(args) -> SongResultPayload:
         def emit(msg):
             if status_queue:
                 try:
-                    status_queue.put(f"[{found_song_name}] {msg}")
+                    status_queue.put(f"[{queue_label or found_song_name}] {msg}")
                 except Exception:
                     pass
 

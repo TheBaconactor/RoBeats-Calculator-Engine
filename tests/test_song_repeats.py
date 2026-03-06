@@ -71,9 +71,15 @@ def test_prepare_tasks_song_repeats_one_keeps_single_shape():
     assert app._task_queue_label(tasks[0]) == "Dummy Song"
 
 
-def test_prepare_tasks_backend_priority_new_songs_use_fixed_50_repeats(monkeypatch):
-    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
+def test_prepare_tasks_backend_priority_new_songs_use_fixed_50_repeats(monkeypatch, tmp_path):
+    song_meta_path = tmp_path / "song_meta_index.json"
+    canonical_db = tmp_path / "canonical.db"
+    song_meta_path.write_text("[]", encoding="utf-8")
+    canonical_db.write_text("", encoding="utf-8")
+    monkeypatch.setenv("ROBEATSMETA_SONG_META_INDEX_PATH", str(song_meta_path))
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(canonical_db))
     app = GearOptimizerApp.__new__(GearOptimizerApp)
+    app._robeatsmeta_api = type("DummyApi", (), {"backend_mode_enabled": staticmethod(lambda: True)})()
     app._backend_priority_song_names = {"New Song"}
     app._backend_priority_song_repeat_count = 50
     cfg = _build_cfg(25)

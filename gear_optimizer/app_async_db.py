@@ -37,7 +37,12 @@ def _overlay_backend_mode_enabled() -> bool:
     """
     if _truthy_env("ROBEATSMETA_OVERLAY_DB_ENABLE", "0"):
         return True
-    return _truthy_env("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")
+    try:
+        from gear_optimizer.robeatsmeta_api import RoBeatsMetaOptimizerApi
+
+        return bool(RoBeatsMetaOptimizerApi.service_mode_enabled())
+    except Exception:
+        return _truthy_env("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")
 
 
 def _team_buff_base_calc_song_cache_max() -> int:
