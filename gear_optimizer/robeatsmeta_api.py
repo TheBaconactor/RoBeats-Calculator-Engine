@@ -466,12 +466,11 @@ class RoBeatsMetaOptimizerApi:
             state = self._load_state_unlocked()
             changed = self._prune_state_unlocked(state, ts)
             entries = state.setdefault("entries", {})
-            entry = entries.get(bundle.bundle_key)
+            entry, merged_changed = self._merge_matching_entries_unlocked(state, bundle)
+            if merged_changed:
+                changed = True
             if not isinstance(entry, dict):
-                if changed:
-                    self._write_state_unlocked(state)
-                self._last_task_priority_signature = None
-                return False
+                entry = {}
 
             next_entry = dict(entry)
             next_entry.update(

@@ -271,6 +271,35 @@ def test_record_song_visit_honors_pending_family_entry_in_song_mode(tmp_path):
     assert int(entry.get("last_requested_at", 0)) == int(now)
 
 
+def test_mark_song_computed_creates_recent_blacklist_without_prior_visit(tmp_path):
+    state_path = tmp_path / "priority_state.json"
+    song_meta_path = tmp_path / "song_meta_index.json"
+    _write_song_meta_index(song_meta_path)
+
+    api = RoBeatsMetaOptimizerApi(state_path=state_path, song_meta_index_path=song_meta_path)
+    now = 1_700_001_150
+
+    api.mark_song_started(song_id="Alpha (Hard) by Artist")
+    marked = api.mark_song_computed(song_id="Alpha (Hard) by Artist", now=now)
+
+    assert marked is True
+
+    raw = json.loads(state_path.read_text(encoding="utf-8"))
+    assert raw.get("active_bundle_key") == ""
+    entries = raw.get("entries") or {}
+    entry = entries.get("song:alpha (hard) by artist") or {}
+    assert int(entry.get("last_computed_at", 0) or 0) == int(now)
+
+    revisit = api.record_song_visit(
+        song_id="Alpha (Hard) by Artist",
+        title="Alpha",
+        artist="Artist",
+        now=now + 60,
+    )
+    assert revisit["queued"] is False
+    assert revisit["reason"] == "fresh_compute"
+
+
 def test_record_song_visit_respects_pending_queue_cap_without_eviction(tmp_path, monkeypatch):
     state_path = tmp_path / "priority_state.json"
     song_meta_path = tmp_path / "song_meta_index.json"
