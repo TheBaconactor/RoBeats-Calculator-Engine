@@ -185,6 +185,92 @@ def test_record_song_visit_song_mode_ignores_family_level_db_presence(monkeypatc
     assert second["queued"] is True
 
 
+def test_record_song_visit_honors_recent_family_blacklist_in_song_mode(tmp_path):
+    state_path = tmp_path / "priority_state.json"
+    song_meta_path = tmp_path / "song_meta_index.json"
+    _write_song_meta_index(song_meta_path)
+
+    now = 1_700_001_000
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "active_bundle_key": "",
+                "entries": {
+                    "alpha|artist": {
+                        "bundle_key": "alpha|artist",
+                        "song_id": "Alpha (Hard) by Artist",
+                        "title": "Alpha",
+                        "artist": "Artist",
+                        "last_computed_at": now,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    api = RoBeatsMetaOptimizerApi(state_path=state_path, song_meta_index_path=song_meta_path)
+    result = api.record_song_visit(
+        song_id="Alpha (Hard) by Artist",
+        title="Alpha",
+        artist="Artist",
+        now=now + 60,
+    )
+
+    assert result["queued"] is False
+    assert result["reason"] == "fresh_compute"
+
+    raw = json.loads(state_path.read_text(encoding="utf-8"))
+    entries = raw.get("entries") or {}
+    assert list(entries.keys()) == ["song:alpha (hard) by artist"]
+    entry = entries["song:alpha (hard) by artist"]
+    assert int(entry.get("last_computed_at", 0)) == int(now)
+
+
+def test_record_song_visit_honors_pending_family_entry_in_song_mode(tmp_path):
+    state_path = tmp_path / "priority_state.json"
+    song_meta_path = tmp_path / "song_meta_index.json"
+    _write_song_meta_index(song_meta_path)
+
+    now = 1_700_001_100
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "active_bundle_key": "",
+                "entries": {
+                    "alpha|artist": {
+                        "bundle_key": "alpha|artist",
+                        "song_id": "Alpha (Hard) by Artist",
+                        "title": "Alpha",
+                        "artist": "Artist",
+                        "last_requested_at": now,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    api = RoBeatsMetaOptimizerApi(state_path=state_path, song_meta_index_path=song_meta_path)
+    result = api.record_song_visit(
+        song_id="Alpha (Hard) by Artist",
+        title="Alpha",
+        artist="Artist",
+        now=now + 1,
+    )
+
+    assert result["queued"] is False
+    assert result["reason"] == "already_queued"
+
+    raw = json.loads(state_path.read_text(encoding="utf-8"))
+    entries = raw.get("entries") or {}
+    assert list(entries.keys()) == ["song:alpha (hard) by artist"]
+    entry = entries["song:alpha (hard) by artist"]
+    assert int(entry.get("last_requested_at", 0)) == int(now)
+
+
 def test_record_song_visit_respects_pending_queue_cap_without_eviction(tmp_path, monkeypatch):
     state_path = tmp_path / "priority_state.json"
     song_meta_path = tmp_path / "song_meta_index.json"
@@ -447,6 +533,87 @@ def test_filter_recently_computed_song_queue_skips_completed_bundles_but_keeps_p
 
     filtered = app._filter_robeatsmeta_recently_computed_song_queue(queue)
     assert [item[1] for item in filtered] == ["Beta (Hard) by Artist"]
+
+
+def test_filter_recently_computed_song_queue_honors_family_blacklist_in_song_mode(tmp_path, monkeypatch):
+    from gear_optimizer.app import GearOptimizerApp
+
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_PRIORITY_QUEUE", "1")
+    state_path = tmp_path / "priority_state.json"
+    status_path = tmp_path / "status.json"
+    song_meta_path = tmp_path / "song_meta_index.json"
+    _write_song_meta_index(song_meta_path)
+    now = int(time.time())
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "active_bundle_key": "",
+                "entries": {
+                    "alpha|artist": {
+                        "bundle_key": "alpha|artist",
+                        "song_id": "Alpha (Hard) by Artist",
+                        "title": "Alpha",
+                        "artist": "Artist",
+                        "last_computed_at": now,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    api = RoBeatsMetaOptimizerApi(
+        state_path=state_path,
+        status_path=status_path,
+        song_meta_index_path=song_meta_path,
+    )
+
+    app = GearOptimizerApp.__new__(GearOptimizerApp)
+    app._robeatsmeta_api = api
+
+    queue = [("alpha.txt", "Alpha (Hard) by Artist", "Hard")]
+
+    filtered = app._filter_robeatsmeta_recently_computed_song_queue(queue)
+    assert filtered == []
+
+
+def test_prioritize_song_queue_honors_pending_family_key_in_song_mode(tmp_path):
+    state_path = tmp_path / "priority_state.json"
+    song_meta_path = tmp_path / "song_meta_index.json"
+    _write_song_meta_index(song_meta_path)
+
+    now = 1_700_001_200
+    state_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "active_bundle_key": "",
+                "entries": {
+                    "alpha|artist": {
+                        "bundle_key": "alpha|artist",
+                        "song_id": "Alpha (Hard) by Artist",
+                        "title": "Alpha",
+                        "artist": "Artist",
+                        "last_requested_at": now,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    api = RoBeatsMetaOptimizerApi(state_path=state_path, song_meta_index_path=song_meta_path)
+    song_queue = [
+        ("beta.txt", "Beta (Hard) by Artist", "Hard"),
+        ("alpha_h.txt", "Alpha (Hard) by Artist", "Hard"),
+    ]
+
+    prioritized = api.prioritize_song_queue(song_queue, now=now + 5)
+    assert [item[1] for item in prioritized] == [
+        "Alpha (Hard) by Artist",
+        "Beta (Hard) by Artist",
+    ]
 
 
 def test_app_pending_song_queue_uses_cached_song_path_index_without_rescan():

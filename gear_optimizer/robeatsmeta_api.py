@@ -340,14 +340,17 @@ class RoBeatsMetaOptimizerApi:
             state = self._load_state_unlocked()
             changed = self._prune_state_unlocked(state, ts)
             entries = state.setdefault("entries", {})
-            entry = entries.get(bundle.bundle_key)
+            entry, merged_changed = self._merge_matching_entries_unlocked(state, bundle)
+            if merged_changed:
+                changed = True
             if not isinstance(entry, dict):
                 entry = {}
             active_bundle_key = str(state.get("active_bundle_key") or "").strip()
 
             last_computed_at = _safe_int(entry.get("last_computed_at"), 0)
             last_requested_at = _safe_int(entry.get("last_requested_at"), 0)
-            entry.update(
+            next_entry = dict(entry)
+            next_entry.update(
                 {
                     "song_id": bundle.song_id,
                     "title": bundle.title,
@@ -357,7 +360,9 @@ class RoBeatsMetaOptimizerApi:
             )
 
             if active_bundle_key == str(bundle.bundle_key or "").strip():
-                entries[bundle.bundle_key] = entry
+                if entries.get(bundle.bundle_key) != next_entry:
+                    entries[bundle.bundle_key] = next_entry
+                    changed = True
                 if changed:
                     self._write_state_unlocked(state)
                 return {
@@ -375,21 +380,21 @@ class RoBeatsMetaOptimizerApi:
                     get_song_names_present_in_db = None
                 if get_song_names_present_in_db is not None:
                     try:
-                        song_ids: set[str] = set()
-                        cached_ids = self._song_ids_by_bundle_key.get(str(bundle.bundle_key or "").strip())
-                        if isinstance(cached_ids, set):
-                            song_ids.update(str(s or "").strip() for s in cached_ids if str(s or "").strip())
-                        if str(bundle.song_id or "").strip():
-                            song_ids.add(str(bundle.song_id).strip())
-                        present = get_song_names_present_in_db(song_ids)
-                        if present:
-                            entry["last_computed_at"] = ts
-                            entries[bundle.bundle_key] = entry
-                            self._write_state_unlocked(state)
-                            self._last_task_priority_signature = None
-                            return {
-                                "queued": False,
-                                "reason": "fresh_compute",
+                            song_ids: set[str] = set()
+                            cached_ids = self._song_ids_by_bundle_key.get(str(bundle.bundle_key or "").strip())
+                            if isinstance(cached_ids, set):
+                                song_ids.update(str(s or "").strip() for s in cached_ids if str(s or "").strip())
+                            if str(bundle.song_id or "").strip():
+                                song_ids.add(str(bundle.song_id).strip())
+                            present = get_song_names_present_in_db(song_ids)
+                            if present:
+                                next_entry["last_computed_at"] = ts
+                                entries[bundle.bundle_key] = next_entry
+                                self._write_state_unlocked(state)
+                                self._last_task_priority_signature = None
+                                return {
+                                    "queued": False,
+                                    "reason": "fresh_compute",
                                 "bundle_key": bundle.bundle_key,
                                 "last_computed_at": ts,
                                 "db_present": True,
@@ -398,7 +403,9 @@ class RoBeatsMetaOptimizerApi:
                         pass
 
             if last_computed_at > 0 and ts - last_computed_at < self._visit_ttl_seconds:
-                entries[bundle.bundle_key] = entry
+                if entries.get(bundle.bundle_key) != next_entry:
+                    entries[bundle.bundle_key] = next_entry
+                    changed = True
                 if changed:
                     self._write_state_unlocked(state)
                 return {
@@ -409,7 +416,9 @@ class RoBeatsMetaOptimizerApi:
                 }
 
             if last_requested_at > last_computed_at:
-                entries[bundle.bundle_key] = entry
+                if entries.get(bundle.bundle_key) != next_entry:
+                    entries[bundle.bundle_key] = next_entry
+                    changed = True
                 if changed:
                     self._write_state_unlocked(state)
                 return {
@@ -436,8 +445,8 @@ class RoBeatsMetaOptimizerApi:
                     "max_pending_visits": int(self._max_pending_visits),
                 }
 
-            entry["last_requested_at"] = ts
-            entries[bundle.bundle_key] = entry
+            next_entry["last_requested_at"] = ts
+            entries[bundle.bundle_key] = next_entry
             self._write_state_unlocked(state)
             return {
                 "queued": True,
@@ -501,6 +510,9 @@ class RoBeatsMetaOptimizerApi:
                         continue
                     if ts - computed_at >= self._visit_ttl_seconds:
                         continue
+                    canonical_bundle_key = self._bundle_key_from_entry(bundle_key=bundle_key, entry=raw_entry)
+                    if canonical_bundle_key:
+                        recent.add(canonical_bundle_key)
                     recent.add(str(bundle_key or "").strip())
             if changed:
                 self._write_state_unlocked(state)
@@ -626,7 +638,7 @@ class RoBeatsMetaOptimizerApi:
             state = self._load_state_unlocked()
             changed = self._prune_state_unlocked(state, ts)
             entries = state.get("entries", {})
-            pending_rows: list[tuple[str, int, int]] = []
+            pending_rows_by_bundle: dict[str, tuple[int, int]] = {}
             if isinstance(entries, dict):
                 for bundle_key, raw_entry in entries.items():
                     if not isinstance(raw_entry, dict):
@@ -639,13 +651,157 @@ class RoBeatsMetaOptimizerApi:
                         continue
                     if requested_at <= computed_at:
                         continue
-                    pending_rows.append((str(bundle_key or ""), requested_at, computed_at))
+                    canonical_bundle_key = self._bundle_key_from_entry(bundle_key=bundle_key, entry=raw_entry)
+                    if not canonical_bundle_key:
+                        canonical_bundle_key = str(bundle_key or "").strip()
+                    if not canonical_bundle_key:
+                        continue
+                    current = pending_rows_by_bundle.get(canonical_bundle_key)
+                    if current is None:
+                        pending_rows_by_bundle[canonical_bundle_key] = (requested_at, computed_at)
+                        continue
+                    best_requested_at = max(int(current[0]), int(requested_at))
+                    best_computed_at = max(int(current[1]), int(computed_at))
+                    pending_rows_by_bundle[canonical_bundle_key] = (best_requested_at, best_computed_at)
+            pending_rows = [
+                (bundle_key, requested_at, computed_at)
+                for bundle_key, (requested_at, computed_at) in pending_rows_by_bundle.items()
+            ]
             pending_rows.sort(key=lambda row: (-row[1], row[0]))
             if changed:
                 self._write_state_unlocked(state)
         bundle_keys = [row[0] for row in pending_rows if row[0]]
         signature = tuple((row[0], int(row[1]), int(row[2])) for row in pending_rows if row[0])
         return bundle_keys, signature
+
+    def _compatible_bundle_keys_for_bundle(self, bundle: SongBundleRef) -> tuple[str, ...]:
+        cleaned_song_id = _strip_run_suffix(str(bundle.song_id or "").strip())
+        resolved_title = str(bundle.title or "").strip()
+        resolved_artist = str(bundle.artist or "").strip()
+
+        if cleaned_song_id and (not resolved_title or not resolved_artist):
+            self._refresh_song_meta_cache()
+            cached = self._bundle_by_song_id.get(cleaned_song_id)
+            if cached is not None:
+                if not resolved_title:
+                    resolved_title = str(cached.title or "").strip()
+                if not resolved_artist:
+                    resolved_artist = str(cached.artist or "").strip()
+
+        compatible: list[str] = []
+        seen: set[str] = set()
+        for candidate in (
+            str(bundle.bundle_key or "").strip(),
+            _build_bundle_key(song_id=cleaned_song_id),
+            _build_bundle_key(title=resolved_title, artist=resolved_artist),
+        ):
+            key = str(candidate or "").strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            compatible.append(key)
+        return tuple(compatible)
+
+    def _bundle_key_from_entry(self, *, bundle_key: str, entry: dict[str, Any]) -> str:
+        raw_song_id = _strip_run_suffix(str(entry.get("song_id") or "").strip())
+        raw_title = str(entry.get("title") or "").strip()
+        raw_artist = str(entry.get("artist") or "").strip()
+        try:
+            resolved = self._resolve_bundle(song_id=raw_song_id, title=raw_title, artist=raw_artist)
+        except Exception:
+            resolved = SongBundleRef(song_id=raw_song_id, title=raw_title, artist=raw_artist, bundle_key="")
+        canonical_bundle_key = str(resolved.bundle_key or "").strip()
+        if canonical_bundle_key:
+            return canonical_bundle_key
+        return str(bundle_key or entry.get("bundle_key") or "").strip()
+
+    def _merge_matching_entries_unlocked(
+        self,
+        state: dict[str, Any],
+        bundle: SongBundleRef,
+    ) -> tuple[dict[str, Any], bool]:
+        entries = state.setdefault("entries", {})
+        if not isinstance(entries, dict):
+            state["entries"] = {}
+            entries = state["entries"]
+
+        compatible_keys = set(self._compatible_bundle_keys_for_bundle(bundle))
+        matching_keys: list[str] = []
+        matching_entries: list[dict[str, Any]] = []
+        target_song_id = _strip_run_suffix(str(bundle.song_id or "").strip())
+        for raw_key, raw_entry in entries.items():
+            if not isinstance(raw_entry, dict):
+                continue
+            entry_key = str(raw_key or "").strip()
+            entry_bundle_key = str(raw_entry.get("bundle_key") or "").strip()
+            if entry_key in compatible_keys or entry_bundle_key in compatible_keys:
+                matching_keys.append(entry_key)
+                matching_entries.append(raw_entry)
+                continue
+
+            entry_song_id = _strip_run_suffix(str(raw_entry.get("song_id") or "").strip())
+            if target_song_id and entry_song_id and entry_song_id == target_song_id:
+                matching_keys.append(entry_key)
+                matching_entries.append(raw_entry)
+                continue
+
+            entry_family_key = _build_bundle_key(
+                title=str(raw_entry.get("title") or "").strip(),
+                artist=str(raw_entry.get("artist") or "").strip(),
+            )
+            entry_uses_family_key = (entry_key and not entry_key.startswith("song:")) or (
+                entry_bundle_key and not entry_bundle_key.startswith("song:")
+            )
+            if entry_uses_family_key and entry_family_key and entry_family_key in compatible_keys:
+                matching_keys.append(entry_key)
+                matching_entries.append(raw_entry)
+
+        if not matching_entries:
+            return {}, False
+
+        requested_at = 0
+        computed_at = 0
+        merged: dict[str, Any] = {}
+        for raw_entry in matching_entries:
+            if not merged:
+                merged = dict(raw_entry)
+            else:
+                for key, value in raw_entry.items():
+                    merged.setdefault(key, value)
+            requested_at = max(requested_at, _safe_int(raw_entry.get("last_requested_at"), 0))
+            computed_at = max(computed_at, _safe_int(raw_entry.get("last_computed_at"), 0))
+
+        merged.update(
+            {
+                "song_id": str(bundle.song_id or merged.get("song_id") or "").strip(),
+                "title": str(bundle.title or merged.get("title") or "").strip(),
+                "artist": str(bundle.artist or merged.get("artist") or "").strip(),
+                "bundle_key": str(bundle.bundle_key or merged.get("bundle_key") or "").strip(),
+            }
+        )
+        if requested_at > 0 or "last_requested_at" in merged:
+            merged["last_requested_at"] = int(requested_at)
+        if computed_at > 0 or "last_computed_at" in merged:
+            merged["last_computed_at"] = int(computed_at)
+
+        changed = False
+        for key in matching_keys:
+            if key == str(bundle.bundle_key or "").strip():
+                continue
+            if key in entries:
+                del entries[key]
+                changed = True
+
+        active_bundle_key = str(state.get("active_bundle_key") or "").strip()
+        if active_bundle_key and active_bundle_key in matching_keys and active_bundle_key != str(bundle.bundle_key or "").strip():
+            state["active_bundle_key"] = str(bundle.bundle_key or "").strip()
+            changed = True
+
+        current_entry = entries.get(str(bundle.bundle_key or "").strip())
+        if current_entry != merged:
+            entries[str(bundle.bundle_key or "").strip()] = merged
+            changed = True
+        return dict(merged), changed
 
     def _resolve_state_path(self) -> Path:
         configured = str(os.environ.get("ROBEATSMETA_OPTIMIZER_PRIORITY_STATE_PATH", "") or "").strip()
@@ -925,6 +1081,15 @@ class RoBeatsMetaOptimizerApi:
         if keep != entries:
             state["entries"] = keep
             changed = True
+        active_bundle_key = str(state.get("active_bundle_key") or "").strip()
+        if active_bundle_key:
+            active_entry = keep.get(active_bundle_key)
+            if isinstance(active_entry, dict):
+                requested_at = _safe_int(active_entry.get("last_requested_at"), 0)
+                computed_at = _safe_int(active_entry.get("last_computed_at"), 0)
+                if requested_at <= computed_at:
+                    state["active_bundle_key"] = ""
+                    changed = True
         return changed
 
     def update_runtime_status(
