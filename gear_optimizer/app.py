@@ -834,13 +834,24 @@ class GearOptimizerApp:
                 if self._robeatsmeta_api.backend_mode_enabled():
                     backend_benchmark_mode = bool(self._robeatsmeta_api.benchmark_mode_enabled())
                     if self._robeatsmeta_api.apply_service_defaults(cfg):
+                        loop_forever_effective = cfg.get("IterationEngine", "LoopForever", fallback="?")
+                        song_repeats_effective = cfg.get("IterationEngine", "SongRepeats", fallback="?")
+                        inflight_songs_effective = cfg.get("IterationEngine", "InFlightSongs", fallback="?")
                         if backend_benchmark_mode:
                             print(
-                                "[RoBeatsMeta] Service defaults enabled (benchmark): LoopForever=false, SongRepeats=25, InFlightSongs=30, Difficulty=All, QueueScope=PendingSongIds.",
+                                "[RoBeatsMeta] Service defaults enabled (benchmark): "
+                                f"LoopForever={loop_forever_effective}, "
+                                f"SongRepeats={song_repeats_effective}, "
+                                f"InFlightSongs={inflight_songs_effective}, "
+                                "Difficulty=All, QueueScope=PendingSongIds.",
                             )
                         else:
                             print(
-                                "[RoBeatsMeta] Service defaults enabled: LoopForever=true, SongRepeats=25, InFlightSongs=30, Difficulty=All, QueueScope=PendingSongIds.",
+                                "[RoBeatsMeta] Service defaults enabled: "
+                                f"LoopForever={loop_forever_effective}, "
+                                f"SongRepeats={song_repeats_effective}, "
+                                f"InFlightSongs={inflight_songs_effective}, "
+                                "Difficulty=All, QueueScope=PendingSongIds.",
                             )
                     elif not self._robeatsmeta_api.service_defaults_enabled():
                         print(

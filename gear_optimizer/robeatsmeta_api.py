@@ -20,7 +20,9 @@ from .data.database import get_evolution_db_path
 _TRUTHY = {"1", "true", "yes", "on"}
 _DEFAULT_VISIT_TTL_SECONDS = 60 * 60 * 24
 _DEFAULT_SONG_REPEATS = 25
-_DEFAULT_INFLIGHT_SONGS = 30
+# Keep the 24/7 service default aligned with the checked-in config instead of the
+# higher profiling-oriented overlap that materially increases steady-state RAM.
+_DEFAULT_INFLIGHT_SONGS = 12
 _DEFAULT_MAX_PENDING_VISITS = 10
 _VISIT_SCOPE_ENV = "ROBEATSMETA_OPTIMIZER_VISIT_SCOPE"
 
