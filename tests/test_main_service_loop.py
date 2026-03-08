@@ -4,9 +4,8 @@ import types
 import main as optimizer_main
 
 
-def test_main_restarts_when_app_requests_loop(monkeypatch):
+def test_main_runs_app_once_and_ignores_run_return_value(monkeypatch):
     calls: list[str] = []
-    outcomes = iter([True, False])
 
     class FakeApp:
         def __init__(self):
@@ -14,7 +13,7 @@ def test_main_restarts_when_app_requests_loop(monkeypatch):
 
         def run(self):
             calls.append("run")
-            return next(outcomes)
+            return True
 
     monkeypatch.setattr(optimizer_main.multiprocessing, "freeze_support", lambda: None)
     monkeypatch.setattr(optimizer_main, "_read_config_path", lambda: "config.ini")
@@ -25,4 +24,4 @@ def test_main_restarts_when_app_requests_loop(monkeypatch):
     monkeypatch.setitem(sys.modules, "gear_optimizer.app", types.SimpleNamespace(GearOptimizerApp=FakeApp))
 
     assert optimizer_main.main() == 0
-    assert calls == ["init", "run", "init", "run"]
+    assert calls == ["init", "run"]

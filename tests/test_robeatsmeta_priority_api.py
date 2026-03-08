@@ -342,6 +342,7 @@ def test_service_defaults_force_continuous_all_difficulty_mode(monkeypatch, tmp_
     canonical_db.write_text("", encoding="utf-8")
     monkeypatch.setenv("ROBEATSMETA_SONG_META_INDEX_PATH", str(song_meta_path))
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(canonical_db))
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
 
     api = RoBeatsMetaOptimizerApi(
         state_path=tmp_path / "priority_state.json",
@@ -360,6 +361,24 @@ def test_service_defaults_force_continuous_all_difficulty_mode(monkeypatch, tmp_
     assert cfg.get("CalculateSong", "Song_Name") == ""
     assert cfg.get("CalculateSong", "TargetPrimary") == "all"
     assert cfg.get("CalculateSong", "TargetSecondary") == "all"
+
+
+def test_service_mode_defaults_to_disabled_without_explicit_env(monkeypatch, tmp_path):
+    song_meta_path = tmp_path / "song_meta_index.json"
+    canonical_db = tmp_path / "canonical.db"
+    song_meta_path.write_text("[]", encoding="utf-8")
+    canonical_db.write_text("", encoding="utf-8")
+    monkeypatch.setenv("ROBEATSMETA_SONG_META_INDEX_PATH", str(song_meta_path))
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(canonical_db))
+
+    assert RoBeatsMetaOptimizerApi.service_mode_enabled(song_meta_index_path=song_meta_path) is False
+
+    api = RoBeatsMetaOptimizerApi(
+        state_path=tmp_path / "priority_state.json",
+        song_meta_index_path=song_meta_path,
+    )
+    assert api.backend_mode_enabled() is False
+    assert api.apply_service_defaults(configparser.ConfigParser()) is False
 
 
 def test_service_mode_env_zero_disables_backend_override(monkeypatch, tmp_path):

@@ -65,6 +65,7 @@ def test_async_db_saver_mirrors_overlay_db_in_backend_mode(tmp_path, monkeypatch
     monkeypatch.setenv("EVOLUTION_DB_PATH", str(canonical_db))
     monkeypatch.setenv("EVOLUTION_OVERLAY_DB_PATH", str(overlay_db))
     monkeypatch.setenv("ROBEATSMETA_SONG_META_INDEX_PATH", str(song_meta_path))
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
     monkeypatch.setenv("POST_TEAM_BUFF_TIERS", "0")
     song_meta_path.write_text("[]", encoding="utf-8")
 
@@ -105,3 +106,41 @@ def test_async_db_saver_mirrors_overlay_db_in_backend_mode(tmp_path, monkeypatch
         details = json.loads(str(overlay_row["details_json"] or "{}"))
         assert int(details.get("attempt_lifetime") or 0) == 1
         assert int(details.get("attempts_first") or 0) == 1
+
+
+def test_async_db_saver_keeps_canonical_db_for_local_runs(tmp_path, monkeypatch):
+    canonical_db = tmp_path / "canonical.db"
+    overlay_db = tmp_path / "overlay.db"
+    song_meta_path = tmp_path / "song_meta_index.json"
+    song_name = "Local Canonical Song"
+
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(canonical_db))
+    monkeypatch.setenv("EVOLUTION_OVERLAY_DB_PATH", str(overlay_db))
+    monkeypatch.setenv("ROBEATSMETA_SONG_META_INDEX_PATH", str(song_meta_path))
+    monkeypatch.delenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", raising=False)
+    monkeypatch.setenv("POST_TEAM_BUFF_TIERS", "0")
+    song_meta_path.write_text("[]", encoding="utf-8")
+
+    init_db()
+
+    saver = AsyncDbSaver()
+    try:
+        saver.submit(song_name, [_entry(score=3333)], meta={"db_key": song_name, "_processed_run": True})
+        saver.flush(timeout=10.0)
+    finally:
+        saver.shutdown(timeout=10.0)
+
+    with get_db_connection(str(canonical_db)) as conn:
+        row = conn.execute(
+            "SELECT score FROM team_buff_loadouts WHERE song_name = ? AND team_buff = 'T5'",
+            (song_name,),
+        ).fetchone()
+        assert row is not None
+        assert int(row["score"]) == 3333
+
+    with get_db_connection(str(overlay_db)) as conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM team_buff_loadouts WHERE song_name = ? AND team_buff = 'T5'",
+            (song_name,),
+        ).fetchone()[0]
+        assert int(count) == 0

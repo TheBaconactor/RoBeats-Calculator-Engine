@@ -275,7 +275,7 @@ class RoBeatsMetaOptimizerApi:
         forced = _env_bool_override("ROBEATSMETA_OPTIMIZER_SERVICE_MODE")
         if forced is not None:
             return bool(forced)
-        return cls._backend_compatible_detected(song_meta_index_path=song_meta_index_path)
+        return False
 
     @classmethod
     def benchmark_mode_enabled(cls) -> bool:
@@ -909,6 +909,14 @@ class RoBeatsMetaOptimizerApi:
                 with self._runtime_status_state_lock:
                     self._runtime_status_current = dict(state)
                 try:
+                    self._persist_status(state)
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "Failed to persist optimizer runtime status heartbeat: %s: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
+                try:
                     self._push_runtime_status_direct(state)
                     self._runtime_status_last_push_monotonic = time.monotonic()
                 except Exception:
@@ -923,6 +931,14 @@ class RoBeatsMetaOptimizerApi:
                         self._runtime_status_flushed_event.set()
                         break
                     self._runtime_status_flushed_event.clear()
+                try:
+                    self._persist_status(state)
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "Failed to persist optimizer runtime status: %s: %s",
+                        type(exc).__name__,
+                        exc,
+                    )
                 try:
                     self._push_runtime_status_direct(state)
                     self._runtime_status_last_push_monotonic = time.monotonic()
@@ -1057,6 +1073,14 @@ class RoBeatsMetaOptimizerApi:
         tmp_path.write_text(payload + "\n", encoding="utf-8")
         os.replace(tmp_path, self._status_path)
 
+    def _load_status(self) -> dict[str, Any]:
+        with _file_lock(self._status_lock_path):
+            return self._load_status_unlocked()
+
+    def _persist_status(self, state: dict[str, Any]) -> None:
+        with _file_lock(self._status_lock_path):
+            self._write_status_unlocked(state)
+
     def _prune_state_unlocked(self, state: dict[str, Any], now: int) -> bool:
         entries = state.get("entries")
         if not isinstance(entries, dict):
@@ -1106,7 +1130,7 @@ class RoBeatsMetaOptimizerApi:
         with self._runtime_status_state_lock:
             state = dict(self._runtime_status_current or {})
             if not state:
-                state = self._load_status_unlocked()
+                state = self._load_status()
             if available is None:
                 state["available"] = True
             else:
@@ -1170,6 +1194,7 @@ class RoBeatsMetaOptimizerApi:
             with self._runtime_status_state_lock:
                 self._runtime_status_current = dict(state)
                 self._runtime_status_pending = None
+            self._persist_status(state)
             self._push_runtime_status_direct(state)
         except Exception:
             pass
@@ -1204,6 +1229,10 @@ class RoBeatsMetaOptimizerApi:
         with self._runtime_status_state_lock:
             if self._runtime_status_current:
                 return dict(self._runtime_status_current)
+        try:
+            return self._load_status()
+        except Exception:
+            pass
         return {
             "version": 1,
             "available": False,

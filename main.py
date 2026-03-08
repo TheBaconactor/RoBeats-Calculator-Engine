@@ -137,10 +137,8 @@ def main() -> int:
         _apply_throughput_mode_env()
         from gear_optimizer.app import GearOptimizerApp
 
-        while True:
-            app = GearOptimizerApp()
-            if not app.run():
-                break
+        app = GearOptimizerApp()
+        app.run()
         return 0
     except KeyboardInterrupt:
         return 0
