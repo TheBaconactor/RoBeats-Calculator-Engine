@@ -2366,6 +2366,78 @@ class GearOptimizerApp:
     def _truthy(v) -> bool:
         return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
 
+    def _fatal_gpu_errors_enabled(self) -> bool:
+        raw = str(os.environ.get("METAFINDER_FATAL_GPU_ERRORS", "") or "").strip()
+        if raw:
+            return self._truthy(raw)
+        if self._truthy(os.environ.get("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")):
+            return True
+        try:
+            api = getattr(self, "_robeatsmeta_api", None)
+            if api is not None and callable(getattr(api, "service_mode_enabled", None)):
+                return bool(api.service_mode_enabled())
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def _iter_exception_chain(exc: BaseException | None):
+        seen: set[int] = set()
+        pending = [exc]
+        while pending:
+            current = pending.pop(0)
+            if current is None:
+                continue
+            current_id = id(current)
+            if current_id in seen:
+                continue
+            seen.add(current_id)
+            yield current
+            try:
+                pending.append(getattr(current, "__cause__", None))
+            except Exception:
+                pass
+            try:
+                pending.append(getattr(current, "__context__", None))
+            except Exception:
+                pass
+
+    def _is_fatal_inflight_exception(self, exc: BaseException) -> bool:
+        if not self._fatal_gpu_errors_enabled():
+            return False
+
+        try:
+            from gear_optimizer.solver.gpu_service import GpuServiceTimeoutError
+        except Exception:
+            GpuServiceTimeoutError = ()
+
+        fatal_markers = (
+            "gpu executor timeout after",
+            "gpu service request",
+            "timed out after",
+            "device lost",
+            "device removed",
+            "device hung",
+            "dxgi_error_device_hung",
+            "dxgi_error_device_removed",
+            "cudaerrorlaunchtimeout",
+            "watchdog timeout",
+            "tdr",
+            "waituntilcompleted",
+            "metaldevice::wait_idle",
+        )
+
+        for current in self._iter_exception_chain(exc):
+            if GpuServiceTimeoutError and isinstance(current, GpuServiceTimeoutError):
+                return True
+            try:
+                message = f"{type(current).__name__}: {current}".lower()
+            except Exception:
+                message = ""
+            if any(marker in message for marker in fatal_markers):
+                return True
+        return False
+
     def _get_inflight_songs_requested(self, cfg) -> int:
         inflight_songs = 0
         try:
@@ -2641,361 +2713,106 @@ class GearOptimizerApp:
         self._stop_hotkeys()
 
     def _run_sequential(self, tasks, completed_songs, memory_resume_tracker):
-        """Sequential song processing with async preloading and GPU look-ahead prefetch.
-
-        While GPU processes current song, next songs are being:
-        1. CPU preloaded (file I/O, parsing) in background thread
-        2. GPU prefetched (timeline kernel) for slots 1-5
-        """
-        completed_offset = len(completed_songs)
+        """Legacy entry point retained for compatibility; all runs now use native in-flight."""
         if self._stop_requested_now():
             return
-        ref_arrays = None
-        try:
-            ref_arrays = tasks[0][5] if tasks and len(tasks[0]) > 5 else None
-        except Exception:
-            ref_arrays = None
+        if not tasks:
+            return
 
-        # ------------------------------------------------------------------
-        # In-flight multi-song pipeline (opt-in):
-        # Overlap multiple songs' CPU GA orchestration while a single GPU-owner
-        # thread runs Taichi kernels via the GPU executor. This is different from
-        # per-song multiprocessing: it stays within one process and avoids per-song
-        # worker overhead.
-        # Enable via IterationEngine.InFlightSongs (or env var IN_FLIGHT_SONGS).
-        # ------------------------------------------------------------------
+        task_count = max(0, int(len(tasks)))
         inflight_songs = 0
         try:
             cfg_dict0 = tasks[0][3] if tasks else {}
             ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
-            if isinstance(ie, dict):
-                raw = ie.get("inflightsongs", 0)
-            else:
-                raw = 0
+            raw = ie.get("inflightsongs", 0) if isinstance(ie, dict) else 0
             inflight_songs = safe_int(raw, 0)
         except Exception:
             inflight_songs = 0
 
-        allow_sequential = self._truthy(os.environ.get("ALLOW_SEQUENTIAL_PIPELINE", "0"))
-        if len(tasks) > 1 and inflight_songs <= 1 and not allow_sequential:
-            # GPU-only policy + throughput goal: multi-song runs should use the native in-flight pipeline.
-            inflight_songs = max(2, min(16, len(tasks)))
+        if inflight_songs <= 0:
+            inflight_songs = min(12, max(1, task_count))
             try:
                 print(
-                    "[InFlight][DEPRECATION] Sequential multi-song pipeline is disabled by default; "
-                    f"forcing InFlightSongs={int(inflight_songs)}. "
-                    "Set ALLOW_SEQUENTIAL_PIPELINE=1 to override."
+                    "[InFlight] Sequential pipeline removed; "
+                    f"defaulting InFlightSongs={int(inflight_songs)}."
+                )
+            except Exception:
+                pass
+        elif task_count > 1 and int(inflight_songs) < 2:
+            inflight_songs = min(12, max(2, task_count))
+            try:
+                print(
+                    "[InFlight] Sequential pipeline removed; "
+                    f"raising InFlightSongs to {int(inflight_songs)} for multi-song queue."
                 )
             except Exception:
                 pass
 
-        # Check if GPU preloading should be used (sequential/non-inflight path).
-        use_gpu_preload = len(tasks) > 1
-        preloader = None
-        if not (inflight_songs and inflight_songs > 1 and len(tasks) > 1):
-            if use_gpu_preload:
-                try:
-                    preloader = self._start_song_preloader(tasks, completed_songs)
-                except Exception as e:
-                    print(f"[Song Preloader] Not available: {e}")
-                    use_gpu_preload = False
+        inflight_songs = max(1, min(int(inflight_songs), int(task_count)))
 
-        if inflight_songs and inflight_songs > 1 and len(tasks) > 1:
-            inflight_ok = False
-            post_queue = None
-            post_proc = None
-            inflight_err_captured = None
-            try:
-                post_queue, post_proc = self._start_post_processor(len(tasks))
-
-                from gear_optimizer.solver.native_inflight_orchestrator import run_native_inflight_song_pipeline
-
-                self._progress_counts_driven = True
-                if self._progress is not None:
-                    self._progress.update_counts(completed=len(completed_songs), total=len(tasks))
-                self._set_runtime_progress_counts(completed=len(completed_songs), total=len(tasks))
-                run_native_inflight_song_pipeline(
-                    tasks,
-                    in_flight_songs=int(inflight_songs),
-                    completed_songs=completed_songs,
-                    memory_resume_tracker=memory_resume_tracker,
-                    post_queue=post_queue,
-                    total_tasks=len(tasks),
-                    stop_requested=self._stop_requested_now,
-                    progress_cb=self._progress_event,
-                    bundle_completed_cb=self._maybe_mark_robeatsmeta_song_batch_computed,
-                )
-                inflight_ok = True
-            except Exception as inflight_err:
-                inflight_err_captured = inflight_err
-                print(f"[InFlight] Disabled: {type(inflight_err).__name__}: {inflight_err}", flush=True)
-                try:
-                    import traceback
-
-                    tb = traceback.format_exc()
-                    try:
-                        logging.error("[InFlight] Traceback:\\n" + tb)
-                    except Exception:
-                        pass
-                    try:
-                        trace_path = os.path.join(BIN_DIR, "inflight_disabled_traceback.log")
-                        ts = time.strftime("%Y-%m-%d %H:%M:%S")
-                        with open(trace_path, "a", encoding="utf-8") as fh:
-                            fh.write(f"\n[{ts}] {type(inflight_err).__name__}: {inflight_err}\n")
-                            fh.write(tb)
-                    except Exception:
-                        pass
-                    if self._truthy(os.environ.get("INFLIGHT_PRINT_TRACE", "0")):
-                        try:
-                            print(tb)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-            finally:
-                self._progress_counts_driven = False
-                self._stop_post_processor(post_queue, post_proc)
-                try:
-                    if use_gpu_preload and preloader is not None:
-                        preloader.stop()
-                except Exception:
-                    pass
-            if inflight_ok:
-                return
-
-            if len(tasks) > 1 and not allow_sequential:
-                raise RuntimeError(
-                    "Native in-flight pipeline failed to start and sequential fallback is disabled. "
-                    "Set ALLOW_SEQUENTIAL_PIPELINE=1 to allow sequential fallback."
-                ) from inflight_err_captured
-
-            # If inflight was configured but failed to start, fall through to the normal
-            # sequential pipeline. Ensure the preloader is running for that path.
-            if use_gpu_preload and preloader is None:
-                try:
-                    preloader = self._start_song_preloader(tasks, completed_songs)
-                except Exception as e:
-                    print(f"[Song Preloader] Not available: {e}")
-                    use_gpu_preload = False
-
-        # ------------------------------------------------------------------
-        # Continuous pipeline mode (major refactor):
-        # Offload CPU-heavy reporting/persistence to a background process so the
-        # main process can continuously feed the GPU with the next song.
-        # ------------------------------------------------------------------
-        pipeline_enabled = False
+        post_queue = None
+        post_proc = None
+        inflight_fatal_gpu_err = False
         try:
-            cfg_dict0 = tasks[0][3] if tasks else {}
-            ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
+            post_queue, post_proc = self._start_post_processor(task_count)
 
-            def _get_ci(d: dict, key: str, default=None):
-                if not isinstance(d, dict):
-                    return default
-                if key in d:
-                    return d[key]
-                lk = str(key).lower()
-                if lk in d:
-                    return d[lk]
-                return d.get(lk, default)
+            from gear_optimizer.solver.native_inflight_orchestrator import run_native_inflight_song_pipeline
 
-            raw = _get_ci(ie, "ContinuousPipeline", None)
-            if raw is None:
-                # Default: enable for single-worker GPU runs where post-processing stalls are noticeable.
-                pipeline_enabled = len(tasks) > 1
-            else:
-                pipeline_enabled = self._truthy(raw)
-        except Exception:
-            pipeline_enabled = False
-
-        if pipeline_enabled:
-            post_queue = None
-            post_proc = None
-            post_sender = None
-            pipeline_ok = False
-            progress_completed = len(completed_songs)
-            self._reprioritize_robeatsmeta_tasks(tasks, start_index=0)
-            if self._progress is not None:
-                self._progress.update_counts(completed=progress_completed, total=len(tasks))
-            self._set_runtime_progress_counts(completed=progress_completed, total=len(tasks))
             self._progress_counts_driven = True
+            if self._progress is not None:
+                self._progress.update_counts(completed=len(completed_songs), total=task_count)
+            self._set_runtime_progress_counts(completed=len(completed_songs), total=task_count)
+            run_native_inflight_song_pipeline(
+                tasks,
+                in_flight_songs=int(inflight_songs),
+                completed_songs=completed_songs,
+                memory_resume_tracker=memory_resume_tracker,
+                post_queue=post_queue,
+                total_tasks=task_count,
+                stop_requested=self._stop_requested_now,
+                progress_cb=self._progress_event,
+                bundle_completed_cb=self._maybe_mark_robeatsmeta_song_batch_computed,
+            )
+            return
+        except Exception as inflight_err:
+            inflight_fatal_gpu_err = self._is_fatal_inflight_exception(inflight_err)
+            print(f"[InFlight] Disabled: {type(inflight_err).__name__}: {inflight_err}", flush=True)
+            if inflight_fatal_gpu_err:
+                print(
+                    "[InFlight] Fatal GPU runtime failure detected; aborting so the supervisor can restart cleanly.",
+                    flush=True,
+                )
             try:
-                post_queue, post_proc = self._start_post_processor(len(tasks))
-                post_sender = _PostQueueSender(
-                    post_queue,
-                    post_proc=post_proc,
-                    stop_requested=self._stop_requested_now,
-                )
-                preload_state = self._make_sequential_preload_state(use_gpu_preload)
+                import traceback
 
-                for i, t in enumerate(tasks):
-                    if self._stop_requested_now():
-                        break
-                    task_key = self._task_queue_label(t)
-                    if task_key in completed_songs:
-                        continue
-                    if post_sender is not None:
-                        for done_key, done_name in post_sender.drain_acks():
-                            completed_songs.add(done_key)
-                            if memory_resume_tracker and done_name:
-                                memory_resume_tracker.mark_completed(done_name)
-
-                    song_name = t[1]
-                    song_path_key = os.path.abspath(str(t[0]))
-                    if self._progress is not None:
-                        try:
-                            self._run_current_song_label = str(task_key)
-                            self._mark_robeatsmeta_song_started(str(task_key))
-                            self._progress.set_status(str(task_key), "Running")
-                        except Exception:
-                            pass
-                    self._update_robeatsmeta_runtime_status(
-                        status="running",
-                        current_song=str(task_key),
-                        completed=int(progress_completed or 0),
-                        total=int(len(tasks) or 0),
-                        failed=int(self._runtime_failed_count or 0),
-                    )
-
-                    self._drain_preloaded_ready(
-                        use_gpu_preload=use_gpu_preload,
-                        preloader=preloader,
-                        preload_state=preload_state,
-                    )
-                    task_args = self._build_sequential_task_args(
-                        t,
-                        song_path_key=song_path_key,
-                        preload_state=preload_state,
-                        defer_post=True,
-                    )
-                    self._queue_next_preload_task(
-                        task_list=tasks,
-                        completed_songs=completed_songs,
-                        preloader=preloader,
-                        use_gpu_preload=use_gpu_preload,
-                        preload_state=preload_state,
-                    )
-
-                    try:
-                        res = safe_process_song_task(task_args)
-                    except Exception as seq_err:
-                        res = {
-                            "_error": str(seq_err),
-                            "_error_type": type(seq_err).__name__,
-                            "_song_name": song_name,
-                            "song": song_name,
-                        }
-                    self._reprioritize_robeatsmeta_tasks(tasks, start_index=i + 1)
-                    progress_completed += 1
-                    failed_delta = 1 if isinstance(res, dict) and "_error" in res else 0
-                    self._progress_on_result(
-                        res, completed=progress_completed, total=len(tasks), failed_delta=failed_delta
-                    )
-
-                    self._maybe_prefetch_ready_song(task_index=i, task_list=tasks, preload_state=preload_state)
-
-                    # Enqueue for post-processing (non-blocking relative to GPU compute).
-                    if post_proc is not None and not post_proc.is_alive():
-                        self.request_stop("post-processor died")
-                        break
-                    if post_sender is not None:
-                        done_key = None
-                        done_name = None
-                        if isinstance(res, dict) and "_error" not in res:
-                            done_name = res.get("song") or song_name
-                            done_key = res.get("_queue_key") or res.get("_queue_label") or task_key
-                        post_sender.send(res, done_key=done_key, done_name=done_name)
-
-                    if memory_release_requested():
-                        print("[MemoryGuard] Early stop in sequential pipeline loop")
-                        break
-                    if self._stop_requested_now():
-                        break
-                pipeline_ok = True
-
-            finally:
-                self._progress_counts_driven = False
+                tb = traceback.format_exc()
                 try:
-                    if post_sender is not None:
-                        post_sender.close(timeout=30.0)
-                        for done_key, done_name in post_sender.drain_acks():
-                            completed_songs.add(done_key)
-                            if memory_resume_tracker and done_name:
-                                memory_resume_tracker.mark_completed(done_name)
+                    logging.error("[InFlight] Traceback:\\n" + tb)
                 except Exception:
                     pass
-                self._stop_post_processor(post_queue, post_proc)
                 try:
-                    if pipeline_ok and use_gpu_preload and preloader is not None:
-                        preloader.stop()
+                    trace_path = os.path.join(BIN_DIR, "inflight_disabled_traceback.log")
+                    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                    with open(trace_path, "a", encoding="utf-8") as fh:
+                        fh.write(f"\n[{ts}] {type(inflight_err).__name__}: {inflight_err}\n")
+                        fh.write(tb)
                 except Exception:
                     pass
-            if pipeline_ok:
-                return
-
-        def _safe_sequential_gen(task_list):
-            preload_state = self._make_sequential_preload_state(use_gpu_preload)
-            self._reprioritize_robeatsmeta_tasks(task_list, start_index=0)
-
-            for i, t in enumerate(task_list):
-                if self._stop_requested_now():
-                    break
-                task_key = self._task_queue_label(t)
-                if task_key in completed_songs:
-                    continue
-
-                song_path_key = os.path.abspath(str(t[0]))
-
-                self._drain_preloaded_ready(
-                    use_gpu_preload=use_gpu_preload,
-                    preloader=preloader,
-                    preload_state=preload_state,
-                )
-                task_args = self._build_sequential_task_args(
-                    t,
-                    song_path_key=song_path_key,
-                    preload_state=preload_state,
-                    defer_post=False,
-                )
-                self._queue_next_preload_task(
-                    task_list=task_list,
-                    completed_songs=completed_songs,
-                    preloader=preloader,
-                    use_gpu_preload=use_gpu_preload,
-                    preload_state=preload_state,
-                )
-
-                try:
-                    res = safe_process_song_task(task_args)
-                except Exception as seq_err:
-                    res = {"_error": str(seq_err), "_error_type": type(seq_err).__name__, "_song_name": t[1]}
-
-                self._maybe_prefetch_ready_song(task_index=i, task_list=task_list, preload_state=preload_state)
-                self._reprioritize_robeatsmeta_tasks(task_list, start_index=i + 1)
-
-                yield res
-
-                # After processing, release the slot for this song to free it for reuse
-                if (
-                    preload_state["gpu_prefetch_enabled"]
-                    and preload_state["gpu_prefetch_mgr"] is not None
-                    and song_path_key in preload_state["gpu_prefetched_set"]
-                ):
+                if self._truthy(os.environ.get("INFLIGHT_PRINT_TRACE", "0")):
                     try:
-                        # Find and release the slot for this song
-                        # The manager keeps track of song_key -> slot mapping internally
-                        pass  # Release happens in song_processor.py after GA completes
+                        print(tb)
                     except Exception:
                         pass
-
-        self._consume_results(
-            _safe_sequential_gen(tasks),
-            completed_songs=completed_songs,
-            completed_offset=completed_offset,
-            memory_resume_tracker=memory_resume_tracker,
-            total_tasks=len(tasks),
-            throughput_t0=time.perf_counter(),
-            ref_arrays=ref_arrays,
-        )
+            except Exception:
+                pass
+            if inflight_fatal_gpu_err:
+                raise
+            raise RuntimeError(
+                "Native in-flight pipeline failed and legacy sequential fallback has been removed."
+            ) from inflight_err
+        finally:
+            self._progress_counts_driven = False
+            self._stop_post_processor(post_queue, post_proc)
 
     def _queue_song_for_preload(self, preloader, task):
         """Queue a song task for background preloading."""
@@ -3473,7 +3290,7 @@ class GearOptimizerApp:
                 current_worker_cap = max(1, effective_workers - 1)
 
                 if broken_pool_failures >= max_pool_retries:
-                    print("[Auto-Recover] Max retries hit; sequential fallback.")
+                    print("[Auto-Recover] Max retries hit; retrying through native in-flight pipeline.")
                     self._run_sequential(remaining_tasks, completed_songs, memory_resume_tracker)
                     break
                 continue

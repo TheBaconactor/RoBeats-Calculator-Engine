@@ -52,7 +52,7 @@ from gear_optimizer.helpers.song_helpers.song_config import setup_song_config
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.genetic import GA_POPULATION_SIZE
 from gear_optimizer.solver.gpu_executor import get_gpu_executor
-from gear_optimizer.solver.gpu_service import GpuServiceClient
+from gear_optimizer.solver.gpu_service import GpuServiceClient, GpuServiceTimeoutError
 from gear_optimizer.solver.inflight_utils import (
     _build_calc_song_from_file,
     _compact_items,
@@ -2722,6 +2722,8 @@ def run_native_inflight_song_pipeline(
 
                 try:
                     runs_payload = song.ga_future.result()
+                except GpuServiceTimeoutError:
+                    raise
                 except Exception as exc:
                     _post(
                         build_error_payload(
@@ -3057,6 +3059,8 @@ def run_native_inflight_song_pipeline(
                         did_work = True
                         try:
                             fut.result()
+                        except GpuServiceTimeoutError:
+                            raise
                         except Exception:
                             pass
                         # Release this song's reserved timeline slot now that FG is complete.

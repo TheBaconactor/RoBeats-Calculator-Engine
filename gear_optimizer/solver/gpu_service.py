@@ -15,6 +15,8 @@ from __future__ import annotations
 import itertools
 import os
 import queue
+import signal
+import sys
 import threading
 import time
 import random
@@ -107,6 +109,18 @@ class GpuJobHandle:
     future: Future
 
 
+class GpuServiceTimeoutError(RuntimeError):
+    """Raised when an in-process GPU service request exceeds its watchdog timeout."""
+
+
+@dataclass
+class _PendingGpuRequest:
+    future: Future
+    request_type: GpuRequestType
+    submit_ts: float
+    timeout_sec: float
+
+
 class GpuServiceClient:
     """
     Async in-process client for the singleton `GpuExecutor`.
@@ -121,13 +135,14 @@ class GpuServiceClient:
         self._request_queue: Any = None
         self._response_queue: Any = None
         self._counter = itertools.count(1)
-        # request_id -> Future, or (Future, request_type, submit_ts) when profiling is enabled.
-        self._pending: dict[int, Any] = {}
+        self._pending: dict[int, _PendingGpuRequest] = {}
         self._lock = threading.Lock()
         self._submit_lock = threading.Lock()
         self._rx_thread: Optional[threading.Thread] = None
+        self._timeout_thread: Optional[threading.Thread] = None
         self._running = False
         self._in_process_queues = False
+        self._timeout_abort_requested = threading.Event()
 
         # Optional latency profiling (end-to-end submit -> response).
         self._profile_enabled = bool(ENV.perf_timing or ENV.gpu_service_profile)
@@ -188,6 +203,19 @@ class GpuServiceClient:
             self._registry_static_handle_cache_max = 512
         self._registry_static_handle_cache_max = max(32, int(self._registry_static_handle_cache_max))
 
+        timeout_default_enabled = env_flag("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "0")
+        timeout_fatal_default = timeout_default_enabled
+        raw_timeout_fatal = str(os.environ.get("GPU_SERVICE_TIMEOUT_FATAL", "") or "").strip().lower()
+        if raw_timeout_fatal:
+            self._timeout_fatal = raw_timeout_fatal in TRUTHY_ENV_VALUES
+        else:
+            self._timeout_fatal = bool(timeout_fatal_default)
+        self._request_timeout_default_enabled = bool(timeout_default_enabled)
+        try:
+            self._timeout_poll_sec = max(0.05, float(os.environ.get("GPU_SERVICE_TIMEOUT_POLL_SEC", "0.25") or "0.25"))
+        except Exception:
+            self._timeout_poll_sec = 0.25
+
     @property
     def executor(self) -> GpuExecutor:
         return self._executor
@@ -218,12 +246,19 @@ class GpuServiceClient:
         self._in_process_queues = bool(in_process_queues)
 
         self._running = True
+        self._timeout_abort_requested.clear()
         self._rx_thread = threading.Thread(
             target=self._rx_loop,
             name=f"GpuServiceClientRx[{self._worker_id}]",
             daemon=True,
         )
         self._rx_thread.start()
+        self._timeout_thread = threading.Thread(
+            target=self._timeout_loop,
+            name=f"GpuServiceClientTimeout[{self._worker_id}]",
+            daemon=True,
+        )
+        self._timeout_thread.start()
 
         if self._fg_coalesce_enabled and self._in_process_queues and self._fg_coalesce_thread is None:
             # On Windows the default timer quantum can stretch 1ms waits to ~15ms.
@@ -260,6 +295,9 @@ class GpuServiceClient:
         if self._rx_thread is not None:
             self._rx_thread.join(timeout=max(0.0, float(timeout)))
         self._rx_thread = None
+        if self._timeout_thread is not None:
+            self._timeout_thread.join(timeout=max(0.0, float(timeout)))
+        self._timeout_thread = None
         if self._fg_coalesce_thread is not None:
             self._fg_coalesce_thread.join(timeout=max(0.0, float(timeout)))
         self._fg_coalesce_thread = None
@@ -286,11 +324,7 @@ class GpuServiceClient:
             pending = list(self._pending.items())
             self._pending.clear()
         for _req_id, entry in pending:
-            fut = None
-            if isinstance(entry, tuple) and entry:
-                fut = entry[0]
-            else:
-                fut = entry
+            fut = entry.future if isinstance(entry, _PendingGpuRequest) else entry
             if not fut.done():
                 fut.set_exception(RuntimeError("GPU client closed"))
 
@@ -299,13 +333,15 @@ class GpuServiceClient:
             raise RuntimeError("GpuServiceClient not started")
 
         request_id = int(next(self._counter))
-        t_submit = time.perf_counter() if self._profile_enabled else 0.0
+        t_submit = time.perf_counter()
         fut: Future = Future()
         with self._lock:
-            if self._profile_enabled:
-                self._pending[request_id] = (fut, request_type, float(t_submit))
-            else:
-                self._pending[request_id] = fut
+            self._pending[request_id] = _PendingGpuRequest(
+                future=fut,
+                request_type=request_type,
+                submit_ts=float(t_submit),
+                timeout_sec=float(self._request_timeout_sec_for(request_type)),
+            )
 
         req = GpuRequest(
             request_type=request_type,
@@ -715,17 +751,14 @@ class GpuServiceClient:
             except Exception:
                 continue
 
-            fut = None
-            req_type = None
-            t_submit = None
+            pending = None
             with self._lock:
-                entry = self._pending.pop(int(resp.request_id), None)
-                if self._profile_enabled and isinstance(entry, tuple) and len(entry) == 3:
-                    fut, req_type, t_submit = entry
-                else:
-                    fut = entry
-            if fut is None:
+                pending = self._pending.pop(int(resp.request_id), None)
+            if pending is None:
                 continue
+            fut = pending.future
+            req_type = pending.request_type
+            t_submit = pending.submit_ts
 
             if self._profile_enabled and isinstance(req_type, GpuRequestType) and isinstance(t_submit, (int, float)):
                 try:
@@ -745,6 +778,96 @@ class GpuServiceClient:
                 fut.set_result(resp.result)
             else:
                 fut.set_exception(RuntimeError(resp.error or "GPU job failed"))
+
+    def _request_timeout_sec_for(self, request_type: GpuRequestType) -> float:
+        env_key = "GPU_SERVICE_REQUEST_TIMEOUT_" + "".join(
+            ch if ch.isalnum() else "_" for ch in str(request_type.value or "").upper()
+        ) + "_SEC"
+        raw = str(os.environ.get(env_key, "") or "").strip()
+        if not raw:
+            raw = str(os.environ.get("GPU_SERVICE_REQUEST_TIMEOUT_SEC", "") or "").strip()
+
+        if raw:
+            try:
+                return max(0.0, float(raw))
+            except Exception:
+                return 0.0
+
+        if not self._request_timeout_default_enabled:
+            return 0.0
+
+        if request_type == GpuRequestType.GPU_NATIVE_GA_RUN:
+            return 240.0
+        if request_type in {
+            GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
+            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
+            GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
+            GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS,
+        }:
+            return 180.0
+        return 120.0
+
+    def _trigger_timeout_abort(self, message: str) -> None:
+        if not self._timeout_fatal or self._timeout_abort_requested.is_set():
+            return
+        self._timeout_abort_requested.set()
+
+        def _abort() -> None:
+            try:
+                print(f"[GpuService] Fatal request timeout: {message}")
+            except Exception:
+                pass
+            try:
+                time.sleep(0.1)
+            except Exception:
+                pass
+            try:
+                os.kill(os.getpid(), signal.SIGTERM)
+            except Exception:
+                os._exit(124)
+
+        threading.Thread(target=_abort, name="GpuServiceTimeoutAbort", daemon=True).start()
+
+    def _timeout_loop(self) -> None:
+        while self._running:
+            now = time.perf_counter()
+            expired: list[tuple[int, _PendingGpuRequest, float]] = []
+            with self._lock:
+                for request_id, entry in list(self._pending.items()):
+                    timeout_sec = max(0.0, float(entry.timeout_sec or 0.0))
+                    if timeout_sec <= 0.0:
+                        continue
+                    elapsed_sec = max(0.0, float(now - float(entry.submit_ts)))
+                    if elapsed_sec < timeout_sec:
+                        continue
+                    expired.append((int(request_id), entry, float(elapsed_sec)))
+                    self._pending.pop(int(request_id), None)
+
+            for request_id, entry, elapsed_sec in expired:
+                message = (
+                    f"GPU service request {entry.request_type.value} "
+                    f"(request_id={request_id}) timed out after {elapsed_sec:.1f}s "
+                    f"(limit {float(entry.timeout_sec):.1f}s)"
+                )
+                if not entry.future.done():
+                    entry.future.set_exception(GpuServiceTimeoutError(message))
+                emit_profile_event(
+                    component="gpu_service",
+                    event="timeout",
+                    metrics={
+                        "request_id": int(request_id),
+                        "request_type": str(entry.request_type.value),
+                        "elapsed_sec": float(elapsed_sec),
+                        "timeout_sec": float(entry.timeout_sec),
+                        "fatal": int(bool(self._timeout_fatal)),
+                    },
+                )
+                self._trigger_timeout_abort(message)
+
+            try:
+                time.sleep(float(self._timeout_poll_sec))
+            except Exception:
+                time.sleep(0.25)
 
     def profile_summary(self) -> dict[str, Any]:
         if not self._profile_enabled:

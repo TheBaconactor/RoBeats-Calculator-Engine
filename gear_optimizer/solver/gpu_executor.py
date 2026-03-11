@@ -27,6 +27,7 @@ import threading
 import queue
 import os
 import atexit
+import json
 import traceback
 import time
 import random
@@ -178,6 +179,11 @@ _PENDING_MAX = max(0, int(getattr(ENV, "gpu_executor_pending_max", 2048) or 0))
 _REGISTRY_STATIC_HANDLE_COUNTER = 0
 _REGISTRY_STATIC_HANDLE_CACHE_MAX = max(16, int(_ENV_GET("GPU_EXECUTOR_REGISTRY_HANDLE_CACHE_MAX", "256") or "256"))
 _REGISTRY_STATIC_HANDLE_CACHE: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
+
+
+def _default_executor_heartbeat_path() -> Path:
+    repo_root = Path(__file__).resolve().parents[2]
+    return repo_root / "bin" / "gpu_executor_heartbeat.json"
 
 
 def _prune_pending_responses(now: float | None = None) -> None:
@@ -1185,6 +1191,17 @@ class GpuExecutor:
 
         self._in_process_queues = bool(in_process)
         self._high_res_timer_enabled = False
+        heartbeat_raw = str(os.environ.get("GPU_EXECUTOR_HEARTBEAT_PATH", "") or "").strip()
+        self._heartbeat_path = Path(heartbeat_raw) if heartbeat_raw else _default_executor_heartbeat_path()
+        try:
+            self._heartbeat_interval_sec = max(
+                0.1,
+                float(os.environ.get("GPU_EXECUTOR_HEARTBEAT_INTERVAL_SEC", "2.0") or "2.0"),
+            )
+        except Exception:
+            self._heartbeat_interval_sec = 2.0
+        self._heartbeat_last_write_monotonic = 0.0
+        self._heartbeat_last_phase = ""
         if self._in_process_queues and os.name == "nt" and _system_timer_override_allowed():
             # The executor's gather loop uses small timeout waits (0-2ms by default in inproc mode).
             # On Windows, keep 1ms timer resolution so these waits aren't quantized to ~15ms.
@@ -1543,6 +1560,57 @@ class GpuExecutor:
         if worker_id in self._response_queues:
             del self._response_queues[worker_id]
 
+    def _write_heartbeat(
+        self,
+        *,
+        phase: str,
+        batch: list[GpuRequest] | None = None,
+        note: str = "",
+        force: bool = False,
+    ) -> None:
+        now_monotonic = time.monotonic()
+        if (
+            not force
+            and str(phase) == str(self._heartbeat_last_phase)
+            and (now_monotonic - float(self._heartbeat_last_write_monotonic or 0.0)) < float(self._heartbeat_interval_sec)
+        ):
+            return
+
+        path = self._heartbeat_path
+        type_counts: dict[str, int] = {}
+        request_count = 0
+        for req in batch or []:
+            if getattr(req, "request_type", None) == GpuRequestType.SHUTDOWN:
+                continue
+            req_name = str(getattr(getattr(req, "request_type", None), "value", "unknown") or "unknown")
+            type_counts[req_name] = int(type_counts.get(req_name, 0)) + 1
+            request_count += 1
+
+        payload = {
+            "pid": int(os.getpid()),
+            "updated_at": int(time.time() * 1000.0),
+            "phase": str(phase or "unknown"),
+            "ready": bool(self._taichi_ready),
+            "running": bool(self._running),
+            "requests_processed": int(self._requests_processed),
+            "request_count": int(request_count),
+            "request_types": type_counts,
+            "note": str(note or ""),
+        }
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = path.with_suffix(path.suffix + ".tmp")
+            tmp_path.write_text(
+                json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            os.replace(tmp_path, path)
+            self._heartbeat_last_write_monotonic = now_monotonic
+            self._heartbeat_last_phase = str(phase or "")
+        except Exception:
+            return
+
     def _executor_loop(self):
         """Main GPU execution loop with batch coalescing."""
         # Initialize Taichi ONCE
@@ -1558,8 +1626,10 @@ class GpuExecutor:
             self._last_init_error = f"{type(e).__name__}: {e}"
             self._running = False
             self._ready_event.set()
+            self._write_heartbeat(phase="init_failed", note=self._last_init_error, force=True)
             print(f"[GpuExecutor] Taichi init failed: {e}")
             return
+        self._write_heartbeat(phase="ready", force=True)
         # Warm up FG kernels up-front to avoid the first ForceGreatsFinder call
         # incurring multi-second Taichi JIT latency (which shows up as a GA→FG GPU idle gap).
         if ENV.gpu_executor_warmup_fg:
@@ -1771,6 +1841,7 @@ class GpuExecutor:
                     self._batch_size_sum += bs
 
                 if not batch:
+                    self._write_heartbeat(phase="idle")
                     batch_metrics["exec_sec"] = 0.0
                     self._record_workload_batch(batch_metrics)
                     continue
@@ -1779,11 +1850,13 @@ class GpuExecutor:
                 if any(r.request_type == GpuRequestType.SHUTDOWN for r in batch):
                     if self._profile_enabled:
                         self._profile_shutdown_ts = perf_counter()
+                    self._write_heartbeat(phase="stopping", batch=batch, force=True)
                     batch_metrics["exec_sec"] = 0.0
                     self._record_workload_batch(batch_metrics)
                     break
 
                 batch_exec_t0 = perf_counter()
+                self._write_heartbeat(phase="running", batch=batch, force=True)
 
                 # Single-pass partitioning keeps request order without rescanning `batch`.
                 ga_native_requests: list[GpuRequest] = []
@@ -2059,6 +2132,7 @@ class GpuExecutor:
                     )
                 batch_metrics["exec_sec"] = max(0.0, float(perf_counter() - batch_exec_t0))
                 self._record_workload_batch(batch_metrics)
+                self._write_heartbeat(phase="idle", force=True)
 
             except Exception as e:
                 # The executor loop must never "drop" a batch on exception; otherwise callers can
@@ -2089,6 +2163,9 @@ class GpuExecutor:
                         self._record_workload_batch(batch_metrics)
                 except Exception:
                     pass
+                self._write_heartbeat(phase="error", batch=batch, note=str(err), force=True)
+
+        self._write_heartbeat(phase="stopped", note=self._last_init_error or "", force=True)
 
     def _queue_get(self, timeout: float):
         wait_timeout = max(0.0, float(timeout))
