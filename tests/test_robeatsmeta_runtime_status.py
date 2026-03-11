@@ -112,6 +112,98 @@ def test_runtime_status_fresh_instance_reads_file_backed_snapshot(tmp_path):
     assert read_back["updated_at"] == 654
 
 
+def test_runtime_status_reader_refreshes_after_file_changes(tmp_path):
+    state_path = tmp_path / "priority.json"
+    status_path = tmp_path / "status.json"
+    song_meta_path = tmp_path / "song_meta_index.json"
+    song_meta_path.write_text("[]", encoding="utf-8")
+
+    writer = RoBeatsMetaOptimizerApi(
+        state_path=state_path,
+        status_path=status_path,
+        song_meta_index_path=song_meta_path,
+    )
+    writer.update_runtime_status(
+        status="running",
+        current_song="Song A (Hard) by Artist",
+        completed=1,
+        total=10,
+        failed=0,
+        now=1_000,
+    )
+    assert writer.flush_runtime_status(timeout=5.0) is True
+
+    reader = RoBeatsMetaOptimizerApi(
+        state_path=state_path,
+        status_path=status_path,
+        song_meta_index_path=song_meta_path,
+        publish_runtime_status=False,
+    )
+    try:
+        first = reader.read_runtime_status()
+        assert first["current_song"] == "Song A (Hard) by Artist"
+        assert first["updated_at"] == 1_000
+
+        writer.update_runtime_status(
+            status="running",
+            current_song="Song B (Hard) by Artist",
+            completed=2,
+            total=10,
+            failed=0,
+            now=2_000,
+        )
+        assert writer.flush_runtime_status(timeout=5.0) is True
+
+        second = reader.read_runtime_status()
+        assert second["current_song"] == "Song B (Hard) by Artist"
+        assert second["completed"] == 2
+        assert second["updated_at"] == 2_000
+    finally:
+        reader.stop_runtime_status_loop(timeout=1.0)
+        writer.stop_runtime_status_loop(timeout=1.0)
+
+
+def test_runtime_status_push_is_off_by_default_even_in_service_mode(monkeypatch, tmp_path):
+    state_path = tmp_path / "priority.json"
+    status_path = tmp_path / "status.json"
+    song_meta_path = tmp_path / "song_meta_index.json"
+    song_meta_path.write_text("[]", encoding="utf-8")
+
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
+    monkeypatch.delenv("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_URL", raising=False)
+    monkeypatch.delenv("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_AUTO", raising=False)
+
+    api = RoBeatsMetaOptimizerApi(
+        state_path=state_path,
+        status_path=status_path,
+        song_meta_index_path=song_meta_path,
+    )
+    try:
+        assert api._runtime_status_push_url == ""
+    finally:
+        api.stop_runtime_status_loop(timeout=1.0)
+
+
+def test_runtime_status_heartbeat_stays_enabled_without_push_url(monkeypatch, tmp_path):
+    state_path = tmp_path / "priority.json"
+    status_path = tmp_path / "status.json"
+    song_meta_path = tmp_path / "song_meta_index.json"
+    song_meta_path.write_text("[]", encoding="utf-8")
+
+    monkeypatch.delenv("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_URL", raising=False)
+    monkeypatch.delenv("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_AUTO", raising=False)
+
+    api = RoBeatsMetaOptimizerApi(
+        state_path=state_path,
+        status_path=status_path,
+        song_meta_index_path=song_meta_path,
+    )
+    try:
+        assert float(api._runtime_status_heartbeat_interval_sec) >= 1.0
+    finally:
+        api.stop_runtime_status_loop(timeout=1.0)
+
+
 def test_runtime_status_pushes_direct_to_backend(monkeypatch, tmp_path):
     state_path = tmp_path / "priority.json"
     status_path = tmp_path / "status.json"

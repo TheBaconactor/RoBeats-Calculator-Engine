@@ -4,7 +4,7 @@ import sqlite3
 import threading
 import time
 
-from gear_optimizer.robeatsmeta_api import RoBeatsMetaOptimizerApi
+from gear_optimizer.robeatsmeta_api import RoBeatsMetaOptimizerApi, _file_lock
 
 
 def _write_song_meta_index(path):
@@ -335,6 +335,43 @@ def test_record_song_visit_respects_pending_queue_cap_without_eviction(tmp_path,
     assert len(entries) == 10
 
 
+def test_record_song_visit_fails_fast_when_priority_state_lock_is_busy(tmp_path, monkeypatch):
+    state_path = tmp_path / "priority_state.json"
+    song_meta_path = tmp_path / "song_meta_index.json"
+    _write_song_meta_index(song_meta_path)
+    monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_VISIT_LOCK_TIMEOUT_SEC", "0.05")
+
+    api = RoBeatsMetaOptimizerApi(state_path=state_path, song_meta_index_path=song_meta_path)
+
+    lock_ready = threading.Event()
+    release_lock = threading.Event()
+
+    def _hold_lock() -> None:
+        with _file_lock(api._lock_path):
+            lock_ready.set()
+            release_lock.wait(timeout=5.0)
+
+    holder = threading.Thread(target=_hold_lock)
+    holder.start()
+    assert lock_ready.wait(timeout=1.0) is True
+
+    started = time.perf_counter()
+    result = api.record_song_visit(
+        song_id="Alpha (Hard) by Artist",
+        title="Alpha",
+        artist="Artist",
+        now=1_700_000_800,
+    )
+    elapsed = time.perf_counter() - started
+
+    release_lock.set()
+    holder.join(timeout=1.0)
+
+    assert result["queued"] is False
+    assert result["reason"] == "busy"
+    assert elapsed < 0.5
+
+
 def test_service_defaults_force_continuous_all_difficulty_mode(monkeypatch, tmp_path):
     song_meta_path = tmp_path / "song_meta_index.json"
     canonical_db = tmp_path / "canonical.db"
@@ -356,7 +393,7 @@ def test_service_defaults_force_continuous_all_difficulty_mode(monkeypatch, tmp_
     assert cfg.get("IterationEngine", "LoopForever") == "true"
     assert cfg.get("IterationEngine", "SongRepeats") == "25"
     assert cfg.get("IterationEngine", "UseEvolutionDB") == "true"
-    assert cfg.get("IterationEngine", "InFlightSongs") == "30"
+    assert cfg.get("IterationEngine", "InFlightSongs") == "12"
     assert cfg.get("CalculateSong", "Difficulty") == "All"
     assert cfg.get("CalculateSong", "Song_Name") == ""
     assert cfg.get("CalculateSong", "TargetPrimary") == "all"
@@ -457,7 +494,7 @@ def test_service_benchmark_mode_keeps_defaults_but_forces_bounded_loop(monkeypat
     assert changed is True
     assert cfg.get("IterationEngine", "LoopForever") == "false"
     assert cfg.get("IterationEngine", "SongRepeats") == "25"
-    assert cfg.get("IterationEngine", "InFlightSongs") == "30"
+    assert cfg.get("IterationEngine", "InFlightSongs") == "12"
     assert cfg.get("CalculateSong", "Difficulty") == "All"
 
 

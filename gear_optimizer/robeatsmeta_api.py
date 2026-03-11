@@ -24,6 +24,7 @@ _DEFAULT_SONG_REPEATS = 25
 # higher profiling-oriented overlap that materially increases steady-state RAM.
 _DEFAULT_INFLIGHT_SONGS = 12
 _DEFAULT_MAX_PENDING_VISITS = 10
+_DEFAULT_VISIT_LOCK_TIMEOUT_SECONDS = 0.05
 _VISIT_SCOPE_ENV = "ROBEATSMETA_OPTIMIZER_VISIT_SCOPE"
 
 
@@ -83,6 +84,13 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(default)
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float(default)
+
+
 @dataclass(frozen=True)
 class SongBundleRef:
     song_id: str
@@ -92,9 +100,11 @@ class SongBundleRef:
 
 
 @contextmanager
-def _file_lock(lock_path: Path):
+def _file_lock(lock_path: Path, *, timeout_sec: float | None = None, poll_interval_sec: float = 0.01):
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     handle = lock_path.open("a+", encoding="utf-8")
+    timeout = None if timeout_sec is None else max(0.0, float(timeout_sec))
+    deadline = time.monotonic() + timeout if timeout is not None else None
     try:
         if os.name == "nt":
             import msvcrt
@@ -107,11 +117,31 @@ def _file_lock(lock_path: Path):
                 handle.seek(0)
             except Exception:
                 pass
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            while True:
+                try:
+                    mode = msvcrt.LK_NBLCK if deadline is not None else msvcrt.LK_LOCK
+                    msvcrt.locking(handle.fileno(), mode, 1)
+                    break
+                except OSError:
+                    if deadline is None:
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"Timed out acquiring file lock for {lock_path}") from None
+                    time.sleep(max(0.001, float(poll_interval_sec)))
         else:
             import fcntl
 
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            while True:
+                try:
+                    flags = fcntl.LOCK_EX | (fcntl.LOCK_NB if deadline is not None else 0)
+                    fcntl.flock(handle.fileno(), flags)
+                    break
+                except BlockingIOError:
+                    if deadline is None:
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"Timed out acquiring file lock for {lock_path}") from None
+                    time.sleep(max(0.001, float(poll_interval_sec)))
         yield
     finally:
         try:
@@ -181,6 +211,9 @@ class RoBeatsMetaOptimizerApi:
             1,
             _safe_int(os.environ.get("ROBEATSMETA_OPTIMIZER_MAX_PENDING_VISITS"), _DEFAULT_MAX_PENDING_VISITS),
         )
+        raw_visit_lock_timeout = os.environ.get("ROBEATSMETA_OPTIMIZER_VISIT_LOCK_TIMEOUT_SEC")
+        visit_lock_timeout = _safe_float(raw_visit_lock_timeout, _DEFAULT_VISIT_LOCK_TIMEOUT_SECONDS)
+        self._visit_lock_timeout_sec = None if visit_lock_timeout <= 0 else max(0.01, float(visit_lock_timeout))
         self._song_meta_mtime_ns: int | None = None
         self._bundle_by_song_id: dict[str, SongBundleRef] = {}
         self._song_ids_by_bundle_key: dict[str, set[str]] = {}
@@ -206,11 +239,12 @@ class RoBeatsMetaOptimizerApi:
         self._runtime_status_stop = False
         self._runtime_status_pending: dict[str, Any] | None = None
         self._runtime_status_current: dict[str, Any] | None = None
+        self._runtime_status_disk_mtime_ns = -1
         self._runtime_status_http_conn: http.client.HTTPConnection | http.client.HTTPSConnection | None = None
         self._runtime_status_http_conn_key: tuple[str, str, int] | None = None
-        self._runtime_status_heartbeat_interval_sec = (
-            5.0 if str(self._runtime_status_push_url or "").strip() else 0.0
-        )
+        heartbeat_raw = os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_HEARTBEAT_SEC", "5")
+        heartbeat_seconds = _safe_float(heartbeat_raw, 5.0)
+        self._runtime_status_heartbeat_interval_sec = max(1.0, float(heartbeat_seconds)) if self._publish_runtime_status else 0.0
         self._runtime_status_last_push_monotonic = 0.0
         self._runtime_status_current = self.read_runtime_status()
         self._runtime_status_thread = threading.Thread(
@@ -224,10 +258,12 @@ class RoBeatsMetaOptimizerApi:
         try:
             self._runtime_status_push_timeout_sec = max(
                 0.05,
-                float(os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_TIMEOUT_SEC", "0.35") or "0.35"),
+                # Local backend pushes can see short scheduler/proxy jitter under load; a 350ms
+                # default was causing false self-timeouts on an otherwise healthy loopback path.
+                float(os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_TIMEOUT_SEC", "3.0") or "3.0"),
             )
         except Exception:
-            self._runtime_status_push_timeout_sec = 0.35
+            self._runtime_status_push_timeout_sec = 3.0
         if self._publish_runtime_status:
             # Advertise liveness immediately so the website can show the optimizer bar
             # even before the first song queue is prepared.
@@ -338,50 +374,50 @@ class RoBeatsMetaOptimizerApi:
             return {"queued": False, "reason": "invalid_song"}
 
         ts = _safe_int(now if now is not None else time.time())
-        with _file_lock(self._lock_path):
-            state = self._load_state_unlocked()
-            changed = self._prune_state_unlocked(state, ts)
-            entries = state.setdefault("entries", {})
-            entry, merged_changed = self._merge_matching_entries_unlocked(state, bundle)
-            if merged_changed:
-                changed = True
-            if not isinstance(entry, dict):
-                entry = {}
-            active_bundle_key = str(state.get("active_bundle_key") or "").strip()
-
-            last_computed_at = _safe_int(entry.get("last_computed_at"), 0)
-            last_requested_at = _safe_int(entry.get("last_requested_at"), 0)
-            next_entry = dict(entry)
-            next_entry.update(
-                {
-                    "song_id": bundle.song_id,
-                    "title": bundle.title,
-                    "artist": bundle.artist,
-                    "bundle_key": bundle.bundle_key,
-                }
-            )
-
-            if active_bundle_key == str(bundle.bundle_key or "").strip():
-                if entries.get(bundle.bundle_key) != next_entry:
-                    entries[bundle.bundle_key] = next_entry
+        try:
+            with _file_lock(self._lock_path, timeout_sec=self._visit_lock_timeout_sec):
+                state = self._load_state_unlocked()
+                changed = self._prune_state_unlocked(state, ts)
+                entries = state.setdefault("entries", {})
+                entry, merged_changed = self._merge_matching_entries_unlocked(state, bundle)
+                if merged_changed:
                     changed = True
-                if changed:
-                    self._write_state_unlocked(state)
-                return {
-                    "queued": False,
-                    "reason": "already_processing",
-                    "bundle_key": bundle.bundle_key,
-                }
+                if not isinstance(entry, dict):
+                    entry = {}
+                active_bundle_key = str(state.get("active_bundle_key") or "").strip()
 
-            # Family mode optimization: if this family already exists in DB and the state file was
-            # reset, avoid re-queueing all difficulties immediately.
-            if self._visit_family_mode and last_computed_at <= 0:
-                try:
-                    from .data.database import get_song_names_present_in_db
-                except Exception:
-                    get_song_names_present_in_db = None
-                if get_song_names_present_in_db is not None:
+                last_computed_at = _safe_int(entry.get("last_computed_at"), 0)
+                last_requested_at = _safe_int(entry.get("last_requested_at"), 0)
+                next_entry = dict(entry)
+                next_entry.update(
+                    {
+                        "song_id": bundle.song_id,
+                        "title": bundle.title,
+                        "artist": bundle.artist,
+                        "bundle_key": bundle.bundle_key,
+                    }
+                )
+
+                if active_bundle_key == str(bundle.bundle_key or "").strip():
+                    if entries.get(bundle.bundle_key) != next_entry:
+                        entries[bundle.bundle_key] = next_entry
+                        changed = True
+                    if changed:
+                        self._write_state_unlocked(state)
+                    return {
+                        "queued": False,
+                        "reason": "already_processing",
+                        "bundle_key": bundle.bundle_key,
+                    }
+
+                # Visit enqueueing is best-effort. Avoid inheriting long queue-lock stalls.
+                if self._visit_family_mode and last_computed_at <= 0:
                     try:
+                        from .data.database import get_song_names_present_in_db
+                    except Exception:
+                        get_song_names_present_in_db = None
+                    if get_song_names_present_in_db is not None:
+                        try:
                             song_ids: set[str] = set()
                             cached_ids = self._song_ids_by_bundle_key.get(str(bundle.bundle_key or "").strip())
                             if isinstance(cached_ids, set):
@@ -397,65 +433,71 @@ class RoBeatsMetaOptimizerApi:
                                 return {
                                     "queued": False,
                                     "reason": "fresh_compute",
-                                "bundle_key": bundle.bundle_key,
-                                "last_computed_at": ts,
-                                "db_present": True,
-                            }
-                    except Exception:
-                        pass
+                                    "bundle_key": bundle.bundle_key,
+                                    "last_computed_at": ts,
+                                    "db_present": True,
+                                }
+                        except Exception:
+                            pass
 
-            if last_computed_at > 0 and ts - last_computed_at < self._visit_ttl_seconds:
-                if entries.get(bundle.bundle_key) != next_entry:
-                    entries[bundle.bundle_key] = next_entry
-                    changed = True
-                if changed:
-                    self._write_state_unlocked(state)
+                if last_computed_at > 0 and ts - last_computed_at < self._visit_ttl_seconds:
+                    if entries.get(bundle.bundle_key) != next_entry:
+                        entries[bundle.bundle_key] = next_entry
+                        changed = True
+                    if changed:
+                        self._write_state_unlocked(state)
+                    return {
+                        "queued": False,
+                        "reason": "fresh_compute",
+                        "bundle_key": bundle.bundle_key,
+                        "last_computed_at": last_computed_at,
+                    }
+
+                if last_requested_at > last_computed_at:
+                    if entries.get(bundle.bundle_key) != next_entry:
+                        entries[bundle.bundle_key] = next_entry
+                        changed = True
+                    if changed:
+                        self._write_state_unlocked(state)
+                    return {
+                        "queued": False,
+                        "reason": "already_queued",
+                        "bundle_key": bundle.bundle_key,
+                    }
+
+                pending_count = 0
+                for raw_entry in entries.values():
+                    if not isinstance(raw_entry, dict):
+                        continue
+                    requested_at = _safe_int(raw_entry.get("last_requested_at"), 0)
+                    computed_at = _safe_int(raw_entry.get("last_computed_at"), 0)
+                    if requested_at > computed_at:
+                        pending_count += 1
+                if pending_count >= int(self._max_pending_visits):
+                    if changed:
+                        self._write_state_unlocked(state)
+                    return {
+                        "queued": False,
+                        "reason": "queue_full",
+                        "bundle_key": bundle.bundle_key,
+                        "max_pending_visits": int(self._max_pending_visits),
+                    }
+
+                next_entry["last_requested_at"] = ts
+                entries[bundle.bundle_key] = next_entry
+                self._write_state_unlocked(state)
                 return {
-                    "queued": False,
-                    "reason": "fresh_compute",
+                    "queued": True,
                     "bundle_key": bundle.bundle_key,
-                    "last_computed_at": last_computed_at,
+                    "song_id": bundle.song_id,
+                    "title": bundle.title,
+                    "artist": bundle.artist,
                 }
-
-            if last_requested_at > last_computed_at:
-                if entries.get(bundle.bundle_key) != next_entry:
-                    entries[bundle.bundle_key] = next_entry
-                    changed = True
-                if changed:
-                    self._write_state_unlocked(state)
-                return {
-                    "queued": False,
-                    "reason": "already_queued",
-                    "bundle_key": bundle.bundle_key,
-                }
-
-            pending_count = 0
-            for raw_entry in entries.values():
-                if not isinstance(raw_entry, dict):
-                    continue
-                requested_at = _safe_int(raw_entry.get("last_requested_at"), 0)
-                computed_at = _safe_int(raw_entry.get("last_computed_at"), 0)
-                if requested_at > computed_at:
-                    pending_count += 1
-            if pending_count >= int(self._max_pending_visits):
-                if changed:
-                    self._write_state_unlocked(state)
-                return {
-                    "queued": False,
-                    "reason": "queue_full",
-                    "bundle_key": bundle.bundle_key,
-                    "max_pending_visits": int(self._max_pending_visits),
-                }
-
-            next_entry["last_requested_at"] = ts
-            entries[bundle.bundle_key] = next_entry
-            self._write_state_unlocked(state)
+        except TimeoutError:
             return {
-                "queued": True,
+                "queued": False,
+                "reason": "busy",
                 "bundle_key": bundle.bundle_key,
-                "song_id": bundle.song_id,
-                "title": bundle.title,
-                "artist": bundle.artist,
             }
 
     def mark_song_computed(self, *, song_id: str, now: int | None = None) -> bool:
@@ -823,7 +865,7 @@ class RoBeatsMetaOptimizerApi:
         configured = str(os.environ.get("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_URL", "") or "").strip()
         if configured:
             return configured
-        if self.backend_mode_enabled():
+        if self.backend_mode_enabled() and _env_truthy("ROBEATSMETA_OPTIMIZER_STATUS_PUSH_AUTO", False):
             return "http://127.0.0.1:8000/robeatsmeta/internal/optimizer/status"
         return ""
 
@@ -1074,10 +1116,16 @@ class RoBeatsMetaOptimizerApi:
         tmp_path = self._status_path.with_suffix(self._status_path.suffix + ".tmp")
         tmp_path.write_text(payload + "\n", encoding="utf-8")
         os.replace(tmp_path, self._status_path)
+        try:
+            self._runtime_status_disk_mtime_ns = int(self._status_path.stat().st_mtime_ns)
+        except Exception:
+            self._runtime_status_disk_mtime_ns = -1
 
     def _load_status(self) -> dict[str, Any]:
-        with _file_lock(self._status_lock_path):
-            return self._load_status_unlocked()
+        # Writes to the status file are atomic (tmp + os.replace), so reads do not
+        # need to contend on the lock file. This prevents the website backend from
+        # stalling on lock acquisition during status polling.
+        return self._load_status_unlocked()
 
     def _persist_status(self, state: dict[str, Any]) -> None:
         with _file_lock(self._status_lock_path):
@@ -1228,14 +1276,7 @@ class RoBeatsMetaOptimizerApi:
             self._runtime_status_http_conn_key = None
 
     def read_runtime_status(self) -> dict[str, Any]:
-        with self._runtime_status_state_lock:
-            if self._runtime_status_current:
-                return dict(self._runtime_status_current)
-        try:
-            return self._load_status()
-        except Exception:
-            pass
-        return {
+        default_state = {
             "version": 1,
             "available": False,
             "status": "idle",
@@ -1245,6 +1286,39 @@ class RoBeatsMetaOptimizerApi:
             "failed": 0,
             "updated_at": 0,
         }
+
+        disk_mtime_ns = -1
+        try:
+            disk_mtime_ns = int(self._status_path.stat().st_mtime_ns)
+        except Exception:
+            disk_mtime_ns = -1
+
+        with self._runtime_status_state_lock:
+            cached = dict(self._runtime_status_current) if self._runtime_status_current else None
+            cached_mtime_ns = int(self._runtime_status_disk_mtime_ns or -1)
+
+        # Bridge-reader instances (`publish_runtime_status=False`) should read through
+        # to disk whenever the status file changes. Writer instances can still use the
+        # in-memory snapshot unless disk mtime has moved ahead.
+        should_refresh_from_disk = (not self._publish_runtime_status) or cached is None or disk_mtime_ns != cached_mtime_ns
+        if not should_refresh_from_disk and cached is not None:
+            return cached
+
+        try:
+            loaded = self._load_status()
+        except Exception:
+            loaded = dict(cached or default_state)
+
+        if disk_mtime_ns < 0:
+            try:
+                disk_mtime_ns = int(self._status_path.stat().st_mtime_ns)
+            except Exception:
+                disk_mtime_ns = -1
+
+        with self._runtime_status_state_lock:
+            self._runtime_status_current = dict(loaded)
+            self._runtime_status_disk_mtime_ns = int(disk_mtime_ns)
+            return dict(self._runtime_status_current)
 
     def flush_runtime_status(self, *, timeout: float = 5.0) -> bool:
         return bool(self._runtime_status_flushed_event.wait(timeout=max(0.0, float(timeout))))
