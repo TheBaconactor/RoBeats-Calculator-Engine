@@ -30,6 +30,10 @@ def _env_int(name: str, default: int) -> int:
         return int(default)
 
 
+def _ga_redundancy_audit_enabled() -> bool:
+    return _env_flag("GA_REDUNDANCY_AUDIT", "0")
+
+
 # Support deterministic testing via GA_SEED environment variable
 _GA_SEED = os.environ.get("GA_SEED")
 if _GA_SEED is not None:
@@ -68,6 +72,11 @@ from .scoring.stats_ops import apply_gems_to_base_stats
 from ..data.models import GASettings
 from ..helpers.ga_helpers import (
     initialize_pools,
+)
+from ..helpers.ga_helpers.redundancy_audit import (
+    analyze_ga_redundancy_from_runs_payload,
+    summarize_ga_redundancy_record,
+    write_ga_redundancy_audit_record,
 )
 from ..helpers.song_helpers.fg_candidate_selector import select_fg_candidates
 from ..helpers.song_helpers.fg_combo_booster import (
@@ -1647,6 +1656,8 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         batch_runs_default = batch_runs_override
 
     payload_segments: list[np.ndarray] = []
+    audit_payload_segments: list[np.ndarray] = []
+    audit_redundancy = _ga_redundancy_audit_enabled()
 
     perf = _PERF_TIMING
     phase_timing = perf and env_flag("GPU_NATIVE_GA_PHASE_TIMING", "0")
@@ -1944,6 +1955,14 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                             combos=int(n_combos),
                         )
 
+                    if audit_redundancy:
+                        gpu_api.ga_store_runs_payload_snapshot_segmented(
+                            run_idx_start=int(local_run_idx),
+                            n_runs=int(batch_len),
+                            n_genomes_per_run=int(n_genomes),
+                            n_slots=int(n_slots),
+                        )
+
                     last_exc = None
                     break
                 except Exception as e:
@@ -1967,6 +1986,15 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
             local_run_idx += int(batch_len)
 
+        if audit_redundancy:
+            audit_payload_segments.append(
+                gpu_api.ga_download_runs_payload(
+                    n_runs=int(seg_len),
+                    n_genomes=int(n_genomes),
+                    n_slots=int(n_slots),
+                )
+            )
+
         payload_segments.append(
             gpu_api.ga_download_fg_selected_payload(
                 table_slot=int(song_slot),
@@ -1981,6 +2009,27 @@ def run_gpu_native_ga_runs_payload_prebuilt(
 
     if not payload_segments:
         raise RuntimeError("Internal error: no GA payload segments were produced")
+
+    if audit_redundancy and audit_payload_segments:
+        try:
+            audit_payload = (
+                audit_payload_segments[0]
+                if len(audit_payload_segments) == 1
+                else np.concatenate(audit_payload_segments, axis=0)
+            )
+            audit_record = analyze_ga_redundancy_from_runs_payload(
+                runs_payload=audit_payload,
+                item_stats=item_stats,
+                base_fixed_stats_arr=base_fixed_stats_arr,
+                calc_song=calc_song,
+                cfg_data=cfg_data,
+                ga_seed=ga_seed,
+            )
+            print(summarize_ga_redundancy_record(audit_record))
+            audit_path = write_ga_redundancy_audit_record(audit_record)
+            print(f"[GA Redundancy Audit] wrote {audit_path}")
+        except Exception as exc:
+            print(f"[GA Redundancy Audit] Warning: failed to capture audit: {exc}")
 
     if len(payload_segments) != 1:
         raise RuntimeError(

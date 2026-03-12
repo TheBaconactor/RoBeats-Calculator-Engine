@@ -33,6 +33,7 @@ def test_ga_evaluate_population_materialize_mode_dispatch(monkeypatch):
     monkeypatch.setattr(ga_operations, "_ensure_ftff_combo_tables", lambda _budget: 1)
     monkeypatch.setattr(ga_operations, "compute_ga_combo_chunk", lambda **_kwargs: 1)
     monkeypatch.setattr(ga_operations, "_ga_eval_budget", lambda: 1024)
+    monkeypatch.setattr(ga_operations, "_ga_exact_genome_base_stats_reuse_enabled", lambda: 0)
     monkeypatch.setattr(ga_operations, "_GA_PLATEAU_PRUNE_ENABLED", 0, raising=False)
 
     ga_operations.ga_evaluate_population(

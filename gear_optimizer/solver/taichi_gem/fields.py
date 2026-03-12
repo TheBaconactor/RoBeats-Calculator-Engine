@@ -146,6 +146,12 @@ ga_scores: ti.Field = None  # (MAX_GENOMES,) int32 fitness scores (from evaluati
 ga_rng_state: ti.Field = None  # (MAX_GENOMES,) uint32 RNG state per genome/thread
 ga_parent_a: ti.Field = None  # (MAX_GENOMES,) int32 selected parent index A
 ga_parent_b: ti.Field = None  # (MAX_GENOMES,) int32 selected parent index B
+GA_EXACT_EVAL_HASH_KEY_COLS = MAX_SLOTS + 4  # 9 slot IDs + 4 reserved cols kept for layout stability
+GA_EXACT_EVAL_HASH_SIZE = 16384  # Open-addressing table for exact duplicate-genome detection.
+ga_exact_eval_hash_used: ti.Field = None  # (HASH_SIZE,) i32 occupancy (0=empty, else rep_idx+1)
+ga_exact_eval_hash_keys: ti.Field = None  # (HASH_SIZE, KEY_COLS) i32 exact genome key (trailing cols reserved)
+ga_exact_eval_rep_idx: ti.Field = None  # (MAX_GENOMES,) i32 representative genome index per row
+ga_exact_eval_unique_count: ti.Field = None  # (1,) i32 number of unique genome rows
 
 # GPU-side global best tracking (avoids per-generation CPU downloads)
 ga_global_best_score: ti.Field = None  # (1,) i32 - best score across all generations
@@ -281,6 +287,7 @@ def reset_fields_state() -> None:
     global population_indices, population_next_indices, ga_initial_populations, ga_init_heuristic_topk
     global item_stats, base_fixed_stats
     global ga_scores, ga_rng_state, ga_parent_a, ga_parent_b
+    global ga_exact_eval_hash_used, ga_exact_eval_hash_keys, ga_exact_eval_rep_idx, ga_exact_eval_unique_count
     global slot_start, slot_count
     global genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
@@ -344,6 +351,10 @@ def reset_fields_state() -> None:
     ga_rng_state = None
     ga_parent_a = None
     ga_parent_b = None
+    ga_exact_eval_hash_used = None
+    ga_exact_eval_hash_keys = None
+    ga_exact_eval_rep_idx = None
+    ga_exact_eval_unique_count = None
     slot_start = None
     slot_count = None
     island_boundaries = None
@@ -489,6 +500,7 @@ def allocate_fields():
         item_stats, \
         base_fixed_stats
     global ga_scores, ga_rng_state, ga_parent_a, ga_parent_b
+    global ga_exact_eval_hash_used, ga_exact_eval_hash_keys, ga_exact_eval_rep_idx, ga_exact_eval_unique_count
     global slot_start, slot_count
     global genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
@@ -546,6 +558,13 @@ def allocate_fields():
     ga_rng_state = ti.field(dtype=ti.u32, shape=MAX_GENOMES)
     ga_parent_a = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     ga_parent_b = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    ga_exact_eval_hash_used = ti.field(dtype=ti.i32, shape=int(GA_EXACT_EVAL_HASH_SIZE))
+    ga_exact_eval_hash_keys = ti.field(
+        dtype=ti.i32,
+        shape=(int(GA_EXACT_EVAL_HASH_SIZE), int(GA_EXACT_EVAL_HASH_KEY_COLS)),
+    )
+    ga_exact_eval_rep_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    ga_exact_eval_unique_count = ti.field(dtype=ti.i32, shape=1)
 
     # Slot pools for GPU mutation
     slot_start = ti.field(dtype=ti.i32, shape=MAX_SLOTS)
@@ -774,6 +793,10 @@ def bind_fields(kernels_module):
     target.ga_rng_state = ga_rng_state
     target.ga_parent_a = ga_parent_a
     target.ga_parent_b = ga_parent_b
+    target.ga_exact_eval_hash_used = ga_exact_eval_hash_used
+    target.ga_exact_eval_hash_keys = ga_exact_eval_hash_keys
+    target.ga_exact_eval_rep_idx = ga_exact_eval_rep_idx
+    target.ga_exact_eval_unique_count = ga_exact_eval_unique_count
     target.slot_start = slot_start
     target.slot_count = slot_count
 
@@ -869,6 +892,7 @@ def ensure_fields_allocated():
             kernels_metal.genome_result_stats = genome_result_stats
             kernels_metal.genome_base_stats = genome_base_stats
             kernels_metal.ga_scores = ga_scores
+            kernels_metal.ga_exact_eval_rep_idx = ga_exact_eval_rep_idx
             kernels_metal.ftff_combo_ft = ftff_combo_ft
             kernels_metal.ftff_combo_ff = ftff_combo_ff
             kernels_metal.genome_hint_allocation = genome_hint_allocation

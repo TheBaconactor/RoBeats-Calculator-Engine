@@ -29,6 +29,7 @@ chunk_best_idx = None  # (MAX_GENOMES,) i32 - work item index for best score
 genome_result_stats = None
 genome_base_stats = None
 ga_scores = None
+ga_exact_eval_rep_idx = None
 ftff_combo_ft = None
 ftff_combo_ff = None
 grid_count_body_fever = None

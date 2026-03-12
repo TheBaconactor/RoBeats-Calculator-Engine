@@ -48,6 +48,8 @@ _GA_COMBO_CHUNK_MAX: int = max(
 # in-flight schedulers can apply env defaults before the first GA dispatch.
 _GA_EVAL_BUDGET_RAW: str | None = None
 _GA_EVAL_BUDGET: int = int(MAX_EVALS_PER_DISPATCH)
+_GA_BASE_STATS_REUSE_RAW: str | None = None
+_GA_BASE_STATS_REUSE_ENABLED: int = 1
 
 
 def _ga_eval_budget() -> int:
@@ -70,6 +72,23 @@ def _ga_eval_budget() -> int:
 
     _GA_EVAL_BUDGET = max(64, min(int(MAX_EVALS_PER_DISPATCH), int(val)))
     return int(_GA_EVAL_BUDGET)
+
+
+def _ga_exact_genome_base_stats_reuse_enabled() -> int:
+    global _GA_BASE_STATS_REUSE_RAW, _GA_BASE_STATS_REUSE_ENABLED
+    raw = os.environ.get("GPU_NATIVE_GA_BASE_STATS_REUSE", None)
+    if raw is None:
+        raw = os.environ.get("GPU_NATIVE_GA_EXACT_EVAL_REUSE", None)
+    raw_norm = str(raw or "").strip().lower()
+    if raw_norm == _GA_BASE_STATS_REUSE_RAW:
+        return int(_GA_BASE_STATS_REUSE_ENABLED)
+
+    _GA_BASE_STATS_REUSE_RAW = raw_norm
+    if raw_norm in {"0", "false", "no", "off"}:
+        _GA_BASE_STATS_REUSE_ENABLED = 0
+    else:
+        _GA_BASE_STATS_REUSE_ENABLED = 1
+    return int(_GA_BASE_STATS_REUSE_ENABLED)
 
 
 # Get appropriate kernels for current platform (Metal-safe on macOS)
@@ -595,6 +614,15 @@ def ga_evaluate_population(
     ensure_ready()
     n_genomes = int(n_genomes)
     n_slots = int(n_slots)
+    use_hints_i = int(use_hints)
+    materialize_mode_norm = str(materialize_mode or "none").strip().lower()
+    exact_genome_base_stats_reuse = bool(_ga_exact_genome_base_stats_reuse_enabled())
+
+    if exact_genome_base_stats_reuse:
+        kernels.ga_build_exact_eval_reuse_map_kernel(
+            int(n_genomes),
+            int(n_slots),
+        )
 
     # Step 1: FUSED aggregate + init (was 2 kernels, now 1)
     kernels.ga_aggregate_and_init_best_kernel(
@@ -612,7 +640,11 @@ def ga_evaluate_population(
         int(is_s_fm),
         int(is_p_ov),
         int(is_s_ov),
+        int(exact_genome_base_stats_reuse),
     )
+
+    if exact_genome_base_stats_reuse:
+        kernels.ga_propagate_exact_eval_reuse_base_stats_kernel(int(n_genomes))
 
     # Step 2: Evaluate genomes using existing FT/FF iteration kernel
     total_budget_i = int(total_budget)
@@ -620,8 +652,6 @@ def ga_evaluate_population(
     song_slot_i = int(song_slot)
 
     # Warm-start logic: Default to cold start (0) unless specified
-    use_hints_i = int(use_hints)
-
     # Use cached module-level plateau prune setting (avoids per-call os.environ overhead)
     prune_plateaus_i = _GA_PLATEAU_PRUNE_ENABLED
 
@@ -684,7 +714,6 @@ def ga_evaluate_population(
         materialize_mode=materialize_mode,
         update_global_best=bool(update_global_best),
     )
-
 
 def _ga_materialize_population_results(
     *,

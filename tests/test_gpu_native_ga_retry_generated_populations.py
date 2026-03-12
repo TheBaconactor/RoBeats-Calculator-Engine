@@ -9,6 +9,8 @@ class _FakeGpuApi:
         self.generate_calls = 0
         self.upload_calls = 0
         self.reset_calls = 0
+        self.snapshot_calls = 0
+        self.download_runs_calls = 0
         self.global_best_init_calls = 0
         self.global_best_update_calls = 0
         self.global_best_download_calls = 0
@@ -77,6 +79,15 @@ class _FakeGpuApi:
     def ga_pack_fg_candidates_table_segmented(self, *_args, **_kwargs):
         return None
 
+    def ga_store_runs_payload_snapshot_segmented(self, *_args, **_kwargs):
+        self.snapshot_calls += 1
+        return None
+
+    def ga_download_runs_payload(self, *, n_runs, n_genomes, n_slots=9):
+        self.download_runs_calls += 1
+        width = 1 + int(n_slots) + 7
+        return np.zeros((int(n_runs), int(n_genomes) + 1, width), dtype=np.int32)
+
     def ga_download_fg_selected_payload(self, *_args, **_kwargs):
         return np.zeros((1, 1, 1), dtype=np.int32)
 
@@ -88,6 +99,7 @@ def _install_fake_taichi_modules(monkeypatch) -> None:
 
     fake_fields_module = types.ModuleType("gear_optimizer.solver.taichi_gem.fields")
     fake_fields_module.MAX_WORK_ITEMS = 1_000_000
+    fake_fields_module.MAX_EVALS_PER_DISPATCH = 1_000_000
     fake_fields_module.MAX_GENOMES = 1_000_000
     fake_fields_module.MAX_GA_RUNS = 64
     fake_fields_module.configure_ga_run_buffers = lambda max_runs, max_genomes: (int(max_runs), int(max_genomes))
@@ -176,3 +188,63 @@ def test_run_gpu_native_ga_trace_enabled_smoke(tmp_path, monkeypatch):
     assert fake_gpu.global_best_init_calls >= 1
     assert fake_gpu.global_best_update_calls >= 1
     assert fake_gpu.global_best_download_calls >= 1
+
+
+def test_run_gpu_native_ga_audit_enabled_snapshots_full_runs(monkeypatch):
+    from gear_optimizer.solver import genetic
+
+    fake_gpu = _FakeGpuApi(fail_once=False)
+    _install_fake_taichi_modules(monkeypatch)
+
+    audit_calls: list[dict] = []
+    written_paths: list[str] = []
+
+    monkeypatch.setenv("GA_REDUNDANCY_AUDIT", "1")
+    monkeypatch.setattr(genetic, "_GPU_NATIVE_AVAILABLE", True, raising=True)
+    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RETRIES", 0, raising=False)
+    monkeypatch.setattr(genetic, "_GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS", 0, raising=False)
+    monkeypatch.setattr(genetic, "_require_gpu_api", lambda: fake_gpu, raising=True)
+    monkeypatch.setattr(
+        genetic,
+        "analyze_ga_redundancy_from_runs_payload",
+        lambda **kwargs: audit_calls.append(kwargs) or {"song_name": "audit", "rows": 16},
+        raising=True,
+    )
+    monkeypatch.setattr(
+        genetic,
+        "summarize_ga_redundancy_record",
+        lambda record: f"audit rows={record['rows']}",
+        raising=True,
+    )
+    monkeypatch.setattr(
+        genetic,
+        "write_ga_redundancy_audit_record",
+        lambda record: written_paths.append(str(record.get("song_name", ""))) or "audit.jsonl",
+        raising=True,
+    )
+
+    out = genetic.run_gpu_native_ga_runs_payload_prebuilt(
+        calc_song={
+            "metadata": {"Song Name": "audit-smoke", "Difficulty": "Hard"},
+            "song_data": {"timestamps": np.asarray([0.0], dtype=np.float32)},
+        },
+        ref_arrays={},
+        song_slot=0,
+        item_stats=np.zeros((16, 10), dtype=np.int32),
+        slot_start=np.zeros((9,), dtype=np.int32),
+        slot_count=np.zeros((9,), dtype=np.int32),
+        base_fixed_stats_arr=np.zeros((10,), dtype=np.int32),
+        n_generations=1,
+        initial_populations=None,
+        num_runs=3,
+        n_genomes=8,
+        color_flags={},
+        cfg_data={"TotalBudget": 90, "GemScaleFever": 3, "fg_candidate_limit": 51, "selected_color": "Rush"},
+        ga_seed=7,
+    )
+
+    assert isinstance(out, np.ndarray)
+    assert fake_gpu.snapshot_calls >= 1
+    assert fake_gpu.download_runs_calls == 1
+    assert len(audit_calls) == 1
+    assert len(written_paths) == 1

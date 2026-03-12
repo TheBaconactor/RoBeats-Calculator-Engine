@@ -79,6 +79,10 @@ ga_scores = None
 ga_rng_state = None
 ga_parent_a = None
 ga_parent_b = None
+ga_exact_eval_hash_used = None  # (HASH_SIZE,) i32 - open-addressing table for exact duplicate-genome reuse
+ga_exact_eval_hash_keys = None  # (HASH_SIZE, 13) i32 - [slots(9), reserved(4)]
+ga_exact_eval_rep_idx = None  # (MAX_GENOMES,) i32 - representative genome index per row
+ga_exact_eval_unique_count = None  # (1,) i32 - number of unique genome rows
 slot_start = None  # (MAX_SLOTS,) per-slot first valid item_id
 slot_count = None  # (MAX_SLOTS,) per-slot item count
 

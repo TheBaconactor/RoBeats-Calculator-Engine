@@ -45,6 +45,94 @@ def _repair_mini_uniqueness(
     return m0, m1, m2, state
 
 
+@ti.func
+def _hash_exact_eval_input_for_genome(genome_idx: ti.i32, n_slots: ti.i32) -> ti.u32:
+    h = ti.u32(2166136261)
+    for s in ti.static(range(9)):
+        v = ti.i32(0)
+        if s < n_slots:
+            v = kernels_helpers.population_indices[genome_idx, s]
+        h = (h ^ ti.cast(v + 1, ti.u32)) * ti.u32(16777619)
+    return h
+
+
+@ti.func
+def _exact_eval_key_matches(pos: ti.i32, genome_idx: ti.i32, n_slots: ti.i32) -> ti.i32:
+    match = ti.i32(1)
+    for s in ti.static(range(9)):
+        want = ti.i32(0)
+        if s < n_slots:
+            want = kernels_helpers.population_indices[genome_idx, s]
+        if kernels_helpers.ga_exact_eval_hash_keys[pos, s] != want:
+            match = 0
+    return match
+
+
+@ti.func
+def _store_exact_eval_key(pos: ti.i32, genome_idx: ti.i32, n_slots: ti.i32) -> None:
+    for s in ti.static(range(9)):
+        value = ti.i32(0)
+        if s < n_slots:
+            value = kernels_helpers.population_indices[genome_idx, s]
+        kernels_helpers.ga_exact_eval_hash_keys[pos, s] = value
+    for i in ti.static(range(4)):
+        kernels_helpers.ga_exact_eval_hash_keys[pos, 9 + i] = 0
+
+
+@ti.kernel
+def ga_build_exact_eval_reuse_map_kernel(n_genomes: ti.i32, n_slots: ti.i32):
+    """
+    Build a representative map for exact duplicate genomes.
+
+    Phase-1 GA optimization only reuses deterministic base-stat aggregation.
+    Full score/hint evaluation still runs per genome so equal-score ties can
+    preserve their own gem-allocation outcomes.
+    """
+    for i in range(kernels_helpers.ga_exact_eval_hash_used.shape[0]):
+        kernels_helpers.ga_exact_eval_hash_used[i] = 0
+    kernels_helpers.ga_exact_eval_unique_count[0] = 0
+
+    ti.loop_config(serialize=True)
+    for g in range(n_genomes):
+        h = _hash_exact_eval_input_for_genome(g, n_slots)
+        mask = kernels_helpers.ga_exact_eval_hash_used.shape[0] - 1
+        pos = ti.cast(h & ti.u32(mask), ti.i32)
+        rep = g
+        handled = ti.i32(0)
+
+        for _ in range(kernels_helpers.ga_exact_eval_hash_used.shape[0]):
+            entry = kernels_helpers.ga_exact_eval_hash_used[pos]
+            if entry == 0:
+                kernels_helpers.ga_exact_eval_hash_used[pos] = g + 1
+                _store_exact_eval_key(pos, g, n_slots)
+                kernels_helpers.ga_exact_eval_unique_count[0] = kernels_helpers.ga_exact_eval_unique_count[0] + 1
+                rep = g
+                handled = 1
+                break
+
+            if _exact_eval_key_matches(pos, g, n_slots) != 0:
+                rep = entry - 1
+                handled = 1
+                break
+
+            pos = (pos + 1) & mask
+
+        if handled == 0:
+            rep = g
+        kernels_helpers.ga_exact_eval_rep_idx[g] = rep
+
+
+@ti.kernel
+def ga_propagate_exact_eval_reuse_base_stats_kernel(n_genomes: ti.i32):
+    """Copy deterministic base stats from representative rows to duplicate genomes."""
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for g in range(n_genomes):
+        rep = kernels_helpers.ga_exact_eval_rep_idx[g]
+        if rep >= 0 and rep != g:
+            for i in ti.static(range(7)):
+                kernels_helpers.genome_base_stats[g][i] = kernels_helpers.genome_base_stats[rep][i]
+
+
 @ti.kernel
 def ga_seed_rng_kernel(n_genomes: ti.i32, seed: ti.u32):
     """
@@ -589,6 +677,7 @@ def ga_aggregate_and_init_best_kernel(
     is_s_fm: ti.i32,
     is_p_ov: ti.i32,
     is_s_ov: ti.i32,
+    reuse_exact_genome_base_stats: ti.i32,
 ):
     """
     FUSED: Aggregate item stats AND initialize chunk_best_key in one kernel.
@@ -615,6 +704,9 @@ def ga_aggregate_and_init_best_kernel(
         kernels_helpers.chunk_best_results[g, 1] = 0
         kernels_helpers.chunk_best_results[g, 2] = 0
         kernels_helpers.chunk_best_results[g, 3] = 0
+
+        if reuse_exact_genome_base_stats != 0 and kernels_helpers.ga_exact_eval_rep_idx[g] != g:
+            continue
 
         pp = kernels_helpers.base_fixed_stats[0]
         cm = kernels_helpers.base_fixed_stats[1]
