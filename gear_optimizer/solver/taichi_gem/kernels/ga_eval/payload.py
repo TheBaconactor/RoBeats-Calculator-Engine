@@ -731,6 +731,8 @@ def ga_select_fg_candidates_coords_kernel(
     - This kernel intentionally mirrors the CPU selection policy used for GPU-native GA decoding:
       hard keep top-N by base score, then base fill, then FG-proxy fill with center diversity,
       then mini diversity, then final base fill.
+    - The scan includes row 0 (per-run best across generations) so non-final-population
+      winners remain eligible for the downstream FG funnel.
     - Minis are canonicalized (sorted) for keys.
     """
     K = ti.static(_GA_FG_CANDIDATES_PER_RUN)
@@ -754,12 +756,13 @@ def ga_select_fg_candidates_coords_kernel(
     # highest base score. Tie-breaker matches CPU: earliest scan order among max-score
     # occurrences (we only update on strictly better score).
     #
-    # Scan order: runs in order, within each run rows 1..K are already top-score.
+    # Scan order: runs in order, within each run row 0 is the per-run tracked best,
+    # then rows 1..K are the mixed final-population archive.
     # ------------------------------------------------------------------
     ti.loop_config(serialize=True)
     for r in range(n_runs):
-        for j in range(K):
-            row_idx = 1 + j
+        for j in range(K + 1):
+            row_idx = j
             score = kernels_helpers.ga_fg_candidates_packed[table_slot, r, row_idx, 0]
             if score <= 0:
                 continue

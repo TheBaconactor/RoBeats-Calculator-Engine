@@ -14,6 +14,7 @@ These kernels enable fully GPU-native GA execution, avoiding CPU-GPU transfers
 during population evolution.
 """
 
+import os
 import sys
 import taichi as ti
 
@@ -21,6 +22,17 @@ import taichi as ti
 IS_METAL = sys.platform == "darwin"
 
 from . import kernels_helpers
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except Exception:
+        return float(default)
+
+
+_GA_DIVERSE_PARENT_B_RATE = max(0.0, min(1.0, _env_float("GPU_GA_DIVERSE_PARENT_B_RATE", 0.125)))
+_GA_DIVERSE_PARENT_B_RATE_FP = int(_GA_DIVERSE_PARENT_B_RATE * 4294967295.0)
 
 
 @ti.func
@@ -43,6 +55,20 @@ def _repair_mini_uniqueness(
                 state = kernels_helpers._xorshift32(state)
                 m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
     return m0, m1, m2, state
+
+
+@ti.func
+def _fg_proxy_for_genome(genome_idx: ti.i32) -> ti.i64:
+    stats7 = kernels_helpers.genome_base_stats[genome_idx]
+    return (
+        ti.cast(stats7[2], ti.i64) * 4
+        + ti.cast(stats7[6], ti.i64) * 4
+        + ti.cast(stats7[5], ti.i64) * 3
+        + ti.cast(stats7[1], ti.i64) * 2
+        + ti.cast(stats7[0], ti.i64)
+        + ti.cast(stats7[3], ti.i64) * 2
+        + ti.cast(stats7[4], ti.i64)
+    )
 
 
 @ti.func
@@ -433,14 +459,28 @@ def ga_select_parents_tournament_kernel(n_genomes: ti.i32, tournament_k: ti.i32)
                 best_a_score = sc
                 best_a = idx
 
-        # Pick parent B
+        # Pick parent B. Occasionally bias this tournament toward an FG proxy
+        # so the population keeps fever-heavy niches without replacing the
+        # score-driven anchor parent.
         best_b = 0
         best_b_score = ti.cast(-2147483648, ti.i32)
+        best_b_proxy = ti.i64(-1)
+        state = kernels_helpers._xorshift32(state)
+        use_diverse_b = ti.i32(0)
+        if ti.static(_GA_DIVERSE_PARENT_B_RATE_FP > 0):
+            if state < ti.u32(_GA_DIVERSE_PARENT_B_RATE_FP):
+                use_diverse_b = ti.i32(1)
         for _ in range(tournament_k):
             state = kernels_helpers._xorshift32(state)
             idx = ti.cast(state % ti.cast(n_genomes, ti.u32), ti.i32)
             sc = kernels_helpers.ga_scores[idx]
-            if sc > best_b_score:
+            if use_diverse_b != 0:
+                proxy = _fg_proxy_for_genome(idx)
+                if proxy > best_b_proxy or (proxy == best_b_proxy and sc > best_b_score):
+                    best_b_proxy = proxy
+                    best_b_score = sc
+                    best_b = idx
+            elif sc > best_b_score:
                 best_b_score = sc
                 best_b = idx
 
@@ -830,14 +870,28 @@ def ga_select_crossover_mutate_kernel(
                 best_a_score = sc
                 best_a = idx
 
-        # Pick parent B
+        # Pick parent B. Occasionally bias this tournament toward an FG proxy
+        # so the population keeps fever-heavy niches without replacing the
+        # score-driven anchor parent.
         best_b = 0
         best_b_score = ti.cast(-2147483648, ti.i32)
+        best_b_proxy = ti.i64(-1)
+        state = kernels_helpers._xorshift32(state)
+        use_diverse_b = ti.i32(0)
+        if ti.static(_GA_DIVERSE_PARENT_B_RATE_FP > 0):
+            if state < ti.u32(_GA_DIVERSE_PARENT_B_RATE_FP):
+                use_diverse_b = ti.i32(1)
         for _ in range(tournament_k):
             state = kernels_helpers._xorshift32(state)
             idx = ti.cast(state % ti.cast(n_genomes, ti.u32), ti.i32)
             sc = kernels_helpers.ga_scores[idx]
-            if sc > best_b_score:
+            if use_diverse_b != 0:
+                proxy = _fg_proxy_for_genome(idx)
+                if proxy > best_b_proxy or (proxy == best_b_proxy and sc > best_b_score):
+                    best_b_proxy = proxy
+                    best_b_score = sc
+                    best_b = idx
+            elif sc > best_b_score:
                 best_b_score = sc
                 best_b = idx
 
@@ -995,14 +1049,28 @@ def ga_next_generation_full_kernel(
                     best_a_score = sc
                     best_a = idx
 
-            # Pick parent B
+            # Pick parent B. Occasionally bias this tournament toward an FG proxy
+            # so the population keeps fever-heavy niches without replacing the
+            # score-driven anchor parent.
             best_b = 0
             best_b_score = ti.cast(-2147483648, ti.i32)
+            best_b_proxy = ti.i64(-1)
+            state = kernels_helpers._xorshift32(state)
+            use_diverse_b = ti.i32(0)
+            if ti.static(_GA_DIVERSE_PARENT_B_RATE_FP > 0):
+                if state < ti.u32(_GA_DIVERSE_PARENT_B_RATE_FP):
+                    use_diverse_b = ti.i32(1)
             for _ in range(tournament_k):
                 state = kernels_helpers._xorshift32(state)
                 idx = ti.cast(state % ti.cast(n_genomes, ti.u32), ti.i32)
                 sc = kernels_helpers.ga_scores[idx]
-                if sc > best_b_score:
+                if use_diverse_b != 0:
+                    proxy = _fg_proxy_for_genome(idx)
+                    if proxy > best_b_proxy or (proxy == best_b_proxy and sc > best_b_score):
+                        best_b_proxy = proxy
+                        best_b_score = sc
+                        best_b = idx
+                elif sc > best_b_score:
                     best_b_score = sc
                     best_b = idx
 
@@ -1227,11 +1295,23 @@ def ga_next_generation_full_islands_kernel(
 
         best_b = 0
         best_b_score = ti.cast(-2147483648, ti.i32)
+        best_b_proxy = ti.i64(-1)
+        state = kernels_helpers._xorshift32(state)
+        use_diverse_b = ti.i32(0)
+        if ti.static(_GA_DIVERSE_PARENT_B_RATE_FP > 0):
+            if state < ti.u32(_GA_DIVERSE_PARENT_B_RATE_FP):
+                use_diverse_b = ti.i32(1)
         for _ in range(tournament_k_i):
             state = kernels_helpers._xorshift32(state)
             idx = ti.cast(state % ti.cast(n_genomes, ti.u32), ti.i32)
             sc = kernels_helpers.ga_scores[idx]
-            if sc > best_b_score:
+            if use_diverse_b != 0:
+                proxy = _fg_proxy_for_genome(idx)
+                if proxy > best_b_proxy or (proxy == best_b_proxy and sc > best_b_score):
+                    best_b_proxy = proxy
+                    best_b_score = sc
+                    best_b = idx
+            elif sc > best_b_score:
                 best_b_score = sc
                 best_b = idx
 
@@ -1452,12 +1532,24 @@ def ga_next_generation_full_runs_kernel(
 
         best_b = run_start
         best_b_score = ti.cast(-2147483648, ti.i32)
+        best_b_proxy = ti.i64(-1)
+        state = kernels_helpers._xorshift32(state)
+        use_diverse_b = ti.i32(0)
+        if ti.static(_GA_DIVERSE_PARENT_B_RATE_FP > 0):
+            if state < ti.u32(_GA_DIVERSE_PARENT_B_RATE_FP):
+                use_diverse_b = ti.i32(1)
         for _ in range(tournament_k_i):
             state = kernels_helpers._xorshift32(state)
             idx_local = ti.cast(state % ti.cast(n_genomes_per_run_i, ti.u32), ti.i32)
             idx = run_start + idx_local
             sc = kernels_helpers.ga_scores[idx]
-            if sc > best_b_score:
+            if use_diverse_b != 0:
+                proxy = _fg_proxy_for_genome(idx)
+                if proxy > best_b_proxy or (proxy == best_b_proxy and sc > best_b_score):
+                    best_b_proxy = proxy
+                    best_b_score = sc
+                    best_b = idx
+            elif sc > best_b_score:
                 best_b_score = sc
                 best_b = idx
 

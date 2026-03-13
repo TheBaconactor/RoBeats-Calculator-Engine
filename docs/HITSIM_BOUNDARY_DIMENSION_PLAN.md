@@ -139,6 +139,7 @@ What is implemented:
 
 - the native in-flight path now runs a deterministic `candidate x regime x gem-allocation` pass over the merged post-refine candidate surface before any continuation
 - that matrix stage reuses one shared GA candidate surface, solves the best gem allocation for every retained candidate under every retained regime, and merges the resulting surface back into the final top pool
+- the active GPU-native runtime now executes that matrix as one shared GPU batch: candidate stats/population are uploaded once, retained regimes are precomputed into GPU song slots, per-regime results are stored in the GPU multi-run payload buffer, and the matrix is downloaded once at the end
 - continuation is driven by the scout/refine surface, not by outer repeat duplication
 - only regimes whose local winner differs from the shared selected winner are considered divergent enough to continue
 - each continued regime rebuilds its deterministic timestamps from stored regime metadata

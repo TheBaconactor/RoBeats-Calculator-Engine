@@ -815,7 +815,12 @@ def process_force_greats_gpu_finder(
         enforce_single_request = True
         if not hasattr(process_force_greats_gpu_finder, "_fg_multi_request_slot_warned"):
             process_force_greats_gpu_finder._fg_multi_request_slot_warned = True
-            print("[FG][ASYNC][WARN] Multi-request FG requires non-zero song_slot; falling back to single request.")
+            warn_fallback(
+                "fg.async.single_request_slot_guard",
+                "multi-request FG requires non-zero song_slot; forcing single-request execution",
+                context={"song_slot": int(song_slot) if str(song_slot).strip("-").isdigit() else 0},
+                fatal=False,
+            )
 
     if enforce_single_request:
         fg_async_max_inflight = 1
@@ -1591,8 +1596,12 @@ def process_force_greats_gpu_finder(
                     except Exception:
                         pass
                 except Exception as _bp_tab_err:
-                    if perf:
-                        print(f"[FG] GPU breakpoints table build failed; falling back to CPU: {_bp_tab_err}")
+                    warn_fallback(
+                        "fg.breakpoint_tables.gpu_to_cpu",
+                        "GPU breakpoint table build failed; falling back to CPU tables",
+                        exc=_bp_tab_err,
+                        fatal=False,
+                    )
                     if _GPU_STRICT:
                         raise
                     fg_breakpoints_non_fever_base_by_ff = None
@@ -1754,8 +1763,12 @@ def process_force_greats_gpu_finder(
                             n_slots=9,
                         )
                     except Exception as e:
-                        if perf:
-                            print(f"[FG] GA->FG genome stats staging failed; falling back to host upload: {e}")
+                        warn_fallback(
+                            "fg.ga_stage.host_upload",
+                            "GA->FG genome stats staging failed; falling back to host upload",
+                            exc=e,
+                            fatal=False,
+                        )
                         genome_stats_preuploaded = False
                         genome_stats_arr = None
                         genome_stats_uploaded = False
@@ -2069,8 +2082,12 @@ def process_force_greats_gpu_finder(
                             result_g_ov = gpu_results["g_ov"]
                             selected_indices = gpu_results.get("selected_indices")
                         except Exception as _fuse_err:
-                            if perf:
-                                print(f"[FG] Fused breakpoint+solve failed; falling back: {_fuse_err}")
+                            warn_fallback(
+                                "fg.fused_breakpoints_solve",
+                                "fused breakpoint+solve failed; falling back to non-fused execution",
+                                exc=_fuse_err,
+                                fatal=False,
+                            )
                             if _GPU_STRICT:
                                 raise
                             max_fp_matrix = None
@@ -2079,8 +2096,12 @@ def process_force_greats_gpu_finder(
                     try:
                         max_fp_matrix = _submit_compute_breakpoints_max_fp(blocking=True)
                     except Exception as _bp_gpu_err:
-                        if perf:
-                            print(f"[FG] GPU breakpoint compute failed; falling back to CPU: {_bp_gpu_err}")
+                        warn_fallback(
+                            "fg.breakpoint_compute.gpu_to_cpu",
+                            "GPU breakpoint compute failed; falling back to CPU breakpoint grouping",
+                            exc=_bp_gpu_err,
+                            fatal=False,
+                        )
                         if _GPU_STRICT:
                             raise
                         max_fp_matrix = None
@@ -2088,8 +2109,12 @@ def process_force_greats_gpu_finder(
                     try:
                         max_fp_matrix = _submit_compute_breakpoints_max_fp(blocking=True)
                     except Exception as _bp_gpu_err:
-                        if perf:
-                            print(f"[FG] GPU breakpoint compute failed; falling back to CPU: {_bp_gpu_err}")
+                        warn_fallback(
+                            "fg.breakpoint_compute.gpu_to_cpu",
+                            "GPU breakpoint compute failed; falling back to CPU breakpoint grouping",
+                            exc=_bp_gpu_err,
+                            fatal=False,
+                        )
                         if _GPU_STRICT:
                             raise
                         max_fp_matrix = None

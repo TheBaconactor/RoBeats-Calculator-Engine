@@ -118,6 +118,7 @@ class GpuRequestType(Enum):
     """Types of GPU requests that can be submitted."""
 
     SOLVE_GENOMES_FROM_REGISTRY = "solve_genomes_from_registry"
+    SOLVE_GENOMES_FROM_REGISTRY_MATRIX = "solve_genomes_from_registry_matrix"
     LOAD_REF_ARRAYS = "load_ref_arrays"
     PRECOMPUTE_TIMELINE = "precompute_timeline_gpu"
     SOLVE_FORCE_GREATS_FINDER = "solve_force_greats_finder_gpu"
@@ -432,6 +433,7 @@ class GpuExecutor:
         {
             GpuRequestType.GPU_NATIVE_GA_RUN,
             GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
+            GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY_MATRIX,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,
@@ -601,6 +603,7 @@ class GpuExecutor:
         # Dispatch table (reduces branching in the hot loop and centralizes request routing).
         self._dispatch = {
             GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY: self._handle_solve_genomes_from_registry,
+            GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY_MATRIX: self._execute_solve_genomes_from_registry_matrix,
             GpuRequestType.LOAD_REF_ARRAYS: self._execute_load_refs,
             GpuRequestType.PRECOMPUTE_TIMELINE: self._execute_precompute_timeline,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER: self._execute_solve_force_greats_finder,
@@ -802,6 +805,15 @@ class GpuExecutor:
         if req_type == GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY:
             n = self._size_hint(payload.get("population_indices"))
             return float(max(1, n))
+
+        if req_type == GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY_MATRIX:
+            shared = payload.get("shared_request_payload")
+            regimes = payload.get("regimes")
+            if not isinstance(shared, dict):
+                return 1.0
+            n = self._size_hint(shared.get("population_indices"))
+            r = self._size_hint(regimes)
+            return float(max(1, n) * max(1, r))
 
         if req_type == GpuRequestType.GPU_NATIVE_GA_RUN:
             n_genomes = int(payload.get("n_genomes", 0) or 0)
@@ -1058,6 +1070,175 @@ class GpuExecutor:
         except Exception:
             song_slot = 0
         return self._execute_solve_genomes_from_registry(request, song_slot=song_slot)
+
+    def _execute_solve_genomes_from_registry_matrix(self, request: GpuRequest) -> GpuResponse:
+        """Execute a shared-population matrix solve across multiple deterministic regimes."""
+        import numpy as np
+
+        from .taichi_gem import fields as gem_fields
+        from .taichi_gem.api import (
+            ga_download_runs_payload,
+            ga_evaluate_population,
+            ga_store_run_payload_segmented,
+            ga_upload_base_fixed_stats,
+            ga_upload_item_stats,
+            ga_upload_population_indices,
+            load_ref_arrays,
+            precompute_timeline_gpu,
+        )
+
+        payload = self._payload_dict(request)
+        shared = payload.get("shared_request_payload")
+        regimes = payload.get("regimes")
+        if not isinstance(shared, dict):
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="Invalid payload for SOLVE_GENOMES_FROM_REGISTRY_MATRIX (missing shared_request_payload)",
+            )
+        if not isinstance(regimes, (list, tuple)):
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="Invalid payload for SOLVE_GENOMES_FROM_REGISTRY_MATRIX (regimes must be list/tuple)",
+            )
+
+        try:
+            population_indices = np.asarray(shared.get("population_indices"), dtype=np.int32)
+        except Exception as exc:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error=f"Invalid matrix population_indices: {type(exc).__name__}: {exc}",
+            )
+        if population_indices.ndim != 2 or int(population_indices.shape[0]) <= 0 or int(population_indices.shape[1]) != 9:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="Invalid matrix population_indices shape",
+            )
+
+        n_genomes = int(population_indices.shape[0])
+        max_run_genomes = int(getattr(gem_fields, "MAX_GA_RUN_GENOMES", 1) or 1)
+        max_run_buffer = int(getattr(gem_fields, "MAX_GA_RUNS", 1) or 1)
+        max_song_slots = int(getattr(gem_fields, "MAX_SONG_SLOTS", 1) or 1)
+        if n_genomes > max_run_genomes:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error=(
+                    "SOLVE_GENOMES_FROM_REGISTRY_MATRIX candidate count exceeds "
+                    f"MAX_GA_RUN_GENOMES ({n_genomes} > {max_run_genomes})"
+                ),
+            )
+        if max_run_buffer <= 0 or max_song_slots <= 0:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="SOLVE_GENOMES_FROM_REGISTRY_MATRIX has no available GPU matrix buffers",
+            )
+
+        regimes_list = list(regimes or [])
+        if not regimes_list:
+            return GpuResponse(request_id=request.request_id, success=True, result=[])
+
+        ref_arrays = shared.get("ref_arrays")
+        if not isinstance(ref_arrays, dict):
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="SOLVE_GENOMES_FROM_REGISTRY_MATRIX requires ref_arrays dict",
+            )
+
+        try:
+            ref_sig = self._ref_arrays_sig(ref_arrays)
+        except Exception:
+            ref_sig = None
+        if ref_sig is None or ref_sig != self._last_ref_arrays_sig:
+            load_ref_arrays(ref_arrays)
+            self._last_ref_arrays_sig = ref_sig
+
+        try:
+            ga_upload_item_stats(
+                np.asarray(shared.get("item_stats"), dtype=np.int32),
+                np.asarray(shared.get("slot_start"), dtype=np.int32),
+                np.asarray(shared.get("slot_count"), dtype=np.int32),
+            )
+            ga_upload_base_fixed_stats(np.asarray(shared.get("base_fixed_stats"), dtype=np.int32))
+            ga_upload_population_indices(population_indices, n_slots=9)
+        except Exception as exc:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error=f"SOLVE_GENOMES_FROM_REGISTRY_MATRIX upload failed: {type(exc).__name__}: {exc}",
+            )
+
+        def _flag(name: str) -> int:
+            try:
+                return int(shared.get(name, 0) or 0)
+            except Exception:
+                return 0
+
+        total_budget = int(shared.get("total_budget", 90) or 90)
+        gem_scale_fever = int(shared.get("gem_scale_fever", 3) or 3)
+        out: list[list[tuple[int, int, int, int, int, int, int]]] = []
+
+        try:
+            for chunk_start in range(0, len(regimes_list), max_run_buffer):
+                chunk = regimes_list[chunk_start : chunk_start + max_run_buffer]
+                for slot_start_idx in range(0, len(chunk), max_song_slots):
+                    slot_chunk = chunk[slot_start_idx : slot_start_idx + max_song_slots]
+                    for local_slot, regime in enumerate(slot_chunk):
+                        timeline_grid = regime.get("timeline_grid") if isinstance(regime, dict) else None
+                        if not isinstance(timeline_grid, dict):
+                            raise TypeError("matrix regime is missing timeline_grid")
+                        precompute_timeline_gpu(timeline_grid, ref_arrays, song_slot=int(local_slot))
+
+                    for local_slot, _regime in enumerate(slot_chunk):
+                        ga_evaluate_population(
+                            n_genomes,
+                            n_slots=9,
+                            total_budget=total_budget,
+                            gem_scale_fever=gem_scale_fever,
+                            song_slot=int(local_slot),
+                            is_p_ft=_flag("is_p_ft"),
+                            is_s_ft=_flag("is_s_ft"),
+                            is_p_ff=_flag("is_p_ff"),
+                            is_s_ff=_flag("is_s_ff"),
+                            is_p_pp=_flag("is_p_pp"),
+                            is_s_pp=_flag("is_s_pp"),
+                            is_p_cm=_flag("is_p_cm"),
+                            is_s_cm=_flag("is_s_cm"),
+                            is_p_fm=_flag("is_p_fm"),
+                            is_s_fm=_flag("is_s_fm"),
+                            is_p_ov=_flag("is_p_ov"),
+                            is_s_ov=_flag("is_s_ov"),
+                            use_hints=0,
+                            materialize_mode="results_only",
+                        )
+                        ga_store_run_payload_segmented(
+                            run_idx=int(slot_start_idx + local_slot),
+                            start_offset=0,
+                            n_genomes=int(n_genomes),
+                            n_slots=9,
+                        )
+
+                packed = ga_download_runs_payload(n_runs=int(len(chunk)), n_genomes=int(n_genomes), n_slots=9)
+                for run_idx in range(int(len(chunk))):
+                    rows = np.asarray(packed[run_idx, 1 : int(n_genomes) + 1, 10:17], dtype=np.int32)
+                    out.append([tuple(int(x) for x in row) for row in rows.tolist()])
+        except Exception as exc:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error=f"SOLVE_GENOMES_FROM_REGISTRY_MATRIX failed: {type(exc).__name__}: {exc}",
+            )
+
+        return GpuResponse(
+            request_id=request.request_id,
+            success=True,
+            result=out,
+        )
 
     @staticmethod
     def _default_song_slot_for_worker(worker_id: int) -> int:
@@ -1682,6 +1863,7 @@ class GpuExecutor:
         fg_burst_until = 0.0
         fg_burst_request_types = {
             GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY,
+            GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY_MATRIX,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH,

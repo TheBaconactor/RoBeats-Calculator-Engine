@@ -359,8 +359,10 @@ def _attach_hitsim_delta_for_fg_variant(
 
         delta_ms = delta_cache.get(cache_key)
         if delta_ms is None:
+            calc_song_variant = variant.get("_hitsim_calc_song")
+            calc_song_in = calc_song_variant if isinstance(calc_song_variant, dict) else calc_song
             try:
-                computed = summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song, fg_data, ref_arrays)
+                computed = summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song_in, fg_data, ref_arrays)
             except Exception:
                 computed = None
             if computed is None:
@@ -3568,6 +3570,7 @@ def _run_fg_job_sync(
             song.db_loadouts_future = None
 
     build_details = make_build_details_fn(song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty)
+    hitsim_regime_groups = list(getattr(song, "_hitsim_fg_regime_groups", []) or [])
 
     if isinstance(song.db_loadouts_full, list):
         song.fg_db_loadouts_full_count = len(song.db_loadouts_full)
@@ -3587,7 +3590,7 @@ def _run_fg_job_sync(
         combo_enabled = _truthy(os.environ.get("FG_COMBO_BOOSTER_ENABLED", "1"))
 
         boosted = None
-        if song.force_greats_finder and song.ga_candidates and combo_enabled:
+        if (not hitsim_regime_groups) and song.force_greats_finder and song.ga_candidates and combo_enabled:
             job = getattr(song, "fg_combo_job", None)
             if isinstance(job, dict):
                 boosted = finalize_fg_combo_booster_candidates_job(job)
@@ -3642,8 +3645,9 @@ def _run_fg_job_sync(
         fg_search_radius=song.fg_search_radius,
         perf_timing=_truthy(os.environ.get("PERF_TIMING", "0")),
         gpu_client=gpu_client,
-        ga_candidates=song.ga_candidates if bool(getattr(song, "fg_direct_ga_candidates", False)) else None,
+        ga_candidates=song.ga_candidates if (bool(getattr(song, "fg_direct_ga_candidates", False)) and not hitsim_regime_groups) else None,
         ga_registry=song.registry if bool(getattr(song, "fg_direct_ga_candidates", False)) else None,
+        hitsim_regime_groups=hitsim_regime_groups if hitsim_regime_groups else None,
     )
 
     song.fg_variants = list(fg_variants or [])

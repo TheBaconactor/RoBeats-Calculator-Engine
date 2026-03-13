@@ -501,6 +501,9 @@ class GpuServiceClient:
         self._attach_handle_failure_reset(job.future, entry)
         return job
 
+    def submit_solve_genomes_from_registry_matrix(self, payload: dict[str, Any]) -> GpuJobHandle:
+        return self.submit(GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY_MATRIX, dict(payload or {}))
+
     def submit_gpu_native_ga_run(self, payload: dict[str, Any]) -> GpuJobHandle:
         return self.submit(GpuRequestType.GPU_NATIVE_GA_RUN, dict(payload or {}))
 

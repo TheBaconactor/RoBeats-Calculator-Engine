@@ -115,3 +115,103 @@ def test_prepare_fg_job_sync_uses_db_only_entries_for_gpu_finder(monkeypatch):
     assert seen["ga_n"] == 0
     assert song.fg_direct_ga_candidates is True
     assert len(song.ga_candidates or []) == 1
+
+
+def test_process_force_greats_runs_gpu_finder_per_hitsim_regime(monkeypatch):
+    from gear_optimizer.helpers.song_helpers.force_greats import core
+
+    monkeypatch.setenv("FG_INPROCESS_EXECUTOR", "0")
+
+    seen = []
+
+    def _fake_gpu_finder(
+        loadout_entries,
+        force_greats_finder,
+        calc_song,
+        ref_arrays,
+        meta_primary_color,
+        build_details_fn,
+        *,
+        use_gpu=False,
+        fg_search_radius=None,
+        perf_timing=False,
+        gpu_client=None,
+        names_list_fn=None,
+        ga_candidates=None,
+        ga_registry=None,
+    ):
+        _ = (
+            loadout_entries,
+            force_greats_finder,
+            ref_arrays,
+            meta_primary_color,
+            build_details_fn,
+            use_gpu,
+            fg_search_radius,
+            perf_timing,
+            gpu_client,
+            names_list_fn,
+            ga_registry,
+        )
+        regime_id = str((calc_song.get("metadata") or {}).get("HumanHitSimRegimeId", "") or "")
+        seen.append((regime_id, len(list(ga_candidates or []))))
+        return [
+            {
+                "data": {
+                    "Score": 100 + len(seen),
+                    "BaseScore": 90,
+                    "ForceGreats": {"config": {"NonFever1": 1}},
+                },
+                "gear": [f"G{regime_id}"],
+                "minis": [f"M{regime_id}"],
+                "score": 90,
+                "fg_score": 100 + len(seen),
+            }
+        ]
+
+    monkeypatch.setattr(core, "process_force_greats_gpu_finder", _fake_gpu_finder)
+
+    groups = [
+        {
+            "regime_id": "regime-1",
+            "calc_song": {"metadata": {"HumanHitSimRegimeId": "regime-1"}, "song_data": {}},
+            "ga_candidates": [
+                {
+                    "Gear": ["A"],
+                    "Minis": ["B"],
+                    "BaseScore": 90,
+                    "Data": {"BaseStats": {"Perfect Points": 1}, "Selected Element": "Rush"},
+                }
+            ],
+        },
+        {
+            "regime_id": "regime-2",
+            "calc_song": {"metadata": {"HumanHitSimRegimeId": "regime-2"}, "song_data": {}},
+            "ga_candidates": [
+                {
+                    "Gear": ["C"],
+                    "Minis": ["D"],
+                    "BaseScore": 91,
+                    "Data": {"BaseStats": {"Perfect Points": 2}, "Selected Element": "Rush"},
+                }
+            ],
+        },
+    ]
+
+    out = core.process_force_greats(
+        loadout_entries={},
+        manual_force_greats=False,
+        force_greats_finder=True,
+        force_greats_config=[],
+        calc_song={"metadata": {}, "song_data": {}},
+        ref_arrays={},
+        meta_primary_color="Rush",
+        build_details_fn=lambda data: data,
+        db_loadouts_full_count=0,
+        use_gpu=True,
+        hitsim_regime_groups=groups,
+    )
+
+    assert seen == [("regime-1", 1), ("regime-2", 1)]
+    assert [str(v["data"]["HumanHitSimRegimeId"]) for v in out] == ["regime-2", "regime-1"]
+    assert all(isinstance(v.get("_hitsim_calc_song"), dict) for v in out)

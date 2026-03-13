@@ -22,7 +22,6 @@ from gear_optimizer.helpers.song_helpers.persistence import make_build_details_f
 
 from gear_optimizer.solver.fever_timeline import get_song_timeline_grid
 from gear_optimizer.solver.gpu_service import GpuServiceClient
-from gear_optimizer.solver.registry_solve_request import RegistrySolveRequest
 from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
 from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
 from gear_optimizer.solver.genetic import decode_gpu_native_ga_runs_payload
@@ -434,6 +433,18 @@ def _prepare_hitsim_matrix_plan(song: Any, *, refine_info: dict, ga_candidates: 
         _set_hitsim_matrix_status(song, "failed", "invalid_population_shape")
         return None
 
+    shared_request_payload = {
+        "population_indices": np.asarray(population_indices, dtype=np.int32),
+        "item_stats": np.asarray(getattr(song, "item_stats", np.zeros((0, 10), dtype=np.int32)), dtype=np.int32),
+        "slot_start": np.asarray(getattr(song, "slot_start", np.zeros((9,), dtype=np.int32)), dtype=np.int32),
+        "slot_count": np.asarray(getattr(song, "slot_count", np.zeros((9,), dtype=np.int32)), dtype=np.int32),
+        "base_fixed_stats": np.asarray(getattr(song, "base_fixed_stats_arr", np.zeros((10,), dtype=np.int32)), dtype=np.int32),
+        "ref_arrays": getattr(song, "ref_arrays", {}) or {},
+        "song_slot": 0,
+    }
+    for flag_name, flag_value in dict(getattr(song, "color_flags", {}) or {}).items():
+        shared_request_payload[str(flag_name)] = int(flag_value or 0)
+
     jobs: list[dict] = []
     for regime in regimes:
         regime_data = regime.get("regime_data")
@@ -448,23 +459,11 @@ def _prepare_hitsim_matrix_plan(song: Any, *, refine_info: dict, ga_candidates: 
                 context={"regime_id": str(regime.get("regime_id", "") or "")},
             )
             continue
-        request = RegistrySolveRequest(
-            population_indices=np.asarray(population_indices, dtype=np.int32),
-            item_stats=np.asarray(getattr(song, "item_stats", np.zeros((0, 10), dtype=np.int32)), dtype=np.int32),
-            slot_start=np.asarray(getattr(song, "slot_start", np.zeros((9,), dtype=np.int32)), dtype=np.int32),
-            slot_count=np.asarray(getattr(song, "slot_count", np.zeros((9,), dtype=np.int32)), dtype=np.int32),
-            base_fixed_stats=np.asarray(getattr(song, "base_fixed_stats_arr", np.zeros((10,), dtype=np.int32)), dtype=np.int32),
-            timeline_grid=calc_song_variant,
-            ref_arrays=getattr(song, "ref_arrays", {}) or {},
-            flags=dict(getattr(song, "color_flags", {}) or {}),
-            song_slot=0,
-        )
         jobs.append(
             {
                 "regime_id": str(regime.get("regime_id", "") or ""),
                 "regime_data": copy.deepcopy(regime_data),
                 "calc_song": calc_song_variant,
-                "request_payload": request.to_payload(),
             }
         )
 
@@ -480,6 +479,7 @@ def _prepare_hitsim_matrix_plan(song: Any, *, refine_info: dict, ga_candidates: 
     return {
         "candidate_entries": list(candidate_entries),
         "jobs": jobs,
+        "shared_request_payload": shared_request_payload,
         "candidate_limit": int(candidate_limit),
     }
 
@@ -584,6 +584,43 @@ def _finalize_hitsim_matrix_merged_candidates(merged_by_identity: dict[tuple[int
     return out
 
 
+def _hitsim_matrix_job_request_payload(shared_request_payload: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(shared_request_payload or {})
+    payload["timeline_grid"] = copy.deepcopy(job.get("calc_song") or {})
+    payload["song_slot"] = 0
+    return payload
+
+
+def _run_hitsim_matrix_gpu_batch(
+    *,
+    gpu_client: GpuServiceClient,
+    jobs: list[dict],
+    shared_request_payload: dict[str, Any],
+) -> list[list[tuple[int, int, int, int, int, int, int]]] | None:
+    submit = getattr(gpu_client, "submit_solve_genomes_from_registry_matrix", None)
+    if not callable(submit):
+        warn_fallback("hitsim.matrix.batch", "gpu matrix batch unavailable; falling back to per-regime solves")
+        return None
+    payload = {
+        "shared_request_payload": dict(shared_request_payload or {}),
+        "regimes": [{"timeline_grid": copy.deepcopy(job.get("calc_song") or {})} for job in list(jobs or [])],
+    }
+    try:
+        handle = submit(payload)
+        results = handle.future.result()
+    except Exception as exc:
+        warn_fallback("hitsim.matrix.batch", "gpu matrix batch failed; falling back to per-regime solves", exc=exc)
+        return None
+    if not isinstance(results, list) or len(results) != int(len(jobs)):
+        warn_fallback(
+            "hitsim.matrix.batch",
+            "gpu matrix batch returned an unexpected result shape; falling back to per-regime solves",
+            context={"expected_regimes": int(len(jobs)), "actual_regimes": int(len(results)) if isinstance(results, list) else -1},
+        )
+        return None
+    return results
+
+
 def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClient] = None) -> tuple[dict, list, list, list[dict]]:
     plan = getattr(song, "_hitsim_matrix_plan", None)
     baseline_best = copy.deepcopy(getattr(song, "best_data", {}) or {})
@@ -608,7 +645,8 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
 
     jobs = list(plan.get("jobs") or [])
     candidate_entries = list(plan.get("candidate_entries") or [])
-    if not jobs or not candidate_entries:
+    shared_request_payload = dict(plan.get("shared_request_payload") or {})
+    if not jobs or not candidate_entries or not shared_request_payload:
         _set_hitsim_matrix_status(song, "skipped", "empty_plan")
         _cleanup()
         return baseline_best, baseline_gear, baseline_minis, baseline_candidates
@@ -619,26 +657,52 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
     secondary_color = str(getattr(song, "meta_secondary_color", "") or "")
 
     merged_by_identity: dict[tuple[int, ...], dict] = {}
+    fg_regime_groups_by_id: dict[str, dict[str, Any]] = {}
     regime_winners: list[dict] = []
     completed_jobs = 0
     evaluated_pairs = 0
     best_candidate_payload: dict | None = None
     best_candidate_score = int(current_score)
     best_calc_song = copy.deepcopy(baseline_calc_song)
+    execution_mode = "per_regime"
 
     try:
-        for job in jobs:
-            try:
-                handle = gpu_client.submit_solve_genomes_from_registry(dict(job.get("request_payload") or {}))
-                gpu_results = handle.future.result()
-            except Exception as exc:
-                warn_fallback(
-                    "hitsim.matrix.job",
-                    "matrix regime solve failed",
-                    context={"regime_id": str(job.get("regime_id", "") or "")},
-                    exc=exc,
+        batch_results = _run_hitsim_matrix_gpu_batch(
+            gpu_client=gpu_client,
+            jobs=jobs,
+            shared_request_payload=shared_request_payload,
+        )
+        if isinstance(batch_results, list):
+            execution_mode = "gpu_batch"
+
+        for job_idx, job in enumerate(jobs):
+            gpu_results = None
+            job_regime_id = str(job.get("regime_id", "") or "")
+            if job_regime_id:
+                fg_regime_groups_by_id.setdefault(
+                    str(job_regime_id),
+                    {
+                        "regime_id": str(job_regime_id),
+                        "calc_song": copy.deepcopy(job.get("calc_song") or baseline_calc_song),
+                        "ga_candidates": [],
+                    },
                 )
-                continue
+            if isinstance(batch_results, list) and job_idx < len(batch_results):
+                gpu_results = batch_results[job_idx]
+            if gpu_results is None:
+                try:
+                    handle = gpu_client.submit_solve_genomes_from_registry(
+                        _hitsim_matrix_job_request_payload(shared_request_payload, job)
+                    )
+                    gpu_results = handle.future.result()
+                except Exception as exc:
+                    warn_fallback(
+                        "hitsim.matrix.job",
+                        "matrix regime solve failed",
+                        context={"regime_id": str(job.get("regime_id", "") or "")},
+                        exc=exc,
+                    )
+                    continue
             if not isinstance(gpu_results, list) or not gpu_results:
                 warn_fallback(
                     "hitsim.matrix.job",
@@ -688,6 +752,10 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
                     selected_color=selected_color,
                     registry=getattr(song, "registry", None),
                 )
+                if job_regime_id:
+                    regime_group = fg_regime_groups_by_id.get(str(job_regime_id))
+                    if isinstance(regime_group, dict):
+                        regime_group.setdefault("ga_candidates", []).append(copy.deepcopy(payload))
                 evaluated_pairs += 1
                 entry = merged_by_identity.get(identity)
                 regime_id = str(payload.get("HumanHitSimRegimeId", "") or "")
@@ -735,6 +803,34 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
             primary_color=primary_color,
             secondary_color=secondary_color,
         )
+    fg_regime_groups: list[dict[str, Any]] = []
+    fg_candidate_limit = int(
+        safe_int(
+            getattr(song, "cfg_data", {}).get("fg_candidate_limit", FG_CANDIDATE_LIMIT),
+            FG_CANDIDATE_LIMIT,
+        )
+    )
+    for group in list(fg_regime_groups_by_id.values()):
+        if not isinstance(group, dict):
+            continue
+        group_candidates = list(group.get("ga_candidates") or [])
+        if not group_candidates:
+            continue
+        selected_group_candidates = select_fg_candidates(
+            group_candidates,
+            limit=int(fg_candidate_limit),
+            primary_color=primary_color,
+            secondary_color=secondary_color,
+        )
+        if not selected_group_candidates:
+            continue
+        fg_regime_groups.append(
+            {
+                "regime_id": str(group.get("regime_id", "") or ""),
+                "calc_song": copy.deepcopy(group.get("calc_song") or baseline_calc_song),
+                "ga_candidates": list(selected_group_candidates),
+            }
+        )
 
     selected_candidate = max(
         merged_candidates,
@@ -780,6 +876,7 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
     matrix_meta["HumanHitSimRegimeMatrixBestScore"] = int(best_candidate_score)
     matrix_meta["HumanHitSimRegimeMatrixCandidateChanged"] = bool(candidate_changed)
     matrix_meta["HumanHitSimRegimeMatrixRegimeChanged"] = bool(regime_changed)
+    matrix_meta["HumanHitSimRegimeMatrixExecutionMode"] = str(execution_mode)
     if isinstance(final_calc_song, dict):
         final_calc_song["metadata"] = matrix_meta
     _set_hitsim_matrix_status(
@@ -805,12 +902,20 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
         refine_info["matrix_best_score"] = int(best_candidate_score)
         refine_info["matrix_candidate_changed"] = bool(candidate_changed)
         refine_info["matrix_regime_changed"] = bool(regime_changed)
+        refine_info["matrix_fg_regime_group_count"] = int(len(fg_regime_groups))
         refine_info["regime_winners"] = list(regime_winners)
         refine_info["merged_candidates"] = list(merged_candidates)
         if isinstance(selected_candidate, dict):
             refine_info["selected_candidate"] = copy.deepcopy(selected_candidate)
         setattr(song, "_hitsim_last_refine_info", refine_info)
 
+    if fg_regime_groups:
+        setattr(song, "_hitsim_fg_regime_groups", list(fg_regime_groups))
+    else:
+        try:
+            delattr(song, "_hitsim_fg_regime_groups")
+        except Exception:
+            pass
     song.calc_song = copy.deepcopy(final_calc_song)
     _cleanup()
     return final_best, final_gear, final_minis, list(merged_candidates or baseline_candidates)

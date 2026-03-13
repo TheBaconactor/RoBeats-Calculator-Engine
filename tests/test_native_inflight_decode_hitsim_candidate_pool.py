@@ -441,7 +441,7 @@ def test_prepare_hitsim_matrix_plan_builds_regime_jobs() -> None:
     assert len(plan["candidate_entries"]) == 1
     assert len(plan["jobs"]) == 1
     assert plan["jobs"][0]["regime_id"] == "regime-1"
-    assert tuple(plan["jobs"][0]["request_payload"]["population_indices"].shape) == (1, 9)
+    assert tuple(plan["shared_request_payload"]["population_indices"].shape) == (1, 9)
 
 
 def test_run_hitsim_matrix_jobs_sync_promotes_best_regime_candidate() -> None:
@@ -557,10 +557,15 @@ def test_run_hitsim_matrix_jobs_sync_promotes_best_regime_candidate() -> None:
         def __init__(self, results):
             self._results = list(results)
             self.calls = []
+            self.batch_calls = []
 
         def submit_solve_genomes_from_registry(self, payload):
             self.calls.append(dict(payload))
             return SimpleNamespace(future=_FakeFuture(self._results[len(self.calls) - 1]))
+
+        def submit_solve_genomes_from_registry_matrix(self, payload):
+            self.batch_calls.append(dict(payload))
+            return SimpleNamespace(future=_FakeFuture(self._results))
 
     gpu_client = _FakeClient(
         [
@@ -574,13 +579,22 @@ def test_run_hitsim_matrix_jobs_sync_promotes_best_regime_candidate() -> None:
         gpu_client=gpu_client,
     )
 
-    assert len(gpu_client.calls) == 2
+    assert len(gpu_client.batch_calls) == 1
+    assert len(gpu_client.calls) == 0
     assert int(best_data["Score"]) == 150
     assert [it["Name"] for it in best_gear] == ["G0B", "G1B", "G2B", "G3B", "G4B", "G5B"]
     assert [it["Name"] for it in best_minis] == ["M0B", "M1B", "M2B"]
     assert any(int(c.get("Score", 0)) == 150 for c in ga_candidates)
     assert song.calc_song["metadata"]["HumanHitSimRegimeMatrixApplied"] is True
     assert int(song.calc_song["metadata"]["HumanHitSimRegimeMatrixCompletedRegimeCount"]) == 2
+    assert str(song.calc_song["metadata"]["HumanHitSimRegimeMatrixExecutionMode"]) == "gpu_batch"
     assert int(song._hitsim_last_refine_info["matrix_best_score"]) == 150
     assert len(song._hitsim_last_refine_info["regime_winners"]) == 2
     assert str(song._hitsim_last_refine_info["selected_candidate"]["HumanHitSimRegimeId"]) == "regime-2"
+    assert len(song._hitsim_fg_regime_groups) == 2
+    assert {str(group["regime_id"]) for group in song._hitsim_fg_regime_groups} == {"regime-1", "regime-2"}
+    assert all(group.get("ga_candidates") for group in song._hitsim_fg_regime_groups)
+    assert {
+        str(group["ga_candidates"][0]["HumanHitSimRegimeId"])
+        for group in song._hitsim_fg_regime_groups
+    } == {"regime-1", "regime-2"}

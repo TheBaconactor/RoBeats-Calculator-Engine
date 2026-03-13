@@ -91,6 +91,7 @@ This mode is a direct upgrade over pure seed luck:
 - legacy sampled/seeded refine branches no longer exist as separate implementations; old config values are normalized onto the exact GPU path and recorded in metadata as requested aliases
 - refinement can switch the final winner to another top GA candidate if that candidate scores better under a refined timing variant
 - the native in-flight path now runs a deterministic `candidate x regime x gem-allocation` matrix pass over the merged post-refine candidate surface and promotes the best regime-local gem result before continuation / FG
+- on the active GPU-native path, that matrix pass stages the shared candidate population once, streams retained regimes through GPU song slots, stores per-regime results in the GPU multi-run buffer, and downloads the matrix in one transfer instead of doing a CPU-driven submit loop per regime
 - opt-in continuation now takes divergent regimes from that post-matrix surface, rebuilds their timestamps deterministically, seeds a bounded prebuilt GA population from the merged matrix surface, and runs a regime-local GPU-native rescout before FG / persistence
 
 ## Limitations / Next Steps

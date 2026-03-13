@@ -223,3 +223,166 @@ def test_gpu_ga_fg_selection_matches_cpu_candidate_selector():
     )
 
     assert [_candidate_key(c, registry) for c in decoded] == [_candidate_key(c, registry) for c in expected]
+
+
+def test_gpu_ga_fg_selection_includes_unique_per_run_best_row() -> None:
+    from gear_optimizer.solver.taichi_gem.api.initialization import ensure_ready
+    from gear_optimizer.solver.taichi_gem.api.ga_operations import ga_download_fg_selected_payload
+    from gear_optimizer.solver.taichi_gem import fields
+
+    ensure_ready()
+
+    slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
+    gear_pool = {
+        slot: [
+            _item(
+                f"{slot}{i}",
+                **{
+                    "Perfect Points": 5 + i,
+                    "Combo Multiplier": 8 + i,
+                    "Fever Multiplier": 10 + (i * 3),
+                    "Fever Time": 12 + (i * 4),
+                    "Fever Fill Rate": 14 + (i * 5),
+                    "Beat": 3 + i,
+                    "Vibe": 4 + i,
+                    "Rush": 20 + (i * 6),
+                    "Flow": 18 + (i * 4),
+                    "Chill": 2 + i,
+                },
+            )
+            for i in range(3)
+        ]
+        for slot in slots
+    }
+    mini_pool = [
+        _item(
+            f"M{i}",
+            **{
+                "Perfect Points": 1 + i,
+                "Combo Multiplier": 2 + i,
+                "Fever Multiplier": 12 + (i * 4),
+                "Fever Time": 14 + (i * 5),
+                "Fever Fill Rate": 16 + (i * 6),
+                "Beat": 1 + i,
+                "Vibe": 2 + i,
+                "Rush": 22 + (i * 5),
+                "Flow": 19 + (i * 3),
+                "Chill": 1 + i,
+            },
+        )
+        for i in range(6)
+    ]
+    registry = ItemRegistry(gear_pool, mini_pool, slots)
+
+    table_slot = 0
+    n_runs = 1
+    k = int(fields.GA_FG_CANDIDATES_PER_RUN)
+    cols = int(fields.GA_FG_CANDIDATE_COLS)
+    table = np.zeros((n_runs, k + 1, cols), dtype=np.int32)
+
+    slot_start = np.asarray(registry.slot_start, dtype=np.int32)
+    item_stats = np.asarray(registry.to_gpu_arrays()["item_stats"], dtype=np.int32)
+
+    def _row_for(genome_ids: np.ndarray, *, score: int, ft: int, ff: int) -> np.ndarray:
+        packed = np.zeros((cols,), dtype=np.int32)
+        stats10 = item_stats[genome_ids].sum(axis=0).astype(np.int32, copy=False)
+        packed[0] = int(score)
+        packed[1 : 1 + 9] = genome_ids
+        packed[1 + 9 : 1 + 9 + 7] = np.asarray([score, ft, ff, 0, 0, 0, 0], dtype=np.int32)
+        packed[1 + 9 + 7 : 1 + 9 + 7 + 7] = np.asarray(
+            [
+                int(stats10[0]),
+                int(stats10[1]),
+                int(stats10[2]),
+                int(stats10[7]),
+                int(stats10[8]),
+                int(stats10[3]),
+                int(stats10[4]),
+            ],
+            dtype=np.int32,
+        )
+        return packed
+
+    row_best = np.asarray(
+        [
+            slot_start[0] + 2,
+            slot_start[1] + 2,
+            slot_start[2] + 2,
+            slot_start[3] + 2,
+            slot_start[4] + 2,
+            slot_start[5] + 2,
+            slot_start[6] + 0,
+            slot_start[6] + 2,
+            slot_start[6] + 4,
+        ],
+        dtype=np.int32,
+    )
+    row_a = np.asarray(
+        [
+            slot_start[0] + 0,
+            slot_start[1] + 0,
+            slot_start[2] + 0,
+            slot_start[3] + 0,
+            slot_start[4] + 0,
+            slot_start[5] + 0,
+            slot_start[6] + 0,
+            slot_start[6] + 1,
+            slot_start[6] + 2,
+        ],
+        dtype=np.int32,
+    )
+    row_b = np.asarray(
+        [
+            slot_start[0] + 1,
+            slot_start[1] + 1,
+            slot_start[2] + 1,
+            slot_start[3] + 1,
+            slot_start[4] + 1,
+            slot_start[5] + 1,
+            slot_start[6] + 1,
+            slot_start[6] + 3,
+            slot_start[6] + 5,
+        ],
+        dtype=np.int32,
+    )
+
+    table[0, 0, :] = _row_for(row_best, score=88_000, ft=17, ff=19)
+    table[0, 1, :] = _row_for(row_a, score=91_000, ft=1, ff=1)
+    table[0, 2, :] = _row_for(row_b, score=90_000, ft=2, ff=2)
+
+    full = np.zeros(fields.ga_fg_candidates_packed.shape, dtype=np.int32)
+    full[table_slot, :n_runs, : k + 1, :cols] = table
+    fields.ga_fg_candidates_packed.from_numpy(full)
+
+    limit = int(LOADOUTS_PER_SONG_LIMIT) + 8
+    top_base_keep = min(limit, int(LOADOUTS_PER_SONG_LIMIT))
+    base_budget = min(limit, max(top_base_keep, int(limit * 0.55)))
+    fg_budget_end = min(limit, base_budget + int(limit * 0.30))
+    selected_payload = ga_download_fg_selected_payload(
+        table_slot=int(table_slot),
+        n_runs=int(n_runs),
+        limit=int(limit),
+        top_base_keep=int(top_base_keep),
+        base_budget=int(base_budget),
+        fg_budget_end=int(fg_budget_end),
+    )
+
+    selected_rows = selected_payload[1 : 1 + int(selected_payload[0, 0])]
+    assert any(int(row[0]) == 0 and int(row[1]) == 0 for row in selected_rows)
+
+    cfg_data = {
+        "selected_color": "Rush",
+        "primary_color": "Rush",
+        "secondary_color": "Flow",
+        "fg_candidate_limit": int(limit),
+    }
+    _best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
+        runs_payload=selected_payload,
+        registry=registry,
+        cfg_data=cfg_data,
+        base_stats_fixed={},
+        fg_candidate_limit=int(limit),
+    )
+
+    expected_key = _canon_ids_key(row_best)
+    assert expected_key in [_candidate_key(candidate, registry) for candidate in decoded]

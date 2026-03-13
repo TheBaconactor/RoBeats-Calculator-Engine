@@ -7,6 +7,7 @@ Public entrypoint:
 
 from __future__ import annotations
 
+import copy
 import os
 import threading
 from typing import TYPE_CHECKING, Optional
@@ -17,6 +18,7 @@ from ..ga_entry_utils import materialize_entry_names
 from ..loadout_builder import refresh_ga_candidate_entries
 from .gpu_dispatch import process_force_greats_gpu_finder
 from ..item_utils import names_list
+from ....core.fallback_monitor import warn_fallback
 from ....core.utils import stats_signature
 from ....solver.scoring import apply_force_greats_to_result
 
@@ -31,6 +33,20 @@ _FG_INPROCESS_GPU_CLIENT_DISABLED = False
 _FG_SESSION_SLOT_LOCK = threading.Lock()
 _FG_SESSION_SLOT_POOL = None
 _FG_SESSION_SLOT_LOGGED = False
+
+_HITSIM_REGIME_META_KEYS = (
+    "HumanHitSimRegimeId",
+    "HumanHitSimRegimeFamily",
+    "HumanHitSimRegimeScope",
+    "HumanHitSimRegimeAlphaNumerator",
+    "HumanHitSimRegimeAlphaDenominator",
+    "HumanHitSimRegimeLeftNumerator",
+    "HumanHitSimRegimeLeftDenominator",
+    "HumanHitSimRegimeRightNumerator",
+    "HumanHitSimRegimeRightDenominator",
+    "HumanHitSimMergedRegimeIds",
+    "HumanHitSimMergedRegimeCount",
+)
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
@@ -110,6 +126,109 @@ def _get_inprocess_gpu_client():
             _FG_INPROCESS_GPU_CLIENT_DISABLED = True
             print(f"[ForceGreats][GPU] In-process GPU executor unavailable: {type(exc).__name__}: {exc}")
             return None
+
+
+def _clone_loadout_entries_for_hitsim_regime(loadout_entries):
+    cloned = {}
+    for key, entry in (loadout_entries or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        entry_copy = dict(entry)
+        entry_copy["fg_score"] = 0
+        entry_copy["force"] = None
+        entry_copy.pop("_candidate_ref", None)
+        cloned[key] = entry_copy
+    return cloned
+
+
+def _clone_ga_candidates_for_hitsim_regime(ga_candidates):
+    cloned = []
+    for candidate in ga_candidates or []:
+        if not isinstance(candidate, dict):
+            continue
+        candidate_copy = dict(candidate)
+        data = candidate_copy.get("Data")
+        if isinstance(data, dict):
+            candidate_copy["Data"] = copy.deepcopy(data)
+        for key in ("Gear", "Minis", "Genome", "GenomeIDs", "GearNames", "MiniNames"):
+            value = candidate_copy.get(key)
+            if isinstance(value, list):
+                candidate_copy[key] = copy.deepcopy(value)
+        candidate_copy["fg_score"] = 0
+        candidate_copy.pop("force", None)
+        candidate_copy.pop("_entry_ref", None)
+        cloned.append(candidate_copy)
+    return cloned
+
+
+def _annotate_fg_variant_with_hitsim_regime(variant, calc_song):
+    if not isinstance(variant, dict) or not isinstance(calc_song, dict):
+        return
+    meta = calc_song.get("metadata") if isinstance(calc_song.get("metadata"), dict) else {}
+    if not isinstance(meta, dict) or not meta:
+        return
+    data = variant.get("data")
+    if not isinstance(data, dict):
+        return
+    for key in _HITSIM_REGIME_META_KEYS:
+        if key in meta and key not in data:
+            data[key] = copy.deepcopy(meta.get(key))
+    variant["data"] = data
+    variant["_hitsim_calc_song"] = copy.deepcopy(calc_song)
+
+
+def _process_force_greats_hitsim_regimes(
+    *,
+    loadout_entries,
+    manual_force_greats,
+    force_greats_finder,
+    force_greats_config,
+    calc_song,
+    ref_arrays,
+    meta_primary_color,
+    build_details_fn,
+    db_loadouts_full_count,
+    use_gpu: bool,
+    fg_search_radius: int | None,
+    perf_timing: bool,
+    gpu_client: Optional["GpuServiceClient"],
+    ga_registry,
+    hitsim_regime_groups,
+):
+    fg_variants = []
+    groups = [group for group in list(hitsim_regime_groups or []) if isinstance(group, dict)]
+    for group in groups:
+        group_calc_song = copy.deepcopy(group.get("calc_song") or calc_song)
+        group_ga_candidates = _clone_ga_candidates_for_hitsim_regime(group.get("ga_candidates") or [])
+        if not group_ga_candidates:
+            continue
+        group_entries = _clone_loadout_entries_for_hitsim_regime(loadout_entries)
+        group_variants = process_force_greats(
+            group_entries,
+            manual_force_greats,
+            force_greats_finder,
+            force_greats_config,
+            group_calc_song,
+            ref_arrays,
+            meta_primary_color,
+            build_details_fn,
+            db_loadouts_full_count,
+            use_gpu=use_gpu,
+            fg_search_radius=fg_search_radius,
+            perf_timing=perf_timing,
+            gpu_client=gpu_client,
+            ga_candidates=group_ga_candidates,
+            ga_registry=ga_registry,
+            hitsim_regime_groups=None,
+        )
+        for variant in list(group_variants or []):
+            _annotate_fg_variant_with_hitsim_regime(variant, group_calc_song)
+        fg_variants.extend(list(group_variants or []))
+    try:
+        fg_variants.sort(key=lambda v: int(v.get("fg_score", 0) or 0), reverse=True)
+    except Exception:
+        pass
+    return fg_variants
 
 
 def _process_force_greats_cpu(
@@ -210,7 +329,27 @@ def process_force_greats(
     gpu_client: Optional["GpuServiceClient"] = None,
     ga_candidates=None,
     ga_registry=None,
+    hitsim_regime_groups=None,
 ):
+    if hitsim_regime_groups and bool(force_greats_finder):
+        return _process_force_greats_hitsim_regimes(
+            loadout_entries=loadout_entries,
+            manual_force_greats=manual_force_greats,
+            force_greats_finder=force_greats_finder,
+            force_greats_config=force_greats_config,
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+            meta_primary_color=meta_primary_color,
+            build_details_fn=build_details_fn,
+            db_loadouts_full_count=db_loadouts_full_count,
+            use_gpu=use_gpu,
+            fg_search_radius=fg_search_radius,
+            perf_timing=perf_timing,
+            gpu_client=gpu_client,
+            ga_registry=ga_registry,
+            hitsim_regime_groups=hitsim_regime_groups,
+        )
+
     def _ensure_ga_entries_for_cpu(loadout_entries_map):
         if not ga_candidates:
             return loadout_entries_map
@@ -227,6 +366,12 @@ def process_force_greats(
     if gpu_client is None and bool(use_gpu) and bool(force_greats_finder):
         if _truthy_env("FG_INPROCESS_EXECUTOR", "1"):
             gpu_client = _get_inprocess_gpu_client()
+            if gpu_client is None:
+                warn_fallback(
+                    "fg.inprocess_client",
+                    "in-process FG gpu client unavailable; continuing without executor-backed FG session",
+                    fatal=False,
+                )
 
     if (
         gpu_client is not None
@@ -282,7 +427,13 @@ def process_force_greats(
                     if not _FG_SESSION_SLOT_LOGGED:
                         _FG_SESSION_SLOT_LOGGED = True
                         print("[ForceGreats][GPU] Auto-assigned FG session slots enabled.")
-            except Exception:
+            except Exception as exc:
+                warn_fallback(
+                    "fg.auto_slot_assign",
+                    "FG auto slot assignment failed; continuing without reserved FG session slot",
+                    exc=exc,
+                    fatal=False,
+                )
                 auto_slot_assigned = False
 
         try:

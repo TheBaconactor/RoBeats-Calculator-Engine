@@ -43,6 +43,7 @@ from gear_optimizer.core.memory import (
     MEMORY_GUARD_RESUME_FILE,
 )
 from gear_optimizer.core.profile_events import emit_profile_event
+from gear_optimizer.core.fallback_monitor import warn_fallback
 from gear_optimizer.pipeline.song_processor import safe_process_song_task, scan_song_header
 from gear_optimizer.data.csv_parser import (
     load_all_gears_list,
@@ -3076,7 +3077,7 @@ class GearOptimizerApp:
                 msg = "[GPU Executor] Taichi init failed or timed out; falling back to direct GPU"
                 if err:
                     msg = f"{msg} ({err})"
-                print(msg)
+                warn_fallback("app.gpu_executor.direct_gpu", msg, fatal=False)
                 try:
                     gpu_executor.stop()
                 except Exception:

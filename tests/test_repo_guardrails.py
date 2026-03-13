@@ -116,3 +116,51 @@ def test_scoring_does_not_import_taichi_gem_internals() -> None:
         "Scoring code must import GPU functionality via taichi_gem.api/force_greats.api/gpu_executor, "
         "not taichi_gem internals:\n" + "\n".join(offenders)
     )
+
+
+def _expr_contains_fallback_text(node: ast.AST) -> bool:
+    fallback_tokens = ("fallback", "fall back", "falling back")
+    text_parts: list[str] = []
+
+    def _visit(expr: ast.AST) -> None:
+        if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+            text_parts.append(expr.value)
+            return
+        if isinstance(expr, ast.JoinedStr):
+            for value in expr.values:
+                _visit(value)
+            return
+        if isinstance(expr, ast.FormattedValue):
+            _visit(expr.value)
+            return
+
+    _visit(node)
+    blob = " ".join(text_parts).lower()
+    return any(tok in blob for tok in fallback_tokens)
+
+
+def test_no_raw_runtime_fallback_prints() -> None:
+    offenders: list[str] = []
+    for path in _iter_python_files(
+        _REPO_ROOT,
+        rel_dirs=[
+            "gear_optimizer",
+            "inventory_optimizer",
+            "general_meta",
+            "tools",
+        ],
+    ):
+        txt = path.read_text(encoding="utf-8", errors="ignore")
+        tree = ast.parse(txt, filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Name) or node.func.id != "print":
+                continue
+            if any(_expr_contains_fallback_text(arg) for arg in node.args):
+                rel = path.relative_to(_REPO_ROOT)
+                offenders.append(f"{rel}:{node.lineno}")
+
+    assert not offenders, (
+        "Fallback paths must go through warn_fallback instead of raw print diagnostics:\n" + "\n".join(offenders)
+    )
