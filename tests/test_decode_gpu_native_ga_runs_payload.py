@@ -365,3 +365,99 @@ def test_decode_gpu_native_selected_payload_emits_base_stats_without_full_stats(
     assert decoded[0].get("GenomeIDs")
     assert not decoded[0].get("Gear")
     assert not decoded[0].get("Minis")
+
+
+def test_decode_gpu_native_selected_payload_emits_full_stats_when_hitsim_refine_requires_it(monkeypatch):
+    monkeypatch.delenv("GA_DECODE_INCLUDE_STATS", raising=False)
+
+    slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
+    gear_pool = {
+        slot: [
+            _item(
+                f"{slot}{i}",
+                **{
+                    "Perfect Points": 10 + i,
+                    "Combo Multiplier": 20 + i,
+                    "Fever Multiplier": 30 + i,
+                    "Fever Time": 40 + i,
+                    "Fever Fill Rate": 50 + i,
+                    "Rush": 60 + i,
+                    "Flow": 70 + i,
+                },
+            )
+            for i in range(2)
+        ]
+        for slot in slots
+    }
+    mini_pool = [
+        _item(
+            f"M{i}",
+            **{
+                "Perfect Points": 5 + i,
+                "Combo Multiplier": 6 + i,
+                "Fever Multiplier": 7 + i,
+                "Fever Time": 8 + i,
+                "Fever Fill Rate": 9 + i,
+                "Rush": 10 + i,
+                "Flow": 11 + i,
+            },
+        )
+        for i in range(4)
+    ]
+    registry = ItemRegistry(gear_pool, mini_pool, slots)
+
+    cfg_data = {
+        "selected_color": "Rush",
+        "primary_color": "Rush",
+        "secondary_color": "Flow",
+        "fg_candidate_limit": int(LOADOUTS_PER_SONG_LIMIT),
+        "hitsim_refine_require_stats": True,
+    }
+
+    n_slots = 9
+    width = 1 + n_slots + 7 + 7
+    selected_payload = np.zeros((2, 26), dtype=np.int32)
+
+    genome_ids = np.asarray(
+        [
+            registry.slot_start[0] + 1,
+            registry.slot_start[1] + 1,
+            registry.slot_start[2] + 1,
+            registry.slot_start[3] + 1,
+            registry.slot_start[4] + 1,
+            registry.slot_start[5] + 1,
+            registry.slot_start[6] + 0,
+            registry.slot_start[6] + 1,
+            registry.slot_start[6] + 2,
+        ],
+        dtype=np.int32,
+    )
+    res = np.asarray([100, 3, 4, 1, 1, 1, 1], dtype=np.int32)
+
+    selected_payload[0, 0] = 1
+    selected_payload[0, 1] = 100
+    selected_payload[0, 2 : 2 + n_slots] = genome_ids
+    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = res
+    selected_payload[0, 2 + n_slots + 7] = 0
+
+    packed = np.zeros((width,), dtype=np.int32)
+    packed[0] = 100
+    packed[1 : 1 + n_slots] = genome_ids
+    packed[1 + n_slots : 1 + n_slots + 7] = res
+    selected_payload[1, 0] = 0
+    selected_payload[1, 1] = 1
+    selected_payload[1, 2 : 2 + width] = packed
+
+    _best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
+        runs_payload=selected_payload,
+        registry=registry,
+        cfg_data=cfg_data,
+        base_stats_fixed={},
+        fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
+    )
+
+    assert decoded
+    data = decoded[0]["Data"]
+    assert isinstance(data.get("BaseStats"), dict)
+    assert isinstance(data.get("Stats"), dict)
+    assert data["Stats"]["Perfect Points"] >= data["BaseStats"]["Perfect Points"]

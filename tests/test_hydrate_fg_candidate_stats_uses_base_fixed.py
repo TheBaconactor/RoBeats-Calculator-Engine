@@ -48,3 +48,36 @@ def test_hydrate_fg_candidate_stats_uses_base_fixed_to_avoid_double_counting_use
     # If we double-counted, this would be 2x. Correct behavior: it stays at the original embedded total.
     assert stats["Perfect Points"] == user_pp * GEM_SCALE_NORMAL
 
+
+def test_hydrate_fg_candidate_stats_prefers_base_stats_over_rebuilding_from_genome():
+    cand = {
+        "Score": 321,
+        "BaseScore": 321,
+        "Gear": [{"Name": "HugePP", "Perfect Points": 999}],
+        "Minis": [],
+        "Genome": [{"Name": "HugePP", "Perfect Points": 999}],
+        "Data": {
+            "BaseStats": {
+                "Perfect Points": 10,
+                "Combo Multiplier": 0,
+                "Fever Multiplier": 0,
+                "Fever Time": 0,
+                "Fever Fill Rate": 0,
+                "Beat": 0,
+                "Vibe": 0,
+                "Rush": 0,
+                "Flow": 0,
+                "Chill": 0,
+            },
+            "FT": 0,
+            "FF": 0,
+            "GemCounts": {"Perfect Points": 1, "Combo Multiplier": 0, "Fever Multiplier": 0, "Element": 0},
+            "Selected Element": "Rush",
+        },
+    }
+
+    hydrate_fg_candidate_stats([cand], base_stats_fixed={}, selected_color="Rush", cfg_data={"selected_color": "Rush"})
+
+    stats = cand["Data"]["Stats"]
+    assert cand["Data"]["BaseStats"]["Perfect Points"] == 10
+    assert stats["Perfect Points"] == 10 + GEM_SCALE_NORMAL

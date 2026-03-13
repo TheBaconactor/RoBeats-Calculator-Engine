@@ -98,9 +98,13 @@ def score_fixed_stats_gpu(
     if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
         precompute_timeline_gpu(timeline_grid, ref_arrays, song_slot=int(song_slot))
     else:
-        if int(song_slot) != 0:
-            raise ValueError("SongTimelineGrid upload supports song_slot=0 only; use calc_song dict for multi-slot")
-        _upload_timeline_grid(timeline_grid)
+        calc_song = getattr(timeline_grid, "calc_song", None)
+        if isinstance(calc_song, dict):
+            precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
+        else:
+            if int(song_slot) != 0:
+                raise ValueError("SongTimelineGrid upload supports song_slot=0 only; use calc_song dict for multi-slot")
+            _upload_timeline_grid(timeline_grid)
 
     n = int(len(stats_inputs))
     base_value = np.empty(n, dtype=np.float32)

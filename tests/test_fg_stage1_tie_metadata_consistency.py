@@ -20,8 +20,8 @@ def _has_taichi() -> bool:
 @pytest.mark.skipif(not _has_taichi(), reason="Taichi not available")
 def test_fg_stage1_packed_and_metadata_stay_consistent_on_cfg_tie():
     """
-    Regression: In FG Stage 1 flat kernel, the packed (score,cfg_idx) atomic winner must always
-    match the metadata fields, even when the best score ties and cfg_idx tie-breaking applies.
+    Regression: In FG Stage 1, the packed (score,cfg_idx) winner must always match the metadata
+    fields, even when the best score ties and cfg_idx tie-breaking applies across cfg chunks.
 
     We construct a deterministic tie across two sequential kernel calls:
       - Call A uses cfg_offset=1 (global cfg idx 1)
@@ -112,31 +112,35 @@ def test_fg_stage1_packed_and_metadata_stay_consistent_on_cfg_tie():
     )
 
     # Process higher global cfg idx first, then lower one (tie-break winner).
-    fg_kernels.fg_stage1_flat_kernel(
-        int(n_work_items),
+    fg_kernels.fg_stage1_kernel(
+        int(n_genomes),
+        int(total_notes),
+        int(long_notes),
+        float(last_note_time),
+        int(total_budget),
+        int(gem_scale_fever),
         int(n_cfg),
+        int(n_sections),
+        int(n_ftff),
         1,  # cfg_offset
         0,  # cfg_read_offset
+        **flags,
+        is_first_chunk=1,
+    )
+    fg_kernels.fg_stage1_kernel(
+        int(n_genomes),
         int(total_notes),
         int(long_notes),
         float(last_note_time),
         int(total_budget),
         int(gem_scale_fever),
-        int(n_sections),
-        **flags,
-    )
-    fg_kernels.fg_stage1_flat_kernel(
-        int(n_work_items),
         int(n_cfg),
+        int(n_sections),
+        int(n_ftff),
         0,  # cfg_offset (lower should win ties)
         0,  # cfg_read_offset
-        int(total_notes),
-        int(long_notes),
-        float(last_note_time),
-        int(total_budget),
-        int(gem_scale_fever),
-        int(n_sections),
         **flags,
+        is_first_chunk=0,
     )
     ti.sync()
 

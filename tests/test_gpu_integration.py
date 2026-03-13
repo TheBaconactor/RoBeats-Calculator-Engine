@@ -20,6 +20,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from gear_optimizer.solver.scoring import batch_evaluate_genomes, solve_best_fever_combination
+from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.core.constants import TOTAL_ROWS
 
 
@@ -65,6 +66,27 @@ def create_mock_ref_arrays():
         "Fever Fill Rate": np.array([1.0 + i * 0.006 for i in range(161)], dtype=np.float64),
         "Fever Time": np.array([1.0 + i * 0.004 for i in range(161)], dtype=np.float64),
     }
+
+
+def create_mock_registry(genomes: list) -> ItemRegistry:
+    """
+    Build a minimal ItemRegistry so the GPU path can run through the registry-solve API.
+
+    These integration tests only use slot 0 (single "gear" item); all other slots are empty.
+    """
+    slots = ["Slot0", "Slot1", "Slot2", "Slot3", "Slot4", "Slot5"]
+    gear_items = []
+    for genome in genomes or []:
+        try:
+            it = genome[0] if genome else None
+        except Exception:
+            it = None
+        if isinstance(it, dict) and it.get("Name"):
+            gear_items.append(it)
+    gear_pool = {slots[0]: gear_items}
+    for s in slots[1:]:
+        gear_pool[s] = []
+    return ItemRegistry(gear_pool, mini_pool=[], slots=slots)
 
 
 def test_multi_genome_parity():
@@ -157,11 +179,12 @@ def test_multi_genome_parity():
     }
 
     # Run GPU path
-    gpu_results = batch_evaluate_genomes(genomes, base_stats_fixed, cfg_data, calc_song, ref_arrays)
+    registry = create_mock_registry(genomes)
+    gpu_results = batch_evaluate_genomes(genomes, base_stats_fixed, cfg_data, calc_song, ref_arrays, registry=registry)
 
     # Compare with CPU path
     cfg_data["use_gpu"] = False
-    cpu_results = batch_evaluate_genomes(genomes, base_stats_fixed, cfg_data, calc_song, ref_arrays)
+    cpu_results = batch_evaluate_genomes(genomes, base_stats_fixed, cfg_data, calc_song, ref_arrays, registry=registry)
 
     mismatches = []
     for i, (gpu, cpu) in enumerate(zip(gpu_results, cpu_results)):
@@ -238,6 +261,8 @@ def test_elemental_color_mapping():
 
     mismatches = []
 
+    registry = create_mock_registry([genome])
+
     for primary, secondary in color_combos:
         calc_song = create_mock_song(primary_color=primary, secondary_color=secondary)
 
@@ -253,8 +278,8 @@ def test_elemental_color_mapping():
         }
         cfg_cpu = {**cfg_gpu, "use_gpu": False}
 
-        gpu_result = batch_evaluate_genomes([genome], base_stats_fixed, cfg_gpu, calc_song, ref_arrays)
-        cpu_result = batch_evaluate_genomes([genome], base_stats_fixed, cfg_cpu, calc_song, ref_arrays)
+        gpu_result = batch_evaluate_genomes([genome], base_stats_fixed, cfg_gpu, calc_song, ref_arrays, registry=registry)
+        cpu_result = batch_evaluate_genomes([genome], base_stats_fixed, cfg_cpu, calc_song, ref_arrays, registry=registry)
 
         gpu_score = gpu_result[0]["Score"] if gpu_result and gpu_result[0] else 0
         cpu_score = cpu_result[0]["Score"] if cpu_result and cpu_result[0] else 0

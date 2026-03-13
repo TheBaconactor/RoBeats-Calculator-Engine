@@ -1572,7 +1572,7 @@ def process_force_greats_gpu_finder(
                     except Exception:
                         non_fever_cas0 = max(0.0, float(total_notes0 - long_notes0) * 0.333)
 
-                    ref_ff0 = _np.asarray(ref_arrays.get("Fever Fill Rate"), dtype=_np.float64)
+                    ref_ff0 = _np.asarray(ref_arrays.get("Fever Fill Rate"), dtype=_np.float32)
                     if ref_ff0.shape[0] < 161:
                         raise ValueError("ref_arrays['Fever Fill Rate'] must have length >= 161")
                     ff_mult = ref_ff0[:161]

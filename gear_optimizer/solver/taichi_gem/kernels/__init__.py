@@ -67,6 +67,7 @@ from .kernels_helpers import (
     _calc_body_score,
     _calc_head_factor,
     _calc_head_score_bits,
+    calc_score_with_grid,
     calc_score_with_grid_bits,
 )
 
@@ -81,6 +82,7 @@ from .kernels_ga import (
     ga_copy_population_indices_from_ndarray_kernel,
     ga_build_exact_eval_reuse_map_kernel,
     ga_propagate_exact_eval_reuse_base_stats_kernel,
+    ga_propagate_exact_eval_reuse_chunk_best_kernel,
     ga_select_parents_tournament_kernel,
     ga_crossover_mutate_kernel,
     ga_swap_populations_kernel,
@@ -153,6 +155,29 @@ from .kernels_timeline import (
     precompute_fever_end_idx_kernel,
     compute_timeline_grid_kernel,
     compute_timeline_grid_signatures_kernel,
+    unpack_timeline_grid_masks_kernel,
+)
+
+# Import HumanHitSim refinement kernels
+from .kernels_hitsim import (
+    hitsim_upload_groups_kernel,
+    hitsim_build_note_to_group_kernel,
+    hitsim_upload_alphas_kernel,
+    hitsim_upload_rows_kernel,
+    hitsim_upload_candidates_kernel,
+    hitsim_build_groups_from_notes_kernel,
+    hitsim_build_exact_alpha_regimes_kernel,
+    hitsim_compute_group_events_batch_kernel,
+    hitsim_prefix_max_batch_kernel,
+    hitsim_eval_alpha_batch_kernel,
+    hitsim_plan_regimes_kernel,
+    hitsim_select_best_regime_kernel,
+    hitsim_pack_scalar_outputs_kernel,
+    hitsim_stage_signature_rows_kernel,
+    hitsim_compute_group_events_tmp_kernel,
+    hitsim_prefix_max_tmp_kernel,
+    hitsim_broadcast_tmp_to_best_event_ms_kernel,
+    hitsim_broadcast_tmp_to_best_great_ms_kernel,
 )
 
 # Public API
@@ -211,6 +236,7 @@ __all__ = [
     "ga_copy_population_indices_from_ndarray_kernel",
     "ga_build_exact_eval_reuse_map_kernel",
     "ga_propagate_exact_eval_reuse_base_stats_kernel",
+    "ga_propagate_exact_eval_reuse_chunk_best_kernel",
     "ga_select_parents_tournament_kernel",
     "ga_crossover_mutate_kernel",
     "ga_swap_populations_kernel",
@@ -232,6 +258,7 @@ __all__ = [
     "_calc_head_factor",
     "_calc_head_score_grid",
     "_calc_head_score_bits",
+    "calc_score_with_grid",
     "calc_score_with_grid_bits",
     "calc_score_cached_device",
     "optimize_core_device",
@@ -276,4 +303,24 @@ __all__ = [
     "precompute_fever_end_idx_kernel",
     "compute_timeline_grid_kernel",
     "compute_timeline_grid_signatures_kernel",
+    "unpack_timeline_grid_masks_kernel",
+    # HitSim refinement kernels
+    "hitsim_upload_groups_kernel",
+    "hitsim_build_note_to_group_kernel",
+    "hitsim_upload_alphas_kernel",
+    "hitsim_upload_rows_kernel",
+    "hitsim_upload_candidates_kernel",
+    "hitsim_build_groups_from_notes_kernel",
+    "hitsim_build_exact_alpha_regimes_kernel",
+    "hitsim_compute_group_events_batch_kernel",
+    "hitsim_prefix_max_batch_kernel",
+    "hitsim_eval_alpha_batch_kernel",
+    "hitsim_plan_regimes_kernel",
+    "hitsim_select_best_regime_kernel",
+    "hitsim_pack_scalar_outputs_kernel",
+    "hitsim_stage_signature_rows_kernel",
+    "hitsim_compute_group_events_tmp_kernel",
+    "hitsim_prefix_max_tmp_kernel",
+    "hitsim_broadcast_tmp_to_best_event_ms_kernel",
+    "hitsim_broadcast_tmp_to_best_great_ms_kernel",
 ]

@@ -1620,10 +1620,11 @@ def fg_stage1_kernel(
             if final_score < 0:
                 final_score = 0
 
-            if final_score > best_final:
+            # Stable tie-break: prefer the lower global cfg idx when final_score ties.
+            if (final_score > best_final) or (final_score == best_final and global_cfg_idx < best_cfg):
                 best_final = final_score
                 best_base = base_score
-                best_cfg = cfg_global_base + cfg_idx
+                best_cfg = global_cfg_idx
                 best_pp = gems_pp
                 best_cm = gems_cm
                 best_fm = gems_fm

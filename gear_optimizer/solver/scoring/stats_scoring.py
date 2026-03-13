@@ -13,7 +13,7 @@ import numpy as np
 from math import floor
 
 from ...core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_OFFSET, FEVER_TIME_SCALE, TOTAL_ROWS
-from ...core.utils import safe_int, safe_float
+from ...core.utils import human_hitsim_timing_context, safe_int, safe_float
 
 from ..fever_timeline import (
     calculate_fever_activations_grid,
@@ -49,7 +49,7 @@ def _get_fg_baseline_grids(
     if cached is not None:
         return cached
 
-    # Normalize timestamps for Numba kernels (keep dtype to preserve parity).
+    # Normalize timestamps for Numba kernels (float32-first for CPU/GPU parity).
     ts = np.asarray(timestamps)
     if ts.ndim != 1:
         raise ValueError("timestamps must be 1D")
@@ -57,12 +57,12 @@ def _get_fg_baseline_grids(
         ts = np.ascontiguousarray(ts)
 
     grid_size = int(TOTAL_ROWS) + 1
-    ref_ft = np.asarray(ref_arrays["Fever Time"], dtype=np.float64)
-    ref_ff = np.asarray(ref_arrays["Fever Fill Rate"], dtype=np.float64)
+    ref_ft = np.asarray(ref_arrays["Fever Time"], dtype=np.float32)
+    ref_ff = np.asarray(ref_arrays["Fever Fill Rate"], dtype=np.float32)
     if int(ref_ft.shape[0]) < grid_size or int(ref_ff.shape[0]) < grid_size:
         raise ValueError("ref_arrays['Fever Time'/'Fever Fill Rate'] must have length >= TOTAL_ROWS+1")
-    ft_factors = np.ascontiguousarray(ref_ft[:grid_size], dtype=np.float64)
-    ff_factors = np.ascontiguousarray(ref_ff[:grid_size], dtype=np.float64)
+    ft_factors = np.ascontiguousarray(ref_ft[:grid_size], dtype=np.float32)
+    ff_factors = np.ascontiguousarray(ref_ff[:grid_size], dtype=np.float32)
 
     non_fever_cas = float(int(total_notes) - int(long_notes)) * float(FEVER_FILL_BASE_RATE)
     if non_fever_cas < 0.0:
@@ -312,4 +312,4 @@ def _song_cache_key(calc_song):
         int(meta.get("Long Notes", 0) or 0),
         apply_to,
         sim_seed,
-    )
+    ) + human_hitsim_timing_context(calc_song)

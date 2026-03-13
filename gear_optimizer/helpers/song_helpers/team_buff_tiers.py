@@ -8,6 +8,7 @@ from math import ceil
 import numpy as np
 
 from ...core.constants import FEVER_FILL_BASE_RATE, TOTAL_ROWS
+from ...core.time_quantize import quantize_to_int_ms
 from ...data.loadout_equivalence import representative_mini_names
 from ...solver.fever_timeline import calculate_fever_timeline_indices
 from ...solver.scoring_core import fast_calculate_score, lookup_reference_py
@@ -309,8 +310,7 @@ def _safe_int(v: object, default: int = 0) -> int:
 
 
 def _floor_to_int_ms(timestamps_sec: np.ndarray) -> np.ndarray:
-    ts = np.asarray(timestamps_sec, dtype=np.float64)
-    return np.floor(ts * 1000.0 + 1e-6).astype(np.int32)
+    return quantize_to_int_ms(timestamps_sec)
 
 
 def _build_base_hitsim_ctx(calc_song: dict) -> dict | None:
@@ -327,8 +327,8 @@ def _build_base_hitsim_ctx(calc_song: dict) -> dict | None:
     timestamps = song_data.get("timestamps")
     if chart_ts is None or timestamps is None:
         return None
-    chart_ms = _floor_to_int_ms(np.asarray(chart_ts, dtype=np.float64))
-    sim_ms = _floor_to_int_ms(np.asarray(timestamps, dtype=np.float64))
+    chart_ms = _floor_to_int_ms(np.asarray(chart_ts, dtype=np.float32))
+    sim_ms = _floor_to_int_ms(np.asarray(timestamps, dtype=np.float32))
     total_notes = int(np.asarray(timestamps).shape[0])
     if total_notes <= 0:
         return None

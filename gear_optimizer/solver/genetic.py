@@ -203,6 +203,18 @@ def _build_candidate_data_obj(
     return data_obj
 
 
+def _decode_requires_full_stats(cfg_data: dict | None) -> bool:
+    if env_flag("GA_DECODE_INCLUDE_STATS", "0"):
+        return True
+    if not isinstance(cfg_data, dict):
+        return False
+    return bool(
+        cfg_data.get("ga_require_full_stats")
+        or cfg_data.get("hitsim_refine_require_stats")
+        or cfg_data.get("fg_require_full_stats")
+    )
+
+
 # Cached env config for GA_FORCE_COLD_START (avoids repeated env lookups)
 _GA_FORCE_COLD_START = _env_flag("GA_FORCE_COLD_START", "")
 _PERF_TIMING = _env_flag("PERF_TIMING", "0")
@@ -566,7 +578,7 @@ def decode_gpu_native_ga_runs_payload(
         # - Reconstructing full per-candidate post-gem `Stats` is expensive.
         # - ForceGreatsFinder grouping only needs `BaseStats`, so keep full `Stats`
         #   reconstruction opt-in and carry only `BaseStats` on the hot path by default.
-        include_full_stats = env_flag("GA_DECODE_INCLUDE_STATS", "0")
+        include_full_stats = _decode_requires_full_stats(cfg_data)
         include_base_stats = bool(include_full_stats or cfg_data.get("fg_require_stats", False))
 
         base_stats_arr = None
@@ -1009,7 +1021,7 @@ def decode_gpu_native_ga_runs_payload(
     select_ms = (time.perf_counter() - t_stub) * 1000.0 if perf else 0.0
     proxy_ms = 0.0
 
-    include_full_stats = env_flag("GA_DECODE_INCLUDE_STATS", "0")
+    include_full_stats = _decode_requires_full_stats(cfg_data)
     include_base_stats = bool(include_full_stats or cfg_data.get("fg_require_stats", False))
 
     # Vectorized stat reconstruction for selected candidates only.
@@ -2233,6 +2245,15 @@ def solve_coevolution_genetic(
     except Exception:
         fg_enabled = False
     cfg_data["fg_require_stats"] = bool(fg_enabled)
+    try:
+        hitsim_refine_enabled = bool(cfg.getboolean("HumanHitSim", "RefineAfterGA", fallback=False))
+    except Exception:
+        hitsim_refine_enabled = False
+    try:
+        hitsim_apply_to = str(cfg.get("HumanHitSim", "ApplyTo", fallback="ALL") or "ALL").strip().upper()
+    except Exception:
+        hitsim_apply_to = "ALL"
+    cfg_data["hitsim_refine_require_stats"] = bool(hitsim_refine_enabled and hitsim_apply_to == "ALL")
 
     # --- GPU-NATIVE GA PATH ---
     # If using GPU mode, bypass the entire CPU loop mechanism.

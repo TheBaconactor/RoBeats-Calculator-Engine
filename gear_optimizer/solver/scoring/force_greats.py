@@ -31,6 +31,7 @@ from ...core.constants import (
 )
 from ...core.color_flags import build_color_flags
 from ...core.utils import safe_int, safe_float, stats_signature
+from ...core.time_quantize import quantize_to_int_ms
 
 from ..fever_timeline import (
     calculate_force_greats_timeline_indices,
@@ -58,9 +59,8 @@ _FG_TIMELINE_TLS = threading.local()
 
 
 def _floor_to_int_ms(timestamps_sec: np.ndarray) -> np.ndarray:
-    ts = np.asarray(timestamps_sec, dtype=np.float64)
-    # Match server/client behavior (floor to integer milliseconds) and mirror hit_simulation.py.
-    return np.floor(ts * 1000.0 + 1e-6).astype(np.int32)
+    # Keep float32-first quantization for CPU/GPU parity.
+    return quantize_to_int_ms(timestamps_sec)
 
 
 def _fg_config_to_counts(config: object) -> list[int]:
@@ -136,8 +136,8 @@ def summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song: dict, fg_data: di
     if timestamps is None:
         return None
 
-    timestamps = np.asarray(timestamps, dtype=np.float64)
-    great_candidates = np.asarray(great_candidates, dtype=np.float64)
+    timestamps = np.asarray(timestamps, dtype=np.float32)
+    great_candidates = np.asarray(great_candidates, dtype=np.float32)
     total_notes = int(timestamps.shape[0])
     if total_notes <= 0:
         return None
@@ -175,9 +175,9 @@ def summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song: dict, fg_data: di
     except Exception:
         return None
 
-    chart_ms = _floor_to_int_ms(np.asarray(chart_ts, dtype=np.float64))
-    cand_ms = _floor_to_int_ms(np.asarray(great_candidates, dtype=np.float64))
-    song_ms = _floor_to_int_ms(np.asarray(timestamps, dtype=np.float64))
+    chart_ms = _floor_to_int_ms(np.asarray(chart_ts, dtype=np.float32))
+    cand_ms = _floor_to_int_ms(np.asarray(great_candidates, dtype=np.float32))
+    song_ms = _floor_to_int_ms(np.asarray(timestamps, dtype=np.float32))
     n = min(int(chart_ms.shape[0]), int(cand_ms.shape[0]), total_notes)
     if n <= 0:
         return None
@@ -251,7 +251,7 @@ def summarize_hitsim_offset_delta_ms_for_base(calc_song: dict, base_data: dict, 
     if chart_ts is None or timestamps is None:
         return None
 
-    timestamps = np.asarray(timestamps, dtype=np.float64)
+    timestamps = np.asarray(timestamps, dtype=np.float32)
     total_notes = int(timestamps.shape[0])
     if total_notes <= 0:
         return None
@@ -270,8 +270,8 @@ def summarize_hitsim_offset_delta_ms_for_base(calc_song: dict, base_data: dict, 
     if end_normal_idx <= 0:
         return None
 
-    chart_ms = _floor_to_int_ms(np.asarray(chart_ts, dtype=np.float64))
-    sim_ms = _floor_to_int_ms(np.asarray(timestamps, dtype=np.float64))
+    chart_ms = _floor_to_int_ms(np.asarray(chart_ts, dtype=np.float32))
+    sim_ms = _floor_to_int_ms(np.asarray(timestamps, dtype=np.float32))
     n = min(int(chart_ms.shape[0]), int(sim_ms.shape[0]), total_notes)
     if end_normal_idx >= n:
         return None

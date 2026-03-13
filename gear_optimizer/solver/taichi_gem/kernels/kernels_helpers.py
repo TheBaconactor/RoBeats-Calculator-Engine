@@ -64,6 +64,81 @@ song_total_notes = None  # scalar i32
 song_long_notes = None  # scalar i32
 song_last_note_time = None  # scalar f32
 
+# HitSim refinement (post-GA deterministic regime scan)
+hitsim_note_count = None  # (1,) i32
+hitsim_group_count = None  # (1,) i32
+hitsim_group_starts = None  # (MAX_HITSIM_GROUPS,) i32
+hitsim_group_ends = None  # (MAX_HITSIM_GROUPS,) i32
+hitsim_group_base_t = None  # (MAX_HITSIM_GROUPS,) i32
+hitsim_group_low_perfect = None  # (MAX_HITSIM_GROUPS,) i32
+hitsim_group_high_perfect = None  # (MAX_HITSIM_GROUPS,) i32
+hitsim_group_low_great = None  # (MAX_HITSIM_GROUPS,) i32
+hitsim_group_high_great = None  # (MAX_HITSIM_GROUPS,) i32
+hitsim_note_to_group = None  # (MAX_HITSIM_NOTES,) i32
+
+hitsim_alpha_count = None  # (1,) i32
+hitsim_alpha_num = None  # (MAX_HITSIM_ALPHAS,) i32
+hitsim_alpha_den = None  # (MAX_HITSIM_ALPHAS,) i32
+hitsim_alpha_left_num = None  # (MAX_HITSIM_ALPHAS,) i32
+hitsim_alpha_left_den = None  # (MAX_HITSIM_ALPHAS,) i32
+hitsim_alpha_right_num = None  # (MAX_HITSIM_ALPHAS,) i32
+hitsim_alpha_right_den = None  # (MAX_HITSIM_ALPHAS,) i32
+
+hitsim_cut_count = None  # (1,) i32
+hitsim_cut_num = None  # (MAX_HITSIM_CUTS,) i32
+hitsim_cut_den = None  # (MAX_HITSIM_CUTS,) i32
+hitsim_span_used = None  # (MAX_HITSIM_SPAN+1,) i32
+
+hitsim_row_count = None  # (1,) i32
+hitsim_row_non_fever_base = None  # (MAX_HITSIM_ROWS,) i32
+hitsim_row_fever_time_ms = None  # (MAX_HITSIM_ROWS,) i32
+
+hitsim_candidate_count = None  # (1,) i32
+hitsim_candidate_row_idx = None  # (MAX_HITSIM_CANDIDATES,) i32
+hitsim_candidate_base_value = None  # (MAX_HITSIM_CANDIDATES,) f32
+hitsim_candidate_combo_mul = None  # (MAX_HITSIM_CANDIDATES,) f32
+hitsim_candidate_fever_mul = None  # (MAX_HITSIM_CANDIDATES,) f32
+
+hitsim_alpha_best_score = None  # (MAX_HITSIM_ALPHAS,) i32
+hitsim_alpha_best_candidate_idx = None  # (MAX_HITSIM_ALPHAS,) i32
+hitsim_alpha_row_sig_counts = None  # (MAX_HITSIM_ALPHAS, MAX_HITSIM_ROWS) vec3 i32
+hitsim_alpha_row_sig_bits = None  # (MAX_HITSIM_ALPHAS, MAX_HITSIM_ROWS) vec4 u32
+
+hitsim_batch_group_event_ms = None  # (MAX_HITSIM_ALPHA_BATCH, MAX_HITSIM_GROUPS) i32
+hitsim_group_event_tmp = None  # (MAX_HITSIM_GROUPS,) i32
+
+hitsim_active_row_mask = None  # (MAX_HITSIM_ROWS,) i32
+hitsim_active_row_count = None  # (1,) i32
+hitsim_regime_count = None  # (1,) i32
+hitsim_regime_start_alpha = None  # (MAX_HITSIM_REGIMES,) i32
+hitsim_regime_end_alpha = None  # (MAX_HITSIM_REGIMES,) i32
+hitsim_regime_left_num = None  # (MAX_HITSIM_REGIMES,) i32
+hitsim_regime_left_den = None  # (MAX_HITSIM_REGIMES,) i32
+hitsim_regime_right_num = None  # (MAX_HITSIM_REGIMES,) i32
+hitsim_regime_right_den = None  # (MAX_HITSIM_REGIMES,) i32
+hitsim_regime_alpha_num = None  # (MAX_HITSIM_REGIMES,) i32
+hitsim_regime_alpha_den = None  # (MAX_HITSIM_REGIMES,) i32
+hitsim_regime_rep_alpha = None  # (MAX_HITSIM_REGIMES,) i32
+hitsim_regime_selected_mask = None  # (MAX_HITSIM_REGIMES,) i32
+hitsim_selected_count = None  # (1,) i32
+hitsim_selected_regime_indices = None  # (MAX_HITSIM_REGIMES,) i32
+
+hitsim_best_score = None  # (1,) i32
+hitsim_best_candidate_idx = None  # (1,) i32
+hitsim_best_regime_idx = None  # (1,) i32
+hitsim_best_alpha_num = None  # (1,) i32
+hitsim_best_alpha_den = None  # (1,) i32
+hitsim_best_left_num = None  # (1,) i32
+hitsim_best_left_den = None  # (1,) i32
+hitsim_best_right_num = None  # (1,) i32
+hitsim_best_right_den = None  # (1,) i32
+hitsim_best_rep_alpha = None  # (1,) i32
+
+hitsim_best_event_ms = None  # (MAX_HITSIM_NOTES,) i32
+hitsim_best_great_ms = None  # (MAX_HITSIM_NOTES,) i32
+hitsim_sig_rows_staging = None  # (MAX_HITSIM_ROWS, 7) i32
+hitsim_scalar_out = None  # (32,) i32
+
 # Genome base stats
 genome_base_stats = None
 # [pp, cm, fm, p_val, s_val, ft, ff]
@@ -416,6 +491,46 @@ def _calc_head_score_bits(
             head_score += ti.cast(ramp_val * mul, ti.i32)
             t += 1.0
     return ti.cast(head_score, ti.f32)
+
+
+@ti.func
+def calc_score_with_grid(
+    base_value: ti.f32,
+    combo_mul: ti.f32,
+    fever_mul: ti.f32,
+    song_slot: ti.i32,
+    ft_idx: ti.i32,
+    ff_idx: ti.i32,
+    head_len: ti.i32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+) -> ti.i32:
+    """
+    Score calculation using the legacy unpacked i8 grid mask.
+
+    This exists for parity tests and debug tooling. Production scoring uses
+    `calc_score_with_grid_bits` exclusively for speed/VRAM.
+
+    IMPORTANT: Callers must ensure `grid_fever_masks` is allocated and populated.
+    """
+    body_score = _calc_body_score(base_value, combo_mul, fever_mul, count_fever, count_normal)
+    factor = _calc_head_factor(base_value, combo_mul)
+
+    head_score_i32 = ti.i32(0)
+    fever_delta = fever_mul - 1.0
+    # Use a fixed loop bound for backend stability (dynamic range() has been flaky on Metal).
+    head_len_c = ti.max(0, ti.min(head_len, 100))
+    # Unpacked masks are stored only for slot 0 (shape[0]=1) to avoid VRAM blowups.
+    mask_slot = ti.i32(0)
+    for i in range(100):
+        if i < head_len_c:
+            t = ti.cast(i + 1, ti.f32)
+            ramp_val = base_value + (t * factor)
+            is_fever_f = ti.cast(grid_fever_masks[mask_slot, ft_idx, ff_idx, i], ti.f32)
+            mul = 1.0 + fever_delta * is_fever_f
+            head_score_i32 += ti.cast(ramp_val * mul, ti.i32)
+
+    return ti.cast(body_score, ti.i32) + head_score_i32
 
 
 @ti.func

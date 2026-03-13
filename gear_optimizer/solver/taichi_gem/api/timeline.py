@@ -11,6 +11,7 @@ import numpy as np
 import taichi as ti
 
 from gear_optimizer.core.env_config import env_flag
+from gear_optimizer.core.utils import human_hitsim_timing_context
 from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
 from ..fields import (
     GRID_SIZE,
@@ -49,6 +50,30 @@ def _upload_song_timestamps_kernel(n: ti.i32, timestamps: ti.types.ndarray(dtype
 _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS  # Track last song per slot
 
 
+def _song_timing_cache_key(calc_song: dict) -> tuple:
+    meta = calc_song.get("metadata", {}) or {}
+    song_data = calc_song.get("song_data", {}) or {}
+    timestamps = song_data.get("timestamps", ())
+    first_ms = 0
+    last_ms = 0
+    try:
+        if hasattr(timestamps, "__len__") and len(timestamps):
+            first_ms = int(float(timestamps[0]) * 1000.0)
+            last_ms = int(float(timestamps[len(timestamps) - 1]) * 1000.0)
+    except Exception:
+        first_ms = 0
+        last_ms = 0
+
+    return (
+        str(meta.get("Song Name", "")),
+        int(len(timestamps)),
+        float(meta.get("Last Note Time", 0) or 0),
+        int(meta.get("Long Notes", 0) or 0),
+        int(first_ms),
+        int(last_ms),
+    ) + human_hitsim_timing_context(calc_song)
+
+
 def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 0) -> None:
     """
     Precompute all 161×161 fever timeline entries on GPU.
@@ -75,39 +100,7 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     global _gpu_timeline_song_id_by_slot
 
     # Check if we already computed for this song
-    meta = calc_song.get("metadata", {}) or {}
-    song_data = calc_song.get("song_data", {}) or {}
-    timestamps = song_data.get("timestamps", ())
-    first_ms = 0
-    last_ms = 0
-    try:
-        if hasattr(timestamps, "__len__") and len(timestamps):
-            first_ms = int(float(timestamps[0]) * 1000.0)
-            last_ms = int(float(timestamps[len(timestamps) - 1]) * 1000.0)
-    except Exception:
-        first_ms = 0
-        last_ms = 0
-
-    try:
-        human_seed = int(meta.get("HumanHitSimSeed") or 0)
-    except Exception:
-        human_seed = 0
-    human_apply_to = str(meta.get("HumanHitSimApplyTo", "")).strip().upper()
-    human_dist = str(meta.get("HumanHitSimDistribution", "")).strip().lower()
-    human_great_mode = str(meta.get("HumanHitSimGreatMode", "")).strip().lower()
-
-    song_key = (
-        str(meta.get("Song Name", "")),
-        int(len(timestamps)),
-        float(meta.get("Last Note Time", 0) or 0),
-        int(meta.get("Long Notes", 0) or 0),
-        int(first_ms),
-        int(last_ms),
-        int(human_seed),
-        human_apply_to,
-        human_dist,
-        human_great_mode,
-    )
+    song_key = _song_timing_cache_key(calc_song)
     song_slot = int(song_slot)
     if song_slot < 0 or song_slot >= MAX_SONG_SLOTS:
         raise ValueError(f"song_slot out of range: {song_slot}")
@@ -148,8 +141,11 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
         float(last_note_time),
     )
 
-    # Launch GPU kernel to compute all 161×161 timelines for this song slot
-    write_unpacked_masks = 1 if env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS", "0") else 0
+    # Launch GPU kernel to compute all 161×161 timelines for this song slot.
+    #
+    # Canonical representation is bitpacked (`grid_fever_masks_bits`). Unpacked
+    # masks are only needed for legacy debug/tests.
+    write_unpacked_masks = 1 if (env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS", "0") or fields.grid_fever_masks is not None) else 0
     if write_unpacked_masks != 0:
         fields.ensure_grid_unpacked_masks_allocated()
     kernels.compute_timeline_grid_kernel(
@@ -159,6 +155,9 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
         song_slot,  # Grid slot for batch coalescing
         int(write_unpacked_masks),
     )
+    if write_unpacked_masks != 0:
+        # Build i8 masks from the bitpacked representation on-GPU (debug/tests only).
+        kernels.unpack_timeline_grid_masks_kernel(int(song_slot))
 
     _maybe_sync(for_timing=True)
     _t1 = time.perf_counter()
@@ -244,7 +243,10 @@ def _upload_timeline_grid(timeline_grid):
     # Avoid allocating giant (MAX_SONG_SLOTS, ...) CPU staging arrays when users
     # increase `GPU_SONG_SLOTS` for VRAM timeline caching. For large slot counts
     # we only stage slot 0 on CPU and upload it via small Taichi kernels.
-    kernel_upload = MAX_SONG_SLOTS > 32
+    #
+    # If unpacked masks are requested, we MUST use kernel upload because the
+    # legacy `grid_fever_masks` field only stores slot 0 (shape[0]=1).
+    kernel_upload = bool(write_unpacked_masks) or (MAX_SONG_SLOTS > 32)
     if kernel_upload:
         cbf_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
         cbn_np = np.zeros((GRID_SIZE, GRID_SIZE), dtype=np.int32)
@@ -259,7 +261,7 @@ def _upload_timeline_grid(timeline_grid):
         cbn_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int16)
         hl_np = np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE), dtype=np.int8)
         masks_np = (
-            np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES), dtype=np.int8)
+            np.zeros((MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE, MAX_HEAD_NOTES), dtype=np.int32)
             if write_unpacked_masks
             else None
         )
@@ -296,7 +298,7 @@ def _upload_timeline_grid(timeline_grid):
                 else:
                     hl_np[song_slot, ft_idx, ff_idx] = head_len
                     if masks_np is not None:
-                        masks_np[song_slot, ft_idx, ff_idx, :head_len] = fever_mask_head[:head_len].astype(np.int8)
+                        masks_np[song_slot, ft_idx, ff_idx, :head_len] = fever_mask_head[:head_len].astype(np.int32)
 
                 # OPTIMIZED: Vectorized bit packing using NumPy
                 # Convert bool array to bit positions, then pack

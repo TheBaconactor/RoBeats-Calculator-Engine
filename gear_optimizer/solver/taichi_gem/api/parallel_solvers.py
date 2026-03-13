@@ -12,6 +12,7 @@ import time
 
 import numpy as np
 
+from gear_optimizer.core.fallback_monitor import warn_fallback
 from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
 
 from .. import fields
@@ -38,6 +39,88 @@ _GENOME_STATS_BUFFER = None
 
 # Get appropriate kernels for current platform (Metal-safe on macOS)
 kernels = get_kernels()
+
+# -----------------------------------------------------------------------------
+# Legacy helpers (kept for regression tests + strict fallback policy).
+# -----------------------------------------------------------------------------
+
+
+def _upload_work_items_chunk(arr: np.ndarray, n_items: int) -> None:
+    """
+    Upload a prefix of a 2D int32 array via the prefix-copy kernel.
+
+    We intentionally do NOT fall back to `field.from_numpy()` here; fallback is both
+    slow (CPU zeroing + full-shape upload) and can hide missing-kernel regressions.
+    """
+    n = max(0, int(n_items))
+    try:
+        src = np.asarray(arr, dtype=np.int32)
+    except Exception:
+        src = arr
+    try:
+        kernel = getattr(kernels, "copy_work_items_from_ndarray_kernel")
+    except Exception as exc:
+        warn_fallback(
+            "gpu.parallel_solvers.work_items_upload_kernel",
+            "work-items prefix upload kernel not available",
+            fatal=True,
+            exc=exc,
+        )
+        return
+    try:
+        kernel(int(n), src[:n])
+    except Exception as exc:
+        warn_fallback(
+            "gpu.parallel_solvers.work_items_upload_kernel",
+            "work-items prefix upload kernel failed",
+            fatal=True,
+            exc=exc,
+        )
+
+
+def _get_ftff_host_combo_arrays(total_budget: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Return the host-side FT/FF combo enumeration for a given budget.
+
+    Order matches the triangular enumeration used by the GPU combo tables:
+      ft=0, ff=0..B ; ft=1, ff=0..B-1 ; ... ; ft=B, ff=0
+    """
+    b = int(total_budget)
+    if b < 0:
+        b = 0
+    dim = int(b) + 1
+    tri_i, tri_j = np.triu_indices(dim)
+    ft = tri_i.astype(np.int32, copy=False)
+    ff = (tri_j - tri_i).astype(np.int32, copy=False)
+    budget_left = (int(b) - ft - ff).astype(np.int32, copy=False)
+    return ft, ff, budget_left
+
+
+def _combo_indices_for_limits(
+    combo_ft: np.ndarray,
+    combo_ff: np.ndarray,
+    *,
+    max_ft: int,
+    max_ff: int,
+    cache: dict | None = None,
+) -> np.ndarray:
+    """
+    Filter combo indices by per-axis limits with a tiny cache.
+
+    Returns a stable cached ndarray when `cache` is provided.
+    """
+    cache_key = (int(max_ft), int(max_ff), int(getattr(combo_ft, "shape", (0,))[0]))
+    if cache is not None:
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return cached
+    ft = np.asarray(combo_ft, dtype=np.int32)
+    ff = np.asarray(combo_ff, dtype=np.int32)
+    mask = (ft <= int(max_ft)) & (ff <= int(max_ff))
+    idx = np.nonzero(mask)[0].astype(np.int32, copy=False)
+    if cache is not None:
+        cache[cache_key] = idx
+    return idx
 
 
 def _results_from_stats(results_np: np.ndarray, n_genomes: int) -> list[tuple[int, int, int, int, int, int, int]]:
@@ -91,9 +174,13 @@ def solve_genomes_with_ftff(
     if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
         precompute_timeline_gpu(timeline_grid, ref_arrays, song_slot=int(song_slot))
     else:
-        if int(song_slot) != 0:
-            raise ValueError("SongTimelineGrid upload supports song_slot=0 only; use calc_song dict for multi-slot")
-        _upload_timeline_grid(timeline_grid)
+        calc_song = getattr(timeline_grid, "calc_song", None)
+        if isinstance(calc_song, dict):
+            precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
+        else:
+            if int(song_slot) != 0:
+                raise ValueError("SongTimelineGrid upload supports song_slot=0 only; use calc_song dict for multi-slot")
+            _upload_timeline_grid(timeline_grid)
 
     n_genomes = len(genome_stats_list)
     if n_genomes == 0:
@@ -286,9 +373,13 @@ def solve_genomes_from_registry(
     if isinstance(timeline_grid, dict) and "metadata" in timeline_grid and "song_data" in timeline_grid:
         precompute_timeline_gpu(timeline_grid, ref_arrays, song_slot=song_slot)
     else:
-        if int(song_slot) != 0:
-            raise ValueError("SongTimelineGrid upload supports song_slot=0 only")
-        _upload_timeline_grid(timeline_grid)
+        calc_song = getattr(timeline_grid, "calc_song", None)
+        if isinstance(calc_song, dict):
+            precompute_timeline_gpu(calc_song, ref_arrays, song_slot=int(song_slot))
+        else:
+            if int(song_slot) != 0:
+                raise ValueError("SongTimelineGrid upload supports song_slot=0 only")
+            _upload_timeline_grid(timeline_grid)
 
     n_genomes = population_indices.shape[0]
     if n_genomes == 0:

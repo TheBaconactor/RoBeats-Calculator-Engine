@@ -90,6 +90,7 @@ def test_fg_combo_booster_light_finalize_hydration_matches_full_finalize() -> No
 
         assert len(light) == len(full) == len(population)
         assert all(isinstance(c, dict) and "Data" not in c for c in light)
+        assert all(isinstance(c.get("BaseStats"), dict) and c["BaseStats"] for c in light)
 
         hydrate_fg_candidate_stats(
             light, base_stats_fixed=base_stats_fixed, selected_color=str(cfg_data["selected_color"])

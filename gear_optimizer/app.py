@@ -1211,7 +1211,7 @@ class GearOptimizerApp:
                 except Exception:
                     val = 0
                 temp_list.append(val)
-            ref_arrays[name] = np.array(temp_list, dtype=np.float64)
+            ref_arrays[name] = np.array(temp_list, dtype=np.float32)
         return ref_arrays
 
     def _get_filter_params(self, cfg):
@@ -2144,6 +2144,9 @@ class GearOptimizerApp:
         tasks = []
         parallel_workers = 1
 
+        def _truthy_cfg(raw) -> bool:
+            return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
         # When GA_SEED is set, users expect reproducible A/B comparisons.
         # Historically we still generated per-repeat seeds via `secrets.randbits`,
         # which made runs non-reproducible even in "deterministic mode".
@@ -2167,6 +2170,27 @@ class GearOptimizerApp:
         except Exception:
             pass
         song_repeats = max(1, min(int(song_repeats), 100))
+        try:
+            hitsim_enabled = _truthy_cfg(cfg.get("HumanHitSim", "Enabled", fallback="0"))
+        except Exception:
+            hitsim_enabled = False
+        try:
+            hitsim_apply_to = str(cfg.get("HumanHitSim", "ApplyTo", fallback="FG") or "FG").strip().upper()
+        except Exception:
+            hitsim_apply_to = "FG"
+        try:
+            hitsim_refine_after = _truthy_cfg(cfg.get("HumanHitSim", "RefineAfterGA", fallback="0"))
+        except Exception:
+            hitsim_refine_after = False
+        try:
+            hitsim_refine_trials = safe_int(cfg.get("HumanHitSim", "RefineTrials", fallback="0"), 0)
+        except Exception:
+            hitsim_refine_trials = 0
+        collapse_hitsim_song_repeats = bool(
+            hitsim_enabled and hitsim_apply_to == "ALL" and hitsim_refine_after and int(hitsim_refine_trials) > 0
+        )
+        if collapse_hitsim_song_repeats:
+            song_repeats = 1
         used_ga_seeds: set[int] = set()
         backend_service_mode = bool(getattr(getattr(self, "_robeatsmeta_api", None), "backend_mode_enabled", lambda: False)())
         backend_priority_song_names = {
@@ -2192,6 +2216,8 @@ class GearOptimizerApp:
                 if backend_service_mode and str(found_song_name or "").strip() in backend_priority_song_names
                 else song_repeats
             )
+            if collapse_hitsim_song_repeats:
+                repeats_for_song = 1
             if repeats_for_song <= 1:
                 print(f"[QUEUE] {found_song_name}")
 
@@ -2351,7 +2377,7 @@ class GearOptimizerApp:
                 # Restore base chart timestamps (HumanHitSim ApplyTo=ALL can override timestamps).
                 if song_data.get("chart_timestamps") is not None:
                     try:
-                        song_data["timestamps"] = np.asarray(song_data.get("chart_timestamps"), dtype=np.float64)
+                        song_data["timestamps"] = np.asarray(song_data.get("chart_timestamps"), dtype=np.float32)
                     except Exception:
                         song_data["timestamps"] = song_data.get("chart_timestamps")
                 song_data.pop("fg_timestamps", None)

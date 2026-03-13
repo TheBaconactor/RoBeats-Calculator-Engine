@@ -49,7 +49,9 @@ _GA_COMBO_CHUNK_MAX: int = max(
 _GA_EVAL_BUDGET_RAW: str | None = None
 _GA_EVAL_BUDGET: int = int(MAX_EVALS_PER_DISPATCH)
 _GA_BASE_STATS_REUSE_RAW: str | None = None
-_GA_BASE_STATS_REUSE_ENABLED: int = 1
+_GA_BASE_STATS_REUSE_ENABLED: int = 0
+_GA_EXACT_EVAL_RESULTS_REUSE_RAW: str | None = None
+_GA_EXACT_EVAL_RESULTS_REUSE_ENABLED: int = 0
 
 
 def _ga_eval_budget() -> int:
@@ -77,18 +79,33 @@ def _ga_eval_budget() -> int:
 def _ga_exact_genome_base_stats_reuse_enabled() -> int:
     global _GA_BASE_STATS_REUSE_RAW, _GA_BASE_STATS_REUSE_ENABLED
     raw = os.environ.get("GPU_NATIVE_GA_BASE_STATS_REUSE", None)
-    if raw is None:
-        raw = os.environ.get("GPU_NATIVE_GA_EXACT_EVAL_REUSE", None)
     raw_norm = str(raw or "").strip().lower()
     if raw_norm == _GA_BASE_STATS_REUSE_RAW:
         return int(_GA_BASE_STATS_REUSE_ENABLED)
 
     _GA_BASE_STATS_REUSE_RAW = raw_norm
-    if raw_norm in {"0", "false", "no", "off"}:
+    if raw_norm in {"", "0", "false", "no", "off"}:
         _GA_BASE_STATS_REUSE_ENABLED = 0
     else:
         _GA_BASE_STATS_REUSE_ENABLED = 1
     return int(_GA_BASE_STATS_REUSE_ENABLED)
+
+
+def _ga_exact_genome_eval_results_reuse_enabled() -> int:
+    global _GA_EXACT_EVAL_RESULTS_REUSE_RAW, _GA_EXACT_EVAL_RESULTS_REUSE_ENABLED
+    raw = os.environ.get("GPU_NATIVE_GA_EXACT_EVAL_RESULTS_REUSE", None)
+    if raw is None:
+        raw = os.environ.get("GPU_NATIVE_GA_EXACT_EVAL_REUSE", None)
+    raw_norm = str(raw or "").strip().lower()
+    if raw_norm == _GA_EXACT_EVAL_RESULTS_REUSE_RAW:
+        return int(_GA_EXACT_EVAL_RESULTS_REUSE_ENABLED)
+
+    _GA_EXACT_EVAL_RESULTS_REUSE_RAW = raw_norm
+    if raw_norm in {"", "0", "false", "no", "off"}:
+        _GA_EXACT_EVAL_RESULTS_REUSE_ENABLED = 0
+    else:
+        _GA_EXACT_EVAL_RESULTS_REUSE_ENABLED = 1
+    return int(_GA_EXACT_EVAL_RESULTS_REUSE_ENABLED)
 
 
 # Get appropriate kernels for current platform (Metal-safe on macOS)
@@ -617,11 +634,16 @@ def ga_evaluate_population(
     use_hints_i = int(use_hints)
     materialize_mode_norm = str(materialize_mode or "none").strip().lower()
     exact_genome_base_stats_reuse = bool(_ga_exact_genome_base_stats_reuse_enabled())
+    # Warm-start local search is not result-stable enough on the current Metal path
+    # to safely collapse duplicate rows without changing convergence behavior.
+    # Keep exact-eval reuse limited to cold-start generations.
+    exact_genome_eval_results_reuse = bool(_ga_exact_genome_eval_results_reuse_enabled()) and use_hints_i == 0
 
-    if exact_genome_base_stats_reuse:
+    if exact_genome_base_stats_reuse or exact_genome_eval_results_reuse:
         kernels.ga_build_exact_eval_reuse_map_kernel(
             int(n_genomes),
             int(n_slots),
+            int(exact_genome_eval_results_reuse and use_hints_i != 0),
         )
 
     # Step 1: FUSED aggregate + init (was 2 kernels, now 1)
@@ -691,7 +713,11 @@ def ga_evaluate_population(
             song_slot_i,
             use_hints_i,
             int(prune_plateaus_i),
+            int(exact_genome_eval_results_reuse),
         )
+
+    if exact_genome_eval_results_reuse:
+        kernels.ga_propagate_exact_eval_reuse_chunk_best_kernel(int(n_genomes))
 
     _ga_materialize_population_results(
         n_genomes=n_genomes,

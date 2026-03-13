@@ -278,10 +278,9 @@ def compute_timeline_grid_signatures_kernel(song_slot: ti.i32):
     Used after CPU upload paths that populate grid_* fields without running
     compute_timeline_grid_kernel(). Keeps signature generation GPU-only.
     """
-    GRID_DIM: ti.i32 = 161
-    for idx in range(GRID_DIM * GRID_DIM):
-        ft_idx = idx // GRID_DIM
-        ff_idx = idx % GRID_DIM
+    # Prefer 2D ndrange over div/mod on Metal (avoids backend edge cases).
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for ft_idx, ff_idx in ti.ndrange(161, 161):
 
         m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
         m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
@@ -296,3 +295,21 @@ def compute_timeline_grid_signatures_kernel(song_slot: ti.i32):
 
         kernels_helpers.grid_sig0[song_slot, ft_idx, ff_idx] = _pack_mask_sig(m0, m1, m2, m3)
         kernels_helpers.grid_sig1[song_slot, ft_idx, ff_idx] = _pack_counts_sig(bf, bn, hl, fa, gap)
+
+
+@ti.kernel
+def unpack_timeline_grid_masks_kernel(song_slot: ti.i32):
+    """
+    Unpack bitpacked head-fever masks (4×u32) into the legacy i8 mask grid.
+
+    Production kernels use `grid_fever_masks_bits` as the canonical representation.
+    This kernel exists for debug/tests that still compare against the unpacked
+    `grid_fever_masks` representation.
+    """
+    ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
+    for ft_idx, ff_idx, k in ti.ndrange(161, 161, 100):
+        # Unpacked masks are stored only for slot 0 to keep VRAM usage low.
+        dst_slot = ti.i32(0)
+        word = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, k >> 5]
+        bit = (word >> ti.u32(k & 31)) & ti.u32(1)
+        kernels_helpers.grid_fever_masks[dst_slot, ft_idx, ff_idx, k] = ti.cast(bit, ti.i8)

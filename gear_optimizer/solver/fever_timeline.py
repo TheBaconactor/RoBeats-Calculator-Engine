@@ -468,8 +468,8 @@ class SongTimelineGrid:
         self.ft_factors = [lookup_reference_py(i, ref_ft, TOTAL_ROWS) for i in range(self.GRID_SIZE)]
         self.ff_factors = [lookup_reference_py(i, ref_ff, TOTAL_ROWS) for i in range(self.GRID_SIZE)]
         # Numba-friendly arrays (avoid Python loops/boxing in JIT grid builders)
-        self._ft_factors_np = np.asarray(self.ft_factors, dtype=np.float64)
-        self._ff_factors_np = np.asarray(self.ff_factors, dtype=np.float64)
+        self._ft_factors_np = np.asarray(self.ft_factors, dtype=np.float32)
+        self._ff_factors_np = np.asarray(self.ff_factors, dtype=np.float32)
 
         # Lazy-loaded 2D grid: [ft_idx][ff_idx] -> (mask_head, body_fever, body_normal, activations)
         # Using None to indicate not-yet-computed

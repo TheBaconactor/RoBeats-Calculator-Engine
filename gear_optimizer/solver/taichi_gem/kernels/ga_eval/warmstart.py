@@ -449,6 +449,7 @@ def ga_find_best_combo_warmstart_kernel(
     song_slot: ti.i32,
     use_hints: ti.template(),  # 0 = cold start (full greedy), 1 = warm start (local search from hint)
     prune_plateaus: ti.template(),  # 0 = disabled, 1 = prune timeline plateaus via dominated representatives
+    reuse_exact_eval_results: ti.i32,
 ):
     """
     GPU-parallel evaluation with optional warm-start from hints.
@@ -484,6 +485,8 @@ def ga_find_best_combo_warmstart_kernel(
         # Metal: keep the original per-combo score atomic approach (no u64 atomics).
         ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
         for genome_idx, local_c in ti.ndrange(n_genomes, combo_count):
+            if reuse_exact_eval_results != 0 and kernels_helpers.ga_exact_eval_rep_idx[genome_idx] != genome_idx:
+                continue
             combo_idx: ti.i32 = combo_offset + local_c
             scratch = ti.Vector.zero(ti.i32, 4)
             key = _compute_combo_key_warmstart(
@@ -593,6 +596,8 @@ def ga_find_best_combo_warmstart_kernel(
                 limit_c = 0
             if limit_c > combo_count:
                 limit_c = combo_count
+            if reuse_exact_eval_results != 0 and kernels_helpers.ga_exact_eval_rep_idx[genome_idx] != genome_idx:
+                limit_c = 0
 
             local_c: ti.i32 = lane
             while local_c < limit_c:

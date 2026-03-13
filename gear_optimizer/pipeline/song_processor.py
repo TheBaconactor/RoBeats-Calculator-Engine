@@ -173,9 +173,9 @@ def _build_base_calc_song_from_file(fp: str) -> dict:
     timestamps_raw = song_data.get("timestamps")
     note_types_raw = song_data.get("note_types")
     if isinstance(timestamps_raw, np.ndarray):
-        song_timestamps_np = timestamps_raw.astype(np.float64, copy=False)
+        song_timestamps_np = timestamps_raw.astype(np.float32, copy=False)
     else:
-        song_timestamps_np = np.asarray(timestamps_raw if timestamps_raw is not None else [], dtype=np.float64)
+        song_timestamps_np = np.asarray(timestamps_raw if timestamps_raw is not None else [], dtype=np.float32)
 
     if isinstance(note_types_raw, np.ndarray):
         song_note_types_np = note_types_raw.astype(np.int16, copy=False)
@@ -511,7 +511,7 @@ def read_song_file(fp):
             "Fever Time": "",
             "Long Notes": "",
         },
-        "timestamps": np.empty((0,), dtype=np.float64),
+        "timestamps": np.empty((0,), dtype=np.float32),
         "note_types": np.empty((0,), dtype=np.int16),
     }
     if not fp:
@@ -550,7 +550,7 @@ def read_song_file(fp):
             if nd.size:
                 nd = nd.reshape(1, -1) if nd.ndim == 1 else nd
                 if nd.shape[1] >= 4:
-                    data["timestamps"] = np.asarray(nd[:, 0], dtype=np.float64)
+                    data["timestamps"] = np.asarray(nd[:, 0], dtype=np.float32)
                     # Column 4 is the note type: 1=normal, 2=held head, 3=held tail.
                     # Keep as int so we can apply held-tail timing rules when needed.
                     data["note_types"] = nd[:, 3].astype(np.int16, copy=False)
@@ -710,7 +710,7 @@ def process_song_task(args) -> SongResultPayload:
             # Ensure chart_timestamps is always available for "HumanHitSim OFF" comparisons.
             song_data = calc_song.get("song_data", {}) or {}
             if "chart_timestamps" not in song_data and song_data.get("timestamps") is not None:
-                song_data["chart_timestamps"] = np.asarray(song_data.get("timestamps"), dtype=np.float64)
+                song_data["chart_timestamps"] = np.asarray(song_data.get("timestamps"), dtype=np.float32)
         except Exception:
             pass
 
@@ -956,13 +956,38 @@ def process_song_task(args) -> SongResultPayload:
                     best_data=best_data,
                     ref_arrays=ref_arrays,
                     ga_seed=ga_seed,
+                    candidate_pool=all_evaluated,
                 )
                 if isinstance(refine_info, dict):
+                    selected_candidate = refine_info.get("selected_candidate")
+                    if isinstance(selected_candidate, dict):
+                        selected_data = selected_candidate.get("Data")
+                        if isinstance(selected_data, dict) and selected_data:
+                            best_data = selected_data
+                        selected_gear = selected_candidate.get("Gear")
+                        if selected_gear is not None:
+                            best_gear = selected_gear
+                        selected_minis = selected_candidate.get("Minis")
+                        if selected_minis is not None:
+                            best_minis = selected_minis
                     stage_timing["cpu_human_hit_sim_refine_sec"] = time.perf_counter() - _t_refine0
                     print(
                         "[HumanHitSim] Post-GA refinement "
-                        f"(trials={refine_info.get('trials')}, prev={refine_info.get('prev_score')}, "
-                        f"best={refine_info.get('best_score')}, seed={refine_info.get('best_seed')})"
+                        f"(mode={refine_info.get('refine_mode')}, budget={refine_info.get('variant_budget_mode')}, "
+                        f"family_mode={refine_info.get('exact_family_mode')}, "
+                        f"planner_family={refine_info.get('exact_planner_family_mode')}, "
+                        f"alpha={refine_info.get('regime_alpha_num')}/{refine_info.get('regime_alpha_den')}, "
+                        f"regimes={refine_info.get('exact_regime_count')}/{refine_info.get('exact_full_regime_count')}, "
+                        f"regime_cap={refine_info.get('exact_regime_cap')}, selection={refine_info.get('exact_regime_selection')}, "
+                        f"raw_intervals={refine_info.get('exact_raw_interval_count')}, "
+                        f"planner={refine_info.get('boundary_domain_active_params')}/{refine_info.get('boundary_domain_planner_params')}, "
+                        f"domain={refine_info.get('boundary_domain_unique_params')}/{refine_info.get('boundary_domain_full_pairs')}, "
+                        f"regime={refine_info.get('regime_id')}, "
+                        f"candidates={refine_info.get('candidate_count')}, "
+                        f"target={refine_info.get('trials')}, variants={refine_info.get('evaluated_trials')}, "
+                        f"attempts={refine_info.get('seed_attempts')}, prev={refine_info.get('prev_score')}, "
+                        f"best={refine_info.get('best_score')}, seed={refine_info.get('best_seed')}, "
+                        f"candidate_changed={refine_info.get('candidate_changed')})"
                     )
             except Exception:
                 pass

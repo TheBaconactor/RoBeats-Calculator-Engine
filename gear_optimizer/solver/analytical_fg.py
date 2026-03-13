@@ -48,11 +48,11 @@ class AnalyticalFGScorer:
             ref_ft: Fever Time stat lookup array (161 values)
             ref_ff: Fever Fill Rate stat lookup array (161 values)
         """
-        self.timestamps = np.array(timestamps, dtype=np.float64)
+        self.timestamps = np.array(timestamps, dtype=np.float32)
         if great_candidate_timestamps is None:
             self.great_candidate_timestamps = self.timestamps
         else:
-            self.great_candidate_timestamps = np.array(great_candidate_timestamps, dtype=np.float64)
+            self.great_candidate_timestamps = np.array(great_candidate_timestamps, dtype=np.float32)
         self.total_notes = total_notes
         self.long_notes = long_notes
         self.last_note_time = last_note_time
@@ -386,7 +386,7 @@ def create_chart_scorer_from_calc_song(calc_song: dict, ref_arrays: dict) -> Ana
     song_data = calc_song["song_data"]
     metadata = calc_song.get("metadata", {})
 
-    timestamps = np.array(song_data.get("timestamps", ()), dtype=np.float64)
+    timestamps = np.array(song_data.get("timestamps", ()), dtype=np.float32)
 
     return AnalyticalFGScorer(
         timestamps=timestamps,

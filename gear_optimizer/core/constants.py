@@ -50,7 +50,10 @@ GA_MUTATION_RATE_MAX = 0.55  # INCREASED: 0.45 → 0.55 (allow more aggressive m
 PP_TIE_LOOKAHEAD_MAX = 8  # Max lookahead iterations for PP tie-breaking in gem optimization
 
 # --- GPU GA ISLAND MODEL ---
-GPU_GA_NUM_ISLANDS = 5  # Number of sub-populations (islands)
+# Real-song benchmarks showed island migration amplifying exact-clone pressure
+# without improving score quality consistently, so keep the default on a single
+# island until migration is revisited.
+GPU_GA_NUM_ISLANDS = 1
 GPU_GA_GENS_PER_MIGRATION = 5  # Generations between elite migrations
 GPU_GA_MIGRATE_COUNT = 2  # Elites to migrate per island (ring topology)
 

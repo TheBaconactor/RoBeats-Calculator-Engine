@@ -123,10 +123,10 @@ def _get_team_buff_ref_arrays_cached() -> dict | None:
                     except Exception:
                         val = 0
                     temp_list.append(val)
-                # NOTE: preserve float64 here (matches the main preload path).
+                # Keep float32 tables for CPU/GPU parity and lower memory bandwidth.
                 import numpy as np
 
-                ref_arrays[name] = np.array(temp_list, dtype=np.float64)
+                ref_arrays[name] = np.array(temp_list, dtype=np.float32)
 
             _TEAM_BUFF_REF_ARRAYS_CACHE = ref_arrays
             return _TEAM_BUFF_REF_ARRAYS_CACHE

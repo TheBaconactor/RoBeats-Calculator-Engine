@@ -9,6 +9,15 @@ import os
 import sys
 import time
 
+# This is a standalone reproduction script, not a unit test. When running the
+# full repo test suite from the monorepo root, pytest may discover this module
+# (due to the filename prefix) and import it for collection. Skip to avoid
+# executing side-effectful profiling setup in unrelated tests.
+if "pytest" in sys.modules:  # pragma: no cover
+    import pytest
+
+    pytest.skip("repro script (not a pytest test module)", allow_module_level=True)
+
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, project_root)
 

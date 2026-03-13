@@ -41,3 +41,5 @@
 - Duplication reduction map: `docs/DUPLICATION_REDUCTION.md`
 - Runtime/GPU maintenance playbook: `docs/MAINTENANCE_PLAYBOOK.md`
 - In-flight integrated throughput architecture + A/B protocol: `docs/INFLIGHT_GA_FG_THROUGHPUT.md`
+- Forward plan for same-slot GPU-resident GA->FG handoff and legacy-path cleanup: `docs/GPU_RESIDENT_GA_FG_PLAN.md`
+- Forward plan for replacing luck-driven HitSim repeats with deterministic boundary dimensions: `docs/HITSIM_BOUNDARY_DIMENSION_PLAN.md`

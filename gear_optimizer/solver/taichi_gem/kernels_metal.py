@@ -29,6 +29,7 @@ chunk_best_idx = None  # (MAX_GENOMES,) i32 - work item index for best score
 genome_result_stats = None
 genome_base_stats = None
 ga_scores = None
+population_indices = None
 ga_exact_eval_rep_idx = None
 ftff_combo_ft = None
 ftff_combo_ff = None
@@ -39,11 +40,16 @@ grid_fever_masks_bits = None
 grid_sig0 = None
 grid_sig1 = None
 genome_hint_allocation = None  # Warm-start hints for local search
+ga_global_best_score = None
+ga_global_best_genome = None
+ga_global_best_results = None
 
 # Kernel function references (populated by create_metal_kernels)
 ga_find_best_combo_key_kernel = None
 ga_write_best_results_from_key_kernel = None
 ga_find_best_combo_warmstart_kernel = None
+ga_update_global_best_kernel = None
+ga_write_best_and_update_global_kernel = None
 
 _kernels_created = False
 
@@ -58,6 +64,7 @@ def create_metal_kernels():
     """
     global ga_find_best_combo_key_kernel
     global ga_write_best_results_from_key_kernel, ga_find_best_combo_warmstart_kernel
+    global ga_update_global_best_kernel, ga_write_best_and_update_global_kernel
     global _kernels_created
 
     if _kernels_created:
@@ -286,6 +293,7 @@ def create_metal_kernels():
         song_slot: ti.i32,
         use_hints: ti.i32,
         prune_plateaus: ti.i32,
+        reuse_exact_eval_results: ti.i32,
     ):
         """Metal-safe warm-start kernel using 32-bit atomics."""
         ti.loop_config(block_dim=_KERNEL_BLOCK_DIM)
@@ -295,6 +303,8 @@ def create_metal_kernels():
         w_ff: ti.i32 = GEM_STAT_TO_ELEMENT * ((is_p_ff << 1) + is_s_ff)
 
         for genome_idx, local_c in ti.ndrange(n_genomes, combo_count):
+            if reuse_exact_eval_results != 0 and ga_exact_eval_rep_idx[genome_idx] != genome_idx:
+                continue
             combo_idx: ti.i32 = combo_offset + local_c
             if combo_idx >= n_combos:
                 continue
@@ -475,9 +485,82 @@ def create_metal_kernels():
                 if old < score:
                     chunk_best_idx[genome_idx] = combo_idx
 
+    @ti.kernel
+    def _ga_update_global_best_kernel(n_genomes: ti.i32, n_slots: ti.i32):
+        """
+        Metal-safe global-best update.
+
+        Metal does not support 64-bit atomics, so we use a serialized scan to find the
+        best score (tie-break: lower genome index), then materialize IDs/results.
+        """
+        prev_best: ti.i32 = ga_global_best_score[0]
+        best_score: ti.i32 = -1
+        best_g: ti.i32 = -1
+
+        ti.loop_config(serialize=True)
+        for g in range(n_genomes):
+            score: ti.i32 = ga_scores[g]
+            if score < 0:
+                continue
+            if (score > best_score) or (score == best_score and (best_g < 0 or g < best_g)):
+                best_score = score
+                best_g = g
+
+        if best_g >= 0 and best_score > prev_best:
+            ga_global_best_score[0] = best_score
+            for s in range(n_slots):
+                ga_global_best_genome[s] = population_indices[best_g, s]
+            res = genome_result_stats[best_g]
+            for r in ti.static(range(7)):
+                ga_global_best_results[r] = res[r]
+
+    def _ga_write_best_and_update_global_kernel(
+        n_genomes: int,
+        n_slots: int,
+        total_budget: int,
+        gem_scale_fever: int,
+        is_p_ft: int,
+        is_s_ft: int,
+        is_p_ff: int,
+        is_s_ff: int,
+        is_p_pp: int,
+        is_s_pp: int,
+        is_p_cm: int,
+        is_s_cm: int,
+        is_p_fm: int,
+        is_s_fm: int,
+        is_p_ov: int,
+        is_s_ov: int,
+        song_slot: int,
+    ) -> None:
+        # Replace the fused kernel (which used 64-bit atomics) with 2 Metal-safe kernels.
+        from . import kernels as base_kernels
+
+        base_kernels.ga_write_best_and_store_hints_kernel(
+            int(n_genomes),
+            int(total_budget),
+            int(gem_scale_fever),
+            int(is_p_ft),
+            int(is_s_ft),
+            int(is_p_ff),
+            int(is_s_ff),
+            int(is_p_pp),
+            int(is_s_pp),
+            int(is_p_cm),
+            int(is_s_cm),
+            int(is_p_fm),
+            int(is_s_fm),
+            int(is_p_ov),
+            int(is_s_ov),
+            int(song_slot),
+        )
+        _ga_update_global_best_kernel(int(n_genomes), int(n_slots))
+
     # Assign to module-level names
     ga_find_best_combo_key_kernel = _ga_find_best_combo_key_kernel
     ga_write_best_results_from_key_kernel = _ga_write_best_results_from_key_kernel
     ga_find_best_combo_warmstart_kernel = _ga_find_best_combo_warmstart_kernel
+    ga_update_global_best_kernel = _ga_update_global_best_kernel
+    ga_write_best_and_update_global_kernel = _ga_write_best_and_update_global_kernel
 
     _kernels_created = True

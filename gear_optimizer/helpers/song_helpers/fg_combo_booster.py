@@ -1113,6 +1113,7 @@ def _finalize_gpu_batch_eval_plan_light(plan, gpu_results: Optional[list]) -> li
 
     uncached_indices = getattr(plan, "uncached_indices", None) or list(range(n_uncached))
     uncached_genomes = getattr(plan, "uncached_genomes", None) or []
+    all_stats = getattr(plan, "all_stats", None) or []
     for i, genome in enumerate(uncached_genomes):
         if not genome:
             continue
@@ -1135,6 +1136,10 @@ def _finalize_gpu_batch_eval_plan_light(plan, gpu_results: Optional[list]) -> li
             "GemCounts": gem_counts_list[i] or {},
             "Selected Element": sel_list[i],
         }
+        if i < len(all_stats):
+            stats_row = all_stats[i]
+            if isinstance(stats_row, dict) and stats_row:
+                result["BaseStats"] = dict(stats_row)
         all_results[out_idx] = result
 
     return [r if isinstance(r, dict) else {} for r in all_results]
@@ -1286,35 +1291,53 @@ def hydrate_fg_candidate_stats(
         g_ov = _int(gem_counts.get("Element", gem_counts.get("Element Overflow", 0)), 0)
 
         sel = get_selected_element(data, "") or get_selected_element(cand, "") or str(selected_color or "")
+        base_stats = data.get("BaseStats")
+        if not (isinstance(base_stats, dict) and base_stats):
+            base_stats = cand.get("BaseStats")
 
-        genome = cand.get("Genome")
-        if not isinstance(genome, list) or not genome:
-            genome = _as_genome(cand)
+        if isinstance(base_stats, dict) and base_stats:
+            data["BaseStats"] = dict(base_stats)
+            stats = apply_gems_to_base_stats(
+                base_stats,
+                str(sel),
+                int(ft),
+                int(ff),
+                int(g_pp),
+                int(g_cm),
+                int(g_fm),
+                int(g_ov),
+                add_missing_element_key=False,
+            )
+        else:
+            genome = cand.get("Genome")
+            if not isinstance(genome, list) or not genome:
+                genome = _as_genome(cand)
 
-        # Aggregate base stats from base_fixed + items.
-        stats = dict(base_fixed)
-        for item in genome[:9]:
-            if not isinstance(item, dict) or not item:
-                continue
-            for k, v in item.items():
-                if k in SKIP_ITEM_KEYS:
+            # Aggregate base stats from base_fixed + items only when BaseStats is unavailable.
+            stats = dict(base_fixed)
+            for item in genome[:9]:
+                if not isinstance(item, dict) or not item:
                     continue
-                try:
-                    stats[k] = stats.get(k, 0) + v
-                except Exception:
-                    continue
+                for k, v in item.items():
+                    if k in SKIP_ITEM_KEYS:
+                        continue
+                    try:
+                        stats[k] = stats.get(k, 0) + v
+                    except Exception:
+                        continue
 
-        stats = apply_gems_to_base_stats(
-            stats,
-            str(sel),
-            int(ft),
-            int(ff),
-            int(g_pp),
-            int(g_cm),
-            int(g_fm),
-            int(g_ov),
-            add_missing_element_key=False,
-        )
+            data["BaseStats"] = dict(stats)
+            stats = apply_gems_to_base_stats(
+                stats,
+                str(sel),
+                int(ft),
+                int(ff),
+                int(g_pp),
+                int(g_cm),
+                int(g_fm),
+                int(g_ov),
+                add_missing_element_key=False,
+            )
 
         base_score = _base_score(cand)
         data["Score"] = int(base_score)

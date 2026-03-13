@@ -137,3 +137,33 @@ def test_prepare_tasks_backend_priority_new_songs_honors_repeat_override(monkeyp
 
     assert len(tasks) == 40
     assert app._task_queue_label(tasks[-1]) == "New Song (Run 40/40)"
+
+
+def test_prepare_tasks_hitsim_all_refine_collapses_song_repeats():
+    app = GearOptimizerApp.__new__(GearOptimizerApp)
+    cfg = _build_cfg(25)
+    cfg.add_section("HumanHitSim")
+    cfg.set("HumanHitSim", "Enabled", "true")
+    cfg.set("HumanHitSim", "ApplyTo", "ALL")
+    cfg.set("HumanHitSim", "RefineAfterGA", "true")
+    cfg.set("HumanHitSim", "RefineTrials", "18")
+
+    song_queue = [("dummy.txt", "Dummy Song", "Hard")]
+    tasks = app._prepare_tasks(
+        song_queue=song_queue,
+        cfg=cfg,
+        paths={},
+        ref_arrays={},
+        all_gears=[],
+        all_minis=[],
+        gears_by_name={},
+        minis_by_name={},
+        use_evo_db=False,
+        auto_buff="",
+        ga_depth=1,
+        status_queue=None,
+        fg_debug=False,
+    )
+
+    assert len(tasks) == 1
+    assert app._task_queue_label(tasks[0]) == "Dummy Song"
