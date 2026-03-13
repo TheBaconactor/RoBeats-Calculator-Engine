@@ -24,13 +24,11 @@ def test_fg_ga_candidate_table_staging_requires_held_slot(monkeypatch):
     known to be held continuously from GA through FG.
     """
     from gear_optimizer.helpers.song_helpers.force_greats.core import process_force_greats
-    from gear_optimizer.helpers.song_helpers.force_greats import gpu_dispatch as fg_gpu_dispatch
     from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
     from gear_optimizer.solver.taichi_gem import api as taichi_api
     from gear_optimizer.core.constants import TOTAL_ROWS
 
     monkeypatch.setenv("FG_INPROCESS_EXECUTOR", "0")
-    monkeypatch.setattr(fg_gpu_dispatch, "_FG_GA_CANDIDATE_TABLE_ENABLED", True, raising=False)
 
     class _StageCalled(BaseException):
         pass
@@ -108,6 +106,9 @@ def test_fg_ga_candidate_table_staging_requires_held_slot(monkeypatch):
     # If the GA slot is marked held, staging is allowed and should be attempted.
     calc_song_held = dict(calc_song_base)
     calc_song_held["_fg_ga_candidate_table_slot_held"] = True
+    calc_song_held["_fg_resident_owner_phase"] = "ga_to_fg"
+    calc_song_held["_fg_resident_owner_slot"] = 0
+    calc_song_held["_fg_resident_candidate_table_slot"] = 0
     with pytest.raises(_StageCalled):
         process_force_greats(
             _loadout_entries(),
@@ -130,6 +131,26 @@ def test_fg_ga_candidate_table_staging_requires_held_slot(monkeypatch):
         True,
         [],
         calc_song_released,
+        ref_arrays,
+        "Rush",
+        build_details_fn,
+        use_gpu=True,
+    )
+    assert isinstance(out, list)
+
+    # If explicit owner metadata is present but does not match the active song slot, staging must be skipped
+    # even if the old boolean says "held".
+    calc_song_mismatch = dict(calc_song_base)
+    calc_song_mismatch["_fg_ga_candidate_table_slot_held"] = True
+    calc_song_mismatch["_fg_resident_owner_phase"] = "ga_to_fg"
+    calc_song_mismatch["_fg_resident_owner_slot"] = 1
+    calc_song_mismatch["_fg_resident_candidate_table_slot"] = 1
+    out = process_force_greats(
+        _loadout_entries(),
+        False,
+        True,
+        [],
+        calc_song_mismatch,
         ref_arrays,
         "Rush",
         build_details_fn,

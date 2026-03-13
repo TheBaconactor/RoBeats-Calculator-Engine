@@ -218,7 +218,10 @@ Implemented on the current FG branch:
 - bounded signature-frontier reduction before exact solve
 - winner-only FG result materialization with lean raw payload persistence
 - breakpoint-group scaffolding reuse for identical chart/regime + FT/FF + base-pair families
+- max-FP breakpoint-matrix reuse for identical chart/regime + FT/FF + base-pair families
 - explicit work-budget tiling for FG task batches and fused breakpoint payload batches
+- held-slot GA candidate-table staging is now canonical in the live path; the old env gate is removed
+- explicit FG resident-owner metadata now guards GA->FG candidate-table staging instead of relying on a loose held-slot boolean
 
 ### Phase 1: Canonicalize same-slot GA->FG residency
 
@@ -256,6 +259,8 @@ Implemented on the current FG branch:
 Current branch status:
 
 - breakpoint-group scaffolding reuse is implemented
+- max-FP matrix reuse is implemented
+- explicit resident-owner metadata is implemented on the live in-flight path
 - deeper exact-solve reuse beyond breakpoint groups still remains
 
 ### Phase 3: Shrink the FG host boundary

@@ -52,8 +52,40 @@ GA and FG are one product outcome.
 - File: `gear_optimizer/helpers/song_helpers/force_greats/gpu_dispatch.py`
 - Added:
   - breakpoint-group cache for identical chart/regime + FT/FF + base-pair families
+  - max-FP breakpoint-matrix cache for identical chart/regime + FT/FF + base-pair families
   - work-budget tiling for FG task batches and fused breakpoint payload batches
+- Held-slot GA candidate-table staging is now treated as the default resident path rather than an env-gated opt-in.
+- Explicit resident-owner metadata now guards the held-slot path so candidate-table staging is allowed only when slot ownership still matches the active FG slot.
 - This reduces repeated CPU scaffolding work and keeps FG requests more bounded under heavy workloads.
+
+## Regression investigation update (March 13, 2026)
+
+The earlier "heavy throughput regression" did not reproduce on the controlled FG-isolation benchmark after the risky hot-path "preselected FG surface" skip was reverted.
+
+Controlled benchmark:
+
+- config: `artifacts/bench/config_fg_regression_bench.ini`
+- `HumanHitSim.Enabled=false`
+- `SONG_REPEATS=1`
+- `GA_SEED=12345`
+- `song_limit=20`
+- `inflight=12`
+
+Latest result:
+
+- current branch: `1459.0 songs/hour`
+- baseline `3d0ccf3`: `1258.8 songs/hour`
+- delta: `+15.9%`
+
+Small full-production-config sample (`song_limit=5`, same seed settings) was effectively flat-to-slightly-positive:
+
+- current branch: `3212.2 songs/hour`
+- baseline `3d0ccf3`: `3180.1 songs/hour`
+
+Interpretation:
+
+- the earlier severe drop was likely benchmark noise from the full mixed HumanHitSim queue path plus the reverted hot-path skip
+- the current FG branch does not show a reproduced throughput regression on the measured comparisons above
 
 ## Regression coverage
 

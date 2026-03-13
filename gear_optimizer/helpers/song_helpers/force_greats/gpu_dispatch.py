@@ -6,6 +6,7 @@ import time
 from typing import TYPE_CHECKING, Optional
 
 from cachetools import LRUCache
+import numpy as np
 
 from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
@@ -35,13 +36,16 @@ _FG_BREAKPOINT_GROUP_CACHE_MAX = max(1, int(os.environ.get("FG_BREAKPOINT_GROUP_
 _FG_BREAKPOINT_GROUPS_CACHE: LRUCache = LRUCache(maxsize=_FG_BREAKPOINT_GROUP_CACHE_MAX)
 _FG_BREAKPOINT_GROUPS_LOCK = threading.Lock()
 
+_FG_MAX_FP_MATRIX_CACHE_MAX = max(1, int(os.environ.get("FG_MAX_FP_MATRIX_CACHE_MAX", "64") or "64"))
+_FG_MAX_FP_MATRIX_CACHE: LRUCache = LRUCache(maxsize=_FG_MAX_FP_MATRIX_CACHE_MAX)
+_FG_MAX_FP_MATRIX_LOCK = threading.Lock()
+
 
 def _truthy_env(name: str, default: str = "0") -> bool:
     return str(os.environ.get(name, default) or "").strip().lower() in TRUTHY_ENV_VALUES
 
 
 _GPU_STRICT = _truthy_env("GPU_STRICT", "1")
-_FG_GA_CANDIDATE_TABLE_ENABLED = _truthy_env("FG_GA_CANDIDATE_TABLE_ENABLED", "1")
 
 
 def _should_use_fused_breakpoints_solve(*, in_process: bool, has_gpu_client: bool) -> bool:
@@ -125,6 +129,48 @@ def _hitsim_apply_to(calc_song: dict) -> str:
         return str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper()
     except Exception:
         return ""
+
+
+def _resolve_fg_candidate_table_residency(calc_song: dict, *, current_song_slot: int) -> tuple[bool, int, bool]:
+    held = True
+    table_slot = int(current_song_slot)
+    owner_meta_present = False
+
+    try:
+        if not isinstance(calc_song, dict):
+            return held, table_slot, owner_meta_present
+
+        owner_phase = calc_song.get("_fg_resident_owner_phase", None)
+        owner_slot = calc_song.get("_fg_resident_owner_slot", None)
+        candidate_table_slot = calc_song.get("_fg_resident_candidate_table_slot", None)
+        owner_meta_present = any(v is not None for v in (owner_phase, owner_slot, candidate_table_slot))
+
+        if owner_meta_present:
+            try:
+                owner_slot_i = int(owner_slot)
+            except Exception:
+                owner_slot_i = -1
+            try:
+                table_slot_i = int(candidate_table_slot) if candidate_table_slot is not None else int(owner_slot_i)
+            except Exception:
+                table_slot_i = -1
+            phase_ok = str(owner_phase or "") == "ga_to_fg"
+            held = bool(
+                phase_ok
+                and owner_slot_i >= 0
+                and table_slot_i >= 0
+                and owner_slot_i == table_slot_i
+                and owner_slot_i == int(current_song_slot)
+            )
+            return held, (table_slot_i if table_slot_i >= 0 else int(current_song_slot)), True
+
+        held_flag = calc_song.get("_fg_ga_candidate_table_slot_held", None)
+        if held_flag is not None:
+            held = bool(held_flag)
+    except Exception:
+        return True, int(current_song_slot), owner_meta_present
+
+    return held, int(table_slot), owner_meta_present
 
 
 def _get_cached_chart_scorer(calc_song: dict, ref_arrays: dict, create_chart_scorer_fn):
@@ -237,6 +283,38 @@ def _get_cached_breakpoint_groups(
     with _FG_BREAKPOINT_GROUPS_LOCK:
         _FG_BREAKPOINT_GROUPS_CACHE[key] = frozen
     return computed, False
+
+
+def _get_cached_max_fp_matrix(
+    *,
+    calc_song: dict,
+    n_sections: int,
+    ftff_pairs,
+    base_stats_pairs,
+    gem_scale_fever: int,
+    compute_fn,
+):
+    key = (
+        _chart_signature_key(calc_song),
+        human_hitsim_timing_context(calc_song),
+        int(n_sections),
+        _normalize_pair_signature(ftff_pairs),
+        _normalize_pair_signature(base_stats_pairs),
+        int(gem_scale_fever),
+    )
+    with _FG_MAX_FP_MATRIX_LOCK:
+        cached = _FG_MAX_FP_MATRIX_CACHE.get(key)
+        if cached is not None:
+            return np.array(cached, dtype=np.int16, copy=True), True
+
+    computed = compute_fn()
+    if computed is None:
+        return None, False
+
+    frozen = np.ascontiguousarray(np.asarray(computed, dtype=np.int16))
+    with _FG_MAX_FP_MATRIX_LOCK:
+        _FG_MAX_FP_MATRIX_CACHE[key] = frozen
+    return np.array(frozen, dtype=np.int16, copy=True), False
 
 
 def _is_empty_pairs(pairs) -> bool:
@@ -911,6 +989,8 @@ def process_force_greats_gpu_finder(
     frontier_groups_reduced = 0
     breakpoint_group_cache_hits = 0
     breakpoint_group_cache_misses = 0
+    max_fp_matrix_cache_hits = 0
+    max_fp_matrix_cache_misses = 0
     fg_task_tile_batches = 0
     fg_task_tile_splits = 0
     fg_fused_tile_batches = 0
@@ -932,7 +1012,6 @@ def process_force_greats_gpu_finder(
     p_color = meta.get("Primary Color", "")
     s_color = meta.get("Secondary Color", "")
 
-    import numpy as np
     from ....helpers.fg_utils import (
         collect_analytical_breakpoints,
         iter_analytical_breakpoint_groups,
@@ -1190,6 +1269,7 @@ def process_force_greats_gpu_finder(
     fg_tasks_batch = []
     genome_stats_uploaded = False
     sig_results: dict[str, dict] = {}
+    ga_candidate_owner_mismatch_warned = False
 
     def _record_gpu_results(
         *,
@@ -1442,6 +1522,17 @@ def process_force_greats_gpu_finder(
         )
     except Exception:
         breakpoint_group_cache_max_base_pairs = 64
+    max_fp_matrix_cache_enabled = _truthy_env("FG_MAX_FP_MATRIX_CACHE", "1")
+    try:
+        max_fp_matrix_cache_max_pairs = max(0, int(os.environ.get("FG_MAX_FP_MATRIX_CACHE_MAX_PAIRS", "256") or "256"))
+    except Exception:
+        max_fp_matrix_cache_max_pairs = 256
+    try:
+        max_fp_matrix_cache_max_base_pairs = max(
+            0, int(os.environ.get("FG_MAX_FP_MATRIX_CACHE_MAX_BASE_PAIRS", "64") or "64")
+        )
+    except Exception:
+        max_fp_matrix_cache_max_base_pairs = 64
     try:
         fg_task_tile_max_threads = int(
             os.environ.get(
@@ -1647,13 +1738,16 @@ def process_force_greats_gpu_finder(
     # In GPU-native in-flight mode, GA can release a song slot before FG runs. When that happens, the GA->FG
     # candidate table for the original slot may be overwritten by other songs, so the staging fast-path is unsafe.
     ga_candidate_table_slot_held = True
+    ga_candidate_table_slot = int(song_slot)
+    ga_candidate_owner_meta_present = False
     try:
-        if isinstance(calc_song, dict):
-            held_flag = calc_song.get("_fg_ga_candidate_table_slot_held", None)
-            if held_flag is not None:
-                ga_candidate_table_slot_held = bool(held_flag)
+        ga_candidate_table_slot_held, ga_candidate_table_slot, ga_candidate_owner_meta_present = (
+            _resolve_fg_candidate_table_residency(calc_song, current_song_slot=int(song_slot))
+        )
     except Exception:
         ga_candidate_table_slot_held = True
+        ga_candidate_table_slot = int(song_slot)
+        ga_candidate_owner_meta_present = False
 
     caps_mode = str(os.environ.get("FG_PAIR_CAPS_MODE", "timeline") or "").strip().lower()
     if caps_mode in {"timeline", "gpu", "1", "true", "yes", "on", ""}:
@@ -2160,9 +2254,19 @@ def process_force_greats_gpu_finder(
             ga_stage_table_slot_pending = None
 
             coords_arr = None
+            if ga_candidate_owner_meta_present and (not ga_candidate_table_slot_held) and (not ga_candidate_owner_mismatch_warned):
+                warn_fallback(
+                    "fg.ga_stage.owner_mismatch",
+                    "FG resident candidate-table ownership mismatch; skipping GA->FG staging",
+                    context={
+                        "current_song_slot": int(song_slot),
+                        "candidate_table_slot": int(ga_candidate_table_slot),
+                    },
+                    fatal=False,
+                )
+                ga_candidate_owner_mismatch_warned = True
             if (
-                _FG_GA_CANDIDATE_TABLE_ENABLED
-                and ga_candidate_table_slot_held
+                ga_candidate_table_slot_held
                 and (gpu_client is None or in_process)
                 and bool(use_gpu)
                 and ga_coords_map
@@ -2210,13 +2314,13 @@ def process_force_greats_gpu_finder(
                 genome_stats_uploaded = True
                 if gpu_client is not None:
                     ga_stage_coords_pending = coords_arr
-                    ga_stage_table_slot_pending = int(song_slot)
+                    ga_stage_table_slot_pending = int(ga_candidate_table_slot)
                 else:
                     try:
                         from ....solver.taichi_gem import api as _taichi_api
 
                         _taichi_api.ga_stage_genome_base_stats_from_fg_candidates_table(
-                            int(song_slot),
+                            int(ga_candidate_table_slot),
                             np.asarray(coords_arr, dtype=np.int32),
                             n_slots=9,
                         )
@@ -2481,7 +2585,7 @@ def process_force_greats_gpu_finder(
                             }
                             if genome_stats_preuploaded and coords_arr is not None:
                                 fused_payload["ga_stage_coords"] = coords_arr
-                                fused_payload["ga_stage_table_slot"] = int(song_slot)
+                                fused_payload["ga_stage_table_slot"] = int(ga_candidate_table_slot)
 
                             if defer_group_apply:
                                 ctx = {
@@ -2549,33 +2653,45 @@ def process_force_greats_gpu_finder(
                             if _GPU_STRICT:
                                 raise
                             max_fp_matrix = None
-                if max_fp_matrix is None and use_gpu_breakpoints and gpu_client is not None and in_process:
-                    # Fallback: separate FG_COMPUTE_BREAKPOINTS request.
-                    try:
-                        max_fp_matrix = _submit_compute_breakpoints_max_fp(blocking=True)
-                    except Exception as _bp_gpu_err:
-                        warn_fallback(
-                            "fg.breakpoint_compute.gpu_to_cpu",
-                            "GPU breakpoint compute failed; falling back to CPU breakpoint grouping",
-                            exc=_bp_gpu_err,
-                            fatal=False,
+                can_cache_max_fp_matrix = (
+                    bool(max_fp_matrix_cache_enabled)
+                    and int(n_sections) > 0
+                    and int(len(base_pairs_list or [])) > 0
+                    and int(len(base_pairs_list or [])) <= int(max_fp_matrix_cache_max_base_pairs)
+                    and int(len(ftff_pairs or [])) > 0
+                    and int(len(ftff_pairs or [])) <= int(max_fp_matrix_cache_max_pairs)
+                )
+
+                if max_fp_matrix is None and use_gpu_breakpoints:
+                    def _compute_max_fp_blocking():
+                        try:
+                            return _submit_compute_breakpoints_max_fp(blocking=True)
+                        except Exception as _bp_gpu_err:
+                            warn_fallback(
+                                "fg.breakpoint_compute.gpu_to_cpu",
+                                "GPU breakpoint compute failed; falling back to CPU breakpoint grouping",
+                                exc=_bp_gpu_err,
+                                fatal=False,
+                            )
+                            if _GPU_STRICT:
+                                raise
+                            return None
+
+                    if can_cache_max_fp_matrix:
+                        max_fp_matrix, max_fp_cache_hit = _get_cached_max_fp_matrix(
+                            calc_song=calc_song,
+                            n_sections=int(n_sections),
+                            ftff_pairs=ftff_pairs,
+                            base_stats_pairs=base_pairs_list,
+                            gem_scale_fever=int(GEM_SCALE_FEVER),
+                            compute_fn=_compute_max_fp_blocking,
                         )
-                        if _GPU_STRICT:
-                            raise
-                        max_fp_matrix = None
-                elif max_fp_matrix is None and use_gpu_breakpoints:
-                    try:
-                        max_fp_matrix = _submit_compute_breakpoints_max_fp(blocking=True)
-                    except Exception as _bp_gpu_err:
-                        warn_fallback(
-                            "fg.breakpoint_compute.gpu_to_cpu",
-                            "GPU breakpoint compute failed; falling back to CPU breakpoint grouping",
-                            exc=_bp_gpu_err,
-                            fatal=False,
-                        )
-                        if _GPU_STRICT:
-                            raise
-                        max_fp_matrix = None
+                        if max_fp_cache_hit:
+                            max_fp_matrix_cache_hits += 1
+                        else:
+                            max_fp_matrix_cache_misses += 1
+                    else:
+                        max_fp_matrix = _compute_max_fp_blocking()
 
                 if max_fp_matrix is None:
                     group_mode = "cpu"
@@ -3532,6 +3648,7 @@ def process_force_greats_gpu_finder(
                 f"db_reuse={db_cached_reuse} no_eval_skips={no_eval_skips} "
                 f"groups={len(groups)} unique_sigs={unique_sig_count} "
                 f"bp_group_cache={breakpoint_group_cache_hits}/{breakpoint_group_cache_hits + breakpoint_group_cache_misses} "
+                f"max_fp_cache={max_fp_matrix_cache_hits}/{max_fp_matrix_cache_hits + max_fp_matrix_cache_misses} "
                 f"task_tiles={fg_task_tile_batches} fused_tiles={fg_fused_tile_batches}"
             )
             print(
@@ -3553,6 +3670,8 @@ def process_force_greats_gpu_finder(
             meta["FGSignatureFrontierLimit"] = int(sig_frontier_limit)
             meta["FGBreakpointGroupCacheHits"] = int(breakpoint_group_cache_hits)
             meta["FGBreakpointGroupCacheMisses"] = int(breakpoint_group_cache_misses)
+            meta["FGMaxFpMatrixCacheHits"] = int(max_fp_matrix_cache_hits)
+            meta["FGMaxFpMatrixCacheMisses"] = int(max_fp_matrix_cache_misses)
             meta["FGTaskTileBatches"] = int(fg_task_tile_batches)
             meta["FGTaskTileSplits"] = int(fg_task_tile_splits)
             meta["FGFusedTileBatches"] = int(fg_fused_tile_batches)
