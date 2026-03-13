@@ -4,6 +4,14 @@ This document captures a follow-on architecture idea for the native in-flight pi
 
 The goal is not "GA is fast" in isolation. The goal is a single integrated GA+FG product path with fewer host/device boundaries, fewer slot handoffs, and less queue starvation.
 
+Important scope note:
+
+- A resident GA->FG handoff is the right canonical architecture.
+- Residency alone is not expected to produce a HitSim-sized speedup.
+- The large remaining FG wins require both:
+  - fewer host/device boundaries
+  - less actual FG work
+
 ## Goal
 
 For one song in the native in-flight path:
@@ -92,6 +100,89 @@ The code carries multiple fallback paths for:
 
 Some of these are still needed as safety valves. Some should become degraded-mode fallbacks only. Some should be deleted after cutover.
 
+## Known Risks And Required Mitigations
+
+These are the main reasons this plan could under-deliver if it is implemented too literally.
+
+### 1. Residency alone may only produce a modest speedup
+
+If the pipeline still evaluates roughly the same FG task volume, then keeping the handoff resident mostly removes transfer/orchestration overhead. That is good, but it is not enough to replicate the structural win we got from eliminating repeat-based HitSim luck.
+
+Required mitigation:
+
+- add GPU-side FG frontier reduction before solve
+- dedupe near-equivalent candidates by FG signature bucket on GPU
+- keep only bounded top-N / diverse representatives per signature bucket
+- treat "less FG work" as a first-class goal alongside "less transfer"
+
+### 2. Fused requests can reduce bubbles but still create bursty spikes
+
+One giant fused FG request can flatten request boundaries while still producing long monopolizing GPU bursts. That is smoother at the queue layer but not actually smooth at the device layer.
+
+Required mitigation:
+
+- make FG execution tiled/resident rather than monolithic
+- bound work by candidate tiles, FT/FF tiles, or section-group tiles
+- keep global-best / top-K accumulators resident across tiles
+- prefer many bounded resident chunks over one mega-request
+
+### 3. Full slot holds can create head-of-line blocking
+
+Holding an entire `song_slot` through FG completion is simple, but it can over-reserve memory/state and reduce fairness when FG jobs are long or irregular.
+
+A permanently exclusive FG slot is not the target architecture. That would protect residency at the cost of cadence: the slot can sit idle when FG demand is low, then accumulate backlog and "backslot" the queue when FG demand spikes.
+
+Required mitigation:
+
+- separate "timeline residency" from "FG resident buffers" where possible
+- pin only the assets FG still needs
+- consider a dedicated FG resident arena or sub-allocation instead of a blunt full-slot hold
+- do not rely on a permanently exclusive FG slot as the steady-state design
+- prefer dynamic reserve/credit behavior over static slot ownership
+- measure queue starvation and slot-block time before treating slot hold as a default good
+
+### 4. Python-side grouping/materialization can cap the upside
+
+If Python still performs most of the signature grouping, candidate filtering, and result application, the pipeline remains partially host-bound even when the solver itself is resident.
+
+Required mitigation:
+
+- move FG signature construction and bucket reduction onto GPU
+- move retained top-K / keep-mask selection onto GPU
+- download only compact selected winner rows
+- materialize full details only for persisted or surfaced winners
+
+### 5. Too much FG work may still be structurally redundant
+
+Even with a GPU-resident handoff, the pipeline can still waste substantial compute if it fully evaluates many candidates that collapse to the same effective FG structure or have no realistic chance to survive top-K.
+
+Common waste patterns:
+
+- near-equivalent candidates that map to the same FG signature class
+- repeated breakpoint/scaffolding construction for equivalent structure families
+- oversized fused batches that do valid work but monopolize the device too long
+- host-side grouping/application on rows that will never be persisted or surfaced
+- resident state that pins more memory or slot ownership than the FG stage actually needs
+
+Required mitigation:
+
+- reduce candidates on GPU before exact solve by signature bucket
+- reuse FG scaffolding where the `(chart, regime, signature bucket)` structure is equivalent
+- keep FG execution tiled and time-bounded rather than monolithic
+- perform GPU-side keep-mask/top-K reduction so CPU only sees winners
+- pin only the resident assets that materially reduce recomputation
+
+### 6. Longer-lived GPU state raises correctness and isolation risk
+
+The more state we keep resident across GA->FG boundaries, the more expensive silent ownership bugs become.
+
+Required mitigation:
+
+- key resident buffers by explicit ownership tuple such as `(session_id, song_slot, phase_id)`
+- fail loudly in debug/parity mode on ownership mismatch
+- log degraded-mode causes explicitly
+- count residency misses, slot loss, and host rebuilds as first-class telemetry
+
 ## Target Canonical Path
 
 This should become the production-default path for native in-process GPU mode.
@@ -139,12 +230,41 @@ In degraded mode, host uploads/downloads are allowed. They should be clearly log
 - Stop relying on large GA run-payload downloads for FG candidate selection in the native in-flight path.
 - Keep lean selected payload download only for persistence/materialization boundaries.
 
+### Phase 2B: Add GPU-side FG frontier reduction
+
+- Build FG signature buckets directly from the resident GA candidate table.
+- Reduce candidates on GPU before FG solve:
+  - top-N per signature bucket
+  - bounded diverse frontier
+  - regime-aware or center-aware representatives when applicable
+- Treat this phase as workload reduction, not just a transport optimization.
+
+### Phase 2C: Remove redundant FG solve volume
+
+- identify near-equivalent FG candidates by signature class before exact solve
+- avoid full FG solve for rows that cannot survive the current bounded frontier
+- reuse breakpoint/scaffolding structures for equivalent `(chart, regime, signature bucket)` families where exactness is preserved
+- treat this phase as compute elimination, not just queue smoothing
+
 ### Phase 3: Shrink the FG host boundary
 
 - Download only selected top-K packed rows.
 - Persist lean raw payloads by default.
 - Move heavyweight stats/detail materialization out of the critical GPU path where possible.
 - Eliminate Python-side apply over candidates that will not be persisted or surfaced.
+
+### Phase 3B: Replace mega-fused FG bursts with tiled resident FG execution
+
+- Keep the resident candidate/signature state across multiple FG tiles.
+- Run bounded work tiles under scheduler credit rather than one giant fused request.
+- Preserve the resident global-best / top-K accumulators across tiles.
+- Optimize for lower jitter and better queue fairness, not just fewer request boundaries.
+
+### Phase 3C: Make winner-only materialization the default
+
+- build GPU-side keep-mask and top-K reduction before any host application
+- download only compact retained winner rows and persistence payloads
+- remove Python-side apply/materialization from non-winning candidates in the hot path
 
 ### Phase 4: Delete non-canonical legacy paths
 
@@ -157,6 +277,13 @@ Candidate deletions or demotions:
 - Separate in-process breakpoint request path where fused request parity is already proven.
 - Multi-request FG reset->solve->download path for the native in-process production path.
 - Clearly marked unused GPU-native GA operator scaffolding that is not part of the final canonical implementation.
+
+### Phase 4B: Replace blunt slot holds with explicit FG-resident ownership
+
+- Hold only the minimum resident assets required across the GA->FG boundary.
+- Move toward explicit FG resident ownership rather than "entire slot is pinned until FG ends."
+- Keep full-slot hold only as a degraded or compatibility mode if finer-grained residency is not yet stable.
+- Avoid a permanently exclusive FG slot; use a bounded FG resident arena plus dynamic scheduler credits so FG cannot silently accumulate and break queue rhythm.
 
 ## Legacy-Removal Policy
 
@@ -178,9 +305,14 @@ The proposal is successful when all of the following are true in native in-proce
 - No GA->FG host upload occurs in the resident same-slot path.
 - No slot release/reacquire occurs for songs that require FG.
 - No full GA payload download is used for FG candidate selection.
+- GPU-side FG frontier reduction is active in the canonical path.
+- redundant FG solve volume is measurably reduced, not just rescheduled
 - GA->FG fused work executes as one owner-thread request per chunk in the common case.
+- FG chunks are bounded; no unbounded mega-request is required for the canonical path.
 - FG host downloads are limited to selected top-K persistence payloads.
 - GPU idle gaps and slot-block oscillation are measurably reduced in throughput benchmarks.
+- Python-side grouping/materialization is not in the hot path for non-retained candidates.
+- Residency ownership mismatches and degraded-mode causes are explicitly counted and logged.
 - FG completion/quality is preserved; no "GA-only throughput win" is accepted.
 
 ## Non-Goals
@@ -195,6 +327,80 @@ Expected remaining variance:
 - backend/runtime variance
 
 The objective is to remove avoidable pipeline bubbles, not to eliminate all runtime variability.
+
+Also not a goal:
+
+- claiming a HitSim-scale speedup from residency alone
+
+If the FG plan is successful, the likely result is:
+
+- lower jitter
+- less burstiness
+- better queue fairness
+- moderate to strong FG-heavy speedups
+- resident FG behavior that does not depend on a permanently exclusive slot
+
+The largest remaining gains will come from reducing FG task volume, not just making the existing FG path more resident.
+
+## Throughput-First Optimization Order
+
+If the KPI is completed songs/hour with FG fully finished, the recommended optimization order is:
+
+1. GPU-side FG frontier reduction
+2. redundant FG solve elimination / scaffolding reuse
+3. GPU-side keep-mask and winner-only materialization
+4. tiled resident FG execution
+5. narrower FG residency ownership
+
+This order is intentional:
+
+- reducing actual FG work should beat transport-only optimization
+- reducing host work should beat over-fusing larger bursts
+- smoothing residency should support throughput, not replace workload reduction
+
+## Deferred Risks To Watch With Tests And Reports
+
+The items below do not need immediate architecture work, but they should not be ignored. For now, the plan is to add detection and reporting first, then only implement deeper fixes if the reports show a real problem.
+
+### 1. VRAM pressure and spill behavior
+
+- add a benchmark/report that records peak resident usage, arena pressure, and any spill/degraded events
+- treat unexpected overcommit or spill as a visible regression, not a silent behavior change
+
+### 2. Determinism and parity drift
+
+- add seeded parity tests and benchmark reports for top-1 and FG top-1 retention
+- watch for backend drift across supported GPU/runtime environments before adding more aggressive reuse
+
+### 3. Cache key or reuse invalidation bugs
+
+- add targeted tests around cache/reuse identity for breakpoint or signature-family reuse
+- require reports that show cache hit/miss counts and any reuse-disabled fallbacks
+
+### 4. Tile cancellation and stale work
+
+- add scheduler tests/reports that show whether FG tiles continue running after they are no longer useful
+- only implement deeper preemption logic if the reports show meaningful wasted work
+
+### 5. GA admission vs FG backlog imbalance
+
+- add throughput reports that track FG queue age, slot-block time, and GA submit throttling behavior
+- only add more complex admission control if those reports show cadence instability
+
+### 6. Benchmark blind spots by workload class
+
+- keep separate benchmark/report slices for FG-heavy songs, lighter songs, timing-sensitive songs, and mixed queues
+- do not rely on one average songs/hour number to validate the full architecture
+
+### 7. Production fail-closed expectations
+
+- add a report or benchmark gate that records `degraded_mode_count` and resident-handoff misses
+- production throughput runs should surface any non-canonical execution explicitly, even if we do not yet delete every compatibility branch
+
+### 8. Top-K surface quality loss
+
+- add tests/reports for retained-surface quality, not just final top-1 quality
+- watch for regressions where frontier reduction preserves top-1 but degrades downstream FG surface quality
 
 ## Relevant Code Map
 
