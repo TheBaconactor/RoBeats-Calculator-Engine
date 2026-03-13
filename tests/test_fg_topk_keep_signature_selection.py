@@ -1,6 +1,6 @@
 from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import (
     _build_topk_keep_signature_set,
-    _pending_entries_have_fg_improvement,
+    _sig_results_has_fg_improvement,
     _selected_count,
 )
 
@@ -83,19 +83,15 @@ def test_keep_signature_set_respects_cap():
     assert len(keep) == 3
 
 
-def test_pending_entries_have_fg_improvement_detects_valid_improver():
-    pending = [
-        ({"score": 100, "fg_score": 0, "force": {}}, {}),
-        (
-            {
-                "score": 100,
-                "fg_score": 120,
-                "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
-            },
-            {},
-        ),
-    ]
-    assert _pending_entries_have_fg_improvement(pending) is True
+def test_sig_results_have_fg_improvement_detects_valid_improver():
+    sig_results = {
+        "sigA": {
+            "base_score": 100,
+            "fg_score": 120,
+            "force": {"ForceGreats": {"config": {"NonFever1": 1}}},
+        }
+    }
+    assert _sig_results_has_fg_improvement(sig_results=sig_results, sigs=["sigA"]) is True
 
 
 def test_selected_count_handles_none_and_list():

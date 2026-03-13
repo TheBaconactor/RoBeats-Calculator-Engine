@@ -17,7 +17,6 @@ from .entry_utils import eval_data_from_entry, expected_selected_element
 from ..ga_entry_utils import materialize_entry_names
 from ..loadout_builder import refresh_ga_candidate_entries
 from .gpu_dispatch import process_force_greats_gpu_finder
-from ..item_utils import names_list
 from ....core.fallback_monitor import warn_fallback
 from ....core.utils import stats_signature
 from ....solver.scoring import apply_force_greats_to_result
@@ -187,7 +186,6 @@ def _process_force_greats_hitsim_regimes(
     ref_arrays,
     meta_primary_color,
     build_details_fn,
-    db_loadouts_full_count,
     use_gpu: bool,
     fg_search_radius: int | None,
     perf_timing: bool,
@@ -212,7 +210,6 @@ def _process_force_greats_hitsim_regimes(
             ref_arrays,
             meta_primary_color,
             build_details_fn,
-            db_loadouts_full_count,
             use_gpu=use_gpu,
             fg_search_radius=fg_search_radius,
             perf_timing=perf_timing,
@@ -239,7 +236,6 @@ def _process_force_greats_cpu(
     calc_song,
     ref_arrays,
     meta_primary_color,
-    build_details_fn,
     use_gpu: bool,
     gpu_client: Optional["GpuServiceClient"],
 ):
@@ -322,7 +318,6 @@ def process_force_greats(
     ref_arrays,
     meta_primary_color,
     build_details_fn,
-    db_loadouts_full_count,
     use_gpu: bool = False,
     fg_search_radius: int | None = None,
     perf_timing: bool = False,
@@ -341,7 +336,6 @@ def process_force_greats(
             ref_arrays=ref_arrays,
             meta_primary_color=meta_primary_color,
             build_details_fn=build_details_fn,
-            db_loadouts_full_count=db_loadouts_full_count,
             use_gpu=use_gpu,
             fg_search_radius=fg_search_radius,
             perf_timing=perf_timing,
@@ -372,29 +366,6 @@ def process_force_greats(
                     "in-process FG gpu client unavailable; continuing without executor-backed FG session",
                     fatal=False,
                 )
-
-    if (
-        gpu_client is not None
-        and bool(use_gpu)
-        and str(os.environ.get("FG_ROUTE_PROCESS_FORCE_GREATS", "0")).strip() == "1"
-    ):
-        return gpu_client.submit_process_force_greats(
-            loadout_entries,
-            manual_force_greats,
-            force_greats_finder,
-            force_greats_config,
-            calc_song,
-            ref_arrays,
-            meta_primary_color,
-            build_details_fn,
-            db_loadouts_full_count,
-            use_gpu=use_gpu,
-            fg_search_radius=fg_search_radius,
-            perf_timing=perf_timing,
-            gpu_client=None,
-            ga_candidates=ga_candidates,
-            ga_registry=ga_registry,
-        ).future.result()
 
     manual_counts = force_greats_config if (manual_force_greats and not force_greats_finder) else []
     try:
@@ -443,12 +414,10 @@ def process_force_greats(
                 calc_song,
                 ref_arrays,
                 meta_primary_color,
-                build_details_fn,
                 use_gpu=use_gpu,
                 fg_search_radius=fg_search_radius,
                 perf_timing=perf_timing,
                 gpu_client=gpu_client,
-                names_list_fn=names_list,
                 ga_candidates=ga_candidates,
                 ga_registry=ga_registry,
             )

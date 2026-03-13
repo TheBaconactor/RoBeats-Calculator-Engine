@@ -1705,8 +1705,6 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
     )
     t_build = time.perf_counter() if perf else 0.0
 
-    song.fg_db_loadouts_full_count = len(db_loadouts_full) if isinstance(db_loadouts_full, list) else 0
-
     # Native in-flight optimization: submit the combo-booster GPU eval early (during FG prep)
     try:
         combo_enabled = _truthy(os.environ.get("FG_COMBO_BOOSTER_ENABLED", "1"))

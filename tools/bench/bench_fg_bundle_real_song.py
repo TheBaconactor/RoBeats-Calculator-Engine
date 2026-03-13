@@ -257,7 +257,6 @@ def main() -> int:
             ref_arrays,
             p_color,
             build_details,
-            db_loadouts_full_count=0,
             use_gpu=True,
             fg_search_radius=int(radius),
             perf_timing=False,

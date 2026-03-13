@@ -213,6 +213,13 @@ In degraded mode, host uploads/downloads are allowed. They should be clearly log
 
 ## Upgrade Plan
 
+Implemented on the current FG branch:
+
+- bounded signature-frontier reduction before exact solve
+- winner-only FG result materialization with lean raw payload persistence
+- breakpoint-group scaffolding reuse for identical chart/regime + FT/FF + base-pair families
+- explicit work-budget tiling for FG task batches and fused breakpoint payload batches
+
 ### Phase 1: Canonicalize same-slot GA->FG residency
 
 - Make "hold the GA slot through FG" the default whenever FG is pending and slot budget allows it.
@@ -246,6 +253,11 @@ In degraded mode, host uploads/downloads are allowed. They should be clearly log
 - reuse breakpoint/scaffolding structures for equivalent `(chart, regime, signature bucket)` families where exactness is preserved
 - treat this phase as compute elimination, not just queue smoothing
 
+Current branch status:
+
+- breakpoint-group scaffolding reuse is implemented
+- deeper exact-solve reuse beyond breakpoint groups still remains
+
 ### Phase 3: Shrink the FG host boundary
 
 - Download only selected top-K packed rows.
@@ -260,11 +272,21 @@ In degraded mode, host uploads/downloads are allowed. They should be clearly log
 - Preserve the resident global-best / top-K accumulators across tiles.
 - Optimize for lower jitter and better queue fairness, not just fewer request boundaries.
 
+Current branch status:
+
+- explicit work-budget tiling is implemented for FG task batches and fused breakpoint payload batches
+- scheduler-credit orchestration is still handled by the in-flight scheduler, not a dedicated FG tile controller
+
 ### Phase 3C: Make winner-only materialization the default
 
 - build GPU-side keep-mask and top-K reduction before any host application
 - download only compact retained winner rows and persistence payloads
 - remove Python-side apply/materialization from non-winning candidates in the hot path
+
+Current branch status:
+
+- retained-winner-only host materialization is implemented
+- frontier construction itself is still Python-side, not GPU-native
 
 ### Phase 4: Delete non-canonical legacy paths
 

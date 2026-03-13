@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
 from typing import Any
 
 from ....core.constants import GEM_SCALE_FEVER
 from ....core.utils import get_selected_element
-from ....solver.scoring import FG_CACHE, _force_greats_counts_to_dict
+from ....solver.scoring import _force_greats_counts_to_dict
 from ....solver.scoring.force_greats import FORCE_GREATS_ALGO_VERSION
 from ....solver.scoring.stats_ops import apply_gems_to_base_stats
 
@@ -139,6 +138,178 @@ def fp_targets_to_forced_counts(
     return forced_counts
 
 
+def _build_raw_gpu_result(
+    *,
+    base_stats: dict[str, Any],
+    sel_color: str,
+    n_sections: int,
+    max_per_section: int,
+    counts_list: Any,
+    fg_scorer: Any,
+    final_score: Any,
+    base_score: Any,
+    cfg_idx: Any,
+    cfg_counts_row: Any,
+    ft: Any,
+    ff: Any,
+    g_pp: Any,
+    g_cm: Any,
+    g_fm: Any,
+    g_ov: Any,
+    materialize_stats: bool = True,
+) -> tuple[int, int, dict[str, Any]]:
+    final_score_i = int(final_score)
+    base_score_i = int(base_score)
+    ft_val = int(ft)
+    ff_val = int(ff)
+    g_pp_i = int(g_pp)
+    g_cm_i = int(g_cm)
+    g_fm_i = int(g_fm)
+    g_ov_i = int(g_ov)
+
+    if cfg_counts_row is not None:
+        row = cfg_counts_row
+        try:
+            if int(n_sections) > 0:
+                cfg_counts = list(row[: int(n_sections)])
+            else:
+                cfg_counts = list(row)
+        except Exception:
+            cfg_counts = []
+    else:
+        cfg_idx_i = int(cfg_idx) if cfg_idx is not None else -1
+        cfg_counts = list(counts_list[cfg_idx_i]) if 0 <= cfg_idx_i < len(counts_list) else []
+
+    forced_counts = cfg_counts
+    if cfg_counts and fg_scorer is not None:
+        try:
+            forced_counts = fp_targets_to_forced_counts(cfg_counts, base_stats, ft_val, ff_val, fg_scorer)
+        except Exception:
+            forced_counts = cfg_counts
+
+    gem_counts = {
+        "Perfect Points": g_pp_i,
+        "Combo Multiplier": g_cm_i,
+        "Fever Multiplier": g_fm_i,
+        "Element": g_ov_i,
+    }
+
+    config_dict = _force_greats_counts_to_dict(forced_counts, max(2, int(len(forced_counts))))
+
+    fg_info = {
+        "enabled": True,
+        "mode": "finder",
+        "algo_version": int(FORCE_GREATS_ALGO_VERSION),
+        "config": config_dict,
+        "final_score": final_score_i,
+    }
+
+    raw_payload = {
+        "BaseScore": base_score_i,
+        "Score": final_score_i,
+        "FT": ft_val,
+        "FF": ff_val,
+        "GemCounts": gem_counts,
+        "BaseStats": base_stats,
+        "Selected Element": str(sel_color),
+        "ForceGreats": fg_info,
+        "forced_counts": list(forced_counts) if forced_counts else [],
+    }
+
+    if materialize_stats:
+        final_stats = apply_gems_to_base_fast(
+            base_stats,
+            str(sel_color),
+            ft_val,
+            ff_val,
+            g_pp_i,
+            g_cm_i,
+            g_fm_i,
+            g_ov_i,
+        )
+        if isinstance(final_stats, dict) and final_stats:
+            raw_payload["Stats"] = final_stats
+
+    return final_score_i, base_score_i, raw_payload
+
+
+def collect_gpu_results_by_signature(
+    *,
+    pending_sigs: list[str],
+    pending: list[dict[str, Any]],
+    sel_color: str,
+    n_sections: int,
+    max_per_section: int,
+    counts_list: Any,
+    fg_scorer: Any,
+    result_final: Any,
+    result_base: Any,
+    result_cfg_idx: Any,
+    result_cfg_counts: Any,
+    result_ft: Any,
+    result_ff: Any,
+    result_g_pp: Any,
+    result_g_cm: Any,
+    result_g_fm: Any,
+    result_g_ov: Any,
+    perf: bool,
+    materialize_stats: bool = True,
+) -> tuple[dict[str, dict[str, Any]], float]:
+    t0 = time.perf_counter() if perf else 0.0
+    sig_results: dict[str, dict[str, Any]] = {}
+    for idx, (sig, bs) in enumerate(zip(pending_sigs, pending)):
+        final_score_i, base_score_i, raw_payload = _build_raw_gpu_result(
+            base_stats=bs,
+            sel_color=str(sel_color),
+            n_sections=int(n_sections),
+            max_per_section=int(max_per_section),
+            counts_list=counts_list,
+            fg_scorer=fg_scorer,
+            final_score=result_final[idx],
+            base_score=result_base[idx],
+            cfg_idx=result_cfg_idx[idx] if result_cfg_idx is not None else None,
+            cfg_counts_row=result_cfg_counts[idx] if result_cfg_counts is not None else None,
+            ft=result_ft[idx],
+            ff=result_ff[idx],
+            g_pp=result_g_pp[idx],
+            g_cm=result_g_cm[idx],
+            g_fm=result_g_fm[idx],
+            g_ov=result_g_ov[idx],
+            materialize_stats=materialize_stats,
+        )
+        sig_results[str(sig)] = {
+            "fg_score": int(final_score_i),
+            "base_score": int(base_score_i),
+            "force": raw_payload,
+        }
+    return sig_results, ((time.perf_counter() - t0) if perf else 0.0)
+
+
+def apply_signature_result_to_entry(*, entry: dict[str, Any], sig_result: dict[str, Any]) -> None:
+    if not isinstance(entry, dict) or not isinstance(sig_result, dict):
+        return
+
+    if "base_score" not in entry:
+        entry["base_score"] = entry.get("score")
+
+    try:
+        entry["fg_score"] = int(sig_result.get("fg_score", 0) or 0)
+    except Exception:
+        entry["fg_score"] = 0
+
+    force_obj = sig_result.get("force")
+    if isinstance(force_obj, dict):
+        entry["force"] = force_obj
+    entry.pop("_fg_raw", None)
+
+    candidate_ref = entry.get("_candidate_ref")
+    if isinstance(candidate_ref, dict):
+        candidate_ref["fg_score"] = int(entry.get("fg_score", 0) or 0)
+        if isinstance(force_obj, dict):
+            candidate_ref["force"] = force_obj
+        candidate_ref["_entry_ref"] = entry
+
+
 def apply_gpu_results_to_entries(
     *,
     pending_sigs: list[str],
@@ -159,138 +330,34 @@ def apply_gpu_results_to_entries(
     result_g_cm: Any,
     result_g_fm: Any,
     result_g_ov: Any,
-    fg_variants: list[dict[str, Any]] | None,
-    build_details_fn: Callable[[dict[str, Any]], dict[str, Any]] | None,
-    names_list_fn: Callable[[Any], list[str]],
     perf: bool,
     materialize_stats: bool = True,
 ) -> float:
-    t0 = time.perf_counter() if perf else 0.0
-    for idx, (sig, bs) in enumerate(zip(pending_sigs, pending)):
-        final_score = int(result_final[idx])
-        base_score = int(result_base[idx])
-        ft_val = int(result_ft[idx])
-        ff_val = int(result_ff[idx])
-        g_pp = int(result_g_pp[idx])
-        g_cm = int(result_g_cm[idx])
-        g_fm = int(result_g_fm[idx])
-        g_ov = int(result_g_ov[idx])
-
-        if result_cfg_counts is not None:
-            # `result_cfg_counts` can be a numpy array; avoid ambiguous truthiness on ndarray rows.
-            row = result_cfg_counts[idx]
-            if row is None:
-                cfg_counts = []
-            else:
-                try:
-                    if int(n_sections) > 0:
-                        cfg_counts = list(row[: int(n_sections)])
-                    else:
-                        cfg_counts = list(row)
-                except Exception:
-                    cfg_counts = []
-        else:
-            cfg_idx = int(result_cfg_idx[idx]) if result_cfg_idx is not None else -1
-            cfg_counts = list(counts_list[cfg_idx]) if 0 <= cfg_idx < len(counts_list) else []
-
-        forced_counts = cfg_counts
-        if cfg_counts and fg_scorer is not None:
-            try:
-                forced_counts = fp_targets_to_forced_counts(cfg_counts, bs, ft_val, ff_val, fg_scorer)
-            except Exception:
-                forced_counts = cfg_counts
-
-        gem_counts = {
-            "Perfect Points": g_pp,
-            "Combo Multiplier": g_cm,
-            "Fever Multiplier": g_fm,
-            "Element": g_ov,
-        }
-
-        config_dict = _force_greats_counts_to_dict(forced_counts, max(2, len(forced_counts)))
-
-        fg_info = {
-            "enabled": True,
-            "mode": "finder",
-            "algo_version": int(FORCE_GREATS_ALGO_VERSION),
-            # Keep search_radius optional; when absent, cache validation remains permissive.
-            "config": config_dict,
-            "final_score": final_score,
-        }
-
-        final_stats = {}
-        if materialize_stats:
-            final_stats = apply_gems_to_base_fast(
-                bs,
-                str(sel_color),
-                ft_val,
-                ff_val,
-                g_pp,
-                g_cm,
-                g_fm,
-                g_ov,
-            )
-
-        fg_variant = {
-            "BaseScore": base_score,
-            "Score": final_score,
-            "FT": ft_val,
-            "FF": ff_val,
-            "GemCounts": gem_counts,
-            "Stats": final_stats,
-            "Selected Element": str(sel_color),
-            "ForceGreats": fg_info,
-        }
-
-        # Lean-only: always store a compact raw payload for DB/UI consumers without
-        # building heavyweight `details` dicts.
-        raw_payload = {
-            "BaseScore": base_score,
-            "Score": final_score,
-            "FT": ft_val,
-            "FF": ff_val,
-            "GemCounts": gem_counts,
-            # Store base stats so downstream can materialize Stats if needed.
-            "BaseStats": bs,
-            "Selected Element": str(sel_color),
-            "ForceGreats": fg_info,
-            # Per-section forced counts (useful for tiering / recompute paths).
-            "forced_counts": list(forced_counts) if forced_counts else [],
-        }
-
-        for entry, eval_data in sig_map.get(sig, []):
-            if "base_score" not in entry:
-                entry["base_score"] = entry.get("score")
-
-            # Always store the numeric FG score for downstream ranking/retention.
-            entry["fg_score"] = final_score
-
-            # Store the raw payload directly under `force` (persisted to force_details_json).
-            entry["force"] = raw_payload
-            entry.pop("_fg_raw", None)
-
-            candidate_ref = entry.get("_candidate_ref")
-            if isinstance(candidate_ref, dict):
-                candidate_ref["fg_score"] = int(final_score)
-                candidate_ref["force"] = raw_payload
-                candidate_ref["_entry_ref"] = entry
-
-            if fg_variants is not None:
-                # Keep FG variants for printing/debug without requiring materialized Stats.
-                fg_variants.append(
-                    {
-                        "data": raw_payload,
-                        "gear": entry.get("gear", []),
-                        "minis": entry.get("minis", []),
-                        "score": base_score,
-                        "fg_score": final_score,
-                        "base_score": base_score,
-                        "_entry_ref": entry,
-                    }
-                )
-
-            c_ft = int(eval_data.get("FT", 0) or 0)
-            c_ff = int(eval_data.get("FF", 0) or 0)
-            FG_CACHE[(sig, str(sel_color), c_ft, c_ff, int(n_sections), int(max_per_section))] = fg_variant
-
-    return (time.perf_counter() - t0) if perf else 0.0
+    sig_results, elapsed = collect_gpu_results_by_signature(
+        pending_sigs=pending_sigs,
+        pending=pending,
+        sel_color=sel_color,
+        n_sections=n_sections,
+        max_per_section=max_per_section,
+        counts_list=counts_list,
+        fg_scorer=fg_scorer,
+        result_final=result_final,
+        result_base=result_base,
+        result_cfg_idx=result_cfg_idx,
+        result_cfg_counts=result_cfg_counts,
+        result_ft=result_ft,
+        result_ff=result_ff,
+        result_g_pp=result_g_pp,
+        result_g_cm=result_g_cm,
+        result_g_fm=result_g_fm,
+        result_g_ov=result_g_ov,
+        perf=perf,
+        materialize_stats=materialize_stats,
+    )
+    for sig, _bs in zip(pending_sigs, pending):
+        sig_result = sig_results.get(str(sig))
+        if not isinstance(sig_result, dict):
+            continue
+        for entry, _eval_data in sig_map.get(sig, []):
+            apply_signature_result_to_entry(entry=entry, sig_result=sig_result)
+    return elapsed

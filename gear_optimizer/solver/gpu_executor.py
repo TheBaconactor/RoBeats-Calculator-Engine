@@ -122,7 +122,6 @@ class GpuRequestType(Enum):
     LOAD_REF_ARRAYS = "load_ref_arrays"
     PRECOMPUTE_TIMELINE = "precompute_timeline_gpu"
     SOLVE_FORCE_GREATS_FINDER = "solve_force_greats_finder_gpu"
-    PROCESS_FORCE_GREATS = "process_force_greats"
     GPU_NATIVE_GA_RUN = "gpu_native_ga_run"
     GA_STAGE_FG_GENOME_BASE_STATS = "ga_stage_fg_genome_base_stats"
     FG_RESET_GLOBAL_BEST = "fg_reset_global_best"
@@ -426,7 +425,6 @@ class GpuExecutor:
             GpuRequestType.FG_RESET_GLOBAL_BEST,
             GpuRequestType.FG_DOWNLOAD_GLOBAL_BEST,
             GpuRequestType.FG_COMPUTE_BREAKPOINTS,
-            GpuRequestType.PROCESS_FORCE_GREATS,
         }
     )
     _COALESCABLE_REQUEST_TYPES = frozenset(
@@ -607,7 +605,6 @@ class GpuExecutor:
             GpuRequestType.LOAD_REF_ARRAYS: self._execute_load_refs,
             GpuRequestType.PRECOMPUTE_TIMELINE: self._execute_precompute_timeline,
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER: self._execute_solve_force_greats_finder,
-            GpuRequestType.PROCESS_FORCE_GREATS: self._execute_process_force_greats,
             GpuRequestType.GPU_NATIVE_GA_RUN: self._execute_gpu_native_ga_run,
             GpuRequestType.GA_STAGE_FG_GENOME_BASE_STATS: self._execute_ga_stage_fg_genome_base_stats,
             GpuRequestType.FG_RESET_GLOBAL_BEST: self._execute_fg_reset_global_best,
@@ -3662,47 +3659,6 @@ class GpuExecutor:
                 result = solve_force_greats_finder_gpu(*base_args, **kwargs)
         else:
             result = solve_force_greats_finder_gpu(*args, **kwargs)
-        return GpuResponse(
-            request_id=request.request_id,
-            success=True,
-            result=result,
-        )
-
-    def _execute_process_force_greats(self, request: GpuRequest) -> GpuResponse:
-        """
-        Execute the full `process_force_greats()` helper on the GPU-owner thread.
-
-        This is only supported when using in-process (thread) queues because the
-        payload can contain large Python objects and closures that are not
-        pickle-safe over multiprocessing IPC.
-        """
-        if not self._in_process_queues:
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error="PROCESS_FORCE_GREATS is only supported with in-process queues",
-            )
-
-        from gear_optimizer.helpers.song_helpers.force_greats import process_force_greats
-
-        payload = request.payload or {}
-        args = payload.get("args", ())
-        kwargs = payload.get("kwargs", {})
-
-        if not isinstance(args, (list, tuple)):
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error="Invalid payload for PROCESS_FORCE_GREATS (expected args list/tuple)",
-            )
-        if not isinstance(kwargs, dict):
-            return GpuResponse(
-                request_id=request.request_id,
-                success=False,
-                error="Invalid payload for PROCESS_FORCE_GREATS (expected kwargs dict)",
-            )
-
-        result = process_force_greats(*args, **kwargs)
         return GpuResponse(
             request_id=request.request_id,
             success=True,

@@ -8,14 +8,14 @@ from typing import TYPE_CHECKING, Optional
 from cachetools import LRUCache
 
 from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
+from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 
 from . import cache_validation, result_application
 from .entry_utils import eval_data_from_entry, expected_selected_element
 from ..ga_entry_utils import candidate_genome_ids, entry_loadout_hash, ga_candidate_key, materialize_entry_names
 from ....core.color_flags import build_color_flags
 from ....core.fallback_monitor import warn_fallback
-from ....core.utils import get_selected_element, stats_signature
-from ..item_utils import names_list
+from ....core.utils import get_selected_element, human_hitsim_timing_context, stats_signature
 from ..retention import select_retained_hashes
 from .ftff_pairs import _collect_ftff_pairs_from_centers, _group_ftff_pairs_by_max_fp_matrix
 
@@ -30,6 +30,10 @@ _FG_CHART_SCORER_LOCK = threading.Lock()
 _FG_ANALYTICAL_BREAKPOINTS_CACHE_MAX = max(1, int(os.environ.get("FG_ANALYTICAL_BREAKPOINTS_CACHE_MAX", "64") or "64"))
 _FG_ANALYTICAL_BREAKPOINTS_CACHE: LRUCache = LRUCache(maxsize=_FG_ANALYTICAL_BREAKPOINTS_CACHE_MAX)
 _FG_ANALYTICAL_BREAKPOINTS_LOCK = threading.Lock()
+
+_FG_BREAKPOINT_GROUP_CACHE_MAX = max(1, int(os.environ.get("FG_BREAKPOINT_GROUP_CACHE_MAX", "64") or "64"))
+_FG_BREAKPOINT_GROUPS_CACHE: LRUCache = LRUCache(maxsize=_FG_BREAKPOINT_GROUP_CACHE_MAX)
+_FG_BREAKPOINT_GROUPS_LOCK = threading.Lock()
 
 
 def _truthy_env(name: str, default: str = "0") -> bool:
@@ -156,6 +160,85 @@ def _get_cached_analytical_breakpoints(
     return list(frozen)
 
 
+def _normalize_pair_signature(pairs: object) -> tuple[tuple[int, int], ...]:
+    try:
+        return tuple((int(a), int(b)) for a, b in list(pairs or []))
+    except Exception:
+        return ()
+
+
+def _freeze_breakpoint_groups(groups: list[dict]) -> tuple[tuple[object, ...], ...]:
+    frozen: list[tuple[object, ...]] = []
+    for group in groups or []:
+        if not isinstance(group, dict):
+            continue
+        frozen.append(
+            (
+                _normalize_pair_signature(group.get("ftff_pairs")),
+                tuple(tuple(int(v) for v in row) for row in list(group.get("counts_list") or [])),
+                tuple(int(v) for v in list(group.get("counts_max_fp") or [])),
+                tuple(tuple(int(v) for v in bp) for bp in list(group.get("section_breakpoints") or []))
+                if group.get("section_breakpoints") is not None
+                else None,
+            )
+        )
+    return tuple(frozen)
+
+
+def _thaw_breakpoint_groups(frozen_groups: object) -> list[dict]:
+    groups: list[dict] = []
+    for row in list(frozen_groups or []):
+        if not isinstance(row, tuple) or len(row) != 4:
+            continue
+        ftff_pairs, counts_list, counts_max_fp, section_breakpoints = row
+        groups.append(
+            {
+                "ftff_pairs": list(ftff_pairs or []),
+                "counts_list": list(counts_list or []),
+                "counts_max_fp": list(counts_max_fp or []),
+                "section_breakpoints": tuple(section_breakpoints or ()) if section_breakpoints is not None else None,
+            }
+        )
+    return groups
+
+
+def _get_cached_breakpoint_groups(
+    *,
+    calc_song: dict,
+    n_sections: int,
+    ftff_pairs,
+    base_stats_pairs,
+    merge_threshold_cfgs: int,
+    merge_threshold_threads: int,
+    n_genomes: int,
+    gem_scale_fever: int,
+    mode: str,
+    compute_fn,
+):
+    key = (
+        _chart_signature_key(calc_song),
+        human_hitsim_timing_context(calc_song),
+        str(mode or ""),
+        int(n_sections),
+        _normalize_pair_signature(ftff_pairs),
+        _normalize_pair_signature(base_stats_pairs),
+        int(merge_threshold_cfgs),
+        int(merge_threshold_threads),
+        int(n_genomes),
+        int(gem_scale_fever),
+    )
+    with _FG_BREAKPOINT_GROUPS_LOCK:
+        cached = _FG_BREAKPOINT_GROUPS_CACHE.get(key)
+        if cached is not None:
+            return _thaw_breakpoint_groups(cached), True
+
+    computed = list(compute_fn() or [])
+    frozen = _freeze_breakpoint_groups(computed)
+    with _FG_BREAKPOINT_GROUPS_LOCK:
+        _FG_BREAKPOINT_GROUPS_CACHE[key] = frozen
+    return computed, False
+
+
 def _is_empty_pairs(pairs) -> bool:
     if pairs is None:
         return True
@@ -181,6 +264,98 @@ def _extract_group_payload(group: dict):
         counts_max_fp = []
     group_pairs = group.get("ftff_pairs")
     return counts_list, counts_max_fp, group_pairs
+
+
+def _sequence_len(value: object) -> int:
+    if value is None:
+        return 0
+    try:
+        shape = getattr(value, "shape", None)
+        if shape is not None and len(shape) > 0:
+            return max(0, int(shape[0] or 0))
+    except Exception:
+        pass
+    try:
+        return max(0, int(len(value)))
+    except Exception:
+        return 0
+
+
+def _fg_task_cfg_count(task: dict, *, n_sections: int) -> int:
+    counts_list = task.get("counts_list") if isinstance(task, dict) else None
+    if counts_list is not None:
+        return max(1, int(_sequence_len(counts_list)))
+
+    counts_max_fp = list((task or {}).get("counts_max_fp") or [])
+    if not counts_max_fp:
+        return 1
+
+    total = 1
+    for v in counts_max_fp[: max(0, int(n_sections))]:
+        try:
+            total *= max(1, int(v or 0) + 1)
+        except Exception:
+            total *= 1
+        if total >= 1_000_000_000:
+            return 1_000_000_000
+    return max(1, int(total))
+
+
+def _estimate_fg_task_threads(task: dict, *, n_sections: int, n_genomes: int) -> int:
+    pair_count = max(1, int(_sequence_len((task or {}).get("ftff_pairs"))))
+    cfg_count = max(1, int(_fg_task_cfg_count(task or {}, n_sections=int(n_sections))))
+    return max(1, int(n_genomes)) * int(pair_count) * int(cfg_count)
+
+
+def _estimate_fused_payload_threads(payload: dict) -> int:
+    if not isinstance(payload, dict):
+        return 1
+    pair_count = max(1, int(_sequence_len(payload.get("ftff_pairs"))))
+    base_pair_count = max(1, int(_sequence_len(payload.get("base_stats_pairs"))))
+    solve_kwargs = payload.get("solve_kwargs") if isinstance(payload.get("solve_kwargs"), dict) else {}
+    n_genomes = 0
+    try:
+        n_genomes = int(solve_kwargs.get("n_genomes_override", 0) or 0)
+    except Exception:
+        n_genomes = 0
+    if n_genomes <= 0:
+        n_genomes = max(1, int(_sequence_len(payload.get("genome_stats_list"))))
+    return max(1, int(n_genomes)) * int(pair_count) * int(base_pair_count)
+
+
+def _split_items_by_work_budget(
+    items: list,
+    *,
+    max_work: int,
+    estimate_fn,
+) -> list[list]:
+    if not items:
+        return []
+    try:
+        max_work_i = int(max_work)
+    except Exception:
+        max_work_i = 0
+    if max_work_i <= 0:
+        return [list(items)]
+
+    out: list[list] = []
+    cur: list = []
+    cur_work = 0
+    for item in items:
+        try:
+            work_i = max(1, int(estimate_fn(item)))
+        except Exception:
+            work_i = 1
+        if cur and (int(cur_work) + int(work_i)) > int(max_work_i):
+            out.append(cur)
+            cur = [item]
+            cur_work = int(work_i)
+            continue
+        cur.append(item)
+        cur_work += int(work_i)
+    if cur:
+        out.append(cur)
+    return out
 
 
 def _decode_cfg_counts_from_windows(cfg_idx, cfg_windows: list[dict], n_sections: int):
@@ -436,44 +611,22 @@ def _merge_retained_direct_ga_entries(loadout_entries, ga_entry_items: list[tupl
             loadout_entries.pop(str(key), None)
 
 
-def _pending_entries_have_fg_improvement(pending: list) -> bool:
-    for item in pending or []:
-        entry = None
-        if isinstance(item, (tuple, list)) and item:
-            entry = item[0]
-        elif isinstance(item, dict):
-            entry = item
-        if not isinstance(entry, dict):
-            continue
-        if _entry_has_valid_fg_config(entry) and _entry_fg_score(entry) > _entry_base_score(entry):
-            return True
-    return False
-
-
-def _sig_map_has_fg_improvement(*, sig_map: dict, sigs: list[str]) -> bool:
-    """
-    Check whether any applied entry in `sig_map` has a valid FG improvement.
-
-    Note: in this module, `pending` often contains representative *base-stats* dicts, not entry dicts,
-    so improvement checks must look at the entry objects in `sig_map` instead of the pending reps.
-    """
-    if not isinstance(sig_map, dict) or not sigs:
+def _sig_results_has_fg_improvement(*, sig_results: dict, sigs: list[str]) -> bool:
+    if not isinstance(sig_results, dict) or not sigs:
         return False
     for sig in sigs:
-        try:
-            rows = sig_map.get(sig) or []
-        except Exception:
-            rows = []
-        for item in rows:
-            entry = None
-            if isinstance(item, (tuple, list)) and item:
-                entry = item[0]
-            elif isinstance(item, dict):
-                entry = item
-            if not isinstance(entry, dict):
+        row = sig_results.get(str(sig))
+        if not isinstance(row, dict):
+            continue
+        force_obj = row.get("force")
+        if not isinstance(force_obj, dict):
+            continue
+        if _is_valid_fg_config((force_obj.get("ForceGreats") or {}).get("config") or {}):
+            try:
+                if int(row.get("fg_score", 0) or 0) > int(row.get("base_score", 0) or 0):
+                    return True
+            except Exception:
                 continue
-            if _entry_has_valid_fg_config(entry) and _entry_fg_score(entry) > _entry_base_score(entry):
-                return True
     return False
 
 
@@ -538,28 +691,230 @@ def _should_skip_full_download_no_candidates(
     return bool(selected_n_i <= keep_n_i)
 
 
+def _resolve_signature_frontier_limit() -> int:
+    raw = str(os.environ.get("FG_SIGNATURE_FRONTIER_LIMIT", "") or "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except Exception:
+            return 0
+
+    try:
+        mult = int(os.environ.get("FG_SIGNATURE_FRONTIER_MULT", "2") or 2)
+    except Exception:
+        mult = 2
+    mult = max(1, int(mult))
+    return max(int(LOADOUTS_PER_SONG_LIMIT), int(LOADOUTS_PER_SONG_LIMIT) * int(mult))
+
+
+def _signature_timing_bucket(sig: object) -> tuple[str, str, str]:
+    if not isinstance(sig, tuple) or len(sig) < 6:
+        return ("", "", "")
+
+    try:
+        apply_to = str(sig[-6] or "")
+        regime_id = str(sig[-5] or "")
+        regime_family = str(sig[-4] or "")
+        regime_scope = str(sig[-3] or "")
+    except Exception:
+        return ("", "", "")
+
+    if not apply_to:
+        return ("", "", "")
+    family = regime_family or regime_id
+    return (apply_to, family, regime_scope)
+
+
+def _select_signature_frontier(
+    sigs: list,
+    *,
+    sig_map: dict,
+    rep_map: dict,
+    base_score_map: dict,
+    fg_proxy_map: dict,
+    keep_sigs: set[str] | None = None,
+    limit: int,
+    center_bin: int = 2,
+) -> list:
+    try:
+        limit_i = int(limit)
+    except Exception:
+        limit_i = 0
+    if limit_i <= 0 or len(sigs) <= limit_i:
+        return list(sigs)
+
+    try:
+        center_bin_i = max(1, int(center_bin))
+    except Exception:
+        center_bin_i = 2
+
+    force_keep = keep_sigs or set()
+    metas: list[dict] = []
+    for idx, sig in enumerate(sigs):
+        rep = rep_map.get(sig)
+        if not isinstance(rep, dict):
+            continue
+        try:
+            base_i = int(base_score_map.get(sig, 0) or 0)
+        except Exception:
+            base_i = 0
+        try:
+            proxy_i = int(fg_proxy_map.get(sig, 0) or 0)
+        except Exception:
+            proxy_i = 0
+
+        priority_i = 0
+        try:
+            rows = sig_map.get(sig) or []
+        except Exception:
+            rows = []
+        for item in rows:
+            entry = None
+            if isinstance(item, (tuple, list)) and item:
+                entry = item[0]
+            elif isinstance(item, dict):
+                entry = item
+            if not isinstance(entry, dict):
+                continue
+            try:
+                priority_i = max(priority_i, int(entry.get("_fg_priority", 0) or 0))
+            except Exception:
+                continue
+
+        try:
+            center_ft = int(rep.get("Fever Time", 0) or 0)
+        except Exception:
+            center_ft = 0
+        try:
+            center_ff = int(rep.get("Fever Fill Rate", 0) or 0)
+        except Exception:
+            center_ff = 0
+
+        metas.append(
+            {
+                "sig": sig,
+                "base": int(base_i),
+                "proxy": int(proxy_i),
+                "priority": int(priority_i),
+                "center": (int(center_ft), int(center_ff)),
+                "center_bucket": (int(center_ft // center_bin_i), int(center_ff // center_bin_i)),
+                "timing_bucket": _signature_timing_bucket(sig),
+                "force_keep": str(sig) in force_keep,
+                "idx": int(idx),
+            }
+        )
+
+    if len(metas) <= limit_i:
+        return [m["sig"] for m in metas]
+
+    metas_by_base = sorted(metas, key=lambda m: (-m["base"], -m["proxy"], -m["priority"], m["idx"]))
+    metas_by_fg = sorted(
+        metas,
+        key=lambda m: (
+            -int(bool(m["force_keep"])),
+            -m["priority"],
+            -m["proxy"],
+            -m["base"],
+            m["idx"],
+        ),
+    )
+
+    selected: list = []
+    seen: set = set()
+    seen_center_buckets: set[tuple[int, int]] = set()
+    seen_timing_buckets: set[tuple[str, str, str]] = set()
+
+    def _add(meta: dict) -> bool:
+        sig = meta["sig"]
+        if sig in seen:
+            return False
+        seen.add(sig)
+        selected.append(sig)
+        seen_center_buckets.add(meta["center_bucket"])
+        if meta["timing_bucket"] != ("", "", ""):
+            seen_timing_buckets.add(meta["timing_bucket"])
+        return True
+
+    top_base_keep = min(limit_i, int(LOADOUTS_PER_SONG_LIMIT))
+    extra_budget = max(0, int(limit_i - top_base_keep))
+    keep_budget = min(extra_budget, max(2, extra_budget // 2)) if extra_budget > 0 else 0
+    keep_budget_end = min(limit_i, top_base_keep + keep_budget)
+    priority_budget = min(max(0, limit_i - keep_budget_end), max(2, min(5, extra_budget))) if extra_budget > 0 else 0
+    priority_budget_end = min(limit_i, keep_budget_end + priority_budget)
+    fg_budget_end = min(limit_i, max(priority_budget_end, top_base_keep + max(priority_budget, int(extra_budget * 0.85))))
+
+    for meta in metas_by_base:
+        if len(selected) >= top_base_keep:
+            break
+        _add(meta)
+
+    for meta in metas_by_base:
+        if len(selected) >= keep_budget_end:
+            break
+        if not meta["force_keep"]:
+            continue
+        _add(meta)
+
+    for meta in metas_by_fg:
+        if len(selected) >= priority_budget_end:
+            break
+        if not meta["priority"]:
+            continue
+        _add(meta)
+
+    for meta in metas_by_fg:
+        if len(selected) >= fg_budget_end:
+            break
+        timing_bucket = meta["timing_bucket"]
+        if timing_bucket != ("", "", "") and timing_bucket not in seen_timing_buckets:
+            _add(meta)
+
+    for meta in metas_by_fg:
+        if len(selected) >= fg_budget_end:
+            break
+        if meta["center_bucket"] in seen_center_buckets:
+            continue
+        _add(meta)
+
+    for meta in metas_by_fg:
+        if len(selected) >= fg_budget_end:
+            break
+        _add(meta)
+
+    for meta in metas_by_base:
+        if len(selected) >= limit_i:
+            break
+        _add(meta)
+
+    return selected[:limit_i]
+
+
 def process_force_greats_gpu_finder(
     loadout_entries,
     force_greats_finder,
     calc_song,
     ref_arrays,
     meta_primary_color,
-    build_details_fn,
     *,
     use_gpu: bool = False,
     fg_search_radius: int | None = None,
     perf_timing: bool = False,
     gpu_client: Optional["GpuServiceClient"] = None,
-    names_list_fn=None,
     ga_candidates=None,
     ga_registry=None,
 ):
     fg_variants = []
     perf = bool(perf_timing)
     computed = 0
-
-    if names_list_fn is None:
-        names_list_fn = names_list
+    frontier_total_before = 0
+    frontier_total_after = 0
+    frontier_groups_reduced = 0
+    breakpoint_group_cache_hits = 0
+    breakpoint_group_cache_misses = 0
+    fg_task_tile_batches = 0
+    fg_task_tile_splits = 0
+    fg_fused_tile_batches = 0
+    fg_fused_tile_splits = 0
 
     from ....core.constants import (
         GEM_SCALE_FEVER,
@@ -589,8 +944,6 @@ def process_force_greats_gpu_finder(
         fg_download_global_best,
     )
     from ....solver.gpu_executor import GpuRequestType
-    from ....core.constants import LOADOUTS_PER_SONG_LIMIT
-
     # Lean-only FG pipeline:
     # - Always store a compact raw FG payload on each entry as `entry['force']`.
     # - Build `fg_variants` only for the retained set to keep output small.
@@ -623,6 +976,13 @@ def process_force_greats_gpu_finder(
         song_slot = 0
     if song_slot < 0:
         song_slot = 0
+
+    sig_frontier_enabled = _truthy_env("FG_SIGNATURE_FRONTIER_ENABLED", "1")
+    sig_frontier_limit = _resolve_signature_frontier_limit() if sig_frontier_enabled else 0
+    try:
+        sig_frontier_center_bin = max(1, int(os.environ.get("FG_SIGNATURE_FRONTIER_CENTER_BIN", "2") or 2))
+    except Exception:
+        sig_frontier_center_bin = 2
 
     def _submit_fg_reset_global_best(n_genomes: int, *, blocking: bool = True):
         if gpu_client is not None:
@@ -829,12 +1189,12 @@ def process_force_greats_gpu_finder(
     fg_async_futures = []
     fg_tasks_batch = []
     genome_stats_uploaded = False
+    sig_results: dict[str, dict] = {}
 
-    def _apply_gpu_results_to_entries(
+    def _record_gpu_results(
         *,
         pending_sigs: list,
         pending: list,
-        sig_map: dict,
         sel_color: str,
         n_sections: int,
         max_per_section: int,
@@ -852,11 +1212,9 @@ def process_force_greats_gpu_finder(
         result_g_ov,
     ) -> None:
         nonlocal t_result_apply_sec
-
-        t_result_apply_sec += result_application.apply_gpu_results_to_entries(
+        collected, elapsed = result_application.collect_gpu_results_by_signature(
             pending_sigs=pending_sigs,
             pending=pending,
-            sig_map=sig_map,
             sel_color=str(sel_color),
             n_sections=int(n_sections),
             max_per_section=int(max_per_section),
@@ -872,12 +1230,11 @@ def process_force_greats_gpu_finder(
             result_g_cm=result_g_cm,
             result_g_fm=result_g_fm,
             result_g_ov=result_g_ov,
-            fg_variants=None,
-            build_details_fn=None,
-            names_list_fn=names_list_fn,
             perf=perf,
-            materialize_stats=True,  # Must materialize Stats for DB persistence
+            materialize_stats=False,
         )
+        sig_results.update(collected)
+        t_result_apply_sec += elapsed
 
     def _iter_ftff_chunks(pairs):
         chunk_size = int(fg_fields.FG_MAX_FTFF)
@@ -931,6 +1288,7 @@ def process_force_greats_gpu_finder(
         nonlocal fg_tasks_batch, need_reset, genome_stats_uploaded
         nonlocal genome_stats_n_genomes, genome_stats_preuploaded
         nonlocal ga_stage_coords_pending, ga_stage_table_slot_pending
+        nonlocal fg_task_tile_batches, fg_task_tile_splits
         if gpu_client is None:
             return None
 
@@ -942,92 +1300,109 @@ def process_force_greats_gpu_finder(
 
         if not batch:
             return None
-        first = batch[0] if batch else {}
-        if not isinstance(first, dict):
-            return None
-
-        placeholder_counts = first.get("counts_list")
-        placeholder_pairs = first.get("ftff_pairs")
-        # When using task batching (`fg_tasks=`), the executor ignores the positional
-        # (counts_list, ftff_pairs) arguments and reads per-task windows instead.
-        # Still, we must pass non-None placeholders to satisfy the API signature.
-        if placeholder_counts is None:
-            placeholder_counts = [tuple([0] * int(n_sections))]
-        if placeholder_pairs is None:
-            return None
-
-        submit_kwargs = dict(
-            n_sections=n_sections,
-            is_p_ft=is_p_ft,
-            is_s_ft=is_s_ft,
-            is_p_ff=is_p_ff,
-            is_s_ff=is_s_ff,
-            is_p_pp=is_p_pp,
-            is_s_pp=is_s_pp,
-            is_p_cm=is_p_cm,
-            is_s_cm=is_s_cm,
-            is_p_fm=is_p_fm,
-            is_s_fm=is_s_fm,
-            is_p_ov=is_p_ov,
-            is_s_ov=is_s_ov,
-            ref_arrays=ref_arrays,
-            total_budget=TOTAL_GEM_BUDGET,
-            gem_scale_fever=GEM_SCALE_FEVER,
-            pair_caps_grid=pair_caps_grid,
-            pair_caps_from_timeline=bool(pair_caps_from_timeline),
-            song_slot=int(song_slot),
-            return_raw=True,
-            accumulate_global=True,
-            fg_tasks=batch,
+        task_tiles = _split_items_by_work_budget(
+            list(batch),
+            max_work=int(fg_task_tile_max_threads),
+            estimate_fn=lambda item: _estimate_fg_task_threads(
+                item,
+                n_sections=int(n_sections),
+                n_genomes=int(genome_stats_n_genomes),
+            ),
         )
-        if genome_stats_preuploaded:
-            submit_kwargs["upload_genome_stats"] = False
-            submit_kwargs["genome_stats_preuploaded"] = True
-            submit_kwargs["n_genomes_override"] = int(genome_stats_n_genomes)
-            if ga_stage_coords_pending is not None:
-                submit_kwargs["ga_stage_coords"] = ga_stage_coords_pending
+        if not task_tiles:
+            return None
+        fg_task_tile_batches += int(len(task_tiles))
+        if len(task_tiles) > 1:
+            fg_task_tile_splits += int(len(task_tiles) - 1)
+
+        last_future = None
+        for tile_idx, task_tile in enumerate(task_tiles):
+            first = task_tile[0] if task_tile else {}
+            if not isinstance(first, dict):
+                continue
+
+            placeholder_counts = first.get("counts_list")
+            placeholder_pairs = first.get("ftff_pairs")
+            # When using task batching (`fg_tasks=`), the executor ignores the positional
+            # (counts_list, ftff_pairs) arguments and reads per-task windows instead.
+            # Still, we must pass non-None placeholders to satisfy the API signature.
+            if placeholder_counts is None:
+                placeholder_counts = [tuple([0] * int(n_sections))]
+            if placeholder_pairs is None:
+                continue
+
+            submit_kwargs = dict(
+                n_sections=n_sections,
+                is_p_ft=is_p_ft,
+                is_s_ft=is_s_ft,
+                is_p_ff=is_p_ff,
+                is_s_ff=is_s_ff,
+                is_p_pp=is_p_pp,
+                is_s_pp=is_s_pp,
+                is_p_cm=is_p_cm,
+                is_s_cm=is_s_cm,
+                is_p_fm=is_p_fm,
+                is_s_fm=is_s_fm,
+                is_p_ov=is_p_ov,
+                is_s_ov=is_s_ov,
+                ref_arrays=ref_arrays,
+                total_budget=TOTAL_GEM_BUDGET,
+                gem_scale_fever=GEM_SCALE_FEVER,
+                pair_caps_grid=pair_caps_grid,
+                pair_caps_from_timeline=bool(pair_caps_from_timeline),
+                song_slot=int(song_slot),
+                return_raw=True,
+                accumulate_global=True,
+                fg_tasks=task_tile,
+            )
+            if genome_stats_preuploaded:
+                submit_kwargs["upload_genome_stats"] = False
+                submit_kwargs["genome_stats_preuploaded"] = True
+                submit_kwargs["n_genomes_override"] = int(genome_stats_n_genomes)
+                if ga_stage_coords_pending is not None:
+                    submit_kwargs["ga_stage_coords"] = ga_stage_coords_pending
+                    try:
+                        submit_kwargs["ga_stage_table_slot"] = int(ga_stage_table_slot_pending or song_slot)
+                    except Exception:
+                        submit_kwargs["ga_stage_table_slot"] = int(song_slot)
+            else:
+                # Avoid re-uploading genome stats for subsequent requests while the
+                # `genome_base_stats` field remains valid (in-process GPU owner thread).
+                submit_kwargs["upload_genome_stats"] = bool(not genome_stats_uploaded)
+            if "base_cfg_offset" in first:
                 try:
-                    submit_kwargs["ga_stage_table_slot"] = int(ga_stage_table_slot_pending or song_slot)
+                    submit_kwargs["base_cfg_offset"] = int(first.get("base_cfg_offset", 0) or 0)
                 except Exception:
-                    submit_kwargs["ga_stage_table_slot"] = int(song_slot)
-        else:
-            # Avoid re-uploading genome stats for subsequent requests while the
-            # `genome_base_stats` field remains valid (in-process GPU owner thread).
-            submit_kwargs["upload_genome_stats"] = bool(not genome_stats_uploaded)
-        if "base_cfg_offset" in first:
-            try:
-                submit_kwargs["base_cfg_offset"] = int(first.get("base_cfg_offset", 0) or 0)
-            except Exception:
-                submit_kwargs["base_cfg_offset"] = 0
+                    submit_kwargs["base_cfg_offset"] = 0
 
-        if need_reset:
-            submit_kwargs["fg_reset_before"] = True
-            need_reset = False
-        if download_after:
-            submit_kwargs["fg_download_after"] = True
-            if download_topk is not None and download_base_scores is not None:
-                submit_kwargs["fg_download_topk"] = int(download_topk)
-                submit_kwargs["fg_download_base_scores"] = download_base_scores
-                submit_kwargs["fg_download_keep_mask"] = download_keep_mask
+            if need_reset:
+                submit_kwargs["fg_reset_before"] = True
+                need_reset = False
+            if download_after and int(tile_idx) == int(len(task_tiles) - 1):
+                submit_kwargs["fg_download_after"] = True
+                if download_topk is not None and download_base_scores is not None:
+                    submit_kwargs["fg_download_topk"] = int(download_topk)
+                    submit_kwargs["fg_download_base_scores"] = download_base_scores
+                    submit_kwargs["fg_download_keep_mask"] = download_keep_mask
 
-        fut = _submit_solve_force_greats_finder(
-            genome_stats_arr,
-            timestamps,
-            great_candidates,
-            long_notes,
-            last_note_time,
-            placeholder_counts,
-            placeholder_pairs,
-            blocking=False,
-            **submit_kwargs,
-        )
-        ga_stage_coords_pending = None
-        ga_stage_table_slot_pending = None
-        genome_stats_uploaded = True
-        fg_async_futures.append(fut)
-        if len(fg_async_futures) >= fg_async_max_inflight:
-            fg_async_futures.pop(0).result()
-        return fut
+            last_future = _submit_solve_force_greats_finder(
+                genome_stats_arr,
+                timestamps,
+                great_candidates,
+                long_notes,
+                last_note_time,
+                placeholder_counts,
+                placeholder_pairs,
+                blocking=False,
+                **submit_kwargs,
+            )
+            ga_stage_coords_pending = None
+            ga_stage_table_slot_pending = None
+            genome_stats_uploaded = True
+            fg_async_futures.append(last_future)
+            if len(fg_async_futures) >= fg_async_max_inflight:
+                fg_async_futures.pop(0).result()
+        return last_future
 
     # Group work by (selected_element, n_sections, max_per_section)
     groups = {}
@@ -1054,6 +1429,42 @@ def process_force_greats_gpu_finder(
     no_eval_skips = 0
     gpu_call_shapes = []  # sample a few: (n_genomes, n_cfg, n_ftff, n_sections)
     per_pair_breakpoints = os.environ.get("FG_PER_FTFF_BREAKPOINTS", "1") == "1"
+    breakpoint_group_cache_enabled = _truthy_env("FG_BREAKPOINT_GROUP_CACHE", "1")
+    try:
+        breakpoint_group_cache_max_pairs = max(
+            0, int(os.environ.get("FG_BREAKPOINT_GROUP_CACHE_MAX_PAIRS", "256") or "256")
+        )
+    except Exception:
+        breakpoint_group_cache_max_pairs = 256
+    try:
+        breakpoint_group_cache_max_base_pairs = max(
+            0, int(os.environ.get("FG_BREAKPOINT_GROUP_CACHE_MAX_BASE_PAIRS", "64") or "64")
+        )
+    except Exception:
+        breakpoint_group_cache_max_base_pairs = 64
+    try:
+        fg_task_tile_max_threads = int(
+            os.environ.get(
+                "FG_TASK_TILE_MAX_THREADS",
+                "125000000" if in_process else "50000000",
+            )
+            or ("125000000" if in_process else "50000000")
+        )
+    except Exception:
+        fg_task_tile_max_threads = 125000000 if in_process else 50000000
+    fg_task_tile_max_threads = max(0, int(fg_task_tile_max_threads))
+
+    try:
+        fg_fused_tile_max_threads = int(
+            os.environ.get(
+                "FG_FUSED_TILE_MAX_THREADS",
+                "125000000" if in_process else "50000000",
+            )
+            or ("125000000" if in_process else "50000000")
+        )
+    except Exception:
+        fg_fused_tile_max_threads = 125000000 if in_process else 50000000
+    fg_fused_tile_max_threads = max(0, int(fg_fused_tile_max_threads))
     if per_pair_breakpoints and not hasattr(process_force_greats_gpu_finder, "_fg_pair_breakpoint_log"):
         process_force_greats_gpu_finder._fg_pair_breakpoint_log = True
         print("[FG] Per-FT/FF breakpoint mode enabled (GPU finder)")
@@ -1366,6 +1777,7 @@ def process_force_greats_gpu_finder(
 
     def _flush_fused_payload_batch() -> None:
         nonlocal timeline_precompute_queued, n_gpu_calls
+        nonlocal fg_fused_tile_batches, fg_fused_tile_splits
 
         if not fused_payload_batch:
             return
@@ -1409,24 +1821,41 @@ def process_force_greats_gpu_finder(
                 ctx_local["download_index"] = int(j)
             n_gpu_calls += 1
 
+        zipped_items = list(zip(fused_payload_batch, fused_ctx_batch))
         if max_pairs_total <= 0:
-            _submit_chunk(list(fused_payload_batch), list(fused_ctx_batch))
+            pair_chunks = [zipped_items]
         else:
-            chunk_payloads: list[dict] = []
-            chunk_ctxs: list[dict] = []
+            pair_chunks: list[list[tuple[dict, dict]]] = []
+            chunk_items: list[tuple[dict, dict]] = []
             chunk_pairs = 0
-            for payload, ctx in zip(fused_payload_batch, fused_ctx_batch):
+            for payload, ctx in zipped_items:
                 p_len = int(_pairs_len(payload))
-                if chunk_payloads and (int(chunk_pairs) + int(p_len)) > int(max_pairs_total):
-                    _submit_chunk(chunk_payloads, chunk_ctxs)
-                    chunk_payloads = []
-                    chunk_ctxs = []
+                if chunk_items and (int(chunk_pairs) + int(p_len)) > int(max_pairs_total):
+                    pair_chunks.append(list(chunk_items))
+                    chunk_items = []
                     chunk_pairs = 0
-                chunk_payloads.append(payload)
-                chunk_ctxs.append(ctx)
+                chunk_items.append((payload, ctx))
                 chunk_pairs += int(p_len)
-            if chunk_payloads:
-                _submit_chunk(chunk_payloads, chunk_ctxs)
+            if chunk_items:
+                pair_chunks.append(list(chunk_items))
+
+        request_chunks: list[list[tuple[dict, dict]]] = []
+        for pair_chunk in pair_chunks:
+            subchunks = _split_items_by_work_budget(
+                list(pair_chunk),
+                max_work=int(fg_fused_tile_max_threads),
+                estimate_fn=lambda item: _estimate_fused_payload_threads(item[0]),
+            )
+            request_chunks.extend(subchunks)
+
+        fg_fused_tile_batches += int(len(request_chunks))
+        if len(request_chunks) > 1:
+            fg_fused_tile_splits += int(len(request_chunks) - 1)
+
+        for chunk in request_chunks:
+            payloads = [payload for payload, _ctx in chunk]
+            ctxs = [ctx for _payload, ctx in chunk]
+            _submit_chunk(payloads, ctxs)
 
         fused_payload_batch.clear()
         fused_ctx_batch.clear()
@@ -1454,6 +1883,37 @@ def process_force_greats_gpu_finder(
             search_radius = TOTAL_GEM_BUDGET
 
         fast_pairs = str(os.environ.get("FG_FTFF_PAIRS_FAST", "1") or "").strip().lower() in (TRUTHY_ENV_VALUES | {""})
+
+        sig_list = list(sig_map.keys())
+        frontier_total_before += int(len(sig_list))
+        if sig_frontier_limit > 0 and len(sig_list) > int(sig_frontier_limit):
+            reduced_sig_list = _select_signature_frontier(
+                sig_list,
+                sig_map=sig_map,
+                rep_map=rep_map,
+                base_score_map=base_score_map,
+                fg_proxy_map=group_fg_proxy_scores.get((sel_color, n_sections, max_per_section), {}) or {},
+                keep_sigs=keep_sigs,
+                limit=int(sig_frontier_limit),
+                center_bin=int(sig_frontier_center_bin),
+            )
+            if reduced_sig_list and len(reduced_sig_list) < len(sig_list):
+                sig_list = list(reduced_sig_list)
+                frontier_groups_reduced += 1
+                centers = {
+                    (
+                        int((rep_map.get(sig0) or {}).get("Fever Time", 0) or 0),
+                        int((rep_map.get(sig0) or {}).get("Fever Fill Rate", 0) or 0),
+                    )
+                    for sig0 in sig_list
+                    if isinstance(rep_map.get(sig0), dict)
+                }
+                if not centers:
+                    centers = group_centers.get((sel_color, n_sections, max_per_section), set())
+        frontier_total_after += int(len(sig_list))
+
+        # Rebuild the FT/FF window from the reduced signature frontier so the exact
+        # solve volume actually drops, not just the post-solve materialization volume.
         ftff_pairs = _collect_ftff_pairs_from_centers(
             centers,
             search_radius=int(search_radius),
@@ -1467,7 +1927,7 @@ def process_force_greats_gpu_finder(
             # Get breakpoints using pure math (no simulation needed)
             rep_pairs = None
             try:
-                reps = rep_map.values() if isinstance(rep_map, dict) else []
+                reps = [rep_map.get(sig0) for sig0 in sig_list] if isinstance(rep_map, dict) else []
                 rep_pairs = {
                     (int(bs.get("Fever Time", 0) or 0), int(bs.get("Fever Fill Rate", 0) or 0))
                     for bs in reps
@@ -1541,8 +2001,6 @@ def process_force_greats_gpu_finder(
             "return_raw": True,
             "accumulate_global": True,
         }
-
-        sig_list = list(sig_map.keys())
 
         use_gpu_breakpoints = _truthy_env("FG_BREAKPOINTS_GPU", "1")
         fg_breakpoints_non_fever_base_by_ff = None
@@ -2120,7 +2578,8 @@ def process_force_greats_gpu_finder(
                         max_fp_matrix = None
 
                 if max_fp_matrix is None:
-                    group_gen = iter_analytical_breakpoint_groups(
+                    group_mode = "cpu"
+                    group_compute_fn = lambda: iter_analytical_breakpoint_groups(
                         fg_scorer,
                         n_sections,
                         ftff_pairs,
@@ -2132,7 +2591,6 @@ def process_force_greats_gpu_finder(
                         n_genomes=n_pending,
                     )
                 else:
-                    import itertools as _it
                     import numpy as _np
 
                     max_fp_matrix = _np.asarray(max_fp_matrix, dtype=_np.int16)
@@ -2172,7 +2630,37 @@ def process_force_greats_gpu_finder(
                                 if g.get("ftff_pairs"):
                                     yield g
 
-                    group_gen = _iter_groups_from_max_fp()
+                    group_mode = "max_fp"
+                    group_compute_fn = _iter_groups_from_max_fp
+
+                can_cache_groups = (
+                    bool(breakpoint_group_cache_enabled)
+                    and int(n_sections) > 0
+                    and int(len(base_pairs_list or [])) > 0
+                    and int(len(base_pairs_list or [])) <= int(breakpoint_group_cache_max_base_pairs)
+                    and int(len(ftff_pairs or [])) > 0
+                    and int(len(ftff_pairs or [])) <= int(breakpoint_group_cache_max_pairs)
+                )
+                if can_cache_groups:
+                    group_list, cache_hit = _get_cached_breakpoint_groups(
+                        calc_song=calc_song,
+                        n_sections=int(n_sections),
+                        ftff_pairs=ftff_pairs,
+                        base_stats_pairs=base_pairs_list,
+                        merge_threshold_cfgs=int(max_union_cfg),
+                        merge_threshold_threads=int(max_union_threads),
+                        n_genomes=int(n_pending),
+                        gem_scale_fever=int(GEM_SCALE_FEVER),
+                        mode=str(group_mode),
+                        compute_fn=group_compute_fn,
+                    )
+                    if cache_hit:
+                        breakpoint_group_cache_hits += 1
+                    else:
+                        breakpoint_group_cache_misses += 1
+                    group_iter = iter(group_list)
+                else:
+                    group_iter = group_compute_fn()
 
                 # Logging (count groups as we go)
                 logged_first = False
@@ -2201,7 +2689,7 @@ def process_force_greats_gpu_finder(
                 # Pipelined processing with GPU accumulation:
                 # Process groups and accumulate best on GPU (no per-group downloads)
                 max_fp_counts_cache: dict[tuple[int, ...], list[tuple[int, ...]]] = {}
-                for group in group_gen:
+                for group in group_iter:
                     group_count += 1
                     counts_list, counts_max_fp, group_pairs = _extract_group_payload(group)
                     if (not counts_list and not counts_max_fp) or _is_empty_pairs(group_pairs):
@@ -2674,10 +3162,9 @@ def process_force_greats_gpu_finder(
                     apply_sigs = pending_sigs
                     apply_pending = pending
 
-            _apply_gpu_results_to_entries(
+            _record_gpu_results(
                 pending_sigs=apply_sigs,
                 pending=apply_pending,
-                sig_map=sig_map,
                 sel_color=str(sel_color),
                 n_sections=int(n_sections),
                 max_per_section=int(max_per_section),
@@ -2702,13 +3189,12 @@ def process_force_greats_gpu_finder(
                 and bool(topk_retry_on_empty)
                 and selected_indices is not None
                 and int(_selected_count(selected_indices)) < int(n_pending)
-                and not _sig_map_has_fg_improvement(sig_map=sig_map, sigs=apply_sigs)
+                and not _sig_results_has_fg_improvement(sig_results=sig_results, sigs=apply_sigs)
             ):
                 full_results = _submit_fg_download_global_best(n_pending, blocking=True)
-                _apply_gpu_results_to_entries(
+                _record_gpu_results(
                     pending_sigs=pending_sigs,
                     pending=pending,
-                    sig_map=sig_map,
                     sel_color=str(sel_color),
                     n_sections=int(n_sections),
                     max_per_section=int(max_per_section),
@@ -2838,10 +3324,9 @@ def process_force_greats_gpu_finder(
                     apply_sigs = ctx.get("pending_sigs") or []
                     apply_pending = ctx.get("pending") or []
 
-            _apply_gpu_results_to_entries(
+            _record_gpu_results(
                 pending_sigs=apply_sigs,
                 pending=apply_pending,
-                sig_map=ctx.get("sig_map") or {},
                 sel_color=str(ctx.get("sel_color") or ""),
                 n_sections=int(ctx.get("n_sections") or 0),
                 max_per_section=int(ctx.get("max_per_section") or 0),
@@ -2864,7 +3349,7 @@ def process_force_greats_gpu_finder(
                 and ctx.get("download_topk") is not None
                 and selected_indices is not None
                 and int(_selected_count(selected_indices)) < int(n_pending)
-                and not _sig_map_has_fg_improvement(sig_map=ctx.get("sig_map") or {}, sigs=apply_sigs)
+                and not _sig_results_has_fg_improvement(sig_results=sig_results, sigs=apply_sigs)
             ):
                 # If the top-k candidate selection produced no candidates beyond the keep-mask, then the GPU
                 # selection filter indicates there are no valid FG-improving candidates (it filters on
@@ -2915,10 +3400,9 @@ def process_force_greats_gpu_finder(
                         pass
                 else:
                     full_results = _submit_fg_download_global_best(n_pending, blocking=True)
-                    _apply_gpu_results_to_entries(
+                    _record_gpu_results(
                         pending_sigs=ctx.get("pending_sigs") or [],
                         pending=ctx.get("pending") or [],
-                        sig_map=ctx.get("sig_map") or {},
                         sel_color=str(ctx.get("sel_color") or ""),
                         n_sections=int(ctx.get("n_sections") or 0),
                         max_per_section=int(ctx.get("max_per_section") or 0),
@@ -2941,13 +3425,51 @@ def process_force_greats_gpu_finder(
     # ------------------------------------------------------------------
     items = list(entry_items)
 
+    def _resolved_sig_result(entry: dict) -> dict | None:
+        try:
+            return sig_results.get(str(entry_sig.get(int(id(entry)), "") or ""))
+        except Exception:
+            return None
+
+    def _resolved_fg_score(entry: dict) -> int:
+        current = _entry_fg_score(entry)
+        if current > 0:
+            return int(current)
+        sig_row = _resolved_sig_result(entry)
+        if not isinstance(sig_row, dict):
+            return 0
+        try:
+            return int(sig_row.get("fg_score", 0) or 0)
+        except Exception:
+            return 0
+
+    def _resolved_fg_valid(entry: dict) -> bool:
+        if _entry_has_valid_fg_config(entry):
+            return True
+        sig_row = _resolved_sig_result(entry)
+        if not isinstance(sig_row, dict):
+            return False
+        force_obj = sig_row.get("force")
+        if not isinstance(force_obj, dict):
+            return False
+        return _is_valid_fg_config((force_obj.get("ForceGreats") or {}).get("config") or {})
+
     retained_hashes = select_retained_hashes(
         items,
         limit=int(LOADOUTS_PER_SONG_LIMIT),
         base_score_fn=_entry_base_score,
-        fg_score_fn=_entry_fg_score,
-        fg_valid_fn=_entry_has_valid_fg_config,
+        fg_score_fn=_resolved_fg_score,
+        fg_valid_fn=_resolved_fg_valid,
     )
+
+    for h, entry in items:
+        if str(h) not in retained_hashes or not isinstance(entry, dict):
+            continue
+        sig_row = _resolved_sig_result(entry)
+        if not isinstance(sig_row, dict):
+            continue
+        result_application.apply_signature_result_to_entry(entry=entry, sig_result=sig_row)
+
     _merge_retained_direct_ga_entries(loadout_entries, direct_ga_items, retained_hashes)
 
     # Build fg_variants for UI/debug.
@@ -3008,7 +3530,9 @@ def process_force_greats_gpu_finder(
                 f"(submit={t_gpu_calls_sec:.3f}s wait={t_gpu_wait_sec:.3f}s dl_wait={t_gpu_download_wait_sec:.3f}s) "
                 f"n_gpu_calls={n_gpu_calls} "
                 f"db_reuse={db_cached_reuse} no_eval_skips={no_eval_skips} "
-                f"groups={len(groups)} unique_sigs={unique_sig_count}"
+                f"groups={len(groups)} unique_sigs={unique_sig_count} "
+                f"bp_group_cache={breakpoint_group_cache_hits}/{breakpoint_group_cache_hits + breakpoint_group_cache_misses} "
+                f"task_tiles={fg_task_tile_batches} fused_tiles={fg_fused_tile_batches}"
             )
             print(
                 "[PERF] FG Detailed: "
@@ -3021,8 +3545,24 @@ def process_force_greats_gpu_finder(
         except Exception:
             pass
 
+    if frontier_total_before > 0:
+        try:
+            meta["FGSignatureFrontierBefore"] = int(frontier_total_before)
+            meta["FGSignatureFrontierAfter"] = int(frontier_total_after)
+            meta["FGSignatureFrontierGroupsReduced"] = int(frontier_groups_reduced)
+            meta["FGSignatureFrontierLimit"] = int(sig_frontier_limit)
+            meta["FGBreakpointGroupCacheHits"] = int(breakpoint_group_cache_hits)
+            meta["FGBreakpointGroupCacheMisses"] = int(breakpoint_group_cache_misses)
+            meta["FGTaskTileBatches"] = int(fg_task_tile_batches)
+            meta["FGTaskTileSplits"] = int(fg_task_tile_splits)
+            meta["FGFusedTileBatches"] = int(fg_fused_tile_batches)
+            meta["FGFusedTileSplits"] = int(fg_fused_tile_splits)
+        except Exception:
+            pass
+
     # Always-on compact workload summary (helps correlate GPU spikes with workload size)
     print(
-        f"[ForceGreats] GPU complete: {len(fg_variants)} variants, {n_gpu_calls} GPU calls, {computed} genomes computed"
+        f"[ForceGreats] GPU complete: {len(fg_variants)} variants, {n_gpu_calls} GPU calls, {computed} genomes computed, "
+        f"sig_frontier={frontier_total_after}/{frontier_total_before}"
     )
     return fg_variants

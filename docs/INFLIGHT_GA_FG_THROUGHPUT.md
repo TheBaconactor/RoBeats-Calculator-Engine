@@ -42,6 +42,19 @@ GA and FG are one product outcome.
   - dynamic default for `FG_FUSED_PAYLOADS_PER_REQUEST` (`64/96/128` by FG worker count)
 - In-process runs always use the fused breakpoint+solve request path.
 
+5. Winner-only FG materialization
+- Files:
+  - `gear_optimizer/helpers/song_helpers/force_greats/gpu_dispatch.py`
+  - `gear_optimizer/helpers/song_helpers/force_greats/result_application.py`
+- GPU FG results are now collected per signature and only materialized onto retained winners at the end of the hot path.
+
+6. Breakpoint-group reuse and explicit FG tiling
+- File: `gear_optimizer/helpers/song_helpers/force_greats/gpu_dispatch.py`
+- Added:
+  - breakpoint-group cache for identical chart/regime + FT/FF + base-pair families
+  - work-budget tiling for FG task batches and fused breakpoint payload batches
+- This reduces repeated CPU scaffolding work and keeps FG requests more bounded under heavy workloads.
+
 ## Regression coverage
 
 Added/updated tests:

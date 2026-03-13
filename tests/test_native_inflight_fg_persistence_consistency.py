@@ -174,3 +174,52 @@ def test_native_inflight_fg_persist_entries_fallback_when_base_entry_missing():
     assert fg_entries[0]["details"]["PrimaryColor"] == "Rush"
     assert fg_entries[0]["details"]["SecondaryColor"] == "Flow"
     assert fg_entries[0]["details"]["Difficulty"] == "Hard"
+
+
+def test_native_inflight_fg_persist_entries_materialize_stats_from_base_stats():
+    from gear_optimizer.helpers.song_helpers.force_greats.result_application import apply_gems_to_base_fast
+    from gear_optimizer.solver.native_inflight_orchestrator import _build_fg_persist_entries
+
+    base_stats = _stats(100)
+    expected_stats = apply_gems_to_base_fast(
+        base_stats,
+        "Rush",
+        9,
+        18,
+        1,
+        0,
+        0,
+        0,
+    )
+
+    fake_song = SimpleNamespace(
+        fg_variants=[
+            {
+                "_is_ga": True,
+                "score": 1000,
+                "base_score": 1000,
+                "fg_score": 1200,
+                "gear": ["G1", "G2", "G3", "G4", "G5", "G6"],
+                "minis": ["M1", "M2", "M3"],
+                "data": {
+                    "BaseScore": 1000,
+                    "Score": 1200,
+                    "FT": 9,
+                    "FF": 18,
+                    "GemCounts": {"Perfect Points": 1},
+                    "BaseStats": base_stats,
+                    "Selected Element": "Rush",
+                    "ForceGreats": {"config": {"NonFever1": 1}},
+                },
+            }
+        ],
+        meta_primary_color="Rush",
+        meta_secondary_color="Flow",
+        effective_difficulty="Hard",
+        loadout_entries={},
+    )
+
+    fg_entries = _build_fg_persist_entries(fake_song)
+    assert fg_entries
+    assert fg_entries[0]["details"]["Stats"] == expected_stats
+    assert fg_entries[0]["force"]["Stats"] == expected_stats

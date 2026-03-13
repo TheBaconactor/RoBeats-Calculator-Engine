@@ -118,7 +118,6 @@ def test_fg_ga_candidate_table_staging_requires_held_slot(monkeypatch):
             ref_arrays,
             "Rush",
             build_details_fn,
-            0,
             use_gpu=True,
         )
 
@@ -134,7 +133,6 @@ def test_fg_ga_candidate_table_staging_requires_held_slot(monkeypatch):
         ref_arrays,
         "Rush",
         build_details_fn,
-        0,
         use_gpu=True,
     )
     assert isinstance(out, list)

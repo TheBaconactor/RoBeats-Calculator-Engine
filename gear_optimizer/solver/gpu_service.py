@@ -569,12 +569,6 @@ class GpuServiceClient:
             return self._submit_fg_batch_coalesced(payload_list)
         return self.submit(GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH, {"payloads": payload_list})
 
-    def submit_process_force_greats(self, *args: Any, **kwargs: Any) -> GpuJobHandle:
-        return self.submit(
-            GpuRequestType.PROCESS_FORCE_GREATS,
-            {"args": args, "kwargs": kwargs},
-        )
-
     def _submit_fg_batch_coalesced(self, payloads: list[dict[str, Any]]) -> GpuJobHandle:
         if not self._running or self._worker_id is None:
             raise RuntimeError("GpuServiceClient not started")

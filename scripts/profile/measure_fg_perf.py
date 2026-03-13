@@ -125,7 +125,6 @@ def run_measurement():
             ref_arrays=ref_arrays,
             meta_primary_color="Rush",
             build_details_fn=lambda x: x,
-            db_loadouts_full_count=100,
             use_gpu=True,
             perf_timing=True,  # Enable internal timing prints
         )

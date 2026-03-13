@@ -15,7 +15,6 @@ def test_run_fg_job_sync_forwards_hitsim_regime_groups(monkeypatch):
         ref_arrays,
         meta_primary_color,
         build_details_fn,
-        db_loadouts_full_count,
         **kwargs,
     ):
         calls["loadout_entries"] = loadout_entries
@@ -25,7 +24,6 @@ def test_run_fg_job_sync_forwards_hitsim_regime_groups(monkeypatch):
         calls["calc_song"] = calc_song
         calls["ref_arrays"] = ref_arrays
         calls["meta_primary_color"] = meta_primary_color
-        calls["db_loadouts_full_count"] = db_loadouts_full_count
         calls["ga_candidates"] = kwargs.get("ga_candidates")
         calls["ga_registry"] = kwargs.get("ga_registry")
         calls["hitsim_regime_groups"] = kwargs.get("hitsim_regime_groups")
@@ -110,7 +108,6 @@ def test_run_fg_job_sync_forwards_hitsim_regime_groups(monkeypatch):
     assert calls["hitsim_regime_groups"] == hitsim_groups
     assert calls["ga_candidates"] is None
     assert calls["ga_registry"] is song.registry
-    assert calls["db_loadouts_full_count"] == 0
     assert song.fg_variants == calls["attach"]["fg_variants"]
     assert int(song.fg_variants[0]["fg_score"]) == 130
     assert song.fg_combo_job is fg_combo_job

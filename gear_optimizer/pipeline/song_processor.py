@@ -1048,10 +1048,6 @@ def process_song_task(args) -> SongResultPayload:
             )
 
             # Process force greats
-            # ForceGreatsFinder no longer uses the historical "DB loadout count budget" heuristic;
-            # avoid an extra SQLite read on the critical path.
-            db_loadouts_full_count = 0
-
             fg_start = time.perf_counter()
             fg_variants = process_force_greats(
                 loadout_entries,
@@ -1062,7 +1058,6 @@ def process_song_task(args) -> SongResultPayload:
                 ref_arrays,
                 meta_primary_color,
                 build_details,
-                db_loadouts_full_count,
                 use_gpu=gpu_mode,
                 fg_search_radius=fg_search_radius,
                 perf_timing=PERF_TIMING_ENABLED,

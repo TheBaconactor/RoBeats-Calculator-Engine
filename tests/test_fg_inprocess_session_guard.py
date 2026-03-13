@@ -131,7 +131,6 @@ def _run_fg_once(
             ref_arrays,
             "Rush",
             lambda d: d,
-            0,
             use_gpu=True,
             fg_search_radius=int(fg_search_radius),
             perf_timing=False,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import (
     _should_skip_full_download_no_candidates,
-    _sig_map_has_fg_improvement,
+    _sig_results_has_fg_improvement,
 )
 
 
@@ -66,16 +66,18 @@ def test_do_not_skip_when_keep_count_unknown() -> None:
     )
 
 
-def test_sig_map_has_improvement_true_when_any_entry_improves() -> None:
-    entry = {
-        "base_score": 100,
-        "fg_score": 120,
-        "force": {"ForceGreats": {"config": {"sec1": 1}}},
+def test_sig_results_has_improvement_true_when_any_entry_improves() -> None:
+    sig_results = {
+        "sigA": {
+            "base_score": 100,
+            "fg_score": 120,
+            "force": {"ForceGreats": {"config": {"sec1": 1}}},
+        }
     }
-    assert _sig_map_has_fg_improvement(sig_map={"sigA": [(entry, {})]}, sigs=["sigA"]) is True
+    assert _sig_results_has_fg_improvement(sig_results=sig_results, sigs=["sigA"]) is True
 
 
-def test_sig_map_has_improvement_false_when_config_invalid_or_no_gain() -> None:
+def test_sig_results_has_improvement_false_when_config_invalid_or_no_gain() -> None:
     entry_no_cfg = {
         "base_score": 100,
         "fg_score": 120,
@@ -86,5 +88,5 @@ def test_sig_map_has_improvement_false_when_config_invalid_or_no_gain() -> None:
         "fg_score": 100,
         "force": {"ForceGreats": {"config": {"sec1": 1}}},
     }
-    assert _sig_map_has_fg_improvement(sig_map={"sigA": [(entry_no_cfg, {})]}, sigs=["sigA"]) is False
-    assert _sig_map_has_fg_improvement(sig_map={"sigB": [(entry_no_gain, {})]}, sigs=["sigB"]) is False
+    assert _sig_results_has_fg_improvement(sig_results={"sigA": entry_no_cfg}, sigs=["sigA"]) is False
+    assert _sig_results_has_fg_improvement(sig_results={"sigB": entry_no_gain}, sigs=["sigB"]) is False

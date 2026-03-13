@@ -997,7 +997,6 @@ class _NativeSong:
     fg_variants: Optional[list[dict]] = None
     fg_candidate_limit: int = 0
     fg_search_radius: Optional[int] = None
-    fg_db_loadouts_full_count: int = 0
     fg_prep_future: Optional[concurrent.futures.Future] = None
     fg_queued_t0: float | None = None
     fg_direct_ga_candidates: bool = False
@@ -3572,11 +3571,6 @@ def _run_fg_job_sync(
     build_details = make_build_details_fn(song.meta_primary_color, song.meta_secondary_color, song.effective_difficulty)
     hitsim_regime_groups = list(getattr(song, "_hitsim_fg_regime_groups", []) or [])
 
-    if isinstance(song.db_loadouts_full, list):
-        song.fg_db_loadouts_full_count = len(song.db_loadouts_full)
-    else:
-        song.fg_db_loadouts_full_count = 0
-
     # If FG prep built GA-only entries while DB prefetch was pending, merge DB rows now
     # without rebuilding the full GA union.
     if song.db_loadouts_full is not None and not _loadout_entries_have_db_source(song.loadout_entries):
@@ -3640,7 +3634,6 @@ def _run_fg_job_sync(
         song.ref_arrays,
         song.meta_primary_color,
         build_details,
-        int(song.fg_db_loadouts_full_count or 0),
         use_gpu=True,
         fg_search_radius=song.fg_search_radius,
         perf_timing=_truthy(os.environ.get("PERF_TIMING", "0")),

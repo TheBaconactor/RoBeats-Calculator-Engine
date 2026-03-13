@@ -46,7 +46,6 @@ def test_process_force_greats_gpu_failure_raises_without_cpu_fallback(monkeypatc
             ref_arrays={},
             meta_primary_color="Rush",
             build_details_fn=lambda data: {"Stats": (data or {}).get("Stats", {})},
-            db_loadouts_full_count=0,
             use_gpu=True,
             ga_candidates=ga_candidates,
             ga_registry=_Registry(),
@@ -130,13 +129,11 @@ def test_process_force_greats_runs_gpu_finder_per_hitsim_regime(monkeypatch):
         calc_song,
         ref_arrays,
         meta_primary_color,
-        build_details_fn,
         *,
         use_gpu=False,
         fg_search_radius=None,
         perf_timing=False,
         gpu_client=None,
-        names_list_fn=None,
         ga_candidates=None,
         ga_registry=None,
     ):
@@ -145,12 +142,10 @@ def test_process_force_greats_runs_gpu_finder_per_hitsim_regime(monkeypatch):
             force_greats_finder,
             ref_arrays,
             meta_primary_color,
-            build_details_fn,
             use_gpu,
             fg_search_radius,
             perf_timing,
             gpu_client,
-            names_list_fn,
             ga_registry,
         )
         regime_id = str((calc_song.get("metadata") or {}).get("HumanHitSimRegimeId", "") or "")
@@ -207,7 +202,6 @@ def test_process_force_greats_runs_gpu_finder_per_hitsim_regime(monkeypatch):
         ref_arrays={},
         meta_primary_color="Rush",
         build_details_fn=lambda data: data,
-        db_loadouts_full_count=0,
         use_gpu=True,
         hitsim_regime_groups=groups,
     )
