@@ -1,4 +1,11 @@
-from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import _select_signature_frontier
+import numpy as np
+
+from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import (
+    _build_signature_frontier_metas,
+    _select_signature_frontier,
+    _select_signature_frontier_cpu,
+)
+from gear_optimizer.solver.taichi_gem.force_greats.api import fg_select_signature_frontier_batch
 
 
 def _sig(name: str, family: str = "", regime_id: str = "") -> tuple:
@@ -142,3 +149,138 @@ def test_signature_frontier_prefers_new_timing_buckets_over_duplicate_proxy_rows
     assert dup_a in out
     assert alt in out
     assert dup_b not in out
+
+
+def test_signature_frontier_gpu_matches_cpu_reference() -> None:
+    base_sigs = [_sig(f"base{i}") for i in range(51)]
+    keep_sig = _sig("keep", family="keep-family", regime_id="keep")
+    prio_sig = _sig("prio", family="prio-family", regime_id="prio")
+    alt_timing_sig = _sig("alt", family="alt-family", regime_id="alt")
+    dup_timing_sig = _sig("dup", family="alt-family", regime_id="dup")
+    filler_sigs = [_sig(f"fill{i}", family="fill-family", regime_id=f"fill{i}") for i in range(12)]
+    sigs = base_sigs + [keep_sig, prio_sig, alt_timing_sig, dup_timing_sig] + filler_sigs
+
+    sig_map = {sig: _rows() for sig in sigs}
+    sig_map[prio_sig] = _rows(priority=2)
+
+    rep_map = {sig: {"Fever Time": 0, "Fever Fill Rate": 0} for sig in base_sigs}
+    rep_map[keep_sig] = {"Fever Time": 12, "Fever Fill Rate": 0}
+    rep_map[prio_sig] = {"Fever Time": 0, "Fever Fill Rate": 12}
+    rep_map[alt_timing_sig] = {"Fever Time": 18, "Fever Fill Rate": 18}
+    rep_map[dup_timing_sig] = {"Fever Time": 18, "Fever Fill Rate": 18}
+    for idx, sig in enumerate(filler_sigs):
+        rep_map[sig] = {"Fever Time": 20 + idx, "Fever Fill Rate": 2 + idx}
+
+    base_map = {sig: 20_000 - idx for idx, sig in enumerate(base_sigs)}
+    base_map[keep_sig] = 100
+    base_map[prio_sig] = 95
+    base_map[alt_timing_sig] = 94
+    base_map[dup_timing_sig] = 93
+    for idx, sig in enumerate(filler_sigs):
+        base_map[sig] = 80 - idx
+
+    proxy_map = {sig: 5 for sig in base_sigs}
+    proxy_map[keep_sig] = 700
+    proxy_map[prio_sig] = 650
+    proxy_map[alt_timing_sig] = 600
+    proxy_map[dup_timing_sig] = 599
+    for idx, sig in enumerate(filler_sigs):
+        proxy_map[sig] = 100 - idx
+
+    cpu = _select_signature_frontier_cpu(
+        sigs,
+        sig_map=sig_map,
+        rep_map=rep_map,
+        base_score_map=base_map,
+        fg_proxy_map=proxy_map,
+        keep_sigs={str(keep_sig)},
+        limit=58,
+        center_bin=2,
+    )
+    gpu = _select_signature_frontier(
+        sigs,
+        sig_map=sig_map,
+        rep_map=rep_map,
+        base_score_map=base_map,
+        fg_proxy_map=proxy_map,
+        keep_sigs={str(keep_sig)},
+        limit=58,
+        center_bin=2,
+    )
+
+    assert gpu == cpu
+
+
+def test_signature_frontier_gpu_batch_matches_cpu_reference() -> None:
+    sigs = [_sig(f"s{i}", family=f"fam{i % 3}", regime_id=f"r{i}") for i in range(70)]
+    sig_map = {sig: _rows(priority=(1 if i % 17 == 0 else 0)) for i, sig in enumerate(sigs)}
+    rep_map = {sig: {"Fever Time": i % 23, "Fever Fill Rate": (i * 3) % 23} for i, sig in enumerate(sigs)}
+    base_map = {sig: 9000 - i for i, sig in enumerate(sigs)}
+    proxy_map = {sig: 500 - (i % 19) for i, sig in enumerate(sigs)}
+
+    metas = _build_signature_frontier_metas(
+        sigs,
+        sig_map=sig_map,
+        rep_map=rep_map,
+        base_score_map=base_map,
+        fg_proxy_map=proxy_map,
+        keep_sigs={str(sigs[3]), str(sigs[9])},
+        limit=57,
+        center_bin=2,
+    )
+    cpu = _select_signature_frontier_cpu(
+        sigs,
+        sig_map=sig_map,
+        rep_map=rep_map,
+        base_score_map=base_map,
+        fg_proxy_map=proxy_map,
+        keep_sigs={str(sigs[3]), str(sigs[9])},
+        limit=57,
+        center_bin=2,
+    )
+
+    timing_bucket_ids: dict[tuple[str, str, str], int] = {}
+    next_timing_bucket_id = 1
+    payload = {
+        "base_scores": [],
+        "proxy_scores": [],
+        "priorities": [],
+        "force_keep": [],
+        "center_bucket_ft": [],
+        "center_bucket_ff": [],
+        "timing_bucket": [],
+        "limit": 57,
+        "top_base_keep": 51,
+    }
+    for meta in metas:
+        payload["base_scores"].append(int(meta["base"]))
+        payload["proxy_scores"].append(int(meta["proxy"]))
+        payload["priorities"].append(int(meta["priority"]))
+        payload["force_keep"].append(1 if meta["force_keep"] else 0)
+        ft_bucket, ff_bucket = meta["center_bucket"]
+        payload["center_bucket_ft"].append(int(ft_bucket))
+        payload["center_bucket_ff"].append(int(ff_bucket))
+        timing_bucket = meta["timing_bucket"]
+        if timing_bucket == ("", "", ""):
+            payload["timing_bucket"].append(0)
+            continue
+        bucket_id = timing_bucket_ids.get(timing_bucket)
+        if bucket_id is None:
+            bucket_id = next_timing_bucket_id
+            timing_bucket_ids[timing_bucket] = bucket_id
+            next_timing_bucket_id += 1
+        payload["timing_bucket"].append(int(bucket_id))
+
+    batch_out = fg_select_signature_frontier_batch(
+        [
+            {
+                key: value
+                if key in {"limit", "top_base_keep"}
+                else np.asarray(value, dtype=np.int32)
+                for key, value in payload.items()
+            }
+        ]
+    )[0]
+    gpu = [metas[int(idx)]["sig"] for idx in batch_out]
+
+    assert gpu == cpu

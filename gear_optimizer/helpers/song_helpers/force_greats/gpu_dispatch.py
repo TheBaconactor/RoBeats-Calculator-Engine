@@ -803,7 +803,7 @@ def _signature_timing_bucket(sig: object) -> tuple[str, str, str]:
     return (apply_to, family, regime_scope)
 
 
-def _select_signature_frontier(
+def _build_signature_frontier_metas(
     sigs: list,
     *,
     sig_map: dict,
@@ -813,13 +813,11 @@ def _select_signature_frontier(
     keep_sigs: set[str] | None = None,
     limit: int,
     center_bin: int = 2,
-) -> list:
+) -> list[dict]:
     try:
         limit_i = int(limit)
     except Exception:
         limit_i = 0
-    if limit_i <= 0 or len(sigs) <= limit_i:
-        return list(sigs)
 
     try:
         center_bin_i = max(1, int(center_bin))
@@ -882,7 +880,15 @@ def _select_signature_frontier(
             }
         )
 
-    if len(metas) <= limit_i:
+    return metas
+
+
+def _select_signature_frontier_cpu_from_metas(metas: list[dict], *, limit: int) -> list:
+    try:
+        limit_i = int(limit)
+    except Exception:
+        limit_i = 0
+    if limit_i <= 0 or len(metas) <= limit_i:
         return [m["sig"] for m in metas]
 
     metas_by_base = sorted(metas, key=lambda m: (-m["base"], -m["proxy"], -m["priority"], m["idx"]))
@@ -967,6 +973,145 @@ def _select_signature_frontier(
     return selected[:limit_i]
 
 
+def _select_signature_frontier_cpu(
+    sigs: list,
+    *,
+    sig_map: dict,
+    rep_map: dict,
+    base_score_map: dict,
+    fg_proxy_map: dict,
+    keep_sigs: set[str] | None = None,
+    limit: int,
+    center_bin: int = 2,
+) -> list:
+    metas = _build_signature_frontier_metas(
+        sigs,
+        sig_map=sig_map,
+        rep_map=rep_map,
+        base_score_map=base_score_map,
+        fg_proxy_map=fg_proxy_map,
+        keep_sigs=keep_sigs,
+        limit=limit,
+        center_bin=center_bin,
+    )
+    return _select_signature_frontier_cpu_from_metas(metas, limit=limit)
+
+
+def _select_signature_frontier(
+    sigs: list,
+    *,
+    sig_map: dict,
+    rep_map: dict,
+    base_score_map: dict,
+    fg_proxy_map: dict,
+    keep_sigs: set[str] | None = None,
+    limit: int,
+    center_bin: int = 2,
+) -> list:
+    try:
+        limit_i = int(limit)
+    except Exception:
+        limit_i = 0
+    if limit_i <= 0 or len(sigs) <= limit_i:
+        return list(sigs)
+
+    metas = _build_signature_frontier_metas(
+        sigs,
+        sig_map=sig_map,
+        rep_map=rep_map,
+        base_score_map=base_score_map,
+        fg_proxy_map=fg_proxy_map,
+        keep_sigs=keep_sigs,
+        limit=limit_i,
+        center_bin=center_bin,
+    )
+    if len(metas) <= limit_i:
+        return [m["sig"] for m in metas]
+
+    try:
+        top_base_keep = min(int(limit_i), int(LOADOUTS_PER_SONG_LIMIT))
+    except Exception:
+        top_base_keep = int(limit_i)
+
+    timing_bucket_ids: dict[tuple[str, str, str], int] = {}
+    next_timing_bucket_id = 1
+    base_scores: list[int] = []
+    proxy_scores: list[int] = []
+    priorities: list[int] = []
+    force_keep_flags: list[int] = []
+    center_ft: list[int] = []
+    center_ff: list[int] = []
+    timing_buckets: list[int] = []
+    for meta in metas:
+        base_scores.append(int(meta["base"]))
+        proxy_scores.append(int(meta["proxy"]))
+        priorities.append(int(meta["priority"]))
+        force_keep_flags.append(1 if bool(meta["force_keep"]) else 0)
+        ft_bucket, ff_bucket = meta["center_bucket"]
+        center_ft.append(int(ft_bucket))
+        center_ff.append(int(ff_bucket))
+        timing_bucket = meta["timing_bucket"]
+        if timing_bucket == ("", "", ""):
+            timing_buckets.append(0)
+            continue
+        bucket_id = timing_bucket_ids.get(timing_bucket)
+        if bucket_id is None:
+            bucket_id = int(next_timing_bucket_id)
+            timing_bucket_ids[timing_bucket] = bucket_id
+            next_timing_bucket_id += 1
+        timing_buckets.append(int(bucket_id))
+
+    try:
+        from ....solver.taichi_gem.force_greats.api import fg_select_signature_frontier_indices
+
+        selected_indices = fg_select_signature_frontier_indices(
+            base_scores=np.asarray(base_scores, dtype=np.int32),
+            proxy_scores=np.asarray(proxy_scores, dtype=np.int32),
+            priorities=np.asarray(priorities, dtype=np.int32),
+            force_keep=np.asarray(force_keep_flags, dtype=np.int32),
+            center_bucket_ft=np.asarray(center_ft, dtype=np.int32),
+            center_bucket_ff=np.asarray(center_ff, dtype=np.int32),
+            timing_bucket=np.asarray(timing_buckets, dtype=np.int32),
+            limit=int(limit_i),
+            top_base_keep=int(top_base_keep),
+        )
+    except Exception as exc:
+        warn_fallback(
+            "fg.signature_frontier.gpu",
+            "GPU FG signature frontier selection failed; falling back to host selector",
+            exc=exc,
+            fatal=False,
+        )
+        if _GPU_STRICT:
+            raise
+        return _select_signature_frontier_cpu_from_metas(metas, limit=limit_i)
+
+    out: list = []
+    seen: set = set()
+    for idx in list(np.asarray(selected_indices, dtype=np.int32)):
+        i = int(idx)
+        if i < 0 or i >= len(metas):
+            continue
+        sig = metas[i]["sig"]
+        if sig in seen:
+            continue
+        seen.add(sig)
+        out.append(sig)
+    expected_n = min(int(limit_i), int(len(metas)))
+    if len(out) < expected_n:
+        exc = RuntimeError(f"GPU FG frontier returned {len(out)} signatures; expected {expected_n}")
+        warn_fallback(
+            "fg.signature_frontier.gpu_short",
+            "GPU FG signature frontier selection returned an incomplete surface",
+            exc=exc,
+            fatal=False,
+        )
+        if _GPU_STRICT:
+            raise exc
+        return _select_signature_frontier_cpu_from_metas(metas, limit=limit_i)
+    return out[:limit_i]
+
+
 def process_force_greats_gpu_finder(
     loadout_entries,
     force_greats_finder,
@@ -1006,7 +1151,10 @@ def process_force_greats_gpu_finder(
         _extract_base_stats,
         fg_baseline_params,
     )
-    from ....solver.taichi_gem.force_greats.api import solve_force_greats_finder_gpu
+    from ....solver.taichi_gem.force_greats.api import (
+        fg_select_signature_frontier_batch,
+        solve_force_greats_finder_gpu,
+    )
 
     meta = calc_song.get("metadata", {}) or {}
     p_color = meta.get("Primary Color", "")
@@ -1710,6 +1858,143 @@ def process_force_greats_gpu_finder(
             max_keep_total=max_keep_total,
         )
 
+    reduced_sig_lists: dict[tuple[str, int, int], list] = {}
+    if groups:
+        frontier_payloads: list[dict[str, object]] = []
+        frontier_keys: list[tuple[str, int, int]] = []
+        frontier_meta_batches: list[list[dict]] = []
+
+        for group_key, sig_map in groups.items():
+            sig_list0 = list(sig_map.keys())
+            reduced_sig_lists[group_key] = list(sig_list0)
+            frontier_total_before += int(len(sig_list0))
+            if sig_frontier_limit <= 0 or len(sig_list0) <= int(sig_frontier_limit):
+                frontier_total_after += int(len(sig_list0))
+                continue
+
+            rep_map = group_reps.get(group_key, {}) or {}
+            base_score_map = group_base_scores.get(group_key, {}) or {}
+            fg_proxy_map = group_fg_proxy_scores.get(group_key, {}) or {}
+            metas = _build_signature_frontier_metas(
+                sig_list0,
+                sig_map=sig_map,
+                rep_map=rep_map,
+                base_score_map=base_score_map,
+                fg_proxy_map=fg_proxy_map,
+                keep_sigs=keep_sigs,
+                limit=int(sig_frontier_limit),
+                center_bin=int(sig_frontier_center_bin),
+            )
+            if len(metas) <= int(sig_frontier_limit):
+                reduced_sig_lists[group_key] = [m["sig"] for m in metas]
+                frontier_total_after += int(len(metas))
+                continue
+
+            try:
+                top_base_keep = min(int(sig_frontier_limit), int(LOADOUTS_PER_SONG_LIMIT))
+            except Exception:
+                top_base_keep = int(sig_frontier_limit)
+
+            timing_bucket_ids: dict[tuple[str, str, str], int] = {}
+            next_timing_bucket_id = 1
+            base_scores: list[int] = []
+            proxy_scores: list[int] = []
+            priorities: list[int] = []
+            force_keep_flags: list[int] = []
+            center_ft: list[int] = []
+            center_ff: list[int] = []
+            timing_buckets: list[int] = []
+            for meta in metas:
+                base_scores.append(int(meta["base"]))
+                proxy_scores.append(int(meta["proxy"]))
+                priorities.append(int(meta["priority"]))
+                force_keep_flags.append(1 if bool(meta["force_keep"]) else 0)
+                ft_bucket, ff_bucket = meta["center_bucket"]
+                center_ft.append(int(ft_bucket))
+                center_ff.append(int(ff_bucket))
+                timing_bucket = meta["timing_bucket"]
+                if timing_bucket == ("", "", ""):
+                    timing_buckets.append(0)
+                    continue
+                bucket_id = timing_bucket_ids.get(timing_bucket)
+                if bucket_id is None:
+                    bucket_id = int(next_timing_bucket_id)
+                    timing_bucket_ids[timing_bucket] = bucket_id
+                    next_timing_bucket_id += 1
+                timing_buckets.append(int(bucket_id))
+
+            frontier_payloads.append(
+                {
+                    "base_scores": np.asarray(base_scores, dtype=np.int32),
+                    "proxy_scores": np.asarray(proxy_scores, dtype=np.int32),
+                    "priorities": np.asarray(priorities, dtype=np.int32),
+                    "force_keep": np.asarray(force_keep_flags, dtype=np.int32),
+                    "center_bucket_ft": np.asarray(center_ft, dtype=np.int32),
+                    "center_bucket_ff": np.asarray(center_ff, dtype=np.int32),
+                    "timing_bucket": np.asarray(timing_buckets, dtype=np.int32),
+                    "limit": int(sig_frontier_limit),
+                    "top_base_keep": int(top_base_keep),
+                }
+            )
+            frontier_keys.append(group_key)
+            frontier_meta_batches.append(metas)
+
+        if frontier_payloads:
+            frontier_batch_failed = False
+            try:
+                selected_batches = fg_select_signature_frontier_batch(frontier_payloads)
+            except Exception as exc:
+                warn_fallback(
+                    "fg.signature_frontier.gpu_batch",
+                    "GPU FG signature frontier batch selection failed; falling back to host selector",
+                    exc=exc,
+                    fatal=False,
+                )
+                if _GPU_STRICT:
+                    raise
+                frontier_batch_failed = True
+                selected_batches = []
+
+            if frontier_batch_failed:
+                for group_key, metas in zip(frontier_keys, frontier_meta_batches):
+                    out = _select_signature_frontier_cpu_from_metas(metas, limit=int(sig_frontier_limit))
+                    reduced_sig_lists[group_key] = list(out[: int(sig_frontier_limit)])
+                    frontier_total_after += int(len(reduced_sig_lists[group_key]))
+                    if int(len(reduced_sig_lists[group_key])) < int(len(metas)):
+                        frontier_groups_reduced += 1
+            else:
+                for group_key, metas, selected_indices in zip(frontier_keys, frontier_meta_batches, selected_batches):
+                    out: list = []
+                    seen: set = set()
+                    for idx in list(np.asarray(selected_indices, dtype=np.int32)):
+                        i = int(idx)
+                        if i < 0 or i >= len(metas):
+                            continue
+                        sig = metas[i]["sig"]
+                        if sig in seen:
+                            continue
+                        seen.add(sig)
+                        out.append(sig)
+                    expected_n = min(int(sig_frontier_limit), int(len(metas)))
+                    if len(out) < expected_n:
+                        exc = RuntimeError(
+                            f"GPU FG frontier batch returned {len(out)} signatures; expected {expected_n}"
+                        )
+                        warn_fallback(
+                            "fg.signature_frontier.gpu_batch_short",
+                            "GPU FG signature frontier batch selection returned an incomplete surface",
+                            exc=exc,
+                            fatal=False,
+                        )
+                        if _GPU_STRICT:
+                            raise exc
+                        out = _select_signature_frontier_cpu_from_metas(metas, limit=int(sig_frontier_limit))
+
+                    reduced_sig_lists[group_key] = list(out[: int(sig_frontier_limit)])
+                    frontier_total_after += int(len(reduced_sig_lists[group_key]))
+                    if int(len(reduced_sig_lists[group_key])) < int(len(metas)):
+                        frontier_groups_reduced += 1
+
     hitsim_apply_to = _hitsim_apply_to(calc_song)
     chart_key = _chart_signature_key(calc_song)
     if hitsim_apply_to == "FG":
@@ -1978,33 +2263,18 @@ def process_force_greats_gpu_finder(
 
         fast_pairs = str(os.environ.get("FG_FTFF_PAIRS_FAST", "1") or "").strip().lower() in (TRUTHY_ENV_VALUES | {""})
 
-        sig_list = list(sig_map.keys())
-        frontier_total_before += int(len(sig_list))
-        if sig_frontier_limit > 0 and len(sig_list) > int(sig_frontier_limit):
-            reduced_sig_list = _select_signature_frontier(
-                sig_list,
-                sig_map=sig_map,
-                rep_map=rep_map,
-                base_score_map=base_score_map,
-                fg_proxy_map=group_fg_proxy_scores.get((sel_color, n_sections, max_per_section), {}) or {},
-                keep_sigs=keep_sigs,
-                limit=int(sig_frontier_limit),
-                center_bin=int(sig_frontier_center_bin),
-            )
-            if reduced_sig_list and len(reduced_sig_list) < len(sig_list):
-                sig_list = list(reduced_sig_list)
-                frontier_groups_reduced += 1
-                centers = {
-                    (
-                        int((rep_map.get(sig0) or {}).get("Fever Time", 0) or 0),
-                        int((rep_map.get(sig0) or {}).get("Fever Fill Rate", 0) or 0),
-                    )
-                    for sig0 in sig_list
-                    if isinstance(rep_map.get(sig0), dict)
-                }
-                if not centers:
-                    centers = group_centers.get((sel_color, n_sections, max_per_section), set())
-        frontier_total_after += int(len(sig_list))
+        sig_list = list(reduced_sig_lists.get((sel_color, n_sections, max_per_section), list(sig_map.keys())))
+        if len(sig_list) < len(sig_map):
+            centers = {
+                (
+                    int((rep_map.get(sig0) or {}).get("Fever Time", 0) or 0),
+                    int((rep_map.get(sig0) or {}).get("Fever Fill Rate", 0) or 0),
+                )
+                for sig0 in sig_list
+                if isinstance(rep_map.get(sig0), dict)
+            }
+            if not centers:
+                centers = group_centers.get((sel_color, n_sections, max_per_section), set())
 
         # Rebuild the FT/FF window from the reduced signature frontier so the exact
         # solve volume actually drops, not just the post-solve materialization volume.

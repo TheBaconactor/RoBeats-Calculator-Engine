@@ -249,6 +249,13 @@ Implemented on the current FG branch:
   - regime-aware or center-aware representatives when applicable
 - Treat this phase as workload reduction, not just a transport optimization.
 
+Current branch status:
+
+- GPU-side FG frontier reduction is implemented in the production path.
+- The hot path now batches FG frontier selection per song/group set, then downloads the reduced frontier once.
+- The first naive version regressed throughput because it downloaded one frontier result per group; that per-group boundary is no longer used in production.
+- Signature metadata still originates from host-built FG groups, so the remaining future opportunity is eliminating the host-side signature-group construction itself, not the frontier reduction step.
+
 ### Phase 2C: Remove redundant FG solve volume
 
 - identify near-equivalent FG candidates by signature class before exact solve
@@ -261,7 +268,8 @@ Current branch status:
 - breakpoint-group scaffolding reuse is implemented
 - max-FP matrix reuse is implemented
 - explicit resident-owner metadata is implemented on the live in-flight path
-- deeper exact-solve reuse beyond breakpoint groups still remains
+- production exact-solve reuse currently comes from the max-FP matrix cache plus breakpoint-group cache
+- further reuse beyond those caches is a watchlist item, not a remaining blocker for the canonical FG path
 
 ### Phase 3: Shrink the FG host boundary
 
@@ -291,7 +299,8 @@ Current branch status:
 Current branch status:
 
 - retained-winner-only host materialization is implemented
-- frontier construction itself is still Python-side, not GPU-native
+- GPU frontier reduction is active in the canonical path
+- the remaining host-side piece is signature-group construction from retained entries before the GPU frontier stage
 
 ### Phase 4: Delete non-canonical legacy paths
 
@@ -311,6 +320,12 @@ Candidate deletions or demotions:
 - Move toward explicit FG resident ownership rather than "entire slot is pinned until FG ends."
 - Keep full-slot hold only as a degraded or compatibility mode if finer-grained residency is not yet stable.
 - Avoid a permanently exclusive FG slot; use a bounded FG resident arena plus dynamic scheduler credits so FG cannot silently accumulate and break queue rhythm.
+
+Current branch status:
+
+- explicit FG resident-owner metadata is implemented on the live in-flight path
+- held-slot candidate-table staging now requires owner/slot identity to match before the resident fast path is used
+- a dedicated FG resident arena is not required for the current production path and remains a future optimization, not a correctness gap
 
 ## Legacy-Removal Policy
 

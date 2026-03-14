@@ -58,9 +58,19 @@ GA and FG are one product outcome.
 - Explicit resident-owner metadata now guards the held-slot path so candidate-table staging is allowed only when slot ownership still matches the active FG slot.
 - This reduces repeated CPU scaffolding work and keeps FG requests more bounded under heavy workloads.
 
+7. Batched GPU FG frontier reduction
+- Files:
+  - `gear_optimizer/helpers/song_helpers/force_greats/gpu_dispatch.py`
+  - `gear_optimizer/solver/taichi_gem/force_greats/api.py`
+  - `gear_optimizer/solver/taichi_gem/force_greats/kernels.py`
+- Added:
+  - GPU frontier selection from per-signature metadata
+  - batched per-song frontier download instead of one download per FG group
+- This keeps the frontier-reduction logic on the GPU without reintroducing the per-group sync/download cliff.
+
 ## Regression investigation update (March 13, 2026)
 
-The earlier "heavy throughput regression" did not reproduce on the controlled FG-isolation benchmark after the risky hot-path "preselected FG surface" skip was reverted.
+The earlier "heavy throughput regression" from the reverted hot-path "preselected FG surface" skip stayed fixed, but a new regression appeared when GPU frontier reduction was first wired as a per-group download.
 
 Controlled benchmark:
 
@@ -71,11 +81,12 @@ Controlled benchmark:
 - `song_limit=20`
 - `inflight=12`
 
-Latest result:
+Latest results:
 
-- current branch: `1459.0 songs/hour`
-- baseline `3d0ccf3`: `1258.8 songs/hour`
-- delta: `+15.9%`
+- previous pushed FG baseline (`773c74e`): `1105.7 songs/hour`
+- naive per-group GPU frontier download: `876.4 songs/hour`
+- current batched GPU frontier path: `1166.7 songs/hour`
+- delta vs pushed baseline: `+5.5%`
 
 Small full-production-config sample (`song_limit=5`, same seed settings) was effectively flat-to-slightly-positive:
 
@@ -84,8 +95,9 @@ Small full-production-config sample (`song_limit=5`, same seed settings) was eff
 
 Interpretation:
 
-- the earlier severe drop was likely benchmark noise from the full mixed HumanHitSim queue path plus the reverted hot-path skip
-- the current FG branch does not show a reproduced throughput regression on the measured comparisons above
+- the reverted hot-path skip was not the remaining problem
+- the real regression cause was the per-group GPU frontier boundary itself: one upload/select/download cycle per FG group
+- batching the frontier selection per song removed that micro-sync pattern and restored a positive controlled throughput delta
 
 ## Regression coverage
 

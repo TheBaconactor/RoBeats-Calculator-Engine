@@ -32,6 +32,12 @@ _fg_max_ftff_env = max(256, min(int(_fg_max_ftff_env), 4096))
 FG_MAX_FTFF = int(_fg_max_ftff_env)
 FG_MAX_SONG_NOTES = 200000  # safety cap for timestamps uploaded to GPU
 FG_DOWNLOAD_TOPK_MAX = 256  # Max selected rows for reduced global_best download (keep + candidates)
+FG_SIGNATURE_FRONTIER_MAX = MAX_GENOMES  # Max signatures per FG frontier-selection batch
+try:
+    _fg_signature_frontier_batch_env = int(os.environ.get("FG_SIGNATURE_FRONTIER_BATCH_MAX", "64") or "64")
+except Exception:
+    _fg_signature_frontier_batch_env = 64
+FG_SIGNATURE_FRONTIER_BATCH_MAX = max(1, min(int(_fg_signature_frontier_batch_env), 128))
 try:
     _fg_download_batch_env = int(os.environ.get("FG_DOWNLOAD_BATCH_MAX", "128") or "128")
 except Exception:
@@ -163,6 +169,21 @@ fg_best_packed_download_staging_1024: ti.Field | None = None
 fg_global_best_packed_download_staging_256: ti.Field | None = None
 fg_global_best_packed_download_staging_1024: ti.Field | None = None
 
+# GPU-side FG frontier selection metadata and outputs.
+fg_frontier_base_score: ti.Field | None = None  # (FG_SIGNATURE_FRONTIER_MAX,) i32
+fg_frontier_proxy_score: ti.Field | None = None  # (FG_SIGNATURE_FRONTIER_MAX,) i32
+fg_frontier_priority: ti.Field | None = None  # (FG_SIGNATURE_FRONTIER_MAX,) i32
+fg_frontier_force_keep: ti.Field | None = None  # (FG_SIGNATURE_FRONTIER_MAX,) i32
+fg_frontier_center_bucket_ft: ti.Field | None = None  # (FG_SIGNATURE_FRONTIER_MAX,) i32
+fg_frontier_center_bucket_ff: ti.Field | None = None  # (FG_SIGNATURE_FRONTIER_MAX,) i32
+fg_frontier_timing_bucket: ti.Field | None = None  # (FG_SIGNATURE_FRONTIER_MAX,) i32
+fg_frontier_selected_count: ti.Field | None = None  # () i32
+fg_frontier_selected_indices: ti.Field | None = None  # (FG_SIGNATURE_FRONTIER_MAX,) i32
+fg_frontier_base_order: ti.Field | None = None  # (FG_SIGNATURE_FRONTIER_MAX,) i32
+fg_frontier_fg_order: ti.Field | None = None  # (FG_SIGNATURE_FRONTIER_MAX,) i32
+fg_frontier_selected_count_batch: ti.Field | None = None  # (FG_SIGNATURE_FRONTIER_BATCH_MAX,) i32
+fg_frontier_selected_indices_batch: ti.Field | None = None  # (FG_SIGNATURE_FRONTIER_BATCH_MAX, FG_SIGNATURE_FRONTIER_MAX) i32
+
 # Warm-start hints for FG gem allocation (local search optimization)
 # Stores: [pp_gems, cm_gems, fm_gems, ov_gems] from previous best allocation
 fg_genome_hint_allocation: ti.Field | None = None  # (MAX_GENOMES, 4) i32
@@ -270,6 +291,20 @@ def reset_fields_state() -> None:
         fg_selected_packed_batch_download_staging_8, \
         fg_selected_packed_batch_download_staging_32, \
         fg_selected_packed_batch_download_staging_128
+    global \
+        fg_frontier_base_score, \
+        fg_frontier_proxy_score, \
+        fg_frontier_priority, \
+        fg_frontier_force_keep, \
+        fg_frontier_center_bucket_ft, \
+        fg_frontier_center_bucket_ff, \
+        fg_frontier_timing_bucket, \
+        fg_frontier_selected_count, \
+        fg_frontier_selected_indices, \
+        fg_frontier_base_order, \
+        fg_frontier_fg_order, \
+        fg_frontier_selected_count_batch, \
+        fg_frontier_selected_indices_batch
     global fg_genome_hint_allocation
     fg_global_best_final_score = None
     fg_global_best_base_score = None
@@ -295,6 +330,19 @@ def reset_fields_state() -> None:
     fg_selected_packed_batch_download_staging_8 = None
     fg_selected_packed_batch_download_staging_32 = None
     fg_selected_packed_batch_download_staging_128 = None
+    fg_frontier_base_score = None
+    fg_frontier_proxy_score = None
+    fg_frontier_priority = None
+    fg_frontier_force_keep = None
+    fg_frontier_center_bucket_ft = None
+    fg_frontier_center_bucket_ff = None
+    fg_frontier_timing_bucket = None
+    fg_frontier_selected_count = None
+    fg_frontier_selected_indices = None
+    fg_frontier_base_order = None
+    fg_frontier_fg_order = None
+    fg_frontier_selected_count_batch = None
+    fg_frontier_selected_indices_batch = None
     fg_genome_hint_allocation = None
 
     _fields_allocated = False
@@ -377,6 +425,19 @@ def bind_fields(kernels_module) -> None:
     kernels_module.fg_selected_indices = fg_selected_indices
     kernels_module.fg_selected_packed = fg_selected_packed
     kernels_module.fg_selected_packed_batch = fg_selected_packed_batch
+    kernels_module.fg_frontier_base_score = fg_frontier_base_score
+    kernels_module.fg_frontier_proxy_score = fg_frontier_proxy_score
+    kernels_module.fg_frontier_priority = fg_frontier_priority
+    kernels_module.fg_frontier_force_keep = fg_frontier_force_keep
+    kernels_module.fg_frontier_center_bucket_ft = fg_frontier_center_bucket_ft
+    kernels_module.fg_frontier_center_bucket_ff = fg_frontier_center_bucket_ff
+    kernels_module.fg_frontier_timing_bucket = fg_frontier_timing_bucket
+    kernels_module.fg_frontier_selected_count = fg_frontier_selected_count
+    kernels_module.fg_frontier_selected_indices = fg_frontier_selected_indices
+    kernels_module.fg_frontier_base_order = fg_frontier_base_order
+    kernels_module.fg_frontier_fg_order = fg_frontier_fg_order
+    kernels_module.fg_frontier_selected_count_batch = fg_frontier_selected_count_batch
+    kernels_module.fg_frontier_selected_indices_batch = fg_frontier_selected_indices_batch
     kernels_module.fg_genome_hint_allocation = fg_genome_hint_allocation
 
 
@@ -405,6 +466,20 @@ def allocate_fields() -> None:
     global fg_stage1_packed, fg_stage1_wave_best
     global fg_flat_work_genome, fg_flat_work_ftff
     global fg_global_best_packed_download_staging_256, fg_global_best_packed_download_staging_1024
+    global \
+        fg_frontier_base_score, \
+        fg_frontier_proxy_score, \
+        fg_frontier_priority, \
+        fg_frontier_force_keep, \
+        fg_frontier_center_bucket_ft, \
+        fg_frontier_center_bucket_ff, \
+        fg_frontier_timing_bucket, \
+        fg_frontier_selected_count, \
+        fg_frontier_selected_indices, \
+        fg_frontier_base_order, \
+        fg_frontier_fg_order, \
+        fg_frontier_selected_count_batch, \
+        fg_frontier_selected_indices_batch
     global _fields_allocated
 
     if _fields_allocated:
@@ -551,6 +626,23 @@ def allocate_fields() -> None:
         )
         if FG_DOWNLOAD_BATCH_MAX >= 128
         else None
+    )
+
+    fg_frontier_base_score = ti.field(dtype=ti.i32, shape=FG_SIGNATURE_FRONTIER_MAX)
+    fg_frontier_proxy_score = ti.field(dtype=ti.i32, shape=FG_SIGNATURE_FRONTIER_MAX)
+    fg_frontier_priority = ti.field(dtype=ti.i32, shape=FG_SIGNATURE_FRONTIER_MAX)
+    fg_frontier_force_keep = ti.field(dtype=ti.i32, shape=FG_SIGNATURE_FRONTIER_MAX)
+    fg_frontier_center_bucket_ft = ti.field(dtype=ti.i32, shape=FG_SIGNATURE_FRONTIER_MAX)
+    fg_frontier_center_bucket_ff = ti.field(dtype=ti.i32, shape=FG_SIGNATURE_FRONTIER_MAX)
+    fg_frontier_timing_bucket = ti.field(dtype=ti.i32, shape=FG_SIGNATURE_FRONTIER_MAX)
+    fg_frontier_selected_count = ti.field(dtype=ti.i32, shape=())
+    fg_frontier_selected_indices = ti.field(dtype=ti.i32, shape=FG_SIGNATURE_FRONTIER_MAX)
+    fg_frontier_base_order = ti.field(dtype=ti.i32, shape=FG_SIGNATURE_FRONTIER_MAX)
+    fg_frontier_fg_order = ti.field(dtype=ti.i32, shape=FG_SIGNATURE_FRONTIER_MAX)
+    fg_frontier_selected_count_batch = ti.field(dtype=ti.i32, shape=FG_SIGNATURE_FRONTIER_BATCH_MAX)
+    fg_frontier_selected_indices_batch = ti.field(
+        dtype=ti.i32,
+        shape=(FG_SIGNATURE_FRONTIER_BATCH_MAX, FG_SIGNATURE_FRONTIER_MAX),
     )
 
     # Warm-start hints for FG gem allocation

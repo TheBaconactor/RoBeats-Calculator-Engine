@@ -291,6 +291,9 @@ _fg_flat_work_buf: dict[str, np.ndarray] | None = None
 _fg_download_topk_base_buf: np.ndarray | None = None
 _fg_download_topk_keep_buf: np.ndarray | None = None
 
+# Cached padded buffers for FG signature frontier selection uploads.
+_fg_frontier_upload_buf: dict[str, np.ndarray] | None = None
+
 # Upload/build caches (avoid huge repeated host->device transfers)
 _fg_genome_stats_upload_key: tuple[int, int] | None = None  # (n_genomes, hash)
 _fg_flat_work_key: tuple[int, int] | None = None  # (n_genomes, n_ftff)
@@ -359,6 +362,7 @@ def reset_force_greats_api_state() -> None:
     global _fg_forced_counts_staging_tiers, _fg_forced_counts_staging_pool
     global _fg_genome_stats_buf, _fg_flat_work_buf
     global _fg_download_topk_base_buf, _fg_download_topk_keep_buf
+    global _fg_frontier_upload_buf
     global _fg_genome_stats_upload_key, _fg_flat_work_key
     global _fg_forced_configs_upload_key
     global _fg_forced_resident_key, _fg_forced_resident_n_cfg_total, _fg_forced_resident_base_offset
@@ -382,6 +386,7 @@ def reset_force_greats_api_state() -> None:
     _fg_flat_work_buf = None
     _fg_download_topk_base_buf = None
     _fg_download_topk_keep_buf = None
+    _fg_frontier_upload_buf = None
     _fg_genome_stats_upload_key = None
     _fg_flat_work_key = None
     _fg_forced_configs_upload_key = None
@@ -723,6 +728,240 @@ def fg_pack_global_best_topk_to_batch(
     fg_kernels.fg_select_global_best_topk_kernel(int(slot), int(n), int(k))
     n_pack = int(getattr(fg_fields, "FG_DOWNLOAD_TOPK_MAX", 256) or 256)
     fg_kernels.fg_pack_selected_global_best_batch_kernel(int(slot), int(n_pack), int(bidx))
+
+
+def fg_select_signature_frontier_indices(
+    *,
+    base_scores: np.ndarray,
+    proxy_scores: np.ndarray,
+    priorities: np.ndarray,
+    force_keep: np.ndarray,
+    center_bucket_ft: np.ndarray,
+    center_bucket_ff: np.ndarray,
+    timing_bucket: np.ndarray,
+    limit: int,
+    top_base_keep: int,
+) -> np.ndarray:
+    """
+    Select a bounded FG signature frontier on GPU from per-signature metadata.
+
+    Inputs are parallel arrays over signatures in their original order. The result
+    is a compact array of selected source indices, preserving the frontier lane
+    ordering used by the host heuristic.
+    """
+    fg_fields.ensure_ready_with_warmup()
+
+    base_np = np.asarray(base_scores, dtype=np.int32)
+    proxy_np = np.asarray(proxy_scores, dtype=np.int32)
+    priority_np = np.asarray(priorities, dtype=np.int32)
+    keep_np = np.asarray(force_keep, dtype=np.int32)
+    center_ft_np = np.asarray(center_bucket_ft, dtype=np.int32)
+    center_ff_np = np.asarray(center_bucket_ff, dtype=np.int32)
+    timing_np = np.asarray(timing_bucket, dtype=np.int32)
+
+    n = int(base_np.shape[0])
+    if any(
+        int(arr.shape[0]) != int(n)
+        for arr in (proxy_np, priority_np, keep_np, center_ft_np, center_ff_np, timing_np)
+    ):
+        raise ValueError("FG signature frontier metadata arrays must have matching length")
+
+    cap = int(getattr(fg_fields, "FG_SIGNATURE_FRONTIER_MAX", 0) or 0)
+    if cap <= 0:
+        cap = int(n)
+    if n > cap:
+        raise ValueError(f"FG signature frontier exceeds device cap: {n} > {cap}")
+    if n <= 0:
+        return np.zeros((0,), dtype=np.int32)
+
+    _fg_upload_signature_frontier_inputs(
+        cap=int(cap),
+        n=int(n),
+        base_np=base_np,
+        proxy_np=proxy_np,
+        priority_np=priority_np,
+        keep_np=keep_np,
+        center_ft_np=center_ft_np,
+        center_ff_np=center_ff_np,
+        timing_np=timing_np,
+    )
+
+    fg_kernels.fg_select_signature_frontier_kernel(int(n), int(limit), int(top_base_keep))
+
+    _t0 = time.perf_counter()
+    did_sync = bool(_FORCE_SYNC or _SYNC_FOR_TIMING or _FG_TRANSFER_TRACE)
+    if did_sync:
+        maybe_sync(
+            sync_fn=ti.sync,
+            force_sync=bool(_FORCE_SYNC or _FG_TRANSFER_TRACE),
+            sync_for_timing=_SYNC_FOR_TIMING,
+            for_timing=True,
+        )
+        _sync_sec = time.perf_counter() - _t0
+    else:
+        _sync_sec = 0.0
+
+    _t1 = time.perf_counter()
+    selected_all = fg_fields.fg_frontier_selected_indices.to_numpy()
+    _dl_sec = time.perf_counter() - _t1
+    _record_kernel_wall("signature_frontier_sync", _sync_sec, genome_count=n)
+    _record_download("signature_frontier_indices", _dl_sec, int(getattr(selected_all, "nbytes", 0) or 0))
+
+    try:
+        neg = np.nonzero(np.asarray(selected_all) < 0)[0]
+        n_sel = int(neg[0]) if int(getattr(neg, "shape", (0,))[0] or 0) > 0 else min(int(limit), int(n))
+    except Exception:
+        n_sel = min(int(limit), int(n))
+    return np.asarray(selected_all[: int(n_sel)], dtype=np.int32)
+
+
+def _ensure_frontier_upload_buf(cap: int) -> dict[str, np.ndarray]:
+    global _fg_frontier_upload_buf
+    existing_base = None if _fg_frontier_upload_buf is None else _fg_frontier_upload_buf.get("base")
+    if existing_base is None or int(existing_base.shape[0]) != int(cap):
+        _fg_frontier_upload_buf = {
+            "base": np.zeros((int(cap),), dtype=np.int32),
+            "proxy": np.zeros((int(cap),), dtype=np.int32),
+            "priority": np.zeros((int(cap),), dtype=np.int32),
+            "keep": np.zeros((int(cap),), dtype=np.int32),
+            "center_ft": np.zeros((int(cap),), dtype=np.int32),
+            "center_ff": np.zeros((int(cap),), dtype=np.int32),
+            "timing": np.zeros((int(cap),), dtype=np.int32),
+        }
+    return _fg_frontier_upload_buf
+
+
+def _fg_upload_signature_frontier_inputs(
+    *,
+    cap: int,
+    n: int,
+    base_np: np.ndarray,
+    proxy_np: np.ndarray,
+    priority_np: np.ndarray,
+    keep_np: np.ndarray,
+    center_ft_np: np.ndarray,
+    center_ff_np: np.ndarray,
+    timing_np: np.ndarray,
+) -> None:
+    buf = _ensure_frontier_upload_buf(int(cap))
+    for key in ("base", "proxy", "priority", "keep", "center_ft", "center_ff", "timing"):
+        buf[key].fill(0)
+
+    buf["base"][:n] = np.ascontiguousarray(base_np)
+    buf["proxy"][:n] = np.ascontiguousarray(proxy_np)
+    buf["priority"][:n] = np.ascontiguousarray(priority_np)
+    buf["keep"][:n] = np.ascontiguousarray(keep_np)
+    buf["center_ft"][:n] = np.ascontiguousarray(center_ft_np)
+    buf["center_ff"][:n] = np.ascontiguousarray(center_ff_np)
+    buf["timing"][:n] = np.ascontiguousarray(timing_np)
+
+    fg_fields.fg_frontier_base_score.from_numpy(buf["base"])
+    fg_fields.fg_frontier_proxy_score.from_numpy(buf["proxy"])
+    fg_fields.fg_frontier_priority.from_numpy(buf["priority"])
+    fg_fields.fg_frontier_force_keep.from_numpy(buf["keep"])
+    fg_fields.fg_frontier_center_bucket_ft.from_numpy(buf["center_ft"])
+    fg_fields.fg_frontier_center_bucket_ff.from_numpy(buf["center_ff"])
+    fg_fields.fg_frontier_timing_bucket.from_numpy(buf["timing"])
+
+
+def fg_select_signature_frontier_batch(payloads: list[dict[str, np.ndarray | int]]) -> list[np.ndarray]:
+    """
+    Select multiple FG signature frontiers with a single device download.
+
+    This keeps the frontier-selection step GPU-side while avoiding a per-group
+    sync/download boundary in the FG hot path.
+    """
+    fg_fields.ensure_ready_with_warmup()
+    if not payloads:
+        return []
+
+    cap = int(getattr(fg_fields, "FG_SIGNATURE_FRONTIER_MAX", 0) or 0)
+    if cap <= 0:
+        raise ValueError("FG_SIGNATURE_FRONTIER_MAX is not configured")
+    batch_cap = int(getattr(fg_fields, "FG_SIGNATURE_FRONTIER_BATCH_MAX", 0) or 0)
+    if batch_cap <= 0:
+        batch_cap = 1
+
+    results: list[np.ndarray] = []
+    for chunk_start in range(0, len(payloads), int(batch_cap)):
+        chunk = payloads[chunk_start : chunk_start + int(batch_cap)]
+        for batch_idx, payload in enumerate(chunk):
+            base_np = np.asarray(payload["base_scores"], dtype=np.int32)
+            proxy_np = np.asarray(payload["proxy_scores"], dtype=np.int32)
+            priority_np = np.asarray(payload["priorities"], dtype=np.int32)
+            keep_np = np.asarray(payload["force_keep"], dtype=np.int32)
+            center_ft_np = np.asarray(payload["center_bucket_ft"], dtype=np.int32)
+            center_ff_np = np.asarray(payload["center_bucket_ff"], dtype=np.int32)
+            timing_np = np.asarray(payload["timing_bucket"], dtype=np.int32)
+            n = int(base_np.shape[0])
+            if any(
+                int(arr.shape[0]) != int(n)
+                for arr in (proxy_np, priority_np, keep_np, center_ft_np, center_ff_np, timing_np)
+            ):
+                raise ValueError("FG signature frontier batch payload arrays must have matching length")
+            if n > int(cap):
+                raise ValueError(f"FG signature frontier exceeds device cap: {n} > {cap}")
+
+            _fg_upload_signature_frontier_inputs(
+                cap=int(cap),
+                n=int(n),
+                base_np=base_np,
+                proxy_np=proxy_np,
+                priority_np=priority_np,
+                keep_np=keep_np,
+                center_ft_np=center_ft_np,
+                center_ff_np=center_ff_np,
+                timing_np=timing_np,
+            )
+            fg_kernels.fg_select_signature_frontier_kernel(
+                int(n),
+                int(payload["limit"]),
+                int(payload["top_base_keep"]),
+            )
+            fg_kernels.fg_copy_signature_frontier_selected_to_batch_kernel(int(batch_idx))
+
+        _t0 = time.perf_counter()
+        did_sync = bool(_FORCE_SYNC or _SYNC_FOR_TIMING or _FG_TRANSFER_TRACE)
+        if did_sync:
+            maybe_sync(
+                sync_fn=ti.sync,
+                force_sync=bool(_FORCE_SYNC or _FG_TRANSFER_TRACE),
+                sync_for_timing=_SYNC_FOR_TIMING,
+                for_timing=True,
+            )
+            _sync_sec = time.perf_counter() - _t0
+        else:
+            _sync_sec = 0.0
+
+        _t1 = time.perf_counter()
+        selected_batch_all = fg_fields.fg_frontier_selected_indices_batch.to_numpy()
+        count_batch_all = fg_fields.fg_frontier_selected_count_batch.to_numpy()
+        _dl_sec = time.perf_counter() - _t1
+        total_n = 0
+        try:
+            total_n = sum(int(np.asarray(payload["base_scores"]).shape[0]) for payload in chunk)
+        except Exception:
+            total_n = 0
+        _record_kernel_wall("signature_frontier_batch_sync", _sync_sec, genome_count=total_n)
+        _record_download(
+            "signature_frontier_batch_indices",
+            _dl_sec,
+            int(getattr(selected_batch_all, "nbytes", 0) or 0) + int(getattr(count_batch_all, "nbytes", 0) or 0),
+        )
+
+        for batch_idx, payload in enumerate(chunk):
+            row = np.asarray(selected_batch_all[int(batch_idx)], dtype=np.int32)
+            try:
+                n_sel = max(0, min(int(count_batch_all[int(batch_idx)]), int(payload["limit"])))
+            except Exception:
+                try:
+                    neg = np.nonzero(row < 0)[0]
+                    n_sel = int(neg[0]) if int(getattr(neg, "shape", (0,))[0] or 0) > 0 else int(payload["limit"])
+                except Exception:
+                    n_sel = int(payload["limit"])
+            results.append(np.asarray(row[: int(n_sel)], dtype=np.int32))
+
+    return results
 
 
 def fg_download_packed_topk_batch(n_payloads: int) -> list[dict[str, np.ndarray]]:
