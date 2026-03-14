@@ -4,10 +4,12 @@ import numpy as np
 import pytest
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
+from gear_optimizer.core.utils import stats_signature
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_fg_candidates
 from gear_optimizer.solver import genetic
 from gear_optimizer.solver.genetic import decode_gpu_native_ga_runs_payload
 from gear_optimizer.solver.item_registry import ItemRegistry
+from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
 
 
 if not getattr(genetic, "_GPU_NATIVE_AVAILABLE", False):
@@ -461,3 +463,97 @@ def test_decode_gpu_native_selected_payload_emits_full_stats_when_hitsim_refine_
     assert isinstance(data.get("BaseStats"), dict)
     assert isinstance(data.get("Stats"), dict)
     assert data["Stats"]["Perfect Points"] >= data["BaseStats"]["Perfect Points"]
+
+
+def test_decode_gpu_native_ga_runs_payload_stamps_fg_group_meta_when_song_context_present(monkeypatch):
+    monkeypatch.setenv("FG_BASELINE_GRID", "1")
+
+    slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
+    gear_pool = {
+        slot: [
+            _item(
+                f"{slot}0",
+                **{
+                    "Perfect Points": 10,
+                    "Combo Multiplier": 4,
+                    "Fever Multiplier": 6,
+                    "Fever Time": 8,
+                    "Fever Fill Rate": 7,
+                    "Rush": 12,
+                    "Flow": 9,
+                },
+            )
+        ]
+        for slot in slots
+    }
+    mini_pool = [_item(f"M{i}", **{"Rush": 3, "Flow": 2}) for i in range(3)]
+    registry = ItemRegistry(gear_pool, mini_pool, slots)
+
+    cfg_data = {
+        "selected_color": "Rush",
+        "primary_color": "Rush",
+        "secondary_color": "Flow",
+        "fg_candidate_limit": int(LOADOUTS_PER_SONG_LIMIT),
+        "fg_require_stats": True,
+    }
+
+    timestamps = np.linspace(0.0, 60.0, 256, dtype=np.float32)
+    calc_song = {
+        "metadata": {
+            "Song Name": "decode_fg_group_meta",
+            "Difficulty": "Hard",
+            "Primary Color": "Rush",
+            "Secondary Color": "Flow",
+            "Long Notes": 0,
+            "Last Note Time": float(timestamps[-1]),
+        },
+        "song_data": {"timestamps": timestamps, "fg_timestamps": timestamps},
+    }
+    ref_arrays = {
+        "Fever Time": np.linspace(1.0, 2.0, 161, dtype=np.float32),
+        "Fever Fill Rate": np.linspace(1.0, 2.0, 161, dtype=np.float32),
+    }
+
+    n_slots = 9
+    width = 1 + n_slots + 7 + 7
+    selected_payload = np.zeros((2, 26), dtype=np.int32)
+    genome_ids = np.asarray([registry.slot_start[i] for i in range(9)], dtype=np.int32)
+    result_row = np.asarray([1234, 5, 7, 1, 2, 3, 0], dtype=np.int32)
+
+    selected_payload[0, 0] = 1
+    selected_payload[0, 1] = 1234
+    selected_payload[0, 2 : 2 + n_slots] = genome_ids
+    selected_payload[0, 2 + n_slots : 2 + n_slots + 7] = result_row
+    selected_payload[0, 2 + n_slots + 7] = 0
+
+    packed = np.zeros((width,), dtype=np.int32)
+    packed[0] = 1234
+    packed[1 : 1 + n_slots] = genome_ids
+    packed[1 + n_slots : 1 + n_slots + 7] = result_row
+    selected_payload[1, 0] = 0
+    selected_payload[1, 1] = 1
+    selected_payload[1, 2 : 2 + width] = packed
+
+    _best_data, _best_gear, _best_minis, decoded = decode_gpu_native_ga_runs_payload(
+        runs_payload=selected_payload,
+        registry=registry,
+        cfg_data=cfg_data,
+        base_stats_fixed={},
+        fg_candidate_limit=int(LOADOUTS_PER_SONG_LIMIT),
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+    )
+
+    assert len(decoded) == 1
+    data = decoded[0]["Data"]
+    base_stats = data["BaseStats"]
+    meta = data.get("_fg_group_meta")
+    assert isinstance(meta, dict)
+    assert meta["selected_element"] == "Rush"
+    assert meta["center_ft"] == 5
+    assert meta["center_ff"] == 7
+    assert meta["ga_run_idx"] == 0
+    assert meta["ga_row_idx"] == 1
+    assert meta["signature"] == stats_signature(base_stats, calc_song, "Rush")
+    n_sections, non_fever_base = fg_baseline_params(base_stats, calc_song, ref_arrays)
+    assert meta["group_key"] == ("Rush", int(n_sections), min(int(non_fever_base), 15))

@@ -254,7 +254,9 @@ Current branch status:
 - GPU-side FG frontier reduction is implemented in the production path.
 - The hot path now batches FG frontier selection per song/group set, then downloads the reduced frontier once.
 - The first naive version regressed throughput because it downloaded one frontier result per group; that per-group boundary is no longer used in production.
-- Signature metadata still originates from host-built FG groups, so the remaining future opportunity is eliminating the host-side signature-group construction itself, not the frontier reduction step.
+- The canonical path now primes compact FG group metadata during FG prep and reuses it in `gpu_dispatch`, so the hot path no longer has to rebuild all group keys/signatures/proxy scores for GA candidates.
+- Decode-time priming was tested and reverted from the canonical path because it moved CPU work into a more serial stage and regressed controlled throughput.
+- The remaining future opportunity is moving signature bucket construction fully off the host, not rebuilding the same compact metadata inside the current FG hot path.
 
 ### Phase 2C: Remove redundant FG solve volume
 
@@ -300,7 +302,8 @@ Current branch status:
 
 - retained-winner-only host materialization is implemented
 - GPU frontier reduction is active in the canonical path
-- the remaining host-side piece is signature-group construction from retained entries before the GPU frontier stage
+- the canonical path now primes compact FG grouping metadata before `gpu_dispatch`
+- the remaining host-side piece is full signature bucket construction from retained entries before the GPU frontier stage
 
 ### Phase 4: Delete non-canonical legacy paths
 

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ....core.utils import get_selected_element
+from ....core.utils import get_selected_element, stats_signature
+from ....solver.scoring.stats_scoring import fg_baseline_params
 
 
 def expected_selected_element(entry: dict[str, Any], meta_primary_color: str) -> str:
@@ -25,6 +26,116 @@ def expected_selected_element(entry: dict[str, Any], meta_primary_color: str) ->
         return get_selected_element(det0, meta_primary_color)
     except Exception:
         return str(meta_primary_color or "")
+
+
+def _stats_int(stats: dict[str, Any] | None, key: str) -> int:
+    try:
+        return int((stats or {}).get(key, 0) or 0)
+    except Exception:
+        return 0
+
+
+def fg_proxy_from_base_stats(stats: dict[str, Any] | None, primary_color: str, secondary_color: str) -> int:
+    score = 0
+    score += _stats_int(stats, "Fever Multiplier") * 4
+    score += _stats_int(stats, "Fever Fill Rate") * 4
+    score += _stats_int(stats, "Fever Time") * 3
+    score += _stats_int(stats, "Combo Multiplier") * 2
+    score += _stats_int(stats, "Perfect Points")
+    if primary_color:
+        score += _stats_int(stats, primary_color) * 2
+    if secondary_color and secondary_color != primary_color:
+        score += _stats_int(stats, secondary_color)
+    return int(score)
+
+
+def build_fg_group_meta(
+    *,
+    base_stats: dict[str, Any] | None,
+    calc_song: dict[str, Any] | None,
+    ref_arrays: dict[str, Any] | None,
+    selected_element: str,
+    center_ft: int,
+    center_ff: int,
+    primary_color: str = "",
+    secondary_color: str = "",
+    run_idx: int | None = None,
+    row_idx: int | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(base_stats, dict) or not base_stats:
+        return None
+    if not isinstance(calc_song, dict) or not calc_song:
+        return None
+
+    sel_color = str(selected_element or "")
+    meta: dict[str, Any] = {
+        "selected_element": sel_color,
+        "center_ft": int(center_ft),
+        "center_ff": int(center_ff),
+    }
+    if run_idx is not None:
+        meta["ga_run_idx"] = int(run_idx)
+    if row_idx is not None:
+        meta["ga_row_idx"] = int(row_idx)
+
+    try:
+        n_sections, non_fever_base = fg_baseline_params(base_stats, calc_song, ref_arrays or {})
+        if int(n_sections) <= 0:
+            meta["skip"] = True
+            return meta
+
+        max_per_section = min(int(non_fever_base or 0), 15)
+        meta["skip"] = False
+        meta["n_sections"] = int(n_sections)
+        meta["max_per_section"] = int(max_per_section)
+        meta["group_key"] = (sel_color, int(n_sections), int(max_per_section))
+        meta["signature"] = stats_signature(base_stats, calc_song, sel_color)
+        meta["fg_proxy_score"] = fg_proxy_from_base_stats(
+            base_stats,
+            str(primary_color or ""),
+            str(secondary_color or ""),
+        )
+        return meta
+    except Exception:
+        return None
+
+
+def fg_group_meta_from_eval_data(
+    eval_data: dict[str, Any] | None,
+    *,
+    calc_song: dict[str, Any] | None,
+    ref_arrays: dict[str, Any] | None,
+    meta_primary_color: str = "",
+    primary_color: str = "",
+    secondary_color: str = "",
+    base_stats: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(eval_data, dict):
+        return None
+
+    cached = eval_data.get("_fg_group_meta")
+    if isinstance(cached, dict):
+        return cached
+
+    base_stats_obj = base_stats if isinstance(base_stats, dict) else eval_data.get("BaseStats")
+    if not isinstance(base_stats_obj, dict) or not base_stats_obj:
+        return None
+
+    meta = build_fg_group_meta(
+        base_stats=base_stats_obj,
+        calc_song=calc_song,
+        ref_arrays=ref_arrays,
+        selected_element=get_selected_element(eval_data, meta_primary_color),
+        center_ft=int(eval_data.get("FT", 0) or 0),
+        center_ff=int(eval_data.get("FF", 0) or 0),
+        primary_color=primary_color,
+        secondary_color=secondary_color,
+        run_idx=eval_data.get("_ga_gpu_run_idx"),
+        row_idx=eval_data.get("_ga_gpu_row_idx"),
+    )
+    if isinstance(meta, dict):
+        eval_data["_fg_group_meta"] = meta
+    return meta
 
 
 def eval_data_from_entry(entry: dict[str, Any], meta_primary_color: str) -> dict[str, Any] | None:

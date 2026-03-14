@@ -17,6 +17,7 @@ from gear_optimizer.core.fallback_monitor import warn_fallback
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_fg_candidates
 from gear_optimizer.helpers.song_helpers.fg_combo_booster import prepare_fg_combo_booster_candidates_job
+from gear_optimizer.helpers.song_helpers.force_greats.entry_utils import build_fg_group_meta
 from gear_optimizer.helpers.song_helpers.loadout_builder import build_loadout_entries
 from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn
 
@@ -1652,6 +1653,49 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
         )
     song.ga_candidates = ga_candidates
     t_select = time.perf_counter() if perf else 0.0
+
+    def _prime_fg_group_meta_for_candidates(candidates: list[dict] | None, *, calc_song: dict | None) -> None:
+        if not isinstance(candidates, list) or not candidates:
+            return
+        if not isinstance(calc_song, dict) or not calc_song:
+            return
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            data = candidate.get("Data")
+            if not isinstance(data, dict):
+                continue
+            if isinstance(data.get("_fg_group_meta"), dict):
+                continue
+            base_stats = data.get("BaseStats")
+            if not isinstance(base_stats, dict) or not base_stats:
+                continue
+            try:
+                fg_group_meta = build_fg_group_meta(
+                    base_stats=base_stats,
+                    calc_song=calc_song,
+                    ref_arrays=song.ref_arrays if isinstance(song.ref_arrays, dict) else {},
+                    selected_element=str(data.get("Selected Element", "") or ""),
+                    center_ft=int(data.get("FT", 0) or 0),
+                    center_ff=int(data.get("FF", 0) or 0),
+                    primary_color=str(song.meta_primary_color or ""),
+                    secondary_color=str(song.meta_secondary_color or ""),
+                    run_idx=data.get("_ga_gpu_run_idx"),
+                    row_idx=data.get("_ga_gpu_row_idx"),
+                )
+                if isinstance(fg_group_meta, dict):
+                    data["_fg_group_meta"] = fg_group_meta
+            except Exception:
+                continue
+
+    _prime_fg_group_meta_for_candidates(ga_candidates, calc_song=song.calc_song)
+    for group in list(getattr(song, "_hitsim_fg_regime_groups", []) or []):
+        if not isinstance(group, dict):
+            continue
+        _prime_fg_group_meta_for_candidates(
+            group.get("ga_candidates"),
+            calc_song=group.get("calc_song") if isinstance(group.get("calc_song"), dict) else song.calc_song,
+        )
 
     # Non-blocking DB prefetch: check if future is ready without blocking.
     # If the DB read is still in progress, proceed with GA candidates only.

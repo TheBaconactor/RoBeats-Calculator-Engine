@@ -83,6 +83,7 @@ from ..helpers.song_helpers.fg_combo_booster import (
     build_fg_combo_booster_candidates,
     hydrate_fg_candidate_stats,
 )
+from ..helpers.song_helpers.force_greats.entry_utils import build_fg_group_meta
 from .item_registry import ItemRegistry
 from .convergence_trace import build_convergence_trace_writer
 
@@ -460,6 +461,8 @@ def decode_gpu_native_ga_runs_payload(
     cfg_data: dict,
     base_stats_fixed: dict,
     fg_candidate_limit: int,
+    calc_song: dict | None = None,
+    ref_arrays: dict | None = None,
 ) -> tuple[dict, list, list, list[dict]]:
     """
     CPU-side decoding for the GPU-native GA multi-run payload.
@@ -580,6 +583,7 @@ def decode_gpu_native_ga_runs_payload(
         #   reconstruction opt-in and carry only `BaseStats` on the hot path by default.
         include_full_stats = _decode_requires_full_stats(cfg_data)
         include_base_stats = bool(include_full_stats or cfg_data.get("fg_require_stats", False))
+        fg_group_meta_enabled = bool(include_base_stats and isinstance(calc_song, dict) and calc_song)
 
         base_stats_arr = None
         sel_color_built = None
@@ -672,6 +676,21 @@ def decode_gpu_native_ga_runs_payload(
                     base_row_stats = base_stats_arr + item_stats_sum[i]
                     base_stats = build_stats_dict(base_row_stats)
                     data_obj["BaseStats"] = base_stats
+                    if fg_group_meta_enabled:
+                        fg_group_meta = build_fg_group_meta(
+                            base_stats=base_stats,
+                            calc_song=calc_song,
+                            ref_arrays=ref_arrays,
+                            selected_element=sel_color,
+                            center_ft=g_ft_i,
+                            center_ff=g_ff_i,
+                            primary_color=str(cfg_data.get("primary_color", "") or ""),
+                            secondary_color=str(cfg_data.get("secondary_color", "") or ""),
+                            run_idx=int(sel_run_idx[i]),
+                            row_idx=int(sel_rows[i]),
+                        )
+                        if isinstance(fg_group_meta, dict):
+                            data_obj["_fg_group_meta"] = fg_group_meta
                 except Exception:
                     pass
                 if include_full_stats and stat_names is not None:
@@ -1023,6 +1042,7 @@ def decode_gpu_native_ga_runs_payload(
 
     include_full_stats = _decode_requires_full_stats(cfg_data)
     include_base_stats = bool(include_full_stats or cfg_data.get("fg_require_stats", False))
+    fg_group_meta_enabled = bool(include_base_stats and isinstance(calc_song, dict) and calc_song)
 
     # Vectorized stat reconstruction for selected candidates only.
     t_stats = time.perf_counter() if perf else 0.0
@@ -1113,6 +1133,21 @@ def decode_gpu_native_ga_runs_payload(
             row_idx=int(sel_rows[i]),
         )
         data_obj["GenomeIDs"] = list(genome_ids)
+        if base_stats is not None and fg_group_meta_enabled:
+            fg_group_meta = build_fg_group_meta(
+                base_stats=base_stats,
+                calc_song=calc_song,
+                ref_arrays=ref_arrays,
+                selected_element=sel_color,
+                center_ft=g_ft_i,
+                center_ff=g_ff_i,
+                primary_color=str(cfg_data.get("primary_color", "") or ""),
+                secondary_color=str(cfg_data.get("secondary_color", "") or ""),
+                run_idx=int(sel_run_idx[i]),
+                row_idx=int(sel_rows[i]),
+            )
+            if isinstance(fg_group_meta, dict):
+                data_obj["_fg_group_meta"] = fg_group_meta
 
         cand_data = {
             "Score": score_val,
@@ -2577,6 +2612,8 @@ def solve_coevolution_genetic(
                 cfg_data=cfg_data,
                 base_stats_fixed=base_stats_fixed,
                 fg_candidate_limit=fg_candidate_limit,
+                calc_song=calc_song,
+                ref_arrays=ref_arrays,
             )
             merged_candidates.extend(list(seg_candidates or []))
             if best_data is None or int(seg_best_data.get("Score", 0)) > int(best_data.get("Score", 0)):

@@ -68,6 +68,18 @@ GA and FG are one product outcome.
   - batched per-song frontier download instead of one download per FG group
 - This keeps the frontier-reduction logic on the GPU without reintroducing the per-group sync/download cliff.
 
+8. FG group metadata priming before the hot path
+- Files:
+  - `gear_optimizer/solver/native_inflight_stages.py`
+  - `gear_optimizer/helpers/song_helpers/force_greats/entry_utils.py`
+  - `gear_optimizer/helpers/song_helpers/force_greats/gpu_dispatch.py`
+- Added:
+  - compact `_fg_group_meta` priming for GA candidates during FG prep
+  - reuse of that metadata inside `gpu_dispatch` instead of rebuilding group keys/signatures/proxy scores on the hot path
+- Important placement note:
+  - priming in GA decode was tested and regressed throughput
+  - the canonical path now primes this metadata in FG prep, where the work is still upstream of the solver hot path but no longer blocks decode throughput
+
 ## Regression investigation update (March 13, 2026)
 
 The earlier "heavy throughput regression" from the reverted hot-path "preselected FG surface" skip stayed fixed, but a new regression appeared when GPU frontier reduction was first wired as a per-group download.
@@ -98,6 +110,14 @@ Interpretation:
 - the reverted hot-path skip was not the remaining problem
 - the real regression cause was the per-group GPU frontier boundary itself: one upload/select/download cycle per FG group
 - batching the frontier selection per song removed that micro-sync pattern and restored a positive controlled throughput delta
+
+Additional March 13, 2026 note:
+
+- moving compact FG group-metadata construction into GA decode caused another controlled regression
+- decode-primed variant: `874.2 songs/hour`
+- same benchmark after relocating that work into FG prep: `1208.9 songs/hour`
+- rerun baseline for that comparison (`fd92cc7`): `1089.8 songs/hour`
+- interpretation: the metadata itself is useful, but decode is the wrong placement because it is a more serial stage in the native in-flight pipeline
 
 ## Regression coverage
 

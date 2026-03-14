@@ -12,11 +12,15 @@ from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 
 from . import cache_validation, result_application
-from .entry_utils import eval_data_from_entry, expected_selected_element
+from .entry_utils import (
+    eval_data_from_entry,
+    expected_selected_element,
+    fg_group_meta_from_eval_data,
+)
 from ..ga_entry_utils import candidate_genome_ids, entry_loadout_hash, ga_candidate_key, materialize_entry_names
 from ....core.color_flags import build_color_flags
 from ....core.fallback_monitor import warn_fallback
-from ....core.utils import get_selected_element, human_hitsim_timing_context, stats_signature
+from ....core.utils import human_hitsim_timing_context, stats_signature
 from ..retention import select_retained_hashes
 from .ftff_pairs import _collect_ftff_pairs_from_centers, _group_ftff_pairs_by_max_fp_matrix
 
@@ -514,27 +518,6 @@ def _entry_base_score(entry: dict) -> int:
         return int(entry.get("base_score") or entry.get("score", 0) or 0)
     except Exception:
         return 0
-
-
-def _stats_int(stats: dict | None, key: str) -> int:
-    try:
-        return int((stats or {}).get(key, 0) or 0)
-    except Exception:
-        return 0
-
-
-def _fg_proxy_from_base_stats(stats: dict | None, primary_color: str, secondary_color: str) -> int:
-    score = 0
-    score += _stats_int(stats, "Fever Multiplier") * 4
-    score += _stats_int(stats, "Fever Fill Rate") * 4
-    score += _stats_int(stats, "Fever Time") * 3
-    score += _stats_int(stats, "Combo Multiplier") * 2
-    score += _stats_int(stats, "Perfect Points")
-    if primary_color:
-        score += _stats_int(stats, primary_color) * 2
-    if secondary_color and secondary_color != primary_color:
-        score += _stats_int(stats, secondary_color)
-    return int(score)
 
 
 def _build_topk_keep_signature_set(
@@ -1751,8 +1734,6 @@ def process_force_greats_gpu_finder(
             no_eval_skips += 1
             continue
 
-        stats = eval_data.get("Stats", {}) or {}
-        sel_color = get_selected_element(eval_data, meta_primary_color)
         center_ft = int(eval_data.get("FT", 0) or 0)
         center_ff = int(eval_data.get("FF", 0) or 0)
 
@@ -1775,16 +1756,39 @@ def process_force_greats_gpu_finder(
         # This avoids an extra "reverse gem contributions" pass during FG candidate batching.
         base_stats = eval_data.get("BaseStats") if isinstance(eval_data.get("BaseStats"), dict) else None
         if not base_stats:
+            stats = eval_data.get("Stats", {}) or {}
+            sel_color = expected_selected_element(entry, meta_primary_color)
             base_stats = _extract_base_stats(stats, gem_counts_existing, sel_color, center_ft, center_ff)
-
-        # Determine how many non-fever sections exist and the notes-to-fill baseline
-        n_sections, non_fever_base = fg_baseline_params(base_stats, calc_song, ref_arrays)
-        if n_sections <= 0:
+        fg_group_meta = fg_group_meta_from_eval_data(
+            eval_data,
+            calc_song=calc_song,
+            ref_arrays=ref_arrays,
+            meta_primary_color=meta_primary_color,
+            primary_color=str(p_color or ""),
+            secondary_color=str(s_color or ""),
+            base_stats=base_stats,
+        )
+        if isinstance(fg_group_meta, dict) and bool(fg_group_meta.get("skip")):
             continue
-        max_per_section = min(int(non_fever_base or 0), 15)
 
-        key = (str(sel_color), int(n_sections), int(max_per_section))
-        sig = stats_signature(base_stats, calc_song, sel_color)
+        if isinstance(fg_group_meta, dict):
+            sel_color = str(fg_group_meta.get("selected_element", "") or "")
+            key = tuple(fg_group_meta.get("group_key") or ())
+            sig = fg_group_meta.get("signature")
+            proxy_i = int(fg_group_meta.get("fg_proxy_score", 0) or 0)
+            ga_run_idx = fg_group_meta.get("ga_run_idx")
+            ga_row_idx = fg_group_meta.get("ga_row_idx")
+        else:
+            sel_color = expected_selected_element(entry, meta_primary_color)
+            n_sections, non_fever_base = fg_baseline_params(base_stats, calc_song, ref_arrays)
+            if n_sections <= 0:
+                continue
+            max_per_section = min(int(non_fever_base or 0), 15)
+            key = (str(sel_color), int(n_sections), int(max_per_section))
+            sig = stats_signature(base_stats, calc_song, sel_color)
+            ga_run_idx = eval_data.get("_ga_gpu_run_idx")
+            ga_row_idx = eval_data.get("_ga_gpu_row_idx")
+            proxy_i = 0
         try:
             entry_sig[int(id(entry))] = str(sig)
         except Exception:
@@ -1794,10 +1798,6 @@ def process_force_greats_gpu_finder(
         group_centers.setdefault(key, set()).add((int(center_ft), int(center_ff)))
         group_reps.setdefault(key, {}).setdefault(sig, base_stats)
         try:
-            proxy_i = _fg_proxy_from_base_stats(base_stats, str(p_color or ""), str(s_color or ""))
-        except Exception:
-            proxy_i = 0
-        try:
             sig_proxy = group_fg_proxy_scores.setdefault(key, {})
             prev_proxy = sig_proxy.get(sig)
             if prev_proxy is None or int(proxy_i) > int(prev_proxy):
@@ -1805,8 +1805,6 @@ def process_force_greats_gpu_finder(
         except Exception:
             pass
         try:
-            ga_run_idx = eval_data.get("_ga_gpu_run_idx")
-            ga_row_idx = eval_data.get("_ga_gpu_row_idx")
             if ga_run_idx is not None and ga_row_idx is not None:
                 group_ga_coords.setdefault(key, {}).setdefault(sig, (int(ga_run_idx), int(ga_row_idx)))
         except Exception:
