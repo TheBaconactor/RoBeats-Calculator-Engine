@@ -524,8 +524,9 @@ def _build_topk_keep_signature_set(
     *,
     items: list[tuple[str, dict]],
     entry_sig: dict[int, str],
-    group_base_scores: dict,
-    group_fg_proxy_scores: dict,
+    group_base_scores: dict | None = None,
+    group_fg_proxy_scores: dict | None = None,
+    group_signature_rows: dict | None = None,
     base_keep_n: int,
     fg_proxy_keep_n: int,
     max_keep_total: int,
@@ -549,7 +550,33 @@ def _build_topk_keep_signature_set(
             sig0 = entry_sig.get(int(id(entry)))
             _add(sig0)
 
-    if int(fg_proxy_keep_n) > 0 and isinstance(group_fg_proxy_scores, dict):
+    if int(fg_proxy_keep_n) > 0 and isinstance(group_signature_rows, dict):
+        proxy_rows: list[tuple[str, int, int]] = []
+        for sig_map in (group_signature_rows or {}).values():
+            if not isinstance(sig_map, dict):
+                continue
+            for sig, row in sig_map.items():
+                if not isinstance(row, dict):
+                    continue
+                try:
+                    proxy_i = int(row.get("proxy", 0) or 0)
+                except Exception:
+                    proxy_i = 0
+                try:
+                    base_i = int(row.get("base", 0) or 0)
+                except Exception:
+                    base_i = 0
+                proxy_rows.append((str(sig or ""), proxy_i, base_i))
+
+        proxy_rows.sort(key=lambda row: (-int(row[1]), -int(row[2]), row[0]))
+        added_proxy = 0
+        for sig, _proxy_i, _base_i in proxy_rows:
+            if _add(sig):
+                added_proxy += 1
+                if added_proxy >= int(fg_proxy_keep_n):
+                    break
+
+    elif int(fg_proxy_keep_n) > 0 and isinstance(group_fg_proxy_scores, dict):
         proxy_rows: list[tuple[str, int, int]] = []
         for key, sig_map in (group_fg_proxy_scores or {}).items():
             if not isinstance(sig_map, dict):
@@ -784,6 +811,57 @@ def _signature_timing_bucket(sig: object) -> tuple[str, str, str]:
         return ("", "", "")
     family = regime_family or regime_id
     return (apply_to, family, regime_scope)
+
+
+def _build_signature_frontier_metas_from_rows(
+    rows: list[dict],
+    *,
+    keep_sigs: set[str] | None = None,
+    center_bin: int = 2,
+) -> list[dict]:
+    try:
+        center_bin_i = max(1, int(center_bin))
+    except Exception:
+        center_bin_i = 2
+
+    force_keep = keep_sigs or set()
+    metas: list[dict] = []
+    for idx, row in enumerate(rows):
+        if not isinstance(row, dict):
+            continue
+        sig = row.get("sig")
+        if sig is None:
+            continue
+        center = row.get("center")
+        if not (isinstance(center, (tuple, list)) and len(center) >= 2):
+            center = (0, 0)
+        try:
+            center_ft = int(center[0] or 0)
+        except Exception:
+            center_ft = 0
+        try:
+            center_ff = int(center[1] or 0)
+        except Exception:
+            center_ff = 0
+
+        timing_bucket = row.get("timing_bucket")
+        if not (isinstance(timing_bucket, (tuple, list)) and len(timing_bucket) >= 3):
+            timing_bucket = _signature_timing_bucket(sig)
+
+        metas.append(
+            {
+                "sig": sig,
+                "base": int(row.get("base", 0) or 0),
+                "proxy": int(row.get("proxy", 0) or 0),
+                "priority": int(row.get("priority", 0) or 0),
+                "center": (int(center_ft), int(center_ff)),
+                "center_bucket": (int(center_ft // center_bin_i), int(center_ff // center_bin_i)),
+                "timing_bucket": tuple(timing_bucket[:3]) if isinstance(timing_bucket, (tuple, list)) else ("", "", ""),
+                "force_keep": str(sig) in force_keep,
+                "idx": int(idx),
+            }
+        )
+    return metas
 
 
 def _build_signature_frontier_metas(
@@ -1617,11 +1695,10 @@ def process_force_greats_gpu_finder(
 
     # Group work by (selected_element, n_sections, max_per_section)
     groups = {}
-    group_reps = {}  # key -> sig -> representative base_stats dict
-    group_base_scores = {}  # key -> sig -> base score for this signature
-    group_fg_proxy_scores = {}  # key -> sig -> FG-proxy score for this signature
+    # Canonical compact signature rows used for frontier + per-group solve prep.
+    # key -> sig -> {"sig","base","proxy","priority","center","timing_bucket","base_stats","ga_coord"}
+    group_signature_rows = {}
     group_centers = {}  # key -> set of (center_ft, center_ff)
-    group_ga_coords = {}  # key -> sig -> (ga_run_idx, ga_row_idx)
     # entry_obj_id -> stats signature (used for top-K download keep-mask)
     entry_sig: dict[int, str] = {}
 
@@ -1796,27 +1873,45 @@ def process_force_greats_gpu_finder(
 
         groups.setdefault(key, {}).setdefault(sig, []).append((entry, eval_data))
         group_centers.setdefault(key, set()).add((int(center_ft), int(center_ff)))
-        group_reps.setdefault(key, {}).setdefault(sig, base_stats)
-        try:
-            sig_proxy = group_fg_proxy_scores.setdefault(key, {})
-            prev_proxy = sig_proxy.get(sig)
-            if prev_proxy is None or int(proxy_i) > int(prev_proxy):
-                sig_proxy[sig] = int(proxy_i)
-        except Exception:
-            pass
-        try:
-            if ga_run_idx is not None and ga_row_idx is not None:
-                group_ga_coords.setdefault(key, {}).setdefault(sig, (int(ga_run_idx), int(ga_row_idx)))
-        except Exception:
-            pass
         try:
             base_score_i = int(entry.get("base_score") or entry.get("score", 0) or 0)
         except Exception:
             base_score_i = 0
-        # For a given (song, selected_element, base stats) signature, the base score should be stable.
-        # Track one representative base score per signature so top-K downloads can use it without
-        # re-scanning the signature's member list.
-        group_base_scores.setdefault(key, {}).setdefault(sig, int(base_score_i))
+        try:
+            sig_rows = group_signature_rows.setdefault(key, {})
+            row = sig_rows.get(sig)
+            if not isinstance(row, dict):
+                row = {
+                    "sig": sig,
+                    # Preserve prior semantics: first observed base score / rep / coord wins.
+                    "base": int(base_score_i),
+                    "proxy": int(proxy_i),
+                    "priority": int(entry.get("_fg_priority", 0) or 0),
+                    "center": (
+                        int((base_stats or {}).get("Fever Time", 0) or 0),
+                        int((base_stats or {}).get("Fever Fill Rate", 0) or 0),
+                    ),
+                    "timing_bucket": _signature_timing_bucket(sig),
+                    "base_stats": base_stats,
+                    "ga_coord": (
+                        (int(ga_run_idx), int(ga_row_idx))
+                        if ga_run_idx is not None and ga_row_idx is not None
+                        else None
+                    ),
+                }
+                sig_rows[sig] = row
+            else:
+                # Preserve behavior where proxy/priority represent strongest observed member.
+                if int(proxy_i) > int(row.get("proxy", 0) or 0):
+                    row["proxy"] = int(proxy_i)
+                try:
+                    row["priority"] = max(int(row.get("priority", 0) or 0), int(entry.get("_fg_priority", 0) or 0))
+                except Exception:
+                    pass
+                if row.get("ga_coord") is None and ga_run_idx is not None and ga_row_idx is not None:
+                    row["ga_coord"] = (int(ga_run_idx), int(ga_row_idx))
+        except Exception:
+            pass
         computed += 1
 
     if perf:
@@ -1849,8 +1944,7 @@ def process_force_greats_gpu_finder(
         keep_sigs = _build_topk_keep_signature_set(
             items=entry_items,
             entry_sig=entry_sig,
-            group_base_scores=group_base_scores,
-            group_fg_proxy_scores=group_fg_proxy_scores,
+            group_signature_rows=group_signature_rows,
             base_keep_n=base_keep_n,
             fg_proxy_keep_n=fg_proxy_keep_n,
             max_keep_total=max_keep_total,
@@ -1870,17 +1964,11 @@ def process_force_greats_gpu_finder(
                 frontier_total_after += int(len(sig_list0))
                 continue
 
-            rep_map = group_reps.get(group_key, {}) or {}
-            base_score_map = group_base_scores.get(group_key, {}) or {}
-            fg_proxy_map = group_fg_proxy_scores.get(group_key, {}) or {}
-            metas = _build_signature_frontier_metas(
-                sig_list0,
-                sig_map=sig_map,
-                rep_map=rep_map,
-                base_score_map=base_score_map,
-                fg_proxy_map=fg_proxy_map,
+            sig_rows = group_signature_rows.get(group_key, {}) if isinstance(group_signature_rows, dict) else {}
+            row_list = [sig_rows.get(sig0) for sig0 in sig_list0 if isinstance(sig_rows.get(sig0), dict)]
+            metas = _build_signature_frontier_metas_from_rows(
+                row_list,
                 keep_sigs=keep_sigs,
-                limit=int(sig_frontier_limit),
                 center_bin=int(sig_frontier_center_bin),
             )
             if len(metas) <= int(sig_frontier_limit):
@@ -2240,9 +2328,7 @@ def process_force_greats_gpu_finder(
     # Process each group in GPU batches
     for (sel_color, n_sections, max_per_section), sig_map in groups.items():
         _t_cfg0 = time.perf_counter() if perf else 0.0
-        rep_map = group_reps.get((sel_color, n_sections, max_per_section), {}) or {}
-        base_score_map = group_base_scores.get((sel_color, n_sections, max_per_section), {}) or {}
-        ga_coords_map = group_ga_coords.get((sel_color, n_sections, max_per_section), {}) or {}
+        sig_rows_map = group_signature_rows.get((sel_color, n_sections, max_per_section), {}) or {}
 
         # Use configurable window around loadout centers for FT/FF search.
         # - fg_search_radius < 0: full search over all FT/FF gem allocations (within TOTAL_GEM_BUDGET).
@@ -2264,12 +2350,9 @@ def process_force_greats_gpu_finder(
         sig_list = list(reduced_sig_lists.get((sel_color, n_sections, max_per_section), list(sig_map.keys())))
         if len(sig_list) < len(sig_map):
             centers = {
-                (
-                    int((rep_map.get(sig0) or {}).get("Fever Time", 0) or 0),
-                    int((rep_map.get(sig0) or {}).get("Fever Fill Rate", 0) or 0),
-                )
+                tuple((sig_rows_map.get(sig0) or {}).get("center") or (0, 0))
                 for sig0 in sig_list
-                if isinstance(rep_map.get(sig0), dict)
+                if isinstance(sig_rows_map.get(sig0), dict)
             }
             if not centers:
                 centers = group_centers.get((sel_color, n_sections, max_per_section), set())
@@ -2289,7 +2372,11 @@ def process_force_greats_gpu_finder(
             # Get breakpoints using pure math (no simulation needed)
             rep_pairs = None
             try:
-                reps = [rep_map.get(sig0) for sig0 in sig_list] if isinstance(rep_map, dict) else []
+                reps = [
+                    (sig_rows_map.get(sig0) or {}).get("base_stats")
+                    for sig0 in sig_list
+                    if isinstance(sig_rows_map.get(sig0), dict)
+                ]
                 rep_pairs = {
                     (int(bs.get("Fever Time", 0) or 0), int(bs.get("Fever Fill Rate", 0) or 0))
                     for bs in reps
@@ -2501,7 +2588,8 @@ def process_force_greats_gpu_finder(
             for sig in chunk_sigs:
                 # Skip cache check in batch mode since center varies per-entry within signature groups.
                 # GPU computation is fast enough for uncached entries.
-                rep = rep_map.get(sig)
+                rep_row = sig_rows_map.get(sig) if isinstance(sig_rows_map, dict) else None
+                rep = (rep_row or {}).get("base_stats") if isinstance(rep_row, dict) else None
                 if rep is None:
                     continue
                 pending.append(rep)
@@ -2537,10 +2625,15 @@ def process_force_greats_gpu_finder(
                 ga_candidate_table_slot_held
                 and (gpu_client is None or in_process)
                 and bool(use_gpu)
-                and ga_coords_map
+                and sig_rows_map
             ):
                 try:
-                    coords_list = [ga_coords_map.get(sig0) for sig0 in pending_sigs]
+                    coords_list = [
+                        (sig_rows_map.get(sig0) or {}).get("ga_coord")
+                        if isinstance(sig_rows_map.get(sig0), dict)
+                        else None
+                        for sig0 in pending_sigs
+                    ]
                     if coords_list and all(c is not None and len(c) >= 2 for c in coords_list):
                         coords_arr = np.asarray(coords_list, dtype=np.int32)
                         if (
@@ -2563,7 +2656,8 @@ def process_force_greats_gpu_finder(
                     keep_buf = np.zeros((int(n_pending),), dtype=np.int32)
                     for i_sig, sig0 in enumerate(pending_sigs):
                         # Conservative: use the MIN base score across entries in this signature group.
-                        base_i = int(base_score_map.get(sig0, 0) or 0)
+                        row0 = sig_rows_map.get(sig0) if isinstance(sig_rows_map, dict) else None
+                        base_i = int((row0 or {}).get("base", 0) or 0) if isinstance(row0, dict) else 0
                         base_buf[int(i_sig)] = int(base_i)
                         keep_buf[int(i_sig)] = 1 if str(sig0) in keep_sigs else 0
                     download_base_scores = base_buf

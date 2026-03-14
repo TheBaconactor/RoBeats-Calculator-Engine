@@ -255,8 +255,10 @@ Current branch status:
 - The hot path now batches FG frontier selection per song/group set, then downloads the reduced frontier once.
 - The first naive version regressed throughput because it downloaded one frontier result per group; that per-group boundary is no longer used in production.
 - The canonical path now primes compact FG group metadata during FG prep and reuses it in `gpu_dispatch`, so the hot path no longer has to rebuild all group keys/signatures/proxy scores for GA candidates.
+- The canonical path now also uses a compact per-group signature-row map as the primary source for frontier metadata and per-group solve prep (`base_stats`, `proxy`, `priority`, `ga_coord`, center/timing metadata) instead of rebuilding those from multiple host maps.
 - Decode-time priming was tested and reverted from the canonical path because it moved CPU work into a more serial stage and regressed controlled throughput.
-- The remaining future opportunity is moving signature bucket construction fully off the host, not rebuilding the same compact metadata inside the current FG hot path.
+- A later host-side flattening attempt also regressed controlled throughput and shifted the FG surface, so it was rejected instead of being kept as "cleanup."
+- The remaining future opportunity is moving signature bucket construction fully off the host, not rebuilding or reshaping the same compact metadata inside Python.
 
 ### Phase 2C: Remove redundant FG solve volume
 
@@ -303,7 +305,60 @@ Current branch status:
 - retained-winner-only host materialization is implemented
 - GPU frontier reduction is active in the canonical path
 - the canonical path now primes compact FG grouping metadata before `gpu_dispatch`
+- the canonical path now uses compact signature rows as the primary host-side frontier/solve metadata source
 - the remaining host-side piece is full signature bucket construction from retained entries before the GPU frontier stage
+
+### Rejected direction: more host reshaping
+
+The architecture already proved that some host work can be moved earlier and still help, but there is now a hard line:
+
+- compact metadata priming in FG prep is accepted
+- additional host-side signature-row flattening is rejected
+
+Reason:
+
+- it regressed the controlled throughput benchmark from the pushed stable `1208.9 songs/hour` to `1128.7` / `1113.4 songs/hour`
+- it also changed the downstream FG surface on the same benchmark sample
+
+So the next step is not "clean up more Python maps." The next step is a resident bucket-construction redesign.
+
+### Resident bucket-construction redesign
+
+Replace the current host-built signature-bucket preparation with this shape:
+
+1. `FGSignatureRow` resident arrays
+- one compact row per candidate
+- fields should include:
+  - exact FG signature inputs
+  - group key inputs
+  - frontier ranking inputs
+  - resident identity / provenance for later staging
+
+2. `FGSignatureBucket` resident arrays
+- build unique signature/group buckets directly from the signature rows
+- preserve:
+  - representative row index
+  - max base score
+  - max proxy score
+  - max priority
+  - timing/center diversity data
+
+3. GPU frontier selection from resident buckets
+- no Python `rep_map/base_map/proxy_map -> metas` phase
+- no extra host flattening pass before the GPU selector
+
+4. Exact FG solve driven from selected resident representatives
+- the CPU should receive only compact selected rows or indices
+- `gpu_dispatch` should orchestrate resident stages rather than assemble the signature frontier itself
+
+### Redesign acceptance criteria
+
+This redesign should only ship if it satisfies all of the following:
+
+- throughput is at least as good as the pushed stable path
+- no new silent degradation is introduced
+- FG surface quality does not regress on the controlled benchmark sample
+- host-side signature construction measurably shrinks instead of moving to another serial CPU stage
 
 ### Phase 4: Delete non-canonical legacy paths
 

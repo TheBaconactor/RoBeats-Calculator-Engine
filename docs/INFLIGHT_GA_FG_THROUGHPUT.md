@@ -80,6 +80,15 @@ GA and FG are one product outcome.
   - priming in GA decode was tested and regressed throughput
   - the canonical path now primes this metadata in FG prep, where the work is still upstream of the solver hot path but no longer blocks decode throughput
 
+9. Canonical compact signature-row map in the FG hot path
+- File:
+  - `gear_optimizer/helpers/song_helpers/force_greats/gpu_dispatch.py`
+- Added:
+  - `group_signature_rows` as the canonical per-group/per-signature metadata source
+  - frontier metadata now built from compact signature rows rather than reconstructing from multiple host maps
+  - per-group solve prep now reads representative base stats, GA staging coords, and download base-score hints from the same compact row map
+- This removes duplicated host reconstruction work while preserving the existing FG solve behavior.
+
 ## Regression investigation update (March 13, 2026)
 
 The earlier "heavy throughput regression" from the reverted hot-path "preselected FG surface" skip stayed fixed, but a new regression appeared when GPU frontier reduction was first wired as a per-group download.
@@ -118,6 +127,26 @@ Additional March 13, 2026 note:
 - same benchmark after relocating that work into FG prep: `1208.9 songs/hour`
 - rerun baseline for that comparison (`fd92cc7`): `1089.8 songs/hour`
 - interpretation: the metadata itself is useful, but decode is the wrong placement because it is a more serial stage in the native in-flight pipeline
+
+Additional rejected experiment:
+
+- a follow-up host-side "signature-row flattening" attempt tried to remove more Python dict/map reconstruction before the existing GPU frontier selector
+- controlled reruns on the same benchmark came in at `1128.7 songs/hour` and `1113.4 songs/hour`
+- the pushed stable state before that experiment was `1208.9 songs/hour`
+- the downstream FG surface also shifted on the same queue sample, so this was not just harmless benchmark noise
+- conclusion: more host-side reshaping is the wrong direction; it violates the throughput-first contract and is rejected from the canonical path
+
+Redesign rule from this violation:
+
+- do not spend more host CPU "organizing" signatures before the GPU frontier stage
+- the next remaining architecture work must build signature buckets from resident candidate rows directly, not by adding another Python reshaping pass
+
+Current redesign slice status:
+
+- the compact signature-row redesign is now implemented in the canonical path
+- controlled benchmark reruns on the same 20-song no-HitSim harness produced `1184.9` and `1223.7 songs/hour`
+- this remains above the comparison baseline (`fd92cc7`: `1089.8 songs/hour`) and above the rejected-host-reshape runset
+- full GPU-side signature bucket construction is still pending
 
 ## Regression coverage
 
@@ -371,6 +400,57 @@ Expected effect:
 
 - less Python hot-path work
 - better chance of a truly GPU-native FG pipeline
+
+## Redesign After The Rejected Host-Reshape Attempt
+
+The next implementation target should be a true resident signature-row pipeline, not another host flattening pass.
+
+### New canonical target
+
+1. Extend the resident FG candidate representation so each candidate row already carries the exact signature inputs needed for FG bucketing:
+- `base_score`
+- `fg_proxy`
+- `priority`
+- `center_ft`, `center_ff`
+- `selected_element`
+- `pp`, `cm`, `fm`, `ft_stat`, `ff_stat`
+- `p_val`, `s_val`
+- timing/regime bucket id
+- `(ga_run_idx, ga_row_idx)` or equivalent resident identity
+
+2. Build `FGSignatureRow` arrays directly from resident candidate rows.
+- one flat row per candidate
+- no host-side `groups -> rep_map/base_map/proxy_map -> metas` reconstruction
+
+3. Build `FGSignatureBucket` rows on GPU.
+- key by exact FG signature + group key
+- keep representative row index
+- keep max base/proxy/priority aggregates
+- keep timing/center information needed by frontier selection
+
+4. Run frontier selection on the resident bucket rows.
+- GPU frontier selector consumes bucket rows directly
+- CPU downloads only selected representative indices or compact winner rows
+
+5. Feed exact FG solve from those selected representative rows.
+- `gpu_dispatch` should stop being the place where signatures are assembled
+- it should become an orchestration layer over already-built resident rows/buckets
+
+### DB-row implication
+
+This redesign also means DB candidates should eventually be converted into the same compact signature-row schema before FG bucketing.
+
+- acceptable interim state: GA candidates use the resident row path while DB rows remain compatibility-mode host input
+- final target: both GA and DB candidates enter the same compact row/bucket pipeline
+
+### Acceptance rule for this redesign
+
+The redesign is only valid if all of these hold on the controlled benchmark:
+
+- no throughput regression vs the pushed stable path
+- no silent degradation or fallback
+- no FG-surface regression on the benchmark sample
+- host-side signature construction materially decreases rather than just moving around
 
 ## Throughput-First Optimization Order
 
