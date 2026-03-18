@@ -9,6 +9,7 @@ This module provides the ItemRegistry class which:
 
 import numpy as np
 from typing import Optional
+import json
 
 
 # Stat dimension indices (matching fields.ITEM_STAT_DIM = 10)
@@ -51,6 +52,33 @@ def _fixed_gear_key(slots: list[str], fixed_gear: Optional[list[dict]]) -> tuple
 
 def _gear_pool_signature(gear_pool: dict[str, list[dict]], slots: list[str]) -> tuple[tuple[str, int], ...]:
     return tuple((str(slot_name), int(len(gear_pool.get(slot_name, []) or []))) for slot_name in slots)
+
+
+def _stable_item_sort_key(item: object) -> tuple:
+    """
+    Deterministic ordering for gear/mini pools.
+
+    GPU-native GA is deterministic in *ID-space* (it mutates/samples integer IDs from per-slot pools).
+    That determinism only holds end-to-end if the (slot, item) -> item_id mapping is stable across
+    processes. Upstream pool construction may iterate dicts/sets; if so, item order can vary with
+    PYTHONHASHSEED and make GA results look "lucky" even when GA_SEED is fixed.
+
+    Canonicalizing the pool order fixes that: same pool contents => same IDs => same GA trajectory.
+    """
+
+    if not isinstance(item, dict):
+        return (1, str(item))
+
+    name = str(item.get("Name", "") or "")
+    # Tie-breaker: stable, content-based signature (handles any rare duplicate names safely).
+    try:
+        sig = json.dumps(item, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    except Exception:
+        try:
+            sig = str(sorted((str(k), str(v)) for k, v in item.items()))
+        except Exception:
+            sig = repr(item)
+    return (0, name, sig)
 
 
 class ItemRegistry:
@@ -122,6 +150,9 @@ class ItemRegistry:
                     if fixed_item and fixed_item.get("Name"):
                         items = [fixed_item]
 
+                # IMPORTANT: keep pool ordering stable across runs (see _stable_item_sort_key docstring).
+                items = sorted(list(items or []), key=_stable_item_sort_key)
+
                 slot_start_base[slot_idx] = next_id_base
                 slot_count_base[slot_idx] = len(items)
 
@@ -167,6 +198,9 @@ class ItemRegistry:
         if fixed_minis is not None:
             # Only use fixed minis
             mini_items = [m for m in fixed_minis if m and m.get("Name")]
+
+        # Same determinism requirement as gear pools: keep ordering stable across processes.
+        mini_items = sorted(list(mini_items or []), key=_stable_item_sort_key)
 
         mini_start = next_id
         mini_count = len(mini_items)
