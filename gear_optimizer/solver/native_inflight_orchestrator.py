@@ -469,15 +469,46 @@ def _default_prime_target(*, inflight_limit: int, prep_limit: int, pending_count
     return max(1, min(target, prep_limit, pending_count))
 
 
+def _is_repeat_ctx_dict(extra: Any) -> bool:
+    return isinstance(extra, dict) and "repeat_index" in extra and "repeat_total" in extra and "ga_seed" in extra
+
+
 def _extract_repeat_ctx(task: tuple) -> dict | None:
+    if not isinstance(task, (tuple, list)) or len(task) <= 16:
+        return None
+    for extra in task[16:]:
+        if _is_repeat_ctx_dict(extra):
+            return extra
+    return None
+
+
+def _extract_repeat_bundle(task: tuple) -> dict | None:
     if not isinstance(task, (tuple, list)) or len(task) <= 16:
         return None
     for extra in task[16:]:
         if not isinstance(extra, dict):
             continue
-        if "repeat_index" in extra and "repeat_total" in extra and "ga_seed" in extra:
+        if not bool(extra.get("repeat_bundle")):
+            continue
+        runs = extra.get("runs")
+        if isinstance(runs, list) and runs:
             return extra
     return None
+
+
+def _materialize_repeat_task(task: tuple, repeat_ctx: dict) -> tuple:
+    if not isinstance(task, (tuple, list)):
+        return task
+    prefix = list(task[:16])
+    extras: list[Any] = []
+    for extra in task[16:]:
+        if _is_repeat_ctx_dict(extra):
+            continue
+        if isinstance(extra, dict) and bool(extra.get("repeat_bundle")):
+            continue
+        extras.append(extra)
+    extras.append(dict(repeat_ctx or {}))
+    return tuple(prefix + extras)
 
 
 def _task_key(task: tuple) -> str:
@@ -1842,7 +1873,7 @@ def run_native_inflight_song_pipeline(
     def _post(item: dict) -> None:
         if post_sender is not None:
             post_sender.send(item)
-        if isinstance(item, dict) and item.get("_error"):
+        if isinstance(item, dict) and item.get("_error") and not bool(item.get("_suppress_progress")):
             try:
                 song_label = (
                     item.get("song")
@@ -1860,8 +1891,76 @@ def run_native_inflight_song_pipeline(
             )
 
     pending_tasks = deque(t for t in tasks if _task_key(t) not in completed_songs)
+    bundle_progress: dict[int, int] = {}
     prepared: deque[_NativeSong] = deque()
     pending_fg: deque[_NativeSong] = deque()
+
+    def _bundle_runs(task: tuple) -> list[dict]:
+        bundle = _extract_repeat_bundle(task)
+        if not isinstance(bundle, dict):
+            return []
+        runs = bundle.get("runs")
+        if not isinstance(runs, list):
+            return []
+        out: list[dict] = []
+        for ctx in runs:
+            if _is_repeat_ctx_dict(ctx):
+                out.append(dict(ctx))
+        return out
+
+    def _next_logical_task(task: tuple) -> tuple[tuple, dict | None]:
+        runs = _bundle_runs(task)
+        if not runs:
+            return task, None
+        cursor = max(0, int(bundle_progress.get(id(task), 0)))
+        if cursor >= len(runs):
+            cursor = len(runs) - 1
+        repeat_ctx = dict(runs[cursor])
+        return _materialize_repeat_task(task, repeat_ctx), repeat_ctx
+
+    def _bind_bundle_song(song: _NativeSong, parent_task: tuple, repeat_ctx: dict | None) -> None:
+        if repeat_ctx is None or not _bundle_runs(parent_task):
+            return
+        setattr(song, "_bundle_parent_task", parent_task)
+        setattr(song, "_bundle_task_key", _task_key(parent_task))
+        try:
+            setattr(song, "_bundle_repeat_index", int(repeat_ctx.get("repeat_index") or 0))
+            setattr(song, "_bundle_repeat_total", int(repeat_ctx.get("repeat_total") or 0))
+        except Exception:
+            setattr(song, "_bundle_repeat_index", 0)
+            setattr(song, "_bundle_repeat_total", 0)
+
+    def _advance_bundle(parent_task: tuple, *, song_name: str, record_info: dict | None = None, failed: bool = False) -> bool:
+        runs = _bundle_runs(parent_task)
+        if not runs:
+            return False
+        next_idx = max(0, int(bundle_progress.get(id(parent_task), 0))) + 1
+        bundle_progress[id(parent_task)] = int(next_idx)
+        if next_idx < len(runs):
+            pending_tasks.appendleft(parent_task)
+            return True
+
+        bundle_key = _task_key(parent_task)
+        completed_songs.add(bundle_key)
+        if memory_resume_tracker:
+            memory_resume_tracker.mark_completed(song_name)
+        if bundle_completed_cb is not None:
+            try:
+                bundle_completed_cb(bundle_key, completed_songs)
+            except Exception:
+                pass
+        try:
+            info = dict(record_info or {})
+            info.setdefault("song", bundle_key or song_name)
+            info.setdefault("status", "FAILED" if failed else "DONE")
+        except Exception:
+            info = record_info
+        _emit_progress(
+            completed_delta=1,
+            failed_delta=1 if failed else 0,
+            record_info=info,
+        )
+        return True
 
     # GA jobs submitted to the GPU executor (in-order). We intentionally keep a
     # backlog so CPU-side decode/post-processing can't create GPU idle gaps.
@@ -1887,7 +1986,7 @@ def run_native_inflight_song_pipeline(
             prep_workers = _default_worker_threads(inflight_limit=inflight_limit, kind="prep")
 
     prep_executor = concurrent.futures.ThreadPoolExecutor(max_workers=prep_workers, thread_name_prefix="SongPrep")
-    prep_inflight: deque[tuple[tuple, concurrent.futures.Future, float]] = deque()
+    prep_inflight: deque[tuple[tuple, tuple, concurrent.futures.Future, float]] = deque()
 
     decode_workers = 0
     if cfg0 is not None:
@@ -2211,12 +2310,15 @@ def run_native_inflight_song_pipeline(
     for _ in range(int(prime_target)):
         first = pending_tasks.popleft()
         song_name = first[1]
-        task_key = _task_key(first)
-        if task_key in completed_songs:
+        bundle_key = _task_key(first)
+        if bundle_key in completed_songs:
             continue
+        logical_task, repeat_ctx = _next_logical_task(first)
+        task_key = _task_key(logical_task)
         try:
             t0 = time.perf_counter()
-            prepared_song = _prepare_song(first)
+            prepared_song = _prepare_song(logical_task)
+            _bind_bundle_song(prepared_song, first, repeat_ctx)
             prepared.append(prepared_song)
             stage_profiler.record(
                 "prep",
@@ -2225,18 +2327,22 @@ def run_native_inflight_song_pipeline(
                 song=task_key,
             )
         except Exception as exc:
-            _post(
-                build_error_payload(
-                    song_name=str(song_name),
-                    queue_key=str(task_key),
-                    queue_label=str(task_key),
-                    exc=exc,
-                    trace=traceback.format_exc(),
-                )
+            payload = build_error_payload(
+                song_name=str(song_name),
+                queue_key=str(task_key),
+                queue_label=str(task_key),
+                exc=exc,
+                trace=traceback.format_exc(),
             )
-            completed_songs.add(task_key)
-            if memory_resume_tracker:
-                memory_resume_tracker.mark_completed(song_name)
+            if repeat_ctx is not None:
+                payload["_suppress_progress"] = True
+            _post(payload)
+            if repeat_ctx is not None:
+                _advance_bundle(first, song_name=str(song_name), failed=True)
+            else:
+                completed_songs.add(task_key)
+                if memory_resume_tracker:
+                    memory_resume_tracker.mark_completed(song_name)
 
     try:
         if prepared and not fg_jit_warmup_submitted:
@@ -2468,17 +2574,20 @@ def run_native_inflight_song_pipeline(
             blocked_on_slot_acquire = False
 
             # Move completed song preps into the staging queue.
-            for task, fut, t_submit in list(prep_inflight):
+            for task, logical_task, fut, t_submit in list(prep_inflight):
                 if not fut.done():
                     continue
-                prep_inflight.remove((task, fut, t_submit))
+                prep_inflight.remove((task, logical_task, fut, t_submit))
                 did_work = True
                 song_name = task[1]
-                task_key = _task_key(task)
-                if task_key in completed_songs:
+                bundle_key = _task_key(task)
+                task_key = _task_key(logical_task)
+                if bundle_key in completed_songs:
                     continue
                 try:
                     prepared_song = fut.result()
+                    repeat_ctx = _extract_repeat_ctx(logical_task)
+                    _bind_bundle_song(prepared_song, task, repeat_ctx)
                     stage_profiler.record(
                         "prep",
                         time.perf_counter() - float(t_submit),
@@ -2502,18 +2611,23 @@ def run_native_inflight_song_pipeline(
                         except Exception:
                             pass
                 except Exception as exc:
-                    _post(
-                        build_error_payload(
-                            song_name=str(song_name),
-                            queue_key=str(task_key),
-                            queue_label=str(task_key),
-                            exc=exc,
-                            trace=traceback.format_exc(),
-                        )
+                    payload = build_error_payload(
+                        song_name=str(song_name),
+                        queue_key=str(task_key),
+                        queue_label=str(task_key),
+                        exc=exc,
+                        trace=traceback.format_exc(),
                     )
-                    completed_songs.add(task_key)
-                    if memory_resume_tracker:
-                        memory_resume_tracker.mark_completed(song_name)
+                    repeat_ctx = _extract_repeat_ctx(logical_task)
+                    if repeat_ctx is not None:
+                        payload["_suppress_progress"] = True
+                    _post(payload)
+                    if repeat_ctx is not None:
+                        _advance_bundle(task, song_name=str(song_name), failed=True)
+                    else:
+                        completed_songs.add(task_key)
+                        if memory_resume_tracker:
+                            memory_resume_tracker.mark_completed(song_name)
 
             # Finalize prepared FG jobs (CPU prep done) so the GPU stage can start immediately when scheduled.
             for song in list(fg_prep_inflight):
@@ -2661,18 +2775,23 @@ def run_native_inflight_song_pipeline(
                             song.song_slot = 0
                         except Exception:
                             pass
-                        _post(
-                            build_error_payload(
-                                song_name=str(song.song_name),
-                                queue_key=str(song.task_key),
-                                queue_label=str(song.task_key),
-                                exc=exc,
-                                trace=traceback.format_exc(),
-                            )
+                        payload = build_error_payload(
+                            song_name=str(song.song_name),
+                            queue_key=str(song.task_key),
+                            queue_label=str(song.task_key),
+                            exc=exc,
+                            trace=traceback.format_exc(),
                         )
-                        completed_songs.add(song.task_key)
-                        if memory_resume_tracker:
-                            memory_resume_tracker.mark_completed(song.song_name)
+                        bundle_parent = getattr(song, "_bundle_parent_task", None)
+                        if bundle_parent is not None:
+                            payload["_suppress_progress"] = True
+                        _post(payload)
+                        if bundle_parent is not None:
+                            _advance_bundle(bundle_parent, song_name=str(song.song_name), failed=True)
+                        else:
+                            completed_songs.add(song.task_key)
+                            if memory_resume_tracker:
+                                memory_resume_tracker.mark_completed(song.song_name)
                         did_work = True
                         continue
 
@@ -2723,27 +2842,33 @@ def run_native_inflight_song_pipeline(
                     break
                 if pending_tasks and (len(prepared) + len(prep_inflight) < prep_limit):
                     nxt = pending_tasks.popleft()
-                    nxt_key = _task_key(nxt)
-                    if nxt_key in completed_songs:
+                    nxt_bundle_key = _task_key(nxt)
+                    if nxt_bundle_key in completed_songs:
                         did_work = True
                         continue
+                    logical_nxt, repeat_ctx = _next_logical_task(nxt)
+                    nxt_key = _task_key(logical_nxt)
                     try:
-                        prep_future = prep_executor.submit(_prepare_song, nxt)
+                        prep_future = prep_executor.submit(_prepare_song, logical_nxt)
                         _register_completion_future(prep_future)
-                        prep_inflight.append((nxt, prep_future, time.perf_counter()))
+                        prep_inflight.append((nxt, logical_nxt, prep_future, time.perf_counter()))
                     except Exception as exc:
-                        _post(
-                            build_error_payload(
-                                song_name=str(nxt[1]),
-                                queue_key=str(nxt_key),
-                                queue_label=str(nxt_key),
-                                exc=exc,
-                                trace=traceback.format_exc(),
-                            )
+                        payload = build_error_payload(
+                            song_name=str(nxt[1]),
+                            queue_key=str(nxt_key),
+                            queue_label=str(nxt_key),
+                            exc=exc,
+                            trace=traceback.format_exc(),
                         )
-                        completed_songs.add(nxt_key)
-                        if memory_resume_tracker:
-                            memory_resume_tracker.mark_completed(nxt[1])
+                        if repeat_ctx is not None:
+                            payload["_suppress_progress"] = True
+                        _post(payload)
+                        if repeat_ctx is not None:
+                            _advance_bundle(nxt, song_name=str(nxt[1]), failed=True)
+                        else:
+                            completed_songs.add(nxt_key)
+                            if memory_resume_tracker:
+                                memory_resume_tracker.mark_completed(nxt[1])
                         did_work = True
                         continue
                     did_work = True
@@ -2764,15 +2889,17 @@ def run_native_inflight_song_pipeline(
                 except GpuServiceTimeoutError:
                     raise
                 except Exception as exc:
-                    _post(
-                        build_error_payload(
-                            song_name=str(song.song_name),
-                            queue_key=str(song.task_key),
-                            queue_label=str(song.task_key),
-                            exc=exc,
-                            trace=traceback.format_exc(),
-                        )
+                    payload = build_error_payload(
+                        song_name=str(song.song_name),
+                        queue_key=str(song.task_key),
+                        queue_label=str(song.task_key),
+                        exc=exc,
+                        trace=traceback.format_exc(),
                     )
+                    bundle_parent = getattr(song, "_bundle_parent_task", None)
+                    if bundle_parent is not None:
+                        payload["_suppress_progress"] = True
+                    _post(payload)
                     # GA failed: release the reserved timeline slot for this song.
                     try:
                         _clear_fg_resident_owner(getattr(song, "calc_song", None))
@@ -2780,9 +2907,12 @@ def run_native_inflight_song_pipeline(
                         song.song_slot = 0
                     except Exception:
                         pass
-                    completed_songs.add(song.task_key)
-                    if memory_resume_tracker:
-                        memory_resume_tracker.mark_completed(song.song_name)
+                    if bundle_parent is not None:
+                        _advance_bundle(bundle_parent, song_name=str(song.song_name), failed=True)
+                    else:
+                        completed_songs.add(song.task_key)
+                        if memory_resume_tracker:
+                            memory_resume_tracker.mark_completed(song.song_name)
                     continue
 
                 t_submit = getattr(song, "_ga_submit_t0", None)
@@ -2868,15 +2998,17 @@ def run_native_inflight_song_pipeline(
                 try:
                     best_data, best_gear, best_minis, ga_candidates = song.decode_future.result()
                 except Exception as exc:
-                    _post(
-                        build_error_payload(
-                            song_name=str(song.song_name),
-                            queue_key=str(song.task_key),
-                            queue_label=str(song.task_key),
-                            exc=exc,
-                            trace=traceback.format_exc(),
-                        )
+                    payload = build_error_payload(
+                        song_name=str(song.song_name),
+                        queue_key=str(song.task_key),
+                        queue_label=str(song.task_key),
+                        exc=exc,
+                        trace=traceback.format_exc(),
                     )
+                    bundle_parent = getattr(song, "_bundle_parent_task", None)
+                    if bundle_parent is not None:
+                        payload["_suppress_progress"] = True
+                    _post(payload)
                     # Decode failed: release the reserved timeline slot for this song.
                     try:
                         _clear_fg_resident_owner(getattr(song, "calc_song", None))
@@ -2884,9 +3016,12 @@ def run_native_inflight_song_pipeline(
                         song.song_slot = 0
                     except Exception:
                         pass
-                    completed_songs.add(song.task_key)
-                    if memory_resume_tracker:
-                        memory_resume_tracker.mark_completed(song.song_name)
+                    if bundle_parent is not None:
+                        _advance_bundle(bundle_parent, song_name=str(song.song_name), failed=True)
+                    else:
+                        completed_songs.add(song.task_key)
+                        if memory_resume_tracker:
+                            memory_resume_tracker.mark_completed(song.song_name)
                     continue
                 finally:
                     song.decode_future = None
@@ -3137,22 +3272,33 @@ def run_native_inflight_song_pipeline(
                     }
                 )
 
-                completed_songs.add(song.task_key)
-                if memory_resume_tracker:
-                    memory_resume_tracker.mark_completed(song.song_name)
-                if bundle_completed_cb is not None:
+                bundle_parent = getattr(song, "_bundle_parent_task", None)
+                if bundle_parent is not None and bool(song.manual_force_greats or song.force_greats_finder):
+                    setattr(song, "_bundle_wait_for_fg", True)
+                elif bundle_parent is not None:
+                    _advance_bundle(
+                        bundle_parent,
+                        song_name=str(song.song_name),
+                        record_info=record_info,
+                        failed=False,
+                    )
+                else:
+                    completed_songs.add(song.task_key)
+                    if memory_resume_tracker:
+                        memory_resume_tracker.mark_completed(song.song_name)
+                    if bundle_completed_cb is not None:
+                        try:
+                            bundle_completed_cb(song.task_key, completed_songs)
+                        except Exception:
+                            pass
                     try:
-                        bundle_completed_cb(song.task_key, completed_songs)
+                        record_info = dict(record_info or {})
+                        # Prefer the task key so repeats show "(Run i/N)" and don't look like a single song run.
+                        record_info.setdefault("song", song.task_key or song.song_name)
+                        record_info.setdefault("status", "DONE")
                     except Exception:
                         pass
-                try:
-                    record_info = dict(record_info or {})
-                    # Prefer the task key so repeats show "(Run i/N)" and don't look like a single song run.
-                    record_info.setdefault("song", song.task_key or song.song_name)
-                    record_info.setdefault("status", "DONE")
-                except Exception:
-                    pass
-                _emit_progress(completed_delta=1, record_info=record_info)
+                    _emit_progress(completed_delta=1, record_info=record_info)
 
             # Reap completed FG workers (capture errors).
             if fg_futures:
@@ -3164,12 +3310,29 @@ def run_native_inflight_song_pipeline(
                         done = False
                     if done:
                         did_work = True
+                        bundle_parent = getattr(fg_song, "_bundle_parent_task", None)
+                        fg_failed = False
                         try:
                             fut.result()
                         except GpuServiceTimeoutError:
                             raise
                         except Exception:
-                            pass
+                            fg_failed = True
+                            try:
+                                if post_sender is not None and bool(getattr(fg_song, "_bundle_wait_for_fg", False)):
+                                    post_sender.send(
+                                        {
+                                            "_fg_update": True,
+                                            "song": fg_song.song_name,
+                                            "db_key": fg_song.db_key,
+                                            "use_evo_db": bool(fg_song.use_evo_db),
+                                            "persist_entries": [],
+                                            "file_path": fg_song.fp,
+                                            "cfg_dict": fg_song.cfg_dict,
+                                        }
+                                    )
+                            except Exception:
+                                pass
                         # Release this song's reserved timeline slot now that FG is complete.
                         try:
                             _clear_fg_resident_owner(getattr(fg_song, "calc_song", None))
@@ -3183,6 +3346,17 @@ def run_native_inflight_song_pipeline(
                             cpu_seconds=getattr(fg_song, "_cpu_fg_run_s", None),
                             song=fg_song.task_key,
                         )
+                        if bundle_parent is not None and bool(getattr(fg_song, "_bundle_wait_for_fg", False)):
+                            _advance_bundle(
+                                bundle_parent,
+                                song_name=str(fg_song.song_name),
+                                record_info=getattr(fg_song, "record_info", None),
+                                failed=bool(fg_failed),
+                            )
+                            try:
+                                delattr(fg_song, "_bundle_wait_for_fg")
+                            except Exception:
+                                pass
                     else:
                         still_pending.append((fg_song, fut, t_submit))
                 fg_futures = still_pending

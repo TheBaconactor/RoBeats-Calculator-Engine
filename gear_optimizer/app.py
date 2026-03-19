@@ -2187,10 +2187,21 @@ class GearOptimizerApp:
             hitsim_refine_trials = safe_int(cfg.get("HumanHitSim", "RefineTrials", fallback="0"), 0)
         except Exception:
             hitsim_refine_trials = 0
+        bundle_song_repeats = False
+        try:
+            bundle_song_repeats = _truthy_cfg(cfg.get("IterationEngine", "BundleSongRepeats", fallback="0"))
+        except Exception:
+            bundle_song_repeats = False
+        try:
+            raw_bundle = os.environ.get("BUNDLE_SONG_REPEATS")
+            if raw_bundle is not None and str(raw_bundle).strip() != "":
+                bundle_song_repeats = _truthy_cfg(raw_bundle)
+        except Exception:
+            pass
         collapse_hitsim_song_repeats = bool(
             hitsim_enabled and hitsim_apply_to == "ALL" and hitsim_refine_after and int(hitsim_refine_trials) > 0
         )
-        if collapse_hitsim_song_repeats:
+        if collapse_hitsim_song_repeats and not bundle_song_repeats:
             song_repeats = 1
         used_ga_seeds: set[int] = set()
         backend_service_mode = bool(getattr(getattr(self, "_robeatsmeta_api", None), "backend_mode_enabled", lambda: False)())
@@ -2211,24 +2222,37 @@ class GearOptimizerApp:
             seed = (base + name_crc + (idx * 0x9E3779B1)) & 0xFFFFFFFF
             return int(seed or 1)
 
+        def _build_repeat_ctx(song_name: str, *, repeat_index: int, repeat_total: int) -> dict:
+            if ga_seed_base is not None:
+                ga_seed = _stable_ga_seed_for_song_repeat(str(song_name), int(repeat_index))
+                while ga_seed in used_ga_seeds:
+                    # Extremely unlikely, but keep the uniqueness guarantee across the queue.
+                    ga_seed = int((ga_seed + 1) & 0xFFFFFFFF) or 1
+            else:
+                ga_seed = int(secrets.randbits(32) or 1)
+                while ga_seed in used_ga_seeds:
+                    ga_seed = int(secrets.randbits(32) or 1)
+            used_ga_seeds.add(int(ga_seed))
+            return {
+                "repeat_index": int(repeat_index),
+                "repeat_total": int(repeat_total),
+                "ga_seed": int(ga_seed),
+            }
+
         for fp, found_song_name, task_diff in song_queue:
             repeats_for_song = (
                 priority_repeat_count
                 if backend_service_mode and str(found_song_name or "").strip() in backend_priority_song_names
                 else song_repeats
             )
-            if collapse_hitsim_song_repeats:
+            if collapse_hitsim_song_repeats and not bundle_song_repeats:
                 repeats_for_song = 1
             if repeats_for_song <= 1:
                 print(f"[QUEUE] {found_song_name}")
 
                 if ga_seed_base is not None:
-                    ga_seed = _stable_ga_seed_for_song_repeat(str(found_song_name), 1)
-                    while ga_seed in used_ga_seeds:
-                        ga_seed = int((ga_seed + 1) & 0xFFFFFFFF) or 1
-                    used_ga_seeds.add(ga_seed)
                     # Use repeat_ctx even when SongRepeats=1 so per-song GA can seed deterministically.
-                    repeat_ctx = {"repeat_index": 1, "repeat_total": 1, "ga_seed": int(ga_seed)}
+                    repeat_ctx = _build_repeat_ctx(str(found_song_name), repeat_index=1, repeat_total=1)
                     tasks.append(
                         (
                             fp,
@@ -2273,23 +2297,50 @@ class GearOptimizerApp:
                     )
                 continue
 
-            for repeat_index in range(1, repeats_for_song + 1):
-                if ga_seed_base is not None:
-                    ga_seed = _stable_ga_seed_for_song_repeat(str(found_song_name), int(repeat_index))
-                    while ga_seed in used_ga_seeds:
-                        # Extremely unlikely, but keep the uniqueness guarantee across the queue.
-                        ga_seed = int((ga_seed + 1) & 0xFFFFFFFF) or 1
-                else:
-                    ga_seed = int(secrets.randbits(32) or 1)
-                    while ga_seed in used_ga_seeds:
-                        ga_seed = int(secrets.randbits(32) or 1)
-                used_ga_seeds.add(ga_seed)
-
-                repeat_ctx = {
-                    "repeat_index": int(repeat_index),
+            if bundle_song_repeats:
+                repeat_runs = [
+                    _build_repeat_ctx(
+                        str(found_song_name),
+                        repeat_index=int(repeat_index),
+                        repeat_total=int(repeats_for_song),
+                    )
+                    for repeat_index in range(1, repeats_for_song + 1)
+                ]
+                repeat_bundle = {
+                    "repeat_bundle": True,
                     "repeat_total": int(repeats_for_song),
-                    "ga_seed": int(ga_seed),
+                    "runs": repeat_runs,
                 }
+                print(f"[QUEUE] {found_song_name}")
+                tasks.append(
+                    (
+                        fp,
+                        found_song_name,
+                        task_diff,
+                        cfg_dict,
+                        paths,
+                        ref_arrays,
+                        all_gears,
+                        all_minis,
+                        gears_by_name,
+                        minis_by_name,
+                        use_evo_db,
+                        auto_buff,
+                        ga_depth,
+                        status_queue,
+                        parallel_workers,
+                        fg_debug,
+                        repeat_bundle,
+                    )
+                )
+                continue
+
+            for repeat_index in range(1, repeats_for_song + 1):
+                repeat_ctx = _build_repeat_ctx(
+                    str(found_song_name),
+                    repeat_index=int(repeat_index),
+                    repeat_total=int(repeats_for_song),
+                )
 
                 print(f"[QUEUE] {found_song_name} (Run {repeat_index}/{repeats_for_song})")
                 tasks.append(
