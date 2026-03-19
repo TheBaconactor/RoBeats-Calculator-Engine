@@ -19,7 +19,6 @@ import datetime as _dt
 import json
 import os
 import signal
-import statistics
 import subprocess
 import sys
 import threading

@@ -639,17 +639,17 @@ def _optimize_core_device_impl(
         pp_score: ti.i32 = -1
 
         # Optimized path: cached grid bitmasks.
-        if 1:
+        t_p_ov: ti.i32 = base_p + ov_p_delta
+        t_s_ov: ti.i32 = base_s + ov_s_delta
+        base_ov: ti.f32 = ti.cast((t_p_ov * 2) + t_s_ov, ti.f32) + pp_factor_cur
+        factor_ov: ti.f32 = kernels_helpers._calc_head_factor(base_ov, c_mul_cur)
+
+        if allow_pp != 0 or cm < MAX_STAT or fm < MAX_STAT:
             # Always fuse OV/CM/FM head loop; PP stays separate.
             # 4-way fusion (OV/PP/CM/FM) was slower on Vulkan due to register pressure.
             do_pp: ti.i32 = 1 if (allow_pp != 0 and pp < MAX_STAT) else 0
             do_cm: ti.i32 = 1 if (cm < MAX_STAT and (cm <= 50 or is_p_cm or is_s_cm)) else 0
             do_fm: ti.i32 = 1 if (fm < MAX_STAT) else 0
-
-            t_p_ov: ti.i32 = base_p + ov_p_delta
-            t_s_ov: ti.i32 = base_s + ov_s_delta
-            base_ov: ti.f32 = ti.cast((t_p_ov * 2) + t_s_ov, ti.f32) + pp_factor_cur
-            factor_ov: ti.f32 = kernels_helpers._calc_head_factor(base_ov, c_mul_cur)
 
             best_score: ti.i32 = -1
             best_opt = 3
@@ -775,6 +775,11 @@ def _optimize_core_device_impl(
                 if pp_score > best_score:
                     best_score = pp_score
                     best_opt = 0
+        else:
+            best_score = calc_score_cached_device(
+                base_ov, c_mul_cur, f_mul_cur, head_len, count_fever, count_normal, m0, m1, m2, m3
+            )
+            best_opt = 3
 
         # PP lookahead: if OV wins a tie now, but a few PP gems would become a real
         # improvement soon, start investing in PP.
