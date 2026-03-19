@@ -610,9 +610,11 @@ class AsyncDbSaver:
                                     db_path=target_db_path or None,
                                 )
 
+                            # Color-tier persistence is opt-in: these rows are not surfaced by
+                            # canonical frontend tier views and can significantly inflate DB size.
                             color_tiers_enabled = str(
-                                os.environ.get("POST_TEAM_BUFF_COLOR_TIERS", "1") or ""
-                            ).strip().lower() in (TRUTHY_ENV_VALUES | {""})
+                                os.environ.get("POST_TEAM_BUFF_COLOR_TIERS", "0") or ""
+                            ).strip().lower() in TRUTHY_ENV_VALUES
                             if color_tiers_enabled:
                                 meta0 = calc_song.get("metadata", {}) or {}
                                 primary_color = str(meta0.get("Primary Color", "") or "").strip()
