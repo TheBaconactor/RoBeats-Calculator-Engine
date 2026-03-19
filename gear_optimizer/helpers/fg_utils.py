@@ -239,8 +239,18 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, *, a
     # Limit to useful sections (sections beyond fever_activations have no benefit)
     actual_sections = min(num_sections, useful_sections)
 
+    import os
+
+    debug_profile = str(os.environ.get("METAFINDER_DEBUG_PROFILE", "") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    } or str(os.environ.get("DEBUG_PROFILE", "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
     if actual_sections <= 0:
-        print(f"[FG] No useful sections (gap={gap}, activations={useful_sections})")
+        if debug_profile:
+            print(f"[FG] No useful sections (gap={gap}, activations={useful_sections})")
         return [()]
 
     # Use analyzed caps if none provided, with MAX_SECTION_CAPS as backup
@@ -280,15 +290,16 @@ def collect_analytical_breakpoints(scorer, num_sections, section_caps=None, *, a
                     max_fp = fp_cap
             section_breakpoints.append(list(range(0, max_fp + 1)))
 
-    # Always log breakpoint info
-    total_configs = 1
-    for bp in section_breakpoints:
-        total_configs *= len(bp)
+    # Breakpoint logging is debug-only; the formatted list construction is not
+    # free when section caps are large.
+    if debug_profile:
+        total_configs = 1
+        for bp in section_breakpoints:
+            total_configs *= len(bp)
 
-    # Show all breakpoints per section
-    print(f"[FG] Breakpoints (FP targets): {actual_sections} sections, {total_configs} configs")
-    for i, bp in enumerate(section_breakpoints):
-        print(f"     Section {i + 1}: {bp}")
+        print(f"[FG] Breakpoints (FP targets): {actual_sections} sections, {total_configs} configs")
+        for i, bp in enumerate(section_breakpoints):
+            print(f"     Section {i + 1}: {bp}")
 
     return list(itertools.product(*section_breakpoints))
 

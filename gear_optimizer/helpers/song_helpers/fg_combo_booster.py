@@ -9,11 +9,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Optional, Iterable
 
-from ...core.constants import (
-    GEM_SCALE_FEVER,
-    SKIP_ITEM_KEYS,
-    TOTAL_GEM_BUDGET,
-)
+from ...core.constants import SKIP_ITEM_KEYS
 from ...core.utils import get_selected_element
 from ...solver.scoring.genome_evaluation import prepare_gpu_batch_eval_plan, finalize_gpu_batch_eval_plan
 from ...solver.base_stats import build_base_fixed_stats_list, build_stats_dict

@@ -54,12 +54,35 @@ def _group_ftff_pairs_by_max_fp_matrix(
         return []
 
     order = np.argsort(first)
+    # `inv` already identifies the group for each pair. Sort once by group id,
+    # then slice contiguous ranges instead of rescanning the full inverse array
+    # for every unique group.
+    sort_idx = np.argsort(inv, kind="stable")
+    inv_sorted = inv[sort_idx]
+    group_count = int(getattr(uniq, "size", 0) or 0)
+    if group_count <= 0:
+        return []
+    group_starts = np.empty(group_count, dtype=np.int64)
+    group_ends = np.empty(group_count, dtype=np.int64)
+    if group_count == 1:
+        group_starts[0] = 0
+        group_ends[0] = int(sort_idx.size)
+    else:
+        boundaries = np.flatnonzero(inv_sorted[1:] != inv_sorted[:-1]).astype(np.int64, copy=False) + 1
+        group_starts[0] = 0
+        group_starts[1:] = boundaries
+        group_ends[:-1] = boundaries
+        group_ends[-1] = int(sort_idx.size)
+
     out: list[dict] = []
     for u in order:
-        idxs = np.nonzero(inv == int(u))[0]
-        if idxs.size <= 0:
+        group_idx = int(u)
+        start = int(group_starts[group_idx])
+        end = int(group_ends[group_idx])
+        if end <= start:
             continue
-        max_fp_row = m0[int(first[int(u)])]
+        idxs = sort_idx[start:end]
+        max_fp_row = m0[int(first[group_idx])]
         out.append(
             {
                 "ftff_pairs": pairs_arr[idxs, :2],

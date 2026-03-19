@@ -23,7 +23,6 @@ from ...core.constants import (
     GEM_STAT_TO_ELEMENT_SCALE,
     ELEMENTAL_GEM_SCALE,
 )
-from ...core.env_config import ENV
 from ...core.color_flags import build_color_flags
 from ...core.utils import safe_int
 

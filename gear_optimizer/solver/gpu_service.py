@@ -16,7 +16,6 @@ import itertools
 import os
 import queue
 import signal
-import sys
 import threading
 import time
 import random

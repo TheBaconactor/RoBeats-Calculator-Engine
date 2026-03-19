@@ -165,6 +165,22 @@ def _safe_float(value: object, default: float = 0.0) -> float:
             return float(default)
 
 
+def _copy_metadata_shallow(meta: object):
+    """
+    Copy metadata without recursively duplicating nested payloads.
+
+    These call sites only update top-level scalar tags, so a shallow copy keeps
+    the existing behavior while avoiding the cost of deepcopying large nested
+    metadata blobs on every song/repeat.
+    """
+    try:
+        if meta is None:
+            return {}
+        return dict(meta)
+    except Exception:
+        return copy.deepcopy(meta)
+
+
 def _hash_reference_array(arr: np.ndarray) -> int:
     ref = np.asarray(arr, dtype=np.float32)
     return int(zlib.crc32(ref.tobytes()) & 0xFFFFFFFF)
@@ -827,10 +843,9 @@ def _plan_exact_boundary_regimes(
     max_regimes: int = 0,
     selection_mode: str = "all",
 ) -> dict:
-    # Exact-mode regime planning follows the base-score surface. `great_prepared`
-    # is still used later to materialize FG candidate timestamps for the selected
-    # regime, but it should not expand the raw cut set because FG timing is not
-    # part of the planner's family identity here.
+    # `great_prepared` is kept for signature compatibility; the current exact
+    # planner only needs the base-score surface.
+    del great_prepared
     cache_key = (
         str(song_name or ""),
         str(dist or ""),
@@ -1513,7 +1528,7 @@ def plan_human_hit_sim(calc_song: dict, *, cfg_dict: dict) -> dict | None:
                 seed_is_random = True
 
     # Record planning info (but do NOT generate fg arrays yet).
-    meta = copy.deepcopy(meta)
+    meta = _copy_metadata_shallow(meta)
     meta["HumanHitSimSeed"] = int(seed_in)
     meta["HumanHitSimApplyTo"] = apply_to
     meta["HumanHitSimDistribution"] = dist
@@ -1619,7 +1634,7 @@ def apply_human_hit_sim(calc_song: dict, *, cfg_dict: dict) -> dict | None:
 
     song_data["fg_timestamps"] = np.asarray(sim_ts, dtype=np.float32)
     song_data["fg_great_candidate_timestamps"] = np.asarray(sim_great_candidates, dtype=np.float32)
-    meta = copy.deepcopy(meta)
+    meta = _copy_metadata_shallow(meta)
     meta["HumanHitSimSeed"] = int(seed_in)
     meta["HumanHitSimApplyTo"] = apply_to
     meta["HumanHitSimDistribution"] = dist
@@ -2014,7 +2029,7 @@ def refine_human_hit_sim_after_ga(
     song_data["timestamps"] = np.asarray(best_ts, dtype=np.float32)
     calc_song["song_data"] = song_data
 
-    meta = copy.deepcopy(meta0)
+    meta = _copy_metadata_shallow(meta0)
     meta["HumanHitSimSeed"] = int(best_seed)
     meta["HumanHitSimApplyTo"] = "ALL"
     meta["HumanHitSimDistribution"] = dist
@@ -2217,7 +2232,7 @@ def materialize_human_hit_sim_regime(
     song_data["timestamps"] = np.asarray(best_ts, dtype=np.float32)
     calc_song["song_data"] = song_data
 
-    meta = copy.deepcopy(meta0)
+    meta = _copy_metadata_shallow(meta0)
     meta["HumanHitSimApplyTo"] = "ALL"
     meta["HumanHitSimDistribution"] = str(dist)
     meta["HumanHitSimGreatMode"] = str(great_mode)

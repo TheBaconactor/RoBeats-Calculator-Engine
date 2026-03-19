@@ -889,10 +889,6 @@ class GearOptimizerApp:
             ignore_resume = os.environ.get("METAFINDER_IGNORE_RESUME_QUEUE", "").lower() in ("1", "true", "yes")
             memory_resume_exists = os.path.exists(MEMORY_GUARD_RESUME_FILE)
             is_fresh_queue = ignore_resume or not memory_resume_exists
-            benchmark_mode = bool(
-                (self._robeatsmeta_api and self._robeatsmeta_api.benchmark_mode_enabled())
-                or self._truthy(os.environ.get("METAFINDER_BENCHMARK_MODE", ""))
-            )
             skip_stats_verify = bool(self._truthy(os.environ.get("METAFINDER_SKIP_STATS_INTEGRITY_VERIFY", "")))
 
             if is_fresh_queue:

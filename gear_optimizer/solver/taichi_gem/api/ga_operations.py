@@ -632,7 +632,6 @@ def ga_evaluate_population(
     n_genomes = int(n_genomes)
     n_slots = int(n_slots)
     use_hints_i = int(use_hints)
-    materialize_mode_norm = str(materialize_mode or "none").strip().lower()
     exact_genome_base_stats_reuse = bool(_ga_exact_genome_base_stats_reuse_enabled())
     # Warm-start local search is not result-stable enough on the current Metal path
     # to safely collapse duplicate rows without changing convergence behavior.

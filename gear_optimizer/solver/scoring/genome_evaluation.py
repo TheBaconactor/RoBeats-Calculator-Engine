@@ -18,7 +18,6 @@ from typing import Any, Callable, Optional
 import numpy as np
 
 from ...core.constants import (
-    TOTAL_GEM_BUDGET,
     GEM_SCALE_NORMAL,
     GEM_SCALE_FEVER,
     GEM_STAT_TO_ELEMENT_SCALE,
@@ -521,8 +520,6 @@ def batch_evaluate_genomes(
 
         if not registry_batch_solve_supported(registry):
             raise RuntimeError("GPU registry solve is required for batch_evaluate_genomes; missing ItemRegistry.")
-
-        flags = plan.flags
         try:
             worker_song_slot = int((plan.calc_song or {}).get("_gpu_song_slot", 0) or 0)
         except Exception:

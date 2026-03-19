@@ -876,11 +876,6 @@ def _build_signature_frontier_metas(
     center_bin: int = 2,
 ) -> list[dict]:
     try:
-        limit_i = int(limit)
-    except Exception:
-        limit_i = 0
-
-    try:
         center_bin_i = max(1, int(center_bin))
     except Exception:
         center_bin_i = 2
@@ -1224,6 +1219,7 @@ def process_force_greats_gpu_finder(
     from ....helpers.fg_utils import (
         collect_analytical_breakpoints,
         iter_analytical_breakpoint_groups,
+        _sample_stat_pairs,
     )
     from ....solver.analytical_fg import create_scorer_from_calc_song, create_chart_scorer_from_calc_song
     from ....solver.taichi_gem.force_greats import fields as fg_fields
@@ -2385,31 +2381,28 @@ def process_force_greats_gpu_finder(
             except Exception:
                 rep_pairs = None
 
-            if hitsim_apply_to == "FG":
-                variant_key = ()
-                if rep_pairs:
-                    try:
-                        variant_key = tuple(sorted({(int(a), int(b)) for (a, b) in rep_pairs}))[:32]
-                    except Exception:
-                        variant_key = ()
-                group_counts_list = _get_cached_analytical_breakpoints(
-                    chart_key=chart_key,
-                    num_sections=int(n_sections),
-                    variant_key=variant_key,
-                    compute_fn=lambda: collect_analytical_breakpoints(fg_scorer, n_sections, analysis_pairs=rep_pairs),
-                )
-            else:
-                group_counts_list = collect_analytical_breakpoints(fg_scorer, n_sections, analysis_pairs=rep_pairs)
+            variant_key = ()
+            if rep_pairs:
+                try:
+                    variant_key = tuple(_sample_stat_pairs(rep_pairs, max_pairs=16))
+                except Exception:
+                    variant_key = ()
+            group_counts_list = _get_cached_analytical_breakpoints(
+                chart_key=chart_key,
+                num_sections=int(n_sections),
+                variant_key=variant_key,
+                compute_fn=lambda: collect_analytical_breakpoints(fg_scorer, n_sections, analysis_pairs=rep_pairs),
+            )
 
             if not group_counts_list:
                 group_counts_list = [tuple([0] * int(n_sections))]
 
-            # Already sliced to n_sections by collect_analytical_breakpoints
-            # Just deduplicate and sort
+            # `collect_analytical_breakpoints` already returns unique configs in
+            # deterministic lexicographic order via `itertools.product`.
             if n_sections <= 0:
                 counts_list = [()]
             else:
-                counts_list = sorted(list(set(group_counts_list)))
+                counts_list = list(group_counts_list)
 
             if perf:
                 t_cfg_build_sec += time.perf_counter() - _t_cfg0
@@ -3057,17 +3050,20 @@ def process_force_greats_gpu_finder(
 
                 if max_fp_matrix is None:
                     group_mode = "cpu"
-                    group_compute_fn = lambda: iter_analytical_breakpoint_groups(
-                        fg_scorer,
-                        n_sections,
-                        ftff_pairs,
-                        base_stats_pairs,
-                        gem_scale_fever=GEM_SCALE_FEVER,
-                        batch_size=breakpoint_batch_size,
-                        merge_threshold_cfgs=max_union_cfg,
-                        merge_threshold_threads=max_union_threads,
-                        n_genomes=n_pending,
-                    )
+                    def _group_compute_fn_cpu():
+                        return iter_analytical_breakpoint_groups(
+                            fg_scorer,
+                            n_sections,
+                            ftff_pairs,
+                            base_stats_pairs,
+                            gem_scale_fever=GEM_SCALE_FEVER,
+                            batch_size=breakpoint_batch_size,
+                            merge_threshold_cfgs=max_union_cfg,
+                            merge_threshold_threads=max_union_threads,
+                            n_genomes=n_pending,
+                        )
+
+                    group_compute_fn = _group_compute_fn_cpu
                 else:
                     import numpy as _np
 
