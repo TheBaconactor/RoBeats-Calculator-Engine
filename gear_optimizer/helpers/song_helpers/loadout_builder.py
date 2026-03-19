@@ -70,7 +70,7 @@ def merge_db_loadouts_into_entries(loadout_entries: dict, db_loadouts: list[dict
     for rec in db_loadouts or []:
         if not isinstance(rec, dict):
             continue
-        _upsert_entry(
+        h = _upsert_entry(
             loadout_entries,
             gear_items=rec.get("gear", []),
             mini_items=rec.get("minis", []),
@@ -80,6 +80,18 @@ def merge_db_loadouts_into_entries(loadout_entries: dict, db_loadouts: list[dict
             force_obj=rec.get("force"),
             eval_data=None,
         )
+        # Preserve the paired base-score context for the best-FG payload (if present).
+        try:
+            fg_base = rec.get("fg_base_score")
+        except Exception:
+            fg_base = None
+        if fg_base is not None:
+            try:
+                entry = loadout_entries.get(str(h))
+                if isinstance(entry, dict):
+                    entry["fg_base_score"] = int(fg_base or 0)
+            except Exception:
+                pass
     return loadout_entries
 
 

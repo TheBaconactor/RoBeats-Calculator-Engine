@@ -1383,10 +1383,25 @@ def save_team_buff_loadouts_batch(
                         ELSE force_details_json
                     END,
                     timestamp = strftime('%s', 'now')
-            """,
+                """,
                 fg_loadouts_params,
             )
             _log_timing("insert_team_buff_fg_loadouts", time.perf_counter() - _t_insfg0)
+
+            # Keep the authoritative song-level FG leaderboard in sync with tier writes.
+            # Tier postprocess can discover FG-improving rows that the base save path did not
+            # surface directly, so we upsert the max FG score here as well.
+            best_fg_max = max((int(row[4] or 0) for row in fg_loadouts_params), default=0)
+            if best_fg_max > 0:
+                conn.execute(
+                    """
+                    INSERT INTO songs (name, best_fg_score) VALUES (?, ?)
+                    ON CONFLICT(name) DO UPDATE SET
+                        best_fg_score = MAX(best_fg_score, excluded.best_fg_score),
+                        last_updated = strftime('%s', 'now')
+                    """,
+                    (song_name, best_fg_max),
+                )
 
         # Enforce FG leaderboard invariant.
         _t_inv0 = time.perf_counter()
@@ -1599,25 +1614,11 @@ def get_best_loadouts(
     # PERF: use a cached per-thread connection for read-heavy call sites.
     conn = get_db_connection_cached(db_path)
     try:
-        # 1. Fetch Top Base Score Loadouts
-        cursor = conn.execute(
-            """
-            SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
-            FROM team_buff_loadouts
-            WHERE song_name = ? AND team_buff = ?
-            ORDER BY score DESC
-            LIMIT ?
-            """,
-            (song_name, team_buff, limit),
-        )
+        results: list[dict[str, Any]] = []
+        by_hash: dict[str, dict[str, Any]] = {}
 
-        results = []
-        seen_hashes = set()
-
-        def process_row(row):
-            if row["loadout_hash"] in seen_hashes:
-                return
-
+        def _materialize_common(row) -> tuple[str, list[str], list[list[str]], list[str], dict[str, Any], dict | None]:
+            loadout_hash = str(row["loadout_hash"])
             gear_names = _json_loads(row["gear_json"]) if row["gear_json"] else []
             mini_groups = decode_minis_json(row["minis_json"])
             mini_names = representative_mini_names(mini_groups)
@@ -1636,19 +1637,22 @@ def get_best_loadouts(
                         expected = effective_loadout_hash_from_names(gear_names, mini_sigs)
                     else:
                         expected = _loadout_hash_from_names(gear_names, mini_names)
-                    if expected and str(expected) != str(row["loadout_hash"]):
+                    if expected and str(expected) != str(loadout_hash):
                         warnings.warn(
                             f"[DB] Loadout hash mismatch (seed): song={song_name!r} team_buff={team_buff!r} "
-                            f"stored={row['loadout_hash']} expected={expected}",
+                            f"stored={loadout_hash} expected={expected}",
                             RuntimeWarning,
                             stacklevel=2,
                         )
-                        return
                 except Exception:
                     # Best-effort only; never break seeding on verifier errors.
                     pass
-            force_block = _json_loads(row["force_details_json"]) if row["force_details_json"] else None
 
+            force_block = _json_loads(row["force_details_json"]) if row["force_details_json"] else None
+            force_obj = force_block if isinstance(force_block, dict) else None
+            return loadout_hash, gear_names, mini_groups, mini_names, details, force_obj
+
+        def _expand_items(gear_names: list[str], mini_names: list[str]):
             # Expand names to full dicts if lookup provided
             if gears_by_name:
                 gear_data = _expand_gear_from_db(gear_names, gears_by_name)
@@ -1659,24 +1663,37 @@ def get_best_loadouts(
                 minis_data = _expand_minis_from_db(mini_names, minis_by_name)
             else:
                 minis_data = mini_names
+            return gear_data, minis_data
 
-            results.append(
-                {
-                    "score": row["score"],
-                    "fg_score": row["fg_score"],
-                    "gear": gear_data,
-                    "minis": minis_data,
-                    "mini_groups": mini_groups,
-                    "details": details,
-                    "force": force_block if isinstance(force_block, dict) else None,
-                }
-            )
-            seen_hashes.add(row["loadout_hash"])
-
+        # 1. Fetch Top Base Score Loadouts (canonical base seed rows)
+        cursor = conn.execute(
+            """
+            SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
+            FROM team_buff_loadouts
+            WHERE song_name = ? AND team_buff = ?
+            ORDER BY score DESC
+            LIMIT ?
+            """,
+            (song_name, team_buff, limit),
+        )
         for row in cursor:
-            process_row(row)
+            loadout_hash, gear_names, mini_groups, mini_names, details, force_obj = _materialize_common(row)
+            if loadout_hash in by_hash:
+                continue
+            gear_data, minis_data = _expand_items(gear_names, mini_names)
+            entry = {
+                "score": row["score"],
+                "fg_score": row["fg_score"],
+                "gear": gear_data,
+                "minis": minis_data,
+                "mini_groups": mini_groups,
+                "details": details,
+                "force": force_obj,
+            }
+            by_hash[loadout_hash] = entry
+            results.append(entry)
 
-        # 2. Fetch Top Force Greats Loadouts
+        # 2. Fetch Top ForceGreats Loadouts (paired base+fg scores)
         cursor = conn.execute(
             """
             SELECT loadout_hash, score, fg_score, gear_json, minis_json, details_json, force_details_json
@@ -1687,9 +1704,48 @@ def get_best_loadouts(
             """,
             (song_name, team_buff, limit),
         )
-
         for row in cursor:
-            process_row(row)
+            loadout_hash, gear_names, mini_groups, mini_names, details, force_obj = _materialize_common(row)
+            gear_data, minis_data = _expand_items(gear_names, mini_names)
+            fg_score = row["fg_score"]
+            fg_base_score = row["score"]
+
+            entry = by_hash.get(loadout_hash)
+            if entry is None:
+                entry = {
+                    "score": row["score"],
+                    "fg_score": fg_score,
+                    "gear": gear_data,
+                    "minis": minis_data,
+                    "mini_groups": mini_groups,
+                    "details": details,
+                    "force": force_obj,
+                }
+                by_hash[loadout_hash] = entry
+                results.append(entry)
+                continue
+
+            # Preserve best base score for this hash, but also preserve the paired base score for the
+            # best-FG payload so downstream FG comparisons use the correct base context.
+            try:
+                existing_fg = int(entry.get("fg_score", 0) or 0)
+            except Exception:
+                existing_fg = 0
+            try:
+                fg_i = int(fg_score or 0)
+            except Exception:
+                fg_i = 0
+
+            if fg_i > existing_fg:
+                entry["fg_score"] = fg_score
+                entry["force"] = force_obj
+                entry["fg_base_score"] = fg_base_score
+            elif fg_i == existing_fg:
+                # Fill missing paired base score / force payload when we already had the same FG score.
+                if "fg_base_score" not in entry:
+                    entry["fg_base_score"] = fg_base_score
+                if entry.get("force") is None and force_obj is not None:
+                    entry["force"] = force_obj
 
         return results
     except (sqlite3.Error, json.JSONDecodeError) as e:

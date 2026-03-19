@@ -119,17 +119,58 @@ def _load_reference_scores(db_path: Path, song_name: str) -> tuple[int, int]:
     conn = _connect_readonly_sqlite(db_path)
     try:
         row = conn.execute(
-            "SELECT best_score, best_fg_score FROM songs WHERE name = ?",
+            "SELECT best_score FROM songs WHERE name = ?",
             (str(song_name),),
         ).fetchone()
+        best_score = int(row[0] or 0) if row is not None else 0
+
+        # Reference DB `songs.best_fg_score` may reflect a different TeamBuff tier (T1/T10/T15)
+        # computed in post-processing. `process_song_task()` evaluates the canonical T5 tier,
+        # so for apples-to-apples comparisons we use the T5 FG leaderboard max.
+        fg_row = conn.execute(
+            """
+            SELECT MAX(fg_score)
+            FROM team_buff_fg_loadouts
+            WHERE song_name = ? AND team_buff = 'T5'
+            """,
+            (str(song_name),),
+        ).fetchone()
+        best_fg_score = int(fg_row[0] or 0) if (fg_row is not None and fg_row[0] is not None) else 0
     finally:
         conn.close()
-    if row is None:
-        return 0, 0
     try:
-        return int(row[0] or 0), int(row[1] or 0)
+        return int(best_score), int(best_fg_score)
     except Exception:
         return 0, 0
+
+
+def _best_fg_score_from_payload(payload: dict) -> int:
+    """
+    NOTE:
+    - `db_payload["fg_score"]` is the FG score attached to the TOP1 base loadout (for force payload pairing).
+    - `songs.best_fg_score` is the song-level FG leaderboard max (may come from a different loadout).
+
+    For regression checks against `songs.best_fg_score`, use the run's global best FG score.
+    """
+
+    if not isinstance(payload, dict):
+        return 0
+
+    candidates: list[int] = []
+    for k in ("run_best_fg_score", "fg_score"):
+        try:
+            candidates.append(int(payload.get(k) or 0))
+        except Exception:
+            continue
+
+    best_fg = payload.get("best_fg")
+    if isinstance(best_fg, dict):
+        try:
+            candidates.append(int(best_fg.get("score") or 0))
+        except Exception:
+            pass
+
+    return max(candidates) if candidates else 0
 
 
 def _run_reference_compare(
@@ -177,7 +218,7 @@ def _run_reference_compare(
         result = process_song_task(args)
         payload = result.get("db_payload") if isinstance(result, dict) else {}
         best_score = int(payload.get("score") or 0) if isinstance(payload, dict) else 0
-        best_fg_score = int(payload.get("fg_score") or 0) if isinstance(payload, dict) else 0
+        best_fg_score = _best_fg_score_from_payload(payload)
         ref_best, ref_fg = _load_reference_scores(ref_db_path, song_name)
         rows.append(
             {

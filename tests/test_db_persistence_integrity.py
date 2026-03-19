@@ -262,6 +262,89 @@ def test_fg_loadouts_requires_fg_beats_base(db_path):
         conn.close()
 
 
+def test_team_buff_fg_loadouts_updates_song_best_fg_score(db_path):
+    from gear_optimizer.data.database import save_team_buff_loadouts_batch
+
+    song = "Tier FG Song"
+
+    save_team_buff_loadouts_batch(
+        song,
+        "T10",
+        [
+            {
+                "score": 1000,
+                "fg_score": 5000,
+                "gear": ["G1"],
+                "minis": ["M1"],
+                "details": {"tag": "tier_fg"},
+                "force": {"score": 5000, "details": {"ForceGreats": {"config": {"NonFever1": 1}}}},
+            }
+        ],
+        db_path=db_path,
+    )
+
+    conn = get_db_connection(db_path)
+    try:
+        song_row = conn.execute("SELECT best_score, best_fg_score FROM songs WHERE name=?", (song,)).fetchone()
+        assert song_row["best_score"] == 0
+        assert song_row["best_fg_score"] == 5000
+
+        fg_row = conn.execute(
+            "SELECT score, fg_score FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T10'",
+            (song,),
+        ).fetchone()
+        assert fg_row["score"] == 1000
+        assert fg_row["fg_score"] == 5000
+    finally:
+        conn.close()
+
+
+def test_get_best_loadouts_preserves_fg_base_score_pairing(db_path):
+    """
+    Regression guard: a single loadout hash can have:
+    - best base score (from one gem allocation), and
+    - best FG score + force payload (from a different allocation).
+
+    `get_best_loadouts()` must preserve the FG table's paired base score so downstream
+    FG comparisons use the correct (fg_score > fg_base_score) context.
+    """
+
+    from gear_optimizer.data.database import get_best_loadouts, save_team_buff_loadouts_batch
+
+    song = "FG Base Pairing Song"
+    gear = ["G1"]
+    minis = ["M1"]
+
+    fg_entry = {
+        "score": 1000,
+        "fg_score": 5000,
+        "gear": gear,
+        "minis": minis,
+        "details": {"tag": "fg"},
+        "force": {"score": 5000, "details": {"ForceGreats": {"config": {"NonFever1": 1}}}},
+    }
+    save_team_buff_loadouts_batch(song, "T5", [fg_entry], db_path=db_path)
+
+    # Later, a higher base score is discovered for the same loadout hash (different gem allocation),
+    # while the best FG payload remains the older one.
+    base_only = {
+        "score": 6000,
+        "fg_score": 0,
+        "gear": gear,
+        "minis": minis,
+        "details": {"tag": "base"},
+        "force": None,
+    }
+    save_team_buff_loadouts_batch(song, "T5", [base_only], db_path=db_path)
+
+    recs = get_best_loadouts(song, limit=1, team_buff="T5")
+    assert recs
+    rec = recs[0]
+    assert int(rec.get("score") or 0) == 6000
+    assert int(rec.get("fg_score") or 0) == 5000
+    assert int(rec.get("fg_base_score") or 0) == 1000
+
+
 def test_fg_score_recovers_from_force_details_when_wrapper_missing(db_path):
     song = "FG Score Recovery Song"
 

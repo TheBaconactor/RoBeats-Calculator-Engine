@@ -119,17 +119,58 @@ def _load_reference_scores(db_path: Path, song_name: str) -> tuple[int, int]:
     conn = _connect_readonly_sqlite(db_path)
     try:
         row = conn.execute(
-            "SELECT best_score, best_fg_score FROM songs WHERE name = ?",
+            "SELECT best_score FROM songs WHERE name = ?",
             (str(song_name),),
         ).fetchone()
+        best_score = int(row[0] or 0) if row is not None else 0
+
+        # `songs.best_fg_score` can reflect non-T5 tiers computed in post-processing.
+        # This verifier runs `process_song_task()` (canonical T5 tier), so compare against
+        # the T5 FG leaderboard max for an apples-to-apples check.
+        fg_row = conn.execute(
+            """
+            SELECT MAX(fg_score)
+            FROM team_buff_fg_loadouts
+            WHERE song_name = ? AND team_buff = 'T5'
+            """,
+            (str(song_name),),
+        ).fetchone()
+        best_fg_score = int(fg_row[0] or 0) if (fg_row is not None and fg_row[0] is not None) else 0
     finally:
         conn.close()
-    if row is None:
-        return 0, 0
     try:
-        return int(row[0] or 0), int(row[1] or 0)
+        return int(best_score), int(best_fg_score)
     except Exception:
         return 0, 0
+
+
+def _best_fg_score_from_payload(payload: dict) -> int:
+    """
+    NOTE:
+    - `db_payload["fg_score"]` is the FG score attached to the TOP1 base loadout (for force payload pairing).
+    - `songs.best_fg_score` is the song-level FG leaderboard max (may come from a different loadout).
+
+    For comparisons against `songs.best_fg_score`, use the run's global best FG score.
+    """
+
+    if not isinstance(payload, dict):
+        return 0
+
+    candidates: list[int] = []
+    for k in ("run_best_fg_score", "fg_score"):
+        try:
+            candidates.append(int(payload.get(k) or 0))
+        except Exception:
+            continue
+
+    best_fg = payload.get("best_fg")
+    if isinstance(best_fg, dict):
+        try:
+            candidates.append(int(best_fg.get("score") or 0))
+        except Exception:
+            pass
+
+    return max(candidates) if candidates else 0
 
 
 def main() -> int:
@@ -187,7 +228,7 @@ def main() -> int:
     os.environ["GA_SEED"] = str(int(os.environ.get("GA_SEED", "1337") or 1337))
 
     print(f"[Compare] Running live optimizer for {len(songs)} song(s) (GA_SearchDepth={ga_depth}).")
-    print("[Compare] HumanHitSim disabled for this run.")
+    print("[Compare] HumanHitSim disabled for this run.")  # deterministic reference compare
 
     results = []
     for item in songs:
@@ -217,7 +258,7 @@ def main() -> int:
         result = process_song_task(args)
         payload = result.get("db_payload") if isinstance(result, dict) else {}
         best_score = int(payload.get("score") or 0) if isinstance(payload, dict) else 0
-        best_fg_score = int(payload.get("fg_score") or 0) if isinstance(payload, dict) else 0
+        best_fg_score = _best_fg_score_from_payload(payload)
         ref_best, ref_fg = _load_reference_scores(ref_db_path, song_name)
 
         results.append(
@@ -234,9 +275,19 @@ def main() -> int:
     ok = True
     for row in results:
         base_ok = abs(int(row["score"]) - int(row["ref_score"])) <= 2
-        fg_ok = abs(int(row["fg_score"]) - int(row["ref_fg_score"])) <= 2
+        ref_fg = int(row["ref_fg_score"])
+        if ref_fg > 0:
+            fg_ok = abs(int(row["fg_score"]) - ref_fg) <= 2
+        else:
+            # Reference DB may not have a T5 FG row for every song; treat as "no reference".
+            fg_ok = True
+
         ok = ok and base_ok and fg_ok
-        status = "OK" if (base_ok and fg_ok) else "DIFF"
+        status = "DIFF"
+        if base_ok and fg_ok:
+            status = "OK"
+        if base_ok and ref_fg <= 0 and int(row["fg_score"]) > 0:
+            status = "NEW"
         print(
             f"{status} | {row['song']} | "
             f"score={row['score']} (ref {row['ref_score']}), "
@@ -244,7 +295,7 @@ def main() -> int:
         )
 
     if ok:
-        print("\n[Compare] All scores matched reference DB (±2).")
+        print("\n[Compare] All comparable scores matched reference DB (+/-2).")
         return 0
     print("\n[Compare] Some scores differ from reference DB (+/-2).")
     return 1

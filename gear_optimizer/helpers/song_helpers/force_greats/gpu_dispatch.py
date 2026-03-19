@@ -3953,8 +3953,20 @@ def process_force_greats_gpu_finder(
         if str(h) not in retained_hashes:
             continue
 
-        base_score = _entry_base_score(entry)
+        base_score_best = _entry_base_score(entry)
         fg_score = _entry_fg_score(entry)
+
+        # IMPORTANT:
+        # `team_buff_loadouts.score` can represent the best base gem allocation for a loadout hash,
+        # while `fg_score`+`force` can be from a different allocation (paired in `team_buff_fg_loadouts`).
+        # When present, `fg_base_score` preserves the base-score context for the FG payload so
+        # downstream comparisons use (fg_score > fg_base_score) instead of (fg_score > best_base_score).
+        try:
+            fg_base_score_i = int((entry.get("fg_base_score") if isinstance(entry, dict) else 0) or 0)
+        except Exception:
+            fg_base_score_i = 0
+        if fg_base_score_i <= 0:
+            fg_base_score_i = int(base_score_best or 0)
 
         force_obj = entry.get("force") if isinstance(entry, dict) else None
         if not isinstance(force_obj, dict):
@@ -3972,9 +3984,9 @@ def process_force_greats_gpu_finder(
                 "data": force_obj,
                 "gear": gear_names,
                 "minis": mini_names,
-                "score": base_score,
+                "score": fg_base_score_i,
                 "fg_score": fg_score,
-                "base_score": base_score,
+                "base_score": fg_base_score_i,
                 "_entry_ref": entry,
                 "_is_ga": str(entry.get("_source") or "") == "ga",
             }
