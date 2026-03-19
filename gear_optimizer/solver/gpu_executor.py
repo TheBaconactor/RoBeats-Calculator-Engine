@@ -388,11 +388,6 @@ def is_gpu_worker_mode() -> bool:
     return _WORKER_MODE
 
 
-def is_in_process_gpu_request_queue() -> bool:
-    """True when the worker's request/response queues are in-process (thread queues)."""
-    return isinstance(_REQUEST_QUEUE, queue.Queue)
-
-
 def clear_gpu_worker_mode():
     """Clear worker mode (for testing or process reuse)."""
     global _WORKER_MODE, _WORKER_ID, _REQUEST_QUEUE, _RESPONSE_QUEUE, _PENDING_RESPONSES

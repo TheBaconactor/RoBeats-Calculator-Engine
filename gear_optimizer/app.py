@@ -447,7 +447,6 @@ class GearOptimizerApp:
             "PERF_TIMING",
             "GPU_EXECUTOR_PROFILE",
             "GPU_PROFILER",
-            "GPU_BATCH_LOG",
             "GPU_SERVICE_PROFILE",
             "GPU_SERVICE_PROFILE_PRINT",
             "GPU_SYNC_FOR_TIMING",

@@ -1207,20 +1207,6 @@ def _ftff_pairs_sig(ftff_pairs: Any, n: int) -> tuple:
         return ("seq", n)
 
 
-def _has_duplicate_ftff_pairs_from_buf(ft_buf: np.ndarray, ff_buf: np.ndarray, n: int) -> bool:
-    try:
-        seen: set[tuple[int, int]] = set()
-        n_i = int(n)
-        for i in range(n_i):
-            key = (int(ft_buf[i]), int(ff_buf[i]))
-            if key in seen:
-                return True
-            seen.add(key)
-    except Exception:
-        return False
-    return False
-
-
 def _get_genome_stats_buf() -> np.ndarray:
     """Get or allocate a persistent buffer for genome stats (N, 7)."""
     global _fg_genome_stats_buf

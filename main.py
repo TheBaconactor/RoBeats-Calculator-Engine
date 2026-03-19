@@ -63,7 +63,6 @@ def _apply_debug_profile_env(cfg_path: str) -> None:
         "GPU_FORCE_SYNC",
         "GPU_EXECUTOR_PROFILE",
         "GPU_PROFILER",
-        "GPU_BATCH_LOG",
         "GPU_SERVICE_PROFILE",
         "GPU_SERVICE_PROFILE_PRINT",
         "INFLIGHT_STAGE_PROFILE",

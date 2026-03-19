@@ -107,14 +107,6 @@ class GpuProfiler:
     def enabled(self) -> bool:
         return self._enabled
 
-    def enable(self):
-        """Enable profiler at runtime."""
-        self._enabled = True
-
-    def disable(self):
-        """Disable profiler at runtime."""
-        self._enabled = False
-
     def start_song(self, song_name: str):
         """Start timing a new song."""
         if not self._enabled:

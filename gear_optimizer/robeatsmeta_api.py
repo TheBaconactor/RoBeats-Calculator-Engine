@@ -170,8 +170,6 @@ class RoBeatsMetaOptimizerApi:
     moves requested songs to the front of the next work slice.
     """
 
-    _backend_compat_cache: dict[tuple[str, str], bool] = {}
-
     @staticmethod
     def _resolve_song_meta_index_path_static() -> Path:
         configured = str(os.environ.get("ROBEATSMETA_SONG_META_INDEX_PATH", "") or "").strip()
@@ -279,34 +277,6 @@ class RoBeatsMetaOptimizerApi:
                 self.flush_runtime_status(timeout=1.0)
             except Exception:
                 pass
-
-    @classmethod
-    def _backend_compatible_detected(cls, *, song_meta_index_path: str | os.PathLike[str] | None = None) -> bool:
-        try:
-            index_path = (
-                Path(song_meta_index_path).expanduser().resolve()
-                if song_meta_index_path is not None
-                else cls._resolve_song_meta_index_path_static()
-            )
-        except Exception:
-            index_path = None
-
-        if index_path is None or not index_path.exists():
-            return False
-
-        try:
-            canonical_db_path = Path(get_evolution_db_path()).expanduser().resolve()
-        except Exception:
-            canonical_db_path = None
-
-        if canonical_db_path is None or not canonical_db_path.exists():
-            return False
-        key = (str(index_path), str(canonical_db_path))
-        cached = cls._backend_compat_cache.get(key)
-        if cached is not None:
-            return bool(cached)
-        cls._backend_compat_cache[key] = True
-        return True
 
     @classmethod
     def service_mode_enabled(cls, *, song_meta_index_path: str | os.PathLike[str] | None = None) -> bool:

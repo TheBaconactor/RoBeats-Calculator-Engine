@@ -103,12 +103,3 @@ def get_result_processor() -> AsyncResultProcessor:
         if _fg_result_processor is None:
             _fg_result_processor = AsyncResultProcessor()
         return _fg_result_processor
-
-
-def shutdown_result_processor() -> None:
-    """Shutdown and reset the result processor."""
-    global _fg_result_processor
-    with _result_lock:
-        if _fg_result_processor is not None:
-            _fg_result_processor.shutdown()
-            _fg_result_processor = None

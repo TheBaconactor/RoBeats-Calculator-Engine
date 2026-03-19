@@ -1314,7 +1314,7 @@ def process_force_greats_gpu_finder(
         nonlocal timeline_precompute_queued
         if gpu_client is not None:
             # Executor-managed dependencies: keep the FG solve self-contained so we don't
-            # need a multi-request submit sequence under `submit_lock` (cross-song choke point).
+            # need a multi-request submit sequence (a cross-song choke point).
             need_timeline_precompute = bool(kwargs.get("pair_caps_from_timeline")) and (not timeline_precompute_queued)
             if need_timeline_precompute:
                 kwargs["ensure_timeline_precompute"] = True
@@ -2832,7 +2832,7 @@ def process_force_greats_gpu_finder(
                         # Ensure the timeline grid for this song_slot is ready (grid_gap/grid_fever_activations).
                         #
                         # NOTE: keep this a single executor request via `ensure_timeline_precompute`.
-                        # Multi-request submit sequences under `submit_lock` are a cross-song choke point and
+                        # Multi-request submit sequences are a cross-song choke point and
                         # can stall unrelated producers, starving the GPU queue and creating visible dips.
                         nonlocal timeline_precompute_queued
                         ensure_timeline = not timeline_precompute_queued
