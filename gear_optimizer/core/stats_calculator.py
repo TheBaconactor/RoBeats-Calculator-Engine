@@ -1,8 +1,8 @@
 """
 Shared stats calculation utilities.
 
-Consolidates stats computation logic from backfill_stats.py and song_preloader.py
-to ensure consistency and reduce maintenance burden.
+Consolidates shared stats computation logic so optimizer and maintenance tools
+derive the same base stat surfaces.
 """
 
 from .constants import (

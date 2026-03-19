@@ -406,18 +406,6 @@ class GpuServiceClient:
             },
         )
 
-    def submit_precompute_timeline(
-        self,
-        *,
-        calc_song: dict,
-        ref_arrays: dict,
-        song_slot: int = 0,
-    ) -> GpuJobHandle:
-        return self.submit(
-            GpuRequestType.PRECOMPUTE_TIMELINE,
-            {"calc_song": calc_song, "ref_arrays": ref_arrays, "song_slot": int(song_slot)},
-        )
-
     def _registry_static_handle_entry(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         if not isinstance(payload, dict):
             return None
@@ -509,12 +497,6 @@ class GpuServiceClient:
     def submit_ga_fg_fused_solve_with_breakpoints(self, payload: dict[str, Any]) -> GpuJobHandle:
         return self.submit(GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS, dict(payload or {}))
 
-    def submit_ga_stage_fg_genome_base_stats(self, *, table_slot: int, coords, n_slots: int = 9) -> GpuJobHandle:
-        return self.submit(
-            GpuRequestType.GA_STAGE_FG_GENOME_BASE_STATS,
-            {"table_slot": int(table_slot), "coords": coords, "n_slots": int(n_slots)},
-        )
-
     def submit_solve_force_greats_finder(self, *args: Any, **kwargs: Any) -> GpuJobHandle:
         return self.submit(
             GpuRequestType.SOLVE_FORCE_GREATS_FINDER,
@@ -553,9 +535,6 @@ class GpuServiceClient:
             GpuRequestType.FG_COMPUTE_BREAKPOINTS,
             request_payload,
         )
-
-    def submit_fg_solve_with_breakpoints(self, payload: dict[str, Any]) -> GpuJobHandle:
-        return self.submit(GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS, dict(payload or {}))
 
     def submit_fg_solve_with_breakpoints_batch(self, payloads: list[dict[str, Any]]) -> GpuJobHandle:
         payload_list = list(payloads or [])

@@ -4,7 +4,6 @@ import gc
 import logging
 import multiprocessing
 import os
-import queue
 import re
 import shutil
 import secrets
@@ -79,98 +78,6 @@ def _gpu_worker_initializer(registrations, counter, lock):
 
     worker_id, request_queue, response_queue = registrations[idx]
     set_gpu_worker_mode(worker_id, request_queue, response_queue)
-
-
-class _PostQueueSender:
-    """
-    Non-blocking (from the caller's perspective) sender for the post-process multiprocessing queue.
-
-    The caller enqueues items into an in-process backlog queue; a dedicated thread performs
-    the potentially-blocking `multiprocessing.Queue.put()` work.
-    """
-
-    def __init__(self, post_queue, *, post_proc=None, stop_requested=None) -> None:
-        self._post_queue = post_queue
-        self._post_proc = post_proc
-        self._stop_requested = stop_requested
-
-        # Default to unbounded backlog to avoid ever blocking the GPU feed loop.
-        backlog = 0
-        try:
-            backlog = int(os.environ.get("POST_LOCAL_BACKLOG", backlog))
-        except Exception:
-            backlog = 0
-        backlog = int(backlog)
-        if backlog < 0:
-            backlog = 0
-
-        self._out_q: queue.Queue = queue.Queue(maxsize=backlog)
-        self._ack_q: queue.Queue = queue.Queue()
-        self._sentinel = object()
-        self._thread = threading.Thread(target=self._run, name="PostQueueSender", daemon=True)
-        self._thread.start()
-
-    def send(self, item, *, done_key: str | None = None, done_name: str | None = None) -> None:
-        if self._post_queue is None:
-            return
-        payload = (item, done_key, done_name)
-        try:
-            self._out_q.put(payload, block=False)
-        except queue.Full:
-            self._out_q.put(payload, block=True)
-
-    def drain_acks(self) -> list[tuple[str, str]]:
-        acks: list[tuple[str, str]] = []
-        while True:
-            try:
-                item = self._ack_q.get_nowait()
-            except queue.Empty:
-                break
-            try:
-                k, n = item
-            except Exception:
-                continue
-            if k and n:
-                acks.append((str(k), str(n)))
-        return acks
-
-    def close(self, *, timeout: float = 30.0) -> None:
-        if self._post_queue is None:
-            return
-        try:
-            self._out_q.put((self._sentinel, None, None), block=True, timeout=max(0.0, float(timeout)))
-        except Exception:
-            return
-        try:
-            self._thread.join(timeout=timeout)
-        except Exception:
-            pass
-
-    def _run(self) -> None:
-        while True:
-            item, done_key, done_name = self._out_q.get()
-            if item is self._sentinel:
-                return
-            while True:
-                if self._stop_requested is not None and callable(self._stop_requested) and self._stop_requested():
-                    return
-                if (
-                    self._post_proc is not None
-                    and hasattr(self._post_proc, "is_alive")
-                    and not self._post_proc.is_alive()
-                ):
-                    return
-                try:
-                    self._post_queue.put(item, block=True, timeout=0.5)
-                    break
-                except Exception:
-                    continue
-            if done_key and done_name:
-                try:
-                    self._ack_q.put((str(done_key), str(done_name)))
-                except Exception:
-                    pass
-
 
 class _ProgressUI:
     """Lightweight single-line progress renderer with spinner + ETA."""
@@ -637,36 +544,6 @@ class GearOptimizerApp:
                 continue
             filtered.append(item)
         return filtered
-
-    def _reprioritize_robeatsmeta_tasks(self, tasks: list[tuple], *, start_index: int) -> None:
-        if not tasks or not self._optimizer_priority_api_enabled():
-            return
-        api = self._robeatsmeta_api
-        if api is None:
-            return
-        try:
-            priority_names = {str(name or "").strip() for name in getattr(self, "_backend_priority_song_names", set()) if str(name or "").strip()}
-            safe_start = max(0, min(int(start_index), len(tasks)))
-            if priority_names:
-                while safe_start < len(tasks) and str(tasks[safe_start][1] or "").strip() in priority_names:
-                    safe_start += 1
-            api.reprioritize_pending_tasks(tasks, start_index=safe_start)
-        except Exception as exc:
-            logging.warning(f"[RoBeatsMeta] Failed to reprioritize pending tasks: {type(exc).__name__}: {exc}")
-
-    def _mark_robeatsmeta_song_computed(self, result: dict | None) -> None:
-        if not isinstance(result, dict) or "_error" in result or not self._optimizer_priority_api_enabled():
-            return
-        api = self._robeatsmeta_api
-        if api is None:
-            return
-        song_name = str(result.get("song") or "").strip()
-        if not song_name:
-            return
-        try:
-            api.mark_song_computed(song_id=song_name)
-        except Exception as exc:
-            logging.warning(f"[RoBeatsMeta] Failed to mark song computed: {type(exc).__name__}: {exc}")
 
     def _maybe_mark_robeatsmeta_song_batch_computed(
         self,
@@ -2390,53 +2267,6 @@ class GearOptimizerApp:
         return base
 
     @staticmethod
-    def _clone_calc_song_for_run(calc_song: dict) -> dict:
-        if not isinstance(calc_song, dict):
-            return calc_song
-        out = dict(calc_song)
-        try:
-            out["metadata"] = dict(out.get("metadata") or {})
-        except Exception:
-            pass
-        try:
-            out["song_data"] = dict(out.get("song_data") or {})
-        except Exception:
-            pass
-
-        # If a song was preloaded, it may have already had HumanHitSim applied. For repeated runs
-        # (and generally when reusing preloaded calc_song), we must clear this state so each run
-        # can (re)apply HumanHitSim and, when Seed=0, generate a unique random seed per run.
-        try:
-            meta = out.get("metadata") or {}
-            song_data = out.get("song_data") or {}
-            if isinstance(meta, dict):
-                for k in (
-                    "HumanHitSimSeed",
-                    "HumanHitSimApplyTo",
-                    "HumanHitSimDistribution",
-                    "HumanHitSimGreatMode",
-                    "HumanHitSimSeedIsRandom",
-                    "HumanHitSimDebug",
-                    "HumanHitSimApplied",
-                ):
-                    meta.pop(k, None)
-                out["metadata"] = meta
-            if isinstance(song_data, dict):
-                # Restore base chart timestamps (HumanHitSim ApplyTo=ALL can override timestamps).
-                if song_data.get("chart_timestamps") is not None:
-                    try:
-                        song_data["timestamps"] = np.asarray(song_data.get("chart_timestamps"), dtype=np.float32)
-                    except Exception:
-                        song_data["timestamps"] = song_data.get("chart_timestamps")
-                song_data.pop("fg_timestamps", None)
-                song_data.pop("fg_great_candidate_timestamps", None)
-                out["song_data"] = song_data
-        except Exception:
-            pass
-
-        return out
-
-    @staticmethod
     def _truthy(v) -> bool:
         return str(v or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -2888,48 +2718,6 @@ class GearOptimizerApp:
             self._progress_counts_driven = False
             self._stop_post_processor(post_queue, post_proc)
 
-    def _queue_song_for_preload(self, preloader, task):
-        """Queue a song task for background preloading."""
-        try:
-            from .helpers.song_preloader import SongLoadRequest
-
-            (
-                fp,
-                song_name,
-                task_diff,
-                cfg_dict,
-                paths,
-                ref_arrays,
-                all_gears,
-                all_minis,
-                gears_by_name,
-                minis_by_name,
-                use_evo_db,
-                auto_buff,
-                ga_depth,
-                status_queue,
-                parallel_workers,
-                fg_debug,
-            ) = task[:16]
-
-            request = SongLoadRequest(
-                song_name=song_name,
-                file_path=fp,
-                difficulty=task_diff,
-                cfg_dict=cfg_dict,
-                paths=paths,
-                ref_arrays=ref_arrays,
-                all_gears=all_gears,
-                all_minis=all_minis,
-                gears_by_name=gears_by_name,
-                minis_by_name=minis_by_name,
-                use_evo_db=use_evo_db,
-                auto_buff=auto_buff,
-            )
-            preloader.queue_song(request)
-        except Exception:
-            pass  # Preloading failure is non-fatal
-
     def _start_post_processor(self, total_tasks: int):
         from gear_optimizer.pipeline.post_processor import run_post_processor
 
@@ -2962,138 +2750,6 @@ class GearOptimizerApp:
                 post_proc.join(timeout=5.0)
         except Exception:
             pass
-
-    def _make_sequential_preload_state(self, use_gpu_preload: bool) -> dict:
-        try:
-            preloaded_ready_cache_max = max(
-                8,
-                safe_int(os.environ.get("SEQUENTIAL_PRELOAD_READY_CACHE_MAX", "256"), 256),
-            )
-        except Exception:
-            preloaded_ready_cache_max = 256
-
-        gpu_prefetch_mgr, gpu_prefetch_enabled = self._init_gpu_prefetch_manager(use_gpu_preload)
-        return {
-            "preload_idx": 5,
-            "preloaded_by_path": {},
-            "preloaded_ready_cache_max": int(preloaded_ready_cache_max),
-            "gpu_prefetch_mgr": gpu_prefetch_mgr,
-            "gpu_prefetch_enabled": bool(gpu_prefetch_enabled),
-            "gpu_prefetched_set": set(),
-        }
-
-    def _drain_preloaded_ready(self, *, use_gpu_preload: bool, preloader, preload_state: dict) -> None:
-        if not use_gpu_preload or preloader is None:
-            return
-        preloaded_by_path = preload_state["preloaded_by_path"]
-        preloaded_ready_cache_max = int(preload_state["preloaded_ready_cache_max"])
-        try:
-            while True:
-                preloaded = preloader.get_if_ready()
-                if preloaded is None:
-                    break
-                preloaded_key = os.path.abspath(str(preloaded.file_path))
-                preloaded_by_path[preloaded_key] = preloaded
-                if len(preloaded_by_path) > preloaded_ready_cache_max:
-                    preloaded_by_path.pop(next(iter(preloaded_by_path)), None)
-        except Exception:
-            pass
-
-    def _build_sequential_task_args(self, task, *, song_path_key: str, preload_state: dict, defer_post: bool):
-        task_args = task
-        preloaded_current = preload_state["preloaded_by_path"].pop(song_path_key, None)
-        if preloaded_current is not None and preloaded_current.calc_song and not preloaded_current.error:
-            cloned = self._clone_calc_song_for_run(preloaded_current.calc_song)
-            task_args = task + (cloned,)
-            if defer_post:
-                task_args = task_args + (True,)
-        elif defer_post:
-            task_args = task + (True,)
-        return task_args
-
-    def _queue_next_preload_task(self, *, task_list, completed_songs, preloader, use_gpu_preload: bool, preload_state: dict):
-        if not use_gpu_preload:
-            return
-        preload_idx = int(preload_state["preload_idx"])
-        if preload_idx >= len(task_list):
-            return
-        next_task = task_list[preload_idx]
-        if self._task_queue_label(next_task) not in completed_songs:
-            self._queue_song_for_preload(preloader, next_task)
-        preload_state["preload_idx"] = preload_idx + 1
-
-    def _maybe_prefetch_ready_song(self, *, task_index: int, task_list, preload_state: dict) -> None:
-        gpu_prefetch_mgr = preload_state["gpu_prefetch_mgr"]
-        gpu_prefetch_enabled = bool(preload_state["gpu_prefetch_enabled"])
-        if not gpu_prefetch_enabled or gpu_prefetch_mgr is None:
-            return
-
-        preloaded_by_path = preload_state["preloaded_by_path"]
-        gpu_prefetched_set = preload_state["gpu_prefetched_set"]
-        try:
-            pick = None
-            if task_index + 1 < len(task_list):
-                next_path_key = os.path.abspath(str(task_list[task_index + 1][0]))
-                cand = preloaded_by_path.get(next_path_key)
-                if cand is not None and cand.calc_song and not cand.error:
-                    pick = cand
-
-            if pick is None:
-                for cand in preloaded_by_path.values():
-                    if cand is not None and cand.calc_song and not cand.error:
-                        pick = cand
-                        break
-
-            pick_key = os.path.abspath(str(getattr(pick, "file_path", ""))) if pick is not None else ""
-            if pick is not None and pick_key and pick_key not in gpu_prefetched_set:
-                slot = gpu_prefetch_mgr.prefetch(pick.calc_song, pick.ref_arrays)
-                if slot is not None:
-                    gpu_prefetched_set.add(pick_key)
-        except Exception:
-            pass
-
-        if task_index > 0 and task_index % 10 == 0:
-            stats = gpu_prefetch_mgr.stats()
-            if stats["prefetch_count"] > 0:
-                print(
-                    f"[GPU Prefetch] Songs prefetched: {stats['prefetch_count']}, "
-                    f"cache hits: {stats['cache_hits']}, "
-                    f"avg time: {stats['avg_prefetch_ms']:.1f}ms"
-                )
-
-    def _start_song_preloader(self, tasks, completed_songs):
-        from .helpers.song_preloader import get_song_preloader
-
-        preloader = get_song_preloader()
-        preloader.start()
-
-        # Queue first 5 songs for preloading
-        for t in tasks[:5]:
-            if self._task_queue_label(t) not in completed_songs:
-                self._queue_song_for_preload(preloader, t)
-
-        print("[Song Preloader] Async preloading enabled")
-        return preloader
-
-    def _init_gpu_prefetch_manager(self, use_gpu_preload: bool):
-        if not use_gpu_preload:
-            return None, False
-        try:
-            from gear_optimizer.solver.taichi_gem.api.gpu_prefetch import get_gpu_prefetch_manager
-
-            prefetch_slots = safe_int(os.environ.get("GPU_PREFETCH_SLOTS", 0))
-            if prefetch_slots <= 0:
-                prefetch_slots = 5  # default
-            keep_slots = self._truthy(os.environ.get("GPU_PREFETCH_KEEP_SLOTS", "0"))
-            return (
-                get_gpu_prefetch_manager(
-                    num_slots=prefetch_slots,
-                    keep_slots=keep_slots,
-                ),
-                True,
-            )
-        except Exception:
-            return None, False
 
     def _run_parallel(
         self, tasks, max_workers, completed_songs, memory_resume_tracker, manager, status_queue, status_thread

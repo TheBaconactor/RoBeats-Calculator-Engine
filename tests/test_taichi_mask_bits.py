@@ -28,7 +28,6 @@ def test_mask_bits_parity():
     from gear_optimizer.solver.taichi_gem.runtime import init_taichi
     from gear_optimizer.solver.taichi_gem.api import ensure_ready
     from gear_optimizer.solver.taichi_gem import fields as gf
-    from gear_optimizer.solver.taichi_gem import kernels as gk
     from gear_optimizer.core.constants import TOTAL_ROWS
 
     # Init Taichi + allocate grid fields

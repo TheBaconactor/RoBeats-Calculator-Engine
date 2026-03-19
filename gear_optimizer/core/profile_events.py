@@ -132,13 +132,6 @@ def _get_writer() -> _ProfileEventWriter:
     return _WRITER
 
 
-def profile_events_enabled() -> bool:
-    try:
-        return bool(_get_writer().enabled)
-    except Exception:
-        return False
-
-
 def emit_profile_event(
     *,
     component: str,

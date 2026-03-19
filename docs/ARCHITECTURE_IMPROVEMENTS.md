@@ -60,7 +60,6 @@
 │ │  ├─ force_greats.py (1,027 LOC) - FG processing             │
 │ │  ├─ persistence.py - DB payload building                    │
 │ │  └─ results_printer.py - Results formatting                 │
-│ ├─ helpers/song_preloader.py (13K) - Multi-song optimization  │
 │ └─ helpers/fg_utils.py (21K) - Force greats utilities         │
 └────────────────────┬────────────────────────────────────────────┘
                      │

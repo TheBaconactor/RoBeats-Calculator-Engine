@@ -733,29 +733,6 @@ def compute_fever_timeline_signature_compact(
     )
 
 
-def _compute_timeline_signature_rows(
-    event_ms: np.ndarray,
-    *,
-    signature_param_rows: tuple[tuple[int, int], ...] | list[tuple[int, int]] | None = None,
-) -> tuple[tuple, dict[tuple[int, int], tuple[np.ndarray, int, int]]]:
-    rows = list(signature_param_rows or ())
-    timeline_cache: dict[tuple[int, int], tuple[np.ndarray, int, int]] = {}
-    combined_timeline_sig: list[tuple[int, int, int, bytes]] = []
-    for non_fever_base, real_fever_time_ms in rows:
-        timeline_sig, fever_mask_head, count_body_fever, count_body_normal = compute_fever_timeline_signature(
-            event_ms,
-            non_fever_base=int(non_fever_base),
-            real_fever_time_ms=int(real_fever_time_ms),
-        )
-        combined_timeline_sig.append(timeline_sig)
-        timeline_cache[(int(non_fever_base), int(real_fever_time_ms))] = (
-            np.asarray(fever_mask_head, dtype=np.bool_),
-            int(count_body_fever),
-            int(count_body_normal),
-        )
-    return tuple(combined_timeline_sig), timeline_cache
-
-
 def _compute_compact_timeline_signature_rows(
     event_ms: np.ndarray,
     *,
@@ -1070,89 +1047,6 @@ def _derive_deterministic_regime_seed(
     token = f"{mode_tag}|{song_name}|{alpha_num}/{alpha_den}|{dist}|{great_mode}"
     seed = int(zlib.crc32(token.encode("utf-8", errors="replace")) & 0xFFFFFFFF)
     return int(seed or 1)
-
-
-def _evaluate_refine_candidates_for_event_ms(
-    refine_candidates: list[dict],
-    event_ms: np.ndarray,
-    *,
-    signature_param_rows: tuple[tuple[int, int], ...] | list[tuple[int, int]] | None = None,
-) -> tuple[tuple, list[tuple[int, np.ndarray, int, int]]]:
-    needed_keys = {
-        tuple(refine_candidates[int(candidate_idx)]["score_inputs"]["timeline_key"]): int(candidate_idx)
-        for candidate_idx in range(len(refine_candidates))
-    }
-    domain_rows = list(signature_param_rows or needed_keys.keys())
-    timeline_cache: dict[tuple[int, int], tuple[np.ndarray, int, int]] = {}
-    combined_timeline_sig: list[tuple[int, int, int, bytes]] = []
-    for non_fever_base, real_fever_time_ms in domain_rows:
-        timeline_sig, fever_mask_head, count_body_fever, count_body_normal = compute_fever_timeline_signature(
-            event_ms,
-            non_fever_base=int(non_fever_base),
-            real_fever_time_ms=int(real_fever_time_ms),
-        )
-        combined_timeline_sig.append(timeline_sig)
-        key = (int(non_fever_base), int(real_fever_time_ms))
-        if key in needed_keys:
-            timeline_cache[key] = (
-                np.asarray(fever_mask_head, dtype=np.bool_),
-                int(count_body_fever),
-                int(count_body_normal),
-            )
-    candidate_timelines: list[tuple[int, np.ndarray, int, int]] = []
-    for candidate_idx, candidate in enumerate(refine_candidates):
-        score_inputs = candidate["score_inputs"]
-        key = tuple(score_inputs["timeline_key"])
-        cached = timeline_cache.get(key)
-        if cached is None:
-            timeline_sig, fever_mask_head, count_body_fever, count_body_normal = compute_fever_timeline_signature(
-                event_ms,
-                non_fever_base=int(score_inputs["non_fever_base"]),
-                real_fever_time_ms=int(score_inputs["real_fever_time_ms"]),
-            )
-            if key not in needed_keys and signature_param_rows is not None:
-                combined_timeline_sig.append(timeline_sig)
-            cached = (
-                np.asarray(fever_mask_head, dtype=np.bool_),
-                int(count_body_fever),
-                int(count_body_normal),
-            )
-            timeline_cache[key] = cached
-        fever_mask_head, count_body_fever, count_body_normal = cached
-        candidate_timelines.append(
-            (
-                int(candidate_idx),
-                fever_mask_head,
-                int(count_body_fever),
-                int(count_body_normal),
-            )
-        )
-    return tuple(combined_timeline_sig), candidate_timelines
-
-
-def _select_best_refine_candidate(
-    refine_candidates: list[dict],
-    candidate_timelines: list[tuple[int, np.ndarray, int, int]],
-) -> tuple[int | None, int | None]:
-    seed_best_score = None
-    seed_best_candidate_idx = None
-    for candidate_idx, fever_mask_head, count_body_fever, count_body_normal in candidate_timelines:
-        score_inputs = refine_candidates[int(candidate_idx)]["score_inputs"]
-        score = _safe_int(
-            fast_calculate_score(
-                score_inputs["total_base"],
-                score_inputs["combo_mul"],
-                score_inputs["fever_mul"],
-                fever_mask_head,
-                int(count_body_fever),
-                int(count_body_normal),
-            ),
-            0,
-        )
-        if seed_best_score is None or int(score) > int(seed_best_score):
-            seed_best_score = int(score)
-            seed_best_candidate_idx = int(candidate_idx)
-    return seed_best_score, seed_best_candidate_idx
 
 
 def _build_refined_candidate_payload(

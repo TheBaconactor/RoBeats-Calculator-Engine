@@ -226,8 +226,7 @@ RoBeats-Calculator-Engine/
 │   │           ├── kernels.py        # FG simulation kernels
 │   │           └── fields.py         # FG field definitions
 │   │
-│   ├── helpers/                      # Modular helper packages (20+ modules, 3,800+ LOC)
-│   │   ├── song_preloader.py         # Pre-loading optimization for multi-song runs
+│   ├── helpers/                      # Modular helper packages (song + GA helper packages)
 │   │   │
 │   │   ├── ga_helpers/               # GA helpers package (6 modules, 1,368 → 228 avg)
 │   │   │   ├── pool_initialization.py # Gear/mini pools with dominance pruning
@@ -324,7 +323,6 @@ RoBeats-Calculator-Engine/
 ┌────────────────────┴────────────────────┐
 │      Helper Layer                      │
 │  gear_optimizer/helpers/ga_helpers/ + song_helpers/ │
-│  gear_optimizer/helpers/song_preloader.py │
 └────────────────────┬────────────────────┘
                      │
 ┌────────────────────┴────────────────────┐
