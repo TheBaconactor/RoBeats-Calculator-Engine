@@ -223,3 +223,54 @@ def test_native_inflight_fg_persist_entries_materialize_stats_from_base_stats():
     assert fg_entries
     assert fg_entries[0]["details"]["Stats"] == expected_stats
     assert fg_entries[0]["force"]["Stats"] == expected_stats
+
+
+def test_native_inflight_base_only_save_keeps_best_fg_score_zero(tmp_path, monkeypatch):
+    from gear_optimizer.data.database import get_db_connection, init_db, save_loadouts_batch
+
+    db_path = tmp_path / "native_fg_zero.db"
+    monkeypatch.setenv("EVOLUTION_DB_PATH", str(db_path))
+    init_db()
+
+    song_name = "pytest_native_inflight_fg_zero"
+    gear = ["G1", "G2", "G3", "G4", "G5", "G6"]
+    minis = ["M1", "M2", "M3"]
+    base_details = {
+        "FT": 0,
+        "FF": 0,
+        "GemCounts": {},
+        "Stats": _stats(100),
+        "SelectedElement": "Rush",
+        "PrimaryColor": "Rush",
+        "SecondaryColor": "Flow",
+        "Difficulty": "Hard",
+    }
+
+    save_loadouts_batch(
+        song_name,
+        [
+            {
+                "score": 1000,
+                "fg_score": 0,
+                "gear": gear,
+                "minis": minis,
+                "details": base_details,
+                "force": None,
+            }
+        ],
+    )
+
+    with get_db_connection(str(db_path)) as conn:
+        row = conn.execute(
+            "SELECT best_score, best_fg_score FROM songs WHERE name = ?",
+            (song_name,),
+        ).fetchone()
+        fg_rows = conn.execute(
+            "SELECT COUNT(*) FROM team_buff_fg_loadouts WHERE song_name = ?",
+            (song_name,),
+        ).fetchone()[0]
+
+    assert row is not None
+    assert int(row[0]) == 1000
+    assert int(row[1]) == 0
+    assert int(fg_rows) == 0
