@@ -54,6 +54,20 @@ def _repair_mini_uniqueness(
             if m2 == m0 or m2 == m1:
                 state = kernels_helpers._xorshift32(state)
                 m2 = mini_pool_start + ti.cast(state % ti.cast(mini_pool_count, ti.u32), ti.i32)
+    # Minis are order-invariant for scoring. Canonicalize the team order so
+    # permutation-only genomes do not consume GA budget or create fake variance.
+    if m0 > m1:
+        tmp = m0
+        m0 = m1
+        m1 = tmp
+    if m1 > m2:
+        tmp = m1
+        m1 = m2
+        m2 = tmp
+    if m0 > m1:
+        tmp = m0
+        m0 = m1
+        m1 = tmp
     return m0, m1, m2, state
 
 
