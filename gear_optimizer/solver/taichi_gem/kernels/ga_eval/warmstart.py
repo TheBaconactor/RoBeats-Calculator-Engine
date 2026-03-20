@@ -8,6 +8,7 @@ Includes:
 import sys
 
 import taichi as ti
+from taichi.lang import simt
 
 from .. import kernels_helpers
 from ..kernels_scoring import local_search_from_hint, optimize_core_device
@@ -518,45 +519,108 @@ def ga_find_best_combo_warmstart_kernel(
                 if old < score:
                     kernels_helpers.chunk_best_idx[genome_idx] = combo_idx
     else:
-        # Vulkan: u64 atomic max over packed keys.
+        # Vulkan: atomic-free block-per-genome reduction.
         #
-        # The previous "block-per-genome reduction" approach derived `lane` from the loop index
-        # (`tid % block_dim`), which is not guaranteed to match the physical `thread_idx` on all
-        # Taichi backends. On Vulkan this can silently produce incorrect winners when `n_genomes>1`.
-        #
-        # Atomic reduction is correct and still fast enough because we already do the expensive
-        # per-combo scoring; materialization will recompute the final gem allocation when the
-        # cached `chunk_best_results` payload is missing.
-        ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
-        for genome_idx, local_c in ti.ndrange(n_genomes, combo_count):
+        # Important: we must not derive `lane` from the Python loop index (Taichi can remap loop
+        # iterations onto physical threads on Vulkan). Always use the real SPIR-V invocation IDs.
+        block_dim = ti.cast(kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM, ti.i32)
+        waves = ti.cast(kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE, ti.i32)
+        shared_waves_key = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.u64)
+        shared_waves_pp = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
+        shared_waves_cm = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
+        shared_waves_fm = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
+        shared_waves_ov = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
+        total_threads = n_genomes * block_dim
+
+        ti.loop_config(block_dim=kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM)
+        for tid in range(total_threads):
+            # On Vulkan, `simt.block.global_thread_idx()` is not consistently available across Taichi builds.
+            # Use the loop's linear index for the block mapping, and the real SPIR-V `localInvocationId`
+            # for lane-local shared memory indexing.
+            genome_idx = tid // block_dim
+            lane = ti.cast(simt.block.thread_idx(), ti.i32)
+
+            if lane < waves:
+                shared_waves_key[lane] = ti.u64(0)
+                shared_waves_pp[lane] = 0
+                shared_waves_cm[lane] = 0
+                shared_waves_fm[lane] = 0
+                shared_waves_ov[lane] = 0
+            simt.block.sync()
+
+            is_rep: ti.i32 = 1
             if reuse_exact_eval_results != 0 and kernels_helpers.ga_exact_eval_rep_idx[genome_idx] != genome_idx:
-                continue
-            combo_idx: ti.i32 = combo_offset + local_c
+                is_rep = 0
+
+            local_best_key = ti.u64(0)
+            local_pp = ti.i32(0)
+            local_cm = ti.i32(0)
+            local_fm = ti.i32(0)
+            local_ov = ti.i32(0)
+
             scratch = ti.Vector.zero(ti.i32, 4)
-            key = _compute_combo_key_warmstart(
-                genome_idx,
-                combo_idx,
-                n_combos,
-                total_budget,
-                gem_scale_fever,
-                is_p_ft,
-                is_s_ft,
-                is_p_ff,
-                is_s_ff,
-                is_p_pp,
-                is_s_pp,
-                is_p_cm,
-                is_s_cm,
-                is_p_fm,
-                is_s_fm,
-                is_p_ov,
-                is_s_ov,
-                song_slot,
-                w_ft,
-                w_ff,
-                use_hints,
-                prune_plateaus,
-                scratch,
-            )
-            if key != ti.u64(0):
-                ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], key)
+            local_c: ti.i32 = lane
+            while local_c < combo_count:
+                if is_rep != 0:
+                    combo_idx: ti.i32 = combo_offset + local_c
+                    key = _compute_combo_key_warmstart(
+                        genome_idx,
+                        combo_idx,
+                        n_combos,
+                        total_budget,
+                        gem_scale_fever,
+                        is_p_ft,
+                        is_s_ft,
+                        is_p_ff,
+                        is_s_ff,
+                        is_p_pp,
+                        is_s_pp,
+                        is_p_cm,
+                        is_s_cm,
+                        is_p_fm,
+                        is_s_fm,
+                        is_p_ov,
+                        is_s_ov,
+                        song_slot,
+                        w_ft,
+                        w_ff,
+                        use_hints,
+                        prune_plateaus,
+                        scratch,
+                    )
+                    if key > local_best_key:
+                        local_best_key = key
+                        local_pp = scratch[0]
+                        local_cm = scratch[1]
+                        local_fm = scratch[2]
+                        local_ov = scratch[3]
+
+                local_c += block_dim
+
+            best = simt.subgroup.reduce_max(local_best_key)
+            if best != ti.u64(0) and local_best_key == best and simt.subgroup.elect():
+                wave_slot = lane >> 5  # lane//32, works for wave32 and wave64 (wave64 uses even slots)
+                shared_waves_key[wave_slot] = best
+                shared_waves_pp[wave_slot] = local_pp
+                shared_waves_cm[wave_slot] = local_cm
+                shared_waves_fm[wave_slot] = local_fm
+                shared_waves_ov[wave_slot] = local_ov
+            simt.block.sync()
+
+            if lane == 0:
+                block_best = shared_waves_key[0]
+                block_best_wave: ti.i32 = 0
+                for i in range(1, kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE):
+                    v = shared_waves_key[i]
+                    if v > block_best:
+                        block_best = v
+                        block_best_wave = i
+
+                if block_best != ti.u64(0):
+                    prev = kernels_helpers.chunk_best_key[genome_idx]
+                    if block_best > prev:
+                        kernels_helpers.chunk_best_key[genome_idx] = block_best
+                        kernels_helpers.chunk_best_results[genome_idx, 0] = shared_waves_pp[block_best_wave]
+                        kernels_helpers.chunk_best_results[genome_idx, 1] = shared_waves_cm[block_best_wave]
+                        kernels_helpers.chunk_best_results[genome_idx, 2] = shared_waves_fm[block_best_wave]
+                        kernels_helpers.chunk_best_results[genome_idx, 3] = shared_waves_ov[block_best_wave]

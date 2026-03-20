@@ -207,9 +207,11 @@ def solve_genomes_with_ftff_block_kernel(
     shared_max_ff = simt.block.SharedArray((1,), ti.i32)
     total_threads = n_genomes * GA_FTFF_BLOCK_DIM
 
+    # Do not derive `lane` from the Python loop index; use real SPIR-V invocation IDs (Vulkan-safe).
+    block_dim = ti.cast(GA_FTFF_BLOCK_DIM, ti.i32)
     for tid in range(total_threads):
-        genome_idx = tid // GA_FTFF_BLOCK_DIM
-        lane = tid - (genome_idx * GA_FTFF_BLOCK_DIM)
+        genome_idx = tid // block_dim
+        lane = ti.cast(simt.block.thread_idx(), ti.i32)
 
         if lane < GA_FTFF_BLOCK_WAVES:
             shared_waves_key[lane] = ti.u64(0)
