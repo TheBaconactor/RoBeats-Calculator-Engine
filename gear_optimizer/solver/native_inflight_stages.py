@@ -607,7 +607,8 @@ def _finalize_hitsim_matrix_merged_candidates(merged_by_identity: dict[tuple[int
 
 def _hitsim_matrix_job_request_payload(shared_request_payload: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
     payload = dict(shared_request_payload or {})
-    payload["timeline_grid"] = copy.deepcopy(job.get("calc_song") or {})
+    calc_song = job.get("calc_song")
+    payload["timeline_grid"] = calc_song if isinstance(calc_song, dict) else {}
     payload["song_slot"] = 0
     return payload
 
@@ -624,7 +625,7 @@ def _run_hitsim_matrix_gpu_batch(
         return None
     payload = {
         "shared_request_payload": dict(shared_request_payload or {}),
-        "regimes": [{"timeline_grid": copy.deepcopy(job.get("calc_song") or {})} for job in list(jobs or [])],
+        "regimes": [{"timeline_grid": job.get("calc_song") if isinstance(job.get("calc_song"), dict) else {}} for job in jobs],
     }
     try:
         handle = submit(payload)
@@ -648,7 +649,7 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
     baseline_gear = copy.deepcopy(list(getattr(song, "best_gear", []) or []))
     baseline_minis = copy.deepcopy(list(getattr(song, "best_minis", []) or []))
     baseline_candidates = copy.deepcopy(list(getattr(song, "ga_candidates", []) or []))
-    baseline_calc_song = copy.deepcopy(getattr(song, "calc_song", {}) or {})
+    baseline_calc_song = _clone_calc_song_for_hitsim(getattr(song, "calc_song", {}) or {})
 
     def _cleanup() -> None:
         for attr in ("_hitsim_matrix_plan", "_hitsim_matrix_submit_t0"):
@@ -684,7 +685,7 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
     evaluated_pairs = 0
     best_candidate_payload: dict | None = None
     best_candidate_score = int(current_score)
-    best_calc_song = copy.deepcopy(baseline_calc_song)
+    best_calc_song: dict = baseline_calc_song
     execution_mode = "per_regime"
 
     try:
@@ -699,12 +700,15 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
         for job_idx, job in enumerate(jobs):
             gpu_results = None
             job_regime_id = str(job.get("regime_id", "") or "")
+            calc_song = job.get("calc_song")
+            if not isinstance(calc_song, dict):
+                calc_song = baseline_calc_song
             if job_regime_id:
                 fg_regime_groups_by_id.setdefault(
                     str(job_regime_id),
                     {
                         "regime_id": str(job_regime_id),
-                        "calc_song": copy.deepcopy(job.get("calc_song") or baseline_calc_song),
+                        "calc_song": calc_song,
                         "ga_candidates": [],
                     },
                 )
@@ -801,7 +805,7 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
                 if int(score) > int(best_candidate_score):
                     best_candidate_score = int(score)
                     best_candidate_payload = payload
-                    best_calc_song = copy.deepcopy(job.get("calc_song") or {})
+                    best_calc_song = calc_song
 
             if isinstance(local_best_payload, dict):
                 regime_winners.append(local_best_payload)
@@ -848,7 +852,7 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
         fg_regime_groups.append(
             {
                 "regime_id": str(group.get("regime_id", "") or ""),
-                "calc_song": copy.deepcopy(group.get("calc_song") or baseline_calc_song),
+                "calc_song": group.get("calc_song") if isinstance(group.get("calc_song"), dict) else baseline_calc_song,
                 "ga_candidates": list(selected_group_candidates),
             }
         )
@@ -864,7 +868,7 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
     final_best = copy.deepcopy(baseline_best)
     final_gear = copy.deepcopy(baseline_gear)
     final_minis = copy.deepcopy(baseline_minis)
-    final_calc_song = copy.deepcopy(baseline_calc_song)
+    final_calc_song = _clone_calc_song_for_hitsim(baseline_calc_song)
     candidate_changed = False
     regime_changed = False
 
@@ -877,7 +881,7 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
             final_best = selected_data if isinstance(selected_data, dict) else {}
             final_gear = copy.deepcopy(list(selected_candidate.get("Gear") or []))
             final_minis = copy.deepcopy(list(selected_candidate.get("Minis") or []))
-            final_calc_song = copy.deepcopy(best_calc_song if isinstance(best_calc_song, dict) else baseline_calc_song)
+            final_calc_song = _clone_calc_song_for_hitsim(best_calc_song if isinstance(best_calc_song, dict) else baseline_calc_song)
         candidate_changed = bool(int(selected_score) > int(current_score))
         regime_changed = bool(candidate_changed and selected_regime_id and selected_regime_id != baseline_regime_id)
 
@@ -937,7 +941,7 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
             delattr(song, "_hitsim_fg_regime_groups")
         except Exception:
             pass
-    song.calc_song = copy.deepcopy(final_calc_song)
+    song.calc_song = final_calc_song
     _cleanup()
     return final_best, final_gear, final_minis, list(merged_candidates or baseline_candidates)
 
@@ -1160,7 +1164,6 @@ def _prepare_hitsim_continuation_jobs(song: Any, *, refine_info: dict, ga_candid
                 "db_seed_prob": float(getattr(song, "db_seed_prob", 0.0) or 0.0),
                 "db_seed_copies": int(getattr(song, "db_seed_copies", 0) or 0),
                 "db_seed_mutations": int(getattr(song, "db_seed_mutations", 0) or 0),
-                "calc_song": copy.deepcopy(getattr(song, "calc_song", {}) or {}),
             },
         )
         _set_hitsim_continuation_status(
@@ -1211,7 +1214,7 @@ def _advance_hitsim_continuation(
         setattr(song, "_hitsim_continuation_best_data", copy.deepcopy(best_data or {}))
         setattr(song, "_hitsim_continuation_best_gear", list(best_gear or []))
         setattr(song, "_hitsim_continuation_best_minis", list(best_minis or []))
-        setattr(song, "_hitsim_continuation_best_calc_song", copy.deepcopy(getattr(song, "calc_song", {}) or {}))
+        setattr(song, "_hitsim_continuation_best_calc_song", _clone_calc_song_for_hitsim(getattr(song, "calc_song", {}) or {}))
 
     merged_candidates = list(getattr(song, "_hitsim_continuation_ga_candidates", []) or [])
     merged_candidates.extend(list(ga_candidates or []))
@@ -1228,7 +1231,7 @@ def _advance_hitsim_continuation(
         setattr(song, "_hitsim_continuation_jobs", jobs)
         setattr(song, "_hitsim_continuation_active", True)
         setattr(song, "_hitsim_in_continuation", True)
-        song.calc_song = copy.deepcopy(next_job["calc_song"])
+        song.calc_song = _clone_calc_song_for_hitsim(next_job.get("calc_song"))
         _set_hitsim_continuation_status(
             song,
             "active",
@@ -1263,7 +1266,9 @@ def _advance_hitsim_continuation(
     best_out = copy.deepcopy(getattr(song, "_hitsim_continuation_best_data", best_data) or {})
     best_gear_out = list(getattr(song, "_hitsim_continuation_best_gear", best_gear) or [])
     best_minis_out = list(getattr(song, "_hitsim_continuation_best_minis", best_minis) or [])
-    best_calc_song = copy.deepcopy(getattr(song, "_hitsim_continuation_best_calc_song", getattr(song, "calc_song", {}) or {}))
+    best_calc_song = getattr(song, "_hitsim_continuation_best_calc_song", None)
+    if not isinstance(best_calc_song, dict) or not best_calc_song:
+        best_calc_song = _clone_calc_song_for_hitsim(getattr(song, "calc_song", {}) or {})
     if isinstance(best_calc_song, dict) and best_calc_song:
         song.calc_song = best_calc_song
     _set_hitsim_continuation_status(

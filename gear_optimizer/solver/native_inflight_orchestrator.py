@@ -349,6 +349,9 @@ def _attach_hitsim_delta_for_fg_variant(
         if not isinstance(variant, dict):
             continue
 
+        # This is a large payload; keep it only long enough to compute the delta once per cache key.
+        calc_song_variant = variant.pop("_hitsim_calc_song", None)
+
         fg_score = safe_int(variant.get("fg_score", 0), 0)
         base_score = safe_int(variant.get("score", 0), 0)
         if fg_score <= base_score:
@@ -379,7 +382,6 @@ def _attach_hitsim_delta_for_fg_variant(
 
         delta_ms = delta_cache.get(cache_key)
         if delta_ms is None:
-            calc_song_variant = variant.get("_hitsim_calc_song")
             calc_song_in = calc_song_variant if isinstance(calc_song_variant, dict) else calc_song
             try:
                 computed = summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song_in, fg_data, ref_arrays)

@@ -173,7 +173,8 @@ def _annotate_fg_variant_with_hitsim_regime(variant, calc_song):
         if key in meta and key not in data:
             data[key] = copy.deepcopy(meta.get(key))
     variant["data"] = data
-    variant["_hitsim_calc_song"] = copy.deepcopy(calc_song)
+    # Keep a lightweight reference for the post-FG delta calculation; this is pruned immediately after.
+    variant["_hitsim_calc_song"] = calc_song
 
 
 def _process_force_greats_hitsim_regimes(
@@ -196,7 +197,11 @@ def _process_force_greats_hitsim_regimes(
     fg_variants = []
     groups = [group for group in list(hitsim_regime_groups or []) if isinstance(group, dict)]
     for group in groups:
-        group_calc_song = copy.deepcopy(group.get("calc_song") or calc_song)
+        group_calc_song = group.get("calc_song")
+        if not isinstance(group_calc_song, dict):
+            group_calc_song = calc_song
+        if not isinstance(group_calc_song, dict) or not group_calc_song:
+            continue
         group_ga_candidates = _clone_ga_candidates_for_hitsim_regime(group.get("ga_candidates") or [])
         if not group_ga_candidates:
             continue
