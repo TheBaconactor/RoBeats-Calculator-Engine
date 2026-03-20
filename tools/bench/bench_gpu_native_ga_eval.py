@@ -24,13 +24,6 @@ if REPO_ROOT not in sys.path:
 from gear_optimizer.core.constants import GEM_SCALE_FEVER
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.scoring.gpu_solver import _GPU_LOCK
-from gear_optimizer.solver.taichi_gem.api.ga_operations import (
-    ga_evaluate_population,
-    ga_upload_base_fixed_stats,
-    ga_upload_item_stats,
-    ga_upload_population_indices,
-)
-from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
 
 
 def _mk_item(name: str, **stats: int) -> dict:
@@ -206,6 +199,21 @@ def main() -> int:
     )
     args = ap.parse_args()
 
+    # `ga_operations` caches GPU_NATIVE_GA_PLATEAU_PRUNE at module import time to avoid per-call overhead.
+    # Set it BEFORE importing ga_operations so the benchmark matches the printed configuration.
+    os.environ["GPU_NATIVE_GA_PLATEAU_PRUNE"] = "1" if int(args.prune_plateaus) else "0"
+
+    from gear_optimizer.solver.taichi_gem.api import ga_operations as _ga_ops
+    from gear_optimizer.solver.taichi_gem.api.ga_operations import (
+        ga_evaluate_population,
+        ga_upload_base_fixed_stats,
+        ga_upload_item_stats,
+        ga_upload_population_indices,
+    )
+    from gear_optimizer.solver.taichi_gem.api.timeline import precompute_timeline_gpu
+
+    prune_effective = int(getattr(_ga_ops, "_GA_PLATEAU_PRUNE_ENABLED", 0))
+
     rng = np.random.default_rng(int(args.seed))
     registry, gear_pool, mini_pool, gpu_arrays, slots = _build_registry(
         rng=rng,
@@ -262,49 +270,42 @@ def main() -> int:
             except Exception:
                 pass
 
-        old = os.environ.get("GPU_NATIVE_GA_PLATEAU_PRUNE")
-        os.environ["GPU_NATIVE_GA_PLATEAU_PRUNE"] = "1" if int(args.prune_plateaus) else "0"
+        start = time.perf_counter()
+        for _ in range(int(args.iters)):
+            ga_evaluate_population(
+                n_genomes=int(args.genomes),
+                n_slots=9,
+                total_budget=int(args.budget),
+                gem_scale_fever=GEM_SCALE_FEVER,
+                song_slot=0,
+                use_hints=int(args.use_hints),
+                is_p_ft=flags["is_p_ft"],
+                is_s_ft=flags["is_s_ft"],
+                is_p_ff=flags["is_p_ff"],
+                is_s_ff=flags["is_s_ff"],
+                is_p_pp=flags["is_p_pp"],
+                is_s_pp=flags["is_s_pp"],
+                is_p_cm=flags["is_p_cm"],
+                is_s_cm=flags["is_s_cm"],
+                is_p_fm=flags["is_p_fm"],
+                is_s_fm=flags["is_s_fm"],
+                is_p_ov=flags["is_p_ov"],
+                is_s_ov=flags["is_s_ov"],
+            )
         try:
-            start = time.perf_counter()
-            for _ in range(int(args.iters)):
-                ga_evaluate_population(
-                    n_genomes=int(args.genomes),
-                    n_slots=9,
-                    total_budget=int(args.budget),
-                    gem_scale_fever=GEM_SCALE_FEVER,
-                    song_slot=0,
-                    use_hints=int(args.use_hints),
-                    is_p_ft=flags["is_p_ft"],
-                    is_s_ft=flags["is_s_ft"],
-                    is_p_ff=flags["is_p_ff"],
-                    is_s_ff=flags["is_s_ff"],
-                    is_p_pp=flags["is_p_pp"],
-                    is_s_pp=flags["is_s_pp"],
-                    is_p_cm=flags["is_p_cm"],
-                    is_s_cm=flags["is_s_cm"],
-                    is_p_fm=flags["is_p_fm"],
-                    is_s_fm=flags["is_s_fm"],
-                    is_p_ov=flags["is_p_ov"],
-                    is_s_ov=flags["is_s_ov"],
-                )
-            try:
-                import taichi as ti
+            import taichi as ti
 
-                ti.sync()
-            except Exception:
-                pass
-            elapsed = time.perf_counter() - start
-        finally:
-            if old is None:
-                os.environ.pop("GPU_NATIVE_GA_PLATEAU_PRUNE", None)
-            else:
-                os.environ["GPU_NATIVE_GA_PLATEAU_PRUNE"] = old
+            ti.sync()
+        except Exception:
+            pass
+        elapsed = time.perf_counter() - start
 
     iters = max(1, int(args.iters))
     per_iter = elapsed / iters
     print(
         f"ga_evaluate_population: genomes={int(args.genomes)} budget={int(args.budget)} "
-        f"iters={iters} warmup={int(args.warmup)} hints={int(args.use_hints)} prune={int(args.prune_plateaus)} "
+        f"iters={iters} warmup={int(args.warmup)} hints={int(args.use_hints)} "
+        f"prune_arg={int(args.prune_plateaus)} prune_effective={prune_effective} "
         f"base_ft={int(args.base_ft)} base_ff={int(args.base_ff)} "
         f"item_ft_max={int(args.item_ft_max)} item_ff_max={int(args.item_ff_max)}"
     )
