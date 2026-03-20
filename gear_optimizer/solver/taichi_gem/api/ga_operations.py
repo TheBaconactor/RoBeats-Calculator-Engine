@@ -30,11 +30,15 @@ from ..kernel_loader import get_kernels
 
 from .initialization import ensure_ready, _ensure_ftff_combo_tables
 
-# Cache environment variables at module load time to avoid per-call overhead
-_GA_PLATEAU_PRUNE_ENABLED: int = 1
-_raw = str(os.environ.get("GPU_NATIVE_GA_PLATEAU_PRUNE", "1") or "").strip().lower()
-if _raw in {"0", "false", "no", "off"}:
-    _GA_PLATEAU_PRUNE_ENABLED = 0
+# Cache environment variables at module load time to avoid per-call overhead.
+#
+# Note: plateau pruning is currently correctness-risky (it can prune away valid
+# FT/FF combos that produce better top-1 results). Keep it OFF by default and
+# allow explicit opt-in for profiling/experimentation.
+_GA_PLATEAU_PRUNE_ENABLED: int = 0
+_raw = str(os.environ.get("GPU_NATIVE_GA_PLATEAU_PRUNE", "0") or "").strip().lower()
+if _raw in {"1", "true", "yes", "on"}:
+    _GA_PLATEAU_PRUNE_ENABLED = 1
 del _raw
 
 _GA_COMBO_CHUNK_MIN: int = max(64, int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MIN", "1024") or 1024))
@@ -739,6 +743,7 @@ def ga_evaluate_population(
         materialize_mode=materialize_mode,
         update_global_best=bool(update_global_best),
     )
+
 
 def _ga_materialize_population_results(
     *,

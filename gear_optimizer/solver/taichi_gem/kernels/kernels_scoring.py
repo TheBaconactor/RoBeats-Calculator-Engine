@@ -939,3 +939,367 @@ def optimize_core_device_preloaded_bits(
         m3,
         1,
     )
+
+
+@ti.func
+def _optimize_core_device_refined_from_hint_preloaded_bits_impl(
+    budget: ti.i32,
+    cur_pp: ti.i32,
+    cur_cm: ti.i32,
+    cur_fm: ti.i32,
+    cur_p_val: ti.i32,
+    cur_s_val: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+    m0: ti.u32,
+    m1: ti.u32,
+    m2: ti.u32,
+    m3: ti.u32,
+    head_len: ti.i32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+    hint_pp: ti.i32,
+    hint_cm: ti.i32,
+    hint_fm: ti.i32,
+    hint_ov: ti.i32,
+) -> ti.types.vector(7, ti.i32):
+    """
+    Refine a greedy gem allocation hint for a fixed (FT, FF) combo.
+
+    This is used to eliminate false "top-1 misses" where the greedy per-gem allocator
+    gets stuck in a local optimum (most commonly CM=0), but a better global allocation
+    exists (as observed in historical/root DB records).
+
+    Important: this should remain cheap relative to per-combo evaluation. We only sweep
+    over (FM, CM) while keeping PP fixed to the hint, and use a coarse+fine CM scan.
+    """
+    # Keep constants in sync with optimize_core_jit / _optimize_core_device_impl.
+    GEM_SCALE_NORMAL: ti.i32 = 2
+    GEM_SCALE_FEVER: ti.i32 = 3
+    ELEMENTAL_GEM_SCALE: ti.i32 = 6
+    GEM_STAT_TO_ELEMENT: ti.i32 = 3
+    MAX_STAT: ti.i32 = 160
+
+    # Sweep knobs (tuned to catch observed regressions while staying bounded).
+    FM_SWEEP: ti.i32 = 12
+    CM_STEP: ti.i32 = 4
+
+    max_pp_gems: ti.i32 = (MAX_STAT - cur_pp) // GEM_SCALE_NORMAL
+    max_cm_gems: ti.i32 = (MAX_STAT - cur_cm) // GEM_SCALE_NORMAL
+    max_fm_gems: ti.i32 = (MAX_STAT - cur_fm) // GEM_SCALE_FEVER
+    if max_pp_gems < 0:
+        max_pp_gems = 0
+    if max_cm_gems < 0:
+        max_cm_gems = 0
+    if max_fm_gems < 0:
+        max_fm_gems = 0
+
+    # Clamp hints defensively (should already be valid).
+    pp0: ti.i32 = ti.min(max_pp_gems, ti.max(0, hint_pp))
+    cm0: ti.i32 = ti.min(max_cm_gems, ti.max(0, hint_cm))
+    fm0: ti.i32 = ti.min(max_fm_gems, ti.max(0, hint_fm))
+    ov0: ti.i32 = ti.max(0, hint_ov)
+    if pp0 + cm0 + fm0 + ov0 != budget:
+        ov0 = budget - pp0 - cm0 - fm0
+        if ov0 < 0:
+            ov0 = 0
+
+    # Element deltas per gem.
+    pp_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_pp
+    pp_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_pp
+    cm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_cm
+    cm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_cm
+    fm_p_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_p_fm
+    fm_s_delta: ti.i32 = GEM_STAT_TO_ELEMENT * is_s_fm
+    ov_p_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_p_ov
+    ov_s_delta: ti.i32 = ELEMENTAL_GEM_SCALE * is_s_ov
+
+    allow_cm: ti.i32 = ti.cast((cur_cm <= 50) | (is_p_cm != 0) | (is_s_cm != 0), ti.i32)
+
+    pp_stat0: ti.i32 = ti.min(MAX_STAT, cur_pp + (pp0 * GEM_SCALE_NORMAL))
+    pp_factor0: ti.f32 = kernels_helpers.lookup_ref_pp(pp_stat0)
+
+    fm_stat0: ti.i32 = ti.min(MAX_STAT, cur_fm + (fm0 * GEM_SCALE_FEVER))
+    f_mul0: ti.f32 = kernels_helpers.lookup_ref_fm(fm_stat0)
+    cm_stat0: ti.i32 = ti.min(MAX_STAT, cur_cm + (cm0 * GEM_SCALE_NORMAL))
+    c_mul0: ti.f32 = kernels_helpers.lookup_ref_cm(cm_stat0)
+    p_val0: ti.i32 = cur_p_val + (pp0 * pp_p_delta) + (cm0 * cm_p_delta) + (fm0 * fm_p_delta) + (ov0 * ov_p_delta)
+    s_val0: ti.i32 = cur_s_val + (pp0 * pp_s_delta) + (cm0 * cm_s_delta) + (fm0 * fm_s_delta) + (ov0 * ov_s_delta)
+    base_value0: ti.f32 = ti.cast((p_val0 * 2) + s_val0, ti.f32) + pp_factor0
+    best_score: ti.i32 = calc_score_cached_device(
+        base_value0,
+        c_mul0,
+        f_mul0,
+        head_len,
+        count_fever,
+        count_normal,
+        m0,
+        m1,
+        m2,
+        m3,
+    )
+    best_pp: ti.i32 = pp0
+    best_cm: ti.i32 = cm0
+    best_fm: ti.i32 = fm0
+    best_ov: ti.i32 = ov0
+
+    do_refine: ti.i32 = ti.cast((allow_cm != 0) & (best_cm == 0), ti.i32)
+    if do_refine != 0:
+        fm_lo: ti.i32 = ti.max(0, fm0 - FM_SWEEP)
+        fm_hi: ti.i32 = ti.min(max_fm_gems, fm0 + FM_SWEEP)
+        fm_g: ti.i32 = fm_lo
+        while fm_g <= fm_hi:
+            rem0: ti.i32 = budget - pp0 - fm_g
+            if rem0 < 0:
+                fm_g += 1
+                continue
+
+            fm_stat: ti.i32 = ti.min(MAX_STAT, cur_fm + (fm_g * GEM_SCALE_FEVER))
+            f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm_stat)
+
+            cm_max_here: ti.i32 = rem0
+            if cm_max_here > max_cm_gems:
+                cm_max_here = max_cm_gems
+            if cm_max_here < 0:
+                fm_g += 1
+                continue
+
+            # Coarse scan CM in steps to avoid large per-genome overhead.
+            best_cm_local: ti.i32 = 0
+            best_score_local: ti.i32 = -2147483647
+            cm_g: ti.i32 = 0
+            while cm_g <= cm_max_here:
+                ov_g: ti.i32 = rem0 - cm_g
+                cm_stat: ti.i32 = ti.min(MAX_STAT, cur_cm + (cm_g * GEM_SCALE_NORMAL))
+                c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm_stat)
+                p_val: ti.i32 = (
+                    cur_p_val + (pp0 * pp_p_delta) + (cm_g * cm_p_delta) + (fm_g * fm_p_delta) + (ov_g * ov_p_delta)
+                )
+                s_val: ti.i32 = (
+                    cur_s_val + (pp0 * pp_s_delta) + (cm_g * cm_s_delta) + (fm_g * fm_s_delta) + (ov_g * ov_s_delta)
+                )
+                base_value: ti.f32 = ti.cast((p_val * 2) + s_val, ti.f32) + pp_factor0
+                score: ti.i32 = calc_score_cached_device(
+                    base_value,
+                    c_mul,
+                    f_mul,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    m0,
+                    m1,
+                    m2,
+                    m3,
+                )
+                if score > best_score_local:
+                    best_score_local = score
+                    best_cm_local = cm_g
+                if score > best_score:
+                    best_score = score
+                    best_cm = cm_g
+                    best_fm = fm_g
+                    best_ov = ov_g
+                cm_g += CM_STEP
+
+            # Fine scan around the best coarse CM for this FM.
+            cm_lo: ti.i32 = best_cm_local - (CM_STEP - 1)
+            if cm_lo < 0:
+                cm_lo = 0
+            cm_hi: ti.i32 = best_cm_local + (CM_STEP - 1)
+            if cm_hi > cm_max_here:
+                cm_hi = cm_max_here
+            cm_g = cm_lo
+            while cm_g <= cm_hi:
+                ov_g: ti.i32 = rem0 - cm_g
+                cm_stat: ti.i32 = ti.min(MAX_STAT, cur_cm + (cm_g * GEM_SCALE_NORMAL))
+                c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm_stat)
+                p_val: ti.i32 = (
+                    cur_p_val + (pp0 * pp_p_delta) + (cm_g * cm_p_delta) + (fm_g * fm_p_delta) + (ov_g * ov_p_delta)
+                )
+                s_val: ti.i32 = (
+                    cur_s_val + (pp0 * pp_s_delta) + (cm_g * cm_s_delta) + (fm_g * fm_s_delta) + (ov_g * ov_s_delta)
+                )
+                base_value: ti.f32 = ti.cast((p_val * 2) + s_val, ti.f32) + pp_factor0
+                score: ti.i32 = calc_score_cached_device(
+                    base_value,
+                    c_mul,
+                    f_mul,
+                    head_len,
+                    count_fever,
+                    count_normal,
+                    m0,
+                    m1,
+                    m2,
+                    m3,
+                )
+                if score > best_score:
+                    best_score = score
+                    best_cm = cm_g
+                    best_fm = fm_g
+                    best_ov = ov_g
+                cm_g += 1
+
+            fm_g += 1
+
+    best_p: ti.i32 = (
+        cur_p_val + (best_pp * pp_p_delta) + (best_cm * cm_p_delta) + (best_fm * fm_p_delta) + (best_ov * ov_p_delta)
+    )
+    best_s: ti.i32 = (
+        cur_s_val + (best_pp * pp_s_delta) + (best_cm * cm_s_delta) + (best_fm * fm_s_delta) + (best_ov * ov_s_delta)
+    )
+    return ti.Vector([best_score, best_pp, best_cm, best_fm, best_ov, best_p, best_s])
+
+
+@ti.func
+def optimize_core_device_refined_from_hint(
+    budget: ti.i32,
+    cur_pp: ti.i32,
+    cur_cm: ti.i32,
+    cur_fm: ti.i32,
+    cur_p_val: ti.i32,
+    cur_s_val: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+    head_len: ti.i32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+    song_slot: ti.i32,
+    ft_idx: ti.i32,
+    ff_idx: ti.i32,
+    hint_pp: ti.i32,
+    hint_cm: ti.i32,
+    hint_fm: ti.i32,
+    hint_ov: ti.i32,
+) -> ti.types.vector(7, ti.i32):
+    m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
+    m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
+    m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
+    m3 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
+    return _optimize_core_device_refined_from_hint_preloaded_bits_impl(
+        budget,
+        cur_pp,
+        cur_cm,
+        cur_fm,
+        cur_p_val,
+        cur_s_val,
+        is_p_pp,
+        is_s_pp,
+        is_p_cm,
+        is_s_cm,
+        is_p_fm,
+        is_s_fm,
+        is_p_ov,
+        is_s_ov,
+        m0,
+        m1,
+        m2,
+        m3,
+        head_len,
+        count_fever,
+        count_normal,
+        hint_pp,
+        hint_cm,
+        hint_fm,
+        hint_ov,
+    )
+
+
+@ti.func
+def optimize_core_device_refined(
+    budget: ti.i32,
+    cur_pp: ti.i32,
+    cur_cm: ti.i32,
+    cur_fm: ti.i32,
+    cur_p_val: ti.i32,
+    cur_s_val: ti.i32,
+    is_p_pp: ti.i32,
+    is_s_pp: ti.i32,
+    is_p_cm: ti.i32,
+    is_s_cm: ti.i32,
+    is_p_fm: ti.i32,
+    is_s_fm: ti.i32,
+    is_p_ov: ti.i32,
+    is_s_ov: ti.i32,
+    head_len: ti.i32,
+    count_fever: ti.i32,
+    count_normal: ti.i32,
+    song_slot: ti.i32,
+    ft_idx: ti.i32,
+    ff_idx: ti.i32,
+) -> ti.types.vector(7, ti.i32):
+    """
+    Refined gem allocation for a fixed (FT, FF) combo.
+
+    Uses the greedy allocation as a hint and refines it with a bounded CM/FM scan.
+    """
+    m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
+    m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
+    m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]
+    m3 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3]
+
+    base = optimize_core_device_preloaded_bits(
+        budget,
+        cur_pp,
+        cur_cm,
+        cur_fm,
+        cur_p_val,
+        cur_s_val,
+        is_p_pp,
+        is_s_pp,
+        is_p_cm,
+        is_s_cm,
+        is_p_fm,
+        is_s_fm,
+        is_p_ov,
+        is_s_ov,
+        m0,
+        m1,
+        m2,
+        m3,
+        head_len,
+        count_fever,
+        count_normal,
+    )
+    # Fast path: if greedy already invested in CM, keep it.
+    if base[2] != 0:
+        return base
+
+    return _optimize_core_device_refined_from_hint_preloaded_bits_impl(
+        budget,
+        cur_pp,
+        cur_cm,
+        cur_fm,
+        cur_p_val,
+        cur_s_val,
+        is_p_pp,
+        is_s_pp,
+        is_p_cm,
+        is_s_cm,
+        is_p_fm,
+        is_s_fm,
+        is_p_ov,
+        is_s_ov,
+        m0,
+        m1,
+        m2,
+        m3,
+        head_len,
+        count_fever,
+        count_normal,
+        base[1],
+        base[2],
+        base[3],
+        base[4],
+    )

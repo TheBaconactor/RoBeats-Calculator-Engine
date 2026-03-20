@@ -121,6 +121,229 @@ def precompute_fever_timelines(
     return results
 
 
+def _refine_gem_allocation_hint_fixed_ftff_cpu(
+    *,
+    budget: int,
+    cur_pp: int,
+    cur_cm: int,
+    cur_fm: int,
+    cur_p_val: int,
+    cur_s_val: int,
+    is_p_pp: int,
+    is_s_pp: int,
+    is_p_cm: int,
+    is_s_cm: int,
+    is_p_fm: int,
+    is_s_fm: int,
+    is_p_ov: int,
+    is_s_ov: int,
+    ref_pp: np.ndarray,
+    ref_cm: np.ndarray,
+    ref_fm: np.ndarray,
+    fever_mask_head: np.ndarray,
+    count_body_fever: int,
+    count_body_normal: int,
+    pp_gems: int,
+    cm_gems: int,
+    fm_gems: int,
+    ov_gems: int,
+) -> tuple[int, int, int, int, int]:
+    """
+    Refine a greedy gem allocation hint for a fixed (FT, FF) combination.
+
+    Matches the GPU-side refinement used in Taichi kernels:
+    - Keep PP fixed to the hint
+    - Sweep FM in a bounded window
+    - Coarse+fine scan CM (OV is the remainder)
+    """
+    budget = int(budget)
+    if budget <= 0:
+        return (0, int(pp_gems), int(cm_gems), int(fm_gems), int(ov_gems))
+
+    allow_cm = (int(cur_cm) <= 50) or (int(is_p_cm) != 0) or (int(is_s_cm) != 0)
+    if (not allow_cm) or int(cm_gems) != 0:
+        # Baseline score for the provided hint (no refinement).
+        pp_stat = min(MAX_STAT_INDEX, int(cur_pp) + int(pp_gems) * GEM_SCALE_NORMAL)
+        cm_stat = min(MAX_STAT_INDEX, int(cur_cm) + int(cm_gems) * GEM_SCALE_NORMAL)
+        fm_stat = min(MAX_STAT_INDEX, int(cur_fm) + int(fm_gems) * GEM_SCALE_FEVER)
+
+        p_val = (
+            int(cur_p_val)
+            + int(pp_gems) * GEM_STAT_TO_ELEMENT_SCALE * int(is_p_pp)
+            + int(cm_gems) * GEM_STAT_TO_ELEMENT_SCALE * int(is_p_cm)
+            + int(fm_gems) * GEM_STAT_TO_ELEMENT_SCALE * int(is_p_fm)
+            + int(ov_gems) * ELEMENTAL_GEM_SCALE * int(is_p_ov)
+        )
+        s_val = (
+            int(cur_s_val)
+            + int(pp_gems) * GEM_STAT_TO_ELEMENT_SCALE * int(is_s_pp)
+            + int(cm_gems) * GEM_STAT_TO_ELEMENT_SCALE * int(is_s_cm)
+            + int(fm_gems) * GEM_STAT_TO_ELEMENT_SCALE * int(is_s_fm)
+            + int(ov_gems) * ELEMENTAL_GEM_SCALE * int(is_s_ov)
+        )
+        base = (p_val * 2) + s_val + lookup_reference_py(pp_stat, ref_pp, TOTAL_ROWS)
+        c_mul = lookup_reference_py(cm_stat, ref_cm, TOTAL_ROWS)
+        f_mul = lookup_reference_py(fm_stat, ref_fm, TOTAL_ROWS)
+        score = int(
+            fast_calculate_score(
+                base,
+                c_mul,
+                f_mul,
+                fever_mask_head,
+                int(count_body_fever),
+                int(count_body_normal),
+            )
+        )
+        return (score, int(pp_gems), int(cm_gems), int(fm_gems), int(ov_gems))
+
+    # Clamp caps.
+    max_cm_gems = (MAX_STAT_INDEX - int(cur_cm)) // GEM_SCALE_NORMAL
+    max_fm_gems = (MAX_STAT_INDEX - int(cur_fm)) // GEM_SCALE_FEVER
+    if max_cm_gems < 0:
+        max_cm_gems = 0
+    if max_fm_gems < 0:
+        max_fm_gems = 0
+
+    pp_gems = int(pp_gems)
+    if pp_gems < 0:
+        pp_gems = 0
+
+    # Sweep knobs (keep in sync with GPU refinement).
+    FM_SWEEP = 12
+    CM_STEP = 4
+
+    # Baseline score at the hint.
+    pp_stat = min(MAX_STAT_INDEX, int(cur_pp) + pp_gems * GEM_SCALE_NORMAL)
+    pp_factor = lookup_reference_py(pp_stat, ref_pp, TOTAL_ROWS)
+
+    cm_stat = min(MAX_STAT_INDEX, int(cur_cm) + int(cm_gems) * GEM_SCALE_NORMAL)
+    fm_stat = min(MAX_STAT_INDEX, int(cur_fm) + int(fm_gems) * GEM_SCALE_FEVER)
+    p_val0 = (
+        int(cur_p_val)
+        + pp_gems * GEM_STAT_TO_ELEMENT_SCALE * int(is_p_pp)
+        + int(cm_gems) * GEM_STAT_TO_ELEMENT_SCALE * int(is_p_cm)
+        + int(fm_gems) * GEM_STAT_TO_ELEMENT_SCALE * int(is_p_fm)
+        + int(ov_gems) * ELEMENTAL_GEM_SCALE * int(is_p_ov)
+    )
+    s_val0 = (
+        int(cur_s_val)
+        + pp_gems * GEM_STAT_TO_ELEMENT_SCALE * int(is_s_pp)
+        + int(cm_gems) * GEM_STAT_TO_ELEMENT_SCALE * int(is_s_cm)
+        + int(fm_gems) * GEM_STAT_TO_ELEMENT_SCALE * int(is_s_fm)
+        + int(ov_gems) * ELEMENTAL_GEM_SCALE * int(is_s_ov)
+    )
+    base0 = (p_val0 * 2) + s_val0 + pp_factor
+    c_mul0 = lookup_reference_py(cm_stat, ref_cm, TOTAL_ROWS)
+    f_mul0 = lookup_reference_py(fm_stat, ref_fm, TOTAL_ROWS)
+    best_score = int(
+        fast_calculate_score(
+            base0,
+            c_mul0,
+            f_mul0,
+            fever_mask_head,
+            int(count_body_fever),
+            int(count_body_normal),
+        )
+    )
+    best_cm = int(cm_gems)
+    best_fm = int(fm_gems)
+    best_ov = int(ov_gems)
+
+    fm_lo = max(0, int(fm_gems) - FM_SWEEP)
+    fm_hi = min(int(max_fm_gems), int(fm_gems) + FM_SWEEP)
+    for fm_g in range(fm_lo, fm_hi + 1):
+        rem0 = budget - pp_gems - fm_g
+        if rem0 < 0:
+            continue
+
+        fm_stat = min(MAX_STAT_INDEX, int(cur_fm) + fm_g * GEM_SCALE_FEVER)
+        f_mul = lookup_reference_py(fm_stat, ref_fm, TOTAL_ROWS)
+
+        cm_max_here = min(int(max_cm_gems), int(rem0))
+        if cm_max_here < 0:
+            continue
+
+        best_cm_local = 0
+        best_score_local = -(2**31) + 1
+        for cm_g in range(0, cm_max_here + 1, CM_STEP):
+            ov_g = rem0 - cm_g
+            cm_stat = min(MAX_STAT_INDEX, int(cur_cm) + cm_g * GEM_SCALE_NORMAL)
+            c_mul = lookup_reference_py(cm_stat, ref_cm, TOTAL_ROWS)
+
+            p_val = (
+                int(cur_p_val)
+                + pp_gems * GEM_STAT_TO_ELEMENT_SCALE * int(is_p_pp)
+                + cm_g * GEM_STAT_TO_ELEMENT_SCALE * int(is_p_cm)
+                + fm_g * GEM_STAT_TO_ELEMENT_SCALE * int(is_p_fm)
+                + ov_g * ELEMENTAL_GEM_SCALE * int(is_p_ov)
+            )
+            s_val = (
+                int(cur_s_val)
+                + pp_gems * GEM_STAT_TO_ELEMENT_SCALE * int(is_s_pp)
+                + cm_g * GEM_STAT_TO_ELEMENT_SCALE * int(is_s_cm)
+                + fm_g * GEM_STAT_TO_ELEMENT_SCALE * int(is_s_fm)
+                + ov_g * ELEMENTAL_GEM_SCALE * int(is_s_ov)
+            )
+            base = (p_val * 2) + s_val + pp_factor
+            score = int(
+                fast_calculate_score(
+                    base,
+                    c_mul,
+                    f_mul,
+                    fever_mask_head,
+                    int(count_body_fever),
+                    int(count_body_normal),
+                )
+            )
+            if score > best_score_local:
+                best_score_local = score
+                best_cm_local = cm_g
+            if score > best_score:
+                best_score = score
+                best_cm = cm_g
+                best_fm = fm_g
+                best_ov = ov_g
+
+        cm_lo = max(0, best_cm_local - (CM_STEP - 1))
+        cm_hi = min(cm_max_here, best_cm_local + (CM_STEP - 1))
+        for cm_g in range(cm_lo, cm_hi + 1):
+            ov_g = rem0 - cm_g
+            cm_stat = min(MAX_STAT_INDEX, int(cur_cm) + cm_g * GEM_SCALE_NORMAL)
+            c_mul = lookup_reference_py(cm_stat, ref_cm, TOTAL_ROWS)
+            p_val = (
+                int(cur_p_val)
+                + pp_gems * GEM_STAT_TO_ELEMENT_SCALE * int(is_p_pp)
+                + cm_g * GEM_STAT_TO_ELEMENT_SCALE * int(is_p_cm)
+                + fm_g * GEM_STAT_TO_ELEMENT_SCALE * int(is_p_fm)
+                + ov_g * ELEMENTAL_GEM_SCALE * int(is_p_ov)
+            )
+            s_val = (
+                int(cur_s_val)
+                + pp_gems * GEM_STAT_TO_ELEMENT_SCALE * int(is_s_pp)
+                + cm_g * GEM_STAT_TO_ELEMENT_SCALE * int(is_s_cm)
+                + fm_g * GEM_STAT_TO_ELEMENT_SCALE * int(is_s_fm)
+                + ov_g * ELEMENTAL_GEM_SCALE * int(is_s_ov)
+            )
+            base = (p_val * 2) + s_val + pp_factor
+            score = int(
+                fast_calculate_score(
+                    base,
+                    c_mul,
+                    f_mul,
+                    fever_mask_head,
+                    int(count_body_fever),
+                    int(count_body_normal),
+                )
+            )
+            if score > best_score:
+                best_score = score
+                best_cm = cm_g
+                best_fm = fm_g
+                best_ov = ov_g
+
+    return (int(best_score), int(pp_gems), int(best_cm), int(best_fm), int(best_ov))
+
+
 def solve_best_fever_combination(
     cfg,
     initial_stats,
@@ -351,6 +574,8 @@ def solve_best_fever_combination(
         best_tuple = (best_score, int(ft), int(ff), int(g_pp), int(g_cm), int(g_fm), int(g_ov))
 
     if not use_gpu:
+        best_timeline = None
+        best_budget = None
         # CPU reference path: enumerate all fever timelines, then optimize PP/CM/FM/OV per timeline.
         song_timestamps = calc_song["song_data"]["timestamps"]
         total_notes = len(song_timestamps)
@@ -438,9 +663,43 @@ def solve_best_fever_combination(
             if total_score > best_score:
                 best_score = total_score
                 best_tuple = (total_score, ft, ff, g_pp, g_cm, g_fm, g_ov)
+                best_timeline = (fever_mask_head, count_body_fever, count_body_normal)
+                best_budget = int(current_budget)
 
     if best_tuple:
         (score, ft, ff, g_pp, g_cm, g_fm, g_ov) = best_tuple
+        if (not use_gpu) and best_timeline is not None:
+            budget0 = int(best_budget) if best_budget is not None else int(g_pp + g_cm + g_fm + g_ov)
+            cur_beat = base_beat + (ft * GEM_STAT_TO_ELEMENT_SCALE)
+            cur_vibe = base_vibe + (ff * GEM_STAT_TO_ELEMENT_SCALE)
+            cur_p_val = get_val_inline(p_color, cur_beat, cur_vibe)
+            cur_s_val = get_val_inline(s_color, cur_beat, cur_vibe)
+            (score, g_pp, g_cm, g_fm, g_ov) = _refine_gem_allocation_hint_fixed_ftff_cpu(
+                budget=budget0,
+                cur_pp=cur_pp,
+                cur_cm=cur_cm,
+                cur_fm=cur_fm,
+                cur_p_val=cur_p_val,
+                cur_s_val=cur_s_val,
+                is_p_pp=is_p_pp,
+                is_s_pp=is_s_pp,
+                is_p_cm=is_p_cm,
+                is_s_cm=is_s_cm,
+                is_p_fm=is_p_fm,
+                is_s_fm=is_s_fm,
+                is_p_ov=is_p_ov,
+                is_s_ov=is_s_ov,
+                ref_pp=ref_pp,
+                ref_cm=ref_cm,
+                ref_fm=ref_fm,
+                fever_mask_head=best_timeline[0],
+                count_body_fever=int(best_timeline[1]),
+                count_body_normal=int(best_timeline[2]),
+                pp_gems=g_pp,
+                cm_gems=g_cm,
+                fm_gems=g_fm,
+                ov_gems=g_ov,
+            )
         final_stats = apply_gems_to_base_stats(
             base_stats,
             selected_color,

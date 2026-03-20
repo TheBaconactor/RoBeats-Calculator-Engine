@@ -8,8 +8,6 @@ Includes:
 import sys
 
 import taichi as ti
-from taichi.lang import simt
-from taichi.lang.simt import subgroup
 
 from .. import kernels_helpers
 from ..kernels_scoring import local_search_from_hint, optimize_core_device
@@ -520,199 +518,45 @@ def ga_find_best_combo_warmstart_kernel(
                 if old < score:
                     kernels_helpers.chunk_best_idx[genome_idx] = combo_idx
     else:
-        # Vulkan: block-per-genome reduction (atomic-free).
-        block_dim = ti.cast(kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM, ti.i32)
-        wave_slots_max = ti.cast(kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE, ti.i32)
-        shared_waves_key = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.u64)
-        shared_waves_pp = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
-        shared_waves_cm = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
-        shared_waves_fm = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
-        shared_waves_ov = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
-        shared_prefix_end = simt.block.SharedArray((1,), ti.i32)
-        shared_max_ft = simt.block.SharedArray((1,), ti.i32)
-        shared_max_ff = simt.block.SharedArray((1,), ti.i32)
-        total_threads = n_genomes * block_dim
-
-        ti.loop_config(block_dim=kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM)
-        for tid in range(total_threads):
-            genome_idx = tid // block_dim
-            lane = tid - (genome_idx * block_dim)
-
-            if lane < wave_slots_max:
-                shared_waves_key[lane] = ti.u64(0)
-                shared_waves_pp[lane] = 0
-                shared_waves_cm[lane] = 0
-                shared_waves_fm[lane] = 0
-                shared_waves_ov[lane] = 0
-            simt.block.sync()
-
-            local_best_score: ti.i32 = -1
-            local_best_combo: ti.i32 = -1
-            local_best_pp: ti.i32 = 0
-            local_best_cm: ti.i32 = 0
-            local_best_fm: ti.i32 = 0
-            local_best_ov: ti.i32 = 0
-
-            scratch = ti.Vector.zero(ti.i32, 4)
-
-            # Prefix cut (computed once per genome): combo table is ordered by ft, so all combos for ft > max_ft_gems
-            # live in a contiguous tail we can skip entirely.
-            if lane == 0:
-                stats = kernels_helpers.genome_base_stats[genome_idx]
-                base_ft_stat: ti.i32 = stats[5]
-                base_ff_stat: ti.i32 = stats[6]
-
-                remaining_ft: ti.i32 = MAX_STAT - base_ft_stat
-                max_ft_gems: ti.i32 = remaining_ft // gem_scale_fever if remaining_ft > 0 else 0
-                if max_ft_gems > total_budget:
-                    max_ft_gems = total_budget
-
-                remaining_ff: ti.i32 = MAX_STAT - base_ff_stat
-                max_ff_gems: ti.i32 = remaining_ff // gem_scale_fever if remaining_ff > 0 else 0
-                if max_ff_gems > total_budget:
-                    max_ff_gems = total_budget
-
-                shared_max_ft[0] = max_ft_gems
-                shared_max_ff[0] = max_ff_gems
-
-                # prefix_end = sum_{ft=0..m} (B-ft+1)
-                prefix_end: ti.i32 = (max_ft_gems + 1) * (total_budget + 1) - (max_ft_gems * (max_ft_gems + 1)) // 2
-
-                # Common case: FT headroom is 0, so only ft=0 is feasible. In that case, valid combos
-                # are a prefix of the (ft=0) block (ff=0..max_ff_gems), so we can cut the scan further.
-                if max_ft_gems == 0:
-                    prefix_end = ti.min(prefix_end, max_ff_gems + 1)
-
-                if prefix_end > n_combos:
-                    prefix_end = n_combos
-                shared_prefix_end[0] = prefix_end
-            simt.block.sync()
-
-            prefix_end = shared_prefix_end[0]
-            max_ft_gems = shared_max_ft[0]
-            max_ff_gems = shared_max_ff[0]
-            limit_c: ti.i32 = prefix_end - combo_offset
-            if limit_c < 0:
-                limit_c = 0
-            if limit_c > combo_count:
-                limit_c = combo_count
+        # Vulkan: u64 atomic max over packed keys.
+        #
+        # The previous "block-per-genome reduction" approach derived `lane` from the loop index
+        # (`tid % block_dim`), which is not guaranteed to match the physical `thread_idx` on all
+        # Taichi backends. On Vulkan this can silently produce incorrect winners when `n_genomes>1`.
+        #
+        # Atomic reduction is correct and still fast enough because we already do the expensive
+        # per-combo scoring; materialization will recompute the final gem allocation when the
+        # cached `chunk_best_results` payload is missing.
+        ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+        for genome_idx, local_c in ti.ndrange(n_genomes, combo_count):
             if reuse_exact_eval_results != 0 and kernels_helpers.ga_exact_eval_rep_idx[genome_idx] != genome_idx:
-                limit_c = 0
-
-            local_c: ti.i32 = lane
-            while local_c < limit_c:
-                combo_idx: ti.i32 = combo_offset + local_c
-                key = ti.u64(0)
-                if ti.static(use_hints):
-                    key = _compute_combo_key_warmstart_precomputed(
-                        genome_idx,
-                        combo_idx,
-                        n_combos,
-                        total_budget,
-                        gem_scale_fever,
-                        is_p_ft,
-                        is_s_ft,
-                        is_p_ff,
-                        is_s_ff,
-                        is_p_pp,
-                        is_s_pp,
-                        is_p_cm,
-                        is_s_cm,
-                        is_p_fm,
-                        is_s_fm,
-                        is_p_ov,
-                        is_s_ov,
-                        song_slot,
-                        w_ft,
-                        w_ff,
-                        max_ft_gems,
-                        max_ff_gems,
-                        use_hints,
-                        prune_plateaus,
-                        scratch,
-                    )
-                else:
-                    key = _compute_combo_key_warmstart(
-                        genome_idx,
-                        combo_idx,
-                        n_combos,
-                        total_budget,
-                        gem_scale_fever,
-                        is_p_ft,
-                        is_s_ft,
-                        is_p_ff,
-                        is_s_ff,
-                        is_p_pp,
-                        is_s_pp,
-                        is_p_cm,
-                        is_s_cm,
-                        is_p_fm,
-                        is_s_fm,
-                        is_p_ov,
-                        is_s_ov,
-                        song_slot,
-                        w_ft,
-                        w_ff,
-                        use_hints,
-                        prune_plateaus,
-                        scratch,
-                    )
-                if key != ti.u64(0):
-                    score = ti.cast((key >> 32), ti.i32) - 1
-                    combo = ti.cast(key & ti.u64(0xFFFFFFFF), ti.i32)
-                    if score > local_best_score or (score == local_best_score and combo > local_best_combo):
-                        local_best_score = score
-                        local_best_combo = combo
-                        local_best_pp = scratch[0]
-                        local_best_cm = scratch[1]
-                        local_best_fm = scratch[2]
-                        local_best_ov = scratch[3]
-                local_c += block_dim
-
-            best_score = subgroup.reduce_max(local_best_score)
-            best_combo: ti.i32 = -1
-            best = ti.u64(0)
-            win_pp: ti.i32 = 0
-            win_cm: ti.i32 = 0
-            win_fm: ti.i32 = 0
-            win_ov: ti.i32 = 0
-
-            if best_score >= 0:
-                is_score_winner: ti.i32 = ti.cast(local_best_score == best_score, ti.i32)
-                best_combo = subgroup.reduce_max(is_score_winner * local_best_combo)
-                is_winner: ti.i32 = ti.cast(
-                    (local_best_score == best_score) & (local_best_combo == best_combo),
-                    ti.i32,
-                )
-                win_pp = subgroup.reduce_max(is_winner * local_best_pp)
-                win_cm = subgroup.reduce_max(is_winner * local_best_cm)
-                win_fm = subgroup.reduce_max(is_winner * local_best_fm)
-                win_ov = subgroup.reduce_max(is_winner * local_best_ov)
-                best = (ti.cast(best_score + 1, ti.u64) << 32) | ti.cast(best_combo, ti.u64)
-
-            if subgroup.invocation_id() == 0 and best != ti.u64(0):
-                wave_slot = lane // subgroup.group_size()
-                if wave_slot < wave_slots_max:
-                    shared_waves_key[wave_slot] = best
-                    shared_waves_pp[wave_slot] = win_pp
-                    shared_waves_cm[wave_slot] = win_cm
-                    shared_waves_fm[wave_slot] = win_fm
-                    shared_waves_ov[wave_slot] = win_ov
-            simt.block.sync()
-
-            if lane == 0:
-                block_best = shared_waves_key[0]
-                block_best_wave: ti.i32 = 0
-                for i in ti.static(range(1, kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE)):
-                    v = shared_waves_key[i]
-                    if v > block_best:
-                        block_best = v
-                        block_best_wave = i
-                if block_best != ti.u64(0):
-                    prev = kernels_helpers.chunk_best_key[genome_idx]
-                    if block_best > prev:
-                        kernels_helpers.chunk_best_key[genome_idx] = block_best
-                        kernels_helpers.chunk_best_results[genome_idx, 0] = shared_waves_pp[block_best_wave]
-                        kernels_helpers.chunk_best_results[genome_idx, 1] = shared_waves_cm[block_best_wave]
-                        kernels_helpers.chunk_best_results[genome_idx, 2] = shared_waves_fm[block_best_wave]
-                        kernels_helpers.chunk_best_results[genome_idx, 3] = shared_waves_ov[block_best_wave]
+                continue
+            combo_idx: ti.i32 = combo_offset + local_c
+            scratch = ti.Vector.zero(ti.i32, 4)
+            key = _compute_combo_key_warmstart(
+                genome_idx,
+                combo_idx,
+                n_combos,
+                total_budget,
+                gem_scale_fever,
+                is_p_ft,
+                is_s_ft,
+                is_p_ff,
+                is_s_ff,
+                is_p_pp,
+                is_s_pp,
+                is_p_cm,
+                is_s_cm,
+                is_p_fm,
+                is_s_fm,
+                is_p_ov,
+                is_s_ov,
+                song_slot,
+                w_ft,
+                w_ff,
+                use_hints,
+                prune_plateaus,
+                scratch,
+            )
+            if key != ti.u64(0):
+                ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], key)

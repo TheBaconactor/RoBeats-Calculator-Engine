@@ -47,6 +47,8 @@ paths_cache.json
 
 # Local database (active during runtime)
 evolution.db
+evolution_before_prune_*.db
+evolution_corrupt_*.db
 
 # Website export folder
 RoBeatMetaWebsite/
