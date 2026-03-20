@@ -545,7 +545,8 @@ def main() -> int:
     base_misses = 0
     base_improves = 0
     base_matches = 0
-    base_ref_beats_best_songs = 0
+    base_ref_beats_best_songs_any = 0
+    base_ref_beats_best_songs_on_miss = 0
     fg_misses = 0
     fg_improves = 0
     fg_matches = 0
@@ -560,9 +561,11 @@ def main() -> int:
     for song_name, row in by_song.items():
         ref_score = _safe_int(row.get("ref_score"), 0)
         best_score = _safe_int(row.get("best_score"), 0)
+        is_base_miss = False
         if ref_score > 0:
             if best_score + tol < ref_score:
                 base_misses += 1
+                is_base_miss = True
             elif best_score > ref_score + tol:
                 base_improves += 1
             else:
@@ -573,7 +576,9 @@ def main() -> int:
                     base_identity_mismatch += 1
 
         if int(row.get("ref_beats_best_count") or 0) > 0:
-            base_ref_beats_best_songs += 1
+            base_ref_beats_best_songs_any += 1
+            if is_base_miss:
+                base_ref_beats_best_songs_on_miss += 1
 
         ref_fg = _safe_int(row.get("ref_fg_score"), 0)
         best_fg = _safe_int(row.get("best_fg_score"), 0)
@@ -622,7 +627,8 @@ def main() -> int:
             "misses": int(base_misses),
             "improves": int(base_improves),
             "identity_mismatch_when_matched": int(base_identity_mismatch),
-            "ref_loadout_beats_optimizer_under_sampled_hitsim_seeds_songs": int(base_ref_beats_best_songs),
+            "ref_loadout_beats_optimizer_under_sampled_hitsim_seeds_songs": int(base_ref_beats_best_songs_any),
+            "ref_loadout_beats_optimizer_under_sampled_hitsim_seeds_miss_songs": int(base_ref_beats_best_songs_on_miss),
         },
         "fg": {
             "matches": int(fg_matches),
@@ -647,7 +653,8 @@ def main() -> int:
     print(
         "  base: "
         f"matches={base_matches} misses={base_misses} improves={base_improves} "
-        f"ref_beats_best_songs={base_ref_beats_best_songs} "
+        f"ref_beats_any_repeat_songs={base_ref_beats_best_songs_any} "
+        f"ref_beats_on_miss_songs={base_ref_beats_best_songs_on_miss} "
         f"identity_mismatch_on_match={base_identity_mismatch}"
     )
     print(
