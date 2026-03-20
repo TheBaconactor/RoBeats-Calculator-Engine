@@ -1402,16 +1402,23 @@ def fg_stage1_kernel(
         best_sp: ti.i32 = 0
         best_fp: ti.i32 = 0
         if is_first_chunk == 0:
-            best_final = fg_stage1_final_score[g, ftff_idx]
-            if best_final >= 0:
-                best_base = fg_stage1_base_score[g, ftff_idx]
-                best_cfg = fg_stage1_cfg_idx[g, ftff_idx]
-                best_pp = fg_stage1_g_pp[g, ftff_idx]
-                best_cm = fg_stage1_g_cm[g, ftff_idx]
-                best_fm = fg_stage1_g_fm[g, ftff_idx]
-                best_ov = fg_stage1_g_ov[g, ftff_idx]
-                best_sp = fg_stage1_score_penalty[g, ftff_idx]
-                best_fp = fg_stage1_fill_penalty[g, ftff_idx]
+            if ti.static(FG_STAGE1_HAS_AUX_FIELDS):
+                best_final = fg_stage1_final_score[g, ftff_idx]
+                if best_final >= 0:
+                    best_base = fg_stage1_base_score[g, ftff_idx]
+                    best_cfg = fg_stage1_cfg_idx[g, ftff_idx]
+                    best_pp = fg_stage1_g_pp[g, ftff_idx]
+                    best_cm = fg_stage1_g_cm[g, ftff_idx]
+                    best_fm = fg_stage1_g_fm[g, ftff_idx]
+                    best_ov = fg_stage1_g_ov[g, ftff_idx]
+                    best_sp = fg_stage1_score_penalty[g, ftff_idx]
+                    best_fp = fg_stage1_fill_penalty[g, ftff_idx]
+            else:
+                prev_packed: ti.i64 = fg_stage1_packed[g, ftff_idx]
+                if prev_packed >= 0:
+                    best_final = ti.cast(prev_packed >> 32, ti.i32)
+                    inverted_idx: ti.i32 = ti.cast(prev_packed & ti.i64(0x7FFFFFFF), ti.i32)
+                    best_cfg = 0x7FFFFFFF - inverted_idx
 
         # Sequential loop over configs (no atomics needed!)
         for cfg_idx in range(n_cfg):
@@ -1653,15 +1660,18 @@ def fg_stage1_kernel(
                 best_sp = score_penalty_total
                 best_fp = fill_penalty_total
 
-        fg_stage1_final_score[g, ftff_idx] = best_final
-        fg_stage1_base_score[g, ftff_idx] = best_base
-        fg_stage1_cfg_idx[g, ftff_idx] = best_cfg
-        fg_stage1_g_pp[g, ftff_idx] = best_pp
-        fg_stage1_g_cm[g, ftff_idx] = best_cm
-        fg_stage1_g_fm[g, ftff_idx] = best_fm
-        fg_stage1_g_ov[g, ftff_idx] = best_ov
-        fg_stage1_score_penalty[g, ftff_idx] = best_sp
-        fg_stage1_fill_penalty[g, ftff_idx] = best_fp
+        if ti.static(FG_STAGE1_HAS_AUX_FIELDS):
+            fg_stage1_final_score[g, ftff_idx] = best_final
+            fg_stage1_base_score[g, ftff_idx] = best_base
+            fg_stage1_g_pp[g, ftff_idx] = best_pp
+            fg_stage1_g_cm[g, ftff_idx] = best_cm
+            fg_stage1_g_fm[g, ftff_idx] = best_fm
+            fg_stage1_g_ov[g, ftff_idx] = best_ov
+            fg_stage1_score_penalty[g, ftff_idx] = best_sp
+            fg_stage1_fill_penalty[g, ftff_idx] = best_fp
+
+        if ti.static(FG_STAGE1_HAS_CFG_IDX_FIELD):
+            fg_stage1_cfg_idx[g, ftff_idx] = best_cfg
         # Keep packed field consistent for Stage 2 reduction (Metal path has no 64-bit atomics).
         if best_final >= 0:
             inverted_idx: ti.i32 = 0x7FFFFFFF - best_cfg

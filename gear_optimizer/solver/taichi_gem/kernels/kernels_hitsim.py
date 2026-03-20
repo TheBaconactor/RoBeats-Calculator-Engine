@@ -47,9 +47,9 @@ def _mask_range_u32(lo: ti.i32, hi: ti.i32) -> ti.u32:
 
 
 @ti.func
-def _or_head_mask_range(
-    m0: ti.u32, m1: ti.u32, m2: ti.u32, m3: ti.u32, start: ti.i32, end: ti.i32
-) -> ti.types.vector(4, ti.u32):
+def _or_head_mask_range(m0: ti.u32, m1: ti.u32, m2: ti.u32, m3: ti.u32, start: ti.i32, end: ti.i32) -> ti.types.vector(
+    4, ti.u32
+):
     # OR a contiguous [start, end) range into 4x u32 head mask words (clipped to [0,100)).
     s = ti.max(0, start)
     e = ti.min(100, end)
@@ -68,15 +68,15 @@ def _or_head_mask_range(
 @ti.func
 def _binary_search_left_group_event_from(batch_slot: ti.i32, n: ti.i32, value: ti.i32, lo: ti.i32) -> ti.i32:
     # Leftmost index i in [lo, n) where group_event[i] >= value (or n if none).
-    l = ti.max(0, lo)
-    r = ti.max(l, n)
-    while l < r:
-        mid = (l + r) >> 1
+    left = ti.max(0, lo)
+    right = ti.max(left, n)
+    while left < right:
+        mid = (left + right) >> 1
         if kernels_helpers.hitsim_batch_group_event_ms[batch_slot, mid] < value:
-            l = mid + 1
+            left = mid + 1
         else:
-            r = mid
-    return l
+            right = mid
+    return left
 
 
 @ti.func
@@ -176,9 +176,9 @@ def _gcd_i64(a: ti.i64, b: ti.i64) -> ti.i64:
 
 
 @ti.func
-def _midpoint_fraction(
-    left_num: ti.i32, left_den: ti.i32, right_num: ti.i32, right_den: ti.i32
-) -> ti.types.vector(2, ti.i32):
+def _midpoint_fraction(left_num: ti.i32, left_den: ti.i32, right_num: ti.i32, right_den: ti.i32) -> ti.types.vector(
+    2, ti.i32
+):
     # Midpoint between two fractions: (L+R)/2, reduced.
     ln = ti.cast(left_num, ti.i64)
     ld = ti.cast(ti.max(1, left_den), ti.i64)
@@ -924,12 +924,18 @@ def hitsim_stage_signature_rows_kernel(alpha_idx: ti.i32, row_count: ti.i32):
 
 
 @ti.kernel
-def hitsim_compute_group_events_tmp_kernel(group_count: ti.i32, alpha_num: ti.i32, alpha_den: ti.i32, use_great: ti.i32):
+def hitsim_compute_group_events_tmp_kernel(
+    group_count: ti.i32, alpha_num: ti.i32, alpha_den: ti.i32, use_great: ti.i32
+):
     for g in range(group_count):
         base_t = kernels_helpers.hitsim_group_base_t[g]
-        g_low = kernels_helpers.hitsim_group_low_great[g] if use_great != 0 else kernels_helpers.hitsim_group_low_perfect[g]
+        g_low = (
+            kernels_helpers.hitsim_group_low_great[g] if use_great != 0 else kernels_helpers.hitsim_group_low_perfect[g]
+        )
         g_high = (
-            kernels_helpers.hitsim_group_high_great[g] if use_great != 0 else kernels_helpers.hitsim_group_high_perfect[g]
+            kernels_helpers.hitsim_group_high_great[g]
+            if use_great != 0
+            else kernels_helpers.hitsim_group_high_perfect[g]
         )
         off = _interpolate_group_offset(g_low, g_high, alpha_num, alpha_den)
         kernels_helpers.hitsim_group_event_tmp[g] = base_t + off
