@@ -337,6 +337,7 @@ genome_result_stats: ti.Field = None  # Vector field [score, ft, ff, pp, cm, fm,
 genome_result_stats_download_staging_256: ti.Field = None  # (256,) vec7 i32
 genome_result_stats_download_staging_1024: ti.Field = None  # (1024,) vec7 i32
 genome_hint_allocation: ti.Field = None  # Vector field [pp, cm, fm, ov] - warm-start hints from previous gen
+genome_hint_allocation_next: ti.Field = None  # Next-gen warm-start hints (race-free inheritance buffer)
 chunk_best_key: ti.Field = None  # (MAX_GENOMES,) u64 packed key for safe per-chunk reduction
 ftff_combo_ft: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FT gems per combo
 ftff_combo_ff: ti.Field = None  # (MAX_FTFF_COMBOS,) i32 FF gems per combo
@@ -467,7 +468,7 @@ def reset_fields_state() -> None:
     global slot_start, slot_count
     global genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
-    global genome_hint_allocation
+    global genome_hint_allocation, genome_hint_allocation_next
     global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_scan_key
@@ -643,6 +644,7 @@ def reset_fields_state() -> None:
     genome_result_stats_download_staging_256 = None
     genome_result_stats_download_staging_1024 = None
     genome_hint_allocation = None
+    genome_hint_allocation_next = None
     chunk_best_key = None
     chunk_best_score = None
     chunk_best_idx = None
@@ -819,7 +821,7 @@ def allocate_fields():
     global slot_start, slot_count
     global genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
-    global genome_hint_allocation
+    global genome_hint_allocation, genome_hint_allocation_next
     global chunk_best_key, chunk_best_score, chunk_best_idx, chunk_best_results
     global ftff_combo_ft, ftff_combo_ff
     global ga_global_best_score, ga_global_best_genome, ga_global_best_results, ga_global_best_scan_key
@@ -968,6 +970,7 @@ def allocate_fields():
     genome_result_stats_download_staging_1024 = ti.Vector.field(n=7, dtype=ti.i32, shape=1024)
     # Warm-start hints for local search optimization [pp_gems, cm_gems, fm_gems, ov_gems]
     genome_hint_allocation = ti.Vector.field(n=4, dtype=ti.i32, shape=MAX_GENOMES)
+    genome_hint_allocation_next = ti.Vector.field(n=4, dtype=ti.i32, shape=MAX_GENOMES)
     # Per-genome reduction key: ((score + 1) << 32) | combo_idx
     # NOTE: u64 atomics are not supported on Metal, so we use separate 32-bit fields on macOS.
     if not IS_METAL:
@@ -1272,6 +1275,7 @@ def bind_fields(kernels_module):
     # Genome results
     target.genome_result_stats = genome_result_stats
     target.genome_hint_allocation = genome_hint_allocation
+    target.genome_hint_allocation_next = genome_hint_allocation_next
     if not IS_METAL:
         target.chunk_best_key = chunk_best_key
     else:
@@ -1366,6 +1370,7 @@ def ensure_fields_allocated():
             kernels_metal.ftff_combo_ft = ftff_combo_ft
             kernels_metal.ftff_combo_ff = ftff_combo_ff
             kernels_metal.genome_hint_allocation = genome_hint_allocation
+            kernels_metal.genome_hint_allocation_next = genome_hint_allocation_next
             kernels_metal.ga_global_best_score = ga_global_best_score
             kernels_metal.ga_global_best_genome = ga_global_best_genome
             kernels_metal.ga_global_best_results = ga_global_best_results

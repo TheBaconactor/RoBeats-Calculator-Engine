@@ -165,6 +165,7 @@ slot_count = None  # (MAX_SLOTS,) per-slot item count
 genome_result_stats = None
 # [score, ft, ff, pp, cm, fm, ov]
 genome_hint_allocation = None  # [pp_gems, cm_gems, fm_gems, ov_gems] - warm-start hints
+genome_hint_allocation_next = None  # next-gen warm-start hints (race-free inheritance buffer)
 chunk_best_key = None  # u64 packed key per genome for safe reduction
 chunk_best_score = None  # (MAX_GENOMES,) i32 best score per genome (Metal)
 chunk_best_idx = None  # (MAX_GENOMES,) i32 winning combo index (Metal)

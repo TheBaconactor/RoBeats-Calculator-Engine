@@ -1000,9 +1000,14 @@ def ga_inherit_hints_kernel(n_genomes: ti.i32):
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for g in range(n_genomes):
         parent_a = kernels_helpers.ga_parent_a[g]
-        # Copy parent A's hint to child
+        # IMPORTANT: do not overwrite `genome_hint_allocation` in-place; other
+        # threads may still need to read parent hints. Always write into the
+        # next buffer.
         for i in range(4):
-            kernels_helpers.genome_hint_allocation[g][i] = kernels_helpers.genome_hint_allocation[parent_a][i]
+            if parent_a >= 0:
+                kernels_helpers.genome_hint_allocation_next[g][i] = kernels_helpers.genome_hint_allocation[parent_a][i]
+            else:
+                kernels_helpers.genome_hint_allocation_next[g][i] = 0
 
 
 @ti.kernel
@@ -1170,15 +1175,24 @@ def ga_next_generation_full_kernel(
                         kernels_helpers.population_next_indices[g, 7] = m1
                         kernels_helpers.population_next_indices[g, 8] = m2
 
-                    # Reset hints for immigrants (avoid inheriting misleading warm-starts).
-                    for i in range(4):
-                        kernels_helpers.genome_hint_allocation[g][i] = 0
-                    pa = g
+                    # Do not inherit warm-start hints for immigrants.
+                    pa = -1
 
         kernels_helpers.ga_rng_state[g] = state
 
         # Store parent_a for hint inheritance (used in second pass)
         kernels_helpers.ga_parent_a[g] = pa
+
+        # Build next-gen warm-start hints without mutating the current hint field.
+        # In-place hint inheritance is race-prone on GPU (other threads may still
+        # need to read parent hints). Always write into the next buffer and let
+        # the swap kernel commit it.
+        if pa >= 0:
+            for i in range(4):
+                kernels_helpers.genome_hint_allocation_next[g][i] = kernels_helpers.genome_hint_allocation[pa][i]
+        else:
+            for i in range(4):
+                kernels_helpers.genome_hint_allocation_next[g][i] = 0
 
 
 @ti.kernel
@@ -1405,12 +1419,19 @@ def ga_next_generation_full_islands_kernel(
                     kernels_helpers.population_next_indices[g, 7] = m1
                     kernels_helpers.population_next_indices[g, 8] = m2
 
-                for i in range(4):
-                    kernels_helpers.genome_hint_allocation[g][i] = 0
-                pa = g
+                # Do not inherit warm-start hints for immigrants.
+                pa = -1
 
         kernels_helpers.ga_rng_state[g] = state
         kernels_helpers.ga_parent_a[g] = pa
+
+        # Build next-gen warm-start hints (race-free).
+        if pa >= 0:
+            for i in range(4):
+                kernels_helpers.genome_hint_allocation_next[g][i] = kernels_helpers.genome_hint_allocation[pa][i]
+        else:
+            for i in range(4):
+                kernels_helpers.genome_hint_allocation_next[g][i] = 0
 
 
 @ti.kernel
@@ -1643,12 +1664,19 @@ def ga_next_generation_full_runs_kernel(
                     kernels_helpers.population_next_indices[g, 7] = m1
                     kernels_helpers.population_next_indices[g, 8] = m2
 
-                for i in range(4):
-                    kernels_helpers.genome_hint_allocation[g][i] = 0
-                pa = g
+                # Do not inherit warm-start hints for immigrants.
+                pa = -1
 
         kernels_helpers.ga_rng_state[g] = state
         kernels_helpers.ga_parent_a[g] = pa
+
+        # Build next-gen warm-start hints (race-free).
+        if pa >= 0:
+            for i in range(4):
+                kernels_helpers.genome_hint_allocation_next[g][i] = kernels_helpers.genome_hint_allocation[pa][i]
+        else:
+            for i in range(4):
+                kernels_helpers.genome_hint_allocation_next[g][i] = 0
 
 
 @ti.kernel
@@ -1658,7 +1686,8 @@ def ga_swap_and_inherit_hints_kernel(n_genomes: ti.i32, n_slots: ti.i32):
 
     This is Phase 2 of the fused next-generation operation:
     1. Copy population_next_indices -> population_indices (swap)
-    2. Inherit hints from parent A (stored in ga_parent_a) to child
+    2. Commit next-gen hints (written into genome_hint_allocation_next by the
+       next-generation kernels)
 
     Args:
         n_genomes: Population size
@@ -1670,7 +1699,6 @@ def ga_swap_and_inherit_hints_kernel(n_genomes: ti.i32, n_slots: ti.i32):
         for s in range(n_slots):
             kernels_helpers.population_indices[g, s] = kernels_helpers.population_next_indices[g, s]
 
-        # Inherit hints from parent A
-        parent_a = kernels_helpers.ga_parent_a[g]
+        # Commit next-gen hints (race-free).
         for i in range(4):
-            kernels_helpers.genome_hint_allocation[g][i] = kernels_helpers.genome_hint_allocation[parent_a][i]
+            kernels_helpers.genome_hint_allocation[g][i] = kernels_helpers.genome_hint_allocation_next[g][i]
