@@ -8,6 +8,7 @@ This module provides GPU genome solvers:
 
 from __future__ import annotations
 
+import os
 import time
 
 import numpy as np
@@ -36,6 +37,15 @@ _profiler = get_gpu_profiler()
 
 # Cache for genome_base_stats uploads to avoid redundant from_numpy calls
 _GENOME_STATS_BUFFER = None
+
+# The Vulkan block-per-genome FT/FF solver is currently unsafe on AMD/Vulkan
+# (score mismatches vs the canonical registry path). Keep it opt-in only.
+_USE_FTFF_BLOCK_KERNEL = str(os.environ.get("GPU_FTFF_BLOCK_KERNEL", "0") or "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 # Get appropriate kernels for current platform (Metal-safe on macOS)
 kernels = get_kernels()
@@ -224,9 +234,9 @@ def solve_genomes_with_ftff(
         _t_kernel = None
 
     # Launch kernel:
-    # - Vulkan: block-per-genome implementation (shared-memory reduction on packed u64 key)
-    # - Metal: portable per-genome loop (Metal doesn't support u64 subgroup reductions)
-    if bool(getattr(fields, "IS_METAL", False)):
+    # - Default: portable per-genome loop (correct across backends)
+    # - Optional: Vulkan block-per-genome implementation (experimental; opt-in only)
+    if bool(getattr(fields, "IS_METAL", False)) or not _USE_FTFF_BLOCK_KERNEL:
         kernels.solve_genomes_with_ftff_kernel(
             n_genomes,
             total_budget,
@@ -246,6 +256,11 @@ def solve_genomes_with_ftff(
             int(song_slot),
         )
     else:
+        warn_fallback(
+            "gpu.ftff.block_kernel",
+            "using experimental Vulkan block FT/FF kernel (may be incorrect on some AMD/Vulkan drivers)",
+            context={"env": "GPU_FTFF_BLOCK_KERNEL"},
+        )
         n_combos = _ensure_ftff_combo_tables(int(total_budget))
         kernels.solve_genomes_with_ftff_block_kernel(
             n_genomes,

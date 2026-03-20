@@ -598,13 +598,26 @@ def ga_find_best_combo_warmstart_kernel(
                 local_c += block_dim
 
             best = simt.subgroup.reduce_max(local_best_key)
-            if best != ti.u64(0) and local_best_key == best and simt.subgroup.elect():
+            win_pp = ti.i32(0)
+            win_cm = ti.i32(0)
+            win_fm = ti.i32(0)
+            win_ov = ti.i32(0)
+            if best != ti.u64(0):
+                # Do not assume the elected lane is the argmax lane.
+                # Reduce payloads gated by the winner predicate so the elected lane can write.
+                is_winner = ti.cast(local_best_key == best, ti.i32)
+                win_pp = simt.subgroup.reduce_max(is_winner * local_pp)
+                win_cm = simt.subgroup.reduce_max(is_winner * local_cm)
+                win_fm = simt.subgroup.reduce_max(is_winner * local_fm)
+                win_ov = simt.subgroup.reduce_max(is_winner * local_ov)
+
+            if simt.subgroup.elect() and best != ti.u64(0):
                 wave_slot = lane >> 5  # lane//32, works for wave32 and wave64 (wave64 uses even slots)
                 shared_waves_key[wave_slot] = best
-                shared_waves_pp[wave_slot] = local_pp
-                shared_waves_cm[wave_slot] = local_cm
-                shared_waves_fm[wave_slot] = local_fm
-                shared_waves_ov[wave_slot] = local_ov
+                shared_waves_pp[wave_slot] = win_pp
+                shared_waves_cm[wave_slot] = win_cm
+                shared_waves_fm[wave_slot] = win_fm
+                shared_waves_ov[wave_slot] = win_ov
             simt.block.sync()
 
             if lane == 0:
