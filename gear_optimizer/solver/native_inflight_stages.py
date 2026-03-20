@@ -118,6 +118,26 @@ def _cfg_value_ci(section: dict, key: str, default: object = None) -> object:
     return default
 
 
+def _clone_calc_song_for_hitsim(calc_song: object) -> dict:
+    """
+    Fast, shallow clone of a calc_song payload for HitSim regime materialization.
+
+    We only need to isolate top-level dicts that HitSim mutates (`metadata`, `song_data`).
+    Numpy arrays inside `song_data` are treated as immutable inputs and are replaced (not mutated in-place)
+    by the HitSim materializers.
+
+    This avoids `copy.deepcopy(calc_song)` which is expensive for large song payloads.
+    """
+    if not isinstance(calc_song, dict):
+        return {}
+    out = dict(calc_song)
+    meta0 = calc_song.get("metadata")
+    out["metadata"] = dict(meta0) if isinstance(meta0, dict) else {}
+    song_data0 = calc_song.get("song_data")
+    out["song_data"] = dict(song_data0) if isinstance(song_data0, dict) else {}
+    return out
+
+
 def _candidate_item_name(item: Any) -> str:
     if isinstance(item, dict):
         return str(item.get("Name", "") or "")
@@ -451,7 +471,7 @@ def _prepare_hitsim_matrix_plan(song: Any, *, refine_info: dict, ga_candidates: 
         regime_data = regime.get("regime_data")
         if not isinstance(regime_data, dict):
             continue
-        calc_song_variant = copy.deepcopy(getattr(song, "calc_song", {}) or {})
+        calc_song_variant = _clone_calc_song_for_hitsim(getattr(song, "calc_song", {}) or {})
         applied = materialize_human_hit_sim_regime(calc_song_variant, regime_data=regime_data)
         if not isinstance(applied, dict):
             warn_fallback(
@@ -1076,7 +1096,7 @@ def _prepare_hitsim_continuation_jobs(song: Any, *, refine_info: dict, ga_candid
         if not isinstance(regime_data, dict):
             continue
 
-        calc_song_variant = copy.deepcopy(getattr(song, "calc_song", {}) or {})
+        calc_song_variant = _clone_calc_song_for_hitsim(getattr(song, "calc_song", {}) or {})
         applied = materialize_human_hit_sim_regime(calc_song_variant, regime_data=regime_data)
         if not isinstance(applied, dict):
             warn_fallback(
