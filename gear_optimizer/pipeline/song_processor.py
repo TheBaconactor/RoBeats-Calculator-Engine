@@ -947,55 +947,6 @@ def process_song_task(args) -> SongResultPayload:
                     }
                 ]
 
-        # Optional post-GA HumanHitSim refinement (ApplyTo=ALL).
-        # This runs only on the final GA winner and updates persisted base score when improved.
-        if (enable_gear or enable_mini) and isinstance(best_data, dict) and best_data:
-            try:
-                from ..solver.hit_simulation import refine_human_hit_sim_after_ga
-
-                _t_refine0 = time.perf_counter()
-                refine_info = refine_human_hit_sim_after_ga(
-                    calc_song,
-                    cfg_dict=cfg_dict or {},
-                    best_data=best_data,
-                    ref_arrays=ref_arrays,
-                    ga_seed=ga_seed,
-                    candidate_pool=all_evaluated,
-                )
-                if isinstance(refine_info, dict):
-                    selected_candidate = refine_info.get("selected_candidate")
-                    if isinstance(selected_candidate, dict):
-                        selected_data = selected_candidate.get("Data")
-                        if isinstance(selected_data, dict) and selected_data:
-                            best_data = selected_data
-                        selected_gear = selected_candidate.get("Gear")
-                        if selected_gear is not None:
-                            best_gear = selected_gear
-                        selected_minis = selected_candidate.get("Minis")
-                        if selected_minis is not None:
-                            best_minis = selected_minis
-                    stage_timing["cpu_human_hit_sim_refine_sec"] = time.perf_counter() - _t_refine0
-                    print(
-                        "[HumanHitSim] Post-GA refinement "
-                        f"(mode={refine_info.get('refine_mode')}, budget={refine_info.get('variant_budget_mode')}, "
-                        f"family_mode={refine_info.get('exact_family_mode')}, "
-                        f"planner_family={refine_info.get('exact_planner_family_mode')}, "
-                        f"alpha={refine_info.get('regime_alpha_num')}/{refine_info.get('regime_alpha_den')}, "
-                        f"regimes={refine_info.get('exact_regime_count')}/{refine_info.get('exact_full_regime_count')}, "
-                        f"regime_cap={refine_info.get('exact_regime_cap')}, selection={refine_info.get('exact_regime_selection')}, "
-                        f"raw_intervals={refine_info.get('exact_raw_interval_count')}, "
-                        f"planner={refine_info.get('boundary_domain_active_params')}/{refine_info.get('boundary_domain_planner_params')}, "
-                        f"domain={refine_info.get('boundary_domain_unique_params')}/{refine_info.get('boundary_domain_full_pairs')}, "
-                        f"regime={refine_info.get('regime_id')}, "
-                        f"candidates={refine_info.get('candidate_count')}, "
-                        f"target={refine_info.get('trials')}, variants={refine_info.get('evaluated_trials')}, "
-                        f"attempts={refine_info.get('seed_attempts')}, prev={refine_info.get('prev_score')}, "
-                        f"best={refine_info.get('best_score')}, seed={refine_info.get('best_seed')}, "
-                        f"candidate_changed={refine_info.get('candidate_changed')})"
-                    )
-            except Exception:
-                pass
-
         # Cap GA candidates for downstream processing.
         # Ranked by Score (base score) for DB seeding. We keep a wider funnel so
         # ForceGreatsFinder can evaluate more unique loadouts even on a cold start

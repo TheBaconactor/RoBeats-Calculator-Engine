@@ -212,7 +212,6 @@ def _decode_requires_full_stats(cfg_data: dict | None) -> bool:
         return False
     return bool(
         cfg_data.get("ga_require_full_stats")
-        or cfg_data.get("hitsim_refine_require_stats")
         or cfg_data.get("fg_require_full_stats")
     )
 
@@ -2293,17 +2292,6 @@ def solve_coevolution_genetic(
     except Exception:
         fg_enabled = False
     cfg_data["fg_require_stats"] = bool(fg_enabled)
-    # RefineAfterGA is a debugging / narrowing pass, not part of the modern production flow.
-    try:
-        hitsim_refine_enabled = bool(cfg.getboolean("HumanHitSim", "RefineAfterGA", fallback=False))
-    except Exception:
-        hitsim_refine_enabled = False
-    try:
-        hitsim_apply_to = str(cfg.get("HumanHitSim", "ApplyTo", fallback="ALL") or "ALL").strip().upper()
-    except Exception:
-        hitsim_apply_to = "ALL"
-    cfg_data["hitsim_refine_require_stats"] = bool(hitsim_refine_enabled and hitsim_apply_to == "ALL")
-
     # PRODUCTION: modern optimizer runtime path is GPU-native.
     # --- GPU-NATIVE GA PATH ---
     # If using GPU mode, bypass the entire CPU loop mechanism.

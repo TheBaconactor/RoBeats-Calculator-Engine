@@ -64,12 +64,9 @@ from gear_optimizer.solver.inflight_utils import (
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.native_inflight_stages import (
     _InFlightStageProfiler,
-    _advance_hitsim_continuation,
     _decode_ga_payload_sync,
-    _prepare_hitsim_continuation_jobs,
     _prefetch_db_loadouts_sync,
     _prepare_fg_job_sync,
-    _run_hitsim_matrix_jobs_sync,
     _warmup_fg_jit,
 )
 
@@ -1274,15 +1271,6 @@ def _prepare_song(task: tuple) -> _NativeSong:
     # The GPU-native GA decode step keeps full post-gem Stats optional so the critical
     # GA->FG handoff does not spend CPU rebuilding data that the FG grouping path does not use.
     cfg_data["fg_require_stats"] = bool(manual_force_greats or force_greats_finder)
-    try:
-        hitsim_refine_enabled = bool(cfg.getboolean("HumanHitSim", "RefineAfterGA", fallback=False))
-    except Exception:
-        hitsim_refine_enabled = False
-    try:
-        hitsim_apply_to = str(cfg.get("HumanHitSim", "ApplyTo", fallback="ALL") or "ALL").strip().upper()
-    except Exception:
-        hitsim_apply_to = "ALL"
-    cfg_data["hitsim_refine_require_stats"] = bool(hitsim_refine_enabled and hitsim_apply_to == "ALL")
 
     base_fixed_stats_arr, _ = build_base_fixed_stats_array(fixed_stats, cfg_data)
 
@@ -3072,56 +3060,6 @@ def run_native_inflight_song_pipeline(
                 song.best_data = best_data
                 song.best_gear = best_gear
                 song.best_minis = best_minis
-                song.ga_candidates = list(ga_candidates or [])
-                _attach_hitsim_delta_for_base(song.best_data, song.calc_song, song.ref_arrays)
-
-                hitsim_matrix_plan = getattr(song, "_hitsim_matrix_plan", None)
-                if isinstance(hitsim_matrix_plan, dict) and hitsim_matrix_plan:
-                    try:
-                        setattr(song, "_hitsim_matrix_submit_t0", time.perf_counter())
-                        song.decode_future = decode_executor.submit(_run_hitsim_matrix_jobs_sync, song, gpu_client)
-                        _register_completion_future(song.decode_future)
-                        decode_inflight.append(song)
-                        continue
-                    except Exception as exc:
-                        warn_fallback("hitsim.matrix.submit", "failed to launch matrix stage; continuing without matrix", exc=exc)
-                        try:
-                            delattr(song, "_hitsim_matrix_plan")
-                        except Exception:
-                            pass
-                        try:
-                            delattr(song, "_hitsim_matrix_submit_t0")
-                        except Exception:
-                            pass
-
-                refine_info = getattr(song, "_hitsim_last_refine_info", None)
-                if isinstance(refine_info, dict):
-                    continuation_jobs = _prepare_hitsim_continuation_jobs(
-                        song,
-                        refine_info=refine_info,
-                        ga_candidates=list(song.ga_candidates or []),
-                    )
-                    if continuation_jobs:
-                        setattr(song, "_hitsim_continuation_jobs", list(continuation_jobs))
-
-                continuation_out = _advance_hitsim_continuation(
-                    song,
-                    best_data=song.best_data if isinstance(song.best_data, dict) else {},
-                    best_gear=list(song.best_gear or []),
-                    best_minis=list(song.best_minis or []),
-                    ga_candidates=list(song.ga_candidates or []),
-                )
-                if bool(continuation_out.get("resubmit")):
-                    prepared.appendleft(song)
-                    continue
-
-                best_data = continuation_out.get("best_data", best_data)
-                best_gear = continuation_out.get("best_gear", best_gear)
-                best_minis = continuation_out.get("best_minis", best_minis)
-                ga_candidates = continuation_out.get("ga_candidates", ga_candidates)
-                song.best_data = best_data if isinstance(best_data, dict) else {}
-                song.best_gear = list(best_gear or [])
-                song.best_minis = list(best_minis or [])
                 song.ga_candidates = list(ga_candidates or [])
                 _attach_hitsim_delta_for_base(song.best_data, song.calc_song, song.ref_arrays)
 

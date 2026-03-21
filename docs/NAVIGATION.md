@@ -62,5 +62,4 @@
 - Runtime/GPU maintenance playbook: `docs/MAINTENANCE_PLAYBOOK.md`
 - In-flight integrated throughput architecture and A/B protocol: `docs/INFLIGHT_GA_FG_THROUGHPUT.md`
 - Same-slot GPU-resident GA->FG handoff and legacy-path cleanup: `docs/GPU_RESIDENT_GA_FG_PLAN.md`
-- Deterministic HitSim boundary-dimension plan: `docs/HITSIM_BOUNDARY_DIMENSION_PLAN.md`
 - Historical implementation records index: `docs/Implementation Records/README.md`

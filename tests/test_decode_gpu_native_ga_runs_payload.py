@@ -369,7 +369,7 @@ def test_decode_gpu_native_selected_payload_emits_base_stats_without_full_stats(
     assert not decoded[0].get("Minis")
 
 
-def test_decode_gpu_native_selected_payload_emits_full_stats_when_hitsim_refine_requires_it(monkeypatch):
+def test_decode_gpu_native_selected_payload_emits_full_stats_when_ga_requires_it(monkeypatch):
     monkeypatch.delenv("GA_DECODE_INCLUDE_STATS", raising=False)
 
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
@@ -413,7 +413,7 @@ def test_decode_gpu_native_selected_payload_emits_full_stats_when_hitsim_refine_
         "primary_color": "Rush",
         "secondary_color": "Flow",
         "fg_candidate_limit": int(LOADOUTS_PER_SONG_LIMIT),
-        "hitsim_refine_require_stats": True,
+        "ga_require_full_stats": True,
     }
 
     n_slots = 9

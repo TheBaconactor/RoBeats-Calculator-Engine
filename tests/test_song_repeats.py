@@ -180,14 +180,12 @@ def test_prepare_tasks_backend_priority_new_songs_honors_repeat_override(monkeyp
     assert app._task_queue_label(tasks[-1]) == "New Song (Run 40/40)"
 
 
-def test_prepare_tasks_hitsim_all_refine_collapses_song_repeats():
+def test_prepare_tasks_hitsim_all_does_not_collapse_song_repeats():
     app = GearOptimizerApp.__new__(GearOptimizerApp)
     cfg = _build_cfg(25)
     cfg.add_section("HumanHitSim")
     cfg.set("HumanHitSim", "Enabled", "true")
     cfg.set("HumanHitSim", "ApplyTo", "ALL")
-    cfg.set("HumanHitSim", "RefineAfterGA", "true")
-    cfg.set("HumanHitSim", "RefineTrials", "18")
 
     song_queue = [("dummy.txt", "Dummy Song", "Hard")]
     tasks = app._prepare_tasks(
@@ -206,19 +204,43 @@ def test_prepare_tasks_hitsim_all_refine_collapses_song_repeats():
         fg_debug=False,
     )
 
-    assert len(tasks) == 1
-    assert app._task_queue_label(tasks[0]) == "Dummy Song"
+    assert len(tasks) == 25
+    assert [app._task_queue_label(t) for t in tasks] == [
+        "Dummy Song (Run 1/25)",
+        "Dummy Song (Run 2/25)",
+        "Dummy Song (Run 3/25)",
+        "Dummy Song (Run 4/25)",
+        "Dummy Song (Run 5/25)",
+        "Dummy Song (Run 6/25)",
+        "Dummy Song (Run 7/25)",
+        "Dummy Song (Run 8/25)",
+        "Dummy Song (Run 9/25)",
+        "Dummy Song (Run 10/25)",
+        "Dummy Song (Run 11/25)",
+        "Dummy Song (Run 12/25)",
+        "Dummy Song (Run 13/25)",
+        "Dummy Song (Run 14/25)",
+        "Dummy Song (Run 15/25)",
+        "Dummy Song (Run 16/25)",
+        "Dummy Song (Run 17/25)",
+        "Dummy Song (Run 18/25)",
+        "Dummy Song (Run 19/25)",
+        "Dummy Song (Run 20/25)",
+        "Dummy Song (Run 21/25)",
+        "Dummy Song (Run 22/25)",
+        "Dummy Song (Run 23/25)",
+        "Dummy Song (Run 24/25)",
+        "Dummy Song (Run 25/25)",
+    ]
 
 
-def test_prepare_tasks_bundle_song_repeats_overrides_hitsim_repeat_collapse():
+def test_prepare_tasks_bundle_song_repeats_ignores_hitsim_settings():
     app = GearOptimizerApp.__new__(GearOptimizerApp)
     cfg = _build_cfg(25)
     cfg.set("IterationEngine", "BundleSongRepeats", "true")
     cfg.add_section("HumanHitSim")
     cfg.set("HumanHitSim", "Enabled", "true")
     cfg.set("HumanHitSim", "ApplyTo", "ALL")
-    cfg.set("HumanHitSim", "RefineAfterGA", "true")
-    cfg.set("HumanHitSim", "RefineTrials", "18")
 
     song_queue = [("dummy.txt", "Dummy Song", "Hard")]
     tasks = app._prepare_tasks(
