@@ -184,25 +184,19 @@ def stats_signature(stats, calc_song, selected_color):
 
 def human_hitsim_timing_context(calc_song):
     """
-    Return the timing context that can change gem-solver behavior.
-
-    For ApplyTo=ALL, HumanHitSim mutates the timestamp stream before score/timeline
-    evaluation, so caches must be partitioned by regime/timing identity.
+    Return the HumanHitSim settings that can change cache-affecting timing.
     """
     if not isinstance(calc_song, dict):
-        return ("", "", "", "", "", 0)
+        return ("", "", "", 0)
 
     meta = calc_song.get("metadata", {}) or {}
     if not isinstance(meta, dict) or not meta.get("HumanHitSimApplied"):
-        return ("", "", "", "", "", 0)
+        return ("", "", "", 0)
 
     apply_to = str(meta.get("HumanHitSimApplyTo", "") or "").strip().upper()
     if apply_to != "ALL":
-        return ("", "", "", "", "", 0)
+        return ("", "", "", 0)
 
-    regime_id = str(meta.get("HumanHitSimRegimeId", "") or "")
-    regime_family = str(meta.get("HumanHitSimRegimeFamily", "") or "")
-    regime_scope = str(meta.get("HumanHitSimRegimeScope", "") or "")
     dist = str(meta.get("HumanHitSimDistribution", "") or "").strip().lower()
     great_mode = str(meta.get("HumanHitSimGreatMode", "") or "").strip().lower()
     try:
@@ -212,10 +206,8 @@ def human_hitsim_timing_context(calc_song):
 
     return (
         apply_to,
-        regime_id,
-        regime_family,
-        regime_scope,
-        f"{dist}:{great_mode}",
+        dist,
+        great_mode,
         int(seed),
     )
 

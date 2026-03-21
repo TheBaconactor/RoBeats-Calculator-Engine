@@ -446,13 +446,6 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
                 continue
 
     _prime_fg_group_meta_for_candidates(ga_candidates, calc_song=song.calc_song)
-    for group in list(getattr(song, "_hitsim_fg_regime_groups", []) or []):
-        if not isinstance(group, dict):
-            continue
-        _prime_fg_group_meta_for_candidates(
-            group.get("ga_candidates"),
-            calc_song=group.get("calc_song") if isinstance(group.get("calc_song"), dict) else song.calc_song,
-        )
 
     # Non-blocking DB prefetch: check if future is ready without blocking.
     # If the DB read is still in progress, proceed with GA candidates only.

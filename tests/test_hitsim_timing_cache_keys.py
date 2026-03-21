@@ -7,7 +7,7 @@ from gear_optimizer.solver.scoring.stats_scoring import _song_cache_key
 from gear_optimizer.solver.taichi_gem.api.timeline import _song_timing_cache_key
 
 
-def _calc_song(*, regime_id: str, apply_to: str = "ALL") -> dict:
+def _calc_song(*, seed: int, apply_to: str = "ALL", distribution: str = "uniform", great_mode: str = "full") -> dict:
     timestamps = np.array([0.0, 0.5, 1.0], dtype=np.float64)
     return {
         "metadata": {
@@ -19,12 +19,9 @@ def _calc_song(*, regime_id: str, apply_to: str = "ALL") -> dict:
             "Long Notes": 0,
             "HumanHitSimApplied": True,
             "HumanHitSimApplyTo": str(apply_to),
-            "HumanHitSimSeed": 11111,
-            "HumanHitSimDistribution": "uniform",
-            "HumanHitSimGreatMode": "full",
-            "HumanHitSimRegimeId": str(regime_id),
-            "HumanHitSimRegimeFamily": "ftff_boundary_rows",
-            "HumanHitSimRegimeScope": "ALL",
+            "HumanHitSimSeed": int(seed),
+            "HumanHitSimDistribution": str(distribution),
+            "HumanHitSimGreatMode": str(great_mode),
         },
         "song_data": {
             "timestamps": timestamps.copy(),
@@ -34,10 +31,10 @@ def _calc_song(*, regime_id: str, apply_to: str = "ALL") -> dict:
 
 
 def test_human_hitsim_timing_context_is_empty_for_non_all_apply() -> None:
-    assert human_hitsim_timing_context(_calc_song(regime_id="exact:a", apply_to="FG")) == ("", "", "", "", "", 0)
+    assert human_hitsim_timing_context(_calc_song(seed=11111, apply_to="FG")) == ("", "", "", 0)
 
 
-def test_stats_signature_changes_with_hitsim_regime_id() -> None:
+def test_stats_signature_changes_with_hitsim_great_mode() -> None:
     stats = {
         "Perfect Points": 100,
         "Combo Multiplier": 100,
@@ -48,15 +45,15 @@ def test_stats_signature_changes_with_hitsim_regime_id() -> None:
         "Vibe": 150,
     }
 
-    sig_a = stats_signature(stats, _calc_song(regime_id="exact:a"), "Beat")
-    sig_b = stats_signature(stats, _calc_song(regime_id="exact:b"), "Beat")
+    sig_a = stats_signature(stats, _calc_song(seed=11111, great_mode="full"), "Beat")
+    sig_b = stats_signature(stats, _calc_song(seed=11111, great_mode="late"), "Beat")
 
     assert sig_a != sig_b
 
 
-def test_song_and_gpu_timeline_cache_keys_change_with_hitsim_regime_id() -> None:
-    calc_song_a = _calc_song(regime_id="exact:a")
-    calc_song_b = _calc_song(regime_id="exact:b")
+def test_song_and_gpu_timeline_cache_keys_change_with_hitsim_great_mode() -> None:
+    calc_song_a = _calc_song(seed=11111, great_mode="full")
+    calc_song_b = _calc_song(seed=11111, great_mode="late")
 
     assert _song_cache_key(calc_song_a) != _song_cache_key(calc_song_b)
     assert _song_timing_cache_key(calc_song_a) != _song_timing_cache_key(calc_song_b)

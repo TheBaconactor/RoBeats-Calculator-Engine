@@ -31,37 +31,14 @@ ITEM_STAT_DIM = 10  # PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill
 MAX_SONG_NOTES = 200000  # Maximum song length for GPU timeline computation
 MAX_EVALS_PER_DISPATCH = 4_194_304  # Upper bound used for chunking (genomes * FT/FF combos)
 
-
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, str(default)))
     except Exception:
         return default
 
-
 def _env_flag(name: str, default: str = "0") -> bool:
     return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-# HumanHitSim runtime buffers.
-#
-# These buffers hold the grouped hit windows, candidate scoring inputs, and
-# final best timestamp materialization state used by HumanHitSim.
-MAX_HITSIM_NOTES = MAX_SONG_NOTES
-MAX_HITSIM_GROUPS = MAX_SONG_NOTES  # chord-group count <= note count
-MAX_HITSIM_ALPHAS = _env_int("GPU_HITSIM_MAX_ALPHAS", 4096)
-MAX_HITSIM_ALPHAS = max(128, min(16384, int(MAX_HITSIM_ALPHAS)))
-MAX_HITSIM_CUTS = MAX_HITSIM_ALPHAS + 2  # alpha cut list: [0, boundaries..., 1]
-MAX_HITSIM_ROWS = _env_int("GPU_HITSIM_MAX_ROWS", 64)  # unique (non_fever_base, fever_time_ms) rows
-MAX_HITSIM_ROWS = max(1, min(256, int(MAX_HITSIM_ROWS)))
-MAX_HITSIM_CANDIDATES = _env_int("GPU_HITSIM_MAX_CANDIDATES", 16)
-MAX_HITSIM_CANDIDATES = max(1, min(int(MAX_HITSIM_ROWS), int(MAX_HITSIM_CANDIDATES)))
-MAX_HITSIM_REGIMES = MAX_HITSIM_ALPHAS
-MAX_HITSIM_ALPHA_BATCH = _env_int("GPU_HITSIM_ALPHA_BATCH", 32)
-MAX_HITSIM_ALPHA_BATCH = max(1, min(256, int(MAX_HITSIM_ALPHA_BATCH)))
-MAX_HITSIM_SPAN = _env_int("GPU_HITSIM_MAX_SPAN", 4096)
-MAX_HITSIM_SPAN = max(256, min(32768, int(MAX_HITSIM_SPAN)))
-
 
 def _clamp_song_slots(n: int) -> int:
     # Slot 0 is always reserved; keep at least one additional slot for prefetch/batching.
@@ -71,7 +48,6 @@ def _clamp_song_slots(n: int) -> int:
     if n > 8192:
         return 8192
     return n
-
 
 # Concurrent song grid slots for batch coalescing / timeline caching.
 # Override via env var `GPU_SONG_SLOTS` (set before process start).
@@ -99,10 +75,8 @@ GA_FTFF_REDUCE_MAX_TILES = (MAX_FTFF_COMBOS + GA_FTFF_REDUCE_BLOCK_DIM - 1) // G
 GA_FTFF_REDUCE_SCRATCH_COLS = GA_FTFF_REDUCE_MAX_TILES * GA_FTFF_REDUCE_WAVE_STRIDE
 
 # GPU-native GA -> ForceGreats candidate table (compact GPU-resident buffer).
-#
 # Avoids downloading full `(runs, pop, payload_cols)` GA run payloads back to CPU just to
 # seed ForceGreats candidate selection. GA packs a small per-run candidate table on GPU.
-#
 # Layout per row (int32):
 #   [score, slot_ids(9), result_row(7), base_stats7(7)]
 # Where base_stats7 is `[pp, cm, fm, p_val, s_val, ft_stat, ff_stat]` (same column order
@@ -114,7 +88,6 @@ GA_FG_CANDIDATE_COLS = 1 + MAX_SLOTS + 7 + 7
 # GPU-side initial population generation (heuristic sampling)
 GA_INIT_HEURISTIC_K = _env_int("GPU_GA_INIT_HEURISTIC_K", 64)
 GA_INIT_HEURISTIC_K = max(0, min(256, int(GA_INIT_HEURISTIC_K)))
-
 
 # ============================================================================
 # GPU FIELDS (Device-resident data)
@@ -143,96 +116,6 @@ grid_fever_activations: ti.Field = None  # (MAX_SONG_SLOTS, 161, 161) i8 - fever
 song_timestamps: ti.Field = None  # (MAX_SONG_NOTES,) f32
 # Precomputed fever end indices per note/FT (binary-search-free timeline simulation)
 fever_end_idx_song: ti.Field = None  # (MAX_SONG_NOTES, GRID_SIZE) i32
-
-# HumanHitSim runtime buffers.
-#
-# NOTE: These are intentionally not slotted by song_id; they are reused
-# call-to-call.
-hitsim_note_count: ti.Field = None  # (1,) i32
-hitsim_group_count: ti.Field = None  # (1,) i32
-hitsim_group_starts: ti.Field = None  # (MAX_HITSIM_GROUPS,) i32
-hitsim_group_ends: ti.Field = None  # (MAX_HITSIM_GROUPS,) i32
-hitsim_group_base_t: ti.Field = None  # (MAX_HITSIM_GROUPS,) i32
-hitsim_group_low_perfect: ti.Field = None  # (MAX_HITSIM_GROUPS,) i32
-hitsim_group_high_perfect: ti.Field = None  # (MAX_HITSIM_GROUPS,) i32
-hitsim_group_low_great: ti.Field = None  # (MAX_HITSIM_GROUPS,) i32
-hitsim_group_high_great: ti.Field = None  # (MAX_HITSIM_GROUPS,) i32
-hitsim_note_to_group: ti.Field = None  # (MAX_HITSIM_NOTES,) i32
-
-# Raw alpha interval midpoints + bounds.
-hitsim_alpha_count: ti.Field = None  # (1,) i32
-hitsim_alpha_num: ti.Field = None  # (MAX_HITSIM_ALPHAS,) i32
-hitsim_alpha_den: ti.Field = None  # (MAX_HITSIM_ALPHAS,) i32
-hitsim_alpha_left_num: ti.Field = None  # (MAX_HITSIM_ALPHAS,) i32
-hitsim_alpha_left_den: ti.Field = None  # (MAX_HITSIM_ALPHAS,) i32
-hitsim_alpha_right_num: ti.Field = None  # (MAX_HITSIM_ALPHAS,) i32
-hitsim_alpha_right_den: ti.Field = None  # (MAX_HITSIM_ALPHAS,) i32
-
-# Scratch cut list used to build alpha intervals on-GPU.
-hitsim_cut_count: ti.Field = None  # (1,) i32
-hitsim_cut_num: ti.Field = None  # (MAX_HITSIM_CUTS,) i32
-hitsim_cut_den: ti.Field = None  # (MAX_HITSIM_CUTS,) i32
-hitsim_span_used: ti.Field = None  # (MAX_HITSIM_SPAN+1,) i32
-
-# Unique fever timeline param rows (non_fever_base, fever_time_ms).
-hitsim_row_count: ti.Field = None  # (1,) i32
-hitsim_row_non_fever_base: ti.Field = None  # (MAX_HITSIM_ROWS,) i32
-hitsim_row_fever_time_ms: ti.Field = None  # (MAX_HITSIM_ROWS,) i32
-
-# Candidate scoring inputs (mapped onto row signatures via candidate_row_idx).
-hitsim_candidate_count: ti.Field = None  # (1,) i32
-hitsim_candidate_row_idx: ti.Field = None  # (MAX_HITSIM_CANDIDATES,) i32
-hitsim_candidate_base_value: ti.Field = None  # (MAX_HITSIM_CANDIDATES,) f32
-hitsim_candidate_combo_mul: ti.Field = None  # (MAX_HITSIM_CANDIDATES,) f32
-hitsim_candidate_fever_mul: ti.Field = None  # (MAX_HITSIM_CANDIDATES,) f32
-
-# Per-alpha outputs: best score/candidate + per-row compact timeline signatures.
-hitsim_alpha_best_score: ti.Field = None  # (MAX_HITSIM_ALPHAS,) i32
-hitsim_alpha_best_candidate_idx: ti.Field = None  # (MAX_HITSIM_ALPHAS,) i32
-hitsim_alpha_row_sig_counts: ti.Field = None  # (MAX_HITSIM_ALPHAS, MAX_HITSIM_ROWS) vec3 i32
-hitsim_alpha_row_sig_bits: ti.Field = None  # (MAX_HITSIM_ALPHAS, MAX_HITSIM_ROWS) vec4 u32
-
-# Scratch: event-ms per group for an alpha batch, plus a single-alpha temp.
-hitsim_batch_group_event_ms: ti.Field = None  # (MAX_HITSIM_ALPHA_BATCH, MAX_HITSIM_GROUPS) i32
-hitsim_group_event_tmp: ti.Field = None  # (MAX_HITSIM_GROUPS,) i32
-
-# Selection outputs.
-hitsim_active_row_mask: ti.Field = None  # (MAX_HITSIM_ROWS,) i32
-hitsim_active_row_count: ti.Field = None  # (1,) i32
-hitsim_regime_count: ti.Field = None  # (1,) i32
-hitsim_regime_start_alpha: ti.Field = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_regime_end_alpha: ti.Field = None  # (MAX_HITSIM_REGIMES,) i32 (exclusive)
-hitsim_regime_left_num: ti.Field = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_regime_left_den: ti.Field = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_regime_right_num: ti.Field = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_regime_right_den: ti.Field = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_regime_alpha_num: ti.Field = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_regime_alpha_den: ti.Field = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_regime_rep_alpha: ti.Field = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_regime_selected_mask: ti.Field = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_selected_count: ti.Field = None  # (1,) i32
-hitsim_selected_regime_indices: ti.Field = None  # (MAX_HITSIM_REGIMES,) i32
-
-# Best selection outputs (scalars).
-hitsim_best_score: ti.Field = None  # (1,) i32
-hitsim_best_candidate_idx: ti.Field = None  # (1,) i32
-hitsim_best_regime_idx: ti.Field = None  # (1,) i32
-hitsim_best_alpha_num: ti.Field = None  # (1,) i32
-hitsim_best_alpha_den: ti.Field = None  # (1,) i32
-hitsim_best_left_num: ti.Field = None  # (1,) i32
-hitsim_best_left_den: ti.Field = None  # (1,) i32
-hitsim_best_right_num: ti.Field = None  # (1,) i32
-hitsim_best_right_den: ti.Field = None  # (1,) i32
-hitsim_best_rep_alpha: ti.Field = None  # (1,) i32
-
-# Materialized best timestamps (ms, per note).
-hitsim_best_event_ms: ti.Field = None  # (MAX_HITSIM_NOTES,) i32
-hitsim_best_great_ms: ti.Field = None  # (MAX_HITSIM_NOTES,) i32
-
-# Small staging buffer for downloading compact signature rows for one alpha.
-# Row layout: [head_len, body_fever, body_normal, m0, m1, m2, m3]
-hitsim_sig_rows_staging: ti.Field = None  # (MAX_HITSIM_ROWS, 7) i32
-hitsim_scalar_out: ti.Field = None  # (32,) i32 - packed scalar outputs to minimize GPU->CPU syncs
 
 # Breakpoint detection kernel inputs/outputs (bound into kernels_breakpoints)
 bp_pair_ft: ti.Field = None  # (MAX_BP_PAIRS,) i32
@@ -292,7 +175,6 @@ ga_fg_candidates_download_staging: ti.Field = (
 )
 
 # GPU-side GA->FG candidate selection outputs (avoid downloading full candidate tables).
-#
 # Selected payload row layout (int32), used for bounded CPU downloads:
 # - Header row 0: [selected_count, best_score, best_ids(9), best_results(7), best_run_idx, ...]
 # - Rows 1..N:    [run_idx, row_idx, score, slot_ids(9), result_row(7), base_stats7(7)]
@@ -348,7 +230,6 @@ chunk_best_idx: ti.Field = None  # (MAX_GENOMES,) i32 winning combo index (Metal
 # Cached evaluation results per genome (eliminates redundant optimize_core_device calls)
 chunk_best_results: ti.Field = None  # (MAX_GENOMES, 4) i32 - [pp, cm, fm, ov] from winning combo
 
-
 # ============================================================================
 # ALLOCATION STATE
 # ============================================================================
@@ -357,27 +238,22 @@ _fields_allocated = False
 _grid_fields_allocated = False
 _last_uploaded_grid_id = None  # Cache to skip redundant grid uploads
 
-
 def is_fields_allocated() -> bool:
     """Check if main fields have been allocated."""
     return _fields_allocated
-
 
 def is_grid_fields_allocated() -> bool:
     """Check if grid fields have been allocated."""
     return _grid_fields_allocated
 
-
 def get_last_uploaded_grid_id():
     """Get the ID of the last uploaded grid (for cache checking)."""
     return _last_uploaded_grid_id
-
 
 def set_last_uploaded_grid_id(grid_id):
     """Set the ID of the last uploaded grid."""
     global _last_uploaded_grid_id
     _last_uploaded_grid_id = grid_id
-
 
 def reset_fields_state() -> None:
     """
@@ -393,71 +269,6 @@ def reset_fields_state() -> None:
     global grid_sig0, grid_sig1
     global grid_gap, grid_fever_activations
     global song_timestamps, fever_end_idx_song
-    global \
-        hitsim_note_count, \
-        hitsim_group_count, \
-        hitsim_group_starts, \
-        hitsim_group_ends, \
-        hitsim_group_base_t, \
-        hitsim_group_low_perfect, \
-        hitsim_group_high_perfect, \
-        hitsim_group_low_great, \
-        hitsim_group_high_great, \
-        hitsim_note_to_group, \
-        hitsim_alpha_count, \
-        hitsim_alpha_num, \
-        hitsim_alpha_den, \
-        hitsim_alpha_left_num, \
-        hitsim_alpha_left_den, \
-        hitsim_alpha_right_num, \
-        hitsim_alpha_right_den, \
-        hitsim_cut_count, \
-        hitsim_cut_num, \
-        hitsim_cut_den, \
-        hitsim_span_used, \
-        hitsim_row_count, \
-        hitsim_row_non_fever_base, \
-        hitsim_row_fever_time_ms, \
-        hitsim_candidate_count, \
-        hitsim_candidate_row_idx, \
-        hitsim_candidate_base_value, \
-        hitsim_candidate_combo_mul, \
-        hitsim_candidate_fever_mul, \
-        hitsim_alpha_best_score, \
-        hitsim_alpha_best_candidate_idx, \
-        hitsim_alpha_row_sig_counts, \
-        hitsim_alpha_row_sig_bits, \
-        hitsim_batch_group_event_ms, \
-        hitsim_group_event_tmp, \
-        hitsim_active_row_mask, \
-        hitsim_active_row_count, \
-        hitsim_regime_count, \
-        hitsim_regime_start_alpha, \
-        hitsim_regime_end_alpha, \
-        hitsim_regime_left_num, \
-        hitsim_regime_left_den, \
-        hitsim_regime_right_num, \
-        hitsim_regime_right_den, \
-        hitsim_regime_alpha_num, \
-        hitsim_regime_alpha_den, \
-        hitsim_regime_rep_alpha, \
-        hitsim_regime_selected_mask, \
-        hitsim_selected_count, \
-        hitsim_selected_regime_indices, \
-        hitsim_best_score, \
-        hitsim_best_candidate_idx, \
-        hitsim_best_regime_idx, \
-        hitsim_best_alpha_num, \
-        hitsim_best_alpha_den, \
-        hitsim_best_left_num, \
-        hitsim_best_left_den, \
-        hitsim_best_right_num, \
-        hitsim_best_right_den, \
-        hitsim_best_rep_alpha, \
-        hitsim_best_event_ms, \
-        hitsim_best_great_ms, \
-        hitsim_sig_rows_staging, \
-        hitsim_scalar_out
     global bp_pair_ft, bp_pair_ff, bp_result_mask
     global genome_base_stats
     global population_indices, population_next_indices, ga_initial_populations, ga_init_heuristic_topk
@@ -508,80 +319,6 @@ def reset_fields_state() -> None:
     # Song timeline
     song_timestamps = None
     fever_end_idx_song = None
-
-    # HumanHitSim runtime buffers.
-    hitsim_note_count = None
-    hitsim_group_count = None
-    hitsim_group_starts = None
-    hitsim_group_ends = None
-    hitsim_group_base_t = None
-    hitsim_group_low_perfect = None
-    hitsim_group_high_perfect = None
-    hitsim_group_low_great = None
-    hitsim_group_high_great = None
-    hitsim_note_to_group = None
-
-    hitsim_alpha_count = None
-    hitsim_alpha_num = None
-    hitsim_alpha_den = None
-    hitsim_alpha_left_num = None
-    hitsim_alpha_left_den = None
-    hitsim_alpha_right_num = None
-    hitsim_alpha_right_den = None
-    hitsim_cut_count = None
-    hitsim_cut_num = None
-    hitsim_cut_den = None
-    hitsim_span_used = None
-
-    hitsim_row_count = None
-    hitsim_row_non_fever_base = None
-    hitsim_row_fever_time_ms = None
-
-    hitsim_candidate_count = None
-    hitsim_candidate_row_idx = None
-    hitsim_candidate_base_value = None
-    hitsim_candidate_combo_mul = None
-    hitsim_candidate_fever_mul = None
-
-    hitsim_alpha_best_score = None
-    hitsim_alpha_best_candidate_idx = None
-    hitsim_alpha_row_sig_counts = None
-    hitsim_alpha_row_sig_bits = None
-
-    hitsim_batch_group_event_ms = None
-    hitsim_group_event_tmp = None
-
-    hitsim_active_row_mask = None
-    hitsim_active_row_count = None
-    hitsim_regime_count = None
-    hitsim_regime_start_alpha = None
-    hitsim_regime_end_alpha = None
-    hitsim_regime_left_num = None
-    hitsim_regime_left_den = None
-    hitsim_regime_right_num = None
-    hitsim_regime_right_den = None
-    hitsim_regime_alpha_num = None
-    hitsim_regime_alpha_den = None
-    hitsim_regime_rep_alpha = None
-    hitsim_regime_selected_mask = None
-    hitsim_selected_count = None
-    hitsim_selected_regime_indices = None
-
-    hitsim_best_score = None
-    hitsim_best_candidate_idx = None
-    hitsim_best_regime_idx = None
-    hitsim_best_alpha_num = None
-    hitsim_best_alpha_den = None
-    hitsim_best_left_num = None
-    hitsim_best_left_den = None
-    hitsim_best_right_num = None
-    hitsim_best_right_den = None
-    hitsim_best_rep_alpha = None
-
-    hitsim_best_event_ms = None
-    hitsim_best_great_ms = None
-    hitsim_sig_rows_staging = None
-    hitsim_scalar_out = None
 
     # Breakpoint detection
     bp_pair_ft = None
@@ -655,11 +392,9 @@ def reset_fields_state() -> None:
     _grid_fields_allocated = False
     _last_uploaded_grid_id = None
 
-
 # ============================================================================
 # FIELD ALLOCATION
 # ============================================================================
-
 
 def _clamp_ga_runs(n: int) -> int:
     if n < 1:
@@ -669,7 +404,6 @@ def _clamp_ga_runs(n: int) -> int:
         return 8192
     return n
 
-
 def _clamp_ga_genomes(n: int) -> int:
     # Must be >= GA_POPULATION_SIZE (currently 250) for GPU-native GA.
     if n < 250:
@@ -678,12 +412,11 @@ def _clamp_ga_genomes(n: int) -> int:
         return MAX_GENOMES
     return n
 
-
 def configure_ga_run_buffers(*, max_runs: int | None = None, max_genomes: int | None = None) -> None:
     """
     Configure GPU-native GA buffer sizes before fields are allocated.
 
-    This reduces large padded CPU↔GPU transfers in GA multi-run mode by shrinking
+    This reduces large padded CPUâ†”GPU transfers in GA multi-run mode by shrinking
     `ga_initial_populations` and `ga_runs_payload_packed` to the smallest required
     shapes for the current session.
 
@@ -698,7 +431,6 @@ def configure_ga_run_buffers(*, max_runs: int | None = None, max_genomes: int | 
         MAX_GA_RUNS = _clamp_ga_runs(int(max_runs))
     if max_genomes is not None:
         MAX_GA_RUN_GENOMES = _clamp_ga_genomes(int(max_genomes))
-
 
 def _maybe_configure_ga_run_buffers_from_env() -> None:
     """
@@ -733,7 +465,6 @@ def _maybe_configure_ga_run_buffers_from_env() -> None:
         return
     configure_ga_run_buffers(max_runs=max_runs, max_genomes=max_genomes)
 
-
 def allocate_fields():
     """
     Allocate GPU fields. Must be called after ti.init().
@@ -743,71 +474,6 @@ def allocate_fields():
     global ref_pp_field, ref_cm_field, ref_fm_field, ref_ft_field, ref_ff_field
     global bp_pair_ft, bp_pair_ff, bp_result_mask
     global genome_base_stats
-    global \
-        hitsim_note_count, \
-        hitsim_group_count, \
-        hitsim_group_starts, \
-        hitsim_group_ends, \
-        hitsim_group_base_t, \
-        hitsim_group_low_perfect, \
-        hitsim_group_high_perfect, \
-        hitsim_group_low_great, \
-        hitsim_group_high_great, \
-        hitsim_note_to_group, \
-        hitsim_alpha_count, \
-        hitsim_alpha_num, \
-        hitsim_alpha_den, \
-        hitsim_alpha_left_num, \
-        hitsim_alpha_left_den, \
-        hitsim_alpha_right_num, \
-        hitsim_alpha_right_den, \
-        hitsim_cut_count, \
-        hitsim_cut_num, \
-        hitsim_cut_den, \
-        hitsim_span_used, \
-        hitsim_row_count, \
-        hitsim_row_non_fever_base, \
-        hitsim_row_fever_time_ms, \
-        hitsim_candidate_count, \
-        hitsim_candidate_row_idx, \
-        hitsim_candidate_base_value, \
-        hitsim_candidate_combo_mul, \
-        hitsim_candidate_fever_mul, \
-        hitsim_alpha_best_score, \
-        hitsim_alpha_best_candidate_idx, \
-        hitsim_alpha_row_sig_counts, \
-        hitsim_alpha_row_sig_bits, \
-        hitsim_batch_group_event_ms, \
-        hitsim_group_event_tmp, \
-        hitsim_active_row_mask, \
-        hitsim_active_row_count, \
-        hitsim_regime_count, \
-        hitsim_regime_start_alpha, \
-        hitsim_regime_end_alpha, \
-        hitsim_regime_left_num, \
-        hitsim_regime_left_den, \
-        hitsim_regime_right_num, \
-        hitsim_regime_right_den, \
-        hitsim_regime_alpha_num, \
-        hitsim_regime_alpha_den, \
-        hitsim_regime_rep_alpha, \
-        hitsim_regime_selected_mask, \
-        hitsim_selected_count, \
-        hitsim_selected_regime_indices, \
-        hitsim_best_score, \
-        hitsim_best_candidate_idx, \
-        hitsim_best_regime_idx, \
-        hitsim_best_alpha_num, \
-        hitsim_best_alpha_den, \
-        hitsim_best_left_num, \
-        hitsim_best_left_den, \
-        hitsim_best_right_num, \
-        hitsim_best_right_den, \
-        hitsim_best_rep_alpha, \
-        hitsim_best_event_ms, \
-        hitsim_best_great_ms, \
-        hitsim_sig_rows_staging, \
-        hitsim_scalar_out
     global \
         population_indices, \
         population_next_indices, \
@@ -859,81 +525,6 @@ def allocate_fields():
     # Per-genome base stats
     # [pp, cm, fm, p_val, s_val, ft, ff]
     genome_base_stats = ti.Vector.field(n=7, dtype=ti.i16, shape=MAX_GENOMES)
-
-    # HumanHitSim runtime buffers.
-    hitsim_note_count = ti.field(dtype=ti.i32, shape=1)
-    hitsim_group_count = ti.field(dtype=ti.i32, shape=1)
-    hitsim_group_starts = ti.field(dtype=ti.i32, shape=MAX_HITSIM_GROUPS)
-    hitsim_group_ends = ti.field(dtype=ti.i32, shape=MAX_HITSIM_GROUPS)
-    hitsim_group_base_t = ti.field(dtype=ti.i32, shape=MAX_HITSIM_GROUPS)
-    hitsim_group_low_perfect = ti.field(dtype=ti.i32, shape=MAX_HITSIM_GROUPS)
-    hitsim_group_high_perfect = ti.field(dtype=ti.i32, shape=MAX_HITSIM_GROUPS)
-    hitsim_group_low_great = ti.field(dtype=ti.i32, shape=MAX_HITSIM_GROUPS)
-    hitsim_group_high_great = ti.field(dtype=ti.i32, shape=MAX_HITSIM_GROUPS)
-    hitsim_note_to_group = ti.field(dtype=ti.i32, shape=MAX_HITSIM_NOTES)
-
-    hitsim_alpha_count = ti.field(dtype=ti.i32, shape=1)
-    hitsim_alpha_num = ti.field(dtype=ti.i32, shape=MAX_HITSIM_ALPHAS)
-    hitsim_alpha_den = ti.field(dtype=ti.i32, shape=MAX_HITSIM_ALPHAS)
-    hitsim_alpha_left_num = ti.field(dtype=ti.i32, shape=MAX_HITSIM_ALPHAS)
-    hitsim_alpha_left_den = ti.field(dtype=ti.i32, shape=MAX_HITSIM_ALPHAS)
-    hitsim_alpha_right_num = ti.field(dtype=ti.i32, shape=MAX_HITSIM_ALPHAS)
-    hitsim_alpha_right_den = ti.field(dtype=ti.i32, shape=MAX_HITSIM_ALPHAS)
-
-    hitsim_cut_count = ti.field(dtype=ti.i32, shape=1)
-    hitsim_cut_num = ti.field(dtype=ti.i32, shape=MAX_HITSIM_CUTS)
-    hitsim_cut_den = ti.field(dtype=ti.i32, shape=MAX_HITSIM_CUTS)
-    hitsim_span_used = ti.field(dtype=ti.i32, shape=MAX_HITSIM_SPAN + 1)
-
-    hitsim_row_count = ti.field(dtype=ti.i32, shape=1)
-    hitsim_row_non_fever_base = ti.field(dtype=ti.i32, shape=MAX_HITSIM_ROWS)
-    hitsim_row_fever_time_ms = ti.field(dtype=ti.i32, shape=MAX_HITSIM_ROWS)
-
-    hitsim_candidate_count = ti.field(dtype=ti.i32, shape=1)
-    hitsim_candidate_row_idx = ti.field(dtype=ti.i32, shape=MAX_HITSIM_CANDIDATES)
-    hitsim_candidate_base_value = ti.field(dtype=ti.f32, shape=MAX_HITSIM_CANDIDATES)
-    hitsim_candidate_combo_mul = ti.field(dtype=ti.f32, shape=MAX_HITSIM_CANDIDATES)
-    hitsim_candidate_fever_mul = ti.field(dtype=ti.f32, shape=MAX_HITSIM_CANDIDATES)
-
-    hitsim_alpha_best_score = ti.field(dtype=ti.i32, shape=MAX_HITSIM_ALPHAS)
-    hitsim_alpha_best_candidate_idx = ti.field(dtype=ti.i32, shape=MAX_HITSIM_ALPHAS)
-    hitsim_alpha_row_sig_counts = ti.Vector.field(n=3, dtype=ti.i32, shape=(MAX_HITSIM_ALPHAS, MAX_HITSIM_ROWS))
-    hitsim_alpha_row_sig_bits = ti.Vector.field(n=4, dtype=ti.u32, shape=(MAX_HITSIM_ALPHAS, MAX_HITSIM_ROWS))
-
-    hitsim_batch_group_event_ms = ti.field(dtype=ti.i32, shape=(MAX_HITSIM_ALPHA_BATCH, MAX_HITSIM_GROUPS))
-    hitsim_group_event_tmp = ti.field(dtype=ti.i32, shape=MAX_HITSIM_GROUPS)
-
-    hitsim_active_row_mask = ti.field(dtype=ti.i32, shape=MAX_HITSIM_ROWS)
-    hitsim_active_row_count = ti.field(dtype=ti.i32, shape=1)
-    hitsim_regime_count = ti.field(dtype=ti.i32, shape=1)
-    hitsim_regime_start_alpha = ti.field(dtype=ti.i32, shape=MAX_HITSIM_REGIMES)
-    hitsim_regime_end_alpha = ti.field(dtype=ti.i32, shape=MAX_HITSIM_REGIMES)
-    hitsim_regime_left_num = ti.field(dtype=ti.i32, shape=MAX_HITSIM_REGIMES)
-    hitsim_regime_left_den = ti.field(dtype=ti.i32, shape=MAX_HITSIM_REGIMES)
-    hitsim_regime_right_num = ti.field(dtype=ti.i32, shape=MAX_HITSIM_REGIMES)
-    hitsim_regime_right_den = ti.field(dtype=ti.i32, shape=MAX_HITSIM_REGIMES)
-    hitsim_regime_alpha_num = ti.field(dtype=ti.i32, shape=MAX_HITSIM_REGIMES)
-    hitsim_regime_alpha_den = ti.field(dtype=ti.i32, shape=MAX_HITSIM_REGIMES)
-    hitsim_regime_rep_alpha = ti.field(dtype=ti.i32, shape=MAX_HITSIM_REGIMES)
-    hitsim_regime_selected_mask = ti.field(dtype=ti.i32, shape=MAX_HITSIM_REGIMES)
-    hitsim_selected_count = ti.field(dtype=ti.i32, shape=1)
-    hitsim_selected_regime_indices = ti.field(dtype=ti.i32, shape=MAX_HITSIM_REGIMES)
-
-    hitsim_best_score = ti.field(dtype=ti.i32, shape=1)
-    hitsim_best_candidate_idx = ti.field(dtype=ti.i32, shape=1)
-    hitsim_best_regime_idx = ti.field(dtype=ti.i32, shape=1)
-    hitsim_best_alpha_num = ti.field(dtype=ti.i32, shape=1)
-    hitsim_best_alpha_den = ti.field(dtype=ti.i32, shape=1)
-    hitsim_best_left_num = ti.field(dtype=ti.i32, shape=1)
-    hitsim_best_left_den = ti.field(dtype=ti.i32, shape=1)
-    hitsim_best_right_num = ti.field(dtype=ti.i32, shape=1)
-    hitsim_best_right_den = ti.field(dtype=ti.i32, shape=1)
-    hitsim_best_rep_alpha = ti.field(dtype=ti.i32, shape=1)
-
-    hitsim_best_event_ms = ti.field(dtype=ti.i32, shape=MAX_HITSIM_NOTES)
-    hitsim_best_great_ms = ti.field(dtype=ti.i32, shape=MAX_HITSIM_NOTES)
-    hitsim_sig_rows_staging = ti.field(dtype=ti.i32, shape=(MAX_HITSIM_ROWS, 7))
-    hitsim_scalar_out = ti.field(dtype=ti.i32, shape=32)
 
     # GPU-native GA / stat aggregation (Phase 3/4)
     population_indices = ti.field(dtype=ti.i32, shape=(MAX_GENOMES, MAX_SLOTS))
@@ -1062,7 +653,7 @@ def allocate_grid_fields():
     """
     Allocate GPU fields for timeline grid. Must be called after ti.init().
 
-    This allocates MAX_SONG_SLOTS × 161×161 timeline grids for batch coalescing.
+    This allocates MAX_SONG_SLOTS Ã— 161Ã—161 timeline grids for batch coalescing.
     Each song slot can hold a different song's grid for parallel processing.
     """
     global grid_count_body_fever, grid_count_body_normal, grid_head_len, grid_fever_masks, grid_fever_masks_bits
@@ -1074,7 +665,7 @@ def allocate_grid_fields():
     if _grid_fields_allocated:
         return
 
-    # Timeline grid with song slots (MAX_SONG_SLOTS × 161×161)
+    # Timeline grid with song slots (MAX_SONG_SLOTS Ã— 161Ã—161)
     # Slot 0 is default for single-song mode; slots 0-7 for batch mode
     grid_count_body_fever = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
     grid_count_body_normal = ti.field(dtype=ti.i16, shape=(MAX_SONG_SLOTS, GRID_SIZE, GRID_SIZE))
@@ -1101,8 +692,7 @@ def allocate_grid_fields():
         fever_end_idx_song = ti.field(dtype=ti.i32, shape=(MAX_SONG_NOTES, GRID_SIZE))
 
     _grid_fields_allocated = True
-    print(f"[Taichi] Allocated grid fields: {MAX_SONG_SLOTS}×{GRID_SIZE}×{GRID_SIZE} timeline grid slots")
-
+    print(f"[Taichi] Allocated grid fields: {MAX_SONG_SLOTS}Ã—{GRID_SIZE}Ã—{GRID_SIZE} timeline grid slots")
 
 def ensure_grid_unpacked_masks_allocated() -> None:
     """
@@ -1123,13 +713,11 @@ def ensure_grid_unpacked_masks_allocated() -> None:
     from . import kernels
 
     bind_fields(kernels)
-    print(f"[Taichi] Allocated unpacked timeline masks: 1×{GRID_SIZE}×{GRID_SIZE}×{MAX_HEAD_NOTES}")
-
+    print(f"[Taichi] Allocated unpacked timeline masks: 1Ã—{GRID_SIZE}Ã—{GRID_SIZE}Ã—{MAX_HEAD_NOTES}")
 
 # ============================================================================
 # FIELD BINDING (for kernels module)
 # ============================================================================
-
 
 def bind_fields(kernels_module):
     """
@@ -1174,81 +762,6 @@ def bind_fields(kernels_module):
     # Song data for timeline
     target.song_timestamps = song_timestamps
     target.fever_end_idx_song = fever_end_idx_song
-
-    # HumanHitSim runtime buffers.
-    target.hitsim_note_count = hitsim_note_count
-    target.hitsim_group_count = hitsim_group_count
-    target.hitsim_group_starts = hitsim_group_starts
-    target.hitsim_group_ends = hitsim_group_ends
-    target.hitsim_group_base_t = hitsim_group_base_t
-    target.hitsim_group_low_perfect = hitsim_group_low_perfect
-    target.hitsim_group_high_perfect = hitsim_group_high_perfect
-    target.hitsim_group_low_great = hitsim_group_low_great
-    target.hitsim_group_high_great = hitsim_group_high_great
-    target.hitsim_note_to_group = hitsim_note_to_group
-
-    target.hitsim_alpha_count = hitsim_alpha_count
-    target.hitsim_alpha_num = hitsim_alpha_num
-    target.hitsim_alpha_den = hitsim_alpha_den
-    target.hitsim_alpha_left_num = hitsim_alpha_left_num
-    target.hitsim_alpha_left_den = hitsim_alpha_left_den
-    target.hitsim_alpha_right_num = hitsim_alpha_right_num
-    target.hitsim_alpha_right_den = hitsim_alpha_right_den
-
-    target.hitsim_cut_count = hitsim_cut_count
-    target.hitsim_cut_num = hitsim_cut_num
-    target.hitsim_cut_den = hitsim_cut_den
-    target.hitsim_span_used = hitsim_span_used
-
-    target.hitsim_row_count = hitsim_row_count
-    target.hitsim_row_non_fever_base = hitsim_row_non_fever_base
-    target.hitsim_row_fever_time_ms = hitsim_row_fever_time_ms
-
-    target.hitsim_candidate_count = hitsim_candidate_count
-    target.hitsim_candidate_row_idx = hitsim_candidate_row_idx
-    target.hitsim_candidate_base_value = hitsim_candidate_base_value
-    target.hitsim_candidate_combo_mul = hitsim_candidate_combo_mul
-    target.hitsim_candidate_fever_mul = hitsim_candidate_fever_mul
-
-    target.hitsim_alpha_best_score = hitsim_alpha_best_score
-    target.hitsim_alpha_best_candidate_idx = hitsim_alpha_best_candidate_idx
-    target.hitsim_alpha_row_sig_counts = hitsim_alpha_row_sig_counts
-    target.hitsim_alpha_row_sig_bits = hitsim_alpha_row_sig_bits
-
-    target.hitsim_batch_group_event_ms = hitsim_batch_group_event_ms
-    target.hitsim_group_event_tmp = hitsim_group_event_tmp
-
-    target.hitsim_active_row_mask = hitsim_active_row_mask
-    target.hitsim_active_row_count = hitsim_active_row_count
-    target.hitsim_regime_count = hitsim_regime_count
-    target.hitsim_regime_start_alpha = hitsim_regime_start_alpha
-    target.hitsim_regime_end_alpha = hitsim_regime_end_alpha
-    target.hitsim_regime_left_num = hitsim_regime_left_num
-    target.hitsim_regime_left_den = hitsim_regime_left_den
-    target.hitsim_regime_right_num = hitsim_regime_right_num
-    target.hitsim_regime_right_den = hitsim_regime_right_den
-    target.hitsim_regime_alpha_num = hitsim_regime_alpha_num
-    target.hitsim_regime_alpha_den = hitsim_regime_alpha_den
-    target.hitsim_regime_rep_alpha = hitsim_regime_rep_alpha
-    target.hitsim_regime_selected_mask = hitsim_regime_selected_mask
-    target.hitsim_selected_count = hitsim_selected_count
-    target.hitsim_selected_regime_indices = hitsim_selected_regime_indices
-
-    target.hitsim_best_score = hitsim_best_score
-    target.hitsim_best_candidate_idx = hitsim_best_candidate_idx
-    target.hitsim_best_regime_idx = hitsim_best_regime_idx
-    target.hitsim_best_alpha_num = hitsim_best_alpha_num
-    target.hitsim_best_alpha_den = hitsim_best_alpha_den
-    target.hitsim_best_left_num = hitsim_best_left_num
-    target.hitsim_best_left_den = hitsim_best_left_den
-    target.hitsim_best_right_num = hitsim_best_right_num
-    target.hitsim_best_right_den = hitsim_best_right_den
-    target.hitsim_best_rep_alpha = hitsim_best_rep_alpha
-
-    target.hitsim_best_event_ms = hitsim_best_event_ms
-    target.hitsim_best_great_ms = hitsim_best_great_ms
-    target.hitsim_sig_rows_staging = hitsim_sig_rows_staging
-    target.hitsim_scalar_out = hitsim_scalar_out
 
     # Genome base stats
     target.genome_base_stats = genome_base_stats
@@ -1327,7 +840,6 @@ def bind_fields(kernels_module):
         # Keep binding best-effort; breakpoint kernels aren't always imported.
         pass
 
-
 def ensure_fields_allocated():
     """
     Ensure Taichi is initialized and fields are allocated.
@@ -1373,7 +885,6 @@ def ensure_fields_allocated():
             kernels_metal.ga_global_best_score = ga_global_best_score
             kernels_metal.ga_global_best_genome = ga_global_best_genome
             kernels_metal.ga_global_best_results = ga_global_best_results
-
 
 def ensure_grid_fields_allocated():
     """

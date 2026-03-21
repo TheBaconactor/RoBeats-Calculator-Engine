@@ -34,7 +34,6 @@ if GA_FTFF_REDUCE_BLOCK_DIM <= 0:
     GA_FTFF_REDUCE_BLOCK_DIM = 32
 GA_FTFF_REDUCE_WAVE_STRIDE = GA_FTFF_REDUCE_BLOCK_DIM // 32  # lane//32 indexing (works for wave32 and wave64)
 
-
 # ============================================================================
 # FIELD PLACEHOLDERS (bound by fields.bind_fields() after allocation)
 # ============================================================================
@@ -63,81 +62,6 @@ fever_end_idx_song = None  # (MAX_SONG_NOTES, 161) i32
 song_total_notes = None  # scalar i32
 song_long_notes = None  # scalar i32
 song_last_note_time = None  # scalar f32
-
-# HumanHitSim runtime buffers.
-hitsim_note_count = None  # (1,) i32
-hitsim_group_count = None  # (1,) i32
-hitsim_group_starts = None  # (MAX_HITSIM_GROUPS,) i32
-hitsim_group_ends = None  # (MAX_HITSIM_GROUPS,) i32
-hitsim_group_base_t = None  # (MAX_HITSIM_GROUPS,) i32
-hitsim_group_low_perfect = None  # (MAX_HITSIM_GROUPS,) i32
-hitsim_group_high_perfect = None  # (MAX_HITSIM_GROUPS,) i32
-hitsim_group_low_great = None  # (MAX_HITSIM_GROUPS,) i32
-hitsim_group_high_great = None  # (MAX_HITSIM_GROUPS,) i32
-hitsim_note_to_group = None  # (MAX_HITSIM_NOTES,) i32
-
-hitsim_alpha_count = None  # (1,) i32
-hitsim_alpha_num = None  # (MAX_HITSIM_ALPHAS,) i32
-hitsim_alpha_den = None  # (MAX_HITSIM_ALPHAS,) i32
-hitsim_alpha_left_num = None  # (MAX_HITSIM_ALPHAS,) i32
-hitsim_alpha_left_den = None  # (MAX_HITSIM_ALPHAS,) i32
-hitsim_alpha_right_num = None  # (MAX_HITSIM_ALPHAS,) i32
-hitsim_alpha_right_den = None  # (MAX_HITSIM_ALPHAS,) i32
-
-hitsim_cut_count = None  # (1,) i32
-hitsim_cut_num = None  # (MAX_HITSIM_CUTS,) i32
-hitsim_cut_den = None  # (MAX_HITSIM_CUTS,) i32
-hitsim_span_used = None  # (MAX_HITSIM_SPAN+1,) i32
-
-hitsim_row_count = None  # (1,) i32
-hitsim_row_non_fever_base = None  # (MAX_HITSIM_ROWS,) i32
-hitsim_row_fever_time_ms = None  # (MAX_HITSIM_ROWS,) i32
-
-hitsim_candidate_count = None  # (1,) i32
-hitsim_candidate_row_idx = None  # (MAX_HITSIM_CANDIDATES,) i32
-hitsim_candidate_base_value = None  # (MAX_HITSIM_CANDIDATES,) f32
-hitsim_candidate_combo_mul = None  # (MAX_HITSIM_CANDIDATES,) f32
-hitsim_candidate_fever_mul = None  # (MAX_HITSIM_CANDIDATES,) f32
-
-hitsim_alpha_best_score = None  # (MAX_HITSIM_ALPHAS,) i32
-hitsim_alpha_best_candidate_idx = None  # (MAX_HITSIM_ALPHAS,) i32
-hitsim_alpha_row_sig_counts = None  # (MAX_HITSIM_ALPHAS, MAX_HITSIM_ROWS) vec3 i32
-hitsim_alpha_row_sig_bits = None  # (MAX_HITSIM_ALPHAS, MAX_HITSIM_ROWS) vec4 u32
-
-hitsim_batch_group_event_ms = None  # (MAX_HITSIM_ALPHA_BATCH, MAX_HITSIM_GROUPS) i32
-hitsim_group_event_tmp = None  # (MAX_HITSIM_GROUPS,) i32
-
-hitsim_active_row_mask = None  # (MAX_HITSIM_ROWS,) i32
-hitsim_active_row_count = None  # (1,) i32
-hitsim_regime_count = None  # (1,) i32
-hitsim_regime_start_alpha = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_regime_end_alpha = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_regime_left_num = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_regime_left_den = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_regime_right_num = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_regime_right_den = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_regime_alpha_num = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_regime_alpha_den = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_regime_rep_alpha = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_regime_selected_mask = None  # (MAX_HITSIM_REGIMES,) i32
-hitsim_selected_count = None  # (1,) i32
-hitsim_selected_regime_indices = None  # (MAX_HITSIM_REGIMES,) i32
-
-hitsim_best_score = None  # (1,) i32
-hitsim_best_candidate_idx = None  # (1,) i32
-hitsim_best_regime_idx = None  # (1,) i32
-hitsim_best_alpha_num = None  # (1,) i32
-hitsim_best_alpha_den = None  # (1,) i32
-hitsim_best_left_num = None  # (1,) i32
-hitsim_best_left_den = None  # (1,) i32
-hitsim_best_right_num = None  # (1,) i32
-hitsim_best_right_den = None  # (1,) i32
-hitsim_best_rep_alpha = None  # (1,) i32
-
-hitsim_best_event_ms = None  # (MAX_HITSIM_NOTES,) i32
-hitsim_best_great_ms = None  # (MAX_HITSIM_NOTES,) i32
-hitsim_sig_rows_staging = None  # (MAX_HITSIM_ROWS, 7) i32
-hitsim_scalar_out = None  # (32,) i32
 
 # Genome base stats
 genome_base_stats = None
@@ -207,11 +131,9 @@ island_boundaries = None  # (MAX_ISLANDS+1,) i32 - island start/end indices
 island_elite_indices = None  # (MAX_GENOMES,) i32 - output: elite genome indices
 island_elite_count = None  # (1,) i32 - output: total elites found
 
-
 # ============================================================================
 # HELPER FUNCTIONS
 # ============================================================================
-
 
 @ti.func
 def _clamp_stat_idx(value: ti.i32) -> ti.i32:
@@ -226,7 +148,6 @@ def _clamp_stat_idx(value: ti.i32) -> ti.i32:
     """
     return ti.max(0, ti.min(160, value))
 
-
 @ti.func
 def lookup_ref_pp(value: ti.i32) -> ti.f32:
     """
@@ -239,7 +160,6 @@ def lookup_ref_pp(value: ti.i32) -> ti.f32:
         PP multiplier from reference table
     """
     return ti.cast(ref_pp_field[_clamp_stat_idx(value)], ti.f32)
-
 
 @ti.func
 def lookup_ref_cm(value: ti.i32) -> ti.f32:
@@ -254,7 +174,6 @@ def lookup_ref_cm(value: ti.i32) -> ti.f32:
     """
     return ref_cm_field[_clamp_stat_idx(value)]
 
-
 @ti.func
 def lookup_ref_fm(value: ti.i32) -> ti.f32:
     """
@@ -267,7 +186,6 @@ def lookup_ref_fm(value: ti.i32) -> ti.f32:
         FM multiplier from reference table
     """
     return ref_fm_field[_clamp_stat_idx(value)]
-
 
 @ti.func
 def lookup_ref_ft(value: ti.i32) -> ti.f32:
@@ -282,7 +200,6 @@ def lookup_ref_ft(value: ti.i32) -> ti.f32:
     """
     return ref_ft_field[_clamp_stat_idx(value)]
 
-
 @ti.func
 def lookup_ref_ff(value: ti.i32) -> ti.f32:
     """
@@ -295,7 +212,6 @@ def lookup_ref_ff(value: ti.i32) -> ti.f32:
         FF multiplier from reference table
     """
     return ref_ff_field[_clamp_stat_idx(value)]
-
 
 @ti.func
 def _xorshift32(x: ti.u32) -> ti.u32:
@@ -316,11 +232,9 @@ def _xorshift32(x: ti.u32) -> ti.u32:
     x ^= x << ti.u32(5)
     return x
 
-
 # ============================================================================
 # SEARCH HELPERS
 # ============================================================================
-
 
 @ti.func
 def binary_search_left_from(timestamps: ti.template(), n: ti.i32, target: ti.f32, lo: ti.i32) -> ti.i32:
@@ -347,7 +261,6 @@ def binary_search_left_from(timestamps: ti.template(), n: ti.i32, target: ti.f32
             hi = mid
     return lo
 
-
 @ti.func
 def binary_search_left(timestamps: ti.template(), n: ti.i32, target: ti.f32) -> ti.i32:
     """
@@ -365,11 +278,9 @@ def binary_search_left(timestamps: ti.template(), n: ti.i32, target: ti.f32) -> 
     """
     return binary_search_left_from(timestamps, n, target, 0)
 
-
 # ============================================================================
 # SCORING HELPERS
 # ============================================================================
-
 
 @ti.func
 def _calc_body_score(
@@ -401,7 +312,6 @@ def _calc_body_score(
     # Use integer multiplication to avoid f32 precision loss with large counts
     return ti.cast((count_fever * fever_val) + (count_normal * combo_val), ti.f32)
 
-
 @ti.func
 def _calc_head_factor(base_value: ti.f32, combo_mul: ti.f32) -> ti.f32:
     """
@@ -419,7 +329,6 @@ def _calc_head_factor(base_value: ti.f32, combo_mul: ti.f32) -> ti.f32:
     """
     return (combo_mul - 1.0) * base_value / 100.0
 
-
 @ti.func
 def _calc_head_score_bits(
     base_value: ti.f32,
@@ -434,7 +343,7 @@ def _calc_head_score_bits(
     """
     Calculate head score using bitpacked fever masks.
 
-    More efficient than grid lookup - masks passed as 4×u32 = 128 bits.
+    More efficient than grid lookup - masks passed as 4Ã—u32 = 128 bits.
     Bit i corresponds to head note i being a fever note.
 
     Args:
@@ -493,7 +402,6 @@ def _calc_head_score_bits(
             t += 1.0
     return ti.cast(head_score, ti.f32)
 
-
 @ti.func
 def calc_score_with_grid(
     base_value: ti.f32,
@@ -533,7 +441,6 @@ def calc_score_with_grid(
 
     return ti.cast(body_score, ti.i32) + head_score_i32
 
-
 @ti.func
 def calc_score_with_grid_bits(
     base_value: ti.f32,
@@ -558,7 +465,7 @@ def calc_score_with_grid_bits(
         base_value: (primary*2) + secondary + pp_factor
         combo_mul: Combo multiplier
         fever_mul: Fever multiplier
-        m0-m3: Bitpacked fever masks (4×32 bits)
+        m0-m3: Bitpacked fever masks (4Ã—32 bits)
         head_len: Number of notes in head
         count_fever: Fever notes in body
         count_normal: Normal notes in body

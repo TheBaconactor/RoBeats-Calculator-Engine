@@ -75,7 +75,9 @@ def test_breakpoint_group_cache_is_partitioned_by_hitsim_timing_context():
         {
             "HumanHitSimApplied": True,
             "HumanHitSimApplyTo": "ALL",
-            "HumanHitSimRegimeId": "regime-a",
+            "HumanHitSimSeed": 11111,
+            "HumanHitSimDistribution": "uniform",
+            "HumanHitSimGreatMode": "full",
         }
     )
     calc_song_b = _base_calc_song()
@@ -83,7 +85,9 @@ def test_breakpoint_group_cache_is_partitioned_by_hitsim_timing_context():
         {
             "HumanHitSimApplied": True,
             "HumanHitSimApplyTo": "ALL",
-            "HumanHitSimRegimeId": "regime-b",
+            "HumanHitSimSeed": 11111,
+            "HumanHitSimDistribution": "uniform",
+            "HumanHitSimGreatMode": "late",
         }
     )
 
@@ -156,7 +160,9 @@ def test_max_fp_matrix_cache_is_partitioned_by_hitsim_timing_context():
         {
             "HumanHitSimApplied": True,
             "HumanHitSimApplyTo": "ALL",
-            "HumanHitSimRegimeId": "regime-a",
+            "HumanHitSimSeed": 22222,
+            "HumanHitSimDistribution": "uniform",
+            "HumanHitSimGreatMode": "full",
         }
     )
     calc_song_b = _base_calc_song()
@@ -164,7 +170,9 @@ def test_max_fp_matrix_cache_is_partitioned_by_hitsim_timing_context():
         {
             "HumanHitSimApplied": True,
             "HumanHitSimApplyTo": "ALL",
-            "HumanHitSimRegimeId": "regime-b",
+            "HumanHitSimSeed": 22222,
+            "HumanHitSimDistribution": "uniform",
+            "HumanHitSimGreatMode": "late",
         }
     )
 
