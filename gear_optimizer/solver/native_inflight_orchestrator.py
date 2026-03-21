@@ -78,6 +78,7 @@ from gear_optimizer.solver.native_inflight_support import (
     _task_ga_seed,
     _task_key,
 )
+from gear_optimizer.solver.native_inflight_timing import _thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import _NativeSong
 from gear_optimizer.solver.inflight_utils import (
     _build_calc_song_from_file,
@@ -280,18 +281,6 @@ def _fixed_registry_cache_key(
     fg = tuple(_n(it) for it in (fixed_gear or [])[:6])
     fm = tuple(sorted(_n(it) for it in (fixed_minis or [])[:3]))
     return ("fixed", pool_key, fg, fm)
-
-
-def _thread_cpu_time_s() -> float:
-    """
-    Best-effort per-thread CPU timer for CPU-only profiling.
-
-    Uses `time.thread_time()` when available (Python 3.7+). Returns 0.0 on unsupported platforms.
-    """
-    try:
-        return float(time.thread_time())
-    except Exception:
-        return 0.0
 
 
 def _attach_hitsim_delta_for_base(best_data: dict | None, calc_song: dict | None, ref_arrays: dict | None) -> None:
