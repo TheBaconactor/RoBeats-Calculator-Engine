@@ -64,7 +64,7 @@ song_total_notes = None  # scalar i32
 song_long_notes = None  # scalar i32
 song_last_note_time = None  # scalar f32
 
-# HitSim refinement (post-GA deterministic regime scan)
+# HumanHitSim runtime buffers.
 hitsim_note_count = None  # (1,) i32
 hitsim_group_count = None  # (1,) i32
 hitsim_group_starts = None  # (MAX_HITSIM_GROUPS,) i32

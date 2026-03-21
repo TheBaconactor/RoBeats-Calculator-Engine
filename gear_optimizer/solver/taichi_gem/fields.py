@@ -43,11 +43,10 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-# HitSim refinement (post-GA deterministic regime scan).
+# HumanHitSim runtime buffers.
 #
-# These buffers are used to keep HumanHitSim "exact boundary regimes" evaluation
-# entirely GPU-resident: grouped hit windows, alpha regime list, per-regime
-# signature + score outputs, and final best timestamp materialization buffers.
+# These buffers hold the grouped hit windows, candidate scoring inputs, and
+# final best timestamp materialization state used by HumanHitSim.
 MAX_HITSIM_NOTES = MAX_SONG_NOTES
 MAX_HITSIM_GROUPS = MAX_SONG_NOTES  # chord-group count <= note count
 MAX_HITSIM_ALPHAS = _env_int("GPU_HITSIM_MAX_ALPHAS", 4096)
@@ -145,10 +144,10 @@ song_timestamps: ti.Field = None  # (MAX_SONG_NOTES,) f32
 # Precomputed fever end indices per note/FT (binary-search-free timeline simulation)
 fever_end_idx_song: ti.Field = None  # (MAX_SONG_NOTES, GRID_SIZE) i32
 
-# HitSim refinement buffers (post-GA deterministic regime scan).
+# HumanHitSim runtime buffers.
 #
-# NOTE: These are intentionally NOT slotted by song_id; refinement is currently
-# invoked per-song and the buffers are reused call-to-call.
+# NOTE: These are intentionally not slotted by song_id; they are reused
+# call-to-call.
 hitsim_note_count: ti.Field = None  # (1,) i32
 hitsim_group_count: ti.Field = None  # (1,) i32
 hitsim_group_starts: ti.Field = None  # (MAX_HITSIM_GROUPS,) i32
@@ -160,7 +159,7 @@ hitsim_group_low_great: ti.Field = None  # (MAX_HITSIM_GROUPS,) i32
 hitsim_group_high_great: ti.Field = None  # (MAX_HITSIM_GROUPS,) i32
 hitsim_note_to_group: ti.Field = None  # (MAX_HITSIM_NOTES,) i32
 
-# Raw alpha interval midpoints + bounds (exact envelope cuts).
+# Raw alpha interval midpoints + bounds.
 hitsim_alpha_count: ti.Field = None  # (1,) i32
 hitsim_alpha_num: ti.Field = None  # (MAX_HITSIM_ALPHAS,) i32
 hitsim_alpha_den: ti.Field = None  # (MAX_HITSIM_ALPHAS,) i32
@@ -169,7 +168,7 @@ hitsim_alpha_left_den: ti.Field = None  # (MAX_HITSIM_ALPHAS,) i32
 hitsim_alpha_right_num: ti.Field = None  # (MAX_HITSIM_ALPHAS,) i32
 hitsim_alpha_right_den: ti.Field = None  # (MAX_HITSIM_ALPHAS,) i32
 
-# Scratch cut list used to build exact alpha regimes on-GPU.
+# Scratch cut list used to build alpha intervals on-GPU.
 hitsim_cut_count: ti.Field = None  # (1,) i32
 hitsim_cut_num: ti.Field = None  # (MAX_HITSIM_CUTS,) i32
 hitsim_cut_den: ti.Field = None  # (MAX_HITSIM_CUTS,) i32
@@ -197,7 +196,7 @@ hitsim_alpha_row_sig_bits: ti.Field = None  # (MAX_HITSIM_ALPHAS, MAX_HITSIM_ROW
 hitsim_batch_group_event_ms: ti.Field = None  # (MAX_HITSIM_ALPHA_BATCH, MAX_HITSIM_GROUPS) i32
 hitsim_group_event_tmp: ti.Field = None  # (MAX_HITSIM_GROUPS,) i32
 
-# Regime planning outputs.
+# Selection outputs.
 hitsim_active_row_mask: ti.Field = None  # (MAX_HITSIM_ROWS,) i32
 hitsim_active_row_count: ti.Field = None  # (1,) i32
 hitsim_regime_count: ti.Field = None  # (1,) i32
@@ -510,7 +509,7 @@ def reset_fields_state() -> None:
     song_timestamps = None
     fever_end_idx_song = None
 
-    # HitSim refinement buffers
+    # HumanHitSim runtime buffers.
     hitsim_note_count = None
     hitsim_group_count = None
     hitsim_group_starts = None
@@ -861,7 +860,7 @@ def allocate_fields():
     # [pp, cm, fm, p_val, s_val, ft, ff]
     genome_base_stats = ti.Vector.field(n=7, dtype=ti.i16, shape=MAX_GENOMES)
 
-    # HitSim refinement buffers (post-GA regime scan).
+    # HumanHitSim runtime buffers.
     hitsim_note_count = ti.field(dtype=ti.i32, shape=1)
     hitsim_group_count = ti.field(dtype=ti.i32, shape=1)
     hitsim_group_starts = ti.field(dtype=ti.i32, shape=MAX_HITSIM_GROUPS)
@@ -1176,7 +1175,7 @@ def bind_fields(kernels_module):
     target.song_timestamps = song_timestamps
     target.fever_end_idx_song = fever_end_idx_song
 
-    # HitSim refinement buffers (post-GA)
+    # HumanHitSim runtime buffers.
     target.hitsim_note_count = hitsim_note_count
     target.hitsim_group_count = hitsim_group_count
     target.hitsim_group_starts = hitsim_group_starts
