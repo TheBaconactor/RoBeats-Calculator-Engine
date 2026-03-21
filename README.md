@@ -138,7 +138,7 @@ export GPU_EXECUTOR_PROFILE=1
 
 ## Project Structure
 
-Quick navigation: see `docs/NAVIGATION.md`.
+Quick navigation: see `docs/README.md` for the docs index and `docs/NAVIGATION.md` for the code map.
 
 High-level layout (current):
 
