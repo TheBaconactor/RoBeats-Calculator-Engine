@@ -1,161 +1,16 @@
 import numpy as np
-from copy import deepcopy
 
+from gear_optimizer.core.constants import FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET
+from gear_optimizer.core.time_quantize import quantize_to_int_ms
+from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
 from gear_optimizer.solver.hit_simulation import (
     apply_human_hit_sim,
-    plan_human_hit_sim,
-    simulate_perfect_hit_timestamps_with_great_candidates,
     compute_fever_timeline_signature,
-    prepare_perfect_hit_simulation,
     generate_perfect_hit_times_ms,
+    plan_human_hit_sim,
+    prepare_perfect_hit_simulation,
+    simulate_perfect_hit_timestamps_with_great_candidates,
 )
-from gear_optimizer.solver.scoring.stats_scoring import evaluate_stats_score
-from gear_optimizer.solver.fever_timeline import calculate_fever_timeline_indices
-from gear_optimizer.core.constants import TOTAL_ROWS, FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET
-from gear_optimizer.core.time_quantize import quantize_to_int_ms
-
-
-def _build_ref_arrays() -> dict:
-    rows = int(TOTAL_ROWS) + 1
-    return {
-        "Perfect Points": np.linspace(500.0, 200.0, rows, dtype=np.float64),
-        "Combo Multiplier": np.linspace(2.6, 1.3, rows, dtype=np.float64),
-        "Fever Multiplier": np.linspace(5.3, 2.1, rows, dtype=np.float64),
-        "Fever Fill Rate": np.linspace(0.20, 0.55, rows, dtype=np.float64),
-        "Fever Time": np.linspace(2.9, 1.8, rows, dtype=np.float64),
-    }
-
-
-def _build_calc_song() -> dict:
-    ts = np.array([0.000, 0.080, 0.160, 0.240, 0.320, 0.400], dtype=np.float64)
-    note_types = np.array([1, 1, 1, 3, 1, 1], dtype=np.int16)
-    return {
-        "metadata": {
-            "Song Name": "Refine Determinism Song",
-            "Difficulty": "Hard",
-            "Primary Color": "Vibe",
-            "Secondary Color": "Chill",
-            "Long Notes": 1,
-            "Last Note Time": float(ts[-1]),
-            "HumanHitSimApplied": True,
-            "HumanHitSimApplyTo": "ALL",
-            "HumanHitSimSeed": 123,
-            "HumanHitSimDistribution": "uniform",
-            "HumanHitSimGreatMode": "full",
-        },
-        "song_data": {
-            "chart_timestamps": ts.copy(),
-            "timestamps": ts.copy(),
-            "note_types": note_types.copy(),
-            "fg_timestamps": ts.copy(),
-            "fg_great_candidate_timestamps": ts.copy(),
-        },
-    }
-
-
-def _build_dense_calc_song() -> dict:
-    ts = np.arange(0.000, 24.000, 0.060, dtype=np.float64)
-    note_types = np.ones(ts.shape[0], dtype=np.int16)
-    return {
-        "metadata": {
-            "Song Name": "Refine Dense Song",
-            "Difficulty": "Hard",
-            "Primary Color": "Vibe",
-            "Secondary Color": "Chill",
-            "Long Notes": 0,
-            "Last Note Time": float(ts[-1]),
-            "HumanHitSimApplied": True,
-            "HumanHitSimApplyTo": "ALL",
-            "HumanHitSimSeed": 111,
-            "HumanHitSimDistribution": "uniform",
-            "HumanHitSimGreatMode": "full",
-        },
-        "song_data": {
-            "chart_timestamps": ts.copy(),
-            "timestamps": ts.copy(),
-            "note_types": note_types.copy(),
-            "fg_timestamps": ts.copy(),
-            "fg_great_candidate_timestamps": ts.copy(),
-        },
-    }
-
-
-def _build_best_data(calc_song: dict, ref_arrays: dict) -> dict:
-    stats = {
-        "Perfect Points": 110,
-        "Combo Multiplier": 100,
-        "Fever Multiplier": 95,
-        "Fever Time": 85,
-        "Fever Fill Rate": 90,
-        "Beat": 120,
-        "Vibe": 180,
-        "Rush": 110,
-        "Flow": 105,
-        "Chill": 140,
-    }
-    base_score = int(
-        evaluate_stats_score(
-            stats,
-            calc_song,
-            ref_arrays,
-            song_timestamps=np.asarray(calc_song["song_data"]["timestamps"], dtype=np.float64),
-        )
-    )
-    return {"Stats": stats, "Score": int(base_score), "BaseScore": int(base_score)}
-
-
-def _make_fake_exact_gpu_out(
-    *,
-    best_score: int,
-    best_candidate_idx: int = 0,
-    best_alpha_num: int = 1,
-    best_alpha_den: int = 2,
-    left_num: int = 0,
-    left_den: int = 1,
-    right_num: int = 1,
-    right_den: int = 1,
-    n_notes: int = 6,
-    raw_interval_count: int = 5,
-    selected_regimes: list[dict] | None = None,
-) -> dict:
-    event_ms = np.arange(n_notes, dtype=np.int32) + (int(best_alpha_num) * 100)
-    great_ms = event_ms + 50
-    regimes = selected_regimes
-    if regimes is None:
-        regimes = [
-            {
-                "left_num": int(left_num),
-                "left_den": int(left_den),
-                "right_num": int(right_num),
-                "right_den": int(right_den),
-                "alpha_num": int(best_alpha_num),
-                "alpha_den": int(best_alpha_den),
-                "best_score": int(best_score),
-                "best_candidate_idx": int(best_candidate_idx),
-                "family": "ftff_boundary_rows",
-                "scope": "ALL",
-            }
-        ]
-    return {
-        "best_score": int(best_score),
-        "best_candidate_idx": int(best_candidate_idx),
-        "best_alpha_num": int(best_alpha_num),
-        "best_alpha_den": int(best_alpha_den),
-        "best_left_num": int(left_num),
-        "best_left_den": int(left_den),
-        "best_right_num": int(right_num),
-        "best_right_den": int(right_den),
-        "active_param_count": 1,
-        "full_regime_count": int(len(regimes)),
-        "selected_regime_count": int(len(regimes)),
-        "raw_interval_count": int(raw_interval_count),
-        "unique_scores": int(len(regimes) + 1),
-        "best_event_ms": event_ms,
-        "best_great_ms": great_ms,
-        "sig_rows": np.asarray([[3, 1, 0, 1, 0, 0, 0]], dtype=np.int32),
-        "active_row_mask": np.asarray([1], dtype=np.int32),
-        "selected_regimes": list(regimes),
-    }
 
 
 def test_simulate_perfect_hit_timestamps_is_deterministic_and_monotonic():
