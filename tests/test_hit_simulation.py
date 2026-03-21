@@ -116,13 +116,13 @@ def _make_fake_exact_gpu_out(
     right_den: int = 1,
     n_notes: int = 6,
     raw_interval_count: int = 5,
-    selected_regimes: list[dict] | None = None,
+    selected_windows: list[dict] | None = None,
 ) -> dict:
     event_ms = np.arange(n_notes, dtype=np.int32) + (int(best_alpha_num) * 100)
     great_ms = event_ms + 50
-    regimes = selected_regimes
-    if regimes is None:
-        regimes = [
+    windows = selected_windows
+    if windows is None:
+        windows = [
             {
                 "left_num": int(left_num),
                 "left_den": int(left_den),
@@ -146,15 +146,15 @@ def _make_fake_exact_gpu_out(
         "best_right_num": int(right_num),
         "best_right_den": int(right_den),
         "active_param_count": 1,
-        "full_regime_count": int(len(regimes)),
-        "selected_regime_count": int(len(regimes)),
+        "full_window_count": int(len(windows)),
+        "selected_window_count": int(len(windows)),
         "raw_interval_count": int(raw_interval_count),
-        "unique_scores": int(len(regimes) + 1),
+        "unique_scores": int(len(windows) + 1),
         "best_event_ms": event_ms,
         "best_great_ms": great_ms,
         "sig_rows": np.asarray([[3, 1, 0, 1, 0, 0, 0]], dtype=np.int32),
         "active_row_mask": np.asarray([1], dtype=np.int32),
-        "selected_regimes": list(regimes),
+        "selected_windows": list(windows),
     }
 
 
