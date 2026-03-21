@@ -1376,17 +1376,17 @@ class GpuExecutor:
         self._heartbeat_last_write_monotonic = 0.0
         self._heartbeat_last_phase = ""
         if self._in_process_queues and os.name == "nt" and _system_timer_override_allowed():
-            # The executor's gather loop uses small timeout waits (0-2ms by default in inproc mode).
+            # The executor's gather loop uses small timeout waits (<=6ms by default in inproc mode).
             # On Windows, keep 1ms timer resolution so these waits aren't quantized to ~15ms.
             try:
                 raw_wait = os.environ.get("GPU_EXECUTOR_BATCH_WAIT_MS")
                 if raw_wait is None or str(raw_wait).strip() == "":
                     base_wait_ms = int(getattr(ENV, "gpu_executor_batch_wait_ms", 10) or 10)
-                    batch_wait_ms = min(int(base_wait_ms), 2)
+                    batch_wait_ms = min(int(base_wait_ms), 6)
                 else:
                     batch_wait_ms = int(str(raw_wait).strip())
             except Exception:
-                batch_wait_ms = 2
+                batch_wait_ms = 6
             try:
                 after_first_ms = int(os.environ.get("GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS", "2") or "2")
             except Exception:
@@ -1916,7 +1916,9 @@ class GpuExecutor:
                     if not cached_batch_max_overridden:
                         batch_max = max(int(batch_max), 8)
                     if not cached_batch_wait_overridden:
-                        batch_wait_ms = min(int(batch_wait_ms), 2)
+                        # Keep a modest default coalescing window so we can batch/coalesce without
+                        # forcing the owner loop into sub-ms yield-spin behavior.
+                        batch_wait_ms = min(int(batch_wait_ms), 6)
                         if int(fg_burst_window_ms) > 0 and perf_counter() < float(fg_burst_until):
                             batch_wait_ms = 0
                 if batch_wait_ms < 0:
@@ -2379,6 +2381,7 @@ class GpuExecutor:
         # Default to enabled for in-process queues; callers can opt out via env var.
         inproc_coalesce_enabled = env_flag("GPU_EXECUTOR_INPROC_COALESCE", "1")
         inproc_idle_wait_s = 0.1
+        inproc_yields_left = 0
         if self._in_process_queues:
             # In-process queues can be extremely latency sensitive when there is already work in-flight, but when
             # completely idle we should avoid a tight (ms-scale) poll loop that burns CPU on Windows.
@@ -2388,6 +2391,15 @@ class GpuExecutor:
             except Exception:
                 inproc_idle_wait_s = 0.1
             inproc_idle_wait_s = max(0.0, min(float(inproc_idle_wait_s), 1.0))
+            try:
+                raw_yields = _ENV_GET("GPU_EXECUTOR_INPROC_COALESCE_YIELD_ROUNDS")
+                if raw_yields is None or str(raw_yields).strip() == "":
+                    inproc_yields_left = max(0, min(64, int(max_wait_ms)))
+                else:
+                    inproc_yields_left = int(str(raw_yields).strip())
+            except Exception:
+                inproc_yields_left = max(0, min(64, int(max_wait_ms)))
+            inproc_yields_left = max(0, min(int(inproc_yields_left), 256))
         try:
             inproc_after_first_ms = int(_ENV_GET("GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS", "2"))
         except Exception:
@@ -2444,7 +2456,26 @@ class GpuExecutor:
                                 timeout = max(0.0, float(remaining)) if allow_coalesce else 0.0
                 else:
                     timeout = max(0.001, remaining) if len(batch) > 0 else 0.1
-                request = self._queue_get(timeout)
+                if (
+                    self._in_process_queues
+                    and inproc_coalesce_enabled
+                    and len(batch) > 0
+                    and float(timeout) > 0.0
+                ):
+                    get_nowait = getattr(self._request_queue, "get_nowait", None)
+                    if callable(get_nowait):
+                        try:
+                            request = get_nowait()
+                        except queue.Empty:
+                            if perf_counter() >= deadline or int(inproc_yields_left) <= 0:
+                                break
+                            inproc_yields_left = int(inproc_yields_left) - 1
+                            time.sleep(0)
+                            continue
+                    else:
+                        request = self._queue_get(timeout)
+                else:
+                    request = self._queue_get(timeout)
                 try:
                     request.dequeue_perf_ns = time.perf_counter_ns()
                 except Exception:
