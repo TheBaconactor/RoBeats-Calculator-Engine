@@ -8,6 +8,8 @@ import time
 import numpy as np
 import pytest
 
+pytestmark = pytest.mark.gpu
+
 
 def _mk_item(name: str, **stats: int) -> dict:
     out = {"Name": name}
@@ -72,7 +74,7 @@ def worker_task(
         return {"worker_id": worker_id, "success": False, "error": str(e)}
 
 
-def test_multi_worker_parallel_simulation():
+def test_multi_worker_parallel_simulation(monkeypatch):
     """
     Simulate multiple workers submitting GPU requests in parallel.
 
@@ -86,10 +88,22 @@ def test_multi_worker_parallel_simulation():
     from gear_optimizer.solver.gpu_executor import GpuExecutor
     from gear_optimizer.solver.item_registry import ItemRegistry
 
+    # This test validates IPC correctness, not kernel JIT warmup behavior. Warmups can
+    # delay queue consumption at startup and make spawn-based workers appear to "hang".
+    monkeypatch.setenv("GPU_EXECUTOR_WARMUP_FG", "0")
+    monkeypatch.setenv("GPU_EXECUTOR_WARMUP_GA", "0")
+    try:
+        from gear_optimizer.core.env_config import EnvConfig
+        import gear_optimizer.solver.gpu_executor as gpu_executor_mod
+
+        monkeypatch.setattr(gpu_executor_mod, "ENV", EnvConfig.from_environment())
+    except Exception:
+        pass
+
     GpuExecutor._instance = None
     executor = GpuExecutor()
     executor.start()
-    time.sleep(1.5)
+    assert executor.wait_until_ready(timeout=30.0), f"GpuExecutor not ready: {executor.last_init_error}"
 
     try:
         slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
