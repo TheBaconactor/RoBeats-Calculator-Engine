@@ -7,9 +7,9 @@ This module provides:
 
 Policy knobs (environment variables):
 - `METAFINDER_FALLBACK_WARN`:
-    - truthy -> force-enable warning output/events
-    - falsy  -> disable warning output/events
-    - unset  -> defaults to enabled (universal logging)
+    - truthy -> enable warning output to stderr
+    - falsy  -> disable warning output to stderr
+    - unset  -> defaults to disabled (quiet console; structured logs are opt-in)
 - `METAFINDER_FALLBACK_STRICT`:
     - truthy -> raise on fallback sites (except allowlisted prefixes)
     - falsy  -> never raise automatically
@@ -21,7 +21,7 @@ Policy knobs (environment variables):
     - default: "config.,env." (diagnostic-only defaults for config/env parsing)
 - `METAFINDER_FALLBACK_LOG_PATH`:
     - JSONL path for structured fallback events
-    - default: "artifacts/fallback_events.jsonl"
+    - default: disabled (unset/empty)
 """
 
 from __future__ import annotations
@@ -77,8 +77,8 @@ def _is_enabled() -> bool:
     raw = os.environ.get("METAFINDER_FALLBACK_WARN")
     if raw is not None:
         return _is_truthy(raw)
-    # Universal logging by default; callers can disable explicitly.
-    return True
+    # Default to quiet console output; keep strict mode enforcement separate.
+    return False
 
 
 def _include_count() -> bool:
@@ -113,7 +113,7 @@ def _is_allowlisted(site: str) -> bool:
 
 
 def _default_log_path() -> str:
-    return str(os.environ.get("METAFINDER_FALLBACK_LOG_PATH", "artifacts/fallback_events.jsonl") or "").strip()
+    return str(os.environ.get("METAFINDER_FALLBACK_LOG_PATH", "") or "").strip()
 
 
 def _ensure_log_fp():
