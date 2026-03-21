@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import threading
 import time
-from typing import TYPE_CHECKING, Optional
+from typing import Any, TYPE_CHECKING, Optional
 
 from cachetools import LRUCache
 import numpy as np
@@ -151,11 +151,11 @@ def _resolve_fg_candidate_table_residency(calc_song: dict, *, current_song_slot:
 
         if owner_meta_present:
             try:
-                owner_slot_i = int(owner_slot)
+                owner_slot_i = int(str(owner_slot or -1))
             except Exception:
                 owner_slot_i = -1
             try:
-                table_slot_i = int(candidate_table_slot) if candidate_table_slot is not None else int(owner_slot_i)
+                table_slot_i = int(str(candidate_table_slot)) if candidate_table_slot is not None else int(owner_slot_i)
             except Exception:
                 table_slot_i = -1
             phase_ok = str(owner_phase or "") == "ga_to_fg"
@@ -210,9 +210,9 @@ def _get_cached_analytical_breakpoints(
     return list(frozen)
 
 
-def _normalize_pair_signature(pairs: object) -> tuple[tuple[int, int], ...]:
+def _normalize_pair_signature(pairs: Any) -> tuple[tuple[int, int], ...]:
     try:
-        return tuple((int(a), int(b)) for a, b in list(pairs or []))
+        return tuple((int(str(a or 0)), int(str(b or 0))) for a, b in list(pairs or []))
     except Exception:
         return ()
 
@@ -235,7 +235,7 @@ def _freeze_breakpoint_groups(groups: list[dict]) -> tuple[tuple[object, ...], .
     return tuple(frozen)
 
 
-def _thaw_breakpoint_groups(frozen_groups: object) -> list[dict]:
+def _thaw_breakpoint_groups(frozen_groups: Any) -> list[dict]:
     groups: list[dict] = []
     for row in list(frozen_groups or []):
         if not isinstance(row, tuple) or len(row) != 4:
@@ -348,7 +348,7 @@ def _extract_group_payload(group: dict):
     return counts_list, counts_max_fp, group_pairs
 
 
-def _sequence_len(value: object) -> int:
+def _sequence_len(value: Any) -> int:
     if value is None:
         return 0
     try:
@@ -394,7 +394,8 @@ def _estimate_fused_payload_threads(payload: dict) -> int:
         return 1
     pair_count = max(1, int(_sequence_len(payload.get("ftff_pairs"))))
     base_pair_count = max(1, int(_sequence_len(payload.get("base_stats_pairs"))))
-    solve_kwargs = payload.get("solve_kwargs") if isinstance(payload.get("solve_kwargs"), dict) else {}
+    solve_kwargs_obj = payload.get("solve_kwargs")
+    solve_kwargs = solve_kwargs_obj if isinstance(solve_kwargs_obj, dict) else {}
     n_genomes = 0
     try:
         n_genomes = int(solve_kwargs.get("n_genomes_override", 0) or 0)
@@ -718,7 +719,7 @@ def _sig_results_has_fg_improvement(*, sig_results: dict, sigs: list[str]) -> bo
     return False
 
 
-def _selected_count(selected_indices: object) -> int:
+def _selected_count(selected_indices: Any) -> int:
     if selected_indices is None:
         return 0
     try:
@@ -795,22 +796,21 @@ def _resolve_signature_frontier_limit() -> int:
     return max(int(LOADOUTS_PER_SONG_LIMIT), int(LOADOUTS_PER_SONG_LIMIT) * int(mult))
 
 
-def _signature_timing_bucket(sig: object) -> tuple[str, str, str]:
-    if not isinstance(sig, tuple) or len(sig) < 6:
-        return ("", "", "")
+def _signature_timing_bucket(sig: object) -> tuple[str, str, str, int]:
+    if not isinstance(sig, tuple) or len(sig) < 4:
+        return ("", "", "", 0)
 
     try:
-        apply_to = str(sig[-6] or "")
-        regime_id = str(sig[-5] or "")
-        regime_family = str(sig[-4] or "")
-        regime_scope = str(sig[-3] or "")
+        apply_to = str(sig[-4] or "")
+        distribution = str(sig[-3] or "")
+        great_mode = str(sig[-2] or "")
+        seed = int(sig[-1] or 0)
     except Exception:
-        return ("", "", "")
+        return ("", "", "", 0)
 
     if not apply_to:
-        return ("", "", "")
-    family = regime_family or regime_id
-    return (apply_to, family, regime_scope)
+        return ("", "", "", 0)
+    return (apply_to, distribution, great_mode, int(seed))
 
 
 def _build_signature_frontier_metas_from_rows(
@@ -845,7 +845,7 @@ def _build_signature_frontier_metas_from_rows(
             center_ff = 0
 
         timing_bucket = row.get("timing_bucket")
-        if not (isinstance(timing_bucket, (tuple, list)) and len(timing_bucket) >= 3):
+        if not (isinstance(timing_bucket, (tuple, list)) and len(timing_bucket) >= 4):
             timing_bucket = _signature_timing_bucket(sig)
 
         metas.append(
@@ -856,7 +856,7 @@ def _build_signature_frontier_metas_from_rows(
                 "priority": int(row.get("priority", 0) or 0),
                 "center": (int(center_ft), int(center_ff)),
                 "center_bucket": (int(center_ft // center_bin_i), int(center_ff // center_bin_i)),
-                "timing_bucket": tuple(timing_bucket[:3]) if isinstance(timing_bucket, (tuple, list)) else ("", "", ""),
+                "timing_bucket": tuple(timing_bucket[:4]) if isinstance(timing_bucket, (tuple, list)) else ("", "", "", 0),
                 "force_keep": str(sig) in force_keep,
                 "idx": int(idx),
             }
@@ -962,7 +962,7 @@ def _select_signature_frontier_cpu_from_metas(metas: list[dict], *, limit: int) 
     selected: list = []
     seen: set = set()
     seen_center_buckets: set[tuple[int, int]] = set()
-    seen_timing_buckets: set[tuple[str, str, str]] = set()
+    seen_timing_buckets: set[tuple[str, str, str, int]] = set()
 
     def _add(meta: dict) -> bool:
         sig = meta["sig"]
@@ -1006,7 +1006,7 @@ def _select_signature_frontier_cpu_from_metas(metas: list[dict], *, limit: int) 
         if len(selected) >= fg_budget_end:
             break
         timing_bucket = meta["timing_bucket"]
-        if timing_bucket != ("", "", "") and timing_bucket not in seen_timing_buckets:
+        if timing_bucket != ("", "", "", 0) and timing_bucket not in seen_timing_buckets:
             _add(meta)
 
     for meta in metas_by_fg:
@@ -1089,7 +1089,7 @@ def _select_signature_frontier(
     except Exception:
         top_base_keep = int(limit_i)
 
-    timing_bucket_ids: dict[tuple[str, str, str], int] = {}
+    timing_bucket_ids: dict[tuple[str, str, str, int], int] = {}
     next_timing_bucket_id = 1
     base_scores: list[int] = []
     proxy_scores: list[int] = []
@@ -1168,7 +1168,7 @@ def _select_signature_frontier(
     return out[:limit_i]
 
 
-def process_force_greats_gpu_finder(
+def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     loadout_entries,
     force_greats_finder,
     calc_song,
@@ -1977,7 +1977,7 @@ def process_force_greats_gpu_finder(
             except Exception:
                 top_base_keep = int(sig_frontier_limit)
 
-            timing_bucket_ids: dict[tuple[str, str, str], int] = {}
+            timing_bucket_ids: dict[tuple[str, str, str, int], int] = {}
             next_timing_bucket_id = 1
             base_scores: list[int] = []
             proxy_scores: list[int] = []
@@ -1995,7 +1995,7 @@ def process_force_greats_gpu_finder(
                 center_ft.append(int(ft_bucket))
                 center_ff.append(int(ff_bucket))
                 timing_bucket = meta["timing_bucket"]
-                if timing_bucket == ("", "", ""):
+                if timing_bucket == ("", "", "", 0):
                     timing_buckets.append(0)
                     continue
                 bucket_id = timing_bucket_ids.get(timing_bucket)

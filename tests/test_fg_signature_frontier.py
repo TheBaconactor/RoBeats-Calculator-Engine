@@ -8,8 +8,8 @@ from gear_optimizer.helpers.song_helpers.force_greats.gpu_dispatch import (
 from gear_optimizer.solver.taichi_gem.force_greats.api import fg_select_signature_frontier_batch
 
 
-def _sig(name: str, family: str = "", regime_id: str = "") -> tuple:
-    apply_to = "ALL" if (family or regime_id) else ""
+def _sig(name: str, distribution: str = "", great_mode: str = "", seed: int = 0) -> tuple:
+    apply_to = "ALL" if (distribution or great_mode or seed) else ""
     return (
         f"song:{name}",
         "hard",
@@ -24,11 +24,9 @@ def _sig(name: str, family: str = "", regime_id: str = "") -> tuple:
         15,
         8,
         apply_to,
-        regime_id,
-        family,
-        "scope",
-        "",
-        0,
+        distribution,
+        great_mode,
+        int(seed),
     )
 
 
@@ -59,10 +57,10 @@ def test_signature_frontier_noop_under_limit() -> None:
 
 def test_signature_frontier_preserves_top_base_keep_force_keep_and_priority() -> None:
     base_sigs = [_sig(f"base{i}") for i in range(51)]
-    keep_sig = _sig("keep", family="keep-family", regime_id="keep")
-    prio_sig = _sig("prio", family="prio-family", regime_id="prio")
-    fg_sig = _sig("fg", family="fg-family", regime_id="fg")
-    filler_sigs = [_sig(f"fill{i}", family="fill-family", regime_id=f"fill{i}") for i in range(7)]
+    keep_sig = _sig("keep", distribution="uniform", great_mode="full", seed=1)
+    prio_sig = _sig("prio", distribution="uniform", great_mode="late", seed=1)
+    fg_sig = _sig("fg", distribution="random", great_mode="full", seed=2)
+    filler_sigs = [_sig(f"fill{i}", distribution="uniform", great_mode="full", seed=10 + i) for i in range(7)]
     sigs = base_sigs + [keep_sig, prio_sig, fg_sig] + filler_sigs
 
     sig_map = {sig: _rows() for sig in sigs}
@@ -109,10 +107,10 @@ def test_signature_frontier_preserves_top_base_keep_force_keep_and_priority() ->
 
 def test_signature_frontier_prefers_new_timing_buckets_over_duplicate_proxy_rows() -> None:
     base_sigs = [_sig(f"base{i}") for i in range(51)]
-    dup_a = _sig("dup-a", family="dup-family", regime_id="dup-a")
-    dup_b = _sig("dup-b", family="dup-family", regime_id="dup-b")
-    alt = _sig("alt", family="alt-family", regime_id="alt")
-    filler = _sig("fill", family="fill-family", regime_id="fill")
+    dup_a = _sig("dup-a", distribution="uniform", great_mode="full", seed=7)
+    dup_b = _sig("dup-b", distribution="uniform", great_mode="full", seed=7)
+    alt = _sig("alt", distribution="uniform", great_mode="late", seed=7)
+    filler = _sig("fill", distribution="random", great_mode="full", seed=11)
     sigs = base_sigs + [dup_a, dup_b, alt, filler]
 
     sig_map = {sig: _rows() for sig in sigs}
@@ -153,11 +151,11 @@ def test_signature_frontier_prefers_new_timing_buckets_over_duplicate_proxy_rows
 
 def test_signature_frontier_gpu_matches_cpu_reference() -> None:
     base_sigs = [_sig(f"base{i}") for i in range(51)]
-    keep_sig = _sig("keep", family="keep-family", regime_id="keep")
-    prio_sig = _sig("prio", family="prio-family", regime_id="prio")
-    alt_timing_sig = _sig("alt", family="alt-family", regime_id="alt")
-    dup_timing_sig = _sig("dup", family="alt-family", regime_id="dup")
-    filler_sigs = [_sig(f"fill{i}", family="fill-family", regime_id=f"fill{i}") for i in range(12)]
+    keep_sig = _sig("keep", distribution="uniform", great_mode="full", seed=1)
+    prio_sig = _sig("prio", distribution="uniform", great_mode="late", seed=1)
+    alt_timing_sig = _sig("alt", distribution="random", great_mode="full", seed=2)
+    dup_timing_sig = _sig("dup", distribution="random", great_mode="full", seed=2)
+    filler_sigs = [_sig(f"fill{i}", distribution="uniform", great_mode="full", seed=20 + i) for i in range(12)]
     sigs = base_sigs + [keep_sig, prio_sig, alt_timing_sig, dup_timing_sig] + filler_sigs
 
     sig_map = {sig: _rows() for sig in sigs}
@@ -212,7 +210,7 @@ def test_signature_frontier_gpu_matches_cpu_reference() -> None:
 
 
 def test_signature_frontier_gpu_batch_matches_cpu_reference() -> None:
-    sigs = [_sig(f"s{i}", family=f"fam{i % 3}", regime_id=f"r{i}") for i in range(70)]
+    sigs = [_sig(f"s{i}", distribution=f"dist{i % 3}", great_mode=("full" if i % 2 == 0 else "late"), seed=i) for i in range(70)]
     sig_map = {sig: _rows(priority=(1 if i % 17 == 0 else 0)) for i, sig in enumerate(sigs)}
     rep_map = {sig: {"Fever Time": i % 23, "Fever Fill Rate": (i * 3) % 23} for i, sig in enumerate(sigs)}
     base_map = {sig: 9000 - i for i, sig in enumerate(sigs)}
@@ -239,7 +237,7 @@ def test_signature_frontier_gpu_batch_matches_cpu_reference() -> None:
         center_bin=2,
     )
 
-    timing_bucket_ids: dict[tuple[str, str, str], int] = {}
+    timing_bucket_ids: dict[tuple[str, str, str, int], int] = {}
     next_timing_bucket_id = 1
     payload = {
         "base_scores": [],
@@ -261,7 +259,7 @@ def test_signature_frontier_gpu_batch_matches_cpu_reference() -> None:
         payload["center_bucket_ft"].append(int(ft_bucket))
         payload["center_bucket_ff"].append(int(ff_bucket))
         timing_bucket = meta["timing_bucket"]
-        if timing_bucket == ("", "", ""):
+        if timing_bucket == ("", "", "", 0):
             payload["timing_bucket"].append(0)
             continue
         bucket_id = timing_bucket_ids.get(timing_bucket)

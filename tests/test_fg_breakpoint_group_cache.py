@@ -53,7 +53,7 @@ def test_breakpoint_group_cache_reuses_identical_group_plan():
     assert groups_2[0]["ftff_pairs"] == [(0, 0), (1, 0)]
 
 
-def test_breakpoint_group_cache_is_partitioned_by_hitsim_timing_context():
+def test_breakpoint_group_cache_is_partitioned_by_human_hitsim_timing_context():
     with gpu_dispatch._FG_BREAKPOINT_GROUPS_LOCK:
         gpu_dispatch._FG_BREAKPOINT_GROUPS_CACHE.clear()
 
@@ -145,7 +145,7 @@ def test_max_fp_matrix_cache_reuses_identical_matrix():
     assert int(matrix_3[0, 0]) == 1
 
 
-def test_max_fp_matrix_cache_is_partitioned_by_hitsim_timing_context():
+def test_max_fp_matrix_cache_is_partitioned_by_human_hitsim_timing_context():
     with gpu_dispatch._FG_MAX_FP_MATRIX_LOCK:
         gpu_dispatch._FG_MAX_FP_MATRIX_CACHE.clear()
 
