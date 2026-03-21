@@ -337,13 +337,16 @@ def _normalize_hitsim_matrix_candidate(candidate: dict, *, song: Any) -> dict | 
     if not isinstance(base_stats, dict) or not base_stats:
         return None
     base_score = safe_int(candidate.get("BaseScore", candidate.get("Score", data.get("BaseScore", data.get("Score", 0)))), 0)
+    genome_list = list(genome[:9])
+    gear_list = list(genome_list[:6])
+    minis_list = list(genome_list[6:9])
     return {
         "Score": int(base_score),
         "BaseScore": int(base_score),
         "GenomeIDs": [int(x) for x in genome_ids.tolist()],
-        "Genome": copy.deepcopy(list(genome[:9])),
-        "Gear": copy.deepcopy(list(genome[:6])),
-        "Minis": copy.deepcopy(list(genome[6:9])),
+        "Genome": genome_list,
+        "Gear": gear_list,
+        "Minis": minis_list,
         "Data": copy.deepcopy(data),
         "_ga_registry": getattr(song, "registry", None),
         "_hitsim_matrix_identity": tuple(identity),
@@ -519,9 +522,9 @@ def _build_hitsim_matrix_candidate_payload(
     selected_color: str,
     registry: Any,
 ) -> dict:
-    genome = copy.deepcopy(list(candidate_entry.get("Genome") or []))[:9]
-    gear = copy.deepcopy(list(candidate_entry.get("Gear") or []))[:6]
-    minis = copy.deepcopy(list(candidate_entry.get("Minis") or []))[:3]
+    genome = list(candidate_entry.get("Genome") or [])[:9]
+    gear = list(candidate_entry.get("Gear") or [])[:6]
+    minis = list(candidate_entry.get("Minis") or [])[:3]
     gear_names = [_candidate_item_name(item) for item in gear]
     mini_names = [_candidate_item_name(item) for item in minis]
     base_stats = dict(candidate_entry.get("_hitsim_matrix_base_stats") or {})
@@ -535,12 +538,15 @@ def _build_hitsim_matrix_candidate_payload(
         int(g_fm),
         int(g_ov),
     )
+    data_genome = list(genome)
+    data_gear = list(gear)
+    data_minis = list(minis)
     data = {
         "Score": int(score),
         "BaseScore": int(score),
-        "Genome": copy.deepcopy(genome),
-        "Gear": copy.deepcopy(gear),
-        "Minis": copy.deepcopy(minis),
+        "Genome": data_genome,
+        "Gear": data_gear,
+        "Minis": data_minis,
         "GearNames": list(gear_names),
         "MiniNames": list(mini_names),
         "FT": int(g_ft),
@@ -571,11 +577,11 @@ def _build_hitsim_matrix_candidate_payload(
     payload = {
         "Score": int(score),
         "BaseScore": int(score),
-        "Genome": copy.deepcopy(genome),
+        "Genome": genome,
         "GenomeIDs": [int(x) for x in list(candidate_entry.get("GenomeIDs") or [])[:9]],
         "_ga_registry": registry,
-        "Gear": copy.deepcopy(gear),
-        "Minis": copy.deepcopy(minis),
+        "Gear": gear,
+        "Minis": minis,
         "MiniNames": list(mini_names),
         "Data": data,
         "HumanHitSimRegimeId": str(data.get("HumanHitSimRegimeId", "") or ""),
@@ -590,7 +596,7 @@ def _finalize_hitsim_matrix_merged_candidates(merged_by_identity: dict[tuple[int
     for entry in list(merged_by_identity.values()):
         if not isinstance(entry, dict):
             continue
-        payload = copy.deepcopy(entry.get("payload")) if isinstance(entry.get("payload"), dict) else None
+        payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else None
         if not isinstance(payload, dict):
             continue
         regime_ids = [str(x) for x in list(entry.get("regime_ids") or []) if str(x or "").strip()]
@@ -646,8 +652,8 @@ def _run_hitsim_matrix_gpu_batch(
 def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClient] = None) -> tuple[dict, list, list, list[dict]]:
     plan = getattr(song, "_hitsim_matrix_plan", None)
     baseline_best = copy.deepcopy(getattr(song, "best_data", {}) or {})
-    baseline_gear = copy.deepcopy(list(getattr(song, "best_gear", []) or []))
-    baseline_minis = copy.deepcopy(list(getattr(song, "best_minis", []) or []))
+    baseline_gear = list(getattr(song, "best_gear", []) or [])
+    baseline_minis = list(getattr(song, "best_minis", []) or [])
     baseline_candidates = copy.deepcopy(list(getattr(song, "ga_candidates", []) or []))
     baseline_calc_song = _clone_calc_song_for_hitsim(getattr(song, "calc_song", {}) or {})
 
@@ -780,13 +786,13 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
                 if job_regime_id:
                     regime_group = fg_regime_groups_by_id.get(str(job_regime_id))
                     if isinstance(regime_group, dict):
-                        regime_group.setdefault("ga_candidates", []).append(copy.deepcopy(payload))
+                        regime_group.setdefault("ga_candidates", []).append(payload)
                 evaluated_pairs += 1
                 entry = merged_by_identity.get(identity)
                 regime_id = str(payload.get("HumanHitSimRegimeId", "") or "")
                 if entry is None:
                     merged_by_identity[identity] = {
-                        "payload": copy.deepcopy(payload),
+                        "payload": payload,
                         "regime_ids": [regime_id] if regime_id else [],
                     }
                 else:
@@ -797,7 +803,7 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
                     existing_payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
                     existing_score = safe_int(existing_payload.get("Score", existing_payload.get("BaseScore", 0)), 0)
                     if int(score) > int(existing_score):
-                        entry["payload"] = copy.deepcopy(payload)
+                        entry["payload"] = payload
 
                 if int(score) > int(local_best_score):
                     local_best_score = int(score)
@@ -866,8 +872,8 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
         selected_candidate = best_candidate_payload if isinstance(best_candidate_payload, dict) else None
 
     final_best = copy.deepcopy(baseline_best)
-    final_gear = copy.deepcopy(baseline_gear)
-    final_minis = copy.deepcopy(baseline_minis)
+    final_gear = list(baseline_gear)
+    final_minis = list(baseline_minis)
     final_calc_song = _clone_calc_song_for_hitsim(baseline_calc_song)
     candidate_changed = False
     regime_changed = False
@@ -879,8 +885,8 @@ def _run_hitsim_matrix_jobs_sync(song: Any, gpu_client: Optional[GpuServiceClien
         baseline_regime_id = str((baseline_best or {}).get("HumanHitSimRegimeId", "") or "")
         if int(selected_score) > int(current_score):
             final_best = selected_data if isinstance(selected_data, dict) else {}
-            final_gear = copy.deepcopy(list(selected_candidate.get("Gear") or []))
-            final_minis = copy.deepcopy(list(selected_candidate.get("Minis") or []))
+            final_gear = list(selected_candidate.get("Gear") or [])
+            final_minis = list(selected_candidate.get("Minis") or [])
             final_calc_song = _clone_calc_song_for_hitsim(best_calc_song if isinstance(best_calc_song, dict) else baseline_calc_song)
         candidate_changed = bool(int(selected_score) > int(current_score))
         regime_changed = bool(candidate_changed and selected_regime_id and selected_regime_id != baseline_regime_id)
