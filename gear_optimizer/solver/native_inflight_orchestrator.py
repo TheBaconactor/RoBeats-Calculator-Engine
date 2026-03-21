@@ -53,6 +53,11 @@ from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.genetic import GA_POPULATION_SIZE
 from gear_optimizer.solver.gpu_executor import get_gpu_executor
 from gear_optimizer.solver.gpu_service import GpuServiceClient, GpuServiceTimeoutError
+from gear_optimizer.solver.inflight_wait import (
+    read_inflight_event_wait_gpu_cap_s,
+    read_inflight_event_wait_short_spin_s,
+    wait_for_completion_event,
+)
 from gear_optimizer.solver.inflight_utils import (
     _build_calc_song_from_file,
     _compact_items,
@@ -755,37 +760,13 @@ def _read_inflight_event_wait_timeout_s() -> float:
 
 
 def _read_inflight_event_wait_gpu_cap_s() -> float:
-    """
-    Optional tighter cap for wait timeout while GPU work is active.
-
-    A small cap reduces GA->FG handoff latency jitter under Windows scheduler/timer noise.
-    Set to 0 to disable this cap.
-    """
-    timeout_s = 0.01
-    raw = os.environ.get("INFLIGHT_EVENT_WAIT_GPU_CAP_SEC")
-    if raw is not None and str(raw).strip() != "":
-        try:
-            timeout_s = float(raw)
-        except Exception:
-            pass
-    return max(0.0, min(float(timeout_s), 1.0))
+    # Kept as a wrapper for unit tests and historical call sites.
+    return float(read_inflight_event_wait_gpu_cap_s())
 
 
 def _read_inflight_event_wait_short_spin_s() -> float:
-    """
-    Short-window polling threshold for completion-event waits.
-
-    For very small waits, poll with zero-timeout checks to avoid coarse timed-wait
-    quantization from stretching sub-ms/ms windows into multi-ms idle bubbles.
-    """
-    short_spin_ms = 3.0
-    raw = os.environ.get("INFLIGHT_EVENT_WAIT_SHORT_SPIN_MS")
-    if raw is not None and str(raw).strip() != "":
-        try:
-            short_spin_ms = float(raw)
-        except Exception:
-            pass
-    return max(0.0, min(float(short_spin_ms) / 1000.0, 0.050))
+    # Kept as a wrapper for unit tests and historical call sites.
+    return float(read_inflight_event_wait_short_spin_s())
 
 
 def _wait_for_completion_event(
@@ -794,20 +775,17 @@ def _wait_for_completion_event(
     timeout_s: float,
     short_spin_s: float,
 ) -> bool:
-    wait_timeout = max(0.0, float(timeout_s))
-    if wait_timeout <= 0.0:
-        return bool(completion_event.wait(timeout=0.0))
-
-    if wait_timeout > max(0.0, float(short_spin_s)):
-        return bool(completion_event.wait(timeout=wait_timeout))
-
-    deadline = time.perf_counter() + wait_timeout
-    while True:
-        if completion_event.wait(timeout=0.0):
-            return True
-        if time.perf_counter() >= deadline:
-            return False
-        time.sleep(0)
+    # Delegate to the shared helper, but pass the module-local time funcs so tests
+    # can monkeypatch `native_inflight_orchestrator.time`.
+    return bool(
+        wait_for_completion_event(
+            completion_event,
+            timeout_s=float(timeout_s),
+            short_spin_s=float(short_spin_s),
+            perf_counter=time.perf_counter,
+            sleep=time.sleep,
+        )
+    )
 
 
 def _continuous_fg_should_start(
@@ -2441,8 +2419,8 @@ def run_native_inflight_song_pipeline(
             stage_emit_sec = 0.0
 
         event_wait_timeout_s = float(_read_inflight_event_wait_timeout_s())
-        event_wait_gpu_cap_s = float(_read_inflight_event_wait_gpu_cap_s())
-        event_wait_short_spin_s = float(_read_inflight_event_wait_short_spin_s())
+        event_wait_gpu_cap_s = float(read_inflight_event_wait_gpu_cap_s())
+        event_wait_short_spin_s = float(read_inflight_event_wait_short_spin_s())
 
         profile_max_songs = 0
         try:
@@ -3587,7 +3565,7 @@ def run_native_inflight_song_pipeline(
                         wait_timeout_s = float(event_wait_timeout_s)
                         if has_gpu and float(event_wait_gpu_cap_s) > 0.0:
                             wait_timeout_s = min(float(wait_timeout_s), float(event_wait_gpu_cap_s))
-                        signaled = _wait_for_completion_event(
+                        signaled = wait_for_completion_event(
                             completion_event,
                             timeout_s=float(wait_timeout_s),
                             short_spin_s=float(event_wait_short_spin_s),
