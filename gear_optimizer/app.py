@@ -472,7 +472,7 @@ class GearOptimizerApp:
             if str(os.environ.get(key, "") or "").strip():
                 return True
 
-        # Config-level profile toggles (important for non-main entrypoints).
+        # DEV / DEBUG: profile-only config overrides (Debug.DebugProfile, IterationEngine.DebugProfile).
         if cfg is not None:
             if self._cfg_truthy(cfg, "Debug", "DebugProfile", fallback=False):
                 return True
@@ -793,6 +793,7 @@ class GearOptimizerApp:
 
                 print(f" >> [ForceGreats] {fg_status}")
 
+            # PRODUCTION: runtime / persistence flags (GA_SearchDepth, UseEvolutionDB, LoopForever, EvalCPUCores).
             ga_depth = safe_int(cfg.get("IterationEngine", "GA_SearchDepth", fallback=50))
             use_evo_db = cfg.getboolean("IterationEngine", "UseEvolutionDB", fallback=True)
             loop_forever = cfg.getboolean("IterationEngine", "LoopForever", fallback=False)
@@ -813,6 +814,7 @@ class GearOptimizerApp:
             # If the GPU executor initializes Taichi before the GA code runs, Taichi fields can be allocated with
             # default (padded) GA run buffers, making GPU-native GA payload downloads significantly slower.
             # Publish a conservative sizing hint early so any first-use allocation can pick tighter shapes.
+            # PRODUCTION: GPU execution flags (GPU_Mode, GPU_Native_GA, GA_MultiStart).
             gpu_mode_requested = True
             try:
                 gpu_mode_requested = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=True)
@@ -848,6 +850,7 @@ class GearOptimizerApp:
             # InFlightSongs uses the singleton in-process GPU executor. Start it early so
             # Taichi init + kernel warmups overlap with CPU-heavy data/path loading.
             # This improves first-task latency on macOS where Metal JIT can be costly.
+            # PRODUCTION: in-flight overlap flag (InFlightSongs).
             try:
                 inflight_req = int(self._get_inflight_songs_requested(cfg) or 0)
             except Exception:
@@ -1276,6 +1279,7 @@ class GearOptimizerApp:
 
         def _read_song_queue_limit() -> int:
             limit = 0
+            # PRODUCTION: queue / resume flag (SongQueueLimit).
             try:
                 limit = safe_int(cfg.get("IterationEngine", "SongQueueLimit", fallback="0"), 0)
             except Exception:
@@ -1309,6 +1313,7 @@ class GearOptimizerApp:
         resume_seed_queue: list[tuple[str, str, str]] = []
         resume_names_present: set[str] = set()
         ignore_resume = False
+        # PRODUCTION: queue / resume flag (IgnoreResumeQueue).
         try:
             ignore_resume = cfg.getboolean("IterationEngine", "IgnoreResumeQueue", fallback=False)
         except Exception:
@@ -2032,6 +2037,9 @@ class GearOptimizerApp:
             except Exception:
                 ga_seed_base = None
 
+        # PRODUCTION: repeat / HitSim flags
+        # (SongRepeats, BundleSongRepeats, HumanHitSim.Enabled, HumanHitSim.ApplyTo,
+        #  HumanHitSim.Seed, HumanHitSim.Distribution, HumanHitSim.GreatMode).
         song_repeats = 1
         try:
             song_repeats = safe_int(cfg.get("IterationEngine", "SongRepeats", fallback="1"), 1)
@@ -2052,6 +2060,8 @@ class GearOptimizerApp:
             hitsim_apply_to = str(cfg.get("HumanHitSim", "ApplyTo", fallback="FG") or "FG").strip().upper()
         except Exception:
             hitsim_apply_to = "FG"
+        # DEV / DEBUG: refinement / narrowing flags
+        # (HumanHitSim.RefineAfterGA, HumanHitSim.RefineTrials).
         try:
             hitsim_refine_after = _truthy_cfg(cfg.get("HumanHitSim", "RefineAfterGA", fallback="0"))
         except Exception:
@@ -2397,6 +2407,7 @@ class GearOptimizerApp:
         - InFlightSongs is a single-process, GPU-backed pipeline.
         - It supports both CPU GA (GPU eval) and GPU_Native_GA via separate orchestrators.
         """
+        # PRODUCTION: in-flight overlap flag (InFlightSongs) and GPU runtime flag (GPU_Mode).
         inflight_songs = self._get_inflight_songs_requested(cfg)
         if inflight_songs > 0:
             if not cfg.has_section("IterationEngine"):
@@ -2430,6 +2441,8 @@ class GearOptimizerApp:
         - config: IterationEngine.InFlight_RamMode=true
         - env: INFLIGHT_RAM_MODE=1
         """
+        # PRODUCTION: in-flight RAM/cache flags
+        # (InFlight_RamMode, InFlight_SongFileCacheMax, TeamBuff_BaseCalcSongCacheMax).
         inflight_songs = self._get_inflight_songs_requested(cfg)
         if int(inflight_songs) <= 1:
             return
@@ -2493,6 +2506,7 @@ class GearOptimizerApp:
         - Must run before `gear_optimizer.solver.taichi_gem.fields` is imported.
         - Users can always override by setting `GPU_SONG_SLOTS` explicitly.
         """
+        # PRODUCTION: GPU slot sizing flag (GPU_SongSlots).
         raw = os.environ.get("GPU_SONG_SLOTS")
         if raw is not None and str(raw).strip() != "":
             return
@@ -2527,6 +2541,7 @@ class GearOptimizerApp:
             pass
 
         ga_queue_mult = 0
+        # PRODUCTION: in-flight overlap flag (InFlight_GA_QueueMult).
         try:
             ga_queue_mult = safe_int(cfg.get("IterationEngine", "InFlight_GA_QueueMult", fallback="0"), 0)
         except Exception:

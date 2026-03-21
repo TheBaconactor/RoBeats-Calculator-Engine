@@ -77,6 +77,7 @@ def compute_memory_guard_limit(cfg):
         else DEFAULT_MEMORY_GUARD_PERCENT
     )
 
+    # PRODUCTION: memory guard flags (MemorySoftLimitGB, MemorySoftLimitPercent).
     limit_gb = safe_float(cfg.get("IterationEngine", "MemorySoftLimitGB", fallback=0.0), default=0.0)
     limit_percent = safe_float(
         cfg.get(
@@ -257,6 +258,7 @@ def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
             manual_force_greats=False,
         )
 
+    # PRODUCTION: core runtime flags (MetaFinder, AutoSelectBuffAndColor, ForceGreatsMode, ForceGreatsFinder).
     try:
         meta_finder = cfg.getboolean("IterationEngine", "MetaFinder", fallback=False)
     except Exception:
@@ -279,6 +281,7 @@ def read_iteration_engine_settings(cfg: Any) -> IterationEngineSettings:
     except Exception:
         force_greats_finder = False
 
+    # DEV / DEBUG: diagnostic-only flag (ForceGreatsDebug).
     try:
         force_greats_debug = cfg.getboolean("IterationEngine", "ForceGreatsDebug", fallback=False)
     except Exception:
@@ -329,6 +332,7 @@ def read_fg_candidate_limit(
     clamping semantics and limits "accidental" extreme values that could cause huge
     DB reads or GPU batches.
     """
+    # PRODUCTION: FG tuning flag (FG_CandidateLimit).
     try:
         raw = cfg.get("IterationEngine", "FG_CandidateLimit", fallback=default)
     except Exception as exc:
@@ -353,6 +357,7 @@ def read_fg_search_radius(cfg: Any) -> int | None:
     - -1 => full window over all FT/FF allocations within TOTAL_GEM_BUDGET
     - >=0 => radius in gem-space around each loadout's (FT, FF) center
     """
+    # PRODUCTION: FG tuning flag (FG_SearchRadius).
     try:
         raw = str(cfg.get("IterationEngine", "FG_SearchRadius", fallback="") or "").strip()
     except Exception as exc:

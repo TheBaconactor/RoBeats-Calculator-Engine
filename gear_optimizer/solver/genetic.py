@@ -205,6 +205,7 @@ def _build_candidate_data_obj(
 
 
 def _decode_requires_full_stats(cfg_data: dict | None) -> bool:
+    # PRODUCTION: decode flag (GA_DECODE_INCLUDE_STATS).
     if env_flag("GA_DECODE_INCLUDE_STATS", "0"):
         return True
     if not isinstance(cfg_data, dict):
@@ -216,7 +217,8 @@ def _decode_requires_full_stats(cfg_data: dict | None) -> bool:
     )
 
 
-# Cached env config for GA_FORCE_COLD_START (avoids repeated env lookups)
+# PRODUCTION: GA_FORCE_COLD_START is a production runtime override for the GPU-native GA path.
+# DEV / DEBUG: PERF_TIMING, GPU_NATIVE_GA_LOG_ISLAND_MODEL, GPU_NATIVE_GA_VULKAN_RESET_EVERY_RUNS, GPU_NATIVE_GA_VULKAN_RETRIES, GPU_NATIVE_GA_BATCH_RUNS, GPU_NATIVE_GA_LOG_PROGRESS, GPU_NATIVE_GA_COLD_TAIL_GENS.
 _GA_FORCE_COLD_START = _env_flag("GA_FORCE_COLD_START", "")
 _PERF_TIMING = _env_flag("PERF_TIMING", "0")
 _GPU_NATIVE_GA_LOG_ISLAND_MODEL = _env_flag("GPU_NATIVE_GA_LOG_ISLAND_MODEL", "0")
@@ -1710,6 +1712,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
     audit_redundancy = _ga_redundancy_audit_enabled()
 
     perf = _PERF_TIMING
+    # DEV / DEBUG: phase timing flag (GPU_NATIVE_GA_PHASE_TIMING).
     phase_timing = perf and env_flag("GPU_NATIVE_GA_PHASE_TIMING", "0")
     if phase_timing:
         import taichi as ti
@@ -2250,6 +2253,9 @@ def solve_coevolution_genetic(
         "user_fm": safe_int(cfg.get("UserInputStatsGems", "fever_multiplier", fallback=0)),
         "static_elem_input": safe_int(cfg.get("ElementalGems", selected_color, fallback=0)),
     }
+    # DEV / DEBUG: convergence trace flags
+    # (GAConvergenceTrace, GAConvergenceTraceEvery, GAConvergenceTraceOutDir,
+    #  GAConvergenceTraceSongFilter).
     try:
         cfg_data["ga_convergence_trace_enabled"] = bool(
             cfg.getboolean("IterationEngine", "GAConvergenceTrace", fallback=False)
@@ -2287,6 +2293,7 @@ def solve_coevolution_genetic(
     except Exception:
         fg_enabled = False
     cfg_data["fg_require_stats"] = bool(fg_enabled)
+    # RefineAfterGA is a debugging / narrowing pass, not part of the modern production flow.
     try:
         hitsim_refine_enabled = bool(cfg.getboolean("HumanHitSim", "RefineAfterGA", fallback=False))
     except Exception:
@@ -2297,6 +2304,7 @@ def solve_coevolution_genetic(
         hitsim_apply_to = "ALL"
     cfg_data["hitsim_refine_require_stats"] = bool(hitsim_refine_enabled and hitsim_apply_to == "ALL")
 
+    # PRODUCTION: modern optimizer runtime path is GPU-native.
     # --- GPU-NATIVE GA PATH ---
     # If using GPU mode, bypass the entire CPU loop mechanism.
     if cfg_data.get("use_gpu", False) and cfg_data.get("use_gpu_native", True) and _GPU_NATIVE_AVAILABLE:
@@ -2642,6 +2650,7 @@ def solve_coevolution_genetic(
                 secondary_color=str(s_color or ""),
             )
 
+        # PRODUCTION: winner gem-allocation refinement keeps the persisted GA result canonical.
         if env_flag("GPU_GA_WINNER_REFINEMENT", "1"):
             # ------------------------------------------------------------------
             # Winner Gem-Allocation Refinement (GPU)
@@ -2713,6 +2722,7 @@ def solve_coevolution_genetic(
                 force_greats_enabled = bool(read_iteration_engine_settings(cfg).force_greats_finder)
             except Exception:
                 force_greats_enabled = False
+            # PRODUCTION: combo booster flag (FG_COMBO_BOOSTER_ENABLED).
             combo_enabled = env_flag("FG_COMBO_BOOSTER_ENABLED", "1")
 
             boosted = None
