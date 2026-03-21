@@ -1,0 +1,8 @@
+{
+  "include": ["gear_optimizer/core", "gear_optimizer/data", "gear_optimizer/pipeline", "gear_optimizer/helpers"],
+  "exclude": ["scripts", "tools", "Data", "bin", "artifacts"],
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "basic",
+  "reportMissingImports": false,
+  "reportMissingTypeStubs": false
+}

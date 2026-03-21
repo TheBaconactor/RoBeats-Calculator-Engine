@@ -1,3 +1,5 @@
+from typing import Any
+
 # Hard cap fallbacks to prevent config explosion
 # Section 1 can have more FG than section 2, etc. (diminishing returns)
 MAX_SECTION_CAPS = [50, 30, 15, 10, 8, 6, 5, 4, 4, 4, 4, 4, 4, 4, 4, 4]
@@ -139,7 +141,7 @@ def generate_dynamic_fg_configs(num_sections, non_fever_base, *, gap=None, fever
     return list(itertools.product(*ranges))
 
 
-def _clamp_stat_idx(x: object) -> int:
+def _clamp_stat_idx(x: Any) -> int:
     try:
         v = int(x)
     except Exception:

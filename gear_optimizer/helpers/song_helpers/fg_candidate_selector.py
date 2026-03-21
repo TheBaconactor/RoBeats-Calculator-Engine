@@ -29,7 +29,9 @@ def _split_gear_minis(candidate: dict) -> tuple[list[dict], list[dict]]:
 def _center_key(candidate: dict) -> tuple[int, int]:
     data = candidate.get("Data")
     if not isinstance(data, dict):
-        data = candidate.get("data") if isinstance(candidate.get("data"), dict) else {}
+        data = candidate.get("data")
+        if not isinstance(data, dict):
+            data = {}
     ft = 0
     ff = 0
     try:

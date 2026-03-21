@@ -3,37 +3,61 @@ JIT (Just-In-Time) compilation setup for performance-critical functions.
 Falls back gracefully if Numba is not available.
 """
 
-# --- OPTIONAL JIT ACCELERATION ---
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Callable, TypeVar
+
+_F = TypeVar("_F", bound=Callable[..., object])
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    val = os.environ.get(name)
+    if val is None:
+        return default
+    return str(val).strip().lower() in ("1", "true", "yes", "y", "on")
+
+
+def _default_numba_cache_dir() -> str | None:
+    """
+    Return a stable cache dir for Numba, scoped to this repo.
+
+    Using `bin/numba_cache/` keeps artifacts out of user profile dirs and
+    makes cleanup straightforward.
+    """
+    try:
+        repo_root = Path(__file__).resolve().parents[2]
+        cache_dir = repo_root / "bin" / "numba_cache"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return str(cache_dir)
+    except Exception:
+        return None
+
+
+def _fallback_jit(nopython: bool = True, cache: bool = True) -> Callable[[_F], _F]:
+    """
+    Fallback decorator when Numba is not available.
+    Returns the function unchanged (no optimization).
+    """
+
+    def decorator(func: _F) -> _F:
+        return func
+
+    return decorator
+
+
+HAS_NUMBA = False
+jit = _fallback_jit
+
 try:
-    import os
-    from pathlib import Path
-
-    def _env_bool(name: str, default: bool) -> bool:
-        val = os.environ.get(name)
-        if val is None:
-            return default
-        return str(val).strip().lower() in ("1", "true", "yes", "y", "on")
-
-    def _default_numba_cache_dir() -> str | None:
-        """
-        Return a stable cache dir for Numba, scoped to this repo.
-
-        Using `bin/numba_cache/` keeps artifacts out of user profile dirs and
-        makes cleanup straightforward.
-        """
-        try:
-            repo_root = Path(__file__).resolve().parents[2]
-            cache_dir = repo_root / "bin" / "numba_cache"
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            return str(cache_dir)
-        except Exception:
-            return None
-
-    from numba import jit as numba_jit
-
+    from numba import jit as _numba_jit
+except ImportError:
+    pass
+else:
     HAS_NUMBA = True
 
-    def jit(nopython=True, cache=True):
+    def _numba_jit_wrapper(nopython: bool = True, cache: bool = True) -> Callable[[_F], _F]:
         """
         Create a JIT decorator.
 
@@ -49,20 +73,9 @@ try:
                 os.environ["NUMBA_CACHE_DIR"] = cache_dir
             else:
                 use_cache = False
-        return numba_jit(nopython=nopython, cache=use_cache)
-except ImportError:
-    HAS_NUMBA = False
+        return _numba_jit(nopython=nopython, cache=use_cache)
 
-    def jit(nopython=True, cache=True):
-        """
-        Fallback decorator when Numba is not available.
-        Returns the function unchanged (no optimization).
-        """
-
-        def decorator(func):
-            return func
-
-        return decorator
+    jit = _numba_jit_wrapper
 
 
 __all__ = ["jit", "HAS_NUMBA"]

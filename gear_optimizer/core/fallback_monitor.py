@@ -40,7 +40,8 @@ from typing import Any
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 _COUNTS_LOCK = threading.Lock()
 _COUNTS_BY_SITE: dict[str, int] = {}
-_UNSET = configparser._UNSET
+# configparser._UNSET is a private sentinel and isn't typed in stdlib stubs.
+_UNSET: Any = getattr(configparser, "_UNSET", object())
 
 _LOG_LOCK = threading.Lock()
 _LOG_FP = None

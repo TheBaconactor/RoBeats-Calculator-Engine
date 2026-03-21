@@ -1,6 +1,6 @@
 # Runtime dependencies
 
-# Pinned to known-good versions (Python >= 3.9). Update intentionally with a test run.
+# Pinned to known-good versions (Python >= 3.10). Update intentionally with a test run.
 numpy==1.26.4
 numba==0.59.1
 taichi==1.7.4

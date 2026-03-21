@@ -3,11 +3,11 @@ name = "robeats-metafinder"
 version = "2.0.0"
 description = "High-performance genetic algorithm solver for optimizing gear and mini loadouts"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 
 [tool.ruff]
 line-length = 120
-target-version = "py39"
+target-version = "py310"
 
 # Include all Python files
 include = ["gear_optimizer/**/*.py", "tests/**/*.py", "scripts/**/*.py", "tools/**/*.py", "*.py"]

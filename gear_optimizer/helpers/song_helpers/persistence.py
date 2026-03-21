@@ -11,6 +11,7 @@ Extension rule:
 """
 
 from collections.abc import Callable
+from typing import Any
 
 from ...core.utils import get_selected_element
 from .ga_entry_utils import entry_loadout_hash, materialize_candidate_names, materialize_entry_names
@@ -18,13 +19,13 @@ from .item_utils import names_list
 from .retention import select_retained_hashes
 
 
-def _safe_int_force(value: object, default: int = 0) -> int:
+def _safe_int_force(value: Any, default: int = 0) -> int:
     """Best-effort integer coercion used for DB payload normalization."""
     try:
-        return int(value) if value is not None else int(default)
+        return int(str(value)) if value is not None else int(default)
     except Exception:
         try:
-            return int(float(value))
+            return int(float(str(value)))
         except Exception:
             return int(default)
 

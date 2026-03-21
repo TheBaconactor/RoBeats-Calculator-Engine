@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-_FTFF_VALID_MASK_CACHE: dict[int, "object"] = {}
+from typing import Any
+
+_FTFF_VALID_MASK_CACHE: dict[int, Any] = {}
 _FTFF_FULL_PAIRS_CACHE: dict[int, list[tuple[int, int]]] = {}
 
 
 def _group_ftff_pairs_by_max_fp_matrix(
-    ftff_pairs: "object",
-    max_fp_matrix: "object",
+    ftff_pairs: Any,
+    max_fp_matrix: Any,
     *,
     n_sections: int,
 ) -> list[dict]:
@@ -93,7 +95,7 @@ def _group_ftff_pairs_by_max_fp_matrix(
 
 
 def _collect_ftff_pairs_from_centers(
-    centers: "object",
+    centers: Any,
     *,
     search_radius: int,
     total_budget: int,

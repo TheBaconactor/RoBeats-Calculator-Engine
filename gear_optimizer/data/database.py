@@ -14,7 +14,7 @@ import atexit
 import weakref
 import warnings
 from collections.abc import Iterable
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 from urllib.parse import quote
 from ..core.constants import LOADOUTS_PER_SONG_LIMIT, PATHS
 from ..core.env_config import env_flag
@@ -954,7 +954,7 @@ def save_loadouts_batch(
 def save_team_buff_loadouts_batch(
     song_name: str,
     team_buff: str,
-    entries: List[Dict[str, Any]],
+    entries: Sequence[Mapping[str, Any]],
     *,
     conn: Optional[sqlite3.Connection] = None,
     commit: bool = True,
@@ -1047,7 +1047,7 @@ def save_team_buff_loadouts_batch(
 
     entry_color_cache: Dict[int, tuple[str, str, str]] = {}
 
-    def _extract_entry_colors(entry: Dict[str, Any]) -> tuple[str, str, str]:
+    def _extract_entry_colors(entry: Mapping[str, Any]) -> tuple[str, str, str]:
         entry_id = int(id(entry))
         cached = entry_color_cache.get(entry_id)
         if cached is not None:
@@ -1137,7 +1137,9 @@ def save_team_buff_loadouts_batch(
         mini_sig_cache[key] = sig
         return sig
 
-    def _effective_hash_for_entry(entry: Dict[str, Any]) -> Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]:
+    def _effective_hash_for_entry(
+        entry: Mapping[str, Any],
+    ) -> Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]:
         gear_names_local = _compact_gear_for_db(entry.get("gear", []))
         mini_names_local = _compact_minis_for_db(entry.get("minis", []))
         p_color, s_color, sel_color = _extract_entry_colors(entry)
@@ -1160,7 +1162,7 @@ def save_team_buff_loadouts_batch(
 
     # Deduplicate (score + hash) within this batch.
     _t_dedup0 = time.perf_counter()
-    dedup_groups: Dict[tuple[int, str], list[Dict[str, Any]]] = {}
+    dedup_groups: Dict[tuple[int, str], list[Mapping[str, Any]]] = {}
     effective_cache_by_entry_id: Dict[int, Optional[tuple[str, list[tuple[Any, ...]], str, str, str]]] = {}
     for entry in entries:
         entry_id = int(id(entry))
@@ -1183,7 +1185,7 @@ def save_team_buff_loadouts_batch(
         key = (int(entry.get("score", 0) or 0), str(h))
         dedup_groups.setdefault(key, []).append(entry)
 
-    deduplicated_entries: list[Dict[str, Any]] = []
+    deduplicated_entries: list[Mapping[str, Any]] = []
     for (_score, _h), group in dedup_groups.items():
         if len(group) == 1:
             deduplicated_entries.append(group[0])

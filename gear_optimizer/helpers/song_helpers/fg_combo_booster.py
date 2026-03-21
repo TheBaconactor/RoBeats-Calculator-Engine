@@ -7,7 +7,7 @@ import weakref
 import zlib
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Optional, Iterable
+from typing import Any, Iterable, Optional, cast
 
 from ...core.constants import SKIP_ITEM_KEYS
 from ...core.utils import get_selected_element
@@ -56,7 +56,7 @@ def _as_genome(candidate: dict) -> list[dict]:
     return gear + minis
 
 
-def _int(v: object, default: int = 0) -> int:
+def _int(v: Any, default: int = 0) -> int:
     try:
         return int(v or 0)
     except Exception:
@@ -1543,7 +1543,7 @@ def prepare_fg_combo_booster_candidates_job(
     if request is None:
         return None
 
-    handle = gpu_client.submit_solve_genomes_from_registry(request.to_payload())
+    handle = cast(Any, gpu_client).submit_solve_genomes_from_registry(request.to_payload())
     return {
         "plan": plan,
         "future": handle.future,

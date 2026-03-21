@@ -194,7 +194,8 @@ def detect_total_physical_memory():
 
     detectors = []
     if psutil is not None:
-        detectors.append(lambda: psutil.virtual_memory().total)
+        _psutil = psutil
+        detectors.append(lambda _psutil=_psutil: _psutil.virtual_memory().total)
 
     if os.name == "nt":
 

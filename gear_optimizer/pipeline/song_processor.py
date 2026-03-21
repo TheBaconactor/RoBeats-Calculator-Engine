@@ -25,6 +25,7 @@ import time
 import traceback
 from collections import OrderedDict
 from io import StringIO
+from typing import cast
 
 import numpy as np
 from cachetools import LRUCache
@@ -266,8 +267,8 @@ def _flush_song_header_cache() -> None:
             return
         payload = {
             key: {
-                "mtime_ns": int(entry.get("mtime_ns", -1)),
-                "size": int(entry.get("size", -1)),
+                "mtime_ns": int(str(entry.get("mtime_ns", -1) or -1)),
+                "size": int(str(entry.get("size", -1) or -1)),
                 "meta": entry.get("meta"),
             }
             for key, entry in _SONG_HEADER_CACHE.items()
@@ -308,8 +309,9 @@ def scan_song_header(fp):
     abs_fp = os.path.abspath(fp)
     try:
         st = os.stat(abs_fp)
-        mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9)))
-        file_size = int(getattr(st, "st_size", -1))
+        mtime_ns_raw = getattr(st, "st_mtime_ns", None)
+        mtime_ns = int(mtime_ns_raw) if isinstance(mtime_ns_raw, int) else int(st.st_mtime * 1e9)
+        file_size = int(st.st_size)
     except Exception:
         mtime_ns = -1
         file_size = -1
@@ -319,7 +321,9 @@ def scan_song_header(fp):
         cached = _SONG_HEADER_CACHE.get(abs_fp)
         if isinstance(cached, dict):
             try:
-                if int(cached.get("mtime_ns", -2)) == int(mtime_ns) and int(cached.get("size", -2)) == int(file_size):
+                if int(str(cached.get("mtime_ns", -2) or -2)) == int(mtime_ns) and int(
+                    str(cached.get("size", -2) or -2)
+                ) == int(file_size):
                     _SONG_HEADER_CACHE.move_to_end(abs_fp)
                     meta_cached = cached.get("meta")
                     return dict(meta_cached) if isinstance(meta_cached, dict) else None
@@ -632,19 +636,22 @@ def process_song_task(args) -> SongResultPayload:
 
     queue_label = found_song_name
     ga_seed = None
+    repeat_index = 0
+    repeat_total = 0
     if isinstance(repeat_ctx, dict):
         try:
-            idx = int(repeat_ctx.get("repeat_index") or 0)
-            total = int(repeat_ctx.get("repeat_total") or 0)
+            repeat_index = int(str(repeat_ctx.get("repeat_index") or 0))
+            repeat_total = int(str(repeat_ctx.get("repeat_total") or 0))
         except Exception:
-            idx = 0
-            total = 0
+            repeat_index = 0
+            repeat_total = 0
         try:
-            ga_seed = int(repeat_ctx.get("ga_seed")) if repeat_ctx.get("ga_seed") is not None else None
+            raw_seed = repeat_ctx.get("ga_seed")
+            ga_seed = int(str(raw_seed)) if raw_seed is not None else None
         except Exception:
             ga_seed = None
-        if idx > 0 and total > 1:
-            queue_label = f"{found_song_name} (Run {idx}/{total})"
+        if repeat_index > 0 and repeat_total > 1:
+            queue_label = f"{found_song_name} (Run {repeat_index}/{repeat_total})"
 
     # Initialize variables at function start to avoid 'in locals()' pattern issues
     loadout_entries = None
@@ -1097,15 +1104,18 @@ def process_song_task(args) -> SongResultPayload:
                 out = dict(record)
                 out["gear"] = _compact_items(record.get("gear"))
                 out["minis"] = _compact_items(record.get("minis"))
-                if isinstance(out.get("loadout"), (list, tuple)):
-                    out["loadout"] = [str(x) if x is not None else "" for x in out.get("loadout")]
+                loadout = out.get("loadout")
+                if isinstance(loadout, (list, tuple)):
+                    out["loadout"] = [str(x) if x is not None else "" for x in loadout]
                 force_obj = out.get("force")
                 if isinstance(force_obj, dict):
                     force_copy = dict(force_obj)
-                    if isinstance(force_copy.get("gear"), (list, tuple)):
-                        force_copy["gear"] = [str(x) if x is not None else "" for x in force_copy.get("gear")]
-                    if isinstance(force_copy.get("minis"), (list, tuple)):
-                        force_copy["minis"] = [str(x) if x is not None else "" for x in force_copy.get("minis")]
+                    force_gear = force_copy.get("gear")
+                    if isinstance(force_gear, (list, tuple)):
+                        force_copy["gear"] = [str(x) if x is not None else "" for x in force_gear]
+                    force_minis = force_copy.get("minis")
+                    if isinstance(force_minis, (list, tuple)):
+                        force_copy["minis"] = [str(x) if x is not None else "" for x in force_minis]
                     out["force"] = force_copy
                 return out
 
@@ -1128,8 +1138,8 @@ def process_song_task(args) -> SongResultPayload:
                 "song": found_song_name,
                 "_queue_key": queue_label,
                 "_queue_label": queue_label,
-                "_repeat_index": int(repeat_ctx.get("repeat_index") or 0) if isinstance(repeat_ctx, dict) else 0,
-                "_repeat_total": int(repeat_ctx.get("repeat_total") or 0) if isinstance(repeat_ctx, dict) else 0,
+                "_repeat_index": int(repeat_index),
+                "_repeat_total": int(repeat_total),
                 "_ga_seed": int(ga_seed) if ga_seed is not None else None,
                 "db_key": db_key,
                 "file_path": fp,
@@ -1158,7 +1168,7 @@ def process_song_task(args) -> SongResultPayload:
                 "_record": record_info,
                 "log": buf_content,
             }
-            return result_payload
+            return cast(SongResultPayload, result_payload)
 
         if best_data:
             # Optional: HumanHitSim timing summary for base fever activation (ApplyTo=ALL only).
@@ -1249,8 +1259,8 @@ def process_song_task(args) -> SongResultPayload:
             "song": found_song_name,
             "_queue_key": queue_label,
             "_queue_label": queue_label,
-            "_repeat_index": int(repeat_ctx.get("repeat_index") or 0) if isinstance(repeat_ctx, dict) else 0,
-            "_repeat_total": int(repeat_ctx.get("repeat_total") or 0) if isinstance(repeat_ctx, dict) else 0,
+            "_repeat_index": int(repeat_index),
+            "_repeat_total": int(repeat_total),
             "_ga_seed": int(ga_seed) if ga_seed is not None else None,
             "db_key": db_key,
             "file_path": fp,
@@ -1264,7 +1274,7 @@ def process_song_task(args) -> SongResultPayload:
             "persist_entries": persist_entries if best_data else [],
             "log": buf_content,
         }
-        return result_payload
+        return cast(SongResultPayload, result_payload)
     finally:
         # Memory leak tracking: Log before cleanup
         log_memory_usage(f"Before cleanup: {found_song_name}")

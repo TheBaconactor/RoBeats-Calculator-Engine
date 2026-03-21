@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
@@ -52,7 +52,8 @@ def _decode_names_from_registry(registry: Any, genome_ids: tuple[int, ...]) -> l
     decode_names = getattr(registry, "decode_names", None)
     if callable(decode_names):
         try:
-            return [str(x if x is not None else "None") for x in decode_names(ids_arr)]
+            decoded = cast(Any, decode_names)(ids_arr)
+            return [str(x if x is not None else "None") for x in list(decoded)]
         except Exception:
             pass
     decode_genome = getattr(registry, "decode_genome", None)

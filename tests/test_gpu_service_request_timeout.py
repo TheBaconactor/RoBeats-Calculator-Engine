@@ -43,7 +43,6 @@ def test_gpu_service_enables_default_timeouts_for_service_mode_on_windows(monkey
     monkeypatch.delenv("GPU_SERVICE_REQUEST_TIMEOUT_SEC", raising=False)
     monkeypatch.delenv("GPU_SERVICE_TIMEOUT_FATAL", raising=False)
     monkeypatch.setenv("ROBEATSMETA_OPTIMIZER_SERVICE_MODE", "1")
-    monkeypatch.setattr(gpu_service.sys, "platform", "win32")
 
     client = GpuServiceClient(executor=_DummyExecutor())
 

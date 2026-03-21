@@ -152,7 +152,7 @@ def print_results(
         base_data0 = base_entry_to_print.get("data") if isinstance(base_entry_to_print, dict) else None
         base_delta = base_data0.get("hitsim_offset_delta_ms") if isinstance(base_data0, dict) else None
         try:
-            base_delta_i = int(base_delta) if base_delta is not None else None
+            base_delta_i = int(str(base_delta)) if base_delta is not None else None
         except Exception:
             base_delta_i = None
         if base_delta_i is not None:
@@ -164,7 +164,7 @@ def print_results(
             if isinstance(fg_meta, dict):
                 delta = fg_meta.get("hitsim_offset_delta_ms")
                 try:
-                    delta_i = int(delta)
+                    delta_i = int(str(delta))
                 except Exception:
                     delta_i = None
                 if delta_i is not None:

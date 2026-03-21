@@ -6,6 +6,7 @@ import os
 import traceback
 import time
 import sys
+from typing import Any, cast
 
 from gear_optimizer.core.fallback_monitor import FallbackAwareConfigParser
 from gear_optimizer.core.utils import cfg_from_dict
@@ -90,9 +91,9 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     # "final configuration" prints appear only at process exit.
     try:
         if hasattr(sys.stdout, "reconfigure"):
-            sys.stdout.reconfigure(line_buffering=True)
+            cast(Any, sys.stdout).reconfigure(line_buffering=True)
         if hasattr(sys.stderr, "reconfigure"):
-            sys.stderr.reconfigure(line_buffering=True)
+            cast(Any, sys.stderr).reconfigure(line_buffering=True)
     except Exception:
         pass
     output_enabled = bool(getattr(ENV, "output_enabled", False))

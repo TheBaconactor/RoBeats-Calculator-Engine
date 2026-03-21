@@ -4,6 +4,7 @@ import copy
 import re
 from dataclasses import dataclass
 from math import ceil
+from typing import Any
 
 import numpy as np
 
@@ -299,12 +300,12 @@ def _force_payload_stats(force_obj: dict, fallback_stats: dict) -> dict:
         return fallback_stats if isinstance(fallback_stats, dict) else {}
 
 
-def _safe_int(v: object, default: int = 0) -> int:
+def _safe_int(v: Any, default: int = 0) -> int:
     try:
-        return int(v) if v is not None else int(default)
+        return int(str(v)) if v is not None else int(default)
     except Exception:
         try:
-            return int(float(v))
+            return int(float(str(v)))
         except Exception:
             return int(default)
 
