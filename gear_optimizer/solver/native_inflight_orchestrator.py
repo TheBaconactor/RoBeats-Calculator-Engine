@@ -13,12 +13,10 @@ from __future__ import annotations
 
 import concurrent.futures
 import os
-import queue
 import threading
 import time
 import traceback
 from collections import OrderedDict, deque
-from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
@@ -68,6 +66,19 @@ from gear_optimizer.solver.native_inflight_scheduler import (
     _read_fg_scheduler_mode,
     _read_fg_slot_reserve,
 )
+from gear_optimizer.solver.native_inflight_support import (
+    _PostSender,
+    _extract_repeat_bundle,
+    _extract_repeat_ctx,
+    _is_repeat_ctx_dict,
+    _lru_get,
+    _lru_put,
+    _loadout_entries_have_db_source,
+    _materialize_repeat_task,
+    _task_ga_seed,
+    _task_key,
+)
+from gear_optimizer.solver.native_inflight_types import _NativeSong
 from gear_optimizer.solver.inflight_utils import (
     _build_calc_song_from_file,
     _compact_items,
@@ -447,113 +458,6 @@ def _default_worker_threads(*, inflight_limit: int, kind: str) -> int:
     return max(1, min(inflight_limit, int(base)))
 
 
-def _is_repeat_ctx_dict(extra: Any) -> bool:
-    return isinstance(extra, dict) and "repeat_index" in extra and "repeat_total" in extra and "ga_seed" in extra
-
-
-def _extract_repeat_ctx(task: tuple) -> dict | None:
-    if not isinstance(task, (tuple, list)) or len(task) <= 16:
-        return None
-    for extra in task[16:]:
-        if _is_repeat_ctx_dict(extra):
-            return extra
-    return None
-
-
-def _extract_repeat_bundle(task: tuple) -> dict | None:
-    if not isinstance(task, (tuple, list)) or len(task) <= 16:
-        return None
-    for extra in task[16:]:
-        if not isinstance(extra, dict):
-            continue
-        if not bool(extra.get("repeat_bundle")):
-            continue
-        runs = extra.get("runs")
-        if isinstance(runs, list) and runs:
-            return extra
-    return None
-
-
-def _materialize_repeat_task(task: tuple, repeat_ctx: dict) -> tuple:
-    if not isinstance(task, (tuple, list)):
-        return task
-    prefix = list(task[:16])
-    extras: list[Any] = []
-    for extra in task[16:]:
-        if _is_repeat_ctx_dict(extra):
-            continue
-        if isinstance(extra, dict) and bool(extra.get("repeat_bundle")):
-            continue
-        extras.append(extra)
-    extras.append(dict(repeat_ctx or {}))
-    return tuple(prefix + extras)
-
-
-def _task_key(task: tuple) -> str:
-    if not isinstance(task, (tuple, list)) or len(task) < 2:
-        return "Unknown"
-    base = str(task[1])
-    repeat_ctx = _extract_repeat_ctx(task)
-    if repeat_ctx:
-        try:
-            idx = int(repeat_ctx.get("repeat_index") or 0)
-            total = int(repeat_ctx.get("repeat_total") or 0)
-        except Exception:
-            idx = 0
-            total = 0
-        if idx > 0 and total > 1:
-            return f"{base} (Run {idx}/{total})"
-    return base
-
-
-def _task_ga_seed(task: tuple) -> int | None:
-    repeat_ctx = _extract_repeat_ctx(task)
-    if not repeat_ctx:
-        return None
-    try:
-        seed = repeat_ctx.get("ga_seed")
-        return int(seed) if seed is not None else None
-    except Exception:
-        return None
-
-
-def _lru_get(cache: OrderedDict, key: tuple) -> Any:
-    try:
-        value = cache.get(key)
-    except Exception:
-        return None
-    if value is not None:
-        try:
-            cache.move_to_end(key)
-        except Exception:
-            pass
-    return value
-
-
-def _lru_put(cache: OrderedDict, key: tuple, value: Any, *, maxsize: int) -> None:
-    try:
-        cache[key] = value
-        cache.move_to_end(key)
-    except Exception:
-        return
-    try:
-        while len(cache) > int(maxsize):
-            cache.popitem(last=False)
-    except Exception:
-        pass
-
-
-def _loadout_entries_have_db_source(loadout_entries: dict | None) -> bool:
-    if not isinstance(loadout_entries, dict) or not loadout_entries:
-        return False
-    for entry in loadout_entries.values():
-        if not isinstance(entry, dict):
-            continue
-        if str(entry.get("_source", "") or "").strip().lower() == "db":
-            return True
-    return False
-
-
 def _read_inflight_event_wait_timeout_s() -> float:
     """
     Base scheduler wait timeout when waiting for in-flight futures to complete.
@@ -598,169 +502,6 @@ def _wait_for_completion_event(
             sleep=time.sleep,
         )
     )
-
-
-class _PostSender:
-    def __init__(self, post_queue, *, stop_requested=None) -> None:
-        self._post_queue = post_queue
-        self._stop_requested = stop_requested
-        # Default to unbounded backlog to avoid ever blocking the GPU-owner pipeline.
-        backlog = 0
-        try:
-            backlog = int(os.environ.get("POST_LOCAL_BACKLOG", backlog))
-        except Exception:
-            backlog = 0
-        backlog = int(backlog)
-        if backlog < 0:
-            backlog = 0
-        self._q: queue.Queue[Any] = queue.Queue(maxsize=backlog)
-        self._sentinel = object()
-        self._thread = threading.Thread(target=self._run, name="PostQueueSender", daemon=True)
-        self._thread.start()
-
-    def send(self, item: Any) -> None:
-        if self._post_queue is None:
-            return
-        try:
-            self._q.put(item, block=False)
-        except queue.Full:
-            self._q.put(item, block=True)
-
-    def close(self, *, timeout: float = 30.0) -> None:
-        if self._post_queue is None:
-            return
-        try:
-            self._q.put(self._sentinel, block=True, timeout=max(0.0, float(timeout)))
-        except Exception:
-            return
-        try:
-            self._thread.join(timeout=timeout)
-        except Exception:
-            pass
-
-    def _run(self) -> None:
-        timing = str(os.environ.get("POST_TIMING", "0") or "").strip().lower() in {"1", "true", "yes", "on"}
-        threshold_ms = 50.0
-        try:
-            threshold_ms = float(os.environ.get("POST_TIMING_THRESHOLD_MS", str(threshold_ms)))
-        except Exception:
-            threshold_ms = 50.0
-        while True:
-            item = self._q.get()
-            if item is self._sentinel:
-                return
-            try:
-                t0 = time.perf_counter()
-                while True:
-                    if self._stop_requested is not None and callable(self._stop_requested) and self._stop_requested():
-                        return
-                    try:
-                        self._post_queue.put(item, block=True, timeout=0.5)
-                        break
-                    except Exception:
-                        continue
-                if timing:
-                    ms = (time.perf_counter() - t0) * 1000.0
-                    if ms >= threshold_ms:
-                        kind = None
-                        try:
-                            kind = item.get("song") if isinstance(item, dict) else None
-                        except Exception:
-                            kind = None
-                        prefix = f"[PostSender][TIMING] {kind} " if kind else "[PostSender][TIMING] "
-                        print(f"{prefix}post_queue_put={ms:.1f}ms")
-            except Exception:
-                pass
-
-
-@dataclass
-class _NativeSong:
-    fp: str
-    song_name: str
-    task_key: str
-    ga_seed: int | None
-    db_key: str
-    effective_difficulty: str
-    cfg_dict: dict
-    cfg: Any
-    paths: Any
-    ref_arrays: dict
-    all_gears: list
-    all_minis: list
-    gears_by_name: dict
-    minis_by_name: dict
-    use_evo_db: bool
-    auto_buff: bool
-    ga_depth: int
-    fg_debug: bool
-
-    calc_song: dict
-    meta_primary_color: str
-    meta_secondary_color: str
-    fixed_stats: dict
-    current_gear_list: list
-    current_mini_list: list
-    enable_gear: bool
-    enable_mini: bool
-    force_greats_finder: bool
-    force_greats_config: list
-    manual_force_greats: bool
-
-    prev_record: Optional[dict]
-    attempt_lifetime: int
-    prev_attempts_first: int
-    db_best_fg_score: int
-
-    # Prepared GPU-native GA inputs
-    registry: ItemRegistry
-    cfg_data: dict
-    color_flags: dict
-    gens_per_run: int
-    num_runs: int
-    n_genomes: int
-    item_stats: np.ndarray
-    slot_start: np.ndarray
-    slot_count: np.ndarray
-    base_fixed_stats_arr: np.ndarray
-    elite_count: int
-    mutation_rate: float
-    immigrant_rate: float
-    tournament_k: int
-    init_heuristic_topk: Optional[np.ndarray] = None
-    init_heuristic_k: int = 0
-    init_heuristic_copies: int = 25
-    db_seed_ids: Optional[np.ndarray] = None
-    db_seed_prob: float = 0.0
-    db_seed_copies: int = 1
-    db_seed_mutations: int = 1
-
-    # Runtime state
-    song_slot: int = 0
-    ga_future: Optional[concurrent.futures.Future] = None
-    decode_future: Optional[concurrent.futures.Future] = None
-    ga_candidates: Optional[list[dict]] = None
-    best_data: Optional[dict] = None
-    best_gear: Optional[list] = None
-    best_minis: Optional[list] = None
-    record_info: Optional[dict] = None
-
-    # DB prefetch for FG (can overlap with GA)
-    db_loadouts_future: Optional[concurrent.futures.Future] = None
-    db_loadouts_full: Optional[list[dict]] = None
-
-    loadout_entries: Optional[dict] = None
-    fg_variants: Optional[list[dict]] = None
-    fg_candidate_limit: int = 0
-    fg_search_radius: Optional[int] = None
-    fg_prep_future: Optional[concurrent.futures.Future] = None
-    fg_queued_t0: float | None = None
-    fg_direct_ga_candidates: bool = False
-
-    def __post_init__(self) -> None:
-        if self.ga_candidates is None:
-            self.ga_candidates = []
-        if self.fg_variants is None:
-            self.fg_variants = []
 
 
 def _prepare_song(task: tuple) -> _NativeSong:
