@@ -1243,6 +1243,12 @@ class RoBeatsMetaOptimizerApi:
         finally:
             self._runtime_status_http_conn = None
             self._runtime_status_http_conn_key = None
+        try:
+            # If callers explicitly stop the status loop (tests, graceful shutdown),
+            # we should not run the atexit handler again and attempt a final push.
+            atexit.unregister(self._publish_runtime_status_unavailable_at_exit)
+        except Exception:
+            pass
 
     def read_runtime_status(self) -> dict[str, Any]:
         default_state = {

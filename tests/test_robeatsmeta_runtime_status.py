@@ -244,29 +244,31 @@ def test_runtime_status_pushes_direct_to_backend(monkeypatch, tmp_path):
         status_path=status_path,
         song_meta_index_path=song_meta_path,
     )
+    try:
+        api.update_runtime_status(
+            status="running",
+            current_song="Direct Song (Hard) by Artist",
+            completed=5,
+            total=99,
+            failed=0,
+            now=789,
+        )
+        assert api.flush_runtime_status(timeout=5.0) is True
 
-    api.update_runtime_status(
-        status="running",
-        current_song="Direct Song (Hard) by Artist",
-        completed=5,
-        total=99,
-        failed=0,
-        now=789,
-    )
-    assert api.flush_runtime_status(timeout=5.0) is True
-
-    payload = json.loads(str(captured["body"]))
-    persisted = json.loads(status_path.read_text(encoding="utf-8"))
-    assert captured["method"] == "POST"
-    assert captured["path"] == "/robeatsmeta/internal/optimizer/status"
-    assert payload["status"] == "running"
-    assert payload["current_song"] == "Direct Song (Hard) by Artist"
-    assert payload["completed"] == 5
-    assert payload["updated_at"] == 789
-    assert payload["available"] is True
-    assert persisted["status"] == "running"
-    assert persisted["current_song"] == "Direct Song (Hard) by Artist"
-    assert persisted["updated_at"] == 789
+        payload = json.loads(str(captured["body"]))
+        persisted = json.loads(status_path.read_text(encoding="utf-8"))
+        assert captured["method"] == "POST"
+        assert captured["path"] == "/robeatsmeta/internal/optimizer/status"
+        assert payload["status"] == "running"
+        assert payload["current_song"] == "Direct Song (Hard) by Artist"
+        assert payload["completed"] == 5
+        assert payload["updated_at"] == 789
+        assert payload["available"] is True
+        assert persisted["status"] == "running"
+        assert persisted["current_song"] == "Direct Song (Hard) by Artist"
+        assert persisted["updated_at"] == 789
+    finally:
+        api.stop_runtime_status_loop(timeout=1.0)
 
 
 def test_runtime_status_clear_can_mark_optimizer_unavailable(monkeypatch, tmp_path):
@@ -309,19 +311,21 @@ def test_runtime_status_clear_can_mark_optimizer_unavailable(monkeypatch, tmp_pa
         status_path=status_path,
         song_meta_index_path=song_meta_path,
     )
+    try:
+        api.clear_runtime_status(status="unavailable", available=False, now=900)
+        assert api.flush_runtime_status(timeout=5.0) is True
 
-    api.clear_runtime_status(status="unavailable", available=False, now=900)
-    assert api.flush_runtime_status(timeout=5.0) is True
+        cleared = api.read_runtime_status()
+        persisted = json.loads(status_path.read_text(encoding="utf-8"))
+        assert cleared["available"] is False
+        assert cleared["status"] == "unavailable"
+        assert cleared["updated_at"] == 900
+        assert persisted == cleared
 
-    cleared = api.read_runtime_status()
-    persisted = json.loads(status_path.read_text(encoding="utf-8"))
-    assert cleared["available"] is False
-    assert cleared["status"] == "unavailable"
-    assert cleared["updated_at"] == 900
-    assert persisted == cleared
-
-    payload = json.loads(str(captured["body"]))
-    assert payload["available"] is False
-    assert payload["status"] == "unavailable"
-    assert payload["current_song"] == ""
-    assert payload["updated_at"] == 900
+        payload = json.loads(str(captured["body"]))
+        assert payload["available"] is False
+        assert payload["status"] == "unavailable"
+        assert payload["current_song"] == ""
+        assert payload["updated_at"] == 900
+    finally:
+        api.stop_runtime_status_loop(timeout=1.0)
