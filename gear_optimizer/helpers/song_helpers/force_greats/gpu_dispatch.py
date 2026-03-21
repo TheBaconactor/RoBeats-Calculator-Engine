@@ -1372,103 +1372,14 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
 
     # ---------------------------------------------------------------------
     # Async batching controls.
-    #
-    # GPU under-utilization during Force Greats is commonly caused by sending
-    # many tiny GPU jobs (high request/launch overhead, lots of CPU wakeups).
-    # Prefer fewer, larger batches by default.
-    #
-    # These defaults remain fully overrideable via env vars.
     # ---------------------------------------------------------------------
-    in_process = False
-    if gpu_client is not None:
-        try:
-            ex = getattr(gpu_client, "executor", None)
-            in_process = bool(getattr(ex, "_in_process_queues", False))
-        except Exception:
-            in_process = False
+    from .gpu_dispatch_async import resolve_fg_async_batching_settings
 
-    fg_async_max_inflight_default = 8
-    # Allow deeper pipelining to keep the GPU queue saturated.
-    # - IPC mode benefits from a deeper queue (hide host latency / serialization).
-    # - In-process mode can also benefit (hide CPU prep between submits) and does not
-    #   pay pickling overhead, so a modest bump is safe.
-    if gpu_client is not None:
-        fg_async_max_inflight_default = 32 if in_process else 32
-    try:
-        fg_async_max_inflight = int(os.environ.get("FG_ASYNC_MAX_INFLIGHT", str(fg_async_max_inflight_default)))
-    except Exception:
-        fg_async_max_inflight = fg_async_max_inflight_default
-    fg_async_max_inflight = max(1, int(fg_async_max_inflight))
-
-    fg_async_tasks_per_request_default = 8
-    if gpu_client is not None and "FG_ASYNC_TASKS_PER_REQUEST" not in os.environ:
-        try:
-            if in_process:
-                # In in-process (thread-queue) mode, overly large task batches can create multi-second
-                # continuous GPU work (TDR / UI freezes on Windows). Keep the default conservative.
-                fg_async_tasks_per_request_default = 256
-            else:
-                # IPC mode: still batch aggressively enough to reduce per-request overhead,
-                # while keeping payload sizes reasonable.
-                fg_async_tasks_per_request_default = 256
-        except Exception:
-            fg_async_tasks_per_request_default = 8
-
-    fg_async_tasks_per_request = fg_async_tasks_per_request_default
-    try:
-        fg_async_tasks_per_request = int(
-            os.environ.get("FG_ASYNC_TASKS_PER_REQUEST", str(fg_async_tasks_per_request_default))
-        )
-    except Exception:
-        fg_async_tasks_per_request = fg_async_tasks_per_request_default
-    fg_async_tasks_per_request = max(1, int(fg_async_tasks_per_request))
-    if gpu_client is not None and in_process and int(fg_async_tasks_per_request) > 512:
-        if not hasattr(process_force_greats_gpu_finder, "_fg_tasks_per_req_clamp_warned"):
-            process_force_greats_gpu_finder._fg_tasks_per_req_clamp_warned = True
-            print(
-                "[FG][WARN] FG_ASYNC_TASKS_PER_REQUEST is very high "
-                f"({int(fg_async_tasks_per_request)}); clamping to 512 to reduce TDR/freezing risk."
-            )
-        fg_async_tasks_per_request = 512
-    if perf and gpu_client is not None:
-        mode = "in_process" if in_process else "ipc"
-        print(
-            f"[FG][ASYNC] mode={mode} max_inflight={fg_async_max_inflight} tasks_per_request={fg_async_tasks_per_request}"
-        )
-
-    # ---------------------------------------------------------------------
-    # Race-safety guard (default-on for in-process in-flight mode).
-    #
-    # The `fg_tasks=` path can span multiple executor requests (reset -> solve tasks -> download).
-    # If other GPU work (GA or another song's FG) overlaps between those requests, GPU-resident
-    # "global best" buffers can mix results. The safest default is to keep each song's FG work
-    # within a single executor request when using in-process thread queues.
-    #
-    # Multi-request FG sessions are enabled by default to keep the GPU queue saturated.
-    # Safety guard: if a song has no slot (song_slot <= 0), force single-request to avoid
-    # global-best mixing across songs.
-    # ---------------------------------------------------------------------
-    unsafe_multi_request_slot = False
-    try:
-        unsafe_multi_request_slot = int(song_slot) <= 0
-    except Exception:
-        unsafe_multi_request_slot = True
-
-    enforce_single_request = False
-    if gpu_client is not None and unsafe_multi_request_slot:
-        enforce_single_request = True
-        if not hasattr(process_force_greats_gpu_finder, "_fg_multi_request_slot_warned"):
-            process_force_greats_gpu_finder._fg_multi_request_slot_warned = True
-            warn_fallback(
-                "fg.async.single_request_slot_guard",
-                "multi-request FG requires non-zero song_slot; forcing single-request execution",
-                context={"song_slot": int(song_slot) if str(song_slot).strip("-").isdigit() else 0},
-                fatal=False,
-            )
-
-    if enforce_single_request:
-        fg_async_max_inflight = 1
-        fg_async_tasks_per_request = 1_000_000_000
+    async_settings = resolve_fg_async_batching_settings(gpu_client=gpu_client, song_slot=int(song_slot), perf=perf)
+    in_process = bool(async_settings.in_process)
+    enforce_single_request = bool(async_settings.enforce_single_request)
+    fg_async_max_inflight = int(async_settings.max_inflight)
+    fg_async_tasks_per_request = int(async_settings.tasks_per_request)
 
     fg_async_futures = []
     fg_tasks_batch = []

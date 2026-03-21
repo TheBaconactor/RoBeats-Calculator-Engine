@@ -29,6 +29,12 @@ def worker_task(
     ref_arrays,
 ):
     """Simulate a worker submitting GPU work."""
+    import faulthandler
+    import sys
+
+    faulthandler.enable()
+    # If the worker hangs (IPC deadlock / queue put stuck), dump a traceback to help root-cause.
+    faulthandler.dump_traceback_later(15.0, file=sys.stderr, repeat=False)
     from gear_optimizer.solver.gpu_executor import (
         set_gpu_worker_mode,
         submit_gpu_solve_genomes_from_registry,
