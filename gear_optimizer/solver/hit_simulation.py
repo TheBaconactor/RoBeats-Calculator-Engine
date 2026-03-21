@@ -19,12 +19,7 @@ import numpy as np
 import copy
 import threading
 
-from ..core.constants import TOTAL_ROWS, FEVER_FILL_BASE_RATE, FEVER_TIME_SCALE, FEVER_TIME_OFFSET
 from ..core.time_quantize import quantize_to_int_ms
-from .scoring_core import lookup_reference_py, fast_calculate_score
-
-
-
 
 def _env_debug_fixed_seeds_enabled() -> bool:
     return str(os.environ.get("METAFINDER_DEBUG_FIXED_SEEDS", "") or "").strip().lower() in {"1", "true", "yes", "on"}

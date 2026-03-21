@@ -2052,14 +2052,6 @@ class GearOptimizerApp:
         except Exception:
             pass
         song_repeats = max(1, min(int(song_repeats), 100))
-        try:
-            hitsim_enabled = _truthy_cfg(cfg.get("HumanHitSim", "Enabled", fallback="0"))
-        except Exception:
-            hitsim_enabled = False
-        try:
-            hitsim_apply_to = str(cfg.get("HumanHitSim", "ApplyTo", fallback="FG") or "FG").strip().upper()
-        except Exception:
-            hitsim_apply_to = "FG"
         bundle_song_repeats = False
         try:
             bundle_song_repeats = _truthy_cfg(cfg.get("IterationEngine", "BundleSongRepeats", fallback="0"))

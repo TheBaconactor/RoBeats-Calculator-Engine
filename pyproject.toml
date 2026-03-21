@@ -24,8 +24,6 @@ ignore = [
     "E501",  # line too long (let formatter handle this)
     "E402",  # module level import not at top of file (common in this codebase)
     "E701",  # multiple statements on one line (mostly in scripts)
-    "F401",  # imported but unused (will clean up separately)
-    "F841",  # local variable assigned but never used
 ]
 
 [tool.ruff.lint.per-file-ignores]

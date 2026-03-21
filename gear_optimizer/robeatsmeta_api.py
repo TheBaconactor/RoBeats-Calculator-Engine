@@ -15,7 +15,6 @@ from typing import Any, Sequence
 from urllib.parse import urlsplit
 
 from .core.constants import BIN_DIR, PATHS
-from .data.database import get_evolution_db_path
 
 _TRUTHY = {"1", "true", "yes", "on"}
 _DEFAULT_VISIT_TTL_SECONDS = 60 * 60 * 24

@@ -26,7 +26,6 @@ import numpy as np
 from gear_optimizer.core.config import read_fg_candidate_limit
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
-from gear_optimizer.core.fallback_monitor import warn_fallback
 from gear_optimizer.core.memory import memory_release_requested
 from gear_optimizer.core.profile_events import emit_profile_event
 from gear_optimizer.core.result_payloads import build_error_payload

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import json
 import os
 import threading
@@ -12,7 +11,6 @@ import numpy as np
 
 from gear_optimizer.core.config import read_fg_candidate_limit, read_fg_search_radius
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT, TOTAL_ROWS
-from gear_optimizer.core.fallback_monitor import warn_fallback
 from gear_optimizer.core.utils import safe_int
 from gear_optimizer.helpers.song_helpers.fg_candidate_selector import select_fg_candidates
 from gear_optimizer.helpers.song_helpers.fg_combo_booster import prepare_fg_combo_booster_candidates_job
@@ -22,7 +20,6 @@ from gear_optimizer.helpers.song_helpers.persistence import make_build_details_f
 
 from gear_optimizer.solver.fever_timeline import get_song_timeline_grid
 from gear_optimizer.solver.gpu_service import GpuServiceClient
-from gear_optimizer.solver.scoring.stats_ops import apply_gems_to_base_stats
 from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
 from gear_optimizer.solver.genetic import decode_gpu_native_ga_runs_payload
 
