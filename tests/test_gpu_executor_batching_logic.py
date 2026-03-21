@@ -4,7 +4,7 @@ import os
 from gear_optimizer.solver.gpu_executor import GpuExecutor, GpuRequest, GpuRequestType
 
 
-def test_gather_batch_inproc_does_not_force_one_ms_wait(monkeypatch):
+def test_gather_batch_inproc_uses_idle_wait_for_first_item(monkeypatch):
     import gear_optimizer.solver.gpu_executor as gpu_executor_mod
 
     class _RecordingQueue:
@@ -31,6 +31,7 @@ def test_gather_batch_inproc_does_not_force_one_ms_wait(monkeypatch):
     ex._in_process_queues = True
     ex._request_queue = _RecordingQueue(req)
 
+    monkeypatch.setenv("GPU_EXECUTOR_INPROC_IDLE_WAIT_MS", "100")
     monkeypatch.setenv("GPU_EXECUTOR_INPROC_COALESCE", "1")
     monkeypatch.setenv("GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS", "0")
 
@@ -47,12 +48,12 @@ def test_gather_batch_inproc_does_not_force_one_ms_wait(monkeypatch):
     batch = ex._gather_batch(max_wait_ms=1, max_batch_size=8)
     assert len(batch) == 1
     assert len(ex._request_queue.timeouts) >= 2
-    assert abs(ex._request_queue.timeouts[0] - 0.001) < 1e-6
+    assert abs(ex._request_queue.timeouts[0] - 0.1) < 1e-6
     assert 0.0 <= ex._request_queue.timeouts[1] < 0.001
 
 
-def test_gather_batch_inproc_short_wait_uses_nonblocking_poll(monkeypatch):
-    class _NowaitQueue:
+def test_gather_batch_inproc_short_wait_uses_nonblocking_poll_after_first(monkeypatch):
+    class _HybridQueue:
         def __init__(self, first_req: GpuRequest):
             self._first_req = first_req
             self._returned = False
@@ -61,13 +62,13 @@ def test_gather_batch_inproc_short_wait_uses_nonblocking_poll(monkeypatch):
 
         def get(self, timeout=None):
             self.get_calls.append(float(timeout))
-            raise AssertionError("blocking get() should not be used for short in-process waits")
-
-        def get_nowait(self):
-            self.get_nowait_calls += 1
             if not self._returned:
                 self._returned = True
                 return self._first_req
+            raise queue.Empty()
+
+        def get_nowait(self):
+            self.get_nowait_calls += 1
             raise queue.Empty()
 
     req = GpuRequest(
@@ -79,16 +80,18 @@ def test_gather_batch_inproc_short_wait_uses_nonblocking_poll(monkeypatch):
 
     ex = GpuExecutor()
     ex._in_process_queues = True
-    ex._request_queue = _NowaitQueue(req)
+    ex._request_queue = _HybridQueue(req)
     ex._short_wait_spin_sec = 0.01
 
+    monkeypatch.setenv("GPU_EXECUTOR_INPROC_IDLE_WAIT_MS", "100")
     monkeypatch.setenv("GPU_EXECUTOR_INPROC_COALESCE", "1")
     monkeypatch.setenv("GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS", "0")
 
     batch = ex._gather_batch(max_wait_ms=1, max_batch_size=8)
     assert len(batch) == 1
     assert ex._request_queue.get_nowait_calls >= 1
-    assert all(float(t or 0.0) <= 0.0 for t in ex._request_queue.get_calls)
+    assert len(ex._request_queue.get_calls) == 1
+    assert abs(ex._request_queue.get_calls[0] - 0.1) < 1e-6
 
 
 def test_gather_batch_stops_when_no_batch_type_seen() -> None:

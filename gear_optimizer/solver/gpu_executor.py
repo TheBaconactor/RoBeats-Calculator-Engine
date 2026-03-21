@@ -2378,6 +2378,16 @@ class GpuExecutor:
         coalescable_types = self._COALESCABLE_REQUEST_TYPES
         # Default to enabled for in-process queues; callers can opt out via env var.
         inproc_coalesce_enabled = env_flag("GPU_EXECUTOR_INPROC_COALESCE", "1")
+        inproc_idle_wait_s = 0.1
+        if self._in_process_queues:
+            # In-process queues can be extremely latency sensitive when there is already work in-flight, but when
+            # completely idle we should avoid a tight (ms-scale) poll loop that burns CPU on Windows.
+            try:
+                raw_idle_ms = _ENV_GET("GPU_EXECUTOR_INPROC_IDLE_WAIT_MS", "100")
+                inproc_idle_wait_s = float(str(raw_idle_ms).strip()) / 1000.0
+            except Exception:
+                inproc_idle_wait_s = 0.1
+            inproc_idle_wait_s = max(0.0, min(float(inproc_idle_wait_s), 1.0))
         try:
             inproc_after_first_ms = int(_ENV_GET("GPU_EXECUTOR_INPROC_COALESCE_AFTER_FIRST_MS", "2"))
         except Exception:
@@ -2411,7 +2421,10 @@ class GpuExecutor:
                     # repeatedly (FG tasks, registry solves, and multi-solve batches). For those, allow a
                     # short coalescing window so we can meaningfully batch/coalesce work.
                     if len(batch) == 0:
-                        timeout = 0.0 if int(max_wait_ms) <= 0 else max(0.0, float(remaining))
+                        if float(inproc_idle_wait_s) > 0.0:
+                            timeout = float(inproc_idle_wait_s)
+                        else:
+                            timeout = 0.0 if int(max_wait_ms) <= 0 else max(0.0, float(remaining))
                     else:
                         if not inproc_coalesce_enabled:
                             timeout = 0.0
