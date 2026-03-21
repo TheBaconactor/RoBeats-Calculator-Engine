@@ -26,13 +26,7 @@ from . import fields as fg_fields
 from . import kernels as fg_kernels
 
 
-# ============================================================================
-# ASYNC PIPELINING (enabled by default, disable with USE_ASYNC_FG=0)
-# ============================================================================
-# When enabled, dict construction is offloaded to background thread
-# while GPU can continue with other work.
 _ENV_GET = os.environ.get
-_USE_ASYNC_FG = _ENV_GET("USE_ASYNC_FG", "1") == "1"
 
 
 def _env_truthy(name: str, default: str = "0") -> bool:
@@ -2209,27 +2203,21 @@ def _solve_force_greats_finder_gpu_impl(
             "fill_penalty": out_fp,
         }
 
-    if _USE_ASYNC_FG:
-        # Async path: offload dict construction to background thread
-        from .async_buffers import get_result_processor
-
-        proc = get_result_processor()
-        proc.submit_result_build(arrays_dict, n_genomes, _build_results)
-        results = proc.get_results()  # Wait for completion (for now, single-call)
-    else:
-        # Sync path: build directly
-        results = _build_results(arrays_dict, n_genomes)
+    # Build per-genome dicts (CPU-bound Python loop).
+    #
+    # Note: an older "async" shim existed here, but it immediately blocked on completion and copied
+    # every numpy array up front. That added overhead without providing real overlap.
+    results = _build_results(arrays_dict, n_genomes)
 
     # Print timing breakdown
     if _perf:
         t_dict_build = time.perf_counter() - _t3
         t_total = t_upload + t_kernel + t_download + t_dict_build
         n_chunks = (n_cfg_total + cfg_chunk - 1) // cfg_chunk
-        async_tag = " [ASYNC]" if _USE_ASYNC_FG else ""
         print(
             f"[PERF] FG GPU: upload={t_upload * 1000:.1f}ms kernel={t_kernel * 1000:.1f}ms "
             f"download={t_download * 1000:.1f}ms dict={t_dict_build * 1000:.1f}ms total={t_total * 1000:.1f}ms "
-            f"(genomes={n_genomes}, cfgs={n_cfg_total}, ftff={n_ftff}, chunks={n_chunks}){async_tag}"
+            f"(genomes={n_genomes}, cfgs={n_cfg_total}, ftff={n_ftff}, chunks={n_chunks})"
         )
 
     return results
