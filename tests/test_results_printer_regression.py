@@ -238,15 +238,23 @@ def test_results_printer_prefers_nonzero_fg_config_over_zero_config(capsys):
     assert "FG Config: {'NonFever1': 0, 'NonFever2': 0}" not in out
 
 
-def test_results_printer_best_base_score_uses_current_run_only(capsys):
+def test_results_printer_best_base_score_floors_to_db_record_when_higher(capsys):
     """
     Regression test:
-    Console output must reflect the current-run winner only.
+    Console output should reflect the persisted winner. When a higher DB base record
+    is provided, the printer must show the DB score/loadout (not the current-run one).
     """
     from gear_optimizer.helpers.song_helpers.results_printer import print_results
 
     found_song_name = "Test Song"
     best_data = {"Score": 100, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"}
+    prev_record = {
+        "score": 200,
+        "fg_score": 0,
+        "gear": [{"Name": "DB Gear", "type": "Hat"}],
+        "minis": [{"Name": "DB Mini"}],
+        "details": {"Score": 200, "FT": 0, "FF": 0, "GemCounts": {}, "Selected Element": "Rush"},
+    }
 
     print_results(
         found_song_name,
@@ -263,12 +271,13 @@ def test_results_printer_best_base_score_uses_current_run_only(capsys):
         ref_arrays=None,
         calc_song=None,
         cfg=None,
+        prev_record=prev_record,
     )
 
     out = capsys.readouterr().out
-    assert "Best Base Score Found: 100" in out
-    assert "Item: DB Gear" not in out
-    assert "Hat: G1" in out
+    assert "Best Base Score Found: 200" in out
+    assert "Hat: DB Gear" in out
+    assert "Hat: G1" not in out
 
 
 def test_results_printer_best_fg_score_uses_variants_only(capsys):

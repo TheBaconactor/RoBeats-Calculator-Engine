@@ -14,12 +14,16 @@ def print_results(
     calc_song=None,
     cfg=None,
     db_best_fg_score=None,
+    prev_record=None,
 ):
     """
     Print final results (console).
 
-    Console output reports *current-run* results only. It intentionally does not
-    "upgrade" the displayed base/FG scores to match DB-persisted winners.
+    Console output reflects the *persisted winners*:
+    - Base: prints the best base score that will remain after persistence
+      (max of current-run vs the DB's prior base record, when provided).
+    - FG: prints the best FG score found this run, floored by the DB best FG
+      score when provided (deferred-FG safe).
     """
 
     def _coerce_int_score(v) -> int:
@@ -61,13 +65,37 @@ def print_results(
     best_fg_score_found = 0
     best_fg_entry = None
 
-    # Create a "variant" for the base result for comparison/debugging/printing.
-    # NOTE: We intentionally ignore any DB-provided "persisted winner" variants here.
-    base_entry = {
+    # Create a "variant" for the base result for printing.
+    base_entry_run = {
         "data": best_data,
         "gear": best_gear if enable_gear else current_gear_list,
         "minis": best_minis if enable_mini else current_mini_list,
     }
+
+    # If the DB already contains a better base record, print the persisted winner instead
+    # of the current-run (non-persisted) winner to avoid console/DB mismatches.
+    db_best_base_score = 0
+    db_best_base_entry = None
+    if isinstance(prev_record, dict) and prev_record:
+        db_best_base_score = _coerce_int_score(prev_record.get("score", 0))
+        if db_best_base_score > 0:
+            details_obj = prev_record.get("details") or {}
+            if not isinstance(details_obj, dict):
+                details_obj = {}
+            if ("Score" not in details_obj) and ("BaseScore" not in details_obj):
+                details_obj = dict(details_obj)
+                details_obj["Score"] = int(db_best_base_score)
+            db_best_base_entry = {
+                "data": details_obj,
+                "gear": prev_record.get("gear") or [],
+                "minis": prev_record.get("minis") or [],
+            }
+
+    base_score_to_print = int(base_score_run or 0)
+    base_entry_to_print = base_entry_run
+    if db_best_base_score > base_score_to_print and db_best_base_entry is not None:
+        base_score_to_print = int(db_best_base_score)
+        base_entry_to_print = db_best_base_entry
 
     if fg_variants:
 
@@ -116,12 +144,13 @@ def print_results(
 
     print("-" * 30)
     print(f"FINAL CONFIGURATION FOR: {found_song_name}")
-    print(f"Best Base Score Found: {base_score_run}")
+    print(f"Best Base Score Found: {base_score_to_print}")
     print(f"Best FG Score Found: {fg_score_to_print}")
 
     # Optional: HumanHitSim timing summary for base + FG (if available).
     try:
-        base_delta = best_data.get("hitsim_offset_delta_ms") if isinstance(best_data, dict) else None
+        base_data0 = base_entry_to_print.get("data") if isinstance(base_entry_to_print, dict) else None
+        base_delta = base_data0.get("hitsim_offset_delta_ms") if isinstance(base_data0, dict) else None
         try:
             base_delta_i = int(base_delta) if base_delta is not None else None
         except Exception:
@@ -142,20 +171,20 @@ def print_results(
                     print(f"HitSim Offset Delta: {delta_i:+d}ms")
     except Exception:
         pass
-    status_emit_fn(f"Base={base_score_run} | FG={fg_score_to_print}")
+    status_emit_fn(f"Base={base_score_to_print} | FG={fg_score_to_print}")
 
     if fg_variants:
         if fg_debug and ref_arrays and calc_song:
-            if best_fg_entry is not None and _is_same_variant(base_entry, best_fg_entry):
+            if best_fg_entry is not None and _is_same_variant(base_entry_to_print, best_fg_entry):
                 print("\n" + "=" * 50)
                 print(" DEBUG: BASE & FORCE GREATS ARE IDENTICAL ".center(50, "="))
                 print("=" * 50)
-                _print_detailed_debug(found_song_name, base_entry, ref_arrays, calc_song, cfg)
+                _print_detailed_debug(found_song_name, base_entry_to_print, ref_arrays, calc_song, cfg)
             else:
                 print("\n" + "=" * 50)
                 print(" === BASE OPTIMIZATION DEBUG === ".center(50, "="))
                 print("=" * 50)
-                _print_detailed_debug(found_song_name, base_entry, ref_arrays, calc_song, cfg)
+                _print_detailed_debug(found_song_name, base_entry_to_print, ref_arrays, calc_song, cfg)
 
                 print("\n" + "=" * 50)
                 print(" === FORCE GREATS OPTIMIZATION DEBUG === ".center(50, "="))
@@ -164,19 +193,19 @@ def print_results(
                     _print_detailed_debug(found_song_name, best_fg_entry, ref_arrays, calc_song, cfg)
 
         # Print Loadouts
-        if best_fg_entry is not None and _is_same_variant(base_entry, best_fg_entry):
+        if best_fg_entry is not None and _is_same_variant(base_entry_to_print, best_fg_entry):
             _print_loadout_section("Best Overall Loadout (Base & FG)", best_fg_entry)
         else:
-            _print_loadout_section("Best Gear Loadout (Base)", base_entry)
+            _print_loadout_section("Best Gear Loadout (Base)", base_entry_to_print)
             if best_fg_entry is not None:
                 _print_loadout_section("Best Gear Loadout (ForceGreats)", best_fg_entry)
 
     else:
         # Standard output when FG is disabled
         if fg_debug and ref_arrays and calc_song:
-            _print_detailed_debug(found_song_name, base_entry, ref_arrays, calc_song, cfg)
+            _print_detailed_debug(found_song_name, base_entry_to_print, ref_arrays, calc_song, cfg)
 
-        _print_loadout_section("Best Gear Loadout", base_entry)
+        _print_loadout_section("Best Gear Loadout", base_entry_to_print)
 
 
 def _is_same_variant(v1, v2):

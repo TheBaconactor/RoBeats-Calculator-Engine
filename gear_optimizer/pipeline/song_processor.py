@@ -1262,6 +1262,7 @@ def process_song_task(args) -> SongResultPayload:
                 calc_song=calc_song,
                 cfg=cfg,
                 db_best_fg_score=db_best_fg_score,
+                prev_record=prev_record,
             )
             report_time_sec = time.perf_counter() - _t_report0
 

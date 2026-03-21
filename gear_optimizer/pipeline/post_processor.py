@@ -249,6 +249,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 calc_song=payload.get("calc_song"),
                 cfg=payload.get("cfg"),
                 db_best_fg_score=db_best_fg_floor,
+                prev_record=payload.get("prev_record"),
             )
             _log_timing("print_results", time.perf_counter() - _t_print0, song=song)
             profiler.record("print_results_pending_final", time.process_time() - cpu_t0)
@@ -536,6 +537,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         "best_data": best_data,
                         "best_gear": best_gear,
                         "best_minis": best_minis,
+                        "prev_record": item.get("prev_record"),
                         "current_gear": item.get("current_gear") or [],
                         "current_minis": item.get("current_minis") or [],
                         "enable_gear": bool(item.get("enable_gear")),
@@ -571,6 +573,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                             calc_song=item.get("calc_song"),
                             cfg=cfg,
                             db_best_fg_score=db_best_fg_score,
+                            prev_record=prev_record,
                         )
                         _log_timing("print_results", time.perf_counter() - _t_print0, song=item.get("song"))
                         profiler.record("print_results", time.process_time() - cpu_t0)
