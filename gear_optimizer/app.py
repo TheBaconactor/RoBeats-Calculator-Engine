@@ -908,13 +908,14 @@ class GearOptimizerApp:
                 status_queue,
                 fg_debug,
             )
-            queued_tasks = len(tasks)
+            queued_tasks = self._effective_total_tasks(tasks)
             emit_profile_event(
                 component="app",
                 event="tasks_prepared",
                 metrics={
                     "queued_songs": int(queued_songs),
                     "queued_tasks": int(queued_tasks),
+                    "queued_task_bundles": int(len(tasks)),
                 },
             )
 
@@ -2249,6 +2250,39 @@ class GearOptimizerApp:
                 return extra
         return None
 
+    @staticmethod
+    def _effective_total_tasks(tasks: list) -> int:
+        """
+        Compute the logical "task" count used for progress + throughput.
+
+        - Non-bundled repeats: each queued tuple is already one task => `len(tasks)`.
+        - Bundled repeats (`BundleSongRepeats=true`): each queued tuple expands into N repeat runs;
+          count those runs so the UI doesn't look stuck at 0 until the entire bundle completes.
+        """
+        if not isinstance(tasks, list) or not tasks:
+            return 0
+        total = 0
+        for task in tasks:
+            repeats = 1
+            try:
+                if isinstance(task, (tuple, list)) and len(task) > 16:
+                    for extra in task[16:]:
+                        if not isinstance(extra, dict) or not bool(extra.get("repeat_bundle")):
+                            continue
+                        try:
+                            repeats = int(extra.get("repeat_total") or 0)
+                        except Exception:
+                            repeats = 0
+                        if repeats <= 0:
+                            runs = extra.get("runs")
+                            repeats = len(runs) if isinstance(runs, list) else 0
+                        repeats = max(1, int(repeats))
+                        break
+            except Exception:
+                repeats = 1
+            total += max(1, int(repeats))
+        return max(0, int(total))
+
     def _task_queue_label(self, task) -> str:
         if not isinstance(task, (tuple, list)) or len(task) < 2:
             return "Unknown"
@@ -2598,8 +2632,12 @@ class GearOptimizerApp:
 
         # Expose completion stats for end-of-iteration throughput reporting.
         try:
-            self._last_completed_tasks = int(len(completed_songs))
-            self._last_total_tasks = int(len(tasks))
+            completed = int(self._runtime_completed_count or 0)
+            total = int(self._runtime_total_count or 0)
+            if total <= 0:
+                total = self._effective_total_tasks(tasks if isinstance(tasks, list) else [])
+            self._last_completed_tasks = max(0, int(completed))
+            self._last_total_tasks = max(0, int(total))
         except Exception:
             self._last_completed_tasks = None
             self._last_total_tasks = None
@@ -2622,7 +2660,8 @@ class GearOptimizerApp:
         if not tasks:
             return
 
-        task_count = max(0, int(len(tasks)))
+        song_task_count = max(0, int(len(tasks)))
+        total_tasks = self._effective_total_tasks(tasks if isinstance(tasks, list) else [])
         inflight_songs = 0
         try:
             cfg_dict0 = tasks[0][3] if tasks else {}
@@ -2633,7 +2672,7 @@ class GearOptimizerApp:
             inflight_songs = 0
 
         if inflight_songs <= 0:
-            inflight_songs = min(12, max(1, task_count))
+            inflight_songs = min(12, max(1, song_task_count))
             try:
                 print(
                     "[InFlight] Sequential pipeline removed; "
@@ -2641,8 +2680,8 @@ class GearOptimizerApp:
                 )
             except Exception:
                 pass
-        elif task_count > 1 and int(inflight_songs) < 2:
-            inflight_songs = min(12, max(2, task_count))
+        elif song_task_count > 1 and int(inflight_songs) < 2:
+            inflight_songs = min(12, max(2, song_task_count))
             try:
                 print(
                     "[InFlight] Sequential pipeline removed; "
@@ -2651,27 +2690,27 @@ class GearOptimizerApp:
             except Exception:
                 pass
 
-        inflight_songs = max(1, min(int(inflight_songs), int(task_count)))
+        inflight_songs = max(1, min(int(inflight_songs), int(song_task_count)))
 
         post_queue = None
         post_proc = None
         inflight_fatal_gpu_err = False
         try:
-            post_queue, post_proc = self._start_post_processor(task_count)
+            post_queue, post_proc = self._start_post_processor(total_tasks)
 
             from gear_optimizer.solver.native_inflight_orchestrator import run_native_inflight_song_pipeline
 
             self._progress_counts_driven = True
             if self._progress is not None:
-                self._progress.update_counts(completed=len(completed_songs), total=task_count)
-            self._set_runtime_progress_counts(completed=len(completed_songs), total=task_count)
+                self._progress.update_counts(completed=0, total=int(total_tasks))
+            self._set_runtime_progress_counts(completed=0, total=int(total_tasks))
             run_native_inflight_song_pipeline(
                 tasks,
                 in_flight_songs=int(inflight_songs),
                 completed_songs=completed_songs,
                 memory_resume_tracker=memory_resume_tracker,
                 post_queue=post_queue,
-                total_tasks=task_count,
+                total_tasks=int(total_tasks),
                 stop_requested=self._stop_requested_now,
                 progress_cb=self._progress_event,
                 bundle_completed_cb=self._maybe_mark_robeatsmeta_song_batch_computed,

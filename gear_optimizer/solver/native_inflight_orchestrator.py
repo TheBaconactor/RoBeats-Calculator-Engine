@@ -1938,6 +1938,37 @@ def run_native_inflight_song_pipeline(
             return False
         next_idx = max(0, int(bundle_progress.get(id(parent_task), 0))) + 1
         bundle_progress[id(parent_task)] = int(next_idx)
+
+        # Bundled repeats behave like a queue "inflation" to N repeat-runs, but the optimizer queues them as
+        # a single bundle to reduce overhead. Emit progress once per repeat-run so the UI/throughput reflects
+        # real work (and so repeat failures are visible).
+        info: dict = {}
+        if isinstance(record_info, dict):
+            try:
+                info = dict(record_info)
+            except Exception:
+                info = {}
+
+        repeat_label = None
+        try:
+            ctx = runs[int(next_idx) - 1] if int(next_idx) > 0 and int(next_idx) <= len(runs) else None
+            if _is_repeat_ctx_dict(ctx):
+                ridx = int(ctx.get("repeat_index") or next_idx)
+                rtotal = int(ctx.get("repeat_total") or len(runs))
+                if ridx > 0 and rtotal > 1:
+                    repeat_label = f"{song_name} (Run {ridx}/{rtotal})"
+        except Exception:
+            repeat_label = None
+
+        info.setdefault("song", repeat_label or song_name)
+        info.setdefault("status", "FAILED" if failed else "DONE")
+
+        _emit_progress(
+            completed_delta=1,
+            failed_delta=1 if failed else 0,
+            record_info=info,
+        )
+
         if next_idx < len(runs):
             pending_tasks.appendleft(parent_task)
             return True
@@ -1951,17 +1982,6 @@ def run_native_inflight_song_pipeline(
                 bundle_completed_cb(bundle_key, completed_songs)
             except Exception:
                 pass
-        try:
-            info = dict(record_info or {})
-            info.setdefault("song", bundle_key or song_name)
-            info.setdefault("status", "FAILED" if failed else "DONE")
-        except Exception:
-            info = record_info
-        _emit_progress(
-            completed_delta=1,
-            failed_delta=1 if failed else 0,
-            record_info=info,
-        )
         return True
 
     # GA jobs submitted to the GPU executor (in-order). We intentionally keep a

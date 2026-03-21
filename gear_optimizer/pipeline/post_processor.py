@@ -80,7 +80,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
     """
     Background post-processor for sequential pipeline mode.
 
-    Consumes per-song compute payloads and performs CPU-heavy work:
+    Consumes per-run compute payloads (songs may be repeated) and performs CPU-heavy work:
     - Build DB payload + persistence entries
     - Print results / debug output
     - Persist to SQLite
@@ -695,7 +695,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                 _print_pending_final(song_name)
 
         if failed > 0:
-            print(f"[POST][SUMMARY] {failed}/{max(1, total)} songs failed.")
+            print(f"[POST][SUMMARY] {failed}/{max(1, total)} task(s) failed.")
     except Exception:
         pass
 
