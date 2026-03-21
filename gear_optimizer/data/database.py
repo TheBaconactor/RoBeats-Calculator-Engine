@@ -1388,20 +1388,26 @@ def save_team_buff_loadouts_batch(
             )
             _log_timing("insert_team_buff_fg_loadouts", time.perf_counter() - _t_insfg0)
 
-            # Keep the authoritative song-level FG leaderboard in sync with tier writes.
-            # Tier postprocess can discover FG-improving rows that the base save path did not
-            # surface directly, so we upsert the max FG score here as well.
-            best_fg_max = max((int(row[4] or 0) for row in fg_loadouts_params), default=0)
-            if best_fg_max > 0:
-                conn.execute(
-                    """
-                    INSERT INTO songs (name, best_fg_score) VALUES (?, ?)
-                    ON CONFLICT(name) DO UPDATE SET
-                        best_fg_score = MAX(best_fg_score, excluded.best_fg_score),
-                        last_updated = strftime('%s', 'now')
-                    """,
-                    (song_name, best_fg_max),
-                )
+            # Keep the canonical song-level FG leaderboard in sync with the *reference tier* only.
+            #
+            # NOTE:
+            # - The async TeamBuff tier post-process persists derived tiers (T1/T10/T15/NONE and color variants)
+            #   via this function, but `songs.best_fg_score` is expected to reflect the canonical tier
+            #   (T5, persisted by `save_loadouts_batch()`).
+            # - Updating `songs.best_fg_score` from non-T5 derived tiers makes DB counters disagree with
+            #   the optimizer's canonical results and breaks `scripts/db/check_db_consistency.py --strict`.
+            if str(team_buff) == "T5":
+                best_fg_max = max((int(row[4] or 0) for row in fg_loadouts_params), default=0)
+                if best_fg_max > 0:
+                    conn.execute(
+                        """
+                        INSERT INTO songs (name, best_fg_score) VALUES (?, ?)
+                        ON CONFLICT(name) DO UPDATE SET
+                            best_fg_score = MAX(best_fg_score, excluded.best_fg_score),
+                            last_updated = strftime('%s', 'now')
+                        """,
+                        (song_name, best_fg_max),
+                    )
 
         # Enforce FG leaderboard invariant.
         _t_inv0 = time.perf_counter()

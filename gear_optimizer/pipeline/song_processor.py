@@ -773,7 +773,7 @@ def process_song_task(args) -> SongResultPayload:
 
         db_seed = prev_record if prev_record else None
 
-        # Calculate best FG score from DB.
+        # Calculate best FG score from DB (canonical reference tier: T5).
         # IMPORTANT: Do NOT derive this from `known_loadouts` alone because that list is
         # ordered/limited by base score and can omit the true best FG-improving loadout.
         db_best_fg_score = 0
@@ -783,7 +783,11 @@ def process_song_task(args) -> SongResultPayload:
 
                 conn = get_db_connection_cached()
                 row = conn.execute(
-                    "SELECT best_fg_score FROM songs WHERE name = ?",
+                    """
+                    SELECT MAX(fg_score)
+                    FROM team_buff_fg_loadouts
+                    WHERE song_name = ? AND team_buff = 'T5'
+                    """,
                     (str(db_key or "").strip(),),
                 ).fetchone()
                 if row is not None:

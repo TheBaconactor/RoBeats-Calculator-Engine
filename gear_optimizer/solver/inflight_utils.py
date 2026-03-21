@@ -183,7 +183,7 @@ def _summarize_db_context(
     db_key: Optional[str] = None,
     use_evo_db: bool = False,
 ) -> tuple[int, int, int]:
-    # Prefer the authoritative `songs.best_fg_score`.
+    # Prefer the canonical T5 FG leaderboard max.
     # `known_loadouts` can be ordered/limited by base score, which can miss the true best FG record.
     db_best_fg_score = 0
     if use_evo_db and db_key:
@@ -192,7 +192,11 @@ def _summarize_db_context(
 
             conn = get_db_connection_cached()
             row = conn.execute(
-                "SELECT best_fg_score FROM songs WHERE name = ?",
+                """
+                SELECT MAX(fg_score)
+                FROM team_buff_fg_loadouts
+                WHERE song_name = ? AND team_buff = 'T5'
+                """,
                 (str(db_key or "").strip(),),
             ).fetchone()
             if row is not None:

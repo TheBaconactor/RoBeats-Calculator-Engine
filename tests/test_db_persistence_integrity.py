@@ -262,10 +262,13 @@ def test_fg_loadouts_requires_fg_beats_base(db_path):
         conn.close()
 
 
-def test_team_buff_fg_loadouts_updates_song_best_fg_score(db_path):
+def test_team_buff_fg_loadouts_does_not_update_song_best_fg_score_for_non_t5_tiers(db_path):
     from gear_optimizer.data.database import save_team_buff_loadouts_batch
 
     song = "Tier FG Song"
+
+    # Ensure the songs row exists so we can assert it remains unchanged by non-T5 tier writes.
+    update_song_counters(song, processed_run=False, record_improved=False, db_path=db_path)
 
     save_team_buff_loadouts_batch(
         song,
@@ -287,7 +290,7 @@ def test_team_buff_fg_loadouts_updates_song_best_fg_score(db_path):
     try:
         song_row = conn.execute("SELECT best_score, best_fg_score FROM songs WHERE name=?", (song,)).fetchone()
         assert song_row["best_score"] == 0
-        assert song_row["best_fg_score"] == 5000
+        assert song_row["best_fg_score"] == 0
 
         fg_row = conn.execute(
             "SELECT score, fg_score FROM team_buff_fg_loadouts WHERE song_name=? AND team_buff='T10'",
