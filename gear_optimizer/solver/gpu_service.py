@@ -41,6 +41,7 @@ from .windows_timer import (
     system_timer_override_allowed as _system_timer_override_allowed_shared,
 )
 
+
 def _system_timer_override_allowed() -> bool:
     # Wrapper kept for monkeypatch-based tests.
     return bool(_system_timer_override_allowed_shared())
@@ -146,6 +147,13 @@ class GpuServiceClient:
         except Exception:
             short_wait_spin_ms = 3.0
         self._short_wait_spin_sec = max(0.0, float(short_wait_spin_ms) / 1000.0)
+        try:
+            short_wait_spin_yields = int(
+                str(os.environ.get("GPU_SERVICE_SHORT_WAIT_SPIN_YIELD_ROUNDS", "8") or "8").strip()
+            )
+        except Exception:
+            short_wait_spin_yields = 8
+        self._short_wait_spin_yield_rounds = max(0, min(int(short_wait_spin_yields), 100_000))
 
         self._registry_static_handle_counter = 0
         self._registry_static_handle_cache: "OrderedDict[tuple[Any, ...], dict[str, Any]]" = OrderedDict()
@@ -627,12 +635,26 @@ class GpuServiceClient:
             return bool(self._fg_coalesce_event.wait(timeout=wait_timeout))
 
         deadline = time.perf_counter() + wait_timeout
+        yields = 0
+        max_yields = int(getattr(self, "_short_wait_spin_yield_rounds", 0) or 0)
         while True:
             if self._fg_coalesce_event.wait(timeout=0.0):
                 return True
-            if time.perf_counter() >= deadline:
+            now = time.perf_counter()
+            if now >= deadline:
                 return False
-            time.sleep(0)
+            remaining = float(deadline - now)
+            if yields < max_yields:
+                yields += 1
+                time.sleep(0)
+                continue
+
+            # After a few yields, block in tiny chunks to avoid burning CPU.
+            block_s = min(remaining, 0.001)  # 1ms cap
+            if block_s <= 0.0:
+                return False
+            if self._fg_coalesce_event.wait(timeout=block_s):
+                return True
 
     def _fg_coalesce_loop(self) -> None:
         while self._running and self._fg_coalesce_enabled and self._in_process_queues:
@@ -702,9 +724,11 @@ class GpuServiceClient:
                 fut.set_exception(RuntimeError(resp.error or "GPU job failed"))
 
     def _request_timeout_sec_for(self, request_type: GpuRequestType) -> float:
-        env_key = "GPU_SERVICE_REQUEST_TIMEOUT_" + "".join(
-            ch if ch.isalnum() else "_" for ch in str(request_type.value or "").upper()
-        ) + "_SEC"
+        env_key = (
+            "GPU_SERVICE_REQUEST_TIMEOUT_"
+            + "".join(ch if ch.isalnum() else "_" for ch in str(request_type.value or "").upper())
+            + "_SEC"
+        )
         raw = str(os.environ.get(env_key, "") or "").strip()
         if not raw:
             raw = str(os.environ.get("GPU_SERVICE_REQUEST_TIMEOUT_SEC", "") or "").strip()

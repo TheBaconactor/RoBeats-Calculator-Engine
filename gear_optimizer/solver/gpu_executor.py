@@ -544,6 +544,11 @@ class GpuExecutor:
         except Exception:
             short_wait_spin_ms = 3.0
         self._short_wait_spin_sec = max(0.0, float(short_wait_spin_ms) / 1000.0)
+        try:
+            short_wait_spin_yields = int(str(_ENV_GET("GPU_EXECUTOR_SHORT_WAIT_SPIN_YIELD_ROUNDS", "8") or "8").strip())
+        except Exception:
+            short_wait_spin_yields = 8
+        self._short_wait_spin_yield_rounds = max(0, min(int(short_wait_spin_yields), 100_000))
 
         # Dispatch table (reduces branching in the hot loop and centralizes request routing).
         self._dispatch = {
@@ -1046,7 +1051,16 @@ class GpuExecutor:
     def start(self, *, in_process: bool = False):
         """Start the GPU executor thread in the main process."""
         if self._running:
-            return
+            # Cross-process (multiprocessing.Queue) mode can service in-process callers,
+            # but the reverse is not true. If we started in-process and later need
+            # IPC queues (parallel worker mode), restart with `in_process=False`.
+            if (not bool(in_process)) and bool(getattr(self, "_in_process_queues", False)):
+                try:
+                    self.stop()
+                except Exception:
+                    return
+            else:
+                return
 
         # Reset per-run state (GpuExecutor is a singleton and may be started/stopped
         # multiple times within one Python process during profiling/benchmarks).
@@ -1518,7 +1532,8 @@ class GpuExecutor:
         if (
             not force
             and str(phase) == str(self._heartbeat_last_phase)
-            and (now_monotonic - float(self._heartbeat_last_write_monotonic or 0.0)) < float(self._heartbeat_interval_sec)
+            and (now_monotonic - float(self._heartbeat_last_write_monotonic or 0.0))
+            < float(self._heartbeat_interval_sec)
         ):
             return
 
@@ -2128,13 +2143,29 @@ class GpuExecutor:
             return self._request_queue.get(timeout=wait_timeout)
 
         deadline = perf_counter() + wait_timeout
+        yields = 0
+        max_yields = int(getattr(self, "_short_wait_spin_yield_rounds", 0) or 0)
         while True:
             try:
                 return get_nowait()
             except queue.Empty:
-                if perf_counter() >= deadline:
+                now = perf_counter()
+                if now >= deadline:
                     raise
-                time.sleep(0)
+                remaining = float(deadline - now)
+                if yields < max_yields:
+                    yields += 1
+                    time.sleep(0)
+                    continue
+
+                # After a few yields, block in tiny chunks to avoid burning CPU.
+                block_s = min(remaining, 0.001)  # 1ms cap
+                if block_s <= 0.0:
+                    raise
+                try:
+                    return self._request_queue.get(timeout=block_s)
+                except queue.Empty:
+                    continue
 
     def _gather_batch(self, max_wait_ms: int = 10, max_batch_size: int = 8) -> list:
         """
@@ -2228,12 +2259,7 @@ class GpuExecutor:
                                 timeout = max(0.0, float(remaining)) if allow_coalesce else 0.0
                 else:
                     timeout = max(0.001, remaining) if len(batch) > 0 else 0.1
-                if (
-                    self._in_process_queues
-                    and inproc_coalesce_enabled
-                    and len(batch) > 0
-                    and float(timeout) > 0.0
-                ):
+                if self._in_process_queues and inproc_coalesce_enabled and len(batch) > 0 and float(timeout) > 0.0:
                     get_nowait = getattr(self._request_queue, "get_nowait", None)
                     if callable(get_nowait):
                         try:
@@ -2377,6 +2403,7 @@ class GpuExecutor:
             # Safety default: chunk FG task uploads in in-process mode to avoid multi-second continuous GPU work.
             task_budget = 256 if (inflight_v3 or inflight_v4 or self._in_process_queues) else 0
         task_budget = max(0, int(task_budget))
+
         def _extract_task_only(
             req: "GpuRequest",
         ) -> tuple[tuple[Any, ...], dict[str, Any], list[dict[str, Any]]] | None:

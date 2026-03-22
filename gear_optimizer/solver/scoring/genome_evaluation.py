@@ -31,7 +31,11 @@ from ...core.utils import stats_signature
 from .gpu_solver import GEM_SOLVER_CACHE
 from .fever_solver import solve_best_fever_combination
 from .stats_ops import apply_gems_to_base_stats
-from ..registry_solve_request import build_registry_solve_request, dispatch_registry_solve, registry_batch_solve_supported
+from ..registry_solve_request import (
+    build_registry_solve_request,
+    dispatch_registry_solve,
+    registry_batch_solve_supported,
+)
 
 
 @dataclass
@@ -516,14 +520,13 @@ def batch_evaluate_genomes(
     gpu_results = None
     if plan.unique_stats and bool(plan.cfg_data.get("use_gpu", False)):
         from ..gpu_executor import is_gpu_worker_mode
-        from ..fever_timeline import get_song_timeline_grid
 
         if not registry_batch_solve_supported(registry):
             raise RuntimeError("GPU registry solve is required for batch_evaluate_genomes; missing ItemRegistry.")
         try:
-            worker_song_slot = int((plan.calc_song or {}).get("_gpu_song_slot", 0) or 0)
+            song_slot = int((plan.calc_song or {}).get("_gpu_song_slot", 0) or 0)
         except Exception:
-            worker_song_slot = 0
+            song_slot = 0
 
         try:
             if is_gpu_worker_mode():
@@ -532,32 +535,19 @@ def batch_evaluate_genomes(
                 request = build_registry_solve_request(
                     plan=plan,
                     registry=registry,
-                    song_slot=int(worker_song_slot),
+                    song_slot=int(song_slot),
                     timeline_grid=plan.calc_song,
                 )
                 if request is None:
                     raise RuntimeError("Failed to build registry solve request for worker-mode GPU dispatch.")
                 gpu_results = dispatch_registry_solve(request)
             else:
-                # In-process path:
-                # - Default: reuse cached per-song CPU timeline grid (then upload to GPU).
-                # - GPU_TIMELINE_ONLY=1: always use GPU timeline precompute path by passing calc_song dict.
-                prefer_gpu_timeline = bool(ENV.gpu_timeline_only)
-                song_slot = 0
-                if prefer_gpu_timeline:
-                    try:
-                        song_slot = int((plan.calc_song or {}).get("_gpu_song_slot", 0) or 0)
-                    except Exception:
-                        song_slot = 0
-                if not prefer_gpu_timeline:
-                    grid = get_song_timeline_grid(plan.calc_song, plan.ref_arrays)
-                    grid.precompute_all()
-
+                # In-process path: pass `calc_song` through so timeline precompute stays GPU-side.
                 request = build_registry_solve_request(
                     plan=plan,
                     registry=registry,
                     song_slot=int(song_slot),
-                    timeline_grid=plan.calc_song if prefer_gpu_timeline else grid,
+                    timeline_grid=plan.calc_song,
                 )
                 if request is None:
                     raise RuntimeError("Failed to build registry solve request for in-process GPU dispatch.")
