@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import time
 from typing import Any, TYPE_CHECKING, Optional
 
@@ -1722,6 +1723,81 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     # When using the in-process GPU client, defer per-group downloads/apply so we can enqueue
     # all FG work first (helps keep the GPU queue full, especially across song boundaries).
     defer_group_apply = gpu_client is not None and per_pair_breakpoints
+    deferred_genome_stats_pool_max_keep = max(2, min(32, int(fg_async_max_inflight) * 2))
+    _deferred_genome_stats_pool = None
+    if defer_group_apply and in_process and gpu_client is not None:
+        _deferred_genome_stats_pool = getattr(process_force_greats_gpu_finder, "_deferred_genome_stats_pool", None)
+        if not isinstance(_deferred_genome_stats_pool, dict):
+            _deferred_genome_stats_pool = None
+        if _deferred_genome_stats_pool is None or "cond" not in _deferred_genome_stats_pool:
+            _deferred_genome_stats_pool = {
+                "cond": threading.Condition(),
+                "free": [],
+                "free_ids": set(),
+            }
+            process_force_greats_gpu_finder._deferred_genome_stats_pool = _deferred_genome_stats_pool
+
+    def _checkout_deferred_genome_stats_buf(n_rows: int) -> tuple[np.ndarray, np.ndarray]:
+        pool = _deferred_genome_stats_pool
+        if pool is None:
+            backing = np.empty((int(n_rows), 7), dtype=np.int32)
+            return backing, backing
+
+        cond = pool["cond"]
+        free = pool["free"]
+        free_ids = pool["free_ids"]
+        with cond:
+            best_idx = None
+            best_cap = None
+            for i, arr in enumerate(free):
+                try:
+                    cap = int(arr.shape[0])
+                except Exception:
+                    cap = 0
+                if cap >= int(n_rows) and (best_cap is None or cap < best_cap):
+                    best_idx = int(i)
+                    best_cap = int(cap)
+            if best_idx is not None:
+                backing = free.pop(int(best_idx))
+                try:
+                    free_ids.discard(int(id(backing)))
+                except Exception:
+                    pass
+            else:
+                backing = np.empty((max(1024, int(n_rows)), 7), dtype=np.int32)
+            return backing[: int(n_rows), :], backing
+
+    def _release_deferred_genome_stats_buf(backing: np.ndarray) -> None:
+        pool = _deferred_genome_stats_pool
+        if pool is None:
+            return
+        cond = pool["cond"]
+        free = pool["free"]
+        free_ids = pool["free_ids"]
+        with cond:
+            buf_id = int(id(backing))
+            if buf_id in free_ids:
+                return
+            if len(free) < int(deferred_genome_stats_pool_max_keep):
+                free.append(backing)
+                free_ids.add(buf_id)
+            cond.notify_all()
+
+    def _attach_deferred_genome_stats_release(fut: Any, backing: np.ndarray) -> None:
+        if backing is None:
+            return
+
+        def _cb(_f: Any) -> None:
+            _release_deferred_genome_stats_buf(backing)
+
+        try:
+            add_cb = getattr(fut, "add_done_callback", None)
+            if callable(add_cb):
+                add_cb(_cb)
+                return
+        except Exception:
+            pass
+
     deferred_gpu_applies: list[dict] = []
     fused_breakpoints_solve = _should_use_fused_breakpoints_solve(
         in_process=bool(in_process),
@@ -1800,6 +1876,9 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             for j, ctx_local in enumerate(ctxs):
                 ctx_local["download_future"] = fut_local
                 ctx_local["download_index"] = int(j)
+                buf = ctx_local.get("_deferred_genome_stats_backing")
+                if buf is not None:
+                    _attach_deferred_genome_stats_release(fut_local, buf)
             n_gpu_calls += 1
 
         zipped_items = list(zip(fused_payload_batch, fused_ctx_batch))
@@ -2183,6 +2262,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     download_keep_mask = None
                     download_keep_count = None
 
+            genome_stats_backing = None
             if genome_stats_preuploaded:
                 genome_stats_arr = None
                 genome_stats_uploaded = True
@@ -2216,8 +2296,9 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 # However, when deferring apply in in-process GPU executor mode, this buffer would be reused
                 # across in-flight async requests (corrupting results). In that mode we allocate a dedicated
                 # array per group instead of fill+copy.
+                genome_stats_backing = None
                 if defer_group_apply and in_process and gpu_client is not None:
-                    genome_stats_arr = np.empty((n_pending, 7), dtype=np.int32)
+                    genome_stats_arr, genome_stats_backing = _checkout_deferred_genome_stats_buf(int(n_pending))
                 else:
                     if not hasattr(process_force_greats_gpu_finder, "_genome_stats_buf"):
                         process_force_greats_gpu_finder._genome_stats_buf = np.zeros((1024, 7), dtype=np.int32)
@@ -2485,6 +2566,8 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                                     if download_keep_count is not None
                                     else None,
                                 }
+                                if genome_stats_backing is not None:
+                                    ctx["_deferred_genome_stats_backing"] = genome_stats_backing
                                 deferred_gpu_applies.append(ctx)
                                 fused_payload_batch.append(fused_payload)
                                 fused_ctx_batch.append(ctx)
@@ -2874,31 +2957,31 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     group_futures.append(download_future)
 
                 if defer_group_apply:
-                    deferred_gpu_applies.append(
-                        {
-                            "mode": "breakpoints",
-                            "pending_sigs": pending_sigs,
-                            "pending": pending,
-                            "sig_map": sig_map,
-                            "sel_color": sel_color,
-                            "n_sections": int(n_sections),
-                            "max_per_section": int(max_per_section),
-                            "n_pending": int(n_pending),
-                            "master_configs": master_configs,
-                            "cfg_windows": cfg_windows,
-                            "fg_scorer": fg_scorer,
-                            "download_future": download_future,
-                            "futures": group_futures,
-                            "download_topk": int(download_topk_k)
-                            if (download_topk_enabled and download_base_scores is not None)
-                            else None,
-                            "download_base_scores": download_base_scores,
-                            "download_keep_mask": download_keep_mask,
-                            "download_keep_count": int(download_keep_count)
-                            if download_keep_count is not None
-                            else None,
-                        }
-                    )
+                    ctx = {
+                        "mode": "breakpoints",
+                        "pending_sigs": pending_sigs,
+                        "pending": pending,
+                        "sig_map": sig_map,
+                        "sel_color": sel_color,
+                        "n_sections": int(n_sections),
+                        "max_per_section": int(max_per_section),
+                        "n_pending": int(n_pending),
+                        "master_configs": master_configs,
+                        "cfg_windows": cfg_windows,
+                        "fg_scorer": fg_scorer,
+                        "download_future": download_future,
+                        "futures": group_futures,
+                        "download_topk": int(download_topk_k)
+                        if (download_topk_enabled and download_base_scores is not None)
+                        else None,
+                        "download_base_scores": download_base_scores,
+                        "download_keep_mask": download_keep_mask,
+                        "download_keep_count": int(download_keep_count) if download_keep_count is not None else None,
+                    }
+                    if genome_stats_backing is not None:
+                        ctx["_deferred_genome_stats_backing"] = genome_stats_backing
+                        _attach_deferred_genome_stats_release(download_future, genome_stats_backing)
+                    deferred_gpu_applies.append(ctx)
                     continue
 
                 if hasattr(download_future, "result"):
@@ -3218,9 +3301,13 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         _done_checked_futures = set()
         _waited_futures = set()
         for ctx in deferred_gpu_applies:
+            buf = ctx.get("_deferred_genome_stats_backing")
             futs = ctx.get("futures") or []
             n_pending = int(ctx.get("n_pending") or 0)
             if n_pending <= 0:
+                if buf is not None:
+                    _release_deferred_genome_stats_buf(buf)
+                    ctx["_deferred_genome_stats_backing"] = None
                 continue
 
             download_future = ctx.get("download_future")
@@ -3288,6 +3375,9 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
 
             mode = str(ctx.get("mode") or "")
             if mode not in {"breakpoints", "breakpoints_fused"}:
+                if buf is not None:
+                    _release_deferred_genome_stats_buf(buf)
+                    ctx["_deferred_genome_stats_backing"] = None
                 continue
 
             cfg_idx_arr = gpu_results.get("cfg_idx")
@@ -3339,6 +3429,10 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 result_g_fm=gpu_results["g_fm"],
                 result_g_ov=gpu_results["g_ov"],
             )
+
+            if buf is not None:
+                _release_deferred_genome_stats_buf(buf)
+                ctx["_deferred_genome_stats_backing"] = None
 
             if (
                 bool(topk_retry_on_empty)

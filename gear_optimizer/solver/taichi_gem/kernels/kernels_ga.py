@@ -111,7 +111,28 @@ def _exact_eval_key_matches(pos: ti.i32, genome_idx: ti.i32, n_slots: ti.i32, in
             match = 0
     if include_hints != 0:
         for i in ti.static(range(4)):
-            if kernels_helpers.ga_exact_eval_hash_keys[pos, 9 + i] != kernels_helpers.genome_hint_allocation[genome_idx][i]:
+            if (
+                kernels_helpers.ga_exact_eval_hash_keys[pos, 9 + i]
+                != kernels_helpers.genome_hint_allocation[genome_idx][i]
+            ):
+                match = 0
+    return match
+
+
+@ti.func
+def _exact_eval_input_matches_genomes(a: ti.i32, b: ti.i32, n_slots: ti.i32, include_hints: ti.i32) -> ti.i32:
+    match = ti.i32(1)
+    for s in ti.static(range(9)):
+        va = ti.i32(0)
+        vb = ti.i32(0)
+        if s < n_slots:
+            va = kernels_helpers.population_indices[a, s]
+            vb = kernels_helpers.population_indices[b, s]
+        if va != vb:
+            match = 0
+    if include_hints != 0:
+        for i in ti.static(range(4)):
+            if kernels_helpers.genome_hint_allocation[a][i] != kernels_helpers.genome_hint_allocation[b][i]:
                 match = 0
     return match
 
@@ -131,13 +152,73 @@ def _store_exact_eval_key(pos: ti.i32, genome_idx: ti.i32, n_slots: ti.i32, incl
 
 
 @ti.kernel
-def ga_build_exact_eval_reuse_map_kernel(n_genomes: ti.i32, n_slots: ti.i32, include_hints: ti.i32):
+def _ga_prepare_exact_eval_reuse_sort_arrays_kernel(n_genomes: ti.i32, n_slots: ti.i32, include_hints: ti.i32):
     """
-    Build a representative map for exact duplicate evaluation inputs.
+    Prepare hash keys + indices for parallel sort grouping.
 
-    When `include_hints` is enabled, the map is keyed on both the encoded genome
-    and the current warm-start hint allocation. This keeps exact-eval reuse
-    limited to rows that would follow the same local-search path.
+    The sorted arrays are consumed by `_ga_build_exact_eval_reuse_map_from_sorted_kernel`.
+    """
+    sentinel = ti.i32(2147483647)
+    for i in range(kernels_helpers.ga_exact_eval_hash_sort_keys.shape[0]):
+        if i < n_genomes:
+            h = _hash_exact_eval_input_for_genome(i, n_slots, include_hints)
+            kernels_helpers.ga_exact_eval_hash_sort_keys[i] = ti.cast(h, ti.i32)
+            kernels_helpers.ga_exact_eval_hash_sort_indices[i] = i
+        else:
+            kernels_helpers.ga_exact_eval_hash_sort_keys[i] = sentinel
+            kernels_helpers.ga_exact_eval_hash_sort_indices[i] = -1
+    kernels_helpers.ga_exact_eval_unique_count[0] = 0
+
+
+@ti.kernel
+def _ga_build_exact_eval_reuse_map_from_sorted_kernel(n_genomes: ti.i32, n_slots: ti.i32, include_hints: ti.i32):
+    """
+    Build `ga_exact_eval_rep_idx` after sorting hash keys.
+
+    We scan the full hash group (both directions) to avoid relying on stable ordering
+    within equal-key regions (Taichi's parallel sort is not guaranteed stable).
+    """
+    n_genomes0 = ti.max(ti.i32(0), n_genomes)
+    for g in range(n_genomes0):
+        kernels_helpers.ga_exact_eval_rep_idx[g] = g
+
+    n_total = kernels_helpers.ga_exact_eval_hash_sort_keys.shape[0]
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for i in range(n_total):
+        g = kernels_helpers.ga_exact_eval_hash_sort_indices[i]
+        if g < 0 or g >= n_genomes0:
+            continue
+
+        key = kernels_helpers.ga_exact_eval_hash_sort_keys[i]
+        rep = g
+
+        j = i - 1
+        while j >= 0 and kernels_helpers.ga_exact_eval_hash_sort_keys[j] == key:
+            cand = kernels_helpers.ga_exact_eval_hash_sort_indices[j]
+            if cand >= 0 and cand < n_genomes0:
+                if _exact_eval_input_matches_genomes(cand, g, n_slots, include_hints) != 0:
+                    rep = ti.min(rep, cand)
+            j -= 1
+
+        j = i + 1
+        while j < n_total and kernels_helpers.ga_exact_eval_hash_sort_keys[j] == key:
+            cand = kernels_helpers.ga_exact_eval_hash_sort_indices[j]
+            if cand >= 0 and cand < n_genomes0:
+                if _exact_eval_input_matches_genomes(cand, g, n_slots, include_hints) != 0:
+                    rep = ti.min(rep, cand)
+            j += 1
+
+        kernels_helpers.ga_exact_eval_rep_idx[g] = rep
+        if rep == g:
+            ti.atomic_add(kernels_helpers.ga_exact_eval_unique_count[0], 1)
+
+
+@ti.kernel
+def _ga_build_exact_eval_reuse_map_serial_kernel(n_genomes: ti.i32, n_slots: ti.i32, include_hints: ti.i32):
+    """
+    Original open-addressing implementation (serialized).
+
+    Kept for the current Metal path and as a correctness fallback.
     """
     for i in range(kernels_helpers.ga_exact_eval_hash_used.shape[0]):
         kernels_helpers.ga_exact_eval_hash_used[i] = 0
@@ -171,6 +252,36 @@ def ga_build_exact_eval_reuse_map_kernel(n_genomes: ti.i32, n_slots: ti.i32, inc
         if handled == 0:
             rep = g
         kernels_helpers.ga_exact_eval_rep_idx[g] = rep
+
+
+def ga_build_exact_eval_reuse_map_kernel(n_genomes: int, n_slots: int, include_hints: int) -> None:
+    """
+    Build a representative map for exact duplicate evaluation inputs.
+
+    When `include_hints` is enabled, the map is keyed on both the encoded genome
+    and the current warm-start hint allocation. This keeps exact-eval reuse
+    limited to rows that would follow the same local-search path.
+    """
+    n_genomes_i = int(n_genomes)
+    if n_genomes_i <= 1:
+        kernels_helpers.ga_exact_eval_unique_count[0] = 0
+        if n_genomes_i == 1:
+            kernels_helpers.ga_exact_eval_rep_idx[0] = 0
+            kernels_helpers.ga_exact_eval_unique_count[0] = 1
+        return
+
+    n_slots_i = int(n_slots)
+    include_hints_i = int(include_hints)
+
+    if IS_METAL:
+        _ga_build_exact_eval_reuse_map_serial_kernel(n_genomes_i, n_slots_i, include_hints_i)
+        return
+
+    _ga_prepare_exact_eval_reuse_sort_arrays_kernel(n_genomes_i, n_slots_i, include_hints_i)
+    from taichi.algorithms import parallel_sort as _parallel_sort
+
+    _parallel_sort(kernels_helpers.ga_exact_eval_hash_sort_keys, kernels_helpers.ga_exact_eval_hash_sort_indices)
+    _ga_build_exact_eval_reuse_map_from_sorted_kernel(n_genomes_i, n_slots_i, include_hints_i)
 
 
 @ti.kernel

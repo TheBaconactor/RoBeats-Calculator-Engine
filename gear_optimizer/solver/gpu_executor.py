@@ -127,11 +127,15 @@ _REQUEST_QUEUE: Optional[multiprocessing.Queue] = None
 _RESPONSE_QUEUE: Optional[multiprocessing.Queue] = None
 _REQUEST_COUNTER = 0
 _PENDING_RESPONSES: OrderedDict[int, tuple["GpuResponse", float]] = OrderedDict()
+_PENDING_RESPONSES_COND = threading.Condition()
 _PENDING_TTL_SEC = max(0.0, float(getattr(ENV, "gpu_executor_pending_ttl_sec", 300.0) or 0.0))
 _PENDING_MAX = max(0, int(getattr(ENV, "gpu_executor_pending_max", 2048) or 0))
 _REGISTRY_STATIC_HANDLE_COUNTER = 0
 _REGISTRY_STATIC_HANDLE_CACHE_MAX = max(16, int(_ENV_GET("GPU_EXECUTOR_REGISTRY_HANDLE_CACHE_MAX", "256") or "256"))
 _REGISTRY_STATIC_HANDLE_CACHE: OrderedDict[tuple[Any, ...], dict[str, Any]] = OrderedDict()
+
+_WORKER_RESPONSE_ROUTER_THREAD: threading.Thread | None = None
+_WORKER_RESPONSE_ROUTER_STOP = threading.Event()
 
 
 def _default_executor_heartbeat_path() -> Path:
@@ -140,6 +144,11 @@ def _default_executor_heartbeat_path() -> Path:
 
 
 def _prune_pending_responses(now: float | None = None) -> None:
+    with _PENDING_RESPONSES_COND:
+        _prune_pending_responses_locked(now)
+
+
+def _prune_pending_responses_locked(now: float | None = None) -> None:
     if not _PENDING_RESPONSES:
         return
     if now is None:
@@ -156,10 +165,75 @@ def _prune_pending_responses(now: float | None = None) -> None:
 
 
 def _store_pending_response(response: "GpuResponse") -> None:
+    with _PENDING_RESPONSES_COND:
+        _store_pending_response_locked(response)
+        _PENDING_RESPONSES_COND.notify_all()
+
+
+def _store_pending_response_locked(response: "GpuResponse") -> None:
     now = time.monotonic()
     _PENDING_RESPONSES[response.request_id] = (response, now)
     _PENDING_RESPONSES.move_to_end(response.request_id)
-    _prune_pending_responses(now)
+    _prune_pending_responses_locked(now)
+
+
+def _worker_response_router_loop() -> None:
+    while True:
+        if _WORKER_RESPONSE_ROUTER_STOP.is_set():
+            return
+        q = _RESPONSE_QUEUE
+        if q is None:
+            time.sleep(0.01)
+            continue
+        try:
+            response = q.get(timeout=0.1)
+        except queue.Empty:
+            continue
+        except Exception:
+            time.sleep(0.05)
+            continue
+        if response is None:
+            continue
+        try:
+            response_id = int(getattr(response, "request_id", 0) or 0)
+        except Exception:
+            response_id = 0
+        with _PENDING_RESPONSES_COND:
+            _store_pending_response_locked(response)
+            # If this response collides on request_id, prefer the latest (should not happen).
+            if response_id in _PENDING_RESPONSES:
+                _PENDING_RESPONSES.move_to_end(response_id)
+            _PENDING_RESPONSES_COND.notify_all()
+
+
+def _ensure_worker_response_router_started() -> None:
+    global _WORKER_RESPONSE_ROUTER_THREAD
+    t = _WORKER_RESPONSE_ROUTER_THREAD
+    if t is not None and t.is_alive():
+        return
+    _WORKER_RESPONSE_ROUTER_STOP.clear()
+    label = str(_WORKER_ID) if _WORKER_ID is not None else "?"
+    t = threading.Thread(
+        target=_worker_response_router_loop,
+        name=f"GpuWorkerResponseRouter[{label}]",
+        daemon=True,
+    )
+    _WORKER_RESPONSE_ROUTER_THREAD = t
+    t.start()
+
+
+def _wait_for_worker_response(request_id: int, timeout: float) -> "GpuResponse":
+    deadline = time.monotonic() + float(timeout)
+    with _PENDING_RESPONSES_COND:
+        while True:
+            _prune_pending_responses_locked()
+            if request_id in _PENDING_RESPONSES:
+                response, _ts = _PENDING_RESPONSES.pop(request_id)
+                return response
+            remaining = float(deadline - time.monotonic())
+            if remaining <= 0:
+                raise RuntimeError(f"GPU executor timeout after {timeout}s")
+            _PENDING_RESPONSES_COND.wait(timeout=remaining)
 
 
 def _registry_base_fixed_stats_sig(arr: Any) -> tuple[Any, ...]:
@@ -295,6 +369,50 @@ def _registry_static_handle_entry(
     """
     global _REGISTRY_STATIC_HANDLE_COUNTER
 
+    def _minimize_calc_song_for_gpu_timeline_grid(calc_song: Any) -> Any:
+        """
+        Reduce IPC payload size for `timeline_grid` when it is actually a `calc_song` dict.
+
+        `taichi_gem.api.timeline.precompute_timeline_gpu` only needs:
+          - calc_song["song_data"]["timestamps"]
+          - calc_song["metadata"]["Long Notes"]
+          - calc_song["metadata"]["Last Note Time"]
+          - HumanHitSim cache-affecting metadata keys (for stable per-slot caching)
+        """
+        if not isinstance(calc_song, dict):
+            return calc_song
+
+        meta = calc_song.get("metadata", {}) or {}
+        song_data = calc_song.get("song_data", {}) or {}
+        if not isinstance(meta, dict) or not isinstance(song_data, dict):
+            return calc_song
+
+        timestamps = song_data.get("timestamps")
+        if timestamps is None:
+            return calc_song
+
+        ts_out = timestamps
+        try:
+            import numpy as np
+
+            ts_out = np.asarray(timestamps, dtype=np.float32)
+            if not ts_out.flags["C_CONTIGUOUS"]:
+                ts_out = np.ascontiguousarray(ts_out)
+        except Exception:
+            ts_out = timestamps
+
+        meta_out = {
+            "Song Name": meta.get("Song Name", ""),
+            "Long Notes": int(meta.get("Long Notes", 0) or 0),
+            "Last Note Time": float(meta.get("Last Note Time", 0) or 0.0),
+            "HumanHitSimApplied": bool(meta.get("HumanHitSimApplied")),
+            "HumanHitSimApplyTo": meta.get("HumanHitSimApplyTo", ""),
+            "HumanHitSimDistribution": meta.get("HumanHitSimDistribution", ""),
+            "HumanHitSimGreatMode": meta.get("HumanHitSimGreatMode", ""),
+            "HumanHitSimSeed": meta.get("HumanHitSimSeed", 0),
+        }
+        return {"metadata": meta_out, "song_data": {"timestamps": ts_out}}
+
     key = (
         int(id(item_stats)),
         int(id(slot_start)),
@@ -309,6 +427,7 @@ def _registry_static_handle_entry(
         return cached
 
     _REGISTRY_STATIC_HANDLE_COUNTER += 1
+    timeline_grid_send = _minimize_calc_song_for_gpu_timeline_grid(timeline_grid)
     entry = {
         "handle": int(_REGISTRY_STATIC_HANDLE_COUNTER),
         "registered": False,
@@ -316,6 +435,7 @@ def _registry_static_handle_entry(
         "slot_start_ref": slot_start,
         "slot_count_ref": slot_count,
         "timeline_grid_ref": timeline_grid,
+        "timeline_grid_send": timeline_grid_send,
         "ref_arrays_ref": ref_arrays,
     }
     _REGISTRY_STATIC_HANDLE_CACHE[key] = entry
@@ -328,7 +448,21 @@ def _registry_static_handle_entry(
 def set_gpu_worker_mode(worker_id: int, request_queue, response_queue):
     """Configure this process as a GPU worker (called after fork/spawn)."""
     global _WORKER_MODE, _WORKER_ID, _REQUEST_QUEUE, _RESPONSE_QUEUE
-    global _REGISTRY_STATIC_HANDLE_CACHE
+    global _PENDING_RESPONSES, _REGISTRY_STATIC_HANDLE_CACHE, _WORKER_RESPONSE_ROUTER_THREAD
+
+    _WORKER_RESPONSE_ROUTER_STOP.set()
+    t = _WORKER_RESPONSE_ROUTER_THREAD
+    if t is not None:
+        try:
+            t.join(timeout=0.25)
+        except Exception:
+            pass
+    _WORKER_RESPONSE_ROUTER_THREAD = None
+    _WORKER_RESPONSE_ROUTER_STOP.clear()
+
+    with _PENDING_RESPONSES_COND:
+        _PENDING_RESPONSES = OrderedDict()
+        _PENDING_RESPONSES_COND.notify_all()
     _WORKER_MODE = True
     _WORKER_ID = worker_id
     _REQUEST_QUEUE = request_queue
@@ -344,13 +478,24 @@ def is_gpu_worker_mode() -> bool:
 def clear_gpu_worker_mode():
     """Clear worker mode (for testing or process reuse)."""
     global _WORKER_MODE, _WORKER_ID, _REQUEST_QUEUE, _RESPONSE_QUEUE, _PENDING_RESPONSES
-    global _REGISTRY_STATIC_HANDLE_CACHE
+    global _REGISTRY_STATIC_HANDLE_CACHE, _WORKER_RESPONSE_ROUTER_THREAD
     global _SOLVE_STATIC_HANDLE_CACHE
+    _WORKER_RESPONSE_ROUTER_STOP.set()
+    with _PENDING_RESPONSES_COND:
+        _PENDING_RESPONSES_COND.notify_all()
+    t = _WORKER_RESPONSE_ROUTER_THREAD
+    if t is not None:
+        try:
+            t.join(timeout=0.25)
+        except Exception:
+            pass
+    _WORKER_RESPONSE_ROUTER_THREAD = None
     _WORKER_MODE = False
     _WORKER_ID = None
     _REQUEST_QUEUE = None
     _RESPONSE_QUEUE = None
-    _PENDING_RESPONSES = OrderedDict()
+    with _PENDING_RESPONSES_COND:
+        _PENDING_RESPONSES = OrderedDict()
     _REGISTRY_STATIC_HANDLE_CACHE = OrderedDict()
 
 
@@ -5032,7 +5177,7 @@ def submit_gpu_solve_genomes_from_registry(
                     "slot_start": slot_start,
                     "slot_count": slot_count,
                     "base_fixed_stats": base_fixed_stats,
-                    "timeline_grid": timeline_grid,
+                    "timeline_grid": entry.get("timeline_grid_send", timeline_grid),
                     "ref_arrays": ref_arrays,
                 }
             )
@@ -5050,28 +5195,9 @@ def submit_gpu_solve_genomes_from_registry(
             payload=payload,
             submit_perf_ns=time.perf_counter_ns(),
         )
+        _ensure_worker_response_router_started()
         _REQUEST_QUEUE.put(request)
-
-        start = time.monotonic()
-        while True:
-            _prune_pending_responses()
-            if request_id in _PENDING_RESPONSES:
-                response, _ts = _PENDING_RESPONSES.pop(request_id)
-                return response
-
-            remaining = timeout - (time.monotonic() - start)
-            if remaining <= 0:
-                raise RuntimeError(f"GPU executor timeout after {timeout}s")
-
-            try:
-                response = _RESPONSE_QUEUE.get(timeout=remaining)
-            except queue.Empty:
-                raise RuntimeError(f"GPU executor timeout after {timeout}s")
-
-            if response.request_id != request_id:
-                _store_pending_response(response)
-                continue
-            return response
+        return _wait_for_worker_response(request_id, timeout)
 
     inline_static = not bool(entry.get("registered", False))
     response = _submit_once(_build_payload(inline_static=inline_static))

@@ -80,6 +80,8 @@ ga_parent_a = None
 ga_parent_b = None
 ga_exact_eval_hash_used = None  # (HASH_SIZE,) i32 - open-addressing table for exact duplicate-genome reuse
 ga_exact_eval_hash_keys = None  # (HASH_SIZE, 13) i32 - [slots(9), reserved(4)]
+ga_exact_eval_hash_sort_keys = None  # (MAX_GENOMES,) i32 - hash keys for parallel sort grouping
+ga_exact_eval_hash_sort_indices = None  # (MAX_GENOMES,) i32 - genome indices permuted with hash_sort_keys
 ga_exact_eval_rep_idx = None  # (MAX_GENOMES,) i32 - representative genome index per row
 ga_exact_eval_unique_count = None  # (1,) i32 - number of unique genome rows
 slot_start = None  # (MAX_SLOTS,) per-slot first valid item_id
@@ -135,6 +137,7 @@ island_elite_count = None  # (1,) i32 - output: total elites found
 # HELPER FUNCTIONS
 # ============================================================================
 
+
 @ti.func
 def _clamp_stat_idx(value: ti.i32) -> ti.i32:
     """
@@ -147,6 +150,7 @@ def _clamp_stat_idx(value: ti.i32) -> ti.i32:
         Clamped value in range [0, 160]
     """
     return ti.max(0, ti.min(160, value))
+
 
 @ti.func
 def lookup_ref_pp(value: ti.i32) -> ti.f32:
@@ -161,6 +165,7 @@ def lookup_ref_pp(value: ti.i32) -> ti.f32:
     """
     return ti.cast(ref_pp_field[_clamp_stat_idx(value)], ti.f32)
 
+
 @ti.func
 def lookup_ref_cm(value: ti.i32) -> ti.f32:
     """
@@ -173,6 +178,7 @@ def lookup_ref_cm(value: ti.i32) -> ti.f32:
         CM multiplier from reference table
     """
     return ref_cm_field[_clamp_stat_idx(value)]
+
 
 @ti.func
 def lookup_ref_fm(value: ti.i32) -> ti.f32:
@@ -187,6 +193,7 @@ def lookup_ref_fm(value: ti.i32) -> ti.f32:
     """
     return ref_fm_field[_clamp_stat_idx(value)]
 
+
 @ti.func
 def lookup_ref_ft(value: ti.i32) -> ti.f32:
     """
@@ -200,6 +207,7 @@ def lookup_ref_ft(value: ti.i32) -> ti.f32:
     """
     return ref_ft_field[_clamp_stat_idx(value)]
 
+
 @ti.func
 def lookup_ref_ff(value: ti.i32) -> ti.f32:
     """
@@ -212,6 +220,7 @@ def lookup_ref_ff(value: ti.i32) -> ti.f32:
         FF multiplier from reference table
     """
     return ref_ff_field[_clamp_stat_idx(value)]
+
 
 @ti.func
 def _xorshift32(x: ti.u32) -> ti.u32:
@@ -232,9 +241,11 @@ def _xorshift32(x: ti.u32) -> ti.u32:
     x ^= x << ti.u32(5)
     return x
 
+
 # ============================================================================
 # SEARCH HELPERS
 # ============================================================================
+
 
 @ti.func
 def binary_search_left_from(timestamps: ti.template(), n: ti.i32, target: ti.f32, lo: ti.i32) -> ti.i32:
@@ -261,6 +272,7 @@ def binary_search_left_from(timestamps: ti.template(), n: ti.i32, target: ti.f32
             hi = mid
     return lo
 
+
 @ti.func
 def binary_search_left(timestamps: ti.template(), n: ti.i32, target: ti.f32) -> ti.i32:
     """
@@ -278,9 +290,11 @@ def binary_search_left(timestamps: ti.template(), n: ti.i32, target: ti.f32) -> 
     """
     return binary_search_left_from(timestamps, n, target, 0)
 
+
 # ============================================================================
 # SCORING HELPERS
 # ============================================================================
+
 
 @ti.func
 def _calc_body_score(
@@ -312,6 +326,7 @@ def _calc_body_score(
     # Use integer multiplication to avoid f32 precision loss with large counts
     return ti.cast((count_fever * fever_val) + (count_normal * combo_val), ti.f32)
 
+
 @ti.func
 def _calc_head_factor(base_value: ti.f32, combo_mul: ti.f32) -> ti.f32:
     """
@@ -328,6 +343,7 @@ def _calc_head_factor(base_value: ti.f32, combo_mul: ti.f32) -> ti.f32:
         Ramp factor per note
     """
     return (combo_mul - 1.0) * base_value / 100.0
+
 
 @ti.func
 def _calc_head_score_bits(
@@ -402,6 +418,7 @@ def _calc_head_score_bits(
             t += 1.0
     return ti.cast(head_score, ti.f32)
 
+
 @ti.func
 def calc_score_with_grid(
     base_value: ti.f32,
@@ -440,6 +457,7 @@ def calc_score_with_grid(
             head_score_i32 += ti.cast(ramp_val * mul, ti.i32)
 
     return ti.cast(body_score, ti.i32) + head_score_i32
+
 
 @ti.func
 def calc_score_with_grid_bits(

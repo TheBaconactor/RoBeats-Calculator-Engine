@@ -31,14 +31,17 @@ ITEM_STAT_DIM = 10  # PP, CM, FM, FT, FF, Beat, Vibe, Rush, Flow, Chill
 MAX_SONG_NOTES = 200000  # Maximum song length for GPU timeline computation
 MAX_EVALS_PER_DISPATCH = 4_194_304  # Upper bound used for chunking (genomes * FT/FF combos)
 
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, str(default)))
     except Exception:
         return default
 
+
 def _env_flag(name: str, default: str = "0") -> bool:
     return str(os.environ.get(name, default) or "").strip().lower() in {"1", "true", "yes", "on"}
+
 
 def _clamp_song_slots(n: int) -> int:
     # Slot 0 is always reserved; keep at least one additional slot for prefetch/batching.
@@ -48,6 +51,7 @@ def _clamp_song_slots(n: int) -> int:
     if n > 8192:
         return 8192
     return n
+
 
 # Concurrent song grid slots for batch coalescing / timeline caching.
 # Override via env var `GPU_SONG_SLOTS` (set before process start).
@@ -143,6 +147,8 @@ GA_EXACT_EVAL_HASH_KEY_COLS = MAX_SLOTS + 4  # 9 slot IDs + 4 reserved cols kept
 GA_EXACT_EVAL_HASH_SIZE = 16384  # Open-addressing table for exact duplicate-genome detection.
 ga_exact_eval_hash_used: ti.Field = None  # (HASH_SIZE,) i32 occupancy (0=empty, else rep_idx+1)
 ga_exact_eval_hash_keys: ti.Field = None  # (HASH_SIZE, KEY_COLS) i32 exact genome key (trailing cols reserved)
+ga_exact_eval_hash_sort_keys: ti.Field = None  # (MAX_GENOMES,) i32 hash keys for parallel sort grouping
+ga_exact_eval_hash_sort_indices: ti.Field = None  # (MAX_GENOMES,) i32 genome indices permuted with sort keys
 ga_exact_eval_rep_idx: ti.Field = None  # (MAX_GENOMES,) i32 representative genome index per row
 ga_exact_eval_unique_count: ti.Field = None  # (1,) i32 number of unique genome rows
 
@@ -238,22 +244,27 @@ _fields_allocated = False
 _grid_fields_allocated = False
 _last_uploaded_grid_id = None  # Cache to skip redundant grid uploads
 
+
 def is_fields_allocated() -> bool:
     """Check if main fields have been allocated."""
     return _fields_allocated
+
 
 def is_grid_fields_allocated() -> bool:
     """Check if grid fields have been allocated."""
     return _grid_fields_allocated
 
+
 def get_last_uploaded_grid_id():
     """Get the ID of the last uploaded grid (for cache checking)."""
     return _last_uploaded_grid_id
+
 
 def set_last_uploaded_grid_id(grid_id):
     """Set the ID of the last uploaded grid."""
     global _last_uploaded_grid_id
     _last_uploaded_grid_id = grid_id
+
 
 def reset_fields_state() -> None:
     """
@@ -274,7 +285,9 @@ def reset_fields_state() -> None:
     global population_indices, population_next_indices, ga_initial_populations, ga_init_heuristic_topk
     global item_stats, base_fixed_stats
     global ga_scores, ga_rng_state, ga_parent_a, ga_parent_b
-    global ga_exact_eval_hash_used, ga_exact_eval_hash_keys, ga_exact_eval_rep_idx, ga_exact_eval_unique_count
+    global ga_exact_eval_hash_used, ga_exact_eval_hash_keys
+    global ga_exact_eval_hash_sort_keys, ga_exact_eval_hash_sort_indices
+    global ga_exact_eval_rep_idx, ga_exact_eval_unique_count
     global slot_start, slot_count
     global genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
@@ -340,6 +353,8 @@ def reset_fields_state() -> None:
     ga_parent_b = None
     ga_exact_eval_hash_used = None
     ga_exact_eval_hash_keys = None
+    ga_exact_eval_hash_sort_keys = None
+    ga_exact_eval_hash_sort_indices = None
     ga_exact_eval_rep_idx = None
     ga_exact_eval_unique_count = None
     slot_start = None
@@ -392,9 +407,11 @@ def reset_fields_state() -> None:
     _grid_fields_allocated = False
     _last_uploaded_grid_id = None
 
+
 # ============================================================================
 # FIELD ALLOCATION
 # ============================================================================
+
 
 def _clamp_ga_runs(n: int) -> int:
     if n < 1:
@@ -404,6 +421,7 @@ def _clamp_ga_runs(n: int) -> int:
         return 8192
     return n
 
+
 def _clamp_ga_genomes(n: int) -> int:
     # Must be >= GA_POPULATION_SIZE (currently 250) for GPU-native GA.
     if n < 250:
@@ -411,6 +429,7 @@ def _clamp_ga_genomes(n: int) -> int:
     if n > MAX_GENOMES:
         return MAX_GENOMES
     return n
+
 
 def configure_ga_run_buffers(*, max_runs: int | None = None, max_genomes: int | None = None) -> None:
     """
@@ -431,6 +450,7 @@ def configure_ga_run_buffers(*, max_runs: int | None = None, max_genomes: int | 
         MAX_GA_RUNS = _clamp_ga_runs(int(max_runs))
     if max_genomes is not None:
         MAX_GA_RUN_GENOMES = _clamp_ga_genomes(int(max_genomes))
+
 
 def _maybe_configure_ga_run_buffers_from_env() -> None:
     """
@@ -465,6 +485,7 @@ def _maybe_configure_ga_run_buffers_from_env() -> None:
         return
     configure_ga_run_buffers(max_runs=max_runs, max_genomes=max_genomes)
 
+
 def allocate_fields():
     """
     Allocate GPU fields. Must be called after ti.init().
@@ -482,7 +503,9 @@ def allocate_fields():
         item_stats, \
         base_fixed_stats
     global ga_scores, ga_rng_state, ga_parent_a, ga_parent_b
-    global ga_exact_eval_hash_used, ga_exact_eval_hash_keys, ga_exact_eval_rep_idx, ga_exact_eval_unique_count
+    global ga_exact_eval_hash_used, ga_exact_eval_hash_keys
+    global ga_exact_eval_hash_sort_keys, ga_exact_eval_hash_sort_indices
+    global ga_exact_eval_rep_idx, ga_exact_eval_unique_count
     global slot_start, slot_count
     global genome_result_stats
     global genome_result_stats_download_staging_256, genome_result_stats_download_staging_1024
@@ -545,6 +568,8 @@ def allocate_fields():
         dtype=ti.i32,
         shape=(int(GA_EXACT_EVAL_HASH_SIZE), int(GA_EXACT_EVAL_HASH_KEY_COLS)),
     )
+    ga_exact_eval_hash_sort_keys = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
+    ga_exact_eval_hash_sort_indices = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     ga_exact_eval_rep_idx = ti.field(dtype=ti.i32, shape=MAX_GENOMES)
     ga_exact_eval_unique_count = ti.field(dtype=ti.i32, shape=1)
 
@@ -649,6 +674,7 @@ def allocate_fields():
     _fields_allocated = True
     print(f"[Taichi] Allocated GPU fields: {MAX_GENOMES} genomes")
 
+
 def allocate_grid_fields():
     """
     Allocate GPU fields for timeline grid. Must be called after ti.init().
@@ -694,6 +720,7 @@ def allocate_grid_fields():
     _grid_fields_allocated = True
     print(f"[Taichi] Allocated grid fields: {MAX_SONG_SLOTS}Ã—{GRID_SIZE}Ã—{GRID_SIZE} timeline grid slots")
 
+
 def ensure_grid_unpacked_masks_allocated() -> None:
     """
     Allocate unpacked timeline masks on demand.
@@ -715,9 +742,11 @@ def ensure_grid_unpacked_masks_allocated() -> None:
     bind_fields(kernels)
     print(f"[Taichi] Allocated unpacked timeline masks: 1Ã—{GRID_SIZE}Ã—{GRID_SIZE}Ã—{MAX_HEAD_NOTES}")
 
+
 # ============================================================================
 # FIELD BINDING (for kernels module)
 # ============================================================================
+
 
 def bind_fields(kernels_module):
     """
@@ -779,6 +808,8 @@ def bind_fields(kernels_module):
     target.ga_parent_b = ga_parent_b
     target.ga_exact_eval_hash_used = ga_exact_eval_hash_used
     target.ga_exact_eval_hash_keys = ga_exact_eval_hash_keys
+    target.ga_exact_eval_hash_sort_keys = ga_exact_eval_hash_sort_keys
+    target.ga_exact_eval_hash_sort_indices = ga_exact_eval_hash_sort_indices
     target.ga_exact_eval_rep_idx = ga_exact_eval_rep_idx
     target.ga_exact_eval_unique_count = ga_exact_eval_unique_count
     target.slot_start = slot_start
@@ -840,6 +871,7 @@ def bind_fields(kernels_module):
         # Keep binding best-effort; breakpoint kernels aren't always imported.
         pass
 
+
 def ensure_fields_allocated():
     """
     Ensure Taichi is initialized and fields are allocated.
@@ -885,6 +917,7 @@ def ensure_fields_allocated():
             kernels_metal.ga_global_best_score = ga_global_best_score
             kernels_metal.ga_global_best_genome = ga_global_best_genome
             kernels_metal.ga_global_best_results = ga_global_best_results
+
 
 def ensure_grid_fields_allocated():
     """
