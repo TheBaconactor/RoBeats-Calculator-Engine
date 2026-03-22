@@ -59,15 +59,23 @@ def _mutate_ga_inherit_hints_in_place(path: Path) -> str:
     old_b = "kernels_helpers.genome_hint_allocation_next[g][i] = 0"
     new_b = "kernels_helpers.genome_hint_allocation[g][i] = 0"
 
-    mutated = original
-    mutated = mutated.replace(old_a, new_a, 1)
-    mutated = mutated.replace(old_b, new_b, 1)
+    # Only mutate the specific kernel we are guarding (avoid rewriting other helper kernels).
+    start = original.find("def ga_inherit_hints_kernel")
+    if start < 0:
+        raise RuntimeError("Failed to locate ga_inherit_hints_kernel() in kernels_ga.py")
+    # Find the next kernel decorator (end of this kernel's body).
+    end = original.find("@ti.kernel", start)
+    if end < 0:
+        end = len(original)
 
-    if mutated == original:
-        raise RuntimeError("Failed to apply hint-inheritance mutation (expected patterns not found).")
-    if old_a in mutated or old_b in mutated:
-        # Ensure we actually rewired BOTH assignments in the kernel.
-        raise RuntimeError("Hint-inheritance mutation did not fully apply (residual next-buffer assignments remain).")
+    block = original[start:end]
+    mutated_block = block.replace(old_a, new_a).replace(old_b, new_b)
+    if mutated_block == block:
+        raise RuntimeError("Failed to apply hint-inheritance mutation (expected patterns not found in kernel).")
+    if old_a in mutated_block or old_b in mutated_block:
+        raise RuntimeError("Hint-inheritance mutation did not fully apply inside ga_inherit_hints_kernel().")
+
+    mutated = original[:start] + mutated_block + original[end:]
 
     _write_text_lf(path, mutated)
     return original
