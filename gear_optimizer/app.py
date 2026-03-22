@@ -58,6 +58,8 @@ from gear_optimizer.app_stop_control import StopController
 from gear_optimizer.helpers.song_helpers.persistence import evaluate_record_update
 from gear_optimizer.robeatsmeta_api import RoBeatsMetaOptimizerApi
 
+logger = logging.getLogger(__name__)
+
 
 # Module-level worker initializer for GPU executor (must be picklable)
 def _gpu_worker_initializer(registrations, counter, lock):
@@ -78,6 +80,7 @@ def _gpu_worker_initializer(registrations, counter, lock):
 
     worker_id, request_queue, response_queue = registrations[idx]
     set_gpu_worker_mode(worker_id, request_queue, response_queue)
+
 
 class _ProgressUI:
     """Lightweight single-line progress renderer with spinner + ETA."""
@@ -398,12 +401,16 @@ class GearOptimizerApp:
         self._song_path_index_force_cooldown_sec = 60.0
         self._robeatsmeta_api: RoBeatsMetaOptimizerApi | None = None
 
-    def setup_logging(self):
-        os.makedirs(BIN_DIR, exist_ok=True)
-        log_file_path = os.path.join(BIN_DIR, "error.log")
-        logging.basicConfig(
-            filename=log_file_path, level=logging.WARNING, format="%(asctime)s %(levelname)s: %(message)s"
-        )
+    def setup_logging(self) -> None:
+        # Keep stdout clean for result printers; send diagnostics to stderr.
+        try:
+            from gear_optimizer.core.logging_config import configure_logging
+
+            log_file_path = os.path.join(BIN_DIR, "error.log")
+            console_level = logging.INFO if bool(getattr(ENV, "output_enabled", False)) else logging.ERROR
+            configure_logging(log_file_path=log_file_path, console_level=console_level, file_level=logging.WARNING)
+        except Exception:
+            pass
 
     def request_stop(self, reason: str, *, force: bool = False) -> None:
         return self._stop_control.request_stop(reason, force=force)
@@ -499,7 +506,11 @@ class GearOptimizerApp:
         if api is None:
             return song_queue
         try:
-            priority_names = {str(name or "").strip() for name in getattr(self, "_backend_priority_song_names", set()) if str(name or "").strip()}
+            priority_names = {
+                str(name or "").strip()
+                for name in getattr(self, "_backend_priority_song_names", set())
+                if str(name or "").strip()
+            }
             if priority_names:
                 priority_front = [item for item in song_queue if str(item[1] or "").strip() in priority_names]
                 remainder = [item for item in song_queue if str(item[1] or "").strip() not in priority_names]
@@ -682,6 +693,97 @@ class GearOptimizerApp:
             restore_stdout(self._orig_stdout)
             restore_stderr(self._orig_stderr)
 
+    def _maybe_init_robeatsmeta_api(self, cfg) -> None:
+        try:
+            self._robeatsmeta_api = RoBeatsMetaOptimizerApi()
+            if self._robeatsmeta_api.backend_mode_enabled():
+                backend_benchmark_mode = bool(self._robeatsmeta_api.benchmark_mode_enabled())
+                if self._robeatsmeta_api.apply_service_defaults(cfg):
+                    loop_forever_effective = cfg.get("IterationEngine", "LoopForever", fallback="?")
+                    song_repeats_effective = cfg.get("IterationEngine", "SongRepeats", fallback="?")
+                    inflight_songs_effective = cfg.get("IterationEngine", "InFlightSongs", fallback="?")
+                    if backend_benchmark_mode:
+                        logger.info(
+                            "[RoBeatsMeta] Service defaults enabled (benchmark): "
+                            f"LoopForever={loop_forever_effective}, "
+                            f"SongRepeats={song_repeats_effective}, "
+                            f"InFlightSongs={inflight_songs_effective}, "
+                            "Difficulty=All, QueueScope=PendingSongIds.",
+                        )
+                    else:
+                        logger.info(
+                            "[RoBeatsMeta] Service defaults enabled: "
+                            f"LoopForever={loop_forever_effective}, "
+                            f"SongRepeats={song_repeats_effective}, "
+                            f"InFlightSongs={inflight_songs_effective}, "
+                            "Difficulty=All, QueueScope=PendingSongIds.",
+                        )
+                elif not self._robeatsmeta_api.service_defaults_enabled():
+                    logger.info(
+                        "[RoBeatsMeta] Service mode enabled: keeping IterationEngine/CalculateSong config (service defaults disabled).",
+                    )
+
+                # Backend-special behavior: default to headless runtime status via API.
+                # Keep CLI progress disabled unless explicitly requested by env.
+                if "METAFINDER_PROGRESS" not in os.environ:
+                    self._progress_enabled = False
+        except Exception as exc:
+            self._robeatsmeta_api = None
+            logging.warning(f"[RoBeatsMeta] Failed to initialize optimizer API: {type(exc).__name__}: {exc}")
+
+    def _configure_gpu_execution_and_prewarm(self, cfg) -> None:
+        # If the GPU executor initializes Taichi before the GA code runs, Taichi fields can be allocated with
+        # default (padded) GA run buffers, making GPU-native GA payload downloads significantly slower.
+        # Publish a conservative sizing hint early so any first-use allocation can pick tighter shapes.
+        # PRODUCTION: GPU execution flags (GPU_Mode, GPU_Native_GA, GA_MultiStart).
+        gpu_mode_requested = True
+        try:
+            gpu_mode_requested = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=True)
+        except Exception:
+            gpu_mode_requested = True
+        if not gpu_mode_requested:
+            logger.warning("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
+            try:
+                if not cfg.has_section("IterationEngine"):
+                    cfg.add_section("IterationEngine")
+                cfg.set("IterationEngine", "GPU_Mode", "true")
+            except Exception:
+                pass
+
+        gpu_native_ga = True
+        try:
+            gpu_native_ga = cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=True)
+        except Exception:
+            gpu_native_ga = True
+
+        if gpu_native_ga:
+            ga_multistart = safe_int(cfg.get("IterationEngine", "GA_MultiStart", fallback=1), 1)
+            ga_multistart = max(1, int(ga_multistart))
+            os.environ.setdefault("GPU_NATIVE_GA_MAX_RUNS", str(ga_multistart))
+            os.environ.setdefault("GPU_NATIVE_GA_MAX_GENOMES", str(int(GA_POPULATION_SIZE)))
+            try:
+                from gear_optimizer.solver.taichi_gem import fields as gpu_fields
+
+                gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
+            except Exception:
+                pass
+
+        # InFlightSongs uses the singleton in-process GPU executor. Start it early so
+        # Taichi init + kernel warmups overlap with CPU-heavy data/path loading.
+        # This improves first-task latency on macOS where Metal JIT can be costly.
+        # PRODUCTION: in-flight overlap flag (InFlightSongs).
+        try:
+            inflight_req = int(self._get_inflight_songs_requested(cfg) or 0)
+        except Exception:
+            inflight_req = 0
+        if inflight_req > 1:
+            try:
+                from gear_optimizer.solver.gpu_executor import get_gpu_executor
+
+                get_gpu_executor().start(in_process=True)
+            except Exception:
+                pass
+
     def _run_single_iteration(self):
         memory_guard_restart = False
         memory_resume_tracker = None
@@ -706,48 +808,13 @@ class GearOptimizerApp:
                 return False
 
             cfg = load_config()
-            try:
-                self._robeatsmeta_api = RoBeatsMetaOptimizerApi()
-                if self._robeatsmeta_api.backend_mode_enabled():
-                    backend_benchmark_mode = bool(self._robeatsmeta_api.benchmark_mode_enabled())
-                    if self._robeatsmeta_api.apply_service_defaults(cfg):
-                        loop_forever_effective = cfg.get("IterationEngine", "LoopForever", fallback="?")
-                        song_repeats_effective = cfg.get("IterationEngine", "SongRepeats", fallback="?")
-                        inflight_songs_effective = cfg.get("IterationEngine", "InFlightSongs", fallback="?")
-                        if backend_benchmark_mode:
-                            print(
-                                "[RoBeatsMeta] Service defaults enabled (benchmark): "
-                                f"LoopForever={loop_forever_effective}, "
-                                f"SongRepeats={song_repeats_effective}, "
-                                f"InFlightSongs={inflight_songs_effective}, "
-                                "Difficulty=All, QueueScope=PendingSongIds.",
-                            )
-                        else:
-                            print(
-                                "[RoBeatsMeta] Service defaults enabled: "
-                                f"LoopForever={loop_forever_effective}, "
-                                f"SongRepeats={song_repeats_effective}, "
-                                f"InFlightSongs={inflight_songs_effective}, "
-                                "Difficulty=All, QueueScope=PendingSongIds.",
-                            )
-                    elif not self._robeatsmeta_api.service_defaults_enabled():
-                        print(
-                            "[RoBeatsMeta] Service mode enabled: keeping IterationEngine/CalculateSong config (service defaults disabled).",
-                        )
-
-                    # Backend-special behavior: default to headless runtime status via API.
-                    # Keep CLI progress disabled unless explicitly requested by env.
-                    if "METAFINDER_PROGRESS" not in os.environ:
-                        self._progress_enabled = False
-            except Exception as exc:
-                self._robeatsmeta_api = None
-                logging.warning(f"[RoBeatsMeta] Failed to initialize optimizer API: {type(exc).__name__}: {exc}")
+            self._maybe_init_robeatsmeta_api(cfg)
             paths = load_paths_cache()
             set_memory_watchdog_limit(compute_memory_guard_limit(cfg))
             db_display_name = os.path.basename(get_evolution_db_path())
             if self._banner_enabled:
                 self._print_banner()
-            print(f"[Run] Gear Optimizer started. DB file: {db_display_name}")
+            logger.info(f"[Run] Gear Optimizer started. DB file: {db_display_name}")
             emit_profile_event(
                 component="app",
                 event="run_start",
@@ -770,7 +837,7 @@ class GearOptimizerApp:
             if is_fresh_queue:
                 if skip_stats_verify:
                     if not self._stats_verified_once:
-                        print("[Benchmark] Skipping stats integrity verification.")
+                        logger.info("[Benchmark] Skipping stats integrity verification.")
                         self._stats_verified_once = True
                 elif not self._stats_verified_once:
                     self._verify_stats_integrity()
@@ -791,7 +858,7 @@ class GearOptimizerApp:
                 else:
                     fg_status = "Enabled but inactive (no manual config; ForceGreatsFinder=false)"
 
-                print(f" >> [ForceGreats] {fg_status}")
+                logger.info(f" >> [ForceGreats] {fg_status}")
 
             # PRODUCTION: runtime / persistence flags (GA_SearchDepth, UseEvolutionDB, LoopForever, EvalCPUCores).
             ga_depth = safe_int(cfg.get("IterationEngine", "GA_SearchDepth", fallback=50))
@@ -799,7 +866,7 @@ class GearOptimizerApp:
             loop_forever = cfg.getboolean("IterationEngine", "LoopForever", fallback=False)
             if self._profiling_mode_enabled(cfg):
                 if loop_forever:
-                    print("[Profiling] LoopForever=true ignored; forcing LoopForever=false.")
+                    logger.warning("[Profiling] LoopForever=true ignored; forcing LoopForever=false.")
                     emit_profile_event(
                         component="app",
                         event="profiling_forced_loop_forever_off",
@@ -811,57 +878,7 @@ class GearOptimizerApp:
             self._maybe_apply_inflight_ram_mode(cfg)
             self._maybe_autoset_gpu_song_slots(cfg)
 
-            # If the GPU executor initializes Taichi before the GA code runs, Taichi fields can be allocated with
-            # default (padded) GA run buffers, making GPU-native GA payload downloads significantly slower.
-            # Publish a conservative sizing hint early so any first-use allocation can pick tighter shapes.
-            # PRODUCTION: GPU execution flags (GPU_Mode, GPU_Native_GA, GA_MultiStart).
-            gpu_mode_requested = True
-            try:
-                gpu_mode_requested = cfg.getboolean("IterationEngine", "GPU_Mode", fallback=True)
-            except Exception:
-                gpu_mode_requested = True
-            if not gpu_mode_requested:
-                print("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
-                try:
-                    if not cfg.has_section("IterationEngine"):
-                        cfg.add_section("IterationEngine")
-                    cfg.set("IterationEngine", "GPU_Mode", "true")
-                except Exception:
-                    pass
-
-            gpu_native_ga = True
-            try:
-                gpu_native_ga = cfg.getboolean("IterationEngine", "GPU_Native_GA", fallback=True)
-            except Exception:
-                gpu_native_ga = True
-
-            if gpu_native_ga:
-                ga_multistart = safe_int(cfg.get("IterationEngine", "GA_MultiStart", fallback=1), 1)
-                ga_multistart = max(1, int(ga_multistart))
-                os.environ.setdefault("GPU_NATIVE_GA_MAX_RUNS", str(ga_multistart))
-                os.environ.setdefault("GPU_NATIVE_GA_MAX_GENOMES", str(int(GA_POPULATION_SIZE)))
-                try:
-                    from gear_optimizer.solver.taichi_gem import fields as gpu_fields
-
-                    gpu_fields.configure_ga_run_buffers(max_runs=ga_multistart, max_genomes=int(GA_POPULATION_SIZE))
-                except Exception:
-                    pass
-
-            # InFlightSongs uses the singleton in-process GPU executor. Start it early so
-            # Taichi init + kernel warmups overlap with CPU-heavy data/path loading.
-            # This improves first-task latency on macOS where Metal JIT can be costly.
-            # PRODUCTION: in-flight overlap flag (InFlightSongs).
-            try:
-                inflight_req = int(self._get_inflight_songs_requested(cfg) or 0)
-            except Exception:
-                inflight_req = 0
-            if inflight_req > 1:
-                try:
-                    from gear_optimizer.solver.gpu_executor import get_gpu_executor
-
-                    get_gpu_executor().start(in_process=True)
-                except Exception:
-                    pass
+            self._configure_gpu_execution_and_prewarm(cfg)
 
             stats_table = read_table(paths.get("Stats", "") or PATHS.stats_csv)
 
@@ -878,7 +895,7 @@ class GearOptimizerApp:
             song_queue = self._build_song_queue(cfg, paths, use_evo_db)
             queued_songs = len(song_queue)
             try:
-                print(f"[Run] Queued {len(song_queue)} song(s) for processing.")
+                logger.info(f"[Run] Queued {len(song_queue)} song(s) for processing.")
             except Exception:
                 pass
             emit_profile_event(
@@ -953,8 +970,7 @@ class GearOptimizerApp:
             except KeyboardInterrupt:
                 raise
         except Exception as e:
-            logging.error(f"Error: {e}")
-            print(f"Error: {e}", file=sys.stderr)
+            logger.error(f"Error: {e}")
 
         finally:
             self._stop_progress()
@@ -962,7 +978,7 @@ class GearOptimizerApp:
 
             elapsed = time.time() - start_time
             done_msg = f"Run completed in {elapsed:.2f}s"
-            print(done_msg)
+            logger.info(done_msg)
             try:
                 elapsed_h = float(elapsed) / 3600.0 if elapsed and elapsed > 0 else 0.0
             except Exception:
@@ -994,7 +1010,7 @@ class GearOptimizerApp:
 
                     songs_per_h = float(completed_songs_est) / elapsed_h if completed_songs_est > 0 else 0.0
                     tasks_per_h = float(completed_tasks) / elapsed_h if completed_tasks > 0 else 0.0
-                    print(
+                    logger.info(
                         f"[Throughput] Completed {completed_tasks}/{total_tasks} task(s) "
                         f"(queue={queued_songs} song(s)) -> {songs_per_h:.1f} songs/hour, {tasks_per_h:.1f} tasks/hour"
                     )
@@ -1014,7 +1030,7 @@ class GearOptimizerApp:
 
         if graceful_stop or self._stop_requested.is_set():
             try:
-                print("[Shutdown] Exiting by user request.")
+                logger.info("[Shutdown] Exiting by user request.")
             except Exception:
                 pass
             return False
@@ -1026,7 +1042,7 @@ class GearOptimizerApp:
             self._handle_loop_restart(wait_time=3)
             return True
         else:
-            print("LoopForever=FALSE; exiting after completing queue.")
+            logger.info("LoopForever=FALSE; exiting after completing queue.")
             return False
 
     def _verify_stats_integrity(self):
@@ -1039,25 +1055,25 @@ class GearOptimizerApp:
         """
         try:
             # Full scan of all entries - sample-based checks can miss scattered bad entries
-            print("[StatsVerifier] Full database integrity check...")
+            logger.info("[StatsVerifier] Full database integrity check...")
             all_valid, full_stats = verify_and_repair_stats(dry_run=False, verbose=True, sample_size=0)
 
             if all_valid:
-                print(f"[StatsVerifier] All {full_stats['total']:,} entries have valid Stats")
+                logger.info(f"[StatsVerifier] All {full_stats['total']:,} entries have valid Stats")
             else:
                 # Repairs were made - display prominent warning
                 repaired = full_stats.get("repaired", 0)
-                print(f"[StatsVerifier] Repaired {repaired:,} entries with invalid Stats")
+                logger.info(f"[StatsVerifier] Repaired {repaired:,} entries with invalid Stats")
                 if repaired > 100:
                     # Only show prominent warning if many repairs needed
                     print_verification_warning(full_stats)
 
         except Exception as e:
-            logging.error(f"[StatsVerifier] Unexpected error: {e}")
-            print(f"[StatsVerifier] Warning: Could not verify Stats integrity: {e}")
+            logger.error(f"[StatsVerifier] Unexpected error: {e}")
+            logger.warning(f"[StatsVerifier] Warning: Could not verify Stats integrity: {e}")
 
     def _disable_inputs_to_prevent_taint(self, cfg):
-        print(
+        logger.info(
             " >> [Auto-Mode] Finders active: Ignoring manual [UserInputStatsGems] & [ElementalGems] to prevent database tainting."
         )
         if not cfg.has_section("UserInputStatsGems"):
@@ -1181,11 +1197,7 @@ class GearOptimizerApp:
     def _ensure_song_path_index(self, *, force: bool = False) -> None:
         roots = tuple(self._song_index_roots())
         with self._song_path_index_lock:
-            if (
-                not force
-                and self._song_path_index_ready
-                and roots == self._song_path_index_roots
-            ):
+            if not force and self._song_path_index_ready and roots == self._song_path_index_roots:
                 return
         index = self._scan_song_paths_for_index(roots)
         with self._song_path_index_lock:
@@ -1251,7 +1263,9 @@ class GearOptimizerApp:
 
     def _build_song_queue(self, cfg, paths, use_evo_db):
         diff_lower, filter_search, tp_all, tp_cols, ts_all, ts_cols = self._get_filter_params(cfg)
-        backend_service_mode = bool(getattr(getattr(self, "_robeatsmeta_api", None), "backend_mode_enabled", lambda: False)())
+        backend_service_mode = bool(
+            getattr(getattr(self, "_robeatsmeta_api", None), "backend_mode_enabled", lambda: False)()
+        )
         self._backend_priority_song_names = set()
 
         def _pending_backend_song_ids() -> list[str]:
@@ -1328,7 +1342,7 @@ class GearOptimizerApp:
         if not ignore_resume:
             resume_seed_queue = load_memory_guard_resume_queue(resume_context)
             if resume_seed_queue:
-                print(f"[MemoryGuard] Resuming {len(resume_seed_queue)} song(s) from previous interrupted run.")
+                logger.info(f"[MemoryGuard] Resuming {len(resume_seed_queue)} song(s) from previous interrupted run.")
                 if use_evo_db:
                     try:
                         resume_names_present = _lookup_song_presence((item[1] for item in resume_seed_queue))
@@ -1351,7 +1365,7 @@ class GearOptimizerApp:
                     song_queue_limit = _read_song_queue_limit()
                     if song_queue_limit and song_queue_limit > 0 and len(resume_seed_queue) > song_queue_limit:
                         resume_seed_queue = resume_seed_queue[: int(song_queue_limit)]
-                        print(
+                        logger.info(
                             f"[Queue] SongQueueLimit={song_queue_limit}: running {len(resume_seed_queue)} song(s) (resume)"
                         )
                     return resume_seed_queue
@@ -1378,9 +1392,8 @@ class GearOptimizerApp:
             )
             if unresolved_song_ids:
                 now_monotonic = float(time.monotonic())
-                if (
-                    now_monotonic - float(self._song_path_index_last_force_attempt_monotonic)
-                    >= float(self._song_path_index_force_cooldown_sec)
+                if now_monotonic - float(self._song_path_index_last_force_attempt_monotonic) >= float(
+                    self._song_path_index_force_cooldown_sec
                 ):
                     self._song_path_index_last_force_attempt_monotonic = now_monotonic
                     self._ensure_song_path_index(force=True)
@@ -1454,18 +1467,18 @@ class GearOptimizerApp:
             elif pending_only_mode:
                 song_queue = []
                 try:
-                    print("[Queue] No pending song-id visits; backend service is idle.")
+                    logger.info("[Queue] No pending song-id visits; backend service is idle.")
                 except Exception:
                     pass
 
         if not song_queue and not resume_seed_queue:
             if backend_service_mode:
                 return []
-            print("Error: No matching songs found.")
+            logger.error("Error: No matching songs found.")
             return []
 
         try:
-            print(f"[Queue] Discovered {len(song_queue)} song(s) (Difficulty={diff})")
+            logger.info(f"[Queue] Discovered {len(song_queue)} song(s) (Difficulty={diff})")
         except Exception:
             pass
 
@@ -1527,7 +1540,7 @@ class GearOptimizerApp:
                     except Exception:
                         pass
                 song_queue = song_queue[: int(song_queue_limit)]
-                print(f"[Queue] SongQueueLimit={song_queue_limit}: running {len(song_queue)} song(s)")
+                logger.info(f"[Queue] SongQueueLimit={song_queue_limit}: running {len(song_queue)} song(s)")
 
         if resume_seed_queue and use_evo_db:
             new_missing: list[tuple[str, str, str]] = []
@@ -1550,7 +1563,7 @@ class GearOptimizerApp:
 
             if new_missing:
                 try:
-                    print(f"[Queue] Prepending {len(new_missing)} new missing song(s) ahead of resume queue.")
+                    logger.info(f"[Queue] Prepending {len(new_missing)} new missing song(s) ahead of resume queue.")
                 except Exception:
                     pass
                 if backend_service_mode:
@@ -1560,7 +1573,9 @@ class GearOptimizerApp:
             song_queue_limit = _read_song_queue_limit()
             if song_queue_limit and song_queue_limit > 0 and len(merged_queue) > song_queue_limit:
                 merged_queue = merged_queue[: int(song_queue_limit)]
-                print(f"[Queue] SongQueueLimit={song_queue_limit}: running {len(merged_queue)} song(s) (resume+new)")
+                logger.info(
+                    f"[Queue] SongQueueLimit={song_queue_limit}: running {len(merged_queue)} song(s) (resume+new)"
+                )
             return self._prioritize_robeatsmeta_song_queue(merged_queue)
 
         # Queue all discovered songs; filtering is handled by difficulty folder + optional search string.
@@ -1569,7 +1584,7 @@ class GearOptimizerApp:
         if not filter_search:
             return song_queue
 
-        print(f"Found {len(song_queue)} songs to process.")
+        logger.info(f"Found {len(song_queue)} songs to process.")
         return song_queue
 
     def _start_progress(self, total_tasks: int, *, completed: int = 0) -> None:
@@ -1718,7 +1733,7 @@ class GearOptimizerApp:
         if self._progress is not None:
             return
         try:
-            print(msg, flush=True)
+            logger.info(str(msg))
         except (ValueError, OSError):
             pass
 
@@ -2064,7 +2079,9 @@ class GearOptimizerApp:
         except Exception:
             pass
         used_ga_seeds: set[int] = set()
-        backend_service_mode = bool(getattr(getattr(self, "_robeatsmeta_api", None), "backend_mode_enabled", lambda: False)())
+        backend_service_mode = bool(
+            getattr(getattr(self, "_robeatsmeta_api", None), "backend_mode_enabled", lambda: False)()
+        )
         backend_priority_song_names = {
             str(name or "").strip()
             for name in getattr(self, "_backend_priority_song_names", set())
@@ -2106,7 +2123,7 @@ class GearOptimizerApp:
                 else song_repeats
             )
             if repeats_for_song <= 1:
-                print(f"[QUEUE] {found_song_name}")
+                logger.info(f"[QUEUE] {found_song_name}")
 
                 if ga_seed_base is not None:
                     # Use repeat_ctx even when SongRepeats=1 so per-song GA can seed deterministically.
@@ -2169,7 +2186,7 @@ class GearOptimizerApp:
                     "repeat_total": int(repeats_for_song),
                     "runs": repeat_runs,
                 }
-                print(f"[QUEUE] {found_song_name}")
+                logger.info(f"[QUEUE] {found_song_name}")
                 tasks.append(
                     (
                         fp,
@@ -2200,7 +2217,7 @@ class GearOptimizerApp:
                     repeat_total=int(repeats_for_song),
                 )
 
-                print(f"[QUEUE] {found_song_name} (Run {repeat_index}/{repeats_for_song})")
+                logger.info(f"[QUEUE] {found_song_name} (Run {repeat_index}/{repeats_for_song})")
                 tasks.append(
                     (
                         fp,
@@ -2398,7 +2415,9 @@ class GearOptimizerApp:
             gpu_mode_requested = True
 
         if not gpu_mode_requested:
-            print("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); enabling GPU_Mode for in-flight.")
+            logger.warning(
+                "[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); enabling GPU_Mode for in-flight."
+            )
             try:
                 cfg.set("IterationEngine", "GPU_Mode", "true")
             except Exception:
@@ -2459,7 +2478,7 @@ class GearOptimizerApp:
             os.environ["TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX"] = str(int(tb_cache))
 
         try:
-            print(
+            logger.info(
                 "[InFlight][RAM] enabled: INFLIGHT_SONG_FILE_CACHE_MAX={} TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX={}".format(
                     os.environ.get("INFLIGHT_SONG_FILE_CACHE_MAX"),
                     os.environ.get("TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX"),
@@ -2495,7 +2514,7 @@ class GearOptimizerApp:
         if int(cfg_slots) > 0:
             os.environ["GPU_SONG_SLOTS"] = str(int(cfg_slots))
             try:
-                print(
+                logger.info(
                     "[GPU] Set GPU_SONG_SLOTS={} from config (IterationEngine.GPU_SongSlots). Set GPU_SONG_SLOTS env var to override.".format(
                         int(cfg_slots)
                     )
@@ -2510,7 +2529,7 @@ class GearOptimizerApp:
 
         try:
             if "gear_optimizer.solver.taichi_gem.fields" in sys.modules:
-                print("[GPU] Auto GPU_SONG_SLOTS skipped: taichi_gem.fields already imported.")
+                logger.info("[GPU] Auto GPU_SONG_SLOTS skipped: taichi_gem.fields already imported.")
                 return
         except Exception:
             pass
@@ -2553,7 +2572,7 @@ class GearOptimizerApp:
 
         os.environ["GPU_SONG_SLOTS"] = str(int(slots))
         try:
-            print(
+            logger.info(
                 "[GPU] Auto-set GPU_SONG_SLOTS={} (InFlightSongs={}, InFlight_GA_QueueMult={}). Set GPU_SONG_SLOTS to override.".format(
                     int(slots),
                     int(inflight_songs),
@@ -2596,15 +2615,15 @@ class GearOptimizerApp:
         max_workers = 1
 
         if available_cpus != logical_cpus:
-            print(f"EvalCPUCores cap applied: using {available_cpus} of {logical_cpus} cores.")
+            logger.info(f"EvalCPUCores cap applied: using {available_cpus} of {logical_cpus} cores.")
 
         if inflight_songs > 1 and len(tasks) > 1:
-            print(f"[InFlight] Requested: InFlightSongs={inflight_songs} (single-process).")
+            logger.info(f"[InFlight] Requested: InFlightSongs={inflight_songs} (single-process).")
 
-        print(
+        logger.info(
             f"Parallel plan -> songs: {len(tasks)}, concurrent workers: {max_workers}, cores per song: {parallel_workers}"
         )
-        print(f"Using {available_cpus} logical CPU cores")
+        logger.info(f"Using {available_cpus} logical CPU cores")
 
         completed_songs = set()
         # Hotkeys need access to the current queue and completion set.
@@ -2633,9 +2652,9 @@ class GearOptimizerApp:
             self._last_total_tasks = None
 
         if memory_release_requested():
-            print("[MemoryGuard] Soft limit reached; pending songs saved for resume.")
+            logger.warning("[MemoryGuard] Soft limit reached; pending songs saved for resume.")
             if loop_forever:
-                print("[MemoryGuard] LoopForever enabled; scheduling automatic restart.")
+                logger.warning("[MemoryGuard] LoopForever enabled; scheduling automatic restart.")
 
         if memory_resume_tracker:
             memory_resume_tracker.finalize(memory_release_requested())
@@ -2664,16 +2683,13 @@ class GearOptimizerApp:
         if inflight_songs <= 0:
             inflight_songs = min(12, max(1, song_task_count))
             try:
-                print(
-                    "[InFlight] Sequential pipeline removed; "
-                    f"defaulting InFlightSongs={int(inflight_songs)}."
-                )
+                logger.info(f"[InFlight] Sequential pipeline removed; defaulting InFlightSongs={int(inflight_songs)}.")
             except Exception:
                 pass
         elif song_task_count > 1 and int(inflight_songs) < 2:
             inflight_songs = min(12, max(2, song_task_count))
             try:
-                print(
+                logger.info(
                     "[InFlight] Sequential pipeline removed; "
                     f"raising InFlightSongs to {int(inflight_songs)} for multi-song queue."
                 )
@@ -2708,11 +2724,10 @@ class GearOptimizerApp:
             return
         except Exception as inflight_err:
             inflight_fatal_gpu_err = self._is_fatal_inflight_exception(inflight_err)
-            print(f"[InFlight] Disabled: {type(inflight_err).__name__}: {inflight_err}", flush=True)
+            logger.error(f"[InFlight] Disabled: {type(inflight_err).__name__}: {inflight_err}")
             if inflight_fatal_gpu_err:
-                print(
+                logger.error(
                     "[InFlight] Fatal GPU runtime failure detected; aborting so the supervisor can restart cleanly.",
-                    flush=True,
                 )
             try:
                 import traceback
@@ -2732,7 +2747,7 @@ class GearOptimizerApp:
                     pass
                 if self._truthy(os.environ.get("INFLIGHT_PRINT_TRACE", "0")):
                     try:
-                        print(tb)
+                        logger.error(tb)
                     except Exception:
                         pass
             except Exception:
@@ -2815,9 +2830,9 @@ class GearOptimizerApp:
                     pass
                 gpu_executor = None
             if gpu_executor is not None and gpu_executor.is_running:
-                print("[GPU Executor] Started for parallel song processing")
+                logger.info("[GPU Executor] Started for parallel song processing")
         except Exception as e:
-            print(f"[GPU Executor] Failed to start: {e} - workers will use direct GPU")
+            logger.error(f"[GPU Executor] Failed to start: {e} - workers will use direct GPU")
             gpu_executor = None
 
         throughput_t0 = time.perf_counter()
@@ -2895,7 +2910,7 @@ class GearOptimizerApp:
                             except Exception:
                                 init_timeout = 30.0
                             if not secondary_ready.wait(timeout=max(0.0, float(init_timeout))):
-                                print(
+                                logger.warning(
                                     "[GPU Executor][Secondary] Init timed out; disabling secondary executor for this pool"
                                 )
                                 try:
@@ -2919,7 +2934,7 @@ class GearOptimizerApp:
                                     msg = "[GPU Executor][Secondary] Taichi init failed; disabling secondary executor for this pool"
                                     if err:
                                         msg = f"{msg} ({err})"
-                                    print(msg)
+                                    logger.warning(msg)
                                     try:
                                         secondary_gpu_proc.terminate()
                                     except Exception:
@@ -2928,12 +2943,12 @@ class GearOptimizerApp:
                                     secondary_gpu_req_q = None
                                 else:
                                     worker_registrations.extend(secondary_regs)
-                                    print(
+                                    logger.info(
                                         f"[GPU Executor][Secondary] Started with {secondary_workers} worker(s) "
                                         f"(TAICHI_VULKAN_VISIBLE_DEVICE={visible_device or 'default'})"
                                     )
                         except Exception as e:
-                            print(f"[GPU Executor][Secondary] Failed to start: {e}")
+                            logger.error(f"[GPU Executor][Secondary] Failed to start: {e}")
                             secondary_gpu_proc = None
                             secondary_gpu_req_q = None
 
@@ -2968,7 +2983,7 @@ class GearOptimizerApp:
                         if self._stop_requested_now():
                             break
                         if memory_release_requested():
-                            print("[MemoryGuard] Stopping parallel loop after soft limit.")
+                            logger.warning("[MemoryGuard] Stopping parallel loop after soft limit.")
                             break
                     finally:
                         try:
@@ -3015,7 +3030,7 @@ class GearOptimizerApp:
                         if self._stop_requested_now():
                             break
                         if memory_release_requested():
-                            print("[MemoryGuard] Stopping parallel loop after soft limit.")
+                            logger.warning("[MemoryGuard] Stopping parallel loop after soft limit.")
                             break
                     finally:
                         try:
@@ -3026,8 +3041,7 @@ class GearOptimizerApp:
             except BrokenProcessPool as bpp:
                 broken_pool_failures += 1
                 warn_msg = f"[Auto-Recover] Process pool broke; attempt {broken_pool_failures}/{max_pool_retries}. Reason: {bpp}"
-                print(warn_msg)
-                logging.error(warn_msg)
+                logger.error(warn_msg)
 
                 # Restart status infra
                 self._cleanup_resources(status_queue, status_thread, manager)
@@ -3048,7 +3062,7 @@ class GearOptimizerApp:
                 current_worker_cap = max(1, effective_workers - 1)
 
                 if broken_pool_failures >= max_pool_retries:
-                    print("[Auto-Recover] Max retries hit; retrying through native in-flight pipeline.")
+                    logger.error("[Auto-Recover] Max retries hit; retrying through native in-flight pipeline.")
                     self._run_sequential(remaining_tasks, completed_songs, memory_resume_tracker)
                     break
                 continue
@@ -3103,8 +3117,7 @@ class GearOptimizerApp:
                 except Exception as task_err:
                     failed += 1
                     err_msg = f"[{completed}/{total}] FAILED: {song_name} - {type(task_err).__name__}: {task_err}"
-                    print(err_msg, file=sys.stderr)
-                    logging.error(err_msg)
+                    logger.error(err_msg)
                     self._progress_on_result(None, completed=completed, total=total, failed_delta=1)
                     if propagate_broken_pool and isinstance(task_err, BrokenProcessPool):
                         raise
@@ -3115,10 +3128,9 @@ class GearOptimizerApp:
                     failed += 1
                     err_type = res.get("_error_type") or type(res.get("_error")).__name__
                     err_msg = f"[{completed}/{total}] FAILED: {song_name} - {err_type}: {res.get('_error')}"
-                    print(err_msg, file=sys.stderr)
-                    logging.error(err_msg)
+                    logger.error(err_msg)
                     if res.get("_trace"):
-                        logging.error(res.get("_trace"))
+                        logger.error(res.get("_trace"))
                     self._progress_on_result(None, completed=completed, total=total, failed_delta=1)
                     continue
             else:
@@ -3128,10 +3140,9 @@ class GearOptimizerApp:
                     err_name = res.get("_queue_label") or res.get("_song_name") or res.get("song")
                     err_type = res.get("_error_type") or type(res.get("_error")).__name__
                     err_msg = f"[{completed}/{total}] FAILED: {err_name} - {err_type}: {res.get('_error')}"
-                    print(err_msg, file=sys.stderr)
-                    logging.error(err_msg)
+                    logger.error(err_msg)
                     if res.get("_trace"):
-                        logging.error(res.get("_trace"))
+                        logger.error(res.get("_trace"))
                     self._progress_on_result(None, completed=completed, total=total, failed_delta=1)
                     continue
 
@@ -3147,10 +3158,10 @@ class GearOptimizerApp:
             self._progress_on_result(res, completed=completed, total=total)
 
             if memory_release_requested():
-                print("[MemoryGuard] Early stop in consume_results")
+                logger.warning("[MemoryGuard] Early stop in consume_results")
                 break
 
-            print(f"[{completed}/{total}] Completed: {task_label}")
+            logger.info(f"[{completed}/{total}] Completed: {task_label}")
             emit_profile_event(
                 component="app",
                 event="task_completed",
@@ -3170,9 +3181,11 @@ class GearOptimizerApp:
                     rem = max(0, int(total) - int(completed)) if total > 0 else 0
                     eta_s = float(rem) * avg_s if rem > 0 else 0.0
                     if rem > 0:
-                        print(f"[Throughput] {per_h:.1f} tasks/hour (avg {avg_s:.2f}s/task, ETA {eta_s / 60.0:.1f}m)")
+                        logger.info(
+                            f"[Throughput] {per_h:.1f} tasks/hour (avg {avg_s:.2f}s/task, ETA {eta_s / 60.0:.1f}m)"
+                        )
                     else:
-                        print(f"[Throughput] {per_h:.1f} tasks/hour (avg {avg_s:.2f}s/task)")
+                        logger.info(f"[Throughput] {per_h:.1f} tasks/hour (avg {avg_s:.2f}s/task)")
                     emit_profile_event(
                         component="app",
                         event="throughput_snapshot",
@@ -3189,9 +3202,9 @@ class GearOptimizerApp:
                     )
                 except Exception:
                     pass
-            print("=" * 60)
-            print(f"PROCESSING SONG: {task_label}")
-            print("=" * 60)
+            logger.info("=" * 60)
+            logger.info(f"PROCESSING SONG: {task_label}")
+            logger.info("=" * 60)
 
             # DB Stuff - Only save valid entries (non-zero score, has gear/minis)
             persisted = res.get("persist_entries")
@@ -3250,7 +3263,7 @@ class GearOptimizerApp:
                         },
                     )
                 else:
-                    print(f"[DB] Skipped save for {res['song']}: no valid entries (score=0 or empty loadout)")
+                    logger.warning(f"[DB] Skipped save for {res['song']}: no valid entries (score=0 or empty loadout)")
                     # Still count as a processed run for per-song attempt counters.
                     try:
                         self._async_db_saver.submit(
@@ -3290,7 +3303,7 @@ class GearOptimizerApp:
                         },
                     )
                 else:
-                    print(f"[DB] Skipped save for {res['song']}: invalid payload (score=0 or empty loadout)")
+                    logger.warning(f"[DB] Skipped save for {res['song']}: invalid payload (score=0 or empty loadout)")
                     # Still count as a processed run for per-song attempt counters.
                     try:
                         self._async_db_saver.submit(
@@ -3322,7 +3335,7 @@ class GearOptimizerApp:
         self._progress_counts_driven = False
 
         if failed > 0:
-            print(f"[SUMMARY] {failed}/{total} songs failed.")
+            logger.warning(f"[SUMMARY] {failed}/{total} songs failed.")
 
     def _cleanup_resources(self, status_queue, status_thread, manager):
         try:
@@ -3367,11 +3380,11 @@ class GearOptimizerApp:
             pass
 
     def _handle_loop_restart(self, wait_time=3):
-        print(f"Restarting song scan in {wait_time} seconds...")
+        logger.info(f"Restarting song scan in {wait_time} seconds...")
         try:
             if os.path.exists(MEMORY_GUARD_RESUME_FILE):
                 os.remove(MEMORY_GUARD_RESUME_FILE)
-                print("[LoopForever] Cleared resume file")
+                logger.info("[LoopForever] Cleared resume file")
         except Exception as e:
             logging.warning(f"Failed to delete resume file: {e}")
         time.sleep(wait_time)

@@ -10,6 +10,7 @@ from helpers.ga_helpers for improved modularity and maintainability.
 """
 
 import os
+import logging
 import random
 import time
 import importlib.util
@@ -17,6 +18,7 @@ import importlib.util
 import numpy as np
 
 _TRUTHY_ENV = {"1", "true", "yes", "on"}
+logger = logging.getLogger(__name__)
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -39,7 +41,7 @@ _GA_SEED = os.environ.get("GA_SEED")
 if _GA_SEED is not None:
     _GA_SEED = int(_GA_SEED)
     random.seed(_GA_SEED)
-    print(f"[GA] Deterministic mode: seed={_GA_SEED}")
+    logger.info(f"[GA] Deterministic mode: seed={_GA_SEED}")
 
 from ..core.constants import (
     GA_POPULATION_SIZE,
@@ -210,10 +212,7 @@ def _decode_requires_full_stats(cfg_data: dict | None) -> bool:
         return True
     if not isinstance(cfg_data, dict):
         return False
-    return bool(
-        cfg_data.get("ga_require_full_stats")
-        or cfg_data.get("fg_require_full_stats")
-    )
+    return bool(cfg_data.get("ga_require_full_stats") or cfg_data.get("fg_require_full_stats"))
 
 
 # PRODUCTION: GA_FORCE_COLD_START is a production runtime override for the GPU-native GA path.
@@ -456,6 +455,46 @@ def _extract_fg_candidates_from_ga_snapshot(
         all_evaluated.append(cand_data)
 
     return all_evaluated
+
+
+def _promote_best_candidate_over_header(
+    *,
+    best_data: dict,
+    registry: "ItemRegistry",
+    best_gear: list,
+    best_minis: list,
+    candidates: list[dict],
+) -> tuple[dict, list, list]:
+    # Sanity: prefer the true max score across decoded candidates if it exceeds
+    # the header best score. This protects against rare GPU header reductions
+    # being out-of-sync with the selected candidate table.
+    try:
+        best_score_run = int(best_data.get("BaseScore") or best_data.get("Score") or 0)
+    except Exception:
+        best_score_run = 0
+    try:
+        cand_best = max(candidates, key=lambda c: int(c.get("BaseScore") or c.get("Score") or 0))
+    except Exception:
+        cand_best = None
+    if isinstance(cand_best, dict):
+        try:
+            cand_score = int(cand_best.get("BaseScore") or cand_best.get("Score") or 0)
+        except Exception:
+            cand_score = 0
+        if cand_score > best_score_run:
+            data_obj = cand_best.get("Data") or {}
+            if isinstance(data_obj, dict):
+                best_data = data_obj
+            cand_ids = cand_best.get("GenomeIDs")
+            if cand_ids is not None:
+                try:
+                    cand_genome = registry.decode_genome(np.asarray(cand_ids, dtype=np.int32))
+                    best_gear = list(cand_genome[:6] or best_gear)
+                    best_minis = list(cand_genome[6:9] or best_minis)
+                except Exception:
+                    pass
+
+    return best_data, best_gear, best_minis
 
 
 def decode_gpu_native_ga_runs_payload(
@@ -715,39 +754,18 @@ def decode_gpu_native_ga_runs_payload(
             }
             unique_evaluated.append(cand_data)
 
-        # Sanity: prefer the true max score across decoded candidates if it exceeds
-        # the header best score. This protects against rare GPU header reductions
-        # being out-of-sync with the selected candidate table.
-        try:
-            best_score_run = int(best_data.get("BaseScore") or best_data.get("Score") or 0)
-        except Exception:
-            best_score_run = 0
-        try:
-            cand_best = max(unique_evaluated, key=lambda c: int(c.get("BaseScore") or c.get("Score") or 0))
-        except Exception:
-            cand_best = None
-        if isinstance(cand_best, dict):
-            try:
-                cand_score = int(cand_best.get("BaseScore") or cand_best.get("Score") or 0)
-            except Exception:
-                cand_score = 0
-            if cand_score > best_score_run:
-                data_obj = cand_best.get("Data") or {}
-                if isinstance(data_obj, dict):
-                    best_data = data_obj
-                cand_ids = cand_best.get("GenomeIDs")
-                if cand_ids is not None:
-                    try:
-                        cand_genome = registry.decode_genome(np.asarray(cand_ids, dtype=np.int32))
-                        best_gear = list(cand_genome[:6] or best_gear)
-                        best_minis = list(cand_genome[6:9] or best_minis)
-                    except Exception:
-                        pass
+        best_data, best_gear, best_minis = _promote_best_candidate_over_header(
+            best_data=best_data,
+            registry=registry,
+            best_gear=list(best_gear),
+            best_minis=list(best_minis),
+            candidates=unique_evaluated,
+        )
 
         if perf:
             stats_ms = (time.perf_counter() - t_stats) * 1000.0 if (perf and include_base_stats) else 0.0
             total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
-            print(
+            logger.info(
                 "[PERF][GADecode] "
                 f"selected={int(selected_n)} stats={stats_ms:.1f}ms total={total_ms:.1f}ms candidates={len(unique_evaluated)}"
             )
@@ -1161,44 +1179,24 @@ def decode_gpu_native_ga_runs_payload(
     stats_ms = (time.perf_counter() - t_stats) * 1000.0 if perf else 0.0
     total_ms = (time.perf_counter() - t_total) * 1000.0 if perf else 0.0
     if perf:
-        print(
+        logger.info(
             "[PERF][GADecode] "
             f"runs={n_runs} pop={n_genomes} uniq={n_stub} "
             f"scan={scan_ms:.1f}ms select={select_ms:.1f}ms stats={stats_ms:.1f}ms total={total_ms:.1f}ms "
             f"selected={len(unique_evaluated)}"
         )
-        print(
+        logger.info(
             "[PERF][GADecodeDetails] "
             f"runs={n_runs} pop={n_genomes} uniq={n_stub} arrays={arrays_ms:.1f}ms proxy={proxy_ms:.1f}ms"
         )
 
-    # Sanity: prefer the true max score across decoded candidates if it exceeds
-    # the per-run best scan result.
-    try:
-        best_score_run = int(best_data.get("BaseScore") or best_data.get("Score") or 0)
-    except Exception:
-        best_score_run = 0
-    try:
-        cand_best = max(unique_evaluated, key=lambda c: int(c.get("BaseScore") or c.get("Score") or 0))
-    except Exception:
-        cand_best = None
-    if isinstance(cand_best, dict):
-        try:
-            cand_score = int(cand_best.get("BaseScore") or cand_best.get("Score") or 0)
-        except Exception:
-            cand_score = 0
-        if cand_score > best_score_run:
-            data_obj = cand_best.get("Data") or {}
-            if isinstance(data_obj, dict):
-                best_data = data_obj
-            cand_ids = cand_best.get("GenomeIDs")
-            if cand_ids is not None:
-                try:
-                    cand_genome = registry.decode_genome(np.asarray(cand_ids, dtype=np.int32))
-                    best_gear = list(cand_genome[:6] or best_gear)
-                    best_minis = list(cand_genome[6:9] or best_minis)
-                except Exception:
-                    pass
+    best_data, best_gear, best_minis = _promote_best_candidate_over_header(
+        best_data=best_data,
+        registry=registry,
+        best_gear=list(best_gear),
+        best_minis=list(best_minis),
+        candidates=unique_evaluated,
+    )
 
     return best_data, list(best_gear), list(best_minis), unique_evaluated
 
@@ -1345,7 +1343,7 @@ def _run_gpu_native_ga(
     island_starts.append(n_genomes)  # Sentinel for last island end
 
     if _GPU_NATIVE_GA_LOG_ISLAND_MODEL:
-        print(f"  >> Island Model: {num_islands} islands, ~{island_size} genomes each")
+        logger.info(f"  >> Island Model: {num_islands} islands, ~{island_size} genomes each")
 
     # Track population snapshot - only downloaded when best improves or during migrations
     pop_snapshot = None
@@ -1728,7 +1726,7 @@ def run_gpu_native_ga_runs_payload_prebuilt(
         if not phase_timing:
             return
         try:
-            print(
+            logger.info(
                 "[PERF][GAGPUPhase] "
                 f"phase={phase} runs={int(runs)} pop={int(pop)} gen={int(gen)} "
                 f"use_hints={int(use_hints)} combos={int(combos)} ms={float(ms):.3f}"
@@ -2081,11 +2079,11 @@ def run_gpu_native_ga_runs_payload_prebuilt(
                 cfg_data=cfg_data,
                 ga_seed=ga_seed,
             )
-            print(summarize_ga_redundancy_record(audit_record))
+            logger.info(summarize_ga_redundancy_record(audit_record))
             audit_path = write_ga_redundancy_audit_record(audit_record)
-            print(f"[GA Redundancy Audit] wrote {audit_path}")
+            logger.info(f"[GA Redundancy Audit] wrote {audit_path}")
         except Exception as exc:
-            print(f"[GA Redundancy Audit] Warning: failed to capture audit: {exc}")
+            logger.warning(f"[GA Redundancy Audit] Warning: failed to capture audit: {exc}")
 
     if len(payload_segments) != 1:
         raise RuntimeError(
@@ -2162,8 +2160,8 @@ def solve_coevolution_genetic(
         except Exception:
             pass
 
-    print("\n=== STARTING GENETIC ALGORITHM SOLVER ===")
-    print(f"Configuration: GearOptimization={optimize_gear}, MiniOptimization={optimize_minis}")
+    logger.info("=== STARTING GENETIC ALGORITHM SOLVER ===")
+    logger.info(f"Configuration: GearOptimization={optimize_gear}, MiniOptimization={optimize_minis}")
 
     ga_settings = ga_settings or GASettings.from_cfg(cfg)
 
@@ -2184,11 +2182,11 @@ def solve_coevolution_genetic(
     else:
         gear_pool, mini_pool, total_before, total_after, whitelisted_minis = pools
     if gear_pool is None:
-        print(f"[GA Error] initialize_pools failed for song {calc_song['metadata'].get('Song Name', 'Unknown')}")
+        logger.error(f"[GA Error] initialize_pools failed for song {calc_song['metadata'].get('Song Name', 'Unknown')}")
         return None, [], [], None, [], [], []
 
     if whitelisted_minis:
-        print(f"[GA] Force-including {len(whitelisted_minis)} whitelisted minis in initialization.")
+        logger.info(f"[GA] Force-including {len(whitelisted_minis)} whitelisted minis in initialization.")
 
     # Build configuration data
     # GPU-only policy: ignore any attempt to disable GPU via config.
@@ -2200,7 +2198,7 @@ def solve_coevolution_genetic(
     except Exception:
         use_gpu_mode_requested = True
     if not use_gpu_mode_requested:
-        print("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
+        logger.warning("[GPU] IterationEngine.GPU_Mode=false ignored (GPU-only policy); forcing GPU_Mode=true.")
     use_gpu_mode = True
 
     use_gpu_native_requested = True
@@ -2211,7 +2209,9 @@ def solve_coevolution_genetic(
     except Exception:
         use_gpu_native_requested = True
     if not use_gpu_native_requested:
-        print("[GPU] IterationEngine.GPU_Native_GA=false ignored (GPU-only policy); forcing GPU_Native_GA=true.")
+        logger.warning(
+            "[GPU] IterationEngine.GPU_Native_GA=false ignored (GPU-only policy); forcing GPU_Native_GA=true."
+        )
     use_gpu_native = True
 
     if not _GPU_NATIVE_AVAILABLE:
@@ -2232,7 +2232,7 @@ def solve_coevolution_genetic(
     # FG fitness heuristic was removed: GA always optimizes true base score (all perfects).
     # The FG finder separately evaluates loadouts with FG configs to find the best FG score.
     if use_gpu_mode:
-        print(f"[GPU] GPU_Mode enabled (Native GA: {use_gpu_native})")
+        logger.info(f"[GPU] GPU_Mode enabled (Native GA: {use_gpu_native})")
 
     cfg_data = {
         "selected_color": selected_color,
@@ -2297,8 +2297,8 @@ def solve_coevolution_genetic(
     # If using GPU mode, bypass the entire CPU loop mechanism.
     if cfg_data.get("use_gpu", False) and cfg_data.get("use_gpu_native", True) and _GPU_NATIVE_AVAILABLE:
         gpu_api = _require_gpu_api()
-        print("\n=== RUNNING GPU-NATIVE GENETIC ALGORITHM ===")
-        print(f"  Population: {GA_POPULATION_SIZE}, Generations: {ga_depth}")
+        logger.info("=== RUNNING GPU-NATIVE GENETIC ALGORITHM ===")
+        logger.info(f"  Population: {GA_POPULATION_SIZE}, Generations: {ga_depth}")
 
         # --- MULTI-START LOOP ---
         num_runs = ga_settings.multi_start
@@ -2356,13 +2356,13 @@ def solve_coevolution_genetic(
                 if topk is not None:
                     gpu_api.ga_upload_init_heuristic_topk(topk_ids=topk, heuristic_k=int(heuristic_k), n_slots=9)
             except Exception as e:
-                print(f"[GPU GA] Warning: failed to build/upload init heuristic table: {e}")
+                logger.warning(f"[GPU GA] Warning: failed to build/upload init heuristic table: {e}")
 
         # Match CPU logic: split total depth across runs (Micro-GA strategy)
         # or use full depth if multi-start is 1.
         gens_per_run = max(1, (ga_depth + num_runs - 1) // num_runs)
 
-        print(f"  Multi-start runs: {num_runs} (generations per run: {gens_per_run})")
+        logger.info(f"  Multi-start runs: {num_runs} (generations per run: {gens_per_run})")
 
         # GPU-native GA exploration knobs (optional; defaults preserve current behavior)
         gpu_tournament_k = safe_int(cfg.get("IterationEngine", "GPU_GA_TournamentK", fallback=3), 3)
@@ -2469,7 +2469,7 @@ def solve_coevolution_genetic(
                 segment_pop_generated = True
 
             if _GPU_NATIVE_GA_LOG_PROGRESS:
-                print(f"  >> GPU GA Run {run_idx + 1}/{num_runs}...")
+                logger.info(f"  >> GPU GA Run {run_idx + 1}/{num_runs}...")
 
             if reset_every_runs > 0 and run_idx > 0 and (run_idx % reset_every_runs) == 0:
                 try:
@@ -2486,7 +2486,7 @@ def solve_coevolution_genetic(
                     gpu_api.ga_upload_base_fixed_stats(base_stats_arr)
                     segment_pop_generated = False
                 except Exception as e:
-                    print(f"[GPU GA] Warning: periodic reset failed: {e}")
+                    logger.warning(f"[GPU GA] Warning: periodic reset failed: {e}")
 
             if not segment_pop_generated:
                 gpu_api.ga_generate_initial_populations(
@@ -2550,7 +2550,7 @@ def solve_coevolution_genetic(
                     last_exc = e
                     if attempt >= max_retries or not _is_vulkan_semaphore_failure(e):
                         break
-                    print(
+                    logger.warning(
                         f"[GPU GA] Vulkan backend error; retrying run after reset (attempt {attempt + 1}/{max_retries})"
                     )
                     try:
@@ -2583,7 +2583,7 @@ def solve_coevolution_genetic(
                         segment_pop_generated = True
                         gpu_api.ga_load_initial_population(run_idx=local_run_idx, n_genomes=n_genomes, n_slots=n_slots)
                     except Exception as reset_exc:
-                        print(f"[GPU GA] Reset failed: {reset_exc}")
+                        logger.error(f"[GPU GA] Reset failed: {reset_exc}")
                         break
 
             if last_exc is not None:
@@ -2699,7 +2699,7 @@ def solve_coevolution_genetic(
                 # Never fail the run for a refinement issue; the unrefined winner is still usable.
                 pass
 
-        print(f"=== GPU-NATIVE GA COMPLETE: Best Score {int(best_data.get('Score', 0))} ===")
+        logger.info(f"=== GPU-NATIVE GA COMPLETE: Best Score {int(best_data.get('Score', 0))} ===")
 
         # FG booster(s): optional candidate augmentation to improve ForceGreatsFinder coverage
         # without inflating the downstream candidate limit (we re-select to the same funnel size).
