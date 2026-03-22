@@ -9,6 +9,7 @@ What it does:
 1) Runs a small baseline set of GPU regression tests (expected PASS).
 2) "Bug injection" scenario A (no file edits): disables winner refinement and asserts the refinement test FAILS.
 3) "Bug injection" scenario B (temporary file edit): reintroduces in-place hint inheritance and asserts the hint test FAILS.
+4) "Bug injection" scenario C (temporary file edit): breaks warmstart best-key reduction and asserts parity test FAILS.
 
 This is designed to catch the kind of multi-day debugging incidents caused by subtle GPU races and
 "hidden top-1 misses" (suboptimal winners that look like regressions).
@@ -28,6 +29,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 def _run(cmd: list[str], *, env: dict[str, str] | None = None) -> int:
     proc = subprocess.run(cmd, cwd=str(PROJECT_ROOT), env=env)
     return int(proc.returncode)
+
 
 def _write_text_lf(path: Path, data: str) -> None:
     # The repo enforces LF for *.py via .gitattributes. When running on Windows,
@@ -77,6 +79,35 @@ def _mutate_ga_inherit_hints_in_place(path: Path) -> str:
 
     mutated = original[:start] + mutated_block + original[end:]
 
+    _write_text_lf(path, mutated)
+    return original
+
+
+def _mutate_warmstart_no_best_key_write(path: Path) -> str:
+    original = path.read_text(encoding="utf-8")
+
+    old = "ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], local_best_key)"
+    new = "ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], ti.u64(0))"
+
+    # Only mutate the warmstart kernel (avoid accidental edits if the pattern is reused).
+    start = original.find("def ga_find_best_combo_warmstart_kernel")
+    if start < 0:
+        raise RuntimeError("Failed to locate ga_find_best_combo_warmstart_kernel() in warmstart.py")
+    end = original.find("@ti.kernel", start + 1)
+    if end < 0:
+        end = len(original)
+
+    block = original[start:end]
+    if old not in block:
+        raise RuntimeError("Failed to locate warmstart best-key atomic_max line for mutation.")
+
+    mutated_block = block.replace(old, new)
+    if mutated_block == block:
+        raise RuntimeError("Failed to apply warmstart mutation.")
+    if old in mutated_block:
+        raise RuntimeError("Warmstart mutation did not fully apply inside ga_find_best_combo_warmstart_kernel().")
+
+    mutated = original[:start] + mutated_block + original[end:]
     _write_text_lf(path, mutated)
     return original
 
@@ -142,6 +173,22 @@ def main() -> int:
             return 3
     finally:
         _write_text_lf(kernels_path, original)
+
+    print("[mutation-guards] Injection C: break warmstart best-key reduction; expect FAIL")
+    warmstart_path = PROJECT_ROOT / "gear_optimizer/solver/taichi_gem/kernels/ga_eval/warmstart.py"
+    warmstart_original = _mutate_warmstart_no_best_key_write(warmstart_path)
+    try:
+        rc = _pytest(
+            [
+                "-q",
+                "tests/test_solve_genomes_from_registry_score_parity.py::test_solve_genomes_from_registry_matches_parallel_scores_with_user_gems_and_static_overflow",
+            ]
+        )
+        if rc == 0:
+            print("[mutation-guards] ERROR: mutated warmstart unexpectedly PASSED (guard is too weak).")
+            return 4
+    finally:
+        _write_text_lf(warmstart_path, warmstart_original)
 
     print("[mutation-guards] OK: injected bugs were detected by tests")
     return 0

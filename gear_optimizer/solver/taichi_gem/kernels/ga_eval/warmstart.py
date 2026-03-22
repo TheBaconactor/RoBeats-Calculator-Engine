@@ -353,12 +353,8 @@ def _compute_combo_key_warmstart_precomputed(
 
                 budget: ti.i32 = combo_budget - ft - ff
 
-                p_val: ti.i32 = (
-                    base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
-                )
-                s_val: ti.i32 = (
-                    base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
-                )
+                p_val: ti.i32 = base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
+                s_val: ti.i32 = base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
 
                 res_vec = ti.Vector([0, 0, 0, 0, 0, 0, 0])
                 if ti.static(use_hints):
@@ -455,8 +451,9 @@ def ga_find_best_combo_warmstart_kernel(
     When use_hints=1, uses local_search_from_hint() with the genome's stored hint.
     When use_hints=0, falls back to full optimize_core_device() (cold start).
 
-    Vulkan path also caches winning [pp, cm, fm, ov] gem allocations into
-    chunk_best_results so materialization kernels can avoid re-running scoring.
+    Vulkan path reduces the winning key into `chunk_best_key` and intentionally does NOT
+    write `chunk_best_results` (materialization validates cached payloads and recomputes
+    when needed).
 
     This enables fast evaluation after Gen 0 by reusing previous generation's
     best allocations as starting points for local refinement.
