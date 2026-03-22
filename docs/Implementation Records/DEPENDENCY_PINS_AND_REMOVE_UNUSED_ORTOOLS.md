@@ -15,11 +15,18 @@ Numba JIT behavior, and Taichi/Vulkan behavior can change across releases).
 
 If OR-Tools becomes required again, reintroduce it as an optional extra with a compatible NumPy/Numba strategy.
 
+## Update (Inventory Optimizer)
+
+`inventory_optimizer/cpsat_hypergraph.py` now includes an optional CP-SAT refinement step that uses OR-Tools when it is
+installed. OR-Tools remains intentionally excluded from the default pinned `requirements.txt` set due to the cp311 +
+NumPy 1.x conflict above; when absent, the refinement step degrades gracefully (`enabled=false`, reason
+`ortools_missing`).
+
 ## Implementation
 
 - `requirements.txt`
   - Pinned: `numpy`, `numba`, `taichi`, `psutil`, `requests`, `python-dotenv`, `cachetools`.
-  - Removed: `ortools` (unused).
+  - Removed: `ortools` from default requirements (kept optional for `inventory_optimizer/` CP-SAT refinement).
 - `requirements-dev.txt`
   - Pinned: `pytest`, `ruff`.
 

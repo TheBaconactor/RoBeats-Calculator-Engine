@@ -227,9 +227,25 @@ def get_db_connection_cached(db_path: Optional[str] = None) -> sqlite3.Connectio
     except Exception:
         conns = {}
 
+    db_path = str(db_path)
     conn = conns.get(db_path)
     if conn is not None:
         return conn
+
+    # If we recently failed to open the real DB connection, avoid retrying on every
+    # hot-path call (which can spam warnings and waste time during brief lock bursts).
+    try:
+        now_monotonic = float(time.monotonic())
+    except Exception:
+        now_monotonic = 0.0
+    try:
+        next_retry_ts = float(getattr(_DB_TLS, "ro_next_retry_ts", 0.0) or 0.0)
+    except Exception:
+        next_retry_ts = 0.0
+    if now_monotonic and (now_monotonic < next_retry_ts):
+        fallback = getattr(_DB_TLS, "fallback_conn", None)
+        if fallback is not None:
+            return fallback
 
     # Default to a small non-zero timeout to allow brief lock contention during
     # write bursts without immediate failure. This prevents spurious fallbacks
@@ -242,19 +258,56 @@ def get_db_connection_cached(db_path: Optional[str] = None) -> sqlite3.Connectio
     try:
         conn = get_db_connection_readonly(db_path, timeout=read_timeout)
     except sqlite3.Error as exc:
-        # Best-effort: DB might be locked briefly during heavy write bursts.
-        # Never block the GPU feed loop on a read-only seed/context fetch.
+        # Best-effort: DB might be locked briefly during heavy write bursts, or
+        # may not exist yet in some test/tool entrypoints. Never block the GPU
+        # feed loop on a read-only seed/context fetch, but also avoid "sticky"
+        # permanent fallback: retry opening the real DB after a short cooldown.
+        try:
+            fail_count = int(getattr(_DB_TLS, "ro_fail_count", 0) or 0) + 1
+        except Exception:
+            fail_count = 1
+        try:
+            setattr(_DB_TLS, "ro_fail_count", int(fail_count))
+        except Exception:
+            pass
+        # Exponential backoff, capped, to avoid thrashing on persistent failures.
+        try:
+            exp = min(7, max(0, int(fail_count) - 1))
+        except Exception:
+            exp = 0
+        cooldown_sec = min(5.0, 0.05 * (2**exp))
+        try:
+            next_retry_ts = float(now_monotonic) + float(cooldown_sec)
+            setattr(_DB_TLS, "ro_next_retry_ts", float(next_retry_ts))
+        except Exception:
+            pass
         warn_fallback(
             "db.readonly_connection",
-            "failed to open read-only DB connection; using thread-local in-memory fallback DB",
-            context={"db_path": db_path, "timeout_sec": read_timeout},
+            "failed to open read-only DB connection; using thread-local in-memory fallback DB (will retry)",
+            context={
+                "db_path": db_path,
+                "timeout_sec": read_timeout,
+                "fail_count": int(fail_count),
+                "retry_in_sec": float(cooldown_sec),
+            },
             exc=exc,
+            fatal=False,
         )
         fallback = getattr(_DB_TLS, "fallback_conn", None)
         if fallback is None:
             try:
                 fallback = sqlite3.connect(":memory:")
                 fallback.row_factory = sqlite3.Row
+                # Keep query semantics stable: fallback DB should look like an empty
+                # evolution DB (schema present) rather than raising "no such table".
+                try:
+                    ensure_schema(fallback)
+                except Exception:
+                    pass
+                try:
+                    fallback.execute("PRAGMA query_only=1;")
+                except Exception:
+                    pass
                 setattr(_DB_TLS, "fallback_conn", fallback)
                 _register_db_conn(fallback)
             except Exception:
@@ -263,6 +316,11 @@ def get_db_connection_cached(db_path: Optional[str] = None) -> sqlite3.Connectio
         return fallback
 
     conns[db_path] = conn
+    try:
+        setattr(_DB_TLS, "ro_fail_count", 0)
+        setattr(_DB_TLS, "ro_next_retry_ts", 0.0)
+    except Exception:
+        pass
     _register_db_conn(conn)
     return conn
 
@@ -305,10 +363,11 @@ def get_song_counters(
     if not song_name:
         return (0, 0, 0, 0)
 
-    close_conn = False
     if conn is None:
+        # Intentionally use a per-thread cached read-only connection for the
+        # hot-path "DB seed/context read" callers. This connection is owned by
+        # the cache and is closed at process exit.
         conn = get_db_connection_cached(db_path or get_evolution_db_path())
-        close_conn = False
 
     try:
         row = conn.execute(
@@ -341,12 +400,6 @@ def get_song_counters(
     except sqlite3.Error:
         # Defensive: if the schema hasn't been migrated yet, treat as missing.
         return (0, 0, 0, 0)
-    finally:
-        if close_conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
 
 
 def update_song_counters(

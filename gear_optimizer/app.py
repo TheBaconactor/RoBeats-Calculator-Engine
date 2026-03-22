@@ -2820,10 +2820,10 @@ class GearOptimizerApp:
                 init_timeout = 30.0
             if not gpu_executor.wait_until_ready(timeout=init_timeout):
                 err = getattr(gpu_executor, "last_init_error", None)
-                msg = "[GPU Executor] Taichi init failed or timed out; falling back to direct GPU"
+                msg = "[GPU Executor] Taichi init failed or timed out; falling back to single-process in-flight"
                 if err:
                     msg = f"{msg} ({err})"
-                warn_fallback("app.gpu_executor.direct_gpu", msg, fatal=False)
+                warn_fallback("app.gpu_executor.single_process", msg, fatal=False)
                 try:
                     gpu_executor.stop()
                 except Exception:
@@ -2832,8 +2832,14 @@ class GearOptimizerApp:
             if gpu_executor is not None and gpu_executor.is_running:
                 logger.info("[GPU Executor] Started for parallel song processing")
         except Exception as e:
-            logger.error(f"[GPU Executor] Failed to start: {e} - workers will use direct GPU")
+            logger.error(f"[GPU Executor] Failed to start: {e} - forcing single-process in-flight")
             gpu_executor = None
+
+        # Without the shared GPU executor, multi-process "direct GPU" workers can fight
+        # over Vulkan contexts and waste work via resets/crashes. Prefer correctness:
+        # fall back to the single-process native in-flight pipeline.
+        if gpu_executor is None or not getattr(gpu_executor, "is_running", False):
+            current_worker_cap = 1
 
         throughput_t0 = time.perf_counter()
         while remaining_tasks:

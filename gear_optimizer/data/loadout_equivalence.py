@@ -92,8 +92,10 @@ def extract_song_colors(details: Any) -> tuple[str, str, str]:
     if not isinstance(details, dict):
         return ("", "", "")
 
-    primary = str(details.get("PrimaryColor") or "").strip()
-    secondary = str(details.get("SecondaryColor") or "").strip()
+    # Backward/interop: some payloads use space-separated keys ("Primary Color"),
+    # while persistence prefers camel-case ("PrimaryColor").
+    primary = str(details.get("PrimaryColor") or details.get("Primary Color") or "").strip()
+    secondary = str(details.get("SecondaryColor") or details.get("Secondary Color") or "").strip()
     selected = str(get_selected_element(details, "") or "").strip()
     if not selected:
         selected = primary or secondary
