@@ -112,6 +112,32 @@ def _mutate_warmstart_no_best_key_write(path: Path) -> str:
     return original
 
 
+def _mutate_disable_cm_lookahead(path: Path) -> str:
+    original = _read_text(path)
+    old = "CM_LOOKAHEAD_MAX = 10"
+    new = "CM_LOOKAHEAD_MAX = 0"
+    if old not in original:
+        raise RuntimeError("Failed to locate CM_LOOKAHEAD_MAX line for mutation.")
+    mutated = original.replace(old, new, 1)
+    if mutated == original or old in mutated:
+        raise RuntimeError("Failed to apply CM lookahead mutation.")
+    _write_text_lf(path, mutated)
+    return original
+
+
+def _mutate_disable_cm_jump(path: Path) -> str:
+    original = _read_text(path)
+    old = "CM_JUMP_MAX: ti.i32 = 10"
+    new = "CM_JUMP_MAX: ti.i32 = 0"
+    if old not in original:
+        raise RuntimeError("Failed to locate CM_JUMP_MAX line for mutation.")
+    mutated = original.replace(old, new, 1)
+    if mutated == original or old in mutated:
+        raise RuntimeError("Failed to apply CM jump mutation.")
+    _write_text_lf(path, mutated)
+    return original
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run regression-guard mutation checks.")
     parser.add_argument(
@@ -130,7 +156,8 @@ def main() -> int:
         "-q",
         "tests/test_solve_genomes_from_registry_score_parity.py::test_solve_genomes_from_registry_matches_parallel_scores_with_user_gems_and_static_overflow",
         "tests/test_gpu_ga_hint_inheritance_race_free.py::test_ga_inherit_hints_uses_next_buffer_and_does_not_mutate_parents_in_place",
-        "tests/test_gpu_ga_winner_refinement_enforced.py::test_gpu_native_ga_winner_refinement_is_enforced",
+        "tests/test_gem_optimizer_cm_lookahead.py::test_optimize_core_jit_cm_lookahead_breaks_plateau_trap",
+        "tests/test_gpu_local_search_cm_plateau.py::test_local_search_from_hint_cm_jump_breaks_plateau_trap",
     ]
 
     print("[mutation-guards] Baseline: expect PASS")
@@ -146,19 +173,39 @@ def main() -> int:
     if not args.allow_dirty:
         _require_clean_worktree()
 
-    print("[mutation-guards] Injection A: disable GA winner refinement; expect FAIL")
-    rc = _pytest(
-        [
-            "-q",
-            "tests/test_gpu_ga_winner_refinement_enforced.py::test_gpu_native_ga_winner_refinement_is_enforced",
-        ],
-        extra_env={"GPU_GA_WINNER_REFINEMENT": "0"},
-    )
-    if rc == 0:
-        print("[mutation-guards] ERROR: refinement-disabled run unexpectedly PASSED (guard is too weak).")
-        return 2
+    print("[mutation-guards] Injection A: disable CM lookahead; expect FAIL")
+    scoring_core_path = PROJECT_ROOT / "gear_optimizer/solver/scoring_core.py"
+    scoring_core_original = _mutate_disable_cm_lookahead(scoring_core_path)
+    try:
+        rc = _pytest(
+            [
+                "-q",
+                "tests/test_gem_optimizer_cm_lookahead.py::test_optimize_core_jit_cm_lookahead_breaks_plateau_trap",
+            ]
+        )
+        if rc == 0:
+            print("[mutation-guards] ERROR: mutated CM lookahead unexpectedly PASSED (guard is too weak).")
+            return 2
+    finally:
+        _write_text_lf(scoring_core_path, scoring_core_original)
 
-    print("[mutation-guards] Injection B: reintroduce in-place hint inheritance; expect FAIL")
+    print("[mutation-guards] Injection B: disable warmstart CM jump; expect FAIL")
+    kernels_scoring_path = PROJECT_ROOT / "gear_optimizer/solver/taichi_gem/kernels/kernels_scoring.py"
+    kernels_scoring_original = _mutate_disable_cm_jump(kernels_scoring_path)
+    try:
+        rc = _pytest(
+            [
+                "-q",
+                "tests/test_gpu_local_search_cm_plateau.py::test_local_search_from_hint_cm_jump_breaks_plateau_trap",
+            ]
+        )
+        if rc == 0:
+            print("[mutation-guards] ERROR: mutated CM jump unexpectedly PASSED (guard is too weak).")
+            return 3
+    finally:
+        _write_text_lf(kernels_scoring_path, kernels_scoring_original)
+
+    print("[mutation-guards] Injection C: reintroduce in-place hint inheritance; expect FAIL")
     kernels_path = PROJECT_ROOT / "gear_optimizer/solver/taichi_gem/kernels/kernels_ga.py"
     original = _mutate_ga_inherit_hints_in_place(kernels_path)
     try:
@@ -170,11 +217,11 @@ def main() -> int:
         )
         if rc == 0:
             print("[mutation-guards] ERROR: mutated hint inheritance unexpectedly PASSED (guard is too weak).")
-            return 3
+            return 4
     finally:
         _write_text_lf(kernels_path, original)
 
-    print("[mutation-guards] Injection C: break warmstart best-key reduction; expect FAIL")
+    print("[mutation-guards] Injection D: break warmstart best-key reduction; expect FAIL")
     warmstart_path = PROJECT_ROOT / "gear_optimizer/solver/taichi_gem/kernels/ga_eval/warmstart.py"
     warmstart_original = _mutate_warmstart_no_best_key_write(warmstart_path)
     try:
@@ -186,7 +233,7 @@ def main() -> int:
         )
         if rc == 0:
             print("[mutation-guards] ERROR: mutated warmstart unexpectedly PASSED (guard is too weak).")
-            return 4
+            return 5
     finally:
         _write_text_lf(warmstart_path, warmstart_original)
 

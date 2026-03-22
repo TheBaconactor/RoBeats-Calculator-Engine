@@ -150,6 +150,9 @@ def optimize_core_jit(
     # we add a small lookahead: if PP ties with OV now but investing a few PP gems
     # would strictly improve score within the lookahead window, we still pick PP.
     PP_TIE_LOOKAHEAD_MAX = 8
+    # CM can also have discrete breakpoint plateaus (multiplier lookup table + integer rounding),
+    # where the first CM gem doesn't improve but a small streak of CM gems does.
+    CM_LOOKAHEAD_MAX = 10
 
     while remaining_budget > 0:
         fill_budget = remaining_budget - 1
@@ -158,12 +161,12 @@ def optimize_core_jit(
         # Precompute multipliers for current CM/FM (unchanged for PP/OV checks)
         c_mul_cur = np.float32(lookup_reference_jit(cur_cm, ref_cm, TOTAL_ROWS))
         f_mul_cur = np.float32(lookup_reference_jit(cur_fm, ref_fm, TOTAL_ROWS))
+        pp_factor_cur = np.float32(lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS))
 
         # Start with OV as the default winner so OV wins exact ties.
         t_p = cur_p_val + (ELEMENTAL_GEM_SCALE * is_p_ov) + (fill_bonus * is_p_ov)
         t_s = cur_s_val + (ELEMENTAL_GEM_SCALE * is_s_ov) + (fill_bonus * is_s_ov)
-        pp_factor = np.float32(lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS))
-        base = np.float32((t_p * 2) + t_s) + pp_factor
+        base = np.float32((t_p * 2) + t_s) + pp_factor_cur
         best_score = fast_calculate_score(
             base,
             c_mul_cur,
@@ -186,8 +189,8 @@ def optimize_core_jit(
             t_pp = cur_pp + GEM_SCALE_NORMAL
             t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_pp) + (fill_bonus * is_p_ov)
             t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_pp) + (fill_bonus * is_s_ov)
-            pp_factor = np.float32(lookup_reference_jit(t_pp, ref_pp, TOTAL_ROWS))
-            base = np.float32((t_p * 2) + t_s) + pp_factor
+            pp_factor_pp = np.float32(lookup_reference_jit(t_pp, ref_pp, TOTAL_ROWS))
+            base = np.float32((t_p * 2) + t_s) + pp_factor_pp
             pp_score = fast_calculate_score(
                 base,
                 c_mul_cur,
@@ -205,8 +208,7 @@ def optimize_core_jit(
             t_cm = cur_cm + GEM_SCALE_NORMAL
             t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_cm) + (fill_bonus * is_p_ov)
             t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_cm) + (fill_bonus * is_s_ov)
-            pp_factor = np.float32(lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS))
-            base = np.float32((t_p * 2) + t_s) + pp_factor
+            base = np.float32((t_p * 2) + t_s) + pp_factor_cur
             c_mul = np.float32(lookup_reference_jit(t_cm, ref_cm, TOTAL_ROWS))
             score = fast_calculate_score(
                 base,
@@ -225,8 +227,7 @@ def optimize_core_jit(
             t_fm = cur_fm + GEM_SCALE_FEVER
             t_p = cur_p_val + (GEM_STAT_TO_ELEMENT_SCALE * is_p_fm) + (fill_bonus * is_p_ov)
             t_s = cur_s_val + (GEM_STAT_TO_ELEMENT_SCALE * is_s_fm) + (fill_bonus * is_s_ov)
-            pp_factor = np.float32(lookup_reference_jit(cur_pp, ref_pp, TOTAL_ROWS))
-            base = np.float32((t_p * 2) + t_s) + pp_factor
+            base = np.float32((t_p * 2) + t_s) + pp_factor_cur
             f_mul = np.float32(lookup_reference_jit(t_fm, ref_fm, TOTAL_ROWS))
             score = fast_calculate_score(
                 base,
@@ -264,6 +265,41 @@ def optimize_core_jit(
                 )
                 if score_k > best_score:
                     best_opt_idx = 0
+                    break
+                k += 1
+
+        # CM lookahead: if OV wins now but investing a few CM gems would cross a breakpoint
+        # and strictly improve score soon, start investing in CM.
+        if (
+            best_opt_idx == 3
+            and remaining_budget > 1
+            and cur_cm < MAX_STAT_INDEX
+            and (cur_cm <= 50 or is_p_cm or is_s_cm)
+        ):
+            max_k = remaining_budget
+            if max_k > CM_LOOKAHEAD_MAX:
+                max_k = CM_LOOKAHEAD_MAX
+            max_k_by_cap = (MAX_STAT_INDEX - cur_cm) // GEM_SCALE_NORMAL
+            if max_k > max_k_by_cap:
+                max_k = max_k_by_cap
+            k = 2
+            while k <= max_k:
+                fill_bonus_k = (remaining_budget - k) * ELEMENTAL_GEM_SCALE
+                t_cm = cur_cm + (k * GEM_SCALE_NORMAL)
+                t_p = cur_p_val + (k * GEM_STAT_TO_ELEMENT_SCALE * is_p_cm) + (fill_bonus_k * is_p_ov)
+                t_s = cur_s_val + (k * GEM_STAT_TO_ELEMENT_SCALE * is_s_cm) + (fill_bonus_k * is_s_ov)
+                base = np.float32((t_p * 2) + t_s) + pp_factor_cur
+                c_mul = np.float32(lookup_reference_jit(t_cm, ref_cm, TOTAL_ROWS))
+                score_k = fast_calculate_score(
+                    base,
+                    c_mul,
+                    f_mul_cur,
+                    fever_mask_head,
+                    count_body_fever,
+                    count_body_normal,
+                )
+                if score_k > best_score:
+                    best_opt_idx = 1
                     break
                 k += 1
 

@@ -11,7 +11,7 @@ import sys
 import taichi as ti
 
 from .. import kernels_helpers
-from ..kernels_scoring import optimize_core_device, optimize_core_device_refined_from_hint
+from ..kernels_scoring import optimize_core_device
 
 # Platform detection for atomic operations
 IS_METAL = sys.platform == "darwin"
@@ -195,91 +195,29 @@ def ga_write_best_results_from_key_kernel(
 
             cached_sum: ti.i32 = pp_gems + cm_gems + fm_gems + ov_gems
             if cached_sum == budget and pp_gems >= 0 and cm_gems >= 0 and fm_gems >= 0 and ov_gems >= 0:
-                if cm_gems == 0:
-                    # Refinement pass: the greedy allocator is known to get stuck at CM=0
-                    # for some songs, producing false top-1 misses vs the historical DB.
-                    GEM_STAT_TO_ELEMENT: ti.i32 = 3
-                    MAX_STAT: ti.i32 = 160
-                    stats = kernels_helpers.genome_base_stats[genome_idx]
-                    base_pp: ti.i32 = stats[0]
-                    base_cm: ti.i32 = stats[1]
-                    base_fm: ti.i32 = stats[2]
-                    base_p_val: ti.i32 = stats[3]
-                    base_s_val: ti.i32 = stats[4]
-                    base_ft_stat: ti.i32 = stats[5]
-                    base_ff_stat: ti.i32 = stats[6]
-
-                    ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
-                    ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
-                    ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
-                    ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
-
-                    count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
-                    count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
-                    head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
-
-                    p_val: ti.i32 = (
-                        base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
-                    )
-                    s_val: ti.i32 = (
-                        base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
-                    )
-
-                    res_vec = optimize_core_device_refined_from_hint(
-                        budget,
-                        base_pp,
-                        base_cm,
-                        base_fm,
-                        p_val,
-                        s_val,
-                        is_p_pp,
-                        is_s_pp,
-                        is_p_cm,
-                        is_s_cm,
-                        is_p_fm,
-                        is_s_fm,
-                        is_p_ov,
-                        is_s_ov,
-                        head_len,
-                        count_fever,
-                        count_normal,
-                        song_slot,
-                        ft_idx,
-                        ff_idx,
-                        pp_gems,
-                        cm_gems,
-                        fm_gems,
-                        ov_gems,
-                    )
-                    score = res_vec[0]
-                    pp_gems = res_vec[1]
-                    cm_gems = res_vec[2]
-                    fm_gems = res_vec[3]
-                    ov_gems = res_vec[4]
-                else:
-                    score = _score_cached_combo_from_gems(
-                        genome_idx,
-                        ft,
-                        ff,
-                        pp_gems,
-                        cm_gems,
-                        fm_gems,
-                        ov_gems,
-                        gem_scale_fever,
-                        is_p_ft,
-                        is_s_ft,
-                        is_p_ff,
-                        is_s_ff,
-                        is_p_pp,
-                        is_s_pp,
-                        is_p_cm,
-                        is_s_cm,
-                        is_p_fm,
-                        is_s_fm,
-                        is_p_ov,
-                        is_s_ov,
-                        song_slot,
-                    )
+                score = _score_cached_combo_from_gems(
+                    genome_idx,
+                    ft,
+                    ff,
+                    pp_gems,
+                    cm_gems,
+                    fm_gems,
+                    ov_gems,
+                    gem_scale_fever,
+                    is_p_ft,
+                    is_s_ft,
+                    is_p_ff,
+                    is_s_ff,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    song_slot,
+                )
             else:
                 # Cache missing/invalid: recompute to keep behavior correct.
                 GEM_STAT_TO_ELEMENT: ti.i32 = 3
@@ -333,38 +271,6 @@ def ga_write_best_results_from_key_kernel(
                 cm_gems = res_vec[2]
                 fm_gems = res_vec[3]
                 ov_gems = res_vec[4]
-                if cm_gems == 0:
-                    res_vec = optimize_core_device_refined_from_hint(
-                        budget,
-                        base_pp,
-                        base_cm,
-                        base_fm,
-                        p_val,
-                        s_val,
-                        is_p_pp,
-                        is_s_pp,
-                        is_p_cm,
-                        is_s_cm,
-                        is_p_fm,
-                        is_s_fm,
-                        is_p_ov,
-                        is_s_ov,
-                        head_len,
-                        count_fever,
-                        count_normal,
-                        song_slot,
-                        ft_idx,
-                        ff_idx,
-                        pp_gems,
-                        cm_gems,
-                        fm_gems,
-                        ov_gems,
-                    )
-                    score = res_vec[0]
-                    pp_gems = res_vec[1]
-                    cm_gems = res_vec[2]
-                    fm_gems = res_vec[3]
-                    ov_gems = res_vec[4]
         else:
             # Metal: eval kernels do not cache allocations.
             GEM_STAT_TO_ELEMENT: ti.i32 = 3
@@ -418,38 +324,6 @@ def ga_write_best_results_from_key_kernel(
             cm_gems = res_vec[2]
             fm_gems = res_vec[3]
             ov_gems = res_vec[4]
-            if cm_gems == 0:
-                res_vec = optimize_core_device_refined_from_hint(
-                    budget,
-                    base_pp,
-                    base_cm,
-                    base_fm,
-                    p_val,
-                    s_val,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
-                    head_len,
-                    count_fever,
-                    count_normal,
-                    song_slot,
-                    ft_idx,
-                    ff_idx,
-                    pp_gems,
-                    cm_gems,
-                    fm_gems,
-                    ov_gems,
-                )
-                score = res_vec[0]
-                pp_gems = res_vec[1]
-                cm_gems = res_vec[2]
-                fm_gems = res_vec[3]
-                ov_gems = res_vec[4]
 
         kernels_helpers.genome_result_stats[genome_idx] = ti.Vector(
             [
@@ -550,89 +424,29 @@ def ga_write_best_and_update_global_kernel(
 
             cached_sum: ti.i32 = pp_gems + cm_gems + fm_gems + ov_gems
             if cached_sum == budget and pp_gems >= 0 and cm_gems >= 0 and fm_gems >= 0 and ov_gems >= 0:
-                if cm_gems == 0:
-                    GEM_STAT_TO_ELEMENT: ti.i32 = 3
-                    MAX_STAT: ti.i32 = 160
-                    stats = kernels_helpers.genome_base_stats[genome_idx]
-                    base_pp: ti.i32 = stats[0]
-                    base_cm: ti.i32 = stats[1]
-                    base_fm: ti.i32 = stats[2]
-                    base_p_val: ti.i32 = stats[3]
-                    base_s_val: ti.i32 = stats[4]
-                    base_ft_stat: ti.i32 = stats[5]
-                    base_ff_stat: ti.i32 = stats[6]
-
-                    ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
-                    ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
-                    ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
-                    ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
-
-                    count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
-                    count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
-                    head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
-
-                    p_val: ti.i32 = (
-                        base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
-                    )
-                    s_val: ti.i32 = (
-                        base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
-                    )
-
-                    res_vec = optimize_core_device_refined_from_hint(
-                        budget,
-                        base_pp,
-                        base_cm,
-                        base_fm,
-                        p_val,
-                        s_val,
-                        is_p_pp,
-                        is_s_pp,
-                        is_p_cm,
-                        is_s_cm,
-                        is_p_fm,
-                        is_s_fm,
-                        is_p_ov,
-                        is_s_ov,
-                        head_len,
-                        count_fever,
-                        count_normal,
-                        song_slot,
-                        ft_idx,
-                        ff_idx,
-                        pp_gems,
-                        cm_gems,
-                        fm_gems,
-                        ov_gems,
-                    )
-                    score = res_vec[0]
-                    pp_gems = res_vec[1]
-                    cm_gems = res_vec[2]
-                    fm_gems = res_vec[3]
-                    ov_gems = res_vec[4]
-                else:
-                    score = _score_cached_combo_from_gems(
-                        genome_idx,
-                        ft,
-                        ff,
-                        pp_gems,
-                        cm_gems,
-                        fm_gems,
-                        ov_gems,
-                        gem_scale_fever,
-                        is_p_ft,
-                        is_s_ft,
-                        is_p_ff,
-                        is_s_ff,
-                        is_p_pp,
-                        is_s_pp,
-                        is_p_cm,
-                        is_s_cm,
-                        is_p_fm,
-                        is_s_fm,
-                        is_p_ov,
-                        is_s_ov,
-                        song_slot,
-                    )
+                score = _score_cached_combo_from_gems(
+                    genome_idx,
+                    ft,
+                    ff,
+                    pp_gems,
+                    cm_gems,
+                    fm_gems,
+                    ov_gems,
+                    gem_scale_fever,
+                    is_p_ft,
+                    is_s_ft,
+                    is_p_ff,
+                    is_s_ff,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    song_slot,
+                )
             else:
                 GEM_STAT_TO_ELEMENT: ti.i32 = 3
                 MAX_STAT: ti.i32 = 160
@@ -685,38 +499,6 @@ def ga_write_best_and_update_global_kernel(
                 cm_gems = res_vec[2]
                 fm_gems = res_vec[3]
                 ov_gems = res_vec[4]
-                if cm_gems == 0:
-                    res_vec = optimize_core_device_refined_from_hint(
-                        budget,
-                        base_pp,
-                        base_cm,
-                        base_fm,
-                        p_val,
-                        s_val,
-                        is_p_pp,
-                        is_s_pp,
-                        is_p_cm,
-                        is_s_cm,
-                        is_p_fm,
-                        is_s_fm,
-                        is_p_ov,
-                        is_s_ov,
-                        head_len,
-                        count_fever,
-                        count_normal,
-                        song_slot,
-                        ft_idx,
-                        ff_idx,
-                        pp_gems,
-                        cm_gems,
-                        fm_gems,
-                        ov_gems,
-                    )
-                    score = res_vec[0]
-                    pp_gems = res_vec[1]
-                    cm_gems = res_vec[2]
-                    fm_gems = res_vec[3]
-                    ov_gems = res_vec[4]
         else:
             GEM_STAT_TO_ELEMENT: ti.i32 = 3
             MAX_STAT: ti.i32 = 160
@@ -769,38 +551,6 @@ def ga_write_best_and_update_global_kernel(
             cm_gems = res_vec[2]
             fm_gems = res_vec[3]
             ov_gems = res_vec[4]
-            if cm_gems == 0:
-                res_vec = optimize_core_device_refined_from_hint(
-                    budget,
-                    base_pp,
-                    base_cm,
-                    base_fm,
-                    p_val,
-                    s_val,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
-                    head_len,
-                    count_fever,
-                    count_normal,
-                    song_slot,
-                    ft_idx,
-                    ff_idx,
-                    pp_gems,
-                    cm_gems,
-                    fm_gems,
-                    ov_gems,
-                )
-                score = res_vec[0]
-                pp_gems = res_vec[1]
-                cm_gems = res_vec[2]
-                fm_gems = res_vec[3]
-                ov_gems = res_vec[4]
 
         kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([score, ft, ff, pp_gems, cm_gems, fm_gems, ov_gems])
         kernels_helpers.ga_scores[genome_idx] = score
@@ -920,89 +670,29 @@ def ga_write_best_and_store_hints_kernel(
 
             cached_sum: ti.i32 = pp_gems + cm_gems + fm_gems + ov_gems
             if cached_sum == budget and pp_gems >= 0 and cm_gems >= 0 and fm_gems >= 0 and ov_gems >= 0:
-                if cm_gems == 0:
-                    GEM_STAT_TO_ELEMENT: ti.i32 = 3
-                    MAX_STAT: ti.i32 = 160
-                    stats = kernels_helpers.genome_base_stats[genome_idx]
-                    base_pp: ti.i32 = stats[0]
-                    base_cm: ti.i32 = stats[1]
-                    base_fm: ti.i32 = stats[2]
-                    base_p_val: ti.i32 = stats[3]
-                    base_s_val: ti.i32 = stats[4]
-                    base_ft_stat: ti.i32 = stats[5]
-                    base_ff_stat: ti.i32 = stats[6]
-
-                    ft_stat_val: ti.i32 = base_ft_stat + (ft * gem_scale_fever)
-                    ff_stat_val: ti.i32 = base_ff_stat + (ff * gem_scale_fever)
-                    ft_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ft_stat_val))
-                    ff_idx: ti.i32 = ti.min(MAX_STAT, ti.max(0, ff_stat_val))
-
-                    count_fever: ti.i32 = kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx]
-                    count_normal: ti.i32 = kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx]
-                    head_len: ti.i32 = kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx]
-
-                    p_val: ti.i32 = (
-                        base_p_val + (ft * GEM_STAT_TO_ELEMENT * is_p_ft) + (ff * GEM_STAT_TO_ELEMENT * is_p_ff)
-                    )
-                    s_val: ti.i32 = (
-                        base_s_val + (ft * GEM_STAT_TO_ELEMENT * is_s_ft) + (ff * GEM_STAT_TO_ELEMENT * is_s_ff)
-                    )
-
-                    res_vec = optimize_core_device_refined_from_hint(
-                        budget,
-                        base_pp,
-                        base_cm,
-                        base_fm,
-                        p_val,
-                        s_val,
-                        is_p_pp,
-                        is_s_pp,
-                        is_p_cm,
-                        is_s_cm,
-                        is_p_fm,
-                        is_s_fm,
-                        is_p_ov,
-                        is_s_ov,
-                        head_len,
-                        count_fever,
-                        count_normal,
-                        song_slot,
-                        ft_idx,
-                        ff_idx,
-                        pp_gems,
-                        cm_gems,
-                        fm_gems,
-                        ov_gems,
-                    )
-                    score = res_vec[0]
-                    pp_gems = res_vec[1]
-                    cm_gems = res_vec[2]
-                    fm_gems = res_vec[3]
-                    ov_gems = res_vec[4]
-                else:
-                    score = _score_cached_combo_from_gems(
-                        genome_idx,
-                        ft,
-                        ff,
-                        pp_gems,
-                        cm_gems,
-                        fm_gems,
-                        ov_gems,
-                        gem_scale_fever,
-                        is_p_ft,
-                        is_s_ft,
-                        is_p_ff,
-                        is_s_ff,
-                        is_p_pp,
-                        is_s_pp,
-                        is_p_cm,
-                        is_s_cm,
-                        is_p_fm,
-                        is_s_fm,
-                        is_p_ov,
-                        is_s_ov,
-                        song_slot,
-                    )
+                score = _score_cached_combo_from_gems(
+                    genome_idx,
+                    ft,
+                    ff,
+                    pp_gems,
+                    cm_gems,
+                    fm_gems,
+                    ov_gems,
+                    gem_scale_fever,
+                    is_p_ft,
+                    is_s_ft,
+                    is_p_ff,
+                    is_s_ff,
+                    is_p_pp,
+                    is_s_pp,
+                    is_p_cm,
+                    is_s_cm,
+                    is_p_fm,
+                    is_s_fm,
+                    is_p_ov,
+                    is_s_ov,
+                    song_slot,
+                )
             else:
                 GEM_STAT_TO_ELEMENT: ti.i32 = 3
                 MAX_STAT: ti.i32 = 160
@@ -1055,38 +745,6 @@ def ga_write_best_and_store_hints_kernel(
                 cm_gems = res_vec[2]
                 fm_gems = res_vec[3]
                 ov_gems = res_vec[4]
-                if cm_gems == 0:
-                    res_vec = optimize_core_device_refined_from_hint(
-                        budget,
-                        base_pp,
-                        base_cm,
-                        base_fm,
-                        p_val,
-                        s_val,
-                        is_p_pp,
-                        is_s_pp,
-                        is_p_cm,
-                        is_s_cm,
-                        is_p_fm,
-                        is_s_fm,
-                        is_p_ov,
-                        is_s_ov,
-                        head_len,
-                        count_fever,
-                        count_normal,
-                        song_slot,
-                        ft_idx,
-                        ff_idx,
-                        pp_gems,
-                        cm_gems,
-                        fm_gems,
-                        ov_gems,
-                    )
-                    score = res_vec[0]
-                    pp_gems = res_vec[1]
-                    cm_gems = res_vec[2]
-                    fm_gems = res_vec[3]
-                    ov_gems = res_vec[4]
         else:
             GEM_STAT_TO_ELEMENT: ti.i32 = 3
             MAX_STAT: ti.i32 = 160
@@ -1139,38 +797,6 @@ def ga_write_best_and_store_hints_kernel(
             cm_gems = res_vec[2]
             fm_gems = res_vec[3]
             ov_gems = res_vec[4]
-            if cm_gems == 0:
-                res_vec = optimize_core_device_refined_from_hint(
-                    budget,
-                    base_pp,
-                    base_cm,
-                    base_fm,
-                    p_val,
-                    s_val,
-                    is_p_pp,
-                    is_s_pp,
-                    is_p_cm,
-                    is_s_cm,
-                    is_p_fm,
-                    is_s_fm,
-                    is_p_ov,
-                    is_s_ov,
-                    head_len,
-                    count_fever,
-                    count_normal,
-                    song_slot,
-                    ft_idx,
-                    ff_idx,
-                    pp_gems,
-                    cm_gems,
-                    fm_gems,
-                    ov_gems,
-                )
-                score = res_vec[0]
-                pp_gems = res_vec[1]
-                cm_gems = res_vec[2]
-                fm_gems = res_vec[3]
-                ov_gems = res_vec[4]
 
         kernels_helpers.genome_result_stats[genome_idx] = ti.Vector([score, ft, ff, pp_gems, cm_gems, fm_gems, ov_gems])
         kernels_helpers.ga_scores[genome_idx] = score

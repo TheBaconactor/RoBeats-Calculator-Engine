@@ -2638,17 +2638,9 @@ def solve_coevolution_genetic(
                 secondary_color=str(s_color or ""),
             )
 
-        # PRODUCTION: winner gem-allocation refinement keeps the persisted GA result canonical.
-        if env_flag("GPU_GA_WINNER_REFINEMENT", "1"):
-            # ------------------------------------------------------------------
-            # Winner Gem-Allocation Refinement (GPU)
-            # ------------------------------------------------------------------
-            # GPU-native GA scoring is allowed to use warm-start/hint machinery for throughput.
-            # Before we return/persist the GA winner, recompute the *exact* best gem allocation for the
-            # winning loadout on the canonical GPU solver path (registry solve).
-            #
-            # This prevents "hidden" regressions where the GA can pick the correct gear/minis but
-            # return a suboptimal (FT, FF, PP, CM, FM, OV) allocation for that same loadout.
+        # Debug-only: compare the selected GA winner against the canonical solver without mutating
+        # the returned/persisted payload. This is intentionally off by default to avoid wasted work.
+        if env_flag("GPU_GA_WINNER_EXACT_CHECK", "0"):
             try:
                 from .scoring.fever_solver import solve_best_fever_combination
 
@@ -2675,28 +2667,18 @@ def solve_coevolution_genetic(
                     )
                     if isinstance(refined, dict) and refined:
                         refined_score = int(refined.get("Score", 0) or 0)
-                        if refined_score > int(best_data.get("Score", 0) or 0):
-                            refined_g = refined.get("GemCounts") if isinstance(refined.get("GemCounts"), dict) else {}
-                            g_pp = int(refined_g.get("Perfect Points", 0) or 0)
-                            g_cm = int(refined_g.get("Combo Multiplier", 0) or 0)
-                            g_fm = int(refined_g.get("Fever Multiplier", 0) or 0)
-                            g_ov = int(refined_g.get("Element", 0) or 0)
-                            g_ft = int(refined.get("FT", 0) or 0)
-                            g_ff = int(refined.get("FF", 0) or 0)
-
-                            best_data["Score"] = int(refined_score)
-                            best_data["BaseScore"] = int(refined_score)
-                            best_data["FT"] = int(g_ft)
-                            best_data["FF"] = int(g_ff)
-                            best_data["GemCounts"] = _build_gem_counts(g_pp, g_cm, g_fm, g_ov)
-                            best_data["Stats"] = dict(refined.get("Stats") or best_data.get("Stats") or {})
-                            sel = refined.get("Selected Element")
-                            if not sel:
-                                sel = best_data.get("Selected Element")
-                            best_data["Selected Element"] = str(sel or "")
-                            best_data["Details"] = _build_gem_details(g_ft, g_ff, g_pp, g_cm, g_fm, g_ov)
+                        best_score = int(best_data.get("Score", 0) or 0)
+                        if refined_score > best_score:
+                            song_name = str((calc_song or {}).get("metadata", {}).get("Song Name", "") or "")
+                            logger.warning(
+                                "[GPU][ExactCheck] canonical winner solve beat GA payload: song=%r best=%d refined=%d delta=%d",
+                                song_name,
+                                best_score,
+                                refined_score,
+                                refined_score - best_score,
+                            )
             except Exception:
-                # Never fail the run for a refinement issue; the unrefined winner is still usable.
+                # Never fail the run for a debug check issue.
                 pass
 
         logger.info(f"=== GPU-NATIVE GA COMPLETE: Best Score {int(best_data.get('Score', 0))} ===")

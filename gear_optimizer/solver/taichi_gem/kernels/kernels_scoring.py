@@ -417,6 +417,53 @@ def local_search_from_hint(
         base_value, c_mul, f_mul, m0, m1, m2, m3, head_len, count_fever, count_normal
     )
 
+    # CM plateau escape: due to discrete multiplier breakpoints, moving 1 gem into CM may not
+    # improve score even when moving a small streak would. When the hint has CM=0, try shifting
+    # up to K OV gems into CM in a single evaluation to cross breakpoints cheaply.
+    CM_JUMP_MAX: ti.i32 = 10  # gear_optimizer.core.constants.CM_LOOKAHEAD_MAX
+    allow_cm: ti.i32 = ti.cast((cm < MAX_STAT) & ((cm <= 50) | (is_p_cm != 0) | (is_s_cm != 0)), ti.i32)
+    if allow_cm != 0 and gems_cm == 0 and gems_ov > 1:
+        max_k: ti.i32 = gems_ov
+        max_k_by_cap: ti.i32 = (MAX_STAT - cm) // GEM_SCALE_NORMAL
+        if max_k > max_k_by_cap:
+            max_k = max_k_by_cap
+        if max_k > CM_JUMP_MAX:
+            max_k = CM_JUMP_MAX
+
+        best_k: ti.i32 = 0
+        best_p_val: ti.i32 = p_val
+        best_s_val: ti.i32 = s_val
+        best_cm_stat: ti.i32 = cm
+        best_c_mul: ti.f32 = c_mul
+
+        k: ti.i32 = 2
+        while k <= max_k:
+            cm_stat_k: ti.i32 = cm + (k * GEM_SCALE_NORMAL)
+            p_val_k: ti.i32 = p_val + (k * (cm_p_delta - ov_p_delta))
+            s_val_k: ti.i32 = s_val + (k * (cm_s_delta - ov_s_delta))
+            c_mul_k: ti.f32 = kernels_helpers.lookup_ref_cm(cm_stat_k)
+            base_k: ti.f32 = ti.cast((p_val_k * 2) + s_val_k, ti.f32) + pp_factor
+            score_k: ti.i32 = kernels_helpers.calc_score_with_grid_bits(
+                base_k, c_mul_k, f_mul, m0, m1, m2, m3, head_len, count_fever, count_normal
+            )
+            if score_k > best_score:
+                best_score = score_k
+                best_k = k
+                best_p_val = p_val_k
+                best_s_val = s_val_k
+                best_cm_stat = cm_stat_k
+                best_c_mul = c_mul_k
+            k += 1
+
+        if best_k > 0:
+            gems_cm += best_k
+            gems_ov -= best_k
+            cm = best_cm_stat
+            p_val = best_p_val
+            s_val = best_s_val
+            c_mul = best_c_mul
+            base_value = ti.cast((p_val * 2) + s_val, ti.f32) + pp_factor
+
     # Delta tables for swap search (index: 0=PP,1=CM,2=FM,3=OV).
     p_delta = ti.Vector([pp_p_delta, cm_p_delta, fm_p_delta, ov_p_delta])
     s_delta = ti.Vector([pp_s_delta, cm_s_delta, fm_s_delta, ov_s_delta])
@@ -595,6 +642,7 @@ def _optimize_core_device_impl(
     gems_ov: ti.i32 = 0
     remaining: ti.i32 = budget
     PP_TIE_LOOKAHEAD_MAX: ti.i32 = 8  # gear_optimizer.core.constants.PP_TIE_LOOKAHEAD_MAX
+    CM_LOOKAHEAD_MAX: ti.i32 = 10  # gear_optimizer.core.constants.CM_LOOKAHEAD_MAX
     allow_pp: ti.i32 = is_p_pp | is_s_pp
 
     # Precompute elemental deltas (avoid repeated multiplies in the inner loop).
@@ -644,12 +692,16 @@ def _optimize_core_device_impl(
         base_ov: ti.f32 = ti.cast((t_p_ov * 2) + t_s_ov, ti.f32) + pp_factor_cur
         factor_ov: ti.f32 = kernels_helpers._calc_head_factor(base_ov, c_mul_cur)
 
+        do_pp: ti.i32 = 0
+        do_cm: ti.i32 = 0
+        do_fm: ti.i32 = 0
+
         if allow_pp != 0 or cm < MAX_STAT or fm < MAX_STAT:
             # Always fuse OV/CM/FM head loop; PP stays separate.
             # 4-way fusion (OV/PP/CM/FM) was slower on Vulkan due to register pressure.
-            do_pp: ti.i32 = 1 if (allow_pp != 0 and pp < MAX_STAT) else 0
-            do_cm: ti.i32 = 1 if (cm < MAX_STAT and (cm <= 50 or is_p_cm or is_s_cm)) else 0
-            do_fm: ti.i32 = 1 if (fm < MAX_STAT) else 0
+            do_pp = 1 if (allow_pp != 0 and pp < MAX_STAT) else 0
+            do_cm = 1 if (cm < MAX_STAT and (cm <= 50 or is_p_cm or is_s_cm)) else 0
+            do_fm = 1 if (fm < MAX_STAT) else 0
 
             best_score: ti.i32 = -1
             best_opt = 3
@@ -803,6 +855,34 @@ def _optimize_core_device_impl(
                     # When we commit to PP, the next PP factor should match the +1 PP gem update.
                     # (pp_score was computed using pp + GEM_SCALE_NORMAL when allow_pp != 0.)
                     pp_factor_next = kernels_helpers.lookup_ref_pp(pp + GEM_SCALE_NORMAL)
+                    break
+                k += 1
+
+        # CM lookahead: discrete CM breakpoints can require multiple CM gems before any
+        # improvement is observed. If OV wins now but a short streak of CM gems would
+        # strictly improve score, start investing in CM.
+        if do_cm != 0 and best_opt == 3 and remaining > 1:
+            max_k: ti.i32 = remaining
+            if max_k > CM_LOOKAHEAD_MAX:
+                max_k = CM_LOOKAHEAD_MAX
+            # Cap by CM stat ceiling.
+            max_k_by_cap: ti.i32 = (MAX_STAT - cm) // GEM_SCALE_NORMAL
+            if max_k > max_k_by_cap:
+                max_k = max_k_by_cap
+            k: ti.i32 = 2
+            while k <= max_k:
+                fill_p_k: ti.i32 = (remaining - k) * ov_p_delta
+                fill_s_k: ti.i32 = (remaining - k) * ov_s_delta
+                t_p = p_val + (k * cm_p_delta) + fill_p_k
+                t_s = s_val + (k * cm_s_delta) + fill_s_k
+                c_mul_k: ti.f32 = kernels_helpers.lookup_ref_cm(cm + (k * GEM_SCALE_NORMAL))
+                base = ti.cast((t_p * 2) + t_s, ti.f32) + pp_factor_cur
+                score_k: ti.i32 = calc_score_cached_device(
+                    base, c_mul_k, f_mul_cur, head_len, count_fever, count_normal, m0, m1, m2, m3
+                )
+                if score_k > best_score:
+                    best_opt = 1
+                    c_mul_next = kernels_helpers.lookup_ref_cm(cm + GEM_SCALE_NORMAL)
                     break
                 k += 1
 
