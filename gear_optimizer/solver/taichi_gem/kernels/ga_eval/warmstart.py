@@ -530,15 +530,31 @@ def ga_find_best_combo_warmstart_kernel(
         shared_waves_cm = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
         shared_waves_fm = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
         shared_waves_ov = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_WAVE_STRIDE,), ti.i32)
+        # Full-lane shared buffers for deterministic, portable reductions.
+        # Avoid simt.subgroup.* here: we've observed rare nondeterministic failures on Vulkan/AMD
+        # where some genomes can fail to publish a non-zero best key (yielding score=-1).
+        shared_lane_key = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM,), ti.u64)
+        shared_lane_pp = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM,), ti.i32)
+        shared_lane_cm = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM,), ti.i32)
+        shared_lane_fm = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM,), ti.i32)
+        shared_lane_ov = simt.block.SharedArray((kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM,), ti.i32)
         total_threads = n_genomes * block_dim
 
         ti.loop_config(block_dim=kernels_helpers.GA_FTFF_REDUCE_BLOCK_DIM)
         for tid in range(total_threads):
             # On Vulkan, `simt.block.global_thread_idx()` is not consistently available across Taichi builds.
-            # Use the loop's linear index for the block mapping, and the real SPIR-V `localInvocationId`
-            # for lane-local shared memory indexing.
-            genome_idx = tid // block_dim
+            # Use the real global invocation id for the block mapping when available, and the real SPIR-V
+            # `localInvocationId` for lane-local shared memory indexing.
+            #
+            # Some Taichi/Vulkan builds can remap the Python loop index; using `tid` for block assignment
+            # can therefore cause cross-genome interference in shared memory and sporadic score=-1 results.
+            tid_global = tid
+            if ti.static(hasattr(simt.block, "global_thread_idx")):
+                tid_global = ti.cast(simt.block.global_thread_idx(), ti.i32)
+            genome_idx = tid_global // block_dim
             lane = ti.cast(simt.block.thread_idx(), ti.i32)
+            if genome_idx >= n_genomes:
+                continue
 
             if lane < waves:
                 shared_waves_key[lane] = ti.u64(0)
@@ -597,27 +613,36 @@ def ga_find_best_combo_warmstart_kernel(
 
                 local_c += block_dim
 
-            best = simt.subgroup.reduce_max(local_best_key)
-            win_pp = ti.i32(0)
-            win_cm = ti.i32(0)
-            win_fm = ti.i32(0)
-            win_ov = ti.i32(0)
-            if best != ti.u64(0):
-                # Do not assume the elected lane is the argmax lane.
-                # Reduce payloads gated by the winner predicate so the elected lane can write.
-                is_winner = ti.cast(local_best_key == best, ti.i32)
-                win_pp = simt.subgroup.reduce_max(is_winner * local_pp)
-                win_cm = simt.subgroup.reduce_max(is_winner * local_cm)
-                win_fm = simt.subgroup.reduce_max(is_winner * local_fm)
-                win_ov = simt.subgroup.reduce_max(is_winner * local_ov)
+            # Publish per-lane bests into shared memory.
+            shared_lane_key[lane] = local_best_key
+            shared_lane_pp[lane] = local_pp
+            shared_lane_cm[lane] = local_cm
+            shared_lane_fm[lane] = local_fm
+            shared_lane_ov[lane] = local_ov
+            simt.block.sync()
 
-            if simt.subgroup.elect() and best != ti.u64(0):
-                wave_slot = lane >> 5  # lane//32, works for wave32 and wave64 (wave64 uses even slots)
-                shared_waves_key[wave_slot] = best
-                shared_waves_pp[wave_slot] = win_pp
-                shared_waves_cm[wave_slot] = win_cm
-                shared_waves_fm[wave_slot] = win_fm
-                shared_waves_ov[wave_slot] = win_ov
+            # Reduce within each 32-lane wave deterministically.
+            wave_lane = lane & 31
+            for offset in ti.static([16, 8, 4, 2, 1]):
+                if wave_lane < offset:
+                    other = lane + offset
+                    other_key = shared_lane_key[other]
+                    if other_key > shared_lane_key[lane]:
+                        shared_lane_key[lane] = other_key
+                        shared_lane_pp[lane] = shared_lane_pp[other]
+                        shared_lane_cm[lane] = shared_lane_cm[other]
+                        shared_lane_fm[lane] = shared_lane_fm[other]
+                        shared_lane_ov[lane] = shared_lane_ov[other]
+                simt.block.sync()
+
+            # Wave leaders publish into the wave-stride scratch for the final block reduce.
+            if wave_lane == 0:
+                wave_slot = lane >> 5  # lane//32 (two slots per wave64 subgroup; unused slots stay 0)
+                shared_waves_key[wave_slot] = shared_lane_key[lane]
+                shared_waves_pp[wave_slot] = shared_lane_pp[lane]
+                shared_waves_cm[wave_slot] = shared_lane_cm[lane]
+                shared_waves_fm[wave_slot] = shared_lane_fm[lane]
+                shared_waves_ov[wave_slot] = shared_lane_ov[lane]
             simt.block.sync()
 
             if lane == 0:

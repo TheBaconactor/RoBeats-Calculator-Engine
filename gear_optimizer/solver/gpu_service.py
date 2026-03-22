@@ -622,7 +622,7 @@ class GpuServiceClient:
                 except Exception as exc3:
                     fut.set_exception(exc3)
                     continue
-                fut.set_result(list(sub))
+                fut.set_result(sub)
 
         job.future.add_done_callback(_on_done)
 
