@@ -3,6 +3,7 @@ from concurrent.futures.process import BrokenProcessPool
 import gc
 import logging
 import multiprocessing
+import queue
 import os
 import re
 import shutil
@@ -365,6 +366,22 @@ class GearOptimizerApp:
         self._progress_interval = float(getattr(ENV, "progress_interval_sec", 0.2))
         self._progress_bar_width = int(getattr(ENV, "progress_bar_width", 24))
         self._progress: _ProgressUI | None = None
+        # Separate-process TUI (default) keeps console IO out of the compute/GPU owner process.
+        self._tui_enabled = True
+        try:
+            raw = os.environ.get("METAFINDER_UI_PROCESS")
+            if raw is not None and str(raw).strip() != "":
+                self._tui_enabled = self._truthy(raw)
+        except Exception:
+            self._tui_enabled = True
+        self._tui_epoch = 0
+        self._tui_progress = None
+        self._tui_process = None
+        self._tui_stop_event = None
+        self._tui_cmd_queue = None
+        self._tui_resp_queue = None
+        self._tui_cmd_thread: threading.Thread | None = None
+        self._tui_cmd_stop = threading.Event()
         self._orig_stdout = None
         self._orig_stderr = None
         self._progress_counts_driven = False
@@ -1599,6 +1616,9 @@ class GearOptimizerApp:
         )
         if not self._progress_enabled:
             return
+        if self._tui_enabled:
+            self._start_tui(total_tasks=total_tasks, completed=completed)
+            return
         stream = self._orig_stdout or getattr(sys, "__stdout__", None) or sys.stdout
         self._progress = _ProgressUI(
             total_tasks,
@@ -1614,12 +1634,198 @@ class GearOptimizerApp:
     def _stop_progress(self) -> None:
         self._runtime_status_name = "idle"
         self._clear_robeatsmeta_runtime_status(status="idle", available=True)
+        self._stop_tui()
         if self._progress is None:
             return
         try:
             self._progress.stop()
         finally:
             self._progress = None
+
+    def _tui_active(self) -> bool:
+        proc = getattr(self, "_tui_process", None)
+        if proc is None:
+            return False
+        try:
+            return bool(proc.is_alive())
+        except Exception:
+            return True
+
+    def _start_tui(self, *, total_tasks: int, completed: int = 0) -> None:
+        if self._tui_active():
+            # New run/iteration: bump epoch so the UI resets its elapsed/ETA.
+            try:
+                self._tui_epoch = int(self._tui_epoch) + 1
+            except Exception:
+                self._tui_epoch = 1
+            self._tui_publish(song="", status=str(self._runtime_status_name or "queued"))
+            return
+
+        try:
+            from gear_optimizer.ui.progress_ipc import SharedProgress
+            from gear_optimizer.ui.tui_process import run_tui_process
+
+            ctx = multiprocessing.get_context("spawn") if os.name == "nt" else multiprocessing.get_context()
+            self._tui_epoch = int(self._tui_epoch) + 1
+            self._tui_progress = SharedProgress.create()
+            self._tui_stop_event = ctx.Event()
+            self._tui_cmd_queue = ctx.Queue(maxsize=64)
+            self._tui_resp_queue = ctx.Queue(maxsize=64)
+            self._tui_process = ctx.Process(
+                target=run_tui_process,
+                kwargs={
+                    "progress_shm_name": str(self._tui_progress.name),
+                    "stop_event": self._tui_stop_event,
+                    "cmd_queue": self._tui_cmd_queue,
+                    "resp_queue": self._tui_resp_queue,
+                    "bar_width": int(self._progress_bar_width),
+                    "update_interval": float(self._progress_interval),
+                },
+                name="MetaFinderTUI",
+                daemon=True,
+            )
+            self._tui_process.start()
+            self._disable_console_logging_for_tui()
+        except Exception:
+            # Best-effort: if we can't start UI, keep compute safe by disabling progress (no fallback to in-proc prints).
+            self._tui_enabled = False
+            self._progress_enabled = False
+            try:
+                if self._tui_progress is not None:
+                    self._tui_progress.close()
+                    self._tui_progress.unlink()
+            except Exception:
+                pass
+            self._tui_progress = None
+            self._tui_process = None
+            self._tui_stop_event = None
+            self._tui_cmd_queue = None
+            self._tui_resp_queue = None
+            return
+
+        self._tui_publish(
+            song="",
+            status=str(self._runtime_status_name or "queued"),
+            completed=int(completed or 0),
+            total=int(total_tasks or 0),
+            failed=0,
+        )
+
+    def _disable_console_logging_for_tui(self) -> None:
+        if self._output_enabled:
+            return
+        root = logging.getLogger()
+        try:
+            stderr = sys.stderr
+        except Exception:
+            stderr = None
+        try:
+            real_stderr = getattr(sys, "__stderr__", None)
+        except Exception:
+            real_stderr = None
+
+        for handler in list(getattr(root, "handlers", []) or []):
+            stream = getattr(handler, "stream", None)
+            if stream is None:
+                continue
+            if stderr is not None and stream is stderr:
+                try:
+                    root.removeHandler(handler)
+                except Exception:
+                    pass
+                try:
+                    handler.close()
+                except Exception:
+                    pass
+                continue
+            if real_stderr is not None and stream is real_stderr:
+                try:
+                    root.removeHandler(handler)
+                except Exception:
+                    pass
+                try:
+                    handler.close()
+                except Exception:
+                    pass
+                continue
+
+    def _stop_tui(self) -> None:
+        proc = getattr(self, "_tui_process", None)
+        if proc is None:
+            return
+        try:
+            if self._tui_stop_event is not None:
+                self._tui_stop_event.set()
+        except Exception:
+            pass
+        try:
+            proc.join(timeout=2.0)
+        except Exception:
+            pass
+        try:
+            if proc.is_alive():
+                proc.terminate()
+                proc.join(timeout=2.0)
+        except Exception:
+            pass
+        self._tui_process = None
+        self._tui_stop_event = None
+        self._stop_tui_command_thread()
+        try:
+            if self._tui_cmd_queue is not None:
+                self._tui_cmd_queue.close()
+        except Exception:
+            pass
+        try:
+            if self._tui_resp_queue is not None:
+                self._tui_resp_queue.close()
+        except Exception:
+            pass
+        self._tui_cmd_queue = None
+        self._tui_resp_queue = None
+        try:
+            if self._tui_progress is not None:
+                self._tui_progress.close()
+                self._tui_progress.unlink()
+        except Exception:
+            pass
+        self._tui_progress = None
+
+    def _tui_publish(
+        self,
+        *,
+        song: str | None,
+        status: str | None,
+        completed: int | None = None,
+        total: int | None = None,
+        failed: int | None = None,
+        new_records: int | None = None,
+    ) -> None:
+        progress = getattr(self, "_tui_progress", None)
+        if progress is None:
+            return
+        try:
+            c = int(self._runtime_completed_count or 0) if completed is None else int(completed or 0)
+            t = int(self._runtime_total_count or 0) if total is None else int(total or 0)
+            f = int(self._runtime_failed_count or 0) if failed is None else int(failed or 0)
+            n = int(self._session_new_records or 0) if new_records is None else int(new_records or 0)
+        except Exception:
+            c = int(completed or 0)
+            t = int(total or 0)
+            f = int(failed or 0)
+            n = int(new_records or 0)
+        try:
+            progress.update(
+                epoch=int(self._tui_epoch),
+                completed=max(0, int(c)),
+                total=max(0, int(t)),
+                failed=max(0, int(f)),
+                new_records=max(0, int(n)),
+                song=str(song or ""),
+                status=str(status or ""),
+            )
+        except Exception:
+            return
 
     def _progress_event(
         self,
@@ -1692,6 +1898,12 @@ class GearOptimizerApp:
                 best_fg = int(record_info.get("best_fg_score_run", 0) or 0)
                 if score > 0 or best_fg > 0:
                     self._progress.add_new_record(1)
+        else:
+            try:
+                current_song = str(song_label or self._run_current_song_label or "").strip()
+            except Exception:
+                current_song = ""
+            self._tui_publish(song=current_song, status=str(status_label or self._runtime_status_name or ""))
         self._update_robeatsmeta_runtime_status(
             status=self._runtime_status_name,
             current_song=str(song_label or self._run_current_song_label or ""),
@@ -1716,6 +1928,8 @@ class GearOptimizerApp:
             self._runtime_completed_count = max(0, int(self._runtime_completed_count or 0) + 1)
             if self._progress is not None:
                 self._progress.add_completed(1)
+            else:
+                self._tui_publish(song=str(song or self._run_current_song_label or ""), status=str(status or ""))
         if song:
             self._run_current_song_label = str(song)
             if status.strip().lower().startswith("running"):
@@ -1723,6 +1937,8 @@ class GearOptimizerApp:
         self._runtime_status_name = str(status or self._runtime_status_name or "running")
         if self._progress is not None:
             self._progress.set_status(song, status)
+        else:
+            self._tui_publish(song=str(song or self._run_current_song_label or ""), status=str(status or ""))
         self._update_robeatsmeta_runtime_status(
             status=self._runtime_status_name,
             current_song=str(song or self._run_current_song_label or ""),
@@ -1730,7 +1946,7 @@ class GearOptimizerApp:
             total=int(self._runtime_total_count or 0),
             failed=int(self._runtime_failed_count or 0),
         )
-        if self._progress is not None:
+        if self._progress is not None or self._tui_progress is not None:
             return
         try:
             logger.info(str(msg))
@@ -1738,6 +1954,10 @@ class GearOptimizerApp:
             pass
 
     def _start_hotkeys(self) -> None:
+        if self._tui_progress is not None:
+            self._start_tui_command_thread()
+            return
+
         if not self._hotkeys_enabled or self._hotkey_thread is not None:
             return
         # Windows-only hotkeys (best-effort; no-op on other platforms).
@@ -1789,9 +2009,106 @@ class GearOptimizerApp:
         self._hotkey_thread.start()
 
     def _stop_hotkeys(self) -> None:
+        self._stop_tui_command_thread()
         self._hotkey_thread = None
 
+    def _start_tui_command_thread(self) -> None:
+        if self._tui_cmd_queue is None or self._tui_resp_queue is None:
+            return
+        t = getattr(self, "_tui_cmd_thread", None)
+        if isinstance(t, threading.Thread) and t.is_alive():
+            return
+        self._tui_cmd_stop.clear()
+
+        def _runner() -> None:
+            while not self._tui_cmd_stop.is_set():
+                try:
+                    cmd = self._tui_cmd_queue.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                except Exception:
+                    continue
+                if not isinstance(cmd, dict):
+                    continue
+                op = str(cmd.get("cmd") or "").strip().lower()
+                if op == "stop":
+                    reason = str(cmd.get("reason") or "ui stop")
+                    try:
+                        self.request_stop(reason)
+                    except Exception:
+                        pass
+                    continue
+                if op == "next":
+                    try:
+                        n = int(cmd.get("n") or 10)
+                    except Exception:
+                        n = 10
+                    lines = self._tui_up_next_lines(n)
+                    self._tui_emit_block(lines)
+                    continue
+
+        self._tui_cmd_thread = threading.Thread(target=_runner, name="TuiCommands", daemon=True)
+        self._tui_cmd_thread.start()
+
+    def _stop_tui_command_thread(self) -> None:
+        t = getattr(self, "_tui_cmd_thread", None)
+        if not isinstance(t, threading.Thread):
+            self._tui_cmd_thread = None
+            return
+        try:
+            self._tui_cmd_stop.set()
+        except Exception:
+            pass
+        try:
+            t.join(timeout=1.0)
+        except Exception:
+            pass
+        self._tui_cmd_thread = None
+
+    def _tui_emit_block(self, lines: list[str]) -> None:
+        q = getattr(self, "_tui_resp_queue", None)
+        if q is None:
+            return
+        try:
+            payload = {"lines": list(lines or [])}
+        except Exception:
+            payload = {"lines": []}
+        try:
+            put_nowait = getattr(q, "put_nowait", None)
+            if callable(put_nowait):
+                put_nowait(payload)
+            else:
+                q.put(payload, block=False)
+        except Exception:
+            return
+
+    def _tui_up_next_lines(self, n: int) -> list[str]:
+        tasks = self._run_tasks_ref
+        completed = self._run_completed_ref
+        if not isinstance(tasks, list) or not isinstance(completed, set):
+            return ["\x1b[91m[Hotkeys]\x1b[0m No active queue."]
+        out: list[str] = ["\x1b[96mUp Next\x1b[0m"]
+        shown = 0
+        for t in tasks:
+            label = self._task_queue_label(t)
+            if label in completed:
+                continue
+            try:
+                diff = str(t[2] or "")
+            except Exception:
+                diff = ""
+            out.append(f"  {shown + 1:>2}. \x1b[93m{label}\x1b[0m \x1b[90m[{diff}]\x1b[0m")
+            shown += 1
+            if shown >= int(n):
+                break
+        if shown <= 0:
+            out.append("  (none)")
+        return out
+
     def _emit_block(self, lines: list[str]) -> None:
+        if self._tui_progress is not None:
+            self._tui_emit_block(lines)
+            return
         if self._progress is not None:
             self._progress.emit_block(lines)
             return
@@ -2000,6 +2317,19 @@ class GearOptimizerApp:
         self._runtime_status_name = "failed" if failed_delta else "done"
         if self._progress is not None:
             self._progress.update_counts(completed=completed, total=total)
+        else:
+            try:
+                current_song = str(song_label or self._run_current_song_label or "").strip()
+            except Exception:
+                current_song = ""
+            self._tui_publish(
+                song=current_song,
+                status=str(self._runtime_status_name or ""),
+                completed=int(completed or 0),
+                total=int(total or 0),
+                failed=int(self._runtime_failed_count or 0),
+                new_records=int(self._session_new_records or 0),
+            )
         self._update_robeatsmeta_runtime_status(
             status=self._runtime_status_name,
             current_song=str(song_label or self._run_current_song_label or ""),
@@ -2709,6 +3039,15 @@ class GearOptimizerApp:
             self._progress_counts_driven = True
             if self._progress is not None:
                 self._progress.update_counts(completed=0, total=int(total_tasks))
+            else:
+                self._tui_publish(
+                    song="",
+                    status=str(self._runtime_status_name or "running"),
+                    completed=0,
+                    total=int(total_tasks),
+                    failed=int(self._runtime_failed_count or 0),
+                    new_records=int(self._session_new_records or 0),
+                )
             self._set_runtime_progress_counts(completed=0, total=int(total_tasks))
             run_native_inflight_song_pipeline(
                 tasks,
@@ -3100,6 +3439,15 @@ class GearOptimizerApp:
         t0 = float(throughput_t0) if throughput_t0 is not None else time.perf_counter()
         if self._progress is not None:
             self._progress.update_counts(completed=completed, total=total)
+        else:
+            self._tui_publish(
+                song="",
+                status=str(self._runtime_status_name or "running"),
+                completed=int(completed or 0),
+                total=int(total or 0),
+                failed=int(failed or 0),
+                new_records=int(self._session_new_records or 0),
+            )
         self._set_runtime_progress_counts(completed=completed, total=total, failed=failed)
         self._progress_counts_driven = True
 

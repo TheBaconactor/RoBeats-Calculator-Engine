@@ -23,7 +23,22 @@ def _mk_item(name: str, **stats: int) -> dict:
 
 
 @pytest.mark.gpu
-def test_solve_genomes_from_registry_matches_parallel_scores_with_user_gems_and_static_overflow() -> None:
+@pytest.mark.parametrize(
+    "use_block_kernel",
+    [False, True],
+    ids=["ftff_per_genome_kernel", "ftff_block_kernel_strict_raises"],
+)
+def test_solve_genomes_from_registry_matches_parallel_scores_with_user_gems_and_static_overflow(
+    use_block_kernel: bool,
+    monkeypatch,
+) -> None:
+    # Ensure we cover BOTH FT/FF solver paths:
+    # - portable per-genome loop (default)
+    # - Vulkan block-per-genome kernel (opt-in; previously had payload-parity bugs)
+    import gear_optimizer.solver.taichi_gem.api.parallel_solvers as parallel_solvers
+
+    monkeypatch.setattr(parallel_solvers, "_USE_FTFF_BLOCK_KERNEL", bool(use_block_kernel))
+
     rng = np.random.default_rng(1337)
 
     slots = ["Hat", "Neck", "Face", "Shirt", "Back", "Pants"]
@@ -201,45 +216,76 @@ def test_solve_genomes_from_registry_matches_parallel_scores_with_user_gems_and_
         ga_upload_item_stats(gpu_arrays["item_stats"], gpu_arrays["slot_start"], gpu_arrays["slot_count"])
         ga_upload_base_fixed_stats(base_fixed_stats_arr)
 
-        parallel = solve_genomes_with_ftff(
-            genome_stats_list,
-            calc_song,
-            flags["is_p_ft"],
-            flags["is_s_ft"],
-            flags["is_p_ff"],
-            flags["is_s_ff"],
-            flags["is_p_pp"],
-            flags["is_s_pp"],
-            flags["is_p_cm"],
-            flags["is_s_cm"],
-            flags["is_p_fm"],
-            flags["is_s_fm"],
-            flags["is_p_ov"],
-            flags["is_s_ov"],
-            ref_arrays,
-            total_budget=TOTAL_GEM_BUDGET,
-            gem_scale_fever=GEM_SCALE_FEVER,
-        )
+        if use_block_kernel:
+            # The experimental block kernel is explicitly guarded by the fallback monitor and
+            # must fail-fast under strict policy (production default).
+            from gear_optimizer.core.fallback_monitor import FallbackViolation
 
-        registry_res = solve_genomes_from_registry(
-            pop_indices,
-            calc_song,
-            flags["is_p_ft"],
-            flags["is_s_ft"],
-            flags["is_p_ff"],
-            flags["is_s_ff"],
-            flags["is_p_pp"],
-            flags["is_s_pp"],
-            flags["is_p_cm"],
-            flags["is_s_cm"],
-            flags["is_p_fm"],
-            flags["is_s_fm"],
-            flags["is_p_ov"],
-            flags["is_s_ov"],
-            ref_arrays,
-            total_budget=TOTAL_GEM_BUDGET,
-            gem_scale_fever=GEM_SCALE_FEVER,
-        )
+            monkeypatch.setenv("METAFINDER_FALLBACK_STRICT", "1")
+            with pytest.raises(FallbackViolation):
+                solve_genomes_with_ftff(
+                    genome_stats_list,
+                    calc_song,
+                    flags["is_p_ft"],
+                    flags["is_s_ft"],
+                    flags["is_p_ff"],
+                    flags["is_s_ff"],
+                    flags["is_p_pp"],
+                    flags["is_s_pp"],
+                    flags["is_p_cm"],
+                    flags["is_s_cm"],
+                    flags["is_p_fm"],
+                    flags["is_s_fm"],
+                    flags["is_p_ov"],
+                    flags["is_s_ov"],
+                    ref_arrays,
+                    total_budget=TOTAL_GEM_BUDGET,
+                    gem_scale_fever=GEM_SCALE_FEVER,
+                )
+            return
 
-    assert len(parallel) == len(registry_res) == n_genomes
-    assert [int(t[0]) for t in parallel] == [int(t[0]) for t in registry_res]
+        # Repeat to catch nondeterministic payload/parity issues (the exact class of GPU races
+        # that previously caused multi-day debugging incidents).
+        for _rep in range(3):
+            parallel = solve_genomes_with_ftff(
+                genome_stats_list,
+                calc_song,
+                flags["is_p_ft"],
+                flags["is_s_ft"],
+                flags["is_p_ff"],
+                flags["is_s_ff"],
+                flags["is_p_pp"],
+                flags["is_s_pp"],
+                flags["is_p_cm"],
+                flags["is_s_cm"],
+                flags["is_p_fm"],
+                flags["is_s_fm"],
+                flags["is_p_ov"],
+                flags["is_s_ov"],
+                ref_arrays,
+                total_budget=TOTAL_GEM_BUDGET,
+                gem_scale_fever=GEM_SCALE_FEVER,
+            )
+
+            registry_res = solve_genomes_from_registry(
+                pop_indices,
+                calc_song,
+                flags["is_p_ft"],
+                flags["is_s_ft"],
+                flags["is_p_ff"],
+                flags["is_s_ff"],
+                flags["is_p_pp"],
+                flags["is_s_pp"],
+                flags["is_p_cm"],
+                flags["is_s_cm"],
+                flags["is_p_fm"],
+                flags["is_s_fm"],
+                flags["is_p_ov"],
+                flags["is_s_ov"],
+                ref_arrays,
+                total_budget=TOTAL_GEM_BUDGET,
+                gem_scale_fever=GEM_SCALE_FEVER,
+            )
+
+            assert len(parallel) == len(registry_res) == n_genomes
+            assert [int(t[0]) for t in parallel] == [int(t[0]) for t in registry_res]
