@@ -1129,8 +1129,8 @@ def _optimize_core_device_refined_from_hint_preloaded_bits_impl(
     best_fm: ti.i32 = fm0
     best_ov: ti.i32 = ov0
 
-    do_refine: ti.i32 = ti.cast((allow_cm != 0) & (best_cm == 0), ti.i32)
-    if do_refine != 0:
+    do_refine_full: ti.i32 = ti.cast((allow_cm != 0) & (best_cm == 0), ti.i32)
+    if do_refine_full != 0:
         fm_lo: ti.i32 = ti.max(0, fm0 - FM_SWEEP)
         fm_hi: ti.i32 = ti.min(max_fm_gems, fm0 + FM_SWEEP)
         fm_g: ti.i32 = fm_lo
@@ -1226,6 +1226,73 @@ def _optimize_core_device_refined_from_hint_preloaded_bits_impl(
                 cm_g += 1
 
             fm_g += 1
+
+    else:
+        # Local refinement when CM is already invested:
+        # sweep FM and a small CM window around the hint (OV is remainder).
+        do_refine_local: ti.i32 = ti.cast((allow_cm != 0) & (best_cm != 0), ti.i32)
+        if do_refine_local != 0:
+            fm_lo: ti.i32 = ti.max(0, fm0 - FM_SWEEP)
+            fm_hi: ti.i32 = ti.min(max_fm_gems, fm0 + FM_SWEEP)
+            cm0_i: ti.i32 = cm0
+            cm_window: ti.i32 = CM_STEP - 1
+
+            fm_g: ti.i32 = fm_lo
+            while fm_g <= fm_hi:
+                rem0: ti.i32 = budget - pp0 - fm_g
+                if rem0 < 0:
+                    fm_g += 1
+                    continue
+
+                fm_stat: ti.i32 = ti.min(MAX_STAT, cur_fm + (fm_g * GEM_SCALE_FEVER))
+                f_mul: ti.f32 = kernels_helpers.lookup_ref_fm(fm_stat)
+
+                cm_max_here: ti.i32 = rem0
+                if cm_max_here > max_cm_gems:
+                    cm_max_here = max_cm_gems
+                if cm_max_here < 0:
+                    fm_g += 1
+                    continue
+
+                cm_lo: ti.i32 = cm0_i - cm_window
+                if cm_lo < 0:
+                    cm_lo = 0
+                cm_hi: ti.i32 = cm0_i + cm_window
+                if cm_hi > cm_max_here:
+                    cm_hi = cm_max_here
+
+                cm_g: ti.i32 = cm_lo
+                while cm_g <= cm_hi:
+                    ov_g: ti.i32 = rem0 - cm_g
+                    cm_stat: ti.i32 = ti.min(MAX_STAT, cur_cm + (cm_g * GEM_SCALE_NORMAL))
+                    c_mul: ti.f32 = kernels_helpers.lookup_ref_cm(cm_stat)
+                    p_val: ti.i32 = (
+                        cur_p_val + (pp0 * pp_p_delta) + (cm_g * cm_p_delta) + (fm_g * fm_p_delta) + (ov_g * ov_p_delta)
+                    )
+                    s_val: ti.i32 = (
+                        cur_s_val + (pp0 * pp_s_delta) + (cm_g * cm_s_delta) + (fm_g * fm_s_delta) + (ov_g * ov_s_delta)
+                    )
+                    base_value: ti.f32 = ti.cast((p_val * 2) + s_val, ti.f32) + pp_factor0
+                    score: ti.i32 = calc_score_cached_device(
+                        base_value,
+                        c_mul,
+                        f_mul,
+                        head_len,
+                        count_fever,
+                        count_normal,
+                        m0,
+                        m1,
+                        m2,
+                        m3,
+                    )
+                    if score > best_score:
+                        best_score = score
+                        best_cm = cm_g
+                        best_fm = fm_g
+                        best_ov = ov_g
+                    cm_g += 1
+
+                fm_g += 1
 
     best_p: ti.i32 = (
         cur_p_val + (best_pp * pp_p_delta) + (best_cm * cm_p_delta) + (best_fm * fm_p_delta) + (best_ov * ov_p_delta)
@@ -1352,10 +1419,7 @@ def optimize_core_device_refined(
         count_fever,
         count_normal,
     )
-    # Fast path: if greedy already invested in CM, keep it.
-    if base[2] != 0:
-        return base
-
+    # Always apply bounded refinement (local scan when CM is nonzero) to avoid top-1 misses.
     return _optimize_core_device_refined_from_hint_preloaded_bits_impl(
         budget,
         cur_pp,

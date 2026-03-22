@@ -11,7 +11,7 @@ import sys
 import taichi as ti
 
 from .. import kernels_helpers
-from ..kernels_scoring import optimize_core_device
+from ..kernels_scoring import optimize_core_device_refined as optimize_core_device
 
 # Platform detection for atomic operations
 IS_METAL = sys.platform == "darwin"

@@ -14,7 +14,7 @@ from taichi.lang import simt
 
 from . import kernels_helpers
 
-from .kernels_scoring import optimize_core_device
+from .kernels_scoring import optimize_core_device_refined as optimize_core_device
 
 try:
     GA_FTFF_BLOCK_DIM = int(os.environ.get("GA_FTFF_BLOCK_DIM", "64") or "64")

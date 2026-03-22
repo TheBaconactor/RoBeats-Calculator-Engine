@@ -161,7 +161,7 @@ def _refine_gem_allocation_hint_fixed_ftff_cpu(
         return (0, int(pp_gems), int(cm_gems), int(fm_gems), int(ov_gems))
 
     allow_cm = (int(cur_cm) <= 50) or (int(is_p_cm) != 0) or (int(is_s_cm) != 0)
-    if (not allow_cm) or int(cm_gems) != 0:
+    if not allow_cm:
         # Baseline score for the provided hint (no refinement).
         pp_stat = min(MAX_STAT_INDEX, int(cur_pp) + int(pp_gems) * GEM_SCALE_NORMAL)
         cm_stat = min(MAX_STAT_INDEX, int(cur_cm) + int(cm_gems) * GEM_SCALE_NORMAL)
@@ -248,6 +248,61 @@ def _refine_gem_allocation_hint_fixed_ftff_cpu(
     best_cm = int(cm_gems)
     best_fm = int(fm_gems)
     best_ov = int(ov_gems)
+
+    # Local refinement when CM is already invested (avoid full CM scan cost; fix CM-nonzero top-1 misses).
+    if int(cm_gems) != 0:
+        fm_lo = max(0, int(fm_gems) - FM_SWEEP)
+        fm_hi = min(int(max_fm_gems), int(fm_gems) + FM_SWEEP)
+        cm0 = int(cm_gems)
+        cm_window = CM_STEP - 1
+        for fm_g in range(fm_lo, fm_hi + 1):
+            rem0 = budget - pp_gems - fm_g
+            if rem0 < 0:
+                continue
+            cm_max_here = min(int(max_cm_gems), int(rem0))
+            if cm_max_here < 0:
+                continue
+            cm_lo = max(0, cm0 - cm_window)
+            cm_hi = min(cm_max_here, cm0 + cm_window)
+
+            fm_stat = min(MAX_STAT_INDEX, int(cur_fm) + fm_g * GEM_SCALE_FEVER)
+            f_mul = lookup_reference_py(fm_stat, ref_fm, TOTAL_ROWS)
+            for cm_g in range(cm_lo, cm_hi + 1):
+                ov_g = rem0 - cm_g
+                cm_stat = min(MAX_STAT_INDEX, int(cur_cm) + cm_g * GEM_SCALE_NORMAL)
+                c_mul = lookup_reference_py(cm_stat, ref_cm, TOTAL_ROWS)
+                p_val = (
+                    int(cur_p_val)
+                    + pp_gems * GEM_STAT_TO_ELEMENT_SCALE * int(is_p_pp)
+                    + cm_g * GEM_STAT_TO_ELEMENT_SCALE * int(is_p_cm)
+                    + fm_g * GEM_STAT_TO_ELEMENT_SCALE * int(is_p_fm)
+                    + ov_g * ELEMENTAL_GEM_SCALE * int(is_p_ov)
+                )
+                s_val = (
+                    int(cur_s_val)
+                    + pp_gems * GEM_STAT_TO_ELEMENT_SCALE * int(is_s_pp)
+                    + cm_g * GEM_STAT_TO_ELEMENT_SCALE * int(is_s_cm)
+                    + fm_g * GEM_STAT_TO_ELEMENT_SCALE * int(is_s_fm)
+                    + ov_g * ELEMENTAL_GEM_SCALE * int(is_s_ov)
+                )
+                base = (p_val * 2) + s_val + pp_factor
+                score = int(
+                    fast_calculate_score(
+                        base,
+                        c_mul,
+                        f_mul,
+                        fever_mask_head,
+                        int(count_body_fever),
+                        int(count_body_normal),
+                    )
+                )
+                if score > best_score:
+                    best_score = score
+                    best_cm = cm_g
+                    best_fm = fm_g
+                    best_ov = ov_g
+
+        return (int(best_score), int(pp_gems), int(best_cm), int(best_fm), int(best_ov))
 
     fm_lo = max(0, int(fm_gems) - FM_SWEEP)
     fm_hi = min(int(max_fm_gems), int(fm_gems) + FM_SWEEP)
