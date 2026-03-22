@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import re
 from dataclasses import dataclass
 from math import ceil
@@ -1020,10 +1019,13 @@ def build_team_buff_tier_db_batches(
             fg_score_out = int(fg_score_by_key.get(k, 0) or 0)
 
             # Keep payloads internally consistent: adjust Stats + FG score fields for this tier.
-            details_base = copy.deepcopy(orig.get("details") or {})
+            details_base = orig.get("details") or {}
+            if not isinstance(details_base, dict):
+                details_base = {}
             if isinstance(details_base, dict):
                 stats0 = details_base.get("Stats")
                 if isinstance(stats0, dict) and stats0:
+                    details_base = dict(details_base)
                     details_base["Stats"] = _ensure_stats_include_base_effect(stats0, base_effect)
             details_out = _apply_details_delta(details_base, delta_map)
             if isinstance(details_out, dict) and base_hitsim_ctx is not None:
@@ -1040,10 +1042,12 @@ def build_team_buff_tier_db_batches(
                         if delta_ms is not None:
                             details_out["hitsim_offset_delta_ms"] = int(delta_ms)
 
-            force_base = copy.deepcopy(orig.get("force"))
+            force_base = orig.get("force")
             # If the persisted BaseStats payload is missing the base TeamBuff effect, add it first so
             # the tier delta map can't create negative stats.
             if isinstance(force_base, dict) and base_effect:
+                force_base_obj = force_base
+                force_base = dict(force_base_obj)
                 bs = force_base.get("BaseStats")
                 if isinstance(bs, dict) and bs:
                     force_base["BaseStats"] = _ensure_stats_include_base_effect(bs, base_effect)

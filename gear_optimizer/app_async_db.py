@@ -9,7 +9,13 @@ from typing import Optional
 
 from gear_optimizer.core.constants import LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.env_config import TRUTHY_ENV_VALUES
-from gear_optimizer.data.database import get_evolution_db_path, get_evolution_overlay_db_path, get_song_counters, save_loadouts_batch, update_song_counters
+from gear_optimizer.data.database import (
+    get_evolution_db_path,
+    get_evolution_overlay_db_path,
+    get_song_counters,
+    save_loadouts_batch,
+    update_song_counters,
+)
 
 
 _TEAM_BUFF_REF_ARRAYS_LOCK = threading.Lock()
@@ -550,7 +556,10 @@ class AsyncDbSaver:
                     )
                     if tiers_enabled and entries and file_path:
                         try:
-                            from gear_optimizer.data.database import save_team_buff_loadouts_batch
+                            from gear_optimizer.data.database import (
+                                get_db_connection,
+                                save_team_buff_loadouts_batch,
+                            )
                             from gear_optimizer.helpers.song_helpers.team_buff_tiers import (
                                 build_team_buff_tier_db_batches,
                             )
@@ -600,50 +609,66 @@ class AsyncDbSaver:
                                 limit=int(_team_buff_tier_limit()),
                                 tiers=("NONE", "T1", "T10", "T15"),
                             )
-                            for tier, tier_entries in (batches or {}).items():
-                                if not tier_entries:
-                                    continue
-                                save_team_buff_loadouts_batch(
-                                    db_key,
-                                    str(tier),
-                                    tier_entries,
-                                    db_path=target_db_path or None,
-                                )
-
-                            # Color-tier persistence is opt-in: these rows are not surfaced by
-                            # canonical frontend tier views and can significantly inflate DB size.
-                            color_tiers_enabled = str(
-                                os.environ.get("POST_TEAM_BUFF_COLOR_TIERS", "0") or ""
-                            ).strip().lower() in TRUTHY_ENV_VALUES
-                            if color_tiers_enabled:
-                                meta0 = calc_song.get("metadata", {}) or {}
-                                primary_color = str(meta0.get("Primary Color", "") or "").strip()
-                                secondary_color = str(meta0.get("Secondary Color", "") or "").strip()
-
-                                color_variants: list[tuple[str, str]] = [(_TEAM_COLOR_VARIANT_NONE, "")]
-                                if secondary_color and secondary_color.lower() != primary_color.lower():
-                                    color_variants.append((_TEAM_COLOR_VARIANT_SECONDARY, secondary_color))
-
-                                for color_variant, target_color in color_variants:
-                                    color_batches = build_team_buff_tier_db_batches(
-                                        entries=entries,
-                                        calc_song=calc_song,
-                                        ref_arrays=ref_arrays,
-                                        cfg_dict=cfg_dict,
-                                        limit=int(_team_buff_tier_limit()),
-                                        tiers=_TEAM_BUFF_COLOR_TIERS,
-                                        target_team_color_override=target_color,
+                            resolved_tier_db_path = str(target_db_path or canonical_db_path or "").strip()
+                            tier_conn = get_db_connection(resolved_tier_db_path or None)
+                            did_write = False
+                            try:
+                                for tier, tier_entries in (batches or {}).items():
+                                    if not tier_entries:
+                                        continue
+                                    save_team_buff_loadouts_batch(
+                                        db_key,
+                                        str(tier),
+                                        tier_entries,
+                                        conn=tier_conn,
+                                        commit=False,
+                                        db_path=resolved_tier_db_path or None,
                                     )
-                                    for tier, tier_entries in (color_batches or {}).items():
-                                        if not tier_entries:
-                                            continue
-                                        tier_key = _compose_team_buff_color_key(str(tier), color_variant)
-                                        save_team_buff_loadouts_batch(
-                                            db_key,
-                                            tier_key,
-                                            tier_entries,
-                                            db_path=target_db_path or None,
+                                    did_write = True
+
+                                # Color-tier persistence is opt-in: these rows are not surfaced by
+                                # canonical frontend tier views and can significantly inflate DB size.
+                                color_tiers_enabled = (
+                                    str(os.environ.get("POST_TEAM_BUFF_COLOR_TIERS", "0") or "").strip().lower()
+                                    in TRUTHY_ENV_VALUES
+                                )
+                                if color_tiers_enabled:
+                                    meta0 = calc_song.get("metadata", {}) or {}
+                                    primary_color = str(meta0.get("Primary Color", "") or "").strip()
+                                    secondary_color = str(meta0.get("Secondary Color", "") or "").strip()
+
+                                    color_variants: list[tuple[str, str]] = [(_TEAM_COLOR_VARIANT_NONE, "")]
+                                    if secondary_color and secondary_color.lower() != primary_color.lower():
+                                        color_variants.append((_TEAM_COLOR_VARIANT_SECONDARY, secondary_color))
+
+                                    for color_variant, target_color in color_variants:
+                                        color_batches = build_team_buff_tier_db_batches(
+                                            entries=entries,
+                                            calc_song=calc_song,
+                                            ref_arrays=ref_arrays,
+                                            cfg_dict=cfg_dict,
+                                            limit=int(_team_buff_tier_limit()),
+                                            tiers=_TEAM_BUFF_COLOR_TIERS,
+                                            target_team_color_override=target_color,
                                         )
+                                        for tier, tier_entries in (color_batches or {}).items():
+                                            if not tier_entries:
+                                                continue
+                                            tier_key = _compose_team_buff_color_key(str(tier), color_variant)
+                                            save_team_buff_loadouts_batch(
+                                                db_key,
+                                                tier_key,
+                                            tier_entries,
+                                            conn=tier_conn,
+                                            commit=False,
+                                            db_path=resolved_tier_db_path or None,
+                                        )
+                                        did_write = True
+
+                                if did_write:
+                                    tier_conn.commit()
+                            finally:
+                                tier_conn.close()
                         except Exception:
                             pass
                 except Exception as exc:

@@ -3042,11 +3042,11 @@ class GearOptimizerApp:
             else:
                 self._tui_publish(
                     song="",
-                    status=str(self._runtime_status_name or "running"),
+                    status=str(getattr(self, "_runtime_status_name", "") or "running"),
                     completed=0,
                     total=int(total_tasks),
-                    failed=int(self._runtime_failed_count or 0),
-                    new_records=int(self._session_new_records or 0),
+                    failed=int(getattr(self, "_runtime_failed_count", 0) or 0),
+                    new_records=int(getattr(self, "_session_new_records", 0) or 0),
                 )
             self._set_runtime_progress_counts(completed=0, total=int(total_tasks))
             run_native_inflight_song_pipeline(

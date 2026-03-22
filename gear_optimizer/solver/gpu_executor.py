@@ -1654,6 +1654,12 @@ class GpuExecutor:
         cached_batch_wait_overridden = False
         cached_batch_max_overridden = False
         cached_fg_burst_window_ms = 6
+        profile_events_enabled = bool(
+            str(os.environ.get("METAFINDER_PROFILE_EVENTS_PATH") or os.environ.get("PROFILE_EVENTS_PATH") or "").strip()
+        )
+        trace_enabled = bool(self._trace_fp is not None or profile_events_enabled)
+        need_batch_summary = bool(self._workload_profile_enabled or trace_enabled)
+        live_enabled = bool(self._live_enabled)
 
         while self._running:
             batch: list[GpuRequest] = []
@@ -1738,37 +1744,34 @@ class GpuExecutor:
                 batch = self._gather_batch(max_wait_ms=batch_wait_ms, max_batch_size=batch_max)
                 dt_wait = perf_counter() - t_wait0
                 self._wait_sec += dt_wait
-                self._live_wait_sec += float(dt_wait)
+                if live_enabled:
+                    self._live_wait_sec += float(dt_wait)
 
-                self._workload_batch_seq += 1
-                batch_metrics = self._summarize_batch(batch, plan=batch_plan, wait_sec=float(dt_wait))
-                trace_shared_kwargs = {
-                    "planner_mode": str(batch_metrics.get("mode", "")),
-                    "queue_depth_hint": int(batch_metrics.get("queue_depth_hint", -1)),
-                    "pressure_hint": float(batch_metrics.get("pressure_hint", 0.0)),
-                    "work_units": float(batch_metrics.get("work_units", 0.0)),
-                    "dominant_type": str(batch_metrics.get("dominant_type", "")),
-                    "dominant_share_pct": float(batch_metrics.get("dominant_share_pct", 0.0)),
-                    "diversity_pct": float(batch_metrics.get("diversity_pct", 0.0)),
-                    "avg_submit_age_ms": float(batch_metrics.get("avg_submit_age_ms", 0.0)),
-                }
+                if need_batch_summary:
+                    self._workload_batch_seq += 1
+                    batch_metrics = self._summarize_batch(batch, plan=batch_plan, wait_sec=float(dt_wait))
+                    if trace_enabled:
+                        trace_shared_kwargs = {
+                            "planner_mode": str(batch_metrics.get("mode", "")),
+                            "queue_depth_hint": int(batch_metrics.get("queue_depth_hint", -1)),
+                            "pressure_hint": float(batch_metrics.get("pressure_hint", 0.0)),
+                            "work_units": float(batch_metrics.get("work_units", 0.0)),
+                            "dominant_type": str(batch_metrics.get("dominant_type", "")),
+                            "dominant_share_pct": float(batch_metrics.get("dominant_share_pct", 0.0)),
+                            "diversity_pct": float(batch_metrics.get("diversity_pct", 0.0)),
+                            "avg_submit_age_ms": float(batch_metrics.get("avg_submit_age_ms", 0.0)),
+                        }
 
-                type_counts = defaultdict(int)
-                for r in batch or []:
-                    if r.request_type == GpuRequestType.SHUTDOWN:
-                        continue
-                    type_counts[r.request_type] += 1
-                types_str = ";".join(
-                    f"{t.value}:{int(n)}" for t, n in sorted(type_counts.items(), key=lambda kv: kv[0].value)
-                )
-                self._trace_event(
-                    event="wait",
-                    wait_sec=float(dt_wait),
-                    batch_size=len(batch or []),
-                    types=types_str,
-                    **trace_shared_kwargs,
-                )
-                self._maybe_live_report()
+                if trace_enabled:
+                    self._trace_event(
+                        event="wait",
+                        wait_sec=float(dt_wait),
+                        batch_size=len(batch or []),
+                        types=str(batch_metrics.get("types", "")),
+                        **trace_shared_kwargs,
+                    )
+                if live_enabled:
+                    self._maybe_live_report()
 
                 saw_fg_work = False
                 if self._in_process_queues and int(fg_burst_window_ms) > 0 and batch:
@@ -1806,7 +1809,8 @@ class GpuExecutor:
                 if not batch:
                     self._write_heartbeat(phase="idle")
                     batch_metrics["exec_sec"] = 0.0
-                    self._record_workload_batch(batch_metrics)
+                    if self._workload_profile_enabled:
+                        self._record_workload_batch(batch_metrics)
                     continue
 
                 # Check for shutdown
@@ -1815,11 +1819,12 @@ class GpuExecutor:
                         self._profile_shutdown_ts = perf_counter()
                     self._write_heartbeat(phase="stopping", batch=batch, force=True)
                     batch_metrics["exec_sec"] = 0.0
-                    self._record_workload_batch(batch_metrics)
+                    if self._workload_profile_enabled:
+                        self._record_workload_batch(batch_metrics)
                     break
 
                 batch_exec_t0 = perf_counter()
-                self._write_heartbeat(phase="running", batch=batch, force=True)
+                self._write_heartbeat(phase="running", batch=batch)
 
                 # Single-pass partitioning keeps request order without rescanning `batch`.
                 ga_native_requests: list[GpuRequest] = []
@@ -1872,16 +1877,18 @@ class GpuExecutor:
                         if _try_put_response(req, resp):
                             responded_ids.add(int(req.request_id))
                         self._requests_processed += 1
-                    self._trace_event(
-                        event="exec",
-                        exec_sec=float(dt_exec),
-                        batch_size=len(ga_native_requests),
-                        types=f"{GpuRequestType.GPU_NATIVE_GA_RUN.value}:{len(ga_native_requests)}",
-                        **trace_shared_kwargs,
-                    )
-                    self._live_exec_sec += float(dt_exec)
-                    self._live_type_counts[GpuRequestType.GPU_NATIVE_GA_RUN] += len(ga_native_requests)
-                    self._maybe_live_report()
+                    if trace_enabled:
+                        self._trace_event(
+                            event="exec",
+                            exec_sec=float(dt_exec),
+                            batch_size=len(ga_native_requests),
+                            types=f"{GpuRequestType.GPU_NATIVE_GA_RUN.value}:{len(ga_native_requests)}",
+                            **trace_shared_kwargs,
+                        )
+                    if live_enabled:
+                        self._live_exec_sec += float(dt_exec)
+                        self._live_type_counts[GpuRequestType.GPU_NATIVE_GA_RUN] += len(ga_native_requests)
+                        self._maybe_live_report()
 
                 if fg_requests:
                     prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
@@ -1912,16 +1919,18 @@ class GpuExecutor:
                         if _try_put_response(req, resp):
                             responded_ids.add(int(req.request_id))
                         self._requests_processed += 1
-                    self._trace_event(
-                        event="exec",
-                        exec_sec=float(dt_exec),
-                        batch_size=len(fg_requests),
-                        types=f"{GpuRequestType.SOLVE_FORCE_GREATS_FINDER.value}:{len(fg_requests)}",
-                        **trace_shared_kwargs,
-                    )
-                    self._live_exec_sec += float(dt_exec)
-                    self._live_type_counts[GpuRequestType.SOLVE_FORCE_GREATS_FINDER] += len(fg_requests)
-                    self._maybe_live_report()
+                    if trace_enabled:
+                        self._trace_event(
+                            event="exec",
+                            exec_sec=float(dt_exec),
+                            batch_size=len(fg_requests),
+                            types=f"{GpuRequestType.SOLVE_FORCE_GREATS_FINDER.value}:{len(fg_requests)}",
+                            **trace_shared_kwargs,
+                        )
+                    if live_enabled:
+                        self._live_exec_sec += float(dt_exec)
+                        self._live_type_counts[GpuRequestType.SOLVE_FORCE_GREATS_FINDER] += len(fg_requests)
+                        self._maybe_live_report()
 
                 if fg_bundle_requests:
                     prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
@@ -1952,16 +1961,20 @@ class GpuExecutor:
                         if _try_put_response(req, resp):
                             responded_ids.add(int(req.request_id))
                         self._requests_processed += 1
-                    self._trace_event(
-                        event="exec",
-                        exec_sec=float(dt_exec),
-                        batch_size=len(fg_bundle_requests),
-                        types=f"{GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH.value}:{len(fg_bundle_requests)}",
-                        **trace_shared_kwargs,
-                    )
-                    self._live_exec_sec += float(dt_exec)
-                    self._live_type_counts[GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH] += len(fg_bundle_requests)
-                    self._maybe_live_report()
+                    if trace_enabled:
+                        self._trace_event(
+                            event="exec",
+                            exec_sec=float(dt_exec),
+                            batch_size=len(fg_bundle_requests),
+                            types=f"{GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH.value}:{len(fg_bundle_requests)}",
+                            **trace_shared_kwargs,
+                        )
+                    if live_enabled:
+                        self._live_exec_sec += float(dt_exec)
+                        self._live_type_counts[GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH] += len(
+                            fg_bundle_requests
+                        )
+                        self._maybe_live_report()
 
                 if fg_ga_fused_requests:
                     prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
@@ -1992,18 +2005,22 @@ class GpuExecutor:
                         if _try_put_response(req, resp):
                             responded_ids.add(int(req.request_id))
                         self._requests_processed += 1
-                    self._trace_event(
-                        event="exec",
-                        exec_sec=float(dt_exec),
-                        batch_size=len(fg_ga_fused_requests),
-                        types=f"{GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS.value}:{len(fg_ga_fused_requests)}",
-                        **trace_shared_kwargs,
-                    )
-                    self._live_exec_sec += float(dt_exec)
-                    self._live_type_counts[GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS] += len(
-                        fg_ga_fused_requests
-                    )
-                    self._maybe_live_report()
+                    if trace_enabled:
+                        self._trace_event(
+                            event="exec",
+                            exec_sec=float(dt_exec),
+                            batch_size=len(fg_ga_fused_requests),
+                            types=(
+                                f"{GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS.value}:{len(fg_ga_fused_requests)}"
+                            ),
+                            **trace_shared_kwargs,
+                        )
+                    if live_enabled:
+                        self._live_exec_sec += float(dt_exec)
+                        self._live_type_counts[GpuRequestType.GA_FG_FUSED_SOLVE_WITH_BREAKPOINTS] += len(
+                            fg_ga_fused_requests
+                        )
+                        self._maybe_live_report()
 
                 if reg_requests:
                     prof_before = self._gpu_prof_snapshot() if self._exec_breakdown_enabled else None
@@ -2034,16 +2051,18 @@ class GpuExecutor:
                         if _try_put_response(req, resp):
                             responded_ids.add(int(req.request_id))
                         self._requests_processed += 1
-                    self._trace_event(
-                        event="exec",
-                        exec_sec=float(dt_exec),
-                        batch_size=len(reg_requests),
-                        types=f"{GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY.value}:{len(reg_requests)}",
-                        **trace_shared_kwargs,
-                    )
-                    self._live_exec_sec += float(dt_exec)
-                    self._live_type_counts[GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY] += len(reg_requests)
-                    self._maybe_live_report()
+                    if trace_enabled:
+                        self._trace_event(
+                            event="exec",
+                            exec_sec=float(dt_exec),
+                            batch_size=len(reg_requests),
+                            types=f"{GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY.value}:{len(reg_requests)}",
+                            **trace_shared_kwargs,
+                        )
+                    if live_enabled:
+                        self._live_exec_sec += float(dt_exec)
+                        self._live_type_counts[GpuRequestType.SOLVE_GENOMES_FROM_REGISTRY] += len(reg_requests)
+                        self._maybe_live_report()
 
                 # Process remaining request types individually
                 for req in remaining:
@@ -2072,16 +2091,18 @@ class GpuExecutor:
                     if _try_put_response(req, response):
                         responded_ids.add(int(req.request_id))
                     self._requests_processed += 1
-                    self._trace_event(
-                        event="exec",
-                        exec_sec=float(dt_exec),
-                        batch_size=1,
-                        types=f"{req.request_type.value}:1",
-                        **trace_shared_kwargs,
-                    )
-                    self._live_exec_sec += float(dt_exec)
-                    self._live_type_counts[req.request_type] += 1
-                    self._maybe_live_report()
+                    if trace_enabled:
+                        self._trace_event(
+                            event="exec",
+                            exec_sec=float(dt_exec),
+                            batch_size=1,
+                            types=f"{req.request_type.value}:1",
+                            **trace_shared_kwargs,
+                        )
+                    if live_enabled:
+                        self._live_exec_sec += float(dt_exec)
+                        self._live_type_counts[req.request_type] += 1
+                        self._maybe_live_report()
 
                 if self._profile_enabled:
                     self._profile_last_work_end_ts = perf_counter()
@@ -2094,8 +2115,8 @@ class GpuExecutor:
                         perf_counter() + (float(fg_burst_window_ms) / 1000.0),
                     )
                 batch_metrics["exec_sec"] = max(0.0, float(perf_counter() - batch_exec_t0))
-                self._record_workload_batch(batch_metrics)
-                self._write_heartbeat(phase="idle", force=True)
+                if self._workload_profile_enabled:
+                    self._record_workload_batch(batch_metrics)
 
             except Exception as e:
                 # The executor loop must never "drop" a batch on exception; otherwise callers can
@@ -2120,7 +2141,11 @@ class GpuExecutor:
                 except Exception:
                     pass
                 try:
-                    if batch_metrics and float(batch_metrics.get("exec_sec", 0.0) or 0.0) <= 0.0:
+                    if (
+                        self._workload_profile_enabled
+                        and batch_metrics
+                        and float(batch_metrics.get("exec_sec", 0.0) or 0.0) <= 0.0
+                    ):
                         batch_metrics["exec_sec"] = 0.0
                         batch_metrics["error"] = str(err)
                         self._record_workload_batch(batch_metrics)

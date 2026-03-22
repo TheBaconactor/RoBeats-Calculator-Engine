@@ -585,7 +585,9 @@ def _build_direct_ga_entry_items(ga_candidates, *, ga_registry=None) -> list[tup
     return items
 
 
-def _merge_retained_direct_ga_entries(loadout_entries, ga_entry_items: list[tuple[str, dict]], retained_hashes: set[str]) -> None:
+def _merge_retained_direct_ga_entries(
+    loadout_entries, ga_entry_items: list[tuple[str, dict]], retained_hashes: set[str]
+) -> None:
     if not isinstance(loadout_entries, dict):
         return
 
@@ -1292,11 +1294,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     except Exception:
         base_items = []
     if direct_ga_items:
-        base_items = [
-            (k, v)
-            for k, v in base_items
-            if not (isinstance(v, dict) and bool(v.get("_fg_direct_ga")))
-        ]
+        base_items = [(k, v) for k, v in base_items if not (isinstance(v, dict) and bool(v.get("_fg_direct_ga")))]
     entry_items = list(base_items) + list(direct_ga_items)
 
     # Collect all candidates (no budget limit)
@@ -2125,7 +2123,11 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
             ga_stage_table_slot_pending = None
 
             coords_arr = None
-            if ga_candidate_owner_meta_present and (not ga_candidate_table_slot_held) and (not ga_candidate_owner_mismatch_warned):
+            if (
+                ga_candidate_owner_meta_present
+                and (not ga_candidate_table_slot_held)
+                and (not ga_candidate_owner_mismatch_warned)
+            ):
                 warn_fallback(
                     "fg.ga_stage.owner_mismatch",
                     "FG resident candidate-table ownership mismatch; skipping GA->FG staging",
@@ -2136,12 +2138,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     fatal=False,
                 )
                 ga_candidate_owner_mismatch_warned = True
-            if (
-                ga_candidate_table_slot_held
-                and (gpu_client is None or in_process)
-                and bool(use_gpu)
-                and sig_rows_map
-            ):
+            if ga_candidate_table_slot_held and (gpu_client is None or in_process) and bool(use_gpu) and sig_rows_map:
                 try:
                     coords_list = [
                         (sig_rows_map.get(sig0) or {}).get("ga_coord")
@@ -2216,15 +2213,21 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 # FAST PATH: Build numpy array directly instead of list[dict]
                 # Column order: pp, cm, fm, p_val, s_val, ft_stat, ff_stat
                 # Reuse a persistent buffer to keep the data pointer stable (enables upload caching).
-                if not hasattr(process_force_greats_gpu_finder, "_genome_stats_buf"):
-                    process_force_greats_gpu_finder._genome_stats_buf = np.zeros((1024, 7), dtype=np.int32)
-                genome_stats_buf = process_force_greats_gpu_finder._genome_stats_buf
-                if genome_stats_buf.shape[0] < n_pending:
-                    process_force_greats_gpu_finder._genome_stats_buf = np.zeros(
-                        (max(1024, n_pending), 7), dtype=np.int32
-                    )
+                # However, when deferring apply in in-process GPU executor mode, this buffer would be reused
+                # across in-flight async requests (corrupting results). In that mode we allocate a dedicated
+                # array per group instead of fill+copy.
+                if defer_group_apply and in_process and gpu_client is not None:
+                    genome_stats_arr = np.empty((n_pending, 7), dtype=np.int32)
+                else:
+                    if not hasattr(process_force_greats_gpu_finder, "_genome_stats_buf"):
+                        process_force_greats_gpu_finder._genome_stats_buf = np.zeros((1024, 7), dtype=np.int32)
                     genome_stats_buf = process_force_greats_gpu_finder._genome_stats_buf
-                genome_stats_arr = genome_stats_buf[:n_pending, :]
+                    if genome_stats_buf.shape[0] < n_pending:
+                        process_force_greats_gpu_finder._genome_stats_buf = np.zeros(
+                            (max(1024, n_pending), 7), dtype=np.int32
+                        )
+                        genome_stats_buf = process_force_greats_gpu_finder._genome_stats_buf
+                    genome_stats_arr = genome_stats_buf[:n_pending, :]
                 for i, bs in enumerate(pending):
                     genome_stats_arr[i, 0] = int(bs.get("Perfect Points", 0))
                     genome_stats_arr[i, 1] = int(bs.get("Combo Multiplier", 0))
@@ -2236,11 +2239,6 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
 
                 # New genome batch => require a fresh upload on the first request.
                 genome_stats_uploaded = False
-                if defer_group_apply and in_process and gpu_client is not None:
-                    # In in-process GPU executor mode, `genome_stats_arr` is passed by reference into async
-                    # requests. When deferring apply across multiple groups, we reuse the backing buffer for
-                    # subsequent groups while earlier GPU work is still in-flight, corrupting results.
-                    genome_stats_arr = genome_stats_arr.copy()
 
             song_data = calc_song.get("song_data", {}) or {}
             # IMPORTANT: Taichi FG API uses float32 timestamps. If we pass float64 arrays here,
@@ -2540,6 +2538,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 )
 
                 if max_fp_matrix is None and use_gpu_breakpoints:
+
                     def _compute_max_fp_blocking():
                         try:
                             return _submit_compute_breakpoints_max_fp(blocking=True)
@@ -2572,6 +2571,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
 
                 if max_fp_matrix is None:
                     group_mode = "cpu"
+
                     def _group_compute_fn_cpu():
                         return iter_analytical_breakpoint_groups(
                             fg_scorer,
