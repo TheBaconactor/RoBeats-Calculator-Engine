@@ -40,6 +40,10 @@ Uploaded once per song (only when ceiling mode is enabled):
 These are derived on CPU using `prepare_perfect_hit_simulation()` (same chord grouping + per-note window
 semantics as HumanHitSim) and uploaded to GPU.
 
+To keep this CPU preprocessing from becoming a throughput bottleneck, the GPU timeline API caches the
+derived chord-group payload (bounded LRU) keyed by the song timing signature (timestamps + note types).
+This makes repeated evaluations of the same song effectively GPU-only after the first call.
+
 ### New Taichi kernel
 
 `compute_timeline_grid_ceiling_hitsim_kernel(...)` computes the full 161x161 grid per song slot:
@@ -70,12 +74,17 @@ semantics as HumanHitSim) and uploaded to GPU.
 ## Tests / Verification
 
 - Added GPU smoke test for ceiling mode: `tests/test_gpu_timeline_ceiling_hitsim_smoke.py`.
+- Added GPU regression test for exact CPU/GPU signature equality (ceiling mode): `tests/test_gpu_timeline_ceiling_hitsim_cpu_gpu_exact.py`.
+- Added GPU invariant test that ceiling is an upper bound over sampled Perfect-window Monte Carlo seeds:
+  `tests/test_gpu_timeline_ceiling_hitsim_mc_upper_bound.py`.
 - The test suite defaults `GPU_TIMELINE_CEILING_HITSIM=0` in `tests/conftest.py` to keep existing CPU/GPU parity tests
   stable. Ceiling mode is exercised explicitly by the new test.
 
 Verified locally (GPU):
 
 - `python -m pytest -m gpu tests/test_gpu_timeline_ceiling_hitsim_smoke.py`
+- `python -m pytest -m gpu tests/test_gpu_timeline_ceiling_hitsim_cpu_gpu_exact.py`
+- `python -m pytest -m gpu tests/test_gpu_timeline_ceiling_hitsim_mc_upper_bound.py`
 - `python -m pytest -m gpu tests/test_gpu_timeline_parity.py`
 - `python -m pytest -m gpu tests/test_fg_breakpoints_maxfp_gpu.py`
 - `python -m pytest -m gpu tests/test_parity_smoke.py::test_gem_solver_cpu_gpu_exact_parity_smoke`
@@ -84,6 +93,7 @@ Verified locally (GPU):
 
 - CPU vs GPU parity tests must run with deterministic timeline mode (or be updated to account for the new ceiling behavior).
 - Ceiling mode currently relies on CPU preprocessing of chord groups/windows before uploading to GPU.
-  If this becomes a measurable bottleneck, consider a GPU-native grouping prepass or caching the grouping arrays per song.
+  If this becomes a measurable bottleneck (very large songs, high churn), consider a GPU-native grouping prepass, or
+  persisting the grouping arrays alongside song metadata for reuse across processes/runs.
 - The ceiling kernel is designed to be a deterministic upper envelope for fever membership under the modeled Perfect windows,
   not an expected-value estimator. Expected-value/Markov variants remain future work (see `docs/ANALYTICAL_HITSIM_SOLUTION.md`).
