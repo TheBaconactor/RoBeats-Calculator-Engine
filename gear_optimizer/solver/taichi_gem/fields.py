@@ -63,10 +63,8 @@ MAX_BP_PAIRS = 256  # Breakpoint kernel scan pairs
 # Optional allocations: unpacked timeline masks are optional; bitpacked masks are the production path.
 WRITE_UNPACKED_GRID_MASKS_DEFAULT = _env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS", "0")
 
-# FT/FF combo reduction scratch sizing (Vulkan path).
-# Used to support a two-stage reduction that avoids highly contended atomics:
-# - Stage A writes per-wave best keys into a scratch buffer (no atomics)
-# - Stage B merges scratch -> chunk_best_key (one thread per genome)
+# FT/FF combo reduction sizing (Vulkan path).
+# Used by the warmstart and combo-search reduction kernels.
 GA_FTFF_REDUCE_BLOCK_DIM = _env_int(
     "GA_FTFF_REDUCE_BLOCK_DIM", 256
 )  # Must match kernels/ga_eval/warmstart.py Vulkan block dim
@@ -75,8 +73,6 @@ GA_FTFF_REDUCE_BLOCK_DIM = (GA_FTFF_REDUCE_BLOCK_DIM // 32) * 32
 if GA_FTFF_REDUCE_BLOCK_DIM <= 0:
     GA_FTFF_REDUCE_BLOCK_DIM = 32
 GA_FTFF_REDUCE_WAVE_STRIDE = GA_FTFF_REDUCE_BLOCK_DIM // 32  # Works for wave32 and wave64 (uses lane//32)
-GA_FTFF_REDUCE_MAX_TILES = (MAX_FTFF_COMBOS + GA_FTFF_REDUCE_BLOCK_DIM - 1) // GA_FTFF_REDUCE_BLOCK_DIM
-GA_FTFF_REDUCE_SCRATCH_COLS = GA_FTFF_REDUCE_MAX_TILES * GA_FTFF_REDUCE_WAVE_STRIDE
 
 # GPU-native GA -> ForceGreats candidate table (compact GPU-resident buffer).
 # Avoids downloading full `(runs, pop, payload_cols)` GA run payloads back to CPU just to

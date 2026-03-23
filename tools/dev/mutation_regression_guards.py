@@ -37,6 +37,10 @@ def _write_text_lf(path: Path, data: str) -> None:
     path.write_text(data, encoding="utf-8", newline="\n")
 
 
+def _read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
 def _pytest(args: list[str], *, extra_env: dict[str, str] | None = None) -> int:
     env = dict(os.environ)
     if extra_env:
@@ -86,8 +90,14 @@ def _mutate_ga_inherit_hints_in_place(path: Path) -> str:
 def _mutate_warmstart_no_best_key_write(path: Path) -> str:
     original = path.read_text(encoding="utf-8")
 
-    old = "ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], local_best_key)"
-    new = "ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], ti.u64(0))"
+    old_candidates = [
+        "kernels_helpers.chunk_best_key[genome_idx] = block_best",
+        "ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], local_best_key)",
+    ]
+    new_map = {
+        old_candidates[0]: "kernels_helpers.chunk_best_key[genome_idx] = ti.u64(0)",
+        old_candidates[1]: "ti.atomic_max(kernels_helpers.chunk_best_key[genome_idx], ti.u64(0))",
+    }
 
     # Only mutate the warmstart kernel (avoid accidental edits if the pattern is reused).
     start = original.find("def ga_find_best_combo_warmstart_kernel")
@@ -98,13 +108,18 @@ def _mutate_warmstart_no_best_key_write(path: Path) -> str:
         end = len(original)
 
     block = original[start:end]
-    if old not in block:
-        raise RuntimeError("Failed to locate warmstart best-key atomic_max line for mutation.")
+    matched = None
+    for old in old_candidates:
+        if old in block:
+            matched = old
+            break
+    if matched is None:
+        raise RuntimeError("Failed to locate warmstart best-key write for mutation.")
 
-    mutated_block = block.replace(old, new)
+    mutated_block = block.replace(matched, new_map[matched])
     if mutated_block == block:
         raise RuntimeError("Failed to apply warmstart mutation.")
-    if old in mutated_block:
+    if matched in mutated_block:
         raise RuntimeError("Warmstart mutation did not fully apply inside ga_find_best_combo_warmstart_kernel().")
 
     mutated = original[:start] + mutated_block + original[end:]
