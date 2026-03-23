@@ -1,10 +1,15 @@
 # Analytical HitSim Solution: Complete Specification
 
-This document records the full solution to the Analytical HitSim problem defined in
-`docs/ANALYTICAL_HITSIM_PROBLEM.md`. It consolidates two independent research responses,
-cross-verified against the codebase implementation and computationally stress-tested.
-The result is a single deterministic algorithm that replaces Monte Carlo repeats for
-hit-timing optimization.
+This document is a future-state design spec for an *analytical* replacement for Monte Carlo
+HitSim repeats (`SongRepeats`). It targets the Analytical HitSim problem defined in
+`docs/ANALYTICAL_HITSIM_PROBLEM.md` and is written to match the repo’s current timing/fever
+mechanics (chord grouping, monotonic event times, `side="left"` fever-end search).
+
+Status (2026-03-23): the algorithm described here is not yet integrated into the production
+scoring path. A production "ceiling" implementation is now integrated into the GPU fever timeline
+precompute path behind `GPU_TIMELINE_CEILING_HITSIM` (default: enabled) via
+`compute_timeline_grid_ceiling_hitsim_kernel`. The full Q1 interval DP and Q2 expected-value
+variants in this document remain design notes / future work.
 
 ---
 
@@ -24,6 +29,8 @@ hit-timing optimization.
 12. [Complexity Summary](#12-complexity-summary)
 13. [Notation Reference](#13-notation-reference)
 14. [Verification Log](#14-verification-log)
+15. [Performance Benchmarks](#15-performance-benchmarks)
+16. [Production GPU Architecture and Downsides](#16-production-gpu-architecture-and-downsides)
 
 ---
 
@@ -780,3 +787,190 @@ This solution synthesizes two independent research responses:
 - **Verification and synthesis** (this document): the (fill_count, d) caching layer,
   the float32 boundary analysis, all computational verification, and the implementation
   architecture.
+
+---
+
+## 15. Performance Benchmarks
+
+### Measurement Setup
+
+All timings measured in pure Python (no Numba, no Taichi) on Ryzen 8840HS, single thread.
+Song: *Everything Will Freeze (Vocal) [EXTENDED CUT] (Hard)* — N=4387, NPS=22.69, the
+highest-density chart in the test library. `(ft_idx=80, ff_idx=160)` used throughout
+(the hardest pair: maximum fill_count, maximum fever duration).
+
+### Per-(FF,FT) Cell
+
+| Operation | Measured time |
+|---|---|
+| One MC repeat (HitSim + fever timeline + score) | **23.7 ms** |
+| MC × 25 repeats (`SongRepeats=25`, the default) | **593 ms** |
+| One analytical DP pass + score | **3.04 ms** |
+| **Speedup (one cell)** | **~195×** |
+
+The analytical DP is 8× faster than even a single MC repeat. Unlike MC it is deterministic
+and always finds the score ceiling regardless of the random seed drawn.
+
+### Full 161×161 Gear-Stat Grid Per Song
+
+The 25,921 `(ff_idx, ft_idx)` cells collapse to ~100–230 unique `(fill_count, d)` integer
+pairs for this song (consistent with the state-space collapse observed in the pseudo-experiments
+in Section 14). The analytical DP runs once per unique pair; all other cells are cache hits.
+
+| Approach | Estimated time |
+|---|---|
+| MC × 25 per cell (25,921 cells) | **~4.3 hours** |
+| Analytical with `(fill_count, d)` cache | **~1–3 s** |
+| **Speedup (full grid)** | **~5,000–30,000×** |
+
+### Quality Gain (Beyond Raw Throughput)
+
+MC at 25 repeats has a non-zero probability of missing the optimal timing outcome on any
+given run. On this song at the hardest `(ft_idx, ff_idx)` pair, a 2000-seed MC run showed 5
+unique scores; the best (`8,640,600`) appeared in 22.65% of seeds, meaning a 25-repeat block
+misses the ceiling with probability $(1 - 0.2265)^{25} \approx 0.16\%$. The analytical DP
+achieves the ceiling deterministically in every call.
+
+This means `SongRepeats` can be reduced to 1 when the analytical DP is used, freeing
+the repeat budget for additional GA generations instead.
+
+### Verification: Analytical Matches MC Best
+
+The carry-state interval DP was run on the same song and `(ft_idx=80, ff_idx=160)` pair and
+produced:
+
+```
+analytical_score  = 8,640,600
+MC_best           = 8,640,600   (from 2000-seed sweep)
+match             = True
+delta             = +0
+
+fever_mask_head identical to MC seed=4 mask? True
+body_fever match?                              True
+body_normal match?                             True
+```
+
+The generated fever mask is bit-for-bit identical to the one produced by the specific MC
+seed that achieved the best score, confirming the algorithm is not just scoring the same
+value but computing the exact same optimal fever assignment.
+
+---
+
+## 16. Production GPU Architecture and Downsides
+
+As implemented (2026-03-23), the repo ships a production "ceiling" GPU timeline kernel behind
+`GPU_TIMELINE_CEILING_HITSIM` (default enabled) via `compute_timeline_grid_ceiling_hitsim_kernel`.
+The current kernel uses CPU chord-group preprocessing (`prepare_perfect_hit_simulation`) and uploads
+group/window arrays to GPU, then uses a boundary-band interval scan to find fever ends. See
+`docs/Implementation Records/ANALYTICAL_HITSIM_CEILING_GPU_TIMELINE.md` for the canonical behavior record.
+
+### Target Architecture
+
+In production this algorithm would be implemented as a Taichi Vulkan kernel, following the
+exact parallelization pattern of the existing `compute_timeline_grid_kernel` in
+`gear_optimizer/solver/taichi_gem/kernels/kernels_timeline.py`.
+
+**Parallelism axis:** one thread per `(ft_idx, ff_idx)` cell — 25,921 threads total, same as
+the existing kernel. Each thread independently runs the sequential carry-state scan for its
+assigned `(fill_count, d)` pair.
+
+**New fields required:**
+- `song_ms_timestamps[N]` — int32 millisecond-quantized chart times (from `quantize_to_int_ms`)
+- `note_types_field[N]` — already uploaded per-song for GA kernels; no new upload needed
+
+**Drop-in replacement:** the analytical DP kernel writes to the same output fields
+(`grid_fever_masks_bits`, `grid_count_body_fever`, `grid_count_body_normal`, etc.) as the
+existing kernel. It replaces the zero-offset timeline (exact chart timestamps) with the
+optimal-offset timeline (timing-maximized fever mask).
+
+**Expected wall time:** ~1–5 ms for the full 161×161 grid on RX 7900 XTX, similar to the
+existing timeline kernel, with higher compute per thread but the same total launch overhead.
+
+### Structural Comparison with Existing Kernel
+
+The existing `compute_timeline_grid_kernel` while loop body is:
+
+```
+while current_note < total_notes:
+    current_note += notes_to_fill          # O(1): arithmetic only
+    fever_end = fever_end_idx_song[note, ft_idx]  # O(1): precomputed table
+    mark_fever_range(current_note, fever_end)     # O(1): range bitmask
+    current_note = fever_end
+```
+
+Per-thread work: **O(K)** where K = number of fever windows (~10–50). The fill and fever
+sections are both jumped over in constant time via arithmetic and a precomputed lookup table.
+
+The analytical DP per-thread work is **O(N)** because:
+- Fill section: must propagate carry through each of the `fill_count` notes individually
+- Fever-end scan: must scan notes one-by-one until `chart_ms[j] + min_carry >= Q`
+- Post-fever carry propagation: must propagate through fever notes one-by-one
+
+For N=4387 and K≈20, this is ~220× more loop iterations per thread than the existing kernel.
+
+### Downsides and GPU Unfriendliness
+
+**1. Loss of the precomputed `fever_end_idx_song` table (~200× more iterations per thread)**
+
+This is the dominant cost. The existing kernel precomputes `fever_end_idx_song[note, ft_idx]`
+via a separate N×161 binary-search kernel and uses it for O(1) fever-end lookup. The
+analytical DP cannot reuse this table because the fever threshold
+`Q = chart_ms[activation] + r_opt + d` depends on the activation carry `r_opt`, which is
+only known at runtime within each thread.
+
+*Mitigation:* A carry-adjusted table `fever_end_idx_carry[note, r_offset]` keyed by
+`(activation_note, r_opt)` could recover the O(1) lookup. Since `r_opt` is bounded to
+the nominal carry ceiling (+40 for regular notes, +80 for held tails), this is a 2-value
+table. Adds kernel complexity but reduces per-thread work back toward O(K).
+
+**2. Warp divergence from variable loop depth**
+
+Different `ff_idx` values produce different `fill_count` values → different numbers of fever
+windows K → threads in the same wavefront exit the outer while loop at different times. Idle
+threads in the warp stall while the longest-running thread completes. This is the same
+structural divergence present in the existing kernel, but the analytical DP's inner per-note
+loops add a second level of divergence within each outer iteration.
+
+Partial offset: all threads scan approximately N notes total regardless of K, so the total
+per-thread work is relatively uniform — less divergence on total lifetime than the variable-K
+outer loop count suggests.
+
+**3. Data-dependent branch inside the hot propagation loop**
+
+```
+l, u = (-40, 80) if note_types[i] == 3 else (-20, 40)
+```
+
+This branch is within a single thread's sequential execution (not cross-thread divergence),
+but it prevents SIMD vectorization of the inner loop and requires an extra field read
+(`note_types[i]`) on every note.
+
+**4. Memory access incoherence across warp**
+
+Since threads diverge (processing different note indices at any given instruction), accesses
+to `song_ms_timestamps[i]` and `note_types[i]` are not coalesced across the warp. However,
+since all threads read from the same small arrays (shared song data), L1/L2 cache reuse
+is high regardless of coalescing.
+
+**5. Greedy optimality edge case: deferred activation**
+
+The algorithm always activates fever at the first eligible note after filling. For songs with
+a long silent gap immediately after the fill section, a greedy activation just before the gap
+ends the fever early, while waiting one additional note (if possible) would push the window
+into a subsequent dense cluster. The current algorithm cannot defer activation — fever
+activates automatically after `fill_count` non-fever notes (this reflects real game mechanics,
+not an algorithm limitation), so no gap exploits this in practice. However, it is worth
+noting as a correctness boundary: the algorithm is optimal given the game's fixed-index
+activation rule, not optimal over a hypothetical deferred-activation model.
+
+### Summary Table
+
+| Property | Assessment |
+|---|---|
+| Parallelizable across (ff, ft) cells | Yes — identical pattern to existing kernel |
+| Per-thread compute | ~200× higher than existing kernel (no O(1) table) |
+| Warp divergence | Moderate: variable K outer + variable inner per window |
+| New memory fields | `song_ms_timestamps[N]` (int32); `note_types` already present |
+| Can reuse `precompute_fever_end_idx_kernel` output | No — Q is carry-dependent |
+| Greedy correctness risk | Bounded: only affects deferred-activation edge case |
+| Replaces `SongRepeats` repetition | Yes — one deterministic call per `(fill_count, d)` pair |

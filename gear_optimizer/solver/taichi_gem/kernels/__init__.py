@@ -154,6 +154,7 @@ from .ga_eval import (
 from .kernels_timeline import (
     precompute_fever_end_idx_kernel,
     compute_timeline_grid_kernel,
+    compute_timeline_grid_ceiling_hitsim_kernel,
     compute_timeline_grid_signatures_kernel,
     unpack_timeline_grid_masks_kernel,
 )
@@ -280,6 +281,7 @@ __all__ = [
     "binary_search_left",
     "precompute_fever_end_idx_kernel",
     "compute_timeline_grid_kernel",
+    "compute_timeline_grid_ceiling_hitsim_kernel",
     "compute_timeline_grid_signatures_kernel",
     "unpack_timeline_grid_masks_kernel",
 ]

@@ -61,6 +61,10 @@ def _configure_test_db_path() -> None:
 
 _configure_test_db_path()
 
+# Keep CPU/GPU parity tests stable: default the GPU timeline to deterministic mode.
+# Dedicated tests explicitly enable Analytical HitSim ceiling mode when needed.
+os.environ.setdefault("GPU_TIMELINE_CEILING_HITSIM", "0")
+
 
 # -----------------------------------------------------------------------------
 # Optional pytest-benchmark support

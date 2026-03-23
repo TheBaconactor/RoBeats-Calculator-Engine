@@ -7,6 +7,7 @@ This module provides GPU-accelerated timeline precomputation:
 """
 
 import time
+import hashlib
 import numpy as np
 import taichi as ti
 
@@ -23,7 +24,7 @@ from ..fields import (
 from .. import fields
 from ..kernel_loader import get_kernels
 
-from .initialization import ensure_ready, _maybe_sync, _SYNC_FOR_TIMING, _FORCE_SYNC
+from .initialization import ensure_ready, _ref_arrays_sig, _maybe_sync, _SYNC_FOR_TIMING, _FORCE_SYNC
 
 _profiler = get_gpu_profiler()
 
@@ -43,6 +44,29 @@ def _upload_song_timestamps_kernel(n: ti.i32, timestamps: ti.types.ndarray(dtype
         fields.song_timestamps[i] = timestamps[i]
 
 
+@ti.kernel
+def _upload_song_note_group_idx_kernel(n: ti.i32, note_group_idx: ti.types.ndarray(dtype=ti.i32, ndim=1)):
+    """Upload note_idx -> group_idx mapping without padding."""
+    for i in range(n):
+        fields.song_note_group_idx[i] = note_group_idx[i]
+
+
+@ti.kernel
+def _upload_song_groups_kernel(
+    n_groups: ti.i32,
+    group_starts: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    group_base_t_ms: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    group_low_ms: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    group_high_ms: ti.types.ndarray(dtype=ti.i32, ndim=1),
+):
+    """Upload chord-group arrays used by the analytical ceiling HitSim timeline kernel."""
+    for g in range(n_groups):
+        fields.song_group_starts[g] = group_starts[g]
+        fields.song_group_base_t_ms[g] = group_base_t_ms[g]
+        fields.song_group_low_ms[g] = group_low_ms[g]
+        fields.song_group_high_ms[g] = group_high_ms[g]
+
+
 # ============================================================================
 # GPU TIMELINE PRECOMPUTATION (eliminates Numba typeof overhead)
 # ============================================================================
@@ -50,28 +74,57 @@ def _upload_song_timestamps_kernel(n: ti.i32, timestamps: ti.types.ndarray(dtype
 _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS  # Track last song per slot
 
 
+def _array_sig(v: object) -> bytes:
+    """
+    Stable content signature for cache keys.
+
+    Timeline caching must account for note types and timestamps content; first/last
+    samples are insufficient (distinct charts can alias).
+    """
+    if v is None:
+        return b"\x00"
+    try:
+        arr = np.asarray(v)
+    except Exception:
+        return bytes(repr(v), "utf-8")
+    if arr.ndim == 0:
+        try:
+            arr = np.asarray([arr.item()], dtype=arr.dtype)
+        except Exception:
+            arr = np.asarray([repr(arr)], dtype=np.uint8)
+    try:
+        is_contig = bool(arr.flags["C_CONTIGUOUS"])
+    except Exception:
+        is_contig = False
+    arr_c = arr if is_contig else np.ascontiguousarray(arr)
+    h = hashlib.blake2b(digest_size=16)
+    h.update(str(arr_c.dtype).encode("utf-8"))
+    h.update(int(arr_c.ndim).to_bytes(1, "little", signed=False))
+    for d in arr_c.shape:
+        h.update(int(d).to_bytes(4, "little", signed=False))
+    h.update(memoryview(arr_c).cast("B"))
+    return h.digest()
+
+
 def _song_timing_cache_key(calc_song: dict) -> tuple:
     meta = calc_song.get("metadata", {}) or {}
     song_data = calc_song.get("song_data", {}) or {}
-    timestamps = song_data.get("timestamps", ())
-    first_ms = 0
-    last_ms = 0
-    try:
-        if hasattr(timestamps, "__len__") and len(timestamps):
-            first_ms = int(float(timestamps[0]) * 1000.0)
-            last_ms = int(float(timestamps[len(timestamps) - 1]) * 1000.0)
-    except Exception:
-        first_ms = 0
-        last_ms = 0
-
+    use_ceiling = bool(env_flag("GPU_TIMELINE_CEILING_HITSIM", "1"))
+    if use_ceiling:
+        chart_ts = song_data.get("chart_timestamps", None)
+        timestamps = chart_ts if chart_ts is not None else song_data.get("timestamps", ())
+    else:
+        timestamps = song_data.get("timestamps", ())
     return (
         str(meta.get("Song Name", "")),
+        str(meta.get("Difficulty", "")),
         int(len(timestamps)),
         float(meta.get("Last Note Time", 0) or 0),
         int(meta.get("Long Notes", 0) or 0),
-        int(first_ms),
-        int(last_ms),
-    ) + human_hitsim_timing_context(calc_song)
+        int(1 if use_ceiling else 0),
+        _array_sig(timestamps),
+        _array_sig(song_data.get("note_types")),
+    ) + (() if use_ceiling else human_hitsim_timing_context(calc_song))
 
 
 def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 0) -> None:
@@ -99,20 +152,29 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     """
     global _gpu_timeline_song_id_by_slot
 
-    # Check if we already computed for this song
-    song_key = _song_timing_cache_key(calc_song)
     song_slot = int(song_slot)
     if song_slot < 0 or song_slot >= MAX_SONG_SLOTS:
         raise ValueError(f"song_slot out of range: {song_slot}")
 
+    # Ensure GPU is ready with refs and grid fields (even on cache hit).
+    ensure_ready(ref_arrays)
+
+    # Check if we already computed for this song+ref set.
+    ref_sig = _ref_arrays_sig(ref_arrays) if isinstance(ref_arrays, dict) else b""
+    song_key = _song_timing_cache_key(calc_song) + (bytes(ref_sig),)
     if _gpu_timeline_song_id_by_slot[song_slot] == song_key:
         return  # Already computed
 
-    # Ensure GPU is ready with refs and grid fields
-    ensure_ready(ref_arrays)
+    song_data = calc_song.get("song_data", {}) or {}
+    use_ceiling = bool(env_flag("GPU_TIMELINE_CEILING_HITSIM", "1"))
 
-    # Upload song timestamps
-    timestamps = np.asarray(calc_song["song_data"]["timestamps"], dtype=np.float32)
+    # Upload song timestamps (float seconds). Analytical ceiling uses chart timestamps.
+    if use_ceiling:
+        chart_ts = song_data.get("chart_timestamps", None)
+        src = chart_ts if chart_ts is not None else song_data.get("timestamps", ())
+        timestamps = np.asarray(src, dtype=np.float32)
+    else:
+        timestamps = np.asarray(song_data.get("timestamps", ()), dtype=np.float32)
     total_notes = len(timestamps)
 
     # Pad to MAX_SONG_NOTES if needed
@@ -127,6 +189,68 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     else:
         _upload_song_timestamps_kernel(int(total_notes), timestamps)
 
+    group_count = 0
+    if use_ceiling:
+        from gear_optimizer.solver.hit_simulation import prepare_perfect_hit_simulation
+
+        note_types = song_data.get("note_types", None)
+        prepared = prepare_perfect_hit_simulation(
+            timestamps,
+            note_types,
+            perfect_lower_ms=-20,
+            perfect_upper_ms=40,
+            held_tail_type=3,
+            held_tail_time_multiplier=2,
+            quantize_ms=True,
+        )
+        group_starts = np.asarray(prepared.get("group_starts", ()), dtype=np.int32)
+        group_ends = np.asarray(prepared.get("group_ends", ()), dtype=np.int32)
+        group_base_t_ms = np.asarray(prepared.get("group_base_t", ()), dtype=np.int32)
+        group_low_ms = np.asarray(prepared.get("group_low", ()), dtype=np.int32)
+        group_high_ms = np.asarray(prepared.get("group_high", ()), dtype=np.int32)
+        group_count = int(group_starts.shape[0])
+        if int(prepared.get("n", total_notes) or 0) != int(total_notes):
+            raise ValueError("prepare_perfect_hit_simulation produced mismatched note count")
+        if total_notes > 0 and group_count <= 0:
+            raise ValueError("prepare_perfect_hit_simulation produced no chord groups")
+
+        note_group_idx = np.full(int(total_notes), -1, dtype=np.int32)
+        for g in range(group_count):
+            s = int(group_starts[g])
+            e = int(group_ends[g])
+            if e > s:
+                note_group_idx[s:e] = int(g)
+        if total_notes > 0 and int(np.any(note_group_idx < 0)):
+            raise ValueError("prepare_perfect_hit_simulation produced uncovered note indices")
+
+        if _profiler.enabled:
+            _t_groups = time.perf_counter()
+            _upload_song_note_group_idx_kernel(int(total_notes), note_group_idx)
+            _upload_song_groups_kernel(
+                int(group_count),
+                group_starts,
+                group_base_t_ms,
+                group_low_ms,
+                group_high_ms,
+            )
+            upload_bytes = int(
+                note_group_idx.nbytes
+                + group_starts.nbytes
+                + group_base_t_ms.nbytes
+                + group_low_ms.nbytes
+                + group_high_ms.nbytes
+            )
+            _profiler.record_upload(time.perf_counter() - _t_groups, bytes_count=upload_bytes)
+        else:
+            _upload_song_note_group_idx_kernel(int(total_notes), note_group_idx)
+            _upload_song_groups_kernel(
+                int(group_count),
+                group_starts,
+                group_base_t_ms,
+                group_low_ms,
+                group_high_ms,
+            )
+
     # Extract song metadata
     long_notes = int(calc_song["metadata"].get("Long Notes", 0))
     last_note_time = float(calc_song["metadata"].get("Last Note Time", 0))
@@ -135,26 +259,39 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     _maybe_sync(for_timing=True)
     _t0 = time.perf_counter()
 
-    # Precompute fever end indices for O(1) timeline lookups
-    kernels.precompute_fever_end_idx_kernel(
-        int(total_notes),
-        float(last_note_time),
-    )
+    if not use_ceiling:
+        # Precompute fever end indices for O(1) timeline lookups
+        kernels.precompute_fever_end_idx_kernel(
+            int(total_notes),
+            float(last_note_time),
+        )
 
     # Launch GPU kernel to compute all 161×161 timelines for this song slot.
     #
     # Canonical representation is bitpacked (`grid_fever_masks_bits`). Unpacked
     # masks are only needed for legacy debug/tests.
-    write_unpacked_masks = 1 if (env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS", "0") or fields.grid_fever_masks is not None) else 0
+    write_unpacked_masks = (
+        1 if (env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS", "0") or fields.grid_fever_masks is not None) else 0
+    )
     if write_unpacked_masks != 0:
         fields.ensure_grid_unpacked_masks_allocated()
-    kernels.compute_timeline_grid_kernel(
-        total_notes,
-        long_notes,
-        last_note_time,
-        song_slot,  # Grid slot for batch coalescing
-        int(write_unpacked_masks),
-    )
+    if use_ceiling:
+        kernels.compute_timeline_grid_ceiling_hitsim_kernel(
+            total_notes,
+            long_notes,
+            last_note_time,
+            int(group_count),
+            song_slot,  # Grid slot for batch coalescing
+            int(write_unpacked_masks),
+        )
+    else:
+        kernels.compute_timeline_grid_kernel(
+            total_notes,
+            long_notes,
+            last_note_time,
+            song_slot,  # Grid slot for batch coalescing
+            int(write_unpacked_masks),
+        )
     if write_unpacked_masks != 0:
         # Build i8 masks from the bitpacked representation on-GPU (debug/tests only).
         kernels.unpack_timeline_grid_masks_kernel(int(song_slot))

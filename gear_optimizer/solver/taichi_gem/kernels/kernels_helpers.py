@@ -63,6 +63,13 @@ song_total_notes = None  # scalar i32
 song_long_notes = None  # scalar i32
 song_last_note_time = None  # scalar f32
 
+# Chord-grouped chart data for Analytical HitSim (ceiling) timeline computation.
+song_note_group_idx = None  # (MAX_SONG_NOTES,) i32: note_idx -> group_idx
+song_group_starts = None  # (MAX_SONG_NOTES,) i32: group_idx -> first note_idx
+song_group_base_t_ms = None  # (MAX_SONG_NOTES,) i32: group_idx -> chart time in integer ms
+song_group_low_ms = None  # (MAX_SONG_NOTES,) i32: group_idx -> min feasible carry (ms)
+song_group_high_ms = None  # (MAX_SONG_NOTES,) i32: group_idx -> max feasible carry (ms)
+
 # Genome base stats
 genome_base_stats = None
 # [pp, cm, fm, p_val, s_val, ft, ff]
