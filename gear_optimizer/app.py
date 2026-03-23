@@ -3002,13 +3002,23 @@ class GearOptimizerApp:
         song_task_count = max(0, int(len(tasks)))
         total_tasks = self._effective_total_tasks(tasks if isinstance(tasks, list) else [])
         inflight_songs = 0
+        inflight_instances = 1
         try:
             cfg_dict0 = tasks[0][3] if tasks else {}
             ie = cfg_dict0.get("IterationEngine", {}) if isinstance(cfg_dict0, dict) else {}
             raw = ie.get("inflightsongs", 0) if isinstance(ie, dict) else 0
             inflight_songs = safe_int(raw, 0)
+            raw_instances = ie.get("inflightinstances", 1) if isinstance(ie, dict) else 1
+            inflight_instances = max(1, safe_int(raw_instances, 1))
         except Exception:
             inflight_songs = 0
+            inflight_instances = 1
+
+        raw_env_instances = os.environ.get("INFLIGHT_INSTANCES")
+        if raw_env_instances is not None and str(raw_env_instances).strip() != "":
+            inflight_instances = max(1, safe_int(raw_env_instances, inflight_instances))
+        # Defensive cap: avoid accidental huge process counts from env/config typos.
+        inflight_instances = max(1, min(int(inflight_instances), 8))
 
         if inflight_songs <= 0:
             inflight_songs = min(12, max(1, song_task_count))
@@ -3049,17 +3059,28 @@ class GearOptimizerApp:
                     new_records=int(getattr(self, "_session_new_records", 0) or 0),
                 )
             self._set_runtime_progress_counts(completed=0, total=int(total_tasks))
-            run_native_inflight_song_pipeline(
-                tasks,
-                in_flight_songs=int(inflight_songs),
-                completed_songs=completed_songs,
-                memory_resume_tracker=memory_resume_tracker,
-                post_queue=post_queue,
-                total_tasks=int(total_tasks),
-                stop_requested=self._stop_requested_now,
-                progress_cb=self._progress_event,
-                bundle_completed_cb=self._maybe_mark_robeatsmeta_song_batch_computed,
-            )
+            if int(inflight_instances) > 1 and len(tasks) > 1:
+                self._run_dual_process_inflight(
+                    tasks,
+                    inflight_instances=int(inflight_instances),
+                    inflight_songs=int(inflight_songs),
+                    completed_songs=completed_songs,
+                    memory_resume_tracker=memory_resume_tracker,
+                    post_queue=post_queue,
+                    total_tasks=int(total_tasks),
+                )
+            else:
+                run_native_inflight_song_pipeline(
+                    tasks,
+                    in_flight_songs=int(inflight_songs),
+                    completed_songs=completed_songs,
+                    memory_resume_tracker=memory_resume_tracker,
+                    post_queue=post_queue,
+                    total_tasks=int(total_tasks),
+                    stop_requested=self._stop_requested_now,
+                    progress_cb=self._progress_event,
+                    bundle_completed_cb=self._maybe_mark_robeatsmeta_song_batch_computed,
+                )
             return
         except Exception as inflight_err:
             inflight_fatal_gpu_err = self._is_fatal_inflight_exception(inflight_err)
@@ -3099,6 +3120,355 @@ class GearOptimizerApp:
         finally:
             self._progress_counts_driven = False
             self._stop_post_processor(post_queue, post_proc)
+
+    def _run_dual_process_inflight(
+        self,
+        tasks: list,
+        *,
+        inflight_instances: int,
+        inflight_songs: int,
+        completed_songs: set[str],
+        memory_resume_tracker,
+        post_queue,
+        total_tasks: int,
+    ) -> None:
+        if self._stop_requested_now():
+            return
+        if not isinstance(tasks, list) or not tasks:
+            return
+
+        try:
+            instances = max(2, int(inflight_instances or 2))
+        except Exception:
+            instances = 2
+        instances = max(2, min(instances, 8))
+
+        try:
+            from gear_optimizer.solver.dual_process_inflight import (
+                dual_process_inflight_worker_main,
+                shard_inflight_tasks,
+            )
+            from gear_optimizer.solver.native_inflight_support import _task_key
+        except Exception as exc:
+            raise RuntimeError(f"Dual-process in-flight import failure: {type(exc).__name__}: {exc}") from exc
+
+        shards = shard_inflight_tasks(tasks, instances=instances)
+        # Drop empty shards to avoid spawning idle processes when the queue is small.
+        shard_items: list[tuple[int, list[tuple]]] = [(i, s) for i, s in enumerate(shards) if s]
+        if len(shard_items) <= 1:
+            # Nothing to gain; fall back to current single-process execution.
+            from gear_optimizer.solver.native_inflight_orchestrator import run_native_inflight_song_pipeline
+
+            run_native_inflight_song_pipeline(
+                tasks,
+                in_flight_songs=max(1, int(inflight_songs or 1)),
+                completed_songs=completed_songs,
+                memory_resume_tracker=memory_resume_tracker,
+                post_queue=post_queue,
+                total_tasks=int(total_tasks),
+                stop_requested=self._stop_requested_now,
+                progress_cb=self._progress_event,
+                bundle_completed_cb=self._maybe_mark_robeatsmeta_song_batch_computed,
+            )
+            return
+
+        # Shared immutable context (pickle once per worker, not once per task).
+        (
+            _fp0,
+            _song0,
+            _diff0,
+            cfg_dict,
+            paths,
+            ref_arrays,
+            all_gears,
+            all_minis,
+            gears_by_name,
+            minis_by_name,
+            use_evo_db,
+            auto_buff,
+            ga_depth,
+            _status_queue,
+            parallel_workers,
+            fg_debug,
+        ) = tasks[0][:16]
+        shared_ctx = (
+            cfg_dict,
+            paths,
+            ref_arrays,
+            all_gears,
+            all_minis,
+            gears_by_name,
+            minis_by_name,
+            use_evo_db,
+            auto_buff,
+            ga_depth,
+            parallel_workers,
+            fg_debug,
+        )
+
+        # Coordinator-owned completion state.
+        task_key_to_song_name: dict[str, str] = {}
+        for t in tasks:
+            try:
+                task_key_to_song_name[_task_key(t)] = str(t[1] or "").strip()
+            except Exception:
+                continue
+
+        # Log effective per-worker thread settings (same formula as native in-flight).
+        try:
+            ga_seed = str(os.environ.get("GA_SEED") or "").strip()
+
+            def _default_worker_threads(*, inflight_limit: int, kind: str) -> int:
+                ncpu = os.cpu_count() or 1
+                try:
+                    ncpu = int(ncpu)
+                except Exception:
+                    ncpu = 1
+                ncpu = max(1, int(ncpu))
+                inflight_limit = max(1, int(inflight_limit))
+                kind = str(kind or "").strip().lower()
+                base = max(1, ncpu // 2)
+                if ncpu <= 4:
+                    base = min(base, 2)
+                elif ncpu <= 8:
+                    base = min(base, 3)
+                if kind in {"fg_prep", "fgprep"}:
+                    base = max(1, min(base, 2 if ncpu <= 8 else base))
+                return max(1, min(int(inflight_limit), int(base)))
+
+            ie = cfg_dict.get("IterationEngine", {}) if isinstance(cfg_dict, dict) else {}
+
+            def _env_int(name: str, default: int) -> int:
+                raw = os.environ.get(name)
+                if raw is None or str(raw).strip() == "":
+                    return int(default)
+                try:
+                    return int(str(raw).strip())
+                except Exception:
+                    return int(default)
+
+            def _cfg_int(name: str, default: int) -> int:
+                if not isinstance(ie, dict):
+                    return int(default)
+                return safe_int(ie.get(str(name)), int(default))
+
+            for shard_idx, shard in shard_items:
+                inflight_limit = max(1, min(int(inflight_songs or 1), int(len(shard))))
+
+                prep_workers = _env_int("INFLIGHT_PREP_WORKERS", _cfg_int("inflight_prepworkers", 0))
+                if prep_workers <= 0:
+                    prep_workers = 1 if ga_seed else _default_worker_threads(inflight_limit=inflight_limit, kind="prep")
+
+                decode_workers = _env_int("INFLIGHT_DECODE_WORKERS", _cfg_int("inflight_decodeworkers", 0))
+                if decode_workers <= 0:
+                    decode_workers = _default_worker_threads(inflight_limit=inflight_limit, kind="decode")
+
+                fg_workers_default = min(4, inflight_limit)
+                fg_workers = _env_int(
+                    "INFLIGHT_FG_WORKERS",
+                    _cfg_int("inflight_fgworkers", int(fg_workers_default)),
+                )
+                fg_workers = max(1, min(int(fg_workers), int(inflight_limit)))
+
+                fg_prep_workers = _env_int("INFLIGHT_FG_PREP_WORKERS", _cfg_int("inflight_fgprepworkers", 0))
+                if fg_prep_workers <= 0:
+                    fg_prep_workers = _default_worker_threads(inflight_limit=inflight_limit, kind="fg_prep")
+
+                db_prefetch_workers = _env_int(
+                    "INFLIGHT_DB_PREFETCH_WORKERS", _cfg_int("inflight_dbprefetchworkers", 0)
+                )
+                if db_prefetch_workers <= 0:
+                    db_prefetch_workers = max(1, min(int(fg_prep_workers), 4))
+
+                logger.info(
+                    "[InFlight][Dual] worker=%s shard=%s tasks=%s InFlightSongs=%s "
+                    "Prep=%s Decode=%s FG=%s FGPrep=%s FGDBPrefetch=%s",
+                    int(shard_idx),
+                    int(shard_idx),
+                    int(len(shard)),
+                    int(inflight_songs),
+                    int(prep_workers),
+                    int(decode_workers),
+                    int(fg_workers),
+                    int(fg_prep_workers),
+                    int(db_prefetch_workers),
+                )
+        except Exception:
+            pass
+
+        try:
+            mp_ctx = multiprocessing.get_context("spawn")
+        except ValueError:
+            mp_ctx = multiprocessing.get_context()
+
+        control_queue = mp_ctx.Queue()
+        stop_event = mp_ctx.Event()
+        initial_completed_keys = list(completed_songs) if isinstance(completed_songs, set) else []
+
+        processes: list[multiprocessing.Process] = []
+        for shard_idx, shard in shard_items:
+            work_items: list[tuple] = []
+            for t in shard:
+                try:
+                    fp = t[0]
+                    song_name = t[1]
+                    diff = t[2]
+                except Exception:
+                    continue
+                extras = list(t[16:]) if isinstance(t, (tuple, list)) and len(t) > 16 else []
+                work_items.append((fp, song_name, diff, extras))
+
+            p = mp_ctx.Process(
+                target=dual_process_inflight_worker_main,
+                kwargs={
+                    "worker_index": int(shard_idx),
+                    "instances": int(instances),
+                    "shared_ctx": shared_ctx,
+                    "work_items": work_items,
+                    "inflight_songs": int(inflight_songs),
+                    "post_queue": post_queue,
+                    "control_queue": control_queue,
+                    "stop_event": stop_event,
+                    "initial_completed_keys": initial_completed_keys,
+                },
+                daemon=True,
+                name=f"InFlightDualWorker[{int(shard_idx)}]",
+            )
+            p.start()
+            processes.append(p)
+
+        fatal_err: str | None = None
+        fatal_trace: str | None = None
+
+        def _set_fatal(err: str, trace: str | None = None) -> None:
+            nonlocal fatal_err, fatal_trace
+            if fatal_err is not None:
+                return
+            fatal_err = str(err or "").strip() or "unknown fatal"
+            fatal_trace = str(trace or "").strip() or None
+            try:
+                stop_event.set()
+            except Exception:
+                pass
+
+        def _handle_msg(msg: dict) -> None:
+            nonlocal fatal_err, fatal_trace
+            kind = str(msg.get("type") or "").strip().lower()
+            if kind == "progress":
+                try:
+                    self._progress_event(
+                        completed_delta=int(msg.get("completed_delta", 0) or 0),
+                        failed_delta=int(msg.get("failed_delta", 0) or 0),
+                        record_info=msg.get("record_info") if isinstance(msg.get("record_info"), dict) else None,
+                    )
+                except Exception:
+                    pass
+                return
+            if kind == "completed":
+                try:
+                    task_key = str(msg.get("task_key") or "").strip()
+                except Exception:
+                    task_key = ""
+                if task_key:
+                    try:
+                        completed_songs.add(task_key)
+                    except Exception:
+                        pass
+                    song_name = task_key_to_song_name.get(task_key)
+                    if memory_resume_tracker and song_name:
+                        try:
+                            memory_resume_tracker.mark_completed(str(song_name))
+                        except Exception:
+                            pass
+                    try:
+                        self._maybe_mark_robeatsmeta_song_batch_computed(str(task_key), completed_songs)
+                    except Exception:
+                        pass
+                return
+            if kind == "fatal":
+                err = str(msg.get("error") or "worker fatal").strip()
+                trace = msg.get("traceback")
+                _set_fatal(err, str(trace) if trace else None)
+                return
+            if kind == "exited":
+                return
+
+        start_t0 = time.perf_counter()
+        try:
+            while True:
+                if self._stop_requested_now():
+                    _set_fatal("Stop requested")
+                if memory_release_requested():
+                    logger.warning("[MemoryGuard] Dual-process stop requested by soft limit.")
+                    _set_fatal("MemoryGuard soft limit")
+
+                alive = False
+                for p in processes:
+                    if p.is_alive():
+                        alive = True
+                        continue
+                    if p.exitcode not in (None, 0):
+                        _set_fatal(f"Worker {p.name} exited with code {p.exitcode}")
+                if not alive:
+                    break
+
+                try:
+                    msg = control_queue.get(timeout=0.1)
+                except queue.Empty:
+                    msg = None
+                except Exception:
+                    msg = None
+                if isinstance(msg, dict):
+                    _handle_msg(msg)
+                if fatal_err is not None:
+                    break
+        finally:
+            # Drain remaining messages so completions/progress are reflected before shutdown.
+            while True:
+                try:
+                    msg = control_queue.get_nowait()
+                except Exception:
+                    break
+                if isinstance(msg, dict):
+                    _handle_msg(msg)
+
+            # Graceful join, then terminate stragglers.
+            for p in processes:
+                try:
+                    p.join(timeout=10.0)
+                except Exception:
+                    pass
+            for p in processes:
+                if not p.is_alive():
+                    continue
+                try:
+                    p.terminate()
+                except Exception:
+                    pass
+                try:
+                    p.join(timeout=5.0)
+                except Exception:
+                    pass
+
+        if fatal_err is not None:
+            if fatal_trace:
+                logger.error("[InFlight][Dual] Fatal traceback:\n%s", fatal_trace)
+            raise RuntimeError(f"[InFlight][Dual] {fatal_err}")
+
+        # Throughput snapshot (tasks/hour) for this dual-process section.
+        try:
+            elapsed_s = max(1e-9, float(time.perf_counter() - start_t0))
+            processed = 0
+            try:
+                processed = len(completed_songs) if isinstance(completed_songs, set) else 0
+            except Exception:
+                processed = 0
+            per_h = float(processed) * 3600.0 / float(elapsed_s) if processed > 0 else 0.0
+            logger.info(
+                "[InFlight][Dual] Completed %s tasks in %.2fs (%.1f tasks/hour)", int(processed), elapsed_s, per_h
+            )
+        except Exception:
+            pass
 
     def _start_post_processor(self, total_tasks: int):
         from gear_optimizer.pipeline.post_processor import run_post_processor
