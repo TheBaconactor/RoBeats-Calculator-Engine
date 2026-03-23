@@ -34,7 +34,8 @@ import time
 from typing import Any, Optional
 from collections import deque
 
-from .timeline import precompute_timeline_gpu
+from .initialization import _ref_arrays_sig
+from .timeline import _song_timing_cache_key, precompute_timeline_gpu
 
 # Use 5 slots by default (slots 1-5, leaving slot 0 as fallback)
 DEFAULT_NUM_SLOTS = 5
@@ -73,49 +74,23 @@ class GPUPrefetchManager:
         self._cache_hits = 0
         self._total_prefetch_ms = 0.0
 
-    def _make_song_key(self, calc_song: dict) -> tuple[Any, ...]:
-        """Create a stable key for a song timeline variant.
-
-        Includes lightweight timestamp signature + HumanHitSim parameters so we
-        never reuse a prefetched timeline across different simulated timestamp
-        streams (ApplyTo=ALL) or different sim configs.
+    def _make_song_key(self, calc_song: dict, ref_arrays: dict) -> tuple[Any, ...]:
         """
-        meta = calc_song.get("metadata", {})
-        song_name = str(meta.get("Song Name", ""))
-        difficulty = str(meta.get("Difficulty", ""))
-        song_data = calc_song.get("song_data", {})
-        timestamps = song_data.get("timestamps", ())
-        note_count = len(timestamps) if hasattr(timestamps, "__len__") else 0
+        Create a stable key for a song timeline variant.
 
-        first_ms = 0
-        last_ms = 0
+        IMPORTANT
+        - Must be collision-resistant: a wrong cache hit would reuse the wrong GPU slot and
+          corrupt scoring.
+        - Must include ref signature: timeline grids depend on FT/FF tables.
+
+        We reuse the same stable key structure as `precompute_timeline_gpu()`:
+          song_key = _song_timing_cache_key(calc_song) + (ref_sig,)
+        """
         try:
-            if note_count:
-                first_ms = int(float(timestamps[0]) * 1000.0)
-                last_ms = int(float(timestamps[note_count - 1]) * 1000.0)
+            ref_sig = _ref_arrays_sig(ref_arrays) if isinstance(ref_arrays, dict) else b""
         except Exception:
-            first_ms = 0
-            last_ms = 0
-
-        try:
-            human_seed = int(meta.get("HumanHitSimSeed") or 0)
-        except Exception:
-            human_seed = 0
-        human_apply_to = str(meta.get("HumanHitSimApplyTo", "")).strip().upper()
-        human_dist = str(meta.get("HumanHitSimDistribution", "")).strip().lower()
-        human_great_mode = str(meta.get("HumanHitSimGreatMode", "")).strip().lower()
-
-        return (
-            song_name,
-            difficulty,
-            int(note_count),
-            int(first_ms),
-            int(last_ms),
-            int(human_seed),
-            human_apply_to,
-            human_dist,
-            human_great_mode,
-        )
+            ref_sig = b""
+        return _song_timing_cache_key(calc_song) + (bytes(ref_sig),)
 
     def prefetch(self, calc_song: dict, ref_arrays: dict) -> Optional[int]:
         """
@@ -131,7 +106,7 @@ class GPUPrefetchManager:
         Returns:
             Slot ID if prefetched, None if no slots available
         """
-        key = self._make_song_key(calc_song)
+        key = self._make_song_key(calc_song, ref_arrays)
 
         # Already prefetched?
         if key in self._prefetched:
@@ -174,7 +149,7 @@ class GPUPrefetchManager:
         Returns:
             Slot ID (1-N) if prefetched, 0 if fallback needed
         """
-        key = self._make_song_key(calc_song)
+        key = self._make_song_key(calc_song, ref_arrays)
 
         # Check if already prefetched
         if key in self._prefetched:

@@ -7,6 +7,7 @@ This module provides GPU-accelerated timeline precomputation:
 """
 
 import time
+import os
 from collections import OrderedDict
 import numpy as np
 import taichi as ti
@@ -73,7 +74,7 @@ def _upload_song_groups_kernel(
 # ============================================================================
 
 _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS  # Track last song per slot
-_CEILING_GROUP_PAYLOAD_CACHE_MAX = 32
+_CEILING_GROUP_PAYLOAD_CACHE_MAX = max(1, int(os.environ.get("CEILING_GROUP_PAYLOAD_CACHE_MAX", "32") or "32"))
 _ceiling_group_payload_cache: "OrderedDict[tuple, dict]" = OrderedDict()
 
 
@@ -90,10 +91,7 @@ def _song_timing_cache_key(calc_song: dict) -> tuple:
         timestamps = chart_ts if chart_ts is not None else song_data.get("timestamps", ())
     else:
         timestamps = song_data.get("timestamps", ())
-    if use_ceiling:
-        ts_sig = song_data.get("_chart_timestamps_sig", None)
-    else:
-        ts_sig = None
+    ts_sig = song_data.get("_chart_timestamps_sig", None) if use_ceiling else song_data.get("_timestamps_sig", None)
     if not isinstance(ts_sig, (bytes, bytearray, memoryview)) or len(ts_sig) != 16:
         ts_sig = array_sig16(timestamps)
     nt_sig = song_data.get("_note_types_sig", None)

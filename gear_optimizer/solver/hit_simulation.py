@@ -561,7 +561,15 @@ def apply_human_hit_sim(calc_song: dict, *, cfg_dict: dict) -> dict | None:
     calc_song["song_data"] = song_data
 
     if apply_to == "ALL":
-        song_data["timestamps"] = np.asarray(sim_ts, dtype=np.float32)
+        ts_all = np.asarray(sim_ts, dtype=np.float32)
+        song_data["timestamps"] = ts_all
+        # Keep timeline cache keys stable/cheap by maintaining the signature when we mutate timestamps.
+        try:
+            from gear_optimizer.core.array_signature import array_sig16
+
+            song_data["_timestamps_sig"] = array_sig16(ts_all)
+        except Exception:
+            song_data.pop("_timestamps_sig", None)
 
     return {
         "apply_to": apply_to,
