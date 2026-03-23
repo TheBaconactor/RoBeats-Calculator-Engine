@@ -100,7 +100,10 @@ for i in range(N):
             total_score += floor(base * combo_mul)
 ```
 
-Score is **maximized** when the number of fever notes is maximized (since `fever_mul > 1`).
+Because `fever_mul > 1`, every note being in fever contributes a **non-negative** score gain relative to normal.
+The true optimization objective is to maximize a **weighted** sum of fever indicators (combo ramp makes early notes
+slightly lower-weight than later notes in the first 100), but in the body region (>= 100 notes) the score depends
+only on the **count** of fever vs normal notes.
 
 ---
 
