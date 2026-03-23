@@ -40,7 +40,7 @@ def _find_default_song() -> str | None:
     if not os.path.isdir(hard):
         return None
     want = "Everything Will Freeze (Vocal) [EXTENDED CUT] (Hard)"
-    for name in os.listdir(hard):
+    for name in sorted(os.listdir(hard)):
         if want in name and name.lower().endswith(".txt"):
             return os.path.join(hard, name)
     return None
@@ -495,6 +495,11 @@ def main() -> int:
     ap.add_argument("--ft", type=int, default=160, help="FT stat index (0-160).")
     ap.add_argument("--ff", type=int, default=0, help="FF stat index (0-160).")
     ap.add_argument("--seeds", type=int, default=25, help="Monte Carlo seed count (default: 25).")
+    ap.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero if CPU/GPU ceiling mismatch or if ceiling scores below the MC best.",
+    )
     args = ap.parse_args()
 
     fp = str(args.song or "").strip()
@@ -641,12 +646,7 @@ def main() -> int:
         f"fever_notes_delta={(ceiling_sig_cpu.body_fever - best_sig.body_fever)} (body-only; head diff shown below)"
     )
 
-    same_as_mc = (
-        (ceiling_sig_cpu.head_len == best_sig.head_len)
-        and (ceiling_sig_cpu.head_bits == best_sig.head_bits)
-        and (ceiling_sig_cpu.body_fever == best_sig.body_fever)
-        and (ceiling_sig_cpu.body_normal == best_sig.body_normal)
-    )
+    same_as_mc = ceiling_sig_cpu == best_sig
     print(f"[compare] ceiling_sig == mc25_best_sig ? {same_as_mc}")
 
     if ceiling_sig_gpu is not None:
@@ -655,6 +655,13 @@ def main() -> int:
         if not same_cpu_gpu:
             print(f"[debug] cpu={ceiling_sig_cpu}")
             print(f"[debug] gpu={ceiling_sig_gpu}")
+            if bool(args.strict):
+                return 2
+
+    if ceiling_score < int(best_score):
+        print(f"[error] ceiling_score < mc_best_score: ceiling={ceiling_score} mc={best_score}")
+        if bool(args.strict):
+            return 3
 
     # Deep introspection: window boundaries.
     print("[trace] mc25_best windows (activation,end):")
