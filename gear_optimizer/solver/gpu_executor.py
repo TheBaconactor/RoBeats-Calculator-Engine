@@ -5086,7 +5086,9 @@ def run_gpu_executor_server(
         label: Log label for this server instance.
     """
     if vulkan_visible_device is not None and str(vulkan_visible_device).strip() != "":
-        os.environ["TAICHI_VULKAN_VISIBLE_DEVICE"] = str(vulkan_visible_device).strip()
+        visible_device = str(vulkan_visible_device).strip()
+        os.environ["TAICHI_VULKAN_VISIBLE_DEVICE"] = visible_device
+        os.environ["TI_VISIBLE_DEVICE"] = visible_device
 
     ex = get_gpu_executor()
 

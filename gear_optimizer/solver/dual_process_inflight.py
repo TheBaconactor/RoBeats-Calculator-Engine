@@ -85,7 +85,9 @@ def _configure_worker_vulkan_device(worker_index: int, *, instances: int) -> Non
         return
     dev = str(parts[idx] or "").strip()
     if dev:
+        # Keep the repo alias and Taichi's standard selector synchronized.
         os.environ["TAICHI_VULKAN_VISIBLE_DEVICE"] = dev
+        os.environ["TI_VISIBLE_DEVICE"] = dev
 
 
 def dual_process_inflight_worker_main(

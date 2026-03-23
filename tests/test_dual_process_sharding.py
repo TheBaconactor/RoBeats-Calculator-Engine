@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+
+from gear_optimizer.solver.dual_process_inflight import _configure_worker_vulkan_device
 from gear_optimizer.solver.dual_process_inflight import shard_inflight_tasks
 
 
@@ -34,3 +37,14 @@ def test_shard_inflight_tasks_is_deterministic_and_no_duplicates() -> None:
     # Trivial case.
     shards1 = shard_inflight_tasks(tasks, instances=1)
     assert shards1 == [tasks]
+
+
+def test_configure_worker_vulkan_device_sets_both_env_vars(monkeypatch) -> None:
+    monkeypatch.setenv("INFLIGHT_VULKAN_VISIBLE_DEVICES", "0,2")
+    monkeypatch.delenv("TAICHI_VULKAN_VISIBLE_DEVICE", raising=False)
+    monkeypatch.delenv("TI_VISIBLE_DEVICE", raising=False)
+
+    _configure_worker_vulkan_device(1, instances=2)
+
+    assert os.environ["TAICHI_VULKAN_VISIBLE_DEVICE"] == "2"
+    assert os.environ["TI_VISIBLE_DEVICE"] == "2"
