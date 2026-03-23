@@ -114,11 +114,15 @@ def _song_timing_cache_key(calc_song: dict) -> tuple:
     song_data = calc_song.get("song_data", {}) or {}
     use_ceiling = bool(env_flag("GPU_TIMELINE_CEILING_HITSIM", "1"))
     if use_ceiling:
+        cached = calc_song.get("_gpu_timing_cache_key_ceiling", None)
+        if isinstance(cached, tuple) and len(cached) == 8:
+            return cached
+    if use_ceiling:
         chart_ts = song_data.get("chart_timestamps", None)
         timestamps = chart_ts if chart_ts is not None else song_data.get("timestamps", ())
     else:
         timestamps = song_data.get("timestamps", ())
-    return (
+    key = (
         str(meta.get("Song Name", "")),
         str(meta.get("Difficulty", "")),
         int(len(timestamps)),
@@ -128,6 +132,11 @@ def _song_timing_cache_key(calc_song: dict) -> tuple:
         _array_sig(timestamps),
         _array_sig(song_data.get("note_types")),
     ) + (() if use_ceiling else human_hitsim_timing_context(calc_song))
+    if use_ceiling and isinstance(key, tuple) and len(key) == 8:
+        # Cache on the calc_song dict to avoid repeated full-array hashing when the
+        # same song is revisited and precompute_timeline_gpu() hits the slot cache.
+        calc_song["_gpu_timing_cache_key_ceiling"] = key
+    return key
 
 
 def _get_or_build_ceiling_group_payload(
