@@ -177,14 +177,31 @@ def _get_or_build_ceiling_group_payload(
     if n > 0 and group_count <= 0:
         raise ValueError("prepare_perfect_hit_simulation produced no chord groups")
 
-    note_group_idx = np.full(int(n), -1, dtype=np.int32)
-    for g in range(group_count):
-        s = int(group_starts[g])
-        e = int(group_ends[g])
-        if e > s:
-            note_group_idx[s:e] = int(g)
-    if n > 0 and int(np.any(note_group_idx < 0)):
-        raise ValueError("prepare_perfect_hit_simulation produced uncovered note indices")
+    if n <= 0:
+        note_group_idx = np.zeros((0,), dtype=np.int32)
+    else:
+        # Fast-path: grouping produces a contiguous partition of note indices, so
+        # note->group can be constructed via repeat() instead of a Python loop.
+        is_partition = False
+        try:
+            if int(group_starts[0]) == 0 and int(group_ends[-1]) == int(n):
+                if group_count == 1 or bool(np.all(group_starts[1:] == group_ends[:-1])):
+                    is_partition = True
+        except Exception:
+            is_partition = False
+
+        if is_partition:
+            lengths = (group_ends - group_starts).astype(np.int32, copy=False)
+            note_group_idx = np.repeat(np.arange(int(group_count), dtype=np.int32), lengths)
+        else:
+            note_group_idx = np.full(int(n), -1, dtype=np.int32)
+            for g in range(group_count):
+                s = int(group_starts[g])
+                e = int(group_ends[g])
+                if e > s:
+                    note_group_idx[s:e] = int(g)
+            if int(np.any(note_group_idx < 0)):
+                raise ValueError("prepare_perfect_hit_simulation produced uncovered note indices")
 
     payload = {
         "n": int(n),
