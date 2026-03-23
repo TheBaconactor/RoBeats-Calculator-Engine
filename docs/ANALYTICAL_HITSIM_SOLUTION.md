@@ -792,9 +792,13 @@ This solution synthesizes two independent research responses:
 
 ## 15. Performance Benchmarks
 
-### Measurement Setup
+### Measurement Setup (Prototype DP, Not Shipped Kernel)
 
-All timings measured in pure Python (no Numba, no Taichi) on Ryzen 8840HS, single thread.
+The timings in this section were measured in a pure-Python prototype of the Q1 interval-DP described
+in this document (no Numba, no Taichi), on Ryzen 8840HS, single thread. These numbers are intended
+to size the opportunity relative to Monte Carlo sampling; the shipped production path is the GPU
+ceiling timeline kernel described earlier in this doc and in the implementation record.
+
 Song: *Everything Will Freeze (Vocal) [EXTENDED CUT] (Hard)* — N=4387, NPS=22.69, the
 highest-density chart in the test library. `(ft_idx=80, ff_idx=160)` used throughout
 (the hardest pair: maximum fill_count, maximum fever duration).
@@ -831,8 +835,10 @@ unique scores; the best (`8,640,600`) appeared in 22.65% of seeds, meaning a 25-
 misses the ceiling with probability $(1 - 0.2265)^{25} \approx 0.16\%$. The analytical DP
 achieves the ceiling deterministically in every call.
 
-This means `SongRepeats` can be reduced to 1 when the analytical DP is used, freeing
-the repeat budget for additional GA generations instead.
+This suggests the fever-timing repeat budget (`SongRepeats`) can be reduced (potentially to 1) when a
+deterministic timing evaluator (analytical DP or ceiling mode) is used, freeing compute for additional GA
+depth. Whether `SongRepeats` can be set to 1 globally depends on what else is randomized in the evaluation
+pipeline.
 
 ### Verification: Analytical Matches MC Best
 
@@ -880,8 +886,8 @@ assigned `(fill_count, d)` pair.
 
 **Drop-in replacement:** the analytical DP kernel writes to the same output fields
 (`grid_fever_masks_bits`, `grid_count_body_fever`, `grid_count_body_normal`, etc.) as the
-existing kernel. It replaces the zero-offset timeline (exact chart timestamps) with the
-optimal-offset timeline (timing-maximized fever mask).
+existing kernel. It replaces the zero-offset timeline (exact chart timestamps) with a
+timing-maximized timeline (fever mask optimized over allowed hit timing).
 
 **Expected wall time:** ~1–5 ms for the full 161×161 grid on RX 7900 XTX, similar to the
 existing timeline kernel, with higher compute per thread but the same total launch overhead.
