@@ -8,6 +8,7 @@ This module provides GPU-accelerated timeline precomputation:
 
 import time
 import hashlib
+from collections import OrderedDict
 import numpy as np
 import taichi as ti
 
@@ -24,7 +25,7 @@ from ..fields import (
 from .. import fields
 from ..kernel_loader import get_kernels
 
-from .initialization import ensure_ready, _ref_arrays_sig, _maybe_sync, _SYNC_FOR_TIMING, _FORCE_SYNC
+from .initialization import ensure_ready, _maybe_sync, _SYNC_FOR_TIMING, _FORCE_SYNC
 
 _profiler = get_gpu_profiler()
 
@@ -72,6 +73,8 @@ def _upload_song_groups_kernel(
 # ============================================================================
 
 _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS  # Track last song per slot
+_CEILING_GROUP_PAYLOAD_CACHE_MAX = 32
+_ceiling_group_payload_cache: "OrderedDict[tuple, dict]" = OrderedDict()
 
 
 def _array_sig(v: object) -> bytes:
@@ -127,6 +130,80 @@ def _song_timing_cache_key(calc_song: dict) -> tuple:
     ) + (() if use_ceiling else human_hitsim_timing_context(calc_song))
 
 
+def _get_or_build_ceiling_group_payload(
+    base_song_key: tuple,
+    *,
+    timestamps: np.ndarray,
+    note_types: object,
+) -> dict:
+    """
+    Prepare and cache chord-group payloads used by the analytical ceiling HitSim kernel.
+
+    This CPU preprocessing is a pure function of chart timestamps + note types (and the
+    fixed Perfect window constants). Caching avoids recomputing grouping + dense note->group
+    maps when the same song is revisited across slots or after timeline cache resets.
+    """
+    global _ceiling_group_payload_cache
+
+    n = int(getattr(timestamps, "shape", (0,))[0] or 0)
+    cached = _ceiling_group_payload_cache.get(base_song_key)
+    if isinstance(cached, dict):
+        try:
+            if int(cached.get("n", -1) or -1) == int(n) and int(cached.get("group_count", 0) or 0) > 0:
+                _ceiling_group_payload_cache.move_to_end(base_song_key)
+                return cached
+        except Exception:
+            pass
+
+    from gear_optimizer.solver.hit_simulation import prepare_perfect_hit_simulation
+
+    prepared = prepare_perfect_hit_simulation(
+        timestamps,
+        note_types,
+        perfect_lower_ms=-20,
+        perfect_upper_ms=40,
+        held_tail_type=3,
+        held_tail_time_multiplier=2,
+        quantize_ms=True,
+    )
+    group_starts = np.asarray(prepared.get("group_starts", ()), dtype=np.int32)
+    group_ends = np.asarray(prepared.get("group_ends", ()), dtype=np.int32)
+    group_base_t_ms = np.asarray(prepared.get("group_base_t", ()), dtype=np.int32)
+    group_low_ms = np.asarray(prepared.get("group_low", ()), dtype=np.int32)
+    group_high_ms = np.asarray(prepared.get("group_high", ()), dtype=np.int32)
+    group_count = int(group_starts.shape[0])
+    if int(prepared.get("n", n) or 0) != int(n):
+        raise ValueError("prepare_perfect_hit_simulation produced mismatched note count")
+    if n > 0 and group_count <= 0:
+        raise ValueError("prepare_perfect_hit_simulation produced no chord groups")
+
+    note_group_idx = np.full(int(n), -1, dtype=np.int32)
+    for g in range(group_count):
+        s = int(group_starts[g])
+        e = int(group_ends[g])
+        if e > s:
+            note_group_idx[s:e] = int(g)
+    if n > 0 and int(np.any(note_group_idx < 0)):
+        raise ValueError("prepare_perfect_hit_simulation produced uncovered note indices")
+
+    payload = {
+        "n": int(n),
+        "group_count": int(group_count),
+        "note_group_idx": np.ascontiguousarray(note_group_idx),
+        "group_starts": np.ascontiguousarray(group_starts),
+        "group_base_t_ms": np.ascontiguousarray(group_base_t_ms),
+        "group_low_ms": np.ascontiguousarray(group_low_ms),
+        "group_high_ms": np.ascontiguousarray(group_high_ms),
+    }
+
+    _ceiling_group_payload_cache[base_song_key] = payload
+    _ceiling_group_payload_cache.move_to_end(base_song_key)
+    while len(_ceiling_group_payload_cache) > int(_CEILING_GROUP_PAYLOAD_CACHE_MAX):
+        _ceiling_group_payload_cache.popitem(last=False)
+
+    return payload
+
+
 def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 0) -> None:
     """
     Precompute all 161×161 fever timeline entries on GPU.
@@ -157,10 +234,10 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
         raise ValueError(f"song_slot out of range: {song_slot}")
 
     # Ensure GPU is ready with refs and grid fields (even on cache hit).
-    ensure_ready(ref_arrays)
+    # Also reuse the ref signature so callers don't hash refs twice.
+    ref_sig = ensure_ready(ref_arrays) if isinstance(ref_arrays, dict) else ensure_ready(None)
 
     # Check if we already computed for this song+ref set.
-    ref_sig = _ref_arrays_sig(ref_arrays) if isinstance(ref_arrays, dict) else b""
     song_key = _song_timing_cache_key(calc_song) + (bytes(ref_sig),)
     if _gpu_timeline_song_id_by_slot[song_slot] == song_key:
         return  # Already computed
@@ -182,46 +259,36 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
         raise ValueError(f"Song has {total_notes} notes, max is {fields.MAX_SONG_NOTES}")
 
     # Upload only the used prefix (avoid padding to MAX_SONG_NOTES).
-    if _profiler.enabled:
-        _t_ts = time.perf_counter()
-        _upload_song_timestamps_kernel(int(total_notes), timestamps)
-        _profiler.record_upload(time.perf_counter() - _t_ts, bytes_count=int(timestamps.nbytes))
-    else:
-        _upload_song_timestamps_kernel(int(total_notes), timestamps)
+    #
+    # Analytical ceiling mode does not read `fields.song_timestamps`, so skip the upload
+    # to reduce CPU->GPU traffic on that path.
+    if not use_ceiling:
+        if _profiler.enabled:
+            _t_ts = time.perf_counter()
+            _upload_song_timestamps_kernel(int(total_notes), timestamps)
+            _profiler.record_upload(time.perf_counter() - _t_ts, bytes_count=int(timestamps.nbytes))
+        else:
+            _upload_song_timestamps_kernel(int(total_notes), timestamps)
 
     group_count = 0
     if use_ceiling:
-        from gear_optimizer.solver.hit_simulation import prepare_perfect_hit_simulation
-
-        note_types = song_data.get("note_types", None)
-        prepared = prepare_perfect_hit_simulation(
-            timestamps,
-            note_types,
-            perfect_lower_ms=-20,
-            perfect_upper_ms=40,
-            held_tail_type=3,
-            held_tail_time_multiplier=2,
-            quantize_ms=True,
+        payload = _get_or_build_ceiling_group_payload(
+            song_key[:-1],
+            timestamps=timestamps,
+            note_types=song_data.get("note_types", None),
         )
-        group_starts = np.asarray(prepared.get("group_starts", ()), dtype=np.int32)
-        group_ends = np.asarray(prepared.get("group_ends", ()), dtype=np.int32)
-        group_base_t_ms = np.asarray(prepared.get("group_base_t", ()), dtype=np.int32)
-        group_low_ms = np.asarray(prepared.get("group_low", ()), dtype=np.int32)
-        group_high_ms = np.asarray(prepared.get("group_high", ()), dtype=np.int32)
-        group_count = int(group_starts.shape[0])
-        if int(prepared.get("n", total_notes) or 0) != int(total_notes):
+        payload_n = int(payload.get("n", 0) or 0)
+        if int(payload_n) != int(total_notes):
             raise ValueError("prepare_perfect_hit_simulation produced mismatched note count")
+
+        note_group_idx = np.asarray(payload.get("note_group_idx", ()), dtype=np.int32)
+        group_starts = np.asarray(payload.get("group_starts", ()), dtype=np.int32)
+        group_base_t_ms = np.asarray(payload.get("group_base_t_ms", ()), dtype=np.int32)
+        group_low_ms = np.asarray(payload.get("group_low_ms", ()), dtype=np.int32)
+        group_high_ms = np.asarray(payload.get("group_high_ms", ()), dtype=np.int32)
+        group_count = int(payload.get("group_count", 0) or 0)
         if total_notes > 0 and group_count <= 0:
             raise ValueError("prepare_perfect_hit_simulation produced no chord groups")
-
-        note_group_idx = np.full(int(total_notes), -1, dtype=np.int32)
-        for g in range(group_count):
-            s = int(group_starts[g])
-            e = int(group_ends[g])
-            if e > s:
-                note_group_idx[s:e] = int(g)
-        if total_notes > 0 and int(np.any(note_group_idx < 0)):
-            raise ValueError("prepare_perfect_hit_simulation produced uncovered note indices")
 
         if _profiler.enabled:
             _t_groups = time.perf_counter()
