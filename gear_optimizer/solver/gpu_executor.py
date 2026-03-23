@@ -3177,12 +3177,28 @@ class GpuExecutor:
             song_data = v.get("song_data")
             if not isinstance(song_data, dict):
                 return _object_sig(v)
+            try:
+                from gear_optimizer.core.array_signature import array_sig16 as _array_sig16_fast
+            except Exception:
+                _array_sig16_fast = None  # type: ignore[assignment]
+
+            def _sig16(key_name: str, arr: Any) -> Any:
+                sig = song_data.get(key_name)
+                if isinstance(sig, (bytes, bytearray, memoryview)) and len(sig) == 16:
+                    return ("sig16", bytes(sig))
+                if _array_sig16_fast is not None:
+                    try:
+                        return ("sig16", _array_sig16_fast(arr))
+                    except Exception:
+                        pass
+                return _array_sig(arr)
+
             return (
                 "timeline",
                 _object_sig(v.get("metadata")),
-                _array_sig(song_data.get("timestamps")),
-                _array_sig(song_data.get("chart_timestamps")),
-                _array_sig(song_data.get("note_types")),
+                _sig16("_timestamps_sig", song_data.get("timestamps")),
+                _sig16("_chart_timestamps_sig", song_data.get("chart_timestamps")),
+                _sig16("_note_types_sig", song_data.get("note_types")),
             )
 
         def _ref_sig(v: Any) -> Any:

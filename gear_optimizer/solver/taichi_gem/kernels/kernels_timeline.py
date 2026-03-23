@@ -270,6 +270,314 @@ def compute_timeline_grid_kernel(
         # Bitpacked `grid_fever_masks_bits` is the canonical timeline representation.
 
 
+@ti.func
+def _binary_search_left_i32(arr, n: ti.i32, x: ti.i32) -> ti.i32:
+    """Lower-bound search on a monotone non-decreasing i32 array."""
+    lo = ti.i32(0)
+    hi = n
+    while lo < hi:
+        mid = (lo + hi) >> 1
+        if arr[mid] < x:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
+@ti.func
+def _propagate_carry_interval(lo: ti.i32, hi: ti.i32, g: ti.i32) -> ti.types.vector(2, ti.i32):
+    """
+    Carry propagation over chord groups using the interval propagation lemma:
+
+      T_g([p,q]) = [max(l_g, p - Δ_g), max(u_g, q - Δ_g)]
+
+    where Δ_g = c_g - c_{g-1}.
+    """
+    l_g = ti.cast(kernels_helpers.song_group_low_ms[g], ti.i32)
+    u_g = ti.cast(kernels_helpers.song_group_high_ms[g], ti.i32)
+    c_g = ti.cast(kernels_helpers.song_group_base_t_ms[g], ti.i32)
+    c_prev = ti.cast(kernels_helpers.song_group_base_t_ms[g - 1], ti.i32)
+    delta = c_g - c_prev
+    if delta < 1:
+        delta = 1
+    out_lo = ti.max(l_g, lo - delta)
+    out_hi = ti.max(u_g, hi - delta)
+    return ti.Vector([out_lo, out_hi])
+
+
+@ti.kernel
+def compute_timeline_grid_ceiling_hitsim_kernel(
+    total_notes: ti.i32,
+    long_notes: ti.i32,
+    last_note_time: ti.f32,
+    group_count: ti.i32,
+    song_slot: ti.i32,
+    write_unpacked_masks: ti.i32,
+):
+    """
+    Compute all 161×161 fever timeline entries using Analytical HitSim (ceiling mode).
+
+    This models per-chord Perfect-window offsets (with held-tail multiplier) and enforces
+    non-decreasing event times. For each fever window, we pick the *latest* activation
+    carry (max window) and then extend fever as far as possible (existence-based interval
+    propagation) to maximize fever note count.
+
+    Output format matches compute_timeline_grid_kernel: bitpacked head-fever masks + body counts + signatures.
+    """
+    # `write_unpacked_masks` is intentionally ignored: unpacked masks are derived from bits via
+    # unpack_timeline_grid_masks_kernel() (debug/tests only).
+
+    n_stat: ti.i32 = 161
+    n: ti.i32 = ti.max(total_notes, 0)
+    gcount: ti.i32 = ti.max(group_count, 0)
+    MAX_HEAD: ti.i32 = 100
+    head_len: ti.i32 = ti.min(n, MAX_HEAD)
+
+    non_fever_cas: ti.f32 = ti.cast(ti.max(0, total_notes - long_notes), ti.f32) * ti.f32(0.333)
+    fever_time_cas: ti.f32 = last_note_time * ti.f32(0.15) + ti.f32(0.15)
+
+    ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
+    for ft_idx, ff_idx in ti.ndrange(n_stat, n_stat):
+        # (1) Parameters for this (FT, FF) cell.
+        ft_factor: ti.f32 = kernels_helpers.ref_ft_field[ft_idx]
+        ff_factor: ti.f32 = kernels_helpers.ref_ff_field[ff_idx]
+
+        raw_fill: ti.f32 = non_fever_cas * ff_factor
+        fill_count: ti.i32 = ti.cast(ti.ceil(raw_fill), ti.i32)
+        if fill_count < 1:
+            fill_count = 1
+
+        fever_time_sec: ti.f32 = fever_time_cas * ft_factor
+        d_ms: ti.i32 = ti.cast(ti.ceil(fever_time_sec * ti.f32(1000.0)), ti.i32)
+        if d_ms < 0:
+            d_ms = 0
+
+        # (2) Timeline simulation.
+        m0 = ti.u32(0)
+        m1 = ti.u32(0)
+        m2 = ti.u32(0)
+        m3 = ti.u32(0)
+        body_fever = ti.i32(0)
+        body_normal = ti.i32(0)
+        fever_activations = ti.i32(0)
+        last_fever_end_idx = ti.i32(0)
+
+        current_note = ti.i32(0)
+        fever_section = ti.i32(0)
+
+        # Carry state across the whole song (chord-grouped hit timing).
+        # `prev_group` is the last chord group we've assigned a carry to.
+        prev_group = ti.i32(-1)
+        prev_carry = ti.i32(0)
+
+        while current_note < n:
+            fever_section += 1
+            notes_to_fill = fill_count - 1 if fever_section == 1 else fill_count
+            if notes_to_fill < 0:
+                notes_to_fill = 0
+
+            start_normal_idx = current_note
+            end_normal_idx = ti.min(current_note + notes_to_fill, n)
+
+            # Count body normal notes (>= MAX_HEAD) in this non-fever segment.
+            body_normal_start = ti.max(current_note, MAX_HEAD)
+            if end_normal_idx > body_normal_start:
+                body_normal += end_normal_idx - body_normal_start
+
+            # Propagate carry through the normal segment. We choose the latest feasible carry
+            # in normal segments to maximize future activation carries (ceiling behavior).
+            walk_note = start_normal_idx
+            while walk_note < end_normal_idx:
+                g = ti.cast(kernels_helpers.song_note_group_idx[walk_note], ti.i32)
+                if g < 0:
+                    g = 0
+                if g >= gcount:
+                    break
+
+                if g != prev_group:
+                    u_g = ti.cast(kernels_helpers.song_group_high_ms[g], ti.i32)
+                    if prev_group < 0:
+                        prev_carry = u_g
+                    else:
+                        c_g = ti.cast(kernels_helpers.song_group_base_t_ms[g], ti.i32)
+                        c_prev = ti.cast(kernels_helpers.song_group_base_t_ms[prev_group], ti.i32)
+                        delta = c_g - c_prev
+                        if delta < 1:
+                            delta = 1
+                        prev_carry = ti.max(u_g, prev_carry - delta)
+                    prev_group = g
+
+                group_end = n
+                if (g + 1) < gcount:
+                    group_end = ti.cast(kernels_helpers.song_group_starts[g + 1], ti.i32)
+                walk_note = ti.min(group_end, end_normal_idx)
+
+            current_note = end_normal_idx
+            if current_note >= n:
+                break
+
+            # Match the legacy behavior: if activation would occur at note 0, skip fever entirely.
+            if current_note <= 0:
+                break
+
+            # Fever activates.
+            fever_activations += 1
+            activation_note = current_note
+            if activation_note >= n:
+                break
+
+            # Resolve activation group and assign activation carry if we ended exactly on a group boundary.
+            s = ti.cast(kernels_helpers.song_note_group_idx[activation_note], ti.i32)
+            if s < 0:
+                s = 0
+            if s >= gcount:
+                # Safety: if grouping data is missing/invalid, fall back to deterministic behavior (no more fever).
+                break
+
+            if s != prev_group:
+                u_s = ti.cast(kernels_helpers.song_group_high_ms[s], ti.i32)
+                if prev_group < 0:
+                    prev_carry = u_s
+                else:
+                    c_s = ti.cast(kernels_helpers.song_group_base_t_ms[s], ti.i32)
+                    c_prev = ti.cast(kernels_helpers.song_group_base_t_ms[prev_group], ti.i32)
+                    delta = c_s - c_prev
+                    if delta < 1:
+                        delta = 1
+                    prev_carry = ti.max(u_s, prev_carry - delta)
+                prev_group = s
+
+            # Activation carry is the latest carry reachable at this group given the timeline so far.
+            r_act = prev_carry
+            c_s = ti.cast(kernels_helpers.song_group_base_t_ms[s], ti.i32)
+            Q = c_s + r_act + d_ms
+
+            # Compute boundary-band group indices.
+            b_minus = _binary_search_left_i32(kernels_helpers.song_group_base_t_ms, gcount, Q - 80)
+            b_plus = _binary_search_left_i32(kernels_helpers.song_group_base_t_ms, gcount, Q + 40)
+
+            start_g = s + 1
+            if b_minus < start_g:
+                b_minus = start_g
+            if b_plus < start_g:
+                b_plus = start_g
+            if b_minus > gcount:
+                b_minus = gcount
+            if b_plus > gcount:
+                b_plus = gcount
+
+            # Propagate carries through guaranteed-interior groups up to b_minus-1.
+            lo = r_act
+            hi = r_act
+            last_fever_group = s
+            last_fever_hi = r_act
+            g = start_g
+            while g < b_minus:
+                out = _propagate_carry_interval(lo, hi, g)
+                lo = out[0]
+                hi = out[1]
+                last_fever_group = g
+                last_fever_hi = hi
+                g += 1
+
+            # Sweep boundary band [b_minus, b_plus) until the in-fever interval becomes empty.
+            exit_group = ti.i32(-1)
+            g = b_minus
+            while g < b_plus and g < gcount:
+                prev_lo = lo
+                prev_hi = hi
+                out = _propagate_carry_interval(lo, hi, g)
+                lo = out[0]
+                hi = out[1]
+
+                c_g = ti.cast(kernels_helpers.song_group_base_t_ms[g], ti.i32)
+                remain_hi = Q - c_g - 1
+
+                # Clip to carries that keep this group in fever.
+                keep_lo = ti.max(lo, ti.i32(-40))
+                keep_hi = ti.min(hi, remain_hi)
+
+                if keep_lo <= keep_hi:
+                    lo = keep_lo
+                    hi = keep_hi
+                    last_fever_group = g
+                    last_fever_hi = hi
+                    g += 1
+                    continue
+
+                # Exit occurs at group g.
+                exit_group = g
+                lo = prev_lo
+                hi = prev_hi
+                break
+
+            # If we never exited inside the boundary band, we either exit at the always-out group b_plus
+            # (when it exists), or the fever lasts to the end of the song.
+            fever_end_idx = n
+            if exit_group >= 0:
+                fever_end_idx = ti.cast(kernels_helpers.song_group_starts[exit_group], ti.i32)
+            else:
+                if b_plus < gcount:
+                    g = b_plus
+                    # One-step propagate to the always-out group.
+                    out = _propagate_carry_interval(lo, hi, g)
+                    lo = out[0]
+                    fever_end_idx = ti.cast(kernels_helpers.song_group_starts[g], ti.i32)
+                else:
+                    # Fever reaches song end.
+                    fever_end_idx = n
+
+            if fever_end_idx < activation_note:
+                fever_end_idx = activation_note
+            if fever_end_idx > n:
+                fever_end_idx = n
+
+            # Mark fever notes in bitmask (only first MAX_HEAD notes are represented).
+            masks = _or_head_mask_range(m0, m1, m2, m3, activation_note, fever_end_idx)
+            m0 = masks[0]
+            m1 = masks[1]
+            m2 = masks[2]
+            m3 = masks[3]
+
+            # Count fever body notes (notes >= MAX_HEAD) without per-note looping.
+            body_fever_start = ti.max(activation_note, MAX_HEAD)
+            if fever_end_idx > body_fever_start:
+                body_fever += fever_end_idx - body_fever_start
+
+            prev_group = last_fever_group
+            prev_carry = last_fever_hi
+            last_fever_end_idx = fever_end_idx
+            current_note = fever_end_idx
+
+        # Remaining notes after last fever are non-fever.
+        body_normal_start = ti.max(current_note, MAX_HEAD)
+        if n > body_normal_start:
+            body_normal += n - body_normal_start
+
+        # Write outputs to specified song slot.
+        kernels_helpers.grid_count_body_fever[song_slot, ft_idx, ff_idx] = ti.cast(body_fever, ti.i16)
+        kernels_helpers.grid_count_body_normal[song_slot, ft_idx, ff_idx] = ti.cast(body_normal, ti.i16)
+        kernels_helpers.grid_head_len[song_slot, ft_idx, ff_idx] = ti.cast(head_len, ti.i8)
+        kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0] = m0
+        kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1] = m1
+        kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2] = m2
+        kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 3] = m3
+
+        gap = ti.cast(n - last_fever_end_idx, ti.i32)
+        kernels_helpers.grid_gap[song_slot, ft_idx, ff_idx] = ti.cast(gap, ti.i16)
+        kernels_helpers.grid_fever_activations[song_slot, ft_idx, ff_idx] = ti.cast(fever_activations, ti.i8)
+
+        # Store compact signatures used for GA plateau bucketing / pruning.
+        kernels_helpers.grid_sig0[song_slot, ft_idx, ff_idx] = _pack_mask_sig(m0, m1, m2, m3)
+        kernels_helpers.grid_sig1[song_slot, ft_idx, ff_idx] = _pack_counts_sig(
+            body_fever,
+            body_normal,
+            head_len,
+            fever_activations,
+            gap,
+        )
+
+
 @ti.kernel
 def compute_timeline_grid_signatures_kernel(song_slot: ti.i32):
     """
@@ -281,7 +589,6 @@ def compute_timeline_grid_signatures_kernel(song_slot: ti.i32):
     # Prefer 2D ndrange over div/mod on Metal (avoids backend edge cases).
     ti.loop_config(block_dim=kernels_helpers._KERNEL_BLOCK_DIM)
     for ft_idx, ff_idx in ti.ndrange(161, 161):
-
         m0 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 0]
         m1 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 1]
         m2 = kernels_helpers.grid_fever_masks_bits[song_slot, ft_idx, ff_idx, 2]

@@ -117,6 +117,15 @@ song_timestamps: ti.Field = None  # (MAX_SONG_NOTES,) f32
 # Precomputed fever end indices per note/FT (binary-search-free timeline simulation)
 fever_end_idx_song: ti.Field = None  # (MAX_SONG_NOTES, GRID_SIZE) i32
 
+# Chord-grouped chart data for Analytical HitSim (ceiling) timeline computation.
+# These are derived from chart timestamps + note types using the same chord grouping and
+# per-note window semantics as HumanHitSim (`prepare_perfect_hit_simulation`).
+song_note_group_idx: ti.Field = None  # (MAX_SONG_NOTES,) i32: note_idx -> group_idx
+song_group_starts: ti.Field = None  # (MAX_SONG_NOTES,) i32: group_idx -> first note_idx
+song_group_base_t_ms: ti.Field = None  # (MAX_SONG_NOTES,) i32: group_idx -> chart time in integer ms
+song_group_low_ms: ti.Field = None  # (MAX_SONG_NOTES,) i32: group_idx -> min feasible carry (ms)
+song_group_high_ms: ti.Field = None  # (MAX_SONG_NOTES,) i32: group_idx -> max feasible carry (ms)
+
 # Breakpoint detection kernel inputs/outputs (bound into kernels_breakpoints)
 bp_pair_ft: ti.Field = None  # (MAX_BP_PAIRS,) i32
 bp_pair_ff: ti.Field = None  # (MAX_BP_PAIRS,) i32
@@ -276,6 +285,7 @@ def reset_fields_state() -> None:
     global grid_sig0, grid_sig1
     global grid_gap, grid_fever_activations
     global song_timestamps, fever_end_idx_song
+    global song_note_group_idx, song_group_starts, song_group_base_t_ms, song_group_low_ms, song_group_high_ms
     global bp_pair_ft, bp_pair_ff, bp_result_mask
     global genome_base_stats
     global population_indices, population_next_indices, ga_initial_populations, ga_init_heuristic_topk
@@ -328,6 +338,11 @@ def reset_fields_state() -> None:
     # Song timeline
     song_timestamps = None
     fever_end_idx_song = None
+    song_note_group_idx = None
+    song_group_starts = None
+    song_group_base_t_ms = None
+    song_group_low_ms = None
+    song_group_high_ms = None
 
     # Breakpoint detection
     bp_pair_ft = None
@@ -682,6 +697,7 @@ def allocate_grid_fields():
     global grid_sig0, grid_sig1
     global grid_gap, grid_fever_activations
     global song_timestamps, fever_end_idx_song
+    global song_note_group_idx, song_group_starts, song_group_base_t_ms, song_group_low_ms, song_group_high_ms
     global _grid_fields_allocated
 
     if _grid_fields_allocated:
@@ -712,6 +728,16 @@ def allocate_grid_fields():
         song_timestamps = ti.field(dtype=ti.f32, shape=MAX_SONG_NOTES)
     if fever_end_idx_song is None:
         fever_end_idx_song = ti.field(dtype=ti.i32, shape=(MAX_SONG_NOTES, GRID_SIZE))
+    if song_note_group_idx is None:
+        song_note_group_idx = ti.field(dtype=ti.i32, shape=MAX_SONG_NOTES)
+    if song_group_starts is None:
+        song_group_starts = ti.field(dtype=ti.i32, shape=MAX_SONG_NOTES)
+    if song_group_base_t_ms is None:
+        song_group_base_t_ms = ti.field(dtype=ti.i32, shape=MAX_SONG_NOTES)
+    if song_group_low_ms is None:
+        song_group_low_ms = ti.field(dtype=ti.i32, shape=MAX_SONG_NOTES)
+    if song_group_high_ms is None:
+        song_group_high_ms = ti.field(dtype=ti.i32, shape=MAX_SONG_NOTES)
 
     _grid_fields_allocated = True
     print(f"[Taichi] Allocated grid fields: {MAX_SONG_SLOTS}Ã—{GRID_SIZE}Ã—{GRID_SIZE} timeline grid slots")
@@ -787,6 +813,11 @@ def bind_fields(kernels_module):
     # Song data for timeline
     target.song_timestamps = song_timestamps
     target.fever_end_idx_song = fever_end_idx_song
+    target.song_note_group_idx = song_note_group_idx
+    target.song_group_starts = song_group_starts
+    target.song_group_base_t_ms = song_group_base_t_ms
+    target.song_group_low_ms = song_group_low_ms
+    target.song_group_high_ms = song_group_high_ms
 
     # Genome base stats
     target.genome_base_stats = genome_base_stats

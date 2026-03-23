@@ -9,7 +9,7 @@ This feature generates a synthetic “human” hit-time stream (seeded RNG) and 
 ## What It Does
 
 - Builds `calc_song["song_data"]["fg_timestamps"]` from the original chart timestamps by:
-  - Quantizing chart timestamps to **integer ms** using **floor**
+  - Quantizing chart timestamps to **integer ms** using `quantize_to_int_ms()` (snap-to-int within tolerance, else floor) to avoid float32 boundary off-by-1s
   - Sampling an offset in the **Perfect timing window** (ms)
   - Applying the **held tail window multiplier (x2)** for tail notes
   - Grouping identical timestamps (chords) so they share the same sampled offset
@@ -35,7 +35,7 @@ Enabled = False
 ApplyTo = FG        ; FG or ALL
 Seed = 0            ; 0 => random seed per song/run (the chosen seed is printed and stored in metadata)
 Distribution = uniform
-GreatMode = Full
+GreatMode = late      ; late | early | full
 ```
 
 When enabled, the run prints a one-line summary (including the chosen seed):
@@ -44,6 +44,6 @@ When enabled, the run prints a one-line summary (including the chosen seed):
 
 ## Limitations / Next Steps
 
-- Current implementation simulates **Perfect-only** offsets (it does not yet model Great-only offset ranges when forcing Greats).
-- Great timing is modeled in a low-overhead way via a “carry” rule using the precomputed great-candidate times; it does not attempt to simulate arbitrary Great distributions across the whole chart.
+- Current implementation simulates **Perfect-only** offsets.
+- For FG timing, Great behavior is modeled via `fg_great_candidate_timestamps` (late-only by default) and a low-overhead “carry” rule; it does not attempt to simulate an arbitrary Great distribution across the whole chart.
 - The goal is to capture *fever boundary sensitivity* to realistic timing jitter; it does not attempt to reproduce full server resync behavior or player input scheduling beyond monotonicity.

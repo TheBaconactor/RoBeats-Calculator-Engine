@@ -21,6 +21,7 @@ import threading
 
 from ..core.time_quantize import quantize_to_int_ms
 
+
 def _env_debug_fixed_seeds_enabled() -> bool:
     return str(os.environ.get("METAFINDER_DEBUG_FIXED_SEEDS", "") or "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -281,17 +282,13 @@ def _prepare_grouped_hit_windows(
 
     group_count = int(group_starts.shape[0])
     group_base_t = ts_ms[group_starts].astype(np.int32, copy=False)
-    group_low = np.empty(group_count, dtype=np.int32)
-    group_high = np.empty(group_count, dtype=np.int32)
-    for g in range(group_count):
-        s = int(group_starts[g])
-        e = int(group_ends[g])
-        g_low = int(np.max(note_low_ms[s:e]))
-        g_high = int(np.min(note_high_ms[s:e]))
-        if g_low > g_high:
-            g_low, g_high = g_high, g_low
-        group_low[g] = g_low
-        group_high[g] = g_high
+    # Aggregate per-note timing windows into per-chord windows. Groups are a partition
+    # of the notes by quantized chart timestamp, so we can use reduceat() instead of a
+    # Python loop over groups.
+    raw_low = np.maximum.reduceat(note_low_ms, group_starts)
+    raw_high = np.minimum.reduceat(note_high_ms, group_starts)
+    group_low = np.minimum(raw_low, raw_high).astype(np.int32, copy=False)
+    group_high = np.maximum(raw_low, raw_high).astype(np.int32, copy=False)
 
     return {
         "n": int(n),
@@ -401,6 +398,7 @@ def generate_perfect_hit_times_ms(prepared: dict, *, seed: int) -> np.ndarray:
         prev_event_ms = event
 
     return event_ms
+
 
 def plan_human_hit_sim(calc_song: dict, *, cfg_dict: dict) -> dict | None:
     """
@@ -563,7 +561,15 @@ def apply_human_hit_sim(calc_song: dict, *, cfg_dict: dict) -> dict | None:
     calc_song["song_data"] = song_data
 
     if apply_to == "ALL":
-        song_data["timestamps"] = np.asarray(sim_ts, dtype=np.float32)
+        ts_all = np.asarray(sim_ts, dtype=np.float32)
+        song_data["timestamps"] = ts_all
+        # Keep timeline cache keys stable/cheap by maintaining the signature when we mutate timestamps.
+        try:
+            from gear_optimizer.core.array_signature import array_sig16
+
+            song_data["_timestamps_sig"] = array_sig16(ts_all)
+        except Exception:
+            song_data.pop("_timestamps_sig", None)
 
     return {
         "apply_to": apply_to,

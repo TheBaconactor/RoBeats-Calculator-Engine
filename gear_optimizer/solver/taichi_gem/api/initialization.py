@@ -217,6 +217,7 @@ def ensure_ready(ref_arrays=None, *, timeline_grid=None):
 
     # 3. Reference arrays - upload only when needed (or when ref source changes)
     # This preserves the old behavior where callers could load once and reuse.
+    sig: bytes = b""
     global _last_ref_arrays_sig
     if ref_arrays is not None:
         sig = _ref_arrays_sig(ref_arrays)
@@ -239,6 +240,9 @@ def ensure_ready(ref_arrays=None, *, timeline_grid=None):
             precompute_timeline_gpu(calc_song, refs, song_slot=0)
         else:
             _upload_timeline_grid(timeline_grid)
+
+    # Return the (possibly empty) ref-array signature so hot paths can avoid hashing refs twice.
+    return bytes(sig)
 
 
 # ============================================================================

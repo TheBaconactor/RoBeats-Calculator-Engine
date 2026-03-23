@@ -7,10 +7,13 @@ This module provides GPU-accelerated timeline precomputation:
 """
 
 import time
+import os
+from collections import OrderedDict
 import numpy as np
 import taichi as ti
 
 from gear_optimizer.core.env_config import env_flag
+from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.utils import human_hitsim_timing_context
 from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
 from ..fields import (
@@ -43,35 +46,163 @@ def _upload_song_timestamps_kernel(n: ti.i32, timestamps: ti.types.ndarray(dtype
         fields.song_timestamps[i] = timestamps[i]
 
 
+@ti.kernel
+def _upload_song_note_group_idx_kernel(n: ti.i32, note_group_idx: ti.types.ndarray(dtype=ti.i32, ndim=1)):
+    """Upload note_idx -> group_idx mapping without padding."""
+    for i in range(n):
+        fields.song_note_group_idx[i] = note_group_idx[i]
+
+
+@ti.kernel
+def _upload_song_groups_kernel(
+    n_groups: ti.i32,
+    group_starts: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    group_base_t_ms: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    group_low_ms: ti.types.ndarray(dtype=ti.i32, ndim=1),
+    group_high_ms: ti.types.ndarray(dtype=ti.i32, ndim=1),
+):
+    """Upload chord-group arrays used by the analytical ceiling HitSim timeline kernel."""
+    for g in range(n_groups):
+        fields.song_group_starts[g] = group_starts[g]
+        fields.song_group_base_t_ms[g] = group_base_t_ms[g]
+        fields.song_group_low_ms[g] = group_low_ms[g]
+        fields.song_group_high_ms[g] = group_high_ms[g]
+
+
 # ============================================================================
 # GPU TIMELINE PRECOMPUTATION (eliminates Numba typeof overhead)
 # ============================================================================
 
 _gpu_timeline_song_id_by_slot = [None] * MAX_SONG_SLOTS  # Track last song per slot
+_CEILING_GROUP_PAYLOAD_CACHE_MAX = max(1, int(os.environ.get("CEILING_GROUP_PAYLOAD_CACHE_MAX", "32") or "32"))
+_ceiling_group_payload_cache: "OrderedDict[tuple, dict]" = OrderedDict()
 
 
 def _song_timing_cache_key(calc_song: dict) -> tuple:
     meta = calc_song.get("metadata", {}) or {}
     song_data = calc_song.get("song_data", {}) or {}
-    timestamps = song_data.get("timestamps", ())
-    first_ms = 0
-    last_ms = 0
-    try:
-        if hasattr(timestamps, "__len__") and len(timestamps):
-            first_ms = int(float(timestamps[0]) * 1000.0)
-            last_ms = int(float(timestamps[len(timestamps) - 1]) * 1000.0)
-    except Exception:
-        first_ms = 0
-        last_ms = 0
-
-    return (
+    use_ceiling = bool(env_flag("GPU_TIMELINE_CEILING_HITSIM", "1"))
+    if use_ceiling:
+        cached = calc_song.get("_gpu_timing_cache_key_ceiling", None)
+        if isinstance(cached, tuple) and len(cached) == 8:
+            return cached
+    if use_ceiling:
+        chart_ts = song_data.get("chart_timestamps", None)
+        timestamps = chart_ts if chart_ts is not None else song_data.get("timestamps", ())
+    else:
+        timestamps = song_data.get("timestamps", ())
+    ts_sig = song_data.get("_chart_timestamps_sig", None) if use_ceiling else song_data.get("_timestamps_sig", None)
+    if not isinstance(ts_sig, (bytes, bytearray, memoryview)) or len(ts_sig) != 16:
+        ts_sig = array_sig16(timestamps)
+    nt_sig = song_data.get("_note_types_sig", None)
+    if not isinstance(nt_sig, (bytes, bytearray, memoryview)) or len(nt_sig) != 16:
+        nt_sig = array_sig16(song_data.get("note_types"))
+    key = (
         str(meta.get("Song Name", "")),
+        str(meta.get("Difficulty", "")),
         int(len(timestamps)),
         float(meta.get("Last Note Time", 0) or 0),
         int(meta.get("Long Notes", 0) or 0),
-        int(first_ms),
-        int(last_ms),
-    ) + human_hitsim_timing_context(calc_song)
+        int(1 if use_ceiling else 0),
+        bytes(ts_sig),
+        bytes(nt_sig),
+    ) + (() if use_ceiling else human_hitsim_timing_context(calc_song))
+    if use_ceiling and isinstance(key, tuple) and len(key) == 8:
+        # Cache on the calc_song dict to avoid repeated full-array hashing when the
+        # same song is revisited and precompute_timeline_gpu() hits the slot cache.
+        calc_song["_gpu_timing_cache_key_ceiling"] = key
+    return key
+
+
+def _get_or_build_ceiling_group_payload(
+    base_song_key: tuple,
+    *,
+    timestamps: np.ndarray,
+    note_types: object,
+) -> dict:
+    """
+    Prepare and cache chord-group payloads used by the analytical ceiling HitSim kernel.
+
+    This CPU preprocessing is a pure function of chart timestamps + note types (and the
+    fixed Perfect window constants). Caching avoids recomputing grouping + dense note->group
+    maps when the same song is revisited across slots or after timeline cache resets.
+    """
+    global _ceiling_group_payload_cache
+
+    n = int(getattr(timestamps, "shape", (0,))[0] or 0)
+    cached = _ceiling_group_payload_cache.get(base_song_key)
+    if isinstance(cached, dict):
+        try:
+            if int(cached.get("n", -1) or -1) == int(n) and int(cached.get("group_count", 0) or 0) > 0:
+                _ceiling_group_payload_cache.move_to_end(base_song_key)
+                return cached
+        except Exception:
+            pass
+
+    from gear_optimizer.solver.hit_simulation import prepare_perfect_hit_simulation
+
+    prepared = prepare_perfect_hit_simulation(
+        timestamps,
+        note_types,
+        perfect_lower_ms=-20,
+        perfect_upper_ms=40,
+        held_tail_type=3,
+        held_tail_time_multiplier=2,
+        quantize_ms=True,
+    )
+    group_starts = np.asarray(prepared.get("group_starts", ()), dtype=np.int32)
+    group_ends = np.asarray(prepared.get("group_ends", ()), dtype=np.int32)
+    group_base_t_ms = np.asarray(prepared.get("group_base_t", ()), dtype=np.int32)
+    group_low_ms = np.asarray(prepared.get("group_low", ()), dtype=np.int32)
+    group_high_ms = np.asarray(prepared.get("group_high", ()), dtype=np.int32)
+    group_count = int(group_starts.shape[0])
+    if int(prepared.get("n", n) or 0) != int(n):
+        raise ValueError("prepare_perfect_hit_simulation produced mismatched note count")
+    if n > 0 and group_count <= 0:
+        raise ValueError("prepare_perfect_hit_simulation produced no chord groups")
+
+    if n <= 0:
+        note_group_idx = np.zeros((0,), dtype=np.int32)
+    else:
+        # Fast-path: grouping produces a contiguous partition of note indices, so
+        # note->group can be constructed via repeat() instead of a Python loop.
+        is_partition = False
+        try:
+            if int(group_starts[0]) == 0 and int(group_ends[-1]) == int(n):
+                if group_count == 1 or bool(np.all(group_starts[1:] == group_ends[:-1])):
+                    is_partition = True
+        except Exception:
+            is_partition = False
+
+        if is_partition:
+            lengths = (group_ends - group_starts).astype(np.int32, copy=False)
+            note_group_idx = np.repeat(np.arange(int(group_count), dtype=np.int32), lengths)
+        else:
+            note_group_idx = np.full(int(n), -1, dtype=np.int32)
+            for g in range(group_count):
+                s = int(group_starts[g])
+                e = int(group_ends[g])
+                if e > s:
+                    note_group_idx[s:e] = int(g)
+            if int(np.any(note_group_idx < 0)):
+                raise ValueError("prepare_perfect_hit_simulation produced uncovered note indices")
+
+    payload = {
+        "n": int(n),
+        "group_count": int(group_count),
+        "note_group_idx": np.ascontiguousarray(note_group_idx),
+        "group_starts": np.ascontiguousarray(group_starts),
+        "group_base_t_ms": np.ascontiguousarray(group_base_t_ms),
+        "group_low_ms": np.ascontiguousarray(group_low_ms),
+        "group_high_ms": np.ascontiguousarray(group_high_ms),
+    }
+
+    _ceiling_group_payload_cache[base_song_key] = payload
+    _ceiling_group_payload_cache.move_to_end(base_song_key)
+    while len(_ceiling_group_payload_cache) > int(_CEILING_GROUP_PAYLOAD_CACHE_MAX):
+        _ceiling_group_payload_cache.popitem(last=False)
+
+    return payload
 
 
 def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 0) -> None:
@@ -99,20 +230,29 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     """
     global _gpu_timeline_song_id_by_slot
 
-    # Check if we already computed for this song
-    song_key = _song_timing_cache_key(calc_song)
     song_slot = int(song_slot)
     if song_slot < 0 or song_slot >= MAX_SONG_SLOTS:
         raise ValueError(f"song_slot out of range: {song_slot}")
 
+    # Ensure GPU is ready with refs and grid fields (even on cache hit).
+    # Also reuse the ref signature so callers don't hash refs twice.
+    ref_sig = ensure_ready(ref_arrays) if isinstance(ref_arrays, dict) else ensure_ready(None)
+
+    # Check if we already computed for this song+ref set.
+    song_key = _song_timing_cache_key(calc_song) + (bytes(ref_sig),)
     if _gpu_timeline_song_id_by_slot[song_slot] == song_key:
         return  # Already computed
 
-    # Ensure GPU is ready with refs and grid fields
-    ensure_ready(ref_arrays)
+    song_data = calc_song.get("song_data", {}) or {}
+    use_ceiling = bool(env_flag("GPU_TIMELINE_CEILING_HITSIM", "1"))
 
-    # Upload song timestamps
-    timestamps = np.asarray(calc_song["song_data"]["timestamps"], dtype=np.float32)
+    # Upload song timestamps (float seconds). Analytical ceiling uses chart timestamps.
+    if use_ceiling:
+        chart_ts = song_data.get("chart_timestamps", None)
+        src = chart_ts if chart_ts is not None else song_data.get("timestamps", ())
+        timestamps = np.asarray(src, dtype=np.float32)
+    else:
+        timestamps = np.asarray(song_data.get("timestamps", ()), dtype=np.float32)
     total_notes = len(timestamps)
 
     # Pad to MAX_SONG_NOTES if needed
@@ -120,12 +260,64 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
         raise ValueError(f"Song has {total_notes} notes, max is {fields.MAX_SONG_NOTES}")
 
     # Upload only the used prefix (avoid padding to MAX_SONG_NOTES).
-    if _profiler.enabled:
-        _t_ts = time.perf_counter()
-        _upload_song_timestamps_kernel(int(total_notes), timestamps)
-        _profiler.record_upload(time.perf_counter() - _t_ts, bytes_count=int(timestamps.nbytes))
-    else:
-        _upload_song_timestamps_kernel(int(total_notes), timestamps)
+    #
+    # Analytical ceiling mode does not read `fields.song_timestamps`, so skip the upload
+    # to reduce CPU->GPU traffic on that path.
+    if not use_ceiling:
+        if _profiler.enabled:
+            _t_ts = time.perf_counter()
+            _upload_song_timestamps_kernel(int(total_notes), timestamps)
+            _profiler.record_upload(time.perf_counter() - _t_ts, bytes_count=int(timestamps.nbytes))
+        else:
+            _upload_song_timestamps_kernel(int(total_notes), timestamps)
+
+    group_count = 0
+    if use_ceiling:
+        payload = _get_or_build_ceiling_group_payload(
+            song_key[:-1],
+            timestamps=timestamps,
+            note_types=song_data.get("note_types", None),
+        )
+        payload_n = int(payload.get("n", 0) or 0)
+        if int(payload_n) != int(total_notes):
+            raise ValueError("prepare_perfect_hit_simulation produced mismatched note count")
+
+        note_group_idx = np.asarray(payload.get("note_group_idx", ()), dtype=np.int32)
+        group_starts = np.asarray(payload.get("group_starts", ()), dtype=np.int32)
+        group_base_t_ms = np.asarray(payload.get("group_base_t_ms", ()), dtype=np.int32)
+        group_low_ms = np.asarray(payload.get("group_low_ms", ()), dtype=np.int32)
+        group_high_ms = np.asarray(payload.get("group_high_ms", ()), dtype=np.int32)
+        group_count = int(payload.get("group_count", 0) or 0)
+        if total_notes > 0 and group_count <= 0:
+            raise ValueError("prepare_perfect_hit_simulation produced no chord groups")
+
+        if _profiler.enabled:
+            _t_groups = time.perf_counter()
+            _upload_song_note_group_idx_kernel(int(total_notes), note_group_idx)
+            _upload_song_groups_kernel(
+                int(group_count),
+                group_starts,
+                group_base_t_ms,
+                group_low_ms,
+                group_high_ms,
+            )
+            upload_bytes = int(
+                note_group_idx.nbytes
+                + group_starts.nbytes
+                + group_base_t_ms.nbytes
+                + group_low_ms.nbytes
+                + group_high_ms.nbytes
+            )
+            _profiler.record_upload(time.perf_counter() - _t_groups, bytes_count=upload_bytes)
+        else:
+            _upload_song_note_group_idx_kernel(int(total_notes), note_group_idx)
+            _upload_song_groups_kernel(
+                int(group_count),
+                group_starts,
+                group_base_t_ms,
+                group_low_ms,
+                group_high_ms,
+            )
 
     # Extract song metadata
     long_notes = int(calc_song["metadata"].get("Long Notes", 0))
@@ -135,26 +327,39 @@ def precompute_timeline_gpu(calc_song: dict, ref_arrays: dict, song_slot: int = 
     _maybe_sync(for_timing=True)
     _t0 = time.perf_counter()
 
-    # Precompute fever end indices for O(1) timeline lookups
-    kernels.precompute_fever_end_idx_kernel(
-        int(total_notes),
-        float(last_note_time),
-    )
+    if not use_ceiling:
+        # Precompute fever end indices for O(1) timeline lookups
+        kernels.precompute_fever_end_idx_kernel(
+            int(total_notes),
+            float(last_note_time),
+        )
 
     # Launch GPU kernel to compute all 161×161 timelines for this song slot.
     #
     # Canonical representation is bitpacked (`grid_fever_masks_bits`). Unpacked
     # masks are only needed for legacy debug/tests.
-    write_unpacked_masks = 1 if (env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS", "0") or fields.grid_fever_masks is not None) else 0
+    write_unpacked_masks = (
+        1 if (env_flag("GPU_TIMELINE_WRITE_UNPACKED_MASKS", "0") or fields.grid_fever_masks is not None) else 0
+    )
     if write_unpacked_masks != 0:
         fields.ensure_grid_unpacked_masks_allocated()
-    kernels.compute_timeline_grid_kernel(
-        total_notes,
-        long_notes,
-        last_note_time,
-        song_slot,  # Grid slot for batch coalescing
-        int(write_unpacked_masks),
-    )
+    if use_ceiling:
+        kernels.compute_timeline_grid_ceiling_hitsim_kernel(
+            total_notes,
+            long_notes,
+            last_note_time,
+            int(group_count),
+            song_slot,  # Grid slot for batch coalescing
+            int(write_unpacked_masks),
+        )
+    else:
+        kernels.compute_timeline_grid_kernel(
+            total_notes,
+            long_notes,
+            last_note_time,
+            song_slot,  # Grid slot for batch coalescing
+            int(write_unpacked_masks),
+        )
     if write_unpacked_masks != 0:
         # Build i8 masks from the bitpacked representation on-GPU (debug/tests only).
         kernels.unpack_timeline_grid_masks_kernel(int(song_slot))

@@ -6,7 +6,11 @@ A rhythm game scores players based on how accurately they hit notes at prescribe
 
 **The complication:** In the real game, players don't hit notes at exactly the chart time. They hit within a timing window (e.g. -20ms to +40ms for a "Perfect" judgment). The exact hit time doesn't affect the per-note judgment (all times in the window are "Perfect"), but it **does** affect when fever activates and ends, because fever duration is measured in **wall-clock seconds**, not note counts. Small timing offsets can push notes in or out of fever windows at the boundaries.
 
-Currently, the optimizer handles this via **Monte Carlo sampling**: run the optimizer multiple times with different random hit-timing seeds (`SongRepeats`), and keep the best result. This is expensive. We want an **analytical approach** that computes the optimal (or expected) hit-timing outcome in a single evaluation.
+Historically, the optimizer handled this via **Monte Carlo sampling**: run multiple hit-timing seeds (`SongRepeats`) and keep the best result. This is expensive and still probabilistic.
+
+As of 2026-03-23, the repo also ships a deterministic, one-shot **ceiling** fever timeline on the GPU behind `GPU_TIMELINE_CEILING_HITSIM` (default: enabled). That ceiling mode is designed as an upper-envelope approximation of best-case fever boundaries under the modeled Perfect timing window.
+
+This document defines the underlying **analytical HitSim problem** (exact optimum and expected-value variants) that motivates both the historical Monte Carlo approach and the production ceiling approximation.
 
 ---
 
@@ -100,7 +104,10 @@ for i in range(N):
             total_score += floor(base * combo_mul)
 ```
 
-Score is **maximized** when the number of fever notes is maximized (since `fever_mul > 1`).
+Because `fever_mul > 1`, every note being in fever contributes a **non-negative** score gain relative to normal.
+The true optimization objective is to maximize a **weighted** sum of fever indicators (combo ramp makes early notes
+slightly lower-weight than later notes in the first 100), but in the body region (>= 100 notes) the score depends
+only on the **count** of fever vs normal notes.
 
 ---
 

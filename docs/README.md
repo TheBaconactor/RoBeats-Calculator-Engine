@@ -25,6 +25,8 @@ If you want the decision-log index, open [Implementation Records/README.md](Impl
 - [GPU_RESIDENT_GA_FG_PLAN.md](GPU_RESIDENT_GA_FG_PLAN.md) - same-slot GPU-resident GA to FG handoff plan.
 - [TAICHI_PORT_ROADMAP.md](TAICHI_PORT_ROADMAP.md) - Taichi/Vulkan roadmap and constraints.
 - [OPTIMIZATION_ANALYSIS.md](OPTIMIZATION_ANALYSIS.md) - optimization findings and tradeoffs.
+- [ANALYTICAL_HITSIM_PROBLEM.md](ANALYTICAL_HITSIM_PROBLEM.md) - problem statement for one-shot analytical HitSim (fever timing depends on hit timing).
+- [ANALYTICAL_HITSIM_SOLUTION.md](ANALYTICAL_HITSIM_SOLUTION.md) - proposed deterministic DP/expected-value methods and GPU integration notes.
 - [REFACTORING_VALIDATION.md](REFACTORING_VALIDATION.md) - refactor validation notes and historical context.
 - [DUPLICATION_REDUCTION.md](DUPLICATION_REDUCTION.md) - duplication cleanup map.
 
