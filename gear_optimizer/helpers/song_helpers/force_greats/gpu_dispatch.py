@@ -121,7 +121,8 @@ def _resolve_fg_candidate_table_residency(calc_song: dict, *, current_song_slot:
 
         if owner_meta_present:
             try:
-                owner_slot_i = int(str(owner_slot or -1))
+                # Slot 0 is a valid GPU song slot; don't treat falsy as absent.
+                owner_slot_i = int(str(owner_slot if owner_slot is not None else -1))
             except Exception:
                 owner_slot_i = -1
             try:
