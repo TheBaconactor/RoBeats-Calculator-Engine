@@ -1545,7 +1545,13 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         if frontier_payloads:
             frontier_batch_failed = False
             try:
-                selected_batches = fg_select_signature_frontier_batch(frontier_payloads)
+                if gpu_client is not None:
+                    selected_batches = gpu_client.submit(
+                        GpuRequestType.FG_SELECT_SIGNATURE_FRONTIER_BATCH,
+                        {"payloads": frontier_payloads},
+                    ).future.result()
+                else:
+                    selected_batches = fg_select_signature_frontier_batch(frontier_payloads)
             except Exception as exc:
                 warn_fallback(
                     "fg.signature_frontier.gpu_batch",

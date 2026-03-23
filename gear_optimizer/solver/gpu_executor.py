@@ -79,6 +79,7 @@ class GpuRequestType(Enum):
     GA_STAGE_FG_GENOME_BASE_STATS = "ga_stage_fg_genome_base_stats"
     FG_RESET_GLOBAL_BEST = "fg_reset_global_best"
     FG_DOWNLOAD_GLOBAL_BEST = "fg_download_global_best"
+    FG_SELECT_SIGNATURE_FRONTIER_BATCH = "fg_select_signature_frontier_batch"
     FG_COMPUTE_BREAKPOINTS = "fg_compute_breakpoints"
     FG_SOLVE_WITH_BREAKPOINTS = "fg_solve_with_breakpoints"
     FG_SOLVE_WITH_BREAKPOINTS_BATCH = "fg_solve_with_breakpoints_batch"
@@ -705,6 +706,7 @@ class GpuExecutor:
             GpuRequestType.GA_STAGE_FG_GENOME_BASE_STATS: self._execute_ga_stage_fg_genome_base_stats,
             GpuRequestType.FG_RESET_GLOBAL_BEST: self._execute_fg_reset_global_best,
             GpuRequestType.FG_DOWNLOAD_GLOBAL_BEST: self._execute_fg_download_global_best,
+            GpuRequestType.FG_SELECT_SIGNATURE_FRONTIER_BATCH: self._execute_fg_select_signature_frontier_batch,
             GpuRequestType.FG_COMPUTE_BREAKPOINTS: self._execute_fg_compute_breakpoints,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS: self._execute_fg_solve_with_breakpoints,
             GpuRequestType.FG_SOLVE_WITH_BREAKPOINTS_BATCH: self._execute_fg_solve_with_breakpoints_batch,
@@ -3948,6 +3950,38 @@ class GpuExecutor:
             )
         else:
             result = fg_download_global_best(int(n_genomes), session_slot=int(song_slot))
+        return GpuResponse(
+            request_id=request.request_id,
+            success=True,
+            result=result,
+        )
+
+    def _execute_fg_select_signature_frontier_batch(self, request: GpuRequest) -> GpuResponse:
+        """
+        Select multiple FG signature frontiers on the GPU-owner thread.
+
+        This is the in-process/owned equivalent of calling
+        `taichi_gem.force_greats.api.fg_select_signature_frontier_batch()` directly.
+        """
+        if not self._in_process_queues:
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="FG_SELECT_SIGNATURE_FRONTIER_BATCH requires in-process queues (avoid IPC pickling)",
+            )
+
+        payload = request.payload or {}
+        payloads = payload.get("payloads")
+        if not isinstance(payloads, list):
+            return GpuResponse(
+                request_id=request.request_id,
+                success=False,
+                error="FG_SELECT_SIGNATURE_FRONTIER_BATCH requires payload['payloads'] list",
+            )
+
+        from .taichi_gem.force_greats.api import fg_select_signature_frontier_batch
+
+        result = fg_select_signature_frontier_batch(payloads)
         return GpuResponse(
             request_id=request.request_id,
             success=True,
