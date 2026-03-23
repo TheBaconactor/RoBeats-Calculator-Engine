@@ -46,6 +46,12 @@ _GA_COMBO_CHUNK_MAX: int = max(
     _GA_COMBO_CHUNK_MIN, int(os.environ.get("GPU_NATIVE_GA_COMBO_CHUNK_MAX", "4096") or 4096)
 )
 
+# Merge a tiny remainder into the prior dispatch when it is safe under the max-evals budget.
+# This can reduce dispatch count when chunking would otherwise leave a very small "tail" kernel and the
+# per-dispatch budget still has slack (e.g. when chunking is capped by `chunk_max` rather than the
+# `max_evals` target).
+_GA_COMBO_TAIL_MERGE_MAX: int = max(0, int(os.environ.get("GPU_NATIVE_GA_COMBO_TAIL_MERGE_MAX", "256") or 256))
+
 # Evaluation budget for GA combo-search chunking (<= MAX_EVALS_PER_DISPATCH).
 #
 # Note: this is read lazily (with light caching) instead of at module import time so
@@ -682,18 +688,28 @@ def ga_evaluate_population(
 
     # Precompute FT/FF combo tables once per budget (tiny upload, reused across generations).
     n_combos = _ensure_ftff_combo_tables(total_budget_i)
+    eval_budget = int(_ga_eval_budget())
+    max_evals = max(int(eval_budget), int(n_genomes))
     combo_chunk = compute_ga_combo_chunk(
         n_genomes=n_genomes,
         n_combos=n_combos,
-        max_evals=max(int(_ga_eval_budget()), int(n_genomes)),
+        max_evals=max_evals,
         chunk_min=_GA_COMBO_CHUNK_MIN,
         chunk_max=_GA_COMBO_CHUNK_MAX,
     )
     if combo_chunk <= 0:
         combo_chunk = int(n_combos)
 
-    for offset in range(0, n_combos, combo_chunk):
+    offset = 0
+    while offset < n_combos:
         chunk_len = int(min(combo_chunk, n_combos - offset))
+        # If the remainder is tiny, fold it into this dispatch to avoid a "tail kernel" launch.
+        if _GA_COMBO_TAIL_MERGE_MAX > 0:
+            rem = int(n_combos - (offset + chunk_len))
+            if 0 < rem <= int(_GA_COMBO_TAIL_MERGE_MAX):
+                merged = int(chunk_len + rem)
+                if int(n_genomes) * int(merged) <= int(max_evals):
+                    chunk_len = merged
         kernels.ga_find_best_combo_warmstart_kernel(
             n_genomes,
             n_combos,
@@ -718,6 +734,7 @@ def ga_evaluate_population(
             int(prune_plateaus_i),
             int(exact_genome_eval_results_reuse),
         )
+        offset += int(chunk_len)
 
     if exact_genome_eval_results_reuse:
         kernels.ga_propagate_exact_eval_reuse_chunk_best_kernel(int(n_genomes))
