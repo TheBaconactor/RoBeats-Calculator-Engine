@@ -7,12 +7,12 @@ This module provides GPU-accelerated timeline precomputation:
 """
 
 import time
-import hashlib
 from collections import OrderedDict
 import numpy as np
 import taichi as ti
 
 from gear_optimizer.core.env_config import env_flag
+from gear_optimizer.core.array_signature import array_sig16
 from gear_optimizer.core.utils import human_hitsim_timing_context
 from gear_optimizer.solver.gpu_profiler import get_gpu_profiler
 from ..fields import (
@@ -77,38 +77,6 @@ _CEILING_GROUP_PAYLOAD_CACHE_MAX = 32
 _ceiling_group_payload_cache: "OrderedDict[tuple, dict]" = OrderedDict()
 
 
-def _array_sig(v: object) -> bytes:
-    """
-    Stable content signature for cache keys.
-
-    Timeline caching must account for note types and timestamps content; first/last
-    samples are insufficient (distinct charts can alias).
-    """
-    if v is None:
-        return b"\x00"
-    try:
-        arr = np.asarray(v)
-    except Exception:
-        return bytes(repr(v), "utf-8")
-    if arr.ndim == 0:
-        try:
-            arr = np.asarray([arr.item()], dtype=arr.dtype)
-        except Exception:
-            arr = np.asarray([repr(arr)], dtype=np.uint8)
-    try:
-        is_contig = bool(arr.flags["C_CONTIGUOUS"])
-    except Exception:
-        is_contig = False
-    arr_c = arr if is_contig else np.ascontiguousarray(arr)
-    h = hashlib.blake2b(digest_size=16)
-    h.update(str(arr_c.dtype).encode("utf-8"))
-    h.update(int(arr_c.ndim).to_bytes(1, "little", signed=False))
-    for d in arr_c.shape:
-        h.update(int(d).to_bytes(4, "little", signed=False))
-    h.update(memoryview(arr_c).cast("B"))
-    return h.digest()
-
-
 def _song_timing_cache_key(calc_song: dict) -> tuple:
     meta = calc_song.get("metadata", {}) or {}
     song_data = calc_song.get("song_data", {}) or {}
@@ -122,6 +90,15 @@ def _song_timing_cache_key(calc_song: dict) -> tuple:
         timestamps = chart_ts if chart_ts is not None else song_data.get("timestamps", ())
     else:
         timestamps = song_data.get("timestamps", ())
+    if use_ceiling:
+        ts_sig = song_data.get("_chart_timestamps_sig", None)
+    else:
+        ts_sig = None
+    if not isinstance(ts_sig, (bytes, bytearray, memoryview)) or len(ts_sig) != 16:
+        ts_sig = array_sig16(timestamps)
+    nt_sig = song_data.get("_note_types_sig", None)
+    if not isinstance(nt_sig, (bytes, bytearray, memoryview)) or len(nt_sig) != 16:
+        nt_sig = array_sig16(song_data.get("note_types"))
     key = (
         str(meta.get("Song Name", "")),
         str(meta.get("Difficulty", "")),
@@ -129,8 +106,8 @@ def _song_timing_cache_key(calc_song: dict) -> tuple:
         float(meta.get("Last Note Time", 0) or 0),
         int(meta.get("Long Notes", 0) or 0),
         int(1 if use_ceiling else 0),
-        _array_sig(timestamps),
-        _array_sig(song_data.get("note_types")),
+        bytes(ts_sig),
+        bytes(nt_sig),
     ) + (() if use_ceiling else human_hitsim_timing_context(calc_song))
     if use_ceiling and isinstance(key, tuple) and len(key) == 8:
         # Cache on the calc_song dict to avoid repeated full-array hashing when the

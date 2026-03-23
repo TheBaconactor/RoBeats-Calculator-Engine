@@ -51,6 +51,7 @@ from ..solver.scoring import (
 from ..solver.gpu_profiler import get_gpu_profiler
 from ..core.memory import log_memory_usage
 from ..core.utils import cfg_from_dict
+from ..core.array_signature import array_sig16
 from ..helpers.song_helpers import (
     load_database_context,
     setup_song_config,
@@ -185,12 +186,20 @@ def _build_base_calc_song_from_file(fp: str) -> dict:
     if song_note_types_np.shape[0] != song_timestamps_np.shape[0]:
         song_note_types_np = np.ones(song_timestamps_np.shape[0], dtype=np.int16)
 
+    # Cache stable content signatures on the base calc_song so GPU timeline caching
+    # doesn't need to hash full arrays on every request (pickling breaks `id()` reuse).
+    ts_sig = array_sig16(song_timestamps_np)
+    nt_sig = array_sig16(song_note_types_np)
+
     return {
         "metadata": song_data.get("song_details", {}) or {},
         "song_data": {
             "timestamps": song_timestamps_np,
             "chart_timestamps": song_timestamps_np,
             "note_types": song_note_types_np,
+            "_timestamps_sig": ts_sig,
+            "_chart_timestamps_sig": ts_sig,
+            "_note_types_sig": nt_sig,
         },
     }
 
