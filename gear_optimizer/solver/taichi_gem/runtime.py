@@ -180,43 +180,50 @@ def _get_offline_cache_dir() -> str:
     locations and makes cache cleanup straightforward.
     """
 
-    def _read_git_head_short(repo_root: str) -> str:
-        """
-        Best-effort read of current git commit short hash.
+    def _sanitize_cache_token(token: str) -> str:
+        cleaned = str(token or "").strip()
+        if not cleaned:
+            return ""
+        # Keep directory names portable and predictable.
+        cleaned = "".join((c if (c.isalnum() or c in "._-") else "_") for c in cleaned)
+        # Defensive cap: avoid accidental extremely long paths.
+        return cleaned[:64]
 
-        We use this to avoid reusing stale/invalid offline caches across code changes
-        (Taichi offline cache can occasionally get into a bad state after kernel edits).
+    def _read_taichi_gem_signature_short(repo_root: str) -> str:
+        """
+        Compute a stable signature for the Taichi kernel sources.
+
+        Why not git HEAD?
+        - Using HEAD invalidates the cache on every commit, even for doc-only changes,
+          causing repeated ~minute-long Taichi/Vulkan warmup compiles.
+        - Hashing the Taichi sources invalidates only when the kernel-related code changes,
+          while still avoiding reuse of stale caches after kernel edits.
         """
         try:
-            head_path = os.path.join(repo_root, ".git", "HEAD")
-            if not os.path.isfile(head_path):
+            import hashlib
+
+            taichi_root = os.path.join(repo_root, "gear_optimizer", "solver", "taichi_gem")
+            if not os.path.isdir(taichi_root):
                 return "nogit"
-            head = (open(head_path, "r", encoding="utf-8", errors="replace").read() or "").strip()
-            if head.startswith("ref:"):
-                ref = head.split(":", 1)[1].strip()
-                ref_path = os.path.join(repo_root, ".git", *ref.split("/"))
-                if os.path.isfile(ref_path):
-                    sha = (open(ref_path, "r", encoding="utf-8", errors="replace").read() or "").strip()
-                else:
-                    packed = os.path.join(repo_root, ".git", "packed-refs")
-                    sha = ""
-                    if os.path.isfile(packed):
-                        for line in open(packed, "r", encoding="utf-8", errors="replace"):
-                            line = line.strip()
-                            if not line or line.startswith("#") or line.startswith("^"):
-                                continue
-                            parts = line.split()
-                            if len(parts) == 2 and parts[1] == ref:
-                                sha = parts[0]
-                                break
-                sha = sha.strip()
-            else:
-                sha = head.strip()
-            if len(sha) >= 7:
-                return sha[:7]
+
+            # Hash file contents for stability across git checkouts (mtime changes are noisy on Windows).
+            h = hashlib.blake2b(digest_size=16)
+            paths: list[str] = []
+            for root, dirs, files in os.walk(taichi_root):
+                dirs[:] = [d for d in dirs if d != "__pycache__"]
+                for f in files:
+                    if not f.endswith(".py"):
+                        continue
+                    paths.append(os.path.join(root, f))
+            for abs_path in sorted(paths):
+                rel = os.path.relpath(abs_path, repo_root).replace("\\", "/")
+                h.update(rel.encode("utf-8", errors="replace"))
+                with open(abs_path, "rb") as fp:
+                    for chunk in iter(lambda: fp.read(64 * 1024), b""):
+                        h.update(chunk)
+            return h.hexdigest()[:12]
         except Exception:
-            pass
-        return "nogit"
+            return "nogit"
 
     try:
         # `.../gear_optimizer/solver/taichi_gem/runtime.py` -> repo root is 3 levels up.
@@ -227,8 +234,9 @@ def _get_offline_cache_dir() -> str:
             raw_ver = ".".join(str(x) for x in raw_ver)
         ti_ver = str(raw_ver)
         ti_ver = "".join((c if (c.isalnum() or c in "._-") else "_") for c in ti_ver).replace(".", "_")
-        head = _read_git_head_short(repo_root)
-        cache_dir = os.path.join(repo_root, "bin", "taichi_cache", cache_schema, f"ti_{ti_ver}", head)
+        env_key = _sanitize_cache_token(os.environ.get("TAICHI_OFFLINE_CACHE_KEY", ""))
+        cache_key = env_key or _read_taichi_gem_signature_short(repo_root)
+        cache_dir = os.path.join(repo_root, "bin", "taichi_cache", cache_schema, f"ti_{ti_ver}", cache_key)
         os.makedirs(cache_dir, exist_ok=True)
         return cache_dir
     except Exception:
