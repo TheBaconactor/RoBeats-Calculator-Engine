@@ -794,6 +794,24 @@ class GearOptimizerApp:
         except Exception:
             inflight_req = 0
         if inflight_req > 1:
+            # Dual-process native in-flight mode intentionally runs Taichi/Vulkan inside the worker
+            # processes (one context per worker). Starting the in-process GPU executor here would
+            # create an extra (idle) Taichi context in the coordinator, wasting VRAM and slowing
+            # cold-start warmups.
+            inflight_instances = 1
+            try:
+                inflight_instances = max(
+                    1,
+                    safe_int(cfg.get("IterationEngine", "InFlightInstances", fallback=1), 1),
+                )
+            except Exception:
+                inflight_instances = 1
+            raw_env_instances = os.environ.get("INFLIGHT_INSTANCES")
+            if raw_env_instances is not None and str(raw_env_instances).strip() != "":
+                inflight_instances = max(1, safe_int(raw_env_instances, inflight_instances))
+
+            if int(inflight_instances) > 1:
+                return
             try:
                 from gear_optimizer.solver.gpu_executor import get_gpu_executor
 
