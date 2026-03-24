@@ -43,9 +43,11 @@ class _NativeSong:
     manual_force_greats: bool
 
     prev_record: Optional[dict]
+    db_best_score: int
     attempt_lifetime: int
     prev_attempts_first: int
     db_best_fg_score: int
+    db_baseline_valid: bool
 
     # Prepared GPU-native GA inputs
     registry: ItemRegistry
@@ -97,4 +99,3 @@ class _NativeSong:
             self.ga_candidates = []
         if self.fg_variants is None:
             self.fg_variants = []
-

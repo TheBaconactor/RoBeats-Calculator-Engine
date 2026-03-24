@@ -28,6 +28,8 @@ from ...core.constants import (
     ELEMENTAL_GEM_SCALE,
     FG_SEARCH_RADIUS,
     FEVER_FILL_BASE_RATE,
+    FEVER_TIME_SCALE,
+    FEVER_TIME_OFFSET,
 )
 from ...core.color_flags import build_color_flags
 from ...core.utils import safe_int, safe_float, stats_signature
@@ -101,12 +103,15 @@ def _fg_config_to_counts(config: object) -> list[int]:
     return out
 
 
-def summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song: dict, fg_data: dict, ref_arrays: dict) -> int | None:
+def summarize_hitsim_offset_deltas_ms_for_fg_variant(
+    calc_song: dict, fg_data: dict, ref_arrays: dict
+) -> list[int] | None:
     """
-    Return a single signed ms offset (vs chart time) for the note that activates the *first* FG fever window.
+    Return a list of signed ms offsets (vs chart time) for the notes that activate *each* FG fever window.
 
-    Intended for persistence/analysis as:
-      ForceGreats.hitsim_offset_delta_ms = +X / -Y
+    The i-th entry corresponds to the activation note at the end of non-fever section i. For each section,
+    the effective activation time is:
+      max(simulated_hit_time, carry_time_from_forced_great_candidates)
 
     Returns None when HumanHitSim timing data is not available.
     """
@@ -176,12 +181,13 @@ def summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song: dict, fg_data: di
         return None
 
     chart_ms = _floor_to_int_ms(np.asarray(chart_ts, dtype=np.float32))
-    cand_ms = _floor_to_int_ms(np.asarray(great_candidates, dtype=np.float32))
-    song_ms = _floor_to_int_ms(np.asarray(timestamps, dtype=np.float32))
-    n = min(int(chart_ms.shape[0]), int(cand_ms.shape[0]), total_notes)
+    cand_ms = _floor_to_int_ms(great_candidates)
+    song_ms = _floor_to_int_ms(timestamps)
+    n = min(int(chart_ms.shape[0]), int(cand_ms.shape[0]), int(song_ms.shape[0]), int(total_notes))
     if n <= 0:
         return None
 
+    deltas: list[int] = []
     for detail in section_details or []:
         try:
             section_start = int(detail.get("start_idx", 0) or 0)
@@ -200,10 +206,9 @@ def summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song: dict, fg_data: di
         if end_normal < 0:
             end_normal = 0
         if end_normal >= n:
-            return None
-        carry_time_ms = 0
+            break
 
-        # Compute carry_time based on the carry-driving note for this section.
+        carry_time_ms = 0
         if forced > 0:
             skip_wasted = bool(detail.get("skip_wasted"))
             forced_start = section_start + (0 if skip_wasted else 1)
@@ -217,17 +222,16 @@ def summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song: dict, fg_data: di
                 if cand_t_ms > carry_time_ms:
                     carry_time_ms = cand_t_ms
 
-        # Fever start time is the later of the perfect-event time and any carry-driven delay.
         start_time_ms = int(song_ms[end_normal])
         effective_start_ms = int(carry_time_ms) if carry_time_ms > start_time_ms else int(start_time_ms)
-        return int(effective_start_ms) - int(chart_ms[end_normal])
+        deltas.append(int(effective_start_ms) - int(chart_ms[end_normal]))
 
-    return None
+    return deltas or None
 
 
-def summarize_hitsim_offset_delta_ms_for_base(calc_song: dict, base_data: dict, ref_arrays: dict) -> int | None:
+def summarize_hitsim_offset_deltas_ms_for_base(calc_song: dict, base_data: dict, ref_arrays: dict) -> list[int] | None:
     """
-    Return a signed ms offset (vs chart time) for the note that activates the *first* base fever window.
+    Return a list of signed ms offsets (vs chart time) for the notes that activate *each* base fever window.
 
     This only applies when HumanHitSim.ApplyTo=ALL (timestamps are simulated).
     """
@@ -258,25 +262,73 @@ def summarize_hitsim_offset_delta_ms_for_base(calc_song: dict, base_data: dict, 
 
     try:
         fever_fill_rate = lookup_reference_py(stats["Fever Fill Rate"], ref_arrays["Fever Fill Rate"], TOTAL_ROWS)
+        fever_time_stat = lookup_reference_py(stats["Fever Time"], ref_arrays["Fever Time"], TOTAL_ROWS)
     except Exception:
         return None
 
     long_notes = safe_int(meta0.get("Long Notes"), 0)
-    non_fever_cas = (total_notes - long_notes) * FEVER_FILL_BASE_RATE
-    non_fever_base = ceil(non_fever_cas * fever_fill_rate)
 
-    notes_to_fill = non_fever_base - 1
-    end_normal_idx = min(int(notes_to_fill), total_notes)
-    if end_normal_idx <= 0:
-        return None
+    base_ts = song_data.get("timestamps", timestamps)
+    try:
+        default_last_note = float(base_ts[-1]) if len(base_ts) else 0.0
+    except Exception:
+        default_last_note = 0.0
+    last_note_time = safe_float(meta0.get("Last Note Time"), default_last_note)
 
     chart_ms = _floor_to_int_ms(np.asarray(chart_ts, dtype=np.float32))
-    sim_ms = _floor_to_int_ms(np.asarray(timestamps, dtype=np.float32))
-    n = min(int(chart_ms.shape[0]), int(sim_ms.shape[0]), total_notes)
-    if end_normal_idx >= n:
+    sim_ms = _floor_to_int_ms(timestamps)
+    n = min(int(chart_ms.shape[0]), int(sim_ms.shape[0]), int(total_notes))
+    if n <= 0:
         return None
 
-    return int(sim_ms[end_normal_idx]) - int(chart_ms[end_normal_idx])
+    deltas: list[int] = []
+
+    # Avoid calling the ForceGreats timeline JIT in DB/persistence paths; base fever stepping is small
+    # and can be computed exactly here via searchsorted (matches `fever_timeline.calculate_fever_timeline_indices`).
+    non_fever_cas = (total_notes - long_notes) * FEVER_FILL_BASE_RATE
+    if non_fever_cas < 0.0:
+        non_fever_cas = 0.0
+
+    try:
+        non_fever_base = int(ceil(float(non_fever_cas) * float(fever_fill_rate)))
+    except Exception:
+        return None
+
+    try:
+        fever_time_cas = float(last_note_time) * float(FEVER_TIME_SCALE) + float(FEVER_TIME_OFFSET)
+        real_fever_time = float(fever_time_cas) * float(fever_time_stat)
+    except Exception:
+        return None
+
+    current_note_idx = 0
+    fever_section = 0
+    while int(current_note_idx) < int(total_notes):
+        fever_section += 1
+        notes_to_fill = int(non_fever_base) - 1 if fever_section == 1 else int(non_fever_base)
+
+        end_normal_idx = int(min(int(current_note_idx) + int(notes_to_fill), int(total_notes)))
+        current_note_idx = end_normal_idx
+        if int(current_note_idx) >= int(total_notes):
+            break
+
+        if int(current_note_idx) <= 0:
+            break
+
+        if int(current_note_idx) >= int(n):
+            break
+
+        a = int(current_note_idx)
+        deltas.append(int(sim_ms[a]) - int(chart_ms[a]))
+
+        start_time = float(timestamps[a])
+        end_time = float(start_time) + float(real_fever_time)
+        try:
+            fever_end_idx = int(np.searchsorted(timestamps, end_time, side="left"))
+        except Exception:
+            break
+        current_note_idx = fever_end_idx
+
+    return deltas or None
 
 
 def _get_fg_timeline_buffers(total_notes: int):

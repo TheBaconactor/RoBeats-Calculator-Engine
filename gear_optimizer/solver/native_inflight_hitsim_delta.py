@@ -6,20 +6,26 @@ from gear_optimizer.core.utils import safe_int
 def _attach_hitsim_delta_for_base(best_data: dict | None, calc_song: dict | None, ref_arrays: dict | None) -> None:
     if not isinstance(best_data, dict) or not best_data:
         return
-    if "hitsim_offset_delta_ms" in best_data:
+    if "hitsim_offset_deltas_ms" in best_data:
         try:
-            if best_data.get("hitsim_offset_delta_ms") is not None:
+            if best_data.get("hitsim_offset_deltas_ms") is not None:
                 return
         except Exception:
             return
     if not isinstance(calc_song, dict) or not isinstance(ref_arrays, dict):
         return
     try:
-        from gear_optimizer.solver.scoring.force_greats import summarize_hitsim_offset_delta_ms_for_base
+        from gear_optimizer.solver.scoring.force_greats import summarize_hitsim_offset_deltas_ms_for_base
 
-        delta_ms = summarize_hitsim_offset_delta_ms_for_base(calc_song, best_data, ref_arrays)
-        if delta_ms is not None:
-            best_data["hitsim_offset_delta_ms"] = int(delta_ms)
+        deltas = summarize_hitsim_offset_deltas_ms_for_base(calc_song, best_data, ref_arrays)
+        if deltas:
+            try:
+                deltas_out = [int(x) for x in deltas]
+            except Exception:
+                deltas_out = []
+            if deltas_out:
+                best_data["hitsim_offset_deltas_ms"] = deltas_out
+                best_data.pop("hitsim_offset_delta_ms", None)
     except Exception:
         return
 
@@ -71,11 +77,11 @@ def _attach_hitsim_delta_for_fg_variant(
         return
 
     try:
-        from gear_optimizer.solver.scoring.force_greats import summarize_hitsim_offset_delta_ms_for_fg_variant
+        from gear_optimizer.solver.scoring.force_greats import summarize_hitsim_offset_deltas_ms_for_fg_variant
     except Exception:
         return
 
-    delta_cache: dict[tuple[int, int, tuple[int, ...]], int] = {}
+    delta_cache: dict[tuple[int, int, tuple[int, ...]], tuple[int, ...]] = {}
     for variant in fg_variants or []:
         if not isinstance(variant, dict):
             continue
@@ -91,7 +97,13 @@ def _attach_hitsim_delta_for_fg_variant(
         fg_meta = fg_data.get("ForceGreats") or {}
         if not isinstance(fg_meta, dict):
             continue
-        if fg_meta.get("hitsim_offset_delta_ms") is not None:
+
+        existing_deltas = fg_meta.get("hitsim_offset_deltas_ms")
+        if isinstance(existing_deltas, (list, tuple)) and existing_deltas:
+            if "hitsim_offset_delta_ms" in fg_meta:
+                fg_meta_out = dict(fg_meta)
+                fg_meta_out.pop("hitsim_offset_delta_ms", None)
+                fg_data["ForceGreats"] = fg_meta_out
             continue
 
         forced_counts = _nonfever_counts_from_config_for_hitsim(fg_meta.get("config") or {})
@@ -108,27 +120,38 @@ def _attach_hitsim_delta_for_fg_variant(
         ft_stat = safe_int(stats.get("Fever Time", 0), 0)
         cache_key = (int(ff_stat), int(ft_stat), tuple(int(x) for x in forced_counts))
 
-        delta_ms = delta_cache.get(cache_key)
-        if delta_ms is None:
+        deltas_t = delta_cache.get(cache_key)
+        if deltas_t is None:
             try:
-                computed = summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song, fg_data, ref_arrays)
+                computed = summarize_hitsim_offset_deltas_ms_for_fg_variant(calc_song, fg_data, ref_arrays)
             except Exception:
                 computed = None
-            if computed is None:
+            if not computed:
                 continue
-            delta_ms = int(computed)
-            delta_cache[cache_key] = int(delta_ms)
+            try:
+                deltas_t = tuple(int(x) for x in computed)
+            except Exception:
+                deltas_t = None
+            if not deltas_t:
+                continue
+            delta_cache[cache_key] = deltas_t
 
         fg_meta_out = dict(fg_meta)
-        fg_meta_out["hitsim_offset_delta_ms"] = int(delta_ms)
+        if fg_meta_out.get("hitsim_offset_deltas_ms") is None:
+            fg_meta_out["hitsim_offset_deltas_ms"] = list(deltas_t)
+        fg_meta_out.pop("hitsim_offset_delta_ms", None)
         fg_data["ForceGreats"] = fg_meta_out
 
         details_obj = fg_data.get("details")
         if isinstance(details_obj, dict):
             fg_det = details_obj.get("ForceGreats")
-            if isinstance(fg_det, dict) and fg_det.get("hitsim_offset_delta_ms") is None:
+            if isinstance(fg_det, dict) and (
+                fg_det.get("hitsim_offset_deltas_ms") is None
+            ):
                 fg_det_out = dict(fg_det)
-                fg_det_out["hitsim_offset_delta_ms"] = int(delta_ms)
+                if fg_det_out.get("hitsim_offset_deltas_ms") is None:
+                    fg_det_out["hitsim_offset_deltas_ms"] = list(deltas_t)
+                fg_det_out.pop("hitsim_offset_delta_ms", None)
                 details_out = dict(details_obj)
                 details_out["ForceGreats"] = fg_det_out
                 fg_data["details"] = details_out

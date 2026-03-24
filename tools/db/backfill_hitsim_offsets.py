@@ -4,8 +4,8 @@ Backfill missing HumanHitSim offset deltas into frontend-facing DB rows.
 Problem this fixes
 ------------------
 Older DB rows can be missing:
-  - `force_details_json["ForceGreats"]["hitsim_offset_delta_ms"]` (FG offset delta), and/or
-  - `details_json["hitsim_offset_delta_ms"]` (base offset delta; only meaningful for ApplyTo=ALL).
+  - `force_details_json["ForceGreats"]["hitsim_offset_deltas_ms"]` (FG per-window offset deltas), and/or
+  - `details_json["hitsim_offset_deltas_ms"]` (base per-window offset deltas; only meaningful for ApplyTo=ALL).
 
 Newer optimizer runs already persist these fields, but existing DBs may still
 have gaps, which makes "new songs" / top51 outputs appear to lack the delta.
@@ -58,8 +58,8 @@ from gear_optimizer.data.database import get_evolution_db_path
 from gear_optimizer.pipeline.song_processor import _build_base_calc_song_from_file, scan_song_header
 from gear_optimizer.solver.hit_simulation import apply_human_hit_sim
 from gear_optimizer.solver.scoring.force_greats import (
-    summarize_hitsim_offset_delta_ms_for_base,
-    summarize_hitsim_offset_delta_ms_for_fg_variant,
+    summarize_hitsim_offset_deltas_ms_for_base,
+    summarize_hitsim_offset_deltas_ms_for_fg_variant,
 )
 
 
@@ -236,13 +236,13 @@ def _iter_target_rows(conn: sqlite3.Connection, *, song_filter: str = "") -> tup
         if not isinstance(details, dict):
             continue
 
-        needs_base = "hitsim_offset_delta_ms" not in details or details.get("hitsim_offset_delta_ms") is None
+        needs_base = details.get("hitsim_offset_deltas_ms") is None
 
         needs_force = False
         if isinstance(force, dict):
             fg_meta = force.get("ForceGreats")
             if isinstance(fg_meta, dict) and fg_meta.get("config"):
-                needs_force = "hitsim_offset_delta_ms" not in fg_meta or fg_meta.get("hitsim_offset_delta_ms") is None
+                needs_force = fg_meta.get("hitsim_offset_deltas_ms") is None
 
         if not (needs_base or needs_force):
             continue
@@ -280,7 +280,7 @@ def _iter_target_rows(conn: sqlite3.Connection, *, song_filter: str = "") -> tup
         fg_meta = force.get("ForceGreats")
         if not isinstance(fg_meta, dict) or not fg_meta.get("config"):
             continue
-        if ("hitsim_offset_delta_ms" in fg_meta) and (fg_meta.get("hitsim_offset_delta_ms") is not None):
+        if fg_meta.get("hitsim_offset_deltas_ms") is not None:
             continue
 
         fg_rows.append(
@@ -456,8 +456,8 @@ def main() -> int:
             # No hitsim => cannot compute offset deltas.
             continue
 
-        base_ff_cache: dict[int, int] = {}
-        fg_delta_cache: dict[tuple[int, int, tuple[int, ...]], int] = {}
+        base_deltas_cache: dict[tuple[int, int], tuple[int, ...]] = {}
+        fg_deltas_cache: dict[tuple[int, int, tuple[int, ...]], tuple[int, ...]] = {}
 
         # Base view rows (team_buff_loadouts).
         for e in per_song_base.get(song_name, []):
@@ -472,19 +472,26 @@ def main() -> int:
                 stats = details.get("Stats")
                 if isinstance(stats, dict) and stats:
                     ff_stat = _coerce_int(stats.get("Fever Fill Rate", 0), 0)
-                    delta_ms = base_ff_cache.get(ff_stat)
-                    if delta_ms is None:
+                    ft_stat = _coerce_int(stats.get("Fever Time", 0), 0)
+                    cache_key = (int(ff_stat), int(ft_stat))
+                    deltas_t = base_deltas_cache.get(cache_key)
+                    if deltas_t is None:
                         base_data = {"Stats": stats}
                         try:
-                            computed = summarize_hitsim_offset_delta_ms_for_base(calc_song, base_data, ref_arrays)
+                            computed = summarize_hitsim_offset_deltas_ms_for_base(calc_song, base_data, ref_arrays)
                         except Exception:
                             computed = None
-                        if computed is not None:
-                            delta_ms = int(computed)
-                            base_ff_cache[ff_stat] = int(delta_ms)
-                    if delta_ms is not None:
+                        if computed:
+                            try:
+                                deltas_t = tuple(int(x) for x in computed)
+                            except Exception:
+                                deltas_t = None
+                            if deltas_t:
+                                base_deltas_cache[cache_key] = deltas_t
+                    if deltas_t:
                         details = dict(details)
-                        details["hitsim_offset_delta_ms"] = int(delta_ms)
+                        details.pop("hitsim_offset_delta_ms", None)
+                        details["hitsim_offset_deltas_ms"] = list(deltas_t)
                         details_changed = True
                         filled_base += 1
 
@@ -499,20 +506,25 @@ def main() -> int:
                             ft_stat = _coerce_int(stats.get("Fever Time", 0), 0)
                             cache_key = (int(ff_stat), int(ft_stat), tuple(int(x) for x in counts))
 
-                            delta_ms = fg_delta_cache.get(cache_key)
-                            if delta_ms is None:
+                            deltas_t = fg_deltas_cache.get(cache_key)
+                            if deltas_t is None:
                                 try:
-                                    computed = summarize_hitsim_offset_delta_ms_for_fg_variant(
+                                    computed = summarize_hitsim_offset_deltas_ms_for_fg_variant(
                                         calc_song, {"ForceGreats": fg_meta, "Stats": stats}, ref_arrays
                                     )
                                 except Exception:
                                     computed = None
-                                if computed is not None:
-                                    delta_ms = int(computed)
-                                    fg_delta_cache[cache_key] = int(delta_ms)
-                            if delta_ms is not None:
+                                if computed:
+                                    try:
+                                        deltas_t = tuple(int(x) for x in computed)
+                                    except Exception:
+                                        deltas_t = None
+                                    if deltas_t:
+                                        fg_deltas_cache[cache_key] = deltas_t
+                            if deltas_t:
                                 fg_meta = dict(fg_meta)
-                                fg_meta["hitsim_offset_delta_ms"] = int(delta_ms)
+                                fg_meta.pop("hitsim_offset_delta_ms", None)
+                                fg_meta["hitsim_offset_deltas_ms"] = list(deltas_t)
                                 force_obj = dict(force_obj)
                                 force_obj["ForceGreats"] = fg_meta
                                 force_changed = True
@@ -522,7 +534,8 @@ def main() -> int:
                                 det_fg = details.get("ForceGreats")
                                 if isinstance(det_fg, dict):
                                     det_fg_out = dict(det_fg)
-                                    det_fg_out.setdefault("hitsim_offset_delta_ms", int(delta_ms))
+                                    det_fg_out.pop("hitsim_offset_delta_ms", None)
+                                    det_fg_out.setdefault("hitsim_offset_deltas_ms", list(deltas_t))
                                     details["ForceGreats"] = det_fg_out
                                     details_changed = True
 
@@ -552,22 +565,27 @@ def main() -> int:
             ft_stat = _coerce_int(stats.get("Fever Time", 0), 0)
             cache_key = (int(ff_stat), int(ft_stat), tuple(int(x) for x in counts))
 
-            delta_ms = fg_delta_cache.get(cache_key)
-            if delta_ms is None:
+            deltas_t = fg_deltas_cache.get(cache_key)
+            if deltas_t is None:
                 try:
-                    computed = summarize_hitsim_offset_delta_ms_for_fg_variant(
+                    computed = summarize_hitsim_offset_deltas_ms_for_fg_variant(
                         calc_song, {"ForceGreats": fg_meta, "Stats": stats}, ref_arrays
                     )
                 except Exception:
                     computed = None
-                if computed is not None:
-                    delta_ms = int(computed)
-                    fg_delta_cache[cache_key] = int(delta_ms)
-            if delta_ms is None:
+                if computed:
+                    try:
+                        deltas_t = tuple(int(x) for x in computed)
+                    except Exception:
+                        deltas_t = None
+                    if deltas_t:
+                        fg_deltas_cache[cache_key] = deltas_t
+            if not deltas_t:
                 continue
 
             fg_meta_out = dict(fg_meta)
-            fg_meta_out["hitsim_offset_delta_ms"] = int(delta_ms)
+            fg_meta_out.pop("hitsim_offset_delta_ms", None)
+            fg_meta_out["hitsim_offset_deltas_ms"] = list(deltas_t)
             force_out = dict(force_obj)
             force_out["ForceGreats"] = fg_meta_out
 
@@ -575,7 +593,8 @@ def main() -> int:
             det_fg = details_out.get("ForceGreats")
             if isinstance(det_fg, dict):
                 det_fg_out = dict(det_fg)
-                det_fg_out.setdefault("hitsim_offset_delta_ms", int(delta_ms))
+                det_fg_out.pop("hitsim_offset_delta_ms", None)
+                det_fg_out.setdefault("hitsim_offset_deltas_ms", list(deltas_t))
                 details_out["ForceGreats"] = det_fg_out
 
             fg_updates.append(

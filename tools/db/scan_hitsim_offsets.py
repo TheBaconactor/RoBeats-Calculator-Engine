@@ -26,10 +26,10 @@ def _coerce_int(v: object, default: int = 0) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Scan DB for max HumanHitSim forced-Great timing offsets.")
+    parser = argparse.ArgumentParser(description="Scan DB for max HumanHitSim forced-Great per-window timing offsets.")
     parser.add_argument("--db", default="evolution.db")
     parser.add_argument("--team-buff", default="T5", help="Filter team buff tier (e.g., T5). Use ALL for no filter.")
-    parser.add_argument("--top", type=int, default=20, help="Print top-N songs by |offset|.")
+    parser.add_argument("--top", type=int, default=20, help="Print top-N songs by max |offset| across windows.")
     parser.add_argument(
         "--include-non-improving",
         action="store_true",
@@ -100,11 +100,26 @@ def main() -> int:
             if not isinstance(fg, dict):
                 missing_timing += 1
                 continue
-            signed_ms = _coerce_int(fg.get("hitsim_offset_delta_ms"), 0)
-            if signed_ms == 0 and "hitsim_offset_delta_ms" not in fg:
+            deltas = fg.get("hitsim_offset_deltas_ms")
+            if not isinstance(deltas, (list, tuple)) or not deltas:
                 missing_timing += 1
                 continue
-            abs_ms = abs(int(signed_ms))
+            best_signed = None
+            best_abs = None
+            for v in deltas:
+                try:
+                    signed = int(v)
+                except Exception:
+                    continue
+                a = abs(int(signed))
+                if best_abs is None or a > best_abs:
+                    best_abs = int(a)
+                    best_signed = int(signed)
+            if best_abs is None or best_signed is None:
+                missing_timing += 1
+                continue
+            abs_ms = int(best_abs)
+            signed_ms = int(best_signed)
 
             hits.append(
                 {
@@ -118,7 +133,7 @@ def main() -> int:
             )
 
         if not hits:
-            print(f"Scanned {total} songs from `{source}`; no rows with ForceGreats.hitsim_offset_delta_ms found.")
+            print(f"Scanned {total} songs from `{source}`; no rows with ForceGreats.hitsim_offset_deltas_ms found.")
             print("Tip: run the optimizer with HumanHitSim enabled and an improving FG result to populate this field.")
             return 0
 

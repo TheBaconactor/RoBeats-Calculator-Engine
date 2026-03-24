@@ -430,23 +430,33 @@ class AsyncDbSaver:
                             details["attempts_first"] = attempts_first
                             e["details"] = details
 
-                    # Backfill base HitSim delta for all persisted base rows (top51).
+                    # Backfill base HitSim per-window deltas for all persisted base rows (top51).
                     #
                     # Why:
-                    # - The frontend expects `details_json.hitsim_offset_delta_ms` for every retained base row.
+                    # - The frontend expects `details_json.hitsim_offset_deltas_ms` for every retained base row.
                     # - TeamBuff tier postprocess intentionally excludes T5 recomputation, so missing values
                     #   in the base entries would otherwise remain null (common in native in-flight mode).
                     #
-                    # NOTE: This computes the delta from `details["Stats"]` (FFR) + a per-run calc_song
+                    # NOTE: This computes the deltas from `details["Stats"]` (FFR, FT) + a per-run calc_song
                     # (HumanHitSim applied). It does not modify scores.
                     try:
-                        needs_hitsim = False
+                        needs_base_hitsim = False
+                        needs_fg_hitsim = False
                         for e in entries or []:
                             if not isinstance(e, dict):
                                 continue
                             det0 = e.get("details")
-                            if isinstance(det0, dict) and det0.get("hitsim_offset_delta_ms") is None:
-                                needs_hitsim = True
+                            if isinstance(det0, dict) and det0.get("hitsim_offset_deltas_ms") is None:
+                                needs_base_hitsim = True
+                            force0 = e.get("force")
+                            if isinstance(force0, dict):
+                                fg0 = force0.get("ForceGreats") or {}
+                                if isinstance(fg0, dict):
+                                    if fg0.get("hitsim_offset_deltas_ms") is None:
+                                        cfg0 = fg0.get("config")
+                                        if isinstance(cfg0, dict) and cfg0:
+                                            needs_fg_hitsim = True
+                            if needs_base_hitsim and needs_fg_hitsim:
                                 break
 
                         human_cfg = cfg_dict.get("HumanHitSim") if isinstance(cfg_dict, dict) else None
@@ -462,11 +472,13 @@ class AsyncDbSaver:
                         enabled_all = str(enabled_raw or "").strip().lower() in TRUTHY_ENV_VALUES
                         apply_to_all = str(apply_to or "").strip().upper() == "ALL"
 
-                        if needs_hitsim and enabled_all and apply_to_all and file_path:
+                        needs_hitsim_any = bool(needs_base_hitsim or needs_fg_hitsim)
+
+                        if needs_hitsim_any and enabled_all and apply_to_all and file_path:
                             from gear_optimizer.pipeline.song_processor import clone_calc_song, get_base_calc_song
                             from gear_optimizer.solver.hit_simulation import apply_human_hit_sim
                             from gear_optimizer.solver.scoring.force_greats import (
-                                summarize_hitsim_offset_delta_ms_for_base,
+                                summarize_hitsim_offset_deltas_ms_for_base,
                             )
 
                             if ref_arrays is None:
@@ -498,39 +510,162 @@ class AsyncDbSaver:
                             meta0 = calc_song.get("metadata", {}) or {}
                             apply_to0 = str(meta0.get("HumanHitSimApplyTo", "") or "").strip().upper()
                             if meta0.get("HumanHitSimApplied") and apply_to0 == "ALL":
-                                delta_cache_by_ff: dict[int, int] = {}
-                                for e in entries or []:
-                                    if not isinstance(e, dict):
-                                        continue
-                                    det0 = e.get("details")
-                                    if not isinstance(det0, dict):
-                                        continue
-                                    if det0.get("hitsim_offset_delta_ms") is not None:
-                                        continue
-                                    stats0 = det0.get("Stats")
-                                    if not isinstance(stats0, dict) or not stats0:
-                                        continue
-                                    try:
-                                        ff0 = int(stats0.get("Fever Fill Rate", 0) or 0)
-                                    except Exception:
-                                        ff0 = 0
-                                    delta0 = delta_cache_by_ff.get(int(ff0))
-                                    if delta0 is None:
+                                deltas_cache_by_ff_ft: dict[tuple[int, int], tuple[int, ...]] = {}
+                                if needs_base_hitsim:
+                                    for e in entries or []:
+                                        if not isinstance(e, dict):
+                                            continue
+                                        det0 = e.get("details")
+                                        if not isinstance(det0, dict):
+                                            continue
+                                        if det0.get("hitsim_offset_deltas_ms") is not None:
+                                            continue
+                                        stats0 = det0.get("Stats")
+                                        if not isinstance(stats0, dict) or not stats0:
+                                            continue
                                         try:
-                                            computed = summarize_hitsim_offset_delta_ms_for_base(
-                                                calc_song,
-                                                {"Stats": stats0},
-                                                ref_arrays or {},
-                                            )
+                                            ff0 = int(stats0.get("Fever Fill Rate", 0) or 0)
                                         except Exception:
-                                            computed = None
-                                        if computed is not None:
-                                            delta0 = int(computed)
-                                            delta_cache_by_ff[int(ff0)] = int(delta0)
-                                    if delta0 is not None:
-                                        det_out = dict(det0)
-                                        det_out["hitsim_offset_delta_ms"] = int(delta0)
-                                        e["details"] = det_out
+                                            ff0 = 0
+                                        try:
+                                            ft0 = int(stats0.get("Fever Time", 0) or 0)
+                                        except Exception:
+                                            ft0 = 0
+
+                                        cache_key = (int(ff0), int(ft0))
+                                        deltas_t = deltas_cache_by_ff_ft.get(cache_key)
+                                        if deltas_t is None:
+                                            try:
+                                                computed = summarize_hitsim_offset_deltas_ms_for_base(
+                                                    calc_song,
+                                                    {"Stats": stats0},
+                                                    ref_arrays or {},
+                                                )
+                                            except Exception:
+                                                computed = None
+                                            if computed:
+                                                try:
+                                                    deltas_t = tuple(int(x) for x in computed)
+                                                except Exception:
+                                                    deltas_t = None
+                                                if deltas_t:
+                                                    deltas_cache_by_ff_ft[cache_key] = deltas_t
+
+                                        if deltas_t:
+                                            det_out = dict(det0)
+                                            det_out.pop("hitsim_offset_delta_ms", None)
+                                            det_out["hitsim_offset_deltas_ms"] = list(deltas_t)
+                                            e["details"] = det_out
+
+                                if needs_fg_hitsim:
+                                    try:
+                                        from gear_optimizer.solver.scoring.force_greats import (
+                                            summarize_hitsim_offset_deltas_ms_for_fg_variant,
+                                        )
+                                    except Exception:
+                                        summarize_hitsim_offset_deltas_ms_for_fg_variant = None
+
+                                    def _counts_from_config(cfg: object) -> tuple[int, ...]:
+                                        if not isinstance(cfg, dict) or not cfg:
+                                            return ()
+                                        pairs: list[tuple[int, int]] = []
+                                        for key, val in cfg.items():
+                                            if not isinstance(key, str) or not key.startswith("NonFever"):
+                                                continue
+                                            try:
+                                                idx = int(key.replace("NonFever", "").strip()) - 1
+                                            except Exception:
+                                                continue
+                                            try:
+                                                cnt = int(val or 0)
+                                            except Exception:
+                                                cnt = 0
+                                            pairs.append((idx, max(0, cnt)))
+                                        if not pairs:
+                                            return ()
+                                        pairs.sort(key=lambda x: x[0])
+                                        max_idx = pairs[-1][0]
+                                        if max_idx < 0:
+                                            return ()
+                                        out = [0] * (max_idx + 1)
+                                        for idx, cnt in pairs:
+                                            if 0 <= idx < len(out):
+                                                out[idx] = int(cnt)
+                                        if sum(out) <= 0:
+                                            return ()
+                                        return tuple(int(v) for v in out)
+
+                                    fg_deltas_cache: dict[tuple[int, int, tuple[int, ...]], tuple[int, ...]] = {}
+                                    if summarize_hitsim_offset_deltas_ms_for_fg_variant is not None:
+                                        for e in entries or []:
+                                            if not isinstance(e, dict):
+                                                continue
+                                            force0 = e.get("force")
+                                            if not isinstance(force0, dict):
+                                                continue
+                                            fg0 = force0.get("ForceGreats") or {}
+                                            if not isinstance(fg0, dict):
+                                                continue
+
+                                            existing_deltas = fg0.get("hitsim_offset_deltas_ms")
+                                            if isinstance(existing_deltas, (list, tuple)) and existing_deltas:
+                                                if "hitsim_offset_delta_ms" in fg0:
+                                                    fg_out = dict(fg0)
+                                                    fg_out.pop("hitsim_offset_delta_ms", None)
+                                                    force_out = dict(force0)
+                                                    force_out["ForceGreats"] = fg_out
+                                                    e["force"] = force_out
+                                                continue
+                                            if fg0.get("hitsim_offset_deltas_ms") is not None:
+                                                continue
+
+                                            counts = _counts_from_config(fg0.get("config") or {})
+                                            if not counts:
+                                                continue
+
+                                            det0 = e.get("details")
+                                            if not isinstance(det0, dict):
+                                                continue
+                                            stats0 = det0.get("Stats")
+                                            if not isinstance(stats0, dict) or not stats0:
+                                                continue
+
+                                            try:
+                                                ff0 = int(stats0.get("Fever Fill Rate", 0) or 0)
+                                            except Exception:
+                                                ff0 = 0
+                                            try:
+                                                ft0 = int(stats0.get("Fever Time", 0) or 0)
+                                            except Exception:
+                                                ft0 = 0
+
+                                            cache_key = (int(ff0), int(ft0), tuple(int(x) for x in counts))
+                                            deltas_t = fg_deltas_cache.get(cache_key)
+                                            if deltas_t is None:
+                                                try:
+                                                    computed = summarize_hitsim_offset_deltas_ms_for_fg_variant(
+                                                        calc_song,
+                                                        {"ForceGreats": fg0, "Stats": stats0},
+                                                        ref_arrays or {},
+                                                    )
+                                                except Exception:
+                                                    computed = None
+                                                if computed:
+                                                    try:
+                                                        deltas_t = tuple(int(x) for x in computed)
+                                                    except Exception:
+                                                        deltas_t = None
+                                                    if deltas_t:
+                                                        fg_deltas_cache[cache_key] = deltas_t
+
+                                            if deltas_t:
+                                                fg_out = dict(fg0)
+                                                fg_out["hitsim_offset_deltas_ms"] = list(deltas_t)
+                                                fg_out.pop("hitsim_offset_delta_ms", None)
+
+                                                force_out = dict(force0)
+                                                force_out["ForceGreats"] = fg_out
+                                                e["force"] = force_out
                     except Exception:
                         pass
 

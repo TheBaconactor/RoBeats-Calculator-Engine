@@ -40,7 +40,7 @@ def test_native_inflight_deferred_fg_keeps_base_details_consistent(tmp_path, mon
         "PrimaryColor": "Rush",
         "SecondaryColor": "Flow",
         "Difficulty": "Hard",
-        "hitsim_offset_delta_ms": 17,
+        "hitsim_offset_deltas_ms": [17, 18],
     }
 
     save_loadouts_batch(
@@ -93,7 +93,8 @@ def test_native_inflight_deferred_fg_keeps_base_details_consistent(tmp_path, mon
     assert fg_entries[0]["score"] == 1000
     assert fg_entries[0]["fg_score"] == 1200
     assert fg_entries[0]["details"]["Stats"] == base_stats
-    assert fg_entries[0]["details"]["hitsim_offset_delta_ms"] == 17
+    assert fg_entries[0]["details"]["hitsim_offset_deltas_ms"] == [17, 18]
+    assert "hitsim_offset_delta_ms" not in fg_entries[0]["details"]
 
     save_loadouts_batch(song_name, fg_entries)
 
@@ -119,7 +120,8 @@ def test_native_inflight_deferred_fg_keeps_base_details_consistent(tmp_path, mon
 
     stored_details = json.loads(row["details_json"])
     assert stored_details.get("Stats") == base_stats
-    assert int(stored_details.get("hitsim_offset_delta_ms", 0)) == 17
+    assert stored_details.get("hitsim_offset_deltas_ms") == [17, 18]
+    assert stored_details.get("hitsim_offset_delta_ms") is None
 
     assert fg_row is not None
     assert int(fg_row["score"]) == 1000

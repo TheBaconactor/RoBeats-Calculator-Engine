@@ -42,6 +42,13 @@ def _normalize_force_payload(force_obj: object) -> dict:
 
     out = dict(force_obj)
 
+    # Persist only the per-window HitSim deltas; strip the legacy scalar if present.
+    fg0 = out.get("ForceGreats")
+    if isinstance(fg0, dict) and "hitsim_offset_delta_ms" in fg0:
+        fg1 = dict(fg0)
+        fg1.pop("hitsim_offset_delta_ms", None)
+        out["ForceGreats"] = fg1
+
     selected_element = get_selected_element(out, "")
     if selected_element:
         out["SelectedElement"] = selected_element
@@ -154,6 +161,64 @@ def evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score
     }
 
 
+def evaluate_progress_record_update(
+    best_data,
+    prev_record,
+    fg_variants,
+    *,
+    db_best_fg_score=None,
+    baseline_valid: bool = True,
+    fg_only: bool = False,
+) -> dict | None:
+    """
+    Progress/UI-safe record evaluation.
+
+    `baseline_valid=False` means the DB baseline could not be read reliably
+    (for example, a strict read hit a temporary lock). In that case we fail
+    closed and suppress `record_update` so the NEW counter cannot over-report.
+    """
+    if not baseline_valid:
+        score = 0
+        if isinstance(best_data, dict):
+            score = _safe_int_force(best_data.get("BaseScore") or best_data.get("Score", 0), 0)
+        best_fg_score_run = 0
+        if fg_only:
+            for fg_entry in fg_variants or []:
+                if not isinstance(fg_entry, dict):
+                    continue
+                if not _has_valid_fg_config(fg_entry):
+                    continue
+                base_score = fg_entry.get("base_score")
+                if base_score is None:
+                    base_score = fg_entry.get("score", 0)
+                base_score_i = _safe_int_force(base_score, 0)
+                fg_score_i = _safe_int_force(fg_entry.get("fg_score", 0), 0)
+                if fg_score_i > base_score_i and fg_score_i > best_fg_score_run:
+                    best_fg_score_run = fg_score_i
+        prev_fg_score = (
+            db_best_fg_score if db_best_fg_score is not None else (prev_record.get("fg_score") if prev_record else 0)
+        )
+        return {
+            "record_update": False,
+            "baseline_unavailable": True,
+            "is_first": False,
+            "is_better": False,
+            "is_fg_better": False,
+            "score": int(score),
+            "prev_score": None,
+            "best_fg_score_run": int(best_fg_score_run),
+            "prev_fg_score": int(_safe_int_force(prev_fg_score, 0)),
+        }
+
+    record_info = evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score=db_best_fg_score)
+    if not isinstance(record_info, dict):
+        return None
+    if fg_only:
+        record_info = dict(record_info)
+        record_info["record_update"] = bool(record_info.get("is_fg_better"))
+    return record_info
+
+
 def make_build_details_fn(
     primary_color: str, secondary_color: str, effective_difficulty: str
 ) -> Callable[[dict], dict]:
@@ -172,11 +237,17 @@ def make_build_details_fn(
     def build_details(data_dict: dict) -> dict:
         if not isinstance(data_dict, dict) or not data_dict:
             return {}
-        hitsim_delta = data_dict.get("hitsim_offset_delta_ms")
-        try:
-            hitsim_delta = int(hitsim_delta) if hitsim_delta is not None else None
-        except Exception:
-            hitsim_delta = None
+        hitsim_deltas_ms_raw = data_dict.get("hitsim_offset_deltas_ms")
+        hitsim_deltas_ms: list[int] | None = None
+        if isinstance(hitsim_deltas_ms_raw, (list, tuple)):
+            tmp: list[int] = []
+            for v in hitsim_deltas_ms_raw:
+                try:
+                    tmp.append(int(v))
+                except Exception:
+                    continue
+            if tmp:
+                hitsim_deltas_ms = tmp
         selected_element = get_selected_element(data_dict, "")
         stats_obj = data_dict.get("Stats")
         if not (isinstance(stats_obj, dict) and stats_obj) and callable(materialize_stats_from_payload):
@@ -200,7 +271,7 @@ def make_build_details_fn(
             "SecondaryColor": secondary_color,
             "Difficulty": effective_difficulty,
             "ForceGreats": data_dict.get("ForceGreats", {}),
-            "hitsim_offset_delta_ms": hitsim_delta,
+            "hitsim_offset_deltas_ms": hitsim_deltas_ms,
         }
 
     return build_details
@@ -467,9 +538,183 @@ def build_persistence_entries(
 
     persist_entries = []
     seen_hashes: set[str] = set()
-    # PERF: Base HitSim delta depends only on the stats' Fever Fill Rate and the song's
-    # simulated timing (HumanHitSim.ApplyTo=ALL). Cache per FFR stat value.
-    _hitsim_base_delta_cache: dict[int, int] = {}
+    # PERF: Base HitSim per-window deltas depend only on (FFR, FT) + the song's simulated timing
+    # (HumanHitSim.ApplyTo=ALL). Cache per (FFR, FT) stat pair.
+    _hitsim_base_deltas_cache: dict[tuple[int, int], tuple[int, ...]] = {}
+    # PERF: FG HitSim per-window deltas depend on (FFR, FT, NonFever counts) + the song's simulated timing.
+    _hitsim_fg_deltas_cache: dict[tuple[int, int, tuple[int, ...]], tuple[int, ...]] = {}
+
+    def _maybe_backfill_base_hitsim_deltas(details_obj: dict) -> dict:
+        if not (calc_song is not None and ref_arrays is not None and isinstance(details_obj, dict)):
+            return details_obj
+
+        existing_deltas = details_obj.get("hitsim_offset_deltas_ms")
+        if isinstance(existing_deltas, (list, tuple)) and existing_deltas:
+            # Strip legacy scalar if present on old rows.
+            if "hitsim_offset_delta_ms" in details_obj:
+                out0 = dict(details_obj)
+                out0.pop("hitsim_offset_delta_ms", None)
+                return out0
+            return details_obj
+
+        meta0 = (calc_song.get("metadata") or {}) if isinstance(calc_song, dict) else {}
+        apply_to = str(meta0.get("HumanHitSimApplyTo", "") or "").strip().upper()
+        if not (meta0.get("HumanHitSimApplied") and apply_to == "ALL"):
+            return details_obj
+
+        stats_obj = details_obj.get("Stats")
+        if not isinstance(stats_obj, dict) or not stats_obj:
+            return details_obj
+
+        try:
+            ff_stat = int(stats_obj.get("Fever Fill Rate", 0) or 0)
+        except Exception:
+            ff_stat = 0
+        try:
+            ft_stat = int(stats_obj.get("Fever Time", 0) or 0)
+        except Exception:
+            ft_stat = 0
+
+        cache_key = (int(ff_stat), int(ft_stat))
+        deltas_t = _hitsim_base_deltas_cache.get(cache_key)
+        if deltas_t is None:
+            try:
+                from ...solver.scoring.force_greats import summarize_hitsim_offset_deltas_ms_for_base
+
+                computed = summarize_hitsim_offset_deltas_ms_for_base(calc_song, {"Stats": stats_obj}, ref_arrays)
+            except Exception:
+                computed = None
+            if computed:
+                try:
+                    deltas_t = tuple(int(x) for x in computed)
+                except Exception:
+                    deltas_t = None
+                if deltas_t:
+                    _hitsim_base_deltas_cache[cache_key] = deltas_t
+
+        if not deltas_t:
+            return details_obj
+
+        out = dict(details_obj)
+        out.pop("hitsim_offset_delta_ms", None)
+        out["hitsim_offset_deltas_ms"] = list(deltas_t)
+        return out
+
+    def _nonfever_counts_from_config_for_hitsim(config: object) -> tuple[int, ...]:
+        if not isinstance(config, dict) or not config:
+            return ()
+        pairs: list[tuple[int, int]] = []
+        for key, val in config.items():
+            if not isinstance(key, str) or not key.startswith("NonFever"):
+                continue
+            try:
+                idx = int(key.replace("NonFever", "").strip()) - 1
+            except Exception:
+                continue
+            try:
+                cnt = int(val or 0)
+            except Exception:
+                cnt = 0
+            pairs.append((idx, max(0, cnt)))
+        if not pairs:
+            return ()
+        pairs.sort(key=lambda x: x[0])
+        max_idx = pairs[-1][0]
+        if max_idx < 0:
+            return ()
+        out = [0] * (max_idx + 1)
+        for idx, cnt in pairs:
+            if 0 <= idx < len(out):
+                out[idx] = int(cnt)
+        if sum(out) <= 0:
+            return ()
+        return tuple(int(v) for v in out)
+
+    def _maybe_backfill_fg_hitsim_deltas(force_obj: dict, *, stats_obj: dict) -> dict:
+        if not (calc_song is not None and ref_arrays is not None and isinstance(force_obj, dict) and isinstance(stats_obj, dict)):
+            return force_obj
+
+        meta0 = (calc_song.get("metadata") or {}) if isinstance(calc_song, dict) else {}
+        apply_to = str(meta0.get("HumanHitSimApplyTo", "") or "").strip().upper()
+        if not (meta0.get("HumanHitSimApplied") and apply_to == "ALL"):
+            return force_obj
+
+        fg_meta = force_obj.get("ForceGreats") or {}
+        if not isinstance(fg_meta, dict):
+            return force_obj
+
+        existing_deltas = fg_meta.get("hitsim_offset_deltas_ms")
+        if isinstance(existing_deltas, (list, tuple)) and existing_deltas:
+            if "hitsim_offset_delta_ms" in fg_meta:
+                fg_meta_out = dict(fg_meta)
+                fg_meta_out.pop("hitsim_offset_delta_ms", None)
+                out0 = dict(force_obj)
+                out0["ForceGreats"] = fg_meta_out
+                return out0
+            return force_obj
+        if fg_meta.get("hitsim_offset_deltas_ms") is not None:
+            return force_obj
+
+        forced_counts = _nonfever_counts_from_config_for_hitsim(fg_meta.get("config") or {})
+        if not forced_counts:
+            return force_obj
+
+        try:
+            ff_stat = int(stats_obj.get("Fever Fill Rate", 0) or 0)
+        except Exception:
+            ff_stat = 0
+        try:
+            ft_stat = int(stats_obj.get("Fever Time", 0) or 0)
+        except Exception:
+            ft_stat = 0
+
+        cache_key = (int(ff_stat), int(ft_stat), tuple(int(x) for x in forced_counts))
+        deltas_t = _hitsim_fg_deltas_cache.get(cache_key)
+        if deltas_t is None:
+            try:
+                from ...solver.scoring.force_greats import summarize_hitsim_offset_deltas_ms_for_fg_variant
+
+                computed = summarize_hitsim_offset_deltas_ms_for_fg_variant(
+                    calc_song,
+                    {"ForceGreats": fg_meta, "Stats": stats_obj},
+                    ref_arrays,
+                )
+            except Exception:
+                computed = None
+            if computed:
+                try:
+                    deltas_t = tuple(int(x) for x in computed)
+                except Exception:
+                    deltas_t = None
+                if deltas_t:
+                    _hitsim_fg_deltas_cache[cache_key] = deltas_t
+
+        if not deltas_t:
+            return force_obj
+
+        fg_meta_out = dict(fg_meta)
+        if fg_meta_out.get("hitsim_offset_deltas_ms") is None:
+            fg_meta_out["hitsim_offset_deltas_ms"] = list(deltas_t)
+        fg_meta_out.pop("hitsim_offset_delta_ms", None)
+
+        out = dict(force_obj)
+        out["ForceGreats"] = fg_meta_out
+
+        # Keep the nested details shape consistent when present (some consumers inspect it).
+        nested0 = out.get("details")
+        if isinstance(nested0, dict):
+            nested_out = dict(nested0)
+            nested_out.pop("hitsim_offset_delta_ms", None)
+            nested_fg0 = nested_out.get("ForceGreats")
+            if isinstance(nested_fg0, dict):
+                nested_fg_out = dict(nested_fg0)
+                if nested_fg_out.get("hitsim_offset_deltas_ms") is None:
+                    nested_fg_out["hitsim_offset_deltas_ms"] = list(deltas_t)
+                nested_fg_out.pop("hitsim_offset_delta_ms", None)
+                nested_out["ForceGreats"] = nested_fg_out
+            out["details"] = nested_out
+
+        return out
 
     def _loadout_hash(gear_items, mini_items) -> str:
         try:
@@ -495,6 +740,13 @@ def build_persistence_entries(
         details_with_meta = dict(details_obj or {})
         details_with_meta["attempt_lifetime"] = attempt_lifetime
         details_with_meta["attempts_first"] = attempts_first
+        # Strip legacy HitSim scalar fields (we persist the per-window list only).
+        details_with_meta.pop("hitsim_offset_delta_ms", None)
+        fg_meta0 = details_with_meta.get("ForceGreats")
+        if isinstance(fg_meta0, dict) and "hitsim_offset_delta_ms" in fg_meta0:
+            fg_meta1 = dict(fg_meta0)
+            fg_meta1.pop("hitsim_offset_delta_ms", None)
+            details_with_meta["ForceGreats"] = fg_meta1
 
         force_out = _normalize_force_payload(force_obj) if isinstance(force_obj, dict) else force_obj
 
@@ -511,11 +763,14 @@ def build_persistence_entries(
 
     # Top 1 (base) - store with its OWN fg_score and force data (if available)
     # This ensures the force_details_json matches the loadout gear
+    top1_details = db_payload.get("details", {})
+    if isinstance(top1_details, dict):
+        top1_details = _maybe_backfill_base_hitsim_deltas(top1_details)
     _append_entry(
         db_payload.get("score", 0),
         db_payload.get("gear", []),
         db_payload.get("minis", []),
-        db_payload.get("details", {}),
+        top1_details,
         db_payload.get("fg_score", 0),
         db_payload.get("force"),  # This comes from top1's own FG, not global best
     )
@@ -549,6 +804,8 @@ def build_persistence_entries(
         best_fg_minis = best_fg.get("minis", [])
         best_fg_details = best_fg.get("details", {})
         best_fg_score = best_fg.get("score", 0)
+        if isinstance(best_fg_details, dict):
+            best_fg_details = _maybe_backfill_base_hitsim_deltas(best_fg_details)
 
         # Flat force payload (persisted in `force_details_json`).
         best_fg_force = best_fg.get("force") if isinstance(best_fg.get("force"), dict) else None
@@ -596,7 +853,7 @@ def build_persistence_entries(
                 calc_song is not None
                 and ref_arrays is not None
                 and isinstance(eval_details, dict)
-                and eval_details.get("hitsim_offset_delta_ms") is None
+                and eval_details.get("hitsim_offset_deltas_ms") is None
             ):
                 meta0 = (calc_song.get("metadata") or {}) if isinstance(calc_song, dict) else {}
                 apply_to = str(meta0.get("HumanHitSimApplyTo", "") or "").strip().upper()
@@ -609,22 +866,34 @@ def build_persistence_entries(
                         ff_stat = int(stats_obj.get("Fever Fill Rate", 0) or 0)
                     except Exception:
                         ff_stat = 0
-                    delta_ms = _hitsim_base_delta_cache.get(int(ff_stat))
-                    if delta_ms is None:
-                        try:
-                            from ...solver.scoring.force_greats import summarize_hitsim_offset_delta_ms_for_base
+                    try:
+                        ft_stat = int(stats_obj.get("Fever Time", 0) or 0)
+                    except Exception:
+                        ft_stat = 0
 
-                            computed = summarize_hitsim_offset_delta_ms_for_base(
+                    cache_key = (int(ff_stat), int(ft_stat))
+                    deltas_t = _hitsim_base_deltas_cache.get(cache_key)
+                    if deltas_t is None:
+                        try:
+                            from ...solver.scoring.force_greats import summarize_hitsim_offset_deltas_ms_for_base
+
+                            computed = summarize_hitsim_offset_deltas_ms_for_base(
                                 calc_song, {"Stats": stats_obj}, ref_arrays
                             )
                         except Exception:
                             computed = None
-                        if computed is not None:
-                            delta_ms = int(computed)
-                            _hitsim_base_delta_cache[int(ff_stat)] = int(delta_ms)
-                    if delta_ms is not None:
+                        if computed:
+                            try:
+                                deltas_t = tuple(int(x) for x in computed)
+                            except Exception:
+                                deltas_t = None
+                            if deltas_t:
+                                _hitsim_base_deltas_cache[cache_key] = deltas_t
+
+                    if deltas_t:
                         eval_details = dict(eval_details)
-                        eval_details["hitsim_offset_delta_ms"] = int(delta_ms)
+                        eval_details.pop("hitsim_offset_delta_ms", None)
+                        eval_details["hitsim_offset_deltas_ms"] = list(deltas_t)
 
             _append_entry(
                 eval_score,
@@ -699,7 +968,7 @@ def build_persistence_entries(
                 calc_song is not None
                 and ref_arrays is not None
                 and isinstance(details_obj, dict)
-                and details_obj.get("hitsim_offset_delta_ms") is None
+                and details_obj.get("hitsim_offset_deltas_ms") is None
             ):
                 meta0 = (calc_song.get("metadata") or {}) if isinstance(calc_song, dict) else {}
                 apply_to = str(meta0.get("HumanHitSimApplyTo", "") or "").strip().upper()
@@ -712,22 +981,48 @@ def build_persistence_entries(
                         ff_stat = int(stats_obj.get("Fever Fill Rate", 0) or 0)
                     except Exception:
                         ff_stat = 0
-                    delta_ms = _hitsim_base_delta_cache.get(int(ff_stat))
-                    if delta_ms is None:
-                        try:
-                            from ...solver.scoring.force_greats import summarize_hitsim_offset_delta_ms_for_base
+                    try:
+                        ft_stat = int(stats_obj.get("Fever Time", 0) or 0)
+                    except Exception:
+                        ft_stat = 0
 
-                            computed = summarize_hitsim_offset_delta_ms_for_base(
+                    cache_key = (int(ff_stat), int(ft_stat))
+                    deltas_t = _hitsim_base_deltas_cache.get(cache_key)
+                    if deltas_t is None:
+                        try:
+                            from ...solver.scoring.force_greats import summarize_hitsim_offset_deltas_ms_for_base
+
+                            computed = summarize_hitsim_offset_deltas_ms_for_base(
                                 calc_song, {"Stats": stats_obj}, ref_arrays
                             )
                         except Exception:
                             computed = None
-                        if computed is not None:
-                            delta_ms = int(computed)
-                            _hitsim_base_delta_cache[int(ff_stat)] = int(delta_ms)
-                    if delta_ms is not None:
+                        if computed:
+                            try:
+                                deltas_t = tuple(int(x) for x in computed)
+                            except Exception:
+                                deltas_t = None
+                            if deltas_t:
+                                _hitsim_base_deltas_cache[cache_key] = deltas_t
+
+                    if deltas_t:
                         details_obj = dict(details_obj)
-                        details_obj["hitsim_offset_delta_ms"] = int(delta_ms)
+                        details_obj.pop("hitsim_offset_delta_ms", None)
+                        details_obj["hitsim_offset_deltas_ms"] = list(deltas_t)
+
+            # Ensure FG per-window deltas are present for all retained rows that have a valid FG payload.
+            # Store them on the persisted `force` payload (used by FG leaderboard rows + frontend).
+            if (
+                calc_song is not None
+                and ref_arrays is not None
+                and isinstance(details_obj, dict)
+                and isinstance(force_obj, dict)
+                and fg_score_to_save
+                and int(fg_score_to_save or 0) > int(_base_score(entry) or 0)
+            ):
+                stats_obj = details_obj.get("Stats")
+                if isinstance(stats_obj, dict) and stats_obj:
+                    force_obj = _maybe_backfill_fg_hitsim_deltas(force_obj, stats_obj=stats_obj)
 
             gear_names, mini_names = materialize_entry_names(entry, mutate=True)
             _append_entry(

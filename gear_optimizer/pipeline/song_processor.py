@@ -53,7 +53,7 @@ from ..core.memory import log_memory_usage
 from ..core.utils import cfg_from_dict
 from ..core.array_signature import array_sig16
 from ..helpers.song_helpers import (
-    load_database_context,
+    load_database_progress_baseline,
     setup_song_config,
     build_loadout_entries,
     # Candidate selection for FG funnel (keeps low-base/high-FG candidates)
@@ -63,7 +63,7 @@ from ..helpers.song_helpers import (
     build_persistence_entries,
     print_results,
 )
-from ..helpers.song_helpers.persistence import make_build_details_fn, evaluate_record_update
+from ..helpers.song_helpers.persistence import make_build_details_fn, evaluate_progress_record_update
 from ..helpers.song_helpers.fg_candidate_selector import select_fg_candidates
 from ..helpers.song_helpers.ga_entry_utils import materialize_candidate_names, materialize_entry_names
 from ..helpers.song_helpers.item_utils import names_list
@@ -418,7 +418,7 @@ def _materialize_fg_stats_if_missing(fg_data: dict) -> dict:
 
 def _attach_hitsim_delta_for_fg_variants(calc_song: dict, fg_variants: list[dict], ref_arrays: dict) -> None:
     """
-    Populate `ForceGreats.hitsim_offset_delta_ms` for all improved FG variants.
+    Populate `ForceGreats.hitsim_offset_deltas_ms` for all improved FG variants.
 
     This keeps persisted T5 FG rows consistent with tier-postprocessed rows and frontend
     leaderboard expectations.
@@ -429,11 +429,11 @@ def _attach_hitsim_delta_for_fg_variants(calc_song: dict, fg_variants: list[dict
         return
 
     try:
-        from ..solver.scoring.force_greats import summarize_hitsim_offset_delta_ms_for_fg_variant
+        from ..solver.scoring.force_greats import summarize_hitsim_offset_deltas_ms_for_fg_variant
     except Exception:
         return
 
-    delta_cache: dict[tuple[int, int, tuple[int, ...]], int] = {}
+    delta_cache: dict[tuple[int, int, tuple[int, ...]], tuple[int, ...]] = {}
     for variant in fg_variants:
         if not isinstance(variant, dict):
             continue
@@ -455,7 +455,13 @@ def _attach_hitsim_delta_for_fg_variants(calc_song: dict, fg_variants: list[dict
         fg_meta = fg_data.get("ForceGreats") or {}
         if not isinstance(fg_meta, dict):
             continue
-        if fg_meta.get("hitsim_offset_delta_ms") is not None:
+
+        existing_deltas = fg_meta.get("hitsim_offset_deltas_ms")
+        if isinstance(existing_deltas, (list, tuple)) and existing_deltas:
+            if "hitsim_offset_delta_ms" in fg_meta:
+                fg_meta_out = dict(fg_meta)
+                fg_meta_out.pop("hitsim_offset_delta_ms", None)
+                fg_data["ForceGreats"] = fg_meta_out
             continue
 
         stats = fg_data.get("Stats") or {}
@@ -476,27 +482,38 @@ def _attach_hitsim_delta_for_fg_variants(calc_song: dict, fg_variants: list[dict
             ft_stat = 0
         cache_key = (int(ff_stat), int(ft_stat), tuple(int(x) for x in counts))
 
-        delta_ms = delta_cache.get(cache_key)
-        if delta_ms is None:
+        deltas_t = delta_cache.get(cache_key)
+        if deltas_t is None:
             try:
-                computed = summarize_hitsim_offset_delta_ms_for_fg_variant(calc_song, fg_data, ref_arrays)
+                computed = summarize_hitsim_offset_deltas_ms_for_fg_variant(calc_song, fg_data, ref_arrays)
             except Exception:
                 computed = None
-            if computed is None:
+            if not computed:
                 continue
-            delta_ms = int(computed)
-            delta_cache[cache_key] = int(delta_ms)
+            try:
+                deltas_t = tuple(int(x) for x in computed)
+            except Exception:
+                deltas_t = None
+            if not deltas_t:
+                continue
+            delta_cache[cache_key] = deltas_t
 
         fg_meta_out = dict(fg_meta)
-        fg_meta_out["hitsim_offset_delta_ms"] = int(delta_ms)
+        if fg_meta_out.get("hitsim_offset_deltas_ms") is None:
+            fg_meta_out["hitsim_offset_deltas_ms"] = list(deltas_t)
+        fg_meta_out.pop("hitsim_offset_delta_ms", None)
         fg_data["ForceGreats"] = fg_meta_out
 
         details_obj = fg_data.get("details")
         if isinstance(details_obj, dict):
             fg_det = details_obj.get("ForceGreats")
-            if isinstance(fg_det, dict) and fg_det.get("hitsim_offset_delta_ms") is None:
+            if isinstance(fg_det, dict) and (
+                fg_det.get("hitsim_offset_deltas_ms") is None
+            ):
                 fg_det_out = dict(fg_det)
-                fg_det_out["hitsim_offset_delta_ms"] = int(delta_ms)
+                if fg_det_out.get("hitsim_offset_deltas_ms") is None:
+                    fg_det_out["hitsim_offset_deltas_ms"] = list(deltas_t)
+                fg_det_out.pop("hitsim_offset_delta_ms", None)
                 details_out = dict(details_obj)
                 details_out["ForceGreats"] = fg_det_out
                 fg_data["details"] = details_out
@@ -784,56 +801,24 @@ def process_song_task(args) -> SongResultPayload:
 
         # Load database context (prev_record, known_loadouts)
         _t_db0 = time.perf_counter()
-        prev_record, known_loadouts = load_database_context(db_key, use_evo_db, gears_by_name, minis_by_name)
+        (
+            prev_record,
+            known_loadouts,
+            db_best_score,
+            db_best_fg_score,
+            attempt_lifetime,
+            prev_attempts_first,
+            db_baseline_valid,
+        ) = load_database_progress_baseline(
+            db_key,
+            use_evo_db,
+            gears_by_name,
+            minis_by_name,
+            allow_fallback=False,
+        )
         stage_timing["cpu_db_load_sec"] = time.perf_counter() - _t_db0
 
         db_seed = prev_record if prev_record else None
-
-        # Calculate best FG score from DB (canonical reference tier: T5).
-        # IMPORTANT: Do NOT derive this from `known_loadouts` alone because that list is
-        # ordered/limited by base score and can omit the true best FG-improving loadout.
-        db_best_fg_score = 0
-        if use_evo_db:
-            try:
-                from gear_optimizer.data.database import get_db_connection_cached
-
-                conn = get_db_connection_cached()
-                row = conn.execute(
-                    """
-                    SELECT MAX(fg_score)
-                    FROM team_buff_fg_loadouts
-                    WHERE song_name = ? AND team_buff = 'T5'
-                    """,
-                    (str(db_key or "").strip(),),
-                ).fetchone()
-                if row is not None:
-                    try:
-                        db_best_fg_score = int(row[0] or 0)
-                    except Exception:
-                        db_best_fg_score = 0
-            except Exception:
-                db_best_fg_score = 0
-
-        # Fallback: if songs row doesn't exist yet, approximate from known_loadouts.
-        if (not db_best_fg_score) and known_loadouts:
-            try:
-                db_best_fg_score = max(v[1] for v in known_loadouts.values() if v[1])
-            except (ValueError, IndexError, TypeError):
-                db_best_fg_score = 0
-
-        attempt_lifetime_prev = 0
-        prev_attempts_first = 0
-        if prev_record and "details" in prev_record:
-            try:
-                attempt_lifetime_prev = int(prev_record["details"].get("attempt_lifetime", 0) or 0)
-            except Exception:
-                attempt_lifetime_prev = 0
-            try:
-                prev_attempts_first = int(prev_record["details"].get("attempts_first", 0) or 0)
-            except Exception:
-                prev_attempts_first = 0
-
-        attempt_lifetime = attempt_lifetime_prev + 1
         # Note: per-song attempt counters are now tracked in `songs` and updated in the DB-writer
         # (post-processor / async saver). This local value is best-effort metadata only.
         attempts_first = (prev_attempts_first + 1) if prev_attempts_first else 1
@@ -1133,11 +1118,12 @@ def process_song_task(args) -> SongResultPayload:
                 buf_content = buf.getvalue() if buf else ""
 
             try:
-                record_info = evaluate_record_update(
+                record_info = evaluate_progress_record_update(
                     best_data,
                     prev_record,
                     fg_variants,
                     db_best_fg_score=db_best_fg_score,
+                    baseline_valid=bool(db_baseline_valid),
                 )
             except Exception:
                 record_info = None
@@ -1170,7 +1156,9 @@ def process_song_task(args) -> SongResultPayload:
                 "prev_record": _compact_prev_record(prev_record),
                 "attempt_lifetime": attempt_lifetime,
                 "prev_attempts_first": prev_attempts_first,
+                "db_best_score": db_best_score,
                 "db_best_fg_score": db_best_fg_score,
+                "db_baseline_valid": bool(db_baseline_valid),
                 "meta_primary_color": meta_primary_color,
                 "meta_secondary_color": meta_secondary_color,
                 "fg_debug": bool(fg_debug),
@@ -1180,14 +1168,18 @@ def process_song_task(args) -> SongResultPayload:
             return cast(SongResultPayload, result_payload)
 
         if best_data:
-            # Optional: HumanHitSim timing summary for base fever activation (ApplyTo=ALL only).
+            # Optional: HumanHitSim timing summary for base fever activations (ApplyTo=ALL only).
             try:
-                from ..solver.scoring.force_greats import summarize_hitsim_offset_delta_ms_for_base
+                from ..solver.scoring.force_greats import summarize_hitsim_offset_deltas_ms_for_base
 
-                if "hitsim_offset_delta_ms" not in best_data:
-                    delta_ms = summarize_hitsim_offset_delta_ms_for_base(calc_song, best_data, ref_arrays)
-                    if delta_ms is not None:
-                        best_data["hitsim_offset_delta_ms"] = int(delta_ms)
+                if best_data.get("hitsim_offset_deltas_ms") is None:
+                    deltas = summarize_hitsim_offset_deltas_ms_for_base(calc_song, best_data, ref_arrays)
+                    if deltas:
+                        try:
+                            best_data["hitsim_offset_deltas_ms"] = [int(x) for x in deltas]
+                        except Exception:
+                            pass
+                best_data.pop("hitsim_offset_delta_ms", None)
             except Exception:
                 pass
 
@@ -1277,6 +1269,13 @@ def process_song_task(args) -> SongResultPayload:
             "cfg_dict": cfg_dict,
             "db_payload": db_payload,
             "_record": db_payload.get("_record") if isinstance(db_payload, dict) else None,
+            "prev_record": prev_record,
+            "fg_variants": fg_variants,
+            "attempt_lifetime": attempt_lifetime,
+            "prev_attempts_first": prev_attempts_first,
+            "db_best_score": db_best_score,
+            "db_best_fg_score": db_best_fg_score,
+            "db_baseline_valid": bool(db_baseline_valid),
             "best_data": best_data,
             "best_gear": best_gear,
             "best_minis": best_minis,

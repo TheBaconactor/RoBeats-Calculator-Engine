@@ -111,7 +111,4 @@ def initialize_pools(all_gears, all_minis, p_color, slots, s_color=None):
     # Initialize/prune gear pools once per gear dataset (song-independent).
     gear_pool, total_before, total_after, from_cache = _get_pruned_gear_pool(all_gears, slots)
 
-    if total_before > total_after and not from_cache:
-        print(f"[Dominance Pruning] Removed {total_before - total_after} dominated gear items.")
-
     return gear_pool, mini_pool, total_before, total_after, []  # No more whitelisted minis

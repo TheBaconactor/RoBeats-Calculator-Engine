@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -12,19 +13,20 @@ from gear_optimizer.core.config import read_fg_candidate_limit
 from gear_optimizer.core.color_flags import build_color_flags
 from gear_optimizer.core.constants import FG_CANDIDATE_LIMIT, LOADOUTS_PER_SONG_LIMIT
 from gear_optimizer.core.utils import cfg_from_dict, safe_float, safe_int
-from gear_optimizer.helpers.song_helpers.database_context import load_database_context
+from gear_optimizer.helpers.song_helpers.database_context import load_database_progress_baseline
 from gear_optimizer.helpers.song_helpers.song_config import setup_song_config
 from gear_optimizer.solver.base_stats import build_base_fixed_stats_array
 from gear_optimizer.solver.inflight_utils import (
     _build_calc_song_from_file,
     _compact_prev_record,
-    _summarize_db_context,
     _truthy,
 )
 from gear_optimizer.solver.item_registry import ItemRegistry
 from gear_optimizer.solver.native_inflight_support import _lru_get, _lru_put, _task_ga_seed, _task_key
 from gear_optimizer.solver.native_inflight_timing import _thread_cpu_time_s
 from gear_optimizer.solver.native_inflight_types import _NativeSong
+
+logger = logging.getLogger(__name__)
 
 
 _POOL_CACHE_MAX = 32
@@ -48,7 +50,7 @@ _CACHE_STATS = {
 _CACHE_STATS_LOCK = threading.Lock()
 _CACHE_STATS_LAST_EMIT = 0.0
 _DB_CONTEXT_CACHE_LOCK = threading.Lock()
-_DB_CONTEXT_CACHE: "OrderedDict[tuple[str, bool], tuple[float, Optional[dict], int, int, int]]" = OrderedDict()
+_DB_CONTEXT_CACHE: "OrderedDict[tuple[str, bool], tuple[float, Optional[dict], int, int, int, int]]" = OrderedDict()
 
 
 def bump_prep_cache_limits_for_ram_mode() -> tuple[int, int, int]:
@@ -81,7 +83,7 @@ def _db_context_cache_ttl_s() -> float:
     return 1.0
 
 
-def _db_context_cache_get(db_key: str, use_evo_db: bool) -> tuple[Optional[dict], int, int, int] | None:
+def _db_context_cache_get(db_key: str, use_evo_db: bool) -> tuple[Optional[dict], int, int, int, int] | None:
     key = (str(db_key or "").strip(), bool(use_evo_db))
     if not key[0] or not key[1]:
         return None
@@ -91,13 +93,13 @@ def _db_context_cache_get(db_key: str, use_evo_db: bool) -> tuple[Optional[dict]
             entry = _DB_CONTEXT_CACHE.get(key)
             if entry is None:
                 return None
-            ts, prev_record, db_best_fg_score, attempt_lifetime, prev_attempts_first = entry
+            ts, prev_record, db_best_score, db_best_fg_score, attempt_lifetime, prev_attempts_first = entry
             if ttl_s > 0.0 and (time.monotonic() - float(ts)) > ttl_s:
                 _DB_CONTEXT_CACHE.pop(key, None)
                 return None
             _DB_CONTEXT_CACHE.move_to_end(key)
             rec = _compact_prev_record(prev_record) if isinstance(prev_record, dict) else None
-            return rec, int(db_best_fg_score), int(attempt_lifetime), int(prev_attempts_first)
+            return rec, int(db_best_score), int(db_best_fg_score), int(attempt_lifetime), int(prev_attempts_first)
     except Exception:
         return None
 
@@ -106,6 +108,7 @@ def _db_context_cache_put(
     db_key: str,
     use_evo_db: bool,
     prev_record: Optional[dict],
+    db_best_score: int,
     db_best_fg_score: int,
     attempt_lifetime: int,
     prev_attempts_first: int,
@@ -119,6 +122,7 @@ def _db_context_cache_put(
             _DB_CONTEXT_CACHE[key] = (
                 float(time.monotonic()),
                 record_copy,
+                int(db_best_score or 0),
                 int(db_best_fg_score or 0),
                 int(attempt_lifetime or 0),
                 int(prev_attempts_first or 0),
@@ -176,11 +180,14 @@ def _cache_stats_maybe_emit() -> None:
         reg_m = int(snap.get("registry_miss", 0) or 0)
         heur_h = int(snap.get("heur_hit", 0) or 0)
         heur_m = int(snap.get("heur_miss", 0) or 0)
-        print(
-            "[InFlight][CacheStats] "
-            f"pools hit={pools_h} miss={pools_m} | "
-            f"registry hit={reg_h} miss={reg_m} | "
-            f"heur_topk hit={heur_h} miss={heur_m}"
+        logger.debug(
+            "[InFlight][CacheStats] pools hit=%s miss=%s | registry hit=%s miss=%s | heur_topk hit=%s miss=%s",
+            pools_h,
+            pools_m,
+            reg_h,
+            reg_m,
+            heur_h,
+            heur_m,
         )
     except Exception:
         pass
@@ -283,31 +290,41 @@ def _prepare_song(task: tuple) -> _NativeSong:
     # Load DB seed record only; full known-loadout hydration is deferred/prefetched
     # in FG prep to avoid redundant per-song DB reads during prepare.
     allow_db_seed = True
+    db_best_score = 0
+    db_baseline_valid = not bool(use_evo_db)
     cached_db_ctx = _db_context_cache_get(db_key, bool(use_evo_db))
     if cached_db_ctx is not None:
-        prev_record, db_best_fg_score, attempt_lifetime, prev_attempts_first = cached_db_ctx
+        prev_record, db_best_score, db_best_fg_score, attempt_lifetime, prev_attempts_first = cached_db_ctx
+        db_baseline_valid = True
     else:
-        prev_record, _known_loadouts = load_database_context(
+        (
+            prev_record,
+            _known_loadouts,
+            db_best_score,
+            db_best_fg_score,
+            attempt_lifetime,
+            prev_attempts_first,
+            db_baseline_valid,
+        ) = load_database_progress_baseline(
             db_key,
             bool(use_evo_db),
             gears_by_name,
             minis_by_name,
             load_known_loadouts=False,
+            allow_fallback=False,
         )
-        db_best_fg_score, attempt_lifetime, prev_attempts_first = _summarize_db_context(
-            prev_record,
-            None,
-            db_key=db_key,
-            use_evo_db=bool(use_evo_db),
-        )
-        _db_context_cache_put(
-            db_key,
-            bool(use_evo_db),
-            prev_record,
-            int(db_best_fg_score),
-            int(attempt_lifetime),
-            int(prev_attempts_first),
-        )
+        if bool(db_baseline_valid):
+            _db_context_cache_put(
+                db_key,
+                bool(use_evo_db),
+                prev_record,
+                int(db_best_score),
+                int(db_best_fg_score),
+                int(attempt_lifetime),
+                int(prev_attempts_first),
+            )
+        else:
+            allow_db_seed = False
 
     p_color = calc_song.get("metadata", {}).get("Primary Color", "Rush")
     s_color = calc_song.get("metadata", {}).get("Secondary Color", "")
@@ -537,9 +554,11 @@ def _prepare_song(task: tuple) -> _NativeSong:
         force_greats_config=force_greats_config,
         manual_force_greats=bool(manual_force_greats),
         prev_record=prev_record,
+        db_best_score=int(db_best_score),
         attempt_lifetime=int(attempt_lifetime),
         prev_attempts_first=int(prev_attempts_first),
         db_best_fg_score=int(db_best_fg_score),
+        db_baseline_valid=bool(db_baseline_valid),
         registry=registry,
         cfg_data=cfg_data,
         color_flags=color_flags,

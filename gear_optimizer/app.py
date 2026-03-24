@@ -56,7 +56,7 @@ from gear_optimizer.solver.genetic import GEM_SOLVER_CACHE
 from gear_optimizer.app_async_db import AsyncDbSaver
 from gear_optimizer.data.stats_verifier import verify_and_repair_stats, print_verification_warning
 from gear_optimizer.app_stop_control import StopController
-from gear_optimizer.helpers.song_helpers.persistence import evaluate_record_update
+from gear_optimizer.helpers.song_helpers.persistence import evaluate_progress_record_update
 from gear_optimizer.robeatsmeta_api import RoBeatsMetaOptimizerApi
 
 logger = logging.getLogger(__name__)
@@ -2264,7 +2264,13 @@ class GearOptimizerApp:
         db_best_fg_score = res.get("db_best_fg_score")
         if isinstance(best_data, dict) and (prev_record is not None or fg_variants):
             try:
-                return evaluate_record_update(best_data, prev_record, fg_variants, db_best_fg_score=db_best_fg_score)
+                return evaluate_progress_record_update(
+                    best_data,
+                    prev_record,
+                    fg_variants,
+                    db_best_fg_score=db_best_fg_score,
+                    baseline_valid=bool(res.get("db_baseline_valid", True)),
+                )
             except Exception:
                 return None
         return None
@@ -2808,7 +2814,7 @@ class GearOptimizerApp:
             os.environ["TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX"] = str(int(tb_cache))
 
         try:
-            logger.info(
+            logger.debug(
                 "[InFlight][RAM] enabled: INFLIGHT_SONG_FILE_CACHE_MAX={} TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX={}".format(
                     os.environ.get("INFLIGHT_SONG_FILE_CACHE_MAX"),
                     os.environ.get("TEAM_BUFF_BASE_CALC_SONG_CACHE_MAX"),
@@ -2844,7 +2850,7 @@ class GearOptimizerApp:
         if int(cfg_slots) > 0:
             os.environ["GPU_SONG_SLOTS"] = str(int(cfg_slots))
             try:
-                logger.info(
+                logger.debug(
                     "[GPU] Set GPU_SONG_SLOTS={} from config (IterationEngine.GPU_SongSlots). Set GPU_SONG_SLOTS env var to override.".format(
                         int(cfg_slots)
                     )
@@ -2859,7 +2865,7 @@ class GearOptimizerApp:
 
         try:
             if "gear_optimizer.solver.taichi_gem.fields" in sys.modules:
-                logger.info("[GPU] Auto GPU_SONG_SLOTS skipped: taichi_gem.fields already imported.")
+                logger.debug("[GPU] Auto GPU_SONG_SLOTS skipped: taichi_gem.fields already imported.")
                 return
         except Exception:
             pass
@@ -2902,7 +2908,7 @@ class GearOptimizerApp:
 
         os.environ["GPU_SONG_SLOTS"] = str(int(slots))
         try:
-            logger.info(
+            logger.debug(
                 "[GPU] Auto-set GPU_SONG_SLOTS={} (InFlightSongs={}, InFlight_GA_QueueMult={}). Set GPU_SONG_SLOTS to override.".format(
                     int(slots),
                     int(inflight_songs),
@@ -2948,7 +2954,7 @@ class GearOptimizerApp:
             logger.info(f"EvalCPUCores cap applied: using {available_cpus} of {logical_cpus} cores.")
 
         if inflight_songs > 1 and len(tasks) > 1:
-            logger.info(f"[InFlight] Requested: InFlightSongs={inflight_songs} (single-process).")
+            logger.debug(f"[InFlight] Requested: InFlightSongs={inflight_songs} (single-process).")
 
         logger.info(
             f"Parallel plan -> songs: {len(tasks)}, concurrent workers: {max_workers}, cores per song: {parallel_workers}"
@@ -3023,13 +3029,13 @@ class GearOptimizerApp:
         if inflight_songs <= 0:
             inflight_songs = min(12, max(1, song_task_count))
             try:
-                logger.info(f"[InFlight] Sequential pipeline removed; defaulting InFlightSongs={int(inflight_songs)}.")
+                logger.debug(f"[InFlight] Sequential pipeline removed; defaulting InFlightSongs={int(inflight_songs)}.")
             except Exception:
                 pass
         elif song_task_count > 1 and int(inflight_songs) < 2:
             inflight_songs = min(12, max(2, song_task_count))
             try:
-                logger.info(
+                logger.debug(
                     "[InFlight] Sequential pipeline removed; "
                     f"raising InFlightSongs to {int(inflight_songs)} for multi-song queue."
                 )
@@ -3280,7 +3286,7 @@ class GearOptimizerApp:
                 if db_prefetch_workers <= 0:
                     db_prefetch_workers = max(1, min(int(fg_prep_workers), 4))
 
-                logger.info(
+                logger.debug(
                     "[InFlight][Dual] worker=%s shard=%s tasks=%s InFlightSongs=%s "
                     "Prep=%s Decode=%s FG=%s FGPrep=%s FGDBPrefetch=%s",
                     int(shard_idx),
@@ -3464,7 +3470,7 @@ class GearOptimizerApp:
             except Exception:
                 processed = 0
             per_h = float(processed) * 3600.0 / float(elapsed_s) if processed > 0 else 0.0
-            logger.info(
+            logger.debug(
                 "[InFlight][Dual] Completed %s tasks in %.2fs (%.1f tasks/hour)", int(processed), elapsed_s, per_h
             )
         except Exception:
@@ -3539,7 +3545,7 @@ class GearOptimizerApp:
                     pass
                 gpu_executor = None
             if gpu_executor is not None and gpu_executor.is_running:
-                logger.info("[GPU Executor] Started for parallel song processing")
+                logger.debug("[GPU Executor] Started for parallel song processing")
         except Exception as e:
             logger.error(f"[GPU Executor] Failed to start: {e} - forcing single-process in-flight")
             gpu_executor = None

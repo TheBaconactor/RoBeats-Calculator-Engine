@@ -453,7 +453,7 @@ def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_has_hitsim_de
         ).fetchone()
         assert row0 is not None
         force0 = json.loads(row0["force_details_json"])
-        assert (force0.get("ForceGreats") or {}).get("hitsim_offset_delta_ms") is None
+        assert (force0.get("ForceGreats") or {}).get("hitsim_offset_deltas_ms") is None
     finally:
         conn.close()
 
@@ -468,7 +468,7 @@ def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_has_hitsim_de
                 "details": {"tag": "second"},
                 "force": {
                     "score": 200,
-                    "ForceGreats": {"config": {"NonFever1": 1}, "hitsim_offset_delta_ms": 37},
+                    "ForceGreats": {"config": {"NonFever1": 1}, "hitsim_offset_deltas_ms": [37, 38]},
                 },
             }
         ],
@@ -482,7 +482,8 @@ def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_has_hitsim_de
         ).fetchone()
         assert row is not None
         force = json.loads(row["force_details_json"])
-        assert (force.get("ForceGreats") or {}).get("hitsim_offset_delta_ms") == 37
+        assert (force.get("ForceGreats") or {}).get("hitsim_offset_deltas_ms") == [37, 38]
+        assert (force.get("ForceGreats") or {}).get("hitsim_offset_delta_ms") is None
 
         base_row = conn.execute(
             "SELECT force_details_json FROM team_buff_loadouts WHERE song_name=? AND team_buff='T5'",
@@ -490,7 +491,8 @@ def test_force_payload_refreshes_on_tied_fg_score_when_new_payload_has_hitsim_de
         ).fetchone()
         assert base_row is not None
         base_force = json.loads(base_row["force_details_json"])
-        assert (base_force.get("ForceGreats") or {}).get("hitsim_offset_delta_ms") == 37
+        assert (base_force.get("ForceGreats") or {}).get("hitsim_offset_deltas_ms") == [37, 38]
+        assert (base_force.get("ForceGreats") or {}).get("hitsim_offset_delta_ms") is None
     finally:
         conn.close()
 

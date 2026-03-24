@@ -48,7 +48,7 @@ def setup_song_config(cfg, calc_song, auto_buff, paths, gears_by_name, minis_by_
             cfg.add_section("TeamContributionBuffConstant")
         cfg.set("TeamContributionBuffConstant", "TeamColor", p_col)
         cfg.set("TeamContributionBuffConstant", "TeamBuff", "T5")
-        print(f"[Auto-Config] Set Team Buff: T5 | Team Color: {p_col}")
+        # Keep auto-buff selection silent so the UI stays clean.
 
     fixed_stats = get_fixed_stats(cfg)
 

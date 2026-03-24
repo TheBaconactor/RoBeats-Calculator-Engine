@@ -9,11 +9,19 @@ This module handles:
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 import threading
-import taichi as ti
 from ...core.fallback_monitor import warn_fallback
+from ...core.output import (
+    restore_native_stdio,
+    restore_stderr,
+    restore_stdout,
+    suppress_native_stdio,
+    suppress_stderr,
+    suppress_stdout,
+)
 
 # ============================================================================
 # INITIALIZATION STATE
@@ -22,6 +30,31 @@ from ...core.fallback_monitor import warn_fallback
 _ti_initialized = False
 _ti_lock = threading.RLock()
 _printed_vulkan_device_hint = False
+logger = logging.getLogger(__name__)
+
+
+_TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
+
+
+def _taichi_verbose_enabled() -> bool:
+    # Keep Taichi banners in explicit verbose mode only.
+    try:
+        if str(os.environ.get("METAFINDER_OUTPUT", "") or "").strip().lower() in _TRUTHY_ENV_VALUES:
+            return True
+        if str(os.environ.get("METAFINDER_VERBOSE", "") or "").strip().lower() in _TRUTHY_ENV_VALUES:
+            return True
+    except Exception:
+        return False
+    return False
+
+
+# Taichi prints a version banner at import-time, and it bypasses Python-level stdout swapping.
+# Import it under OS-level stdio suppression unless the user explicitly asked for verbose output.
+_ti_import_guard = suppress_native_stdio(not _taichi_verbose_enabled())
+try:
+    import taichi as ti  # noqa: E402
+finally:
+    restore_native_stdio(_ti_import_guard)
 
 
 def is_initialized() -> bool:
@@ -89,16 +122,24 @@ def _maybe_set_vulkan_visible_device() -> None:
             ok = False
             break
     if not ok:
-        print(f"[Taichi] Ignoring TAICHI_VULKAN_VISIBLE_DEVICE={raw!r} (expected device index like '1')")
+        warn_fallback(
+            "taichi_runtime.vulkan_visible_device",
+            "ignoring invalid TAICHI_VULKAN_VISIBLE_DEVICE value",
+            context={"value": raw},
+        )
         return
 
     try:
         import taichi._lib.core as ti_core
 
         ti_core.set_vulkan_visible_device(raw)
-        print(f"[Taichi] Vulkan visible device override: {raw}")
     except Exception as exc:
-        print(f"[Taichi] Failed to set Vulkan visible device ({type(exc).__name__}): {exc}")
+        warn_fallback(
+            "taichi_runtime.vulkan_visible_device",
+            "failed to set TAICHI_VULKAN_VISIBLE_DEVICE",
+            context={"value": raw},
+            exc=exc,
+        )
 
 
 def _maybe_print_vulkan_device_hint() -> None:
@@ -114,7 +155,7 @@ def _maybe_print_vulkan_device_hint() -> None:
     _printed_vulkan_device_hint = True
     if str(os.environ.get("TAICHI_VULKAN_VISIBLE_DEVICE", "") or "").strip():
         return
-    print(
+    logger.debug(
         "[Taichi] Tip: on hybrid/dual-GPU systems, set TAICHI_VULKAN_VISIBLE_DEVICE=1 (or another index) "
         "to force the discrete GPU."
     )
@@ -195,6 +236,22 @@ def _get_offline_cache_dir() -> str:
         return "taichi_cache"
 
 
+def _init_taichi_quietly(init_kwargs: dict) -> None:
+    """Run `ti.init()` without leaking backend banners to the console."""
+    if _taichi_verbose_enabled():
+        ti.init(**init_kwargs)
+        return
+    old_stdout = suppress_stdout(True)
+    old_stderr = suppress_stderr(True)
+    native_guard = suppress_native_stdio(True)
+    try:
+        ti.init(**init_kwargs)
+    finally:
+        restore_native_stdio(native_guard)
+        restore_stderr(old_stderr)
+        restore_stdout(old_stdout)
+
+
 def init_taichi():
     """
     Initialize Taichi with auto-detected GPU backend.
@@ -230,7 +287,7 @@ def init_taichi():
             offline_cache_file_path=_get_offline_cache_dir(),
         )
         try:
-            ti.init(**init_kwargs)
+            _init_taichi_quietly(init_kwargs)
         except Exception as e:
             # Be robust: if offline cache init fails for any reason, fall back to normal init.
             warn_fallback(
@@ -239,17 +296,15 @@ def init_taichi():
                 context={"backend": backend_name},
                 exc=e,
             )
-            try:
-                print(f"[Taichi] Offline cache init failed ({type(e).__name__}: {e}); retrying without offline cache.")
-            except Exception:
-                pass
             init_kwargs.pop("offline_cache", None)
             init_kwargs.pop("offline_cache_file_path", None)
-            ti.init(**init_kwargs)
+            _init_taichi_quietly(init_kwargs)
         _ti_initialized = True
-        kp = "on" if kernel_profiler else "off"
-        print(
-            f"[Taichi] Initialized with {backend_name} backend - f32 precision (kernel_profiler={kp}, block_dim={block_dim})"
+        logger.debug(
+            "[Taichi] Initialized with %s backend - f32 precision (kernel_profiler=%s, block_dim=%s)",
+            backend_name,
+            "on" if kernel_profiler else "off",
+            block_dim,
         )
 
         if kernel_profiler:
@@ -270,7 +325,7 @@ def reset_taichi(*, reason: str | None = None) -> None:
     global _ti_initialized
     with _ti_lock:
         if reason:
-            print(f"[Taichi] Resetting runtime: {reason}")
+            logger.debug("[Taichi] Resetting runtime: %s", reason)
 
         if not _ti_initialized:
             return

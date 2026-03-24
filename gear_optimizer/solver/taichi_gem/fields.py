@@ -9,6 +9,7 @@ This module handles:
 """
 
 import os
+import logging
 import sys
 
 import taichi as ti
@@ -17,6 +18,7 @@ from .runtime import is_initialized, init_taichi
 
 # Platform detection for Metal-specific fields
 IS_METAL = sys.platform == "darwin"
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # CONSTANTS
@@ -683,7 +685,7 @@ def allocate_fields():
     island_elite_count = ti.field(dtype=ti.i32, shape=1)  # Output: total elites found
 
     _fields_allocated = True
-    print(f"[Taichi] Allocated GPU fields: {MAX_GENOMES} genomes")
+    logger.debug("[Taichi] Allocated GPU fields: %s genomes", MAX_GENOMES)
 
 
 def allocate_grid_fields():
@@ -740,7 +742,12 @@ def allocate_grid_fields():
         song_group_high_ms = ti.field(dtype=ti.i32, shape=MAX_SONG_NOTES)
 
     _grid_fields_allocated = True
-    print(f"[Taichi] Allocated grid fields: {MAX_SONG_SLOTS}Ã—{GRID_SIZE}Ã—{GRID_SIZE} timeline grid slots")
+    logger.debug(
+        "[Taichi] Allocated grid fields: %s x %s x %s timeline grid slots",
+        MAX_SONG_SLOTS,
+        GRID_SIZE,
+        GRID_SIZE,
+    )
 
 
 def ensure_grid_unpacked_masks_allocated() -> None:
@@ -762,7 +769,12 @@ def ensure_grid_unpacked_masks_allocated() -> None:
     from . import kernels
 
     bind_fields(kernels)
-    print(f"[Taichi] Allocated unpacked timeline masks: 1Ã—{GRID_SIZE}Ã—{GRID_SIZE}Ã—{MAX_HEAD_NOTES}")
+    logger.debug(
+        "[Taichi] Allocated unpacked timeline masks: 1 x %s x %s x %s",
+        GRID_SIZE,
+        GRID_SIZE,
+        MAX_HEAD_NOTES,
+    )
 
 
 # ============================================================================

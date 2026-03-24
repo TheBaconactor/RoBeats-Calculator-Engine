@@ -6,6 +6,7 @@ Provides a lightweight stdout suppressor used for quiet CLI mode.
 
 from __future__ import annotations
 
+import os
 import sys
 
 
@@ -70,3 +71,104 @@ def restore_stderr(old_stderr: object | None) -> None:
     if old_stderr is None:
         return
     sys.stderr = old_stderr
+
+
+def suppress_native_stdio(suppress: bool) -> tuple[int | None, int | None]:
+    """
+    Best-effort OS-level stdout/stderr suppression (C/C++ prints).
+
+    Some native libraries (notably Taichi) write directly to the OS-level stdout/stderr
+    file descriptors, bypassing Python's `sys.stdout`/`sys.stderr`. Swapping the Python
+    objects alone (NullWriter) does not silence those messages.
+
+    This function redirects file descriptors 1 and 2 to `os.devnull` and returns
+    duplicates of the original fds for restoration via `restore_native_stdio()`.
+
+    Notes:
+    - Works on Windows (NUL) and POSIX.
+    - Best-effort and never raises (optimizer must not crash due to logging helpers).
+    """
+    if not suppress:
+        return (None, None)
+
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+    saved_out: int | None = None
+    saved_err: int | None = None
+    try:
+        saved_out = os.dup(1)
+    except Exception:
+        saved_out = None
+    try:
+        saved_err = os.dup(2)
+    except Exception:
+        saved_err = None
+
+    try:
+        with open(os.devnull, "w") as devnull:
+            try:
+                os.dup2(devnull.fileno(), 1)
+            except Exception:
+                pass
+            try:
+                os.dup2(devnull.fileno(), 2)
+            except Exception:
+                pass
+    except Exception:
+        # If we failed to redirect, close any saved fds so we don't leak.
+        if saved_out is not None:
+            try:
+                os.close(saved_out)
+            except Exception:
+                pass
+            saved_out = None
+        if saved_err is not None:
+            try:
+                os.close(saved_err)
+            except Exception:
+                pass
+            saved_err = None
+
+    return (saved_out, saved_err)
+
+
+def restore_native_stdio(saved: tuple[int | None, int | None] | None) -> None:
+    """Restore OS-level stdout/stderr from a guard returned by `suppress_native_stdio()`."""
+    if not saved:
+        return
+    saved_out, saved_err = saved
+
+    try:
+        sys.stdout.flush()
+    except Exception:
+        pass
+    try:
+        sys.stderr.flush()
+    except Exception:
+        pass
+
+    if saved_out is not None:
+        try:
+            os.dup2(saved_out, 1)
+        except Exception:
+            pass
+        try:
+            os.close(saved_out)
+        except Exception:
+            pass
+    if saved_err is not None:
+        try:
+            os.dup2(saved_err, 2)
+        except Exception:
+            pass
+        try:
+            os.close(saved_err)
+        except Exception:
+            pass

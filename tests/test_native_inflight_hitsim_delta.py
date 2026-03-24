@@ -6,10 +6,16 @@ def test_native_inflight_attach_hitsim_delta_for_all_improved_variants(monkeypat
 
     def _fake_summarize(_calc_song, _fg_data, _ref_arrays):
         calls["count"] += 1
-        return 11
+        existing = (_fg_data.get("ForceGreats") or {}).get("hitsim_offset_delta_ms")
+        try:
+            existing_i = int(existing) if existing is not None else None
+        except Exception:
+            existing_i = None
+        base = existing_i if existing_i is not None else 11
+        return [base, base + 1]
 
     monkeypatch.setattr(
-        "gear_optimizer.solver.scoring.force_greats.summarize_hitsim_offset_delta_ms_for_fg_variant",
+        "gear_optimizer.solver.scoring.force_greats.summarize_hitsim_offset_deltas_ms_for_fg_variant",
         _fake_summarize,
     )
 
@@ -50,11 +56,15 @@ def test_native_inflight_attach_hitsim_delta_for_all_improved_variants(monkeypat
 
     _attach_hitsim_delta_for_fg_variant(calc_song={"song_data": {}}, fg_variants=variants, ref_arrays={"x": 1})
 
-    assert variants[0]["data"]["ForceGreats"]["hitsim_offset_delta_ms"] == 11
-    assert variants[1]["data"]["ForceGreats"]["hitsim_offset_delta_ms"] == 11
+    assert variants[0]["data"]["ForceGreats"]["hitsim_offset_deltas_ms"] == [11, 12]
+    assert "hitsim_offset_delta_ms" not in variants[0]["data"]["ForceGreats"]
+    assert variants[1]["data"]["ForceGreats"]["hitsim_offset_deltas_ms"] == [11, 12]
     assert "hitsim_offset_delta_ms" not in variants[2]["data"]["ForceGreats"]
-    assert variants[3]["data"]["ForceGreats"]["hitsim_offset_delta_ms"] == 5
-    assert calls["count"] == 1
+    assert "hitsim_offset_deltas_ms" not in variants[2]["data"]["ForceGreats"]
+    assert variants[3]["data"]["ForceGreats"]["hitsim_offset_deltas_ms"] == [5, 6]
+    assert "hitsim_offset_delta_ms" not in variants[1]["data"]["ForceGreats"]
+    assert "hitsim_offset_delta_ms" not in variants[3]["data"]["ForceGreats"]
+    assert calls["count"] == 2
 
 
 def test_native_inflight_attach_hitsim_delta_materializes_stats(monkeypatch):
@@ -67,14 +77,14 @@ def test_native_inflight_attach_hitsim_delta_materializes_stats(monkeypatch):
         calls["count"] += 1
         assert fg_data.get("Stats", {}).get("Fever Fill Rate") == 6
         assert fg_data.get("Stats", {}).get("Fever Time") == 14
-        return -2
+        return [-2, -1]
 
     monkeypatch.setattr(
         "gear_optimizer.helpers.song_helpers.force_greats.result_application.apply_gems_to_base_fast",
         _fake_apply_gems,
     )
     monkeypatch.setattr(
-        "gear_optimizer.solver.scoring.force_greats.summarize_hitsim_offset_delta_ms_for_fg_variant",
+        "gear_optimizer.solver.scoring.force_greats.summarize_hitsim_offset_deltas_ms_for_fg_variant",
         _fake_summarize,
     )
 
@@ -104,5 +114,6 @@ def test_native_inflight_attach_hitsim_delta_materializes_stats(monkeypatch):
 
     assert variants[0]["data"]["Stats"]["Fever Fill Rate"] == 6
     assert variants[0]["data"]["Stats"]["Fever Time"] == 14
-    assert variants[0]["data"]["ForceGreats"]["hitsim_offset_delta_ms"] == -2
+    assert variants[0]["data"]["ForceGreats"]["hitsim_offset_deltas_ms"] == [-2, -1]
+    assert "hitsim_offset_delta_ms" not in variants[0]["data"]["ForceGreats"]
     assert calls["count"] == 1

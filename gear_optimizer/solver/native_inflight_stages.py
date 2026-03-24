@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -22,6 +23,8 @@ from gear_optimizer.solver.fever_timeline import get_song_timeline_grid
 from gear_optimizer.solver.gpu_service import GpuServiceClient
 from gear_optimizer.solver.scoring.stats_scoring import fg_baseline_params
 from gear_optimizer.solver.genetic import decode_gpu_native_ga_runs_payload
+
+logger = logging.getLogger(__name__)
 
 _FG_JIT_WARMED = False
 _FG_DB_LOADOUTS_CACHE: "OrderedDict[str, tuple[int, list[dict]]]" = OrderedDict()
@@ -245,36 +248,34 @@ class _InFlightStageProfiler:
         summary = self.summary()
         stages = summary.get("stages") or {}
         ranked = sorted(stages.items(), key=lambda kv: float(kv[1].get("total_s", 0.0) or 0.0), reverse=True)
-        print(f"[InFlight][StageProfile] total_wall_s={float(summary.get('total_wall_s', 0.0) or 0.0):.3f}")
+        logger.debug("[InFlight][StageProfile] total_wall_s=%.3f", float(summary.get("total_wall_s", 0.0) or 0.0))
         for name, info in ranked[:10]:
-            print(
-                "[InFlight][StageProfile] {:<12} total={:>8.3f}s cpu={:>8.3f}s p50={:>6.3f}s p95={:>6.3f}s max={:>6.3f}s n={}".format(
-                    name,
-                    float(info.get("total_s", 0.0) or 0.0),
-                    float(info.get("cpu_total_s", 0.0) or 0.0),
-                    float(info.get("p50_s", 0.0) or 0.0),
-                    float(info.get("p95_s", 0.0) or 0.0),
-                    float(info.get("max_s", 0.0) or 0.0),
-                    int(info.get("count", 0) or 0),
-                )
+            logger.debug(
+                "[InFlight][StageProfile] %-12s total=%8.3fs cpu=%8.3fs p50=%6.3fs p95=%6.3fs max=%6.3fs n=%s",
+                name,
+                float(info.get("total_s", 0.0) or 0.0),
+                float(info.get("cpu_total_s", 0.0) or 0.0),
+                float(info.get("p50_s", 0.0) or 0.0),
+                float(info.get("p95_s", 0.0) or 0.0),
+                float(info.get("max_s", 0.0) or 0.0),
+                int(info.get("count", 0) or 0),
             )
 
         ranked_cpu = sorted(stages.items(), key=lambda kv: float(kv[1].get("cpu_total_s", 0.0) or 0.0), reverse=True)
         if ranked_cpu:
-            print("[InFlight][CpuProfile] top_cpu_s")
+            logger.debug("[InFlight][CpuProfile] top_cpu_s")
             for name, info in ranked_cpu[:10]:
                 cpu_total = float(info.get("cpu_total_s", 0.0) or 0.0)
                 if cpu_total <= 0.0:
                     continue
-                print(
-                    "[InFlight][CpuProfile] {:<12} cpu_total={:>8.3f}s p50={:>6.3f}s p95={:>6.3f}s max={:>6.3f}s n={}".format(
-                        name,
-                        cpu_total,
-                        float(info.get("cpu_p50_s", 0.0) or 0.0),
-                        float(info.get("cpu_p95_s", 0.0) or 0.0),
-                        float(info.get("cpu_max_s", 0.0) or 0.0),
-                        int(info.get("count", 0) or 0),
-                    )
+                logger.debug(
+                    "[InFlight][CpuProfile] %-12s cpu_total=%8.3fs p50=%6.3fs p95=%6.3fs max=%6.3fs n=%s",
+                    name,
+                    cpu_total,
+                    float(info.get("cpu_p50_s", 0.0) or 0.0),
+                    float(info.get("cpu_p95_s", 0.0) or 0.0),
+                    float(info.get("cpu_max_s", 0.0) or 0.0),
+                    int(info.get("count", 0) or 0),
                 )
 
         out_path = str(self.out_path or "").strip()
@@ -466,7 +467,7 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
             else:
                 # DB prefetch still running - proceed without it to keep GPU fed
                 if perf:
-                    print("[PERF][FGPrep] db_prefetch not ready, proceeding without DB loadouts")
+                    logger.debug("[PERF][FGPrep] db_prefetch not ready, proceeding without DB loadouts")
                 prefetch_pending = True
                 db_loadouts_full = None
         except Exception:
@@ -539,7 +540,7 @@ def _prepare_fg_job_sync(song: Any, gpu_client: Optional[GpuServiceClient] = Non
                 db_n = len(db_loadouts_full)
         except Exception:
             db_n = -1
-        print(
+        logger.debug(
             "[PERF][FGPrep] "
             f"limit={fg_candidate_limit} ga={len(ga_candidates)} loadouts={loadouts_n} "
             f"select={select_ms:.1f}ms db_wait={db_wait_ms:.1f}ms build={build_ms:.1f}ms total={total_ms:.1f}ms "

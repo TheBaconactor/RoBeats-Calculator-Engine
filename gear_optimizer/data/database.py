@@ -210,7 +210,7 @@ def _close_all_registered_db_conns() -> None:
 atexit.register(_close_all_registered_db_conns)
 
 
-def get_db_connection_cached(db_path: Optional[str] = None) -> sqlite3.Connection:
+def get_db_connection_cached(db_path: Optional[str] = None, *, allow_fallback: bool = True) -> sqlite3.Connection:
     """
     Return a per-thread cached SQLite connection.
 
@@ -245,6 +245,8 @@ def get_db_connection_cached(db_path: Optional[str] = None) -> sqlite3.Connectio
     if now_monotonic and (now_monotonic < next_retry_ts):
         fallback = getattr(_DB_TLS, "fallback_conn", None)
         if fallback is not None:
+            if not allow_fallback:
+                raise sqlite3.OperationalError("read-only DB fallback active during strict read")
             return fallback
 
     # Default to a small non-zero timeout to allow brief lock contention during
@@ -281,9 +283,14 @@ def get_db_connection_cached(db_path: Optional[str] = None) -> sqlite3.Connectio
             setattr(_DB_TLS, "ro_next_retry_ts", float(next_retry_ts))
         except Exception:
             pass
+        site = "db.readonly_connection"
+        message = "failed to open read-only DB connection; using thread-local in-memory fallback DB (will retry)"
+        if not allow_fallback:
+            site = "db.readonly_connection.strict"
+            message = "failed to open read-only DB connection for strict baseline read"
         warn_fallback(
-            "db.readonly_connection",
-            "failed to open read-only DB connection; using thread-local in-memory fallback DB (will retry)",
+            site,
+            message,
             context={
                 "db_path": db_path,
                 "timeout_sec": read_timeout,
@@ -293,6 +300,8 @@ def get_db_connection_cached(db_path: Optional[str] = None) -> sqlite3.Connectio
             exc=exc,
             fatal=False,
         )
+        if not allow_fallback:
+            raise
         fallback = getattr(_DB_TLS, "fallback_conn", None)
         if fallback is None:
             try:
@@ -352,6 +361,7 @@ def get_song_counters(
     *,
     conn: Optional[sqlite3.Connection] = None,
     db_path: Optional[str] = None,
+    allow_fallback: bool = True,
 ) -> tuple[int, int, int, int]:
     """
     Fetch per-song attempt counters and best scores from `songs`.
@@ -367,7 +377,7 @@ def get_song_counters(
         # Intentionally use a per-thread cached read-only connection for the
         # hot-path "DB seed/context read" callers. This connection is owned by
         # the cache and is closed at process exit.
-        conn = get_db_connection_cached(db_path or get_evolution_db_path())
+        conn = get_db_connection_cached(db_path or get_evolution_db_path(), allow_fallback=allow_fallback)
 
     try:
         row = conn.execute(
@@ -399,6 +409,8 @@ def get_song_counters(
         return (attempt_lifetime, attempts_first, best_score, best_fg_score)
     except sqlite3.Error:
         # Defensive: if the schema hasn't been migrated yet, treat as missing.
+        if not allow_fallback:
+            raise
         return (0, 0, 0, 0)
 
 
@@ -757,18 +769,32 @@ def _normalize_details_for_persistence(details: Any, *, score: int, fg_score: in
     if not isinstance(details, dict):
         return {}
 
-    if force_data is None or int(fg_score or 0) <= 0:
-        return details
+    # Persist only the per-window HitSim deltas; strip the legacy scalar if present.
+    out = details
+    if "hitsim_offset_delta_ms" in out:
+        out = dict(out)
+        out.pop("hitsim_offset_delta_ms", None)
+    fg0 = out.get("ForceGreats")
+    if isinstance(fg0, dict) and "hitsim_offset_delta_ms" in fg0:
+        fg1 = dict(fg0)
+        fg1.pop("hitsim_offset_delta_ms", None)
+        if out is details:
+            out = dict(out)
+        out["ForceGreats"] = fg1
 
-    fg_meta = details.get("ForceGreats")
+    if force_data is None or int(fg_score or 0) <= 0:
+        return out
+
+    fg_meta = out.get("ForceGreats")
     if not isinstance(fg_meta, dict):
-        return details
+        return out
 
     # Update (or create) the final_score field for consistency.
     fg_out = dict(fg_meta)
     fg_out["final_score"] = int(fg_score)
 
-    out = dict(details)
+    if out is details:
+        out = dict(out)
     out["ForceGreats"] = fg_out
     return out
 
@@ -1079,6 +1105,28 @@ def save_team_buff_loadouts_batch(
             return force_data
 
         out = dict(force_data)
+        fg0 = out.get("ForceGreats")
+        if isinstance(fg0, dict) and "hitsim_offset_delta_ms" in fg0:
+            fg1 = dict(fg0)
+            fg1.pop("hitsim_offset_delta_ms", None)
+            out["ForceGreats"] = fg1
+
+        det0 = out.get("details")
+        if isinstance(det0, dict):
+            det_out = det0
+            if "hitsim_offset_delta_ms" in det_out:
+                det_out = dict(det_out)
+                det_out.pop("hitsim_offset_delta_ms", None)
+            nested_fg0 = det_out.get("ForceGreats")
+            if isinstance(nested_fg0, dict) and "hitsim_offset_delta_ms" in nested_fg0:
+                nested_fg1 = dict(nested_fg0)
+                nested_fg1.pop("hitsim_offset_delta_ms", None)
+                if det_out is det0:
+                    det_out = dict(det_out)
+                det_out["ForceGreats"] = nested_fg1
+            if det_out is not det0:
+                out["details"] = det_out
+
         score_v = _coerce_int(out.get("score", 0))
         if score_v <= 0:
             score_v = _coerce_int(out.get("Score", 0))
@@ -1639,6 +1687,8 @@ def get_best_loadouts(
     gears_by_name: Optional[Dict[str, Any]] = None,
     minis_by_name: Optional[Dict[str, Any]] = None,
     team_buff: str = "T5",
+    *,
+    allow_fallback: bool = True,
 ) -> List[Dict[str, Any]]:
     """
     Retrieve the top N loadouts for a song to seed the GA.
@@ -1673,7 +1723,7 @@ def get_best_loadouts(
     }
 
     # PERF: use a cached per-thread connection for read-heavy call sites.
-    conn = get_db_connection_cached(db_path)
+    conn = get_db_connection_cached(db_path, allow_fallback=allow_fallback)
     try:
         results: list[dict[str, Any]] = []
         by_hash: dict[str, dict[str, Any]] = {}
@@ -1810,6 +1860,8 @@ def get_best_loadouts(
 
         return results
     except (sqlite3.Error, json.JSONDecodeError) as e:
+        if not allow_fallback and isinstance(e, sqlite3.Error):
+            raise
         print(f"[DB] Error retrieving loadouts: {e}")
         return []
     finally:

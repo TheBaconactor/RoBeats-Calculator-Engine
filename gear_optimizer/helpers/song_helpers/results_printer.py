@@ -150,25 +150,29 @@ def print_results(
     # Optional: HumanHitSim timing summary for base + FG (if available).
     try:
         base_data0 = base_entry_to_print.get("data") if isinstance(base_entry_to_print, dict) else None
-        base_delta = base_data0.get("hitsim_offset_delta_ms") if isinstance(base_data0, dict) else None
-        try:
-            base_delta_i = int(str(base_delta)) if base_delta is not None else None
-        except Exception:
-            base_delta_i = None
-        if base_delta_i is not None:
-            print(f"HitSim Offset Delta (Base): {base_delta_i:+d}ms")
+        base_deltas = base_data0.get("hitsim_offset_deltas_ms") if isinstance(base_data0, dict) else None
+        if isinstance(base_deltas, (list, tuple)) and base_deltas:
+            try:
+                base_deltas_i = [int(x) for x in base_deltas]
+            except Exception:
+                base_deltas_i = []
+            if base_deltas_i:
+                formatted = ", ".join(f"{x:+d}ms" for x in base_deltas_i)
+                print(f"HitSim Offset Deltas (Base): [{formatted}]")
 
         if best_fg_entry is not None:
             fg_data = best_fg_entry.get("data", {}) or {}
             fg_meta = fg_data.get("ForceGreats") or {}
             if isinstance(fg_meta, dict):
-                delta = fg_meta.get("hitsim_offset_delta_ms")
-                try:
-                    delta_i = int(str(delta))
-                except Exception:
-                    delta_i = None
-                if delta_i is not None:
-                    print(f"HitSim Offset Delta: {delta_i:+d}ms")
+                fg_deltas = fg_meta.get("hitsim_offset_deltas_ms")
+                if isinstance(fg_deltas, (list, tuple)) and fg_deltas:
+                    try:
+                        fg_deltas_i = [int(x) for x in fg_deltas]
+                    except Exception:
+                        fg_deltas_i = []
+                    if fg_deltas_i:
+                        formatted = ", ".join(f"{x:+d}ms" for x in fg_deltas_i)
+                        print(f"HitSim Offset Deltas: [{formatted}]")
     except Exception:
         pass
     status_emit_fn(f"Base={base_score_to_print} | FG={fg_score_to_print}")

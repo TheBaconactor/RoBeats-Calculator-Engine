@@ -163,7 +163,7 @@ def test_normalize_force_payload_materializes_stats_from_base_stats():
     assert stats.get("Vibe", 0) >= base_stats["Vibe"]
 
 
-def test_make_build_details_fn_preserves_hitsim_offset_delta():
+def test_make_build_details_fn_coerces_hitsim_offset_deltas_ms():
     build_details = make_build_details_fn("Rush", "Flow", "Hard")
     details = build_details(
         {
@@ -173,14 +173,17 @@ def test_make_build_details_fn_preserves_hitsim_offset_delta():
             "Stats": {},
             "Selected Element": "Rush",
             "ForceGreats": {},
-            "hitsim_offset_delta_ms": "13",
+            # Only the detailed list is persisted; legacy scalar keys should be ignored.
+            "hitsim_offset_delta_ms": "999",
+            "hitsim_offset_deltas_ms": ["13", "-2", None, "oops"],
         }
     )
 
     assert details["PrimaryColor"] == "Rush"
     assert details["SecondaryColor"] == "Flow"
     assert details["Difficulty"] == "Hard"
-    assert details["hitsim_offset_delta_ms"] == 13
+    assert details["hitsim_offset_deltas_ms"] == [13, -2]
+    assert "hitsim_offset_delta_ms" not in details
 
 
 def test_make_build_details_fn_materializes_stats_from_base_stats():

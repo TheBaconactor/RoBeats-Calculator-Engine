@@ -12,6 +12,7 @@ This pipeline is designed to keep the GPU continuously busy in GPU_Native_GA mod
 from __future__ import annotations
 
 import concurrent.futures
+import logging
 import os
 import threading
 import time
@@ -40,7 +41,7 @@ from gear_optimizer.helpers.song_helpers.loadout_builder import (
     merge_db_loadouts_into_entries,
     refresh_ga_candidate_entries,
 )
-from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn, evaluate_record_update
+from gear_optimizer.helpers.song_helpers.persistence import make_build_details_fn, evaluate_progress_record_update
 from gear_optimizer.solver.genetic import GA_POPULATION_SIZE
 from gear_optimizer.solver.gpu_executor import get_gpu_executor
 from gear_optimizer.solver.gpu_service import GpuServiceClient, GpuServiceTimeoutError
@@ -87,6 +88,8 @@ from gear_optimizer.solver.native_inflight_stages import (
     _prepare_fg_job_sync,
     _warmup_fg_jit,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _set_fg_resident_owner(calc_song: Any, *, song_slot: int, task_key: str) -> None:
@@ -221,7 +224,7 @@ def run_native_inflight_song_pipeline(
         # Allow more caching when the user explicitly opts into higher RAM usage.
         pool_cache_max, registry_cache_max, init_heur_cache_max = bump_prep_cache_limits_for_ram_mode()
         try:
-            print(
+            logger.debug(
                 "[InFlight][RAM] enabled: default InFlight_GA_QueueMult=4 InFlight_PrepBufferMult=12 "
                 f"cache_max={{pool:{int(pool_cache_max)} registry:{int(registry_cache_max)} heur:{int(init_heur_cache_max)}}}"
             )
@@ -265,7 +268,7 @@ def run_native_inflight_song_pipeline(
                 else:
                     msg += " [capped"
                 msg += "; set GPU_SONG_SLOTS >= InFlightSongs + 1 to avoid slot caps]"
-            print(msg)
+            logger.debug(msg)
         except Exception:
             pass
 
@@ -387,7 +390,7 @@ def run_native_inflight_song_pipeline(
             f"InFlight_FGAgingTriggerMs={int(fg_aging_trigger_s * 1000.0)}, "
             f"InFlight_FGAgingHardMs={int(fg_aging_hard_s * 1000.0)})"
         )
-        print(msg)
+        logger.debug(msg)
     except Exception:
         pass
 
@@ -510,7 +513,7 @@ def run_native_inflight_song_pipeline(
                 )
                 if required_gpu_slots is not None:
                     msg += f" (For full slot reuse: set GPU_SONG_SLOTS>={int(required_gpu_slots)} or reduce InFlight_GA_QueueMult.)"
-                print(msg)
+                logger.debug(msg)
             except Exception:
                 pass
             # No slack beyond the GA queue depth: any attempt to hold FG slots will eventually starve GA.
@@ -519,7 +522,7 @@ def run_native_inflight_song_pipeline(
                 inflight_fg_hold_slots = False
                 fg_hold_budget = 0
                 try:
-                    print("[InFlight][Auto] Disabling InFlight_FGHoldSlots (no slack song slots available).")
+                    logger.debug("[InFlight][Auto] Disabling InFlight_FGHoldSlots (no slack song slots available).")
                 except Exception:
                     pass
 
@@ -551,7 +554,7 @@ def run_native_inflight_song_pipeline(
         if os.name == "nt" and os.environ.get("GPU_ALLOW_SYSTEM_TIMER_OVERRIDE") is None:
             os.environ["GPU_ALLOW_SYSTEM_TIMER_OVERRIDE"] = "1"
             if _truthy(os.environ.get("PERF_TIMING", "0")):
-                print(
+                logger.debug(
                     "[InFlight][Perf] Enabled 1ms Windows timer period for GPU batching "
                     "(set GPU_ALLOW_SYSTEM_TIMER_OVERRIDE=0 to disable)."
                 )
@@ -582,15 +585,23 @@ def run_native_inflight_song_pipeline(
     # that in-flight tasks can start with (DB persistence is async, and many repeats can overlap).
     progress_best_lock = threading.Lock()
     progress_best: dict[str, tuple[int, int]] = {}
+    progress_best_valid: set[str] = set()
 
-    def _progress_best_snapshot(db_key: str) -> tuple[int, int]:
+    def _progress_best_snapshot(db_key: str) -> tuple[int, int, bool]:
         key = str(db_key or "").strip()
         if not key:
-            return (0, 0)
+            return (0, 0, False)
         with progress_best_lock:
-            return progress_best.get(key, (0, 0))
+            score0, fg0 = progress_best.get(key, (0, 0))
+            return (int(score0), int(fg0), key in progress_best_valid)
 
-    def _progress_best_update(db_key: str, *, best_score: int | None = None, best_fg: int | None = None) -> None:
+    def _progress_best_update(
+        db_key: str,
+        *,
+        best_score: int | None = None,
+        best_fg: int | None = None,
+        mark_valid: bool = False,
+    ) -> None:
         key = str(db_key or "").strip()
         if not key:
             return
@@ -609,6 +620,8 @@ def run_native_inflight_song_pipeline(
             if fg_new is not None and fg_new > int(fg0):
                 fg0 = int(fg_new)
             progress_best[key] = (int(score0), int(fg0))
+            if mark_valid:
+                progress_best_valid.add(key)
 
     def _emit_progress(*, completed_delta: int = 0, failed_delta: int = 0, record_info: dict | None = None) -> None:
         if progress_cb is None:
@@ -1314,9 +1327,13 @@ def run_native_inflight_song_pipeline(
                         avg_s = 0.0
                         eta_s = 0.0
                     try:
-                        print(
-                            f"[InFlight][Throughput] done={completed_now} pending~{pending_now} "
-                            f"rate={per_h:.1f}/h avg={avg_s:.2f}s ETA={eta_s / 60.0:.1f}m"
+                        logger.debug(
+                            "[InFlight][Throughput] done=%s pending~%s rate=%.1f/h avg=%.2fs ETA=%.1fm",
+                            completed_now,
+                            pending_now,
+                            per_h,
+                            avg_s,
+                            eta_s / 60.0,
                         )
                     except Exception:
                         pass
@@ -1365,15 +1382,13 @@ def run_native_inflight_song_pipeline(
                         song=task_key,
                     )
                     prepared.append(prepared_song)
-                    try:
-                        prev_best_score = safe_int((prepared_song.prev_record or {}).get("score", 0), 0)
-                    except Exception:
-                        prev_best_score = 0
-                    _progress_best_update(
-                        prepared_song.db_key,
-                        best_score=int(prev_best_score),
-                        best_fg=int(getattr(prepared_song, "db_best_fg_score", 0) or 0),
-                    )
+                    if bool(getattr(prepared_song, "db_baseline_valid", True)):
+                        _progress_best_update(
+                            prepared_song.db_key,
+                            best_score=int(getattr(prepared_song, "db_best_score", 0) or 0),
+                            best_fg=int(getattr(prepared_song, "db_best_fg_score", 0) or 0),
+                            mark_valid=True,
+                        )
                     if prepared and not fg_jit_warmup_submitted:
                         try:
                             fg_prep_executor.submit(_warmup_fg_jit, prepared[0].calc_song, prepared[0].ref_arrays)
@@ -1476,13 +1491,18 @@ def run_native_inflight_song_pipeline(
                 if ga_queue_debug and ga_queue_limit_effective != last_ga_queue_limit_effective:
                     last_ga_queue_limit_effective = int(ga_queue_limit_effective)
                     try:
-                        print(
-                            "[InFlight][GAQueue] "
-                            f"effective={int(ga_queue_limit_effective)} base={int(ga_queue_limit_base)} "
-                            f"ga_inflight={len(ga_inflight)} prepared={len(prepared)} pending_fg={len(pending_fg)} "
-                            f"fg_prep={len(fg_prep_inflight)} fg_inflight={len(fg_futures)} "
-                            f"slot_reserve={int(fg_slot_reserve)} "
-                            f"oldest_fg_wait_ms={fg_oldest_wait_s * 1000.0:.0f}"
+                        logger.debug(
+                            "[InFlight][GAQueue] effective=%s base=%s ga_inflight=%s prepared=%s pending_fg=%s "
+                            "fg_prep=%s fg_inflight=%s slot_reserve=%s oldest_fg_wait_ms=%.0f",
+                            int(ga_queue_limit_effective),
+                            int(ga_queue_limit_base),
+                            len(ga_inflight),
+                            len(prepared),
+                            len(pending_fg),
+                            len(fg_prep_inflight),
+                            len(fg_futures),
+                            int(fg_slot_reserve),
+                            fg_oldest_wait_s * 1000.0,
                         )
                     except Exception:
                         pass
@@ -1842,25 +1862,30 @@ def run_native_inflight_song_pipeline(
 
                 record_info = None
                 try:
-                    prev_best_score, prev_best_fg = _progress_best_snapshot(song.db_key)
-                    record_info = evaluate_record_update(
+                    prev_best_score, prev_best_fg, baseline_valid = _progress_best_snapshot(song.db_key)
+                    record_info = evaluate_progress_record_update(
                         song.best_data or {},
                         {"score": int(prev_best_score)},
                         [],
                         db_best_fg_score=int(prev_best_fg),
+                        baseline_valid=bool(baseline_valid),
                     )
                     if isinstance(record_info, dict) and record_info.get("is_better"):
-                        _progress_best_update(song.db_key, best_score=int(record_info.get("score", 0) or 0))
+                        _progress_best_update(
+                            song.db_key,
+                            best_score=int(record_info.get("score", 0) or 0),
+                            mark_valid=bool(baseline_valid),
+                        )
                 except Exception:
                     record_info = None
                 song.record_info = record_info
 
-                # Backfill base HitSim delta for the deferred-post payload (best_data + GA candidates).
+                # Backfill base HitSim per-window deltas for the deferred-post payload (best_data + GA candidates).
                 #
                 # Why here?
                 # - In native in-flight mode we don't ship `calc_song`/`ref_arrays` across the post-process queue.
                 # - TeamBuff tier postprocess intentionally excludes T5, so T5's base rows must already contain
-                #   `details_json.hitsim_offset_delta_ms` or the frontend will see nulls for top51.
+                #   `details_json.hitsim_offset_deltas_ms` or the frontend will see nulls for top51.
                 # - Compute using the in-process `calc_song` (has the true per-run HitSim seed/timestamps).
                 best_data_for_post = song.best_data or {}
                 best_data_post = dict(best_data_for_post) if isinstance(best_data_for_post, dict) else {}
@@ -1902,19 +1927,25 @@ def run_native_inflight_song_pipeline(
                 if hitsim_seed is not None and int(hitsim_seed) <= 0:
                     hitsim_seed = None
 
-                delta_cache_by_ff: dict[int, int] = {}
+                deltas_cache_by_ff_ft: dict[tuple[int, int], tuple[int, ...]] = {}
                 if hitsim_enabled and isinstance(song.calc_song, dict) and isinstance(song.ref_arrays, dict):
                     try:
-                        from gear_optimizer.solver.scoring.force_greats import summarize_hitsim_offset_delta_ms_for_base
+                        from gear_optimizer.solver.scoring.force_greats import summarize_hitsim_offset_deltas_ms_for_base
                     except Exception:
-                        summarize_hitsim_offset_delta_ms_for_base = None
+                        summarize_hitsim_offset_deltas_ms_for_base = None
 
-                    if summarize_hitsim_offset_delta_ms_for_base is not None:
+                    if summarize_hitsim_offset_deltas_ms_for_base is not None:
 
                         def _maybe_attach(entry_data: dict) -> None:
                             if not isinstance(entry_data, dict):
                                 return
-                            if entry_data.get("hitsim_offset_delta_ms") is not None:
+
+                            existing_deltas = entry_data.get("hitsim_offset_deltas_ms")
+                            if isinstance(existing_deltas, (list, tuple)) and existing_deltas:
+                                if "hitsim_offset_delta_ms" in entry_data:
+                                    entry_data.pop("hitsim_offset_delta_ms", None)
+                                return
+                            if entry_data.get("hitsim_offset_deltas_ms") is not None:
                                 return
                             stats0 = entry_data.get("Stats")
                             if not isinstance(stats0, dict) or not stats0:
@@ -1923,21 +1954,33 @@ def run_native_inflight_song_pipeline(
                                 ff0 = int(stats0.get("Fever Fill Rate", 0) or 0)
                             except Exception:
                                 ff0 = 0
-                            delta0 = delta_cache_by_ff.get(int(ff0))
-                            if delta0 is None:
+                            try:
+                                ft0 = int(stats0.get("Fever Time", 0) or 0)
+                            except Exception:
+                                ft0 = 0
+
+                            cache_key = (int(ff0), int(ft0))
+                            deltas_t = deltas_cache_by_ff_ft.get(cache_key)
+                            if deltas_t is None:
                                 try:
-                                    computed = summarize_hitsim_offset_delta_ms_for_base(
+                                    computed = summarize_hitsim_offset_deltas_ms_for_base(
                                         song.calc_song,
                                         {"Stats": stats0},
                                         song.ref_arrays,
                                     )
                                 except Exception:
                                     computed = None
-                                if computed is not None:
-                                    delta0 = int(computed)
-                                    delta_cache_by_ff[int(ff0)] = int(delta0)
-                            if delta0 is not None:
-                                entry_data["hitsim_offset_delta_ms"] = int(delta0)
+                                if computed:
+                                    try:
+                                        deltas_t = tuple(int(x) for x in computed)
+                                    except Exception:
+                                        deltas_t = None
+                                    if deltas_t:
+                                        deltas_cache_by_ff_ft[cache_key] = deltas_t
+
+                            if deltas_t:
+                                entry_data["hitsim_offset_deltas_ms"] = list(deltas_t)
+                                entry_data.pop("hitsim_offset_delta_ms", None)
 
                         # Best-data backfill
                         _maybe_attach(best_data_post)
@@ -2098,10 +2141,10 @@ def run_native_inflight_song_pipeline(
                     should_start_fg = False
                 else:
                     try:
-                        print(
-                            f"[InFlight][FG] Deferred {len(pending_fg)} pending FG job(s) "
-                            "(FG_DrainAtEnd=false). "
-                            "Candidates were persisted to DB for later processing."
+                        logger.debug(
+                            "[InFlight][FG] Deferred %s pending FG job(s) (FG_DrainAtEnd=false). "
+                            "Candidates were persisted to DB for later processing.",
+                            len(pending_fg),
                         )
                     except Exception:
                         pass
@@ -2159,13 +2202,20 @@ def run_native_inflight_song_pipeline(
                         if int(fg_ga_credit) <= 0:
                             reasons.append("credit")
 
-                        print(
-                            "[InFlight][FGDecision] start "
-                            f"reasons={','.join(reasons) or 'unknown'} "
-                            f"pending={len(pending_tasks)} prepared={len(prepared)} prep_inflight={len(prep_inflight)} "
-                            f"ga_inflight={len(ga_inflight)} decode_inflight={len(decode_inflight)} "
-                            f"pending_fg={len(pending_fg)} fg_prep={len(fg_prep_inflight)} fg_inflight={len(fg_futures)} "
-                            f"oldest_fg_wait_ms={fg_oldest_wait_s * 1000.0:.0f}"
+                        logger.debug(
+                            "[InFlight][FGDecision] start reasons=%s pending=%s prepared=%s prep_inflight=%s "
+                            "ga_inflight=%s decode_inflight=%s pending_fg=%s fg_prep=%s fg_inflight=%s "
+                            "oldest_fg_wait_ms=%.0f",
+                            ",".join(reasons) or "unknown",
+                            len(pending_tasks),
+                            len(prepared),
+                            len(prep_inflight),
+                            len(ga_inflight),
+                            len(decode_inflight),
+                            len(pending_fg),
+                            len(fg_prep_inflight),
+                            len(fg_futures),
+                            fg_oldest_wait_s * 1000.0,
                         )
                     except Exception:
                         pass
@@ -2211,10 +2261,11 @@ def run_native_inflight_song_pipeline(
                                 pass
                         if fg_submit_debug:
                             try:
-                                print(
-                                    "[InFlight][FGSubmit] "
-                                    f"song={fg_song.task_key} "
-                                    f"pending_fg={len(pending_fg)} fg_inflight={len(fg_futures)}"
+                                logger.debug(
+                                    "[InFlight][FGSubmit] song=%s pending_fg=%s fg_inflight=%s",
+                                    fg_song.task_key,
+                                    len(pending_fg),
+                                    len(fg_futures),
                                 )
                             except Exception:
                                 pass
@@ -2230,6 +2281,7 @@ def run_native_inflight_song_pipeline(
                             post_sender=post_sender,
                             progress_cb=progress_cb,
                             progress_best=progress_best,
+                            progress_best_valid=progress_best_valid,
                             progress_best_lock=progress_best_lock,
                         )
                         _register_completion_future(fg_future)
@@ -2275,7 +2327,7 @@ def run_native_inflight_song_pipeline(
                             msg += " blocked_slots=1"
                         if oldest_ga_s is not None:
                             msg += f" oldest_ga={oldest_ga_s:.1f}s"
-                        print(msg)
+                        logger.debug(msg)
                     except Exception:
                         pass
                     emit_profile_event(
@@ -2316,12 +2368,18 @@ def run_native_inflight_song_pipeline(
                     except Exception:
                         fg_done = None
                         fg_inflight = None
-                    print(
-                        "[InFlight][STALL] "
-                        f"pending={len(pending_tasks)} prepared={len(prepared)} prep_inflight={len(prep_inflight)} "
-                        f"ga_inflight={len(ga_inflight)} decode_inflight={len(decode_inflight)} "
-                        f"pending_fg={len(pending_fg)} fg_prep={len(fg_prep_inflight)} "
-                        f"fg_inflight={fg_inflight} fg_done={fg_done}"
+                    logger.debug(
+                        "[InFlight][STALL] pending=%s prepared=%s prep_inflight=%s ga_inflight=%s "
+                        "decode_inflight=%s pending_fg=%s fg_prep=%s fg_inflight=%s fg_done=%s",
+                        len(pending_tasks),
+                        len(prepared),
+                        len(prep_inflight),
+                        len(ga_inflight),
+                        len(decode_inflight),
+                        len(pending_fg),
+                        len(fg_prep_inflight),
+                        fg_inflight,
+                        fg_done,
                     )
                     emit_profile_event(
                         component="inflight_orchestrator",
@@ -2384,51 +2442,51 @@ def run_native_inflight_song_pipeline(
         shutdown_debug = _truthy(os.environ.get("INFLIGHT_SHUTDOWN_DEBUG", "0"))
         try:
             if shutdown_debug:
-                print("[InFlight][SHUTDOWN] fg_executor.shutdown")
+                logger.debug("[InFlight][SHUTDOWN] fg_executor.shutdown")
             fg_executor.shutdown(wait=True, cancel_futures=True)
         except Exception:
             pass
         try:
             if shutdown_debug:
-                print("[InFlight][SHUTDOWN] decode_executor.shutdown")
+                logger.debug("[InFlight][SHUTDOWN] decode_executor.shutdown")
             decode_executor.shutdown(wait=True, cancel_futures=True)
         except Exception:
             pass
         try:
             if shutdown_debug:
-                print("[InFlight][SHUTDOWN] db_prefetch_executor.shutdown")
+                logger.debug("[InFlight][SHUTDOWN] db_prefetch_executor.shutdown")
             db_prefetch_executor.shutdown(wait=True, cancel_futures=True)
         except Exception:
             pass
         try:
             if shutdown_debug:
-                print("[InFlight][SHUTDOWN] fg_prep_executor.shutdown")
+                logger.debug("[InFlight][SHUTDOWN] fg_prep_executor.shutdown")
             fg_prep_executor.shutdown(wait=True, cancel_futures=True)
         except Exception:
             pass
         try:
             if shutdown_debug:
-                print("[InFlight][SHUTDOWN] prep_executor.shutdown")
+                logger.debug("[InFlight][SHUTDOWN] prep_executor.shutdown")
             prep_executor.shutdown(wait=True, cancel_futures=True)
         except Exception:
             pass
         try:
             if post_sender is not None:
                 if shutdown_debug:
-                    print("[InFlight][SHUTDOWN] post_sender.close")
+                    logger.debug("[InFlight][SHUTDOWN] post_sender.close")
                 post_sender.close(timeout=10.0)
         except Exception:
             pass
         try:
             if shutdown_debug:
-                print("[InFlight][SHUTDOWN] gpu_client.close")
+                logger.debug("[InFlight][SHUTDOWN] gpu_client.close")
             gpu_client.close(timeout=2.0)
         except Exception:
             pass
         try:
             if gpu_executor.is_running:
                 if shutdown_debug:
-                    print("[InFlight][SHUTDOWN] gpu_executor.stop")
+                    logger.debug("[InFlight][SHUTDOWN] gpu_executor.stop")
                 gpu_executor.stop()
         except Exception:
             pass
@@ -2445,6 +2503,7 @@ def _run_fg_job_sync(
     post_sender: Optional[_PostSender] = None,
     progress_cb=None,
     progress_best: dict[str, tuple[int, int]] | None = None,
+    progress_best_valid: set[str] | None = None,
     progress_best_lock: Any | None = None,
 ) -> None:
     cpu_t0 = _thread_cpu_time_s()
@@ -2566,40 +2625,34 @@ def _run_fg_job_sync(
     if progress_cb is not None:
         fg_record_info = None
         try:
-            prev_best_score = 0
-            prev_best_fg = 0
-            try:
-                prev_best_score = safe_int((song.prev_record or {}).get("score", 0), 0)
-            except Exception:
-                prev_best_score = 0
-            try:
-                prev_best_fg = safe_int(getattr(song, "db_best_fg_score", 0), 0)
-            except Exception:
-                prev_best_fg = 0
+            prev_best_score = safe_int(getattr(song, "db_best_score", 0), 0)
+            prev_best_fg = safe_int(getattr(song, "db_best_fg_score", 0), 0)
+            baseline_valid = bool(getattr(song, "db_baseline_valid", True))
 
             key = str(getattr(song, "db_key", "") or "").strip()
             if progress_best is not None and progress_best_lock is not None and key:
                 try:
                     with progress_best_lock:
                         best_pair = progress_best.get(key)
-                    if isinstance(best_pair, tuple) and len(best_pair) == 2:
-                        prev_best_score = safe_int(best_pair[0], prev_best_score)
-                        prev_best_fg = safe_int(best_pair[1], prev_best_fg)
+                        if isinstance(best_pair, tuple) and len(best_pair) == 2:
+                            prev_best_score = safe_int(best_pair[0], prev_best_score)
+                            prev_best_fg = safe_int(best_pair[1], prev_best_fg)
+                        baseline_valid = key in (progress_best_valid or set())
                 except Exception:
                     pass
 
-            fg_record_info = evaluate_record_update(
+            fg_record_info = evaluate_progress_record_update(
                 song.best_data or {},
                 {"score": int(prev_best_score)},
                 song.fg_variants or [],
                 db_best_fg_score=int(prev_best_fg),
+                baseline_valid=bool(baseline_valid),
+                fg_only=True,
             )
         except Exception:
             fg_record_info = None
         if isinstance(fg_record_info, dict):
             fg_record_info = dict(fg_record_info)
-            # Only count FG improvements in this stage (independent of base GA updates).
-            fg_record_info["record_update"] = bool(fg_record_info.get("is_fg_better"))
             if fg_record_info.get("is_fg_better") and progress_best is not None and progress_best_lock is not None:
                 try:
                     best_fg_new = safe_int(fg_record_info.get("best_fg_score_run", 0), 0)
@@ -2613,6 +2666,8 @@ def _run_fg_job_sync(
                                 score0, fg0 = progress_best.get(key, (int(prev_best_score), int(prev_best_fg)))
                                 if int(best_fg_new) > int(fg0):
                                     progress_best[key] = (int(score0), int(best_fg_new))
+                                if bool(baseline_valid) and progress_best_valid is not None:
+                                    progress_best_valid.add(key)
                         except Exception:
                             pass
             try:

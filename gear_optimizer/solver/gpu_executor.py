@@ -25,6 +25,7 @@ Usage:
 import multiprocessing
 import threading
 import queue
+import logging
 import os
 import atexit
 import json
@@ -51,6 +52,7 @@ from gear_optimizer.solver.windows_timer import (
 )
 
 _ENV_GET = os.environ.get
+logger = logging.getLogger(__name__)
 
 
 def _system_timer_override_allowed() -> bool:
@@ -1142,7 +1144,7 @@ class GpuExecutor:
         self._workload_profile_last_emit_ts = now
 
         if self._profile_enabled:
-            print(
+            logger.debug(
                 "[GpuExecutor][WORKLOAD] "
                 f"window_batches={len(window)} busy={busy_pct:.1f}% avg_batch={avg_batch:.2f} "
                 f"avg_units={avg_units:.1f} fg_share={fg_share:.1f}% qdepth~={avg_qdepth:.1f} "
@@ -1337,7 +1339,7 @@ class GpuExecutor:
             daemon=True,
         )
         self._executor_thread.start()
-        print("[GpuExecutor] Started")
+        logger.debug("[GpuExecutor] Started")
 
     def stop(self):
         """Stop the GPU executor."""
@@ -1403,7 +1405,7 @@ class GpuExecutor:
                     fg_tasks_hist = ", ".join(f"{sz}:{cnt}" for sz, cnt in top_fg if cnt)
                 except Exception:
                     fg_tasks_hist = ""
-            print(
+            logger.debug(
                 "[GpuExecutor][PROFILE] "
                 f"wait={self._wait_sec:.2f}s exec={self._exec_sec:.2f}s busy={util:.1f}% (executor) "
                 f"avg_exec_per_req={avg:.3f}s avg_batch={avg_batch:.2f} "
@@ -1418,8 +1420,10 @@ class GpuExecutor:
                 fg_exec = float(self._req_type_exec_sec.get(GpuRequestType.SOLVE_FORCE_GREATS_FINDER, 0.0) or 0.0)
                 if fg_exec > 0 and self._fg_tasks_total > 0:
                     fg_tasks_per_s = float(self._fg_tasks_total) / fg_exec
-                    print(
-                        f"[GpuExecutor][FG] tasks_per_sec~={fg_tasks_per_s:.1f} (executor-wall) fg_exec={fg_exec:.2f}s"
+                    logger.debug(
+                        "[GpuExecutor][FG] tasks_per_sec~=%.1f (executor-wall) fg_exec=%.2fs",
+                        fg_tasks_per_s,
+                        fg_exec,
                     )
             except Exception:
                 pass
@@ -1464,7 +1468,7 @@ class GpuExecutor:
                                 f"queue_avg={queue_avg * 1000:.1f}ms p95={queue_p95 * 1000:.1f}ms "
                                 f"in_exec_avg={in_exec_avg * 1000:.1f}ms p95={in_exec_p95 * 1000:.1f}ms"
                             )
-                        print(f"[GpuExecutor][LATENCY] {'; '.join(parts)}")
+                        logger.debug("[GpuExecutor][LATENCY] %s", "; ".join(parts))
             except Exception:
                 pass
             try:
@@ -1481,7 +1485,7 @@ class GpuExecutor:
                             f"gpu_kernel~={kernel_s:.2f}s up~={upload_s:.2f}s down~={download_s:.2f}s"
                         )
                     if breakdown_parts:
-                        print(f"[GpuExecutor][BREAKDOWN] {'; '.join(breakdown_parts)}")
+                        logger.debug("[GpuExecutor][BREAKDOWN] %s", "; ".join(breakdown_parts))
             except Exception:
                 pass
             try:
@@ -1493,7 +1497,7 @@ class GpuExecutor:
                         next_s = next_t.value if next_t is not None else "<none>"
                         cnt = int(self._idle_transitions_count.get((prev_t, next_t), 0))
                         parts.append(f"{prev_s}->{next_s}:{sec:.2f}s({cnt})")
-                    print(f"[GpuExecutor][IDLE] transitions=[{', '.join(parts)}]")
+                    logger.debug("[GpuExecutor][IDLE] transitions=[%s]", ", ".join(parts))
             except Exception:
                 pass
             try:
@@ -1514,7 +1518,7 @@ class GpuExecutor:
                     p95_q = self._p95(self._workload_queue_depth_samples)
                     mode_top = sorted(self._workload_mode_counts.items(), key=lambda kv: kv[1], reverse=True)[:5]
                     mode_str = ", ".join(f"{name}:{int(count)}" for name, count in mode_top)
-                    print(
+                    logger.debug(
                         "[GpuExecutor][WORKLOAD][SUMMARY] "
                         f"batches={len(window)} avg_units={avg_units:.1f} p95_units={p95_units:.1f} "
                         f"avg_diversity={avg_div:.1f}% p95_diversity={p95_div:.1f}% "
@@ -1567,7 +1571,7 @@ class GpuExecutor:
                 get_gpu_profiler().report(verbose=True)
             except Exception:
                 pass
-        print(f"[GpuExecutor] Stopped. Processed {self._requests_processed} requests.")
+        logger.debug("[GpuExecutor] Stopped. Processed %s requests.", self._requests_processed)
 
     def register_worker(self) -> tuple:
         """
@@ -1653,7 +1657,7 @@ class GpuExecutor:
         util = (float(self._live_exec_sec) / total * 100.0) if total > 0 else 0.0
         top_types = sorted(self._live_type_counts.items(), key=lambda kv: kv[1], reverse=True)[:4]
         types_str = ",".join(f"{t.value}:{int(n)}" for t, n in top_types) if top_types else ""
-        print(
+        logger.debug(
             f"[GpuExecutor][LIVE] busy={util:.1f}% (executor) wait={self._live_wait_sec * 1000:.1f}ms "
             f"exec={self._live_exec_sec * 1000:.1f}ms types=[{types_str}]"
         )
@@ -1728,14 +1732,14 @@ class GpuExecutor:
             init_taichi()
             self._taichi_ready = True
             self._ready_event.set()
-            print("[GpuExecutor] Taichi initialized")
+            logger.debug("[GpuExecutor] Taichi initialized")
         except Exception as e:
             self._taichi_ready = False
             self._last_init_error = f"{type(e).__name__}: {e}"
             self._running = False
             self._ready_event.set()
             self._write_heartbeat(phase="init_failed", note=self._last_init_error, force=True)
-            print(f"[GpuExecutor] Taichi init failed: {e}")
+            logger.debug("[GpuExecutor] Taichi init failed: %s", e)
             return
         self._write_heartbeat(phase="ready", force=True)
         # Warm up FG kernels up-front to avoid the first ForceGreatsFinder call
@@ -1748,10 +1752,10 @@ class GpuExecutor:
                 fg_fields.ensure_ready_with_warmup()
                 dt_ms = (perf_counter() - t0) * 1000.0
                 if ENV.perf_timing:
-                    print(f"[GpuExecutor] Warmed FG kernels in {dt_ms:.1f}ms")
+                    logger.debug("[GpuExecutor] Warmed FG kernels in %.1fms", dt_ms)
             except Exception as e:
                 try:
-                    print(f"[GpuExecutor] FG warmup failed: {type(e).__name__}: {e}")
+                    logger.debug("[GpuExecutor] FG warmup failed: %s: %s", type(e).__name__, e)
                 except Exception:
                     pass
 
@@ -1766,10 +1770,10 @@ class GpuExecutor:
                 ga_ops.warmup_ga_kernels()
                 dt_ms = (perf_counter() - t0) * 1000.0
                 if ENV.perf_timing:
-                    print(f"[GpuExecutor] Warmed GA kernels in {dt_ms:.1f}ms")
+                    logger.debug("[GpuExecutor] Warmed GA kernels in %.1fms", dt_ms)
             except Exception as e:
                 try:
-                    print(f"[GpuExecutor] GA warmup failed: {type(e).__name__}: {e}")
+                    logger.debug("[GpuExecutor] GA warmup failed: %s: %s", type(e).__name__, e)
                 except Exception:
                     pass
 
@@ -2280,7 +2284,7 @@ class GpuExecutor:
                     except Exception:
                         continue
                 try:
-                    print(f"[GpuExecutor] Error: {e}")
+                    logger.debug("[GpuExecutor] Error: %s", e)
                 except Exception:
                     pass
                 try:
@@ -4434,7 +4438,7 @@ class GpuExecutor:
         min_pack_payloads = max(1, min(int(min_pack_payloads), 128))
         if debug_batch_pack:
             try:
-                print(f"[FG][BatchPack] request payloads={len(payloads)}")
+                logger.debug("[FG][BatchPack] request payloads=%s", len(payloads))
             except Exception:
                 pass
 
@@ -4582,7 +4586,7 @@ class GpuExecutor:
                             if p.get("fg_download_base_scores") is None:
                                 reason = f"payload[{idx}] fg_download_base_scores=None"
                                 break
-                    print(f"[FG][BatchPack] skipped: {reason} (payloads={len(payloads)})")
+                    logger.debug("[FG][BatchPack] skipped: %s (payloads=%s)", reason, len(payloads))
                 except Exception:
                     pass
         except Exception as exc:
@@ -4590,8 +4594,8 @@ class GpuExecutor:
                 try:
                     import traceback
 
-                    print(f"[FG][BatchPack] disabled: {type(exc).__name__}: {exc}")
-                    print(traceback.format_exc())
+                    logger.debug("[FG][BatchPack] disabled: %s: %s", type(exc).__name__, exc)
+                    logger.debug("%s", traceback.format_exc())
                 except Exception:
                     pass
             # Fall through to per-payload download path.
@@ -5144,7 +5148,7 @@ def run_gpu_executor_server(
         threading.Thread(target=_signal_ready, name=f"GpuExecutorReady[{label}]", daemon=True).start()
 
     try:
-        print(
+        logger.debug(
             f"[GpuExecutor][{label}] Starting server loop "
             f"(TAICHI_VULKAN_VISIBLE_DEVICE={os.environ.get('TAICHI_VULKAN_VISIBLE_DEVICE', '') or 'default'})"
         )
