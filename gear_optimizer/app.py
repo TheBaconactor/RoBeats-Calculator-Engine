@@ -849,16 +849,19 @@ class GearOptimizerApp:
             ignore_resume = os.environ.get("METAFINDER_IGNORE_RESUME_QUEUE", "").lower() in ("1", "true", "yes")
             memory_resume_exists = os.path.exists(MEMORY_GUARD_RESUME_FILE)
             is_fresh_queue = ignore_resume or not memory_resume_exists
+            # StatsVerifier is a heavyweight DB integrity repair pass intended for debugging/one-off recovery,
+            # not a default production startup step. Keep it opt-in.
+            enable_stats_verify = bool(self._truthy(os.environ.get("METAFINDER_VERIFY_STATS_INTEGRITY", "")))
             skip_stats_verify = bool(self._truthy(os.environ.get("METAFINDER_SKIP_STATS_INTEGRITY_VERIFY", "")))
 
             if is_fresh_queue:
-                if skip_stats_verify:
-                    if not self._stats_verified_once:
-                        logger.info("[Benchmark] Skipping stats integrity verification.")
+                if not self._stats_verified_once:
+                    if skip_stats_verify or not enable_stats_verify:
+                        # Preserve the legacy skip env var as an explicit override, but keep the default off.
                         self._stats_verified_once = True
-                elif not self._stats_verified_once:
-                    self._verify_stats_integrity()
-                    self._stats_verified_once = True
+                    else:
+                        self._verify_stats_integrity()
+                        self._stats_verified_once = True
 
             # Config reading
             ie = read_iteration_engine_settings(cfg)
