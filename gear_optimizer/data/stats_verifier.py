@@ -7,7 +7,7 @@ and warns if any issues are detected.
 
 import json
 import sqlite3
-from typing import Dict, List, Tuple
+from typing import Dict, Tuple, Iterable
 
 from gear_optimizer.data.database import _ensure_stats_in_details, get_evolution_db_path
 from gear_optimizer.data.csv_parser import parse_mini_rows
@@ -60,6 +60,67 @@ def verify_and_repair_stats(
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
 
+    def _sqlite_json_available(c: sqlite3.Connection) -> bool:
+        # SQLite JSON functions are built-in on modern builds (sqlite >= 3.38).
+        # Keep a defensive fallback for older environments.
+        try:
+            c.execute("SELECT json_extract('{\"a\":1}', '$.a')").fetchone()
+            return True
+        except sqlite3.Error:
+            return False
+
+    json_ok = _sqlite_json_available(conn)
+
+    def _counts_from_config_json(minis_json_raw: object) -> list[str]:
+        mini_names_raw = json.loads(minis_json_raw) if minis_json_raw else []
+        mini_names: list[str] = []
+        for item in mini_names_raw:
+            if isinstance(item, list) and item:
+                mini_names.append(str(item[0]))
+            elif isinstance(item, str):
+                mini_names.append(item)
+        return mini_names
+
+    def _iter_base_rows_to_verify(
+        c: sqlite3.Connection, *, table: str, limit: int
+    ) -> Iterable[sqlite3.Row]:
+        cols = "rowid, song_name, gear_json, minis_json, details_json, team_buff"
+        q = f"SELECT {cols} FROM {table}"
+        if limit > 0:
+            q += f" LIMIT {int(limit)}"
+        return c.execute(q)
+
+    def _iter_problem_base_rows_sql(
+        c: sqlite3.Connection, *, table: str, limit: int
+    ) -> Iterable[sqlite3.Row]:
+        # Fast path: only stream rows that look invalid, using SQLite JSON functions.
+        #
+        # We treat as invalid when:
+        # - Stats is missing (NULL json_type)
+        # - Stats is an empty object ({})
+        # - Stats object exists but all values are 0 (placeholder dict)
+        cols = (
+            "rowid, song_name, gear_json, minis_json, details_json, team_buff, "
+            "CASE WHEN json_type(details_json, '$.Stats') IS NULL THEN 1 ELSE 0 END AS is_missing"
+        )
+        q = f"""
+            SELECT {cols}
+            FROM {table}
+            WHERE
+                json_type(details_json, '$.Stats') IS NULL
+                OR json_extract(details_json, '$.Stats') = '{{}}'
+                OR (
+                    json_type(details_json, '$.Stats') = 'object'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM json_each(details_json, '$.Stats')
+                        WHERE CAST(value AS REAL) != 0
+                    )
+                )
+        """
+        if limit > 0:
+            q += f" LIMIT {int(limit)}"
+        return c.execute(q)
+
     # ============================================================
     # PART 1: Verify and repair base table (team_buff_loadouts)
     # ============================================================
@@ -81,34 +142,43 @@ def verify_and_repair_stats(
             "fg_repaired": 0,
         }
 
-    select_cols = ["rowid", "song_name", "gear_json", "minis_json", "details_json", "team_buff"]
-
-    query = f"SELECT {', '.join(select_cols)} FROM {base_table}"
-    if sample_size > 0:
-        query += f" LIMIT {int(sample_size)}"
-
-    cur = conn.execute(query)
-    rows = cur.fetchall()
-
-    total = len(rows)
+    # Total rows is fast via SQLite's count(*) optimization.
+    total = int(conn.execute(f"SELECT COUNT(*) FROM {base_table}").fetchone()[0] or 0)
     missing = 0
     empty = 0
     repaired = 0
-    issues: List[Tuple[int, str, str]] = []  # (rowid, song_name, issue_type)
 
     if verbose and total > 0:
         print(f"[StatsVerifier] Checking {total} {base_table} entries...")
 
-    for i, row in enumerate(rows):
-        if verbose and total > 1000 and i > 0 and i % 10000 == 0:
-            print(f"[StatsVerifier] team_buff_loadouts progress: {i}/{total}...")
+    # sample_size>0: validate the first N rows (quick check).
+    # sample_size==0: validate full table. Use SQLite JSON functions to avoid Python-level scan.
+    verify_limit = int(sample_size) if int(sample_size) > 0 else 0
+    if json_ok and verify_limit <= 0:
+        row_iter = _iter_problem_base_rows_sql(conn, table=base_table, limit=0)
+    else:
+        row_iter = _iter_base_rows_to_verify(conn, table=base_table, limit=verify_limit)
+
+    for i, row in enumerate(row_iter):
+        # In sample mode we still iterate through N rows; keep lightweight progress logs.
+        if verbose and verify_limit > 0 and verify_limit > 1000 and i > 0 and i % 10000 == 0:
+            print(f"[StatsVerifier] {base_table} sample progress: {i}/{verify_limit}...")
 
         details = json.loads(row["details_json"]) if row["details_json"] else {}
         stats = details.get("Stats")
 
         # Check for missing or empty Stats
         issue_type = None
-        if stats is None:
+        # Fast-path categorization for SQL-selected rows.
+        if json_ok and verify_limit <= 0 and ("is_missing" in row.keys()):
+            is_missing = bool(row["is_missing"])
+            if is_missing:
+                issue_type = "missing"
+                missing += 1
+            else:
+                issue_type = "empty"
+                empty += 1
+        elif stats is None:
             issue_type = "missing"
             missing += 1
         elif isinstance(stats, dict) and len(stats) == 0:
@@ -123,18 +193,9 @@ def verify_and_repair_stats(
                 empty += 1
 
         if issue_type:
-            issues.append((row["rowid"], row["song_name"], issue_type))
-
             if not dry_run:
                 gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
-                mini_names_raw = json.loads(row["minis_json"]) if row["minis_json"] else []
-
-                mini_names = []
-                for item in mini_names_raw:
-                    if isinstance(item, list) and item:
-                        mini_names.append(item[0])
-                    elif isinstance(item, str):
-                        mini_names.append(item)
+                mini_names = _counts_from_config_json(row["minis_json"])
 
                 details = _ensure_stats_in_details(
                     details,
@@ -160,7 +221,13 @@ def verify_and_repair_stats(
     # PART 2: Verify and repair team_buff_fg_loadouts table
     # ============================================================
     fg_total, fg_empty, fg_repaired = _verify_fg_table(
-        conn, "team_buff_fg_loadouts", minis_by_name, dry_run, verbose, sample_size
+        conn,
+        "team_buff_fg_loadouts",
+        minis_by_name,
+        dry_run=dry_run,
+        verbose=verbose,
+        sample_size=sample_size,
+        json_ok=json_ok,
     )
 
     conn.close()
@@ -183,9 +250,11 @@ def _verify_fg_table(
     conn: sqlite3.Connection,
     table_name: str,
     minis_by_name: Dict,
+    *,
     dry_run: bool,
     verbose: bool,
     sample_size: int,
+    json_ok: bool,
 ) -> Tuple[int, int, int]:
     """
     Verify and repair team_buff_fg_loadouts.
@@ -205,27 +274,61 @@ def _verify_fg_table(
         return 0, 0, 0
 
     select_cols = ["rowid", "song_name", "team_buff", "gear_json", "minis_json", "details_json", "force_details_json"]
-
-    query = f"SELECT {', '.join(select_cols)} FROM {table_name}"
-    if sample_size > 0:
-        query += f" LIMIT {int(sample_size)}"
-
-    rows = conn.execute(query).fetchall()
-    total = len(rows)
+    total = int(conn.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0] or 0)
     empty_count = 0
     repaired_count = 0
 
     if verbose and total > 0:
         print(f"[StatsVerifier] Checking {total} {table_name} entries...")
 
-    for i, row in enumerate(rows):
-        if verbose and total > 1000 and i > 0 and i % 10000 == 0:
-            print(f"[StatsVerifier] {table_name} progress: {i}/{total}...")
+    verify_limit = int(sample_size) if int(sample_size) > 0 else 0
+
+    def _iter_fg_rows_to_verify(c: sqlite3.Connection, *, limit: int) -> Iterable[sqlite3.Row]:
+        q = f"SELECT {', '.join(select_cols)} FROM {table_name}"
+        if limit > 0:
+            q += f" LIMIT {int(limit)}"
+        return c.execute(q)
+
+    def _iter_problem_fg_rows_sql(c: sqlite3.Connection, *, limit: int) -> Iterable[sqlite3.Row]:
+        # See base table for invalid definitions; apply the same rules here.
+        q = f"""
+            SELECT
+                {', '.join(select_cols)},
+                CASE WHEN json_type(details_json, '$.Stats') IS NULL THEN 1 ELSE 0 END AS is_missing
+            FROM {table_name}
+            WHERE
+                json_type(details_json, '$.Stats') IS NULL
+                OR json_extract(details_json, '$.Stats') = '{{}}'
+                OR (
+                    json_type(details_json, '$.Stats') = 'object'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM json_each(details_json, '$.Stats')
+                        WHERE CAST(value AS REAL) != 0
+                    )
+                )
+        """
+        if limit > 0:
+            q += f" LIMIT {int(limit)}"
+        return c.execute(q)
+
+    if json_ok and verify_limit <= 0:
+        row_iter = _iter_problem_fg_rows_sql(conn, limit=0)
+    else:
+        row_iter = _iter_fg_rows_to_verify(conn, limit=verify_limit)
+
+    for i, row in enumerate(row_iter):
+        if verbose and verify_limit > 0 and verify_limit > 1000 and i > 0 and i % 10000 == 0:
+            print(f"[StatsVerifier] {table_name} sample progress: {i}/{verify_limit}...")
 
         details = json.loads(row["details_json"]) if row["details_json"] else {}
         stats = details.get("Stats")
 
-        if _is_stats_empty(stats):
+        is_empty = _is_stats_empty(stats)
+        if json_ok and verify_limit <= 0 and ("is_missing" in row.keys()):
+            # SQL-selected rows are always invalid; treat them as empty to preserve old counters.
+            is_empty = True
+
+        if is_empty:
             empty_count += 1
 
             if not dry_run:
@@ -240,11 +343,10 @@ def _verify_fg_table(
                     # Recompute from gear/minis/gems
                     gear_names = json.loads(row["gear_json"]) if row["gear_json"] else []
                     mini_names_raw = json.loads(row["minis_json"]) if row["minis_json"] else []
-
-                    mini_names = []
+                    mini_names: list[str] = []
                     for item in mini_names_raw:
                         if isinstance(item, list) and item:
-                            mini_names.append(item[0])
+                            mini_names.append(str(item[0]))
                         elif isinstance(item, str):
                             mini_names.append(item)
 
