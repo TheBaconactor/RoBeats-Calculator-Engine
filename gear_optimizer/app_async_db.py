@@ -686,10 +686,9 @@ class AsyncDbSaver:
 
                     # Optional: Populate TeamBuff-tier tables (T1/T5/T10/T15/NONE) in async mode.
                     # This is intentionally after base persistence so it never blocks GPU work.
-                    # Optional and potentially expensive: leave OFF by default to avoid hidden throughput stalls.
-                    # Enable explicitly with: POST_TEAM_BUFF_TIERS=1
-                    tiers_enabled = str(os.environ.get("POST_TEAM_BUFF_TIERS", "0") or "").strip().lower() in (
-                        TRUTHY_ENV_VALUES
+                    # Default ON (repo parity): disable explicitly with POST_TEAM_BUFF_TIERS=0.
+                    tiers_enabled = str(os.environ.get("POST_TEAM_BUFF_TIERS", "1") or "").strip().lower() in (
+                        TRUTHY_ENV_VALUES | {""}
                     )
                     if tiers_enabled and entries and file_path:
                         try:

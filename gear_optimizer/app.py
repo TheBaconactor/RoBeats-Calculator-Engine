@@ -3495,14 +3495,38 @@ class GearOptimizerApp:
         return post_queue, post_proc
 
     def _stop_post_processor(self, post_queue, post_proc):
+        sentinel_sent = False
         try:
             if post_queue is not None:
-                post_queue.put(None, block=True, timeout=1.0)
+                # Bounded post queues (POST_PIPELINE_QUEUE) can be full at shutdown. A single short
+                # timeout can miss the sentinel and make the join wait the full timeout.
+                t0 = time.perf_counter()
+                while True:
+                    try:
+                        post_queue.put(None, block=True, timeout=0.5)
+                        sentinel_sent = True
+                        break
+                    except Exception:
+                        try:
+                            if post_proc is None or not post_proc.is_alive():
+                                break
+                        except Exception:
+                            break
+                        if (time.perf_counter() - t0) >= 15.0:
+                            break
+                        continue
         except Exception:
             pass
         try:
             if post_proc is not None:
-                post_proc.join(timeout=120.0)
+                if not sentinel_sent:
+                    try:
+                        logger.warning(
+                            "[POST] Failed to enqueue shutdown sentinel in time; forcing post-processor shutdown."
+                        )
+                    except Exception:
+                        pass
+                post_proc.join(timeout=120.0 if sentinel_sent else 5.0)
         except Exception:
             pass
         try:
