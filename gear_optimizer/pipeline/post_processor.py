@@ -21,6 +21,8 @@ from gear_optimizer.helpers.song_helpers.persistence import (
 )
 from gear_optimizer.helpers.song_helpers.results_printer import print_results
 
+logger = logging.getLogger(__name__)
+
 
 class _PostCpuProfiler:
     def __init__(self, *, enabled: bool, out_path: str | None) -> None:
@@ -258,7 +260,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
             pass
 
         if saw_fg_update and saved > 0:
-            print(f"[POST][FG] Saved {saved} FG variant(s) for {song} (best_fg={best_fg})")
+            logger.debug("[POST][FG] Saved %s FG variant(s) for %s (best_fg=%s)", saved, song, best_fg)
 
         pending_final_print.pop(song, None)
         pending_fg_summary.pop(song, None)
@@ -293,7 +295,11 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     ]
                     if valid_entries:
                         if timing:
-                            print(f"[POST][FG] Saving {len(valid_entries)} FG variant(s) for {song_name}...")
+                            logger.debug(
+                                "[POST][FG] Saving %s FG variant(s) for %s...",
+                                len(valid_entries),
+                                song_name,
+                            )
                         cpu_t0 = time.process_time()
                         _t_db0 = time.perf_counter()
 
@@ -314,7 +320,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                         profiler.record("fg_save_loadouts_batch_enqueue", time.process_time() - cpu_t0)
                     else:
                         if persisted:
-                            print(f"[DB] Skipped FG update for {song_name}: no valid entries")
+                            logger.debug("[DB] Skipped FG update for %s: no valid entries", song_name)
 
                     try:
                         _t_del0 = time.perf_counter()
@@ -363,7 +369,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     except Exception:
                         best_fg = 0
                     if saved > 0:
-                        print(f"[POST][FG] Saved {saved} FG variant(s) for {song_name} (best_fg={best_fg})")
+                        logger.debug("[POST][FG] Saved %s FG variant(s) for %s (best_fg=%s)", saved, song_name, best_fg)
                 else:
                     # If there's no pending final output, keep a small status line so users still
                     # see that FG persistence happened.
@@ -376,7 +382,7 @@ def run_post_processor(result_queue, total_tasks: int | None = None) -> None:
                     except Exception:
                         best_fg = 0
                     if saved > 0:
-                        print(f"[POST][FG] Saved {saved} FG variant(s) for {song_name} (best_fg={best_fg})")
+                        logger.debug("[POST][FG] Saved %s FG variant(s) for %s (best_fg=%s)", saved, song_name, best_fg)
             except Exception as exc:
                 msg = f"[POST][FG] Error: {type(exc).__name__}: {exc}"
                 print(msg, file=sys.stderr)

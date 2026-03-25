@@ -7,6 +7,7 @@ Public entrypoint:
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from typing import TYPE_CHECKING, Optional
@@ -23,6 +24,8 @@ from ....solver.scoring import apply_force_greats_to_result
 if TYPE_CHECKING:
     from gear_optimizer.solver.gpu_service import GpuServiceClient
 
+
+logger = logging.getLogger(__name__)
 
 _FG_INPROCESS_GPU_CLIENT_LOCK = threading.Lock()
 _FG_INPROCESS_GPU_CLIENT = None
@@ -104,11 +107,11 @@ def _get_inprocess_gpu_client():
             gpu_client = GpuServiceClient(gpu_executor)
             gpu_client.start(start_executor=False)
             _FG_INPROCESS_GPU_CLIENT = gpu_client
-            print("[ForceGreats][GPU] In-process GPU executor enabled for FG.")
+            logger.debug("[ForceGreats][GPU] In-process GPU executor enabled for FG.")
             return _FG_INPROCESS_GPU_CLIENT
         except Exception as exc:
             _FG_INPROCESS_GPU_CLIENT_DISABLED = True
-            print(f"[ForceGreats][GPU] In-process GPU executor unavailable: {type(exc).__name__}: {exc}")
+            logger.debug("[ForceGreats][GPU] In-process GPU executor unavailable: %s: %s", type(exc).__name__, exc)
             return None
 
 
@@ -186,9 +189,11 @@ def _process_force_greats_cpu(
             entry["force"] = fg_variant
             entry["fg_score"] = fg_score
 
-    print(
-        f"[ForceGreats] {len(unique_stats_seen)} unique stat signatures, "
-        f"{len(fg_variants)} FG variants generated (computed {computed})"
+    logger.debug(
+        "[ForceGreats] %s unique stat signatures, %s FG variants generated (computed %s)",
+        len(unique_stats_seen),
+        len(fg_variants),
+        computed,
     )
     return fg_variants
 
@@ -237,7 +242,7 @@ def process_force_greats(
         total_entries = int(len(loadout_entries or {})) + int(len(ga_candidates or []))
     except Exception:
         total_entries = len(loadout_entries or {})
-    print(f"[ForceGreats] Processing {total_entries} candidate loadouts (DB + GA)...")
+    logger.debug("[ForceGreats] Processing %s candidate loadouts (DB + GA)...", total_entries)
 
     if use_gpu and force_greats_finder:
         auto_slot_assigned = False
@@ -262,7 +267,7 @@ def process_force_greats(
                     global _FG_SESSION_SLOT_LOGGED
                     if not _FG_SESSION_SLOT_LOGGED:
                         _FG_SESSION_SLOT_LOGGED = True
-                        print("[ForceGreats][GPU] Auto-assigned FG session slots enabled.")
+                        logger.debug("[ForceGreats][GPU] Auto-assigned FG session slots enabled.")
             except Exception as exc:
                 warn_fallback(
                     "fg.auto_slot_assign",
@@ -287,7 +292,7 @@ def process_force_greats(
                 ga_registry=ga_registry,
             )
         except Exception as e:
-            print(f"[ForceGreats][GPU] Batch FG finder failed: {type(e).__name__}: {e}")
+            logger.warning("[ForceGreats][GPU] Batch FG finder failed: %s: %s", type(e).__name__, e)
             raise
         finally:
             if auto_slot_assigned and isinstance(calc_song, dict):

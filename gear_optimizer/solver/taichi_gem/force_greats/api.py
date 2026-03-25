@@ -9,6 +9,7 @@ This module is called from the scoring pipeline and must remain API-stable.
 
 from __future__ import annotations
 
+import logging
 import os
 import hashlib
 import time
@@ -24,6 +25,8 @@ from ..api.sync_policy import maybe_sync
 from .. import fields as gem_fields
 from . import fields as fg_fields
 from . import kernels as fg_kernels
+
+logger = logging.getLogger(__name__)
 
 
 _ENV_GET = os.environ.get
@@ -2308,9 +2311,10 @@ def solve_force_greats_finder_gpu(*args, **kwargs) -> list[dict[str, Any]] | dic
         except Exception as e:
             if attempt >= max(0, _FG_VULKAN_RETRIES) or not _is_vulkan_backend_failure(e):
                 raise
-            print(
-                "[FG GPU] Vulkan backend error; retrying after hard reset "
-                f"(attempt {attempt + 1}/{max(0, _FG_VULKAN_RETRIES)})"
+            logger.warning(
+                "[FG GPU] Vulkan backend error; retrying after hard reset (attempt %s/%s)",
+                attempt + 1,
+                max(0, _FG_VULKAN_RETRIES),
             )
             gem_api.hard_reset_taichi(reason=str(e).splitlines()[0][:200])
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -32,6 +33,8 @@ from .signature_frontier import (
     signature_timing_bucket as _signature_timing_bucket_impl,
 )
 from . import gpu_dispatch_caches as _dispatch_caches
+
+logger = logging.getLogger(__name__)
 
 # Re-export cache state for targeted tests and local debugging.
 _FG_CHART_SCORER_CACHE = _dispatch_caches._FG_CHART_SCORER_CACHE
@@ -1288,7 +1291,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
     fg_fused_tile_max_threads = max(0, int(fg_fused_tile_max_threads))
     if per_pair_breakpoints and not hasattr(process_force_greats_gpu_finder, "_fg_pair_breakpoint_log"):
         process_force_greats_gpu_finder._fg_pair_breakpoint_log = True
-        print("[FG] Per-FT/FF breakpoint mode enabled (GPU finder)")
+        logger.debug("[FG] Per-FT/FF breakpoint mode enabled (GPU finder)")
 
     direct_ga_items = _build_direct_ga_entry_items(ga_candidates, ga_registry=ga_registry)
     try:
@@ -1616,9 +1619,10 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         fg_scorer_cache_hit = False
     if (not fg_scorer_cache_hit) and hitsim_apply_to == "FG":
         try:
-            print(
-                f"[FG] Cached chart AnalyticalFGScorer: {getattr(fg_scorer, 'total_notes', '?')} notes, "
-                f"head_len={getattr(fg_scorer, 'head_len', '?')}"
+            logger.debug(
+                "[FG] Cached chart AnalyticalFGScorer: %s notes, head_len=%s",
+                getattr(fg_scorer, "total_notes", "?"),
+                getattr(fg_scorer, "head_len", "?"),
             )
         except Exception:
             pass
@@ -1669,7 +1673,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 context={"song_slot": int(song_slot)},
                 exc=e,
             )
-            print(f"[FG] Timeline precompute for pair-caps FAILED: {type(e).__name__}: {e}")
+            logger.warning("[FG] Timeline precompute for pair-caps FAILED: %s: %s", type(e).__name__, e)
             pair_caps_from_timeline = False
 
     if (
@@ -1719,7 +1723,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                 "CPU pair-caps precompute failed; falling back to permissive cap grid",
                 exc=e,
             )
-            print(f"[FG] CPU pair-caps precompute FAILED: {type(e).__name__}: {e}")
+            logger.warning("[FG] CPU pair-caps precompute FAILED: %s: %s", type(e).__name__, e)
             # Fallback to permissive caps (50) to avoid 0-clamping on GPU.
             pair_caps_grid = np.full((TOTAL_ROWS + 1, TOTAL_ROWS + 1, 16), 50, dtype=np.int32)
 
@@ -1833,9 +1837,9 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         if in_process and int(fused_payloads_per_request) > 8:
             if not hasattr(process_force_greats_gpu_finder, "_fg_fused_payloads_clamp_warned"):
                 process_force_greats_gpu_finder._fg_fused_payloads_clamp_warned = True
-                print(
-                    "[FG][WARN] FG_FUSED_PAYLOADS_PER_REQUEST is very high "
-                    f"({int(fused_payloads_per_request)}); clamping to 8 to reduce TDR/freezing risk."
+                logger.warning(
+                    "[FG] FG_FUSED_PAYLOADS_PER_REQUEST is very high (%s); clamping to 8 to reduce TDR/freezing risk.",
+                    int(fused_payloads_per_request),
                 )
             fused_payloads_per_request = 8
 
@@ -2828,9 +2832,17 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                             except Exception:
                                 bps = ()
                         if bps and (_truthy_env("METAFINDER_DEBUG_PROFILE", "0") or _truthy_env("DEBUG_PROFILE", "0")):
-                            print(f"[FG] Per-FT/FF Breakpoints (GPU accumulation): {len(ftff_pairs)} FT/FF pairs")
+                            logger.debug(
+                                "[FG] Per-FT/FF Breakpoints (GPU accumulation): %s FT/FF pairs",
+                                len(ftff_pairs),
+                            )
                             for sec_idx, bp in enumerate(bps):
-                                print(f"     Section {sec_idx + 1}: {list(bp)[:15]}{'...' if len(bp) > 15 else ''}")
+                                logger.debug(
+                                    "     Section %s: %s%s",
+                                    sec_idx + 1,
+                                    list(bp)[:15],
+                                    "..." if len(bp) > 15 else "",
+                                )
 
                     _t_gpu0 = time.perf_counter() if perf else 0.0
                     # Use accumulate_global=True to skip download, with base_cfg_offset for global indexing
@@ -2939,14 +2951,15 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                             gpu_call_shapes.append((n_pending, len(counts_list), len(group_pairs), int(n_sections)))
                     n_gpu_calls += 1
 
-                # Log merged status if we got a single batch (always log)
+                # Log merged status if we got a single batch (debug only)
                 if group_count == 1:
                     # For the packed GPU-accumulation path, the "master config list" lives as windows
                     # (cfg_windows). The total config count is the final cfg_next_base.
                     n_configs = int(cfg_next_base)
-                    print(
-                        f"[FG] Merged breakpoint groups -> 1 batch "
-                        f"(pairs={len(ftff_pairs)}, configs={n_configs}, GPU accumulation)"
+                    logger.debug(
+                        "[FG] Merged breakpoint groups -> 1 batch (pairs=%s, configs=%s, GPU accumulation)",
+                        len(ftff_pairs),
+                        n_configs,
                     )
                     # Breakdown is intentionally omitted here because we do not materialize master configs.
 
@@ -3027,7 +3040,7 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
                     )
                 if perf:
                     t_download_sec = time.perf_counter() - _t_download0
-                    print(f"[PERF] FG GPU global download: {t_download_sec * 1000:.1f}ms")
+                    logger.debug("[PERF] FG GPU global download: %.1fms", t_download_sec * 1000.0)
 
                 # Extract results from global download
                 result_final = global_results["final_score"]
@@ -3626,32 +3639,44 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         unique_sig_count = sum(len(sig_map) for sig_map in (groups or {}).values())
     except Exception:
         unique_sig_count = 0
-    print(
-        f"[ForceGreats] {unique_sig_count} unique stat signatures, "
-        f"{len(fg_variants)} FG variants generated (computed {computed})"
+    logger.debug(
+        "[ForceGreats] %s unique stat signatures, %s FG variants generated (computed %s)",
+        unique_sig_count,
+        len(fg_variants),
+        computed,
     )
     if perf:
         try:
-            print(
-                "[PERF] ForceGreatsFinder(GPU): "
-                f"collect={t_collect_sec:.3f}s cfg_build={t_cfg_build_sec:.3f}s "
-                f"gpu_total={float(t_gpu_calls_sec + t_gpu_wait_sec + t_gpu_download_wait_sec):.3f}s "
-                f"(submit={t_gpu_calls_sec:.3f}s wait={t_gpu_wait_sec:.3f}s dl_wait={t_gpu_download_wait_sec:.3f}s) "
-                f"n_gpu_calls={n_gpu_calls} "
-                f"db_reuse={db_cached_reuse} no_eval_skips={no_eval_skips} "
-                f"groups={len(groups)} unique_sigs={unique_sig_count} "
-                f"bp_group_cache={breakpoint_group_cache_hits}/{breakpoint_group_cache_hits + breakpoint_group_cache_misses} "
-                f"max_fp_cache={max_fp_matrix_cache_hits}/{max_fp_matrix_cache_hits + max_fp_matrix_cache_misses} "
-                f"task_tiles={fg_task_tile_batches} fused_tiles={fg_fused_tile_batches}"
+            logger.debug(
+                "[PERF] ForceGreatsFinder(GPU): collect=%.3fs cfg_build=%.3fs gpu_total=%.3fs "
+                "(submit=%.3fs wait=%.3fs dl_wait=%.3fs) n_gpu_calls=%s db_reuse=%s no_eval_skips=%s "
+                "groups=%s unique_sigs=%s bp_group_cache=%s/%s max_fp_cache=%s/%s task_tiles=%s fused_tiles=%s",
+                t_collect_sec,
+                t_cfg_build_sec,
+                float(t_gpu_calls_sec + t_gpu_wait_sec + t_gpu_download_wait_sec),
+                t_gpu_calls_sec,
+                t_gpu_wait_sec,
+                t_gpu_download_wait_sec,
+                n_gpu_calls,
+                db_cached_reuse,
+                no_eval_skips,
+                len(groups),
+                unique_sig_count,
+                breakpoint_group_cache_hits,
+                breakpoint_group_cache_hits + breakpoint_group_cache_misses,
+                max_fp_matrix_cache_hits,
+                max_fp_matrix_cache_hits + max_fp_matrix_cache_misses,
+                fg_task_tile_batches,
+                fg_fused_tile_batches,
             )
-            print(
-                "[PERF] FG Detailed: "
-                f"cache_check={t_cache_check_sec * 1000:.1f}ms "
-                f"genome_build={t_genome_build_sec * 1000:.1f}ms "
-                f"result_apply={t_result_apply_sec * 1000:.1f}ms"
+            logger.debug(
+                "[PERF] FG Detailed: cache_check=%.1fms genome_build=%.1fms result_apply=%.1fms",
+                t_cache_check_sec * 1000.0,
+                t_genome_build_sec * 1000.0,
+                t_result_apply_sec * 1000.0,
             )
             if gpu_call_shapes:
-                print(f"[PERF] FG GPU call shapes (n_genomes,n_cfg,n_ftff,n_sections): {gpu_call_shapes}")
+                logger.debug("[PERF] FG GPU call shapes (n_genomes,n_cfg,n_ftff,n_sections): %s", gpu_call_shapes)
         except Exception:
             pass
 
@@ -3672,9 +3697,13 @@ def process_force_greats_gpu_finder(  # pyright: ignore[reportGeneralTypeIssues]
         except Exception:
             pass
 
-    # Always-on compact workload summary (helps correlate GPU spikes with workload size)
-    print(
-        f"[ForceGreats] GPU complete: {len(fg_variants)} variants, {n_gpu_calls} GPU calls, {computed} genomes computed, "
-        f"sig_frontier={frontier_total_after}/{frontier_total_before}"
+    # Compact workload summary (debug only; keep stdout clean for progress/TUI)
+    logger.debug(
+        "[ForceGreats] GPU complete: %s variants, %s GPU calls, %s genomes computed, sig_frontier=%s/%s",
+        len(fg_variants),
+        n_gpu_calls,
+        computed,
+        frontier_total_after,
+        frontier_total_before,
     )
     return fg_variants
