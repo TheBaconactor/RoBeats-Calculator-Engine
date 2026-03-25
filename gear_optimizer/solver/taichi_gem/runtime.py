@@ -13,6 +13,10 @@ import logging
 import os
 import sys
 import threading
+import time
+from contextlib import contextmanager, nullcontext
+from pathlib import Path
+from typing import Iterator
 from ...core.fallback_monitor import warn_fallback
 from ...core.output import (
     restore_native_stdio,
@@ -30,6 +34,7 @@ from ...core.output import (
 _ti_initialized = False
 _ti_lock = threading.RLock()
 _printed_vulkan_device_hint = False
+_offline_cache_dir: str | None = None
 logger = logging.getLogger(__name__)
 
 
@@ -48,18 +53,127 @@ def _taichi_verbose_enabled() -> bool:
     return False
 
 
-# Taichi prints a version banner at import-time, and it bypasses Python-level stdout swapping.
-# Import it under OS-level stdio suppression unless the user explicitly asked for verbose output.
-_ti_import_guard = suppress_native_stdio(not _taichi_verbose_enabled())
+# Taichi prints a version banner at import-time via Python's print().
+# On Windows, spawned child processes can inherit an invalid console handle that makes
+# print() raise OSError [WinError 1].  Suppress both the Python-level sys.stdout/stderr
+# AND the OS-level fd 1/2 to cover both WindowsConsoleIO and native C writes.
+_ti_suppress = not _taichi_verbose_enabled()
+_ti_saved_stdout = suppress_stdout(_ti_suppress)
+_ti_saved_stderr = suppress_stderr(_ti_suppress)
+_ti_import_guard = suppress_native_stdio(_ti_suppress)
 try:
     import taichi as ti  # noqa: E402
 finally:
     restore_native_stdio(_ti_import_guard)
+    restore_stderr(_ti_saved_stderr)
+    restore_stdout(_ti_saved_stdout)
+del _ti_suppress, _ti_saved_stdout, _ti_saved_stderr, _ti_import_guard
 
 
 def is_initialized() -> bool:
     """Check if Taichi has been initialized."""
     return _ti_initialized
+
+
+def get_offline_cache_dir() -> str | None:
+    """
+    Return the effective offline cache directory used by Taichi (when enabled).
+
+    This is set during `init_taichi()` and can be used by callers to coordinate
+    cross-process warmups and avoid corrupting the offline cache directory when
+    multiple workers start concurrently.
+    """
+    return _offline_cache_dir
+
+
+@contextmanager
+def _file_lock(lock_path: Path, *, timeout_sec: float | None = None, poll_interval_sec: float = 0.01) -> Iterator[None]:
+    """
+    Best-effort cross-process file lock (Windows + POSIX).
+
+    This is intentionally lightweight and only used for Taichi offline-cache
+    warmup coordination during startup.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+", encoding="utf-8")
+    timeout = None if timeout_sec is None else max(0.0, float(timeout_sec))
+    deadline = time.monotonic() + timeout if timeout is not None else None
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            try:
+                handle.seek(0)
+                if not handle.read(1):
+                    handle.write("0")
+                    handle.flush()
+                handle.seek(0)
+            except Exception:
+                pass
+            while True:
+                try:
+                    # `msvcrt.locking(..., LK_LOCK, ...)` is not reliably blocking on Windows and can raise
+                    # `EDEADLK` ("Resource deadlock avoided") under contention. Use a non-blocking lock and
+                    # implement the wait loop ourselves for both bounded and unbounded cases.
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        raise TimeoutError(f"Timed out acquiring file lock for {lock_path}") from None
+                    time.sleep(max(0.001, float(poll_interval_sec)))
+        else:
+            import fcntl
+
+            while True:
+                try:
+                    flags = fcntl.LOCK_EX | (fcntl.LOCK_NB if deadline is not None else 0)
+                    fcntl.flock(handle.fileno(), flags)
+                    break
+                except BlockingIOError:
+                    if deadline is None:
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"Timed out acquiring file lock for {lock_path}") from None
+                    time.sleep(max(0.001, float(poll_interval_sec)))
+        yield
+    finally:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            handle.close()
+        except Exception:
+            pass
+
+
+@contextmanager
+def offline_cache_lock(
+    *,
+    timeout_sec: float | None = None,
+    poll_interval_sec: float = 0.01,
+) -> Iterator[str]:
+    """
+    Cross-process lock keyed by the current Taichi offline-cache directory.
+
+    Yields the resolved offline cache directory path.
+    """
+    cache_dir = str(_offline_cache_dir or _get_offline_cache_dir() or "").strip()
+    if not cache_dir:
+        # Nothing to lock; still yield a stable string for callers.
+        yield ""
+        return
+    lock_path = Path(cache_dir) / ".metafinder_offline_cache.lock"
+    with _file_lock(lock_path, timeout_sec=timeout_sec, poll_interval_sec=poll_interval_sec):
+        yield cache_dir
 
 
 def _env_int(name: str, default: int) -> int:
@@ -244,9 +358,9 @@ def _get_offline_cache_dir() -> str:
         return "taichi_cache"
 
 
-def _init_taichi_quietly(init_kwargs: dict) -> None:
+def _init_taichi_quietly(init_kwargs: dict, *, force_verbose: bool = False) -> None:
     """Run `ti.init()` without leaking backend banners to the console."""
-    if _taichi_verbose_enabled():
+    if force_verbose or _taichi_verbose_enabled():
         ti.init(**init_kwargs)
         return
     old_stdout = suppress_stdout(True)
@@ -272,6 +386,7 @@ def init_taichi():
     - Windows/Linux: Vulkan
     """
     global _ti_initialized
+    global _offline_cache_dir
     with _ti_lock:
         if _ti_initialized:
             return
@@ -295,7 +410,33 @@ def init_taichi():
             offline_cache_file_path=_get_offline_cache_dir(),
         )
         try:
-            _init_taichi_quietly(init_kwargs)
+            _offline_cache_dir = str(init_kwargs.get("offline_cache_file_path") or "").strip() or None
+        except Exception:
+            _offline_cache_dir = None
+        # Some Windows/Vulkan stacks are sensitive to concurrent Taichi/Vulkan initialization across
+        # multiple spawned processes (dual-process in-flight). Serialize `ti.init()` per offline-cache
+        # directory to avoid races in the Vulkan loader/driver and on-disk cache setup.
+        def _taichi_init_lock():
+            try:
+                return offline_cache_lock(timeout_sec=None)
+            except Exception:
+                return nullcontext("")
+
+        def _init_with_winerror_retry(kwargs: dict) -> None:
+            try:
+                _init_taichi_quietly(kwargs)
+            except OSError as exc:
+                # Windows ERROR_INVALID_FUNCTION (1) is commonly surfaced when a library attempts to query
+                # console properties (e.g., terminal size/mode) while stdout/stderr are redirected. In that
+                # case, retry once without stdio suppression so Taichi can perform any console checks.
+                if int(getattr(exc, "winerror", 0) or 0) == 1 and not _taichi_verbose_enabled():
+                    _init_taichi_quietly(kwargs, force_verbose=True)
+                    return
+                raise
+
+        try:
+            with _taichi_init_lock():
+                _init_with_winerror_retry(init_kwargs)
         except Exception as e:
             # Be robust: if offline cache init fails for any reason, fall back to normal init.
             warn_fallback(
@@ -303,10 +444,12 @@ def init_taichi():
                 "offline-cache init failed; retrying Taichi init without offline cache",
                 context={"backend": backend_name},
                 exc=e,
+                fatal=False,
             )
             init_kwargs.pop("offline_cache", None)
             init_kwargs.pop("offline_cache_file_path", None)
-            _init_taichi_quietly(init_kwargs)
+            with _taichi_init_lock():
+                _init_with_winerror_retry(init_kwargs)
         _ti_initialized = True
         logger.debug(
             "[Taichi] Initialized with %s backend - f32 precision (kernel_profiler=%s, block_dim=%s)",
