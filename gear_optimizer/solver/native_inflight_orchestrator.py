@@ -562,7 +562,35 @@ def run_native_inflight_song_pipeline(
         pass
 
     gpu_executor = get_gpu_executor()
+    if progress_cb is not None:
+        # Make startup visible in the TUI: Taichi/Vulkan init + warmup can take noticeable time on cold caches.
+        try:
+            progress_cb(completed_delta=0, failed_delta=0, record_info={"status": "GPU init (Taichi/Vulkan)"})
+        except Exception:
+            pass
     gpu_executor.start(in_process=True)
+    try:
+        # Dual-process in-flight can legitimately spend >30s in Taichi/Vulkan init on cold caches
+        # (one worker may wait on the offline-cache init lock while another initializes first).
+        init_timeout = float(os.environ.get("GPU_EXECUTOR_INIT_TIMEOUT_SEC", "180") or "180")
+    except Exception:
+        init_timeout = 180.0
+    if not gpu_executor.wait_until_ready(timeout=init_timeout):
+        err = getattr(gpu_executor, "last_init_error", None)
+        msg = "[InFlight] GPU executor Taichi init failed or timed out"
+        if err:
+            msg = f"{msg} ({err})"
+        try:
+            gpu_executor.stop()
+        except Exception:
+            pass
+        raise RuntimeError(msg)
+    if progress_cb is not None:
+        # Executor is initialized, but it may still be running kernel warmups before processing the first requests.
+        try:
+            progress_cb(completed_delta=0, failed_delta=0, record_info={"status": "GPU warmup (Taichi JIT)"})
+        except Exception:
+            pass
     gpu_client = GpuServiceClient(gpu_executor)
     gpu_client.start(start_executor=False)
 

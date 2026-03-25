@@ -34,6 +34,7 @@ import time
 import random
 import math
 import hashlib
+from contextlib import nullcontext
 from pathlib import Path
 from collections import defaultdict, OrderedDict, deque
 from time import perf_counter
@@ -1735,47 +1736,130 @@ class GpuExecutor:
             logger.debug("[GpuExecutor] Taichi initialized")
         except Exception as e:
             self._taichi_ready = False
-            self._last_init_error = f"{type(e).__name__}: {e}"
+            err = f"{type(e).__name__}: {e}"
+            # Capture the full init traceback to disk so startup failures in dual-process mode
+            # are diagnosable from user logs without enabling verbose tracing.
+            try:
+                tb = traceback.format_exc()
+            except Exception:
+                tb = ""
+            trace_path = None
+            try:
+                trace_path = self._heartbeat_path.with_name(self._heartbeat_path.stem + "_taichi_init_error.log")
+                trace_path.parent.mkdir(parents=True, exist_ok=True)
+                trace_path.write_text(tb, encoding="utf-8", errors="replace")
+            except Exception:
+                trace_path = None
+            if trace_path is not None:
+                err = f"{err} (trace: {trace_path})"
+            self._last_init_error = err
             self._running = False
             self._ready_event.set()
             self._write_heartbeat(phase="init_failed", note=self._last_init_error, force=True)
             logger.debug("[GpuExecutor] Taichi init failed: %s", e)
             return
-        self._write_heartbeat(phase="ready", force=True)
+        # Taichi init completed (warmup may still be running below).
+        self._write_heartbeat(phase="init_ok", force=True)
         # Warm up FG kernels up-front to avoid the first ForceGreatsFinder call
-        # incurring multi-second Taichi JIT latency (which shows up as a GA→FG GPU idle gap).
-        if ENV.gpu_executor_warmup_fg:
+        # incurring multi-second Taichi JIT latency (which shows up as a GA->FG GPU idle gap).
+        warmup_fg = bool(getattr(ENV, "gpu_executor_warmup_fg", False))
+        warmup_ga = bool(getattr(ENV, "gpu_executor_warmup_ga", False))
+        if warmup_fg or warmup_ga:
+            # Cross-process warmup coordination:
+            # - On cold caches, Taichi warmups can take ~minute-scale wall time on Windows/Vulkan.
+            # - In dual-process mode, workers can race compiling the same kernels into the shared
+            #   offline-cache directory, increasing wall time and sometimes failing.
+            # - Serialize the cold-cache warmup once per offline-cache dir using a file lock +
+            #   a sentinel file. Other workers skip the expensive warmup work.
             try:
-                t0 = perf_counter()
-                from .taichi_gem.force_greats import fields as fg_fields
+                from .taichi_gem import runtime as ti_runtime
 
-                fg_fields.ensure_ready_with_warmup()
-                dt_ms = (perf_counter() - t0) * 1000.0
-                if ENV.perf_timing:
-                    logger.debug("[GpuExecutor] Warmed FG kernels in %.1fms", dt_ms)
-            except Exception as e:
+                lock_cm = ti_runtime.offline_cache_lock(timeout_sec=None)
+            except Exception:
+                lock_cm = nullcontext("")
+
+            self._write_heartbeat(phase="warmup_wait", force=True)
+            try:
+                with lock_cm as cache_dir:
+                    cache_dir = str(cache_dir or "").strip()
+                    sentinel_path = Path(cache_dir) / "metafinder_warmup_done.json" if cache_dir else None
+                    if sentinel_path is not None and sentinel_path.exists():
+                        self._write_heartbeat(phase="warmup_cached", force=True)
+                    else:
+                        sentinel_error = ""
+                        try:
+                            # Warm up FG kernels up-front to avoid the first ForceGreatsFinder call
+                            # paying compilation latency (which shows up as a GA->FG GPU idle gap).
+                            if warmup_fg:
+                                try:
+                                    self._write_heartbeat(phase="warmup_fg", force=True)
+                                except Exception:
+                                    pass
+                                t0 = perf_counter()
+                                from .taichi_gem.force_greats import fields as fg_fields
+
+                                fg_fields.ensure_ready_with_warmup()
+                                dt_ms = (perf_counter() - t0) * 1000.0
+                                if ENV.perf_timing:
+                                    logger.debug("[GpuExecutor] Warmed FG kernels in %.1fms", dt_ms)
+
+                            # Warm up GPU-native GA kernels up-front to avoid the first GA request paying
+                            # multi-second compilation latency. This also helps stabilize external GPU
+                            # utilization graphs that otherwise show an early low-util \"hiccup\".
+                            if warmup_ga:
+                                try:
+                                    self._write_heartbeat(phase="warmup_ga", force=True)
+                                except Exception:
+                                    pass
+                                t0 = perf_counter()
+                                from .taichi_gem.api import ga_operations as ga_ops
+
+                                ga_ops.warmup_ga_kernels()
+                                dt_ms = (perf_counter() - t0) * 1000.0
+                                if ENV.perf_timing:
+                                    logger.debug("[GpuExecutor] Warmed GA kernels in %.1fms", dt_ms)
+                        except Exception as e:
+                            sentinel_error = f"{type(e).__name__}: {e}"
+                            try:
+                                logger.debug("[GpuExecutor] Warmup failed: %s", sentinel_error)
+                            except Exception:
+                                pass
+                        finally:
+                            if sentinel_path is not None:
+                                try:
+                                    payload = {
+                                        "schema": 1,
+                                        "ok": not bool(sentinel_error),
+                                        "error": str(sentinel_error or ""),
+                                        "pid": int(os.getpid()),
+                                        "warmed_at": int(time.time() * 1000.0),
+                                        "warmup_fg": bool(warmup_fg),
+                                        "warmup_ga": bool(warmup_ga),
+                                    }
+                                    sentinel_path.parent.mkdir(parents=True, exist_ok=True)
+                                    tmp_path = sentinel_path.with_suffix(".tmp")
+                                    tmp_path.write_text(
+                                        json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")),
+                                        encoding="utf-8",
+                                    )
+                                    os.replace(tmp_path, sentinel_path)
+                                except Exception:
+                                    pass
+            except Exception:
+                # If anything about cross-process coordination fails, fall back to best-effort warmup.
                 try:
-                    logger.debug("[GpuExecutor] FG warmup failed: %s: %s", type(e).__name__, e)
+                    if warmup_fg:
+                        from .taichi_gem.force_greats import fields as fg_fields
+
+                        fg_fields.ensure_ready_with_warmup()
+                    if warmup_ga:
+                        from .taichi_gem.api import ga_operations as ga_ops
+
+                        ga_ops.warmup_ga_kernels()
                 except Exception:
                     pass
 
-        # Warm up GPU-native GA kernels up-front to avoid the first GA request paying
-        # multi-second Taichi JIT latency. This also helps stabilize external GPU
-        # utilization graphs that otherwise show an early low-util \"hiccup\".
-        if getattr(ENV, "gpu_executor_warmup_ga", False):
-            try:
-                t0 = perf_counter()
-                from .taichi_gem.api import ga_operations as ga_ops
-
-                ga_ops.warmup_ga_kernels()
-                dt_ms = (perf_counter() - t0) * 1000.0
-                if ENV.perf_timing:
-                    logger.debug("[GpuExecutor] Warmed GA kernels in %.1fms", dt_ms)
-            except Exception as e:
-                try:
-                    logger.debug("[GpuExecutor] GA warmup failed: %s: %s", type(e).__name__, e)
-                except Exception:
-                    pass
+        self._write_heartbeat(phase="ready", force=True)
 
         def _try_put_response(req: GpuRequest, resp: GpuResponse) -> bool:
             try:
@@ -1972,6 +2056,7 @@ class GpuExecutor:
                     batch_metrics["exec_sec"] = 0.0
                     if self._workload_profile_enabled:
                         self._record_workload_batch(batch_metrics)
+                    self._running = False
                     break
 
                 batch_exec_t0 = perf_counter()

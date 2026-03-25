@@ -2709,6 +2709,8 @@ class GearOptimizerApp:
 
         fatal_markers = (
             "gpu executor timeout after",
+            "gpu executor taichi init failed",
+            "taichi init failed",
             "gpu service request",
             "timed out after",
             "device lost",
