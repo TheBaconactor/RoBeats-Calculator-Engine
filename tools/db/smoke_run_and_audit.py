@@ -106,10 +106,18 @@ def main() -> None:
 
     print("\nAuditing DB (compact schema)...")
     from gear_optimizer.data.database import _load_piece_name_encoding_maps, _unpack_id_groups, _unpack_id_list, _unpack_stats_after_load
+    from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
 
     conn2 = sqlite3.connect(str(smoke_db))
     conn2.row_factory = sqlite3.Row
     try:
+        audit_cfg = ConfigParser()
+        try:
+            audit_cfg.read(str(smoke_cfg), encoding="utf-8")
+        except Exception:
+            pass
+        baseline_team_buff = str(resolve_baseline_team_buff_from_cfg(audit_cfg, default="T5") or "T5").strip().upper() or "T5"
+
         version = conn2.execute("PRAGMA user_version").fetchone()[0]
         print(f"PRAGMA user_version: {version}")
 
@@ -126,11 +134,12 @@ def main() -> None:
             print(f"Missing required tables: {missing}")
             raise SystemExit(2)
 
-        t5_rows = conn2.execute(
-            "SELECT COUNT(*) FROM team_buff_loadouts WHERE UPPER(COALESCE(team_buff,'UNKNOWN'))='T5'"
+        base_rows = conn2.execute(
+            "SELECT COUNT(*) FROM team_buff_loadouts WHERE UPPER(COALESCE(team_buff,'UNKNOWN'))=?",
+            (baseline_team_buff,),
         ).fetchone()[0]
-        print(f"team_buff_loadouts(T5) rows: {int(t5_rows or 0):,}")
-        if int(t5_rows or 0) <= 0:
+        print(f"team_buff_loadouts({baseline_team_buff}) rows: {int(base_rows or 0):,}")
+        if int(base_rows or 0) <= 0:
             print("No baseline rows persisted.")
             raise SystemExit(2)
 
@@ -138,10 +147,11 @@ def main() -> None:
             """
             SELECT score, fg_score, gear_ids_blob, minis_ids_blob, details_json
             FROM team_buff_loadouts
-            WHERE UPPER(COALESCE(team_buff,'UNKNOWN'))='T5'
+            WHERE UPPER(COALESCE(team_buff,'UNKNOWN'))=?
             ORDER BY score DESC
             LIMIT 1
-            """
+            """,
+            (baseline_team_buff,),
         ).fetchone()
         if row is None:
             print("No rows found to audit.")

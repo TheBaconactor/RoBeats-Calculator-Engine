@@ -14,7 +14,7 @@ from gear_optimizer.data.database import (
 from gear_optimizer.data.loadout_equivalence import representative_mini_names
 
 
-def get_all_loadouts_from_db() -> List[dict]:
+def get_all_loadouts_from_db(*, team_buff: str = "T5") -> List[dict]:
     """
     Query all loadouts from the database with their scores and gear/mini info.
 
@@ -25,6 +25,8 @@ def get_all_loadouts_from_db() -> List[dict]:
     db_path = get_evolution_db_path()
     if not os.path.exists(db_path):
         return []
+
+    resolved_team_buff = str(team_buff or "").strip().upper() or "T5"
 
     conn = get_db_connection(db_path)
     try:
@@ -73,9 +75,17 @@ def get_all_loadouts_from_db() -> List[dict]:
                     }
                 )
 
-        # Baseline-only workflow: GeneralMeta reads the canonical baseline tier (T5 by default).
-        _select_all_from("team_buff_loadouts", where="WHERE UPPER(team_buff) = 'T5'")
-        _select_all_from("team_buff_fg_loadouts", where="WHERE UPPER(team_buff) = 'T5'")
+        # Baseline-only workflow: GeneralMeta reads the baseline tier rows persisted in compact DB mode.
+        _select_all_from(
+            "team_buff_loadouts",
+            where="WHERE UPPER(team_buff) = ?",
+            params=(resolved_team_buff,),
+        )
+        _select_all_from(
+            "team_buff_fg_loadouts",
+            where="WHERE UPPER(team_buff) = ?",
+            params=(resolved_team_buff,),
+        )
         return results
     finally:
         conn.close()

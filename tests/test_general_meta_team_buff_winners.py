@@ -41,7 +41,7 @@ def test_run_general_meta_emits_team_buff_winners(monkeypatch):
     monkeypatch.setattr(
         gm_app,
         "get_all_loadouts_from_db",
-        lambda: [
+        lambda **_kwargs: [
             {
                 "song_name": "Song A",
                 "score": 100,

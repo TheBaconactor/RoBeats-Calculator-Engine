@@ -12,6 +12,84 @@ from .keys import ELEMENT_TO_ID
 from .models import SongCandidate
 
 TEAM_BUFF_DEFAULT: str = "T5"
+_BASELINE_TEAM_BUFF_BY_DB_PATH: Dict[str, str] = {}
+
+
+def _conn_db_path(conn: sqlite3.Connection) -> str:
+    """
+    Best-effort: resolve the on-disk file path for this connection's main database.
+
+    This is used only for lightweight process-local caching of the resolved baseline TeamBuff tier.
+    """
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+    except sqlite3.Error:
+        return ""
+
+    for row in rows or []:
+        try:
+            name = row["name"] if isinstance(row, sqlite3.Row) else row[1]
+            file = row["file"] if isinstance(row, sqlite3.Row) else row[2]
+        except Exception:
+            continue
+        if str(name) == "main":
+            return str(file or "")
+
+    # Fall back to the first row's file if present.
+    if rows:
+        try:
+            file = rows[0]["file"] if isinstance(rows[0], sqlite3.Row) else rows[0][2]
+            return str(file or "")
+        except Exception:
+            return ""
+    return ""
+
+
+def _probe_first_team_buff(conn: sqlite3.Connection, table: str) -> Optional[str]:
+    """
+    Return a TeamBuff value present in `table`, or None if table is missing/empty.
+
+    Compact DB mode persists baseline candidates under exactly one TeamBuff tier per DB in practice,
+    so a single-row probe is sufficient and avoids scanning large tables.
+    """
+    try:
+        row = conn.execute(
+            f"SELECT team_buff FROM {table} WHERE team_buff IS NOT NULL AND team_buff != '' LIMIT 1"
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    try:
+        v = row["team_buff"] if isinstance(row, sqlite3.Row) else row[0]
+    except Exception:
+        return None
+    s = str(v or "").strip().upper()
+    return s or None
+
+
+def _resolve_baseline_team_buff(conn: sqlite3.Connection) -> str:
+    """
+    Resolve which baseline TeamBuff tier this DB is using for persisted candidates.
+
+    This intentionally resolves from the DB contents (not config) so tools keep working when a DB
+    created under a different baseline tier is inspected with a different local config.
+    """
+    db_path = _conn_db_path(conn)
+    cached = _BASELINE_TEAM_BUFF_BY_DB_PATH.get(db_path) if db_path else None
+    if cached:
+        return cached
+
+    # Prefer base table; then FG table.
+    tb_base = _probe_first_team_buff(conn, "team_buff_loadouts")
+    tb_fg = _probe_first_team_buff(conn, "team_buff_fg_loadouts")
+    baseline = tb_base or tb_fg or TEAM_BUFF_DEFAULT
+
+    # Only cache when we successfully observed a tier in the DB; if the DB is empty,
+    # caching would make later inserts under a different baseline invisible.
+    if db_path and (tb_base or tb_fg):
+        _BASELINE_TEAM_BUFF_BY_DB_PATH[db_path] = str(baseline)
+    return str(baseline)
 
 
 class _EncodingMaps:
@@ -75,13 +153,13 @@ def _decode_mini_groups_blob(payload: object, maps: _EncodingMaps) -> Tuple[Tupl
     return tuple(out)
 
 
-def _resolve_tables(_conn: sqlite3.Connection) -> Tuple[str, str, str]:
+def _resolve_tables(conn: sqlite3.Connection) -> Tuple[str, str, str]:
     """
     Choose which DB tables to treat as the base/FG leaderboards.
 
-    Uses `team_buff_*` (filtered to TEAM_BUFF_DEFAULT).
+    Uses `team_buff_*` (filtered to the DB's baseline TeamBuff tier).
     """
-    return "team_buff_loadouts", "team_buff_fg_loadouts", TEAM_BUFF_DEFAULT
+    return "team_buff_loadouts", "team_buff_fg_loadouts", _resolve_baseline_team_buff(conn)
 
 
 def _is_fg_table(name: str) -> bool:

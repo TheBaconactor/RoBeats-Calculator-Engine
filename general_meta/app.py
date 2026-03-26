@@ -7,6 +7,7 @@ from typing import Any, Dict
 
 from gear_optimizer.core.constants import PATHS, TOTAL_ROWS
 from gear_optimizer.core.stats_calculator import compute_full_stats
+from gear_optimizer.core.team_buff import resolve_baseline_team_buff_from_cfg
 from gear_optimizer.data.csv_parser import load_all_gears_list, load_all_minis_list, read_table
 from gear_optimizer.data.loadout_equivalence import normalize_minis_groups_for_display
 
@@ -133,8 +134,10 @@ def run_general_meta(cfg, paths: dict) -> dict:
     for combo, songs in songs_by_combo.items():
         print(f"  {combo[0]}/{combo[1]}: {len(songs)} songs")
 
-    print("\nQuerying loadouts from database...")
-    all_loadouts = get_all_loadouts_from_db()
+    baseline_team_buff = resolve_baseline_team_buff_from_cfg(cfg, default="T5")
+    baseline_label = "None" if str(baseline_team_buff) == "NONE" else str(baseline_team_buff)
+    print(f"\nQuerying loadouts from database (baseline TeamBuff={baseline_label})...")
+    all_loadouts = get_all_loadouts_from_db(team_buff=baseline_team_buff)
     print(f"  Found {len(all_loadouts)} loadout records")
 
     baseline_loadouts_by_song: dict[str, list[dict]] = {}
@@ -183,7 +186,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
         if not top_loadouts:
             print("  No loadouts found for this category")
             team_buff_winners = _empty_team_buff_winners()
-            team_buff_winners["T5"]["songs_count_with_data"] = len(songs)
+            team_buff_winners[baseline_label]["songs_count_with_data"] = len(songs)
             results[combo_key] = {
                 "songs_count": len(songs),
                 "selected_element": primary,
@@ -218,14 +221,15 @@ def run_general_meta(cfg, paths: dict) -> dict:
             print(f"    Avg Score: {loadout_data['avg_score']:,}")
             if peak_in_songs:
                 print(f"    Peak In Songs ({len(peak_in_songs)}): {', '.join(peak_in_songs)}")
-            loadout_entries.append(_build_loadout_entry(loadout_data, primary, team_buff="T5", team_color=team_color))
+            loadout_entries.append(
+                _build_loadout_entry(loadout_data, primary, team_buff=baseline_label, team_color=team_color)
+            )
 
         team_buff_winners = _empty_team_buff_winners()
 
-        # GeneralMeta contract: T5 is the "default" (baseline-derived) result.
-        # Only None/T1/T10/T15 are sourced from tiered DB tables.
-        team_buff_winners["T5"]["songs_count_with_data"] = len(songs)
-        team_buff_winners["T5"]["winner"] = loadout_entries[0] if loadout_entries else None
+        # GeneralMeta contract: the resolved baseline tier is the "default" (baseline-derived) result.
+        team_buff_winners[baseline_label]["songs_count_with_data"] = len(songs)
+        team_buff_winners[baseline_label]["winner"] = loadout_entries[0] if loadout_entries else None
 
         winners_to_print = [t for t in team_buff_tiers if team_buff_winners[t]["winner"] is not None]
         if winners_to_print:
@@ -234,7 +238,7 @@ def run_general_meta(cfg, paths: dict) -> dict:
                 winner = team_buff_winners[label]["winner"] or {}
                 minis_groups = winner.get("mini_groups") or []
                 mini_names = sorted([min(g) for g in minis_groups if g])
-                songs_note = "songs in category" if label == "T5" else "songs"
+                songs_note = "songs in category" if label == baseline_label else "songs"
                 print(
                     f"    {label}: {int(winner.get('win_frequency') or 0)} wins "
                     f"(from {int(team_buff_winners[label]['songs_count_with_data'] or 0)} {songs_note})"
